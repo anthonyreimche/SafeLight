@@ -20,6 +20,7 @@ If you'd like to help make this software possible, feel free to help!
 - Rating (0–5), color code (6–9), and pick(P) / reject(X) / unflag (U) support
 - Library sort tools
 - Single file and folder import support
+
 ## Develop Environment
 <img width="3831" height="1856" alt="image" src="https://github.com/user-attachments/assets/e21e8479-fe57-406c-b25a-5057105121df" />
 - Undo/Redo support
@@ -30,10 +31,12 @@ If you'd like to help make this software possible, feel free to help!
 - Basic preset support
 - Hold shift or widen slider panel for fine adjustment, double-click to reset value
 - Limited crop functionality
+
 ## Loupe Viewer
 <img width="3832" height="1848" alt="image" src="https://github.com/user-attachments/assets/cbf992a6-0172-40af-ab1f-7e4041b425dd" />
 - Snappy zoom and pan functionality
 - Native detachable window support for dual screen culling
+
 ## Export Settings
 <img width="3837" height="1860" alt="image" src="https://github.com/user-attachments/assets/437874d3-0b02-4ee2-a2c6-136e2fa88bdf" />
 - batch JPG, PNG, and WebP export
