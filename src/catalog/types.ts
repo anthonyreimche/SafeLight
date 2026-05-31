@@ -71,6 +71,16 @@ export interface CurvePoint {
   y: number; // 0..1 output
 }
 
+export const TONE_CURVE_CHANNELS = ["rgb", "red", "green", "blue"] as const;
+export type ToneCurveChannel = (typeof TONE_CURVE_CHANNELS)[number];
+
+export interface ToneCurves {
+  rgb: CurvePoint[]; // master curve, applied to all channels first
+  red: CurvePoint[];
+  green: CurvePoint[];
+  blue: CurvePoint[];
+}
+
 export interface CropRect {
   x: number; // 0..1 left edge, image space (y-down, 0 = top)
   y: number; // 0..1 top edge
@@ -114,7 +124,7 @@ export interface DevelopParams {
   tint: number;
   straighten: number; // degrees, -45..45 (0 = none)
   crop: CropRect;
-  toneCurve: CurvePoint[];
+  toneCurve: ToneCurves;
   hsl: HSLAdjustments;
 }
 
@@ -122,6 +132,15 @@ export const DEFAULT_TONE_CURVE: CurvePoint[] = [
   { x: 0, y: 0 },
   { x: 1, y: 1 },
 ];
+
+export function defaultToneCurves(): ToneCurves {
+  return {
+    rgb: [...DEFAULT_TONE_CURVE],
+    red: [...DEFAULT_TONE_CURVE],
+    green: [...DEFAULT_TONE_CURVE],
+    blue: [...DEFAULT_TONE_CURVE],
+  };
+}
 
 export const DEFAULT_CROP: CropRect = { x: 0, y: 0, width: 1, height: 1 };
 
@@ -160,7 +179,7 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   tint: 0,
   straighten: 0,
   crop: { ...DEFAULT_CROP },
-  toneCurve: [...DEFAULT_TONE_CURVE],
+  toneCurve: defaultToneCurves(),
   hsl: defaultHSL(),
 };
 
@@ -183,6 +202,27 @@ function normalizeCrop(c: Partial<CropRect> | undefined): CropRect {
   };
 }
 
+function normalizeCurve(c: CurvePoint[] | undefined): CurvePoint[] {
+  return c && c.length >= 2
+    ? c.map((pt) => ({ x: pt.x, y: pt.y }))
+    : [...DEFAULT_TONE_CURVE];
+}
+
+// Accepts the current object shape or a legacy single-curve array (treated as
+// the RGB master curve), so old snapshots/presets still load.
+function normalizeToneCurves(tc: unknown): ToneCurves {
+  if (Array.isArray(tc)) {
+    return { ...defaultToneCurves(), rgb: normalizeCurve(tc as CurvePoint[]) };
+  }
+  const t = (tc ?? {}) as Partial<ToneCurves>;
+  return {
+    rgb: normalizeCurve(t.rgb),
+    red: normalizeCurve(t.red),
+    green: normalizeCurve(t.green),
+    blue: normalizeCurve(t.blue),
+  };
+}
+
 // Merge a (possibly partial / legacy) params object with current defaults so
 // snapshots saved before a field existed still load cleanly.
 export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopParams {
@@ -192,10 +232,7 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
     straighten:
       typeof p?.straighten === "number" ? clampStraighten(p.straighten) : 0,
     crop: normalizeCrop(p?.crop),
-    toneCurve:
-      p?.toneCurve && p.toneCurve.length >= 2
-        ? p.toneCurve.map((pt) => ({ x: pt.x, y: pt.y }))
-        : [...DEFAULT_TONE_CURVE],
+    toneCurve: normalizeToneCurves(p?.toneCurve),
     hsl: {
       hue: { ...zeroHSLValues(), ...p?.hsl?.hue },
       saturation: { ...zeroHSLValues(), ...p?.hsl?.saturation },

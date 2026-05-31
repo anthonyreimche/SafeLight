@@ -6,8 +6,10 @@ import type {
   EditState,
   HSLBand,
   HSLChannel,
+  ToneCurveChannel,
 } from "@/catalog/types";
 import { normalizeParams } from "@/catalog/types";
+import type { HistogramData } from "@/rendering/histogram";
 import { catalogDB } from "@/catalog/db";
 import { broadcast } from "./broadcast";
 
@@ -16,13 +18,15 @@ interface DevelopState {
   params: DevelopParams;
   history: EditSnapshot[];
   historyIndex: number;
+  histogram: HistogramData | null;
 
+  setHistogram: (histogram: HistogramData | null) => void;
   loadEdit: (photoId: string) => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
     key: K,
     value: DevelopParams[K],
   ) => void;
-  setToneCurve: (points: CurvePoint[]) => void;
+  setToneCurve: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
   setHslValue: (band: HSLBand, channel: HSLChannel, value: number) => void;
   applyPreset: (params: Partial<DevelopParams>) => Promise<void>;
   commitEdit: (label: string) => Promise<void>;
@@ -38,6 +42,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   params: normalizeParams(undefined),
   history: [],
   historyIndex: -1,
+  histogram: null,
+
+  setHistogram: (histogram) => set({ histogram }),
 
   async loadEdit(photoId: string) {
     const editState = await catalogDB.getEditState(photoId);
@@ -68,9 +75,12 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     });
   },
 
-  setToneCurve(points) {
+  setToneCurve(channel, points) {
     set((s) => ({
-      params: { ...s.params, toneCurve: points },
+      params: {
+        ...s.params,
+        toneCurve: { ...s.params.toneCurve, [channel]: points },
+      },
     }));
     broadcast({
       type: "edit-update",

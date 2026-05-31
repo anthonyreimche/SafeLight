@@ -26,7 +26,8 @@ If you'd like to help make this software more powerful, feel free to help!
 - Undo/Redo support
 - Edit reset button
 - Metadata viewer
-- Basic white balance, exposure, clarity, vibrance, tone curve support
+- White balance sliders
+- Full and single-channel RGB tone curve support
 - Basic HSL/Color support 
 - Basic preset support
 - Hold shift or widen slider panel for fine adjustment, double-click to reset value
@@ -49,7 +50,6 @@ If you'd like to help make this software more powerful, feel free to help!
 - Histogram viewer and control
 - Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
 - Transform and warp image crop / geometry and perspective tools
-- RGB single channel tone curve support
 - Color grading wheels
 - Image sharpen / denoise support (WASM-based)
 - Lens correction profiles

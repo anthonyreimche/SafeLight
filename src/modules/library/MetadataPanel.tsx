@@ -17,7 +17,13 @@ export function MetadataPanel() {
   const photo = useCatalogStore((s) =>
     s.photos.find((p) => p.id === s.activePhotoId),
   );
-  if (!photo) return null;
+  if (!photo) {
+    return (
+      <Panel title="Metadata">
+        <p className="text-[11px] text-text-muted">Select a photo</p>
+      </Panel>
+    );
+  }
 
   const e = photo.exif;
   const camera = [e.cameraMake, e.cameraModel].filter(Boolean).join(" ");
@@ -41,7 +47,7 @@ export function MetadataPanel() {
   const visible = rows.filter((r): r is [string, string] => Boolean(r[1]));
 
   return (
-    <Panel title="Metadata" defaultOpen={false}>
+    <Panel title="Metadata">
       <dl className="space-y-0.5">
         {visible.map(([k, v]) => (
           <div key={k} className="flex justify-between gap-2 text-[11px]">

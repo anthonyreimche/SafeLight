@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { AppShell } from "@/ui/components/AppShell";
 import { Panel } from "@/ui/components/Panel";
+import { Slider } from "@/ui/components/Slider";
 import { useCatalogStore } from "@/state/catalog-store";
 import {
   exportPhotos,
@@ -100,25 +101,14 @@ export function ExportView() {
 
           {hasQuality && (
             <Panel title="Quality">
-              <div className="flex items-center gap-2 py-0.5">
-                <input
-                  type="range"
-                  min={1}
-                  max={100}
-                  step={1}
-                  value={quality}
-                  onChange={(e) => setQuality(Number(e.target.value))}
-                  onDoubleClick={() => setQuality(90)}
-                  title="Quality (double-click to reset)"
-                  className="sl-slider flex-1"
-                  style={{
-                    background: `linear-gradient(to right, #5a5a5a 0%, #5a5a5a ${quality}%, var(--color-surface-3) ${quality}%, var(--color-surface-3) 100%)`,
-                  }}
-                />
-                <span className="w-8 text-right text-[11px] tabular-nums text-text-secondary">
-                  {quality}
-                </span>
-              </div>
+              <Slider
+                label=""
+                value={quality}
+                min={1}
+                max={100}
+                defaultValue={90}
+                onChange={setQuality}
+              />
             </Panel>
           )}
 

@@ -3,6 +3,7 @@ import type { RefObject } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { loadPhotoBitmap } from "@/catalog/load-image";
+import { computeHistogram } from "@/rendering/histogram";
 import { useDevelopStore } from "@/state/develop-store";
 
 interface RendererStatus {
@@ -21,6 +22,7 @@ export function useDevelopRenderer(
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const params = useDevelopStore((s) => s.params);
+  const setHistogram = useDevelopStore((s) => s.setHistogram);
 
   // Mirror the canvas's current buffer size into state so zoom can scale it.
   const syncSize = () => {
@@ -31,6 +33,12 @@ export function useDevelopRenderer(
         ? s
         : { width: cv.width, height: cv.height },
     );
+  };
+
+  // Recompute the live histogram from the freshly rendered canvas.
+  const updateHistogram = () => {
+    const cv = canvasRef.current;
+    if (cv && cv.width > 0 && cv.height > 0) setHistogram(computeHistogram(cv));
   };
 
   // Create the renderer once for the canvas.
@@ -66,6 +74,7 @@ export function useDevelopRenderer(
       renderer.setParams(useDevelopStore.getState().params);
       renderer.render();
       syncSize();
+      updateHistogram();
       bitmap.close();
       setLoading(false);
     });
@@ -83,6 +92,7 @@ export function useDevelopRenderer(
     const id = requestAnimationFrame(() => {
       renderer.render();
       syncSize();
+      updateHistogram();
     });
     return () => cancelAnimationFrame(id);
   }, [params]);

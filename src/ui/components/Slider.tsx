@@ -22,6 +22,7 @@ export function Slider({
   max = 100,
   step = 1,
   defaultValue = 0,
+  hideValue = false,
   onChange,
   onCommit,
 }: SliderProps) {
@@ -161,18 +162,20 @@ export function Slider({
           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
         />
       </div>
-      <input
-        type="text"
-        inputMode="decimal"
-        value={editing ?? display}
-        onFocus={() => setEditing(String(value))}
-        onChange={(e) => onText(e.target.value)}
-        onBlur={() => {
-          setEditing(null);
-          onCommit?.();
-        }}
-        className="w-12 shrink-0 rounded bg-transparent px-1 text-right text-[11px] tabular-nums text-text-secondary outline-none focus:bg-surface-2 focus:text-text-primary"
-      />
+      {!hideValue && (
+        <input
+          type="text"
+          inputMode="decimal"
+          value={editing ?? display}
+          onFocus={() => setEditing(String(value))}
+          onChange={(e) => onText(e.target.value)}
+          onBlur={() => {
+            setEditing(null);
+            onCommit?.();
+          }}
+          className="w-12 shrink-0 rounded bg-transparent px-1 text-right text-[11px] tabular-nums text-text-secondary outline-none focus:bg-surface-2 focus:text-text-primary"
+        />
+      )}
     </div>
   );
 }

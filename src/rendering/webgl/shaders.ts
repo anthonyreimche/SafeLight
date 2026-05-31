@@ -87,9 +87,10 @@ vec3 applyTonal(vec3 c, float hi, float sh, float wh, float bl) {
 
 vec3 applyToneCurve(vec3 c) {
   c = clamp(c, 0.0, 1.0);
+  // Per-channel LUTs packed into RGBA (master curve already composed in).
   c.r = texture(uCurve, vec2(c.r, 0.5)).r;
-  c.g = texture(uCurve, vec2(c.g, 0.5)).r;
-  c.b = texture(uCurve, vec2(c.b, 0.5)).r;
+  c.g = texture(uCurve, vec2(c.g, 0.5)).g;
+  c.b = texture(uCurve, vec2(c.b, 0.5)).b;
   return c;
 }
 

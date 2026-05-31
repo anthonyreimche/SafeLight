@@ -1,4 +1,4 @@
-import type { CurvePoint } from "@/catalog/types";
+import type { CurvePoint, ToneCurves } from "@/catalog/types";
 
 // Monotone cubic Hermite interpolation (Fritsch–Carlson). Produces smooth,
 // overshoot-free tone curves through the control points — the standard choice
@@ -79,6 +79,26 @@ export function buildCurveLUT(points: CurvePoint[]): Uint8Array {
     lut[i] = Math.round(clamp01(y) * 255);
   }
   return lut;
+}
+
+// Compose the master (RGB) curve with each per-channel curve into one 256×1
+// RGBA LUT: the master curve is applied first, then the channel's own curve, so
+// finalChannel[i] = channelCurve(rgbCurve(i)). The shader samples .r/.g/.b.
+export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
+  const rgb = buildCurveLUT(curves.rgb);
+  const red = buildCurveLUT(curves.red);
+  const green = buildCurveLUT(curves.green);
+  const blue = buildCurveLUT(curves.blue);
+
+  const out = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const base = rgb[i];
+    out[i * 4] = red[base];
+    out[i * 4 + 1] = green[base];
+    out[i * 4 + 2] = blue[base];
+    out[i * 4 + 3] = 255;
+  }
+  return out;
 }
 
 function clamp01(v: number): number {

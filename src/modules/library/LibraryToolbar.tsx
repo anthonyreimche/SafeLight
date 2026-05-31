@@ -1,6 +1,7 @@
 import { useUIStore } from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import type { SortField } from "@/catalog/types";
+import { Slider } from "@/ui/components/Slider";
 import { importFiles, importDirectory } from "./import-photos";
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
@@ -158,20 +159,18 @@ export function LibraryToolbar() {
           </button>
         </div>
 
-        <input
-          type="range"
-          min={100}
-          max={400}
-          step={20}
-          value={gridSize}
-          onChange={(e) => setGridSize(Number(e.target.value))}
-          onDoubleClick={() => setGridSize(200)}
-          title="Thumbnail size (double-click to reset)"
-          className="sl-slider w-20"
-          style={{
-            background: `linear-gradient(to right, #5a5a5a 0%, #5a5a5a ${((gridSize - 100) / 300) * 100}%, var(--color-surface-3) ${((gridSize - 100) / 300) * 100}%, var(--color-surface-3) 100%)`,
-          }}
-        />
+        <div className="w-24">
+          <Slider
+            label=""
+            hideValue
+            value={gridSize}
+            min={100}
+            max={400}
+            step={20}
+            defaultValue={200}
+            onChange={setGridSize}
+          />
+        </div>
       </div>
     </div>
   );

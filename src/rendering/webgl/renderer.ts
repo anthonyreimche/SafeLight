@@ -1,6 +1,6 @@
 import type { DevelopParams } from "@/catalog/types";
 import { DEFAULT_CROP, HSL_CHANNELS } from "@/catalog/types";
-import { buildCurveLUT } from "../curve";
+import { buildRGBCurveLUT } from "../curve";
 import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders";
 
 // Default cap on render resolution for interactive performance. Export passes
@@ -132,8 +132,13 @@ export class WebGLRenderer {
 
   private initCurveTexture() {
     const gl = this.gl;
-    const identity = new Uint8Array(256);
-    for (let i = 0; i < 256; i++) identity[i] = i;
+    const identity = new Uint8Array(256 * 4);
+    for (let i = 0; i < 256; i++) {
+      identity[i * 4] = i;
+      identity[i * 4 + 1] = i;
+      identity[i * 4 + 2] = i;
+      identity[i * 4 + 3] = 255;
+    }
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -142,11 +147,11 @@ export class WebGLRenderer {
     gl.texImage2D(
       gl.TEXTURE_2D,
       0,
-      gl.R8,
+      gl.RGBA,
       256,
       1,
       0,
-      gl.RED,
+      gl.RGBA,
       gl.UNSIGNED_BYTE,
       identity,
     );
@@ -191,17 +196,17 @@ export class WebGLRenderer {
 
   setParams(params: DevelopParams) {
     this.params = params;
-    const lut = buildCurveLUT(params.toneCurve);
+    const lut = buildRGBCurveLUT(params.toneCurve);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
     gl.texImage2D(
       gl.TEXTURE_2D,
       0,
-      gl.R8,
+      gl.RGBA,
       256,
       1,
       0,
-      gl.RED,
+      gl.RGBA,
       gl.UNSIGNED_BYTE,
       lut,
     );
