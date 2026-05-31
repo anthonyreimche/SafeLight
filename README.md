@@ -1,8 +1,5 @@
-As more and more photo editors turn to AI, I find it hard to find a good replacement that doesn't expose your photos to train its AI. This is why I have begun this pet project — to create an alternative editing software that is easy to pick up and does not expose your art.
-There are many other alternatives, but they are tailored for very different workflows to mine and I am sure many others will agree.
-
 # Safelight is privacy-first, GPU-accelerated, open-source photo editing for every photographer.
-If you'd like to help make this software possible, feel free to help!
+If you'd like to help make this software more powerful, feel free to help!
 
 - Zero cost, zero subscription
 - Fully offline, no cloud dependency
