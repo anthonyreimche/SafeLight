@@ -12,9 +12,10 @@ If you'd like to help make this software possible, feel free to help!
 - [In development] Lightroom catalog import
 - Open source
 
-# What I’ve done
+# Progress
 ## Image Library
 <img width="3837" height="1853" alt="image" src="https://github.com/user-attachments/assets/600b1df9-c7d2-4d38-8269-a41fd5022e96" />
+<img width="3838" height="1858" alt="image" src="https://github.com/user-attachments/assets/425f04b7-6a48-4981-904d-cf86a6fecf14" />
 
 - Photo library with grid and list view
 - Collection support
