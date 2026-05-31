@@ -15,6 +15,7 @@ If you'd like to help make this software possible, feel free to help!
 # What I’ve done
 ## Image Library
 <img width="3837" height="1853" alt="image" src="https://github.com/user-attachments/assets/600b1df9-c7d2-4d38-8269-a41fd5022e96" />
+
 - Photo library with grid and list view
 - Collection support
 - Rating (0–5), color code (6–9), and pick(P) / reject(X) / unflag (U) support
@@ -23,6 +24,7 @@ If you'd like to help make this software possible, feel free to help!
 
 ## Develop Environment
 <img width="3831" height="1856" alt="image" src="https://github.com/user-attachments/assets/e21e8479-fe57-406c-b25a-5057105121df" />
+
 - Undo/Redo support
 - Edit reset button
 - Metadata viewer
@@ -34,11 +36,13 @@ If you'd like to help make this software possible, feel free to help!
 
 ## Loupe Viewer
 <img width="3832" height="1848" alt="image" src="https://github.com/user-attachments/assets/cbf992a6-0172-40af-ab1f-7e4041b425dd" />
+
 - Snappy zoom and pan functionality
 - Native detachable window support for dual screen culling
 
 ## Export Settings
 <img width="3837" height="1860" alt="image" src="https://github.com/user-attachments/assets/437874d3-0b02-4ee2-a2c6-136e2fa88bdf" />
+
 - batch JPG, PNG, and WebP export
 - Limited output resolution clamping
 
