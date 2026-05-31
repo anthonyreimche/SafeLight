@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+@theme {
+  --color-surface-0: #0a0a0a;
+  --color-surface-1: #111111;
+  --color-surface-2: #1a1a1a;
+  --color-surface-3: #242424;
+  --color-surface-4: #2e2e2e;
+  --color-border: #333333;
+  --color-border-subtle: #222222;
+  --color-text-primary: #e0e0e0;
+  --color-text-secondary: #888888;
+  --color-text-muted: #555555;
+  --color-accent: #4a9eff;
+  --color-accent-hover: #6ab4ff;
+  --color-rating: #f5c542;
+  --color-flag-pick: #ffffff;
+  --color-flag-reject: #444444;
+  --color-label-red: #e74c3c;
+  --color-label-yellow: #f39c12;
+  --color-label-green: #27ae60;
+  --color-label-blue: #3498db;
+  --color-label-purple: #9b59b6;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code",
+    ui-monospace, monospace;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-4) transparent;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--color-surface-0);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background: var(--color-accent);
+  color: white;
+}
+
+/* Grey, colorless range slider: rounded track + filled portion, no handle. */
+.sl-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-surface-3);
+  cursor: pointer;
+  outline: none;
+}
+
+/* Thumb is hidden (transparent) but kept grabbable so dragging still works;
+   the filled gradient on the track shows the value. */
+.sl-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: transparent;
+  border: none;
+}
+
+.sl-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: transparent;
+  border: none;
+}
+
+.sl-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-surface-3);
+}

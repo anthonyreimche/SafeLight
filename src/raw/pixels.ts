@@ -1,0 +1,159 @@
+// Pure pixel math for RAW development: sample unpacking, Bayer demosaic, and
+// the linear -> display color/gamma stage. No DOM or app imports, so each
+// function is unit-testable directly under Node's --experimental-strip-types.
+//
+// CFA color codes follow TIFF CFAPattern: 0 = Red, 1 = Green, 2 = Blue.
+export const CFA = { R: 0, G: 1, B: 2 } as const;
+
+// Unpack `count` samples of `bits` bits each from a packed byte stream.
+//  - 8/16-bit samples are read whole (16-bit honors file endianness).
+//  - 12/14-bit (and other sub-byte widths) are read MSB-first, which is how
+//    TIFF packs contiguous samples regardless of the file's byte order.
+export function unpackSamples(
+  bytes: Uint8Array,
+  bits: number,
+  count: number,
+  littleEndian: boolean,
+): Uint16Array {
+  const out = new Uint16Array(count);
+
+  if (bits === 8) {
+    for (let i = 0; i < count && i < bytes.length; i++) out[i] = bytes[i];
+    return out;
+  }
+
+  if (bits === 16) {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let i = 0; i < count && (i + 1) * 2 <= bytes.length; i++) {
+      out[i] = dv.getUint16(i * 2, littleEndian);
+    }
+    return out;
+  }
+
+  // Sub-byte widths: MSB-first bit reader.
+  let bitBuf = 0;
+  let bitCnt = 0;
+  let bytePos = 0;
+  for (let i = 0; i < count; i++) {
+    while (bitCnt < bits) {
+      bitBuf = (bitBuf << 8) | (bytePos < bytes.length ? bytes[bytePos++] : 0);
+      bitCnt += 8;
+    }
+    bitCnt -= bits;
+    out[i] = (bitBuf >>> bitCnt) & ((1 << bits) - 1);
+  }
+  return out;
+}
+
+// Subtract black level and scale to 0..1, clamped. Returns a fresh Float32Array.
+export function normalizePlane(
+  raw: Uint16Array,
+  black: number,
+  white: number,
+): Float32Array {
+  const out = new Float32Array(raw.length);
+  const range = white - black;
+  const inv = range > 0 ? 1 / range : 0;
+  for (let i = 0; i < raw.length; i++) {
+    let v = (raw[i] - black) * inv;
+    if (v < 0) v = 0;
+    else if (v > 1) v = 1;
+    out[i] = v;
+  }
+  return out;
+}
+
+// `cfa` is the 2x2 pattern in row-major order: [topLeft, topRight, bottomLeft,
+// bottomRight], each a CFA color code. Returns interleaved RGB (length w*h*3).
+//
+// Bilinear interpolation: the site's native channel is taken directly; the two
+// missing channels are averaged from the matching-color samples in the 3x3
+// neighborhood (edges clamp). Pattern-agnostic, correct for any Bayer layout.
+export function demosaicBilinear(
+  plane: Float32Array,
+  width: number,
+  height: number,
+  cfa: [number, number, number, number],
+): Float32Array {
+  const rgb = new Float32Array(width * height * 3);
+  const colorAt = (x: number, y: number): number => cfa[(y & 1) * 2 + (x & 1)];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const site = colorAt(x, y);
+      const acc = [0, 0, 0];
+      const cnt = [0, 0, 0];
+
+      // 3x3 neighborhood (including self) with edge clamping.
+      for (let dy = -1; dy <= 1; dy++) {
+        let ny = y + dy;
+        if (ny < 0) ny = 0;
+        else if (ny >= height) ny = height - 1;
+        for (let dx = -1; dx <= 1; dx++) {
+          let nx = x + dx;
+          if (nx < 0) nx = 0;
+          else if (nx >= width) nx = width - 1;
+          const c = colorAt(nx, ny);
+          acc[c] += plane[ny * width + nx];
+          cnt[c]++;
+        }
+      }
+
+      const o = idx * 3;
+      // Native channel: exact sample. Others: neighborhood average.
+      rgb[o] = site === CFA.R ? plane[idx] : cnt[0] ? acc[0] / cnt[0] : 0;
+      rgb[o + 1] = site === CFA.G ? plane[idx] : cnt[1] ? acc[1] / cnt[1] : 0;
+      rgb[o + 2] = site === CFA.B ? plane[idx] : cnt[2] ? acc[2] / cnt[2] : 0;
+    }
+  }
+  return rgb;
+}
+
+function linearToSrgb(c: number): number {
+  if (c <= 0) return 0;
+  if (c >= 1) return 1;
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+
+// Apply per-channel white-balance gain (normalized so green stays ~1.0) and
+// encode linear -> sRGB into an 8-bit RGBA buffer ready for ImageData.
+export function toRGBA8(
+  rgb: Float32Array,
+  width: number,
+  height: number,
+  wb: [number, number, number] = [1, 1, 1],
+): Uint8ClampedArray {
+  const g = wb[1] || 1;
+  const mr = wb[0] / g;
+  const mg = 1;
+  const mb = wb[2] / g;
+
+  const out = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0, o = 0; i < rgb.length; i += 3, o += 4) {
+    out[o] = linearToSrgb(rgb[i] * mr) * 255;
+    out[o + 1] = linearToSrgb(rgb[i + 1] * mg) * 255;
+    out[o + 2] = linearToSrgb(rgb[i + 2] * mb) * 255;
+    out[o + 3] = 255;
+  }
+  return out;
+}
+
+// One-shot helper used by the decoder: raw plane -> display RGBA.
+export interface DevelopOptions {
+  width: number;
+  height: number;
+  black: number;
+  white: number;
+  cfa: [number, number, number, number];
+  wb?: [number, number, number];
+}
+
+export function developRawPlane(
+  raw: Uint16Array,
+  opts: DevelopOptions,
+): Uint8ClampedArray {
+  const norm = normalizePlane(raw, opts.black, opts.white);
+  const rgb = demosaicBilinear(norm, opts.width, opts.height, opts.cfa);
+  return toRGBA8(rgb, opts.width, opts.height, opts.wb);
+}
