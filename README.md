@@ -1,7 +1,7 @@
 As more and more photo editors turn to AI, I find it hard to find a good replacement that doesn't expose your photos to train its AI. This is why I have begun this pet project — to create an alternative editing software that is easy to pick up and does not expose your art.
 There are many other alternatives, but they are tailored for very different workflows to mine and I am sure many others will agree.
 
-#Safelight is privacy-first, GPU-accelerated, open-source photo editing for every photographer.
+# Safelight is privacy-first, GPU-accelerated, open-source photo editing for every photographer.
 If you'd like to help make this software possible, feel free to help!
 
 - Zero cost, zero subscription
@@ -12,15 +12,16 @@ If you'd like to help make this software possible, feel free to help!
 - [In development] Lightroom catalog import
 - Open source
 
-#What I’ve done
-- Native GPU rendering
-##Image Library
+# What I’ve done
+## Image Library
+<img width="3837" height="1853" alt="image" src="https://github.com/user-attachments/assets/600b1df9-c7d2-4d38-8269-a41fd5022e96" />
 - Photo library with grid and list view
 - Collection support
 - Rating (0–5), color code (6–9), and pick(P) / reject(X) / unflag (U) support
 - Library sort tools
 - Single file and folder import support
-##Develop Environment
+## Develop Environment
+<img width="3831" height="1856" alt="image" src="https://github.com/user-attachments/assets/e21e8479-fe57-406c-b25a-5057105121df" />
 - Undo/Redo support
 - Edit reset button
 - Metadata viewer
@@ -29,14 +30,16 @@ If you'd like to help make this software possible, feel free to help!
 - Basic preset support
 - Hold shift or widen slider panel for fine adjustment, double-click to reset value
 - Limited crop functionality
-##Loupe Viewer
+## Loupe Viewer
+<img width="3832" height="1848" alt="image" src="https://github.com/user-attachments/assets/cbf992a6-0172-40af-ab1f-7e4041b425dd" />
 - Snappy zoom and pan functionality
 - Native detachable window support for dual screen culling
-##Export Settings
+## Export Settings
+<img width="3837" height="1860" alt="image" src="https://github.com/user-attachments/assets/437874d3-0b02-4ee2-a2c6-136e2fa88bdf" />
 - batch JPG, PNG, and WebP export
 - Limited output resolution clamping
 
-#To Do
+# To Do
 - Make detachable windows re-attachable
 - Histogram viewer and control
 - Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
