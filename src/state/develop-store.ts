@@ -20,6 +20,14 @@ interface DevelopState {
   historyIndex: number;
   histogram: HistogramData | null;
 
+  // Crop tool UI state (not part of the edit, so not persisted to history).
+  cropping: boolean;
+  constrainCrop: boolean;
+  cropAspect: number; // 0 = free; else target width:height in pixels
+  setCropping: (v: boolean) => void;
+  setConstrainCrop: (v: boolean) => void;
+  setCropAspect: (r: number) => void;
+
   setHistogram: (histogram: HistogramData | null) => void;
   loadEdit: (photoId: string) => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
@@ -43,6 +51,13 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   history: [],
   historyIndex: -1,
   histogram: null,
+
+  cropping: false,
+  constrainCrop: true,
+  cropAspect: 0,
+  setCropping: (cropping) => set({ cropping }),
+  setConstrainCrop: (constrainCrop) => set({ constrainCrop }),
+  setCropAspect: (cropAspect) => set({ cropAspect }),
 
   setHistogram: (histogram) => set({ histogram }),
 

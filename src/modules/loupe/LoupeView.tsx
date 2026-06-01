@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useCatalogStore } from "@/state/catalog-store";
-import { useUIStore } from "@/state/ui-store";
-import { onBroadcast } from "@/state/broadcast";
 import { AppShell } from "@/ui/components/AppShell";
 import { LoupeCanvas } from "./LoupeCanvas";
 import { ZoomControls } from "@/ui/ZoomControls";
@@ -10,8 +8,6 @@ export function LoupeView() {
   const photos = useCatalogStore((s) => s.photos);
   const activePhotoId = useCatalogStore((s) => s.activePhotoId);
   const setActivePhoto = useCatalogStore((s) => s.setActivePhoto);
-  const loupeDetached = useUIStore((s) => s.loupeDetached);
-  const setLoupeDetached = useUIStore((s) => s.setLoupeDetached);
   const [showBefore, setShowBefore] = useState(false);
   const [zoom, setZoom] = useState<number | null>(null);
 
@@ -19,14 +15,6 @@ export function LoupeView() {
     () => photos.find((p) => p.id === activePhotoId),
     [photos, activePhotoId],
   );
-
-  useEffect(() => {
-    return onBroadcast((msg) => {
-      if (msg.type === "selection-change") {
-        setActivePhoto(msg.payload.activePhotoId);
-      }
-    });
-  }, [setActivePhoto]);
 
   // Arrow keys cycle through photos. Reads fresh store state so there's no stale
   // closure, and works in both the attached and detached Loupe windows.
@@ -50,17 +38,6 @@ export function LoupeView() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  const handleDetach = () => {
-    const w = window.open(
-      `${window.location.origin}?loupe=detached`,
-      "safelight-loupe",
-      "width=1200,height=800",
-    );
-    if (w) {
-      setLoupeDetached(true);
-    }
-  };
 
   const navigate = (dir: -1 | 1) => {
     if (!activePhotoId) return;
@@ -117,16 +94,6 @@ export function LoupeView() {
           </>
         ) : (
           <p className="text-sm text-text-muted">No photo selected</p>
-        )}
-
-        {!loupeDetached && (
-          <button
-            onClick={handleDetach}
-            className="absolute right-3 top-3 rounded bg-surface-2 px-2 py-1 text-[10px] text-text-muted hover:text-text-primary"
-            title="Open in new window"
-          >
-            {"⧉"} Detach
-          </button>
         )}
       </div>
     </AppShell>

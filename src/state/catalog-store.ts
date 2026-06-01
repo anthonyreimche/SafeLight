@@ -7,6 +7,7 @@ import type {
 } from "@/catalog/types";
 import { catalogDB } from "@/catalog/db";
 import { rotateBlob, normalizeRotation } from "@/catalog/orient";
+import { verifyPermission } from "@/catalog/permissions";
 import { broadcast } from "./broadcast";
 
 // Recreate a fresh object URL from the persisted thumbnail blob. Used on load
@@ -26,8 +27,12 @@ interface CatalogState {
   selectedIds: Set<string>;
   activePhotoId: string | null;
   loading: boolean;
+  fileAccessNonce: number; // bumped after re-granting permission, to reload bitmaps
+  needsReconnect: boolean; // stored originals need a permission re-grant
+  reconnecting: boolean; // a permission re-grant is in progress
 
   loadCatalog: () => Promise<void>;
+  reconnectFiles: () => Promise<void>;
 
   addPhotos: (photos: CatalogPhoto[]) => Promise<void>;
   removePhoto: (id: string) => Promise<void>;
@@ -80,6 +85,9 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     selectedIds: new Set(),
     activePhotoId: null,
     loading: false,
+    fileAccessNonce: 0,
+    needsReconnect: false,
+    reconnecting: false,
 
     async loadCatalog() {
       set({ loading: true });
@@ -91,6 +99,40 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       // is dangling. Recreate it from the stored blob.
       const photos = stored.map(hydrateThumbnailUrl);
       set({ photos, collections, loading: false });
+
+      // Handles persist but their read permission resets per session. If a
+      // file-backed photo isn't currently readable, prompt for a reconnect so
+      // Develop/Loupe/Export can use the originals instead of the thumbnail.
+      const backed = photos.find((p) => p.directoryHandle || p.fileHandle);
+      const handle = backed?.directoryHandle ?? backed?.fileHandle;
+      if (handle && !(await verifyPermission(handle))) {
+        set({ needsReconnect: true });
+      }
+    },
+
+    async reconnectFiles() {
+      // Re-request read access to the stored originals. Must run within a user
+      // gesture; one grant per directory typically covers all of its photos.
+      if (get().reconnecting) return;
+      set({ reconnecting: true });
+      try {
+        let anyGranted = false;
+        for (const p of get().photos) {
+          const handle = p.directoryHandle ?? p.fileHandle;
+          if (!handle) continue;
+          if (await verifyPermission(handle)) {
+            anyGranted = true;
+          } else if (await verifyPermission(handle, true)) {
+            anyGranted = true;
+          }
+        }
+        set((s) => ({
+          needsReconnect: !anyGranted,
+          fileAccessNonce: s.fileAccessNonce + 1,
+        }));
+      } finally {
+        set({ reconnecting: false });
+      }
     },
 
     async addPhotos(newPhotos) {
@@ -304,6 +346,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     },
 
     setActivePhoto(id) {
+      if (get().activePhotoId === id) return; // avoids cross-window echo loops
       set({ activePhotoId: id });
       if (id) {
         broadcast({ type: "selection-change", payload: { activePhotoId: id } });

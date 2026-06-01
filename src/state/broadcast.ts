@@ -1,4 +1,4 @@
-import type { DevelopParams } from "@/catalog/types";
+import type { AppModule, DevelopParams } from "@/catalog/types";
 
 export type BroadcastMessage =
   | {
@@ -12,6 +12,12 @@ export type BroadcastMessage =
   | {
       type: "catalog-change";
       payload: { action: string; id?: string };
+    }
+  | {
+      // A module window was popped out / re-attached, so the main window can
+      // reflect it in the tab strip.
+      type: "detach" | "attach";
+      payload: { module: AppModule };
     };
 
 const CHANNEL_NAME = "safelight-sync";

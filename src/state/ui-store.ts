@@ -32,8 +32,10 @@ interface UIState {
   gridSize: number;
   setGridSize: (size: number) => void;
 
-  loupeDetached: boolean;
-  setLoupeDetached: (detached: boolean) => void;
+  // Modules currently popped out into their own windows (main-window view).
+  detached: Set<AppModule>;
+  markDetached: (module: AppModule) => void;
+  markAttached: (module: AppModule) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -68,6 +70,13 @@ export const useUIStore = create<UIState>((set) => ({
   gridSize: 200,
   setGridSize: (size) => set({ gridSize: size }),
 
-  loupeDetached: false,
-  setLoupeDetached: (detached) => set({ loupeDetached: detached }),
+  detached: new Set<AppModule>(),
+  markDetached: (module) =>
+    set((s) => ({ detached: new Set(s.detached).add(module) })),
+  markAttached: (module) =>
+    set((s) => {
+      const next = new Set(s.detached);
+      next.delete(module);
+      return { detached: next };
+    }),
 }));

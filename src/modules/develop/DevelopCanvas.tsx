@@ -1,7 +1,10 @@
 import { useRef } from "react";
-import type { CatalogPhoto } from "@/catalog/types";
+import type { CatalogPhoto, CropRect } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
+import { useDevelopStore } from "@/state/develop-store";
+import { fitCropToImage, rotatedViewCrop } from "@/rendering/crop-transform";
 import { ViewportImage } from "@/ui/ViewportImage";
+import { CropOverlay } from "./CropOverlay";
 
 export function DevelopCanvas({
   photo,
@@ -17,6 +20,42 @@ export function DevelopCanvas({
     canvasRef,
     photo,
   );
+
+  const cropping = useDevelopStore((s) => s.cropping);
+  const crop = useDevelopStore((s) => s.params.crop);
+  const straighten = useDevelopStore((s) => s.params.straighten);
+  const cropAspect = useDevelopStore((s) => s.cropAspect);
+  const constrainCrop = useDevelopStore((s) => s.constrainCrop);
+  const setParam = useDevelopStore((s) => s.setParam);
+  const commitEdit = useDevelopStore((s) => s.commitEdit);
+
+  const imageAspect = photo.height > 0 ? photo.width / photo.height : 1;
+  const straightenRad = (straighten * Math.PI) / 180;
+  const viewCrop = rotatedViewCrop(straightenRad, imageAspect);
+
+  // Throttle crop writes to one per frame so a drag doesn't re-render the panels
+  // on every pointer event.
+  const pendingCrop = useRef<CropRect | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const pushCrop = (next: CropRect) => {
+    pendingCrop.current = next;
+    if (rafRef.current == null) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        if (pendingCrop.current) setParam("crop", pendingCrop.current);
+      });
+    }
+  };
+  const flushCrop = () => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (pendingCrop.current) {
+      setParam("crop", pendingCrop.current);
+      pendingCrop.current = null;
+    }
+  };
 
   if (!supported) {
     return (
@@ -42,6 +81,37 @@ export function DevelopCanvas({
       onZoomChange={onZoomChange}
       loading={loading}
       resetKey={photo.id}
+      overlay={
+        cropping
+          ? (rect) => (
+              <CropOverlay
+                rect={rect}
+                crop={crop}
+                viewCrop={viewCrop}
+                straightenRad={straightenRad}
+                straightenDeg={straighten}
+                aspect={cropAspect}
+                imageAspect={imageAspect}
+                constrain={constrainCrop}
+                onChange={pushCrop}
+                onCommit={() => {
+                  flushCrop();
+                  commitEdit("Crop");
+                }}
+                onLevel={(deg) => {
+                  setParam("straighten", deg);
+                  if (constrainCrop) {
+                    setParam(
+                      "crop",
+                      fitCropToImage(crop, (deg * Math.PI) / 180, imageAspect),
+                    );
+                  }
+                  commitEdit("Straighten");
+                }}
+              />
+            )
+          : undefined
+      }
     />
   );
 }

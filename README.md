@@ -19,13 +19,15 @@ If you'd like to help make this software more powerful, feel free to help!
 - Rating (0–5), color code (6–9), and pick(P) / reject(X) / unflag (U) support
 - Library sort tools
 - Single file and folder import support
+- Full and single channel Histogram viewer
+- Metadata viewer
 
 ## Develop Environment
 <img width="3831" height="1856" alt="image" src="https://github.com/user-attachments/assets/e21e8479-fe57-406c-b25a-5057105121df" />
 
 - Undo/Redo support
 - Edit reset button
-- Metadata viewer
+- Histogram control
 - White balance sliders
 - Full and single-channel RGB tone curve support
 - Basic HSL/Color support 
@@ -37,7 +39,7 @@ If you'd like to help make this software more powerful, feel free to help!
 <img width="3832" height="1848" alt="image" src="https://github.com/user-attachments/assets/cbf992a6-0172-40af-ab1f-7e4041b425dd" />
 
 - Snappy zoom and pan functionality
-- Native detachable window support for dual screen culling
+- Native detachable window support for multi-screen culling
 
 ## Export Settings
 <img width="3837" height="1860" alt="image" src="https://github.com/user-attachments/assets/437874d3-0b02-4ee2-a2c6-136e2fa88bdf" />
@@ -46,8 +48,6 @@ If you'd like to help make this software more powerful, feel free to help!
 - Limited output resolution clamping
 
 # To Do
-- Make detachable windows re-attachable
-- Histogram viewer and control
 - Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
 - Transform and warp image crop / geometry and perspective tools
 - Color grading wheels

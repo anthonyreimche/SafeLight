@@ -4,6 +4,7 @@ import {
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type RefObject,
 } from "react";
 
@@ -15,6 +16,9 @@ interface ViewportImageProps {
   onZoomChange: (zoom: number | null) => void;
   loading?: boolean;
   resetKey?: string; // changing this snaps back to "fit" (e.g. a new photo)
+  // When provided, the viewport is a static fit (no zoom/pan) and renders this
+  // overlay on top, given the displayed image rect in frame coordinates.
+  overlay?: (rect: { x: number; y: number; w: number; h: number }) => ReactNode;
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
@@ -32,7 +36,9 @@ export function ViewportImage({
   onZoomChange,
   loading,
   resetKey,
+  overlay,
 }: ViewportImageProps) {
+  const cropMode = !!overlay;
   const frameRef = useRef<HTMLDivElement>(null);
   const [frame, setFrame] = useState({ w: 0, h: 0 });
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -83,9 +89,9 @@ export function ViewportImage({
     return { x, y };
   };
 
-  const effScale = zoom ?? fitScale;
+  const effScale = cropMode ? fitScale : (zoom ?? fitScale);
   const effOffset =
-    zoom == null ? centered(fitScale) : clampOffset(offset, zoom);
+    cropMode || zoom == null ? centered(fitScale) : clampOffset(offset, zoom);
 
   const stateRef = useRef({ effScale, effOffset });
   stateRef.current = { effScale, effOffset };
@@ -131,7 +137,7 @@ export function ViewportImage({
   } | null>(null);
 
   const onPointerDown = (e: ReactPointerEvent) => {
-    if (e.button !== 0) return;
+    if (cropMode || e.button !== 0) return;
     frameRef.current?.setPointerCapture(e.pointerId);
     downRef.current = {
       x: e.clientX,
@@ -164,7 +170,13 @@ export function ViewportImage({
     handleClick(e.clientX, e.clientY);
   };
 
-  const cursor = dragging ? "grabbing" : zoom == null ? "zoom-in" : "zoom-out";
+  const cursor = cropMode
+    ? "default"
+    : dragging
+      ? "grabbing"
+      : zoom == null
+        ? "zoom-in"
+        : "zoom-out";
 
   const canvasStyle: CSSProperties = {
     position: "absolute",
@@ -187,6 +199,13 @@ export function ViewportImage({
       onPointerUp={onPointerUp}
     >
       <canvas ref={canvasRef} style={canvasStyle} />
+
+      {overlay?.({
+        x: effOffset.x,
+        y: effOffset.y,
+        w: bufferWidth * effScale,
+        h: bufferHeight * effScale,
+      })}
 
       {loading && (
         <div className="absolute bottom-2 left-2 text-[10px] text-text-muted">

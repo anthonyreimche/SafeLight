@@ -179,16 +179,17 @@ vec3 applyVibSat(vec3 c, float vib, float sat) {
 // which mirrors this exactly and is unit-tested. vUv already has V flipped, so
 // both are in top-left-origin image space.
 vec2 cropStraightenUV(vec2 o) {
-  vec2 cropSize = uCrop.zw;
-  vec2 cropCenter = uCrop.xy + cropSize * 0.5;
-  vec2 local = (o - 0.5) * cropSize;
+  // o is within the crop region; p is the corresponding point in the
+  // straightened frame. Straighten rotates about the image center (not the
+  // crop), so rotation is processed before — and independent of — the crop.
+  vec2 p = uCrop.xy + o * uCrop.zw;
+  float sx = (p.x - 0.5) * uImageAspect;
+  float sy = p.y - 0.5;
   float cs = cos(uStraighten);
   float sn = sin(uStraighten);
-  float sx = local.x * uImageAspect;
-  float sy = local.y;
   float rx = sx * cs - sy * sn;
   float ry = sx * sn + sy * cs;
-  return cropCenter + vec2(rx / uImageAspect, ry);
+  return vec2(0.5 + rx / uImageAspect, 0.5 + ry);
 }
 
 void main() {

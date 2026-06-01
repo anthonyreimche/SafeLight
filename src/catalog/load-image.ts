@@ -2,6 +2,7 @@ import type { CatalogPhoto } from "./types";
 import { extractRawPreview, isRawFile } from "@/modules/library/raw-preview";
 import { decodeRawToBitmap } from "@/raw/decode";
 import { rotateBitmap } from "./orient";
+import { verifyPermission } from "./permissions";
 
 // Decode a photo to a full(er)-resolution bitmap for editing/preview. Prefers
 // the original file via its handle; for RAW it attempts a true sensor decode and
@@ -14,7 +15,7 @@ import { rotateBitmap } from "./orient";
 export async function loadPhotoBitmap(
   photo: CatalogPhoto,
 ): Promise<ImageBitmap | null> {
-  if (photo.fileHandle) {
+  if (photo.fileHandle && (await verifyPermission(photo.fileHandle))) {
     try {
       const file = await photo.fileHandle.getFile();
       let raw: ImageBitmap | null = null;

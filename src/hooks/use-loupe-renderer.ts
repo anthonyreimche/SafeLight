@@ -5,6 +5,7 @@ import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { loadPhotoBitmap } from "@/catalog/load-image";
 import { loadSavedParams } from "@/catalog/edit-params";
+import { useCatalogStore } from "@/state/catalog-store";
 
 interface RendererStatus {
   supported: boolean;
@@ -30,6 +31,7 @@ export function useLoupeRenderer(
   const [supported, setSupported] = useState(true);
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
 
   // Mirror the canvas's current buffer size into state so zoom can scale it.
   const syncSize = () => {
@@ -89,7 +91,7 @@ export function useLoupeRenderer(
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photo.id]);
+  }, [photo.id, fileAccessNonce]);
 
   // Re-render on the before/after toggle without reloading pixels.
   useEffect(() => {

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
-import type { CatalogPhoto } from "@/catalog/types";
+import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
+import { rotatedViewCrop } from "@/rendering/crop-transform";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { loadPhotoBitmap } from "@/catalog/load-image";
 import { computeHistogram } from "@/rendering/histogram";
 import { useDevelopStore } from "@/state/develop-store";
+import { useCatalogStore } from "@/state/catalog-store";
 
 interface RendererStatus {
   supported: boolean;
@@ -18,11 +20,22 @@ export function useDevelopRenderer(
   photo: CatalogPhoto | undefined,
 ): RendererStatus {
   const rendererRef = useRef<WebGLRenderer | null>(null);
+  const rafIdRef = useRef<number | null>(null);
   const [supported, setSupported] = useState(true);
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const params = useDevelopStore((s) => s.params);
   const setHistogram = useDevelopStore((s) => s.setHistogram);
+  const cropping = useDevelopStore((s) => s.cropping);
+  const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
+
+  // While cropping, render a view that encloses the rotated image so the crop
+  // overlay can see the whole (straightened) frame; straighten stays applied.
+  const aspect = photo && photo.height > 0 ? photo.width / photo.height : 1;
+  const forRender = (p: DevelopParams, crop: boolean): DevelopParams =>
+    crop
+      ? { ...p, crop: rotatedViewCrop((p.straighten * Math.PI) / 180, aspect) }
+      : p;
 
   // Mirror the canvas's current buffer size into state so zoom can scale it.
   const syncSize = () => {
@@ -71,7 +84,8 @@ export function useDevelopRenderer(
         return;
       }
       renderer.setImage(bitmap);
-      renderer.setParams(useDevelopStore.getState().params);
+      const st = useDevelopStore.getState();
+      renderer.setParams(forRender(st.params, st.cropping));
       renderer.render();
       syncSize();
       updateHistogram();
@@ -82,20 +96,20 @@ export function useDevelopRenderer(
     return () => {
       cancelled = true;
     };
-  }, [photo]);
+  }, [photo, fileAccessNonce]);
 
   // Re-render on parameter changes, coalesced to one frame.
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
-    renderer.setParams(params);
+    renderer.setParams(forRender(params, cropping));
     const id = requestAnimationFrame(() => {
       renderer.render();
       syncSize();
       updateHistogram();
     });
     return () => cancelAnimationFrame(id);
-  }, [params]);
+  }, [params, cropping]);
 
   return { supported, loading, width: size.width, height: size.height };
 }
