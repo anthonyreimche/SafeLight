@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
+import { useEditedThumbUrl } from "@/state/edited-thumbnails";
 import { Rating } from "./Rating";
 
 interface ThumbnailProps {
@@ -37,11 +38,14 @@ export function Thumbnail({
   // Rejected photos recede: dim only the image so flag/rating badges stay crisp.
   const dimClass = photo.flag === "reject" ? "opacity-40" : "";
 
-  const thumbUrl = useMemo(() => {
+  const editedUrl = useEditedThumbUrl(photo.id);
+  const originalUrl = useMemo(() => {
     if (photo.thumbnailUrl) return photo.thumbnailUrl;
     if (photo.thumbnailBlob) return URL.createObjectURL(photo.thumbnailBlob);
     return null;
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
+  // Prefer the develop-edited render once it's ready; fall back to the original.
+  const thumbUrl = editedUrl ?? originalUrl;
 
   return (
     <div

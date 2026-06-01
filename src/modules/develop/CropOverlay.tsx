@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CropRect } from "@/catalog/types";
-import { cropFitsImage } from "@/rendering/crop-transform";
+import { constrainCropToImage } from "@/rendering/crop-transform";
+import { guideShapes, type CropGuide } from "./crop-guides";
 
 interface Rect {
   x: number;
@@ -23,6 +24,9 @@ type Handle =
 
 const MIN = 0.04; // smallest crop, normalized to image
 const HIT = 12; // px hit radius for handles
+// Translucent so the cropped-out image stays visible (darkened) rather than
+// being hidden behind a solid panel.
+const DIM = "rgba(0, 0, 0, 0.55)";
 
 const clamp = (v: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, v));
@@ -36,9 +40,11 @@ interface CropOverlayProps {
   aspect: number; // crop aspect lock, width:height in pixels (0 = free)
   imageAspect: number;
   constrain: boolean;
+  guide: CropGuide;
   onChange: (crop: CropRect) => void;
   onCommit: () => void;
   onLevel: (deg: number) => void;
+  onCycleGuide: () => void;
 }
 
 export function CropOverlay({
@@ -50,9 +56,11 @@ export function CropOverlay({
   aspect,
   imageAspect,
   constrain,
+  guide,
   onChange,
   onCommit,
   onLevel,
+  onCycleGuide,
 }: CropOverlayProps) {
   const dragRef = useRef<{
     mode: Handle;
@@ -65,6 +73,29 @@ export function CropOverlay({
   );
 
   const normRatio = aspect > 0 ? aspect / imageAspect : 0; // crop.w / crop.h
+  // The same pixel ratio in the opposite orientation (e.g. 3:2 → 2:3), in
+  // normalized crop.w/crop.h terms, so a drag can flip the lock automatically.
+  const normRatioFlip = aspect > 0 ? 1 / (aspect * imageAspect) : 0;
+
+  // "O" cycles the composition guide while the crop overlay is mounted.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      )
+        return;
+      if (e.key === "o" || e.key === "O") {
+        e.preventDefault();
+        onCycleGuide();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCycleGuide]);
 
   // straightened-frame point -> frame (screen) coords
   const toScreen = (px: number, py: number) => ({
@@ -128,9 +159,18 @@ export function CropOverlay({
     const dnx = ((e.clientX - d.sx) / rect.w) * viewCrop.width;
     const dny = ((e.clientY - d.sy) / rect.h) * viewCrop.height;
 
-    let next = applyDrag(d.mode, d.startCrop, dnx, dny, normRatio);
+    let next = applyDrag(d.mode, d.startCrop, dnx, dny, normRatio, normRatioFlip);
     next = clampToBounds(next, viewCrop);
-    if (constrain && !cropFitsImage(next, straightenRad, imageAspect)) return;
+    if (constrain) {
+      next = constrainCropToImage(
+        d.startCrop,
+        next,
+        d.mode,
+        straightenRad,
+        imageAspect,
+        normRatio > 0,
+      );
+    }
     onChange(next);
   };
 
@@ -143,11 +183,12 @@ export function CropOverlay({
       const dy = e.clientY - d.sy;
       setLine(null);
       if (Math.abs(dx) + Math.abs(dy) > 6) {
-        // Residual tilt of the drawn line, reduced to the nearest axis.
+        // Residual tilt of the drawn line, reduced to the nearest axis. The
+        // image rotates to bring that line level, so we add the residual.
         let residual = (Math.atan2(dy, dx) * 180) / Math.PI;
         while (residual > 45) residual -= 90;
         while (residual < -45) residual += 90;
-        onLevel(clamp(straightenDeg - residual, -45, 45));
+        onLevel(clamp(straightenDeg + residual, -45, 45));
       }
       return;
     }
@@ -163,20 +204,17 @@ export function CropOverlay({
       onPointerUp={onPointerUp}
     >
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute bg-black/50" style={{ left: 0, top: 0, right: 0, height: Math.max(0, by) }} />
-        <div className="absolute bg-black/50" style={{ left: 0, top: by + bh, right: 0, bottom: 0 }} />
-        <div className="absolute bg-black/50" style={{ left: 0, top: by, width: Math.max(0, bx), height: bh }} />
-        <div className="absolute bg-black/50" style={{ left: bx + bw, top: by, right: 0, height: bh }} />
+        <div className="absolute" style={{ left: 0, top: 0, right: 0, height: Math.max(0, by), background: DIM }} />
+        <div className="absolute" style={{ left: 0, top: by + bh, right: 0, bottom: 0, background: DIM }} />
+        <div className="absolute" style={{ left: 0, top: by, width: Math.max(0, bx), height: bh, background: DIM }} />
+        <div className="absolute" style={{ left: bx + bw, top: by, right: 0, height: bh, background: DIM }} />
       </div>
 
       <div
         className="pointer-events-none absolute border border-white/80"
         style={{ left: bx, top: by, width: bw, height: bh }}
       >
-        <div className="absolute inset-y-0 border-l border-white/25" style={{ left: "33.33%" }} />
-        <div className="absolute inset-y-0 border-l border-white/25" style={{ left: "66.66%" }} />
-        <div className="absolute inset-x-0 border-t border-white/25" style={{ top: "33.33%" }} />
-        <div className="absolute inset-x-0 border-t border-white/25" style={{ top: "66.66%" }} />
+        <GuideSvg guide={guide} w={bw} h={bh} />
       </div>
 
       {handles.map((h) => (
@@ -209,6 +247,7 @@ function applyDrag(
   dnx: number,
   dny: number,
   normRatio: number,
+  normRatioFlip: number,
 ): CropRect {
   let x = c.x;
   let y = c.y;
@@ -219,13 +258,35 @@ function applyDrag(
     x += dnx;
     y += dny;
   } else if (normRatio > 0) {
-    // Aspect-locked corner resize, anchored at the opposite corner.
+    // Aspect-locked corner resize, anchored at the opposite corner. The lock
+    // can take either orientation (e.g. 3:2 or 2:3); we pick whichever matches
+    // the drag's shape, so dragging tall vs wide flips it automatically.
     const right = mode.includes("e");
     const bottom = mode.includes("s");
     const anchorX = right ? c.x : c.x + c.width;
     const anchorY = bottom ? c.y : c.y + c.height;
-    w = Math.max(MIN, right ? c.width + dnx : c.width - dnx);
-    h = w / normRatio;
+    const dw = Math.max(MIN, right ? c.width + dnx : c.width - dnx);
+    const dh = Math.max(MIN, bottom ? c.height + dny : c.height - dny);
+    const rFlip = normRatioFlip > 0 ? normRatioFlip : normRatio;
+    const dragRatio = dw / dh;
+    const r =
+      Math.abs(Math.log(dragRatio / normRatio)) <=
+      Math.abs(Math.log(dragRatio / rFlip))
+        ? normRatio
+        : rFlip;
+    // Size so the locked rect reaches the cursor, then keep the smaller side
+    // above MIN without breaking the ratio.
+    w = Math.max(dw, dh * r);
+    h = w / r;
+    if (r >= 1) {
+      if (h < MIN) {
+        h = MIN;
+        w = h * r;
+      }
+    } else if (w < MIN) {
+      w = MIN;
+      h = w / r;
+    }
     x = right ? anchorX : anchorX - w;
     y = bottom ? anchorY : anchorY - h;
   } else {
@@ -250,6 +311,40 @@ function applyDrag(
     h = MIN;
   }
   return { x, y, width: w, height: h };
+}
+
+// The active composition guide, drawn in the crop box's pixel space.
+function GuideSvg({ guide, w, h }: { guide: CropGuide; w: number; h: number }) {
+  if (w <= 1 || h <= 1) return null;
+  const { lines, paths } = guideShapes(guide, w, h);
+  return (
+    <svg
+      className="pointer-events-none absolute left-0 top-0"
+      width={w}
+      height={h}
+    >
+      {lines.map((l, i) => (
+        <line
+          key={i}
+          x1={l.x1}
+          y1={l.y1}
+          x2={l.x2}
+          y2={l.y2}
+          stroke="rgba(255,255,255,0.4)"
+          strokeWidth={1}
+        />
+      ))}
+      {paths.map((d, i) => (
+        <path
+          key={`p${i}`}
+          d={d}
+          fill="none"
+          stroke="rgba(255,255,255,0.55)"
+          strokeWidth={1}
+        />
+      ))}
+    </svg>
+  );
 }
 
 // Keep the crop within the visible view region.

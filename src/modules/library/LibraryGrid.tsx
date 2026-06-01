@@ -4,6 +4,7 @@ import { useUIStore } from "@/state/ui-store";
 import { Thumbnail } from "@/ui/components/Thumbnail";
 import { LibraryListRow } from "./LibraryListRow";
 import { visiblePhotos } from "./visible-photos";
+import { useEditedThumbnails } from "./use-edited-thumbnails";
 
 export function LibraryGrid() {
   const photos = useCatalogStore((s) => s.photos);
@@ -35,6 +36,10 @@ export function LibraryGrid() {
     }
     return visiblePhotos(scoped, filter, sortField, sortDirection);
   }, [photos, collections, activeCollectionId, filter, sortField, sortDirection]);
+
+  // Keep grid/list thumbnails showing the develop-edited result, rendered in the
+  // background while the Library is on screen.
+  useEditedThumbnails(visible);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 

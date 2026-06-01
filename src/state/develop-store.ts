@@ -12,6 +12,7 @@ import { normalizeParams } from "@/catalog/types";
 import type { HistogramData } from "@/rendering/histogram";
 import { catalogDB } from "@/catalog/db";
 import { broadcast } from "./broadcast";
+import { nextGuide, type CropGuide } from "@/modules/develop/crop-guides";
 
 interface DevelopState {
   photoId: string | null;
@@ -24,9 +25,12 @@ interface DevelopState {
   cropping: boolean;
   constrainCrop: boolean;
   cropAspect: number; // 0 = free; else target width:height in pixels
+  cropGuide: CropGuide; // active composition overlay
   setCropping: (v: boolean) => void;
   setConstrainCrop: (v: boolean) => void;
   setCropAspect: (r: number) => void;
+  setCropGuide: (g: CropGuide) => void;
+  cycleCropGuide: () => void;
 
   setHistogram: (histogram: HistogramData | null) => void;
   loadEdit: (photoId: string) => Promise<void>;
@@ -55,9 +59,12 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   cropping: false,
   constrainCrop: true,
   cropAspect: 0,
+  cropGuide: "thirds",
   setCropping: (cropping) => set({ cropping }),
   setConstrainCrop: (constrainCrop) => set({ constrainCrop }),
   setCropAspect: (cropAspect) => set({ cropAspect }),
+  setCropGuide: (cropGuide) => set({ cropGuide }),
+  cycleCropGuide: () => set((s) => ({ cropGuide: nextGuide(s.cropGuide) })),
 
   setHistogram: (histogram) => set({ histogram }),
 

@@ -26,6 +26,8 @@ export function DevelopCanvas({
   const straighten = useDevelopStore((s) => s.params.straighten);
   const cropAspect = useDevelopStore((s) => s.cropAspect);
   const constrainCrop = useDevelopStore((s) => s.constrainCrop);
+  const cropGuide = useDevelopStore((s) => s.cropGuide);
+  const cycleCropGuide = useDevelopStore((s) => s.cycleCropGuide);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
 
@@ -93,6 +95,8 @@ export function DevelopCanvas({
                 aspect={cropAspect}
                 imageAspect={imageAspect}
                 constrain={constrainCrop}
+                guide={cropGuide}
+                onCycleGuide={cycleCropGuide}
                 onChange={pushCrop}
                 onCommit={() => {
                   flushCrop();

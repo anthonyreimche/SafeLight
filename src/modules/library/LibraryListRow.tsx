@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
+import { useEditedThumbUrl } from "@/state/edited-thumbnails";
 
 const colorDot: Record<string, string> = {
   red: "bg-label-red",
@@ -24,11 +25,13 @@ export function LibraryListRow({
   onClick,
   onDoubleClick,
 }: LibraryListRowProps) {
-  const thumbUrl = useMemo(() => {
+  const editedUrl = useEditedThumbUrl(photo.id);
+  const originalUrl = useMemo(() => {
     if (photo.thumbnailUrl) return photo.thumbnailUrl;
     if (photo.thumbnailBlob) return URL.createObjectURL(photo.thumbnailBlob);
     return null;
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
+  const thumbUrl = editedUrl ?? originalUrl;
 
   const rowClass = active
     ? "bg-surface-4 text-text-primary"

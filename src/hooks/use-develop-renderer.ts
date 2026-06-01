@@ -65,6 +65,8 @@ export function useDevelopRenderer(
       setSupported(false);
     }
     return () => {
+      if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
       rendererRef.current?.dispose();
       rendererRef.current = null;
     };
@@ -103,12 +105,19 @@ export function useDevelopRenderer(
     const renderer = rendererRef.current;
     if (!renderer) return;
     renderer.setParams(forRender(params, cropping));
-    const id = requestAnimationFrame(() => {
-      renderer.render();
-      syncSize();
-      updateHistogram();
-    });
-    return () => cancelAnimationFrame(id);
+    // Coalesce to one render per frame, but don't cancel a pending frame on
+    // re-run: a continuous drag changes params every frame, and cancelling each
+    // time starved the render so the preview only updated when the drag paused.
+    if (rafIdRef.current == null) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = null;
+        const r = rendererRef.current;
+        if (!r) return;
+        r.render();
+        syncSize();
+        updateHistogram();
+      });
+    }
   }, [params, cropping]);
 
   return { supported, loading, width: size.width, height: size.height };

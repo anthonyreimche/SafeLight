@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SafeLight</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html {
+            scroll-behavior: smooth;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #000;
+            color: #fff;
+            overflow-x: hidden;
+            cursor: default;
+        }
+        
+        .font-display {
+            font-family: 'Space Grotesk', sans-serif;
+        }
+        
+        .text-red {
+            color: #e43d30;
+        }
+        
+        .bg-red {
+            background-color: #e43d30;
+        }
+        
+        .border-red {
+            border-color: #e43d30;
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #000;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #e43d30;
+        }
+        
+        /* Diagonal section */
+        .diagonal-top {
+            clip-path: polygon(0 8%, 100% 0, 100% 100%, 0 100%);
+        }
+        
+        .diagonal-bottom {
+            clip-path: polygon(0 0, 100% 0, 100% 92%, 0 100%);
+        }
+        
+        /* Horizontal scroll */
+        .horizontal-scroll {
+            display: flex;
+            gap: 2rem;
+            overflow-x: auto;
+            scroll-snap-type: x mandatory;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none;
+        }
+        
+        .horizontal-scroll::-webkit-scrollbar {
+            display: none;
+        }
+        
+        .horizontal-scroll > * {
+            scroll-snap-align: start;
+            flex-shrink: 0;
+        }
+        
+        /* Marquee */
+        .marquee {
+            display: flex;
+            overflow: hidden;
+            user-select: none;
+        }
+        
+        .marquee-content {
+            display: flex;
+            animation: marquee 30s linear infinite;
+        }
+        
+        @keyframes marquee {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+        }
+        
+        /* Reveal animations */
+        .reveal {
+            opacity: 0;
+            transform: translateY(60px);
+            transition: all 1s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        .reveal.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        
+        .reveal-left {
+            opacity: 0;
+            transform: translateX(-100px);
+            transition: all 1s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        .reveal-left.visible {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        
+        .reveal-right {
+            opacity: 0;
+            transform: translateX(100px);
+            transition: all 1s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        .reveal-right.visible {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        
+        /* Image hover effect */
+        .img-reveal {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .img-reveal img {
+            transition: transform 1.2s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        .img-reveal:hover img {
+            transform: scale(1.08);
+        }
+        
+        /* Text stroke */
+        .text-stroke {
+            -webkit-text-stroke: 1px rgba(255,255,255,0.3);
+            color: transparent;
+        }
+        
+        /* Magnetic button */
+        .magnetic-btn {
+            position: relative;
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        /* Noise overlay */
+        .noise::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+            opacity: 0.03;
+            pointer-events: none;
+            z-index: 1000;
+        }
+        
+        /* Line animation */
+        .line-animate {
+            width: 0;
+            transition: width 1.5s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        .line-animate.visible {
+            width: 100%;
+        }
+        
+        /* Floating elements */
+        @keyframes float {
+            0%, 100% { transform: translateY(0) rotate(0deg); }
+            50% { transform: translateY(-20px) rotate(2deg); }
+        }
+        
+        .float {
+            animation: float 8s ease-in-out infinite;
+        }
+        
+        /* Stagger delays */
+        .delay-1 { transition-delay: 0.1s; }
+        .delay-2 { transition-delay: 0.2s; }
+        .delay-3 { transition-delay: 0.3s; }
+        .delay-4 { transition-delay: 0.4s; }
+        .delay-5 { transition-delay: 0.5s; }
+        .delay-6 { transition-delay: 0.6s; }
+        
+        /* Parallax */
+        .parallax {
+            will-change: transform;
+        }
+        
+        /* Cursor spotlight */
+        .spotlight::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(600px circle at var(--x) var(--y), rgba(228, 61, 48, 0.06), transparent 40%);
+            pointer-events: none;
+            z-index: 9999;
+        }
+        
+        /* Glitch effect */
+        .glitch {
+            position: relative;
+        }
+        
+        .glitch:hover::before,
+        .glitch:hover::after {
+            content: attr(data-text);
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        
+        .glitch:hover::before {
+            animation: glitch-1 0.3s infinite linear alternate-reverse;
+            clip-path: polygon(0 0, 100% 0, 100% 35%, 0 35%);
+            color: #e43d30;
+        }
+        
+        .glitch:hover::after {
+            animation: glitch-2 0.3s infinite linear alternate-reverse;
+            clip-path: polygon(0 65%, 100% 65%, 100% 100%, 0 100%);
+            color: #fff;
+        }
+        
+        @keyframes glitch-1 {
+            0% { transform: translateX(0); }
+            20% { transform: translateX(-3px); }
+            40% { transform: translateX(3px); }
+            60% { transform: translateX(-3px); }
+            80% { transform: translateX(3px); }
+            100% { transform: translateX(0); }
+        }
+        
+        @keyframes glitch-2 {
+            0% { transform: translateX(0); }
+            20% { transform: translateX(3px); }
+            40% { transform: translateX(-3px); }
+            60% { transform: translateX(3px); }
+            80% { transform: translateX(-3px); }
+            100% { transform: translateX(0); }
+        }
+        
+        /* Image distortion on hover */
+        .distort {
+            transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+            filter: grayscale(100%);
+        }
+        
+        .distort:hover {
+            filter: grayscale(0%);
+            transform: scale(1.02) rotate(0.5deg);
+        }
+        
+        /* Scale on scroll */
+        .scale-scroll {
+            transition: transform 0.1s linear;
+        }
+        
+        /* Text reveal */
+        .text-reveal {
+            overflow: hidden;
+        }
+        
+        .text-reveal span {
+            display: inline-block;
+            transform: translateY(100%);
+            transition: transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        .text-reveal.visible span {
+            transform: translateY(0);
+        }
+        
+        /* Blend mode sections */
+        .blend-screen {
+            mix-blend-mode: screen;
+        }
+        
+        /* Mosaic grid */
+        .mosaic-item {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .mosaic-item::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.8) 100%);
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+        
+        .mosaic-item:hover::after {
+            opacity: 1;
+        }
+        
+        .mosaic-item img {
+            transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        .mosaic-item:hover img {
+            transform: scale(1.1);
+        }
+        
+        /* Floating decorative elements */
+        .float-element {
+            position: absolute;
+            pointer-events: none;
+            opacity: 0.1;
+        }
+        
+        .float-element-1 {
+            top: 20%;
+            right: 10%;
+            width: 300px;
+            height: 300px;
+            background: radial-gradient(circle, #e43d30 0%, transparent 70%);
+            filter: blur(100px);
+            animation: float 10s ease-in-out infinite;
+        }
+        
+        .float-element-2 {
+            bottom: 30%;
+            left: 5%;
+            width: 200px;
+            height: 200px;
+            background: radial-gradient(circle, #e43d30 0%, transparent 70%);
+            filter: blur(80px);
+            animation: float 8s ease-in-out infinite reverse;
+        }
+        
+        /* Image sequence effect */
+        .image-sequence {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .image-sequence::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(45deg, transparent 30%, rgba(228, 61, 48, 0.1) 50%, transparent 70%);
+            animation: shimmer 3s infinite;
+        }
+        
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        /* Rotating border */
+        .rotating-border {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .rotating-border::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: conic-gradient(transparent, #e43d30, transparent 30%);
+            animation: rotate 4s linear infinite;
+        }
+        
+        .rotating-border::after {
+            content: '';
+            position: absolute;
+            inset: 2px;
+            background: #0a0a0a;
+        }
+        
+        @keyframes rotate {
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Scale on hover */
+        .scale-hover {
+            transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        
+        .scale-hover:hover {
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body class="noise spotlight">
+    <!-- Navigation -->
+    <nav class="fixed top-0 left-0 right-0 z-50 mix-blend-difference">
+        <div class="max-w-[1800px] mx-auto px-8 py-6 flex justify-between items-center">
+            <a href="#" class="flex items-center gap-3">
+                <img src="favicon.svg" alt="SafeLight" class="w-8 h-8">
+                <span class="font-display font-bold text-lg tracking-tight">SafeLight</span>
+            </a>
+            <div class="hidden md:flex items-center gap-12">
+                <a href="#work" class="text-sm font-light tracking-wide hover:text-red transition-colors">Work</a>
+                <a href="#philosophy" class="text-sm font-light tracking-wide hover:text-red transition-colors">Philosophy</a>
+                <a href="https://github.com/anthonyreimche/SafeLight" class="text-sm font-light tracking-wide hover:text-red transition-colors">GitHub</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="min-h-screen relative flex items-center overflow-hidden">
+        <div class="absolute inset-0">
+            <img src="Screenshots/Library-grid.png" alt="" class="parallax w-full h-full object-cover opacity-20">
+        </div>
+        <div class="float-element float-element-1"></div>
+        <div class="float-element float-element-2"></div>
+        <div class="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black/80"></div>
+        <div class="relative z-10 max-w-[1800px] mx-auto px-8 w-full">
+            <div class="grid lg:grid-cols-12 gap-8 items-end">
+                <div class="lg:col-span-7 pb-20">
+                    <p class="text-red font-mono text-xs tracking-[0.3em] mb-6 reveal">PRIVACY-FIRST PHOTO EDITING</p>
+                    <h1 class="font-display text-6xl md:text-8xl lg:text-9xl font-bold leading-[0.9] mb-8">
+                        <span class="reveal delay-1 block">Your</span>
+                        <span class="reveal delay-2 block text-stroke glitch" data-text="Photos.">Photos.</span>
+                        <span class="reveal delay-3 block">Your</span>
+                        <span class="reveal delay-4 block text-red">Privacy.</span>
+                    </h1>
+                    <div class="reveal delay-5 flex flex-col sm:flex-row gap-4 mt-12">
+                        <a href="https://github.com/anthonyreimche/SafeLight" class="magnetic-btn bg-red text-white px-8 py-4 text-sm font-medium tracking-wide">
+                            Download
+                        </a>
+                        <a href="#work" class="magnetic-btn border border-white/20 px-8 py-4 text-sm font-medium tracking-wide hover:border-red transition-colors">
+                            Explore
+                        </a>
+                    </div>
+                </div>
+                <div class="lg:col-span-5 lg:pb-20">
+                    <div class="reveal delay-6 space-y-2 text-sm text-zinc-400 font-light">
+                        <p>GPU-accelerated</p>
+                        <p>Fully offline</p>
+                        <p>Zero telemetry</p>
+                        <p>Open source</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="absolute bottom-8 right-8 reveal delay-6">
+            <div class="w-px h-24 bg-white/20"></div>
+        </div>
+    </section>
+
+    <!-- Marquee -->
+    <section class="py-12 border-y border-white/10 overflow-hidden">
+        <div class="marquee">
+            <div class="marquee-content">
+                <span class="font-display text-4xl md:text-6xl font-bold text-stroke mx-8">OFFLINE</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-red mx-8">•</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-stroke mx-8">PRIVATE</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-red mx-8">•</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-stroke mx-8">GPU-ACCELERATED</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-red mx-8">•</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-stroke mx-8">OPEN SOURCE</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-red mx-8">•</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-stroke mx-8">OFFLINE</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-red mx-8">•</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-stroke mx-8">PRIVATE</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-red mx-8">•</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-stroke mx-8">GPU-ACCELERATED</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-red mx-8">•</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-stroke mx-8">OPEN SOURCE</span>
+                <span class="font-display text-4xl md:text-6xl font-bold text-red mx-8">•</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Philosophy Section -->
+    <section id="philosophy" class="py-32 diagonal-top bg-zinc-950 relative overflow-hidden">
+        <div class="absolute inset-0 opacity-10">
+            <img src="Screenshots/Develop-crop.png" alt="" class="parallax w-full h-full object-cover">
+        </div>
+        <div class="relative z-10 max-w-[1800px] mx-auto px-8">
+            <div class="grid lg:grid-cols-2 gap-16 items-center">
+                <div class="reveal-left">
+                    <p class="text-red font-mono text-xs tracking-[0.3em] mb-6">PHILOSOPHY</p>
+                    <h2 class="font-display text-5xl md:text-7xl font-bold leading-tight mb-8">
+                        Ownership<br>
+                        <span class="text-stroke glitch" data-text="matters.">matters.</span>
+                    </h2>
+                    <p class="text-xl text-zinc-400 font-light leading-relaxed max-w-lg">
+                        Your photos should never leave your machine. No cloud, no telemetry, no subscriptions. Just you and your images.
+                    </p>
+                    <div class="h-px bg-red line-animate mt-12"></div>
+                </div>
+                <div class="reveal-right">
+                    <div class="img-reveal relative">
+                        <img src="Screenshots/Loupe.png" alt="Loupe Viewer" class="w-full">
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Full Width Image Section -->
+    <section class="py-32 relative overflow-hidden">
+        <div class="absolute inset-0">
+            <img src="Screenshots/Detachable-windows.png" alt="Multi-window" class="parallax w-full h-full object-cover opacity-30">
+        </div>
+        <div class="absolute inset-0 bg-gradient-to-b from-black/80 via-transparent to-black/80"></div>
+        <div class="relative z-10 max-w-[1800px] mx-auto px-8 text-center">
+            <div class="reveal">
+                <p class="text-red font-mono text-xs tracking-[0.3em] mb-6">WORKFLOW</p>
+                <h2 class="font-display text-5xl md:text-7xl lg:text-8xl font-bold leading-tight mb-8">
+                    Multi-screen<br>
+                    <span class="text-stroke">freedom</span>
+                </h2>
+                <p class="text-xl text-zinc-400 font-light max-w-2xl mx-auto">
+                    Detachable windows let you spread your workflow across multiple monitors. Cull on one screen, edit on another.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Work Section - Horizontal Scroll -->
+    <section id="work" class="py-32">
+        <div class="max-w-[1800px] mx-auto px-8 mb-16">
+            <p class="text-red font-mono text-xs tracking-[0.3em] mb-6 reveal">WORK</p>
+            <h2 class="font-display text-5xl md:text-7xl font-bold reveal delay-1">
+                The <span class="text-stroke">environment</span>
+            </h2>
+        </div>
+        
+        <div class="horizontal-scroll px-8 pb-8">
+            <div class="w-[80vw] md:w-[60vw] lg:w-[50vw] flex-shrink-0 reveal delay-1">
+                <div class="img-reveal mb-6">
+                    <img src="Screenshots/Library-grid.png" alt="Library" class="distort w-full">
+                </div>
+                <p class="font-display text-2xl font-bold">Library</p>
+                <p class="text-zinc-400 text-sm mt-2">Grid & list view, collections, ratings</p>
+            </div>
+            
+            <div class="w-[80vw] md:w-[60vw] lg:w-[50vw] flex-shrink-0 reveal delay-2">
+                <div class="img-reveal mb-6">
+                    <img src="Screenshots/Develop-basic.png" alt="Develop" class="distort w-full">
+                </div>
+                <p class="font-display text-2xl font-bold">Develop</p>
+                <p class="text-zinc-400 text-sm mt-2">Tone curve, HSL, white balance</p>
+            </div>
+            
+            <div class="w-[80vw] md:w-[60vw] lg:w-[50vw] flex-shrink-0 reveal delay-3">
+                <div class="img-reveal mb-6">
+                    <img src="Screenshots/Loupe.png" alt="Loupe" class="distort w-full">
+                </div>
+                <p class="font-display text-2xl font-bold">Loupe</p>
+                <p class="text-zinc-400 text-sm mt-2">Pixel-perfect culling & inspection</p>
+            </div>
+            
+            <div class="w-[80vw] md:w-[60vw] lg:w-[50vw] flex-shrink-0 reveal delay-4">
+                <div class="img-reveal mb-6">
+                    <img src="Screenshots/Export.png" alt="Export" class="distort w-full">
+                </div>
+                <p class="font-display text-2xl font-bold">Export</p>
+                <p class="text-zinc-400 text-sm mt-2">JPG, PNG, WebP batch export</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Tools Section -->
+    <section class="py-32 diagonal-top bg-zinc-950">
+        <div class="max-w-[1800px] mx-auto px-8 mb-16">
+            <p class="text-red font-mono text-xs tracking-[0.3em] mb-6 reveal">TOOLS</p>
+            <h2 class="font-display text-5xl md:text-7xl font-bold reveal delay-1">
+                Precision <span class="text-stroke">controls</span>
+            </h2>
+        </div>
+        
+        <div class="max-w-[1800px] mx-auto px-8">
+            <div class="space-y-24">
+                <div class="grid lg:grid-cols-2 gap-12 items-center reveal delay-1">
+                    <div class="img-reveal">
+                        <img src="Screenshots/ToneCurve-RGB.png" alt="Tone Curve" class="max-w-lg w-full">
+                    </div>
+                    <div>
+                        <h3 class="font-display text-3xl font-bold mb-4">Tone Curve</h3>
+                        <p class="text-zinc-400 text-lg leading-relaxed">RGB and single-channel control for precise tonal adjustments. Fine-tune shadows, midtones, and highlights independently.</p>
+                    </div>
+                </div>
+                
+                <div class="grid lg:grid-cols-2 gap-12 items-center reveal delay-2">
+                    <div class="order-2 lg:order-1">
+                        <h3 class="font-display text-3xl font-bold mb-4">HSL</h3>
+                        <p class="text-zinc-400 text-lg leading-relaxed">Targeted color adjustments. Modify hue, saturation, and luminance for specific color ranges without affecting the rest of your image.</p>
+                    </div>
+                    <div class="img-reveal order-1 lg:order-2">
+                        <img src="Screenshots/HSL-Hue.png" alt="HSL" class="max-w-lg w-full">
+                    </div>
+                </div>
+                
+                <div class="grid lg:grid-cols-2 gap-12 items-center reveal delay-3">
+                    <div class="img-reveal">
+                        <img src="Screenshots/Histogram-RGB.png" alt="Histogram" class="max-w-lg w-full">
+                    </div>
+                    <div>
+                        <h3 class="font-display text-3xl font-bold mb-4">Histogram</h3>
+                        <p class="text-zinc-400 text-lg leading-relaxed">Full RGB and single-channel monitoring. See exactly how your adjustments affect tonal distribution across all channels.</p>
+                    </div>
+                </div>
+                
+                <div class="grid lg:grid-cols-2 gap-12 items-center reveal delay-4">
+                    <div class="order-2 lg:order-1">
+                        <h3 class="font-display text-3xl font-bold mb-4">Presets</h3>
+                        <p class="text-zinc-400 text-lg leading-relaxed">Open preset format. Save and share your editing styles with a JSON-based format that's fully documented and extensible.</p>
+                    </div>
+                    <div class="img-reveal order-1 lg:order-2">
+                        <img src="Screenshots/Presets.png" alt="Presets" class="max-w-lg w-full">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Grid - Asymmetric -->
+    <section class="py-32 diagonal-bottom bg-zinc-950">
+        <div class="max-w-[1800px] mx-auto px-8">
+            <div class="grid lg:grid-cols-12 gap-8">
+                <div class="lg:col-span-4 reveal">
+                    <p class="text-red font-mono text-xs tracking-[0.3em] mb-6">FEATURES</p>
+                    <h2 class="font-display text-4xl md:text-5xl font-bold leading-tight">
+                        Built for<br>
+                        <span class="text-stroke">control</span>
+                    </h2>
+                </div>
+                
+                <div class="lg:col-span-8 grid md:grid-cols-2 gap-8">
+                    <div class="border border-white/10 p-8 hover:border-red transition-colors reveal delay-1">
+                        <div class="text-4xl font-display font-bold text-red mb-4">01</div>
+                        <h3 class="font-display text-xl font-bold mb-2">Privacy First</h3>
+                        <p class="text-zinc-400 text-sm font-light">Zero telemetry, no data collection, no cloud dependency.</p>
+                    </div>
+                    
+                    <div class="border border-white/10 p-8 hover:border-red transition-colors reveal delay-2">
+                        <div class="text-4xl font-display font-bold text-red mb-4">02</div>
+                        <h3 class="font-display text-xl font-bold mb-2">GPU Accelerated</h3>
+                        <p class="text-zinc-400 text-sm font-light">Hardware-accelerated image processing for speed.</p>
+                    </div>
+                    
+                    <div class="border border-white/10 p-8 hover:border-red transition-colors reveal delay-3">
+                        <div class="text-4xl font-display font-bold text-red mb-4">03</div>
+                        <h3 class="font-display text-xl font-bold mb-2">Fully Offline</h3>
+                        <p class="text-zinc-400 text-sm font-light">No internet required. Edit anywhere, anytime.</p>
+                    </div>
+                    
+                    <div class="border border-white/10 p-8 hover:border-red transition-colors reveal delay-4">
+                        <div class="text-4xl font-display font-bold text-red mb-4">04</div>
+                        <h3 class="font-display text-xl font-bold mb-2">Open Source</h3>
+                        <p class="text-zinc-400 text-sm font-light">Free forever. Open preset and plugin format.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Roadmap -->
+    <section class="py-32">
+        <div class="max-w-[1800px] mx-auto px-8">
+            <div class="reveal mb-16">
+                <p class="text-red font-mono text-xs tracking-[0.3em] mb-6">ROADMAP</p>
+                <h2 class="font-display text-5xl md:text-7xl font-bold">
+                    What's <span class="text-stroke">coming</span>
+                </h2>
+            </div>
+            
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="border-l-2 border-red pl-6 reveal delay-1">
+                    <p class="text-zinc-500 font-mono text-xs mb-2">AI</p>
+                    <h3 class="font-display text-lg font-bold">AI Masking</h3>
+                    <p class="text-zinc-400 text-sm mt-1">ONNX.js subject & sky selection</p>
+                </div>
+                
+                <div class="border-l-2 border-white/20 pl-6 hover:border-red transition-colors reveal delay-2">
+                    <p class="text-zinc-500 font-mono text-xs mb-2">IMPORT</p>
+                    <h3 class="font-display text-lg font-bold">Lightroom Catalog</h3>
+                    <p class="text-zinc-400 text-sm mt-1">Seamless import via sql.js</p>
+                </div>
+                
+                <div class="border-l-2 border-white/20 pl-6 hover:border-red transition-colors reveal delay-3">
+                    <p class="text-zinc-500 font-mono text-xs mb-2">ENHANCE</p>
+                    <h3 class="font-display text-lg font-bold">Denoise & Sharpen</h3>
+                    <p class="text-zinc-400 text-sm mt-1">WASM-based enhancement</p>
+                </div>
+                
+                <div class="border-l-2 border-white/20 pl-6 hover:border-red transition-colors reveal delay-4">
+                    <p class="text-zinc-500 font-mono text-xs mb-2">GRADE</p>
+                    <h3 class="font-display text-lg font-bold">Color Grading</h3>
+                    <p class="text-zinc-400 text-sm mt-1">Professional grading wheels</p>
+                </div>
+                
+                <div class="border-l-2 border-white/20 pl-6 hover:border-red transition-colors reveal delay-5">
+                    <p class="text-zinc-500 font-mono text-xs mb-2">GEOMETRY</p>
+                    <h3 class="font-display text-lg font-bold">Transform Tools</h3>
+                    <p class="text-zinc-400 text-sm mt-1">Perspective & warp corrections</p>
+                </div>
+                
+                <div class="border-l-2 border-white/20 pl-6 hover:border-red transition-colors reveal delay-6">
+                    <p class="text-zinc-500 font-mono text-xs mb-2">EFFECTS</p>
+                    <h3 class="font-display text-lg font-bold">Vignette & Grain</h3>
+                    <p class="text-zinc-400 text-sm mt-1">Classic film effects</p>
+                </div>
+                
+                <div class="border-l-2 border-white/20 pl-6 hover:border-red transition-colors reveal delay-1">
+                    <p class="text-zinc-500 font-mono text-xs mb-2">MERGE</p>
+                    <h3 class="font-display text-lg font-bold">HDR & Focus Stack</h3>
+                    <p class="text-zinc-400 text-sm mt-1">Advanced photo merging</p>
+                </div>
+                
+                <div class="border-l-2 border-white/20 pl-6 hover:border-red transition-colors reveal delay-2">
+                    <p class="text-zinc-500 font-mono text-xs mb-2">PLATFORM</p>
+                    <h3 class="font-display text-lg font-bold">Electron Wrapper</h3>
+                    <p class="text-zinc-400 text-sm mt-1">Deeper OS file access</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="py-32 border-t border-white/10 relative overflow-hidden">
+        <div class="absolute inset-0 opacity-5">
+            <img src="Screenshots/Library-list.png" alt="" class="parallax w-full h-full object-cover">
+        </div>
+        <div class="relative z-10 max-w-[1800px] mx-auto px-8 text-center">
+            <div class="reveal">
+                <h2 class="font-display text-5xl md:text-8xl font-bold mb-8">
+                    Take <span class="text-red glitch" data-text="control">control</span>
+                </h2>
+                <p class="text-xl text-zinc-400 font-light max-w-2xl mx-auto mb-12">
+                    Join photographers who demand privacy and performance.
+                </p>
+                <div class="inline-block rotating-border rounded-lg">
+                    <a href="https://github.com/anthonyreimche/SafeLight" class="block relative z-10 bg-red text-white px-12 py-5 text-sm font-medium tracking-wide hover:bg-red/90 transition-colors">
+                        Star on GitHub
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-12 border-t border-white/10">
+        <div class="max-w-[1800px] mx-auto px-8">
+            <div class="flex flex-col md:flex-row justify-between items-center gap-8">
+                <div class="flex items-center gap-3">
+                    <img src="favicon.svg" alt="SafeLight" class="w-6 h-6">
+                    <span class="font-display font-bold">SafeLight</span>
+                </div>
+                <a href="https://github.com/anthonyreimche/SafeLight" class="text-zinc-400 hover:text-white transition-colors">
+                    GitHub
+                </a>
+                <p class="text-zinc-600 text-sm font-mono">Open Source</p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Cursor spotlight effect
+        document.addEventListener('mousemove', (e) => {
+            document.body.style.setProperty('--x', e.clientX + 'px');
+            document.body.style.setProperty('--y', e.clientY + 'px');
+        });
+
+        // Parallax effect
+        window.addEventListener('scroll', () => {
+            const scrolled = window.pageYOffset;
+            document.querySelectorAll('.parallax').forEach(el => {
+                const speed = 0.5;
+                el.style.transform = `translateY(${scrolled * speed}px)`;
+            });
+        });
+
+        // Intersection Observer for reveal animations
+        const observerOptions = {
+            root: null,
+            rootMargin: '0px',
+            threshold: 0.1
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        }, observerOptions);
+
+        document.querySelectorAll('.reveal, .reveal-left, .reveal-right, .line-animate, .text-reveal').forEach(el => {
+            observer.observe(el);
+        });
+
+        // Smooth scroll
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth' });
+                }
+            });
+        });
+
+        // Magnetic button effect
+        document.querySelectorAll('.magnetic-btn').forEach(btn => {
+            btn.addEventListener('mousemove', (e) => {
+                const rect = btn.getBoundingClientRect();
+                const x = e.clientX - rect.left - rect.width / 2;
+                const y = e.clientY - rect.top - rect.height / 2;
+                btn.style.transform = `translate(${x * 0.2}px, ${y * 0.2}px)`;
+            });
+            
+            btn.addEventListener('mouseleave', () => {
+                btn.style.transform = 'translate(0, 0)';
+            });
+        });
+
+        // Image scale on scroll
+        window.addEventListener('scroll', () => {
+            const scaleElements = document.querySelectorAll('.scale-scroll');
+            scaleElements.forEach(el => {
+                const rect = el.getBoundingClientRect();
+                const scrollPercent = (window.innerHeight - rect.top) / window.innerHeight;
+                if (scrollPercent > 0 && scrollPercent < 1) {
+                    const scale = 1 + (scrollPercent - 0.5) * 0.2;
+                    el.style.transform = `scale(${Math.max(0.9, Math.min(1.1, scale))})`;
+                }
+            });
+        });
+    </script>
+</body>
+</html>

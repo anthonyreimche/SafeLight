@@ -131,6 +131,11 @@ export const catalogDB = {
     return requestToPromise(txStore(db, STORE_EDITS, "readonly").get(photoId));
   },
 
+  async getAllEditStates(): Promise<EditState[]> {
+    const db = await getDB();
+    return requestToPromise(txStore(db, STORE_EDITS, "readonly").getAll());
+  },
+
   async putEditState(editState: EditState): Promise<void> {
     const db = await getDB();
     await requestToPromise(

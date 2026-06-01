@@ -33,7 +33,7 @@ If you'd like to help make this software more powerful, feel free to help!
 - Basic HSL/Color support 
 - Basic preset support
 - Hold shift or widen slider panel for fine adjustment, double-click to reset value
-- Limited crop functionality
+- Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
 
 ## Loupe Viewer
 <img width="3832" height="1848" alt="image" src="https://github.com/user-attachments/assets/cbf992a6-0172-40af-ab1f-7e4041b425dd" />
@@ -48,7 +48,8 @@ If you'd like to help make this software more powerful, feel free to help!
 - Limited output resolution clamping
 
 # To Do
-- Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
+- Optimized thumbnail updates when library view is visible
+- Improve highlight/shadow recovery for high-contrast images
 - Transform and warp image crop / geometry and perspective tools
 - Color grading wheels
 - Image sharpen / denoise support (WASM-based)
