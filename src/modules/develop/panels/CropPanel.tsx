@@ -5,6 +5,7 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { DEFAULT_CROP, type CropRect } from "@/catalog/types";
 import { computeCropForAspect, fitCropToImage } from "@/rendering/crop-transform";
+import { buildInverseTransform } from "@/rendering/transform";
 import { CROP_GUIDES } from "../crop-guides";
 
 // ratio is width:height in pixels. 0 = Free (no lock); -1 = Original (locks to
@@ -29,6 +30,7 @@ export function CropPanel() {
   const cropGuide = useDevelopStore((s) => s.cropGuide);
   const setCropGuide = useDevelopStore((s) => s.setCropGuide);
   const straighten = useDevelopStore((s) => s.params.straighten);
+  const transform = useDevelopStore((s) => s.params.transform);
   const crop = useDevelopStore((s) => s.params.crop);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
@@ -57,7 +59,10 @@ export function CropPanel() {
     // image and the handles stay inside.
     let next = computeCropForAspect(resolved, imageAspect);
     if (constrainCrop) {
-      next = fitCropToImage(next, (straighten * Math.PI) / 180, imageAspect);
+      next = fitCropToImage(
+        next,
+        buildInverseTransform(straighten, transform, imageAspect),
+      );
     }
     setParam("crop", next);
     commitEdit("Crop");
@@ -123,8 +128,7 @@ export function CropPanel() {
                 "crop",
                 fitCropToImage(
                   baseCropRef.current,
-                  (s * Math.PI) / 180,
-                  imageAspect,
+                  buildInverseTransform(s, transform, imageAspect),
                 ),
               );
             }

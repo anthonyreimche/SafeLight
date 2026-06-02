@@ -1,4 +1,5 @@
 import { CropPanel } from "./panels/CropPanel";
+import { TransformPanel } from "./panels/TransformPanel";
 import { WhiteBalancePanel } from "./panels/WhiteBalancePanel";
 import { BasicPanel } from "./panels/BasicPanel";
 import { ToneCurvePanel } from "./panels/ToneCurvePanel";
@@ -53,6 +54,7 @@ export function DevelopSidebar() {
       </div>
       <DevelopHistogram />
       <CropPanel />
+      <TransformPanel />
       <WhiteBalancePanel />
       <BasicPanel />
       <ToneCurvePanel />

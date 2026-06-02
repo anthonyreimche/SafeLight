@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CropRect } from "@/catalog/types";
 import { constrainCropToImage } from "@/rendering/crop-transform";
+import type { Mat3 } from "@/rendering/transform";
 import { guideShapes, type CropGuide } from "./crop-guides";
 
 interface Rect {
@@ -33,9 +34,10 @@ const clamp = (v: number, lo: number, hi: number) =>
 
 interface CropOverlayProps {
   rect: Rect; // displayed canvas rect (frame coords); shows the viewCrop region
-  crop: CropRect; // straightened-frame, normalized to the image
-  viewCrop: CropRect; // straightened-frame region the canvas shows
-  straightenRad: number;
+  crop: CropRect; // transformed-frame, normalized to the image
+  viewCrop: CropRect; // transformed-frame region the canvas shows
+  inv: Mat3; // transformed coord -> source UV (for image-bounds constraints)
+  forward: Mat3; // source UV -> transformed coord (image quad for move clamp)
   straightenDeg: number;
   aspect: number; // crop aspect lock, width:height in pixels (0 = free)
   imageAspect: number;
@@ -51,7 +53,8 @@ export function CropOverlay({
   rect,
   crop,
   viewCrop,
-  straightenRad,
+  inv,
+  forward,
   straightenDeg,
   aspect,
   imageAspect,
@@ -166,7 +169,8 @@ export function CropOverlay({
         d.startCrop,
         next,
         d.mode,
-        straightenRad,
+        inv,
+        forward,
         imageAspect,
         normRatio > 0,
       );

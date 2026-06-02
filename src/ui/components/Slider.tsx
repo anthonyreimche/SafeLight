@@ -49,8 +49,11 @@ export function Slider({
   );
 
   const shown = dragValue ?? value;
-  const pct = ((shown - min) / (max - min)) * 100;
+  // The bar only represents the track range; a typed override past it pins full.
+  const pct = Math.max(0, Math.min(100, ((shown - min) / (max - min)) * 100));
   const display = shown > 0 ? `+${shown}` : String(shown);
+  // A value outside the normal range (only reachable by typing) reads red.
+  const outOfRange = shown < min || shown > max;
 
   const clamp = (v: number) => Math.min(max, Math.max(min, v));
   const snap = (v: number) => {
@@ -94,7 +97,9 @@ export function Slider({
     setEditing(raw);
     if (raw === "" || raw === "-" || raw === ".") return;
     const n = Number(raw);
-    if (!Number.isNaN(n)) onChange(clamp(n));
+    // Typed values may exceed the track range (e.g. Exposure past +5); the drag
+    // and arrow keys still clamp to it.
+    if (Number.isFinite(n)) onChange(n);
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLInputElement>) => {
@@ -173,7 +178,11 @@ export function Slider({
             setEditing(null);
             onCommit?.();
           }}
-          className="w-12 shrink-0 rounded bg-transparent px-1 text-right text-[11px] tabular-nums text-text-secondary outline-none focus:bg-surface-2 focus:text-text-primary"
+          className={`w-12 shrink-0 rounded bg-transparent px-1 text-right text-[11px] tabular-nums outline-none focus:bg-surface-2 ${
+            outOfRange
+              ? "text-label-red"
+              : "text-text-secondary focus:text-text-primary"
+          }`}
         />
       )}
     </div>

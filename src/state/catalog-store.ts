@@ -9,6 +9,7 @@ import { catalogDB } from "@/catalog/db";
 import { rotateBlob, normalizeRotation } from "@/catalog/orient";
 import { verifyPermission } from "@/catalog/permissions";
 import { broadcast } from "./broadcast";
+import { useEditedThumbs } from "./edited-thumbnails";
 
 // Recreate a fresh object URL from the persisted thumbnail blob. Used on load
 // because blob: URLs from a previous session are no longer valid.
@@ -143,6 +144,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
 
     async removePhoto(id) {
       await catalogDB.deletePhoto(id);
+      useEditedThumbs.getState().drop(id);
       set((s) => ({
         photos: s.photos.filter((p) => p.id !== id),
         selectedIds: (() => {
@@ -158,7 +160,10 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     async removePhotos(ids) {
       if (ids.length === 0) return;
       const idSet = new Set(ids);
-      for (const id of ids) await catalogDB.deletePhoto(id);
+      for (const id of ids) {
+        await catalogDB.deletePhoto(id);
+        useEditedThumbs.getState().drop(id);
+      }
 
       // Drop the removed photos from any collections that held them.
       const prev = get().collections;

@@ -110,6 +110,17 @@ export interface HSLAdjustments {
   luminance: HSLValues;
 }
 
+// Geometry/perspective transform applied to the whole image before the crop.
+// All values are -100..100 with 0 = no effect.
+export interface TransformParams {
+  perspectiveV: number; // vertical keystone (tilt top/bottom)
+  perspectiveH: number; // horizontal keystone (tilt left/right)
+  aspect: number; // horizontal vs vertical stretch
+  scale: number; // zoom in/out
+  offsetX: number; // pan
+  offsetY: number;
+}
+
 export interface DevelopParams {
   exposure: number;
   contrast: number;
@@ -117,16 +128,28 @@ export interface DevelopParams {
   shadows: number;
   whites: number;
   blacks: number;
+  texture: number;
   clarity: number;
+  dehaze: number;
   vibrance: number;
   saturation: number;
   temperature: number;
   tint: number;
   straighten: number; // degrees, -45..45 (0 = none)
   crop: CropRect;
+  transform: TransformParams;
   toneCurve: ToneCurves;
   hsl: HSLAdjustments;
 }
+
+export const DEFAULT_TRANSFORM: TransformParams = {
+  perspectiveV: 0,
+  perspectiveH: 0,
+  aspect: 0,
+  scale: 0,
+  offsetX: 0,
+  offsetY: 0,
+};
 
 export const DEFAULT_TONE_CURVE: CurvePoint[] = [
   { x: 0, y: 0 },
@@ -172,20 +195,50 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   shadows: 0,
   whites: 0,
   blacks: 0,
+  texture: 0,
   clarity: 0,
+  dehaze: 0,
   vibrance: 0,
   saturation: 0,
-  temperature: 0,
+  temperature: 6500, // Kelvin; 6500 = neutral
   tint: 0,
   straighten: 0,
   crop: { ...DEFAULT_CROP },
+  transform: { ...DEFAULT_TRANSFORM },
   toneCurve: defaultToneCurves(),
   hsl: defaultHSL(),
 };
 
+function normalizeTransform(
+  t: Partial<TransformParams> | undefined,
+): TransformParams {
+  const c = (n: unknown) =>
+    typeof n === "number" && isFinite(n) ? Math.max(-100, Math.min(100, n)) : 0;
+  return {
+    perspectiveV: c(t?.perspectiveV),
+    perspectiveH: c(t?.perspectiveH),
+    aspect: c(t?.aspect),
+    scale: c(t?.scale),
+    offsetX: c(t?.offsetX),
+    offsetY: c(t?.offsetY),
+  };
+}
+
 function clampStraighten(n: number): number {
   if (!isFinite(n)) return 0;
   return Math.min(45, Math.max(-45, n));
+}
+
+// Temperature is Kelvin (2000–50000), 6500 neutral. Pre-Kelvin edits stored a
+// relative value near 0, so anything below 1000 is treated as "neutral".
+function normalizeTemp(n: unknown): number {
+  if (typeof n !== "number" || !isFinite(n) || n < 1000) return 6500;
+  return Math.min(50000, Math.max(2000, n));
+}
+
+function clampTint(n: unknown): number {
+  if (typeof n !== "number" || !isFinite(n)) return 0;
+  return Math.min(150, Math.max(-150, n));
 }
 
 function normalizeCrop(c: Partial<CropRect> | undefined): CropRect {
@@ -231,7 +284,10 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
     ...base,
     straighten:
       typeof p?.straighten === "number" ? clampStraighten(p.straighten) : 0,
+    temperature: normalizeTemp(p?.temperature),
+    tint: clampTint(p?.tint),
     crop: normalizeCrop(p?.crop),
+    transform: normalizeTransform(p?.transform),
     toneCurve: normalizeToneCurves(p?.toneCurve),
     hsl: {
       hue: { ...zeroHSLValues(), ...p?.hsl?.hue },

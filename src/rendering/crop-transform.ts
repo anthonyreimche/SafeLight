@@ -1,42 +1,17 @@
 import type { CropRect } from "@/catalog/types";
+import { mat3Apply, type Mat3, type Vec2 } from "./transform";
 
-export interface Vec2 {
-  x: number;
-  y: number;
-}
+export type { Vec2 } from "./transform";
 
-// Map a point in the straightened frame (image-normalized, top-left origin) to
-// the source image UV. Straighten rotates about the image center, so it is
-// independent of the crop — mirrors cropStraightenUV in shaders.ts exactly.
-//
-// Rotation happens in square-pixel space (the aspect compensation), so a level
-// line stays level regardless of the image's proportions.
-export function straightenedToSource(
-  p: Vec2,
-  straightenRad: number,
-  aspect: number,
-): Vec2 {
-  const sx = (p.x - 0.5) * aspect;
-  const sy = p.y - 0.5;
-  const c = Math.cos(straightenRad);
-  const s = Math.sin(straightenRad);
-  const rx = sx * c - sy * s;
-  const ry = sx * s + sy * c;
-  return { x: 0.5 + rx / aspect, y: 0.5 + ry };
+// Map a point in the (cropped) transformed frame to source UV via the inverse
+// transform. Mirrors cropTransformUV in shaders.ts exactly.
+export function transformedToSource(p: Vec2, inv: Mat3): Vec2 {
+  return mat3Apply(inv, p.x, p.y);
 }
 
 // Output (crop) coord -> source UV. `o` is [0,1] over the crop region.
-export function sourceUV(
-  o: Vec2,
-  crop: CropRect,
-  straightenRad: number,
-  aspect: number,
-): Vec2 {
-  return straightenedToSource(
-    { x: crop.x + o.x * crop.width, y: crop.y + o.y * crop.height },
-    straightenRad,
-    aspect,
-  );
+export function sourceUV(o: Vec2, crop: CropRect, inv: Mat3): Vec2 {
+  return mat3Apply(inv, crop.x + o.x * crop.width, crop.y + o.y * crop.height);
 }
 
 // Largest centered crop of a given target aspect ratio (width:height, in pixels)
@@ -58,43 +33,98 @@ export function computeCropForAspect(
   return { x: (1 - width) / 2, y: (1 - height) / 2, width, height };
 }
 
-// A centered region (in straightened-frame coords) that encloses the whole
-// image after rotation, so crop mode can show it all with dark margins.
-export function rotatedViewCrop(
-  straightenRad: number,
-  aspect: number,
-  pad = 1.06,
-): CropRect {
-  const c = Math.abs(Math.cos(straightenRad));
-  const s = Math.abs(Math.sin(straightenRad));
-  const halfW = ((aspect * c + s) / (2 * aspect)) * pad;
-  const halfH = ((aspect * s + c) / 2) * pad;
-  return { x: 0.5 - halfW, y: 0.5 - halfH, width: 2 * halfW, height: 2 * halfH };
+// A region (in transformed-frame coords) that encloses the whole image after
+// the geometry transform, so crop mode can show it all with dark margins.
+export function transformedViewCrop(forward: Mat3, pad = 1.06): CropRect {
+  const corners: [number, number][] = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+  ];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [u, v] of corners) {
+    const p = mat3Apply(forward, u, v);
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const halfW = ((maxX - minX) / 2) * pad;
+  const halfH = ((maxY - minY) / 2) * pad;
+  return { x: cx - halfW, y: cy - halfH, width: 2 * halfW, height: 2 * halfH };
 }
 
-function inside(p: Vec2, straightenRad: number, aspect: number): boolean {
-  const u = straightenedToSource(p, straightenRad, aspect);
+function inside(p: Vec2, inv: Mat3): boolean {
+  const u = mat3Apply(inv, p.x, p.y);
   return u.x >= 0 && u.x <= 1 && u.y >= 0 && u.y <= 1;
 }
 
-// Whether the (axis-aligned, straightened-frame) crop lies fully within the
-// rotated image — i.e. no empty corners.
-export function cropFitsImage(
-  crop: CropRect,
-  straightenRad: number,
-  aspect: number,
-): boolean {
+// Whether the (axis-aligned, transformed-frame) crop lies fully within the
+// transformed image — i.e. no empty corners.
+export function cropFitsImage(crop: CropRect, inv: Mat3): boolean {
   const r = crop.x + crop.width;
   const b = crop.y + crop.height;
   return (
-    inside({ x: crop.x, y: crop.y }, straightenRad, aspect) &&
-    inside({ x: r, y: crop.y }, straightenRad, aspect) &&
-    inside({ x: crop.x, y: b }, straightenRad, aspect) &&
-    inside({ x: r, y: b }, straightenRad, aspect)
+    inside({ x: crop.x, y: crop.y }, inv) &&
+    inside({ x: r, y: crop.y }, inv) &&
+    inside({ x: crop.x, y: b }, inv) &&
+    inside({ x: r, y: b }, inv)
   );
 }
 
 const MIN_CROP = 0.04; // smallest crop edge, normalized to the image
+
+interface Plane {
+  nx: number;
+  ny: number;
+  b: number;
+} // half-plane: nx·x + ny·y ≤ b
+
+// Closest point to `p` within the intersection of half-planes (a convex polygon
+// that always contains the origin). Returns `p` if already inside; otherwise the
+// nearest boundary point (checking edge-line projections and vertices).
+function closestInHalfplanes(p: Vec2, planes: Plane[]): Vec2 {
+  const eps = 1e-7;
+  const feasible = (q: Vec2) =>
+    planes.every((pl) => pl.nx * q.x + pl.ny * q.y <= pl.b + eps);
+  if (feasible(p)) return p;
+
+  let best: Vec2 = { x: 0, y: 0 }; // t=0 (start position) is always valid
+  let bestD = p.x * p.x + p.y * p.y;
+  const consider = (q: Vec2) => {
+    if (!feasible(q)) return;
+    const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = q;
+    }
+  };
+  for (const pl of planes) {
+    const len2 = pl.nx * pl.nx + pl.ny * pl.ny;
+    if (len2 < 1e-12) continue;
+    const dist = (pl.nx * p.x + pl.ny * p.y - pl.b) / len2;
+    consider({ x: p.x - dist * pl.nx, y: p.y - dist * pl.ny });
+  }
+  for (let i = 0; i < planes.length; i++) {
+    for (let j = i + 1; j < planes.length; j++) {
+      const a = planes[i];
+      const b = planes[j];
+      const det = a.nx * b.ny - a.ny * b.nx;
+      if (Math.abs(det) < 1e-12) continue;
+      consider({
+        x: (a.b * b.ny - a.ny * b.b) / det,
+        y: (a.nx * b.b - a.b * b.nx) / det,
+      });
+    }
+  }
+  return best;
+}
 
 // Furthest position from `from` (which must be valid) toward `to` for which
 // `test` holds. Validity is assumed monotonic along the segment.
@@ -114,73 +144,77 @@ function searchEdge(
   return lo;
 }
 
-// Constrain a dragged crop to the rotated image so each handle rides the image
-// edge nearest the cursor (rather than collapsing toward a corner). `mode` is
-// the drag handle ("nw".."move"); `ratioLocked` keeps an aspect-locked crop's
-// proportions by pulling straight back along the drag instead.
+// Constrain a dragged crop to the transformed image so each handle rides the
+// image edge nearest the cursor. `mode` is the drag handle ("nw".."move").
+// `inv` maps transformed coord -> source UV; `forward` maps source -> transformed
+// (used to find the image quadrilateral for the exact move projection). `aspect`
+// is the image aspect, used as the on-screen distance metric.
 export function constrainCropToImage(
   start: CropRect,
   target: CropRect,
   mode: string,
-  straightenRad: number,
+  inv: Mat3,
+  forward: Mat3,
   aspect: number,
   ratioLocked: boolean,
 ): CropRect {
-  if (cropFitsImage(target, straightenRad, aspect)) return target;
+  if (cropFitsImage(target, inv)) return target;
 
   const fits = (l: number, t: number, r: number, b: number) =>
     r - l >= MIN_CROP &&
     b - t >= MIN_CROP &&
-    cropFitsImage(
-      { x: l, y: t, width: r - l, height: b - t },
-      straightenRad,
-      aspect,
-    );
+    cropFitsImage({ x: l, y: t, width: r - l, height: b - t }, inv);
 
   const tx0 = target.x;
   const ty0 = target.y;
   const tx1 = target.x + target.width;
   const ty1 = target.y + target.height;
 
-  // A move keeps its size (so the locked ratio is preserved automatically), and
-  // wants the box at the position closest to the cursor. The valid translations
-  // form a parallelogram whose sides run along the rotated image's edges: d1
-  // (image x-edges) and d2 (image y-edges). In that basis the region is an
-  // axis-aligned box, so clamping each component independently lands exactly on
-  // the nearest valid spot — and slides along the tilted boundary when the box
-  // is wedged between two opposite edges (where x/y nudges would both freeze).
-  // (det[d1 d2] = 1, so the decomposition is exact.) Handled before the locked
-  // branch so locked crops get the same closest-point move, not a lerp-back.
+  // A move keeps its size, so the locked ratio is preserved automatically and we
+  // just want the box at the position closest to the cursor. The image occupies
+  // a convex quadrilateral Q in the transformed frame; the translations that
+  // keep all crop corners inside Q form a convex polygon (Q eroded by the crop).
+  // We project the desired translation onto that polygon in screen-isotropic
+  // space — the exact nearest valid position, for rotation and perspective
+  // alike. Handled before the locked branch so locked crops move the same way.
   if (mode === "move") {
     const w = target.width;
     const h = target.height;
-    const c = Math.cos(straightenRad);
-    const s = Math.sin(straightenRad);
-    const d1x = s / aspect;
-    const d1y = c;
-    const d2x = -c;
-    const d2y = aspect * s;
-    const tx = tx0 - start.x;
-    const ty = ty0 - start.y;
-    const aT = aspect * s * tx + c * ty; // target component along d1
-    const bT = -c * tx + (s / aspect) * ty; // target component along d2
-    let a = 0;
-    let b = 0;
-    const moveFits = (va: number, vb: number) => {
-      const x = start.x + va * d1x + vb * d2x;
-      const y = start.y + va * d1y + vb * d2y;
-      return fits(x, y, x + w, y + h);
-    };
-    for (let i = 0; i < 8; i++) {
-      a = searchEdge(a, aT, (v) => moveFits(v, b));
-      b = searchEdge(b, bT, (v) => moveFits(a, v));
+    const Q = [
+      mat3Apply(forward, 0, 0),
+      mat3Apply(forward, 1, 0),
+      mat3Apply(forward, 1, 1),
+      mat3Apply(forward, 0, 1),
+    ];
+    const cx = (Q[0].x + Q[1].x + Q[2].x + Q[3].x) / 4;
+    const cy = (Q[0].y + Q[1].y + Q[2].y + Q[3].y) / 4;
+    const corners = [
+      { x: start.x, y: start.y },
+      { x: start.x + w, y: start.y },
+      { x: start.x + w, y: start.y + h },
+      { x: start.x, y: start.y + h },
+    ];
+    // Half-planes n·t ≤ b on the translation t, rescaled into screen-isotropic
+    // space (x·aspect) so the projection minimizes on-screen distance.
+    const planes: Plane[] = [];
+    for (let e = 0; e < 4; e++) {
+      const A = Q[e];
+      const B = Q[(e + 1) % 4];
+      let nx = B.y - A.y;
+      let ny = -(B.x - A.x);
+      let d = nx * A.x + ny * A.y;
+      if (nx * cx + ny * cy > d) {
+        nx = -nx;
+        ny = -ny;
+        d = -d;
+      }
+      let maxNC = -Infinity;
+      for (const c of corners) maxNC = Math.max(maxNC, nx * c.x + ny * c.y);
+      planes.push({ nx: nx / aspect, ny, b: d - maxNC });
     }
-    return {
-      x: start.x + a * d1x + b * d2x,
-      y: start.y + a * d1y + b * d2y,
-      width: w,
-      height: h,
-    };
+    const uStar = { x: (tx0 - start.x) * aspect, y: ty0 - start.y };
+    const u = closestInHalfplanes(uStar, planes);
+    return { x: start.x + u.x / aspect, y: start.y + u.y, width: w, height: h };
   }
 
   if (ratioLocked) {
@@ -188,7 +222,7 @@ export function constrainCropToImage(
     // ratio — including a just-flipped orientation — holds at the boundary.
     const anchorX = mode.includes("e") ? target.x : target.x + target.width;
     const anchorY = mode.includes("s") ? target.y : target.y + target.height;
-    return fitLockedCrop(target, anchorX, anchorY, straightenRad, aspect);
+    return fitLockedCrop(target, anchorX, anchorY, inv);
   }
 
   // Free resize: coordinate descent from the (valid) start crop toward the
@@ -208,16 +242,14 @@ export function constrainCropToImage(
 }
 
 // Shrink an aspect-locked crop about its anchor corner (opposite the dragged
-// handle) until it fits the rotated image, preserving the crop's ratio so a
-// constrained drag keeps its locked proportions at the boundary.
+// handle) until it fits the transformed image, preserving the crop's ratio.
 export function fitLockedCrop(
   target: CropRect,
   anchorX: number,
   anchorY: number,
-  straightenRad: number,
-  aspect: number,
+  inv: Mat3,
 ): CropRect {
-  if (cropFitsImage(target, straightenRad, aspect)) return target;
+  if (cropFitsImage(target, inv)) return target;
   const at = (m: number): CropRect => ({
     x: anchorX + (target.x - anchorX) * m,
     y: anchorY + (target.y - anchorY) * m,
@@ -228,20 +260,16 @@ export function fitLockedCrop(
   let hi = 1;
   for (let i = 0; i < 24; i++) {
     const m = (lo + hi) / 2;
-    if (cropFitsImage(at(m), straightenRad, aspect)) lo = m;
+    if (cropFitsImage(at(m), inv)) lo = m;
     else hi = m;
   }
   return at(lo);
 }
 
 // Shrink the crop about its center to the largest size that still fits the
-// rotated image. Returns it unchanged when it already fits.
-export function fitCropToImage(
-  crop: CropRect,
-  straightenRad: number,
-  aspect: number,
-): CropRect {
-  if (cropFitsImage(crop, straightenRad, aspect)) return crop;
+// transformed image. Returns it unchanged when it already fits.
+export function fitCropToImage(crop: CropRect, inv: Mat3): CropRect {
+  if (cropFitsImage(crop, inv)) return crop;
   const cx = crop.x + crop.width / 2;
   const cy = crop.y + crop.height / 2;
   let lo = 0;
@@ -251,7 +279,7 @@ export function fitCropToImage(
     const w = crop.width * m;
     const h = crop.height * m;
     const c2 = { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
-    if (cropFitsImage(c2, straightenRad, aspect)) lo = m;
+    if (cropFitsImage(c2, inv)) lo = m;
     else hi = m;
   }
   const w = crop.width * lo;

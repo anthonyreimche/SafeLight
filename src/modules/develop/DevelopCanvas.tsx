@@ -2,7 +2,11 @@ import { useRef } from "react";
 import type { CatalogPhoto, CropRect } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
 import { useDevelopStore } from "@/state/develop-store";
-import { fitCropToImage, rotatedViewCrop } from "@/rendering/crop-transform";
+import { fitCropToImage, transformedViewCrop } from "@/rendering/crop-transform";
+import {
+  buildForwardTransform,
+  buildInverseTransform,
+} from "@/rendering/transform";
 import { ViewportImage } from "@/ui/ViewportImage";
 import { CropOverlay } from "./CropOverlay";
 
@@ -24,6 +28,7 @@ export function DevelopCanvas({
   const cropping = useDevelopStore((s) => s.cropping);
   const crop = useDevelopStore((s) => s.params.crop);
   const straighten = useDevelopStore((s) => s.params.straighten);
+  const transform = useDevelopStore((s) => s.params.transform);
   const cropAspect = useDevelopStore((s) => s.cropAspect);
   const constrainCrop = useDevelopStore((s) => s.constrainCrop);
   const cropGuide = useDevelopStore((s) => s.cropGuide);
@@ -32,8 +37,12 @@ export function DevelopCanvas({
   const commitEdit = useDevelopStore((s) => s.commitEdit);
 
   const imageAspect = photo.height > 0 ? photo.width / photo.height : 1;
-  const straightenRad = (straighten * Math.PI) / 180;
-  const viewCrop = rotatedViewCrop(straightenRad, imageAspect);
+  // Inverse transform (transformed coord -> source UV) for crop constraints, the
+  // forward transform (image quad) for the move clamp, and the view region
+  // enclosing the warped image for the crop overlay.
+  const inv = buildInverseTransform(straighten, transform, imageAspect);
+  const forward = buildForwardTransform(straighten, transform, imageAspect);
+  const viewCrop = transformedViewCrop(forward);
 
   // Throttle crop writes to one per frame so a drag doesn't re-render the panels
   // on every pointer event.
@@ -90,7 +99,8 @@ export function DevelopCanvas({
                 rect={rect}
                 crop={crop}
                 viewCrop={viewCrop}
-                straightenRad={straightenRad}
+                inv={inv}
+                forward={forward}
                 straightenDeg={straighten}
                 aspect={cropAspect}
                 imageAspect={imageAspect}
@@ -107,7 +117,10 @@ export function DevelopCanvas({
                   if (constrainCrop) {
                     setParam(
                       "crop",
-                      fitCropToImage(crop, (deg * Math.PI) / 180, imageAspect),
+                      fitCropToImage(
+                        crop,
+                        buildInverseTransform(deg, transform, imageAspect),
+                      ),
                     );
                   }
                   commitEdit("Straighten");

@@ -19,7 +19,9 @@ const basicSliders: {
   { key: "shadows", label: "Shadows", min: -100, max: 100 },
   { key: "whites", label: "Whites", min: -100, max: 100 },
   { key: "blacks", label: "Blacks", min: -100, max: 100 },
+  { key: "texture", label: "Texture", min: -100, max: 100 },
   { key: "clarity", label: "Clarity", min: -100, max: 100 },
+  { key: "dehaze", label: "Dehaze", min: -100, max: 100 },
   { key: "vibrance", label: "Vibrance", min: -100, max: 100 },
   { key: "saturation", label: "Saturation", min: -100, max: 100 },
 ];

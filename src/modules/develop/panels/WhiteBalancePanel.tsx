@@ -13,16 +13,19 @@ export function WhiteBalancePanel() {
         <Slider
           label="Temp"
           value={params.temperature}
-          min={-100}
-          max={100}
+          min={2000}
+          max={50000}
+          step={10}
+          defaultValue={6500}
           onChange={(v) => setParam("temperature", v)}
           onCommit={() => commitEdit("Temperature")}
         />
         <Slider
           label="Tint"
           value={params.tint}
-          min={-100}
-          max={100}
+          min={-150}
+          max={150}
+          defaultValue={0}
           onChange={(v) => setParam("tint", v)}
           onCommit={() => commitEdit("Tint")}
         />

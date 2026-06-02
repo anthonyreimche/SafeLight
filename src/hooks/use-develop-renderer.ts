@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
-import { rotatedViewCrop } from "@/rendering/crop-transform";
+import { transformedViewCrop } from "@/rendering/crop-transform";
+import { buildForwardTransform } from "@/rendering/transform";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { loadPhotoBitmap } from "@/catalog/load-image";
 import { computeHistogram } from "@/rendering/histogram";
@@ -34,7 +35,12 @@ export function useDevelopRenderer(
   const aspect = photo && photo.height > 0 ? photo.width / photo.height : 1;
   const forRender = (p: DevelopParams, crop: boolean): DevelopParams =>
     crop
-      ? { ...p, crop: rotatedViewCrop((p.straighten * Math.PI) / 180, aspect) }
+      ? {
+          ...p,
+          crop: transformedViewCrop(
+            buildForwardTransform(p.straighten, p.transform, aspect),
+          ),
+        }
       : p;
 
   // Mirror the canvas's current buffer size into state so zoom can scale it.

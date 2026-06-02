@@ -1,6 +1,7 @@
 import type { DevelopParams } from "@/catalog/types";
 import { DEFAULT_CROP, HSL_CHANNELS } from "@/catalog/types";
 import { buildRGBCurveLUT } from "../curve";
+import { buildInverseTransform, mat3ColumnMajor } from "../transform";
 import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders";
 
 // Default cap on render resolution for interactive performance. Export passes
@@ -97,15 +98,16 @@ export class WebGLRenderer {
       "uImage",
       "uCurve",
       "uCrop",
-      "uStraighten",
-      "uImageAspect",
+      "uInvTransform",
       "uExposure",
       "uContrast",
       "uHighlights",
       "uShadows",
       "uWhites",
       "uBlacks",
+      "uTexture",
       "uClarity",
+      "uDehaze",
       "uVibrance",
       "uSaturation",
       "uTemperature",
@@ -123,7 +125,12 @@ export class WebGLRenderer {
     const gl = this.gl;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    // Mipmaps give Texture/Clarity/Dehaze a cheap multi-scale blur (textureLod).
+    gl.texParameteri(
+      gl.TEXTURE_2D,
+      gl.TEXTURE_MIN_FILTER,
+      gl.LINEAR_MIPMAP_LINEAR,
+    );
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -174,6 +181,8 @@ export class WebGLRenderer {
       gl.UNSIGNED_BYTE,
       bitmap,
     );
+    // Build the mip chain for the local-contrast (Texture/Clarity/Dehaze) blurs.
+    gl.generateMipmap(gl.TEXTURE_2D);
     this.hasImage = true;
     this.resize();
   }
@@ -235,7 +244,9 @@ export class WebGLRenderer {
     gl.uniform1f(u.uShadows, p.shadows);
     gl.uniform1f(u.uWhites, p.whites);
     gl.uniform1f(u.uBlacks, p.blacks);
+    gl.uniform1f(u.uTexture, p.texture);
     gl.uniform1f(u.uClarity, p.clarity);
+    gl.uniform1f(u.uDehaze, p.dehaze);
     gl.uniform1f(u.uVibrance, p.vibrance);
     gl.uniform1f(u.uSaturation, p.saturation);
     gl.uniform1f(u.uTemperature, p.temperature);
@@ -243,10 +254,11 @@ export class WebGLRenderer {
 
     const crop = p.crop ?? DEFAULT_CROP;
     gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
-    gl.uniform1f(u.uStraighten, (p.straighten * Math.PI) / 180);
-    gl.uniform1f(
-      u.uImageAspect,
-      this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1,
+    const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+    gl.uniformMatrix3fv(
+      u.uInvTransform,
+      false,
+      mat3ColumnMajor(buildInverseTransform(p.straighten, p.transform, aspect)),
     );
 
     gl.uniform1fv(
