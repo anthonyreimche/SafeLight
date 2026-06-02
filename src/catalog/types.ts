@@ -121,6 +121,42 @@ export interface TransformParams {
   offsetY: number;
 }
 
+export interface ColorGradingRange {
+  hue: number;  // 0..360 degrees
+  sat: number;  // 0..100
+  luma: number; // -100..100
+}
+
+export interface ColorGradingParams {
+  shadows: ColorGradingRange;
+  midtones: ColorGradingRange;
+  highlights: ColorGradingRange;
+  global: ColorGradingRange;
+  shadowRange: number;    // 0..100: how far shadow wheel extends upward
+  highlightRange: number; // 0..100: how far highlight wheel extends downward
+}
+
+export interface LensCorrectionParams {
+  distortion: number;          // -100..100 (neg=barrel fix, pos=pincushion fix)
+  chromaticAberration: number; // 0..100 lateral CA removal
+  defringe: number;            // 0..100 fringe suppression amount
+  vignetting: number;          // -100..100 lens vignetting correction
+}
+
+export interface VignetteParams {
+  amount: number;      // -100..100 (neg=darken, pos=lighten edges)
+  midpoint: number;    // 0..100 how far the effect reaches in
+  roundness: number;   // -100..100 (neg=rectangular, pos=circular)
+  feather: number;     // 0..100 edge softness
+  highlights: number;  // 0..100 highlight priority (protect highlights)
+}
+
+export interface GrainParams {
+  amount: number;     // 0..100
+  size: number;       // 25..100 grain clumpiness
+  roughness: number;  // 0..100 regularity
+}
+
 export interface DevelopParams {
   exposure: number;
   contrast: number;
@@ -131,6 +167,16 @@ export interface DevelopParams {
   texture: number;
   clarity: number;
   dehaze: number;
+  sharpening: number;        // 0..100 capture sharpening amount
+  sharpenRadius: number;     // 1..3   sharpening radius
+  sharpenDetail: number;     // 0..100 halo suppression (higher = more detail)
+  sharpenMasking: number;    // 0..100 edge masking (0 = sharpen all, 100 = edges only)
+  luminanceNR: number;       // 0..100 luminance noise reduction
+  luminanceNRDetail: number; // 0..100 luminance detail preservation
+  luminanceNRContrast: number; // 0..100 luminance contrast preservation
+  colorNR: number;           // 0..100 color (chroma) noise reduction
+  colorNRDetail: number;     // 0..100 color detail preservation
+  colorNRSmoothness: number; // 0..100 color smoothness
   vibrance: number;
   saturation: number;
   temperature: number;
@@ -140,6 +186,10 @@ export interface DevelopParams {
   transform: TransformParams;
   toneCurve: ToneCurves;
   hsl: HSLAdjustments;
+  colorGrading: ColorGradingParams;
+  lensCorrection: LensCorrectionParams;
+  vignette: VignetteParams;
+  grain: GrainParams;
 }
 
 export const DEFAULT_TRANSFORM: TransformParams = {
@@ -167,6 +217,21 @@ export function defaultToneCurves(): ToneCurves {
 
 export const DEFAULT_CROP: CropRect = { x: 0, y: 0, width: 1, height: 1 };
 
+function defaultColorGradingRange(): ColorGradingRange {
+  return { hue: 0, sat: 0, luma: 0 };
+}
+
+export function defaultColorGrading(): ColorGradingParams {
+  return {
+    shadows: defaultColorGradingRange(),
+    midtones: defaultColorGradingRange(),
+    highlights: defaultColorGradingRange(),
+    global: defaultColorGradingRange(),
+    shadowRange: 50,
+    highlightRange: 50,
+  };
+}
+
 function zeroHSLValues(): HSLValues {
   return {
     red: 0,
@@ -188,6 +253,27 @@ export function defaultHSL(): HSLAdjustments {
   };
 }
 
+export const DEFAULT_LENS_CORRECTION: LensCorrectionParams = {
+  distortion: 0,
+  chromaticAberration: 0,
+  defringe: 0,
+  vignetting: 0,
+};
+
+export const DEFAULT_VIGNETTE: VignetteParams = {
+  amount: 0,
+  midpoint: 50,
+  roundness: 0,
+  feather: 50,
+  highlights: 0,
+};
+
+export const DEFAULT_GRAIN: GrainParams = {
+  amount: 0,
+  size: 25,
+  roughness: 50,
+};
+
 export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   exposure: 0,
   contrast: 0,
@@ -198,6 +284,16 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   texture: 0,
   clarity: 0,
   dehaze: 0,
+  sharpening: 25,
+  sharpenRadius: 1.0,
+  sharpenDetail: 25,
+  sharpenMasking: 0,
+  luminanceNR: 0,
+  luminanceNRDetail: 50,
+  luminanceNRContrast: 0,
+  colorNR: 25,
+  colorNRDetail: 50,
+  colorNRSmoothness: 50,
   vibrance: 0,
   saturation: 0,
   temperature: 6500, // Kelvin; 6500 = neutral
@@ -207,6 +303,10 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   transform: { ...DEFAULT_TRANSFORM },
   toneCurve: defaultToneCurves(),
   hsl: defaultHSL(),
+  colorGrading: defaultColorGrading(),
+  lensCorrection: { ...DEFAULT_LENS_CORRECTION },
+  vignette: { ...DEFAULT_VIGNETTE },
+  grain: { ...DEFAULT_GRAIN },
 };
 
 function normalizeTransform(
@@ -229,7 +329,7 @@ function clampStraighten(n: number): number {
   return Math.min(45, Math.max(-45, n));
 }
 
-// Temperature is Kelvin (2000–50000), 6500 neutral. Pre-Kelvin edits stored a
+// Temperature is Kelvin (2000-50000), 6500 neutral. Pre-Kelvin edits stored a
 // relative value near 0, so anything below 1000 is treated as "neutral".
 function normalizeTemp(n: unknown): number {
   if (typeof n !== "number" || !isFinite(n) || n < 1000) return 6500;
@@ -255,6 +355,33 @@ function normalizeCrop(c: Partial<CropRect> | undefined): CropRect {
   };
 }
 
+function normalizeColorGradingRange(
+  r: Partial<ColorGradingRange> | undefined,
+): ColorGradingRange {
+  const clamp = (v: unknown, lo: number, hi: number, d: number) =>
+    typeof v === "number" && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d;
+  return {
+    hue: clamp(r?.hue, 0, 360, 0),
+    sat: clamp(r?.sat, 0, 100, 0),
+    luma: clamp(r?.luma, -100, 100, 0),
+  };
+}
+
+function normalizeColorGrading(
+  cg: Partial<ColorGradingParams> | undefined,
+): ColorGradingParams {
+  const clamp01 = (v: unknown, d: number) =>
+    typeof v === "number" && isFinite(v) ? Math.min(100, Math.max(0, v)) : d;
+  return {
+    shadows: normalizeColorGradingRange(cg?.shadows),
+    midtones: normalizeColorGradingRange(cg?.midtones),
+    highlights: normalizeColorGradingRange(cg?.highlights),
+    global: normalizeColorGradingRange(cg?.global),
+    shadowRange: clamp01(cg?.shadowRange, 50),
+    highlightRange: clamp01(cg?.highlightRange, 50),
+  };
+}
+
 function normalizeCurve(c: CurvePoint[] | undefined): CurvePoint[] {
   return c && c.length >= 2
     ? c.map((pt) => ({ x: pt.x, y: pt.y }))
@@ -276,6 +403,47 @@ function normalizeToneCurves(tc: unknown): ToneCurves {
   };
 }
 
+function normalizeLensCorrection(
+  lc: Partial<LensCorrectionParams> | undefined,
+): LensCorrectionParams {
+  const c100 = (v: unknown, d: number) =>
+    typeof v === "number" && isFinite(v) ? Math.min(100, Math.max(-100, v)) : d;
+  const c0100 = (v: unknown, d: number) =>
+    typeof v === "number" && isFinite(v) ? Math.min(100, Math.max(0, v)) : d;
+  return {
+    distortion: c100(lc?.distortion, 0),
+    chromaticAberration: c0100(lc?.chromaticAberration, 0),
+    defringe: c0100(lc?.defringe, 0),
+    vignetting: c100(lc?.vignetting, 0),
+  };
+}
+
+function normalizeVignette(
+  v: Partial<VignetteParams> | undefined,
+): VignetteParams {
+  const c = (val: unknown, lo: number, hi: number, d: number) =>
+    typeof val === "number" && isFinite(val) ? Math.min(hi, Math.max(lo, val)) : d;
+  return {
+    amount: c(v?.amount, -100, 100, 0),
+    midpoint: c(v?.midpoint, 0, 100, 50),
+    roundness: c(v?.roundness, -100, 100, 0),
+    feather: c(v?.feather, 0, 100, 50),
+    highlights: c(v?.highlights, 0, 100, 0),
+  };
+}
+
+function normalizeGrain(
+  g: Partial<GrainParams> | undefined,
+): GrainParams {
+  const c = (val: unknown, lo: number, hi: number, d: number) =>
+    typeof val === "number" && isFinite(val) ? Math.min(hi, Math.max(lo, val)) : d;
+  return {
+    amount: c(g?.amount, 0, 100, 0),
+    size: c(g?.size, 25, 100, 25),
+    roughness: c(g?.roughness, 0, 100, 50),
+  };
+}
+
 // Merge a (possibly partial / legacy) params object with current defaults so
 // snapshots saved before a field existed still load cleanly.
 export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopParams {
@@ -283,7 +451,7 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
   return {
     ...base,
     straighten:
-      typeof p?.straighten === "number" ? clampStraighten(p.straighten) : 0,
+      typeof p?.straighten === 'number' ? clampStraighten(p.straighten) : 0,
     temperature: normalizeTemp(p?.temperature),
     tint: clampTint(p?.tint),
     crop: normalizeCrop(p?.crop),
@@ -294,10 +462,14 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
       saturation: { ...zeroHSLValues(), ...p?.hsl?.saturation },
       luminance: { ...zeroHSLValues(), ...p?.hsl?.luminance },
     },
+    colorGrading: normalizeColorGrading(p?.colorGrading),
+    lensCorrection: normalizeLensCorrection(p?.lensCorrection),
+    vignette: normalizeVignette(p?.vignette),
+    grain: normalizeGrain(p?.grain),
   };
 }
 
-export type SortField = "dateImported" | "dateCreated" | "filename" | "rating";
-export type SortDirection = "asc" | "desc";
-export type ViewMode = "grid" | "list";
-export type AppModule = "library" | "develop" | "loupe" | "export";
+export type SortField = 'dateImported' | 'dateCreated' | 'filename' | 'rating';
+export type SortDirection = 'asc' | 'desc';
+export type ViewMode = 'grid' | 'list';
+export type AppModule = 'library' | 'develop' | 'loupe' | 'export';

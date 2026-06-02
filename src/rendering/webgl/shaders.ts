@@ -26,6 +26,8 @@ uniform sampler2D uCurve;
 
 uniform vec4 uCrop;         // x, y, width, height (transformed image space, y-down)
 uniform mat3 uInvTransform; // transformed-image coord -> source UV (projective)
+uniform bool uLinear;       // true: source texture is linear float (RAW); skip sRGB decode
+uniform bool uIsFallbackPreview; // true: source is pseudo-linear from 8-bit JPEG preview
 
 uniform float uExposure;
 uniform float uContrast;
@@ -36,6 +38,16 @@ uniform float uBlacks;
 uniform float uTexture;
 uniform float uClarity;
 uniform float uDehaze;
+uniform float uSharpening;
+uniform float uSharpenRadius;    // 1..3
+uniform float uSharpenDetail;    // 0..100
+uniform float uSharpenMasking;   // 0..100
+uniform float uLuminanceNR;
+uniform float uLumNRDetail;      // 0..100
+uniform float uLumNRContrast;    // 0..100
+uniform float uColorNR;
+uniform float uColorNRDetail;    // 0..100
+uniform float uColorNRSmooth;    // 0..100
 uniform float uVibrance;
 uniform float uSaturation;
 uniform float uTemperature;
@@ -44,6 +56,40 @@ uniform float uTint;
 uniform float uHslHue[8];
 uniform float uHslSat[8];
 uniform float uHslLum[8];
+
+// Color grading wheels: per-range hue (degrees), saturation (0..100), luma (-100..100)
+uniform float uCGShadowHue;
+uniform float uCGShadowSat;
+uniform float uCGShadowLuma;
+uniform float uCGMidHue;
+uniform float uCGMidSat;
+uniform float uCGMidLuma;
+uniform float uCGHighHue;
+uniform float uCGHighSat;
+uniform float uCGHighLuma;
+uniform float uCGGlobalHue;
+uniform float uCGGlobalSat;
+uniform float uCGGlobalLuma;
+uniform float uCGShadowRange;    // 0..1
+uniform float uCGHighlightRange; // 0..1
+
+// Lens correction
+uniform float uLensDistortion;    // -100..100 (barrel/pincushion)
+uniform float uLensCA;            // 0..100 lateral chromatic aberration removal
+uniform float uLensDefringe;      // 0..100 purple/green fringe suppression
+uniform float uLensVignetting;    // -100..100 optical vignetting correction
+
+// Effects: vignette
+uniform float uVignetteAmount;    // -100..100
+uniform float uVignetteMidpoint;  // 0..100
+uniform float uVignetteRoundness; // -100..100
+uniform float uVignetteFeather;   // 0..100
+uniform float uVignetteHighlights;// 0..100
+
+// Effects: grain
+uniform float uGrainAmount;    // 0..100
+uniform float uGrainSize;      // 25..100
+uniform float uGrainRoughness; // 0..100
 
 const float HSL_CENTERS[8] = float[8](
   0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 280.0, 320.0
@@ -216,8 +262,14 @@ vec3 applyHSL(vec3 c) {
 // Blurred source luminance at a mip level — a cheap Gaussian-ish blur whose
 // radius grows with the lod. Texture/Clarity/Dehaze build their local contrast
 // (unsharp masks) from the difference between the pixel and this blur.
+// Perceptual luminance of a source sample, encoded so local-contrast magnitudes
+// match whether the texture is linear-float (RAW) or already sRGB (8-bit).
+float srcLuma(vec3 s) {
+  float l = luma(max(s, 0.0));
+  return uLinear ? sqrt(l) : l;
+}
 float lumaLod(vec2 uv, float lod) {
-  return luma(textureLod(uImage, uv, lod).rgb);
+  return srcLuma(textureLod(uImage, uv, lod).rgb);
 }
 
 vec3 applyVibSat(vec3 c, float vib, float sat) {
@@ -231,6 +283,50 @@ vec3 applyVibSat(vec3 c, float vib, float sat) {
   return c;
 }
 
+// Convert hue+sat to a neutral-axis RGB color offset (equilateral triangle projection).
+// The three cosines are 120° apart so they always sum to zero — no net luminance shift.
+vec3 cgWheelRGB(float hueDeg, float satPct) {
+  if (satPct < 0.001) return vec3(0.0);
+  float rad = hueDeg * 3.14159265358979 / 180.0;
+  float s = satPct / 100.0 * 0.15; // max ±15% per channel at full saturation
+  return vec3(
+    cos(rad),
+    cos(rad - 2.09439510239320), // 2π/3
+    cos(rad - 4.18879020478640)  // 4π/3
+  ) * s;
+}
+
+vec3 applyColorGrading(vec3 c) {
+  float l = luma(c);
+  // Shadow weight: peaks at black, falls off toward midtones.
+  float shRange = max(uCGShadowRange, 0.05);
+  float hiRange = max(uCGHighlightRange, 0.05);
+  float shadowW    = 1.0 - smoothstep(0.0, shRange, l);
+  shadowW          = shadowW * shadowW;
+  float highlightW = smoothstep(1.0 - hiRange, 1.0, l);
+  highlightW       = highlightW * highlightW;
+  float midW       = clamp(1.0 - shadowW - highlightW, 0.0, 1.0);
+
+  vec3 shColor  = cgWheelRGB(uCGShadowHue,  uCGShadowSat);
+  vec3 midColor = cgWheelRGB(uCGMidHue,     uCGMidSat);
+  vec3 hiColor  = cgWheelRGB(uCGHighHue,    uCGHighSat);
+  vec3 glColor  = cgWheelRGB(uCGGlobalHue,  uCGGlobalSat);
+
+  c += shadowW    * shColor
+     + midW       * midColor
+     + highlightW * hiColor
+     + glColor;  // global applied uniformly
+
+  // Per-range luminance adjustments, scaled so ±100 → ±0.25 exposure-equivalent.
+  float lumaAdj = shadowW    * (uCGShadowLuma / 100.0) * 0.25
+                + midW       * (uCGMidLuma    / 100.0) * 0.25
+                + highlightW * (uCGHighLuma   / 100.0) * 0.25
+                + (uCGGlobalLuma / 100.0) * 0.20;
+  c += vec3(lumaAdj);
+
+  return clamp(c, 0.0, 1.0);
+}
+
 // Inverse map from output (crop) coord to source UV: see crop-transform.ts,
 // which mirrors this exactly. vUv already has V flipped, so both are in
 // top-left-origin image space. The geometry transform (straighten, perspective,
@@ -241,19 +337,140 @@ vec2 cropTransformUV(vec2 o) {
   return q.xy / q.z;
 }
 
+// Radial barrel/pincushion distortion correction applied to source UV.
+// k > 0 fixes barrel (outward bulge), k < 0 fixes pincushion (inward pinch).
+vec2 lensCorrectedUV(vec2 uv) {
+  vec2 centered = uv - 0.5;
+  float r2 = dot(centered, centered);
+  float k = uLensDistortion * 0.0003; // scale factor: 100 → ~strong barrel fix
+  return 0.5 + centered * (1.0 + k * r2);
+}
+
+// Lateral chromatic aberration correction: scale R and B channels outward/inward.
+// The fringing is radial from center so we shift the sample UV per channel.
+vec3 sampleWithCA(vec2 uv) {
+  float ca = uLensCA / 100.0 * 0.008; // max 0.8% offset at full strength
+  vec2 centered = uv - 0.5;
+  float r2 = dot(centered, centered);
+  float scale = ca * r2 * 4.0; // quadratic: more at corners, zero at center
+  vec2 uvR = 0.5 + centered * (1.0 + scale);
+  vec2 uvB = 0.5 + centered * (1.0 - scale);
+  float r = texture(uImage, clamp(uvR, 0.0, 1.0)).r;
+  float g = texture(uImage, uv).g;
+  float b = texture(uImage, clamp(uvB, 0.0, 1.0)).b;
+  return vec3(r, g, b);
+}
+
+// Defringe: detect and suppress purple/green fringing by desaturating
+// hue ranges that occur at high chroma at edges.
+vec3 applyDefringe(vec3 c, float amount) {
+  if (amount < 0.001) return c;
+  float l = luma(c);
+  float chroma = length(c - vec3(l));
+  // Purple (~300°) and green (~120°) fringe hues have negative R-B and R-G relations
+  float purpleish = max(0.0, c.b - c.r) + max(0.0, c.b - c.g); // blue dominant
+  float greenish  = max(0.0, c.g - c.r) + max(0.0, c.g - c.b); // green dominant
+  float fringeMag = clamp((purpleish + greenish) * 4.0, 0.0, 1.0);
+  float suppress = clamp(amount / 100.0 * fringeMag * (chroma * 8.0), 0.0, 1.0);
+  return mix(c, vec3(l), suppress);
+}
+
+// Lens optical vignetting correction (adds light to corners to flatten falloff).
+float lensVignetteFactor(vec2 uv) {
+  if (abs(uLensVignetting) < 0.001) return 1.0;
+  vec2 centered = uv - 0.5;
+  float r2 = dot(centered, centered) * 4.0; // 0 at center, 1 at corners
+  // cos^4 law approximation: natural falloff then we correct against it
+  float falloff = pow(clamp(1.0 - r2 * 0.5, 0.0, 1.0), 2.0);
+  float correction = uLensVignetting > 0.0
+    ? 1.0 + (1.0 - falloff) * (uLensVignetting / 100.0) // brighten corners
+    : 1.0 - (1.0 - falloff) * (-uLensVignetting / 100.0); // darken corners
+  return clamp(correction, 0.0, 2.0);
+}
+
+// Post-crop creative vignette (Lightroom Post-Crop Vignetting style).
+vec3 applyVignette(vec3 c, vec2 uv) {
+  if (abs(uVignetteAmount) < 0.001) return c;
+  vec2 centered = uv - 0.5;
+  // Roundness: -1 = rectangular, 0 = ellipse, +1 = circular
+  float roundness = uVignetteRoundness / 100.0;
+  float rx = abs(centered.x);
+  float ry = abs(centered.y);
+  // Interpolate between Chebyshev (rect) and Euclidean (circle) norms
+  float rect = max(rx, ry);
+  float circ = length(centered);
+  float r = mix(rect, circ, clamp(roundness + 0.5, 0.0, 1.0)) * 2.0;
+  // Midpoint: how far the vignette reaches in (0=edges only, 1=reaches center)
+  float midpoint = mix(0.5, 1.5, 1.0 - uVignetteMidpoint / 100.0);
+  float feather = mix(0.05, 0.95, uVignetteFeather / 100.0);
+  float lo = max(0.0, midpoint - feather * 0.5);
+  float hi = midpoint + feather * 0.5;
+  float edge = smoothstep(lo, hi, r);
+  float vigAmt = uVignetteAmount / 100.0;
+  float darkening = vigAmt < 0.0 ? -vigAmt * edge : 0.0;
+  float lightening = vigAmt > 0.0 ?  vigAmt * edge : 0.0;
+  // Highlight priority: protect bright areas from darkening vignette
+  float hlProtect = uVignetteHighlights > 0.001
+    ? clamp(luma(c) * (uVignetteHighlights / 100.0) * 2.0, 0.0, 1.0)
+    : 0.0;
+  darkening *= (1.0 - hlProtect);
+  c = c * (1.0 - darkening) + c * lightening;
+  return clamp(c, 0.0, 1.0);
+}
+
+// Hash-based pseudo-random noise for film grain.
+float hash(vec2 p) {
+  p = fract(p * vec2(234.34, 435.345));
+  p += dot(p, p + 34.23);
+  return fract(p.x * p.y);
+}
+
+vec3 applyGrain(vec3 c, vec2 uv) {
+  if (uGrainAmount < 0.001) return c;
+  float amount = uGrainAmount / 100.0 * 0.12; // max ~12% peak grain
+  // Size: larger values cluster grain into coarser patches
+  float sizeScale = mix(800.0, 100.0, (uGrainSize - 25.0) / 75.0);
+  vec2 grainUv = uv * sizeScale;
+  // Roughness: blends between smooth (averaged neighbors) and raw noise
+  float n = hash(floor(grainUv));
+  if (uGrainRoughness < 99.0) {
+    float smoothed = 0.0;
+    for (int dx = -1; dx <= 1; dx++) {
+      for (int dy = -1; dy <= 1; dy++) {
+        smoothed += hash(floor(grainUv) + vec2(float(dx), float(dy)));
+      }
+    }
+    smoothed /= 9.0;
+    float rough = uGrainRoughness / 100.0;
+    n = mix(smoothed, n, rough);
+  }
+  // Center the noise at 0 and scale. Luminance-weighted: less grain in shadows.
+  float lumaW = clamp(luma(c) * 1.5 + 0.2, 0.2, 1.0);
+  float grain = (n - 0.5) * 2.0 * amount * lumaW;
+  return clamp(c + grain, 0.0, 1.0);
+}
+
+
 void main() {
   vec2 srcUv = cropTransformUV(vUv);
+  // Lens distortion correction: remap srcUv before any sampling
+  if (abs(uLensDistortion) > 0.001) {
+    srcUv = lensCorrectedUV(srcUv);
+  }
   // Content rotated out of frame by straighten reads as neutral dark, so corners
   // stay clean instead of smearing the edge texel.
   if (srcUv.x < 0.0 || srcUv.x > 1.0 || srcUv.y < 0.0 || srcUv.y > 1.0) {
     fragColor = vec4(0.04, 0.04, 0.04, 1.0);
     return;
   }
-  vec3 c = texture(uImage, srcUv).rgb;
-  float rawLuma = luma(c);
+  // Sample with chromatic aberration correction (CA splits R/B channels radially)
+  vec3 src = uLensCA > 0.001 ? sampleWithCA(srcUv) : texture(uImage, srcUv).rgb;
+  // Lens optical vignetting correction (flatten corner light falloff)
+  src *= lensVignetteFactor(srcUv);
+  float rawLuma = srcLuma(src);
 
-  // Local-contrast detail (unsharp masks), measured from the source: a fine
-  // scale for Texture and a broad scale for Clarity/Dehaze. Skipped when unused.
+  // Local-contrast detail (unsharp masks), measured from the source in a
+  // perceptual space: a fine scale for Texture, a broad scale for Clarity/Dehaze.
   float texAmt = uTexture / 100.0;
   float clarAmt = uClarity / 100.0;
   float dehAmt = uDehaze / 100.0;
@@ -264,8 +481,44 @@ void main() {
       : 0.0;
 
   // White balance & exposure in linear light, kept HDR (no clamp) so highlights
-  // survive past 1.0 into the recovery stage.
-  vec3 lin = srgbToLinear(c);
+  // survive past 1.0 into the recovery stage. RAW input is already linear.
+  // Fallback preview is already pseudo-linear (inverse gamma applied in JS).
+  vec3 lin = uLinear ? src : (uIsFallbackPreview ? src : srgbToLinear(src));
+
+  // Noise reduction, applied before exposure so it isn't amplified. Color NR
+  // replaces chroma with a blurred (mip) version -- kills the rainbow speckle
+  // that big exposure pushes reveal; Luminance NR eases luma toward the blur in
+  // flat areas while protecting edges.
+  float colorNR = uColorNR / 100.0;
+  float lumNR = uLuminanceNR / 100.0;
+  if (colorNR > 0.001 || lumNR > 0.001) {
+    // Luminance NR uses a fixed LOD=2 blur for edge detection
+    vec3 b = textureLod(uImage, srcUv, 2.0).rgb;
+    vec3 blurLin = uLinear ? b : srgbToLinear(b);
+    float ls = luma(lin);
+    float lb = luma(blurLin);
+    if (colorNR > 0.001) {
+      // Color NR: detail (0-100) controls LOD -- higher preserves more color detail
+      float colorLod = mix(3.0, 1.5, uColorNRDetail / 100.0);
+      // Smoothness (0-100) scales the blend -- higher = more aggressive chroma smoothing
+      float colorSmMult = mix(0.5, 1.5, uColorNRSmooth / 100.0);
+      vec3 bc = textureLod(uImage, srcUv, colorLod).rgb;
+      vec3 blurC = uLinear ? bc : srgbToLinear(bc);
+      float lbc = luma(blurC);
+      vec3 deChroma = vec3(ls) + (blurC - vec3(lbc));
+      lin = mix(lin, deChroma, clamp(colorNR * colorSmMult, 0.0, 1.0));
+    }
+    if (lumNR > 0.001) {
+      // Detail (0-100): higher = tighter edge threshold = preserve more texture
+      float edgeThresh = mix(0.14, 0.03, uLumNRDetail / 100.0);
+      // Contrast (0-100): widen the protection zone for tonal transitions
+      float contrastBias = mix(0.0, 0.05, uLumNRContrast / 100.0);
+      float edge = abs(luma(lin) - lb);
+      float w = lumNR * (1.0 - smoothstep(max(edgeThresh - contrastBias, 0.0), edgeThresh, edge));
+      lin += (mix(luma(lin), lb, w) - luma(lin));
+    }
+  }
+
   lin = applyWhiteBalance(lin, uTemperature, uTint);
   lin *= exp2(uExposure);
   vec3 disp = linearToSrgbU(lin); // per-channel, may exceed 1.0
@@ -284,29 +537,58 @@ void main() {
   float l0 = luma(disp);
   float lc = clamp((l0 - 0.5) * (1.0 + uContrast / 100.0) + 0.5, 0.0, 1.0);
   float ln = toneMapLuma(lc, uHighlights, uShadows, uWhites, uBlacks);
-  c = clamp(recolorToLuma(disp, l0, ln), 0.0, 1.0);
+  vec3 c = clamp(recolorToLuma(disp, l0, ln), 0.0, 1.0);
 
   c = applyToneCurve(c);
   c = applyHSL(c);
 
-  // Scale the source-measured local contrast to the displayed brightness, so it
-  // stays effective on lifted shadows / pulled highlights (not just bright pixels).
-  float lcGain = clamp(luma(c) / max(rawLuma, 1e-3), 0.0, 6.0);
-
-  // Dehaze: clear the veil with broad local contrast, then add contrast & color.
+  // Dehaze: clear the veil with broad local contrast, then a little contrast/color.
   if (abs(dehAmt) > 0.001) {
-    c += broadDetail * lcGain * dehAmt * 1.5;
-    c = (c - 0.45) * (1.0 + dehAmt * 0.35) + 0.45;
+    c += broadDetail * dehAmt * 1.0;
+    c = (c - 0.45) * (1.0 + dehAmt * 0.25) + 0.45;
     float dl = luma(c);
-    c = mix(vec3(dl), c, 1.0 + dehAmt * 0.6);
+    c = mix(vec3(dl), c, 1.0 + dehAmt * 0.5);
   }
   // Clarity: broad local contrast, eased away from the deepest shadows/brightest
   // highlights. Texture: fine local contrast across the whole range.
   float midMask = 1.0 - pow(clamp(abs(luma(c) - 0.5) * 1.6, 0.0, 1.0), 3.0);
-  c += broadDetail * lcGain * clarAmt * 2.2 * midMask;
-  c += texDetail * lcGain * texAmt * 3.2;
+  c += broadDetail * clarAmt * 1.3 * midMask;
+  c += texDetail * texAmt * 1.8;
+
+  // Capture sharpening with radius, detail (halo control), and edge masking.
+  float sharpen = uSharpening / 100.0;
+  if (sharpen > 0.001) {
+    // Radius (1..3) -> LOD (0.5..1.5): larger radius = coarser unsharp kernel
+    float lod = mix(0.5, 1.5, (uSharpenRadius - 1.0) / 2.0);
+    float blur = lumaLod(srcUv, lod);
+    float detail = rawLuma - blur;
+    // Detail (0-100): lower suppresses halos by blending with a broader USM
+    float detailFactor = uSharpenDetail / 100.0;
+    float broadBlur = lumaLod(srcUv, lod + 1.0);
+    detail = mix((rawLuma - broadBlur) * 0.35, detail, detailFactor);
+    // Masking (0-100): 0 = sharpen everywhere; 100 = edges only
+    float mask = 1.0;
+    if (uSharpenMasking > 0.001) {
+      float edgeMag = abs(rawLuma - lumaLod(srcUv, 0.5));
+      float threshold = (uSharpenMasking / 100.0) * 0.12;
+      mask = smoothstep(threshold * 0.4, threshold, edgeMag);
+    }
+    c += detail * sharpen * 1.6 * mask;
+  }
 
   c = applyVibSat(c, uVibrance, uSaturation);
+  c = applyColorGrading(c);
+  c = applyDefringe(c, uLensDefringe);
+
+  // Fallback previews have limited dynamic range - clamp final output
+  // since there's no true sensor headroom above 1.0
+  if (uIsFallbackPreview) {
+    c = clamp(c, 0.0, 1.0);
+  }
+
+  // Creative effects: vignette then grain (applied in display/output space)
+  c = applyVignette(c, vUv);
+  c = applyGrain(c, vUv);
 
   fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }

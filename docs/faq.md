@@ -35,7 +35,7 @@ Lightroom catalog import is planned for a future release using sql.js.
 
 ### Does SafeLight support RAW files?
 
-Yes, Safelight supports 8-bit RAW files. 16-bit RAW file support is planned for a future release.
+SafeLight has partial RAW support. It attempts to decode RAW files at full resolution using libraw-wasm, but some camera formats may fail and fall back to the embedded JPEG preview. Supported formats include NEF, CR2, CR3, ARW, DNG, ORF, RAF, PEF, SRW, RW2, and others. Full RAW support with all camera models is planned for a future release.
 
 ### Can I use presets?
 

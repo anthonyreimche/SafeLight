@@ -16,10 +16,67 @@ import {
   type Ifd,
   type RawIfdInfo,
 } from "./tiff";
-import { developRawPlane, unpackSamples } from "./pixels";
+import { developRawPlane, developRawPlaneFloat, unpackSamples } from "./pixels";
 import { getLibRaw } from "./libraw";
+import { decodeRawFloatViaLibRaw } from "./libraw-wasm-adapter";
+
+export interface RawFloatImage {
+  data: Float32Array; // linear RGBA, row-major, top-left origin
+  width: number;
+  height: number;
+  oriented?: boolean; // true when the decoder already applied EXIF orientation
+}
 
 const DEFAULT_CFA: [number, number, number, number] = [0, 1, 1, 2]; // RGGB
+
+// Decode to a full-precision LINEAR float image, for the high-bit-depth editing
+// pipeline. Only the in-house uncompressed CFA path is float-capable today;
+// compressed sensor data (e.g. Nikon NEF) needs libraw and returns null here, so
+// the caller falls back to the 8-bit bitmap path.
+export async function decodeRawToFloat(
+  file: Blob,
+): Promise<RawFloatImage | null> {
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await file.arrayBuffer();
+  } catch {
+    return null;
+  }
+
+  // Prefer libraw: it decodes every compression (incl. Nikon NEF), applies
+  // camera WB and orientation, and outputs full-precision linear data.
+  const viaLib = await decodeRawFloatViaLibRaw(buffer);
+  if (viaLib) return { ...viaLib, oriented: true };
+
+  // In-house fallback handles only uncompressed CFA (sensor-native orientation).
+  try {
+    const reader = new TiffReader(buffer);
+    const info = findRawIfd(reader);
+    if (!info || info.compression !== COMPRESSION.None) return null;
+    const strips = readStrips(reader, info.ifd);
+    if (!strips) return null;
+    const samples = unpackPlane(
+      strips,
+      info.bitsPerSample,
+      info.width,
+      info.height,
+      reader.le,
+    );
+    if (samples.length < info.width * info.height) return null;
+    const { black, white } = readLevels(reader, info.ifd, info.bitsPerSample);
+    const data = developRawPlaneFloat(samples, {
+      width: info.width,
+      height: info.height,
+      black,
+      white,
+      cfa: readCFA(reader, info.ifd),
+      wb: readWhiteBalance(reader),
+    });
+    return { data, width: info.width, height: info.height, oriented: false };
+  } catch {
+    return null;
+  }
+}
 
 export async function decodeRawToBitmap(file: Blob): Promise<ImageBitmap | null> {
   let buffer: ArrayBuffer;

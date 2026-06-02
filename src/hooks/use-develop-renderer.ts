@@ -4,7 +4,8 @@ import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { transformedViewCrop } from "@/rendering/crop-transform";
 import { buildForwardTransform } from "@/rendering/transform";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
-import { loadPhotoBitmap } from "@/catalog/load-image";
+import { loadPhotoImage } from "@/catalog/load-image";
+import { lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
 import { computeHistogram } from "@/rendering/histogram";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
@@ -14,7 +15,13 @@ interface RendererStatus {
   loading: boolean;
   width: number; // rendered output buffer size (for zoom)
   height: number;
+  source: string | null; // diagnostic: which decode produced the image
 }
+
+// Develop renders at (up to) the sensor's full resolution so "100%" is true 1:1
+// and zooming shows real pixels instead of an upscaled 2560px preview. Capped to
+// bound memory on very large sensors.
+const DEVELOP_MAX_EDGE = 6144;
 
 export function useDevelopRenderer(
   canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -25,6 +32,7 @@ export function useDevelopRenderer(
   const [supported, setSupported] = useState(true);
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const [source, setSource] = useState<string | null>(null);
   const params = useDevelopStore((s) => s.params);
   const setHistogram = useDevelopStore((s) => s.setHistogram);
   const cropping = useDevelopStore((s) => s.cropping);
@@ -79,31 +87,71 @@ export function useDevelopRenderer(
   }, [canvasRef]);
 
   // Load the active photo into the renderer.
+  // Phase 1: show the stored thumbnail immediately so the UI isn't blank.
+  // Phase 2: decode the full-quality image (RAW float or hi-res bitmap) and
+  //          replace the texture — typically a few seconds for large RAW files.
   useEffect(() => {
     let cancelled = false;
     if (!photo || !rendererRef.current) return;
 
     setLoading(true);
-    loadPhotoBitmap(photo).then((bitmap) => {
+
+    const renderImage = (
+      image: ImageBitmap | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean },
+      isFallback = false,
+    ) => {
       const renderer = rendererRef.current;
-      if (cancelled || !bitmap || !renderer) {
-        bitmap?.close();
-        setLoading(false);
-        return;
-      }
-      renderer.setImage(bitmap);
+      if (cancelled || !renderer) return;
+      renderer.setImage(image, DEVELOP_MAX_EDGE, isFallback);
       const st = useDevelopStore.getState();
       renderer.setParams(forRender(st.params, st.cropping));
       renderer.render();
       syncSize();
       updateHistogram();
-      bitmap.close();
-      setLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
     };
+
+    const run = async () => {
+      // Phase 1: thumbnail for immediate feedback
+      if (photo.thumbnailBlob) {
+        try {
+          const bm = await createImageBitmap(photo.thumbnailBlob);
+          if (!cancelled) {
+            renderImage(bm);
+            bm.close();
+          } else {
+            bm.close();
+            return;
+          }
+        } catch { /* ignore — thumbnail is optional */ }
+      }
+
+      // Phase 2: full quality decode
+      const image = await loadPhotoImage(photo);
+      if (cancelled) {
+        if (image?.kind === "bitmap") image.bitmap.close();
+        return;
+      }
+      if (!image) { setLoading(false); return; }
+
+      const isFallback = image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
+      renderImage(image.kind === "bitmap" ? image.bitmap : image, isFallback);
+
+      if (image.kind === "float") {
+        setSource(
+          image.isFallbackPreview
+            ? `Preview ${image.width}×${image.height}`
+            : `RAW ${image.width}×${image.height}`,
+        );
+      } else {
+        const b = image.bitmap;
+        setSource(`8-bit ${b.width}×${b.height} — ${lastLibRawStatus}`);
+        b.close();
+      }
+      setLoading(false);
+    };
+
+    run();
+    return () => { cancelled = true; };
   }, [photo, fileAccessNonce]);
 
   // Re-render on parameter changes, coalesced to one frame.
@@ -126,5 +174,11 @@ export function useDevelopRenderer(
     }
   }, [params, cropping]);
 
-  return { supported, loading, width: size.width, height: size.height };
+  return {
+    supported,
+    loading,
+    width: size.width,
+    height: size.height,
+    source,
+  };
 }

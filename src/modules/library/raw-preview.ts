@@ -2,7 +2,27 @@
 // JPEG previews. Until full RAW decoding lands (libraw/WASM, Phase 3), we
 // extract the largest *decodable* embedded JPEG so RAW files import and display.
 
-const RAW_EXTENSIONS = new Set([".nef"]);
+const RAW_EXTENSIONS = new Set([
+  ".nef",
+  ".cr2",
+  ".cr3",
+  ".arw",
+  ".dng",
+  ".orf",
+  ".raf",
+  ".pef",
+  ".srw",
+  ".rw2",
+  ".iiq",
+  ".3fr",
+  ".nrw",
+  ".kdc",
+  ".mos",
+  ".mrw",
+  ".erf",
+  ".sr2",
+  ".x3f",
+]);
 
 export function getExtension(name: string): string {
   const dot = name.lastIndexOf(".");

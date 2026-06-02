@@ -139,6 +139,28 @@ export function toRGBA8(
   return out;
 }
 
+// Apply white-balance gain and pack into a LINEAR float RGBA buffer (no sRGB
+// encode, no clip at 1.0), preserving the sensor's full precision and highlight
+// headroom for editing. Alpha is 1.0.
+export function toRGBAFloat(
+  rgb: Float32Array,
+  width: number,
+  height: number,
+  wb: [number, number, number] = [1, 1, 1],
+): Float32Array {
+  const g = wb[1] || 1;
+  const mr = wb[0] / g;
+  const mb = wb[2] / g;
+  const out = new Float32Array(width * height * 4);
+  for (let i = 0, o = 0; i < rgb.length; i += 3, o += 4) {
+    out[o] = Math.max(0, rgb[i] * mr);
+    out[o + 1] = Math.max(0, rgb[i + 1]);
+    out[o + 2] = Math.max(0, rgb[i + 2] * mb);
+    out[o + 3] = 1;
+  }
+  return out;
+}
+
 // One-shot helper used by the decoder: raw plane -> display RGBA.
 export interface DevelopOptions {
   width: number;
@@ -156,4 +178,15 @@ export function developRawPlane(
   const norm = normalizePlane(raw, opts.black, opts.white);
   const rgb = demosaicBilinear(norm, opts.width, opts.height, opts.cfa);
   return toRGBA8(rgb, opts.width, opts.height, opts.wb);
+}
+
+// Like developRawPlane but returns linear float RGBA for a high-bit-depth
+// (HDR-capable) texture instead of an 8-bit display buffer.
+export function developRawPlaneFloat(
+  raw: Uint16Array,
+  opts: DevelopOptions,
+): Float32Array {
+  const norm = normalizePlane(raw, opts.black, opts.white);
+  const rgb = demosaicBilinear(norm, opts.width, opts.height, opts.cfa);
+  return toRGBAFloat(rgb, opts.width, opts.height, opts.wb);
 }

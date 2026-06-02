@@ -3,7 +3,11 @@ import { TransformPanel } from "./panels/TransformPanel";
 import { WhiteBalancePanel } from "./panels/WhiteBalancePanel";
 import { BasicPanel } from "./panels/BasicPanel";
 import { ToneCurvePanel } from "./panels/ToneCurvePanel";
+import { DetailPanel } from "./panels/DetailPanel";
 import { HSLPanel } from "./panels/HSLPanel";
+import { ColorGradingPanel } from "./panels/ColorGradingPanel";
+import { LensCorrectionPanel } from "./panels/LensCorrectionPanel";
+import { EffectsPanel } from "./panels/EffectsPanel";
 import { PresetsPanel } from "./panels/PresetsPanel";
 import { useRef } from "react";
 import type { DevelopParams } from "@/catalog/types";
@@ -58,6 +62,10 @@ export function DevelopSidebar() {
       <WhiteBalancePanel />
       <BasicPanel />
       <ToneCurvePanel />
+      <ColorGradingPanel />
+      <DetailPanel />
+      <LensCorrectionPanel />
+      <EffectsPanel />
       <HSLPanel />
       <PresetsPanel />
     </div>

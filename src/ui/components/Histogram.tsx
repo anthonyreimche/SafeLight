@@ -21,6 +21,22 @@ export type HistogramZone =
 
 type Phase = "start" | "move" | "end";
 
+
+const HIST_MODE_KEY = "sl_histogram_mode";
+const VALID_MODES = new Set<string>(["luma", "rgb", "red", "green", "blue"]);
+
+function readHistMode(): Mode {
+  try {
+    const v = localStorage.getItem(HIST_MODE_KEY);
+    if (v && VALID_MODES.has(v)) return v as Mode;
+  } catch {}
+  return "luma";
+}
+
+function writeHistMode(mode: Mode) {
+  try { localStorage.setItem(HIST_MODE_KEY, mode); } catch {}
+}
+
 const ZONES: { zone: HistogramZone; to: number; label: string }[] = [
   { zone: "blacks", to: 0.1, label: "Blacks" },
   { zone: "shadows", to: 0.3, label: "Shadows" },
@@ -44,7 +60,7 @@ export function Histogram({
   onAdjust?: (zone: HistogramZone, deltaPx: number, phase: Phase) => void;
 }) {
   const interactive = !!onAdjust;
-  const [mode, setMode] = useState<Mode>("luma");
+  const [mode, setMode] = useState<Mode>(readHistMode);
   const [hoverZone, setHoverZone] = useState<HistogramZone | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -119,7 +135,7 @@ export function Histogram({
         {MODES.map((m) => (
           <button
             key={m.key}
-            onClick={() => setMode(m.key)}
+            onClick={() => { setMode(m.key); writeHistMode(m.key); }}
             className={`flex-1 rounded py-0.5 text-[9px] font-medium uppercase tracking-wider ${
               mode === m.key
                 ? "bg-surface-3"

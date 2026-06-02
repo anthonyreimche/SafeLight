@@ -142,7 +142,7 @@ export async function importFiles(): Promise<CatalogPhoto[]> {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
-    input.accept = "image/*,.nef";
+    input.accept = "image/*,.nef,.cr2,.cr3,.arw,.dng,.orf,.raf,.pef,.srw,.rw2,.iiq,.3fr,.nrw,.kdc,.mos,.mrw,.erf,.sr2,.x3f";
 
     return new Promise((resolve) => {
       input.onchange = async () => {
@@ -167,8 +167,26 @@ export async function importFiles(): Promise<CatalogPhoto[]> {
             ".avif",
             ".tiff",
             ".tif",
+            ".nef",
+            ".cr2",
+            ".cr3",
+            ".arw",
+            ".dng",
+            ".orf",
+            ".raf",
+            ".pef",
+            ".srw",
+            ".rw2",
+            ".iiq",
+            ".3fr",
+            ".nrw",
+            ".kdc",
+            ".mos",
+            ".mrw",
+            ".erf",
+            ".sr2",
+            ".x3f",
           ],
-          "image/x-nikon-nef": [".nef"],
         },
       },
     ],

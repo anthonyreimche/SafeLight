@@ -36,6 +36,10 @@ If you'd like to help make this software more powerful, feel free to help!
 - Hold shift or widen slider panel for fine adjustment, double-click to reset value
 - Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
 - Transform and warp image crop / geometry and perspective tools
+- Color grading wheels
+- Image sharpen / denoise support (WASM-based)
+- Lens correction profiles
+- Vignette and grain effects
 
 ## Loupe Viewer
 <img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/668808bb-f7a4-4707-841a-1d9b0f582406" />
@@ -51,11 +55,6 @@ If you'd like to help make this software more powerful, feel free to help!
 - Limited output resolution clamping
 
 # To Do
-- Full 16-bit RAW support (Currently 8-bit RAW)
-- Color grading wheels
-- Image sharpen / denoise support (WASM-based)
-- Lens correction profiles
-- Vignette and grain effects
 - Image masking and touchup removal / cloning support
 - Red eye correction
 - Image compare support

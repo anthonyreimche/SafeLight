@@ -22,6 +22,45 @@ export function orientationToRotation(orientation: number | undefined): number {
   }
 }
 
+// Rotate a linear float RGBA buffer by a 90° step (for the high-bit-depth RAW
+// path, which has no ImageBitmap to draw through a canvas).
+export function rotateFloatRGBA(
+  data: Float32Array,
+  w: number,
+  h: number,
+  deg: number,
+): { data: Float32Array; width: number; height: number } {
+  const d = normalizeRotation(deg);
+  if (d === 0) return { data, width: w, height: h };
+  const swap = d === 90 || d === 270;
+  const nw = swap ? h : w;
+  const nh = swap ? w : h;
+  const out = new Float32Array(nw * nh * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let nx: number;
+      let ny: number;
+      if (d === 90) {
+        nx = h - 1 - y;
+        ny = x;
+      } else if (d === 180) {
+        nx = w - 1 - x;
+        ny = h - 1 - y;
+      } else {
+        nx = y;
+        ny = w - 1 - x;
+      }
+      const si = (y * w + x) * 4;
+      const di = (ny * nw + nx) * 4;
+      out[di] = data[si];
+      out[di + 1] = data[si + 1];
+      out[di + 2] = data[si + 2];
+      out[di + 3] = data[si + 3];
+    }
+  }
+  return { data: out, width: nw, height: nh };
+}
+
 function drawRotated(
   source: CanvasImageSource,
   srcW: number,
