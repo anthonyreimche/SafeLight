@@ -2,6 +2,9 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { parseExif, parseExifDate } from "@/catalog/exif";
 import { orientationToRotation } from "@/catalog/orient";
 import { extractRawPreview, getExtension, isRawFile } from "./raw-preview";
+import { decodeRawToFloat } from "@/raw/decode";
+import { rotateFloatRGBA } from "@/catalog/orient";
+import { readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
 
 const SUPPORTED_TYPES = new Set([
   "image/jpeg",
@@ -135,6 +138,42 @@ async function buildMany(
     ),
   );
   return results.filter((p): p is CatalogPhoto => p !== null);
+}
+
+/**
+ * Pre-decode RAW files for imported photos and write them to the develop-preview
+ * cache so the first Develop open is instant instead of waiting for libraw.
+ *
+ * Runs sequentially (one at a time) to keep memory and CPU impact low while
+ * the user browses the just-imported library. Already-cached photos are skipped.
+ * Call this after saving imported photos to the catalog — fire and forget.
+ */
+export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<void> {
+  const raws = photos.filter((p) => p.fileHandle && isRawFile({ name: p.filename } as File));
+
+  for (const photo of raws) {
+    try {
+      const file = await photo.fileHandle!.getFile();
+
+      // Skip if already cached (e.g., re-imported the same folder).
+      const hit = await readCachedPreview(file);
+      if (hit) { hit.close(); continue; }
+
+      const f = await decodeRawToFloat(file);
+      if (!f) continue;
+
+      const r = f.oriented
+        ? { data: f.data, width: f.width, height: f.height }
+        : rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
+
+      await writeCachedPreview(file, r.data, r.width, r.height);
+
+      // Yield to the event loop between files so the UI stays responsive.
+      await new Promise<void>((res) => setTimeout(res, 0));
+    } catch {
+      // A single decode failure shouldn't stop the rest.
+    }
+  }
 }
 
 export async function importFiles(): Promise<CatalogPhoto[]> {

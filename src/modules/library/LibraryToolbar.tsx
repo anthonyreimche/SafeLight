@@ -2,7 +2,7 @@ import { useUIStore } from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import type { SortField } from "@/catalog/types";
 import { Slider } from "@/ui/components/Slider";
-import { importFiles, importDirectory } from "./import-photos";
+import { importFiles, importDirectory, preDecodeRawsForCache } from "./import-photos";
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: "dateImported", label: "Imported" },
@@ -32,6 +32,8 @@ export function LibraryToolbar() {
     const newPhotos = await importFiles();
     if (newPhotos.length > 0) {
       await addPhotos(newPhotos);
+      // Pre-decode RAWs in the background so Develop opens instantly.
+      preDecodeRawsForCache(newPhotos);
     }
   };
 
@@ -46,6 +48,8 @@ export function LibraryToolbar() {
           newPhotos.map((p) => p.id),
         );
       }
+      // Pre-decode RAWs in the background so Develop opens instantly.
+      preDecodeRawsForCache(newPhotos);
     }
   };
 

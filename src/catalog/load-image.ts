@@ -3,6 +3,7 @@ import { extractRawPreview, isRawFile } from "@/modules/library/raw-preview";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
 import { rotateBitmap, rotateFloatRGBA } from "./orient";
 import { verifyPermission } from "./permissions";
+import { readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
 
 // Convert sRGB ImageBitmap to pseudo-linear Float32Array by applying inverse gamma
 // This allows embedded JPEG previews to be processed through the same shader pipeline
@@ -38,7 +39,7 @@ async function bitmapToPseudoLinear(
 // precision, HDR-capable) or an 8-bit sRGB bitmap (preview/JPEG fallback).
 export type DecodedImage =
   | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-  | { kind: "bitmap"; bitmap: ImageBitmap };
+  | { kind: "bitmap"; bitmap: ImageBitmap; cached?: boolean };
 
 // Prefer a full-precision linear RAW decode (so exposure/highlight recovery work
 // on the sensor's real data); otherwise fall back to the 8-bit bitmap path.
@@ -49,15 +50,28 @@ export async function loadPhotoImage(
     try {
       const file = await photo.fileHandle.getFile();
       if (isRawFile(file)) {
+        // Fast path: return the cached develop preview (JPEG stored from a
+        // previous full decode). Skips libraw entirely — ~50ms vs 3-8s.
+        const cached = await readCachedPreview(file);
+        if (cached) {
+          return { kind: "bitmap", bitmap: cached, cached: true };
+        }
+
+        // Slow path: full libraw decode. Write result to cache asynchronously
+        // so the next open hits the fast path above.
         const f = await decodeRawToFloat(file);
         if (f) {
           // libraw already applies EXIF orientation; the in-house path doesn't.
           const r = f.oriented
             ? { data: f.data, width: f.width, height: f.height }
             : rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
+
+          // Write to cache in the background — don't block the render.
+          writeCachedPreview(file, r.data, r.width, r.height);
+
           return { kind: "float", data: r.data, width: r.width, height: r.height };
         }
-        
+
         // If libraw fails, try converting the embedded preview to pseudo-linear
         const preview = await extractRawPreview(file);
         if (preview) {
@@ -66,12 +80,12 @@ export async function loadPhotoImage(
           if (upright !== bitmap) bitmap.close();
           const pseudoLinear = await bitmapToPseudoLinear(upright);
           upright.close();
-          return { 
-            kind: "float", 
-            data: pseudoLinear.data, 
-            width: pseudoLinear.width, 
+          return {
+            kind: "float",
+            data: pseudoLinear.data,
+            width: pseudoLinear.width,
             height: pseudoLinear.height,
-            isFallbackPreview: true 
+            isFallbackPreview: true,
           };
         }
       }

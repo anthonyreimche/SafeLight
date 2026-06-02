@@ -144,7 +144,11 @@ export function useDevelopRenderer(
         );
       } else {
         const b = image.bitmap;
-        setSource(`8-bit ${b.width}×${b.height} — ${lastLibRawStatus}`);
+        setSource(
+          image.cached
+            ? `Cached ${b.width}×${b.height}`
+            : `8-bit ${b.width}×${b.height} — ${lastLibRawStatus}`,
+        );
         b.close();
       }
       setLoading(false);
