@@ -11,8 +11,8 @@ If you'd like to help make this software more powerful, feel free to help!
 
 # Progress
 ## Image Library
-<img width="3837" height="1853" alt="image" src="https://github.com/user-attachments/assets/600b1df9-c7d2-4d38-8269-a41fd5022e96" />
-<img width="3838" height="1858" alt="image" src="https://github.com/user-attachments/assets/425f04b7-6a48-4981-904d-cf86a6fecf14" />
+<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/ecdf475d-7273-4f77-87cb-1baca63bf765" />
+<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/f7caffb5-5708-45d2-b1c1-0c972d94d68b" />
 
 - Photo library with grid and list view
 - Collection support
@@ -23,7 +23,8 @@ If you'd like to help make this software more powerful, feel free to help!
 - Metadata viewer
 
 ## Develop Environment
-<img width="3831" height="1856" alt="image" src="https://github.com/user-attachments/assets/e21e8479-fe57-406c-b25a-5057105121df" />
+<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/410708b2-44d5-4891-93b0-2fdaa95e4a30" />
+<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/f5f36602-1076-446c-9098-1f5d24f881ad" />
 
 - Undo/Redo support
 - Edit reset button
@@ -34,35 +35,34 @@ If you'd like to help make this software more powerful, feel free to help!
 - Basic preset support
 - Hold shift or widen slider panel for fine adjustment, double-click to reset value
 - Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
+- Transform and warp image crop / geometry and perspective tools
 
 ## Loupe Viewer
-<img width="3832" height="1848" alt="image" src="https://github.com/user-attachments/assets/cbf992a6-0172-40af-ab1f-7e4041b425dd" />
+<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/668808bb-f7a4-4707-841a-1d9b0f582406" />
+<img width="3829" height="1025" alt="image" src="https://github.com/user-attachments/assets/e9ee2f31-108b-4e36-b318-a559d42bcc85" />
 
 - Snappy zoom and pan functionality
 - Native detachable window support for multi-screen culling
 
 ## Export Settings
-<img width="3837" height="1860" alt="image" src="https://github.com/user-attachments/assets/437874d3-0b02-4ee2-a2c6-136e2fa88bdf" />
+<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/d54e132b-fa58-416b-b599-899329cf882e" />
 
 - batch JPG, PNG, and WebP export
 - Limited output resolution clamping
 
 # To Do
-- Optimized thumbnail updates when library view is visible
-- Improve highlight/shadow recovery for high-contrast images
-- Transform and warp image crop / geometry and perspective tools
+- Full 16-bit RAW support (Currently 8-bit RAW)
 - Color grading wheels
 - Image sharpen / denoise support (WASM-based)
 - Lens correction profiles
 - Vignette and grain effects
-- Color, BW, and HDR support
 - Image masking and touchup removal / cloning support
 - Red eye correction
-- Image compare / “open in new unsynced loupe tab” support
+- Image compare support
+- Color, BW, and HDR image support
 - HDR / focus stacking and photo merge support
 - Batch editing functionality
 - AI masking via ONNX.js (Select Subject, Sky)
+- Lightroom catalog import (sql.js)
 - Electron wrapper for deeper OS file access
 - Mobile-responsive Loupe view
-- Open preset and plugin standard
-- Lightroom catalog import (sql.js)
