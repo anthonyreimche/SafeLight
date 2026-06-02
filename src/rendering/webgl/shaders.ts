@@ -158,33 +158,20 @@ vec3 applyWhiteBalance(vec3 c, float kelvin, float tint) {
   return c * gain;
 }
 
-// Map luminance through the Highlights / Shadows / Whites / Blacks controls as a
-// single monotonic tone curve (Lightroom-like):
-//   - Blacks / Whites shift the black & white points (a linear endpoint remap).
-//   - Shadows / Highlights are gamma curves anchored at 0 and 1, so raising
-//     Shadows *spreads* the dark tones (slope > 1 near black) and widens the
-//     histogram instead of crushing everything toward mid-grey. The previous
-//     additive offset mapped black straight to mid-grey, which is what collapsed
-//     the histogram into a central spike.
-float toneMapLuma(float l, float hi, float sh, float wh, float bl) {
-  float bp = -(bl / 100.0) * 0.18;                  // bl<0 deepens the black point
-  float wp = 1.0 - (max(wh, 0.0) / 100.0) * 0.18;   // wh>0 brightens the white point
-  l = clamp((l - bp) / max(wp - bp, 1e-3), 0.0, 1.0);
-  l = pow(l, exp2(-(sh / 100.0) * 0.9));            // shadows: lift & spread
-  // Positive highlights brighten the top; negative (recovery) is handled by the
-  // HDR rolloff before this, so only the positive side acts here.
-  l = 1.0 - pow(1.0 - l, exp2(max(hi, 0.0) / 100.0 * 0.9));
-  return clamp(l, 0.0, 1.0);
-}
-
-// Re-apply a new luminance to a color while preserving its hue & saturation
-// (scale RGB; additive lift near black where there's no chroma and the divide
-// would blow up). Contrast and Highlights/Shadows/Whites/Blacks all run through
-// this, so none of them grey-out or desaturate the image.
-vec3 recolorToLuma(vec3 c, float l0, float ln) {
-  vec3 scaled = c * (ln / max(l0, 1e-3));
-  vec3 added = c + (ln - l0);
-  return mix(added, scaled, smoothstep(0.0, 0.08, l0));
+// Tone-map one channel through Blacks/Shadows/Highlights/Whites using the same
+// global gamma curves as the original implementation, now applied per-channel
+// (R, G, B independently) rather than to scalar luminance + recolor. Per-channel
+// application lets shadow lifts preserve natural colour, and lets each blown
+// channel recover independently for proper highlight detail.
+// Negative Highlights is handled upstream by the per-channel HDR shoulder rolloff;
+// only positive hi acts here (matching the rolloff's complementary design).
+float toneMapChannel(float v, float hi, float sh, float wh, float bl) {
+  float bp = -(bl / 100.0) * 0.18;
+  float wp = 1.0 - (max(wh, 0.0) / 100.0) * 0.18;
+  v = clamp((v - bp) / max(wp - bp, 1e-3), 0.0, 1.0);
+  v = pow(max(v, 1e-6), exp2(-(sh / 100.0) * 0.9));
+  v = 1.0 - pow(max(1.0 - v, 1e-6), exp2(max(hi, 0.0) / 100.0 * 0.9));
+  return clamp(v, 0.0, 1.0);
 }
 
 vec3 applyToneCurve(vec3 c) {
@@ -532,12 +519,23 @@ void main() {
   float knee = mix(1.0, 0.5, rec);
   disp = vec3(rollHi(disp.r, knee), rollHi(disp.g, knee), rollHi(disp.b, knee));
 
-  // Contrast + Shadows/Blacks (+ positive Highlights/Whites), on luminance, then
-  // recolor so none of them desaturate.
-  float l0 = luma(disp);
-  float lc = clamp((l0 - 0.5) * (1.0 + uContrast / 100.0) + 0.5, 0.0, 1.0);
-  float ln = toneMapLuma(lc, uHighlights, uShadows, uWhites, uBlacks);
-  vec3 c = clamp(recolorToLuma(disp, l0, ln), 0.0, 1.0);
+  // Contrast: S-curve applied per-channel (like Lightroom), which naturally pushes
+  // channel differences apart and increases perceived saturation with positive contrast.
+  // f(x) = x + k·x·(1-x)·(2x-1) — passes through (0,0), (0.5,0.5), (1,1).
+  // Monotonic for |k| < 1; applied to the vec3 so all three channels shift independently.
+  float ck = (uContrast / 100.0) * 0.8;
+  vec3 afterContrast = abs(ck) > 0.001
+    ? clamp(disp + ck * disp * (1.0 - disp) * (2.0 * disp - 1.0), 0.0, 1.0)
+    : disp;
+
+  // Shadows / Highlights / Whites / Blacks — applied per-channel so each channel
+  // recovers independently (critical for highlight detail) and shadow lifts
+  // preserve natural colour rather than graying out.
+  vec3 c = clamp(vec3(
+    toneMapChannel(afterContrast.r, uHighlights, uShadows, uWhites, uBlacks),
+    toneMapChannel(afterContrast.g, uHighlights, uShadows, uWhites, uBlacks),
+    toneMapChannel(afterContrast.b, uHighlights, uShadows, uWhites, uBlacks)
+  ), 0.0, 1.0);
 
   c = applyToneCurve(c);
   c = applyHSL(c);

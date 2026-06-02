@@ -55,6 +55,7 @@ If you'd like to help make this software more powerful, feel free to help!
 - Limited output resolution clamping
 
 # To Do
+- Parametric highlight recovery
 - Image masking and touchup removal / cloning support
 - Red eye correction
 - Image compare support
