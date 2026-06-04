@@ -1,4 +1,4 @@
-// Lightroom-style culling shortcuts, scoped to the Library (the hook is mounted
+// Culling shortcuts, scoped to the Library (the hook is mounted
 // by LibraryView, so it only listens while the grid is on screen):
 //
 //   1-5        set rating          0   clear rating

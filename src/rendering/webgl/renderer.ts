@@ -1,8 +1,15 @@
-import type { DevelopParams } from "@/catalog/types";
-import { DEFAULT_CROP, HSL_CHANNELS } from "@/catalog/types";
+import type { DevelopParams, Mask, MaskAdjustments, RetouchSpot } from "@/catalog/types";
+import {
+  DEFAULT_CROP,
+  HSL_CHANNELS,
+  MAX_MASKS,
+  MAX_RETOUCH,
+  MAX_RETOUCH_BRUSH,
+} from "@/catalog/types";
 import { buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
 import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders";
+import { bakeCoverage, coverageSignature, type CoverageItem } from "./mask-coverage";
 
 // Default cap on render resolution for interactive performance. Export passes
 // a larger value (or the image's own long edge) to render at full size.
@@ -14,6 +21,12 @@ export class WebGLRenderer {
   private program: WebGLProgram;
   private imageTexture: WebGLTexture;
   private curveTexture: WebGLTexture;
+  private maskTexture: WebGLTexture;
+  private maskSig = "";
+  private maskChannelOf: Record<string, number> = {};
+  private retouchTexture: WebGLTexture;
+  private retouchSig = "";
+  private retouchChannelOf: Record<string, number> = {};
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private params: DevelopParams | null = null;
   private hasImage = false;
@@ -41,6 +54,74 @@ export class WebGLRenderer {
     this.imageTexture = this.createTexture();
     this.curveTexture = gl.createTexture();
     this.initCurveTexture();
+    this.maskTexture = gl.createTexture();
+    this.retouchTexture = gl.createTexture();
+    this.initCoverageTexture(this.maskTexture);
+    this.initCoverageTexture(this.retouchTexture);
+  }
+
+  // 1x1 transparent default so a coverage sampler is always valid even with no
+  // brush items present.
+  private initCoverageTexture(tex: WebGLTexture) {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 0]),
+    );
+  }
+
+  // Rebuild a coverage atlas when its geometry changes. Cheap no-op on a
+  // signature match or when there are no brush items. Returns the channel map.
+  private updateCoverageTexture(
+    tex: WebGLTexture,
+    items: CoverageItem[],
+    prevSig: string,
+  ): { sig: string; channelOf: Record<string, number> } {
+    const sig = coverageSignature(items);
+    if (sig === prevSig) return { sig, channelOf: tex === this.maskTexture ? this.maskChannelOf : this.retouchChannelOf };
+    const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+    const baked = bakeCoverage(items, aspect);
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (!baked) {
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+        new Uint8Array([0, 0, 0, 0]),
+      );
+      return { sig, channelOf: {} };
+    }
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA, baked.size, baked.size, 0,
+      gl.RGBA, gl.UNSIGNED_BYTE, baked.data,
+    );
+    return { sig, channelOf: baked.channelOf };
+  }
+
+  private updateMaskTexture(masks: Mask[]) {
+    const items: CoverageItem[] = masks
+      .filter((m) => m.type === "brush" && m.brush)
+      .map((m) => ({ id: m.id, dabs: m.brush!.dabs, feather: m.brush!.feather }));
+    const r = this.updateCoverageTexture(this.maskTexture, items, this.maskSig);
+    this.maskSig = r.sig;
+    this.maskChannelOf = r.channelOf;
+  }
+
+  private updateRetouchTexture(retouch: RetouchSpot[]) {
+    const items: CoverageItem[] = retouch
+      .filter((s) => s.shape === "brush" && s.dabs && s.dabs.length > 0)
+      .map((s) => ({
+        id: s.id,
+        dabs: s.dabs!,
+        feather: Math.max(0, Math.min(1, s.feather / 100)),
+      }));
+    const r = this.updateCoverageTexture(this.retouchTexture, items, this.retouchSig);
+    this.retouchSig = r.sig;
+    this.retouchChannelOf = r.channelOf;
   }
 
   private createProgram(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -158,7 +239,39 @@ export class WebGLRenderer {
       "uGrainAmount",
       "uGrainSize",
       "uGrainRoughness",
+      // Masks + retouch
+      "uImageAspect",
+      "uMaskCount",
+      "uMaskTex",
+      "uSpotCount",
+      "uRetouchTex",
+      "uRetouchCount",
     ];
+    // Per-element mask/retouch array uniforms (queried by indexed name).
+    for (let i = 0; i < MAX_MASKS; i++) {
+      for (const base of [
+        "uMaskType",
+        "uMaskInvert",
+        "uMaskBrushCh",
+        "uMaskOpacity",
+        "uMaskGeoA",
+        "uMaskGeoB",
+        "uMaskAdj0",
+        "uMaskAdj1",
+        "uMaskAdj2",
+      ]) {
+        const name = `${base}[${i}]`;
+        this.uniforms[name] = gl.getUniformLocation(this.program, name);
+      }
+    }
+    for (let i = 0; i < MAX_RETOUCH; i++) {
+      this.uniforms[`uSpotA[${i}]`] = gl.getUniformLocation(this.program, `uSpotA[${i}]`);
+      this.uniforms[`uSpotB[${i}]`] = gl.getUniformLocation(this.program, `uSpotB[${i}]`);
+    }
+    for (let i = 0; i < MAX_RETOUCH_BRUSH; i++) {
+      this.uniforms[`uRetouchCh[${i}]`] = gl.getUniformLocation(this.program, `uRetouchCh[${i}]`);
+      this.uniforms[`uRetouchData[${i}]`] = gl.getUniformLocation(this.program, `uRetouchData[${i}]`);
+    }
     for (const name of names) {
       this.uniforms[name] = gl.getUniformLocation(this.program, name);
     }
@@ -278,6 +391,8 @@ export class WebGLRenderer {
 
   setParams(params: DevelopParams) {
     this.params = params;
+    this.updateMaskTexture(params.masks);
+    this.updateRetouchTexture(params.retouch);
     const lut = buildRGBCurveLUT(params.toneCurve);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
@@ -393,6 +508,69 @@ export class WebGLRenderer {
     gl.uniform1f(u.uGrainSize,      gr.size);
     gl.uniform1f(u.uGrainRoughness, gr.roughness);
 
+    // Masks + retouch
+    gl.uniform1f(u.uImageAspect, aspect);
+
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.maskTexture);
+    gl.uniform1i(u.uMaskTex, 2);
+
+    const masks = p.masks.slice(0, MAX_MASKS);
+    gl.uniform1i(u.uMaskCount, masks.length);
+    masks.forEach((m, i) => {
+      const type = m.type === "linear" ? 0 : m.type === "radial" ? 1 : 2;
+      gl.uniform1i(u[`uMaskType[${i}]`], type);
+      gl.uniform1i(u[`uMaskInvert[${i}]`], m.invert ? 1 : 0);
+      gl.uniform1i(u[`uMaskBrushCh[${i}]`], this.maskChannelOf[m.id] ?? 0);
+      gl.uniform1f(u[`uMaskOpacity[${i}]`], m.opacity / 100);
+      if (m.type === "linear" && m.linear) {
+        gl.uniform4f(u[`uMaskGeoA[${i}]`], m.linear.x0, m.linear.y0, m.linear.x1, m.linear.y1);
+        gl.uniform4f(u[`uMaskGeoB[${i}]`], 0, 0, 0, 0);
+      } else if (m.type === "radial" && m.radial) {
+        gl.uniform4f(u[`uMaskGeoA[${i}]`], m.radial.cx, m.radial.cy, m.radial.rx, m.radial.ry);
+        gl.uniform4f(u[`uMaskGeoB[${i}]`], m.radial.feather, m.radial.angle, 0, 0);
+      } else {
+        gl.uniform4f(u[`uMaskGeoA[${i}]`], 0, 0, 0, 0);
+        gl.uniform4f(u[`uMaskGeoB[${i}]`], 0, 0, 0, 0);
+      }
+      const a: MaskAdjustments = m.adj;
+      gl.uniform4f(u[`uMaskAdj0[${i}]`], a.exposure, a.contrast, a.highlights, a.shadows);
+      gl.uniform4f(u[`uMaskAdj1[${i}]`], a.saturation, a.temperature, a.tint, a.clarity);
+      gl.uniform4f(u[`uMaskAdj2[${i}]`], a.sharpness, 0, 0, 0);
+    });
+
+    // Circular spots -> parametric array; brush-shaped retouch -> coverage atlas.
+    const circles = p.retouch.filter((s) => s.shape !== "brush").slice(0, MAX_RETOUCH);
+    gl.uniform1i(u.uSpotCount, circles.length);
+    circles.forEach((s, i) => {
+      gl.uniform4f(u[`uSpotA[${i}]`], s.dstX, s.dstY, s.srcX, s.srcY);
+      gl.uniform4f(
+        u[`uSpotB[${i}]`],
+        s.radius,
+        s.feather / 100,
+        s.opacity / 100,
+        s.mode === "clone" ? 1 : 0,
+      );
+    });
+
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.retouchTexture);
+    gl.uniform1i(u.uRetouchTex, 3);
+    const brushSpots = p.retouch
+      .filter((s) => s.shape === "brush" && s.dabs && s.dabs.length > 0)
+      .slice(0, MAX_RETOUCH_BRUSH);
+    gl.uniform1i(u.uRetouchCount, brushSpots.length);
+    brushSpots.forEach((s, i) => {
+      gl.uniform1i(u[`uRetouchCh[${i}]`], this.retouchChannelOf[s.id] ?? 0);
+      gl.uniform4f(
+        u[`uRetouchData[${i}]`],
+        s.srcX - s.dstX, // source offset, UV
+        s.srcY - s.dstY,
+        s.opacity / 100,
+        s.mode === "clone" ? 1 : 0,
+      );
+    });
+
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
 
@@ -400,6 +578,8 @@ export class WebGLRenderer {
     const gl = this.gl;
     gl.deleteTexture(this.imageTexture);
     gl.deleteTexture(this.curveTexture);
+    gl.deleteTexture(this.maskTexture);
+    gl.deleteTexture(this.retouchTexture);
     gl.deleteProgram(this.program);
   }
 }

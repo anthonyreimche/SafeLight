@@ -9,6 +9,7 @@ import {
 } from "@/rendering/transform";
 import { ViewportImage } from "@/ui/ViewportImage";
 import { CropOverlay } from "./CropOverlay";
+import { MaskOverlay } from "./MaskOverlay";
 
 export function DevelopCanvas({
   photo,
@@ -26,6 +27,7 @@ export function DevelopCanvas({
   );
 
   const cropping = useDevelopStore((s) => s.cropping);
+  const activeTool = useDevelopStore((s) => s.activeTool);
   const crop = useDevelopStore((s) => s.params.crop);
   const straighten = useDevelopStore((s) => s.params.straighten);
   const transform = useDevelopStore((s) => s.params.transform);
@@ -127,7 +129,17 @@ export function DevelopCanvas({
                 }}
               />
             )
-          : undefined
+          : activeTool !== "none"
+            ? (rect) => (
+                <MaskOverlay
+                  rect={rect}
+                  crop={crop}
+                  inv={inv}
+                  forward={forward}
+                  imageAspect={imageAspect}
+                />
+              )
+            : undefined
       }
     />
   );

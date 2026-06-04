@@ -9,6 +9,7 @@ import { ColorGradingPanel } from "./panels/ColorGradingPanel";
 import { LensCorrectionPanel } from "./panels/LensCorrectionPanel";
 import { EffectsPanel } from "./panels/EffectsPanel";
 import { PresetsPanel } from "./panels/PresetsPanel";
+import { TuningPanel } from "./panels/TuningPanel";
 import { useRef } from "react";
 import type { DevelopParams } from "@/catalog/types";
 import { Histogram, type HistogramZone } from "@/ui/components/Histogram";
@@ -57,6 +58,7 @@ export function DevelopSidebar() {
         </div>
       </div>
       <DevelopHistogram />
+      <TuningPanel />
       <CropPanel />
       <TransformPanel />
       <WhiteBalancePanel />

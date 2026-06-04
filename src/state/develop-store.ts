@@ -1,14 +1,21 @@
 import { create } from "zustand";
 import type {
+  BrushDab,
   CurvePoint,
   DevelopParams,
   EditSnapshot,
   EditState,
   HSLBand,
   HSLChannel,
+  Mask,
+  MaskAdjustments,
+  MaskType,
+  RetouchSpot,
   ToneCurveChannel,
 } from "@/catalog/types";
-import { normalizeParams } from "@/catalog/types";
+import { MAX_MASKS, MAX_RETOUCH, normalizeParams } from "@/catalog/types";
+
+export type ToolMode = "none" | "mask" | "retouch";
 import type { HistogramData } from "@/rendering/histogram";
 import { catalogDB } from "@/catalog/db";
 import { broadcast } from "./broadcast";
@@ -32,6 +39,41 @@ interface DevelopState {
   setCropGuide: (g: CropGuide) => void;
   cycleCropGuide: () => void;
 
+  // Mask / retouch tool UI state (ephemeral, not persisted to history).
+  activeTool: ToolMode;
+  maskToolType: MaskType;
+  selectedMaskId: string | null;
+  selectedSpotId: string | null;
+  brushSize: number; // image-height fraction
+  brushFeather: number; // 0..1
+  brushErase: boolean;
+  retouchMode: "heal" | "clone";
+  retouchSize: number; // image-height fraction
+  retouchFeather: number; // 0..100
+  retouchOpacity: number; // 0..100
+  setActiveTool: (t: ToolMode) => void;
+  setMaskToolType: (t: MaskType) => void;
+  selectMask: (id: string | null) => void;
+  selectSpot: (id: string | null) => void;
+  setBrushSize: (v: number) => void;
+  setBrushFeather: (v: number) => void;
+  setBrushErase: (v: boolean) => void;
+  setRetouchMode: (m: "heal" | "clone") => void;
+  setRetouchSize: (v: number) => void;
+  setRetouchFeather: (v: number) => void;
+  setRetouchOpacity: (v: number) => void;
+
+  // Mask data mutations (persisted; commitEdit ends a gesture for undo).
+  addMask: (mask: Mask) => void;
+  updateMask: (id: string, patch: Partial<Mask>) => void;
+  updateMaskAdj: (id: string, patch: Partial<MaskAdjustments>) => void;
+  addBrushDab: (id: string, dab: BrushDab) => void;
+  removeMask: (id: string) => void;
+  // Retouch data mutations.
+  addSpot: (spot: RetouchSpot) => void;
+  updateSpot: (id: string, patch: Partial<RetouchSpot>) => void;
+  removeSpot: (id: string) => void;
+
   setHistogram: (histogram: HistogramData | null) => void;
   loadEdit: (photoId: string) => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
@@ -47,6 +89,16 @@ interface DevelopState {
   reset: () => Promise<void>;
   canUndo: () => boolean;
   canRedo: () => boolean;
+}
+
+// Broadcast the current params so the renderer re-renders live during a mask /
+// retouch gesture. History is written separately by commitEdit at gesture end.
+function pushEdit(get: () => DevelopState) {
+  const s = get();
+  broadcast({
+    type: "edit-update",
+    payload: { photoId: s.photoId, params: s.params },
+  });
 }
 
 export const useDevelopStore = create<DevelopState>((set, get) => ({
@@ -65,6 +117,115 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   setCropAspect: (cropAspect) => set({ cropAspect }),
   setCropGuide: (cropGuide) => set({ cropGuide }),
   cycleCropGuide: () => set((s) => ({ cropGuide: nextGuide(s.cropGuide) })),
+
+  activeTool: "none",
+  maskToolType: "radial",
+  selectedMaskId: null,
+  selectedSpotId: null,
+  brushSize: 0.08,
+  brushFeather: 0.5,
+  brushErase: false,
+  retouchMode: "heal",
+  retouchSize: 0.04,
+  retouchFeather: 50,
+  retouchOpacity: 100,
+  setActiveTool: (activeTool) => set({ activeTool }),
+  setMaskToolType: (maskToolType) => set({ maskToolType }),
+  selectMask: (selectedMaskId) => set({ selectedMaskId }),
+  selectSpot: (selectedSpotId) => set({ selectedSpotId }),
+  setBrushSize: (brushSize) => set({ brushSize }),
+  setBrushFeather: (brushFeather) => set({ brushFeather }),
+  setBrushErase: (brushErase) => set({ brushErase }),
+  setRetouchMode: (retouchMode) => set({ retouchMode }),
+  setRetouchSize: (retouchSize) => set({ retouchSize }),
+  setRetouchFeather: (retouchFeather) => set({ retouchFeather }),
+  setRetouchOpacity: (retouchOpacity) => set({ retouchOpacity }),
+
+  addMask(mask) {
+    set((s) => {
+      if (s.params.masks.length >= MAX_MASKS) return s;
+      return {
+        params: { ...s.params, masks: [...s.params.masks, mask] },
+        selectedMaskId: mask.id,
+      };
+    });
+    pushEdit(get);
+  },
+
+  updateMask(id, patch) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        masks: s.params.masks.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+      },
+    }));
+    pushEdit(get);
+  },
+
+  updateMaskAdj(id, patch) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        masks: s.params.masks.map((m) =>
+          m.id === id ? { ...m, adj: { ...m.adj, ...patch } } : m,
+        ),
+      },
+    }));
+    pushEdit(get);
+  },
+
+  addBrushDab(id, dab) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        masks: s.params.masks.map((m) =>
+          m.id === id && m.brush
+            ? { ...m, brush: { ...m.brush, dabs: [...m.brush.dabs, dab] } }
+            : m,
+        ),
+      },
+    }));
+    pushEdit(get);
+  },
+
+  removeMask(id) {
+    set((s) => ({
+      params: { ...s.params, masks: s.params.masks.filter((m) => m.id !== id) },
+      selectedMaskId: s.selectedMaskId === id ? null : s.selectedMaskId,
+    }));
+    pushEdit(get);
+  },
+
+  addSpot(spot) {
+    set((s) => {
+      if (s.params.retouch.length >= MAX_RETOUCH) return s;
+      return {
+        params: { ...s.params, retouch: [...s.params.retouch, spot] },
+        selectedSpotId: spot.id,
+      };
+    });
+    pushEdit(get);
+  },
+
+  updateSpot(id, patch) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        retouch: s.params.retouch.map((sp) =>
+          sp.id === id ? { ...sp, ...patch } : sp,
+        ),
+      },
+    }));
+    pushEdit(get);
+  },
+
+  removeSpot(id) {
+    set((s) => ({
+      params: { ...s.params, retouch: s.params.retouch.filter((sp) => sp.id !== id) },
+      selectedSpotId: s.selectedSpotId === id ? null : s.selectedSpotId,
+    }));
+    pushEdit(get);
+  },
 
   setHistogram: (histogram) => set({ histogram }),
 

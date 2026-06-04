@@ -12,7 +12,7 @@ void main() {
 }
 `;
 
-// Single-pass develop shader. Operations run in a Lightroom-like order. Most
+// Single-pass develop shader. Most
 // are per-pixel point operations; clarity is a midtone-contrast approximation
 // (a true local-contrast version needs a blur pass, planned for a later phase).
 export const FRAGMENT_SHADER = `#version 300 es
@@ -91,6 +91,38 @@ uniform float uGrainAmount;    // 0..100
 uniform float uGrainSize;      // 25..100
 uniform float uGrainRoughness; // 0..100
 
+// Image aspect (width / height) — used so radial masks and round retouch discs
+// stay circular on screen despite the non-square source-UV space.
+uniform float uImageAspect;
+
+
+// Local adjustment masks (linear / radial parametric, brush via texture).
+#define MAX_MASKS 8
+uniform int uMaskCount;
+uniform sampler2D uMaskTex;        // RGBA brush coverage atlas
+uniform int uMaskType[MAX_MASKS];  // 0 linear, 1 radial, 2 brush
+uniform int uMaskInvert[MAX_MASKS];
+uniform int uMaskBrushCh[MAX_MASKS]; // channel 0..3 in uMaskTex
+uniform float uMaskOpacity[MAX_MASKS]; // 0..1
+uniform vec4 uMaskGeoA[MAX_MASKS]; // linear: x0,y0,x1,y1 ; radial: cx,cy,rx,ry
+uniform vec4 uMaskGeoB[MAX_MASKS]; // radial: feather,_,_,_
+uniform vec4 uMaskAdj0[MAX_MASKS]; // exposure, contrast, highlights, shadows
+uniform vec4 uMaskAdj1[MAX_MASKS]; // saturation, temperature, tint, clarity
+uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, _, _, _
+
+// Retouch (spot removal): heal / clone discs.
+#define MAX_SPOTS 16
+uniform int uSpotCount;
+uniform vec4 uSpotA[MAX_SPOTS]; // dstX, dstY, srcX, srcY
+uniform vec4 uSpotB[MAX_SPOTS]; // radius(height units), feather(0..1), opacity(0..1), mode(0 heal,1 clone)
+
+// Brush-shaped retouch: painted coverage atlas + per-item source offset.
+#define MAX_RBRUSH 4
+uniform sampler2D uRetouchTex;
+uniform int uRetouchCount;
+uniform int uRetouchCh[MAX_RBRUSH];     // channel 0..3 in uRetouchTex
+uniform vec4 uRetouchData[MAX_RBRUSH];  // offX, offY (UV), opacity(0..1), mode(0 heal,1 clone)
+
 const float HSL_CENTERS[8] = float[8](
   0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 280.0, 320.0
 );
@@ -148,8 +180,8 @@ vec3 blackbodyLinear(float kelvin) {
   return srgbToLinear(srgb);
 }
 
-// White balance as a Kelvin temperature (warming the image as the value rises,
-// like Lightroom) plus a green↔magenta tint. Gains are derived so 6500K is
+// White balance as a Kelvin temperature (warming the image as the value rises)
+// plus a green↔magenta tint. Gains are derived so 6500K is
 // neutral, normalized on green to hold brightness.
 vec3 applyWhiteBalance(vec3 c, float kelvin, float tint) {
   vec3 gain = blackbodyLinear(6500.0) / blackbodyLinear(kelvin);
@@ -158,20 +190,157 @@ vec3 applyWhiteBalance(vec3 c, float kelvin, float tint) {
   return c * gain;
 }
 
-// Tone-map one channel through Blacks/Shadows/Highlights/Whites using the same
-// global gamma curves as the original implementation, now applied per-channel
-// (R, G, B independently) rather than to scalar luminance + recolor. Per-channel
-// application lets shadow lifts preserve natural colour, and lets each blown
-// channel recover independently for proper highlight detail.
-// Negative Highlights is handled upstream by the per-channel HDR shoulder rolloff;
-// only positive hi acts here (matching the rolloff's complementary design).
-float toneMapChannel(float v, float hi, float sh, float wh, float bl) {
-  float bp = -(bl / 100.0) * 0.18;
-  float wp = 1.0 - (max(wh, 0.0) / 100.0) * 0.18;
-  v = clamp((v - bp) / max(wp - bp, 1e-3), 0.0, 1.0);
-  v = pow(max(v, 1e-6), exp2(-(sh / 100.0) * 0.9));
-  v = 1.0 - pow(max(1.0 - v, 1e-6), exp2(max(hi, 0.0) / 100.0 * 0.9));
-  return clamp(v, 0.0, 1.0);
+// Exposure tone-mapping.
+//
+// The old Michaelis-Menten form  I*k/((k-1)*I + 1)  reaches *exactly* 1.0 at a
+// linear input of I=1 and only asymptotes at k/(k-1) (e.g. 1.14 at +5). After a
+// big push every bright value above ~0.16 was therefore crushed into the top
+// ~10% of the range and clipped — all of it landing in the same output bin,
+// which is the tall narrow highlight spike (visible even at Highlights=0) and the
+// emptied upper-midtones. Lightroom instead lets highlights roll toward white
+// gradually, keeping their spread as a broad hump.
+//
+// This keeps the same shadow/midtone gain (so positions still match LR) but gives
+// the highlights real headroom: the saturation coefficient beta = 1/g makes the
+// curve asymptotic to 1.0 only many stops up, so the bright band spreads across
+// the highlights instead of piling at the clip point. beta -> 1 as E -> 0, so the
+// curve is an exact identity at EV 0; negative exposure is a plain gain (no need
+// for a highlight shoulder when darkening).
+float applyExposure(float i_in, float E) {
+  float g = exp2(E);
+  if (E <= 0.0) return i_in * g;
+  float beta = 1.0 / g;
+  return g * i_in / (1.0 + (g - beta) * i_in);
+}
+
+// Highlights recovery (H < 0): per-channel rollHi with a sliding knee.
+// knee = 1.0 at H=0 (no-op), slides to 0.5 at H=-1 (aggressive recovery).
+// rollHi is already identity below the knee, so no bell-weight mixing is needed —
+// that was the graying bug: per-channel bell mixing preferentially compressed the
+// dominant channel in saturated colors while leaving others alone → desaturation.
+// With rollHi, a red pixel's low G/B channels are below the knee and untouched.
+//
+// Highlights lift (H > 0): luminance-ratio applied to preserve hue.
+// Additive bell on luminance; ratio scales all channels identically → no hue shift.
+//
+// Shadows (S): gamma toe on linear luminance, ratio-scaled (hue preserved). Strength
+// falls off as exp(-λ·t) over display luma t so shadows lift most, mids/highlights
+// still stretch with exponentially decreasing weight — no hard shadow/mid cutoff.
+
+// Per-channel highlight recovery curve. amt in [0,1] (= -H).
+// rollHi only soft-clipped the HDR over-range back toward 1.0, so blown whites
+// stayed pinned to the right edge of the histogram — nothing actually moved at
+// -100. This instead (1) folds any over-range into [thr,1], then (2) compresses
+// that highlight band DOWNWARD toward the threshold, so a clipped white is pulled
+// well back into the histogram, the way Lightroom's Highlights -100 does.
+// Per-channel: a channel that clipped is rebuilt from the level of the others.
+float hiDown(float v, float amt) {
+  float thr = mix(0.70, 0.45, amt);           // band start slides down with amount
+  if (v <= thr) return min(v, 1.0);
+  float head = max(1.0 - thr, 1e-3);
+  float sat = thr + head * (1.0 - exp(-(v - thr) / head)); // saturate into [thr,1]
+  float comp = mix(1.0, 0.35, amt);            // pull the band toward the threshold
+  return thr + (sat - thr) * comp;
+}
+
+// Exponential shadow weight: w = exp(-λ·t), t = display luma in [0,1]. Black gets
+// full strength; mids and highlights still move, with weight decreasing exponentially.
+float shadowWeight(vec3 linRgb) {
+  float t = clamp(luma(linearToSrgbU(max(linRgb, vec3(0.0)))), 0.0, 1.0);
+  return exp(-2.75 * t);
+}
+
+// Exponential highlight weight: w = exp(-λ·(1-t)), t = display luma in [0,1]. White gets
+// full strength; mids and shadows still move, with weight decreasing exponentially.
+float highlightWeight(vec3 linRgb) {
+  float t = clamp(luma(linearToSrgbU(max(linRgb, vec3(0.0)))), 0.0, 1.0);
+  return exp(-3.5 * (1.0 - t));
+}
+
+// Exponential whites weight: w = exp(-λ·(1-t)²), t = display luma in [0,1]. Stronger
+// falloff than highlights, focused on the extreme bright end.
+float whitesWeight(vec3 linRgb) {
+  float t = clamp(luma(linearToSrgbU(max(linRgb, vec3(0.0)))), 0.0, 1.0);
+  return exp(-8.0 * (1.0 - t) * (1.0 - t));
+}
+
+// Exponential blacks weight: w = exp(-λ·t²), t = display luma in [0,1]. Stronger
+// falloff than shadows, focused on the extreme dark end.
+float blacksWeight(vec3 linRgb) {
+  float t = clamp(luma(linearToSrgbU(max(linRgb, vec3(0.0)))), 0.0, 1.0);
+  return exp(-8.0 * t * t);
+}
+
+// Highlights applied to linear RGB. H in [-1, 1] (uHighlights / 100).
+// Uses broad per-pixel weight centered on highlights, feathering across the range.
+vec3 applyHighlightsRGB(vec3 c, float H) {
+  if (H < 0.0) {
+    // Recovery: pull the highlight band down with luminance-based compression
+    // to preserve hue. Weighted by highlightWeight so different luminances shift
+    // by different amounts.
+    float amt = -H;
+    float w = highlightWeight(c);
+    float blend = amt * w;
+    if (blend < 1e-5) return c;
+    float L = max(luma(c), 1e-4);
+    // Apply per-channel compression, then ratio-scale to preserve hue
+    vec3 compressed = vec3(hiDown(c.r, amt), hiDown(c.g, amt), hiDown(c.b, amt));
+    float Lcomp = luma(compressed);
+    float newL = mix(L, Lcomp, blend);
+    c *= newL / L;
+  } else {
+    // Lift: gamma brightening of the highlight zone, ratio-scaled (hue-preserving).
+    // Weighted by highlightWeight so different luminances shift by different amounts.
+    float w = highlightWeight(c);
+    float blend = H * w;
+    if (blend < 1e-5) return c;
+    float L = max(luma(c), 1e-4);
+    float gamma = mix(1.0, 0.4, H);
+    float newL = mix(L, pow(L, gamma), blend);
+    c *= newL / L;
+  }
+  return c;
+}
+
+// Shadows lift/crush on linear RGB. S in [-1, 1] (uShadows / 100).
+vec3 applyShadowsRGB(vec3 c, float S) {
+  float L = max(luma(c), 1e-4);
+  float w = shadowWeight(c);
+  float blend = abs(S) * w;
+  if (blend < 1e-5) return c;
+
+  float gamma = S > 0.0 ? mix(1.0, 0.55, abs(S)) : mix(1.0, 2.35, -S);
+  float newL = mix(L, pow(L, gamma), blend);
+  c *= newL / L;
+  return c;
+}
+
+// Whites point adjustment with broad per-pixel weight centered on extreme highlights.
+// Different luminances shift by different amounts, redistributing across the range.
+float applyWhites(float v, float wh) {
+  if (wh <= 0.0) return v;
+  float amt = wh / 100.0;
+  vec3 c = vec3(v);
+  float w = whitesWeight(c);
+  float blend = amt * w;
+  if (blend < 1e-5) return v;
+  // Gamma brightening for whites lift
+  float gamma = mix(1.0, 0.5, amt);
+  return mix(v, pow(max(v, 0.0), gamma), blend);
+}
+
+// Blacks point adjustment with broad per-pixel weight centered on extreme shadows.
+// Different luminances shift by different amounts, redistributing across the range.
+float applyBlacks(float v, float bl) {
+  if (bl <= 0.0) return v;
+  float amt = bl / 100.0;
+  vec3 c = vec3(v);
+  float w = blacksWeight(c);
+  float blend = amt * w;
+  if (blend < 1e-5) return v;
+  // Gamma darkening for blacks crush
+  float gamma = mix(1.0, 2.5, amt);
+  return mix(v, pow(max(v, 0.0), gamma), blend);
 }
 
 vec3 applyToneCurve(vec3 c) {
@@ -202,6 +371,25 @@ vec3 rgb2hsl(vec3 c) {
     h /= 6.0;
   }
   return vec3(h, s, l);
+}
+
+// Convert RGB to YCbCr (BT.709) for better luminance/chroma separation
+vec3 rgb2YCbCr(vec3 c) {
+  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float cb = (c.b - y) * 0.5 / (1.0 - 0.0722) + 0.5;
+  float cr = (c.r - y) * 0.5 / (1.0 - 0.2126) + 0.5;
+  return vec3(y, cb, cr);
+}
+
+// Convert YCbCr (BT.709) back to RGB
+vec3 yCbCr2rgb(vec3 ycbcr) {
+  float y = ycbcr.x;
+  float cb = ycbcr.y - 0.5;
+  float cr = ycbcr.z - 0.5;
+  float r = y + cr * (1.0 - 0.2126) * 2.0;
+  float b = y + cb * (1.0 - 0.0722) * 2.0;
+  float g = y - (cb * (1.0 - 0.0722) * 2.0 * 0.0722 / 0.7152 + cr * (1.0 - 0.2126) * 2.0 * 0.2126 / 0.7152);
+  return clamp(vec3(r, g, b), 0.0, 1.0);
 }
 
 float hue2rgb(float p, float q, float t) {
@@ -375,7 +563,7 @@ float lensVignetteFactor(vec2 uv) {
   return clamp(correction, 0.0, 2.0);
 }
 
-// Post-crop creative vignette (Lightroom Post-Crop Vignetting style).
+// Post-crop creative vignette
 vec3 applyVignette(vec3 c, vec2 uv) {
   if (abs(uVignetteAmount) < 0.001) return c;
   vec2 centered = uv - 0.5;
@@ -438,6 +626,125 @@ vec3 applyGrain(vec3 c, vec2 uv) {
 }
 
 
+// ---- Retouch: spot heal / clone -------------------------------------------
+// Replace the source sample where retouch discs cover, before any tone edits so
+// the patched pixels develop together with the rest of the frame.
+vec3 applyRetouch(vec2 uv, vec3 base) {
+  vec3 c = base;
+  for (int i = 0; i < MAX_SPOTS; i++) {
+    if (i >= uSpotCount) break;
+    vec4 a = uSpotA[i];
+    vec4 b = uSpotB[i];
+    vec2 dst = a.xy;
+    vec2 off = a.zw - dst;            // source-center minus dest-center
+    float radius = max(b.x, 1e-4);
+    float feather = b.y;
+    float opacity = b.z;
+    float d = length(vec2((uv.x - dst.x) * uImageAspect, uv.y - dst.y)) / radius;
+    if (d >= 1.0) continue;
+    float w = (1.0 - smoothstep(1.0 - feather, 1.0, d)) * opacity;
+    if (w <= 0.0) continue;
+    vec2 sUv = clamp(uv + off, 0.0, 1.0);
+    vec3 srcCol = texture(uImage, sUv).rgb;
+    if (b.w < 0.5) {
+      // Heal: carry the source texture but match the destination's local tone.
+      vec3 dstLow = textureLod(uImage, uv, 4.0).rgb;
+      vec3 srcLow = textureLod(uImage, sUv, 4.0).rgb;
+      srcCol = clamp(srcCol + (dstLow - srcLow), 0.0, 1.0);
+    }
+    c = mix(c, srcCol, w);
+  }
+  // Brush-shaped retouch: painted coverage from the atlas, one source offset each.
+  if (uRetouchCount > 0) {
+    vec4 rcov = texture(uRetouchTex, uv);
+    for (int i = 0; i < MAX_RBRUSH; i++) {
+      if (i >= uRetouchCount) break;
+      int ch = uRetouchCh[i];
+      float cov = ch == 0 ? rcov.r : (ch == 1 ? rcov.g : (ch == 2 ? rcov.b : rcov.a));
+      vec4 rd = uRetouchData[i];
+      float w = cov * rd.z;
+      if (w <= 0.0) continue;
+      vec2 sUv = clamp(uv + rd.xy, 0.0, 1.0);
+      vec3 srcCol = texture(uImage, sUv).rgb;
+      if (rd.w < 0.5) {
+        vec3 dstLow = textureLod(uImage, uv, 4.0).rgb;
+        vec3 srcLow = textureLod(uImage, sUv, 4.0).rgb;
+        srcCol = clamp(srcCol + (dstLow - srcLow), 0.0, 1.0);
+      }
+      c = mix(c, srcCol, w);
+    }
+  }
+  return c;
+}
+
+// ---- Local adjustment masks ------------------------------------------------
+float maskCoverage(int i, vec2 uv) {
+  int type = uMaskType[i];
+  float m = 0.0;
+  if (type == 0) {
+    // Linear gradient: ramp 0->1 projected onto the drag direction.
+    vec2 p0 = uMaskGeoA[i].xy;
+    vec2 p1 = uMaskGeoA[i].zw;
+    vec2 dir = p1 - p0;
+    float len2 = max(dot(dir, dir), 1e-6);
+    m = clamp(dot(uv - p0, dir) / len2, 0.0, 1.0);
+  } else if (type == 1) {
+    // Radial: 1 inside, feathered to 0 at the edge. Worked in screen-proportional
+    // space (x scaled by aspect) so the ellipse and its rotation stay rigid on
+    // screen. Reduces to the plain (uv-ctr)/rad test when angle = 0.
+    vec2 ctr = uMaskGeoA[i].xy;
+    vec2 rad = max(uMaskGeoA[i].zw, vec2(1e-4));
+    float feather = uMaskGeoB[i].x;
+    float ang = uMaskGeoB[i].y;
+    vec2 q = vec2((uv.x - ctr.x) * uImageAspect, uv.y - ctr.y);
+    float ca = cos(ang);
+    float sa = sin(ang);
+    vec2 qr = vec2(ca * q.x + sa * q.y, -sa * q.x + ca * q.y);
+    vec2 radS = vec2(rad.x * uImageAspect, rad.y);
+    float d = length(qr / radS);
+    m = 1.0 - smoothstep(1.0 - feather, 1.0, d);
+  } else {
+    // Brush: prebaked coverage from the atlas channel.
+    vec4 cov = texture(uMaskTex, uv);
+    int ch = uMaskBrushCh[i];
+    m = ch == 0 ? cov.r : (ch == 1 ? cov.g : (ch == 2 ? cov.b : cov.a));
+  }
+  if (uMaskInvert[i] == 1) m = 1.0 - m;
+  return clamp(m * uMaskOpacity[i], 0.0, 1.0);
+}
+
+// Apply a mask's local adjustments to the display-space color, blended by m.
+vec3 applyMaskAdj(vec3 c, vec4 a0, vec4 a1, float sharp, float m, vec2 uv) {
+  vec3 r = c;
+  // Exposure (multiplicative).
+  r *= exp2((a0.x / 100.0) * 1.2);
+  // Contrast S-curve.
+  float k = (a0.y / 100.0) * 0.7;
+  r = clamp(r + k * r * (1.0 - r) * (2.0 * r - 1.0), 0.0, 1.0);
+  // Highlights / shadows via luminance weighting.
+  float L = luma(r);
+  r += (a0.z / 100.0) * 0.25 * smoothstep(0.5, 1.0, L);
+  r += (a0.w / 100.0) * 0.25 * (1.0 - smoothstep(0.0, 0.5, L));
+  // Temperature (warm/cool) and tint (magenta/green) shifts.
+  float temp = a1.y / 100.0;
+  float tnt = a1.z / 100.0;
+  r += vec3(temp * 0.12, 0.0, -temp * 0.12);
+  r += vec3(tnt * 0.08, -tnt * 0.08, tnt * 0.08);
+  // Saturation.
+  float Lr = luma(r);
+  r = mix(vec3(Lr), r, 1.0 + a1.x / 100.0);
+  // Clarity (broad) and sharpness (fine) local contrast.
+  float clar = a1.w / 100.0;
+  float shp = sharp / 100.0;
+  if (abs(clar) > 0.001 || abs(shp) > 0.001) {
+    float base = luma(r);
+    r += (base - lumaLod(uv, 4.0)) * clar * 1.2;
+    r += (base - lumaLod(uv, 1.5)) * shp * 1.2;
+  }
+  r = clamp(r, 0.0, 1.0);
+  return mix(c, r, m);
+}
+
 void main() {
   vec2 srcUv = cropTransformUV(vUv);
   // Lens distortion correction: remap srcUv before any sampling
@@ -452,6 +759,8 @@ void main() {
   }
   // Sample with chromatic aberration correction (CA splits R/B channels radially)
   vec3 src = uLensCA > 0.001 ? sampleWithCA(srcUv) : texture(uImage, srcUv).rgb;
+  // Spot removal (heal / clone): patch the source before any tone edits.
+  if (uSpotCount > 0 || uRetouchCount > 0) src = applyRetouch(srcUv, src);
   // Lens optical vignetting correction (flatten corner light falloff)
   src *= lensVignetteFactor(srcUv);
   float rawLuma = srcLuma(src);
@@ -507,19 +816,28 @@ void main() {
   }
 
   lin = applyWhiteBalance(lin, uTemperature, uTint);
-  lin *= exp2(uExposure);
+
+  // Exposure in true stops: the slider is an EV value, so +1 must double the
+  // linear signal (×2), matching Lightroom. The old ×0.6 scaling made +1 only
+  // ~0.6 stops (×1.5) — every exposure was ~60% as strong as LR's, which is why
+  // pushed shots stayed dark and the histogram bulk sat too low. The ×0.6 was a
+  // workaround for the old clipping curve; the asymptotic curve no longer needs it.
+  // Applied per-channel so channels recover independently for highlight detail.
+  float E = uExposure;
+  lin.r = applyExposure(lin.r, E);
+  lin.g = applyExposure(lin.g, E);
+  lin.b = applyExposure(lin.b, E);
+  
+  float H = clamp(uHighlights / 100.0, -1.0, 1.0);
+  float S = clamp(uShadows / 100.0, -1.0, 1.0);
+  if (abs(H) > 0.001) {
+    lin = applyHighlightsRGB(lin, H);
+  }
+  if (abs(S) > 0.001) lin = applyShadowsRGB(lin, S);
+  
   vec3 disp = linearToSrgbU(lin); // per-channel, may exceed 1.0
 
-  // Highlight/White recovery: fold the HDR overshoot back into range with a soft
-  // per-channel shoulder. Driven by negative Highlights/Whites; at 0 it clips.
-  float rec = max(
-    clamp(-uHighlights / 100.0, 0.0, 1.0),
-    clamp(-uWhites / 100.0, 0.0, 1.0) * 0.85
-  );
-  float knee = mix(1.0, 0.5, rec);
-  disp = vec3(rollHi(disp.r, knee), rollHi(disp.g, knee), rollHi(disp.b, knee));
-
-  // Contrast: S-curve applied per-channel (like Lightroom), which naturally pushes
+  // Contrast: S-curve applied per-channel, which naturally pushes
   // channel differences apart and increases perceived saturation with positive contrast.
   // f(x) = x + k·x·(1-x)·(2x-1) — passes through (0,0), (0.5,0.5), (1,1).
   // Monotonic for |k| < 1; applied to the vec3 so all three channels shift independently.
@@ -528,13 +846,16 @@ void main() {
     ? clamp(disp + ck * disp * (1.0 - disp) * (2.0 * disp - 1.0), 0.0, 1.0)
     : disp;
 
-  // Shadows / Highlights / Whites / Blacks — applied per-channel so each channel
-  // recovers independently (critical for highlight detail) and shadow lifts
-  // preserve natural colour rather than graying out.
+  // Whites / Blacks — applied per-channel with broad per-pixel weights
   vec3 c = clamp(vec3(
-    toneMapChannel(afterContrast.r, uHighlights, uShadows, uWhites, uBlacks),
-    toneMapChannel(afterContrast.g, uHighlights, uShadows, uWhites, uBlacks),
-    toneMapChannel(afterContrast.b, uHighlights, uShadows, uWhites, uBlacks)
+    applyWhites(afterContrast.r, uWhites),
+    applyWhites(afterContrast.g, uWhites),
+    applyWhites(afterContrast.b, uWhites)
+  ), 0.0, 1.0);
+  c = clamp(vec3(
+    applyBlacks(c.r, uBlacks),
+    applyBlacks(c.g, uBlacks),
+    applyBlacks(c.b, uBlacks)
   ), 0.0, 1.0);
 
   c = applyToneCurve(c);
@@ -582,6 +903,14 @@ void main() {
   // since there's no true sensor headroom above 1.0
   if (uIsFallbackPreview) {
     c = clamp(c, 0.0, 1.0);
+  }
+
+  // Local adjustment masks (after global tone, in display space).
+  for (int mi = 0; mi < MAX_MASKS; mi++) {
+    if (mi >= uMaskCount) break;
+    float mcov = maskCoverage(mi, srcUv);
+    if (mcov <= 0.0) continue;
+    c = applyMaskAdj(c, uMaskAdj0[mi], uMaskAdj1[mi], uMaskAdj2[mi].x, mcov, srcUv);
   }
 
   // Creative effects: vignette then grain (applied in display/output space)

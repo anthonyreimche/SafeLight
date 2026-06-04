@@ -40,6 +40,7 @@ If you'd like to help make this software more powerful, feel free to help!
 - Image sharpen / denoise support (WASM-based)
 - Lens correction profiles
 - Vignette and grain effects
+- Image masking and touchup removal / cloning support
 
 ## Loupe Viewer
 <img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/668808bb-f7a4-4707-841a-1d9b0f582406" />
@@ -56,7 +57,6 @@ If you'd like to help make this software more powerful, feel free to help!
 
 # To Do
 - Parametric highlight recovery
-- Image masking and touchup removal / cloning support
 - Red eye correction
 - Image compare support
 - Color, BW, and HDR image support

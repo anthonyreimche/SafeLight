@@ -81,10 +81,35 @@ export function buildCurveLUT(points: CurvePoint[]): Uint8Array {
   return lut;
 }
 
-// Compose the master (RGB) curve with each per-channel curve into one 256×1
-// RGBA LUT: the master curve is applied first, then the channel's own curve, so
-// finalChannel[i] = channelCurve(rgbCurve(i)). The shader samples .r/.g/.b.
+// Adobe Color baseline tone response (approximation).
+//
+// Lightroom's "Adobe Color" profile bakes a base tone curve into the render
+// *before* any slider or point-curve edit. SafeLight had no profile (flat
+// identity), which is why its render didn't match LR. The Adobe Color baseline
+// is a contrast curve that sits BELOW the diagonal: it anchors/crushes the
+// blacks and gently darkens the lower midtones, then rejoins at white — giving
+// the deep blacks and contrast LR shows (its histogram touches the left edge).
+//
+// These points match the hand-tuned curve verified against Lightroom for the
+// reference shot. Points are display-space (x = input 0..1 -> y = output 0..1).
+// Tune to taste: lower the 0.13/0.5 y-values for deeper blacks / more contrast,
+// raise them toward the diagonal for a flatter look.
+// NOTE: applied to every image, RAW or not — a future profile system should gate
+// this to RAW / make it selectable.
+const ADOBE_COLOR_BASE: CurvePoint[] = [
+  { x: 0.0, y: 0.0 },
+  { x: 0.13, y: 0.04 },
+  { x: 0.5, y: 0.42 },
+  { x: 0.75, y: 0.7 },
+  { x: 1.0, y: 1.0 },
+];
+
+// Compose the profile base curve with the master (RGB) curve and each per-channel
+// curve into one 256×1 RGBA LUT. Order matches LR: profile baseline first, then
+// the user's master curve, then the channel's own curve, so
+// finalChannel[i] = channelCurve(rgbCurve(baseCurve(i))). The shader samples .r/.g/.b.
 export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
+  const baseProfile = buildCurveLUT(ADOBE_COLOR_BASE);
   const rgb = buildCurveLUT(curves.rgb);
   const red = buildCurveLUT(curves.red);
   const green = buildCurveLUT(curves.green);
@@ -92,7 +117,7 @@ export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
 
   const out = new Uint8Array(256 * 4);
   for (let i = 0; i < 256; i++) {
-    const base = rgb[i];
+    const base = rgb[baseProfile[i]];
     out[i * 4] = red[base];
     out[i * 4 + 1] = green[base];
     out[i * 4 + 2] = blue[base];

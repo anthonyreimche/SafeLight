@@ -157,6 +157,84 @@ export interface GrainParams {
   roughness: number;  // 0..100 regularity
 }
 
+// Local adjustments carried by a mask. A subset of the global develop controls,
+// all -100..100 with 0 = no effect. Applied only where the mask covers.
+export interface MaskAdjustments {
+  exposure: number;
+  contrast: number;
+  highlights: number;
+  shadows: number;
+  saturation: number;
+  temperature: number; // relative warm(+)/cool(-)
+  tint: number;        // magenta(+)/green(-)
+  clarity: number;
+  sharpness: number;
+}
+
+export type MaskType = "linear" | "radial" | "brush";
+
+// One freehand brush dab, in source-UV space. radius is in image-height units.
+export interface BrushDab {
+  x: number;
+  y: number;
+  radius: number;
+  erase: boolean;
+}
+
+// Linear gradient geometry: effect ramps 0->1 from p0 to p1 (source-UV).
+export interface LinearMaskGeo {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+// Radial geometry in source-UV: center + per-axis radii (so it stays round on
+// screen regardless of image aspect) + edge feather (0..1 of the radius).
+export interface RadialMaskGeo {
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  feather: number;
+  angle: number; // rotation, radians (0 = axis-aligned)
+}
+
+export interface BrushMaskGeo {
+  dabs: BrushDab[];
+  feather: number; // 0..1 edge softness of each dab
+}
+
+export interface Mask {
+  id: string;
+  type: MaskType;
+  name: string;
+  invert: boolean;
+  opacity: number; // 0..100 overall strength
+  adj: MaskAdjustments;
+  linear?: LinearMaskGeo;
+  radial?: RadialMaskGeo;
+  brush?: BrushMaskGeo;
+}
+
+// A spot-removal target: paint the destination with pixels sampled from a
+// source offset. heal blends to match surrounding tone; clone copies verbatim.
+// shape "circle" is a single disc; "brush" is a freehand painted region (dabs),
+// with the same source offset applied across the whole shape.
+export interface RetouchSpot {
+  id: string;
+  mode: "heal" | "clone";
+  shape: "circle" | "brush";
+  dstX: number; // destination center / anchor (source-UV)
+  dstY: number;
+  srcX: number; // sample source center / anchor (source-UV)
+  srcY: number;
+  radius: number; // image-height units (circle radius; brush draw radius)
+  feather: number; // 0..100
+  opacity: number; // 0..100
+  dabs?: BrushDab[]; // brush shape, when shape === "brush"
+}
+
 export interface DevelopParams {
   exposure: number;
   contrast: number;
@@ -190,6 +268,27 @@ export interface DevelopParams {
   lensCorrection: LensCorrectionParams;
   vignette: VignetteParams;
   grain: GrainParams;
+  masks: Mask[];
+  retouch: RetouchSpot[];
+}
+
+export const MAX_MASKS = 8;
+export const MAX_RETOUCH = 16;
+export const MAX_BRUSH_MASKS = 4; // brush coverage packs into one RGBA texture
+export const MAX_RETOUCH_BRUSH = 4; // brush-shaped retouch packs into one RGBA texture
+
+export function defaultMaskAdjustments(): MaskAdjustments {
+  return {
+    exposure: 0,
+    contrast: 0,
+    highlights: 0,
+    shadows: 0,
+    saturation: 0,
+    temperature: 0,
+    tint: 0,
+    clarity: 0,
+    sharpness: 0,
+  };
 }
 
 export const DEFAULT_TRANSFORM: TransformParams = {
@@ -307,6 +406,8 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   lensCorrection: { ...DEFAULT_LENS_CORRECTION },
   vignette: { ...DEFAULT_VIGNETTE },
   grain: { ...DEFAULT_GRAIN },
+  masks: [],
+  retouch: [],
 };
 
 function normalizeTransform(
@@ -444,6 +545,112 @@ function normalizeGrain(
   };
 }
 
+const clampN = (v: unknown, lo: number, hi: number, d: number) =>
+  typeof v === "number" && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d;
+
+function normalizeMaskAdjustments(
+  a: Partial<MaskAdjustments> | undefined,
+): MaskAdjustments {
+  return {
+    exposure: clampN(a?.exposure, -100, 100, 0),
+    contrast: clampN(a?.contrast, -100, 100, 0),
+    highlights: clampN(a?.highlights, -100, 100, 0),
+    shadows: clampN(a?.shadows, -100, 100, 0),
+    saturation: clampN(a?.saturation, -100, 100, 0),
+    temperature: clampN(a?.temperature, -100, 100, 0),
+    tint: clampN(a?.tint, -100, 100, 0),
+    clarity: clampN(a?.clarity, -100, 100, 0),
+    sharpness: clampN(a?.sharpness, -100, 100, 0),
+  };
+}
+
+function normalizeMasks(masks: unknown): Mask[] {
+  if (!Array.isArray(masks)) return [];
+  const out: Mask[] = [];
+  for (const raw of masks as Partial<Mask>[]) {
+    if (!raw || (raw.type !== "linear" && raw.type !== "radial" && raw.type !== "brush"))
+      continue;
+    const m: Mask = {
+      id: typeof raw.id === "string" ? raw.id : `mask-${out.length}-${Date.now()}`,
+      type: raw.type,
+      name: typeof raw.name === "string" ? raw.name : raw.type,
+      invert: !!raw.invert,
+      opacity: clampN(raw.opacity, 0, 100, 100),
+      adj: normalizeMaskAdjustments(raw.adj),
+    };
+    if (raw.type === "linear" && raw.linear) {
+      m.linear = {
+        x0: clampN(raw.linear.x0, -2, 2, 0.5),
+        y0: clampN(raw.linear.y0, -2, 2, 0.2),
+        x1: clampN(raw.linear.x1, -2, 2, 0.5),
+        y1: clampN(raw.linear.y1, -2, 2, 0.8),
+      };
+    } else if (raw.type === "radial" && raw.radial) {
+      m.radial = {
+        cx: clampN(raw.radial.cx, -2, 2, 0.5),
+        cy: clampN(raw.radial.cy, -2, 2, 0.5),
+        rx: clampN(raw.radial.rx, 0.001, 4, 0.3),
+        ry: clampN(raw.radial.ry, 0.001, 4, 0.3),
+        feather: clampN(raw.radial.feather, 0, 1, 0.5),
+        angle: clampN(raw.radial.angle, -7, 7, 0),
+      };
+    } else if (raw.type === "brush") {
+      const dabs = Array.isArray(raw.brush?.dabs) ? raw.brush!.dabs : [];
+      m.brush = {
+        feather: clampN(raw.brush?.feather, 0, 1, 0.5),
+        dabs: dabs
+          .filter((d): d is BrushDab => !!d && typeof d.x === "number")
+          .map((d) => ({
+            x: clampN(d.x, -2, 2, 0),
+            y: clampN(d.y, -2, 2, 0),
+            radius: clampN(d.radius, 0.001, 2, 0.05),
+            erase: !!d.erase,
+          })),
+      };
+    } else {
+      continue; // declared type but no geometry — drop
+    }
+    out.push(m);
+    if (out.length >= MAX_MASKS) break;
+  }
+  return out;
+}
+
+function normalizeRetouch(spots: unknown): RetouchSpot[] {
+  if (!Array.isArray(spots)) return [];
+  const out: RetouchSpot[] = [];
+  for (const raw of spots as Partial<RetouchSpot>[]) {
+    if (!raw || typeof raw.dstX !== "number") continue;
+    const shape = raw.shape === "brush" ? "brush" : "circle";
+    const dabs =
+      shape === "brush" && Array.isArray(raw.dabs)
+        ? raw.dabs
+            .filter((d): d is BrushDab => !!d && typeof d.x === "number")
+            .map((d) => ({
+              x: clampN(d.x, -2, 2, 0),
+              y: clampN(d.y, -2, 2, 0),
+              radius: clampN(d.radius, 0.001, 2, 0.04),
+              erase: !!d.erase,
+            }))
+        : undefined;
+    out.push({
+      id: typeof raw.id === "string" ? raw.id : `spot-${out.length}-${Date.now()}`,
+      mode: raw.mode === "clone" ? "clone" : "heal",
+      shape,
+      dstX: clampN(raw.dstX, -1, 2, 0.5),
+      dstY: clampN(raw.dstY, -1, 2, 0.5),
+      srcX: clampN(raw.srcX, -1, 2, 0.5),
+      srcY: clampN(raw.srcY, -1, 2, 0.5),
+      radius: clampN(raw.radius, 0.002, 1, 0.04),
+      feather: clampN(raw.feather, 0, 100, 50),
+      opacity: clampN(raw.opacity, 0, 100, 100),
+      ...(dabs ? { dabs } : {}),
+    });
+    if (out.length >= MAX_RETOUCH) break;
+  }
+  return out;
+}
+
 // Merge a (possibly partial / legacy) params object with current defaults so
 // snapshots saved before a field existed still load cleanly.
 export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopParams {
@@ -466,6 +673,8 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
     lensCorrection: normalizeLensCorrection(p?.lensCorrection),
     vignette: normalizeVignette(p?.vignette),
     grain: normalizeGrain(p?.grain),
+    masks: normalizeMasks(p?.masks),
+    retouch: normalizeRetouch(p?.retouch),
   };
 }
 

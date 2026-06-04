@@ -11,7 +11,7 @@ const MODES: { key: Mode; label: string; active: string }[] = [
   { key: "blue", label: "B", active: "#4aa3ff" },
 ];
 
-// Lightroom-style tonal zones across the histogram, left (dark) to right (light).
+// Tonal zones across the histogram, left (dark) to right (light).
 export type HistogramZone =
   | "blacks"
   | "shadows"

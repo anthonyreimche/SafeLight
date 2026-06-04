@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/ui/components/AppShell";
 import { DevelopSidebar } from "./DevelopSidebar";
+import { DevelopLeftSidebar } from "./DevelopLeftSidebar";
 import { DevelopCanvas } from "./DevelopCanvas";
 import { ZoomControls } from "@/ui/ZoomControls";
 import { useCatalogStore } from "@/state/catalog-store";
@@ -25,6 +26,7 @@ export function DevelopView() {
 
   return (
     <AppShell
+      leftSidebar={<DevelopLeftSidebar />}
       rightSidebar={<DevelopSidebar />}
       statusBar={
         activePhoto && (
