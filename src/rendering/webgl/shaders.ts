@@ -28,6 +28,8 @@ uniform vec4 uCrop;         // x, y, width, height (transformed image space, y-d
 uniform mat3 uInvTransform; // transformed-image coord -> source UV (projective)
 uniform bool uLinear;       // true: source texture is linear float (RAW); skip sRGB decode
 uniform bool uIsFallbackPreview; // true: source is pseudo-linear from 8-bit JPEG preview
+uniform bool uApplyBaseCurve; // true: full-res RAW float decode -- add the default camera
+                              // tone curve the already-rendered preview/export bitmaps carry
 
 uniform float uExposure;
 uniform float uContrast;
@@ -780,6 +782,22 @@ void main() {
   // survive past 1.0 into the recovery stage. RAW input is already linear.
   // Fallback preview is already pseudo-linear (inverse gamma applied in JS).
   vec3 lin = uLinear ? src : (uIsFallbackPreview ? src : srgbToLinear(src));
+
+  // Default base tone curve. The full-res RAW float decode is scene-linear, so
+  // its default render is flat compared with the preview/export/loupe views,
+  // which inherit a camera-style contrast curve from their already-rendered
+  // bitmaps. Re-create that curve here so all views match. Applied in display
+  // space, then returned to linear so the downstream linear edits (WB, exposure,
+  // highlight recovery) are unchanged; HDR highlights above 1.0 pass through
+  // untouched so recovery still has headroom. Tune BASE_CONTRAST to taste.
+  if (uApplyBaseCurve) {
+    const float BASE_CONTRAST = 0.55; // 0 = flat (linear), 1 = full smoothstep S
+    vec3 d  = linearToSrgbU(lin);            // display-space; may exceed 1.0
+    vec3 dc = clamp(d, 0.0, 1.0);
+    vec3 s  = dc * dc * (3.0 - 2.0 * dc);    // smoothstep S-curve, pivot 0.5
+    vec3 c  = mix(dc, s, BASE_CONTRAST) + max(d - 1.0, 0.0);
+    lin = srgbToLinear(c);
+  }
 
   // Noise reduction, applied before exposure so it isn't amplified. Color NR
   // replaces chroma with a blurred (mip) version -- kills the rainbow speckle

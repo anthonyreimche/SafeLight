@@ -2,13 +2,19 @@ import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
 import type { MaskAdjustments, MaskType } from "@/catalog/types";
-import { MAX_MASKS } from "@/catalog/types";
+import { MAX_MASKS, defaultMaskAdjustments } from "@/catalog/types";
 
 const TOOL_LABELS: { type: MaskType; label: string }[] = [
   { type: "radial", label: "Radial" },
   { type: "linear", label: "Linear" },
   { type: "brush", label: "Brush" },
 ];
+
+const TYPE_ICON: Record<MaskType, string> = {
+  radial: "◯",
+  linear: "▤",
+  brush: "✎",
+};
 
 const ADJ_SLIDERS: { key: keyof MaskAdjustments; label: string }[] = [
   { key: "exposure", label: "Exposure" },
@@ -45,8 +51,38 @@ export function MasksPanel() {
   const masking = activeTool === "mask";
   const selected = masks.find((m) => m.id === selectedMaskId) ?? null;
 
+  // Radial edge feather lives on the geometry; expose it 0..100 in the selected
+  // section.
+  const featherPct =
+    selected?.type === "radial"
+      ? Math.round((selected.radial?.feather ?? 0.5) * 100)
+      : null;
+  const setRadialFeather = (v: number) => {
+    if (selected?.type === "radial" && selected.radial)
+      updateMask(selected.id, { radial: { ...selected.radial, feather: v / 100 } });
+  };
+
+  // The brush's Feather is a tool setting that controls the brush, not any
+  // existing mask. Painting stamps the current value onto the mask being drawn.
+  const brushFeatherVal = Math.round(brushFeather * 100);
+  const onBrushFeather = (v: number) => setBrushFeather(v / 100);
+
+  const resetAdj = () => {
+    if (!selected) return;
+    updateMaskAdj(selected.id, defaultMaskAdjustments());
+    commitEdit("Mask Reset");
+  };
+
   const pickTool = (t: MaskType) => {
     setMaskToolType(t);
+    setActiveTool("mask");
+  };
+
+  // Clicking a mask row opens it for editing: select it and bring up its on-image
+  // handles by activating the matching tool.
+  const editMask = (m: (typeof masks)[number]) => {
+    selectMask(m.id);
+    setMaskToolType(m.type);
     setActiveTool("mask");
   };
 
@@ -64,7 +100,7 @@ export function MasksPanel() {
                   : "bg-surface-2 text-text-secondary hover:text-text-primary"
               }`}
             >
-              {t.label}
+              {TYPE_ICON[t.type]} {t.label}
             </button>
           ))}
         </div>
@@ -100,12 +136,12 @@ export function MasksPanel() {
             />
             <Slider
               label="Feather"
-              value={Math.round(brushFeather * 100)}
+              value={brushFeatherVal}
               min={0}
               max={100}
               step={1}
               defaultValue={50}
-              onChange={(v) => setBrushFeather(v / 100)}
+              onChange={onBrushFeather}
             />
             <label className="flex items-center gap-1.5 px-0.5 text-[11px] text-text-secondary">
               <input
@@ -114,6 +150,7 @@ export function MasksPanel() {
                 onChange={(e) => setBrushErase(e.target.checked)}
               />
               Erase
+              <span className="text-text-muted">· hold Alt to erase · [ ] resize</span>
             </label>
           </div>
         )}
@@ -123,13 +160,16 @@ export function MasksPanel() {
             {masks.map((m) => (
               <div
                 key={m.id}
-                onClick={() => selectMask(m.id)}
+                onClick={() => editMask(m)}
                 className={`flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-[11px] ${
                   m.id === selectedMaskId
                     ? "bg-accent/20 text-text-primary"
                     : "text-text-secondary hover:bg-surface-2"
                 }`}
               >
+                <span className="w-3 shrink-0 text-center text-text-muted">
+                  {TYPE_ICON[m.type]}
+                </span>
                 <span className="flex-1 truncate">
                   {m.name}
                   {m.type === "brush" ? ` (${m.brush?.dabs.length ?? 0})` : ""}
@@ -163,8 +203,17 @@ export function MasksPanel() {
 
         {selected && (
           <div className="space-y-0.5 border-t border-border-subtle pt-2">
-            <div className="pb-1 text-[10px] uppercase tracking-wider text-text-muted">
-              {selected.name} adjustments
+            <div className="flex items-center justify-between pb-1">
+              <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                {selected.name} adjustments
+              </span>
+              <button
+                onClick={resetAdj}
+                title="Reset this mask's adjustments"
+                className="rounded px-1 text-[10px] text-text-muted hover:text-text-primary"
+              >
+                Reset
+              </button>
             </div>
             <Slider
               label="Amount"
@@ -176,6 +225,18 @@ export function MasksPanel() {
               onChange={(v) => updateMask(selected.id, { opacity: v })}
               onCommit={() => commitEdit("Mask Amount")}
             />
+            {featherPct != null && (
+              <Slider
+                label="Feather"
+                value={featherPct}
+                min={0}
+                max={100}
+                step={1}
+                defaultValue={50}
+                onChange={setRadialFeather}
+                onCommit={() => commitEdit("Mask Feather")}
+              />
+            )}
             {ADJ_SLIDERS.map((s) => (
               <Slider
                 key={s.key}

@@ -1,5 +1,9 @@
 import { useEffect } from "react";
 import { useUIStore } from "@/state/ui-store";
+import { useDevelopStore } from "@/state/develop-store";
+
+const clampSize = (v: number, lo: number, hi: number) =>
+  Math.max(lo, Math.min(hi, Number(v.toFixed(3))));
 
 export function useKeyboardShortcuts() {
   const setActiveModule = useUIStore((s) => s.setActiveModule);
@@ -35,6 +39,18 @@ export function useKeyboardShortcuts() {
             document.documentElement.requestFullscreen?.();
           }
           break;
+        case "[":
+        case "]": {
+          // Shrink ([) / grow (]) the active brush, Lightroom-style.
+          const ds = useDevelopStore.getState();
+          const dir = e.key === "]" ? 1 : -1;
+          if (ds.activeTool === "mask" && ds.maskToolType === "brush") {
+            ds.setBrushSize(clampSize(ds.brushSize + dir * 0.01, 0.01, 0.5));
+          } else if (ds.activeTool === "retouch") {
+            ds.setRetouchSize(clampSize(ds.retouchSize + dir * 0.005, 0.01, 0.3));
+          }
+          break;
+        }
       }
     };
 

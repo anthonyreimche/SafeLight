@@ -4,7 +4,7 @@
 // or location metadata — fitting for a privacy-first tool.
 
 import type { CatalogPhoto } from "@/catalog/types";
-import { loadPhotoBitmap } from "@/catalog/load-image";
+import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedParams } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { ZipWriter } from "./zip";
@@ -91,16 +91,30 @@ async function renderOne(
   photo: CatalogPhoto,
   settings: ExportSettings,
 ): Promise<Blob | null> {
-  const bitmap = await loadPhotoBitmap(photo);
-  if (!bitmap) return null;
+  // Same decode as Develop/Loupe: full-res RAW float when available (gets the
+  // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
+  const image = await loadPhotoImage(photo);
+  if (!image) return null;
+  const bitmap = image.kind === "bitmap" ? image.bitmap : null;
   try {
-    const maxEdge = settings.longEdge ?? Math.max(bitmap.width, bitmap.height);
-    renderer.setImage(bitmap, maxEdge);
+    const w = image.kind === "bitmap" ? image.bitmap.width : image.width;
+    const h = image.kind === "bitmap" ? image.bitmap.height : image.height;
+    const maxEdge = settings.longEdge ?? Math.max(w, h);
+    const isFallback =
+      image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
+    // Cached develop preview is linear-encoded RAW; it needs the base tone curve.
+    const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
+    renderer.setImage(
+      image.kind === "bitmap" ? image.bitmap : image,
+      maxEdge,
+      isFallback,
+      cachedRaw,
+    );
     renderer.setParams(await loadSavedParams(photo.id));
     renderer.render();
     return await canvasToBlob(canvas, settings.format, settings.quality);
   } finally {
-    bitmap.close();
+    bitmap?.close();
   }
 }
 

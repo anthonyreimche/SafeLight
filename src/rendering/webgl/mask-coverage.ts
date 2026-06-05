@@ -8,8 +8,7 @@ const BAKE_SIZE = 768; // coverage resolution; soft shapes tolerate downscaling
 
 export interface CoverageItem {
   id: string;
-  dabs: BrushDab[];
-  feather: number; // 0..1 edge softness
+  dabs: BrushDab[]; // each dab carries its own feather (0..1)
 }
 
 export interface CoverageResult {
@@ -25,12 +24,10 @@ export function coverageSignature(items: CoverageItem[]): string {
       (it) =>
         it.id +
         ":" +
-        it.feather.toFixed(3) +
-        ":" +
         it.dabs
           .map(
             (d) =>
-              `${d.x.toFixed(4)},${d.y.toFixed(4)},${d.radius.toFixed(4)},${d.erase ? 1 : 0}`,
+              `${d.x.toFixed(4)},${d.y.toFixed(4)},${d.radius.toFixed(4)},${d.feather.toFixed(3)},${d.erase ? 1 : 0}`,
           )
           .join("|"),
     )
@@ -38,6 +35,13 @@ export function coverageSignature(items: CoverageItem[]): string {
 }
 
 // Bake up to four coverage items into an RGBA atlas. Returns null when empty.
+//
+// Coverage is encoded as luminance on an opaque black canvas, and dabs are
+// composited with "lighten" (per-pixel max) for paint and "darken" (min) for
+// erase. Taking the max — rather than summing alpha — means overlapping dabs
+// combine as a union without washing out their soft edges, so a soft dab and a
+// hard dab painted into the same mask each keep their own feather. Each dab's
+// feather sets the width of its own radial falloff.
 export function bakeCoverage(
   items: CoverageItem[],
   imageAspect: number,
@@ -57,30 +61,48 @@ export function bakeCoverage(
 
   list.forEach((item, ch) => {
     channelOf[item.id] = ch;
-    ctx.clearRect(0, 0, BAKE_SIZE, BAKE_SIZE);
-    const feather = item.feather;
+
+    // Opaque black base; coverage lives in the luminance (R) channel.
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, BAKE_SIZE, BAKE_SIZE);
+
     for (const dab of item.dabs) {
       const ry = dab.radius * BAKE_SIZE;
       const rx = (dab.radius / aspect) * BAKE_SIZE;
       if (rx < 0.3 || ry < 0.3) continue;
+      const core = Math.max(0, Math.min(1, 1 - dab.feather)); // solid centre fraction
+
       ctx.save();
       ctx.translate(dab.x * BAKE_SIZE, dab.y * BAKE_SIZE);
       ctx.scale(rx, ry);
       const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-      const core = Math.max(0, 1 - feather);
-      grad.addColorStop(0, "rgba(255,255,255,1)");
-      grad.addColorStop(core, "rgba(255,255,255,1)");
-      grad.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.globalCompositeOperation = dab.erase ? "destination-out" : "lighter";
+      if (dab.erase) {
+        // Punch a hole: 0 (erased) in the core, fading to white (no-op) at the
+        // edge, combined with the existing coverage by min().
+        grad.addColorStop(0, "#000");
+        grad.addColorStop(core, "#000");
+        grad.addColorStop(1, "#fff");
+        ctx.globalCompositeOperation = "darken";
+      } else {
+        // Paint: full coverage in the core, fading to 0 at the edge, combined by
+        // max() so it unions cleanly with neighbouring dabs.
+        grad.addColorStop(0, "#fff");
+        grad.addColorStop(core, "#fff");
+        grad.addColorStop(1, "#000");
+        ctx.globalCompositeOperation = "lighten";
+      }
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.arc(0, 0, 1, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
+    ctx.globalCompositeOperation = "source-over";
+
     const img = ctx.getImageData(0, 0, BAKE_SIZE, BAKE_SIZE).data;
     for (let i = 0; i < BAKE_SIZE * BAKE_SIZE; i++) {
-      out[i * 4 + ch] = img[i * 4 + 3];
+      out[i * 4 + ch] = img[i * 4]; // R channel holds the coverage value
     }
   });
 

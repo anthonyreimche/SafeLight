@@ -45,8 +45,9 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
   const spots = useDevelopStore((s) => s.params.retouch);
   const selectedMaskId = useDevelopStore((s) => s.selectedMaskId);
   const selectedSpotId = useDevelopStore((s) => s.selectedSpotId);
+  const brushErase = useDevelopStore((s) => s.brushErase);
 
-  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  const [cursor, setCursor] = useState<{ x: number; y: number; alt: boolean } | null>(null);
 
   // --- coordinate transforms -------------------------------------------------
   const toSource = (px: number, py: number) => {
@@ -184,7 +185,13 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       // circular spot on release.
       const id = genId("spot");
       const off = Math.max(0.04, st.retouchSize * 1.5);
-      const firstDab: BrushDab = { x: down.x, y: down.y, radius: st.retouchSize, erase: false };
+      const firstDab: BrushDab = {
+        x: down.x,
+        y: down.y,
+        radius: st.retouchSize,
+        erase: false,
+        feather: st.retouchFeather / 100,
+      };
       const spot: RetouchSpot = {
         id,
         mode: st.retouchMode,
@@ -252,7 +259,13 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
         } else {
           st.selectMask(target.id);
         }
-        st.addBrushDab(target.id, { x: down.x, y: down.y, radius: st.brushSize, erase: st.brushErase });
+        st.addBrushDab(target.id, {
+          x: down.x,
+          y: down.y,
+          radius: st.brushSize,
+          erase: e.altKey || st.brushErase, // hold Alt to erase, Lightroom-style
+          feather: st.brushFeather,
+        });
         dragRef.current = { kind: "brush", id: target.id, downSrc: down, lastDab: down };
       }
     }
@@ -261,7 +274,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
   const onPointerMove = (e: React.PointerEvent) => {
     const px = e.nativeEvent.offsetX;
     const py = e.nativeEvent.offsetY;
-    setCursor({ x: px, y: py });
+    setCursor({ x: px, y: py, alt: e.altKey });
     const d = dragRef.current;
     if (!d) return;
     const cur = toSource(px, py);
@@ -323,8 +336,15 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       case "brush": {
         const last = d.lastDab ?? d.downSrc;
         const dist = Math.hypot((cur.x - last.x) * imageAspect, cur.y - last.y);
-        if (dist >= st.brushSize * 0.5) {
-          st.addBrushDab(d.id!, { x: cur.x, y: cur.y, radius: st.brushSize, erase: st.brushErase });
+        // Tight spacing keeps the stroke smooth instead of beaded.
+        if (dist >= st.brushSize * 0.25) {
+          st.addBrushDab(d.id!, {
+            x: cur.x,
+            y: cur.y,
+            radius: st.brushSize,
+            erase: e.altKey || st.brushErase,
+            feather: st.brushFeather,
+          });
           d.lastDab = cur;
         }
         break;
@@ -332,8 +352,14 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       case "retouch-paint": {
         const last = d.lastDab ?? d.downSrc;
         const dist = Math.hypot((cur.x - last.x) * imageAspect, cur.y - last.y);
-        if (dist >= st.retouchSize * 0.5 && d.dabs) {
-          d.dabs.push({ x: cur.x, y: cur.y, radius: st.retouchSize, erase: false });
+        if (dist >= st.retouchSize * 0.25 && d.dabs) {
+          d.dabs.push({
+            x: cur.x,
+            y: cur.y,
+            radius: st.retouchSize,
+            erase: false,
+            feather: st.retouchFeather / 100,
+          });
           st.updateSpot(d.id!, { dabs: [...d.dabs] });
           d.lastDab = cur;
         }
@@ -471,7 +497,16 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
 
         {/* Tool cursors */}
         {showBrushCursor && (
-          <circle cx={cursor!.x} cy={cursor!.y} r={Math.max(3, brushPx)} fill="none" stroke="#fff" strokeWidth={1} opacity={0.7} />
+          <circle
+            cx={cursor!.x}
+            cy={cursor!.y}
+            r={Math.max(3, brushPx)}
+            fill="none"
+            stroke={cursor!.alt || brushErase ? "#ff6b6b" : "#fff"}
+            strokeWidth={1}
+            strokeDasharray={cursor!.alt || brushErase ? "4 3" : undefined}
+            opacity={0.8}
+          />
         )}
         {showSpotCursor && (
           <circle cx={cursor!.x} cy={cursor!.y} r={Math.max(3, spotPx)} fill="none" stroke="#4affa3" strokeWidth={1} opacity={0.8} />

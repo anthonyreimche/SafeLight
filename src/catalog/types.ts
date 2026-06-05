@@ -179,6 +179,7 @@ export interface BrushDab {
   y: number;
   radius: number;
   erase: boolean;
+  feather: number; // 0..1 edge softness, captured from the brush at paint time
 }
 
 // Linear gradient geometry: effect ramps 0->1 from p0 to p1 (source-UV).
@@ -605,6 +606,7 @@ function normalizeMasks(masks: unknown): Mask[] {
             y: clampN(d.y, -2, 2, 0),
             radius: clampN(d.radius, 0.001, 2, 0.05),
             erase: !!d.erase,
+            feather: clampN(d.feather, 0, 1, 0.5),
           })),
       };
     } else {
@@ -631,6 +633,7 @@ function normalizeRetouch(spots: unknown): RetouchSpot[] {
               y: clampN(d.y, -2, 2, 0),
               radius: clampN(d.radius, 0.001, 2, 0.04),
               erase: !!d.erase,
+              feather: clampN(d.feather, 0, 1, 0.5),
             }))
         : undefined;
     out.push({

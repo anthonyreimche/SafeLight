@@ -99,10 +99,11 @@ export function useDevelopRenderer(
     const renderImage = (
       image: ImageBitmap | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean },
       isFallback = false,
+      cachedRaw = false,
     ) => {
       const renderer = rendererRef.current;
       if (cancelled || !renderer) return;
-      renderer.setImage(image, DEVELOP_MAX_EDGE, isFallback);
+      renderer.setImage(image, DEVELOP_MAX_EDGE, isFallback, cachedRaw);
       const st = useDevelopStore.getState();
       renderer.setParams(forRender(st.params, st.cropping));
       renderer.render();
@@ -134,7 +135,10 @@ export function useDevelopRenderer(
       if (!image) { setLoading(false); return; }
 
       const isFallback = image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
-      renderImage(image.kind === "bitmap" ? image.bitmap : image, isFallback);
+      // The cached develop preview is a linear-encoded RAW bitmap — it still
+      // needs the base tone curve, unlike a genuine camera-rendered bitmap.
+      const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
+      renderImage(image.kind === "bitmap" ? image.bitmap : image, isFallback, cachedRaw);
 
       if (image.kind === "float") {
         setSource(

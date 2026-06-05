@@ -3,9 +3,14 @@ import type { RefObject } from "react";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
-import { loadPhotoBitmap } from "@/catalog/load-image";
+import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedParams } from "@/catalog/edit-params";
 import { useCatalogStore } from "@/state/catalog-store";
+
+// Loupe zooms to 1:1, so decode at (up to) full sensor resolution like Develop
+// rather than the 2560px interactive cap — otherwise a RAW whose libraw bitmap
+// path falls back to the small embedded preview shows up soft/low-res.
+const LOUPE_MAX_EDGE = 6144;
 
 interface RendererStatus {
   supported: boolean;
@@ -66,18 +71,31 @@ export function useLoupeRenderer(
     let cancelled = false;
     if (!rendererRef.current) return;
     setLoading(true);
-    Promise.all([loadPhotoBitmap(photo), loadSavedParams(photo.id)]).then(
-      ([bitmap, saved]) => {
+    Promise.all([loadPhotoImage(photo), loadSavedParams(photo.id)]).then(
+      ([image, saved]) => {
         const renderer = rendererRef.current;
         if (cancelled || !renderer) {
-          bitmap?.close();
+          if (image?.kind === "bitmap") image.bitmap.close();
           setLoading(false);
           return;
         }
         savedParamsRef.current = saved;
-        if (bitmap) {
-          renderer.setImage(bitmap);
-          bitmap.close();
+        if (image) {
+          // Same decode as Develop: full-res RAW float when available (gets the
+          // base tone curve in the renderer), else the 8-bit bitmap. Keeps Loupe
+          // pixel-consistent with Develop at full resolution.
+          const isFallback =
+            image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
+          // Cached develop preview is linear-encoded RAW; it needs the base tone
+          // curve, unlike a genuine camera-rendered bitmap.
+          const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
+          renderer.setImage(
+            image.kind === "bitmap" ? image.bitmap : image,
+            LOUPE_MAX_EDGE,
+            isFallback,
+            cachedRaw,
+          );
+          if (image.kind === "bitmap") image.bitmap.close();
         }
         renderer.setParams(
           showBeforeRef.current ? DEFAULT_DEVELOP_PARAMS : saved,

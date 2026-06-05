@@ -1,22 +1,35 @@
-import type { DevelopParams } from "@/catalog/types";
+import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
+import type { DecodedImage } from "@/catalog/load-image";
+import { loadPhotoImage } from "@/catalog/load-image";
+import { computeHistogram, type HistogramData } from "@/rendering/histogram";
 import { WebGLRenderer } from "./webgl/renderer";
 
-// A single, lazily-created offscreen WebGL renderer shared by all edited-
-// thumbnail generation. Reused across photos so we never pay context-creation
-// cost per thumbnail, and kept alive for the session for fast re-renders.
-let canvas: HTMLCanvasElement | null = null;
-let renderer: WebGLRenderer | null = null;
-let unavailable = false;
+// Two lazily-created offscreen renderers: one drives grid-thumbnail JPEGs, the
+// other the Library histogram. They are kept separate so a histogram render can't
+// clobber the shared canvas midway through a thumbnail's async toBlob (and vice
+// versa). Each is reused across the session to avoid per-call context cost.
+interface Ctx {
+  canvas: HTMLCanvasElement;
+  renderer: WebGLRenderer;
+}
+let thumbCtx: Ctx | null = null;
+let histCtx: Ctx | null = null;
+let thumbDead = false;
+let histDead = false;
 
-function getRenderer(): WebGLRenderer | null {
-  if (renderer) return renderer;
-  if (unavailable) return null;
+function getCtx(which: "thumb" | "hist"): Ctx | null {
+  const cur = which === "thumb" ? thumbCtx : histCtx;
+  if (cur) return cur;
+  if (which === "thumb" ? thumbDead : histDead) return null;
   try {
-    canvas = document.createElement("canvas");
-    renderer = new WebGLRenderer(canvas);
-    return renderer;
+    const canvas = document.createElement("canvas");
+    const ctx: Ctx = { canvas, renderer: new WebGLRenderer(canvas) };
+    if (which === "thumb") thumbCtx = ctx;
+    else histCtx = ctx;
+    return ctx;
   } catch {
-    unavailable = true;
+    if (which === "thumb") thumbDead = true;
+    else histDead = true;
     return null;
   }
 }
@@ -24,22 +37,69 @@ function getRenderer(): WebGLRenderer | null {
 // Grid thumbnails never need more than a few hundred px; this keeps each render
 // (and the resulting JPEG) cheap while staying crisp at large grid sizes.
 const MAX_THUMB_EDGE = 640;
+// The histogram only needs enough pixels for a stable distribution.
+const MAX_HIST_EDGE = 512;
 
-// Render a source bitmap through the develop pipeline with the given params and
-// return an edited (and cropped/straightened) thumbnail as a JPEG blob. Returns
-// null if WebGL is unavailable. Calls are expected to be serialized by the
-// caller, since the underlying renderer/canvas is a shared singleton.
+// Render a photo through the develop pipeline on the given renderer, using the
+// SAME decode as Develop/Loupe/Export — full-res RAW float (with the base tone
+// curve) or the cached develop preview — so every view is tonally consistent.
+function drawPhoto(
+  ctx: Ctx,
+  image: DecodedImage,
+  params: DevelopParams,
+  maxEdge: number,
+): void {
+  const isFallback =
+    image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
+  // Cached develop preview is linear-encoded RAW; it needs the base tone curve.
+  const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
+  ctx.renderer.setImage(
+    image.kind === "bitmap" ? image.bitmap : image,
+    maxEdge,
+    isFallback,
+    cachedRaw,
+  );
+  ctx.renderer.setParams(params);
+  ctx.renderer.render();
+}
+
+// Render an edited (and cropped/straightened) thumbnail for a photo as a JPEG
+// blob. Returns null if the photo can't be decoded or WebGL is unavailable.
+// Calls are serialized by the caller, since the thumbnail renderer is a singleton.
 export async function renderEditedThumbnail(
-  source: ImageBitmap,
+  photo: CatalogPhoto,
   params: DevelopParams,
   maxEdge: number = MAX_THUMB_EDGE,
 ): Promise<Blob | null> {
-  const r = getRenderer();
-  if (!r || !canvas) return null;
-  r.setImage(source, maxEdge);
-  r.setParams(params);
-  r.render();
-  return await new Promise<Blob | null>((resolve) =>
-    canvas!.toBlob((b) => resolve(b), "image/jpeg", 0.9),
-  );
+  const ctx = getCtx("thumb");
+  if (!ctx) return null;
+  const image = await loadPhotoImage(photo);
+  if (!image) return null;
+  try {
+    drawPhoto(ctx, image, params, maxEdge);
+    return await new Promise<Blob | null>((resolve) =>
+      ctx.canvas.toBlob((b) => resolve(b), "image/jpeg", 0.9),
+    );
+  } finally {
+    if (image.kind === "bitmap") image.bitmap.close();
+  }
+}
+
+// Compute the histogram of a photo rendered through the develop pipeline with the
+// given params, so the Library histogram reflects edits and matches Develop.
+export async function renderPhotoHistogram(
+  photo: CatalogPhoto,
+  params: DevelopParams,
+  maxEdge: number = MAX_HIST_EDGE,
+): Promise<HistogramData | null> {
+  const ctx = getCtx("hist");
+  if (!ctx) return null;
+  const image = await loadPhotoImage(photo);
+  if (!image) return null;
+  try {
+    drawPhoto(ctx, image, params, maxEdge);
+    return computeHistogram(ctx.canvas);
+  } finally {
+    if (image.kind === "bitmap") image.bitmap.close();
+  }
 }

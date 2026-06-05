@@ -35,6 +35,7 @@ export class WebGLRenderer {
   private maxEdge = MAX_EDGE;
   private linear = false;
   private isFallbackPreview = false;
+  private applyBaseCurve = false;
 
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", {
@@ -105,7 +106,7 @@ export class WebGLRenderer {
   private updateMaskTexture(masks: Mask[]) {
     const items: CoverageItem[] = masks
       .filter((m) => m.type === "brush" && m.brush)
-      .map((m) => ({ id: m.id, dabs: m.brush!.dabs, feather: m.brush!.feather }));
+      .map((m) => ({ id: m.id, dabs: m.brush!.dabs }));
     const r = this.updateCoverageTexture(this.maskTexture, items, this.maskSig);
     this.maskSig = r.sig;
     this.maskChannelOf = r.channelOf;
@@ -114,11 +115,7 @@ export class WebGLRenderer {
   private updateRetouchTexture(retouch: RetouchSpot[]) {
     const items: CoverageItem[] = retouch
       .filter((s) => s.shape === "brush" && s.dabs && s.dabs.length > 0)
-      .map((s) => ({
-        id: s.id,
-        dabs: s.dabs!,
-        feather: Math.max(0, Math.min(1, s.feather / 100)),
-      }));
+      .map((s) => ({ id: s.id, dabs: s.dabs! }));
     const r = this.updateCoverageTexture(this.retouchTexture, items, this.retouchSig);
     this.retouchSig = r.sig;
     this.retouchChannelOf = r.channelOf;
@@ -184,6 +181,7 @@ export class WebGLRenderer {
       "uInvTransform",
       "uLinear",
       "uIsFallbackPreview",
+      "uApplyBaseCurve",
       "uExposure",
       "uContrast",
       "uHighlights",
@@ -324,6 +322,10 @@ export class WebGLRenderer {
     image: ImageBitmap | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean },
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
+    // True when an 8-bit bitmap is actually a linear-encoded RAW source (the
+    // cached develop preview) rather than a camera-rendered image. Such a source
+    // still needs the default base tone curve, same as the live float decode.
+    baseCurveForBitmap = false,
   ) {
     const gl = this.gl;
     this.maxEdge = maxEdge;
@@ -345,6 +347,9 @@ export class WebGLRenderer {
       // uLinear is therefore false: the texture is sRGB-encoded, not linear.
       this.linear = false;
       this.isFallbackPreview = image.isFallbackPreview ?? isFallbackPreview;
+      // Real full-res RAW decode (not the pseudo-linear JPEG fallback) renders
+      // scene-linear and flat; add the default tone curve to match other views.
+      this.applyBaseCurve = !this.isFallbackPreview;
       const u8 = new Uint8Array(image.data.length);
       for (let i = 0; i < image.data.length; i++) {
         const v = Math.max(0, image.data[i]);
@@ -361,6 +366,9 @@ export class WebGLRenderer {
       this.imageHeight = image.height;
       this.linear = false;
       this.isFallbackPreview = isFallbackPreview;
+      // Camera-rendered bitmaps already carry a tone curve; the cached develop
+      // preview is linear-encoded RAW and needs the base curve added.
+      this.applyBaseCurve = baseCurveForBitmap;
       // Orientation is handled by the vertex shader (V flip). Do NOT use
       // UNPACK_FLIP_Y_WEBGL: it is unreliable for ImageBitmap sources.
       gl.texImage2D(
@@ -428,6 +436,7 @@ export class WebGLRenderer {
 
     gl.uniform1i(u.uLinear, this.linear ? 1 : 0);
     gl.uniform1i(u.uIsFallbackPreview, this.isFallbackPreview ? 1 : 0);
+    gl.uniform1i(u.uApplyBaseCurve, this.applyBaseCurve ? 1 : 0);
     gl.uniform1f(u.uExposure, p.exposure);
     gl.uniform1f(u.uContrast, p.contrast);
     gl.uniform1f(u.uHighlights, p.highlights);

@@ -51,27 +51,22 @@ export function useEditedThumbnails(visible: CatalogPhoto[]) {
         const edit = editsRef.current.get(next.id)!;
         attemptedRef.current.add(`${next.id}:${edit.sig}`);
 
-        const blob = next.thumbnailBlob;
-        if (blob) {
-          try {
-            const src = await createImageBitmap(blob, {
-              imageOrientation: "none",
-            });
-            const out = await renderEditedThumbnail(src, edit.params);
-            src.close();
-            // Skip a stale result if a newer edit arrived while we rendered.
-            if (
-              out &&
-              mountedRef.current &&
-              editsRef.current.get(next.id)?.sig === edit.sig
-            ) {
-              useEditedThumbs
-                .getState()
-                .put(next.id, URL.createObjectURL(out), edit.sig);
-            }
-          } catch {
-            // Leave it on the original thumbnail; attempted-set avoids retrying.
+        try {
+          // Render through the same decode/curve as Develop so edited grid
+          // thumbnails match the Develop view (not the flat camera preview).
+          const out = await renderEditedThumbnail(next, edit.params);
+          // Skip a stale result if a newer edit arrived while we rendered.
+          if (
+            out &&
+            mountedRef.current &&
+            editsRef.current.get(next.id)?.sig === edit.sig
+          ) {
+            useEditedThumbs
+              .getState()
+              .put(next.id, URL.createObjectURL(out), edit.sig);
           }
+        } catch {
+          // Leave it on the original thumbnail; attempted-set avoids retrying.
         }
         await new Promise((r) => setTimeout(r, 40));
       }
