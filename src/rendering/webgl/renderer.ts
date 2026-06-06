@@ -10,10 +10,80 @@ import { buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
 import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders";
 import { bakeCoverage, coverageSignature, type CoverageItem } from "./mask-coverage";
+import { contentAwareFill } from "../content-aware-fill";
+import { setHealSourceImage } from "../heal-source";
 
 // Default cap on render resolution for interactive performance. Export passes
 // a larger value (or the image's own long edge) to render at full size.
 const MAX_EDGE = 2560;
+
+// Column-major identity, used to render the developed pass in plain source-UV
+// space (no crop / transform) so retouch coordinates line up with it.
+const IDENTITY3 = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+
+// Working resolution for the (CPU) content-aware heal fill. Small so synthesis
+// stays fast; the GPU upsamples and re-develops the result.
+const FILL_EDGE = 168;
+
+// Experimental CPU content-aware heal fill. Off: heal copies the source verbatim
+// (predictable, artifact-free). Flip to re-enable the PatchMatch synthesis path.
+let CONTENT_AWARE_HEAL = false;
+
+function downsampleRGBA(src: Uint8ClampedArray | Uint8Array, W: number, H: number) {
+  const scale = Math.min(1, FILL_EDGE / Math.max(W, H));
+  const w = Math.max(1, Math.round(W * scale));
+  const h = Math.max(1, Math.round(H * scale));
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const sy0 = Math.floor((y * H) / h);
+    const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * H) / h));
+    for (let x = 0; x < w; x++) {
+      const sx0 = Math.floor((x * W) / w);
+      const sx1 = Math.max(sx0 + 1, Math.floor(((x + 1) * W) / w));
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let sy = sy0; sy < sy1; sy++) {
+        for (let sx = sx0; sx < sx1; sx++) {
+          const si = (sy * W + sx) * 4;
+          r += src[si]; g += src[si + 1]; b += src[si + 2]; n++;
+        }
+      }
+      const di = (y * w + x) * 4;
+      out[di] = r / n; out[di + 1] = g / n; out[di + 2] = b / n; out[di + 3] = 255;
+    }
+  }
+  return { data: out, w, h };
+}
+
+function downsampleDrawable(img: TexImageSource, W: number, H: number) {
+  const scale = Math.min(1, FILL_EDGE / Math.max(W, H));
+  const w = Math.max(1, Math.round(W * scale));
+  const h = Math.max(1, Math.round(H * scale));
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return { data: new Uint8ClampedArray(w * h * 4), w, h };
+  ctx.drawImage(img as CanvasImageSource, 0, 0, w, h);
+  return { data: ctx.getImageData(0, 0, w, h).data, w, h };
+}
+
+// Rasterise a retouch disc (radius in image-height units) into the hole mask.
+function stampDisc(
+  hole: Uint8Array, W: number, H: number, aspect: number,
+  cx: number, cy: number, r: number,
+) {
+  const rax = r / aspect;
+  const x0 = Math.max(0, Math.floor((cx - rax) * W));
+  const x1 = Math.min(W - 1, Math.ceil((cx + rax) * W));
+  const y0 = Math.max(0, Math.floor((cy - r) * H));
+  const y1 = Math.min(H - 1, Math.ceil((cy + r) * H));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = (x / W - cx) * aspect;
+      const dy = y / H - cy;
+      if (dx * dx + dy * dy <= r * r) hole[y * W + x] = 1;
+    }
+  }
+}
 
 export class WebGLRenderer {
   private canvas: HTMLCanvasElement;
@@ -27,6 +97,19 @@ export class WebGLRenderer {
   private retouchTexture: WebGLTexture;
   private retouchSig = "";
   private retouchChannelOf: Record<string, number> = {};
+  // Offscreen "develop without retouch" target, sampled so heal matches tone in
+  // edited space. Sized to the (capped) source; lazily created on first heal.
+  private developedTex: WebGLTexture | null = null;
+  private developedFbo: WebGLFramebuffer | null = null;
+  private devW = 0;
+  private devH = 0;
+  // Content-aware heal fill, computed on the CPU from the (pre-edit) source.
+  private healFillTex: WebGLTexture | null = null;
+  private haveHealFill = false;
+  private healSig = "";
+  private fillSrc: Uint8ClampedArray | null = null;
+  private fillW = 0;
+  private fillH = 0;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private params: DevelopParams | null = null;
   private hasImage = false;
@@ -119,6 +202,59 @@ export class WebGLRenderer {
     const r = this.updateCoverageTexture(this.retouchTexture, items, this.retouchSig);
     this.retouchSig = r.sig;
     this.retouchChannelOf = r.channelOf;
+  }
+
+  // Recompute the content-aware fill when a heal region's geometry changes.
+  // Guarded by a geometry signature; cleared entirely when nothing is healed.
+  private updateHealFill(retouch: RetouchSpot[]) {
+    if (!CONTENT_AWARE_HEAL) {
+      this.haveHealFill = false;
+      this.healSig = "";
+      return;
+    }
+    const heals = retouch.filter((s) => s.mode === "heal");
+    if (heals.length === 0 || !this.fillSrc) {
+      this.haveHealFill = false;
+      this.healSig = "";
+      return;
+    }
+    const sig =
+      `${this.fillW}x${this.fillH}|` +
+      heals
+        .map((s) =>
+          s.shape === "brush" && s.dabs
+            ? "b" + s.dabs.map((d) => `${d.x.toFixed(3)},${d.y.toFixed(3)},${d.radius.toFixed(3)}`).join(";")
+            : `c${s.dstX.toFixed(3)},${s.dstY.toFixed(3)},${s.radius.toFixed(3)}`,
+        )
+        .join("|");
+    if (sig === this.healSig && this.haveHealFill) return;
+    this.healSig = sig;
+
+    const W = this.fillW, H = this.fillH;
+    const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+    const hole = new Uint8Array(W * H);
+    let any = false;
+    for (const s of heals) {
+      if (s.shape === "brush" && s.dabs) {
+        for (const d of s.dabs) { stampDisc(hole, W, H, aspect, d.x, d.y, d.radius); any = true; }
+      } else {
+        stampDisc(hole, W, H, aspect, s.dstX, s.dstY, s.radius);
+        any = true;
+      }
+    }
+    if (!any) { this.haveHealFill = false; return; }
+
+    const filled = contentAwareFill(this.fillSrc, W, H, hole, { patch: 3, iters: 4 });
+    const gl = this.gl;
+    if (!this.healFillTex) this.healFillTex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.healFillTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, filled);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.haveHealFill = true;
   }
 
   private createProgram(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -244,6 +380,11 @@ export class WebGLRenderer {
       "uSpotCount",
       "uRetouchTex",
       "uRetouchCount",
+      "uDevelopedSrc",
+      "uHaveDeveloped",
+      "uApplyRetouch",
+      "uHealFill",
+      "uHaveHealFill",
     ];
     // Per-element mask/retouch array uniforms (queried by indexed name).
     for (let i = 0; i < MAX_MASKS; i++) {
@@ -269,6 +410,7 @@ export class WebGLRenderer {
     for (let i = 0; i < MAX_RETOUCH_BRUSH; i++) {
       this.uniforms[`uRetouchCh[${i}]`] = gl.getUniformLocation(this.program, `uRetouchCh[${i}]`);
       this.uniforms[`uRetouchData[${i}]`] = gl.getUniformLocation(this.program, `uRetouchData[${i}]`);
+      this.uniforms[`uRetouchRadius[${i}]`] = gl.getUniformLocation(this.program, `uRetouchRadius[${i}]`);
     }
     for (const name of names) {
       this.uniforms[name] = gl.getUniformLocation(this.program, name);
@@ -360,6 +502,11 @@ export class WebGLRenderer {
         gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0,
         gl.RGBA, gl.UNSIGNED_BYTE, u8,
       );
+      {
+        const ds = downsampleRGBA(u8, image.width, image.height);
+        this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
+        setHealSourceImage(ds.data, ds.w, ds.h);
+      }
     } else {
       // 8-bit sRGB bitmap path
       this.imageWidth = image.width;
@@ -374,6 +521,11 @@ export class WebGLRenderer {
       gl.texImage2D(
         gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image,
       );
+      {
+        const ds = downsampleDrawable(image, image.width, image.height);
+        this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
+        setHealSourceImage(ds.data, ds.w, ds.h);
+      }
     }
     // Build the mip chain for local-contrast blurs (Texture/Clarity/Dehaze).
     gl.generateMipmap(gl.TEXTURE_2D);
@@ -401,6 +553,7 @@ export class WebGLRenderer {
     this.params = params;
     this.updateMaskTexture(params.masks);
     this.updateRetouchTexture(params.retouch);
+    this.updateHealFill(params.retouch);
     const lut = buildRGBCurveLUT(params.toneCurve);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
@@ -578,15 +731,104 @@ export class WebGLRenderer {
         s.opacity / 100,
         s.mode === "clone" ? 1 : 0,
       );
+      // Average dab radius drives the heal blur scale for this painted region.
+      const dabs = s.dabs!;
+      const avgR = dabs.reduce((sum, d) => sum + d.radius, 0) / dabs.length;
+      gl.uniform1f(u[`uRetouchRadius[${i}]`], avgR);
     });
 
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    // Heal matches tone against the edited image: render the develop once into a
+    // source-space texture (no crop/transform, no retouch), then composite the
+    // retouch in a second pass that samples it. Clone / no-heal stays single-pass.
+    // Content-aware heal fill (source-UV space), sampled by the heal branch.
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.healFillTex ?? this.imageTexture);
+    gl.uniform1i(u.uHealFill, 5);
+    gl.uniform1i(u.uHaveHealFill, this.haveHealFill ? 1 : 0);
+
+    // The inpaint fallback (used only until the fill is ready) needs the
+    // developed image for tone; the fill path does not.
+    const needDeveloped = false; // content-aware heal disabled; single pass
+    gl.activeTexture(gl.TEXTURE4);
+    if (needDeveloped && this.prepareDevelopedTarget()) {
+      // Pass 1 -> developed source image + mip chain.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.developedFbo);
+      gl.viewport(0, 0, this.devW, this.devH);
+      gl.uniform1i(u.uApplyRetouch, 0);
+      gl.uniform1i(u.uHaveDeveloped, 0);
+      gl.uniform4f(u.uCrop, 0, 0, 1, 1);
+      gl.uniformMatrix3fv(u.uInvTransform, false, IDENTITY3);
+      gl.bindTexture(gl.TEXTURE_2D, this.imageTexture); // keep unit 4 valid
+      gl.uniform1i(u.uDevelopedSrc, 4);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      // Pass 2 -> composite retouch against the developed texture, to screen.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
+      gl.uniformMatrix3fv(
+        u.uInvTransform,
+        false,
+        mat3ColumnMajor(buildInverseTransform(p.straighten, p.transform, aspect)),
+      );
+      gl.uniform1i(u.uDevelopedSrc, 4); // developedTex still bound to unit 4
+      gl.uniform1i(u.uHaveDeveloped, 1);
+      gl.uniform1i(u.uApplyRetouch, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    } else {
+      gl.bindTexture(gl.TEXTURE_2D, this.imageTexture); // keep unit 4 valid
+      gl.uniform1i(u.uDevelopedSrc, 4);
+      gl.uniform1i(u.uHaveDeveloped, 0);
+      gl.uniform1i(u.uApplyRetouch, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+  }
+
+  // Create / resize the offscreen develop target (capped source size). Returns
+  // false if the framebuffer can't be completed, so the caller falls back.
+  private prepareDevelopedTarget(): boolean {
+    if (!this.imageWidth || !this.imageHeight) return false;
+    const longEdge = Math.max(this.imageWidth, this.imageHeight);
+    const scale = longEdge > 0 ? Math.min(1, this.maxEdge / longEdge) : 1;
+    const w = Math.max(1, Math.round(this.imageWidth * scale));
+    const h = Math.max(1, Math.round(this.imageHeight * scale));
+    const gl = this.gl;
+    if (!this.developedTex) {
+      this.developedTex = gl.createTexture();
+      this.developedFbo = gl.createFramebuffer();
+    }
+    if (this.devW !== w || this.devH !== h) {
+      gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.developedFbo);
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.developedTex, 0,
+      );
+      const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      if (!ok) {
+        this.devW = 0;
+        this.devH = 0;
+        return false;
+      }
+      this.devW = w;
+      this.devH = h;
+    }
+    return true;
   }
 
   dispose() {
     const gl = this.gl;
     gl.deleteTexture(this.imageTexture);
     gl.deleteTexture(this.curveTexture);
+    if (this.developedTex) gl.deleteTexture(this.developedTex);
+    if (this.developedFbo) gl.deleteFramebuffer(this.developedFbo);
+    if (this.healFillTex) gl.deleteTexture(this.healFillTex);
     gl.deleteTexture(this.maskTexture);
     gl.deleteTexture(this.retouchTexture);
     gl.deleteProgram(this.program);

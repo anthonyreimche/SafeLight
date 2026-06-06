@@ -3,6 +3,7 @@ import type { BrushDab, CropRect, Mask, RetouchSpot } from "@/catalog/types";
 import { defaultMaskAdjustments } from "@/catalog/types";
 import { mat3Apply, type Mat3 } from "@/rendering/transform";
 import { useDevelopStore } from "@/state/develop-store";
+import { findHealSource } from "@/rendering/heal-source";
 
 interface Rect {
   x: number;
@@ -185,6 +186,14 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       // circular spot on release.
       const id = genId("spot");
       const off = Math.max(0.04, st.retouchSize * 1.5);
+      // Heal: auto-pick a source whose surroundings match the spot's so the copy
+      // blends. Clone keeps the simple offset (user positions it).
+      let srcX = down.x - off / imageAspect;
+      let srcY = down.y - off;
+      if (st.retouchMode === "heal") {
+        const auto = findHealSource(down.x, down.y, st.retouchSize, imageAspect);
+        if (auto) { srcX = auto.x; srcY = auto.y; }
+      }
       const firstDab: BrushDab = {
         x: down.x,
         y: down.y,
@@ -198,8 +207,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
         shape: "brush",
         dstX: down.x,
         dstY: down.y,
-        srcX: down.x - off / imageAspect,
-        srcY: down.y - off,
+        srcX,
+        srcY,
         radius: st.retouchSize,
         feather: st.retouchFeather,
         opacity: st.retouchOpacity,

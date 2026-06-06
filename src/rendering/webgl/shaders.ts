@@ -124,6 +124,12 @@ uniform sampler2D uRetouchTex;
 uniform int uRetouchCount;
 uniform int uRetouchCh[MAX_RBRUSH];     // channel 0..3 in uRetouchTex
 uniform vec4 uRetouchData[MAX_RBRUSH];  // offX, offY (UV), opacity(0..1), mode(0 heal,1 clone)
+uniform float uRetouchRadius[MAX_RBRUSH]; // image-height units, for heal LOD
+uniform sampler2D uDevelopedSrc; // pass-1 developed image, source-UV space
+uniform bool uHaveDeveloped;     // true on the compositing pass (match in edited space)
+uniform bool uApplyRetouch;      // false while rendering the developed pass
+uniform sampler2D uHealFill;     // precomputed content-aware fill, source-UV space
+uniform bool uHaveHealFill;      // true when the fill texture is valid
 
 const float HSL_CENTERS[8] = float[8](
   0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 280.0, 320.0
@@ -629,8 +635,74 @@ vec3 applyGrain(vec3 c, vec2 uv) {
 
 
 // ---- Retouch: spot heal / clone -------------------------------------------
-// Replace the source sample where retouch discs cover, before any tone edits so
-// the patched pixels develop together with the rest of the frame.
+// Heal keeps the source patch's fine detail but swaps its low-frequency content
+// for the destination's, so the patch melds into its surroundings (skin, sky).
+// The match is done at a blur scale that tracks the patch radius — a small spot
+// matches a small neighbourhood, a large one a large neighbourhood — instead of
+// an arbitrary fixed mip level, which is what makes the seam disappear. The
+// correction is per-pixel (sampled at the current uv), so a tone gradient under
+// the patch is followed rather than flattened.
+// Sample the *edited* image (pass-1 develop) when available, else the source.
+vec3 devSample(vec2 uv) {
+  return uHaveDeveloped ? texture(uDevelopedSrc, uv).rgb : texture(uImage, uv).rgb;
+}
+
+float retouchCovAt(int ch, vec2 uv) {
+  vec4 c = texture(uRetouchTex, uv);
+  return ch == 0 ? c.r : (ch == 1 ? c.g : (ch == 2 ? c.b : c.a));
+}
+
+
+// Content-aware heal: instead of copying a source patch, ERASE the interior and
+// reconstruct it from the ring of pixels surrounding the spot. Each interior
+// pixel is a distance-weighted blend of the boundary just outside the disc — a
+// cheap harmonic in-fill, so whatever was inside (blemish, branch, wire) is
+// replaced by a smooth continuation of its surroundings.
+vec3 inpaintCircle(vec2 ctr, float radius, vec2 uv) {
+  vec2 q = vec2((uv.x - ctr.x) * uImageAspect, uv.y - ctr.y);
+  vec3 acc = vec3(0.0);
+  float wsum = 0.0;
+  const int N = 16;
+  for (int k = 0; k < N; k++) {
+    float a = (float(k) + 0.5) / float(N) * 6.2831853;
+    vec2 e = vec2(cos(a), sin(a));                 // aspect-corrected direction
+    vec2 bpos = e * radius;                         // boundary point (aspect space)
+    vec2 buv = clamp(ctr + vec2(e.x / uImageAspect, e.y) * radius * 1.04, 0.0, 1.0);
+    float dist = length(q - bpos) + 1e-3;
+    float w = 1.0 / (dist * dist);                  // mean-value-style weighting
+    acc += devSample(buv) * w;
+    wsum += w;
+  }
+  return acc / max(wsum, 1e-4);
+}
+
+// Same idea for a painted (brush) region: march outward from the pixel in a fan
+// of directions until each ray leaves the painted coverage, then blend those
+// boundary colours weighted toward the nearest edge.
+vec3 inpaintBrush(int ch, vec2 uv, float radius) {
+  vec3 acc = vec3(0.0);
+  float wsum = 0.0;
+  float step = max(radius * 0.5, 0.003);
+  const int DIRS = 12;
+  for (int k = 0; k < DIRS; k++) {
+    float a = (float(k) + 0.5) / float(DIRS) * 6.2831853;
+    vec2 e = vec2(cos(a) / uImageAspect, sin(a));
+    vec2 p = uv;
+    float dist = 0.0;
+    bool found = false;
+    for (int s = 0; s < 20; s++) {
+      p += e * step;
+      dist += step;
+      if (retouchCovAt(ch, p) < 0.4) { found = true; break; }
+    }
+    if (!found) continue;
+    float w = 1.0 / (dist * dist);
+    acc += devSample(clamp(p, 0.0, 1.0)) * w;
+    wsum += w;
+  }
+  return wsum > 0.0 ? acc / wsum : devSample(uv);
+}
+
 vec3 applyRetouch(vec2 uv, vec3 base) {
   vec3 c = base;
   for (int i = 0; i < MAX_SPOTS; i++) {
@@ -647,13 +719,7 @@ vec3 applyRetouch(vec2 uv, vec3 base) {
     float w = (1.0 - smoothstep(1.0 - feather, 1.0, d)) * opacity;
     if (w <= 0.0) continue;
     vec2 sUv = clamp(uv + off, 0.0, 1.0);
-    vec3 srcCol = texture(uImage, sUv).rgb;
-    if (b.w < 0.5) {
-      // Heal: carry the source texture but match the destination's local tone.
-      vec3 dstLow = textureLod(uImage, uv, 4.0).rgb;
-      vec3 srcLow = textureLod(uImage, sUv, 4.0).rgb;
-      srcCol = clamp(srcCol + (dstLow - srcLow), 0.0, 1.0);
-    }
+    vec3 srcCol = texture(uImage, sUv).rgb; // heal & clone: copy source, develop together
     c = mix(c, srcCol, w);
   }
   // Brush-shaped retouch: painted coverage from the atlas, one source offset each.
@@ -668,11 +734,6 @@ vec3 applyRetouch(vec2 uv, vec3 base) {
       if (w <= 0.0) continue;
       vec2 sUv = clamp(uv + rd.xy, 0.0, 1.0);
       vec3 srcCol = texture(uImage, sUv).rgb;
-      if (rd.w < 0.5) {
-        vec3 dstLow = textureLod(uImage, uv, 4.0).rgb;
-        vec3 srcLow = textureLod(uImage, sUv, 4.0).rgb;
-        srcCol = clamp(srcCol + (dstLow - srcLow), 0.0, 1.0);
-      }
       c = mix(c, srcCol, w);
     }
   }
@@ -762,7 +823,7 @@ void main() {
   // Sample with chromatic aberration correction (CA splits R/B channels radially)
   vec3 src = uLensCA > 0.001 ? sampleWithCA(srcUv) : texture(uImage, srcUv).rgb;
   // Spot removal (heal / clone): patch the source before any tone edits.
-  if (uSpotCount > 0 || uRetouchCount > 0) src = applyRetouch(srcUv, src);
+  if (uApplyRetouch && (uSpotCount > 0 || uRetouchCount > 0)) src = applyRetouch(srcUv, src);
   // Lens optical vignetting correction (flatten corner light falloff)
   src *= lensVignetteFactor(srcUv);
   float rawLuma = srcLuma(src);
