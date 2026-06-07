@@ -54,10 +54,13 @@ const H = 76;
 export function Histogram({
   data,
   onAdjust,
+  onReset,
 }: {
   data: HistogramData | null;
   // When provided, the histogram becomes a draggable tonal control.
   onAdjust?: (zone: HistogramZone, deltaPx: number, phase: Phase) => void;
+  // Double-clicking a zone resets its mapped slider.
+  onReset?: (zone: HistogramZone) => void;
 }) {
   const interactive = !!onAdjust;
   const [mode, setMode] = useState<Mode>(readHistMode);
@@ -116,6 +119,11 @@ export function Histogram({
     if (d) onAdjust(d.zone, e.clientX - d.startX, "end");
   };
 
+  const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!onReset) return;
+    onReset(zoneAt(e.nativeEvent.offsetX / width).zone);
+  };
+
   return (
     <div className="border-b border-border-subtle px-3 py-2">
       <div ref={wrapRef} className="w-full">
@@ -126,6 +134,7 @@ export function Histogram({
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onDoubleClick={onDoubleClick}
           onPointerLeave={() => {
             if (!dragRef.current) setHoverZone(null);
           }}

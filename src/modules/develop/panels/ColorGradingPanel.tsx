@@ -33,6 +33,8 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 
 const WHEEL_SIZE = 88; // canvas px
 const WHEEL_RADIUS = (WHEEL_SIZE / 2) - 3;
+// Sensitivity factor while Shift is held during a wheel drag (precise control).
+const WHEEL_FINE = 0.25;
 
 interface ColorWheelProps {
   label: string;
@@ -46,6 +48,14 @@ function ColorWheel({ label, range, onChange, onCommit }: ColorWheelProps) {
   // Separate ref for the background image so we only compute it once.
   const bgRef = useRef<ImageData | null>(null);
   const dragging = useRef(false);
+  // Drag anchor: pointer (rx,ry) and value-vector (vx,vy) at drag start / shift toggle.
+  const anchor = useRef<{
+    rx: number;
+    ry: number;
+    vx: number;
+    vy: number;
+    shift: boolean;
+  } | null>(null);
 
   // Build the wheel background once on mount.
   useEffect(() => {
@@ -115,37 +125,66 @@ function ColorWheel({ label, range, onChange, onCommit }: ColorWheelProps) {
     ctx.fill();
   }, [range.hue, range.sat]);
 
-  const updateFromPointer = useCallback(
-    (e: React.PointerEvent<HTMLCanvasElement>) => {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const scaleX = WHEEL_SIZE / rect.width;
-      const scaleY = WHEEL_SIZE / rect.height;
-      const cx = WHEEL_SIZE / 2;
-      const cy = WHEEL_SIZE / 2;
-      const dx = (e.clientX - rect.left) * scaleX - cx;
-      const dy = (e.clientY - rect.top) * scaleY - cy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const newHue = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360;
-      const newSat = Math.min(dist / WHEEL_RADIUS, 1) * 100;
-      onChange({ hue: newHue, sat: newSat });
-    },
-    [onChange],
-  );
+  // Pointer position in canvas space, relative to the wheel center.
+  const relPointer = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return {
+      rx: (e.clientX - rect.left) * (WHEEL_SIZE / rect.width) - WHEEL_SIZE / 2,
+      ry: (e.clientY - rect.top) * (WHEEL_SIZE / rect.height) - WHEEL_SIZE / 2,
+    };
+  };
+
+  // Current handle vector (center-relative) derived from hue + saturation.
+  const valueVec = () => {
+    const r = (range.sat / 100) * WHEEL_RADIUS;
+    const a = (range.hue * Math.PI) / 180;
+    return { vx: Math.cos(a) * r, vy: Math.sin(a) * r };
+  };
+
+  // Push a center-relative vector back out as hue + saturation.
+  const applyVec = (vx: number, vy: number) => {
+    const dist = Math.sqrt(vx * vx + vy * vy);
+    const newHue = ((Math.atan2(vy, vx) * 180) / Math.PI + 360) % 360;
+    const newSat = Math.min(dist / WHEEL_RADIUS, 1) * 100;
+    onChange({ hue: newHue, sat: newSat });
+  };
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     dragging.current = true;
-    updateFromPointer(e);
+    const { rx, ry } = relPointer(e);
+    const { vx, vy } = valueVec();
+    anchor.current = { rx, ry, vx, vy, shift: e.shiftKey };
+    // Fine: keep the current value and move relative to it (no jump). Coarse: jump
+    // the handle straight to the pointer.
+    if (e.shiftKey) applyVec(vx, vy);
+    else applyVec(rx, ry);
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!dragging.current) return;
-    updateFromPointer(e);
+    if (!dragging.current || !anchor.current) return;
+    const a = anchor.current;
+    const { rx, ry } = relPointer(e);
+    // Re-anchor when Shift toggles mid-drag so the sensitivity change is seamless.
+    if (e.shiftKey !== a.shift) {
+      const v = valueVec();
+      a.rx = rx;
+      a.ry = ry;
+      a.vx = v.vx;
+      a.vy = v.vy;
+      a.shift = e.shiftKey;
+    }
+    if (e.shiftKey) {
+      applyVec(a.vx + (rx - a.rx) * WHEEL_FINE, a.vy + (ry - a.ry) * WHEEL_FINE);
+    } else {
+      applyVec(rx, ry);
+    }
   };
 
   const onPointerUp = (_e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!dragging.current) return;
     dragging.current = false;
+    anchor.current = null;
     onCommit(label);
   };
 
@@ -168,11 +207,12 @@ function ColorWheel({ label, range, onChange, onCommit }: ColorWheelProps) {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
-        title={`${label} color wheel — drag to set hue & saturation, double-click to reset`}
+        title={`${label} color wheel — drag to set hue & saturation, hold Shift for precise control, double-click to reset`}
       />
       <div className="w-full">
         <Slider
           label="Luma"
+          compact
           value={range.luma}
           min={-100}
           max={100}

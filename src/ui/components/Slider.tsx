@@ -8,6 +8,7 @@ interface SliderProps {
   step?: number;
   defaultValue?: number; // double-clicking the track resets to this
   hideValue?: boolean; // hide the editable numeric field
+  compact?: boolean; // narrow label + value, for tight columns (e.g. color wheels)
   onChange: (value: number) => void;
   onCommit?: () => void;
 }
@@ -23,6 +24,7 @@ export function Slider({
   step = 1,
   defaultValue = 0,
   hideValue = false,
+  compact = false,
   onChange,
   onCommit,
 }: SliderProps) {
@@ -139,7 +141,9 @@ export function Slider({
   return (
     <div className="flex items-center gap-2 py-0.5">
       {label !== "" && (
-        <label className="w-20 shrink-0 text-[11px] text-text-secondary">
+        <label
+          className={`${compact ? "w-9" : "w-20"} shrink-0 ${compact ? "text-[10px]" : "text-[11px]"} text-text-secondary`}
+        >
           {label}
         </label>
       )}
@@ -178,7 +182,7 @@ export function Slider({
             setEditing(null);
             onCommit?.();
           }}
-          className={`w-12 shrink-0 rounded bg-transparent px-1 text-right text-[11px] tabular-nums outline-none focus:bg-surface-2 ${
+          className={`${compact ? "w-8" : "w-12"} shrink-0 rounded bg-transparent px-1 text-right ${compact ? "text-[10px]" : "text-[11px]"} tabular-nums outline-none focus:bg-surface-2 ${
             outOfRange
               ? "text-label-red"
               : "text-text-secondary focus:text-text-primary"

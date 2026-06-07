@@ -145,5 +145,11 @@ function DevelopHistogram() {
     }
   };
 
-  return <Histogram data={histogram} onAdjust={onAdjust} />;
+  const onReset = (zone: HistogramZone) => {
+    const cfg = ZONE_PARAM[zone];
+    setParam(cfg.key, 0 as never);
+    commitEdit("Histogram Reset");
+  };
+
+  return <Histogram data={histogram} onAdjust={onAdjust} onReset={onReset} />;
 }

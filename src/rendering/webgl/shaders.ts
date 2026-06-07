@@ -330,32 +330,39 @@ vec3 applyShadowsRGB(vec3 c, float S) {
   return c;
 }
 
-// Whites point adjustment with broad per-pixel weight centered on extreme highlights.
-// Different luminances shift by different amounts, redistributing across the range.
-float applyWhites(float v, float wh) {
-  if (wh <= 0.0) return v;
+// Whites endpoint, display space. wh in [-100,100]; bidirectional.
+// + brightens the bright end, - pulls it down. Luminance-targeted and
+// ratio-scaled so it shifts tone WITHOUT changing hue/saturation.
+vec3 applyWhitesRGB(vec3 c, float wh) {
+  if (abs(wh) < 0.001) return c;
   float amt = wh / 100.0;
-  vec3 c = vec3(v);
-  float w = whitesWeight(c);
-  float blend = amt * w;
-  if (blend < 1e-5) return v;
-  // Gamma brightening for whites lift
-  float gamma = mix(1.0, 0.5, amt);
-  return mix(v, pow(max(v, 0.0), gamma), blend);
+  float L = max(luma(c), 1e-4);
+  float t = clamp(L, 0.0, 1.0);
+  float w = exp(-8.0 * (1.0 - t) * (1.0 - t)); // extreme highlights
+  float blend = abs(amt) * w;
+  if (blend < 1e-5) return c;
+  float gamma = amt > 0.0 ? mix(1.0, 0.5, amt) : mix(1.0, 1.9, -amt);
+  float newL = mix(L, pow(L, gamma), blend);
+  return c * (newL / L);
 }
 
-// Blacks point adjustment with broad per-pixel weight centered on extreme shadows.
-// Different luminances shift by different amounts, redistributing across the range.
-float applyBlacks(float v, float bl) {
-  if (bl <= 0.0) return v;
+// Blacks endpoint, display space. bl in [-100,100]; bidirectional.
+// LIGHTROOM CONVENTION: + lifts/opens blacks (brighter dark end),
+// - crushes/deepens them. The old curve did the opposite (and ignored the
+// negative half) — that's the "Blacks is backwards" bug. Luminance-targeted
+// and ratio-scaled so it does not pump saturation.
+vec3 applyBlacksRGB(vec3 c, float bl) {
+  if (abs(bl) < 0.001) return c;
   float amt = bl / 100.0;
-  vec3 c = vec3(v);
-  float w = blacksWeight(c);
-  float blend = amt * w;
-  if (blend < 1e-5) return v;
-  // Gamma darkening for blacks crush
-  float gamma = mix(1.0, 2.5, amt);
-  return mix(v, pow(max(v, 0.0), gamma), blend);
+  float L = max(luma(c), 1e-4);
+  float t = clamp(L, 0.0, 1.0);
+  float w = exp(-8.0 * t * t); // extreme shadows
+  float blend = abs(amt) * w;
+  if (blend < 1e-5) return c;
+  // + -> gamma < 1 (lift), - -> gamma > 1 (crush)
+  float gamma = amt > 0.0 ? mix(1.0, 0.55, amt) : mix(1.0, 2.2, -amt);
+  float newL = mix(L, pow(L, gamma), blend);
+  return c * (newL / L);
 }
 
 vec3 applyToneCurve(vec3 c) {
@@ -502,10 +509,16 @@ vec3 applyColorGrading(vec3 c) {
   vec3 hiColor  = cgWheelRGB(uCGHighHue,    uCGHighSat);
   vec3 glColor  = cgWheelRGB(uCGGlobalHue,  uCGGlobalSat);
 
-  c += shadowW    * shColor
-     + midW       * midColor
-     + highlightW * hiColor
-     + glColor;  // global applied uniformly
+  vec3 colorOffset = shadowW    * shColor
+                   + midW       * midColor
+                   + highlightW * hiColor
+                   + glColor;  // global applied uniformly
+  // Strip any net luminance the (weight-blended) offset introduced. cgWheelRGB is
+  // luma-neutral per range, but the per-pixel weighting is not, so without this the
+  // tint lifts/drops tones and washes out contrast/detail. Removing the luma term
+  // keeps the change purely chromatic — color shifts, tonal structure is untouched.
+  colorOffset -= vec3(luma(colorOffset));
+  c += colorOffset;
 
   // Per-range luminance adjustments, scaled so ±100 → ±0.25 exposure-equivalent.
   float lumaAdj = shadowW    * (uCGShadowLuma / 100.0) * 0.25
@@ -615,24 +628,34 @@ float hash(vec2 p) {
   return fract(p.x * p.y);
 }
 
+// Smooth 2D value noise: hashes a lattice and bilinearly interpolates with a
+// smoothstep fade. Unlike hash(floor(uv)) this has no hard square cells, so the
+// grain reads as soft organic specks rather than blocky pixels.
+float valueNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 vec3 applyGrain(vec3 c, vec2 uv) {
   if (uGrainAmount < 0.001) return c;
   float amount = uGrainAmount / 100.0 * 0.12; // max ~12% peak grain
-  // Size: larger values cluster grain into coarser patches
-  float sizeScale = mix(800.0, 100.0, (uGrainSize - 25.0) / 75.0);
-  vec2 grainUv = uv * sizeScale;
-  // Roughness: blends between smooth (averaged neighbors) and raw noise
-  float n = hash(floor(grainUv));
-  if (uGrainRoughness < 99.0) {
-    float smoothed = 0.0;
-    for (int dx = -1; dx <= 1; dx++) {
-      for (int dy = -1; dy <= 1; dy++) {
-        smoothed += hash(floor(grainUv) + vec2(float(dx), float(dy)));
-      }
-    }
-    smoothed /= 9.0;
-    float rough = uGrainRoughness / 100.0;
-    n = mix(smoothed, n, rough);
+  // Frequency: higher = finer grain. Much finer than the old 100..800 cells so
+  // the grain isn't oversized; Size scales from fine (25) to coarse (100).
+  // Aspect-corrected so specks stay round rather than stretched.
+  float freq = mix(1600.0, 450.0, (uGrainSize - 25.0) / 75.0);
+  vec2 guv = vec2(uv.x * uImageAspect, uv.y) * freq;
+  // Base soft speck; Roughness folds in a finer second octave to break it up.
+  float n = valueNoise(guv);
+  float rough = uGrainRoughness / 100.0;
+  if (rough > 0.001) {
+    float n2 = valueNoise(guv * 2.07 + 17.3);
+    n = mix(n, clamp(n + (n2 - 0.5) * 0.9, 0.0, 1.0), rough);
   }
   // Center the noise at 0 and scale. Luminance-weighted: less grain in shadows.
   float lumaW = clamp(luma(c) * 1.5 + 0.2, 0.2, 1.0);
@@ -902,30 +925,37 @@ void main() {
   float colorNR = uColorNR / 100.0;
   float lumNR = uLuminanceNR / 100.0;
   if (colorNR > 0.001 || lumNR > 0.001) {
-    // Luminance NR uses a fixed LOD=2 blur for edge detection
     vec3 b = textureLod(uImage, srcUv, 2.0).rgb;
     vec3 blurLin = uLinear ? b : srgbToLinear(b);
-    float ls = luma(lin);
     float lb = luma(blurLin);
     if (colorNR > 0.001) {
-      // Color NR: detail (0-100) controls LOD -- higher preserves more color detail
-      float colorLod = mix(3.0, 1.5, uColorNRDetail / 100.0);
-      // Smoothness (0-100) scales the blend -- higher = more aggressive chroma smoothing
-      float colorSmMult = mix(0.5, 1.5, uColorNRSmooth / 100.0);
+      // Color NR removes chroma SPECKLE while keeping luma and overall saturation.
+      // Work in luma-normalized color (lin / luma): pulling that toward the local
+      // average smooths color noise but leaves flat regions at their original
+      // saturation, so the slider reduces chroma noise instead of desaturating.
+      float colorLod = mix(4.0, 2.0, uColorNRDetail / 100.0);   // detail = less blur
+      float colorSmMult = mix(0.4, 1.0, uColorNRSmooth / 100.0);
       vec3 bc = textureLod(uImage, srcUv, colorLod).rgb;
       vec3 blurC = uLinear ? bc : srgbToLinear(bc);
-      float lbc = luma(blurC);
-      vec3 deChroma = vec3(ls) + (blurC - vec3(lbc));
-      lin = mix(lin, deChroma, clamp(colorNR * colorSmMult, 0.0, 1.0));
+      float ls = max(luma(lin), 1e-4);
+      float lbc = max(luma(blurC), 1e-4);
+      vec3 ratioCur = lin / ls;      // this pixel's color direction
+      vec3 ratioBlur = blurC / lbc;  // local-average color direction
+      float blend = clamp(colorNR * colorSmMult, 0.0, 1.0);
+      lin = mix(ratioCur, ratioBlur, blend) * ls; // keep luma, smooth chroma only
     }
     if (lumNR > 0.001) {
-      // Detail (0-100): higher = tighter edge threshold = preserve more texture
+      // Luminance NR changes only the LUMA, leaving chroma/saturation intact, by
+      // ratio-scaling toward the local-average luma. (An additive luma shift, the
+      // old approach, desaturates in linear light — the "luminance changes chroma"
+      // bug.) Edge-protected so texture survives.
       float edgeThresh = mix(0.14, 0.03, uLumNRDetail / 100.0);
-      // Contrast (0-100): widen the protection zone for tonal transitions
       float contrastBias = mix(0.0, 0.05, uLumNRContrast / 100.0);
-      float edge = abs(luma(lin) - lb);
+      float ls = max(luma(lin), 1e-4);
+      float edge = abs(ls - lb);
       float w = lumNR * (1.0 - smoothstep(max(edgeThresh - contrastBias, 0.0), edgeThresh, edge));
-      lin += (mix(luma(lin), lb, w) - luma(lin));
+      float targetL = mix(ls, lb, w);
+      lin *= targetL / ls;
     }
   }
 
@@ -936,11 +966,16 @@ void main() {
   // ~0.6 stops (×1.5) — every exposure was ~60% as strong as LR's, which is why
   // pushed shots stayed dark and the histogram bulk sat too low. The ×0.6 was a
   // workaround for the old clipping curve; the asymptotic curve no longer needs it.
-  // Applied per-channel so channels recover independently for highlight detail.
+  // Applied on luminance and ratio-scaled so the color ratios (hue + saturation)
+  // are preserved: a tonal control should not pump saturation. Identical to the
+  // old per-channel form for a neutral pixel and for any darkening (pure gain);
+  // for a bright push it spreads the highlight band the same way but keeps color.
   float E = uExposure;
-  lin.r = applyExposure(lin.r, E);
-  lin.g = applyExposure(lin.g, E);
-  lin.b = applyExposure(lin.b, E);
+  {
+    float L = max(luma(lin), 1e-4);
+    float newL = applyExposure(L, E);
+    lin *= newL / L;
+  }
   
   float H = clamp(uHighlights / 100.0, -1.0, 1.0);
   float S = clamp(uShadows / 100.0, -1.0, 1.0);
@@ -960,17 +995,9 @@ void main() {
     ? clamp(disp + ck * disp * (1.0 - disp) * (2.0 * disp - 1.0), 0.0, 1.0)
     : disp;
 
-  // Whites / Blacks — applied per-channel with broad per-pixel weights
-  vec3 c = clamp(vec3(
-    applyWhites(afterContrast.r, uWhites),
-    applyWhites(afterContrast.g, uWhites),
-    applyWhites(afterContrast.b, uWhites)
-  ), 0.0, 1.0);
-  c = clamp(vec3(
-    applyBlacks(c.r, uBlacks),
-    applyBlacks(c.g, uBlacks),
-    applyBlacks(c.b, uBlacks)
-  ), 0.0, 1.0);
+  // Whites / Blacks — luminance-targeted, hue/saturation preserving, bidirectional.
+  vec3 c = clamp(applyWhitesRGB(afterContrast, uWhites), 0.0, 1.0);
+  c = clamp(applyBlacksRGB(c, uBlacks), 0.0, 1.0);
 
   c = applyToneCurve(c);
   c = applyHSL(c);
