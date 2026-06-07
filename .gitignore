@@ -12,6 +12,14 @@ dist
 dist-ssr
 *.local
 
+# Electron build output
+release
+build/icon.ico
+build/icon.png
+
+# Code-signing certificate (private key — never commit)
+build/safelight-cert.pfx
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

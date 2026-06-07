@@ -52,7 +52,7 @@ export function LibraryListRow({
         <img
           src={thumbUrl}
           alt={photo.filename}
-          className="h-10 w-14 shrink-0 rounded object-cover"
+          className="h-10 w-14 shrink-0 rounded object-contain"
           loading="lazy"
         />
       ) : (

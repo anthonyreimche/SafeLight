@@ -233,6 +233,13 @@ export interface RetouchSpot {
   radius: number; // image-height units (circle radius; brush draw radius)
   feather: number; // 0..100
   opacity: number; // 0..100
+  // Auto-fit transform of the source patch, so it blends into the spot's
+  // surroundings (circle spots). Defaults are identity / no shift.
+  angle?: number; // radians; source rotation
+  scale?: number; // source scale (1 = none)
+  recolorR?: number; // additive colour offset (encoded 0..1), source -> match
+  recolorG?: number;
+  recolorB?: number;
   dabs?: BrushDab[]; // brush shape, when shape === "brush"
 }
 
@@ -647,6 +654,11 @@ function normalizeRetouch(spots: unknown): RetouchSpot[] {
       radius: clampN(raw.radius, 0.002, 1, 0.04),
       feather: clampN(raw.feather, 0, 100, 50),
       opacity: clampN(raw.opacity, 0, 100, 100),
+      angle: clampN(raw.angle, -Math.PI, Math.PI, 0),
+      scale: clampN(raw.scale, 0.25, 4, 1),
+      recolorR: clampN(raw.recolorR, -1, 1, 0),
+      recolorG: clampN(raw.recolorG, -1, 1, 0),
+      recolorB: clampN(raw.recolorB, -1, 1, 0),
       ...(dabs ? { dabs } : {}),
     });
     if (out.length >= MAX_RETOUCH) break;

@@ -117,6 +117,8 @@ uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, _, _, _
 uniform int uSpotCount;
 uniform vec4 uSpotA[MAX_SPOTS]; // dstX, dstY, srcX, srcY
 uniform vec4 uSpotB[MAX_SPOTS]; // radius(height units), feather(0..1), opacity(0..1), mode(0 heal,1 clone)
+uniform vec4 uSpotC[MAX_SPOTS];    // cosA, sinA, 1/scale, _  (source rotate/scale)
+uniform vec4 uSpotTint[MAX_SPOTS]; // recolour offset rgb (encoded 0..1), _
 
 // Brush-shaped retouch: painted coverage atlas + per-item source offset.
 #define MAX_RBRUSH 4
@@ -130,6 +132,11 @@ uniform bool uHaveDeveloped;     // true on the compositing pass (match in edite
 uniform bool uApplyRetouch;      // false while rendering the developed pass
 uniform sampler2D uHealFill;     // precomputed content-aware fill, source-UV space
 uniform bool uHaveHealFill;      // true when the fill texture is valid
+// Pass 1 of the heal/clone pipeline: output ONLY the retouched source (no tone
+// edits) into an offscreen copy. Pass 2 then develops from that copy, so every
+// blur/sharpen tap sees the spot already removed instead of the original
+// blemish (which otherwise drives the unsharp masks negative and inverts it).
+uniform bool uPatchPass;
 
 const float HSL_CENTERS[8] = float[8](
   0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 280.0, 320.0
@@ -710,16 +717,31 @@ vec3 applyRetouch(vec2 uv, vec3 base) {
     vec4 a = uSpotA[i];
     vec4 b = uSpotB[i];
     vec2 dst = a.xy;
-    vec2 off = a.zw - dst;            // source-center minus dest-center
+    vec2 src = a.zw;                  // source-patch centre
+    vec4 tc = uSpotC[i];             // cosA, sinA, 1/scale
     float radius = max(b.x, 1e-4);
     float feather = b.y;
     float opacity = b.z;
-    float d = length(vec2((uv.x - dst.x) * uImageAspect, uv.y - dst.y)) / radius;
-    if (d >= 1.0) continue;
-    float w = (1.0 - smoothstep(1.0 - feather, 1.0, d)) * opacity;
+    // Offset from the spot centre in image-height units (aspect-corrected so the
+    // disc stays round on screen).
+    float dx = (uv.x - dst.x) * uImageAspect;
+    float dy = uv.y - dst.y;
+    float dist = length(vec2(dx, dy));
+    // The marked radius is fully replaced, so the blemish is removed outright;
+    // feather softens the seam by fading out *beyond* the radius rather than
+    // carving into the core (which only made the blemish go lighter, not gone).
+    // feather=0 -> hard edge; feather=1 -> blend out to 2x the radius.
+    float edge = radius * (1.0 + feather);
+    if (dist >= edge) continue;
+    float w = opacity * (1.0 - smoothstep(radius, edge, dist));
     if (w <= 0.0) continue;
-    vec2 sUv = clamp(uv + off, 0.0, 1.0);
-    vec3 srcCol = texture(uImage, sUv).rgb; // heal & clone: copy source, develop together
+    // Fetch the source with the inverse rotation+scale, so the patch lands
+    // rotated by +angle and scaled by +scale to match the surrounding texture.
+    float rx = (tc.x * dx + tc.y * dy) * tc.z;
+    float ry = (-tc.y * dx + tc.x * dy) * tc.z;
+    vec2 sUv = clamp(src + vec2(rx / uImageAspect, ry), 0.0, 1.0);
+    // Recolour toward the destination's surroundings so the seam disappears.
+    vec3 srcCol = clamp(texture(uImage, sUv).rgb + uSpotTint[i].rgb, 0.0, 1.0);
     c = mix(c, srcCol, w);
   }
   // Brush-shaped retouch: painted coverage from the atlas, one source offset each.
@@ -809,6 +831,19 @@ vec3 applyMaskAdj(vec3 c, vec4 a0, vec4 a1, float sharp, float m, vec2 uv) {
 }
 
 void main() {
+  // Pass 1: bake the retouch into an offscreen copy of the source. We render in
+  // the source's own texel space (the V-flip in vUv is undone here) so the
+  // result is a drop-in replacement for uImage: sampling the copy at any
+  // coordinate X yields applyRetouch(X, source(X)). Pass 2 binds this copy as
+  // uImage and develops normally, so its blur/sharpen taps read the patched
+  // pixels and no false detail is synthesised over the removed spot.
+  if (uPatchPass) {
+    vec2 c = vec2(vUv.x, 1.0 - vUv.y);
+    vec3 raw = texture(uImage, c).rgb;
+    raw = applyRetouch(c, raw);
+    fragColor = vec4(raw, 1.0);
+    return;
+  }
   vec2 srcUv = cropTransformUV(vUv);
   // Lens distortion correction: remap srcUv before any sampling
   if (abs(uLensDistortion) > 0.001) {

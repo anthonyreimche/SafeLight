@@ -36,8 +36,8 @@ If you'd like to help make this software more powerful, feel free to help!
 - Hold shift or widen slider panel for fine adjustment, double-click to reset value
 - Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
 - Transform and warp image crop / geometry and perspective tools
+- Image sharpen / denoise support
 - Color grading wheels
-- Image sharpen / denoise support (WASM-based)
 - Lens correction profiles
 - Vignette and grain effects
 - Image masking and touchup removal / cloning support
@@ -56,7 +56,6 @@ If you'd like to help make this software more powerful, feel free to help!
 - Limited output resolution clamping
 
 # To Do
-- Parametric highlight recovery
 - Red eye correction
 - Image compare support
 - Color, BW, and HDR image support
@@ -64,5 +63,4 @@ If you'd like to help make this software more powerful, feel free to help!
 - Batch editing functionality
 - AI masking via ONNX.js (Select Subject, Sky)
 - Lightroom catalog import (sql.js)
-- Electron wrapper for deeper OS file access
 - Mobile-responsive Loupe view

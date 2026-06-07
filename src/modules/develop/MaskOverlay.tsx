@@ -3,7 +3,7 @@ import type { BrushDab, CropRect, Mask, RetouchSpot } from "@/catalog/types";
 import { defaultMaskAdjustments } from "@/catalog/types";
 import { mat3Apply, type Mat3 } from "@/rendering/transform";
 import { useDevelopStore } from "@/state/develop-store";
-import { findHealSource } from "@/rendering/heal-source";
+import { findHealSource, healColorOffset } from "@/rendering/heal-source";
 
 interface Rect {
   x: number;
@@ -190,9 +190,20 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       // blends. Clone keeps the simple offset (user positions it).
       let srcX = down.x - off / imageAspect;
       let srcY = down.y - off;
+      let angle = 0;
+      let scale = 1;
+      let recolorR = 0;
+      let recolorG = 0;
+      let recolorB = 0;
       if (st.retouchMode === "heal") {
+        // Auto-fit the source: position, rotation, scale and a colour shift that
+        // make the copied patch blend into the spot's surroundings.
         const auto = findHealSource(down.x, down.y, st.retouchSize, imageAspect);
-        if (auto) { srcX = auto.x; srcY = auto.y; }
+        if (auto) {
+          srcX = auto.x; srcY = auto.y;
+          angle = auto.angle; scale = auto.scale;
+          recolorR = auto.r; recolorG = auto.g; recolorB = auto.b;
+        }
       }
       const firstDab: BrushDab = {
         x: down.x,
@@ -212,6 +223,11 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
         radius: st.retouchSize,
         feather: st.retouchFeather,
         opacity: st.retouchOpacity,
+        angle,
+        scale,
+        recolorR,
+        recolorG,
+        recolorB,
         dabs: [firstDab],
       };
       st.addSpot(spot);
@@ -392,7 +408,25 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
         break;
       }
       case "spot-src": {
-        st.updateSpot(d.id!, { srcX: cur.x, srcY: cur.y });
+        // Manual source positioning takes over from the auto-fit: drop the
+        // rotation/scale, but keep recolour matching at the new location.
+        const s = st.params.retouch.find((sp) => sp.id === d.id);
+        const patch: Partial<RetouchSpot> = {
+          srcX: cur.x,
+          srcY: cur.y,
+          angle: 0,
+          scale: 1,
+          recolorR: 0,
+          recolorG: 0,
+          recolorB: 0,
+        };
+        if (s && s.mode === "heal") {
+          const off = healColorOffset(s.dstX, s.dstY, cur.x, cur.y, s.radius, imageAspect);
+          patch.recolorR = off.r;
+          patch.recolorG = off.g;
+          patch.recolorB = off.b;
+        }
+        st.updateSpot(d.id!, patch);
         break;
       }
     }

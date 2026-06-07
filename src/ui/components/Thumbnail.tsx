@@ -59,7 +59,7 @@ export function Thumbnail({
         <img
           src={thumbUrl}
           alt={photo.filename}
-          className={`h-full w-full object-cover transition group-hover:brightness-50 ${dimClass}`}
+          className={`h-full w-full object-contain transition group-hover:brightness-50 ${dimClass}`}
           loading="lazy"
         />
       ) : (

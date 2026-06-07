@@ -17,13 +17,11 @@ import { setHealSourceImage } from "../heal-source";
 // a larger value (or the image's own long edge) to render at full size.
 const MAX_EDGE = 2560;
 
-// Column-major identity, used to render the developed pass in plain source-UV
-// space (no crop / transform) so retouch coordinates line up with it.
-const IDENTITY3 = new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
-
-// Working resolution for the (CPU) content-aware heal fill. Small so synthesis
-// stays fast; the GPU upsamples and re-develops the result.
-const FILL_EDGE = 168;
+// Working resolution for the CPU heal-source search (and the disabled
+// content-aware fill). Big enough that thin structures (edges, lines) survive
+// the downscale so the source picker can match and continue them; the search
+// cost is independent of this, only the sampling fidelity changes.
+const FILL_EDGE = 384;
 
 // Experimental CPU content-aware heal fill. Off: heal copies the source verbatim
 // (predictable, artifact-free). Flip to re-enable the PatchMatch synthesis path.
@@ -385,6 +383,7 @@ export class WebGLRenderer {
       "uApplyRetouch",
       "uHealFill",
       "uHaveHealFill",
+      "uPatchPass",
     ];
     // Per-element mask/retouch array uniforms (queried by indexed name).
     for (let i = 0; i < MAX_MASKS; i++) {
@@ -406,6 +405,8 @@ export class WebGLRenderer {
     for (let i = 0; i < MAX_RETOUCH; i++) {
       this.uniforms[`uSpotA[${i}]`] = gl.getUniformLocation(this.program, `uSpotA[${i}]`);
       this.uniforms[`uSpotB[${i}]`] = gl.getUniformLocation(this.program, `uSpotB[${i}]`);
+      this.uniforms[`uSpotC[${i}]`] = gl.getUniformLocation(this.program, `uSpotC[${i}]`);
+      this.uniforms[`uSpotTint[${i}]`] = gl.getUniformLocation(this.program, `uSpotTint[${i}]`);
     }
     for (let i = 0; i < MAX_RETOUCH_BRUSH; i++) {
       this.uniforms[`uRetouchCh[${i}]`] = gl.getUniformLocation(this.program, `uRetouchCh[${i}]`);
@@ -713,6 +714,22 @@ export class WebGLRenderer {
         s.opacity / 100,
         s.mode === "clone" ? 1 : 0,
       );
+      const angle = s.angle ?? 0;
+      const scale = s.scale ?? 1;
+      gl.uniform4f(
+        u[`uSpotC[${i}]`],
+        Math.cos(angle),
+        Math.sin(angle),
+        1 / (scale || 1),
+        0,
+      );
+      gl.uniform4f(
+        u[`uSpotTint[${i}]`],
+        s.recolorR ?? 0,
+        s.recolorG ?? 0,
+        s.recolorB ?? 0,
+        0,
+      );
     });
 
     gl.activeTexture(gl.TEXTURE3);
@@ -737,50 +754,53 @@ export class WebGLRenderer {
       gl.uniform1f(u[`uRetouchRadius[${i}]`], avgR);
     });
 
-    // Heal matches tone against the edited image: render the develop once into a
-    // source-space texture (no crop/transform, no retouch), then composite the
-    // retouch in a second pass that samples it. Clone / no-heal stays single-pass.
-    // Content-aware heal fill (source-UV space), sampled by the heal branch.
+    // Content-aware heal fill (source-UV space); unused while disabled but kept
+    // bound so the sampler stays valid.
     gl.activeTexture(gl.TEXTURE5);
     gl.bindTexture(gl.TEXTURE_2D, this.healFillTex ?? this.imageTexture);
     gl.uniform1i(u.uHealFill, 5);
     gl.uniform1i(u.uHaveHealFill, this.haveHealFill ? 1 : 0);
+    gl.uniform1i(u.uHaveDeveloped, 0);
 
-    // The inpaint fallback (used only until the fill is ready) needs the
-    // developed image for tone; the fill path does not.
-    const needDeveloped = false; // content-aware heal disabled; single pass
+    // Keep unit 4 (uDevelopedSrc) pointed at a valid texture.
     gl.activeTexture(gl.TEXTURE4);
-    if (needDeveloped && this.prepareDevelopedTarget()) {
-      // Pass 1 -> developed source image + mip chain.
+    gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
+    gl.uniform1i(u.uDevelopedSrc, 4);
+
+    const hasRetouch = circles.length > 0 || brushSpots.length > 0;
+    if (hasRetouch && this.prepareDevelopedTarget()) {
+      // Pass 1 -> bake the retouch into an offscreen copy of the source, then
+      // build its mip chain so the develop's blur taps read the patched pixels.
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.developedFbo);
       gl.viewport(0, 0, this.devW, this.devH);
-      gl.uniform1i(u.uApplyRetouch, 0);
-      gl.uniform1i(u.uHaveDeveloped, 0);
-      gl.uniform4f(u.uCrop, 0, 0, 1, 1);
-      gl.uniformMatrix3fv(u.uInvTransform, false, IDENTITY3);
-      gl.bindTexture(gl.TEXTURE_2D, this.imageTexture); // keep unit 4 valid
-      gl.uniform1i(u.uDevelopedSrc, 4);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.imageTexture); // read the original source
+      gl.uniform1i(u.uImage, 0);
+      gl.uniform1i(u.uPatchPass, 1);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
       gl.generateMipmap(gl.TEXTURE_2D);
-      // Pass 2 -> composite retouch against the developed texture, to screen.
+
+      // Pass 2 -> develop from the patched copy (now the spot is already gone,
+      // so texture/clarity/sharpening can't invert it). Retouch off this pass.
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-      gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
-      gl.uniformMatrix3fv(
-        u.uInvTransform,
-        false,
-        mat3ColumnMajor(buildInverseTransform(p.straighten, p.transform, aspect)),
-      );
-      gl.uniform1i(u.uDevelopedSrc, 4); // developedTex still bound to unit 4
-      gl.uniform1i(u.uHaveDeveloped, 1);
-      gl.uniform1i(u.uApplyRetouch, 1);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
+      gl.uniform1i(u.uImage, 0);
+      gl.uniform1i(u.uPatchPass, 0);
+      gl.uniform1i(u.uApplyRetouch, 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     } else {
-      gl.bindTexture(gl.TEXTURE_2D, this.imageTexture); // keep unit 4 valid
-      gl.uniform1i(u.uDevelopedSrc, 4);
-      gl.uniform1i(u.uHaveDeveloped, 0);
-      gl.uniform1i(u.uApplyRetouch, 1);
+      // No retouch (or no offscreen target): single pass. The in-shader retouch
+      // is the fallback when the framebuffer can't be created.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
+      gl.uniform1i(u.uImage, 0);
+      gl.uniform1i(u.uPatchPass, 0);
+      gl.uniform1i(u.uApplyRetouch, hasRetouch ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
   }

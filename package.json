@@ -1,18 +1,28 @@
 {
   "name": "safelight",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Safelight — a fast RAW photo editor.",
+  "author": "Anthony Reimche",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "icon": "node electron/make-icon.cjs",
+    "electron:dev": "vite build && electron .",
+    "build:electron": "npm run build && npm run icon && electron-builder --win"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "png-to-ico": "^3.0.0",
+    "sharp": "^0.33.5",
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.12"
@@ -23,5 +33,38 @@
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.16.0",
     "zustand": "^5.0.14"
+  },
+  "build": {
+    "appId": "com.safelight.app",
+    "productName": "Safelight",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "asar": true,
+    "compression": "maximum",
+    "removePackageScripts": true,
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Safelight"
+    }
   }
 }
