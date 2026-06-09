@@ -12,6 +12,8 @@ interface UIState {
   toggleRightSidebar: () => void;
   setLeftSidebar: (open: boolean) => void;
   setRightSidebar: (open: boolean) => void;
+  leftSidebarWidth: number;
+  setLeftSidebarWidth: (width: number) => void;
   rightSidebarWidth: number;
   setRightSidebarWidth: (width: number) => void;
 
@@ -50,6 +52,8 @@ export const useUIStore = create<UIState>((set) => ({
     set((s) => ({ rightSidebarOpen: !s.rightSidebarOpen })),
   setLeftSidebar: (open) => set({ leftSidebarOpen: open }),
   setRightSidebar: (open) => set({ rightSidebarOpen: open }),
+  leftSidebarWidth: 224,
+  setLeftSidebarWidth: (width) => set({ leftSidebarWidth: width }),
   rightSidebarWidth: 256,
   setRightSidebarWidth: (width) => set({ rightSidebarWidth: width }),
 

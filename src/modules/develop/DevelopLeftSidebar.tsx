@@ -1,9 +1,10 @@
 import { MasksPanel } from "./panels/MasksPanel";
 import { RetouchPanel } from "./panels/RetouchPanel";
+import { PresetsPanel } from "./panels/PresetsPanel";
 
 // Left-side toolbox in Develop: local adjustment masks and spot removal
-// (heal / clone). Both write into the develop params, so they undo/redo and
-// export through the same pipeline as the global edits.
+// (heal / clone), plus saved presets. Both write into the develop params, so
+// they undo/redo and export through the same pipeline as the global edits.
 export function DevelopLeftSidebar() {
   return (
     <div className="flex flex-col">
@@ -14,6 +15,7 @@ export function DevelopLeftSidebar() {
       </div>
       <MasksPanel />
       <RetouchPanel />
+      <PresetsPanel />
     </div>
   );
 }

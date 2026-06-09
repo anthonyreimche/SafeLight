@@ -157,7 +157,7 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
 
       // Skip if already cached (e.g., re-imported the same folder).
       const hit = await readCachedPreview(file);
-      if (hit) { hit.close(); continue; }
+      if (hit) continue; // already cached
 
       const f = await decodeRawToFloat(file);
       if (!f) continue;

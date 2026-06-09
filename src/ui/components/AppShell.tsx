@@ -17,6 +17,8 @@ export function AppShell({
 }: AppShellProps) {
   const leftOpen = useUIStore((s) => s.leftSidebarOpen);
   const rightOpen = useUIStore((s) => s.rightSidebarOpen);
+  const leftSidebarWidth = useUIStore((s) => s.leftSidebarWidth);
+  const setLeftSidebarWidth = useUIStore((s) => s.setLeftSidebarWidth);
   const rightSidebarWidth = useUIStore((s) => s.rightSidebarWidth);
   const setRightSidebarWidth = useUIStore((s) => s.setRightSidebarWidth);
 
@@ -25,9 +27,19 @@ export function AppShell({
       <TopBar />
       <div className="flex min-h-0 flex-1">
         {leftSidebar && leftOpen && (
-          <aside className="flex w-56 shrink-0 flex-col overflow-y-auto border-r border-border bg-surface-1">
-            {leftSidebar}
-          </aside>
+          <>
+            <aside
+              className="flex shrink-0 flex-col overflow-y-auto border-r border-border bg-surface-1"
+              style={{ width: leftSidebarWidth }}
+            >
+              {leftSidebar}
+            </aside>
+            <ResizeHandle
+              onResize={(clientX) =>
+                setLeftSidebarWidth(Math.min(600, Math.max(180, clientX)))
+              }
+            />
+          </>
         )}
 
         <main className="flex min-w-0 flex-1 flex-col bg-surface-0">

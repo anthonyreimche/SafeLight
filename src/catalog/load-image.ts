@@ -50,11 +50,13 @@ export async function loadPhotoImage(
     try {
       const file = await photo.fileHandle.getFile();
       if (isRawFile(file)) {
-        // Fast path: return the cached develop preview (JPEG stored from a
-        // previous full decode). Skips libraw entirely — ~50ms vs 3-8s.
+        // Fast path: return the cached develop preview (16-bit sRGB, gzip) from a
+        // previous full decode. Skips libraw entirely — ~50ms vs 3-8s. Returned as
+        // linear float so it goes through the full-precision RGBA16F render path
+        // (no 8-bit posterising under a big exposure push).
         const cached = await readCachedPreview(file);
         if (cached) {
-          return { kind: "bitmap", bitmap: cached, cached: true };
+          return { kind: "float", data: cached.data, width: cached.width, height: cached.height };
         }
 
         // Slow path: full libraw decode. Write result to cache asynchronously

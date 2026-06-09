@@ -205,27 +205,19 @@ vec3 applyWhiteBalance(vec3 c, float kelvin, float tint) {
   return c * gain;
 }
 
-// Exposure tone-mapping.
+// Exposure as a TRUE linear gain: ×2 per stop, exactly like a camera sensor and
+// Lightroom. Midtones brighten linearly so tonal separation/contrast is kept, and
+// the brightest values roll past 1.0 into HDR headroom — carried (unclamped) into
+// the highlight-recovery stage and clipped to white on display unless Highlights
+// pulls them back, which is how LR blows a +5 sky to white then recovers it.
 //
-// The old Michaelis-Menten form  I*k/((k-1)*I + 1)  reaches *exactly* 1.0 at a
-// linear input of I=1 and only asymptotes at k/(k-1) (e.g. 1.14 at +5). After a
-// big push every bright value above ~0.16 was therefore crushed into the top
-// ~10% of the range and clipped — all of it landing in the same output bin,
-// which is the tall narrow highlight spike (visible even at Highlights=0) and the
-// emptied upper-midtones. Lightroom instead lets highlights roll toward white
-// gradually, keeping their spread as a broad hump.
-//
-// This keeps the same shadow/midtone gain (so positions still match LR) but gives
-// the highlights real headroom: the saturation coefficient beta = 1/g makes the
-// curve asymptotic to 1.0 only many stops up, so the bright band spreads across
-// the highlights instead of piling at the clip point. beta -> 1 as E -> 0, so the
-// curve is an exact identity at EV 0; negative exposure is a plain gain (no need
-// for a highlight shoulder when darkening).
+// The previous asymptotic curve  g·i/(1+(g−β)i)  asymptoted to ~1.0 and never
+// actually clipped: at +5 it crushed the whole scene range (linear 0.05→1.0) into
+// the thin band sRGB 0.81–0.99. Nothing clipped like LR, and with no separation
+// left the highlights/upper-mids went flat/milky as soon as Highlights pulled on
+// them. Identity at E=0; negative E is the same plain gain as before.
 float applyExposure(float i_in, float E) {
-  float g = exp2(E);
-  if (E <= 0.0) return i_in * g;
-  float beta = 1.0 / g;
-  return g * i_in / (1.0 + (g - beta) * i_in);
+  return i_in * exp2(E);
 }
 
 // Highlights recovery (H < 0): per-channel rollHi with a sliding knee.
@@ -242,33 +234,18 @@ float applyExposure(float i_in, float E) {
 // falls off as exp(-λ·t) over display luma t so shadows lift most, mids/highlights
 // still stretch with exponentially decreasing weight — no hard shadow/mid cutoff.
 
-// Per-channel highlight recovery curve. amt in [0,1] (= -H).
-// rollHi only soft-clipped the HDR over-range back toward 1.0, so blown whites
-// stayed pinned to the right edge of the histogram — nothing actually moved at
-// -100. This instead (1) folds any over-range into [thr,1], then (2) compresses
-// that highlight band DOWNWARD toward the threshold, so a clipped white is pulled
-// well back into the histogram, the way Lightroom's Highlights -100 does.
-// Per-channel: a channel that clipped is rebuilt from the level of the others.
-float hiDown(float v, float amt) {
-  float thr = mix(0.70, 0.45, amt);           // band start slides down with amount
-  if (v <= thr) return min(v, 1.0);
-  float head = max(1.0 - thr, 1e-3);
-  float sat = thr + head * (1.0 - exp(-(v - thr) / head)); // saturate into [thr,1]
-  float comp = mix(1.0, 0.35, amt);            // pull the band toward the threshold
-  return thr + (sat - thr) * comp;
-}
-
 // Exponential shadow weight: w = exp(-λ·t), t = display luma in [0,1]. Black gets
 // full strength; mids and highlights still move, with weight decreasing exponentially.
-float shadowWeight(vec3 linRgb) {
-  float t = clamp(luma(linearToSrgbU(max(linRgb, vec3(0.0)))), 0.0, 1.0);
+// t is the SCENE (pre-exposure) display luma so a global exposure push does not
+// reclassify which pixels count as shadows.
+float shadowWeight(float t) {
   return exp(-2.75 * t);
 }
 
 // Exponential highlight weight: w = exp(-λ·(1-t)), t = display luma in [0,1]. White gets
 // full strength; mids and shadows still move, with weight decreasing exponentially.
-float highlightWeight(vec3 linRgb) {
-  float t = clamp(luma(linearToSrgbU(max(linRgb, vec3(0.0)))), 0.0, 1.0);
+// t is the SCENE (pre-exposure) display luma (see shadowWeight).
+float highlightWeight(float t) {
   return exp(-3.5 * (1.0 - t));
 }
 
@@ -286,64 +263,89 @@ float blacksWeight(vec3 linRgb) {
   return exp(-8.0 * t * t);
 }
 
+// Ratio-scale a color from luma L to a target newL: hue and per-channel saturation
+// preserving. Visible-saturation compensation is NOT done here — it is applied once
+// at the end of the tone chain in display space (see main), so each stage's tonal
+// mapping (e.g. highlight recovery) stays clean and never overshoots into false color.
+const float SAT_COMP = 0.4; // strength of the end-of-chain visible-saturation comp
+const float HI_SAT  = 0.4;  // saturation lift inside highlight recovery (offsets pull-down)
+const float HI_DETAIL = 1.5; // local contrast restored to recovered highlights (cloud detail)
+vec3 retargetLuma(vec3 c, float L, float newL) {
+  return c * (newL / L);
+}
+
 // Highlights applied to linear RGB. H in [-1, 1] (uHighlights / 100).
-// Uses broad per-pixel weight centered on highlights, feathering across the range.
-vec3 applyHighlightsRGB(vec3 c, float H) {
+// refT is the SCENE (pre-exposure) display luma used to pick the highlight band,
+// so exposure-lifted midtones are not treated as highlights and pulled to grey.
+vec3 applyHighlightsRGB(vec3 c, float H, float refT) {
   if (H < 0.0) {
-    // Recovery: pull the highlight band down with luminance-based compression
-    // to preserve hue. Weighted by highlightWeight so different luminances shift
-    // by different amounts.
+    // Recovery as a strictly MONOTONIC highlight rolloff on luminance: slope 1 at the
+    // knee, sub-linear above, and it only ever darkens — so brighter input ALWAYS maps
+    // to brighter output. No tonal inversion means no bright ring/halo along the
+    // high-contrast tree↔sky edges. (The previous brightness-gated 'over' term was
+    // non-monotonic: sky just under the clip point recovered less than sky just over
+    // it, leaving a halo hugging the tree line, which default sharpening then amplified.)
+    // Keyed to luminance like Lightroom, so it separates the bright sky from darker
+    // foliage on its own; applied via luma-ratio so hue/saturation are preserved.
     float amt = -H;
-    float w = highlightWeight(c);
-    float blend = amt * w;
-    if (blend < 1e-5) return c;
     float L = max(luma(c), 1e-4);
-    // Apply per-channel compression, then ratio-scale to preserve hue
-    vec3 compressed = vec3(hiDown(c.r, amt), hiDown(c.g, amt), hiDown(c.b, amt));
-    float Lcomp = luma(compressed);
-    float newL = mix(L, Lcomp, blend);
-    c *= newL / L;
+    float knee = mix(1.0, 0.30, amt);     // recovery starts here; reaches down as amt rises
+    float newL = L;
+    if (L > knee) {
+      float x = L - knee;
+      float a = mix(0.0, 40.0, amt);      // pull strength
+      newL = knee + x / pow(1.0 + a * x, 0.7); // 0.7 keeps luminance spread (contrast)
+    }
+    c = retargetLuma(c, L, newL);
+    // Restore the colourfulness that pulling bright values down costs (Hunt effect),
+    // scaled by how far this pixel was actually pulled.
+    float pulled = clamp(1.0 - newL / L, 0.0, 1.0);
+    float Lr = luma(c);
+    c = mix(vec3(Lr), c, 1.0 + pulled * HI_SAT);
   } else {
     // Lift: gamma brightening of the highlight zone, ratio-scaled (hue-preserving).
     // Weighted by highlightWeight so different luminances shift by different amounts.
-    float w = highlightWeight(c);
+    float w = highlightWeight(refT);
     float blend = H * w;
     if (blend < 1e-5) return c;
     float L = max(luma(c), 1e-4);
     float gamma = mix(1.0, 0.4, H);
     float newL = mix(L, pow(L, gamma), blend);
-    c *= newL / L;
+    c = retargetLuma(c, L, newL);
   }
   return c;
 }
 
 // Shadows lift/crush on linear RGB. S in [-1, 1] (uShadows / 100).
-vec3 applyShadowsRGB(vec3 c, float S) {
+// refT is the SCENE (pre-exposure) display luma used to pick the shadow band.
+vec3 applyShadowsRGB(vec3 c, float S, float refT) {
   float L = max(luma(c), 1e-4);
-  float w = shadowWeight(c);
+  float w = shadowWeight(refT);
   float blend = abs(S) * w;
   if (blend < 1e-5) return c;
 
   float gamma = S > 0.0 ? mix(1.0, 0.55, abs(S)) : mix(1.0, 2.35, -S);
   float newL = mix(L, pow(L, gamma), blend);
-  c *= newL / L;
+  c = retargetLuma(c, L, newL);
   return c;
 }
 
 // Whites endpoint, display space. wh in [-100,100]; bidirectional.
 // + brightens the bright end, - pulls it down. Luminance-targeted and
 // ratio-scaled so it shifts tone WITHOUT changing hue/saturation.
-vec3 applyWhitesRGB(vec3 c, float wh) {
+// refT is the SCENE (pre-exposure) display luma used to pick the band, so an
+// exposure push does not reclassify lifted midtones as whites.
+vec3 applyWhitesRGB(vec3 c, float wh, float refT) {
   if (abs(wh) < 0.001) return c;
   float amt = wh / 100.0;
   float L = max(luma(c), 1e-4);
-  float t = clamp(L, 0.0, 1.0);
+  float t = refT;
   float w = exp(-8.0 * (1.0 - t) * (1.0 - t)); // extreme highlights
   float blend = abs(amt) * w;
   if (blend < 1e-5) return c;
   float gamma = amt > 0.0 ? mix(1.0, 0.5, amt) : mix(1.0, 1.9, -amt);
   float newL = mix(L, pow(L, gamma), blend);
-  return c * (newL / L);
+  return retargetLuma(c, L, newL);
 }
 
 // Blacks endpoint, display space. bl in [-100,100]; bidirectional.
@@ -351,18 +353,19 @@ vec3 applyWhitesRGB(vec3 c, float wh) {
 // - crushes/deepens them. The old curve did the opposite (and ignored the
 // negative half) — that's the "Blacks is backwards" bug. Luminance-targeted
 // and ratio-scaled so it does not pump saturation.
-vec3 applyBlacksRGB(vec3 c, float bl) {
+// refT is the SCENE (pre-exposure) display luma used to pick the band.
+vec3 applyBlacksRGB(vec3 c, float bl, float refT) {
   if (abs(bl) < 0.001) return c;
   float amt = bl / 100.0;
   float L = max(luma(c), 1e-4);
-  float t = clamp(L, 0.0, 1.0);
+  float t = refT;
   float w = exp(-8.0 * t * t); // extreme shadows
   float blend = abs(amt) * w;
   if (blend < 1e-5) return c;
   // + -> gamma < 1 (lift), - -> gamma > 1 (crush)
   float gamma = amt > 0.0 ? mix(1.0, 0.55, amt) : mix(1.0, 2.2, -amt);
   float newL = mix(L, pow(L, gamma), blend);
-  return c * (newL / L);
+  return retargetLuma(c, L, newL);
 }
 
 vec3 applyToneCurve(vec3 c) {
@@ -961,28 +964,30 @@ void main() {
 
   lin = applyWhiteBalance(lin, uTemperature, uTint);
 
-  // Exposure in true stops: the slider is an EV value, so +1 must double the
-  // linear signal (×2), matching Lightroom. The old ×0.6 scaling made +1 only
-  // ~0.6 stops (×1.5) — every exposure was ~60% as strong as LR's, which is why
-  // pushed shots stayed dark and the histogram bulk sat too low. The ×0.6 was a
-  // workaround for the old clipping curve; the asymptotic curve no longer needs it.
-  // Applied on luminance and ratio-scaled so the color ratios (hue + saturation)
-  // are preserved: a tonal control should not pump saturation. Identical to the
-  // old per-channel form for a neutral pixel and for any darkening (pure gain);
-  // for a bright push it spreads the highlight band the same way but keeps color.
+  // Scene tonal zone, captured BEFORE exposure. Highlights/Shadows classify pixels
+  // by where they sat in the original scene, so a global exposure push (e.g. +5) does
+  // not reclassify lifted midtones as highlights and let Highlights -100 drag them to grey.
+  float refT = clamp(luma(linearToSrgbU(max(lin, vec3(0.0)))), 0.0, 1.0);
+
+  // Exposure in true stops: the slider is an EV value, so +1 doubles the linear
+  // signal (×2), matching Lightroom. A true linear gain (see applyExposure) keeps
+  // midtone separation and lets the brightest values run past 1.0 into HDR headroom,
+  // which is carried unclamped into highlight recovery below and only resolves to
+  // display at the end. Ratio-scaled on luma so hue/saturation are preserved (for a
+  // constant gain this is just a per-channel ×2^E).
   float E = uExposure;
   {
     float L = max(luma(lin), 1e-4);
     float newL = applyExposure(L, E);
-    lin *= newL / L;
+    lin = retargetLuma(lin, L, newL);
   }
   
   float H = clamp(uHighlights / 100.0, -1.0, 1.0);
   float S = clamp(uShadows / 100.0, -1.0, 1.0);
   if (abs(H) > 0.001) {
-    lin = applyHighlightsRGB(lin, H);
+    lin = applyHighlightsRGB(lin, H, refT);
   }
-  if (abs(S) > 0.001) lin = applyShadowsRGB(lin, S);
+  if (abs(S) > 0.001) lin = applyShadowsRGB(lin, S, refT);
   
   vec3 disp = linearToSrgbU(lin); // per-channel, may exceed 1.0
 
@@ -995,11 +1000,33 @@ void main() {
     ? clamp(disp + ck * disp * (1.0 - disp) * (2.0 * disp - 1.0), 0.0, 1.0)
     : disp;
 
-  // Whites / Blacks — luminance-targeted, hue/saturation preserving, bidirectional.
-  vec3 c = clamp(applyWhitesRGB(afterContrast, uWhites), 0.0, 1.0);
-  c = clamp(applyBlacksRGB(c, uBlacks), 0.0, 1.0);
+  // Whites / Blacks — luminance-targeted, hue/saturation preserving, bidirectional,
+  // and SCENE-anchored (refT) like exposure/highlights/shadows. Carried unclamped
+  // so the highlight stages keep their HDR headroom; the final per-channel clip
+  // (in applyToneCurve) resolves anything still over 1.0 to white, exactly like a
+  // sensor / Lightroom — which is what lets a +5 blowout read as white and lets
+  // Highlights -100 visibly un-clip it.
+  vec3 c = applyWhitesRGB(afterContrast, uWhites, refT);
+  c = applyBlacksRGB(c, uBlacks, refT);
 
-  c = applyToneCurve(c);
+  // Visible-saturation compensation (once, in display space). The tone controls hold
+  // HSV saturation but darkening still reads as a loss of colorfulness, so where a
+  // pixel ended up darker than its scene luma (refT) — i.e. any slider was lowered —
+  // nudge chroma back up in proportion to that drop, keeping the image's visible
+  // saturation steady. Brightening: no-op. Gamut-safe: the boost is capped so the
+  // darkest channel cannot cross 0 (crossing 0 is what flipped hue / "inverted").
+  {
+    float Lc = luma(c);
+    float drop = clamp(1.0 - Lc / max(refT, 1e-3), 0.0, 1.0);
+    if (drop > 1e-4 && Lc > 1e-4) {
+      float mn = min(min(c.r, c.g), c.b);
+      float boost = drop * SAT_COMP;
+      if (mn < Lc) boost = min(boost, mn / (Lc - mn)); // keep darkest channel >= 0
+      c = mix(vec3(Lc), c, 1.0 + boost);
+    }
+  }
+
+  c = applyToneCurve(c); // clamps per-channel to [0,1] — LR-style white clip
   c = applyHSL(c);
 
   // Dehaze: clear the veil with broad local contrast, then a little contrast/color.
@@ -1014,6 +1041,17 @@ void main() {
   float midMask = 1.0 - pow(clamp(abs(luma(c) - 0.5) * 1.6, 0.0, 1.0), 3.0);
   c += broadDetail * clarAmt * 1.3 * midMask;
   c += texDetail * texAmt * 1.8;
+
+  // Highlight detail restore: the Highlights recovery compresses the bright band and
+  // dulls cloud/texture micro-contrast. A luminance curve can't add it back without
+  // also darkening lit foliage (sky and foliage overlap in luma after a big push), so
+  // restore LOCAL contrast instead — only where the pixel ended up bright, scaled by
+  // recovery strength (-H). Clamped to limit edge overshoot (anti-halo).
+  if (H < -0.001) {
+    float hiZone = smoothstep(0.45, 0.78, luma(c));
+    float hiDet = clamp(rawLuma - lumaLod(srcUv, 2.0), -0.15, 0.15);
+    c += hiDet * (-H) * hiZone * HI_DETAIL;
+  }
 
   // Capture sharpening with radius, detail (halo control), and edge masking.
   float sharpen = uSharpening / 100.0;

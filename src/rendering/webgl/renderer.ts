@@ -52,6 +52,30 @@ function downsampleRGBA(src: Uint8ClampedArray | Uint8Array, W: number, H: numbe
   return { data: out, w, h };
 }
 
+// Box-halve an RGBA Float32 image (linear space). Used to build a float mip chain
+// by hand: WebGL2 cannot generateMipmap on RGBA16F, but it can sample manually
+// supplied float mip levels with trilinear filtering, which the local-contrast
+// taps (Texture/Clarity/Dehaze/Sharpen) need. Working in 16-bit float keeps real
+// precision and HDR headroom so a big exposure push doesn't posterise into bands.
+function halveRGBAF(src: Float32Array, w: number, h: number) {
+  const nw = Math.max(1, w >> 1);
+  const nh = Math.max(1, h >> 1);
+  const out = new Float32Array(nw * nh * 4);
+  for (let y = 0; y < nh; y++) {
+    const y0 = Math.min(h - 1, y * 2), y1 = Math.min(h - 1, y * 2 + 1);
+    for (let x = 0; x < nw; x++) {
+      const x0 = Math.min(w - 1, x * 2), x1 = Math.min(w - 1, x * 2 + 1);
+      const i00 = (y0 * w + x0) * 4, i01 = (y0 * w + x1) * 4;
+      const i10 = (y1 * w + x0) * 4, i11 = (y1 * w + x1) * 4;
+      const o = (y * nw + x) * 4;
+      for (let k = 0; k < 4; k++) {
+        out[o + k] = (src[i00 + k] + src[i01 + k] + src[i10 + k] + src[i11 + k]) * 0.25;
+      }
+    }
+  }
+  return { data: out, w: nw, h: nh };
+}
+
 function downsampleDrawable(img: TexImageSource, W: number, H: number) {
   const scale = Math.min(1, FILL_EDGE / Math.max(W, H));
   const w = Math.max(1, Math.round(W * scale));
@@ -474,36 +498,44 @@ export class WebGLRenderer {
     this.maxEdge = maxEdge;
 
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
+    let builtFloatMips = false;
     if ("kind" in image) {
-      // Linear float (RAW) path — convert to RGBA8 for upload.
-      // RGBA16F does not support generateMipmap in WebGL2, which breaks
-      // Texture/Clarity/Dehaze. The shader reads these as linear (uLinear=true),
-      // so no sRGB decode is applied. Precision loss vs 32-bit is acceptable
-      // since the display pipeline is 8-bit anyway.
+      // Linear float (RAW) path — upload as RGBA16F so the develop pipeline keeps
+      // ~10-bit precision AND real HDR headroom. The previous code quantised to 8-bit
+      // sRGB (mipmaps need a filterable+renderable format), which meant a +5 exposure
+      // (×32) stretched ~50 code values across the bright sky into visible bands, and
+      // because R/G/B quantise independently their ratios stepped → rainbow posterising.
+      // 16-bit float removes that. WebGL2 can't generateMipmap on RGBA16F, so the mip
+      // chain for the local-contrast taps is built by hand below.
       this.imageWidth = image.width;
       this.imageHeight = image.height;
-      // Store gamma-encoded (sRGB) rather than linear values so that shadow
-      // detail survives the float→uint8 quantisation. In linear space, shadow
-      // values in [0, 0.04] collapse to only ~10 uint8 steps; sRGB gamma
-      // maps that same range to ~90 steps (8-9× more precision). The shader's
-      // srgbToLinear path decodes them back to linear before any edits apply.
-      // uLinear is therefore false: the texture is sRGB-encoded, not linear.
-      this.linear = false;
+      // Texture now holds true linear scene values, so the shader must NOT sRGB-decode.
+      this.linear = true;
       this.isFallbackPreview = image.isFallbackPreview ?? isFallbackPreview;
       // Real full-res RAW decode (not the pseudo-linear JPEG fallback) renders
       // scene-linear and flat; add the default tone curve to match other views.
       this.applyBaseCurve = !this.isFallbackPreview;
-      const u8 = new Uint8Array(image.data.length);
-      for (let i = 0; i < image.data.length; i++) {
-        const v = Math.max(0, image.data[i]);
-        const enc = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-        u8[i] = Math.round(Math.min(255, enc * 255));
-      }
+      const f0 = image.data instanceof Float32Array ? image.data : new Float32Array(image.data);
       gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0,
-        gl.RGBA, gl.UNSIGNED_BYTE, u8,
+        gl.TEXTURE_2D, 0, gl.RGBA16F, image.width, image.height, 0,
+        gl.RGBA, gl.FLOAT, f0,
       );
+      // Manual float mip chain (trilinear taps for Texture/Clarity/Dehaze/Sharpen).
+      let lw = image.width, lh = image.height, lvl = 0, cur = f0;
+      while (lw > 1 || lh > 1) {
+        const ds = halveRGBAF(cur, lw, lh);
+        lvl++; cur = ds.data; lw = ds.w; lh = ds.h;
+        gl.texImage2D(gl.TEXTURE_2D, lvl, gl.RGBA16F, lw, lh, 0, gl.RGBA, gl.FLOAT, cur);
+      }
+      builtFloatMips = true;
       {
+        // Heal / content-aware-fill source stays 8-bit sRGB (its own pipeline).
+        const u8 = new Uint8Array(image.data.length);
+        for (let i = 0; i < image.data.length; i++) {
+          const v = Math.max(0, image.data[i]);
+          const enc = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+          u8[i] = Math.round(Math.min(255, enc * 255));
+        }
         const ds = downsampleRGBA(u8, image.width, image.height);
         this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
         setHealSourceImage(ds.data, ds.w, ds.h);
@@ -529,7 +561,9 @@ export class WebGLRenderer {
       }
     }
     // Build the mip chain for local-contrast blurs (Texture/Clarity/Dehaze).
-    gl.generateMipmap(gl.TEXTURE_2D);
+    // The float (RGBA16F) path already supplied its mips by hand; generateMipmap
+    // is invalid on a non-color-renderable float format, so skip it there.
+    if (!builtFloatMips) gl.generateMipmap(gl.TEXTURE_2D);
     this.hasImage = true;
     this.resize();
   }

@@ -8,7 +8,6 @@ import { HSLPanel } from "./panels/HSLPanel";
 import { ColorGradingPanel } from "./panels/ColorGradingPanel";
 import { LensCorrectionPanel } from "./panels/LensCorrectionPanel";
 import { EffectsPanel } from "./panels/EffectsPanel";
-import { PresetsPanel } from "./panels/PresetsPanel";
 import { TuningPanel } from "./panels/TuningPanel";
 import { useRef } from "react";
 import type { DevelopParams } from "@/catalog/types";
@@ -69,7 +68,6 @@ export function DevelopSidebar() {
       <LensCorrectionPanel />
       <EffectsPanel />
       <HSLPanel />
-      <PresetsPanel />
     </div>
   );
 }
