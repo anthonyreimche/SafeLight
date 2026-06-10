@@ -9,10 +9,14 @@
 // stretched the bright sky into visible posterising bands (and JPEG's lossy chroma
 // made it rainbow). 16-bit gives 65536 levels so the push stays smooth; sRGB gamma
 // keeps shadow precision; gzip keeps the blob near a large JPEG's size. On load the
-// data is decoded to a linear Float32 buffer and uploaded through the RGBA16F path.
+// 16-bit sRGB data is uploaded straight to a normalized RGBA16 texture and decoded
+// to linear in the shader (no per-sample CPU math); see WebGLRenderer.setImage.
 
 const DB_NAME = "safelight-raw-cache";
-const DB_VERSION = 2; // bumped: old entries are 8-bit JPEG, incompatible — drop them
+// v2: old entries were 8-bit JPEG, incompatible.
+// v3: decode settings changed (noAutoBright off, highlight blend) — entries decoded
+//     with the old settings have clipped highlights baked in; drop them.
+const DB_VERSION = 3;
 const STORE = "previews";
 // Cap the cached resolution; keeps the 16-bit blob to a few× a JPEG. The live
 // (cache-miss) decode still renders full-res, so only re-opens use this.
@@ -63,12 +67,14 @@ export function rawCacheKey(file: File): string {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Return a cached ImageBitmap for `file`, or null on cache miss / any error.
- * The bitmap is already rotated/oriented (stored post-rotation).
+ * Return the cached develop preview for `file` as raw 16-bit sRGB RGBA (already
+ * rotated/oriented), or null on cache miss / any error. The sRGB->linear decode
+ * is done on the GPU (shader), so the read is just a gunzip + typed-array view —
+ * no per-sample CPU math, half the bytes of the old Float32 buffer.
  */
 export async function readCachedPreview(
   file: File,
-): Promise<{ data: Float32Array; width: number; height: number } | null> {
+): Promise<{ data: Uint16Array; width: number; height: number } | null> {
   try {
     const db = await getDB();
     const entry: CacheEntry | undefined = await idbReq(
@@ -76,10 +82,7 @@ export async function readCachedPreview(
     );
     if (!entry) return null;
     const buf = await gunzip(entry.blob);
-    const u16 = new Uint16Array(buf);
-    const data = new Float32Array(u16.length);
-    for (let i = 0; i < u16.length; i++) data[i] = srgbToLinear(u16[i] / 65535);
-    return { data, width: entry.width, height: entry.height };
+    return { data: new Uint16Array(buf), width: entry.width, height: entry.height };
   } catch {
     return null;
   }
@@ -128,9 +131,6 @@ export async function deleteCachedPreview(file: File): Promise<void> {
 function linearToSrgb(v: number): number {
   v = v < 0 ? 0 : v > 1 ? 1 : v;
   return v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-}
-function srgbToLinear(e: number): number {
-  return e <= 0.04045 ? e / 12.92 : Math.pow((e + 0.055) / 1.055, 2.4);
 }
 
 // Box-average downsample a linear Float32 RGBA buffer so the long edge ≤ maxEdge.

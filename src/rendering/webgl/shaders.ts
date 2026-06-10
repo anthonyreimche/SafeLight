@@ -220,12 +220,11 @@ float applyExposure(float i_in, float E) {
   return i_in * exp2(E);
 }
 
-// Highlights recovery (H < 0): per-channel rollHi with a sliding knee.
-// knee = 1.0 at H=0 (no-op), slides to 0.5 at H=-1 (aggressive recovery).
-// rollHi is already identity below the knee, so no bell-weight mixing is needed —
-// that was the graying bug: per-channel bell mixing preferentially compressed the
-// dominant channel in saturated colors while leaving others alone → desaturation.
-// With rollHi, a red pixel's low G/B channels are below the knee and untouched.
+// Highlights recovery (H < 0): saturating shoulder on LUMINANCE with a sliding
+// knee. knee = 1.0 at H=0 (no-op), slides to 0.30 at H=-1 (aggressive recovery).
+// [knee, inf) is compressed into [knee, 1) — blown values resolve near white with
+// ordering/separation preserved (LR behaviour). Applied via luma-ratio so hue and
+// per-channel saturation are preserved (no per-channel graying/desaturation).
 //
 // Highlights lift (H > 0): luminance-ratio applied to preserve hue.
 // Additive bell on luminance; ratio scales all channels identically → no hue shift.
@@ -268,7 +267,7 @@ float blacksWeight(vec3 linRgb) {
 // at the end of the tone chain in display space (see main), so each stage's tonal
 // mapping (e.g. highlight recovery) stays clean and never overshoots into false color.
 const float SAT_COMP = 0.4; // strength of the end-of-chain visible-saturation comp
-const float HI_SAT  = 0.4;  // saturation lift inside highlight recovery (offsets pull-down)
+const float HI_SAT  = 0.55; // saturation lift inside highlight recovery (offsets pull-down)
 const float HI_DETAIL = 1.5; // local contrast restored to recovered highlights (cloud detail)
 vec3 retargetLuma(vec3 c, float L, float newL) {
   return c * (newL / L);
@@ -289,17 +288,41 @@ vec3 applyHighlightsRGB(vec3 c, float H, float refT) {
     // foliage on its own; applied via luma-ratio so hue/saturation are preserved.
     float amt = -H;
     float L = max(luma(c), 1e-4);
-    float knee = mix(1.0, 0.30, amt);     // recovery starts here; reaches down as amt rises
+    float knee = mix(1.0, 0.15, amt);     // recovery starts here; reaches down as amt rises
     float newL = L;
     if (L > knee) {
-      float x = L - knee;
-      float a = mix(0.0, 40.0, amt);      // pull strength
-      newL = knee + x / pow(1.0 + a * x, 0.7); // 0.7 keeps luminance spread (contrast)
+      // LR-style recovery: place the range above the knee EVENLY PER STOP
+      // across the display band [knee, white] (log placement in display~sqrt
+      // space). This pulls the recovered range DEEP — a +5EV sky lands around
+      // 0.6..0.95 display with ~0.07/stop separation, instead of a shoulder
+      // gluing everything to the bright end (slope-1-at-knee curves can never
+      // pull the band down; that was the pale cream clouds).
+      float kd = sqrt(knee);
+      // White point: brightest scene value the current exposure can produce
+      // (source clips at ~1.0 -> 2^E), plus ~half a stop of VIRTUAL headroom
+      // (x1.5) so scene-white maps slightly below display-white at low E —
+      // LR's -100 darkens bright skies even when nothing is actually blown.
+      float Lmax = exp2(max(uExposure, 0.0)) * 1.5;
+      float S = log2(max(Lmax / knee, 1.06)); // stops of range above the knee
+      float s = log2(L / knee);               // this pixel's stops above knee
+      float u = min(s / S, 1.0);
+      // Convex placement (pow > 1): allot LESS display range to the stops just
+      // above the knee and MORE to the top stops — LR sits recovered cloud
+      // bodies deep (~0.6 display) while bright edges keep their separation.
+      // 1.0 = even per-stop spacing; raise toward 2.0 for a deeper, contrastier
+      // recovery; the cost is mild flattening right above the knee.
+      const float HI_CONVEX = 1.5;
+      float d = kd + (1.0 - kd) * pow(u, HI_CONVEX);
+      newL = d * d;
     }
     c = retargetLuma(c, L, newL);
     // Restore the colourfulness that pulling bright values down costs (Hunt effect),
-    // scaled by how far this pixel was actually pulled.
-    float pulled = clamp(1.0 - newL / L, 0.0, 1.0);
+    // scaled by the PERCEIVED (display) darkening. min(L, 1.0): anything over 1.0
+    // would have displayed as clipped white, so recovering it to ~0.95 is barely a
+    // perceived pull and gets almost no boost. (The old linear ratio 1 - newL/L was
+    // ~0.97 for blown sky -> chroma x1.4 on near-neutral clipped pixels, amplifying
+    // demosaic chroma noise into pastel splotches.)
+    float pulled = clamp(min(L, 1.0) - newL, 0.0, 1.0);
     float Lr = luma(c);
     c = mix(vec3(Lr), c, 1.0 + pulled * HI_SAT);
   } else {

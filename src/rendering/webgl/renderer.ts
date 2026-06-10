@@ -27,6 +27,36 @@ const FILL_EDGE = 384;
 // (predictable, artifact-free). Flip to re-enable the PatchMatch synthesis path.
 let CONTENT_AWARE_HEAL = false;
 
+// sRGB(16-bit code value) -> linear, built once. Fallback for the rare GPU
+// without EXT_texture_norm16, where the cached 16-bit preview can't be uploaded
+// as a normalized texture and must be linearised on the CPU. A 65536-entry LUT
+// turns the per-sample pow() into a table read.
+let SRGB16_TO_LINEAR: Float32Array | null = null;
+function srgb16ToLinearLut(): Float32Array {
+  if (SRGB16_TO_LINEAR) return SRGB16_TO_LINEAR;
+  const lut = new Float32Array(65536);
+  for (let i = 0; i < 65536; i++) {
+    const e = i / 65535;
+    lut[i] = e <= 0.04045 ? e / 12.92 : Math.pow((e + 0.055) / 1.055, 2.4);
+  }
+  SRGB16_TO_LINEAR = lut;
+  return lut;
+}
+
+// Expand a raw 16-bit sRGB RGBA buffer to a linear Float32 image (CPU fallback
+// path; the GPU normally does this decode while sampling the norm16 texture).
+// Return type matches the float-image member so it unifies with the live float
+// decode in setImage (isFallbackPreview stays absent — a cache is never a fallback).
+function srgb16ToFloatImage(
+  img: { data: Uint16Array; width: number; height: number },
+): { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean } {
+  const lut = srgb16ToLinearLut();
+  const src = img.data;
+  const out = new Float32Array(src.length);
+  for (let i = 0; i < src.length; i++) out[i] = lut[src[i]];
+  return { kind: "float", data: out, width: img.width, height: img.height };
+}
+
 function downsampleRGBA(src: Uint8ClampedArray | Uint8Array, W: number, H: number) {
   const scale = Math.min(1, FILL_EDGE / Math.max(W, H));
   const w = Math.max(1, Math.round(W * scale));
@@ -141,6 +171,11 @@ export class WebGLRenderer {
   private linear = false;
   private isFallbackPreview = false;
   private applyBaseCurve = false;
+  // EXT_texture_norm16: lets the cached 16-bit sRGB preview upload as a normalized,
+  // filterable RGBA16 texture (decoded to linear in-shader). 0 / false when the
+  // GPU lacks it — then the cached preview falls back to the CPU-linearised float path.
+  private haveNorm16 = false;
+  private norm16Format = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", {
@@ -152,6 +187,15 @@ export class WebGLRenderer {
     }
     this.canvas = canvas;
     this.gl = gl;
+
+    // Normalized 16-bit textures (for the cached develop preview). Core WebGL2 has
+    // no UNORM RGBA16, so this is gated on the extension; absent it, we linearise
+    // the cached preview on the CPU instead (see setImage).
+    const norm16 = gl.getExtension("EXT_texture_norm16");
+    if (norm16) {
+      this.haveNorm16 = true;
+      this.norm16Format = (norm16 as { RGBA16_EXT: number }).RGBA16_EXT;
+    }
 
     this.program = this.createProgram(VERTEX_SHADER, FRAGMENT_SHADER);
     this.setupQuad();
@@ -486,7 +530,10 @@ export class WebGLRenderer {
   }
 
   setImage(
-    image: ImageBitmap | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean },
+    image:
+      | ImageBitmap
+      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+      | { kind: "srgb16"; data: Uint16Array; width: number; height: number },
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
     // True when an 8-bit bitmap is actually a linear-encoded RAW source (the
@@ -498,8 +545,35 @@ export class WebGLRenderer {
     this.maxEdge = maxEdge;
 
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
-    let builtFloatMips = false;
-    if ("kind" in image) {
+    let mipsBuilt = false;
+    if ("kind" in image && image.kind === "srgb16" && this.haveNorm16) {
+      // Cached develop preview, GPU path — upload the 16-bit sRGB data straight to a
+      // normalized RGBA16 texture and let the shader's srgbToLinear (uLinear == false)
+      // do the decode while sampling. No per-sample CPU math, and the texture is half
+      // the bytes / upload of the old Float32 (RGBA16F) route. Full 16-bit precision,
+      // so a big exposure push still doesn't posterise. RGBA16 is colour-renderable
+      // AND filterable, so unlike RGBA16F the GPU can build the mip chain itself.
+      this.imageWidth = image.width;
+      this.imageHeight = image.height;
+      this.linear = false;          // texture is sRGB-encoded; shader decodes it
+      this.isFallbackPreview = false;
+      this.applyBaseCurve = true;   // cached source is scene-linear RAW -> needs base curve
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, this.norm16Format, image.width, image.height, 0,
+        gl.RGBA, gl.UNSIGNED_SHORT, image.data,
+      );
+      gl.generateMipmap(gl.TEXTURE_2D);
+      mipsBuilt = true;
+      {
+        // Heal / content-aware-fill source is 8-bit sRGB; the cached data is already
+        // sRGB, so the high byte of each 16-bit sample is the 8-bit value directly.
+        const u8 = new Uint8Array(image.data.length);
+        for (let i = 0; i < image.data.length; i++) u8[i] = image.data[i] >> 8;
+        const ds = downsampleRGBA(u8, image.width, image.height);
+        this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
+        setHealSourceImage(ds.data, ds.w, ds.h);
+      }
+    } else if ("kind" in image) {
       // Linear float (RAW) path — upload as RGBA16F so the develop pipeline keeps
       // ~10-bit precision AND real HDR headroom. The previous code quantised to 8-bit
       // sRGB (mipmaps need a filterable+renderable format), which meant a +5 exposure
@@ -507,36 +581,40 @@ export class WebGLRenderer {
       // because R/G/B quantise independently their ratios stepped → rainbow posterising.
       // 16-bit float removes that. WebGL2 can't generateMipmap on RGBA16F, so the mip
       // chain for the local-contrast taps is built by hand below.
-      this.imageWidth = image.width;
-      this.imageHeight = image.height;
+      //
+      // A cached (srgb16) preview also lands here when the GPU lacks EXT_texture_norm16:
+      // it's linearised on the CPU (LUT) so it can ride the same scene-linear float path.
+      const fimg = image.kind === "srgb16" ? srgb16ToFloatImage(image) : image;
+      this.imageWidth = fimg.width;
+      this.imageHeight = fimg.height;
       // Texture now holds true linear scene values, so the shader must NOT sRGB-decode.
       this.linear = true;
-      this.isFallbackPreview = image.isFallbackPreview ?? isFallbackPreview;
+      this.isFallbackPreview = fimg.isFallbackPreview ?? isFallbackPreview;
       // Real full-res RAW decode (not the pseudo-linear JPEG fallback) renders
       // scene-linear and flat; add the default tone curve to match other views.
       this.applyBaseCurve = !this.isFallbackPreview;
-      const f0 = image.data instanceof Float32Array ? image.data : new Float32Array(image.data);
+      const f0 = fimg.data instanceof Float32Array ? fimg.data : new Float32Array(fimg.data);
       gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGBA16F, image.width, image.height, 0,
+        gl.TEXTURE_2D, 0, gl.RGBA16F, fimg.width, fimg.height, 0,
         gl.RGBA, gl.FLOAT, f0,
       );
       // Manual float mip chain (trilinear taps for Texture/Clarity/Dehaze/Sharpen).
-      let lw = image.width, lh = image.height, lvl = 0, cur = f0;
+      let lw = fimg.width, lh = fimg.height, lvl = 0, cur = f0;
       while (lw > 1 || lh > 1) {
         const ds = halveRGBAF(cur, lw, lh);
         lvl++; cur = ds.data; lw = ds.w; lh = ds.h;
         gl.texImage2D(gl.TEXTURE_2D, lvl, gl.RGBA16F, lw, lh, 0, gl.RGBA, gl.FLOAT, cur);
       }
-      builtFloatMips = true;
+      mipsBuilt = true;
       {
         // Heal / content-aware-fill source stays 8-bit sRGB (its own pipeline).
-        const u8 = new Uint8Array(image.data.length);
-        for (let i = 0; i < image.data.length; i++) {
-          const v = Math.max(0, image.data[i]);
+        const u8 = new Uint8Array(f0.length);
+        for (let i = 0; i < f0.length; i++) {
+          const v = Math.max(0, f0[i]);
           const enc = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
           u8[i] = Math.round(Math.min(255, enc * 255));
         }
-        const ds = downsampleRGBA(u8, image.width, image.height);
+        const ds = downsampleRGBA(u8, fimg.width, fimg.height);
         this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
         setHealSourceImage(ds.data, ds.w, ds.h);
       }
@@ -561,9 +639,10 @@ export class WebGLRenderer {
       }
     }
     // Build the mip chain for local-contrast blurs (Texture/Clarity/Dehaze).
-    // The float (RGBA16F) path already supplied its mips by hand; generateMipmap
-    // is invalid on a non-color-renderable float format, so skip it there.
-    if (!builtFloatMips) gl.generateMipmap(gl.TEXTURE_2D);
+    // The float (RGBA16F) path supplies its mips by hand, and the norm16 path
+    // already called generateMipmap; both set mipsBuilt, so only the 8-bit bitmap
+    // path needs it here.
+    if (!mipsBuilt) gl.generateMipmap(gl.TEXTURE_2D);
     this.hasImage = true;
     this.resize();
   }

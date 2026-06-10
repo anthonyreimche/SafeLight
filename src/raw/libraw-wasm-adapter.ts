@@ -76,9 +76,17 @@ export async function decodeRawFloatViaLibRaw(
         useCameraWb: true,
         outputColor: 1,
         gamm: [1, 1],
-        noAutoBright: false,
+        // No content-driven auto-brighten: it scaled each image so ~1% of pixels
+        // clipped to white, destroying exactly the data Highlights recovery needs
+        // (and made baseline brightness vary per image). LR uses a fixed baseline.
+        // NOTE: images now decode slightly darker than before — that's the removed
+        // auto-gain, not a regression; compensate (if desired) via base curve.
+        noAutoBright: true,
         userQual: 3,
-        highlight: 0,
+        // Blend-reconstruct clipped highlights from the unclipped channels (dcraw
+        // mode 2) instead of clipping to flat white — closest to LR's recovery of
+        // near-blown detail. Modes 3+ (rebuild) can paint magenta; 2 is safe.
+        highlight: 2,
         noAutoScale: false,
       });
       meta = await raw.metadata(false);

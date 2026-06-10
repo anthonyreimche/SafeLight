@@ -97,7 +97,10 @@ export function useDevelopRenderer(
     setLoading(true);
 
     const renderImage = (
-      image: ImageBitmap | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean },
+      image:
+        | ImageBitmap
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+        | { kind: "srgb16"; data: Uint16Array; width: number; height: number },
       isFallback = false,
       cachedRaw = false,
     ) => {
@@ -146,6 +149,8 @@ export function useDevelopRenderer(
             ? `Preview ${image.width}×${image.height}`
             : `RAW ${image.width}×${image.height}`,
         );
+      } else if (image.kind === "srgb16") {
+        setSource(`Cached ${image.width}×${image.height}`);
       } else {
         const b = image.bitmap;
         setSource(

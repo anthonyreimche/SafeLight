@@ -152,10 +152,29 @@ export function toRGBAFloat(
   const mr = wb[0] / g;
   const mb = wb[2] / g;
   const out = new Float32Array(width * height * 4);
+  // Sensor-clip handling: normalizePlane clamps clipped channels at 1.0, and a
+  // clipped channel's TRUE value is unknown (>= its WB gain). Multiplying the
+  // clamp by the gain paints blown areas the WB colour (red gain ~2x -> magenta
+  // highlights that luminance-keyed recovery then preserves). Reconstruct
+  // dcraw-"blend" style: raise each clipped channel to the pixel's brightest
+  // channel, so fully blown pixels come out neutral and recover to white.
+  const CLIP = 0.9995;
   for (let i = 0, o = 0; i < rgb.length; i += 3, o += 4) {
-    out[o] = Math.max(0, rgb[i] * mr);
-    out[o + 1] = Math.max(0, rgb[i + 1]);
-    out[o + 2] = Math.max(0, rgb[i + 2] * mb);
+    const cr = rgb[i] >= CLIP;
+    const cg = rgb[i + 1] >= CLIP;
+    const cb = rgb[i + 2] >= CLIP;
+    let r = Math.max(0, rgb[i] * mr);
+    let gg = Math.max(0, rgb[i + 1]);
+    let b = Math.max(0, rgb[i + 2] * mb);
+    if (cr || cg || cb) {
+      const m = Math.max(r, gg, b);
+      if (cr) r = m;
+      if (cg) gg = m;
+      if (cb) b = m;
+    }
+    out[o] = r;
+    out[o + 1] = gg;
+    out[o + 2] = b;
     out[o + 3] = 1;
   }
   return out;

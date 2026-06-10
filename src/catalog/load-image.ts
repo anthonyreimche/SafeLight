@@ -18,27 +18,29 @@ async function bitmapToPseudoLinear(
   const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
   const pixels = imageData.data;
   const floatData = new Float32Array(pixels.length);
-  
+
   // Apply inverse sRGB gamma to convert to pseudo-linear space
   for (let i = 0; i < pixels.length; i += 4) {
     const r = pixels[i] / 255;
     const g = pixels[i + 1] / 255;
     const b = pixels[i + 2] / 255;
-    
+
     // Inverse sRGB gamma (approximate as power 2.2 for performance)
     floatData[i] = Math.pow(r, 2.2);
     floatData[i + 1] = Math.pow(g, 2.2);
     floatData[i + 2] = Math.pow(b, 2.2);
     floatData[i + 3] = 1.0; // Alpha
   }
-  
+
   return { data: floatData, width: bitmap.width, height: bitmap.height };
 }
 
-// A decoded image for the renderer: either a linear float buffer (full sensor
-// precision, HDR-capable) or an 8-bit sRGB bitmap (preview/JPEG fallback).
+// A decoded image for the renderer: a linear float buffer (full sensor precision,
+// HDR-capable), a raw 16-bit sRGB buffer (cached develop preview — decoded to
+// linear on the GPU), or an 8-bit sRGB bitmap (preview/JPEG fallback).
 export type DecodedImage =
   | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+  | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
   | { kind: "bitmap"; bitmap: ImageBitmap; cached?: boolean };
 
 // Prefer a full-precision linear RAW decode (so exposure/highlight recovery work
@@ -51,12 +53,14 @@ export async function loadPhotoImage(
       const file = await photo.fileHandle.getFile();
       if (isRawFile(file)) {
         // Fast path: return the cached develop preview (16-bit sRGB, gzip) from a
-        // previous full decode. Skips libraw entirely — ~50ms vs 3-8s. Returned as
-        // linear float so it goes through the full-precision RGBA16F render path
+        // previous full decode. Skips libraw entirely — ~50ms vs 3-8s. Handed over
+        // as raw 16-bit sRGB: the renderer uploads it to a normalized RGBA16 texture
+        // and the shader does sRGB->linear, so there's no per-sample CPU decode and
+        // the texture is half the bytes of the old Float32 path. Still full precision
         // (no 8-bit posterising under a big exposure push).
         const cached = await readCachedPreview(file);
         if (cached) {
-          return { kind: "float", data: cached.data, width: cached.width, height: cached.height };
+          return { kind: "srgb16", data: cached.data, width: cached.width, height: cached.height };
         }
 
         // Slow path: full libraw decode. Write result to cache asynchronously
