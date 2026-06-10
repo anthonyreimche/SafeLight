@@ -15,6 +15,31 @@ const { pathToFileURL } = require("node:url");
 const isDev = !app.isPackaged;
 const DIST = path.join(__dirname, "..", "dist");
 
+// ---------------------------------------------------------------------------
+// GPU / renderer performance. Must run before app `ready`.
+// Without these, packaged Electron on Windows can land on the integrated GPU,
+// an old ANGLE backend, or SwiftShader software WebGL — all much slower than
+// the same page in Chrome. Match Chrome's fast path explicitly.
+// ---------------------------------------------------------------------------
+app.commandLine.appendSwitch("use-angle", "d3d11"); // modern ANGLE backend (no D3D9/WARP fallback)
+app.commandLine.appendSwitch("force_high_performance_gpu"); // discrete GPU on dual-GPU machines
+app.commandLine.appendSwitch("ignore-gpu-blocklist"); // don't silently drop to SwiftShader
+app.commandLine.appendSwitch("enable-gpu-rasterization");
+app.commandLine.appendSwitch("enable-zero-copy");
+// SharedArrayBuffer: Chromium only grants crossOriginIsolated on http(s)
+// origins, so the COOP/COEP headers on app:// are not honored and libraw-wasm
+// would fall back to the slow CPU decoder / embedded JPEG preview. This flag
+// re-enables SAB unconditionally (safe here — we only load our own bundle).
+app.commandLine.appendSwitch(
+  "enable-features",
+  "CanvasOopRasterization,SharedArrayBuffer"
+);
+// Keep RAW-decode workers and renders at full speed when the window is occluded
+// or in the background (Lightroom-style apps keep processing).
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+
 const MIME = {
   ".html": "text/html",
   ".js": "text/javascript",
@@ -107,6 +132,7 @@ function createWindow() {
       sandbox: true,
       devTools: isDev,
       spellcheck: false,
+      backgroundThrottling: false,
     },
   });
 
@@ -129,6 +155,7 @@ function createWindow() {
             nodeIntegration: false,
             sandbox: true,
             devTools: isDev,
+            backgroundThrottling: false,
           },
         },
       };

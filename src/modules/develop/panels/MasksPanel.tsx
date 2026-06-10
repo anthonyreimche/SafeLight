@@ -1,8 +1,15 @@
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
+import { CurveEditor } from "@/ui/components/CurveEditor";
+import { HSLMixer } from "@/ui/components/HSLMixer";
 import { useDevelopStore } from "@/state/develop-store";
-import type { MaskAdjustments, MaskType } from "@/catalog/types";
-import { MAX_MASKS, defaultMaskAdjustments } from "@/catalog/types";
+import type { Mask, MaskAdjustments, MaskPanelId, MaskType } from "@/catalog/types";
+import {
+  MAX_MASKS,
+  defaultHSL,
+  defaultMaskAdjustments,
+  defaultToneCurves,
+} from "@/catalog/types";
 
 const TOOL_LABELS: { type: MaskType; label: string }[] = [
   { type: "radial", label: "Radial" },
@@ -16,16 +23,41 @@ const TYPE_ICON: Record<MaskType, string> = {
   brush: "✎",
 };
 
-const ADJ_SLIDERS: { key: keyof MaskAdjustments; label: string }[] = [
-  { key: "exposure", label: "Exposure" },
-  { key: "contrast", label: "Contrast" },
-  { key: "highlights", label: "Highlights" },
-  { key: "shadows", label: "Shadows" },
-  { key: "temperature", label: "Temp" },
-  { key: "tint", label: "Tint" },
-  { key: "saturation", label: "Saturation" },
-  { key: "clarity", label: "Clarity" },
-  { key: "sharpness", label: "Sharpness" },
+type SliderDef = { key: keyof MaskAdjustments; label: string };
+
+// Sub-panels a mask can carry, mirroring the develop module's right-side
+// panels. Slider panels write into mask.adj; "hsl" and "curve" carry their
+// own data on the mask. Render order is fixed regardless of add order.
+const PANEL_DEFS: { id: MaskPanelId; label: string; sliders?: SliderDef[] }[] = [
+  {
+    id: "basic",
+    label: "Basic",
+    sliders: [
+      { key: "exposure", label: "Exposure" },
+      { key: "contrast", label: "Contrast" },
+      { key: "highlights", label: "Highlights" },
+      { key: "shadows", label: "Shadows" },
+      { key: "saturation", label: "Saturation" },
+    ],
+  },
+  {
+    id: "wb",
+    label: "White Balance",
+    sliders: [
+      { key: "temperature", label: "Temp" },
+      { key: "tint", label: "Tint" },
+    ],
+  },
+  { id: "curve", label: "Tone Curve" },
+  { id: "hsl", label: "HSL" },
+  {
+    id: "detail",
+    label: "Detail",
+    sliders: [
+      { key: "clarity", label: "Clarity" },
+      { key: "sharpness", label: "Sharpness" },
+    ],
+  },
 ];
 
 export function MasksPanel() {
@@ -70,7 +102,39 @@ export function MasksPanel() {
   const resetAdj = () => {
     if (!selected) return;
     updateMaskAdj(selected.id, defaultMaskAdjustments());
+    updateMask(selected.id, {
+      hsl: selected.panels.includes("hsl") ? defaultHSL() : undefined,
+      toneCurve: selected.panels.includes("curve") ? defaultToneCurves() : undefined,
+    });
     commitEdit("Mask Reset");
+  };
+
+  const addPanel = (id: MaskPanelId) => {
+    if (!selected) return;
+    updateMask(selected.id, {
+      panels: [...selected.panels, id],
+      ...(id === "hsl" ? { hsl: defaultHSL() } : {}),
+      ...(id === "curve" ? { toneCurve: defaultToneCurves() } : {}),
+    });
+    commitEdit("Add Mask Panel");
+  };
+
+  // Removing a sub-panel also resets the values it controlled, so the render
+  // matches what the user sees.
+  const removePanel = (id: MaskPanelId) => {
+    if (!selected) return;
+    const def = PANEL_DEFS.find((d) => d.id === id);
+    if (def?.sliders) {
+      const zero: Partial<MaskAdjustments> = {};
+      for (const s of def.sliders) zero[s.key] = 0;
+      updateMaskAdj(selected.id, zero);
+    }
+    updateMask(selected.id, {
+      panels: selected.panels.filter((p) => p !== id),
+      ...(id === "hsl" ? { hsl: undefined } : {}),
+      ...(id === "curve" ? { toneCurve: undefined } : {}),
+    });
+    commitEdit("Remove Mask Panel");
   };
 
   const pickTool = (t: MaskType) => {
@@ -80,11 +144,15 @@ export function MasksPanel() {
 
   // Clicking a mask row opens it for editing: select it and bring up its on-image
   // handles by activating the matching tool.
-  const editMask = (m: (typeof masks)[number]) => {
+  const editMask = (m: Mask) => {
     selectMask(m.id);
     setMaskToolType(m.type);
     setActiveTool("mask");
   };
+
+  const availablePanels = selected
+    ? PANEL_DEFS.filter((d) => !selected.panels.includes(d.id))
+    : [];
 
   return (
     <Panel title="Masking" defaultOpen>
@@ -202,8 +270,8 @@ export function MasksPanel() {
         )}
 
         {selected && (
-          <div className="space-y-0.5 border-t border-border-subtle pt-2">
-            <div className="flex items-center justify-between pb-1">
+          <div className="space-y-1.5 border-t border-border-subtle pt-2">
+            <div className="flex items-center justify-between">
               <span className="text-[10px] uppercase tracking-wider text-text-muted">
                 {selected.name} adjustments
               </span>
@@ -215,41 +283,106 @@ export function MasksPanel() {
                 Reset
               </button>
             </div>
-            <Slider
-              label="Amount"
-              value={selected.opacity}
-              min={0}
-              max={100}
-              step={1}
-              defaultValue={100}
-              onChange={(v) => updateMask(selected.id, { opacity: v })}
-              onCommit={() => commitEdit("Mask Amount")}
-            />
-            {featherPct != null && (
+            <div className="space-y-0.5">
               <Slider
-                label="Feather"
-                value={featherPct}
+                label="Amount"
+                value={selected.opacity}
                 min={0}
                 max={100}
                 step={1}
-                defaultValue={50}
-                onChange={setRadialFeather}
-                onCommit={() => commitEdit("Mask Feather")}
+                defaultValue={100}
+                onChange={(v) => updateMask(selected.id, { opacity: v })}
+                onCommit={() => commitEdit("Mask Amount")}
               />
-            )}
-            {ADJ_SLIDERS.map((s) => (
-              <Slider
-                key={s.key}
-                label={s.label}
-                value={selected.adj[s.key]}
-                min={-100}
-                max={100}
-                step={1}
-                defaultValue={0}
-                onChange={(v) => updateMaskAdj(selected.id, { [s.key]: v })}
-                onCommit={() => commitEdit(`Mask ${s.label}`)}
-              />
+              {featherPct != null && (
+                <Slider
+                  label="Feather"
+                  value={featherPct}
+                  min={0}
+                  max={100}
+                  step={1}
+                  defaultValue={50}
+                  onChange={setRadialFeather}
+                  onCommit={() => commitEdit("Mask Feather")}
+                />
+              )}
+            </div>
+
+            {PANEL_DEFS.filter((d) => selected.panels.includes(d.id)).map((def) => (
+              <div key={def.id} className="rounded bg-surface-2/40 p-1.5">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                    {def.label}
+                  </span>
+                  <button
+                    onClick={() => removePanel(def.id)}
+                    title={`Remove ${def.label} (resets its values)`}
+                    className="rounded px-1 text-text-muted hover:text-label-red"
+                  >
+                    ×
+                  </button>
+                </div>
+                {def.sliders && (
+                  <div className="space-y-0.5">
+                    {def.sliders.map((s) => (
+                      <Slider
+                        key={s.key}
+                        label={s.label}
+                        value={selected.adj[s.key]}
+                        min={-100}
+                        max={100}
+                        step={1}
+                        defaultValue={0}
+                        onChange={(v) => updateMaskAdj(selected.id, { [s.key]: v })}
+                        onCommit={() => commitEdit(`Mask ${s.label}`)}
+                      />
+                    ))}
+                  </div>
+                )}
+                {def.id === "curve" && (
+                  <CurveEditor
+                    compact
+                    curves={selected.toneCurve ?? defaultToneCurves()}
+                    onChange={(channel, points) =>
+                      updateMask(selected.id, {
+                        toneCurve: {
+                          ...(selected.toneCurve ?? defaultToneCurves()),
+                          [channel]: points,
+                        },
+                      })
+                    }
+                    onCommit={() => commitEdit("Mask Tone Curve")}
+                  />
+                )}
+                {def.id === "hsl" && (
+                  <HSLMixer
+                    value={selected.hsl ?? defaultHSL()}
+                    onChange={(band, channel, v) => {
+                      const h = selected.hsl ?? defaultHSL();
+                      updateMask(selected.id, {
+                        hsl: { ...h, [band]: { ...h[band], [channel]: v } },
+                      });
+                    }}
+                    onCommit={(channel) => commitEdit(`Mask HSL ${channel}`)}
+                  />
+                )}
+              </div>
             ))}
+
+            {availablePanels.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1">
+                <span className="text-[10px] text-text-muted">Add:</span>
+                {availablePanels.map((d) => (
+                  <button
+                    key={d.id}
+                    onClick={() => addPanel(d.id)}
+                    className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary"
+                  >
+                    + {d.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

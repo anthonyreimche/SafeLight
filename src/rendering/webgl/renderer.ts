@@ -5,8 +5,10 @@ import {
   MAX_MASKS,
   MAX_RETOUCH,
   MAX_RETOUCH_BRUSH,
+  isDefaultHSL,
+  isDefaultToneCurves,
 } from "@/catalog/types";
-import { buildRGBCurveLUT } from "../curve";
+import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
 import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders";
 import { bakeCoverage, coverageSignature, type CoverageItem } from "./mask-coverage";
@@ -143,6 +145,9 @@ export class WebGLRenderer {
   private program: WebGLProgram;
   private imageTexture: WebGLTexture;
   private curveTexture: WebGLTexture;
+  // Per-mask tone-curve LUT atlas (256 x MAX_MASKS RGBA; one row per mask).
+  private maskCurveTexture: WebGLTexture;
+  private maskCurveAtlas = new Uint8Array(256 * MAX_MASKS * 4);
   private maskTexture: WebGLTexture;
   private maskSig = "";
   private maskChannelOf: Record<string, number> = {};
@@ -204,6 +209,8 @@ export class WebGLRenderer {
     this.imageTexture = this.createTexture();
     this.curveTexture = gl.createTexture();
     this.initCurveTexture();
+    this.maskCurveTexture = gl.createTexture();
+    this.initMaskCurveTexture();
     this.maskTexture = gl.createTexture();
     this.retouchTexture = gl.createTexture();
     this.initCoverageTexture(this.maskTexture);
@@ -443,6 +450,11 @@ export class WebGLRenderer {
       "uImageAspect",
       "uMaskCount",
       "uMaskTex",
+      "uMaskCurves",
+      // Array bases set in one call via uniform*v.
+      "uMaskHasHsl[0]",
+      "uMaskHasCurve[0]",
+      "uMaskHsl[0]",
       "uSpotCount",
       "uRetouchTex",
       "uRetouchCount",
@@ -663,9 +675,44 @@ export class WebGLRenderer {
     this.gl.viewport(0, 0, w, h);
   }
 
+  private initMaskCurveTexture() {
+    const gl = this.gl;
+    for (let m = 0; m < MAX_MASKS; m++)
+      for (let i = 0; i < 256; i++) {
+        const o = (m * 256 + i) * 4;
+        this.maskCurveAtlas[o] = i;
+        this.maskCurveAtlas[o + 1] = i;
+        this.maskCurveAtlas[o + 2] = i;
+        this.maskCurveAtlas[o + 3] = 255;
+      }
+    gl.bindTexture(gl.TEXTURE_2D, this.maskCurveTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, MAX_MASKS, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.maskCurveAtlas);
+  }
+
+  // Rebuild rows for masks carrying a non-default curve. Rows are left as
+  // written previously when a curve goes away — uMaskHasCurve gates sampling.
+  private updateMaskCurveTexture(masks: Mask[]) {
+    let any = false;
+    masks.slice(0, MAX_MASKS).forEach((m, i) => {
+      if (m.toneCurve && !isDefaultToneCurves(m.toneCurve)) {
+        buildMaskCurveLUT(m.toneCurve, this.maskCurveAtlas, i * 256 * 4);
+        any = true;
+      }
+    });
+    if (!any) return;
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.maskCurveTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, MAX_MASKS, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.maskCurveAtlas);
+  }
+
   setParams(params: DevelopParams) {
     this.params = params;
     this.updateMaskTexture(params.masks);
+    this.updateMaskCurveTexture(params.masks);
     this.updateRetouchTexture(params.retouch);
     this.updateHealFill(params.retouch);
     const lut = buildRGBCurveLUT(params.toneCurve);
@@ -815,6 +862,30 @@ export class WebGLRenderer {
       gl.uniform4f(u[`uMaskAdj2[${i}]`], a.sharpness, 0, 0, 0);
     });
 
+    // Optional per-mask sub-panels: HSL packed as 6 vec4s per mask
+    // (hue lo/hi, sat lo/hi, lum lo/hi), curve flag selects the atlas row.
+    const hasHsl = new Int32Array(MAX_MASKS);
+    const hasCurve = new Int32Array(MAX_MASKS);
+    const hslData = new Float32Array(MAX_MASKS * 24);
+    masks.forEach((m, i) => {
+      if (m.toneCurve && !isDefaultToneCurves(m.toneCurve)) hasCurve[i] = 1;
+      if (m.hsl && !isDefaultHSL(m.hsl)) {
+        hasHsl[i] = 1;
+        const base = i * 24;
+        HSL_CHANNELS.forEach((ch, b) => {
+          hslData[base + b] = m.hsl!.hue[ch] / 100;
+          hslData[base + 8 + b] = m.hsl!.saturation[ch] / 100;
+          hslData[base + 16 + b] = m.hsl!.luminance[ch] / 100;
+        });
+      }
+    });
+    gl.uniform1iv(u["uMaskHasHsl[0]"], hasHsl);
+    gl.uniform1iv(u["uMaskHasCurve[0]"], hasCurve);
+    gl.uniform4fv(u["uMaskHsl[0]"], hslData);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, this.maskCurveTexture);
+    gl.uniform1i(u.uMaskCurves, 6);
+
     // Circular spots -> parametric array; brush-shaped retouch -> coverage atlas.
     const circles = p.retouch.filter((s) => s.shape !== "brush").slice(0, MAX_RETOUCH);
     gl.uniform1i(u.uSpotCount, circles.length);
@@ -959,6 +1030,7 @@ export class WebGLRenderer {
     const gl = this.gl;
     gl.deleteTexture(this.imageTexture);
     gl.deleteTexture(this.curveTexture);
+    gl.deleteTexture(this.maskCurveTexture);
     if (this.developedTex) gl.deleteTexture(this.developedTex);
     if (this.developedFbo) gl.deleteFramebuffer(this.developedFbo);
     if (this.healFillTex) gl.deleteTexture(this.healFillTex);

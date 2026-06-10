@@ -173,6 +173,15 @@ export interface MaskAdjustments {
 
 export type MaskType = "linear" | "radial" | "brush";
 
+// Adjustment sub-panels a mask can carry. Each mask opts into the panels it
+// needs (Lightroom-style): "basic" tone sliders, white balance, an 8-band HSL
+// mixer, a full RGB tone curve, and detail (clarity/sharpness).
+export type MaskPanelId = "basic" | "wb" | "hsl" | "curve" | "detail";
+export const MASK_PANEL_IDS: MaskPanelId[] = ["basic", "wb", "hsl", "curve", "detail"];
+// Masks saved before sub-panels existed showed every slider; keep that view.
+export const LEGACY_MASK_PANELS: MaskPanelId[] = ["basic", "wb", "detail"];
+export const DEFAULT_MASK_PANELS: MaskPanelId[] = ["basic"];
+
 // One freehand brush dab, in source-UV space. radius is in image-height units.
 export interface BrushDab {
   x: number;
@@ -213,6 +222,9 @@ export interface Mask {
   invert: boolean;
   opacity: number; // 0..100 overall strength
   adj: MaskAdjustments;
+  panels: MaskPanelId[]; // which adjustment sub-panels are active for this mask
+  hsl?: HSLAdjustments;  // present only while the "hsl" panel is added
+  toneCurve?: ToneCurves; // present only while the "curve" panel is added
   linear?: LinearMaskGeo;
   radial?: RadialMaskGeo;
   brush?: BrushMaskGeo;
@@ -320,6 +332,25 @@ export function defaultToneCurves(): ToneCurves {
     green: [...DEFAULT_TONE_CURVE],
     blue: [...DEFAULT_TONE_CURVE],
   };
+}
+
+// True when every channel is the untouched 2-point identity ramp — the
+// renderer skips per-mask curve LUT work for such masks.
+export function isDefaultToneCurves(c: ToneCurves): boolean {
+  return (["rgb", "red", "green", "blue"] as const).every((ch) => {
+    const pts = c[ch];
+    return (
+      pts.length === 2 &&
+      pts[0].x === 0 && pts[0].y === 0 &&
+      pts[1].x === 1 && pts[1].y === 1
+    );
+  });
+}
+
+export function isDefaultHSL(h: HSLAdjustments): boolean {
+  return (["hue", "saturation", "luminance"] as const).every((b) =>
+    HSL_CHANNELS.every((ch) => h[b][ch] === 0),
+  );
 }
 
 export const DEFAULT_CROP: CropRect = { x: 0, y: 0, width: 1, height: 1 };
@@ -572,6 +603,15 @@ function normalizeMaskAdjustments(
   };
 }
 
+// Missing => legacy mask saved before sub-panels existed: show all sliders.
+function normalizeMaskPanels(p: unknown): MaskPanelId[] {
+  if (!Array.isArray(p)) return [...LEGACY_MASK_PANELS];
+  const seen = new Set<MaskPanelId>();
+  for (const id of p)
+    if ((MASK_PANEL_IDS as string[]).includes(id)) seen.add(id as MaskPanelId);
+  return [...seen];
+}
+
 function normalizeMasks(masks: unknown): Mask[] {
   if (!Array.isArray(masks)) return [];
   const out: Mask[] = [];
@@ -585,7 +625,16 @@ function normalizeMasks(masks: unknown): Mask[] {
       invert: !!raw.invert,
       opacity: clampN(raw.opacity, 0, 100, 100),
       adj: normalizeMaskAdjustments(raw.adj),
+      panels: normalizeMaskPanels(raw.panels),
     };
+    if (raw.hsl) {
+      m.hsl = {
+        hue: { ...zeroHSLValues(), ...raw.hsl.hue },
+        saturation: { ...zeroHSLValues(), ...raw.hsl.saturation },
+        luminance: { ...zeroHSLValues(), ...raw.hsl.luminance },
+      };
+    }
+    if (raw.toneCurve) m.toneCurve = normalizeToneCurves(raw.toneCurve);
     if (raw.type === "linear" && raw.linear) {
       m.linear = {
         x0: clampN(raw.linear.x0, -2, 2, 0.5),

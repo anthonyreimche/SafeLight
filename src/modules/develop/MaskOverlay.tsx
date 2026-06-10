@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { BrushDab, CropRect, Mask, RetouchSpot } from "@/catalog/types";
-import { defaultMaskAdjustments } from "@/catalog/types";
+import { DEFAULT_MASK_PANELS, defaultMaskAdjustments } from "@/catalog/types";
 import { mat3Apply, type Mat3 } from "@/rendering/transform";
 import { useDevelopStore } from "@/state/develop-store";
 import { findHealSource, healColorOffset } from "@/rendering/heal-source";
@@ -250,6 +250,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
           invert: false,
           opacity: 100,
           adj: defaultMaskAdjustments(),
+          panels: [...DEFAULT_MASK_PANELS],
           radial: { cx: down.x, cy: down.y, rx: 0.001, ry: 0.001, feather: 0.5, angle: 0 },
         };
         st.addMask(mask);
@@ -263,6 +264,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
           invert: false,
           opacity: 100,
           adj: defaultMaskAdjustments(),
+          panels: [...DEFAULT_MASK_PANELS],
           linear: { x0: down.x, y0: down.y, x1: down.x, y1: down.y },
         };
         st.addMask(mask);
@@ -278,6 +280,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
             invert: false,
             opacity: 100,
             adj: defaultMaskAdjustments(),
+            panels: [...DEFAULT_MASK_PANELS],
             brush: { dabs: [], feather: st.brushFeather },
           };
           st.addMask(target);

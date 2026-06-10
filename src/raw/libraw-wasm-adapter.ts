@@ -44,9 +44,14 @@ export async function decodeRawFloatViaLibRaw(
     console.warn("[libraw]", lastLibRawStatus);
     return null;
   }
-  if (!globalThis.crossOriginIsolated) {
-    lastLibRawStatus =
-      "not cross-origin isolated (restart dev server for COOP/COEP)";
+  // What libraw actually needs is SharedArrayBuffer. On http(s) that means
+  // cross-origin isolation (COOP/COEP); in Electron the app:// scheme can't
+  // become crossOriginIsolated, so SAB is re-enabled via a feature flag
+  // instead and crossOriginIsolated stays false. Gate on SAB itself.
+  if (typeof SharedArrayBuffer === "undefined") {
+    lastLibRawStatus = globalThis.crossOriginIsolated
+      ? "no SharedArrayBuffer support"
+      : "no SharedArrayBuffer (not cross-origin isolated — restart dev server for COOP/COEP)";
     console.warn("[libraw]", lastLibRawStatus);
     return null;
   }

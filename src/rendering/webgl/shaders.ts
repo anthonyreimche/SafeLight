@@ -111,6 +111,13 @@ uniform vec4 uMaskGeoB[MAX_MASKS]; // radial: feather,_,_,_
 uniform vec4 uMaskAdj0[MAX_MASKS]; // exposure, contrast, highlights, shadows
 uniform vec4 uMaskAdj1[MAX_MASKS]; // saturation, temperature, tint, clarity
 uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, _, _, _
+// Optional per-mask sub-panels: 8-band HSL (packed 6 vec4s per mask:
+// hue0-3, hue4-7, sat0-3, sat4-7, lum0-3, lum4-7) and an RGB tone-curve LUT
+// atlas (256 x MAX_MASKS; row mi at v=(mi+0.5)/MAX_MASKS).
+uniform int uMaskHasHsl[MAX_MASKS];
+uniform vec4 uMaskHsl[MAX_MASKS * 6];
+uniform int uMaskHasCurve[MAX_MASKS];
+uniform sampler2D uMaskCurves;
 
 // Retouch (spot removal): heal / clone discs.
 #define MAX_SPOTS 16
@@ -847,23 +854,48 @@ float maskCoverage(int i, vec2 uv) {
   return clamp(m * uMaskOpacity[i], 0.0, 1.0);
 }
 
-// Apply a mask's local adjustments to the display-space color, blended by m.
-vec3 applyMaskAdj(vec3 c, vec4 a0, vec4 a1, float sharp, float m, vec2 uv) {
+// Mask stage 1 — scene-referred linear, BEFORE the display conversion and
+// tone curve. The tonal + WB mask controls run here with full HDR headroom,
+// reusing the global sliders' machinery — so mask Highlights can un-clip a
+// blown sky exactly like the global slider, and mask WB is true channel gains.
+vec3 applyMaskLinear(vec3 c, vec4 a0, vec4 a1, float m, float refT) {
   vec3 r = c;
-  // Exposure (multiplicative).
-  r *= exp2((a0.x / 100.0) * 1.2);
+  // Exposure in true stops (±2.5 EV at the slider ends), hue-preserving.
+  float ev = (a0.x / 100.0) * 2.5;
+  if (abs(ev) > 1e-3) {
+    float L = max(luma(r), 1e-4);
+    r = retargetLuma(r, L, applyExposure(L, ev));
+  }
+  // Highlights / shadows: the global recovery/lift functions, scene-anchored.
+  float H = clamp(a0.z / 100.0, -1.0, 1.0);
+  if (abs(H) > 0.001) r = applyHighlightsRGB(r, H, refT);
+  float S = clamp(a0.w / 100.0, -1.0, 1.0);
+  if (abs(S) > 0.001) r = applyShadowsRGB(r, S, refT);
+  // White balance as linear channel gains (the physically correct space; the
+  // old display-space additive shifts greyed highlights and crushed hue).
+  float temp = a1.y / 100.0;
+  if (abs(temp) > 0.001) {
+    r.r *= exp2(temp * 0.35);
+    r.b *= exp2(-temp * 0.35);
+  }
+  float tnt = a1.z / 100.0;
+  if (abs(tnt) > 0.001) {
+    r.r *= exp2(tnt * 0.12);
+    r.g *= exp2(-tnt * 0.20);
+    r.b *= exp2(tnt * 0.12);
+  }
+  return mix(c, r, m);
+}
+
+// Mask stage 2 — display space, after the global tone curve. Contrast,
+// saturation, and the detail taps were tuned for the 0..1 display range and
+// stay here (matching LR, whose point curve and local contrast are
+// display-referred).
+vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, float sharp, float m, vec2 uv) {
+  vec3 r = c;
   // Contrast S-curve.
   float k = (a0.y / 100.0) * 0.7;
   r = clamp(r + k * r * (1.0 - r) * (2.0 * r - 1.0), 0.0, 1.0);
-  // Highlights / shadows via luminance weighting.
-  float L = luma(r);
-  r += (a0.z / 100.0) * 0.25 * smoothstep(0.5, 1.0, L);
-  r += (a0.w / 100.0) * 0.25 * (1.0 - smoothstep(0.0, 0.5, L));
-  // Temperature (warm/cool) and tint (magenta/green) shifts.
-  float temp = a1.y / 100.0;
-  float tnt = a1.z / 100.0;
-  r += vec3(temp * 0.12, 0.0, -temp * 0.12);
-  r += vec3(tnt * 0.08, -tnt * 0.08, tnt * 0.08);
   // Saturation.
   float Lr = luma(r);
   r = mix(vec3(Lr), r, 1.0 + a1.x / 100.0);
@@ -877,6 +909,41 @@ vec3 applyMaskAdj(vec3 c, vec4 a0, vec4 a1, float sharp, float m, vec2 uv) {
   }
   r = clamp(r, 0.0, 1.0);
   return mix(c, r, m);
+}
+
+// Per-mask 8-band HSL mixer — same weighting as the global applyHSL, but the
+// band values come from the packed uMaskHsl vec4s. Band weights are built into
+// two vec4s so the accumulation is three dot() pairs instead of dynamic
+// component indexing.
+vec3 maskHsl(vec3 c, int mi) {
+  vec3 hsl = rgb2hsl(c);
+  float hueDeg = hsl.x * 360.0;
+  vec4 wA, wB;
+  for (int i = 0; i < 4; i++) {
+    float dA = abs(mod(hueDeg - HSL_CENTERS[i] + 540.0, 360.0) - 180.0);
+    float dB = abs(mod(hueDeg - HSL_CENTERS[i + 4] + 540.0, 360.0) - 180.0);
+    wA[i] = max(0.0, 1.0 - dA / 35.0);
+    wB[i] = max(0.0, 1.0 - dB / 35.0);
+  }
+  int b = mi * 6;
+  float hueShift = dot(uMaskHsl[b], wA) + dot(uMaskHsl[b + 1], wB);
+  float satMul = dot(uMaskHsl[b + 2], wA) + dot(uMaskHsl[b + 3], wB);
+  float lumAdd = dot(uMaskHsl[b + 4], wA) + dot(uMaskHsl[b + 5], wB);
+  hsl.x = fract(hsl.x + hueShift * (30.0 / 360.0));
+  hsl.y = clamp(hsl.y * (1.0 + satMul), 0.0, 1.0);
+  hsl.z = clamp(hsl.z + lumAdd * 0.4, 0.0, 1.0);
+  return hsl2rgb(hsl);
+}
+
+// Per-mask RGB tone curve from the LUT atlas row, blended by coverage.
+vec3 maskCurve(vec3 c, int mi, float m) {
+  vec3 cs = clamp(c, 0.0, 1.0);
+  float v = (float(mi) + 0.5) / float(MAX_MASKS);
+  vec3 cc = vec3(
+    texture(uMaskCurves, vec2(cs.r, v)).r,
+    texture(uMaskCurves, vec2(cs.g, v)).g,
+    texture(uMaskCurves, vec2(cs.b, v)).b);
+  return mix(c, cc, m);
 }
 
 void main() {
@@ -1011,7 +1078,19 @@ void main() {
     lin = applyHighlightsRGB(lin, H, refT);
   }
   if (abs(S) > 0.001) lin = applyShadowsRGB(lin, S, refT);
-  
+
+  // Local adjustment masks, stage 1: tonal + WB controls in scene-referred
+  // linear with HDR headroom intact (Lightroom-style — this is what lets a
+  // mask's Highlights/Exposure recover data the display stage can't see).
+  // Coverage is computed once here and reused by stage 2 below.
+  float mcovs[MAX_MASKS];
+  for (int mi = 0; mi < MAX_MASKS; mi++) {
+    if (mi >= uMaskCount) break;
+    mcovs[mi] = maskCoverage(mi, srcUv);
+    if (mcovs[mi] <= 0.0) continue;
+    lin = applyMaskLinear(lin, uMaskAdj0[mi], uMaskAdj1[mi], mcovs[mi], refT);
+  }
+
   vec3 disp = linearToSrgbU(lin); // per-channel, may exceed 1.0
 
   // Contrast: S-curve applied per-channel, which naturally pushes
@@ -1107,12 +1186,17 @@ void main() {
     c = clamp(c, 0.0, 1.0);
   }
 
-  // Local adjustment masks (after global tone, in display space).
+  // Local adjustment masks, stage 2: contrast/saturation/detail plus the HSL
+  // and tone-curve sub-panels, in display space (coverage from stage 1).
   for (int mi = 0; mi < MAX_MASKS; mi++) {
     if (mi >= uMaskCount) break;
-    float mcov = maskCoverage(mi, srcUv);
+    float mcov = mcovs[mi];
     if (mcov <= 0.0) continue;
-    c = applyMaskAdj(c, uMaskAdj0[mi], uMaskAdj1[mi], uMaskAdj2[mi].x, mcov, srcUv);
+    c = applyMaskDisplay(c, uMaskAdj0[mi], uMaskAdj1[mi], uMaskAdj2[mi].x, mcov, srcUv);
+    if (uMaskHasHsl[mi] == 1)
+      c = mix(c, maskHsl(clamp(c, 0.0, 1.0), mi), mcov);
+    if (uMaskHasCurve[mi] == 1)
+      c = maskCurve(c, mi, mcov);
   }
 
   // Creative effects: vignette then grain (applied in display/output space)

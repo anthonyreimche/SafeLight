@@ -126,6 +126,26 @@ export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
   return out;
 }
 
+// Per-mask curve LUT: master + per-channel curves composed, but WITHOUT the
+// Adobe Color baseline (that profile is global; mask curves start from the
+// already-developed display color). Layout matches buildRGBCurveLUT (256 RGBA).
+export function buildMaskCurveLUT(curves: ToneCurves, out?: Uint8Array, offset = 0): Uint8Array {
+  const rgb = buildCurveLUT(curves.rgb);
+  const red = buildCurveLUT(curves.red);
+  const green = buildCurveLUT(curves.green);
+  const blue = buildCurveLUT(curves.blue);
+  const buf = out ?? new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const base = rgb[i];
+    const o = offset + i * 4;
+    buf[o] = red[base];
+    buf[o + 1] = green[base];
+    buf[o + 2] = blue[base];
+    buf[o + 3] = 255;
+  }
+  return buf;
+}
+
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
