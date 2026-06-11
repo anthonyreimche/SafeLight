@@ -7,9 +7,18 @@
 // isolation headers to every response. This is the load-bearing part — without
 // it RAW decoding silently falls back / fails.
 
-const { app, protocol, BrowserWindow, Menu, shell, net } = require("electron");
+const {
+  app,
+  protocol,
+  BrowserWindow,
+  Menu,
+  shell,
+  net,
+  ipcMain,
+} = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
+const zlib = require("node:zlib");
 const { pathToFileURL } = require("node:url");
 
 const isDev = !app.isPackaged;
@@ -95,6 +104,26 @@ function resolveRequestPath(urlPath) {
 function registerProtocol() {
   protocol.handle("app", async (request) => {
     const url = new URL(request.url);
+
+    // Installed extensions are served from userData/plugins under the same
+    // origin (/__plugins__/<id>/...), so dynamic import works under COOP/COEP
+    // without any CORS dance.
+    if (url.pathname.startsWith("/__plugins__/")) {
+      const rel = path
+        .normalize(decodeURIComponent(url.pathname.slice("/__plugins__/".length)))
+        .replace(/^([/\\]|\.\.[/\\])+/, "");
+      const filePath = path.join(pluginsDir(), rel);
+      if (!filePath.startsWith(pluginsDir()) || !fs.existsSync(filePath)) {
+        return new Response("Not found", { status: 404 });
+      }
+      const res = await net.fetch(pathToFileURL(filePath).toString());
+      const headers = new Headers(res.headers);
+      const type = MIME[path.extname(filePath).toLowerCase()];
+      if (type) headers.set("Content-Type", type);
+      for (const [k, v] of Object.entries(ISOLATION_HEADERS)) headers.set(k, v);
+      return new Response(res.body, { status: 200, headers });
+    }
+
     let filePath = resolveRequestPath(url.pathname || "/");
 
     // Directory or missing file: serve index.html so SPA routes resolve.
@@ -113,6 +142,125 @@ function registerProtocol() {
     if (type) headers.set("Content-Type", type);
     for (const [k, v] of Object.entries(ISOLATION_HEADERS)) headers.set(k, v);
     return new Response(res.body, { status: 200, headers });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Extensions: GitHub repos with a safelight.json manifest, installed into
+// userData/plugins/<id>/ and loaded by the renderer as ESM. Repos are fetched
+// as tarballs (codeload) and unpacked with a minimal in-process untar so we
+// carry zero extra runtime dependencies.
+// ---------------------------------------------------------------------------
+
+const pluginsDir = () => path.join(app.getPath("userData"), "plugins");
+
+function validManifest(m) {
+  return (
+    m &&
+    typeof m.id === "string" &&
+    /^[a-z0-9][a-z0-9._-]*$/i.test(m.id) &&
+    typeof m.name === "string" &&
+    typeof m.version === "string" &&
+    typeof m.main === "string" &&
+    !m.main.includes("..")
+  );
+}
+
+function listPlugins() {
+  const dir = pluginsDir();
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const m = JSON.parse(
+        fs.readFileSync(path.join(dir, entry.name, "safelight.json"), "utf8")
+      );
+      if (validManifest(m) && m.id === entry.name) out.push(m);
+    } catch {}
+  }
+  return out;
+}
+
+// Minimal POSIX/GNU tar reader: 512-byte headers, octal sizes, 'L' longnames.
+function untar(buf) {
+  const files = [];
+  let off = 0;
+  let longName = null;
+  while (off + 512 <= buf.length) {
+    const block = buf.subarray(off, off + 512);
+    off += 512;
+    if (block.every((b) => b === 0)) continue;
+    const name =
+      longName ?? block.toString("utf8", 0, 100).replace(/\0[\s\S]*$/, "");
+    longName = null;
+    const size = parseInt(block.toString("utf8", 124, 136).trim(), 8) || 0;
+    const type = String.fromCharCode(block[156]);
+    const data = buf.subarray(off, off + size);
+    off += Math.ceil(size / 512) * 512;
+    if (type === "L") {
+      longName = data.toString("utf8").replace(/\0[\s\S]*$/, "");
+    } else if (type === "0" || type === "\0" || block[156] === 0) {
+      files.push({ name, data });
+    } // dirs ('5'), pax headers ('x'/'g'), links: skipped
+  }
+  return files;
+}
+
+// spec: "owner/repo", "owner/repo#ref", or a github.com URL.
+function parseRepoSpec(spec) {
+  let s = String(spec).trim();
+  const url = s.match(
+    /^https?:\/\/github\.com\/([^/\s]+)\/([^/\s#]+?)(?:\.git)?(?:\/tree\/([^\s]+))?\/?$/
+  );
+  if (url) return { owner: url[1], repo: url[2], ref: url[3] || "HEAD" };
+  const [repoPart, ref] = s.split("#");
+  const m = repoPart.match(/^([^/\s]+)\/([^/\s]+)$/);
+  if (!m) throw new Error("Use owner/repo, owner/repo#branch, or a GitHub URL");
+  return { owner: m[1], repo: m[2], ref: ref || "HEAD" };
+}
+
+async function installPlugin(spec) {
+  const { owner, repo, ref } = parseRepoSpec(spec);
+  const tarUrl = `https://codeload.github.com/${owner}/${repo}/tar.gz/${encodeURIComponent(ref)}`;
+  const res = await net.fetch(tarUrl);
+  if (!res.ok) throw new Error(`GitHub download failed (${res.status})`);
+  const tar = zlib.gunzipSync(Buffer.from(await res.arrayBuffer()));
+
+  // Strip the "<repo>-<ref>/" top-level folder GitHub adds.
+  const files = untar(tar)
+    .map((f) => ({ ...f, name: f.name.split("/").slice(1).join("/") }))
+    .filter((f) => f.name && !f.name.split("/").includes(".."));
+
+  const manifestFile = files.find((f) => f.name === "safelight.json");
+  if (!manifestFile) throw new Error("Repo has no safelight.json manifest");
+  const manifest = JSON.parse(manifestFile.data.toString("utf8"));
+  if (!validManifest(manifest)) throw new Error("Invalid safelight.json");
+  if (!files.some((f) => f.name === manifest.main))
+    throw new Error(`Entry bundle "${manifest.main}" not found in repo`);
+
+  const target = path.join(pluginsDir(), manifest.id);
+  if (!target.startsWith(pluginsDir())) throw new Error("Bad extension id");
+  fs.rmSync(target, { recursive: true, force: true });
+  for (const f of files) {
+    const dest = path.join(target, f.name);
+    if (!dest.startsWith(target)) continue;
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, f.data);
+  }
+  return manifest;
+}
+
+function registerPluginIpc() {
+  ipcMain.handle("plugins:list", () => listPlugins());
+  ipcMain.handle("plugins:install", (_e, spec) => installPlugin(spec));
+  ipcMain.handle("plugins:uninstall", (_e, id) => {
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))
+      throw new Error("Bad extension id");
+    fs.rmSync(path.join(pluginsDir(), String(id)), {
+      recursive: true,
+      force: true,
+    });
   });
 }
 
@@ -185,6 +333,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null);
     registerProtocol();
+    registerPluginIpc();
     createWindow();
 
     app.on("activate", () => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { normalizeParams } from "@/catalog/types";
-import { catalogDB } from "@/catalog/db";
+import { catalogStorage } from "@/catalog/storage";
 import { onBroadcast } from "@/state/broadcast";
 import { useEditedThumbs } from "@/state/edited-thumbnails";
 import { renderEditedThumbnail } from "@/rendering/thumbnail-renderer";
@@ -90,7 +90,7 @@ export function useEditedThumbnails(visible: CatalogPhoto[]) {
     mountedRef.current = true;
     let cancelled = false;
 
-    catalogDB.getAllEditStates().then((states) => {
+    catalogStorage().getAllEditStates().then((states) => {
       if (cancelled) return;
       for (const st of states) {
         const raw = st.stack[st.currentIndex]?.params;

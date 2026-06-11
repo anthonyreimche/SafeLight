@@ -1,13 +1,20 @@
-# Safelight is privacy-first, GPU-accelerated, open-source photo editing for every photographer.
-If you'd like to help make this software more powerful, feel free to help!
+# SafeLight
 
-- Zero cost, zero subscription
-- Fully offline, no cloud dependency
-- No telemetry or data collection of any kind
- - First-class multi-window/multi-monitor workflow
-- Open preset and plugin format
-- [In development] Lightroom catalog import
-- Open source
+SafeLight is a modular image editing software that combines professional imaging tools with the customizability and modularity of modern IDEs to create a powerful, personalized editing workflow backed by an open-source community.
+
+## Vision
+
+SafeLight reimagines photo editing as an extensible platform where photographers can customize their workflow just like developers customize their IDEs. With a plugin architecture that lets you replace or supplement any panel, theme the interface, and add new tools, SafeLight adapts to your unique creative process.
+
+## Core Features
+
+- **Modular Architecture**: Every panel, tool, and interface element is an extension that can be customized or replaced
+- **Professional Imaging Tools**: GPU-accelerated editing with tone curves, HSL adjustments, crop/transform, masking, and more
+- **IDE-like Customization**: Dockable panels, persistent layouts, keyboard shortcuts, and theming
+- **Privacy-First**: Zero cost, zero subscription, fully offline with no telemetry or data collection
+- **Multi-Window Workflow**: First-class multi-monitor support with detachable modules
+- **Open Extension System**: Install extensions from GitHub repos to add new features or replace existing ones
+- **Open Source**: Community-driven development with transparent code
 
 # Progress
 ## Image Library
@@ -55,7 +62,9 @@ If you'd like to help make this software more powerful, feel free to help!
 - batch JPG, PNG, and WebP export
 - Limited output resolution clamping
 
-# To Do
+# Roadmap
+
+## Planned Features
 - Red eye correction
 - Image compare support
 - Color, BW, and HDR image support
@@ -64,3 +73,33 @@ If you'd like to help make this software more powerful, feel free to help!
 - AI masking via ONNX.js (Select Subject, Sky)
 - Lightroom catalog import (sql.js)
 - Mobile-responsive Loupe view
+
+## Extension Ecosystem
+- Extension marketplace and discovery
+- Extension templates and scaffolding tools
+- API documentation for extension developers
+- Community-contributed extensions library
+
+# Getting Started
+
+See [docs/getting-started.md](docs/getting-started.md) for installation and first steps.
+
+# Documentation
+
+- [Getting Started](docs/getting-started.md) - Installation and quick start guide
+- [User Guide](docs/user-guide.md) - Complete feature documentation
+- [Extensions](docs/extensions.md) - Build and install extensions
+- [Architecture](docs/architecture.md) - Technical architecture overview
+- [API Documentation](docs/api-documentation.md) - Extension API reference
+- [Contributing](docs/contributing.md) - Development guidelines
+
+# Contributing
+
+SafeLight is open source and community-driven. We welcome contributions in the form of:
+- Bug reports and feature requests
+- Code contributions
+- Extension development
+- Documentation improvements
+- Community support
+
+See [docs/contributing.md](docs/contributing.md) for guidelines.

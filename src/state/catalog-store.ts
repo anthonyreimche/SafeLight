@@ -1,47 +1,27 @@
 import { create } from "zustand";
-import type {
-  CatalogPhoto,
-  Collection,
-  ColorLabel,
-  FlagStatus,
-} from "@/catalog/types";
-import { catalogDB } from "@/catalog/db";
+import type { CatalogPhoto, ColorLabel, FlagStatus } from "@/catalog/types";
+import { catalogStorage } from "@/catalog/storage";
 import { rotateBlob, normalizeRotation } from "@/catalog/orient";
-import { verifyPermission } from "@/catalog/permissions";
+import { useProjectStore } from "@/project/project-store";
 import { broadcast } from "./broadcast";
 import { useEditedThumbs } from "./edited-thumbnails";
 
-// Recreate a fresh object URL from the persisted thumbnail blob. Used on load
-// because blob: URLs from a previous session are no longer valid.
-function hydrateThumbnailUrl(photo: CatalogPhoto): CatalogPhoto {
-  return {
-    ...photo,
-    thumbnailUrl: photo.thumbnailBlob
-      ? URL.createObjectURL(photo.thumbnailBlob)
-      : null,
-  };
-}
-
 interface CatalogState {
   photos: CatalogPhoto[];
-  collections: Collection[];
   selectedIds: Set<string>;
   activePhotoId: string | null;
   loading: boolean;
   fileAccessNonce: number; // bumped after re-granting permission, to reload bitmaps
-  needsReconnect: boolean; // stored originals need a permission re-grant
+  needsReconnect: boolean; // the last project needs a permission re-grant
   reconnecting: boolean; // a permission re-grant is in progress
 
   loadCatalog: () => Promise<void>;
   reconnectFiles: () => Promise<void>;
+  /** Swap in a freshly opened project's photos (called by the project store). */
+  replaceCatalog: (photos: CatalogPhoto[]) => void;
 
-  addPhotos: (photos: CatalogPhoto[]) => Promise<void>;
   removePhoto: (id: string) => Promise<void>;
   removePhotos: (ids: string[]) => Promise<void>;
-  addCollection: (name: string, photoIds: string[]) => Promise<void>;
-  deleteCollection: (id: string) => Promise<void>;
-  addToCollection: (id: string, photoIds: string[]) => Promise<void>;
-  removeFromCollection: (id: string, photoIds: string[]) => Promise<void>;
 
   setRating: (id: string, rating: number) => Promise<void>;
   setColorLabel: (id: string, label: ColorLabel) => Promise<void>;
@@ -62,7 +42,7 @@ interface CatalogState {
 }
 
 export const useCatalogStore = create<CatalogState>((set, get) => {
-  // Apply a field change to many photos at once: one IndexedDB write, one state
+  // Apply a field change to many photos at once: one storage write, one state
   // update, one broadcast. The single-photo setters delegate here as well.
   const commit = async (
     ids: string[],
@@ -71,7 +51,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     const idSet = new Set(ids);
     const updated = get().photos.filter((p) => idSet.has(p.id)).map(mutate);
     if (updated.length === 0) return;
-    await catalogDB.putPhotos(updated);
+    await catalogStorage().putPhotos(updated);
     const byId = new Map(updated.map((p) => [p.id, p] as const));
     set((s) => ({ photos: s.photos.map((p) => byId.get(p.id) ?? p) }));
     broadcast({
@@ -82,7 +62,6 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
 
   return {
     photos: [],
-    collections: [],
     selectedIds: new Set(),
     activePhotoId: null,
     loading: false,
@@ -90,45 +69,24 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     needsReconnect: false,
     reconnecting: false,
 
+    // Startup: reopen the last project (silently if permission survived,
+    // otherwise the reconnect button re-grants on a user gesture).
     async loadCatalog() {
       set({ loading: true });
-      const [stored, collections] = await Promise.all([
-        catalogDB.getAllPhotos(),
-        catalogDB.getAllCollections(),
-      ]);
-      // Object URLs don't survive across sessions, so the persisted thumbnailUrl
-      // is dangling. Recreate it from the stored blob.
-      const photos = stored.map(hydrateThumbnailUrl);
-      set({ photos, collections, loading: false });
-
-      // Handles persist but their read permission resets per session. If a
-      // file-backed photo isn't currently readable, prompt for a reconnect so
-      // Develop/Loupe/Export can use the originals instead of the thumbnail.
-      const backed = photos.find((p) => p.directoryHandle || p.fileHandle);
-      const handle = backed?.directoryHandle ?? backed?.fileHandle;
-      if (handle && !(await verifyPermission(handle))) {
-        set({ needsReconnect: true });
+      try {
+        await useProjectStore.getState().openLast();
+      } finally {
+        set({ loading: false });
       }
     },
 
     async reconnectFiles() {
-      // Re-request read access to the stored originals. Must run within a user
-      // gesture; one grant per directory typically covers all of its photos.
       if (get().reconnecting) return;
       set({ reconnecting: true });
       try {
-        let anyGranted = false;
-        for (const p of get().photos) {
-          const handle = p.directoryHandle ?? p.fileHandle;
-          if (!handle) continue;
-          if (await verifyPermission(handle)) {
-            anyGranted = true;
-          } else if (await verifyPermission(handle, true)) {
-            anyGranted = true;
-          }
-        }
+        const ok = await useProjectStore.getState().reconnectLast();
         set((s) => ({
-          needsReconnect: !anyGranted,
+          needsReconnect: !ok,
           fileAccessNonce: s.fileAccessNonce + 1,
         }));
       } finally {
@@ -136,14 +94,22 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       }
     },
 
-    async addPhotos(newPhotos) {
-      await catalogDB.putPhotos(newPhotos);
-      set((s) => ({ photos: [...s.photos, ...newPhotos] }));
+    replaceCatalog(photos) {
+      // Old object URLs would dangle once their photos are replaced.
+      for (const p of get().photos) {
+        if (p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
+      }
+      set({
+        photos,
+        selectedIds: new Set(),
+        activePhotoId: null,
+        needsReconnect: false,
+      });
       broadcast({ type: "catalog-change", payload: { action: "add" } });
     },
 
     async removePhoto(id) {
-      await catalogDB.deletePhoto(id);
+      await catalogStorage().deletePhoto(id);
       useEditedThumbs.getState().drop(id);
       set((s) => ({
         photos: s.photos.filter((p) => p.id !== id),
@@ -161,28 +127,14 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       if (ids.length === 0) return;
       const idSet = new Set(ids);
       for (const id of ids) {
-        await catalogDB.deletePhoto(id);
+        await catalogStorage().deletePhoto(id);
         useEditedThumbs.getState().drop(id);
       }
-
-      // Drop the removed photos from any collections that held them.
-      const prev = get().collections;
-      const collections = prev.map((c) => {
-        const photoIds = c.photoIds.filter((pid) => !idSet.has(pid));
-        return photoIds.length === c.photoIds.length ? c : { ...c, photoIds };
-      });
-      await Promise.all(
-        collections
-          .filter((c, i) => c !== prev[i])
-          .map((c) => catalogDB.putCollection(c)),
-      );
-
       set((s) => {
         const selectedIds = new Set(s.selectedIds);
         for (const id of ids) selectedIds.delete(id);
         return {
           photos: s.photos.filter((p) => !idSet.has(p.id)),
-          collections,
           selectedIds,
           activePhotoId:
             s.activePhotoId && idSet.has(s.activePhotoId)
@@ -191,56 +143,6 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         };
       });
       broadcast({ type: "catalog-change", payload: { action: "remove" } });
-    },
-
-    async addCollection(name, photoIds) {
-      const collection: Collection = {
-        id: crypto.randomUUID(),
-        name,
-        type: "regular",
-        photoIds: [...photoIds],
-        dateCreated: Date.now(),
-      };
-      await catalogDB.putCollection(collection);
-      set((s) => ({ collections: [...s.collections, collection] }));
-      broadcast({ type: "catalog-change", payload: { action: "collection" } });
-    },
-
-    async deleteCollection(id) {
-      await catalogDB.deleteCollection(id);
-      set((s) => ({
-        collections: s.collections.filter((c) => c.id !== id),
-      }));
-      broadcast({ type: "catalog-change", payload: { action: "collection" } });
-    },
-
-    async addToCollection(id, photoIds) {
-      const coll = get().collections.find((c) => c.id === id);
-      if (!coll) return;
-      const updated: Collection = {
-        ...coll,
-        photoIds: Array.from(new Set([...coll.photoIds, ...photoIds])),
-      };
-      await catalogDB.putCollection(updated);
-      set((s) => ({
-        collections: s.collections.map((c) => (c.id === id ? updated : c)),
-      }));
-      broadcast({ type: "catalog-change", payload: { action: "collection" } });
-    },
-
-    async removeFromCollection(id, photoIds) {
-      const coll = get().collections.find((c) => c.id === id);
-      if (!coll) return;
-      const idSet = new Set(photoIds);
-      const updated: Collection = {
-        ...coll,
-        photoIds: coll.photoIds.filter((pid) => !idSet.has(pid)),
-      };
-      await catalogDB.putCollection(updated);
-      set((s) => ({
-        collections: s.collections.map((c) => (c.id === id ? updated : c)),
-      }));
-      broadcast({ type: "catalog-change", payload: { action: "collection" } });
     },
 
     async rotatePhotos(ids, deg) {
@@ -268,7 +170,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
               width: swap ? p.height : p.width,
               height: swap ? p.width : p.height,
             };
-            await catalogDB.putPhoto(updated);
+            await catalogStorage().putPhoto(updated);
             if (p.thumbnailUrl && p.thumbnailUrl !== thumbnailUrl) {
               URL.revokeObjectURL(p.thumbnailUrl);
             }

@@ -1,6 +1,6 @@
 # Architecture
 
-SafeLight is built as a modern web application using React, TypeScript, and WebGL2 for GPU-accelerated image processing. The architecture is designed around a modular system with clear separation of concerns.
+SafeLight is built as a modern web application using React, TypeScript, and WebGL2 for GPU-accelerated image processing. The architecture is designed around a modular system with clear separation of concerns, inspired by the extensibility and customization patterns of modern IDEs.
 
 ## Technology Stack
 
@@ -69,6 +69,18 @@ SafeLight is organized into four main modules, each with its own view and respon
 - **Export Module**: Batch export with format and resolution options
 
 Modules can be detached into separate windows for multi-monitor workflows. The `detach.ts` file manages window detachment and synchronization.
+
+### Extension System
+
+SafeLight's extension system is inspired by IDE plugin architectures, enabling deep customization:
+
+- **Panel Registration**: Extensions can register new panels or replace existing ones
+- **Theme System**: CSS variable-based theming allows complete visual customization
+- **Contribution Points**: Well-defined extension points for panels, themes, and UI elements
+- **Hot Reloading**: Extensions can be installed and activated without restarting the application
+- **API Surface**: Extensions access SafeLight's React instance, state stores, and rendering pipeline through `window.safelight`
+
+The extension system is implemented in `src/extensions/` with built-in extensions serving as examples.
 
 ### State Management
 

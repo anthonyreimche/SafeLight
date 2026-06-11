@@ -6,17 +6,6 @@ interface UIState {
   activeModule: AppModule;
   setActiveModule: (module: AppModule) => void;
 
-  leftSidebarOpen: boolean;
-  rightSidebarOpen: boolean;
-  toggleLeftSidebar: () => void;
-  toggleRightSidebar: () => void;
-  setLeftSidebar: (open: boolean) => void;
-  setRightSidebar: (open: boolean) => void;
-  leftSidebarWidth: number;
-  setLeftSidebarWidth: (width: number) => void;
-  rightSidebarWidth: number;
-  setRightSidebarWidth: (width: number) => void;
-
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
 
@@ -28,8 +17,9 @@ interface UIState {
   setFilter: (patch: Partial<LibraryFilter>) => void;
   clearFilters: () => void;
 
-  activeCollectionId: string | null;
-  setActiveCollection: (id: string | null) => void;
+  /** Project folder filter: relative path ("" = whole project), null = all. */
+  activeFolder: string | null;
+  setActiveFolder: (path: string | null) => void;
 
   gridSize: number;
   setGridSize: (size: number) => void;
@@ -44,19 +34,6 @@ export const useUIStore = create<UIState>((set) => ({
   activeModule: "library",
   setActiveModule: (module) => set({ activeModule: module }),
 
-  leftSidebarOpen: true,
-  rightSidebarOpen: true,
-  toggleLeftSidebar: () =>
-    set((s) => ({ leftSidebarOpen: !s.leftSidebarOpen })),
-  toggleRightSidebar: () =>
-    set((s) => ({ rightSidebarOpen: !s.rightSidebarOpen })),
-  setLeftSidebar: (open) => set({ leftSidebarOpen: open }),
-  setRightSidebar: (open) => set({ rightSidebarOpen: open }),
-  leftSidebarWidth: 224,
-  setLeftSidebarWidth: (width) => set({ leftSidebarWidth: width }),
-  rightSidebarWidth: 256,
-  setRightSidebarWidth: (width) => set({ rightSidebarWidth: width }),
-
   viewMode: "grid",
   setViewMode: (mode) => set({ viewMode: mode }),
 
@@ -68,8 +45,8 @@ export const useUIStore = create<UIState>((set) => ({
   setFilter: (patch) => set((s) => ({ filter: { ...s.filter, ...patch } })),
   clearFilters: () => set({ filter: NO_FILTER }),
 
-  activeCollectionId: null,
-  setActiveCollection: (id) => set({ activeCollectionId: id }),
+  activeFolder: null,
+  setActiveFolder: (path) => set({ activeFolder: path }),
 
   gridSize: 200,
   setGridSize: (size) => set({ gridSize: size }),

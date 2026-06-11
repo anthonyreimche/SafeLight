@@ -1,6 +1,6 @@
 # User Guide
 
-This guide covers how to use SafeLight for photo management and editing.
+This guide covers how to use SafeLight for photo management and editing. SafeLight's modular architecture lets you customize your workflow through extensions, dockable panels, and themes—just like customizing an IDE.
 
 ## Library Module
 <img width="2275" height="1454" alt="image" src="https://github.com/user-attachments/assets/c9a7f9fc-b6c3-4bd9-a028-f798a891215d" />
@@ -213,3 +213,44 @@ The Export module handles batch export of edited photos.
 - **E**: Switch between modules (Loupe)
 - **Tab**: Close / Open side panels
 - **Escape**: Close dialogs or exit crop mode
+
+## Customization and Extensions
+
+SafeLight's modular architecture allows you to customize your editing experience just like customizing an IDE.
+
+### Installing Extensions
+
+1. Go to **View → Extensions**
+2. Enter a GitHub repo URL (e.g., `owner/repo` or `owner/repo#branch`)
+3. Click **Install**
+4. The extension is downloaded and activated immediately—no restart required
+
+Extensions can add new panels, replace existing ones, add themes, or provide new tools.
+
+### Customizing the Interface
+
+- **Dockable Panels**: Every panel can be docked, undocked, and rearranged
+- **Persistent Layouts**: Your panel layouts are saved and restored between sessions
+- **Themes**: Apply custom themes to change the visual appearance
+- **Keyboard Shortcuts**: Customize shortcuts to match your workflow
+
+### Building Extensions
+
+SafeLight provides a comprehensive extension API that lets you:
+- Register new panels that integrate with the editing workflow
+- Replace existing panels with custom implementations
+- Add custom themes with CSS variables
+- Register slider icons and UI elements
+- Access SafeLight's state stores and rendering pipeline
+
+See the [Extensions documentation](extensions.md) for detailed information on building and publishing extensions.
+
+### Panel Management
+
+Every registered panel appears in the **View** menu and can:
+- Float as a separate window
+- Dock beside the canvas
+- Be toggled on/off
+- Have its position persisted per window
+
+This IDE-like flexibility lets you create the perfect workspace for your specific editing needs.

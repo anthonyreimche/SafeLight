@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { useRegistry } from "@/extensions/registry";
 
 interface SliderProps {
   label: string;
+  /** Slider-icon contribution id (e.g. "core.exposure"); themes/extensions
+   *  may register an SVG for it. Renders nothing if unregistered. */
+  icon?: string;
   value: number;
   min?: number;
   max?: number;
@@ -18,6 +22,7 @@ const FINE = 0.2;
 
 export function Slider({
   label,
+  icon,
   value,
   min = -100,
   max = 100,
@@ -28,6 +33,9 @@ export function Slider({
   onChange,
   onCommit,
 }: SliderProps) {
+  const iconSvg = useRegistry((s) =>
+    icon ? s.sliderIcons[icon]?.svg : undefined,
+  );
   // Raw text while the numeric field is focused, so intermediate states
   // ("", "-", "1.") don't fight the controlled value.
   const [editing, setEditing] = useState<string | null>(null);
@@ -140,6 +148,12 @@ export function Slider({
 
   return (
     <div className="flex items-center gap-2 py-0.5">
+      {iconSvg && (
+        <span
+          className="h-3 w-3 shrink-0 text-text-muted [&_svg]:h-full [&_svg]:w-full"
+          dangerouslySetInnerHTML={{ __html: iconSvg }}
+        />
+      )}
       {label !== "" && (
         <label
           className={`${compact ? "w-9" : "w-20"} shrink-0 ${compact ? "text-[10px]" : "text-[11px]"} text-text-secondary`}
@@ -150,7 +164,7 @@ export function Slider({
       <div className="relative flex h-4 min-w-0 flex-1 select-none items-center">
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
           <div
-            className="h-full rounded-full bg-[#5a5a5a]"
+            className="h-full rounded-full bg-slider-fill"
             style={{ width: `${pct}%` }}
           />
         </div>

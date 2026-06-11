@@ -1,3 +1,7 @@
+// Photo record construction + background RAW pre-decode. Photos enter the
+// catalog exclusively through the project scan (see src/project/), which calls
+// buildPhoto for each new file it finds.
+
 import type { CatalogPhoto } from "@/catalog/types";
 import { parseExif, parseExifDate } from "@/catalog/exif";
 import { orientationToRotation } from "@/catalog/orient";
@@ -23,6 +27,14 @@ const SUPPORTED_EXTENSIONS = new Set([
   ".tiff",
   ".tif",
 ]);
+
+/** Name-only check used by the project scanner (no File object needed). */
+export function isSupportedName(name: string): boolean {
+  const ext = getExtension(name);
+  return (
+    SUPPORTED_EXTENSIONS.has(ext) || isRawFile({ name } as File)
+  );
+}
 
 function isSupported(file: File): boolean {
   const ext = getExtension(file.name);
@@ -71,7 +83,9 @@ async function getImageSource(file: File): Promise<Blob | null> {
   return file;
 }
 
-async function buildPhoto(
+/** Build a catalog record for a file: thumbnail, EXIF, orientation. The caller
+ *  fills in relPath/folder (they're project-relative). */
+export async function buildPhoto(
   file: File,
   directoryHandle: FileSystemDirectoryHandle | null,
   fileHandle: FileSystemFileHandle | null,
@@ -105,6 +119,8 @@ async function buildPhoto(
   const photo: CatalogPhoto = {
     id: generateId(),
     filename: file.name,
+    relPath: "",
+    folder: "",
     directoryHandle,
     fileHandle,
     thumbnailBlob: thumb,
@@ -127,26 +143,14 @@ async function buildPhoto(
   return photo;
 }
 
-async function buildMany(
-  files: File[],
-  directoryHandle: FileSystemDirectoryHandle | null,
-  fileHandles: (FileSystemFileHandle | null)[] | null,
-): Promise<CatalogPhoto[]> {
-  const results = await Promise.all(
-    files.map((file, i) =>
-      buildPhoto(file, directoryHandle, fileHandles?.[i] ?? null),
-    ),
-  );
-  return results.filter((p): p is CatalogPhoto => p !== null);
-}
-
 /**
- * Pre-decode RAW files for imported photos and write them to the develop-preview
- * cache so the first Develop open is instant instead of waiting for libraw.
+ * Pre-decode RAW files for newly discovered photos and write them to the
+ * develop-preview cache (.safelight/raw/ in the open project) so the first
+ * Develop open is instant instead of waiting for libraw.
  *
  * Runs sequentially (one at a time) to keep memory and CPU impact low while
- * the user browses the just-imported library. Already-cached photos are skipped.
- * Call this after saving imported photos to the catalog — fire and forget.
+ * the user browses the just-opened project. Already-cached photos are skipped.
+ * Fire and forget.
  */
 export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<void> {
   const raws = photos.filter((p) => p.fileHandle && isRawFile({ name: p.filename } as File));
@@ -155,7 +159,7 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
     try {
       const file = await photo.fileHandle!.getFile();
 
-      // Skip if already cached (e.g., re-imported the same folder).
+      // Skip if already cached (e.g., re-opened the same project).
       const hit = await readCachedPreview(file);
       if (hit) continue; // already cached
 
@@ -174,90 +178,4 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
       // A single decode failure shouldn't stop the rest.
     }
   }
-}
-
-export async function importFiles(): Promise<CatalogPhoto[]> {
-  if (!("showOpenFilePicker" in window)) {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.accept = "image/*,.nef,.cr2,.cr3,.arw,.dng,.orf,.raf,.pef,.srw,.rw2,.iiq,.3fr,.nrw,.kdc,.mos,.mrw,.erf,.sr2,.x3f";
-
-    return new Promise((resolve) => {
-      input.onchange = async () => {
-        if (!input.files) return resolve([]);
-        resolve(await buildMany(Array.from(input.files), null, null));
-      };
-      input.click();
-    });
-  }
-
-  const handles = await window.showOpenFilePicker({
-    multiple: true,
-    types: [
-      {
-        description: "Images & RAW",
-        accept: {
-          "image/*": [
-            ".jpg",
-            ".jpeg",
-            ".png",
-            ".webp",
-            ".avif",
-            ".tiff",
-            ".tif",
-            ".nef",
-            ".cr2",
-            ".cr3",
-            ".arw",
-            ".dng",
-            ".orf",
-            ".raf",
-            ".pef",
-            ".srw",
-            ".rw2",
-            ".iiq",
-            ".3fr",
-            ".nrw",
-            ".kdc",
-            ".mos",
-            ".mrw",
-            ".erf",
-            ".sr2",
-            ".x3f",
-          ],
-        },
-      },
-    ],
-  });
-
-  const photos: CatalogPhoto[] = [];
-  for (const handle of handles) {
-    const file = await handle.getFile();
-    const photo = await buildPhoto(file, null, handle);
-    if (photo) photos.push(photo);
-  }
-  return photos;
-}
-
-export async function importDirectory(): Promise<{
-  photos: CatalogPhoto[];
-  name: string;
-}> {
-  if (!("showDirectoryPicker" in window)) {
-    return { photos: [], name: "" };
-  }
-
-  const dirHandle = await window.showDirectoryPicker();
-  const photos: CatalogPhoto[] = [];
-
-  for await (const entry of dirHandle.values()) {
-    if (entry.kind === "file") {
-      const file = await entry.getFile();
-      const photo = await buildPhoto(file, dirHandle, entry);
-      if (photo) photos.push(photo);
-    }
-  }
-
-  return { photos, name: dirHandle.name };
 }

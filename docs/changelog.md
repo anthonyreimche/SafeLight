@@ -5,10 +5,6 @@ All notable changes to SafeLight will be documented in this file.
 ## [Unreleased]
 
 ### Planned Features
-- Color grading wheels
-- Image sharpen/denoise support (WASM-based)
-- Lens correction profiles
-- Vignette and grain effects
 - Color, BW, and HDR support
 - Image masking and touchup removal/cloning
 - Red eye correction
@@ -16,7 +12,6 @@ All notable changes to SafeLight will be documented in this file.
 - HDR / focus stacking and photo merge support
 - Batch editing functionality
 - AI masking via ONNX.js (Select Subject, Sky)
-- Electron wrapper for deeper OS file access
 - Mobile-responsive Loupe view
 - Open preset and plugin standard
 - Lightroom catalog import (sql.js)
@@ -44,10 +39,10 @@ All notable changes to SafeLight will be documented in this file.
   - Hold shift or widen slider panel for fine adjustment, double-click to reset value
   - Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
   - Transform and warp image crop / geometry and perspective tools
-
-- **Loupe Viewer**
-  - Snappy zoom and pan functionality
-  - Native detachable window support for multi-screen culling
+  - Color grading wheels
+  - Image sharpen/denoise support (WASM-based)
+  - Lens correction profiles
+  - Vignette and grain effects
 
 - **Export Settings**
   - Batch JPG, PNG, and WebP export

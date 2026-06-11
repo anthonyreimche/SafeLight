@@ -17,7 +17,7 @@ import { MAX_MASKS, MAX_RETOUCH, normalizeParams } from "@/catalog/types";
 
 export type ToolMode = "none" | "mask" | "retouch";
 import type { HistogramData } from "@/rendering/histogram";
-import { catalogDB } from "@/catalog/db";
+import { catalogStorage } from "@/catalog/storage";
 import { broadcast } from "./broadcast";
 import { nextGuide, type CropGuide } from "@/modules/develop/crop-guides";
 
@@ -230,7 +230,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   setHistogram: (histogram) => set({ histogram }),
 
   async loadEdit(photoId: string) {
-    const editState = await catalogDB.getEditState(photoId);
+    const editState = await catalogStorage().getEditState(photoId);
     if (editState && editState.stack.length > 0) {
       set({
         photoId,
@@ -317,7 +317,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
       stack: newHistory,
       currentIndex: newIndex,
     };
-    await catalogDB.putEditState(editState);
+    await catalogStorage().putEditState(editState);
   },
 
   undo() {

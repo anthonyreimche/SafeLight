@@ -8,8 +8,6 @@ import { detachedModule, MODULE_LABELS } from "@/state/detach";
 import { AppShell } from "@/ui/components/AppShell";
 import { LibraryView } from "@/modules/library/LibraryView";
 import { DevelopView } from "@/modules/develop/DevelopView";
-import { LoupeView } from "@/modules/loupe/LoupeView";
-import { ExportView } from "@/modules/export/ExportView";
 
 function renderModule(module: AppModule) {
   switch (module) {
@@ -17,10 +15,6 @@ function renderModule(module: AppModule) {
       return <LibraryView />;
     case "develop":
       return <DevelopView />;
-    case "loupe":
-      return <LoupeView />;
-    case "export":
-      return <ExportView />;
   }
 }
 
@@ -43,7 +37,7 @@ export function App() {
   // In the main window, a module that's popped out lives in its own window.
   if (detached.has(activeModule)) {
     return (
-      <AppShell>
+      <AppShell module={activeModule}>
         <div className="flex flex-1 items-center justify-center text-center text-text-muted">
           <p className="text-sm">
             {MODULE_LABELS[activeModule]} is open in a separate window.

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/ui/components/AppShell";
-import { DevelopSidebar } from "./DevelopSidebar";
-import { DevelopLeftSidebar } from "./DevelopLeftSidebar";
 import { DevelopCanvas } from "./DevelopCanvas";
 import { ZoomControls } from "@/ui/ZoomControls";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 
+// The canvas is the module's "main" dock panel; Tools (masks/retouch/presets)
+// and the Edit stack are extension panels placed by the develop dock layout.
 export function DevelopView() {
   const activePhotoId = useCatalogStore((s) => s.activePhotoId);
   const photos = useCatalogStore((s) => s.photos);
@@ -26,8 +26,7 @@ export function DevelopView() {
 
   return (
     <AppShell
-      leftSidebar={<DevelopLeftSidebar />}
-      rightSidebar={<DevelopSidebar />}
+      module="develop"
       statusBar={
         activePhoto && (
           <div className="flex w-full items-center justify-between">

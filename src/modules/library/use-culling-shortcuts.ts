@@ -110,6 +110,7 @@ export function useCullingShortcuts(): void {
           ui.filter,
           ui.sortField,
           ui.sortDirection,
+          ui.activeFolder,
         );
         if (list.length === 0) return;
         e.preventDefault();

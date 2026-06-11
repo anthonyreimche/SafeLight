@@ -71,16 +71,22 @@ function sortValue(p: CatalogPhoto, field: SortField): number | string {
   }
 }
 
+// A photo is in scope when it lives in `folder` or any subfolder of it.
+function inFolder(p: CatalogPhoto, folder: string): boolean {
+  return p.folder === folder || p.folder.startsWith(`${folder}/`) || folder === "";
+}
+
 export function visiblePhotos(
   photos: CatalogPhoto[],
   filter: LibraryFilter,
   sortField: SortField,
   sortDir: SortDirection,
+  folder: string | null = null,
 ): CatalogPhoto[] {
   const dir = sortDir === "asc" ? 1 : -1;
   // .filter() already returns a fresh array, so sorting it in place is safe.
   return photos
-    .filter((p) => matches(p, filter))
+    .filter((p) => (folder === null || inFolder(p, folder)) && matches(p, filter))
     .sort((a, b) => {
       const av = sortValue(a, sortField);
       const bv = sortValue(b, sortField);

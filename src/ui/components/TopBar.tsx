@@ -10,6 +10,8 @@ import {
   focusDetached,
   reattachSelf,
 } from "@/state/detach";
+import { ViewMenu } from "./ViewMenu";
+import { LayoutMenu } from "./LayoutMenu";
 
 export function TopBar() {
   const dm = detachedModule();
@@ -36,7 +38,7 @@ export function TopBar() {
       <button
         onClick={() => void reconnectFiles()}
         disabled={reconnecting}
-        title="Re-grant access to your photo files so Develop, Loupe and Export use full-resolution originals (browsers reset this each session)."
+        title="Re-grant access to your project folder so Develop and Export use full-resolution originals (browsers reset this each session)."
         className="flex items-center gap-1.5 rounded bg-accent px-3 py-1 text-[11px] font-medium text-white hover:bg-accent-hover disabled:opacity-70"
       >
         {reconnecting && (
@@ -106,6 +108,9 @@ export function TopBar() {
             </div>
           );
         })}
+        <div className="mx-1 h-4 w-px bg-border" />
+        <ViewMenu />
+        <LayoutMenu />
       </div>
       {reconnectButton}
     </div>

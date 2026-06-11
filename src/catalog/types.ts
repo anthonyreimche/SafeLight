@@ -1,6 +1,10 @@
 export interface CatalogPhoto {
   id: string;
   filename: string;
+  /** Path relative to the project root, e.g. "2024/trip/IMG_001.NEF". */
+  relPath: string;
+  /** Containing folder: dirname of relPath ("" = project root). */
+  folder: string;
   directoryHandle: FileSystemDirectoryHandle | null;
   fileHandle: FileSystemFileHandle | null;
   thumbnailBlob: Blob | null;
@@ -32,26 +36,6 @@ export interface ExifData {
   iso?: number;
   dateTimeOriginal?: string;
   orientation?: number; // EXIF Orientation tag (1..8)
-}
-
-export interface Collection {
-  id: string;
-  name: string;
-  type: "regular" | "smart";
-  photoIds: string[];
-  criteria?: SmartCriteria;
-  dateCreated: number;
-}
-
-export interface SmartCriteria {
-  rules: SmartRule[];
-  match: "all" | "any";
-}
-
-export interface SmartRule {
-  field: "rating" | "colorLabel" | "flag" | "keyword" | "camera" | "date";
-  operator: "is" | "isNot" | "greaterThan" | "lessThan" | "contains";
-  value: string | number;
 }
 
 export interface EditState {
@@ -745,4 +729,4 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
 export type SortField = 'dateImported' | 'dateCreated' | 'filename' | 'rating';
 export type SortDirection = 'asc' | 'desc';
 export type ViewMode = 'grid' | 'list';
-export type AppModule = 'library' | 'develop' | 'loupe' | 'export';
+export type AppModule = 'library' | 'develop';

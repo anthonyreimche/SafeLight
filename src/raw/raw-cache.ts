@@ -64,6 +64,52 @@ export function rawCacheKey(file: File): string {
   return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
+// ─── Project-folder cache ────────────────────────────────────────────────────
+// With a project open, decoded previews live in <project>/.safelight/raw/ so
+// they travel with the folder (and dodge browser storage quotas). IndexedDB
+// remains the fallback when no directory is set.
+//
+// File format: 8-byte header (Uint32 LE width, height) + gzipped Uint16 RGBA.
+
+let cacheDir: FileSystemDirectoryHandle | null = null;
+
+export function setRawCacheDir(dir: FileSystemDirectoryHandle | null): void {
+  cacheDir = dir;
+}
+
+function cacheFileName(key: string): string {
+  return `${encodeURIComponent(key)}.bin`; // ":" etc. are not filename-safe
+}
+
+async function readFromDir(
+  key: string,
+): Promise<{ data: Uint16Array; width: number; height: number } | null> {
+  try {
+    const fh = await cacheDir!.getFileHandle(cacheFileName(key));
+    const buf = await (await fh.getFile()).arrayBuffer();
+    if (buf.byteLength < 8) return null;
+    const [width, height] = new Uint32Array(buf.slice(0, 8));
+    const body = await gunzip(new Blob([buf.slice(8)]));
+    return { data: new Uint16Array(body), width, height };
+  } catch {
+    return null;
+  }
+}
+
+async function writeToDir(
+  key: string,
+  u16: Uint16Array<ArrayBuffer>,
+  width: number,
+  height: number,
+): Promise<void> {
+  const header = new Uint32Array([width, height]);
+  const gz = await gzip(u16);
+  const fh = await cacheDir!.getFileHandle(cacheFileName(key), { create: true });
+  const w = await fh.createWritable();
+  await w.write(new Blob([header, gz]));
+  await w.close();
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -75,6 +121,7 @@ export function rawCacheKey(file: File): string {
 export async function readCachedPreview(
   file: File,
 ): Promise<{ data: Uint16Array; width: number; height: number } | null> {
+  if (cacheDir) return readFromDir(rawCacheKey(file));
   try {
     const db = await getDB();
     const entry: CacheEntry | undefined = await idbReq(
@@ -105,6 +152,10 @@ export async function writeCachedPreview(
     for (let i = 0; i < ds.data.length; i++) {
       u16[i] = Math.round(linearToSrgb(ds.data[i]) * 65535);
     }
+    if (cacheDir) {
+      await writeToDir(rawCacheKey(file), u16, ds.width, ds.height);
+      return;
+    }
     const blob = await gzip(u16);
     const entry: CacheEntry = { key: rawCacheKey(file), blob, width: ds.width, height: ds.height };
     const db = await getDB();
@@ -116,6 +167,12 @@ export async function writeCachedPreview(
 
 /** Remove a single file's cached preview (e.g., after file replacement). */
 export async function deleteCachedPreview(file: File): Promise<void> {
+  if (cacheDir) {
+    try {
+      await cacheDir.removeEntry(cacheFileName(rawCacheKey(file)));
+    } catch {}
+    return;
+  }
   try {
     const db = await getDB();
     await idbReq(

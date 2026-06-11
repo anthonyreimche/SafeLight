@@ -37,6 +37,7 @@ export function BasicPanel() {
         {basicSliders.map((s) => (
           <Slider
             key={s.key}
+            icon={`core.${s.key}`}
             label={s.label}
             value={params[s.key]}
             min={s.min}

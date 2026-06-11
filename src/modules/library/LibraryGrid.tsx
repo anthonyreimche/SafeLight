@@ -22,20 +22,12 @@ export function LibraryGrid() {
   const sortField = useUIStore((s) => s.sortField);
   const sortDirection = useUIStore((s) => s.sortDirection);
   const clearFilters = useUIStore((s) => s.clearFilters);
-  const collections = useCatalogStore((s) => s.collections);
-  const activeCollectionId = useUIStore((s) => s.activeCollectionId);
+  const activeFolder = useUIStore((s) => s.activeFolder);
 
-  const visible = useMemo(() => {
-    let scoped = photos;
-    if (activeCollectionId) {
-      const coll = collections.find((c) => c.id === activeCollectionId);
-      if (coll) {
-        const ids = new Set(coll.photoIds);
-        scoped = photos.filter((p) => ids.has(p.id));
-      }
-    }
-    return visiblePhotos(scoped, filter, sortField, sortDirection);
-  }, [photos, collections, activeCollectionId, filter, sortField, sortDirection]);
+  const visible = useMemo(
+    () => visiblePhotos(photos, filter, sortField, sortDirection, activeFolder),
+    [photos, activeFolder, filter, sortField, sortDirection],
+  );
 
   // Keep grid/list thumbnails showing the develop-edited result, rendered in the
   // background while the Library is on screen.

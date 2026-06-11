@@ -1,8 +1,8 @@
 import { useUIStore } from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
+import { useProjectStore } from "@/project/project-store";
 import type { SortField } from "@/catalog/types";
 import { Slider } from "@/ui/components/Slider";
-import { importFiles, importDirectory, preDecodeRawsForCache } from "./import-photos";
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: "dateImported", label: "Imported" },
@@ -19,68 +19,32 @@ export function LibraryToolbar() {
   const sortField = useUIStore((s) => s.sortField);
   const sortDirection = useUIStore((s) => s.sortDirection);
   const setSort = useUIStore((s) => s.setSort);
-  const addPhotos = useCatalogStore((s) => s.addPhotos);
-  const addCollection = useCatalogStore((s) => s.addCollection);
   const removePhotos = useCatalogStore((s) => s.removePhotos);
   const rotatePhotos = useCatalogStore((s) => s.rotatePhotos);
-  const removeFromCollection = useCatalogStore((s) => s.removeFromCollection);
-  const activeCollectionId = useUIStore((s) => s.activeCollectionId);
   const photos = useCatalogStore((s) => s.photos);
   const selectedIds = useCatalogStore((s) => s.selectedIds);
-
-  const handleImportFiles = async () => {
-    const newPhotos = await importFiles();
-    if (newPhotos.length > 0) {
-      await addPhotos(newPhotos);
-      // Pre-decode RAWs in the background so Develop opens instantly.
-      preDecodeRawsForCache(newPhotos);
-    }
-  };
-
-  const handleImportFolder = async () => {
-    const { photos: newPhotos, name } = await importDirectory();
-    if (newPhotos.length > 0) {
-      await addPhotos(newPhotos);
-      // Group a folder import into a collection named after the folder.
-      if (name) {
-        await addCollection(
-          name,
-          newPhotos.map((p) => p.id),
-        );
-      }
-      // Pre-decode RAWs in the background so Develop opens instantly.
-      preDecodeRawsForCache(newPhotos);
-    }
-  };
+  const openProjectPicker = useProjectStore((s) => s.openProjectPicker);
+  const opening = useProjectStore((s) => s.opening);
+  const projectName = useProjectStore((s) => s.name);
 
   const handleRemove = () => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
     const ok = window.confirm(
-      `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted.`,
+      `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted (they'll reappear on the next folder scan).`,
     );
     if (ok) removePhotos(ids);
-  };
-
-  const handleRemoveFromCollection = () => {
-    if (!activeCollectionId || selectedIds.size === 0) return;
-    removeFromCollection(activeCollectionId, [...selectedIds]);
   };
 
   return (
     <div className="flex items-center justify-between border-b border-border-subtle bg-surface-1 px-3 py-1.5">
       <div className="flex items-center gap-2">
         <button
-          onClick={handleImportFiles}
-          className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary"
+          onClick={() => void openProjectPicker()}
+          disabled={opening}
+          className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary disabled:opacity-50"
         >
-          + Files
-        </button>
-        <button
-          onClick={handleImportFolder}
-          className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary"
-        >
-          + Folder
+          {opening ? "Opening…" : projectName ? `Open Folder… (${projectName})` : "Open Folder…"}
         </button>
         <span className="text-[10px] text-text-muted">
           {photos.length} photos{selectedIds.size > 0 && ` · ${selectedIds.size} selected`}
@@ -101,15 +65,6 @@ export function LibraryToolbar() {
             >
               {"⟳"}
             </button>
-            {activeCollectionId && (
-              <button
-                onClick={handleRemoveFromCollection}
-                title="Remove selected from this collection"
-                className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary"
-              >
-                From collection
-              </button>
-            )}
             <button
               onClick={handleRemove}
               className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-label-red"

@@ -1,14 +1,13 @@
 import { useEffect } from "react";
 import { useUIStore } from "@/state/ui-store";
 import { useDevelopStore } from "@/state/develop-store";
+import { toggleDockVisibility } from "@/extensions/dock";
 
 const clampSize = (v: number, lo: number, hi: number) =>
   Math.max(lo, Math.min(hi, Number(v.toFixed(3))));
 
 export function useKeyboardShortcuts() {
   const setActiveModule = useUIStore((s) => s.setActiveModule);
-  const toggleLeftSidebar = useUIStore((s) => s.toggleLeftSidebar);
-  const toggleRightSidebar = useUIStore((s) => s.toggleRightSidebar);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -26,13 +25,10 @@ export function useKeyboardShortcuts() {
         case "d":
           setActiveModule("develop");
           break;
-        case "e":
-          setActiveModule("loupe");
-          break;
         case "tab":
+          // Hide/show every dock panel; positions are restored exactly.
           e.preventDefault();
-          toggleLeftSidebar();
-          toggleRightSidebar();
+          toggleDockVisibility();
           break;
         case "f":
           if (!e.ctrlKey && !e.metaKey) {
@@ -56,5 +52,5 @@ export function useKeyboardShortcuts() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [setActiveModule, toggleLeftSidebar, toggleRightSidebar]);
+  }, [setActiveModule]);
 }

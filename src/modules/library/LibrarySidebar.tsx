@@ -1,7 +1,14 @@
+// Library dock panels: "Folders" (project tree + Open Folder) and "Filters"
+// (quick catalog scopes + rating/label filters). Both are registered extension
+// contributions docked left of the grid by default.
+
+import { useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Rating } from "@/ui/components/Rating";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
+import { useProjectStore } from "@/project/project-store";
+import type { FolderNode } from "@/project/scan";
 import type { ColorLabel } from "@/catalog/types";
 import { isFilterActive, type RatingOp } from "./visible-photos";
 
@@ -23,41 +30,64 @@ const RATING_OP_SYMBOL: Record<RatingOp, string> = {
   neq: "≠",
 };
 
-export function LibrarySidebar() {
+export function FoldersPanel() {
+  const activeFolder = useUIStore((s) => s.activeFolder);
+  const setActiveFolder = useUIStore((s) => s.setActiveFolder);
+  const projectName = useProjectStore((s) => s.name);
+  const tree = useProjectStore((s) => s.tree);
+  const opening = useProjectStore((s) => s.opening);
+  const openProjectPicker = useProjectStore((s) => s.openProjectPicker);
+
+  return (
+    <div className="flex flex-col gap-1 p-2">
+      {tree ? (
+        <>
+          <FolderRow
+            node={tree}
+            depth={0}
+            label={projectName || tree.name}
+            activeFolder={activeFolder}
+            onSelect={setActiveFolder}
+          />
+          {tree.children.map((c) => (
+            <FolderTree
+              key={c.path}
+              node={c}
+              depth={1}
+              activeFolder={activeFolder}
+              onSelect={setActiveFolder}
+            />
+          ))}
+        </>
+      ) : (
+        <p className="px-2 py-1 text-[11px] text-text-muted">
+          Open a folder to start — its images are decoded and cached in a
+          .safelight working directory inside it.
+        </p>
+      )}
+      <button
+        onClick={() => void openProjectPicker()}
+        disabled={opening}
+        className="w-full rounded bg-surface-2 px-2 py-1 text-left text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-50"
+      >
+        {opening ? "Opening…" : "Open Folder…"}
+      </button>
+    </div>
+  );
+}
+
+export function LibraryFiltersPanel() {
   const photos = useCatalogStore((s) => s.photos);
-  const collections = useCatalogStore((s) => s.collections);
   const filter = useUIStore((s) => s.filter);
   const setFilter = useUIStore((s) => s.setFilter);
   const clearFilters = useUIStore((s) => s.clearFilters);
-  const activeCollectionId = useUIStore((s) => s.activeCollectionId);
-  const setActiveCollection = useUIStore((s) => s.setActiveCollection);
-  const selectedIds = useCatalogStore((s) => s.selectedIds);
-  const addCollection = useCatalogStore((s) => s.addCollection);
-  const deleteCollection = useCatalogStore((s) => s.deleteCollection);
-  const addToCollection = useCatalogStore((s) => s.addToCollection);
+  const activeFolder = useUIStore((s) => s.activeFolder);
+  const setActiveFolder = useUIStore((s) => s.setActiveFolder);
 
   const picks = photos.filter((p) => p.flag === "pick").length;
   const rejects = photos.filter((p) => p.flag === "reject").length;
   const rated = photos.filter((p) => p.rating > 0).length;
   const active = isFilterActive(filter);
-
-  const handleNewCollection = () => {
-    const name = window.prompt("New collection name");
-    if (name?.trim()) {
-      addCollection(name.trim(), selectedIds.size > 0 ? [...selectedIds] : []);
-    }
-  };
-
-  const handleDeleteCollection = (id: string, name: string) => {
-    if (
-      window.confirm(
-        `Delete collection "${name}"? The photos stay in your catalog.`,
-      )
-    ) {
-      deleteCollection(id);
-      if (activeCollectionId === id) setActiveCollection(null);
-    }
-  };
 
   const cycleRatingOp = () => {
     const i = RATING_OPS.indexOf(filter.ratingOp);
@@ -71,10 +101,10 @@ export function LibrarySidebar() {
           <SidebarItem
             label="All Photos"
             count={photos.length}
-            active={!active && !activeCollectionId}
+            active={!active && activeFolder === null}
             onClick={() => {
               clearFilters();
-              setActiveCollection(null);
+              setActiveFolder(null);
             }}
           />
           <SidebarItem
@@ -156,64 +186,90 @@ export function LibrarySidebar() {
           </button>
         </div>
       </Panel>
+    </div>
+  );
+}
 
-      <Panel title="Collections">
-        <div className="space-y-1">
-          {collections.length === 0 && (
-            <p className="px-2 py-1 text-[11px] text-text-muted">
-              No collections yet
-            </p>
-          )}
-          {collections.map((c) => {
-            const isActive = activeCollectionId === c.id;
-            return (
-              <div
-                key={c.id}
-                onClick={() => setActiveCollection(c.id)}
-                className={`group flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] ${
-                  isActive
-                    ? "bg-surface-3 text-text-primary"
-                    : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
-                }`}
-              >
-                <span className="flex-1 truncate">{c.name}</span>
-                <span className="text-text-muted">{c.photoIds.length}</span>
-                {selectedIds.size > 0 && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      addToCollection(c.id, [...selectedIds]);
-                    }}
-                    title={`Add ${selectedIds.size} selected`}
-                    className="opacity-0 transition-opacity hover:text-text-primary group-hover:opacity-100"
-                  >
-                    {"＋"}
-                  </button>
-                )}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDeleteCollection(c.id, c.name);
-                  }}
-                  title="Delete collection"
-                  className="opacity-0 transition-opacity hover:text-label-red group-hover:opacity-100"
-                >
-                  {"✕"}
-                </button>
-              </div>
-            );
-          })}
+// One folder row; subtree rows collapse behind a disclosure toggle.
+function FolderTree({
+  node,
+  depth,
+  activeFolder,
+  onSelect,
+}: {
+  node: FolderNode;
+  depth: number;
+  activeFolder: string | null;
+  onSelect: (path: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <>
+      <FolderRow
+        node={node}
+        depth={depth}
+        activeFolder={activeFolder}
+        onSelect={onSelect}
+        expanded={node.children.length > 0 ? expanded : undefined}
+        onToggle={() => setExpanded((e) => !e)}
+      />
+      {expanded &&
+        node.children.map((c) => (
+          <FolderTree
+            key={c.path}
+            node={c}
+            depth={depth + 1}
+            activeFolder={activeFolder}
+            onSelect={onSelect}
+          />
+        ))}
+    </>
+  );
+}
 
-          <button
-            onClick={handleNewCollection}
-            className="w-full rounded bg-surface-2 px-2 py-1 text-left text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary"
-          >
-            {selectedIds.size > 0
-              ? `＋ New from ${selectedIds.size} selected`
-              : "＋ New collection"}
-          </button>
-        </div>
-      </Panel>
+function FolderRow({
+  node,
+  depth,
+  label,
+  activeFolder,
+  onSelect,
+  expanded,
+  onToggle,
+}: {
+  node: FolderNode;
+  depth: number;
+  label?: string;
+  activeFolder: string | null;
+  onSelect: (path: string) => void;
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
+  const isActive = activeFolder === node.path;
+  return (
+    <div
+      onClick={() => onSelect(node.path)}
+      style={{ paddingLeft: 8 + depth * 12 }}
+      className={`flex cursor-pointer items-center gap-1 rounded py-1 pr-2 text-[11px] ${
+        isActive
+          ? "bg-surface-3 text-text-primary"
+          : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+      }`}
+    >
+      {expanded !== undefined ? (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle?.();
+          }}
+          className="w-3 shrink-0 text-text-muted hover:text-text-primary"
+        >
+          {expanded ? "▾" : "▸"}
+        </button>
+      ) : (
+        <span className="w-3 shrink-0" />
+      )}
+      <span className="flex-1 truncate">{label ?? node.name}</span>
+      {node.count > 0 && <span className="text-text-muted">{node.count}</span>}
     </div>
   );
 }

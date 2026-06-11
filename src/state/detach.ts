@@ -2,13 +2,11 @@ import type { AppModule } from "@/catalog/types";
 import { useUIStore } from "./ui-store";
 import { broadcast } from "./broadcast";
 
-export const MODULES: AppModule[] = ["library", "develop", "loupe", "export"];
+export const MODULES: AppModule[] = ["library", "develop"];
 
 export const MODULE_LABELS: Record<AppModule, string> = {
   library: "Library",
   develop: "Develop",
-  loupe: "Loupe",
-  export: "Export",
 };
 
 // The module this window is dedicated to, if it was opened as a detached window.

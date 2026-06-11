@@ -15,13 +15,15 @@ interface PermissionableHandle {
 }
 
 // Returns whether the handle is readable. With `request`, prompts for access
-// (only valid inside a user gesture).
+// (only valid inside a user gesture). Pass mode "readwrite" for project roots
+// (the .safelight/ working directory needs writes).
 export async function verifyPermission(
   handle: AnyHandle,
   request = false,
+  mode: "read" | "readwrite" = "read",
 ): Promise<boolean> {
   const h = handle as unknown as PermissionableHandle;
-  const opts = { mode: "read" as const };
+  const opts = { mode };
   try {
     if (!h.queryPermission) return true; // no permission API → assume readable
     if ((await h.queryPermission(opts)) === "granted") return true;

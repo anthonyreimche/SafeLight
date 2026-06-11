@@ -1,4 +1,5 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useContext, useState } from "react";
+import { DockPanelTitleCtx } from "@/extensions/dock";
 
 const STORAGE_PREFIX = "sl_panel_";
 
@@ -24,7 +25,14 @@ interface PanelProps {
 }
 
 export function Panel({ title, defaultOpen = true, children }: PanelProps) {
+  const dockTitle = useContext(DockPanelTitleCtx);
   const [open, setOpen] = useState(() => readPanelState(title, defaultOpen));
+
+  // Inside a dock panel of the same name, the tab already shows the title —
+  // drop the redundant collapsible header and render the content directly.
+  if (dockTitle != null && dockTitle.toLowerCase() === title.toLowerCase()) {
+    return <div className="px-3 py-3">{children}</div>;
+  }
 
   const toggle = () => {
     const next = !open;
