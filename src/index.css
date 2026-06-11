@@ -48,6 +48,14 @@ body,
   color: white;
 }
 
+/* Preferences ▸ Interface ▸ Reduce motion */
+.sl-reduce-motion *,
+.sl-reduce-motion *::before,
+.sl-reduce-motion *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
 /* Grey, colorless range slider: rounded track + filled portion, no handle. */
 .sl-slider {
   -webkit-appearance: none;

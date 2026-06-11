@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld("safelightNative", {
   plugins: {
     list: () => ipcRenderer.invoke("plugins:list"),
     install: (spec) => ipcRenderer.invoke("plugins:install", String(spec)),
+    search: (query, topic) =>
+      ipcRenderer.invoke("plugins:search", String(query ?? ""), String(topic ?? "")),
     uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
   },
 });

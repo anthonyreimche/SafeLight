@@ -39,11 +39,14 @@ export async function loadExternalPlugins(): Promise<void> {
   applySavedTheme();
 }
 
-export async function installFromGitHub(spec: string): Promise<void> {
+export async function installFromGitHub(
+  spec: string,
+): Promise<ExtensionManifest> {
   const native = window.safelightNative;
   if (!native) throw new Error("Requires the desktop app.");
   const manifest = await native.plugins.install(spec);
   await loadPlugin(manifest); // live, no restart
+  return manifest;
 }
 
 export async function uninstallPlugin(id: string): Promise<void> {

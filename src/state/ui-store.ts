@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AppModule, SortDirection, SortField, ViewMode } from "@/catalog/types";
 import { NO_FILTER, type LibraryFilter } from "@/modules/library/visible-photos";
+import { getSettings } from "@/state/settings-store";
 
 interface UIState {
   activeModule: AppModule;
@@ -37,8 +38,8 @@ export const useUIStore = create<UIState>((set) => ({
   viewMode: "grid",
   setViewMode: (mode) => set({ viewMode: mode }),
 
-  sortField: "dateImported",
-  sortDirection: "desc",
+  sortField: getSettings().defaultSortField,
+  sortDirection: getSettings().defaultSortDirection,
   setSort: (field, direction) => set({ sortField: field, sortDirection: direction }),
 
   filter: NO_FILTER,
@@ -48,7 +49,7 @@ export const useUIStore = create<UIState>((set) => ({
   activeFolder: null,
   setActiveFolder: (path) => set({ activeFolder: path }),
 
-  gridSize: 200,
+  gridSize: getSettings().defaultGridSize,
   setGridSize: (size) => set({ gridSize: size }),
 
   detached: new Set<AppModule>(),

@@ -251,9 +251,42 @@ async function installPlugin(spec) {
   return manifest;
 }
 
+// Discover official extensions on GitHub by topic (default
+// "safelight-extension"; configurable in Preferences ▸ Extensions). Runs in the
+// main process so the renderer's COOP/COEP isolation never gets in the way.
+async function searchExtensions(query, topic) {
+  const t = String(topic || "safelight-extension").trim();
+  if (!/^[a-z0-9][a-z0-9-]*$/i.test(t)) throw new Error("Bad extension topic");
+  const q = [String(query || "").trim(), `topic:${t}`]
+    .filter(Boolean)
+    .join(" ");
+  const res = await net.fetch(
+    `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=25`,
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "Safelight",
+      },
+    }
+  );
+  if (res.status === 403 || res.status === 429)
+    throw new Error("GitHub rate limit reached — try again in a minute.");
+  if (!res.ok) throw new Error(`GitHub search failed (${res.status})`);
+  const body = await res.json();
+  return (body.items || []).map((r) => ({
+    fullName: r.full_name,
+    description: r.description,
+    stars: r.stargazers_count || 0,
+    updatedAt: r.updated_at,
+  }));
+}
+
 function registerPluginIpc() {
   ipcMain.handle("plugins:list", () => listPlugins());
   ipcMain.handle("plugins:install", (_e, spec) => installPlugin(spec));
+  ipcMain.handle("plugins:search", (_e, query, topic) =>
+    searchExtensions(query, topic)
+  );
   ipcMain.handle("plugins:uninstall", (_e, id) => {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))
       throw new Error("Bad extension id");

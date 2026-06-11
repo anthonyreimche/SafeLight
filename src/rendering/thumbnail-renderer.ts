@@ -3,6 +3,7 @@ import type { DecodedImage } from "@/catalog/load-image";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { computeHistogram, type HistogramData } from "@/rendering/histogram";
 import { WebGLRenderer } from "./webgl/renderer";
+import { getSettings } from "@/state/settings-store";
 
 // Two lazily-created offscreen renderers: one drives grid-thumbnail JPEGs, the
 // other the Library histogram. They are kept separate so a histogram render can't
@@ -36,7 +37,7 @@ function getCtx(which: "thumb" | "hist"): Ctx | null {
 
 // Grid thumbnails never need more than a few hundred px; this keeps each render
 // (and the resulting JPEG) cheap while staying crisp at large grid sizes.
-const MAX_THUMB_EDGE = 640;
+// The cap is a preference (Preferences ▸ Library ▸ Thumbnail quality).
 // The histogram only needs enough pixels for a stable distribution.
 const MAX_HIST_EDGE = 512;
 
@@ -69,7 +70,7 @@ function drawPhoto(
 export async function renderEditedThumbnail(
   photo: CatalogPhoto,
   params: DevelopParams,
-  maxEdge: number = MAX_THUMB_EDGE,
+  maxEdge: number = getSettings().thumbMaxEdge,
 ): Promise<Blob | null> {
   const ctx = getCtx("thumb");
   if (!ctx) return null;

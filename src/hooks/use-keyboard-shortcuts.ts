@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import { useUIStore } from "@/state/ui-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { toggleDockVisibility } from "@/extensions/dock";
+import { getSettings } from "@/state/settings-store";
+import { togglePreferences } from "@/ui/components/PreferencesDialog";
 
 const clampSize = (v: number, lo: number, hi: number) =>
   Math.max(lo, Math.min(hi, Number(v.toFixed(3))));
@@ -11,6 +13,13 @@ export function useKeyboardShortcuts() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Ctrl/Cmd+, opens Preferences (works even while typing in an input).
+      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+        e.preventDefault();
+        togglePreferences();
+        return;
+      }
+
       if (
         e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement
@@ -18,12 +27,14 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      const singleKeys = getSettings().singleKeyShortcuts;
+
       switch (e.key.toLowerCase()) {
         case "g":
-          setActiveModule("library");
+          if (singleKeys) setActiveModule("library");
           break;
         case "d":
-          setActiveModule("develop");
+          if (singleKeys) setActiveModule("develop");
           break;
         case "tab":
           // Hide/show every dock panel; positions are restored exactly.
@@ -31,7 +42,7 @@ export function useKeyboardShortcuts() {
           toggleDockVisibility();
           break;
         case "f":
-          if (!e.ctrlKey && !e.metaKey) {
+          if (singleKeys && !e.ctrlKey && !e.metaKey) {
             document.documentElement.requestFullscreen?.();
           }
           break;

@@ -10,6 +10,7 @@ import {
   type ExportFormat,
   type ExportSettings,
 } from "./export-image";
+import { getSettings } from "@/state/settings-store";
 
 const FORMATS: { value: ExportFormat; label: string }[] = [
   { value: "image/jpeg", label: "JPEG" },
@@ -29,10 +30,13 @@ export function ExportPanel() {
   const selectedIds = useCatalogStore((s) => s.selectedIds);
   const activePhotoId = useCatalogStore((s) => s.activePhotoId);
 
-  const [format, setFormat] = useState<ExportFormat>("image/jpeg");
-  const [quality, setQuality] = useState(90);
-  const [longEdge, setLongEdge] = useState<number | null>(null);
-  const [bundle, setBundle] = useState(true);
+  // Defaults come from Preferences ▸ Export; the panel state is per-session.
+  const [format, setFormat] = useState<ExportFormat>(getSettings().exportFormat);
+  const [quality, setQuality] = useState(getSettings().exportQuality);
+  const [longEdge, setLongEdge] = useState<number | null>(
+    getSettings().exportLongEdge,
+  );
+  const [bundle, setBundle] = useState(getSettings().exportBundle);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(
     null,

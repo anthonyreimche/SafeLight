@@ -72,6 +72,15 @@ export interface SliderIconContribution {
   svg: string;
 }
 
+/** A repo found by the official-extension search (GitHub topic). */
+export interface ExtensionSearchResult {
+  /** "owner/repo" — also the install spec. */
+  fullName: string;
+  description: string | null;
+  stars: number;
+  updatedAt: string;
+}
+
 /** safelight.json at the root of an extension repo. */
 export interface ExtensionManifest {
   id: string;
@@ -122,6 +131,8 @@ declare global {
         /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. */
         install(spec: string): Promise<ExtensionManifest>;
         uninstall(id: string): Promise<void>;
+        /** Search GitHub for official extensions (repos with `topic`). */
+        search(query: string, topic: string): Promise<ExtensionSearchResult[]>;
       };
     };
   }

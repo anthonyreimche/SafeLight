@@ -18,9 +18,10 @@ const DB_NAME = "safelight-raw-cache";
 //     with the old settings have clipped highlights baked in; drop them.
 const DB_VERSION = 3;
 const STORE = "previews";
-// Cap the cached resolution; keeps the 16-bit blob to a few× a JPEG. The live
-// (cache-miss) decode still renders full-res, so only re-opens use this.
-const CACHE_MAX_EDGE = 3072;
+// The cached-resolution cap and the cache on/off switch are preferences
+// (Preferences ▸ Performance). The live (cache-miss) decode still renders
+// full-res, so only re-opens use the cap.
+import { getSettings } from "@/state/settings-store";
 
 interface CacheEntry {
   key: string;    // "${name}:${size}:${lastModified}"
@@ -121,6 +122,7 @@ async function writeToDir(
 export async function readCachedPreview(
   file: File,
 ): Promise<{ data: Uint16Array; width: number; height: number } | null> {
+  if (!getSettings().rawCacheEnabled) return null;
   if (cacheDir) return readFromDir(rawCacheKey(file));
   try {
     const db = await getDB();
@@ -146,8 +148,9 @@ export async function writeCachedPreview(
   width: number,
   height: number,
 ): Promise<void> {
+  if (!getSettings().rawCacheEnabled) return;
   try {
-    const ds = downsampleFloatRGBA(data, width, height, CACHE_MAX_EDGE);
+    const ds = downsampleFloatRGBA(data, width, height, getSettings().rawCacheMaxEdge);
     const u16 = new Uint16Array(ds.data.length);
     for (let i = 0; i < ds.data.length; i++) {
       u16[i] = Math.round(linearToSrgb(ds.data[i]) * 65535);
@@ -179,6 +182,24 @@ export async function deleteCachedPreview(file: File): Promise<void> {
       db.transaction(STORE, "readwrite").objectStore(STORE).delete(rawCacheKey(file)),
     );
   } catch { /* ignore */ }
+}
+
+/** Wipe every cached preview (Preferences ▸ Performance ▸ Clear cache).
+ *  Clears both the project-folder cache (when set) and IndexedDB. */
+export async function clearRawCache(): Promise<void> {
+  if (cacheDir) {
+    try {
+      for await (const name of (cacheDir as unknown as { keys(): AsyncIterable<string> }).keys()) {
+        try {
+          await cacheDir.removeEntry(name);
+        } catch {}
+      }
+    } catch {}
+  }
+  try {
+    const db = await getDB();
+    await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).clear());
+  } catch {}
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────

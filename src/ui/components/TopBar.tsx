@@ -12,6 +12,17 @@ import {
 } from "@/state/detach";
 import { ViewMenu } from "./ViewMenu";
 import { LayoutMenu } from "./LayoutMenu";
+import { openPreferences } from "./PreferencesDialog";
+
+const prefsButton = (
+  <button
+    onClick={openPreferences}
+    title="Preferences (Ctrl+,)"
+    className="rounded px-2 py-1 text-[13px] leading-none text-text-secondary hover:text-text-primary"
+  >
+    ⚙
+  </button>
+);
 
 export function TopBar() {
   const dm = detachedModule();
@@ -62,6 +73,7 @@ export function TopBar() {
         </div>
         <div className="flex items-center gap-2">
           {reconnectButton}
+          {prefsButton}
           <button
             onClick={() => reattachSelf(dm)}
             title="Return this window to the main app"
@@ -112,7 +124,10 @@ export function TopBar() {
         <ViewMenu />
         <LayoutMenu />
       </div>
-      {reconnectButton}
+      <div className="flex items-center gap-2">
+        {reconnectButton}
+        {prefsButton}
+      </div>
     </div>
   );
 }

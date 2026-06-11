@@ -21,6 +21,7 @@ import { Histogram } from "@/ui/components/Histogram";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
+import { initSettings, useSettings } from "@/state/settings-store";
 
 /** Every register* call made through a scoped API is tagged with the
  *  extension's id, so uninstalling can sweep all of its contributions. */
@@ -38,6 +39,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       useDevelopStore,
       useCatalogStore,
       useUIStore,
+      useSettings,
       /** For plugins that need their own state. */
       create,
     },
@@ -54,6 +56,7 @@ export function initExtensionHost(): void {
   booted = true;
   registerBuiltins(makeScopedAPI("core"));
   window.safelight = makeScopedAPI("host");
+  initSettings();
   initThemes();
   initDockLayouts();
   void loadExternalPlugins();
