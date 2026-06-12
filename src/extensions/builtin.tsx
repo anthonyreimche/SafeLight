@@ -171,6 +171,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     module: "library", direction: "right", order: 0, width: 280,
   }),
 
-  // ── View-menu-only ──
-  panelExt("core.export", "Export", ExportPanel, "Export photos with format, size and quality options."),
+  panelExt("core.export", "Export", ExportPanel, "Export photos with format, size and quality options.", {
+    module: "library", direction: "right", order: 1, width: 280,
+  }),
 ];
