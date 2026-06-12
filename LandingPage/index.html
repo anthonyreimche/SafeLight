@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Safelight 1.0 - Free Open-Source RAW Photo Editor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@200;300;400;500&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Oswald', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: #e0e0e0;
+            background: #000000;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+            position: relative;
+            z-index: 1;
+        }
+
+        header {
+            padding: 40px 0;
+            text-align: center;
+            animation: fadeInDown 1.2s ease-out;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 8px;
+        }
+
+        .logo img {
+            width: 50px;
+            height: 50px;
+        }
+
+        .logo-text {
+            font-size: 3rem;
+            font-weight: 200;
+            color: #fff;
+            letter-spacing: 0.05em;
+        }
+
+        .tagline {
+            color: #dc2626;
+            font-size: 0.9rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            font-weight: 300;
+        }
+
+        .hero {
+            text-align: center;
+            padding: 100px 20px 80px;
+            animation: fadeInUp 1.4s ease-out 0.3s backwards;
+            position: relative;
+        }
+
+        .hero::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-image: url('https://github.com/user-attachments/assets/b5808eae-aa0b-4f2a-b1f4-08fd5c45e62b');
+            background-size: cover;
+            background-position: center;
+            opacity: 0.2;
+            z-index: -1;
+        }
+
+        .hero h1 {
+            font-size: 4.5rem;
+            color: #fff;
+            margin-bottom: 30px;
+            font-weight: 200;
+            letter-spacing: 0.02em;
+            line-height: 1.1;
+        }
+
+        .hero p {
+            font-size: 1.2rem;
+            color: #888;
+            max-width: 650px;
+            margin: 0 auto 50px;
+            line-height: 1.7;
+            font-weight: 300;
+            letter-spacing: 0.01em;
+        }
+
+        .download-buttons {
+            display: flex;
+            gap: 25px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 80px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 16px 45px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-weight: 300;
+            font-size: 1.1rem;
+            letter-spacing: 0.05em;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .btn-primary {
+            background: #dc2626;
+            color: #fff;
+            border: 1px solid #dc2626;
+        }
+
+        .btn-primary:hover {
+            background: #b91c1c;
+            border-color: #b91c1c;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .features {
+            padding: 80px 40px;
+            margin: 60px 0;
+            animation: fadeIn 1.6s ease-out 0.6s backwards;
+        }
+
+        .features h2 {
+            text-align: center;
+            color: #fff;
+            font-size: 2.5rem;
+            margin-bottom: 60px;
+            font-weight: 200;
+            letter-spacing: 0.05em;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 30px;
+        }
+
+        .feature-card {
+            background: rgba(255, 255, 255, 0.02);
+            padding: 35px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            transition: all 0.3s ease;
+        }
+
+        .feature-card:hover {
+            border-color: rgba(220, 38, 38, 0.4);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .feature-card h3 {
+            color: #fff;
+            font-size: 1.3rem;
+            margin-bottom: 15px;
+            font-weight: 300;
+            letter-spacing: 0.03em;
+        }
+
+        .feature-card p {
+            color: #888;
+            font-size: 0.95rem;
+            line-height: 1.7;
+            font-weight: 200;
+        }
+
+        .info {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+            animation: fadeIn 1.8s ease-out 0.9s backwards;
+        }
+
+        .info a {
+            color: #dc2626;
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+
+        .info a:hover {
+            color: #b91c1c;
+        }
+
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2.8rem;
+            }
+
+            .hero p {
+                font-size: 1.2rem;
+            }
+
+            .download-buttons {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .btn {
+                width: 100%;
+                max-width: 320px;
+            }
+
+            .features {
+                padding: 50px 25px;
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <img src="../public/favicon.svg" alt="Safelight">
+                <span class="logo-text">Safelight</span>
+            </div>
+            <div class="tagline">Version 1.0</div>
+        </header>
+
+        <section class="hero">
+            <h1>YOUR Editing Workflow<br>For YOUR Artistic Style</h1>
+            <p>Fast, free, and open-source. Edit your photos with GPU-accelerated tools in a customizable IDE-like workspace. Zero cost, zero subscription, fully offline.</p>
+            
+            <div class="download-buttons">
+                <a href="https://github.com/anthonyreimche/SafeLight/releases" class="btn btn-primary" target="_blank">
+                    Download for Windows
+                </a>
+                <a href="https://github.com/anthonyreimche/SafeLight" class="btn btn-secondary" target="_blank">
+                    View on GitHub
+                </a>
+            </div>
+        </section>
+
+        <section class="features">
+            <h2>Key Features</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <h3>Non-Destructive Editing</h3>
+                    <p>Your originals are never touched. All edits, ratings, and history live in a portable project folder.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Real RAW Support</h3>
+                    <p>Full-resolution RAW decoding for NEF, CR2/CR3, ARW, DNG, ORF, RAF, RW2, and many more formats.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>GPU Pipeline</h3>
+                    <p>Every adjustment renders through a WebGL2 shader pipeline with optional 16-bit textures for high-bit-depth editing.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Privacy First</h3>
+                    <p>Zero telemetry, no cloud, no data collection. Exports carry no EXIF or location metadata.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>IDE-like Workspace</h3>
+                    <p>Photoshop-style docking, named layouts, themes, rebindable keyboard shortcuts, and multi-monitor support.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Open Extensions</h3>
+                    <p>Install extensions from GitHub to add tools, themes, layouts, and more. Any stock panel can be replaced.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="info">
+            <p>
+                Available for Windows desktop and browser. 
+                <a href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/installation.md" target="_blank">Installation instructions</a> • 
+                <a href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/getting-started.md" target="_blank">Getting started guide</a> • 
+                <a href="https://github.com/anthonyreimche/SafeLight/blob/main/LICENSE" target="_blank">MIT License</a>
+            </p>
+        </section>
+    </div>
+</body>
+</html>
