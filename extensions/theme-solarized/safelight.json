@@ -1,8 +1,0 @@
-{
-  "id": "theme-solarized",
-  "name": "Solarized Themes",
-  "version": "1.0.0",
-  "description": "Solarized Light and Solarized Dark themes (Ethan Schoonover's palette).",
-  "author": "Safelight",
-  "main": "dist/index.js"
-}
