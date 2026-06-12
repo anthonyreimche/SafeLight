@@ -8,7 +8,7 @@ Thanks for your interest in contributing to Safelight! There are two main ways t
 2. `npm install`
 3. `npm run dev` — browser dev server (Chromium-based browser recommended), or
    `npm run electron:dev` — desktop window
-4. `npm run build` — type-check and production build; `npm run build:electron` — Windows installer
+4. `npm run build` — type-check and production build; `npm run build:electron` — Windows installer. Distribution packages (Windows + Linux deb/rpm/pacman/AppImage/Flatpak) are built with the one-click scripts in `build-scripts/` (see [Installation](installation.md))
 
 Node.js 18+ required. There is no test suite yet; changes are verified by building and exercising the app.
 

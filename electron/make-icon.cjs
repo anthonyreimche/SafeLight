@@ -21,10 +21,13 @@ async function main() {
   if (!fs.existsSync(svgPath)) {
     throw new Error(`favicon.svg not found at ${svgPath}`);
   }
-  // Skip the expensive rasterization when the .ico is already newer than the SVG.
+  const outPng = path.join(outDir, "icon.png");
+  // Skip the expensive rasterization when outputs are already newer than the SVG.
   if (
     fs.existsSync(outIco) &&
-    fs.statSync(outIco).mtimeMs >= fs.statSync(svgPath).mtimeMs
+    fs.existsSync(outPng) &&
+    fs.statSync(outIco).mtimeMs >= fs.statSync(svgPath).mtimeMs &&
+    fs.statSync(outPng).mtimeMs >= fs.statSync(svgPath).mtimeMs
   ) {
     console.log("icon up to date - skipping.");
     return;
@@ -42,13 +45,18 @@ async function main() {
     ),
   );
 
-  // png-to-ico's default 256px output is used by electron-builder as the
-  // master; also drop a 256 PNG for any png-based targets.
   const ico = await pngToIco(pngs);
   fs.writeFileSync(outIco, ico);
-  fs.writeFileSync(path.join(outDir, "icon.png"), pngs[pngs.length - 1]);
 
-  console.log(`icon -> ${outIco} (${ico.length} bytes, sizes: ${sizes.join(",")})`);
+  // 1024px master PNG: electron-builder derives the Linux icon set and the
+  // macOS .icns from this (macOS requires at least 512px).
+  const png1024 = await sharp(svg, { density: 1536 })
+    .resize(1024, 1024, { fit: "contain" })
+    .png()
+    .toBuffer();
+  fs.writeFileSync(outPng, png1024);
+
+  console.log(`icon -> ${outIco} (${ico.length} bytes, sizes: ${sizes.join(",")}) + icon.png (1024px)`);
 }
 
 main().catch((err) => {

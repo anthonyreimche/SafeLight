@@ -3,7 +3,9 @@
   "private": true,
   "version": "1.0.0",
   "description": "Safelight — a fast RAW photo editor.",
-  "author": "Anthony Reimche",
+  "homepage": "https://github.com/anthonyreimche/SafeLight",
+  "desktopName": "safelight",
+  "author": "Anthony Reimche <anthonyreimche@gmail.com>",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -36,6 +38,7 @@
   "build": {
     "appId": "com.safelight.app",
     "productName": "Safelight",
+    "copyright": "Copyright © Safelight",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -56,7 +59,34 @@
           "arch": ["x64"]
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "signtoolOptions": {
+        "publisherName": ["Safelight"]
+      }
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "category": "public.app-category.photography",
+      "icon": "build/icon.png"
+    },
+    "dmg": {
+      "title": "Safelight ${version}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Graphics",
+      "synopsis": "Fast RAW photo editor",
+      "syncDesktopName": true,
+      "maintainer": "Safelight <anthonyreimche+safelight@gmail.com>"
+    },
+    "flatpak": {
+      "runtimeVersion": "24.08",
+      "baseVersion": "24.08"
     },
     "nsis": {
       "differentialPackage": false,

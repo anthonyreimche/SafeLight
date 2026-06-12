@@ -1,7 +1,7 @@
 # make-cert.ps1 — self-signed code-signing certificate for Safelight.
 #
 # Creates build\safelight-cert.pfx (reused on later builds) under the name
-# "Anthony Reimche" and trusts it locally so the signed .exe shows that
+# "Safelight" and trusts it locally so the signed .exe shows that
 # publisher on this PC instead of "Unknown Publisher". Run the .bat as
 # Administrator to trust it machine-wide; otherwise it trusts per-user.
 #
@@ -15,13 +15,19 @@ $root     = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $root "build"
 $pfxPath  = Join-Path $buildDir "safelight-cert.pfx"
 $password = "safelight"
-$subject  = "CN=Anthony Reimche"
+$subject  = "CN=Safelight"
 
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
 if (Test-Path $pfxPath) {
-    Write-Host "[cert] Reusing existing certificate: $pfxPath"
-    exit 0
+    # Regenerate if the cached cert was made under an old subject name.
+    $existing = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfxPath, $password)
+    if ($existing.Subject -eq $subject) {
+        Write-Host "[cert] Reusing existing certificate: $pfxPath"
+        exit 0
+    }
+    Write-Host "[cert] Cached cert is '$($existing.Subject)', want '$subject' - regenerating..."
+    Remove-Item $pfxPath -Force
 }
 
 Write-Host "[cert] Generating self-signed code-signing certificate ($subject)..."

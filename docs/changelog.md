@@ -4,6 +4,14 @@ All notable changes to Safelight are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `build-scripts/` folder with one-click builds for every distribution target: Windows NSIS installer, Linux `.deb`, `.rpm`, `.pacman` (Arch/Manjaro), Flatpak, and AppImage (built via WSL2 on Windows), and a macOS `.dmg` script (run on a Mac)
+- Linux packaging config (`build.linux`) in package.json
+
+### Changed
+- `build-electron.bat` renamed and moved to `build-scripts/build-electron-windows-exe.bat`; it now prunes `release/` to the single signed installer file
+- Code-signing certificate subject changed to `CN=Safelight`
+
 ### Planned
 - Red eye correction
 - Image compare view

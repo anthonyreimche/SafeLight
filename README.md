@@ -62,7 +62,9 @@
 
 ## Installation
 
-**Windows desktop (recommended):** download the latest `Safelight Setup` installer from the [releases page](../../releases), or build it yourself with `build-electron.bat`. The desktop app enables the fastest RAW decode path and full GPU acceleration.
+**Windows desktop (recommended):** download the latest `Safelight Setup` installer from the [releases page](../../releases), or build it yourself with `build-scripts\build-electron-windows-exe.bat`. The desktop app enables the fastest RAW decode path and full GPU acceleration.
+
+**Linux:** grab the package for your distro from the [releases page](../../releases) — `.deb` (Debian/Ubuntu), `.rpm` (Fedora/openSUSE), `.pacman` (Arch/Manjaro), Flatpak, or portable AppImage. See [Installation](docs/installation.md) for install commands and how to build them yourself from `build-scripts\`.
 
 **From source:**
 

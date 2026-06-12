@@ -66,7 +66,6 @@ export function LibraryGrid() {
   if (photos.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-text-muted">
-        <div className="text-4xl">{"📷"}</div>
         <p className="text-sm">No photos imported</p>
         <p className="text-xs">
           Click <strong>+ Files</strong> or <strong>+ Folder</strong> to get
