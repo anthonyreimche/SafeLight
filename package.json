@@ -19,20 +19,18 @@
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8",
-    "png-to-ico": "^3.0.0",
-    "sharp": "^0.33.5",
-    "tailwindcss": "^4.3.0",
-    "typescript": "~6.0.2",
-    "vite": "^8.0.12"
-  },
-  "dependencies": {
     "dockview": "^6.6.1",
+    "electron": "^42.4.0",
+    "electron-builder": "^26.15.2",
     "libraw-wasm": "^1.1.2",
+    "png-to-ico": "^3.0.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.16.0",
+    "sharp": "^0.33.5",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12",
     "zustand": "^5.0.14"
   },
   "build": {
@@ -44,10 +42,11 @@
     },
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/main.cjs",
+      "electron/preload.cjs"
     ],
     "asar": true,
-    "compression": "maximum",
+    "compression": "normal",
     "removePackageScripts": true,
     "npmRebuild": false,
     "win": {
@@ -60,6 +59,7 @@
       "icon": "build/icon.ico"
     },
     "nsis": {
+      "differentialPackage": false,
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,

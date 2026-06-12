@@ -1,17 +1,17 @@
-# SafeLight Extensions
+# Safelight Extensions
 
-SafeLight's extension system is inspired by modern IDE plugin architectures, enabling deep customization of the editing workflow. Every panel in SafeLight—including the histogram—is a registered extension contribution. Enthusiasts can replace or supplement any component by publishing a GitHub repo.
+Safelight's extension system is inspired by modern IDE plugin architectures. Every panel in Safelight — including the histogram — is a registered extension contribution, and every stock panel is a pre-installed extension that can be disabled and replaced by a community version. Anyone can publish an extension as a GitHub repo.
 
 ## Managing extensions
 
-The Extensions panel (View ▸ Extensions) is the one place for the full lifecycle:
+The Extensions panel (**View ▸ Extensions**) covers the full lifecycle:
 
-- **Install** — search official extensions (GitHub repos tagged `safelight-extension`; topic configurable in Preferences ▸ Extensions) or enter `owner/repo` (or `owner/repo#branch`, or a github.com URL). The repo is downloaded into `userData/plugins/<id>/` and activated live, no restart.
-- **Disable / enable** — the toggle on each row deactivates an extension and removes its contributions, keeping its files and settings. Re-enabling is instant.
+- **Install** — browse official extensions (GitHub repos tagged with the `safelight-extension` topic; configurable in Preferences ▸ Extensions) or enter `owner/repo`, `owner/repo#branch`, or a github.com URL. The repo is downloaded and activated live — no restart.
+- **Disable / enable** — the toggle on each row deactivates an extension and removes its contributions while keeping its files and settings. Re-enabling is instant.
 - **Settings** — extensions that call `registerSettings` get a ⚙ button opening their settings dialog.
-- **Uninstall** — removes the extension *and deletes its files and stored settings* from disk.
+- **Uninstall** — removes the extension *and deletes its files and stored settings*.
 
-Every stock panel is itself a pre-installed extension listed under **Built-in** — it can be disabled (and replaced by a community version) but not uninstalled. "Safelight Core" (the extension manager, stock themes, Classic layout) is locked and always on.
+Built-in panels appear under **Built-in**; they can be disabled but not uninstalled. **Safelight Core** (the extension manager, stock themes, and the Classic layout) is locked and always on.
 
 ## Anatomy of an extension
 
@@ -27,7 +27,7 @@ A repo needs two things: a `safelight.json` manifest at the root, and a prebuilt
 }
 ```
 
-The bundle must export `activate(api)` (and optionally `deactivate()`). Do **not** bundle React — use `api.react`, the app's instance:
+The bundle must export `activate(api)` (and optionally `deactivate()`). Do **not** bundle React — use `api.react`, the app's own instance:
 
 ```js
 export function activate(api) {
@@ -42,8 +42,7 @@ export function activate(api) {
     id: "histogram-pro.waveform",
     title: "Waveform",
     component: WaveformPanel,
-    slot: "develop-right", // or "none" for View-menu-only
-    order: 0,              // 0 = top of the sidebar, like the stock histogram
+    defaultDock: { module: "develop", direction: "right", order: 1, width: 280, height: 150 },
   });
 
   api.registerTheme({
@@ -73,31 +72,33 @@ export function activate(api) {
 }
 ```
 
+## Contribution types
+
+- **Panels** (`registerPanel`) — a React component with a unique id and title. `defaultDock` places it in a module's rail (`library` or `develop`, `left` or `right`, with `order`, `width`, and a relative `height`) when the user has no saved layout; without it the panel is available from the View menu. Panels can be docked, tabbed, floated, and persisted like any built-in.
+- **Themes** (`registerTheme`) — a named set of CSS custom properties applied to `:root` (surfaces, borders, text, accent, slider fill — see the stock themes in `src/extensions/builtin.tsx` for the full themable surface), plus a `colorScheme` hint.
+- **Layouts** (`registerLayout`) — a named dock arrangement for the Layout menu. Each module defines rails (`side`, `width`, ordered panel ids) and optional floating panels. A layout with no `modules` resolves to the registry's `defaultDock` placements (this is what Classic does), so extension panels join it automatically.
+- **Slider icons** (`registerSliderIcon`) — inline SVG rendered at 12×12 beside a slider label, keyed by the slider's icon id (e.g. `core.exposure`).
+- **Settings** (`registerSettings`) — a declarative settings dialog with `boolean`, `number`, `string`, and `select` fields.
+
+All contributions are auto-tagged with the extension's id and swept when it is disabled or uninstalled.
+
 ## The API surface (`window.safelight`)
 
-- `registerPanel / registerTheme / registerLayout / registerSliderIcon / registerSettings` — contributions, auto-tagged with your extension id and swept on disable or uninstall.
+Each extension receives a scoped `SafelightAPI` (`version: 1`):
+
+- `react` — the app's React instance (never bundle your own).
+- `registerPanel / registerTheme / registerLayout / registerSliderIcon / registerSettings` — contributions, described above.
 - `settings.get(key, fallback)` / `settings.set(key, value)` / `settings.onChange(cb)` — persisted per-extension key/value settings (kept on disable, deleted on uninstall).
-- `react` — the host React (use `React.createElement` or compile JSX against an external `react`).
-- `components` — `Panel` (collapsible sidebar chrome), `Slider`, `Histogram`.
-- `stores` — `useDevelopStore`, `useCatalogStore`, `useUIStore` (zustand hooks), plus `create` for your own state.
-- `dock.togglePanel(id)` — open/close any panel as a floating dockable window.
-- `themes.apply(id)` — switch theme.
-- `layouts.apply(id)` — switch the dock layout preset.
+- `components` — Safelight's stock `Panel`, `Slider`, and `Histogram` components, so extension UI matches the app.
+- `stores` — the live Zustand stores: `useDevelopStore` (edit params, history, histogram, mask/brush state), `useCatalogStore` (photos, selection, culling), `useUIStore` (active module, view options), `useSettings` (app preferences), plus `create` for an extension's own store.
+- `dock.togglePanel(id)` — open/close a panel programmatically.
+- `themes.apply(id)` / `layouts.apply(id)` — switch theme or layout.
 
-Every registered panel appears in the **View** menu and can float or dock beside the canvas; layouts persist per window.
+See [API Documentation](api-documentation.md) for the underlying types and store contents.
 
-## Themable CSS variables
+## Tips
 
-`--color-surface-0…4`, `--color-border`, `--color-border-subtle`, `--color-text-primary/secondary/muted`, `--color-accent`, `--color-accent-hover`, `--color-slider-fill` (see `core.dark` in `src/extensions/builtin.tsx` for the canonical list).
-
-## IDE-like Philosophy
-
-SafeLight's extension system is designed with the same philosophy that powers modern IDEs:
-
-- **Replaceable Components**: Just as IDEs let you replace terminals, debuggers, and file explorers, SafeLight lets you replace any panel or tool
-- **Contribution-based Architecture**: Extensions contribute specific functionality through well-defined APIs, ensuring stability and compatibility
-- **Hot Reloading**: Install and activate extensions without restarting, enabling rapid iteration
-- **Community-driven**: Extensions are distributed through GitHub, making it easy to discover, share, and contribute
-- **Open API**: Full access to SafeLight's state stores, rendering pipeline, and UI components
-
-This architecture transforms SafeLight from a fixed photo editor into a customizable platform that adapts to your unique workflow.
+- Namespace contribution ids with your extension id (`my-ext.panel-name`); `core.*` is reserved for built-ins.
+- To *replace* a stock panel, register your own panel and instruct users to disable the built-in (e.g. "Histogram") in the Extensions panel.
+- Keep bundles dependency-light. React, the component kit, and state come from the API.
+- Tag the repo with the `safelight-extension` topic so it appears in the in-app browser.

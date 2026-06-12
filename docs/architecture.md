@@ -1,162 +1,101 @@
 # Architecture
 
-SafeLight is built as a modern web application using React, TypeScript, and WebGL2 for GPU-accelerated image processing. The architecture is designed around a modular system with clear separation of concerns, inspired by the extensibility and customization patterns of modern IDEs.
+Safelight is a React + TypeScript application with a WebGL2 image pipeline, shipped both as a browser app and as a packaged Electron desktop app. Three ideas shape the design: **project-based storage** (the catalog lives with the photos), **a GPU-only render path** (every preview, edit, thumbnail, and export goes through the same shader pipeline), and **everything-is-an-extension** (all panels, themes, and layouts flow through one registry).
 
 ## Technology Stack
 
-- **Frontend Framework**: React 19 with TypeScript
-- **Build Tool**: Vite 8
-- **Styling**: TailwindCSS 4
-- **State Management**: Zustand 5
-- **Routing**: React Router DOM 7
-- **Rendering**: WebGL2 with custom shaders
-- **Storage**: IndexedDB for persistent data
-- **File Access**: File System Access API
+- **UI**: React 19, TypeScript, TailwindCSS 4
+- **State**: Zustand 5 stores
+- **Docking**: dockview (panel rails, tabs, floating windows)
+- **Rendering**: WebGL2 with custom shaders; optional 16-bit float textures
+- **RAW**: libraw-wasm (worker + SharedArrayBuffer) and an in-house TIFF/CFA decoder
+- **Build**: Vite 8; Electron 42 + electron-builder for the desktop app
 
 ## Project Structure
 
 ```
+electron/             # Desktop shell: app:// scheme, COOP/COEP, GPU flags
 src/
-├── App.tsx                 # Main application component
-├── main.tsx               # Application entry point
-├── catalog/               # Photo catalog and metadata
-│   ├── db.ts             # IndexedDB wrapper
-│   ├── types.ts          # TypeScript interfaces
-│   ├── exif.ts           # EXIF data extraction
-│   ├── load-image.ts     # Image loading utilities
-│   ├── orient.ts         # Image orientation handling
-│   ├── permissions.ts    # File system permissions
-│   └── edit-params.ts   # Edit parameter utilities
-├── modules/              # Feature modules
-│   ├── library/          # Photo library management
-│   ├── develop/          # Image editing interface
-│   ├── loupe/            # Detailed image viewer
-│   └── export/           # Export functionality
-├── state/                # Zustand state stores
-│   ├── catalog-store.ts  # Photo catalog state
-│   ├── develop-store.ts  # Edit parameters state
-│   ├── ui-store.ts       # UI state (active module, detached windows)
-│   ├── presets-store.ts  # Preset management
-│   ├── detach.ts         # Window detachment logic
-│   ├── broadcast.ts      # Cross-window communication
-│   └── edited-thumbnails.ts # Thumbnail cache
-├── rendering/            # Image rendering pipeline
-│   ├── webgl/            # WebGL renderer and shaders
-│   ├── crop-transform.ts # Crop and transform math
-│   ├── curve.ts          # Tone curve LUT generation
-│   ├── histogram.ts      # Histogram computation
-│   ├── transform.ts      # Matrix transformations
-│   └── thumbnail-renderer.ts # Thumbnail generation
-├── ui/                   # Shared UI components
-│   ├── ViewportImage.tsx # Image viewport component
-│   ├── ZoomControls.tsx # Zoom controls
-│   └── components/       # Reusable UI components
-├── hooks/                # Custom React hooks
-│   ├── use-keyboard-shortcuts.ts
-│   └── use-window-sync.ts
-└── types/                # Shared type definitions
+├── App.tsx            # Module router (Library / Develop) + detached windows
+├── catalog/           # Photo records, EXIF, edit params, storage interface
+├── project/           # Project folders: scan, .safelight/ storage, recents
+├── raw/               # RAW decoding: libraw-wasm adapter, TIFF/CFA, cache
+├── modules/
+│   ├── library/       # Grid/list, folders, filters, culling, import
+│   ├── develop/       # Canvas, overlays, and all tool panels
+│   ├── export/        # Export panel, render-to-blob pipeline, ZIP writer
+│   └── loupe/         # Standalone loupe canvas/renderer
+├── extensions/        # Registry, host API, loader, docking, themes, builtins
+├── rendering/         # WebGL renderer, shaders, curves, histogram, heal/fill
+├── state/             # Zustand stores: catalog, develop, ui, settings,
+│                      #   keybindings, presets, broadcast, detach
+├── hooks/             # Renderer hooks, keyboard shortcuts, window sync
+└── ui/                # Shell, top bar, menus, shared components
 ```
 
-## Core Architecture Patterns
+## Projects and Persistence
 
-### Module System
+Opening a folder installs a `ProjectStorage` (implementing the pluggable `CatalogStorage` interface in `catalog/storage.ts`) backed by that folder's `.safelight/` directory:
 
-SafeLight is organized into four main modules, each with its own view and responsibilities:
+```
+<project>/.safelight/
+├── catalog.json   # photo records + edit histories (debounced whole-file writes)
+├── previews/      # <photoId>.jpg grid thumbnails
+└── raw/           # decoded-RAW develop cache
+```
 
-- **Library Module**: Photo import, organization, culling, and metadata viewing
-- **Develop Module**: Image editing with GPU-accelerated adjustments
-- **Loupe Module**: Detailed viewing with zoom, pan, and multi-monitor support
-- **Export Module**: Batch export with format and resolution options
+Opening reconciles `catalog.json` against a fresh recursive disk scan: new files are decoded and thumbnailed, vanished files are dropped, and everything else keeps its ratings and edits. File handles and blobs are never serialized. The last project's `FileSystemDirectoryHandle` persists in IndexedDB (`project/recent.ts`); only its permission resets between browser sessions, which the reconnect flow re-requests.
 
-Modules can be detached into separate windows for multi-monitor workflows. The `detach.ts` file manages window detachment and synchronization.
+## RAW Pipeline
 
-### Extension System
+`raw/decode.ts` orchestrates decoding with a best-available strategy:
 
-SafeLight's extension system is inspired by IDE plugin architectures, enabling deep customization:
+1. **libraw-wasm** — handles every compression scheme (including lossless NEF), applies camera white balance and orientation, and outputs full-precision linear data. Runs in a worker on shared memory, which requires a cross-origin-isolated context.
+2. **In-house decoder** (`raw/tiff.ts`, `raw/pixels.ts`) — uncompressed CFA TIFF-based RAW/DNG, float-capable.
+3. **Embedded JPEG preview** — final fallback, so RAW files always display.
 
-- **Panel Registration**: Extensions can register new panels or replace existing ones
-- **Theme System**: CSS variable-based theming allows complete visual customization
-- **Contribution Points**: Well-defined extension points for panels, themes, and UI elements
-- **Hot Reloading**: Extensions can be installed and activated without restarting the application
-- **API Surface**: Extensions access SafeLight's React instance, state stores, and rendering pipeline through `window.safelight`
+Decoded previews are cached (IndexedDB, or `<project>/.safelight/raw/` in a project) at a configurable long edge so reopening a photo in Develop is instant. Newly discovered RAW files are pre-decoded in the background after a project opens.
 
-The extension system is implemented in `src/extensions/` with built-in extensions serving as examples.
+## Rendering Pipeline
 
-### State Management
+A single `WebGLRenderer` (`rendering/webgl/`) serves the Develop canvas, the loupe, thumbnail regeneration, and export:
 
-State is managed using Zustand stores:
+1. The decoded image is uploaded as a texture (8-bit, or 16-bit float when `highBitDepth` is on and supported) with mipmaps.
+2. Fragment shaders apply the full develop recipe: white balance, exposure/contrast/parametric tone recovery, tone curve LUT, HSL, color grading, sharpening and noise reduction, lens corrections, vignette and grain, geometric transform and crop, plus per-mask local adjustments (brush coverage packs into RGBA textures) and heal/clone retouching (`rendering/heal-source.ts`, `rendering/content-aware-fill.ts`).
+3. The interactive render buffer is capped at a configurable long edge (4096/6144/8192); export renders at output resolution.
 
-- **catalog-store**: Manages photos, collections, selections, ratings, and flags
-- **develop-store**: Manages edit parameters, history (undo/redo), and crop UI state
-- **ui-store**: Manages active module, detached windows, and UI preferences
-- **presets-store**: Manages preset save/load functionality
+The histogram is computed from the rendered output, optionally on every frame (`liveHistogram`).
 
-State changes are broadcast across windows using the `broadcast.ts` system, enabling synchronization between detached windows.
+## Extension System
 
-### Rendering Pipeline
+`extensions/` implements the everything-is-an-extension model:
 
-The rendering pipeline uses WebGL2 for GPU-accelerated image processing:
+- **Registry** (`registry.ts`) — panels, themes, layouts, and slider icons, each tagged with its owning extension id so disable/uninstall can sweep contributions.
+- **Host** (`host.tsx`) — builds the scoped `SafelightAPI` handed to every extension and boots the system once before first render; the host-scoped API is exposed as `window.safelight`.
+- **Built-ins** (`builtin.tsx`) — every stock panel is a pre-installed extension entry, registered through the same scoped API external plugins use, so any of them can be disabled and replaced.
+- **Loader** (`loader.ts`) — downloads GitHub repos into local storage, imports their ESM bundle, and calls `activate(api)`; persists enablement.
+- **Dock** (`dock.tsx`, `PanelStack.tsx`) — dockview-backed rails with per-module persisted layouts; panels can dock, tab, minimize, or float.
+- **Themes** (`themes.ts`) — CSS-variable themes applied to `:root`.
 
-1. **Image Loading**: Images are loaded as ImageBitmap objects
-2. **Texture Upload**: Images are uploaded as WebGL textures with mipmaps
-3. **Shader Processing**: Custom fragment shaders apply:
-   - Exposure, contrast, highlights, shadows adjustments
-   - Tone curve adjustments via LUT texture
-   - HSL color adjustments
-   - Crop and geometric transforms
-   - White balance (temperature/tint)
-4. **Output**: Rendered canvas can be exported or displayed
+## State and Multi-Window
 
-The shader pipeline is defined in `rendering/webgl/shaders.ts` and the renderer in `rendering/webgl/renderer.ts`.
+Zustand stores back each domain: `catalog-store` (photos, selection, culling), `develop-store` (params, undo/redo history, crop/mask/brush UI state), `ui-store` (active module, view mode, detached modules), `settings-store` (preferences), `keybindings-store` (rebindable actions with module scoping), and `presets-store`.
 
-### Data Persistence
+Library and Develop can detach into separate OS windows (`state/detach.ts`). Stores synchronize across windows via BroadcastChannel (`state/broadcast.ts`) for catalog/selection/edit updates, and via the localStorage `storage` event for settings, themes, layouts, and keybindings.
 
-SafeLight uses IndexedDB for persistent storage:
+## Electron Shell
 
-- **Photos**: Full photo metadata, thumbnails, and file handles
-- **Collections**: Regular and smart collections with criteria
-- **Edit States**: Edit history with parameters for each photo
-- **Presets**: Saved edit parameter sets
+`electron/main.cjs` exists chiefly to make the RAW path fast and reliable:
 
-The `catalog/db.ts` file provides a typed wrapper around IndexedDB operations.
+- Registers a privileged `app://` scheme serving the built `dist/`, attaching COOP/COEP headers so the page is cross-origin isolated and libraw-wasm can use SharedArrayBuffer workers.
+- Forces Chromium's fast GPU path (D3D11 ANGLE, discrete GPU, no software WebGL fallback, zero-copy rasterization).
+- Disables renderer/background throttling so decodes and renders continue while the window is occluded.
 
-### File System Integration
+The renderer is identical to the web build; there is no Node integration in app code beyond a minimal preload.
 
-SafeLight uses the File System Access API for direct file system access:
+## Performance Notes
 
-- Directory handles for folder imports
-- File handles for individual photo access
-- Permission management and reconnection after browser sessions
-- Fallback to traditional file input for unsupported browsers
-
-The `catalog/permissions.ts` file handles permission requests and verification.
-
-### Cross-Window Communication
-
-When modules are detached into separate windows, SafeLight uses the BroadcastChannel API for synchronization:
-
-- Selection changes across windows
-- Edit parameter updates
-- Catalog modifications
-- UI state synchronization
-
-The `broadcast.ts` file implements this messaging system.
-
-## Type System
-
-The `catalog/types.ts` file defines the core data structures:
-
-- **CatalogPhoto**: Photo metadata, EXIF data, thumbnails, and file handles
-- **Collection**: Regular and smart collections with photo IDs
-- **DevelopParams**: All edit parameters (exposure, contrast, curves, HSL, crop, transform)
-- **EditState**: Edit history with undo/redo stack
-- **ToneCurves**: RGB and per-channel tone curve points
-- **HSLAdjustments**: Per-color HSL adjustments
-
-## Performance Considerations
-
-- **Thumbnail Caching**: Edited thumbnails are cached to avoid re-rendering
-- **Resolution Capping**: Interactive rendering is capped at 2560px for performance
-- **Mipmap Usage**: Texture mipmaps enable efficient multi-scale blurs for texture/clarity/dehaze
-- **Lazy Loading**: Photos are loaded on-demand rather than all at once
-- **WebGL Acceleration**: All image processing happens on the GPU
+- Decoded-RAW and thumbnail caches avoid repeat work; edited thumbnails re-render lazily.
+- Mipmapped textures power efficient multi-scale operations (texture/clarity/dehaze).
+- Catalog writes are debounced whole-file JSON; thumbnails write only when changed.
+- All pixel work happens on the GPU; the CPU never touches full-resolution pixels after decode.

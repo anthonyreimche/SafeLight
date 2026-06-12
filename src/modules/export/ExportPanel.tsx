@@ -167,7 +167,7 @@ export function ExportPanel() {
         <button
           onClick={handleExport}
           disabled={busy || targets.length === 0}
-          className="mt-2 w-full rounded bg-accent px-3 py-2 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+          className="mt-2 w-full rounded bg-slider-fill px-3 py-2 text-xs font-medium text-white hover:bg-surface-4 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy && progress
             ? `Exporting ${progress.done}/${progress.total}…`

@@ -1,139 +1,103 @@
 # FAQ
 
-Frequently asked questions about SafeLight.
+Frequently asked questions about Safelight.
 
 ## General
 
-### What is SafeLight?
+### What is Safelight?
 
-SafeLight is a privacy-first, GPU-accelerated, open-source photo editing application. It runs entirely in your browser with no cloud dependencies, no telemetry, and no data collection.
+Safelight is a free, open-source, privacy-first RAW photo editor. It combines GPU-accelerated professional editing tools with an IDE-style extensible interface, and ships as a Windows desktop app (Electron) and a browser app.
 
-### Is SafeLight free?
+### Is Safelight free?
 
-Yes, SafeLight is completely free and open source. There are no subscriptions or hidden costs.
+Yes — completely free and open source (MIT). No subscriptions, no hidden costs.
 
-### Does SafeLight work offline?
+### Does Safelight work offline?
 
-Yes, SafeLight is designed to work fully offline. Once loaded, it doesn't require an internet connection for any functionality.
+Yes, fully. The only network feature is the optional extension installer, which downloads from GitHub when you ask it to.
 
-### What browsers are supported?
+### Does Safelight collect my data?
 
-SafeLight requires a modern browser with WebGL2 support:
-- Chrome/Edge 56+
-- Firefox 51+
-- Safari 15+
+No. There is no telemetry, no cloud, no accounts. Photos and edits never leave your computer, and exported images carry no EXIF or location metadata.
 
-### Does SafeLight collect my data?
+### Desktop app or browser — which should I use?
 
-No. SafeLight is privacy-first by design. All your photos and edits stay on your computer. No data is sent to any server.
+The desktop app. It guarantees the fast libraw RAW decode path (cross-origin isolation + SharedArrayBuffer) and forces the high-performance GPU. The browser version works in recent Chromium-based browsers (Chrome, Edge, Opera) and is mainly useful for development; Firefox and Safari lack the File System Access API Safelight relies on.
+
+## Projects and Files
+
+### Where is my catalog stored?
+
+Inside the project folder you open, in a hidden `.safelight/` directory: `catalog.json` (records and edit histories), `previews/` (thumbnails), and `raw/` (decoded-RAW cache). Move the folder and the project moves with it.
+
+### Does Safelight modify my original files?
+
+Never. All edits are non-destructive parameter sets stored in `.safelight/`. Deleting that directory removes Safelight's data and nothing else.
+
+### What happens if I add or delete photos outside Safelight?
+
+Reopening the project reconciles against the disk: new files appear, missing files drop out, and everything else keeps its ratings and edits.
+
+### Why do I see a "Reconnect" button in the browser?
+
+Browsers reset folder permissions between sessions. One click re-grants access to the project folder.
 
 ## Features
 
-### Can I import Lightroom catalogs?
+### Does Safelight support RAW files?
 
-Lightroom catalog import is planned for a future release using sql.js.
+Yes. Safelight decodes RAW at full resolution via libraw-wasm, with an in-house decoder for uncompressed CFA/DNG, covering NEF, CR2, CR3, ARW, DNG, ORF, RAF, PEF, SRW, RW2, IIQ, 3FR, NRW, KDC, MOS, MRW, ERF, SR2, and X3F. If a file can't be decoded, Safelight falls back to the embedded JPEG preview so it always displays.
 
-### Does SafeLight support RAW files?
+### Can I make local adjustments?
 
-SafeLight has partial RAW support. It attempts to decode RAW files at full resolution using libraw-wasm, but some camera formats may fail and fall back to the embedded JPEG preview. Supported formats include NEF, CR2, CR3, ARW, DNG, ORF, RAF, PEF, SRW, RW2, and others. Full RAW support with all camera models is planned for a future release.
+Yes — radial, linear, and brush masks (up to 8 per photo) with per-mask exposure, contrast, tone, color, and clarity, plus heal/clone spot removal (up to 16 spots).
 
 ### Can I use presets?
 
-Yes, SafeLight supports saving and applying presets. An open preset and plugin standard is also planned.
+Yes. Presets are an open, human-readable JSON format (`safelight-preset`) that you can save, apply, export, and import — easy to share or generate.
 
-### Does SafeLight support batch editing?
+### Can I import Lightroom catalogs?
 
-Batch editing functionality is planned for a future release.
+Not yet — it's on the roadmap (via sql.js).
 
-### Can I use AI features?
+### Does Safelight support batch editing or AI masking?
 
-AI masking via ONNX.js (Select Subject, Sky) is planned for a future release.
+Both are planned: batch editing, and AI masking (Select Subject, Sky) via ONNX.js.
+
+### Can I rebind keyboard shortcuts?
+
+Every shortcut is rebindable in Preferences (Ctrl+,) ▸ Shortcuts. Single-letter shortcuts can be disabled entirely if they conflict with your workflow.
+
+## Extensions
+
+### What can extensions do?
+
+Add or replace panels (every stock panel can be disabled and swapped for a community version), add themes, layouts, and slider icons, and persist their own settings. See [Extensions](extensions.md).
+
+### Are extensions safe?
+
+Extensions are JavaScript running inside the app, installed from GitHub repos you choose. Install only extensions you trust, the same judgment you'd apply to IDE plugins.
 
 ## Technical
 
-### Why does SafeLight need file system permissions?
-
-SafeLight uses the File System Access API to directly access your photos for editing. This allows for better performance and the ability to save edits back to original files (in future versions).
-
-### What happens if I don't grant file permissions?
-
-SafeLight will fall back to traditional file input methods, but you may need to re-import photos after each browser session.
-
-### How are edits stored?
-
-Edits are stored in IndexedDB in your browser. They are associated with the original photos via their file handles.
-
-### Will my edits persist after closing the browser?
-
-Yes, edits are stored persistently in IndexedDB. However, you may need to re-grant file system permissions when you reopen the browser.
-
-### Can I use SafeLight on mobile?
-
-A mobile-responsive Loupe view is planned. Currently, SafeLight is optimized for desktop use.
-
 ### How does multi-window support work?
 
-SafeLight uses the BroadcastChannel API to synchronize state across detached windows. This allows you to have different modules open in separate windows on multiple monitors.
+Library and Develop can detach into separate OS windows; state synchronizes via BroadcastChannel (catalog, selection, edits) and the storage event (settings, themes, layouts).
 
-## Troubleshooting
+### What is "high bit depth" in Preferences?
 
-### WebGL2 not supported error
+When enabled (and supported by your GPU), cached RAW previews use 16-bit float textures, preserving highlight/shadow precision through heavy edits.
 
-This error means your browser or graphics driver doesn't support WebGL2. Try:
-- Updating your graphics drivers
-- Using a different browser (Chrome/Edge recommended)
-- Checking if hardware acceleration is enabled in your browser
+### Performance is slow — what can I try?
 
-### Photos not loading after browser restart
+Use the desktop app (it forces the discrete GPU), lower the Develop render cap or thumbnail resolution in Preferences, disable the live histogram, and keep the RAW cache enabled.
 
-This is likely due to file system permissions expiring. Click the "Reconnect" button in the UI to re-grant permissions to your photo folders.
+### Export fails or produces no file
 
-### Performance is slow
+Ensure you have write permission to the destination and that photos finished decoding. When exporting many photos in the browser, prefer the ZIP option — separate files trigger one download prompt each.
 
-SafeLight uses GPU acceleration, but performance depends on your graphics hardware. Try:
-- Closing other browser tabs
-- Ensuring hardware acceleration is enabled
-- Reducing the number of photos in your catalog
+## Contributing
 
-### Export fails
+### How can I request a feature or report a bug?
 
-Ensure you have write permissions to the destination folder. Some browsers may restrict file system access in certain contexts.
-
-## Privacy and Security
-
-### Are my photos uploaded anywhere?
-
-No. All photo processing happens locally in your browser using WebGL2. No images are sent to any server.
-
-### Can SafeLight access my other files?
-
-SafeLight can only access files you explicitly grant permission to via the File System Access API. It cannot access your entire file system.
-
-### Is my edit history private?
-
-Yes, all edit history is stored locally in your browser's IndexedDB.
-
-## Future Development
-
-### What features are coming soon?
-
-Based on the project roadmap, planned features include:
-- Color grading wheels
-- Image sharpen/denoise (WASM-based)
-- Lens correction profiles
-- Vignette and grain effects
-- Color, BW, and HDR support
-- Image masking and touchup tools
-- Red eye correction
-- Image compare functionality
-- HDR/focus stacking
-- Batch editing
-- AI masking
-- Electron wrapper for desktop app
-- Mobile support
-- Open preset/plugin standard
-- Lightroom catalog import
-
-### How can I request a feature?
-
-Open an issue on GitHub with your feature request. Contributions are also welcome!
+Open a GitHub issue. Pull requests are welcome — see [Contributing](contributing.md).

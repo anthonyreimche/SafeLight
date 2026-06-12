@@ -1,52 +1,58 @@
 # Getting Started
 
-SafeLight is a modular image editing software that combines professional imaging tools with the customizability and modularity of modern IDEs. Designed for photographers who want full control over their workflow, SafeLight lets you customize every aspect of your editing experience through extensions, themes, and dockable panels—all while keeping your data private and offline.
+Safelight is a fast, project-based RAW photo editor. This guide takes you from launch to your first export.
 
-## Quick Start
+## Launch Safelight
 
-1. **Install dependencies**: Run `npm install` to install all required packages
-2. **Start development server**: Run `npm run dev` to launch the application
-3. **Open in browser**: Navigate to the local development server URL (typically `http://localhost:5173`)
+- **Desktop app**: run the installed `Safelight` shortcut (see [Installation](installation.md)).
+- **From source**: `npm install`, then `npm run dev` and open the printed URL in a Chromium-based browser, or `npm run electron:dev` for a desktop window.
 
-## First Steps
+## Open a Project
 
-1. **Import Photos**: Use the Library module to import photos from your computer. SafeLight supports single file and folder imports.
-2. **Organize**: Use collections, ratings (0-5), color labels, and pick/reject flags to organize your photo library.
-3. **Edit**: Switch to the Develop module to adjust exposure, contrast, tone curves, HSL, and crop/transform your images.
-4. **Export**: Use the Export module to batch export your edited photos in JPG, PNG, or WebP formats.
+Safelight is project-based: instead of importing photos into a central catalog, you open a folder.
 
-## Key Concepts
+1. In the **Library** module, click **Open Folder** in the Folders panel.
+2. Pick any folder containing photos. Safelight scans it (including subfolders) and builds thumbnails.
+3. All catalog data — ratings, flags, labels, and edit history — is written to a hidden `.safelight/` directory inside that folder. Your project travels with the folder; originals are never modified.
 
-- **Modular Architecture**: SafeLight is built as an extensible platform where every panel, tool, and interface element can be customized or replaced through extensions
-- **Modules**: SafeLight is organized into four main modules:
-  - **Library**: Photo management, organization, and culling
-  - **Develop**: Image editing with GPU-accelerated adjustments
-  - **Loupe**: Detailed viewing with zoom and pan
-  - **Export**: Batch export functionality
+Safelight remembers your last project and reopens it on launch. Browsers reset folder permissions between sessions, so you may see a **Reconnect** prompt — one click re-grants access.
 
-- **IDE-like Customization**: Dockable panels, persistent layouts, keyboard shortcuts, and theming let you tailor the interface to your workflow
-- **Multi-Window Workflow**: Modules can be detached into separate windows for multi-monitor workflows
-- **Extension System**: Install extensions from GitHub repos to add new features, replace existing panels, or customize the interface
-- **Privacy-First**: All data stays local. No cloud sync, no telemetry, no data collection
+Supported formats: JPEG, PNG, WebP, AVIF, TIFF, and RAW (NEF, CR2, CR3, ARW, DNG, ORF, RAF, PEF, SRW, RW2, IIQ, 3FR, NRW, KDC, MOS, MRW, ERF, SR2, X3F).
 
-## Navigation
+## Cull and Organize
 
-- Use the module switcher in the sidebar to move between Library, Develop, Loupe, and Export
-- Keyboard shortcuts are available for common operations (see User Guide for details)
-- Photos can be selected by clicking, Shift+click for range selection, or Ctrl+click for multi-selection
+In the Library grid (defaults match Lightroom; everything is rebindable in Preferences ▸ Shortcuts):
 
-## Customizing Your Workflow
+- **1–5** rate, **0** clear rating
+- **6–9** color labels (red, yellow, green, blue)
+- **P** pick, **X** reject, **U** unflag
+- **← →** previous/next photo, **[ ]** rotate
+- Filter the grid by rating, flag, and label using the Filters panel
 
-SafeLight's modular architecture lets you customize your editing experience:
+## Edit
 
-- **Install Extensions**: Use View → Extensions to install community-built extensions from GitHub repos
-- **Customize Panels**: Dock, undock, and rearrange panels to create your ideal workspace
-- **Apply Themes**: Change the visual appearance with custom themes
-- **Create Extensions**: Build your own extensions to add new features or replace existing ones (see Extensions documentation)
+Double-click a photo (or press **D**) to open it in the **Develop** module. Tool panels stack in rails on either side of the canvas:
+
+- White Balance, Basic, Tone Curve, HSL, and Color Grading for tone and color
+- Detail for sharpening and noise reduction; Lens Correction and Effects for optics and finishing
+- Crop & Straighten and Transform for geometry
+- Masking and Heal/Clone for local adjustments and retouching
+
+Tips: hold **Shift** while dragging a slider for fine control, double-click to reset it, and use **Ctrl+Z / Ctrl+Shift+Z** for undo/redo. All edits are non-destructive.
+
+## Export
+
+Open the **Export** panel (View ▸ Export, docked in Library by default), select photos, choose JPEG/PNG/WebP, quality, and an optional long-edge limit, then export — multiple photos can be bundled into a single ZIP.
+
+## Make It Yours
+
+- **Panels**: drag to dock, tab, float, or minimize any panel; toggle them from the **View** menu. Layouts persist per module.
+- **Layouts and themes**: switch named layouts from the **Layout** menu and themes from the **View** menu.
+- **Shortcuts**: rebind any key in **Preferences (Ctrl+,) ▸ Shortcuts**.
+- **Extensions**: install community panels and themes from GitHub via **View ▸ Extensions** — see [Extensions](extensions.md).
 
 ## Next Steps
 
-- Read the [User Guide](user-guide.md) for detailed feature documentation
-- Explore the [Extensions](extensions.md) documentation to learn about building and installing extensions
-- Check the [Architecture](architecture.md) documentation for technical details
-- Review the [API Documentation](api-documentation.md) for extension development reference
+- [User Guide](user-guide.md) — every feature in detail
+- [Extensions](extensions.md) — installing and building extensions
+- [Architecture](architecture.md) and [API Documentation](api-documentation.md) — technical reference

@@ -97,7 +97,7 @@ export function CropPanel() {
           onClick={() => setCropping(!cropping)}
           className={`w-full rounded px-2 py-1 text-[11px] font-medium ${
             cropping
-              ? "bg-accent text-white hover:bg-accent-hover"
+              ? "bg-slider-fill text-white hover:bg-surface-4"
               : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
           }`}
         >
@@ -211,7 +211,7 @@ export function CropPanel() {
             type="checkbox"
             checked={constrainCrop}
             onChange={(e) => setConstrainCrop(e.target.checked)}
-            className="accent-accent"
+            className="accent-slider-fill"
           />
           Constrain to image
         </label>

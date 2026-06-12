@@ -21,6 +21,14 @@ async function main() {
   if (!fs.existsSync(svgPath)) {
     throw new Error(`favicon.svg not found at ${svgPath}`);
   }
+  // Skip the expensive rasterization when the .ico is already newer than the SVG.
+  if (
+    fs.existsSync(outIco) &&
+    fs.statSync(outIco).mtimeMs >= fs.statSync(svgPath).mtimeMs
+  ) {
+    console.log("icon up to date - skipping.");
+    return;
+  }
   fs.mkdirSync(outDir, { recursive: true });
 
   const sizes = [16, 24, 32, 48, 64, 128, 256];

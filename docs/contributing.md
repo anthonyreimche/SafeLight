@@ -1,96 +1,64 @@
 # Contributing
 
-Thank you for your interest in contributing to SafeLight! This document provides guidelines for contributing to the project.
+Thanks for your interest in contributing to Safelight! There are two main ways to contribute: improving the core app, and building extensions.
 
 ## Development Setup
 
-1. Fork the repository
-2. Clone your fork: `git clone https://github.com/yourusername/SafeLight.git`
-3. Navigate to the project directory: `cd SafeLight`
-4. Install dependencies: `npm install`
-5. Start the development server: `npm run dev`
+1. Fork and clone the repository
+2. `npm install`
+3. `npm run dev` — browser dev server (Chromium-based browser recommended), or
+   `npm run electron:dev` — desktop window
+4. `npm run build` — type-check and production build; `npm run build:electron` — Windows installer
+
+Node.js 18+ required. There is no test suite yet; changes are verified by building and exercising the app.
 
 ## Code Style
 
-- Use TypeScript for all new code
-- Follow existing code conventions and patterns
-- Use meaningful variable and function names
-- Add comments for complex logic
-- Keep functions focused and small
+- TypeScript everywhere; keep types in `src/catalog/types.ts` (core data) or alongside the feature
+- Follow existing patterns — Zustand stores for state, panels as small focused components, comments explaining *why* at the top of each file
+- Keep functions small; prefer pure helpers (see `src/rendering/` and `src/raw/`) that are easy to reason about
 
-## Project Structure
+## Where Things Live
 
-- `src/catalog/` - Photo catalog and metadata handling
-- `src/modules/` - Feature modules (library, develop, loupe, export)
-- `src/state/` - Zustand state stores
-- `src/rendering/` - WebGL rendering pipeline
-- `src/ui/` - Shared UI components
-- `src/hooks/` - Custom React hooks
+- `src/catalog/` — photo records, EXIF, edit params, storage interface
+- `src/project/` — project folders and `.safelight/` persistence
+- `src/raw/` — RAW decoding (libraw-wasm adapter, TIFF/CFA, cache)
+- `src/modules/` — library, develop (and its panels), export
+- `src/extensions/` — registry, host API, loader, docking, themes, built-ins
+- `src/rendering/` — WebGL renderer, shaders, image math
+- `src/state/` — Zustand stores, broadcast, keybindings
+- `electron/` — desktop shell
 
-## Adding Features
+See [Architecture](architecture.md) for the full picture.
 
-When adding new features:
+## Building Extensions Instead
 
-1. Create a new branch: `git checkout -b feature/your-feature-name`
-2. Implement the feature following existing patterns
-3. Add appropriate TypeScript types
-4. Test thoroughly
-5. Update documentation if needed
-6. Submit a pull request
+If your feature is a new panel, theme, or tool, consider shipping it as an extension rather than a core change — no fork required, and users can install it straight from your GitHub repo. See [Extensions](extensions.md) and the [API reference](api-documentation.md). Tag the repo with the `safelight-extension` topic so it appears in the in-app browser.
 
-## Bug Fixes
+## Workflow
 
-When fixing bugs:
+1. Branch from `main`: `feature/<name>` or `fix/<description>`
+2. Implement, keeping commits focused
+3. Verify: `npm run build` passes; test in the browser and (for anything touching files, RAW, or GPU paths) the Electron build; test keyboard shortcuts and multi-window sync if relevant
+4. Open a pull request describing what and why, with screenshots for UI changes and references to related issues
 
-1. Create a new branch: `git checkout -b fix/bug-description`
-2. Identify the root cause
-3. Implement the fix
-4. Test the fix
-5. Submit a pull request with a description of the bug and fix
+Commit message style: `feat: …`, `fix: …`, `docs: …`, `refactor: …`.
 
-## Testing
+## Areas Where Help Is Wanted
 
-- Test your changes in multiple browsers (Chrome, Firefox, Edge, Safari)
-- Test with different image formats and sizes
-- Test keyboard shortcuts
-- Test multi-window functionality if relevant
-
-## Commit Messages
-
-Use clear, descriptive commit messages:
-- `feat: add new feature description`
-- `fix: fix bug description`
-- `docs: update documentation`
-- `refactor: refactor code for clarity`
-
-## Pull Requests
-
-1. Describe what your PR does
-2. Reference any related issues
-3. Include screenshots for UI changes
-4. Ensure all tests pass
-5. Request review from maintainers
-
-## Areas for Contribution
-
-Based on the project roadmap, here are areas where help is needed:
-
-- Color grading wheels
-- Image sharpen/denoise support (WASM-based)
-- Lens correction profiles
-- Vignette and grain effects
-- Color, BW, and HDR support
-- Image masking and touchup removal/cloning
 - Red eye correction
-- Image compare functionality
-- HDR/focus stacking and photo merge
-- Batch editing functionality
+- Image compare view
+- B&W and HDR image support
+- HDR / focus stacking and photo merge
+- Batch editing
 - AI masking via ONNX.js (Select Subject, Sky)
-- Electron wrapper for deeper OS file access
-- Mobile-responsive Loupe view
-- Open preset and plugin standard
 - Lightroom catalog import (sql.js)
+- Mobile-responsive viewing
+- Camera profiles / base tuning (the Tuning panel is currently a stub)
+- Extension marketplace, templates, and scaffolding
+- macOS / Linux desktop builds
+- Tests
 
 ## Questions
 
-Feel free to open an issue for questions or discussion about potential contributions.
+Open a GitHub issue for questions or to discuss an idea before building it.

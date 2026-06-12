@@ -50,7 +50,7 @@ export function TopBar() {
         onClick={() => void reconnectFiles()}
         disabled={reconnecting}
         title="Re-grant access to your project folder so Develop and Export use full-resolution originals (browsers reset this each session)."
-        className="flex items-center gap-1.5 rounded bg-accent px-3 py-1 text-[11px] font-medium text-white hover:bg-accent-hover disabled:opacity-70"
+        className="flex items-center gap-1.5 rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:bg-surface-4 disabled:opacity-70"
       >
         {reconnecting && (
           <span className="h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white" />

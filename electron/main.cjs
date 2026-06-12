@@ -15,6 +15,7 @@ const {
   shell,
   net,
   ipcMain,
+  session,
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -74,6 +75,23 @@ const ISOLATION_HEADERS = {
   "Cross-Origin-Embedder-Policy": "require-corp",
   "Cross-Origin-Resource-Policy": "same-origin",
 };
+
+// CSP for the app shell. Everything is same-origin (app://bundle), including
+// installed extensions (/__plugins__/...). 'wasm-unsafe-eval' is required for
+// libraw-wasm; blob: workers/scripts cover Vite's worker bootstrap; inline
+// styles cover React style props + Tailwind.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval' blob:",
+  "worker-src 'self' blob:",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self' data: blob:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-src 'none'",
+].join("; ");
 
 // Must run before app `ready`. `standard` + `secure` gives the scheme a real
 // origin and a secure context (required for SharedArrayBuffer); the rest let it
@@ -140,6 +158,7 @@ function registerProtocol() {
     const headers = new Headers(res.headers);
     const type = MIME[path.extname(filePath).toLowerCase()];
     if (type) headers.set("Content-Type", type);
+    if (type === "text/html") headers.set("Content-Security-Policy", CSP);
     for (const [k, v] of Object.entries(ISOLATION_HEADERS)) headers.set(k, v);
     return new Response(res.body, { status: 200, headers });
   });
@@ -363,8 +382,32 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
+  // Lock every webContents (main + detached module windows) to the bundled
+  // app: in-page navigation may only target app://, anything http(s) goes to
+  // the system browser. Stops extensions/markdown links from hijacking a window.
+  app.on("web-contents-created", (_e, contents) => {
+    contents.on("will-navigate", (event, url) => {
+      if (!url.startsWith("app://")) {
+        event.preventDefault();
+        if (/^https?:\/\//.test(url)) shell.openExternal(url);
+      }
+    });
+  });
+
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null);
+    // Permissions: the File System Access API (Open Folder / Reconnect
+    // originals) must be granted or showDirectoryPicker/requestPermission
+    // silently fail. Everything else (camera, mic, geolocation, ...) is denied.
+    const ALLOWED_PERMISSIONS = new Set([
+      "fileSystem", // File System Access API (Electron's name)
+      "file-system-access", // older/alternate name, kept for safety
+      "clipboard-sanitized-write", // navigator.clipboard.writeText
+      "persistent-storage", // keep IndexedDB (project handles, cache) from eviction
+    ]);
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) =>
+      cb(ALLOWED_PERMISSIONS.has(permission))
+    );
     registerProtocol();
     registerPluginIpc();
     createWindow();

@@ -216,6 +216,7 @@ export function MasksPanel() {
                 type="checkbox"
                 checked={brushErase}
                 onChange={(e) => setBrushErase(e.target.checked)}
+                style={{ accentColor: "var(--color-slider-fill)" }}
               />
               Erase
               <span className="text-text-muted">· hold Alt to erase · [ ] resize</span>

@@ -397,7 +397,7 @@ function ExtensionRow({
             onClick={onToggle}
             title={enabled ? "Disable (keeps files and settings)" : "Enable"}
             className={`relative h-4 w-7 rounded-full transition-colors ${
-              enabled ? "bg-accent" : "bg-surface-3"
+              enabled ? "bg-slider-fill" : "bg-surface-3"
             }`}
           >
             <span

@@ -109,7 +109,7 @@ function GenericRow({
         <span className="text-[11px] text-text-primary">{k}</span>
         <span
           className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
-            value ? "bg-accent" : "bg-surface-3"
+            value ? "bg-slider-fill" : "bg-surface-3"
           }`}
         >
           <span
@@ -181,7 +181,7 @@ function FieldRow({
           <span className="text-[11px] text-text-primary">{field.label}</span>
           <span
             className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
-              checked ? "bg-accent" : "bg-surface-3"
+              checked ? "bg-slider-fill" : "bg-surface-3"
             }`}
           >
             <span

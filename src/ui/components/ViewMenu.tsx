@@ -93,7 +93,7 @@ function MenuItem({
       onClick={onClick}
       className="flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary"
     >
-      <span className="w-3 text-accent">{checked ? "✓" : ""}</span>
+      <span className="w-3 text-slider-fill">{checked ? "✓" : ""}</span>
       <span className="truncate">{children}</span>
     </button>
   );

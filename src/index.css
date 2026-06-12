@@ -31,6 +31,15 @@
   scrollbar-color: var(--color-surface-4) transparent;
 }
 
+/* Native form controls (checkboxes, radios, progress, un-styled ranges) follow
+   the theme instead of the browser's default blue. */
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"],
+progress {
+  accent-color: var(--color-slider-fill);
+}
+
 html,
 body,
 #root {

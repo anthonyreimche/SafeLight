@@ -1,83 +1,63 @@
 # Installation
 
-SafeLight is a web-based application that runs locally in your browser. Follow these steps to set it up for development or production use.
+Safelight 1.0 ships two ways: a packaged **Windows desktop app** (recommended) and a **browser app** run from source. The desktop app guarantees the fast RAW decode path and full GPU acceleration; the browser version is handy for development.
 
-## Prerequisites
+## Windows Desktop App
 
-- **Node.js**: Version 18 or higher
-- **npm**: Comes with Node.js, or use yarn/pnpm as alternatives
-- **Modern web browser**: Chrome, Firefox, Edge, or Safari with WebGL2 support
+Download and run the latest `Safelight Setup <version>.exe` from the releases page. The installer (NSIS) lets you pick the install directory and creates desktop / Start-menu shortcuts.
 
-## Development Installation
+### Building the installer yourself
 
-1. **Clone the repository**:
+Prerequisites: Node.js 18+ and npm.
+
+```bash
+npm install
+npm run build:electron
+```
+
+Output lands in `release/` (`Safelight Setup <version>.exe` plus an unpacked build). On Windows you can instead double-click **`build-electron.bat`**, which also generates the icon and signs the build with a local self-signed certificate (run as Administrator for machine-wide trust; see `make-cert.ps1`).
+
+Why a desktop app? RAW decoding runs libraw-wasm on shared memory in a worker, which requires a cross-origin-isolated secure context. The Electron shell serves the app over a privileged `app://` scheme with COOP/COEP headers and pins Chromium to the fast GPU path (discrete GPU, D3D11 ANGLE, no software fallback).
+
+## Running from Source (browser)
+
+1. **Clone and install**:
+
    ```bash
-   git clone https://github.com/yourusername/SafeLight.git
+   git clone https://github.com/anthonyreimche/SafeLight.git
    cd SafeLight
-   ```
-
-2. **Install dependencies**:
-   ```bash
    npm install
    ```
 
-3. **Start the development server**:
+2. **Start the dev server**:
+
    ```bash
    npm run dev
    ```
 
-4. **Open in browser**: The development server will start at `http://localhost:5173` (or another port if 5173 is in use)
+   Vite serves at `http://localhost:5173` (or the next free port). On Windows you can double-click **`start.bat`**, which installs dependencies on first run and starts the server.
 
-## Production Build
+3. **Desktop window in dev**: `npm run electron:dev` builds the renderer and opens it in Electron.
 
-To create an optimized production build:
-
-```bash
-npm run build
-```
-
-This will:
-- Compile TypeScript to JavaScript
-- Bundle the application with Vite
-- Generate optimized assets in the `dist/` directory
-
-To preview the production build:
+### Production web build
 
 ```bash
-npm run preview
+npm run build    # tsc + vite build → dist/
+npm run preview  # serve the production build locally
 ```
 
-## Windows Quick Start
+## Requirements
 
-A `start.bat` script is provided for Windows users to quickly start the development server:
-
-```batch
-start.bat
-```
-
-## Browser Requirements
-
-SafeLight requires WebGL2 support for GPU-accelerated image processing. Most modern browsers support this:
-
-- **Chrome/Edge**: Version 56+
-- **Firefox**: Version 51+
-- **Safari**: Version 15+
-
-## File System Access API
-
-SafeLight uses the File System Access API for direct file access. This API is supported in:
-- Chrome/Edge (desktop)
-- Opera (desktop)
-
-For browsers without File System Access API support, SafeLight falls back to traditional file input methods.
+- **Node.js** 18 or newer (for source builds)
+- **GPU with WebGL2** — all image processing is GPU-accelerated
+- **Browser** (web version): a recent Chromium-based browser (Chrome, Edge, Opera). Safelight depends on the File System Access API for project folders; Firefox and Safari are not supported for full functionality.
 
 ## Troubleshooting
 
-### "WebGL2 not supported" error
-Ensure your browser and graphics drivers support WebGL2. Try updating your graphics drivers or using a different browser.
+**"WebGL2 not supported"** — update your graphics drivers and make sure hardware acceleration is enabled. The desktop app forces the high-performance GPU automatically.
 
-### Port already in use
-If port 5173 is in use, Vite will automatically try the next available port (5174, 5175, etc.).
+**RAW files look soft or load as small previews (browser)** — full-speed RAW decoding needs cross-origin isolation, which the plain dev server does not provide in all configurations. Use the desktop app for guaranteed full-resolution RAW.
 
-### Permission errors
-SafeLight requires file system permissions to access photos. Grant permissions when prompted by the browser.
+**Photos missing after restart (browser)** — folder permissions expire between browser sessions. Click **Reconnect** in the top bar to re-grant access; the desktop app is not affected the same way once permission is granted.
+
+**Port already in use** — Vite automatically tries the next port (5174, 5175, …).

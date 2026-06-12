@@ -1,105 +1,107 @@
-# SafeLight
+# Safelight
 
-SafeLight is a modular image editing software that combines professional imaging tools with the customizability and modularity of modern IDEs to create a powerful, personalized editing workflow backed by an open-source community.
+**Safelight 1.0** is a fast, free, open-source RAW photo editor for Windows and the browser. It pairs professional, GPU-accelerated imaging tools with the customizability of a modern IDE: every panel is an extension that can be rearranged, replaced, or supplemented by the community.
 
-## Vision
+- **Non-destructive and project-based** — open a folder of photos and edit. Your originals are never touched; ratings, flags, and edit history live in a `.safelight/` directory inside the project folder, so a project is fully portable.
+- **Real RAW support** — full-resolution RAW decoding via libraw-wasm plus an in-house linear-float decoder for uncompressed CFA/DNG, covering NEF, CR2/CR3, ARW, DNG, ORF, RAF, RW2, and many more, with automatic fallback to the embedded preview.
+- **GPU pipeline** — every adjustment renders through a WebGL2 shader pipeline with optional 16-bit textures for high-bit-depth editing.
+- **Privacy-first** — zero cost, zero subscription, fully offline. No telemetry, no cloud, no data collection. Exports carry no EXIF or location metadata.
+- **IDE-like workspace** — Photoshop-style docking (drag, tab, minimize, float any panel), named layouts, themes, rebindable keyboard shortcuts, and detachable modules for multi-monitor work.
+- **Open extension system** — install extensions straight from GitHub repos to add panels, themes, layouts, and more; any stock panel can be disabled and replaced by a community version.
 
-SafeLight reimagines photo editing as an extensible platform where photographers can customize their workflow just like developers customize their IDEs. With a plugin architecture that lets you replace or supplement any panel, theme the interface, and add new tools, SafeLight adapts to your unique creative process.
+## Features
 
-## Core Features
-
-- **Modular Architecture**: Every panel, tool, and interface element is an extension that can be customized or replaced
-- **Professional Imaging Tools**: GPU-accelerated editing with tone curves, HSL adjustments, crop/transform, masking, and more
-- **IDE-like Customization**: Dockable panels, persistent layouts, keyboard shortcuts, and theming
-- **Privacy-First**: Zero cost, zero subscription, fully offline with no telemetry or data collection
-- **Multi-Window Workflow**: First-class multi-monitor support with detachable modules
-- **Open Extension System**: Install extensions from GitHub repos to add new features or replace existing ones
-- **Open Source**: Community-driven development with transparent code
-
-# Progress
-## Image Library
+### Library
 <img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/ecdf475d-7273-4f77-87cb-1baca63bf765" />
 <img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/f7caffb5-5708-45d2-b1c1-0c972d94d68b" />
 
-- Photo library with grid and list view
-- Collection support
-- Rating (0–5), color code (6–9), and pick(P) / reject(X) / unflag (U) support
-- Library sort tools
-- Single file and folder import support
-- Full and single channel Histogram viewer
-- Metadata viewer
+- Project folder tree with per-folder browsing
+- Grid and list views with adjustable thumbnail size
+- Lightroom-style culling: ratings (1–5), color labels (6–9), pick / reject / unflag (P / X / U)
+- Filters by rating, flag, and label; sortable by date, name, or rating
+- EXIF metadata and histogram in the Info panel
+- Background RAW pre-decoding so Develop opens instantly
 
-## Develop Environment
+### Develop
 <img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/410708b2-44d5-4891-93b0-2fdaa95e4a30" />
 <img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/f5f36602-1076-446c-9098-1f5d24f881ad" />
 
-- Undo/Redo support
-- Edit reset button
-- Histogram control
-- White balance sliders
-- Full and single-channel RGB tone curve support
-- Basic HSL/Color support 
-- Basic preset support
-- Hold shift or widen slider panel for fine adjustment, double-click to reset value
-- Full traditional crop functionality with guides, level (CTRL+drag), and constrain to image option support
-- Transform and warp image crop / geometry and perspective tools
-- Image sharpen / denoise support
-- Color grading wheels
-- Lens correction profiles
-- Vignette and grain effects
-- Image masking and touchup removal / cloning support
+- Full undo/redo history with per-edit labels and reset
+- White balance, exposure, contrast, highlights/shadows, whites/blacks, texture, clarity, dehaze, vibrance, saturation
+- Point tone curves — RGB master plus individual red/green/blue channels
+- HSL mixer for 8 color bands
+- Color grading wheels (shadows / midtones / highlights with luma)
+- Detail panel: capture sharpening (amount, radius, detail, masking) and luminance/color noise reduction
+- Lens corrections: distortion, fringing, defringe, vignetting
+- Effects: post-crop vignette and film grain
+- Crop with guide overlays, straighten (Ctrl+drag to level), aspect lock, constrain-to-image
+- Transform: perspective, aspect, scale, and offset geometry corrections
+- Local adjustments: radial, linear, and brush masks with per-mask exposure, contrast, tone, color, and clarity
+- Heal and clone spot removal with size, feather, and opacity control
+- Presets in an open, human-readable JSON format with import/export
+- 1:1 loupe zoom and pan; hold Shift on any slider for fine adjustment, double-click to reset
 
-## Loupe Viewer
-<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/668808bb-f7a4-4707-841a-1d9b0f582406" />
-<img width="3829" height="1025" alt="image" src="https://github.com/user-attachments/assets/e9ee2f31-108b-4e36-b318-a559d42bcc85" />
-
-- Snappy zoom and pan functionality
-- Native detachable window support for multi-screen culling
-
-## Export Settings
+### Export
 <img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/d54e132b-fa58-416b-b599-899329cf882e" />
 
-- batch JPG, PNG, and WebP export
-- Limited output resolution clamping
+- Batch JPEG, PNG, and WebP export through the same GPU pipeline used for editing
+- Quality and long-edge resizing controls
+- Multiple photos as a single ZIP or separate files
+- Metadata-free output by design
 
-# Roadmap
+### Workspace
+<img width="3829" height="1025" alt="image" src="https://github.com/user-attachments/assets/e9ee2f31-108b-4e36-b318-a559d42bcc85" />
 
-## Planned Features
+- Dock, tab, float, or minimize every panel; layouts persist per module
+- Detach Library or Develop into its own window for multi-monitor culling
+- Dark and light themes, UI scale, and custom fonts
+- Every keyboard shortcut is rebindable in Preferences
+
+## Installation
+
+**Windows desktop (recommended):** download the latest `Safelight Setup` installer from the [releases page](../../releases), or build it yourself with `build-electron.bat`. The desktop app enables the fastest RAW decode path and full GPU acceleration.
+
+**From source:**
+
+```bash
+git clone https://github.com/anthonyreimche/SafeLight.git
+cd SafeLight
+npm install
+npm run dev          # browser (Chromium-based recommended)
+npm run electron:dev # desktop window
+npm run build:electron # Windows installer in release/
+```
+
+See [docs/installation.md](docs/installation.md) for details.
+
+## Roadmap
+
 - Red eye correction
-- Image compare support
-- Color, BW, and HDR image support
-- HDR / focus stacking and photo merge support
-- Batch editing functionality
+- Image compare view
+- B&W and HDR editing support
+- HDR / focus stacking and photo merge
+- Batch editing
 - AI masking via ONNX.js (Select Subject, Sky)
 - Lightroom catalog import (sql.js)
-- Mobile-responsive Loupe view
+- Mobile-responsive viewing
+- Extension marketplace and scaffolding tools
 
-## Extension Ecosystem
-- Extension marketplace and discovery
-- Extension templates and scaffolding tools
-- API documentation for extension developers
-- Community-contributed extensions library
+## Documentation
 
-# Getting Started
+- [Getting Started](docs/getting-started.md) — first project and first edit
+- [Installation](docs/installation.md) — desktop app and source builds
+- [User Guide](docs/user-guide.md) — complete feature documentation
+- [Extensions](docs/extensions.md) — install and build extensions
+- [Architecture](docs/architecture.md) — technical overview
+- [API Documentation](docs/api-documentation.md) — extension API reference
+- [FAQ](docs/faq.md) — common questions
+- [Contributing](docs/contributing.md) — development guidelines
+- [Changelog](docs/changelog.md) — release history
 
-See [docs/getting-started.md](docs/getting-started.md) for installation and first steps.
+## Contributing
 
-# Documentation
+Safelight is community-driven. Bug reports, code, extensions, documentation, and feedback are all welcome — see [docs/contributing.md](docs/contributing.md).
 
-- [Getting Started](docs/getting-started.md) - Installation and quick start guide
-- [User Guide](docs/user-guide.md) - Complete feature documentation
-- [Extensions](docs/extensions.md) - Build and install extensions
-- [Architecture](docs/architecture.md) - Technical architecture overview
-- [API Documentation](docs/api-documentation.md) - Extension API reference
-- [Contributing](docs/contributing.md) - Development guidelines
+## License
 
-# Contributing
-
-SafeLight is open source and community-driven. We welcome contributions in the form of:
-- Bug reports and feature requests
-- Code contributions
-- Extension development
-- Documentation improvements
-- Community support
-
-See [docs/contributing.md](docs/contributing.md) for guidelines.
+MIT — see [LICENSE](LICENSE).
