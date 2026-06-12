@@ -1,10 +1,9 @@
-// Culling shortcuts, scoped to the Library (the hook is mounted
-// by LibraryView, so it only listens while the grid is on screen):
+// Culling shortcuts, scoped to the Library (the hook is mounted by
+// LibraryView, so it only listens while the grid is on screen). All combos are
+// rebindable in Preferences ▸ Shortcuts; the defaults match Lightroom:
 //
-//   1-5        set rating          0   clear rating
-//   P pick     X reject     U unflag
-//   6-9        color label (red / yellow / green / blue)
-//   ← →        move to previous / next photo (also ↑ ↓)
+//   1-5 rating   0 clear   P pick   X reject   U unflag
+//   6-9 color label        [ ] rotate          ← → prev / next
 //
 // Rating/flag/label apply to the whole current selection (or the active photo
 // when nothing is multi-selected). Navigation walks the same filtered+sorted
@@ -14,33 +13,48 @@ import { useEffect } from "react";
 import type { ColorLabel, FlagStatus } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
+import {
+  isEditableTarget,
+  matchAction,
+  shortcutsSuspended,
+} from "@/state/keybindings-store";
 import { visiblePhotos } from "./visible-photos";
 
-const LABEL_KEYS: Record<string, ColorLabel> = {
-  "6": "red",
-  "7": "yellow",
-  "8": "green",
-  "9": "blue",
+const LABELS: Record<string, ColorLabel> = {
+  "label.red": "red",
+  "label.yellow": "yellow",
+  "label.green": "green",
+  "label.blue": "blue",
 };
 
-const FLAG_KEYS: Record<string, FlagStatus> = {
-  p: "pick",
-  x: "reject",
-  u: "none",
+const FLAGS: Record<string, FlagStatus> = {
+  "flag.pick": "pick",
+  "flag.reject": "reject",
+  "flag.unflag": "none",
 };
 
 export function useCullingShortcuts(): void {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement ||
-        e.target instanceof HTMLSelectElement
-      ) {
+      if (shortcutsSuspended()) return;
+
+      // Shortcuts take priority: only bare keys defer to true text-entry
+      // targets (so typing works); modifier combos always fire, and a focused
+      // slider or checkbox never blocks anything.
+      if (!(e.ctrlKey || e.metaKey || e.altKey) && isEditableTarget(e.target))
         return;
-      }
-      // Leave browser/OS combos and the global module shortcuts untouched.
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      // ↑/↓ are fixed aliases of prev/next so grid navigation feels natural.
+      const action =
+        matchAction(e, ["Library"]) ??
+        (e.key === "ArrowUp" && !e.ctrlKey && !e.metaKey && !e.altKey
+          ? "photo.prev"
+          : e.key === "ArrowDown" && !e.ctrlKey && !e.metaKey && !e.altKey
+            ? "photo.next"
+            : e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey
+              ? "photo.remove"
+              : null);
+      if (!action) return;
 
       const catalog = useCatalogStore.getState();
       const targetIds =
@@ -50,19 +64,17 @@ export function useCullingShortcuts(): void {
             ? [catalog.activePhotoId]
             : [];
 
-      const key = e.key;
-
-      if (/^[0-5]$/.test(key)) {
+      if (action.startsWith("rate.")) {
         if (targetIds.length === 0) return;
         e.preventDefault();
-        catalog.applyRating(targetIds, Number(key));
+        catalog.applyRating(targetIds, Number(action.slice(5)));
         return;
       }
 
-      if (key in LABEL_KEYS) {
+      if (action in LABELS) {
         if (targetIds.length === 0) return;
         e.preventDefault();
-        const color = LABEL_KEYS[key];
+        const color = LABELS[action];
         // Pressing the same color again clears it (toggle off).
         const ids = new Set(targetIds);
         const allHaveColor = catalog.photos
@@ -72,15 +84,14 @@ export function useCullingShortcuts(): void {
         return;
       }
 
-      const flag = FLAG_KEYS[key.toLowerCase()];
-      if (flag) {
+      if (action in FLAGS) {
         if (targetIds.length === 0) return;
         e.preventDefault();
-        catalog.applyFlag(targetIds, flag);
+        catalog.applyFlag(targetIds, FLAGS[action]);
         return;
       }
 
-      if (key === "Delete" || key === "Backspace") {
+      if (action === "photo.remove") {
         if (targetIds.length === 0) return;
         e.preventDefault();
         const n = targetIds.length;
@@ -91,19 +102,14 @@ export function useCullingShortcuts(): void {
         return;
       }
 
-      if (key === "[" || key === "]") {
+      if (action === "photo.rotateCCW" || action === "photo.rotateCW") {
         if (targetIds.length === 0) return;
         e.preventDefault();
-        catalog.rotatePhotos(targetIds, key === "[" ? -90 : 90);
+        catalog.rotatePhotos(targetIds, action === "photo.rotateCCW" ? -90 : 90);
         return;
       }
 
-      if (
-        key === "ArrowLeft" ||
-        key === "ArrowRight" ||
-        key === "ArrowUp" ||
-        key === "ArrowDown"
-      ) {
+      if (action === "photo.prev" || action === "photo.next") {
         const ui = useUIStore.getState();
         const list = visiblePhotos(
           catalog.photos,
@@ -114,7 +120,7 @@ export function useCullingShortcuts(): void {
         );
         if (list.length === 0) return;
         e.preventDefault();
-        const back = key === "ArrowLeft" || key === "ArrowUp";
+        const back = action === "photo.prev";
         const curIdx = catalog.activePhotoId
           ? list.findIndex((p) => p.id === catalog.activePhotoId)
           : -1;
@@ -128,7 +134,9 @@ export function useCullingShortcuts(): void {
       }
     };
 
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    // Capture phase: shortcuts see the event before any component can
+    // stopPropagation it away.
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
   }, []);
 }

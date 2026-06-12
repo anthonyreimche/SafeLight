@@ -290,10 +290,10 @@ function registerPluginIpc() {
   ipcMain.handle("plugins:uninstall", (_e, id) => {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))
       throw new Error("Bad extension id");
-    fs.rmSync(path.join(pluginsDir(), String(id)), {
-      recursive: true,
-      force: true,
-    });
+    const dir = path.join(pluginsDir(), String(id));
+    // Retry: on Windows a just-imported bundle can be briefly locked.
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    if (fs.existsSync(dir)) throw new Error("Could not delete extension files");
   });
 }
 

@@ -7,6 +7,7 @@ import type {
   LayoutContribution,
   PanelContribution,
   PanelSlot,
+  SettingsContribution,
   SliderIconContribution,
   ThemeContribution,
 } from "./types";
@@ -23,12 +24,17 @@ export interface RegisteredIcon extends SliderIconContribution {
 export interface RegisteredLayout extends LayoutContribution {
   extensionId: string;
 }
+export interface RegisteredSettings extends SettingsContribution {
+  extensionId: string;
+}
 
 interface RegistryState {
   panels: Record<string, RegisteredPanel>;
   themes: Record<string, RegisteredTheme>;
   sliderIcons: Record<string, RegisteredIcon>;
   layouts: Record<string, RegisteredLayout>;
+  /** Keyed by extension id — one settings dialog per extension. */
+  settings: Record<string, RegisteredSettings>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -36,6 +42,7 @@ export const useRegistry = create<RegistryState>(() => ({
   themes: {},
   sliderIcons: {},
   layouts: {},
+  settings: {},
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -68,6 +75,15 @@ export function registerLayout(
   }));
 }
 
+export function registerSettings(
+  extensionId: string,
+  c: SettingsContribution,
+): void {
+  useRegistry.setState((s) => ({
+    settings: { ...s.settings, [extensionId]: { ...c, extensionId } },
+  }));
+}
+
 /** Remove every contribution an extension made (uninstall/deactivate). */
 export function unregisterExtension(extensionId: string): void {
   const drop = <T extends { extensionId: string }>(map: Record<string, T>) =>
@@ -79,6 +95,7 @@ export function unregisterExtension(extensionId: string): void {
     themes: drop(s.themes),
     sliderIcons: drop(s.sliderIcons),
     layouts: drop(s.layouts),
+    settings: drop(s.settings),
   }));
 }
 

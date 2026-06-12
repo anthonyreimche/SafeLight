@@ -14,6 +14,7 @@ import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders";
 import { bakeCoverage, coverageSignature, type CoverageItem } from "./mask-coverage";
 import { contentAwareFill } from "../content-aware-fill";
 import { setHealSourceImage } from "../heal-source";
+import { getSettings } from "@/state/settings-store";
 
 // Default cap on render resolution for interactive performance. Export passes
 // a larger value (or the image's own long edge) to render at full size.
@@ -196,7 +197,10 @@ export class WebGLRenderer {
     // Normalized 16-bit textures (for the cached develop preview). Core WebGL2 has
     // no UNORM RGBA16, so this is gated on the extension; absent it, we linearise
     // the cached preview on the CPU instead (see setImage).
-    const norm16 = gl.getExtension("EXT_texture_norm16");
+    // Skippable via Preferences ▸ Performance ▸ High bit-depth previews.
+    const norm16 = getSettings().highBitDepth
+      ? gl.getExtension("EXT_texture_norm16")
+      : null;
     if (norm16) {
       this.haveNorm16 = true;
       this.norm16Format = (norm16 as { RGBA16_EXT: number }).RGBA16_EXT;
@@ -729,11 +733,14 @@ export class WebGLRenderer {
       gl.UNSIGNED_BYTE,
       lut,
     );
-    this.resize();
+    // NOTE: resize happens in render(), not here. Resizing the canvas clears
+    // it, and setParams runs a frame before the coalesced render — doing it
+    // here painted a black frame on every crop/straighten/transform change.
   }
 
   render() {
     if (!this.hasImage || !this.params) return;
+    this.resize();
     const gl = this.gl;
     const p = this.params;
     const u = this.uniforms;

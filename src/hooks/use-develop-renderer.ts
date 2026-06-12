@@ -9,6 +9,7 @@ import { lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
 import { computeHistogram } from "@/rendering/histogram";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
+import { getSettings } from "@/state/settings-store";
 
 interface RendererStatus {
   supported: boolean;
@@ -19,9 +20,8 @@ interface RendererStatus {
 }
 
 // Develop renders at (up to) the sensor's full resolution so "100%" is true 1:1
-// and zooming shows real pixels instead of an upscaled 2560px preview. Capped to
-// bound memory on very large sensors.
-const DEVELOP_MAX_EDGE = 6144;
+// and zooming shows real pixels instead of an upscaled 2560px preview. Capped
+// to bound memory; the cap is a preference (Preferences ▸ Performance).
 
 export function useDevelopRenderer(
   canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -62,10 +62,21 @@ export function useDevelopRenderer(
     );
   };
 
-  // Recompute the live histogram from the freshly rendered canvas.
+  // Recompute the histogram from the freshly rendered canvas — every render
+  // when liveHistogram is on, otherwise debounced until edits settle.
+  const histTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const updateHistogram = () => {
-    const cv = canvasRef.current;
-    if (cv && cv.width > 0 && cv.height > 0) setHistogram(computeHistogram(cv));
+    const compute = () => {
+      const cv = canvasRef.current;
+      if (cv && cv.width > 0 && cv.height > 0)
+        setHistogram(computeHistogram(cv));
+    };
+    if (getSettings().liveHistogram) {
+      compute();
+    } else {
+      if (histTimer.current != null) clearTimeout(histTimer.current);
+      histTimer.current = setTimeout(compute, 250);
+    }
   };
 
   // Create the renderer once for the canvas.
@@ -81,6 +92,7 @@ export function useDevelopRenderer(
     return () => {
       if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
+      if (histTimer.current != null) clearTimeout(histTimer.current);
       rendererRef.current?.dispose();
       rendererRef.current = null;
     };
@@ -106,7 +118,7 @@ export function useDevelopRenderer(
     ) => {
       const renderer = rendererRef.current;
       if (cancelled || !renderer) return;
-      renderer.setImage(image, DEVELOP_MAX_EDGE, isFallback, cachedRaw);
+      renderer.setImage(image, getSettings().developMaxEdge, isFallback, cachedRaw);
       const st = useDevelopStore.getState();
       renderer.setParams(forRender(st.params, st.cropping));
       renderer.render();

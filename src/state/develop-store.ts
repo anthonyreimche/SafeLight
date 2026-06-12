@@ -33,11 +33,13 @@ interface DevelopState {
   constrainCrop: boolean;
   cropAspect: number; // 0 = free; else target width:height in pixels
   cropGuide: CropGuide; // active composition overlay
+  cropGuideFlip: number; // 0-3: identity / mirror-x / mirror-y / 180°
   setCropping: (v: boolean) => void;
   setConstrainCrop: (v: boolean) => void;
   setCropAspect: (r: number) => void;
   setCropGuide: (g: CropGuide) => void;
   cycleCropGuide: () => void;
+  cycleCropGuideFlip: () => void;
 
   // Mask / retouch tool UI state (ephemeral, not persisted to history).
   activeTool: ToolMode;
@@ -101,6 +103,35 @@ function pushEdit(get: () => DevelopState) {
   });
 }
 
+// Step the history cursor (undo = -1, redo = +1), broadcast the restored
+// params, and persist the new cursor — without persisting, switching photos
+// (or another window) snapped the stack back to the last commit, which made
+// redo/undo positions silently vanish.
+function moveHistory(
+  get: () => DevelopState,
+  set: (p: Partial<DevelopState>) => void,
+  dir: -1 | 1,
+): void {
+  const { photoId, history, historyIndex } = get();
+  const newIndex = historyIndex + dir;
+  if (newIndex < 0 || newIndex > history.length - 1) return;
+  set({
+    historyIndex: newIndex,
+    params: { ...history[newIndex].params },
+  });
+  broadcast({
+    type: "edit-update",
+    payload: { photoId, params: history[newIndex].params },
+  });
+  if (photoId) {
+    void catalogStorage().putEditState({
+      photoId,
+      stack: history,
+      currentIndex: newIndex,
+    });
+  }
+}
+
 export const useDevelopStore = create<DevelopState>((set, get) => ({
   photoId: null,
   params: normalizeParams(undefined),
@@ -112,11 +143,14 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   constrainCrop: true,
   cropAspect: 0,
   cropGuide: "thirds",
+  cropGuideFlip: 0,
   setCropping: (cropping) => set({ cropping }),
   setConstrainCrop: (constrainCrop) => set({ constrainCrop }),
   setCropAspect: (cropAspect) => set({ cropAspect }),
   setCropGuide: (cropGuide) => set({ cropGuide }),
   cycleCropGuide: () => set((s) => ({ cropGuide: nextGuide(s.cropGuide) })),
+  cycleCropGuideFlip: () =>
+    set((s) => ({ cropGuideFlip: (s.cropGuideFlip + 1) % 4 })),
 
   activeTool: "none",
   maskToolType: "radial",
@@ -232,18 +266,40 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   async loadEdit(photoId: string) {
     const editState = await catalogStorage().getEditState(photoId);
     if (editState && editState.stack.length > 0) {
+      // Older stacks lack the seeded "Original" snapshot — prepend one so the
+      // first real edit is always undoable.
+      let stack = editState.stack;
+      let index = editState.currentIndex;
+      if (stack[0].label !== "Original") {
+        stack = [
+          {
+            timestamp: stack[0].timestamp,
+            label: "Original",
+            params: normalizeParams(undefined),
+          },
+          ...stack,
+        ];
+        index += 1;
+      }
       set({
         photoId,
-        params: normalizeParams(editState.stack[editState.currentIndex].params),
-        history: editState.stack,
-        historyIndex: editState.currentIndex,
+        params: normalizeParams(stack[index].params),
+        history: stack,
+        historyIndex: index,
       });
     } else {
+      // Seed history with the untouched state so undo can return to it.
       set({
         photoId,
         params: normalizeParams(undefined),
-        history: [],
-        historyIndex: -1,
+        history: [
+          {
+            timestamp: Date.now(),
+            label: "Original",
+            params: normalizeParams(undefined),
+          },
+        ],
+        historyIndex: 0,
       });
     }
   },
@@ -321,31 +377,11 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   },
 
   undo() {
-    const { history, historyIndex } = get();
-    if (historyIndex <= 0) return;
-    const newIndex = historyIndex - 1;
-    set({
-      historyIndex: newIndex,
-      params: { ...history[newIndex].params },
-    });
-    broadcast({
-      type: "edit-update",
-      payload: { photoId: get().photoId, params: history[newIndex].params },
-    });
+    moveHistory(get, set, -1);
   },
 
   redo() {
-    const { history, historyIndex } = get();
-    if (historyIndex >= history.length - 1) return;
-    const newIndex = historyIndex + 1;
-    set({
-      historyIndex: newIndex,
-      params: { ...history[newIndex].params },
-    });
-    broadcast({
-      type: "edit-update",
-      payload: { photoId: get().photoId, params: history[newIndex].params },
-    });
+    moveHistory(get, set, +1);
   },
 
   async reset() {

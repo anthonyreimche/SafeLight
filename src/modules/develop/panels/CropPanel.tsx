@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
@@ -43,6 +43,15 @@ export function CropPanel() {
   // The crop as it was before a straighten drag began. Fitting against this
   // (rather than the live, shrinking crop) lets rotating back un-crop outward.
   const baseCropRef = useRef<CropRect | null>(null);
+
+  // Custom ratio entry (width : height).
+  const [customW, setCustomW] = useState("16");
+  const [customH, setCustomH] = useState("10");
+  const customRatio = (() => {
+    const w = parseFloat(customW);
+    const h = parseFloat(customH);
+    return w > 0 && h > 0 ? w / h : 0;
+  })();
 
   const applyAspect = (ratio: number) => {
     setCropping(true);
@@ -95,21 +104,55 @@ export function CropPanel() {
           {cropping ? "Done" : "Crop"}
         </button>
 
-        <div className="grid grid-cols-3 gap-1">
-          {ASPECTS.map((a) => (
-            <button
-              key={a.label}
-              onClick={() => applyAspect(a.ratio)}
-              className={`rounded px-2 py-1 text-[11px] ${
-                aspectActive(a.ratio)
-                  ? "bg-surface-3 text-text-primary"
-                  : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
-              }`}
-            >
-              {a.label}
-            </button>
-          ))}
-        </div>
+        {cropping && (
+          <>
+            <div className="grid grid-cols-3 gap-1">
+              {ASPECTS.map((a) => (
+                <button
+                  key={a.label}
+                  onClick={() => applyAspect(a.ratio)}
+                  className={`rounded px-2 py-1 text-[11px] ${
+                    aspectActive(a.ratio)
+                      ? "bg-surface-3 text-text-primary"
+                      : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
+                  }`}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Custom ratio: width : height, applied like any preset. */}
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={1}
+                value={customW}
+                onChange={(e) => setCustomW(e.target.value)}
+                className="w-12 min-w-0 rounded bg-surface-2 px-1.5 py-1 text-center text-[11px] text-text-primary outline-none focus:bg-surface-3"
+              />
+              <span className="text-[11px] text-text-muted">:</span>
+              <input
+                type="number"
+                min={1}
+                value={customH}
+                onChange={(e) => setCustomH(e.target.value)}
+                className="w-12 min-w-0 rounded bg-surface-2 px-1.5 py-1 text-center text-[11px] text-text-primary outline-none focus:bg-surface-3"
+              />
+              <button
+                disabled={customRatio <= 0}
+                onClick={() => applyAspect(customRatio)}
+                className={`min-w-0 flex-1 rounded px-2 py-1 text-[11px] disabled:opacity-40 ${
+                  customRatio > 0 && aspectActive(customRatio)
+                    ? "bg-surface-3 text-text-primary"
+                    : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
+                }`}
+              >
+                Custom
+              </button>
+            </div>
+          </>
+        )}
 
         <Slider
           label="Straighten"
@@ -139,27 +182,29 @@ export function CropPanel() {
           }}
         />
 
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-[10px] text-text-muted">
-            <span>Overlay</span>
-            <span>press O to cycle</span>
+        {cropping && (
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[10px] text-text-muted">
+              <span>Overlay</span>
+              <span>O cycles · Shift+O flips</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {CROP_GUIDES.map((g) => (
+                <button
+                  key={g.id}
+                  onClick={() => setCropGuide(g.id)}
+                  className={`rounded px-2 py-1 text-[11px] ${
+                    cropGuide === g.id
+                      ? "bg-surface-3 text-text-primary"
+                      : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
+                  }`}
+                >
+                  {g.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="grid grid-cols-3 gap-1">
-            {CROP_GUIDES.map((g) => (
-              <button
-                key={g.id}
-                onClick={() => setCropGuide(g.id)}
-                className={`rounded px-2 py-1 text-[11px] ${
-                  cropGuide === g.id
-                    ? "bg-surface-3 text-text-primary"
-                    : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
-                }`}
-              >
-                {g.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        )}
 
         <label className="flex cursor-pointer items-center gap-2 text-[11px] text-text-secondary">
           <input

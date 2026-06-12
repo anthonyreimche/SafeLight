@@ -123,11 +123,15 @@ export function TopBar() {
         <div className="mx-1 h-4 w-px bg-border" />
         <ViewMenu />
         <LayoutMenu />
+        <button
+          onClick={openPreferences}
+          title="Preferences (Ctrl+,)"
+          className="rounded px-3 py-1 text-[11px] uppercase tracking-wider text-text-secondary transition-colors hover:text-text-primary"
+        >
+          Preferences
+        </button>
       </div>
-      <div className="flex items-center gap-2">
-        {reconnectButton}
-        {prefsButton}
-      </div>
+      <div className="flex items-center gap-2">{reconnectButton}</div>
     </div>
   );
 }

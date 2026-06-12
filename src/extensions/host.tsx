@@ -8,13 +8,20 @@ import type { SafelightAPI } from "./types";
 import {
   registerLayout,
   registerPanel,
+  registerSettings,
   registerSliderIcon,
   registerTheme,
 } from "./registry";
+import {
+  getExtSetting,
+  initExtSettings,
+  onExtSettingChange,
+  setExtSetting,
+} from "./ext-settings";
+import { initKeybindings } from "@/state/keybindings-store";
 import { applyDockLayout, initDockLayouts, toggleDockPanel } from "./dock";
 import { applyTheme, initThemes } from "./themes";
-import { registerBuiltins } from "./builtin";
-import { loadExternalPlugins } from "./loader";
+import { initEnablement, loadBuiltins, loadExternalPlugins } from "./loader";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { Histogram } from "@/ui/components/Histogram";
@@ -34,6 +41,12 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerTheme: (c) => registerTheme(extensionId, c),
     registerLayout: (c) => registerLayout(extensionId, c),
     registerSliderIcon: (c) => registerSliderIcon(extensionId, c),
+    registerSettings: (c) => registerSettings(extensionId, c),
+    settings: {
+      get: (key, fallback) => getExtSetting(extensionId, key, fallback),
+      set: (key, value) => setExtSetting(extensionId, key, value),
+      onChange: (cb) => onExtSettingChange(extensionId, cb),
+    },
     components: { Panel, Slider, Histogram },
     stores: {
       useDevelopStore,
@@ -54,9 +67,12 @@ let booted = false;
 export function initExtensionHost(): void {
   if (booted) return;
   booted = true;
-  registerBuiltins(makeScopedAPI("core"));
+  loadBuiltins(); // pre-installed extensions, minus any the user disabled
   window.safelight = makeScopedAPI("host");
   initSettings();
+  initKeybindings();
+  initExtSettings();
+  initEnablement();
   initThemes();
   initDockLayouts();
   void loadExternalPlugins();

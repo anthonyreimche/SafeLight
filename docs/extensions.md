@@ -2,9 +2,16 @@
 
 SafeLight's extension system is inspired by modern IDE plugin architectures, enabling deep customization of the editing workflow. Every panel in SafeLight—including the histogram—is a registered extension contribution. Enthusiasts can replace or supplement any component by publishing a GitHub repo.
 
-## Installing
+## Managing extensions
 
-View ▸ Extensions ▸ enter `owner/repo` (or `owner/repo#branch`, or a github.com URL) ▸ Install. The repo is downloaded into `userData/plugins/<id>/` and activated live, no restart. Uninstall from the same panel.
+The Extensions panel (View ▸ Extensions) is the one place for the full lifecycle:
+
+- **Install** — search official extensions (GitHub repos tagged `safelight-extension`; topic configurable in Preferences ▸ Extensions) or enter `owner/repo` (or `owner/repo#branch`, or a github.com URL). The repo is downloaded into `userData/plugins/<id>/` and activated live, no restart.
+- **Disable / enable** — the toggle on each row deactivates an extension and removes its contributions, keeping its files and settings. Re-enabling is instant.
+- **Settings** — extensions that call `registerSettings` get a ⚙ button opening their settings dialog.
+- **Uninstall** — removes the extension *and deletes its files and stored settings* from disk.
+
+Every stock panel is itself a pre-installed extension listed under **Built-in** — it can be disabled (and replaced by a community version) but not uninstalled. "Safelight Core" (the extension manager, stock themes, Classic layout) is locked and always on.
 
 ## Anatomy of an extension
 
@@ -50,17 +57,32 @@ export function activate(api) {
     id: "core.exposure", // shows beside the Basic panel's Exposure slider
     svg: "<svg viewBox='0 0 16 16'>...</svg>",
   });
+
+  // Declarative settings dialog (⚙ in the Extensions panel). Values persist
+  // per-extension; read them with api.settings.get and react to edits live.
+  api.registerSettings({
+    fields: [
+      { key: "mode", label: "Mode", type: "select", default: "parade",
+        options: [{ value: "parade", label: "RGB parade" },
+                  { value: "wave", label: "Waveform" }] },
+      { key: "opacity", label: "Opacity", type: "number", default: 80, min: 10, max: 100 },
+      { key: "showClipping", label: "Show clipping", type: "boolean", default: true },
+    ],
+  });
+  api.settings.onChange((key, value) => {/* re-render with the new value */});
 }
 ```
 
 ## The API surface (`window.safelight`)
 
-- `registerPanel / registerTheme / registerSliderIcon` — contributions, auto-tagged with your extension id and swept on uninstall.
+- `registerPanel / registerTheme / registerLayout / registerSliderIcon / registerSettings` — contributions, auto-tagged with your extension id and swept on disable or uninstall.
+- `settings.get(key, fallback)` / `settings.set(key, value)` / `settings.onChange(cb)` — persisted per-extension key/value settings (kept on disable, deleted on uninstall).
 - `react` — the host React (use `React.createElement` or compile JSX against an external `react`).
 - `components` — `Panel` (collapsible sidebar chrome), `Slider`, `Histogram`.
 - `stores` — `useDevelopStore`, `useCatalogStore`, `useUIStore` (zustand hooks), plus `create` for your own state.
 - `dock.togglePanel(id)` — open/close any panel as a floating dockable window.
 - `themes.apply(id)` — switch theme.
+- `layouts.apply(id)` — switch the dock layout preset.
 
 Every registered panel appears in the **View** menu and can float or dock beside the canvas; layouts persist per window.
 

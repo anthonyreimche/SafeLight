@@ -517,7 +517,7 @@ function PanelBody({ id }: { id: string }) {
   if (!reg)
     return (
       <div className="p-3 text-[11px] text-text-muted">
-        Panel “{id}” is not installed.
+        Panel “{id}” is disabled or not installed.
       </div>
     );
   const C = reg.component;

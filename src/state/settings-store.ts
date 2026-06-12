@@ -15,6 +15,8 @@ export interface AppSettings {
   uiScale: number;
   /** Reduce motion: disables spinners/animated affordances where practical. */
   reduceMotion: boolean;
+  /** UI font: CSS font-family string. "" = the built-in mono stack. */
+  uiFont: string;
 
   // ── Library ────────────────────────────────────────────────────────────
   defaultGridSize: number; // px, 120–360
@@ -28,6 +30,14 @@ export interface AppSettings {
   rawCacheEnabled: boolean;
   /** Long-edge cap of cached previews (bigger = sharper re-opens, more disk). */
   rawCacheMaxEdge: 2048 | 3072 | 4096;
+
+  // ── Render pipeline ────────────────────────────────────────────────────
+  /** Resolution cap of the Develop render buffer (true 1:1 zoom vs. memory). */
+  developMaxEdge: 4096 | 6144 | 8192;
+  /** 16-bit GPU textures for cached previews when the GPU supports them. */
+  highBitDepth: boolean;
+  /** Recompute the histogram on every render (off = after edits settle). */
+  liveHistogram: boolean;
 
   // ── Export defaults ────────────────────────────────────────────────────
   exportFormat: ExportFormatPref;
@@ -47,12 +57,16 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   uiScale: 1,
   reduceMotion: false,
+  uiFont: "",
   defaultGridSize: 200,
   defaultSortField: "dateImported",
   defaultSortDirection: "desc",
   thumbMaxEdge: 640,
   rawCacheEnabled: true,
   rawCacheMaxEdge: 3072,
+  developMaxEdge: 6144,
+  highBitDepth: true,
+  liveHistogram: true,
   exportFormat: "image/jpeg",
   exportQuality: 90,
   exportLongEdge: null,
@@ -81,6 +95,12 @@ function applySideEffects(s: AppSettings): void {
     s.uiScale === 1 ? "" : String(s.uiScale);
   // index.css kills animations/transitions under this class.
   document.documentElement.classList.toggle("sl-reduce-motion", s.reduceMotion);
+  // Body font-family reads var(--font-mono); an inline :root override wins.
+  if (s.uiFont) {
+    document.documentElement.style.setProperty("--font-mono", s.uiFont);
+  } else {
+    document.documentElement.style.removeProperty("--font-mono");
+  }
 }
 
 export function updateSettings(patch: Partial<AppSettings>): void {

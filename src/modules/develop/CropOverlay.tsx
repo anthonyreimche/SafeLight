@@ -43,10 +43,12 @@ interface CropOverlayProps {
   imageAspect: number;
   constrain: boolean;
   guide: CropGuide;
+  guideFlip: number; // 0-3: identity / mirror-x / mirror-y / 180°
   onChange: (crop: CropRect) => void;
   onCommit: () => void;
   onLevel: (deg: number) => void;
   onCycleGuide: () => void;
+  onFlipGuide: () => void;
 }
 
 export function CropOverlay({
@@ -60,10 +62,12 @@ export function CropOverlay({
   imageAspect,
   constrain,
   guide,
+  guideFlip,
   onChange,
   onCommit,
   onLevel,
   onCycleGuide,
+  onFlipGuide,
 }: CropOverlayProps) {
   const dragRef = useRef<{
     mode: Handle;
@@ -80,7 +84,8 @@ export function CropOverlay({
   // normalized crop.w/crop.h terms, so a drag can flip the lock automatically.
   const normRatioFlip = aspect > 0 ? 1 / (aspect * imageAspect) : 0;
 
-  // "O" cycles the composition guide while the crop overlay is mounted.
+  // While the crop overlay is mounted: "O" cycles the composition guide,
+  // Shift+O rotates / reflects it (Lightroom-style).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
@@ -91,14 +96,15 @@ export function CropOverlay({
           t.isContentEditable)
       )
         return;
-      if (e.key === "o" || e.key === "O") {
+      if ((e.key === "o" || e.key === "O") && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
-        onCycleGuide();
+        if (e.shiftKey) onFlipGuide();
+        else onCycleGuide();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCycleGuide]);
+  }, [onCycleGuide, onFlipGuide]);
 
   // straightened-frame point -> frame (screen) coords
   const toScreen = (px: number, py: number) => ({
@@ -218,7 +224,7 @@ export function CropOverlay({
         className="pointer-events-none absolute border border-white/80"
         style={{ left: bx, top: by, width: bw, height: bh }}
       >
-        <GuideSvg guide={guide} w={bw} h={bh} />
+        <GuideSvg guide={guide} flip={guideFlip} w={bw} h={bh} />
       </div>
 
       {handles.map((h) => (
@@ -317,16 +323,37 @@ function applyDrag(
   return { x, y, width: w, height: h };
 }
 
-// The active composition guide, drawn in the crop box's pixel space.
-function GuideSvg({ guide, w, h }: { guide: CropGuide; w: number; h: number }) {
+// The active composition guide, drawn in the crop box's pixel space. `flip`
+// mirrors the shapes (Shift+O): 1 = horizontal, 2 = vertical, 3 = both (180°);
+// asymmetric guides (golden, diagonal, triangle, spiral) get 4 orientations.
+function GuideSvg({
+  guide,
+  flip,
+  w,
+  h,
+}: {
+  guide: CropGuide;
+  flip: number;
+  w: number;
+  h: number;
+}) {
   if (w <= 1 || h <= 1) return null;
   const { lines, paths } = guideShapes(guide, w, h);
+  const transform =
+    flip === 1
+      ? `translate(${w} 0) scale(-1 1)`
+      : flip === 2
+        ? `translate(0 ${h}) scale(1 -1)`
+        : flip === 3
+          ? `translate(${w} ${h}) scale(-1 -1)`
+          : undefined;
   return (
     <svg
       className="pointer-events-none absolute left-0 top-0"
       width={w}
       height={h}
     >
+      <g transform={transform}>
       {lines.map((l, i) => (
         <line
           key={i}
@@ -347,6 +374,7 @@ function GuideSvg({ guide, w, h }: { guide: CropGuide; w: number; h: number }) {
           strokeWidth={1}
         />
       ))}
+      </g>
     </svg>
   );
 }

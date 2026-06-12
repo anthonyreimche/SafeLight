@@ -72,6 +72,50 @@ export interface SliderIconContribution {
   svg: string;
 }
 
+/** One field in an extension's settings dialog. */
+export type SettingsField =
+  | {
+      key: string;
+      label: string;
+      hint?: string;
+      type: "boolean";
+      default: boolean;
+    }
+  | {
+      key: string;
+      label: string;
+      hint?: string;
+      type: "number";
+      default: number;
+      min?: number;
+      max?: number;
+      step?: number;
+    }
+  | {
+      key: string;
+      label: string;
+      hint?: string;
+      type: "string";
+      default: string;
+      placeholder?: string;
+    }
+  | {
+      key: string;
+      label: string;
+      hint?: string;
+      type: "select";
+      default: string;
+      options: { value: string; label: string }[];
+    };
+
+/** Declarative settings dialog, opened from the Extensions panel. Values are
+ *  persisted per-extension and read back with api.settings.get(). */
+export interface SettingsContribution {
+  /** Dialog title; defaults to the extension's name. */
+  title?: string;
+  fields: SettingsField[];
+}
+
 /** A repo found by the official-extension search (GitHub topic). */
 export interface ExtensionSearchResult {
   /** "owner/repo" — also the install spec. */
@@ -102,6 +146,15 @@ export interface SafelightAPI {
   registerTheme(c: ThemeContribution): void;
   registerLayout(c: LayoutContribution): void;
   registerSliderIcon(c: SliderIconContribution): void;
+  /** Declare a settings dialog (⚙ in the Extensions panel). */
+  registerSettings(c: SettingsContribution): void;
+  /** Persisted per-extension key/value settings. */
+  settings: {
+    get<T>(key: string, fallback: T): T;
+    set(key: string, value: unknown): void;
+    /** Fires when any of this extension's settings change (any window). */
+    onChange(cb: (key: string, value: unknown) => void): () => void;
+  };
   /** Reusable UI building blocks (Panel chrome, Slider, Histogram). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   components: Record<string, ComponentType<any>>;
