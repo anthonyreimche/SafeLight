@@ -12,8 +12,8 @@
 ## Features
 
 ### Library
-<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/ecdf475d-7273-4f77-87cb-1baca63bf765" />
-<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/f7caffb5-5708-45d2-b1c1-0c972d94d68b" />
+<img width="3840" height="2067" alt="image" src="https://github.com/user-attachments/assets/4d9fc0f7-1af9-4040-8684-f927cc7fa757" />
+<img width="3840" height="2067" alt="image" src="https://github.com/user-attachments/assets/2066274e-aa17-43ce-b67e-46f7234c56aa" />
 
 - Project folder tree with per-folder browsing
 - Grid and list views with adjustable thumbnail size
@@ -23,8 +23,10 @@
 - Background RAW pre-decoding so Develop opens instantly
 
 ### Develop
-<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/410708b2-44d5-4891-93b0-2fdaa95e4a30" />
-<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/f5f36602-1076-446c-9098-1f5d24f881ad" />
+<img width="3840" height="2067" alt="image" src="https://github.com/user-attachments/assets/960afdee-95d0-498b-9988-6c9b63a285a6" />
+<img width="3840" height="2067" alt="image" src="https://github.com/user-attachments/assets/ca9f9fbb-6fd7-463d-8e6c-42f47165806e" />
+<img width="3840" height="2067" alt="image" src="https://github.com/user-attachments/assets/fe9c8403-b46c-4f71-bf99-ed3c9b11104f" />
+
 
 - Full undo/redo history with per-edit labels and reset
 - White balance, exposure, contrast, highlights/shadows, whites/blacks, texture, clarity, dehaze, vibrance, saturation
@@ -42,7 +44,6 @@
 - 1:1 loupe zoom and pan; hold Shift on any slider for fine adjustment, double-click to reset
 
 ### Export
-<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/d54e132b-fa58-416b-b599-899329cf882e" />
 
 - Batch JPEG, PNG, and WebP export through the same GPU pipeline used for editing
 - Quality and long-edge resizing controls
@@ -50,7 +51,9 @@
 - Metadata-free output by design
 
 ### Workspace
-<img width="3829" height="1025" alt="image" src="https://github.com/user-attachments/assets/e9ee2f31-108b-4e36-b318-a559d42bcc85" />
+<img width="3837" height="2065" alt="image" src="https://github.com/user-attachments/assets/811242de-0973-4378-bfb5-7add1433595e" />
+<img width="3840" height="2067" alt="image" src="https://github.com/user-attachments/assets/b5808eae-aa0b-4f2a-b1f4-08fd5c45e62b" />
+<img width="3840" height="2067" alt="image" src="https://github.com/user-attachments/assets/4b4fb272-2835-4c1c-9933-20e5e4408dc8" />
 
 - Dock, tab, float, or minimize every panel; layouts persist per module
 - Detach Library or Develop into its own window for multi-monitor culling
