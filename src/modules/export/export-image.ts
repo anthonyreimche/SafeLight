@@ -11,11 +11,15 @@ import { ZipWriter } from "./zip";
 
 export type ExportFormat = "image/jpeg" | "image/png" | "image/webp";
 
+export type DeliveryMode = "zip" | "files" | "folder";
+
 export interface ExportSettings {
   format: ExportFormat;
   quality: number; // 0..1, used by JPEG/WebP (ignored for PNG)
   longEdge: number | null; // null = original (largest decodable) size
-  bundle: boolean; // true = one ZIP download; false = a download per photo
+  /** @deprecated Use deliveryMode instead */
+  bundle: boolean;
+  delivery: DeliveryMode;
 }
 
 const ARCHIVE_NAME = "safelight-export.zip";
@@ -120,13 +124,12 @@ async function renderOne(
 
 // Render each photo through the develop pipeline, then deliver the results. A
 // single WebGL context is reused across the batch so we don't exhaust the
-// browser's context limit; rendering is sequential. With `bundle` and more than
-// one photo, everything goes into a single ZIP (one download prompt instead of
-// N); otherwise each photo downloads on its own.
+// browser's context limit; rendering is sequential.
 export async function exportPhotos(
   photos: CatalogPhoto[],
   settings: ExportSettings,
   onProgress?: (p: ExportProgress) => void,
+  destDir?: FileSystemDirectoryHandle,
 ): Promise<ExportResult> {
   const canvas = document.createElement("canvas");
   let renderer: WebGLRenderer;
@@ -136,8 +139,9 @@ export async function exportPhotos(
     return { exported: 0, failed: photos.map((p) => p.filename) };
   }
 
-  const bundle = settings.bundle && photos.length > 1;
-  const zip = bundle ? new ZipWriter() : null;
+  const delivery = settings.delivery ?? (settings.bundle ? "zip" : "files");
+  const useZip = delivery === "zip" && photos.length > 1;
+  const zip = useZip ? new ZipWriter() : null;
   const usedNames = new Set<string>();
   const failed: string[] = [];
   let exported = 0;
@@ -148,12 +152,21 @@ export async function exportPhotos(
       const blob = await renderOne(renderer, canvas, photo, settings);
       if (blob) {
         const name = uniqueName(exportFilename(photo, settings.format), usedNames);
-        if (zip) {
-          zip.add(name, new Uint8Array(await blob.arrayBuffer()));
-        } else {
-          downloadBlob(blob, name);
+        try {
+          if (zip) {
+            zip.add(name, new Uint8Array(await blob.arrayBuffer()));
+          } else if (delivery === "folder" && destDir) {
+            const fh = await destDir.getFileHandle(name, { create: true });
+            const w = await fh.createWritable();
+            await w.write(blob);
+            await w.close();
+          } else {
+            downloadBlob(blob, name);
+          }
+          exported++;
+        } catch {
+          failed.push(photo.filename);
         }
-        exported++;
       } else {
         failed.push(photo.filename);
       }

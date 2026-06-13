@@ -81,7 +81,6 @@
       "icon": "build/icon.png",
       "category": "Graphics",
       "synopsis": "Fast RAW photo editor",
-      "syncDesktopName": true,
       "maintainer": "Safelight <anthonyreimche+safelight@gmail.com>"
     },
     "flatpak": {

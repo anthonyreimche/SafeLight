@@ -70,7 +70,10 @@ export class ProjectStorage implements CatalogStorage {
     this.previews = previews;
   }
 
-  static async open(root: FileSystemDirectoryHandle): Promise<OpenedProject> {
+  static async open(
+    root: FileSystemDirectoryHandle,
+    onPhoto?: (photo: CatalogPhoto) => void,
+  ): Promise<OpenedProject> {
     const sl = await root.getDirectoryHandle(".safelight", { create: true });
     const previews = await sl.getDirectoryHandle("previews", { create: true });
     const rawCacheDir = await sl.getDirectoryHandle("raw", { create: true });
@@ -99,6 +102,7 @@ export class ProjectStorage implements CatalogStorage {
           thumbnailUrl: blob ? URL.createObjectURL(blob) : null,
         };
         storage.lastThumb.set(photo.id, blob);
+        onPhoto?.(photo);
         return photo;
       }
       // New file: decode, thumbnail, cache the preview on disk.
@@ -115,6 +119,7 @@ export class ProjectStorage implements CatalogStorage {
           await writeBlob(previews, `${photo.id}.jpg`, photo.thumbnailBlob);
         storage.lastThumb.set(photo.id, photo.thumbnailBlob);
         newPhotos.push(photo);
+        onPhoto?.(photo);
         return photo;
       } catch {
         return null;

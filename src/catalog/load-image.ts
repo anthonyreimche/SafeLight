@@ -19,17 +19,15 @@ async function bitmapToPseudoLinear(
   const pixels = imageData.data;
   const floatData = new Float32Array(pixels.length);
 
-  // Apply inverse sRGB gamma to convert to pseudo-linear space
+  // Inverse sRGB transfer function (IEC 61966-2-1) — matches the LUT in renderer.ts.
   for (let i = 0; i < pixels.length; i += 4) {
     const r = pixels[i] / 255;
     const g = pixels[i + 1] / 255;
     const b = pixels[i + 2] / 255;
-
-    // Inverse sRGB gamma (approximate as power 2.2 for performance)
-    floatData[i] = Math.pow(r, 2.2);
-    floatData[i + 1] = Math.pow(g, 2.2);
-    floatData[i + 2] = Math.pow(b, 2.2);
-    floatData[i + 3] = 1.0; // Alpha
+    floatData[i]     = r <= 0.04045 ? r / 12.92 : Math.pow((r + 0.055) / 1.055, 2.4);
+    floatData[i + 1] = g <= 0.04045 ? g / 12.92 : Math.pow((g + 0.055) / 1.055, 2.4);
+    floatData[i + 2] = b <= 0.04045 ? b / 12.92 : Math.pow((b + 0.055) / 1.055, 2.4);
+    floatData[i + 3] = 1.0;
   }
 
   return { data: floatData, width: bitmap.width, height: bitmap.height };

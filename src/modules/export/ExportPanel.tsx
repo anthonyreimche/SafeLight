@@ -1,12 +1,13 @@
 // Export as a dock panel (View ▸ Export from either module): format, quality,
 // resolution and delivery settings plus the export action, in one column.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { useCatalogStore } from "@/state/catalog-store";
 import {
   exportPhotos,
+  type DeliveryMode,
   type ExportFormat,
   type ExportSettings,
 } from "./export-image";
@@ -36,7 +37,8 @@ export function ExportPanel() {
   const [longEdge, setLongEdge] = useState<number | null>(
     getSettings().exportLongEdge,
   );
-  const [bundle, setBundle] = useState(getSettings().exportBundle);
+  const [delivery, setDelivery] = useState<DeliveryMode>("folder");
+  const [destDir, setDestDir] = useState<FileSystemDirectoryHandle | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(
     null,
@@ -55,8 +57,35 @@ export function ExportPanel() {
 
   const hasQuality = format !== "image/png";
 
+  // Revert to Files when dropping to a single photo (ZIP/Folder are multi-only).
+  useEffect(() => {
+    if (targets.length === 1 && (delivery === "zip" || delivery === "folder")) {
+      setDelivery("files");
+    }
+  }, [targets.length, delivery]);
+
+  const pickFolder = async () => {
+    try {
+      const dir = await window.showDirectoryPicker({ mode: "readwrite", id: "safelight-export" });
+      setDestDir(dir);
+      setDelivery("folder");
+    } catch {
+      // user cancelled
+    }
+  };
+
   const handleExport = async () => {
     if (busy || targets.length === 0) return;
+    let dir = destDir;
+    if (delivery === "folder" && !dir) {
+      try {
+        dir = await window.showDirectoryPicker({ mode: "readwrite", id: "safelight-export" });
+        setDestDir(dir);
+      } catch {
+        return; // user cancelled
+      }
+    }
+
     setBusy(true);
     setStatus(null);
     setProgress({ done: 0, total: targets.length });
@@ -65,19 +94,27 @@ export function ExportPanel() {
       format,
       quality: quality / 100,
       longEdge,
-      bundle,
+      bundle: delivery === "zip",
+      delivery,
     };
-    const result = await exportPhotos(targets, settings, (p) =>
-      setProgress({ done: p.done, total: p.total }),
-    );
-
-    setBusy(false);
-    setProgress(null);
-    setStatus(
-      result.failed.length === 0
-        ? `Exported ${result.exported} photo${result.exported === 1 ? "" : "s"}.`
-        : `Exported ${result.exported}; ${result.failed.length} could not be decoded.`,
-    );
+    try {
+      const result = await exportPhotos(
+        targets,
+        settings,
+        (p) => setProgress({ done: p.done, total: p.total }),
+        dir ?? undefined,
+      );
+      setStatus(
+        result.failed.length === 0
+          ? `Exported ${result.exported} photo${result.exported === 1 ? "" : "s"}.`
+          : `Exported ${result.exported}; ${result.failed.length} could not be decoded.`,
+      );
+    } catch (e) {
+      setStatus(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
   };
 
   const optionBtn = (active: boolean) =>
@@ -133,28 +170,48 @@ export function ExportPanel() {
         </p>
       </Panel>
 
-      {targets.length > 1 && (
-        <Panel title="Delivery">
-          <div className="flex gap-1">
+      <Panel title="Delivery">
+        <div className="flex gap-1">
+          {targets.length !== 1 && (
             <button
-              onClick={() => setBundle(true)}
-              className={`flex-1 ${optionBtn(bundle)}`}
+              onClick={() => setDelivery("zip")}
+              className={`flex-1 ${optionBtn(delivery === "zip")}`}
             >
-              ZIP archive
+              ZIP
             </button>
+          )}
+          <button
+            onClick={() => setDelivery("files")}
+            className={`flex-1 ${optionBtn(delivery === "files")}`}
+          >
+            Files
+          </button>
+          {targets.length !== 1 && (
             <button
-              onClick={() => setBundle(false)}
-              className={`flex-1 ${optionBtn(!bundle)}`}
+              onClick={() => setDelivery("folder")}
+              className={`flex-1 ${optionBtn(delivery === "folder")}`}
             >
-              Separate files
+              Folder
             </button>
-          </div>
+          )}
+        </div>
+        {delivery === "folder" ? (
           <p className="mt-2 text-[10px] leading-snug text-text-muted">
-            A ZIP keeps it to a single download. Separate files prompt the
-            browser once per photo.
+            {destDir ? (
+              <>Saving to <span className="text-text-secondary">{destDir.name}</span>.{" "}
+              <button onClick={() => void pickFolder()} className="underline hover:text-text-primary">Change…</button></>
+            ) : "A folder picker will open on export."}
           </p>
-        </Panel>
-      )}
+        ) : delivery === "zip" ? (
+          <p className="mt-2 text-[10px] leading-snug text-text-muted">
+            All photos in a single ZIP download.
+          </p>
+        ) : (
+          <p className="mt-2 text-[10px] leading-snug text-text-muted">
+            One download prompt per photo.
+          </p>
+        )}
+      </Panel>
 
       <div className="p-3">
         <p className="text-[11px] text-text-secondary">
@@ -165,7 +222,7 @@ export function ExportPanel() {
               } ready as ${format.split("/")[1].toUpperCase()}.`}
         </p>
         <button
-          onClick={handleExport}
+          onClick={() => void handleExport()}
           disabled={busy || targets.length === 0}
           className="mt-2 w-full rounded bg-slider-fill px-3 py-2 text-xs font-medium text-white hover:bg-surface-4 disabled:cursor-not-allowed disabled:opacity-40"
         >

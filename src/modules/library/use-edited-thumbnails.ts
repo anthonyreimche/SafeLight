@@ -6,6 +6,8 @@ import { onBroadcast } from "@/state/broadcast";
 import { useEditedThumbs } from "@/state/edited-thumbnails";
 import { renderEditedThumbnail } from "@/rendering/thumbnail-renderer";
 
+const POLL_INTERVAL = 1000;
+
 // Signature of params with no visible edits — these photos keep their original
 // thumbnail and are never rendered.
 const DEFAULT_SIG = JSON.stringify(normalizeParams(undefined));
@@ -137,4 +139,38 @@ export function useEditedThumbnails(visible: CatalogPhoto[]) {
   useEffect(() => {
     void pump();
   }, [visible, pump]);
+
+  // Poll the DB every second so thumbnails update even when broadcasts are missed
+  // (e.g. after returning from the Develop view in a separate window).
+  useEffect(() => {
+    const id = window.setInterval(async () => {
+      if (!mountedRef.current) return;
+      let changed = false;
+      try {
+        const states = await catalogStorage().getAllEditStates();
+        for (const st of states) {
+          const raw = st.stack[st.currentIndex]?.params;
+          const params = normalizeParams(raw);
+          const sig = sigOf(params);
+          if (sig === DEFAULT_SIG) {
+            if (editsRef.current.has(st.photoId)) {
+              editsRef.current.delete(st.photoId);
+              useEditedThumbs.getState().drop(st.photoId);
+              changed = true;
+            }
+          } else {
+            const existing = editsRef.current.get(st.photoId);
+            if (!existing || existing.sig !== sig) {
+              editsRef.current.set(st.photoId, { params, sig });
+              changed = true;
+            }
+          }
+        }
+      } catch {
+        // Storage not ready yet (e.g. no project open); skip this tick.
+      }
+      if (changed) void pump();
+    }, POLL_INTERVAL);
+    return () => clearInterval(id);
+  }, [pump]);
 }

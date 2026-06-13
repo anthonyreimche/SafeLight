@@ -51,13 +51,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   async openProject(handle) {
     if (get().opening) return;
     set({ opening: true });
+    // Clear the old catalog immediately so the grid shows photos as they arrive
+    // rather than showing the previous folder until the new one is fully loaded.
+    useCatalogStore.getState().replaceCatalog([]);
+    useUIStore.getState().setActiveFolder(null);
     try {
-      const opened = await ProjectStorage.open(handle);
+      const opened = await ProjectStorage.open(handle, (photo) => {
+        useCatalogStore.getState().appendPhotos([photo]);
+      });
       setRawCacheDir(opened.rawCacheDir);
       setCatalogStorage(opened.storage);
       set({ root: handle, name: handle.name, tree: opened.tree });
-      useUIStore.getState().setActiveFolder(null);
-      useCatalogStore.getState().replaceCatalog(opened.photos);
+      // Finalize with the authoritative sorted list. Uses finalizeCatalog so
+      // object URLs added during the progressive open are not revoked.
+      useCatalogStore.getState().finalizeCatalog(opened.photos);
       await saveLastProject(handle);
       // Background: pre-decode new RAWs so first Develop open is instant.
       void preDecodeRawsForCache(opened.newPhotos);

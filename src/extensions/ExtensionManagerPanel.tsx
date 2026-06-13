@@ -223,7 +223,7 @@ export function ExtensionManagerPanel() {
                     className={`shrink-0 rounded px-2 py-0.5 font-medium ${
                       installed
                         ? "text-text-muted"
-                        : "bg-accent text-white hover:bg-accent-hover disabled:opacity-40"
+                        : "bg-slider-fill text-white hover:opacity-80 disabled:opacity-40"
                     }`}
                   >
                     {installed

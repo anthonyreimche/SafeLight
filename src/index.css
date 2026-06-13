@@ -11,8 +11,8 @@
   --color-text-primary: #e0e0e0;
   --color-text-secondary: #888888;
   --color-text-muted: #555555;
-  --color-accent: #4a9eff;
-  --color-accent-hover: #6ab4ff;
+  --color-accent: #5a5a5a;
+  --color-accent-hover: #6e6e6e;
   --color-slider-fill: #5a5a5a;
   --color-rating: #f5c542;
   --color-flag-pick: #ffffff;
@@ -31,12 +31,9 @@
   scrollbar-color: var(--color-surface-4) transparent;
 }
 
-/* Native form controls (checkboxes, radios, progress, un-styled ranges) follow
-   the theme instead of the browser's default blue. */
-input[type="checkbox"],
-input[type="radio"],
-input[type="range"],
-progress {
+/* All native form controls (checkboxes, radios, selects, progress, range
+   inputs) follow the theme — this also covers extension panels. */
+* {
   accent-color: var(--color-slider-fill);
 }
 
@@ -53,8 +50,8 @@ body,
 }
 
 ::selection {
-  background: var(--color-accent);
-  color: white;
+  background: var(--color-slider-fill);
+  color: var(--color-text-primary);
 }
 
 /* Preferences ▸ Interface ▸ Reduce motion */

@@ -71,47 +71,26 @@ export async function decodeRawFloatViaLibRaw(
 
   const raw = new Ctor();
   try {
-    // Try with default settings first
-    let px: unknown;
-    let meta: Record<string, unknown>;
-    
-    try {
-      await raw.open(new Uint8Array(buffer), {
-        outputBps: 16,
-        useCameraWb: true,
-        outputColor: 1,
-        gamm: [1, 1],
-        // No content-driven auto-brighten: it scaled each image so ~1% of pixels
-        // clipped to white, destroying exactly the data Highlights recovery needs
-        // (and made baseline brightness vary per image). LR uses a fixed baseline.
-        // NOTE: images now decode slightly darker than before — that's the removed
-        // auto-gain, not a regression; compensate (if desired) via base curve.
-        noAutoBright: true,
-        userQual: 3,
-        // Blend-reconstruct clipped highlights from the unclipped channels (dcraw
-        // mode 2) instead of clipping to flat white — closest to LR's recovery of
-        // near-blown detail. Modes 3+ (rebuild) can paint magenta; 2 is safe.
-        highlight: 2,
-        noAutoScale: false,
-      });
-      meta = await raw.metadata(false);
-      px = await raw.imageData();
-    } catch (openError) {
-      // Try with more permissive settings if first attempt fails
-      console.warn("[libraw] First decode attempt failed, trying fallback settings", openError);
-      await raw.open(new Uint8Array(buffer), {
-        outputBps: 8, // Try 8-bit output as fallback
-        useCameraWb: true,
-        outputColor: 1,
-        gamm: [1, 1],
-        noAutoBright: false,
-        userQual: 0, // Faster, less quality
-        highlight: 0,
-        noAutoScale: false,
-      });
-      meta = await raw.metadata(false);
-      px = await raw.imageData();
-    }
+    await raw.open(new Uint8Array(buffer), {
+      outputBps: 16,
+      useCameraWb: true,
+      outputColor: 1,
+      gamm: [1, 1],
+      // No content-driven auto-brighten: it scaled each image so ~1% of pixels
+      // clipped to white, destroying exactly the data Highlights recovery needs
+      // (and made baseline brightness vary per image). LR uses a fixed baseline.
+      // NOTE: images now decode slightly darker than before — that's the removed
+      // auto-gain, not a regression; compensate (if desired) via base curve.
+      noAutoBright: true,
+      userQual: 3,
+      // Blend-reconstruct clipped highlights from the unclipped channels (dcraw
+      // mode 2) instead of clipping to flat white — closest to LR's recovery of
+      // near-blown detail. Modes 3+ (rebuild) can paint magenta; 2 is safe.
+      highlight: 2,
+      noAutoScale: false,
+    });
+    const meta = await raw.metadata(false);
+    const px: unknown = await raw.imageData();
 
     // imageData() may return undefined on WASM errors even if metadata succeeded
     if (!px) {

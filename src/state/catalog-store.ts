@@ -19,6 +19,11 @@ interface CatalogState {
   reconnectFiles: () => Promise<void>;
   /** Swap in a freshly opened project's photos (called by the project store). */
   replaceCatalog: (photos: CatalogPhoto[]) => void;
+  /** Append photos during a progressive open (no URL revocation, no state reset). */
+  appendPhotos: (photos: CatalogPhoto[]) => void;
+  /** Finalize a progressive open: set authoritative list without revoking URLs
+   *  (photos are the same object references already shown during the open). */
+  finalizeCatalog: (photos: CatalogPhoto[]) => void;
 
   removePhoto: (id: string) => Promise<void>;
   removePhotos: (ids: string[]) => Promise<void>;
@@ -99,6 +104,21 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       for (const p of get().photos) {
         if (p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
       }
+      set({
+        photos,
+        selectedIds: new Set(),
+        activePhotoId: null,
+        needsReconnect: false,
+      });
+      broadcast({ type: "catalog-change", payload: { action: "add" } });
+    },
+
+    appendPhotos(photos) {
+      set((s) => ({ photos: [...s.photos, ...photos] }));
+    },
+
+    finalizeCatalog(photos) {
+      // Same photo objects as those already appended — don't revoke their URLs.
       set({
         photos,
         selectedIds: new Set(),
