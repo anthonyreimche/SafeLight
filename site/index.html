@@ -1,559 +1,2146 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Safelight — Free Open-Source RAW Photo Editor</title>
-<meta name="description" content="Safelight is a fast, free, open-source RAW photo editor for Windows, Linux, and the browser. GPU-accelerated, non-destructive, privacy-first, built like a modern IDE.">
-<link rel="icon" type="image/svg+xml" href="favicon.svg">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@200;300;400;500&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
-<style>
-:root{
-  --red:#dc2626;
-  --red-dim:#b91c1c;
-  --red-glow:rgba(220,38,38,.35);
-  --bg:#070708;
-  --panel:#0e0e10;
-  --line:rgba(255,255,255,.08);
-  --line-hot:rgba(220,38,38,.45);
-  --txt:#e4e4e7;
-  --mut:#8a8a93;
-  --dim:#5a5a62;
-  --mono:'JetBrains Mono',Consolas,monospace;
-}
-*{margin:0;padding:0;box-sizing:border-box}
-html{scroll-behavior:smooth}
-body{font-family:'Oswald',-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--txt);line-height:1.6;overflow-x:hidden}
-a{color:inherit;text-decoration:none}
-.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
-::selection{background:var(--red);color:#fff}
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Safelight — Free Open-Source RAW Photo Editor</title>
+		<meta
+			name="description"
+			content="Safelight is a fast, free, open-source RAW photo editor for Windows, Linux, and the browser. GPU-accelerated, non-destructive, privacy-first, built like a modern IDE."
+		/>
+		<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Oswald:wght@200;300;400;500&family=JetBrains+Mono:wght@300;400;500&display=swap"
+			rel="stylesheet"
+		/>
+		<style>
+			:root {
+				--red: #dc2626;
+				--red-dim: #b91c1c;
+				--red-glow: rgba(220, 38, 38, 0.35);
+				--bg: #070708;
+				--panel: #0e0e10;
+				--line: rgba(255, 255, 255, 0.08);
+				--line-hot: rgba(220, 38, 38, 0.45);
+				--txt: #e4e4e7;
+				--mut: #8a8a93;
+				--dim: #5a5a62;
+				--mono: "JetBrains Mono", Consolas, monospace;
+			}
+			* {
+				margin: 0;
+				padding: 0;
+				box-sizing: border-box;
+			}
+			html {
+				scroll-behavior: smooth;
+			}
+			body {
+				font-family:
+					"Oswald",
+					-apple-system,
+					"Segoe UI",
+					Roboto,
+					sans-serif;
+				background: var(--bg);
+				color: var(--txt);
+				line-height: 1.6;
+				overflow-x: hidden;
+			}
+			a {
+				color: inherit;
+				text-decoration: none;
+			}
+			.wrap {
+				max-width: 1180px;
+				margin: 0 auto;
+				padding: 0 24px;
+			}
+			::selection {
+				background: var(--red);
+				color: #fff;
+			}
 
-/* ---------- nav ---------- */
-nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(7,7,8,.78);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
-.nav-inner{display:flex;align-items:center;gap:34px;height:60px;max-width:1180px;margin:0 auto;padding:0 24px}
-.brand{display:flex;align-items:center;gap:10px;font-size:1.25rem;font-weight:300;letter-spacing:.08em;color:#fff}
-.brand img{width:26px;height:26px}
-.brand b{color:var(--red);font-weight:400}
-.nav-links{display:flex;gap:28px;margin-left:auto;font-size:.82rem;letter-spacing:.14em;text-transform:uppercase;font-weight:300}
-.nav-links a{color:var(--mut);transition:color .2s}
-.nav-links a:hover{color:#fff}
-.nav-cta{margin-left:10px;padding:7px 18px;border:1px solid var(--red);color:#fff!important;border-radius:3px;transition:background .2s}
-.nav-cta:hover{background:var(--red)}
-.nav-burger{display:none;margin-left:auto;background:none;border:1px solid var(--line);border-radius:3px;color:var(--mut);font-size:1.05rem;line-height:1;padding:6px 11px;cursor:pointer}
-@media(max-width:860px){
-  .nav-burger{display:block}
-  .nav-links{display:none;position:fixed;top:60px;left:0;right:0;flex-direction:column;gap:0;margin:0;padding:6px 24px 18px;background:rgba(9,9,11,.97);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
-  .nav-links.open{display:flex}
-  .nav-links a{padding:13px 0;border-bottom:1px solid rgba(255,255,255,.05)}
-  .nav-cta{margin:14px 0 0;text-align:center;border-bottom:none!important}
-}
+			/* ---------- nav ---------- */
+			nav {
+				position: fixed;
+				top: 0;
+				left: 0;
+				right: 0;
+				z-index: 100;
+				background: rgba(7, 7, 8, 0.78);
+				backdrop-filter: blur(14px);
+				border-bottom: 1px solid var(--line);
+			}
+			.nav-inner {
+				display: flex;
+				align-items: center;
+				gap: 34px;
+				height: 60px;
+				max-width: 1180px;
+				margin: 0 auto;
+				padding: 0 24px;
+			}
+			.brand {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				font-size: 1.25rem;
+				font-weight: 300;
+				letter-spacing: 0.08em;
+				color: #fff;
+			}
+			.brand img {
+				width: 26px;
+				height: 26px;
+			}
+			.brand b {
+				color: var(--red);
+				font-weight: 400;
+			}
+			.nav-links {
+				display: flex;
+				gap: 28px;
+				margin-left: auto;
+				font-size: 0.82rem;
+				letter-spacing: 0.14em;
+				text-transform: uppercase;
+				font-weight: 300;
+			}
+			.nav-links a {
+				color: var(--mut);
+				transition: color 0.2s;
+			}
+			.nav-links a:hover {
+				color: #fff;
+			}
+			.nav-cta {
+				margin-left: 10px;
+				padding: 7px 18px;
+				border: 1px solid var(--red);
+				color: #fff !important;
+				border-radius: 3px;
+				transition: background 0.2s;
+			}
+			.nav-cta:hover {
+				background: var(--red);
+			}
+			.nav-burger {
+				display: none;
+				margin-left: auto;
+				background: none;
+				border: 1px solid var(--line);
+				border-radius: 3px;
+				color: var(--mut);
+				font-size: 1.05rem;
+				line-height: 1;
+				padding: 6px 11px;
+				cursor: pointer;
+			}
+			@media (max-width: 860px) {
+				.nav-burger {
+					display: block;
+				}
+				.nav-links {
+					display: none;
+					position: fixed;
+					top: 60px;
+					left: 0;
+					right: 0;
+					flex-direction: column;
+					gap: 0;
+					margin: 0;
+					padding: 6px 24px 18px;
+					background: rgba(9, 9, 11, 0.97);
+					backdrop-filter: blur(14px);
+					border-bottom: 1px solid var(--line);
+				}
+				.nav-links.open {
+					display: flex;
+				}
+				.nav-links a {
+					padding: 13px 0;
+					border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+				}
+				.nav-cta {
+					margin: 14px 0 0;
+					text-align: center;
+					border-bottom: none !important;
+				}
+			}
 
-/* ---------- hero ---------- */
-.hero{position:relative;min-height:100vh;display:flex;flex-direction:column;justify-content:center;text-align:center;padding:120px 20px 60px;overflow:hidden}
-/* panel explosion */
-.panels{position:absolute;inset:0;perspective:900px;pointer-events:none}
-.fp{position:absolute;left:50%;top:44%;width:200px;opacity:0;pointer-events:auto;cursor:grab;touch-action:none;user-select:none;
-  animation:boom 1.5s cubic-bezier(.16,1,.3,1) var(--d,0s) forwards}
-.fp.drag{cursor:grabbing}
-.fp.drag .fp-in{animation-play-state:paused}
-.fp-in{background:linear-gradient(155deg,rgba(52,52,62,.42),rgba(18,18,24,.55) 55%,rgba(30,30,38,.45));
-  backdrop-filter:blur(10px) saturate(1.4);-webkit-backdrop-filter:blur(10px) saturate(1.4);
-  border:1px solid rgba(255,255,255,.18);border-radius:9px;padding:0 0 10px;
-  box-shadow:0 30px 80px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(0,0,0,.3),0 0 30px rgba(220,38,38,.08);
-  position:relative;overflow:hidden;
-  animation:bob var(--bd,8s) ease-in-out calc(var(--d,0s) + 1.5s) infinite alternate}
-.fp-in::before{content:'';position:absolute;inset:0;border-radius:9px;pointer-events:none;
-  background:linear-gradient(115deg,transparent 30%,rgba(255,255,255,.07) 44%,rgba(255,255,255,.02) 52%,transparent 60%)}
-.fp.far .fp-in{filter:blur(1px)}
-@keyframes boom{
-  0%{opacity:0;transform:translate(-50%,-50%) scale(.15) rotate(0deg) rotateX(0deg) rotateY(0deg)}
-  100%{opacity:var(--o,.85);transform:translate(calc(-50% + var(--x)),calc(-50% + var(--y))) scale(var(--s,1)) rotate(var(--r,0deg)) rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg))}}
-@keyframes bob{from{transform:rotateX(var(--jrx,0deg)) rotateY(var(--jry,0deg)) translateY(-7px) translateX(4px)}to{transform:rotateX(var(--jrx,0deg)) rotateY(var(--jry,0deg)) translateY(8px) translateX(-4px)}}
-.fp h5{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-weight:400;font-size:.6rem;letter-spacing:.18em;text-transform:uppercase;color:#a9a9b0;padding:9px 11px;border-bottom:1px solid rgba(255,255,255,.07);margin-bottom:9px}
-.fp h5::before{content:'▾';color:#55555c;font-size:.5rem}
-.fp h5::after{content:'×';margin-left:auto;color:#55555c;font-size:.75rem;letter-spacing:0}
-.fp .ptabs{display:flex;margin:0 11px 9px;font-family:var(--mono);font-size:.55rem;letter-spacing:.14em;color:#66666e}
-.fp .ptabs b{flex:1;text-align:center;font-weight:400;padding:4px 0;border-radius:3px}
-.fp .ptabs b.on{background:#232327;color:var(--red)}
-.fp .ptabs b.onw{background:#232327;color:#e8e8ec}
-.fp .row{display:flex;align-items:center;gap:9px;padding:5px 11px;font-family:var(--mono);font-size:.58rem;color:#8f8f96}
-.fp .row span{width:58px;overflow:hidden;white-space:nowrap;text-transform:capitalize}
-.fp .row em{font-style:normal;margin-left:auto;color:#b9b9bf;min-width:28px;text-align:right}
-.fp .dot8{width:8px;height:8px;border-radius:50%;flex:none}
-.fp .tk{flex:1;height:6px;background:rgba(255,255,255,.10);position:relative;border-radius:3px;overflow:hidden}
-.fp .tk b{position:absolute;left:0;top:0;bottom:0;background:rgba(255,255,255,.38);width:var(--w,50%);border-radius:3px}
-.fp .plot{display:block;width:calc(100% - 22px);margin:0 11px;background:rgba(0,0,0,.5);border-radius:3px}
-.fp .hint{padding:7px 11px 0;font-family:var(--mono);font-size:.52rem;color:#5a5a60;line-height:1.6}
-.fp .wlabel{display:flex;justify-content:space-around;font-family:var(--mono);font-size:.56rem;color:#77777e;padding:0 10px 6px}
-.fp .wheels{display:flex;justify-content:space-around;padding:2px 10px 6px}
-.fp .wh{width:46px;height:46px;border-radius:50%;position:relative;background:conic-gradient(#e03c3c 0,#e0832e 45deg,#e3d52f 85deg,#43c95c 140deg,#2db3c0 185deg,#3b5de0 230deg,#a04ae0 285deg,#e04ab8 330deg,#e03c3c 360deg)}
-.fp .wh::after{content:'';position:absolute;left:var(--mx,50%);top:var(--my,30%);width:8px;height:8px;border-radius:50%;border:2px solid #fff;transform:translate(-50%,-50%);box-shadow:0 0 4px rgba(0,0,0,.9)}
-.fp .meta{padding:2px 11px 0;font-family:var(--mono);font-size:.56rem;line-height:2;color:#77777e;display:grid;grid-template-columns:auto 1fr;column-gap:12px}
-.fp .meta i{font-style:normal;color:#b9b9bf;text-align:right}
-.fp .cat{padding:0 11px 4px;font-family:var(--mono);font-size:.6rem;color:#9a9aa1;line-height:2.1;display:grid;grid-template-columns:1fr auto}
-.fp .cat i{font-style:normal;color:#66666e;text-align:right}
-.fp .cat .sel{color:#fff;background:#232327;margin:0 -6px;padding:0 6px;border-radius:3px}
-.fp .stars{letter-spacing:2px;color:#d8a93a!important}
-.fp .stars i{font-style:normal;color:#44444a}
-.fp .labels{display:flex;gap:6px;align-items:center;margin-left:auto}
-.fp .btns{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;padding:0 11px 4px;font-family:var(--mono);font-size:.56rem;color:#8f8f96;text-align:center}
-.fp .btns b{font-weight:400;background:#1d1d21;border:1px solid rgba(255,255,255,.06);border-radius:3px;padding:4px 0}
-.fp .btns b.on{background:#2c2c31;color:#e8e8ec}
-@media(max-width:860px){.fp.far,.fp.mid{display:none}.fp{touch-action:pan-y}.fp .hint{display:none}}
-@media (prefers-reduced-motion:reduce){.fp{animation-duration:0s}.fp-in{animation:none}}
-.hero-vig{position:absolute;inset:0;pointer-events:none;background:
-  radial-gradient(ellipse 42% 38% at 50% 44%,rgba(7,7,8,.55) 0%,transparent 78%),
-  radial-gradient(ellipse 85% 75% at 50% 45%,transparent 55%,var(--bg) 100%),
-  linear-gradient(180deg,rgba(7,7,8,.35) 0%,transparent 25%,transparent 78%,var(--bg) 98%)}
-.hero-glow{position:absolute;left:50%;top:-220px;width:1000px;height:520px;transform:translateX(-50%);background:radial-gradient(ellipse at center,var(--red-glow),transparent 65%);filter:blur(40px);opacity:.7;pointer-events:none}
-.hero .wrap{position:relative}
-.kicker{font-family:var(--mono);font-size:.72rem;letter-spacing:.32em;text-transform:uppercase;color:var(--red);margin-bottom:26px}
-.kicker::before,.kicker::after{content:"—";color:var(--dim);margin:0 14px}
-h1{font-size:clamp(2.6rem,6.5vw,4.8rem);font-weight:200;line-height:1.08;letter-spacing:.02em;color:#fff;margin-bottom:28px}
-h1 em{font-style:normal;color:var(--red);font-weight:300}
-.hero-sub{font-size:1.15rem;font-weight:300;color:var(--mut);max-width:640px;margin:0 auto 44px;letter-spacing:.01em}
-.btn-row{display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-bottom:46px}
-.btn{display:inline-flex;align-items:center;gap:10px;padding:15px 38px;border-radius:3px;font-size:1rem;font-weight:300;letter-spacing:.08em;text-transform:uppercase;transition:all .25s;border:1px solid transparent}
-.btn svg{width:17px;height:17px;fill:currentColor}
-.btn-primary{background:var(--red);color:#fff;box-shadow:0 0 28px var(--red-glow)}
-.btn-primary:hover{background:var(--red-dim);transform:translateY(-2px);box-shadow:0 4px 38px var(--red-glow)}
-.btn-ghost{border-color:rgba(255,255,255,.25);color:#fff}
-.btn-ghost:hover{border-color:rgba(255,255,255,.6);background:rgba(255,255,255,.05);transform:translateY(-2px)}
-.hero-meta{font-family:var(--mono);font-size:.74rem;letter-spacing:.12em;color:var(--dim)}
-.hero-meta span{color:var(--mut)}
-.hero-meta i{font-style:normal;color:var(--red);margin:0 10px}
+			/* ---------- hero ---------- */
+			.hero {
+				position: relative;
+				min-height: 100vh;
+				display: flex;
+				flex-direction: column;
+				justify-content: center;
+				text-align: center;
+				padding: 120px 20px 60px;
+				overflow: hidden;
+			}
+			/* panel explosion */
+			.panels {
+				position: absolute;
+				inset: 0;
+				perspective: 900px;
+				pointer-events: none;
+			}
+			.fp {
+				position: absolute;
+				left: 50%;
+				top: 44%;
+				width: 200px;
+				opacity: 0;
+				pointer-events: auto;
+				cursor: grab;
+				touch-action: none;
+				user-select: none;
+				animation: boom 1.5s cubic-bezier(0.16, 1, 0.3, 1) var(--d, 0s)
+					forwards;
+			}
+			.fp.drag {
+				cursor: grabbing;
+			}
+			.fp.drag .fp-in {
+				animation-play-state: paused;
+			}
+			.fp-in {
+				background: linear-gradient(
+					155deg,
+					rgba(52, 52, 62, 0.42),
+					rgba(18, 18, 24, 0.55) 55%,
+					rgba(30, 30, 38, 0.45)
+				);
+				backdrop-filter: blur(10px) saturate(1.4);
+				-webkit-backdrop-filter: blur(10px) saturate(1.4);
+				border: 1px solid rgba(255, 255, 255, 0.18);
+				border-radius: 9px;
+				padding: 0 0 10px;
+				box-shadow:
+					0 30px 80px rgba(0, 0, 0, 0.6),
+					inset 0 1px 0 rgba(255, 255, 255, 0.16),
+					inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+					0 0 30px rgba(220, 38, 38, 0.08);
+				position: relative;
+				overflow: hidden;
+				animation: bob var(--bd, 8s) ease-in-out
+					calc(var(--d, 0s) + 1.5s) infinite alternate;
+			}
+			.fp-in::before {
+				content: "";
+				position: absolute;
+				inset: 0;
+				border-radius: 9px;
+				pointer-events: none;
+				background: linear-gradient(
+					115deg,
+					transparent 30%,
+					rgba(255, 255, 255, 0.07) 44%,
+					rgba(255, 255, 255, 0.02) 52%,
+					transparent 60%
+				);
+			}
+			.fp.far .fp-in {
+				filter: blur(1px);
+			}
+			@keyframes boom {
+				0% {
+					opacity: 0;
+					transform: translate(-50%, -50%) scale(0.15) rotate(0deg)
+						rotateX(0deg) rotateY(0deg);
+				}
+				100% {
+					opacity: var(--o, 0.85);
+					transform: translate(
+							calc(-50% + var(--x)),
+							calc(-50% + var(--y))
+						)
+						scale(var(--s, 1)) rotate(var(--r, 0deg))
+						rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+				}
+			}
+			@keyframes bob {
+				from {
+					transform: rotateX(var(--jrx, 0deg))
+						rotateY(var(--jry, 0deg)) translateY(-7px)
+						translateX(4px);
+				}
+				to {
+					transform: rotateX(var(--jrx, 0deg))
+						rotateY(var(--jry, 0deg)) translateY(8px)
+						translateX(-4px);
+				}
+			}
+			.fp h5 {
+				display: flex;
+				align-items: center;
+				gap: 7px;
+				font-family: var(--mono);
+				font-weight: 400;
+				font-size: 0.6rem;
+				letter-spacing: 0.18em;
+				text-transform: uppercase;
+				color: #a9a9b0;
+				padding: 9px 11px;
+				border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+				margin-bottom: 9px;
+			}
+			.fp h5::before {
+				content: "▾";
+				color: #55555c;
+				font-size: 0.5rem;
+			}
+			.fp h5::after {
+				content: "×";
+				margin-left: auto;
+				color: #55555c;
+				font-size: 0.75rem;
+				letter-spacing: 0;
+			}
+			.fp .ptabs {
+				display: flex;
+				margin: 0 11px 9px;
+				font-family: var(--mono);
+				font-size: 0.55rem;
+				letter-spacing: 0.14em;
+				color: #66666e;
+			}
+			.fp .ptabs b {
+				flex: 1;
+				text-align: center;
+				font-weight: 400;
+				padding: 4px 0;
+				border-radius: 3px;
+			}
+			.fp .ptabs b.on {
+				background: #232327;
+				color: var(--red);
+			}
+			.fp .ptabs b.onw {
+				background: #232327;
+				color: #e8e8ec;
+			}
+			.fp .row {
+				display: flex;
+				align-items: center;
+				gap: 9px;
+				padding: 5px 11px;
+				font-family: var(--mono);
+				font-size: 0.58rem;
+				color: #8f8f96;
+			}
+			.fp .row span {
+				width: 58px;
+				overflow: hidden;
+				white-space: nowrap;
+				text-transform: capitalize;
+			}
+			.fp .row em {
+				font-style: normal;
+				margin-left: auto;
+				color: #b9b9bf;
+				min-width: 28px;
+				text-align: right;
+			}
+			.fp .dot8 {
+				width: 8px;
+				height: 8px;
+				border-radius: 50%;
+				flex: none;
+			}
+			.fp .tk {
+				flex: 1;
+				height: 6px;
+				background: rgba(255, 255, 255, 0.1);
+				position: relative;
+				border-radius: 3px;
+				overflow: hidden;
+			}
+			.fp .tk b {
+				position: absolute;
+				left: 0;
+				top: 0;
+				bottom: 0;
+				background: rgba(255, 255, 255, 0.38);
+				width: var(--w, 50%);
+				border-radius: 3px;
+			}
+			.fp .plot {
+				display: block;
+				width: calc(100% - 22px);
+				margin: 0 11px;
+				background: rgba(0, 0, 0, 0.5);
+				border-radius: 3px;
+			}
+			.fp .hint {
+				padding: 7px 11px 0;
+				font-family: var(--mono);
+				font-size: 0.52rem;
+				color: #5a5a60;
+				line-height: 1.6;
+			}
+			.fp .wlabel {
+				display: flex;
+				justify-content: space-around;
+				font-family: var(--mono);
+				font-size: 0.56rem;
+				color: #77777e;
+				padding: 0 10px 6px;
+			}
+			.fp .wheels {
+				display: flex;
+				justify-content: space-around;
+				padding: 2px 10px 6px;
+			}
+			.fp .wh {
+				width: 46px;
+				height: 46px;
+				border-radius: 50%;
+				position: relative;
+				background: conic-gradient(
+					#e03c3c 0,
+					#e0832e 45deg,
+					#e3d52f 85deg,
+					#43c95c 140deg,
+					#2db3c0 185deg,
+					#3b5de0 230deg,
+					#a04ae0 285deg,
+					#e04ab8 330deg,
+					#e03c3c 360deg
+				);
+			}
+			.fp .wh::after {
+				content: "";
+				position: absolute;
+				left: var(--mx, 50%);
+				top: var(--my, 30%);
+				width: 8px;
+				height: 8px;
+				border-radius: 50%;
+				border: 2px solid #fff;
+				transform: translate(-50%, -50%);
+				box-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+			}
+			.fp .meta {
+				padding: 2px 11px 0;
+				font-family: var(--mono);
+				font-size: 0.56rem;
+				line-height: 2;
+				color: #77777e;
+				display: grid;
+				grid-template-columns: auto 1fr;
+				column-gap: 12px;
+			}
+			.fp .meta i {
+				font-style: normal;
+				color: #b9b9bf;
+				text-align: right;
+			}
+			.fp .cat {
+				padding: 0 11px 4px;
+				font-family: var(--mono);
+				font-size: 0.6rem;
+				color: #9a9aa1;
+				line-height: 2.1;
+				display: grid;
+				grid-template-columns: 1fr auto;
+			}
+			.fp .cat i {
+				font-style: normal;
+				color: #66666e;
+				text-align: right;
+			}
+			.fp .cat .sel {
+				color: #fff;
+				background: #232327;
+				margin: 0 -6px;
+				padding: 0 6px;
+				border-radius: 3px;
+			}
+			.fp .stars {
+				letter-spacing: 2px;
+				color: #d8a93a !important;
+			}
+			.fp .stars i {
+				font-style: normal;
+				color: #44444a;
+			}
+			.fp .labels {
+				display: flex;
+				gap: 6px;
+				align-items: center;
+				margin-left: auto;
+			}
+			.fp .btns {
+				display: grid;
+				grid-template-columns: repeat(3, 1fr);
+				gap: 5px;
+				padding: 0 11px 4px;
+				font-family: var(--mono);
+				font-size: 0.56rem;
+				color: #8f8f96;
+				text-align: center;
+			}
+			.fp .btns b {
+				font-weight: 400;
+				background: #1d1d21;
+				border: 1px solid rgba(255, 255, 255, 0.06);
+				border-radius: 3px;
+				padding: 4px 0;
+			}
+			.fp .btns b.on {
+				background: #2c2c31;
+				color: #e8e8ec;
+			}
+			@media (max-width: 860px) {
+				.fp.far,
+				.fp.mid {
+					display: none;
+				}
+				.fp {
+					touch-action: pan-y;
+				}
+				.fp .hint {
+					display: none;
+				}
+			}
+			@media (prefers-reduced-motion: reduce) {
+				.fp {
+					animation-duration: 0s;
+				}
+				.fp-in {
+					animation: none;
+				}
+			}
+			.hero-vig {
+				position: absolute;
+				inset: 0;
+				pointer-events: none;
+				background:
+					radial-gradient(
+						ellipse 42% 38% at 50% 44%,
+						rgba(7, 7, 8, 0.55) 0%,
+						transparent 78%
+					),
+					radial-gradient(
+						ellipse 85% 75% at 50% 45%,
+						transparent 55%,
+						var(--bg) 100%
+					),
+					linear-gradient(
+						180deg,
+						rgba(7, 7, 8, 0.35) 0%,
+						transparent 25%,
+						transparent 78%,
+						var(--bg) 98%
+					);
+			}
+			.hero-glow {
+				position: absolute;
+				left: 50%;
+				top: -220px;
+				width: 1000px;
+				height: 520px;
+				transform: translateX(-50%);
+				background: radial-gradient(
+					ellipse at center,
+					var(--red-glow),
+					transparent 65%
+				);
+				filter: blur(40px);
+				opacity: 0.7;
+				pointer-events: none;
+			}
+			.hero .wrap {
+				position: relative;
+			}
+			.kicker {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.32em;
+				text-transform: uppercase;
+				color: var(--red);
+				margin-bottom: 26px;
+			}
+			.kicker::before,
+			.kicker::after {
+				content: "—";
+				color: var(--dim);
+				margin: 0 14px;
+			}
+			h1 {
+				font-size: clamp(2.6rem, 6.5vw, 4.8rem);
+				font-weight: 200;
+				line-height: 1.08;
+				letter-spacing: 0.02em;
+				color: #fff;
+				margin-bottom: 28px;
+			}
+			h1 em {
+				font-style: normal;
+				color: var(--red);
+				font-weight: 300;
+			}
+			.hero-sub {
+				font-size: 1.15rem;
+				font-weight: 300;
+				color: var(--mut);
+				max-width: 640px;
+				margin: 0 auto 44px;
+				letter-spacing: 0.01em;
+			}
+			.btn-row {
+				display: flex;
+				gap: 18px;
+				justify-content: center;
+				flex-wrap: wrap;
+				margin-bottom: 46px;
+			}
+			.btn {
+				display: inline-flex;
+				align-items: center;
+				gap: 10px;
+				padding: 15px 38px;
+				border-radius: 3px;
+				font-size: 1rem;
+				font-weight: 300;
+				letter-spacing: 0.08em;
+				text-transform: uppercase;
+				transition: all 0.25s;
+				border: 1px solid transparent;
+			}
+			.btn svg {
+				width: 17px;
+				height: 17px;
+				fill: currentColor;
+			}
+			.btn-primary {
+				background: var(--red);
+				color: #fff;
+				box-shadow: 0 0 28px var(--red-glow);
+			}
+			.btn-primary:hover {
+				background: var(--red-dim);
+				transform: translateY(-2px);
+				box-shadow: 0 4px 38px var(--red-glow);
+			}
+			.btn-ghost {
+				border-color: rgba(255, 255, 255, 0.25);
+				color: #fff;
+			}
+			.btn-ghost:hover {
+				border-color: rgba(255, 255, 255, 0.6);
+				background: rgba(255, 255, 255, 0.05);
+				transform: translateY(-2px);
+			}
+			.hero-meta {
+				font-family: var(--mono);
+				font-size: 0.74rem;
+				letter-spacing: 0.12em;
+				color: var(--dim);
+			}
+			.hero-meta span {
+				color: var(--mut);
+			}
+			.hero-meta i {
+				font-style: normal;
+				color: var(--red);
+				margin: 0 10px;
+			}
 
-/* ---------- stat strip ---------- */
-.stats{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--panel)}
-.stats .wrap{display:grid;grid-template-columns:repeat(4,1fr);gap:1px}
-.stat{padding:34px 10px;text-align:center}
-.stat+ .stat{border-left:1px solid var(--line)}
-.stat b{display:block;font-size:2rem;font-weight:200;color:#fff}
-.stat b i{font-style:normal;color:var(--red)}
-.stat span{font-family:var(--mono);font-size:.68rem;letter-spacing:.22em;text-transform:uppercase;color:var(--dim)}
-@media(max-width:700px){.stats .wrap{grid-template-columns:repeat(2,1fr)}.stat:nth-child(3){border-left:none}}
+			/* ---------- stat strip ---------- */
+			.stats {
+				border-top: 1px solid var(--line);
+				border-bottom: 1px solid var(--line);
+				background: var(--panel);
+			}
+			.stats .wrap {
+				display: grid;
+				grid-template-columns: repeat(4, 1fr);
+				gap: 1px;
+			}
+			.stat {
+				padding: 34px 10px;
+				text-align: center;
+			}
+			.stat + .stat {
+				border-left: 1px solid var(--line);
+			}
+			.stat b {
+				display: block;
+				font-size: 2rem;
+				font-weight: 200;
+				color: #fff;
+			}
+			.stat b i {
+				font-style: normal;
+				color: var(--red);
+			}
+			.stat span {
+				font-family: var(--mono);
+				font-size: 0.68rem;
+				letter-spacing: 0.22em;
+				text-transform: uppercase;
+				color: var(--dim);
+			}
+			@media (max-width: 700px) {
+				.stats .wrap {
+					grid-template-columns: repeat(2, 1fr);
+				}
+				.stat:nth-child(3) {
+					border-left: none;
+				}
+			}
 
-/* ---------- sections ---------- */
-section{padding:110px 0}
-.sec-head{text-align:center;margin-bottom:64px}
-.sec-tag{font-family:var(--mono);font-size:.7rem;letter-spacing:.3em;text-transform:uppercase;color:var(--red);display:block;margin-bottom:14px}
-.sec-head h2{font-size:2.6rem;font-weight:200;color:#fff;letter-spacing:.04em}
-.sec-head p{color:var(--mut);font-weight:300;max-width:560px;margin:14px auto 0}
+			/* ---------- sections ---------- */
+			section {
+				padding: 110px 0;
+			}
+			.sec-head {
+				text-align: center;
+				margin-bottom: 64px;
+			}
+			.sec-tag {
+				font-family: var(--mono);
+				font-size: 0.7rem;
+				letter-spacing: 0.3em;
+				text-transform: uppercase;
+				color: var(--red);
+				display: block;
+				margin-bottom: 14px;
+			}
+			.sec-head h2 {
+				font-size: 2.6rem;
+				font-weight: 200;
+				color: #fff;
+				letter-spacing: 0.04em;
+			}
+			.sec-head p {
+				color: var(--mut);
+				font-weight: 300;
+				max-width: 560px;
+				margin: 14px auto 0;
+			}
 
-/* ---------- features ---------- */
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:22px}
-.card{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:32px;transition:border-color .3s,transform .3s}
-.card:hover{border-color:var(--line-hot);transform:translateY(-3px)}
-.card .num{font-family:var(--mono);font-size:.68rem;color:var(--dim);letter-spacing:.2em;display:block;margin-bottom:16px}
-.card h3{font-size:1.25rem;font-weight:300;color:#fff;margin-bottom:12px;letter-spacing:.03em}
-.card p{font-size:.93rem;font-weight:300;color:var(--mut);line-height:1.75}
-.card::before{content:'';position:absolute;top:-1px;left:24px;width:36px;height:1px;background:var(--red);opacity:0;transition:opacity .3s}
-.card:hover::before{opacity:1}
+			/* ---------- features ---------- */
+			.grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+				gap: 22px;
+			}
+			.card {
+				position: relative;
+				background: var(--panel);
+				border: 1px solid var(--line);
+				border-radius: 4px;
+				padding: 32px;
+				transition:
+					border-color 0.3s,
+					transform 0.3s;
+			}
+			.card:hover {
+				border-color: var(--line-hot);
+				transform: translateY(-3px);
+			}
+			.card .num {
+				font-family: var(--mono);
+				font-size: 0.68rem;
+				color: var(--dim);
+				letter-spacing: 0.2em;
+				display: block;
+				margin-bottom: 16px;
+			}
+			.card h3 {
+				font-size: 1.25rem;
+				font-weight: 300;
+				color: #fff;
+				margin-bottom: 12px;
+				letter-spacing: 0.03em;
+			}
+			.card p {
+				font-size: 0.93rem;
+				font-weight: 300;
+				color: var(--mut);
+				line-height: 1.75;
+			}
+			.card::before {
+				content: "";
+				position: absolute;
+				top: -1px;
+				left: 24px;
+				width: 36px;
+				height: 1px;
+				background: var(--red);
+				opacity: 0;
+				transition: opacity 0.3s;
+			}
+			.card:hover::before {
+				opacity: 1;
+			}
 
-/* ---------- screenshots (IDE frame) ---------- */
-.shots{background:linear-gradient(180deg,var(--bg),#0a0a0c 50%,var(--bg))}
-.ide{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#0b0b0d;box-shadow:0 30px 90px rgba(0,0,0,.7),0 0 60px rgba(220,38,38,.07)}
-.ide-bar{display:flex;align-items:center;gap:8px;padding:11px 16px;background:#101013;border-bottom:1px solid var(--line)}
-.dot{width:11px;height:11px;border-radius:50%;background:#2d2d33}
-.dot.r{background:var(--red)}
-.ide-title{font-family:var(--mono);font-size:.7rem;color:var(--dim);margin:0 auto;letter-spacing:.1em}
-.ide-tabs{display:flex;background:#0d0d10;border-bottom:1px solid var(--line)}
-.ide-tab{font-family:var(--mono);font-size:.74rem;letter-spacing:.08em;padding:11px 26px;color:var(--dim);cursor:pointer;border:none;background:transparent;border-right:1px solid var(--line);border-top:2px solid transparent;transition:color .2s}
-.ide-tab:hover{color:var(--txt)}
-.ide-tab.on{color:#fff;background:#0b0b0d;border-top-color:var(--red)}
-.ide img{display:block;width:100%;height:auto}
-.shot-cap{text-align:center;font-family:var(--mono);font-size:.72rem;color:var(--dim);letter-spacing:.16em;margin-top:22px}
+			/* ---------- screenshots (IDE frame) ---------- */
+			.shots {
+				background: linear-gradient(
+					180deg,
+					var(--bg),
+					#0a0a0c 50%,
+					var(--bg)
+				);
+			}
+			.ide {
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				overflow: hidden;
+				background: #0b0b0d;
+				box-shadow:
+					0 30px 90px rgba(0, 0, 0, 0.7),
+					0 0 60px rgba(220, 38, 38, 0.07);
+			}
+			.ide-bar {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				padding: 11px 16px;
+				background: #101013;
+				border-bottom: 1px solid var(--line);
+			}
+			.dot {
+				width: 11px;
+				height: 11px;
+				border-radius: 50%;
+				background: #2d2d33;
+			}
+			.dot.r {
+				background: var(--red);
+			}
+			.ide-title {
+				font-family: var(--mono);
+				font-size: 0.7rem;
+				color: var(--dim);
+				margin: 0 auto;
+				letter-spacing: 0.1em;
+			}
+			.ide-tabs {
+				display: flex;
+				background: #0d0d10;
+				border-bottom: 1px solid var(--line);
+			}
+			.ide-tab {
+				font-family: var(--mono);
+				font-size: 0.74rem;
+				letter-spacing: 0.08em;
+				padding: 11px 26px;
+				color: var(--dim);
+				cursor: pointer;
+				border: none;
+				background: transparent;
+				border-right: 1px solid var(--line);
+				border-top: 2px solid transparent;
+				transition: color 0.2s;
+			}
+			.ide-tab:hover {
+				color: var(--txt);
+			}
+			.ide-tab.on {
+				color: #fff;
+				background: #0b0b0d;
+				border-top-color: var(--red);
+			}
+			.ide img {
+				display: block;
+				width: 100%;
+				height: auto;
+			}
+			.shot-cap {
+				text-align: center;
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				color: var(--dim);
+				letter-spacing: 0.16em;
+				margin-top: 22px;
+			}
 
-/* ---------- download ---------- */
-.dl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:22px}
-.dl{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:36px;display:flex;flex-direction:column;transition:border-color .3s}
-.dl:hover{border-color:var(--line-hot)}
-.dl.hot{border-color:rgba(220,38,38,.55);box-shadow:0 0 40px rgba(220,38,38,.08)}
-.badge{align-self:flex-start;font-family:var(--mono);font-size:.62rem;letter-spacing:.2em;text-transform:uppercase;color:var(--red);border:1px solid var(--line-hot);padding:4px 10px;border-radius:2px;margin-bottom:18px}
-.dl h3{font-size:1.4rem;font-weight:300;color:#fff;margin-bottom:8px}
-.dl>p{font-size:.9rem;color:var(--mut);font-weight:300;margin-bottom:22px}
-.dl ul{list-style:none;margin-bottom:26px;font-family:var(--mono);font-size:.78rem;color:var(--mut)}
-.dl ul li{padding:7px 0;border-bottom:1px solid rgba(255,255,255,.05)}
-.dl ul li::before{content:"▸";color:var(--red);margin-right:10px}
-.dl .btn{margin-top:auto;justify-content:center}
-.term{background:#0a0a0c;border:1px solid var(--line);border-radius:4px;font-family:var(--mono);font-size:.78rem;line-height:1.9;padding:18px 20px;color:var(--mut);margin-bottom:26px;overflow-x:auto}
-.term .c{color:#3f6e3f}
-.term .p{color:var(--red);user-select:none}
-.dl-src{display:flex;align-items:center;gap:30px;flex-wrap:wrap;margin-top:22px;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:20px 28px}
-.dl-src h4{font-weight:300;color:#fff;font-size:1.05rem;letter-spacing:.03em}
-.dl-src p{font-size:.8rem;color:var(--dim);font-weight:300;max-width:300px}
-.dl-src .term{margin:0;flex:1;min-width:300px;padding:12px 16px}
-.link-mono{font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--red);white-space:nowrap;transition:color .2s}
-.link-mono:hover{color:#fff}
+			/* ---------- download ---------- */
+			.dl-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+				gap: 22px;
+			}
+			.dl {
+				background: var(--panel);
+				border: 1px solid var(--line);
+				border-radius: 4px;
+				padding: 36px;
+				display: flex;
+				flex-direction: column;
+				transition: border-color 0.3s;
+			}
+			.dl:hover {
+				border-color: var(--line-hot);
+			}
+			.dl.hot {
+				border-color: rgba(220, 38, 38, 0.55);
+				box-shadow: 0 0 40px rgba(220, 38, 38, 0.08);
+			}
+			.badge {
+				align-self: flex-start;
+				font-family: var(--mono);
+				font-size: 0.62rem;
+				letter-spacing: 0.2em;
+				text-transform: uppercase;
+				color: var(--red);
+				border: 1px solid var(--line-hot);
+				padding: 4px 10px;
+				border-radius: 2px;
+				margin-bottom: 18px;
+			}
+			.dl h3 {
+				font-size: 1.4rem;
+				font-weight: 300;
+				color: #fff;
+				margin-bottom: 8px;
+			}
+			.dl > p {
+				font-size: 0.9rem;
+				color: var(--mut);
+				font-weight: 300;
+				margin-bottom: 22px;
+			}
+			.dl ul {
+				list-style: none;
+				margin-bottom: 26px;
+				font-family: var(--mono);
+				font-size: 0.78rem;
+				color: var(--mut);
+			}
+			.dl ul li {
+				padding: 7px 0;
+				border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+			}
+			.dl ul li::before {
+				content: "▸";
+				color: var(--red);
+				margin-right: 10px;
+			}
+			.dl .btn {
+				margin-top: auto;
+				justify-content: center;
+			}
+			.term {
+				background: #0a0a0c;
+				border: 1px solid var(--line);
+				border-radius: 4px;
+				font-family: var(--mono);
+				font-size: 0.78rem;
+				line-height: 1.9;
+				padding: 18px 20px;
+				color: var(--mut);
+				margin-bottom: 26px;
+				overflow-x: auto;
+			}
+			.term .c {
+				color: #3f6e3f;
+			}
+			.term .p {
+				color: var(--red);
+				user-select: none;
+			}
+			.dl-src {
+				display: flex;
+				align-items: center;
+				gap: 30px;
+				flex-wrap: wrap;
+				margin-top: 22px;
+				background: var(--panel);
+				border: 1px solid var(--line);
+				border-radius: 4px;
+				padding: 20px 28px;
+			}
+			.dl-src h4 {
+				font-weight: 300;
+				color: #fff;
+				font-size: 1.05rem;
+				letter-spacing: 0.03em;
+			}
+			.dl-src p {
+				font-size: 0.8rem;
+				color: var(--dim);
+				font-weight: 300;
+				max-width: 300px;
+			}
+			.dl-src .term {
+				margin: 0;
+				flex: 1;
+				min-width: 300px;
+				padding: 12px 16px;
+			}
+			.link-mono {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.14em;
+				text-transform: uppercase;
+				color: var(--red);
+				white-space: nowrap;
+				transition: color 0.2s;
+			}
+			.link-mono:hover {
+				color: #fff;
+			}
 
-/* ---------- docs ---------- */
-.doc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
-.doc{display:flex;align-items:center;gap:14px;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:20px 22px;transition:border-color .25s,background .25s}
-.doc:hover{border-color:var(--line-hot);background:#121214}
-.doc i{font-family:var(--mono);font-style:normal;font-size:.7rem;color:var(--red)}
-.doc div b{display:block;font-weight:300;color:#fff;font-size:1rem;letter-spacing:.03em}
-.doc div span{font-size:.78rem;color:var(--dim);font-weight:300}
+			/* ---------- docs ---------- */
+			.doc-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+				gap: 14px;
+			}
+			.doc {
+				display: flex;
+				align-items: center;
+				gap: 14px;
+				background: var(--panel);
+				border: 1px solid var(--line);
+				border-radius: 4px;
+				padding: 20px 22px;
+				transition:
+					border-color 0.25s,
+					background 0.25s;
+			}
+			.doc:hover {
+				border-color: var(--line-hot);
+				background: #121214;
+			}
+			.doc i {
+				font-family: var(--mono);
+				font-style: normal;
+				font-size: 0.7rem;
+				color: var(--red);
+			}
+			.doc div b {
+				display: block;
+				font-weight: 300;
+				color: #fff;
+				font-size: 1rem;
+				letter-spacing: 0.03em;
+			}
+			.doc div span {
+				font-size: 0.78rem;
+				color: var(--dim);
+				font-weight: 300;
+			}
 
-/* ---------- support ---------- */
-.sup-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:22px}
-.sup{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:34px;text-align:center;transition:border-color .3s,transform .3s}
-.sup:hover{border-color:var(--line-hot);transform:translateY(-3px)}
-.sup svg{width:30px;height:30px;fill:none;stroke:var(--red);stroke-width:1.4;margin-bottom:18px}
-.sup h3{font-weight:300;color:#fff;font-size:1.2rem;margin-bottom:10px;letter-spacing:.03em}
-.sup p{font-size:.88rem;color:var(--mut);font-weight:300;margin-bottom:20px}
-.sup a.link{font-family:var(--mono);font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;color:var(--red);transition:color .2s}
-.sup a.link:hover{color:#fff}
+			/* ---------- support ---------- */
+			.sup-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+				gap: 22px;
+			}
+			.sup {
+				background: var(--panel);
+				border: 1px solid var(--line);
+				border-radius: 4px;
+				padding: 34px;
+				text-align: center;
+				transition:
+					border-color 0.3s,
+					transform 0.3s;
+			}
+			.sup:hover {
+				border-color: var(--line-hot);
+				transform: translateY(-3px);
+			}
+			.sup svg {
+				width: 30px;
+				height: 30px;
+				fill: none;
+				stroke: var(--red);
+				stroke-width: 1.4;
+				margin-bottom: 18px;
+			}
+			.sup h3 {
+				font-weight: 300;
+				color: #fff;
+				font-size: 1.2rem;
+				margin-bottom: 10px;
+				letter-spacing: 0.03em;
+			}
+			.sup p {
+				font-size: 0.88rem;
+				color: var(--mut);
+				font-weight: 300;
+				margin-bottom: 20px;
+			}
+			.sup a.link {
+				font-family: var(--mono);
+				font-size: 0.74rem;
+				letter-spacing: 0.14em;
+				text-transform: uppercase;
+				color: var(--red);
+				transition: color 0.2s;
+			}
+			.sup a.link:hover {
+				color: #fff;
+			}
 
-/* ---------- footer ---------- */
-footer{border-top:1px solid var(--line);padding:46px 0;text-align:center}
-footer .f-brand{font-size:1.1rem;font-weight:300;letter-spacing:.1em;color:#fff;margin-bottom:10px}
-footer .f-brand b{color:var(--red);font-weight:400}
-footer p{font-family:var(--mono);font-size:.72rem;color:var(--dim);letter-spacing:.1em}
-footer a{color:var(--mut);transition:color .2s}
-footer a:hover{color:var(--red)}
+			/* ---------- footer ---------- */
+			footer {
+				border-top: 1px solid var(--line);
+				padding: 46px 0;
+				text-align: center;
+			}
+			footer .f-brand {
+				font-size: 1.1rem;
+				font-weight: 300;
+				letter-spacing: 0.1em;
+				color: #fff;
+				margin-bottom: 10px;
+			}
+			footer .f-brand b {
+				color: var(--red);
+				font-weight: 400;
+			}
+			footer p {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				color: var(--dim);
+				letter-spacing: 0.1em;
+			}
+			footer a {
+				color: var(--mut);
+				transition: color 0.2s;
+			}
+			footer a:hover {
+				color: var(--red);
+			}
 
-/* ---------- reveal ---------- */
-.rv{opacity:0;transform:translateY(26px);transition:opacity .8s ease,transform .8s ease}
-.rv.in{opacity:1;transform:none}
+			/* ---------- reveal ---------- */
+			.rv {
+				opacity: 0;
+				transform: translateY(26px);
+				transition:
+					opacity 0.8s ease,
+					transform 0.8s ease;
+			}
+			.rv.in {
+				opacity: 1;
+				transform: none;
+			}
 
-/* ---------- mobile ---------- */
-@media(max-width:768px){
-  .hero{padding:96px 16px 50px}
-  h1{font-size:2.2rem}
-  h1 br{display:none}
-  .kicker{font-size:.58rem;letter-spacing:.22em}
-  .kicker::before,.kicker::after{margin:0 8px}
-  .hero-sub{font-size:1rem;margin-bottom:34px}
-  .btn-row{gap:12px;margin-bottom:34px}
-  .btn{width:100%;max-width:320px;justify-content:center;padding:14px 20px}
-  section{padding:70px 0}
-  .sec-head{margin-bottom:40px}
-  .sec-head h2{font-size:1.9rem}
-  .stat{padding:22px 8px}
-  .stat b{font-size:1.5rem}
-  .ide-tabs{overflow-x:auto;scrollbar-width:none}
-  .ide-tabs::-webkit-scrollbar{display:none}
-  .ide-tab{padding:10px 16px;white-space:nowrap}
-  .term{font-size:.66rem}
-  .dl-src{gap:14px;padding:18px}
-  .dl-src .term{min-width:0;width:100%}
-  .dl,.sup,.card{padding:26px}
-}
-</style>
-</head>
-<body>
+			/* ---------- mobile ---------- */
+			@media (max-width: 768px) {
+				.hero {
+					padding: 96px 16px 50px;
+				}
+				h1 {
+					font-size: 2.2rem;
+				}
+				h1 br {
+					display: none;
+				}
+				.kicker {
+					font-size: 0.58rem;
+					letter-spacing: 0.22em;
+				}
+				.kicker::before,
+				.kicker::after {
+					margin: 0 8px;
+				}
+				.hero-sub {
+					font-size: 1rem;
+					margin-bottom: 34px;
+				}
+				.btn-row {
+					gap: 12px;
+					margin-bottom: 34px;
+				}
+				.btn {
+					width: 100%;
+					max-width: 320px;
+					justify-content: center;
+					padding: 14px 20px;
+				}
+				section {
+					padding: 70px 0;
+				}
+				.sec-head {
+					margin-bottom: 40px;
+				}
+				.sec-head h2 {
+					font-size: 1.9rem;
+				}
+				.stat {
+					padding: 22px 8px;
+				}
+				.stat b {
+					font-size: 1.5rem;
+				}
+				.ide-tabs {
+					overflow-x: auto;
+					scrollbar-width: none;
+				}
+				.ide-tabs::-webkit-scrollbar {
+					display: none;
+				}
+				.ide-tab {
+					padding: 10px 16px;
+					white-space: nowrap;
+				}
+				.term {
+					font-size: 0.66rem;
+				}
+				.dl-src {
+					gap: 14px;
+					padding: 18px;
+				}
+				.dl-src .term {
+					min-width: 0;
+					width: 100%;
+				}
+				.dl,
+				.sup,
+				.card {
+					padding: 26px;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<nav>
+			<div class="nav-inner">
+				<a class="brand" href="#"
+					><img src="favicon.svg" alt="" /><span
+						>Safe<b>light</b></span
+					></a
+				>
+				<div class="nav-links">
+					<a href="#features">Features</a>
+					<a href="#screenshots">Screenshots</a>
+					<a href="#download">Download</a>
+					<a href="#docs">Docs</a>
+					<a href="#support">Support</a>
+					<a
+						class="nav-cta"
+						href="https://github.com/anthonyreimche/SafeLight"
+						target="_blank"
+						>GitHub</a
+					>
+				</div>
+				<button class="nav-burger" id="burger" aria-label="Menu">
+					☰
+				</button>
+			</div>
+		</nav>
 
-<nav>
-  <div class="nav-inner">
-    <a class="brand" href="#"><img src="favicon.svg" alt=""><span>Safe<b>light</b></span></a>
-    <div class="nav-links">
-      <a href="#features">Features</a>
-      <a href="#screenshots">Screenshots</a>
-      <a href="#download">Download</a>
-      <a href="#docs">Docs</a>
-      <a href="#support">Support</a>
-      <a class="nav-cta" href="https://github.com/anthonyreimche/SafeLight" target="_blank">GitHub</a>
-    </div>
-    <button class="nav-burger" id="burger" aria-label="Menu">☰</button>
-  </div>
-</nav>
+		<header class="hero">
+			<div class="panels" aria-hidden="true">
+				<div
+					class="fp"
+					style="
+						--x: -35vw;
+						--y: -15vh;
+						--r: -6deg;
+						--rx: 6deg;
+						--ry: 16deg;
+						--s: 1.05;
+						--o: 0.92;
+						--d: 0.05s;
+						--bd: 7s;
+					"
+				>
+					<div class="fp-in">
+						<h5>tone curve</h5>
+						<div class="ptabs">
+							<b>RGB</b><b class="on">R</b><b>G</b><b>B</b>
+						</div>
+						<svg class="plot" viewBox="0 0 100 70">
+							<path
+								d="M25 0V70M50 0V70M75 0V70M0 17.5H100M0 35H100M0 52.5H100"
+								stroke="rgba(255,255,255,.07)"
+								stroke-width="1"
+							/>
+							<path
+								d="M0 70 L100 0"
+								stroke="#3a3a40"
+								stroke-width="1"
+							/>
+							<path
+								d="M0 70 C 18 62, 27 51, 38 40 S 64 15, 78 9 S 95 2, 100 0"
+								fill="none"
+								stroke="#de4337"
+								stroke-width="1.8"
+							/>
+							<circle cx="0" cy="70" r="3" fill="#fff" />
+							<circle cx="38" cy="40" r="3" fill="#fff" />
+							<circle cx="78" cy="9" r="3" fill="#fff" />
+							<circle cx="100" cy="0" r="3" fill="#fff" />
+						</svg>
+						<div class="hint">Click to add · drag to move</div>
+					</div>
+				</div>
+				<div
+					class="fp"
+					style="
+						--x: 35vw;
+						--y: -13vh;
+						--r: 5deg;
+						--rx: 6deg;
+						--ry: -16deg;
+						--s: 1;
+						--o: 0.92;
+						--d: 0.15s;
+						--bd: 9s;
+					"
+				>
+					<div class="fp-in">
+						<h5>basic</h5>
+						<div class="row">
+							<span>Exposure</span>
+							<div class="tk" style="--w: 64%"><b></b></div>
+							<em>+0.35</em>
+						</div>
+						<div class="row">
+							<span>Contrast</span>
+							<div class="tk" style="--w: 56%"><b></b></div>
+							<em>+12</em>
+						</div>
+						<div class="row">
+							<span>Highlights</span>
+							<div class="tk" style="--w: 26%"><b></b></div>
+							<em>-48</em>
+						</div>
+						<div class="row">
+							<span>Shadows</span>
+							<div class="tk" style="--w: 66%"><b></b></div>
+							<em>+31</em>
+						</div>
+						<div class="row">
+							<span>Clarity</span>
+							<div class="tk" style="--w: 54%"><b></b></div>
+							<em>+8</em>
+						</div>
+					</div>
+				</div>
+				<div
+					class="fp"
+					style="
+						--x: -29vw;
+						--y: 17vh;
+						--r: 4deg;
+						--rx: -8deg;
+						--ry: 14deg;
+						--s: 0.92;
+						--o: 0.85;
+						--d: 0.25s;
+						--bd: 8s;
+					"
+				>
+					<div class="fp-in">
+						<h5>histogram</h5>
+						<svg class="plot" viewBox="0 0 100 38">
+							<path
+								d="M0 38 V35.5 C6 35.8,10 34.5,16 33.8 C22 33,27 31.5,32 29.5 C37 27.5,41 26.5,45 22 C48 18.5,50 21,53 14 C55.5 8,57.5 16,60 7 C62 1.5,64 11,66.5 5 C68.5 1,70.5 13,74 9.5 C77 6.5,79 19,83 15 C86 12,88.5 23.5,92 21 C95 19,97.5 27,100 25.5 V38 Z"
+								fill="#d8463a"
+							/>
+						</svg>
+						<div class="ptabs">
+							<b>LUM</b><b>RGB</b><b class="on">R</b><b>G</b
+							><b>B</b>
+						</div>
+					</div>
+				</div>
+				<div
+					class="fp"
+					style="
+						--x: 30vw;
+						--y: 18vh;
+						--r: -4deg;
+						--rx: -8deg;
+						--ry: -14deg;
+						--s: 0.95;
+						--o: 0.85;
+						--d: 0.35s;
+						--bd: 10s;
+					"
+				>
+					<div class="fp-in">
+						<h5>color grading</h5>
+						<div class="wlabel">
+							<span>Shadows</span><span>Midtones</span>
+						</div>
+						<div class="wheels">
+							<div class="wh" style="--mx: 44%; --my: 20%"></div>
+							<div class="wh" style="--mx: 55%; --my: 52%"></div>
+						</div>
+						<div class="row">
+							<span>Luma</span>
+							<div class="tk" style="--w: 30%"><b></b></div>
+							<em>-33</em>
+						</div>
+						<div class="row">
+							<span>Hi Range</span>
+							<div class="tk" style="--w: 63%"><b></b></div>
+							<em>+63</em>
+						</div>
+					</div>
+				</div>
+				<div
+					class="fp mid"
+					style="
+						--x: -14vw;
+						--y: -27vh;
+						--r: 3deg;
+						--rx: 10deg;
+						--ry: 7deg;
+						--s: 0.8;
+						--o: 0.75;
+						--d: 0.45s;
+						--bd: 11s;
+					"
+				>
+					<div class="fp-in">
+						<h5>filters</h5>
+						<div class="cat">
+							<span>All Photos</span><i>374</i><span>Picks</span
+							><i>5</i><span class="sel">Rated</span><i>7</i>
+						</div>
+						<div class="row">
+							<span>Rating ≥</span
+							><em class="stars">★★<i>☆☆☆</i></em>
+						</div>
+						<div class="row">
+							<span>Label</span>
+							<div class="labels">
+								<b class="dot8" style="background: #e0483c"></b
+								><b class="dot8" style="background: #b07818"></b
+								><b class="dot8" style="background: #2e9e62"></b
+								><b class="dot8" style="background: #3878c0"></b
+								><b
+									class="dot8"
+									style="background: #8a56c0"
+								></b>
+							</div>
+						</div>
+					</div>
+				</div>
+				<div
+					class="fp mid"
+					style="
+						--x: 23vw;
+						--y: 31vh;
+						--r: -3deg;
+						--rx: -10deg;
+						--ry: -8deg;
+						--s: 0.85;
+						--o: 0.75;
+						--d: 0.55s;
+						--bd: 7.5s;
+					"
+				>
+					<div class="fp-in">
+						<h5>info</h5>
+						<svg class="plot" viewBox="0 0 100 28">
+							<path
+								d="M0 28 V4.5 C1.5 8.5,3 5.5,5 7.5 C8 10.5,11 14,15 13 C19.5 11.8,23 18.5,29 17.5 C35 16.5,41 13.5,47 15.5 C54 17.8,62 20.5,70 22.5 C79 24.5,89 26,100 26.6 V28 Z"
+								fill="#d8463a"
+							/>
+						</svg>
+						<div class="meta">
+							<span>Camera</span><i>NIKON Z 6_2</i
+							><span>Aperture</span><i>f/4</i><span>Shutter</span
+							><i>1/15</i><span>ISO</span><i>100</i>
+						</div>
+					</div>
+				</div>
+				<div
+					class="fp far"
+					style="
+						--x: 44vw;
+						--y: 4vh;
+						--r: 6deg;
+						--rx: 2deg;
+						--ry: -22deg;
+						--s: 0.72;
+						--o: 0.6;
+						--d: 0.65s;
+						--bd: 12s;
+					"
+				>
+					<div class="fp-in">
+						<h5>hsl</h5>
+						<div class="ptabs">
+							<b>HUE</b><b class="onw">SAT</b><b>LUM</b>
+						</div>
+						<div class="row">
+							<b class="dot8" style="background: #e0483c"></b>
+							<div class="tk" style="--w: 62%"><b></b></div>
+							<em>+33</em>
+						</div>
+						<div class="row">
+							<b class="dot8" style="background: #e07a2e"></b>
+							<div class="tk" style="--w: 38%"><b></b></div>
+							<em>-18</em>
+						</div>
+						<div class="row">
+							<b class="dot8" style="background: #36b35c"></b>
+							<div class="tk" style="--w: 62%"><b></b></div>
+							<em>+33</em>
+						</div>
+						<div class="row">
+							<b class="dot8" style="background: #2f8fd8"></b>
+							<div class="tk" style="--w: 46%"><b></b></div>
+							<em>-6</em>
+						</div>
+					</div>
+				</div>
+				<div
+					class="fp far"
+					style="
+						--x: -44vw;
+						--y: 1vh;
+						--r: -7deg;
+						--rx: 2deg;
+						--ry: 22deg;
+						--s: 0.75;
+						--o: 0.6;
+						--d: 0.75s;
+						--bd: 9.5s;
+					"
+				>
+					<div class="fp-in">
+						<h5>crop &amp; straighten</h5>
+						<div class="btns">
+							<b>Free</b><b class="on">Original</b><b>1:1</b
+							><b>3:2</b><b>4:3</b><b>16:9</b>
+						</div>
+						<div class="row">
+							<span>Straighten</span>
+							<div class="tk" style="--w: 55%"><b></b></div>
+							<em>+5.6</em>
+						</div>
+					</div>
+				</div>
+			</div>
+			<div class="hero-vig"></div>
+			<div class="hero-glow"></div>
+			<div class="wrap">
+				<div class="kicker">Free · Open Source · RAW Photo Editor</div>
+				<h1>
+					Your tools should follow your workflow.<br /><em
+						>Not the other way around.</em
+					>
+				</h1>
+				<p class="hero-sub">
+					Safelight is a GPU-accelerated RAW editor built like a
+					modern IDE — dock, float, rearrange, or replace every panel
+					until the darkroom fits you. Zero cost. Zero subscription.
+					Fully offline.
+				</p>
+				<div class="btn-row">
+					<a
+						class="btn btn-primary"
+						href="https://github.com/anthonyreimche/SafeLight/releases"
+						target="_blank"
+					>
+						<svg viewBox="0 0 24 24">
+							<path
+								d="M12 16l-6-6h4V3h4v7h4l-6 6zm-8 2h16v3H4v-3z"
+							/>
+						</svg>
+						Download v1.0
+					</a>
+					<a class="btn btn-ghost" href="#screenshots"
+						>See it in action</a
+					>
+				</div>
+				<div class="hero-meta">
+					<span>Windows</span><i>/</i><span>Linux</span><i>/</i
+					><span>Browser</span><i>·</i>MIT licensed<i>·</i>v1.0.2
+				</div>
+			</div>
+		</header>
 
-<header class="hero">
-  <div class="panels" aria-hidden="true">
-    <div class="fp" style="--x:-35vw;--y:-15vh;--r:-6deg;--rx:6deg;--ry:16deg;--s:1.05;--o:.92;--d:.05s;--bd:7s"><div class="fp-in">
-      <h5>tone curve</h5>
-      <div class="ptabs"><b>RGB</b><b class="on">R</b><b>G</b><b>B</b></div>
-      <svg class="plot" viewBox="0 0 100 70">
-        <path d="M25 0V70M50 0V70M75 0V70M0 17.5H100M0 35H100M0 52.5H100" stroke="rgba(255,255,255,.07)" stroke-width="1"/>
-        <path d="M0 70 L100 0" stroke="#3a3a40" stroke-width="1"/>
-        <path d="M0 70 C 18 62, 27 51, 38 40 S 64 15, 78 9 S 95 2, 100 0" fill="none" stroke="#de4337" stroke-width="1.8"/>
-        <circle cx="0" cy="70" r="3" fill="#fff"/><circle cx="38" cy="40" r="3" fill="#fff"/><circle cx="78" cy="9" r="3" fill="#fff"/><circle cx="100" cy="0" r="3" fill="#fff"/>
-      </svg>
-      <div class="hint">Click to add · drag to move</div>
-    </div></div>
-    <div class="fp" style="--x:35vw;--y:-13vh;--r:5deg;--rx:6deg;--ry:-16deg;--s:1;--o:.92;--d:.15s;--bd:9s"><div class="fp-in">
-      <h5>basic</h5>
-      <div class="row"><span>Exposure</span><div class="tk" style="--w:64%"><b></b></div><em>+0.35</em></div>
-      <div class="row"><span>Contrast</span><div class="tk" style="--w:56%"><b></b></div><em>+12</em></div>
-      <div class="row"><span>Highlights</span><div class="tk" style="--w:26%"><b></b></div><em>-48</em></div>
-      <div class="row"><span>Shadows</span><div class="tk" style="--w:66%"><b></b></div><em>+31</em></div>
-      <div class="row"><span>Clarity</span><div class="tk" style="--w:54%"><b></b></div><em>+8</em></div>
-    </div></div>
-    <div class="fp" style="--x:-29vw;--y:17vh;--r:4deg;--rx:-8deg;--ry:14deg;--s:.92;--o:.85;--d:.25s;--bd:8s"><div class="fp-in">
-      <h5>histogram</h5>
-      <svg class="plot" viewBox="0 0 100 38">
-        <path d="M0 38 V35.5 C6 35.8,10 34.5,16 33.8 C22 33,27 31.5,32 29.5 C37 27.5,41 26.5,45 22 C48 18.5,50 21,53 14 C55.5 8,57.5 16,60 7 C62 1.5,64 11,66.5 5 C68.5 1,70.5 13,74 9.5 C77 6.5,79 19,83 15 C86 12,88.5 23.5,92 21 C95 19,97.5 27,100 25.5 V38 Z" fill="#d8463a"/>
-      </svg>
-      <div class="ptabs"><b>LUM</b><b>RGB</b><b class="on">R</b><b>G</b><b>B</b></div>
-    </div></div>
-    <div class="fp" style="--x:30vw;--y:18vh;--r:-4deg;--rx:-8deg;--ry:-14deg;--s:.95;--o:.85;--d:.35s;--bd:10s"><div class="fp-in">
-      <h5>color grading</h5>
-      <div class="wlabel"><span>Shadows</span><span>Midtones</span></div>
-      <div class="wheels"><div class="wh" style="--mx:44%;--my:20%"></div><div class="wh" style="--mx:55%;--my:52%"></div></div>
-      <div class="row"><span>Luma</span><div class="tk" style="--w:30%"><b></b></div><em>-33</em></div>
-      <div class="row"><span>Hi Range</span><div class="tk" style="--w:63%"><b></b></div><em>+63</em></div>
-    </div></div>
-    <div class="fp mid" style="--x:-14vw;--y:-27vh;--r:3deg;--rx:10deg;--ry:7deg;--s:.8;--o:.75;--d:.45s;--bd:11s"><div class="fp-in">
-      <h5>filters</h5>
-      <div class="cat"><span>All Photos</span><i>374</i><span>Picks</span><i>5</i><span class="sel">Rated</span><i>7</i></div>
-      <div class="row"><span>Rating ≥</span><em class="stars">★★<i>☆☆☆</i></em></div>
-      <div class="row"><span>Label</span><div class="labels"><b class="dot8" style="background:#e0483c"></b><b class="dot8" style="background:#b07818"></b><b class="dot8" style="background:#2e9e62"></b><b class="dot8" style="background:#3878c0"></b><b class="dot8" style="background:#8a56c0"></b></div></div>
-    </div></div>
-    <div class="fp mid" style="--x:23vw;--y:31vh;--r:-3deg;--rx:-10deg;--ry:-8deg;--s:.85;--o:.75;--d:.55s;--bd:7.5s"><div class="fp-in">
-      <h5>info</h5>
-      <svg class="plot" viewBox="0 0 100 28">
-        <path d="M0 28 V4.5 C1.5 8.5,3 5.5,5 7.5 C8 10.5,11 14,15 13 C19.5 11.8,23 18.5,29 17.5 C35 16.5,41 13.5,47 15.5 C54 17.8,62 20.5,70 22.5 C79 24.5,89 26,100 26.6 V28 Z" fill="#d8463a"/>
-      </svg>
-      <div class="meta"><span>Camera</span><i>NIKON Z 6_2</i><span>Aperture</span><i>f/4</i><span>Shutter</span><i>1/15</i><span>ISO</span><i>100</i></div>
-    </div></div>
-    <div class="fp far" style="--x:44vw;--y:4vh;--r:6deg;--rx:2deg;--ry:-22deg;--s:.72;--o:.6;--d:.65s;--bd:12s"><div class="fp-in">
-      <h5>hsl</h5>
-      <div class="ptabs"><b>HUE</b><b class="onw">SAT</b><b>LUM</b></div>
-      <div class="row"><b class="dot8" style="background:#e0483c"></b><div class="tk" style="--w:62%"><b></b></div><em>+33</em></div>
-      <div class="row"><b class="dot8" style="background:#e07a2e"></b><div class="tk" style="--w:38%"><b></b></div><em>-18</em></div>
-      <div class="row"><b class="dot8" style="background:#36b35c"></b><div class="tk" style="--w:62%"><b></b></div><em>+33</em></div>
-      <div class="row"><b class="dot8" style="background:#2f8fd8"></b><div class="tk" style="--w:46%"><b></b></div><em>-6</em></div>
-    </div></div>
-    <div class="fp far" style="--x:-44vw;--y:1vh;--r:-7deg;--rx:2deg;--ry:22deg;--s:.75;--o:.6;--d:.75s;--bd:9.5s"><div class="fp-in">
-      <h5>crop &amp; straighten</h5>
-      <div class="btns"><b>Free</b><b class="on">Original</b><b>1:1</b><b>3:2</b><b>4:3</b><b>16:9</b></div>
-      <div class="row"><span>Straighten</span><div class="tk" style="--w:55%"><b></b></div><em>+5.6</em></div>
-    </div></div>
-  </div>
-  <div class="hero-vig"></div>
-  <div class="hero-glow"></div>
-  <div class="wrap">
-    <div class="kicker">Free · Open Source · RAW Photo Editor</div>
-    <h1>Your tools should follow your workflow.<br><em>Not the other way around.</em></h1>
-    <p class="hero-sub">Safelight is a GPU-accelerated RAW editor built like a modern IDE — dock, float, rearrange, or replace every panel until the darkroom fits you. Zero cost. Zero subscription. Fully offline.</p>
-    <div class="btn-row">
-      <a class="btn btn-primary" href="https://github.com/anthonyreimche/SafeLight/releases" target="_blank">
-        <svg viewBox="0 0 24 24"><path d="M12 16l-6-6h4V3h4v7h4l-6 6zm-8 2h16v3H4v-3z"/></svg>
-        Download v1.0
-      </a>
-      <a class="btn btn-ghost" href="#screenshots">See it in action</a>
-    </div>
-    <div class="hero-meta"><span>Windows</span><i>/</i><span>Linux</span><i>/</i><span>Browser</span><i>·</i>MIT licensed<i>·</i>v1.0.0</div>
-  </div>
-</header>
+		<div class="stats">
+			<div class="wrap">
+				<div class="stat">
+					<b><i>$</i>0</b><span>Forever free</span>
+				</div>
+				<div class="stat">
+					<b>30<i>+</i></b
+					><span>RAW formats</span>
+				</div>
+				<div class="stat">
+					<b><i>0</i></b
+					><span>Telemetry</span>
+				</div>
+				<div class="stat">
+					<b>100<i>%</i></b
+					><span>GPU pipeline</span>
+				</div>
+			</div>
+		</div>
 
-<div class="stats">
-  <div class="wrap">
-    <div class="stat"><b><i>$</i>0</b><span>Forever free</span></div>
-    <div class="stat"><b>30<i>+</i></b><span>RAW formats</span></div>
-    <div class="stat"><b><i>0</i></b><span>Telemetry</span></div>
-    <div class="stat"><b>100<i>%</i></b><span>GPU pipeline</span></div>
-  </div>
-</div>
+		<section id="features">
+			<div class="wrap">
+				<div class="sec-head rv">
+					<span class="sec-tag">// features</span>
+					<h2>Built for serious editing</h2>
+					<p>
+						Everything you expect from a professional RAW workflow —
+						without the subscription, the cloud, or the lock-in.
+					</p>
+				</div>
+				<div class="grid">
+					<div class="card rv">
+						<span class="num">01</span>
+						<h3>Non-Destructive &amp; Portable</h3>
+						<p>
+							Open a folder and edit. Originals are never touched
+							— ratings, flags, and full edit history live in a
+							<code>.safelight/</code> directory, so every project
+							is fully portable.
+						</p>
+					</div>
+					<div class="card rv">
+						<span class="num">02</span>
+						<h3>Real RAW Support</h3>
+						<p>
+							Full-resolution decoding via libraw-wasm plus an
+							in-house linear-float CFA/DNG decoder. NEF, CR2/CR3,
+							ARW, DNG, ORF, RAF, RW2 and many more.
+						</p>
+					</div>
+					<div class="card rv">
+						<span class="num">03</span>
+						<h3>GPU Shader Pipeline</h3>
+						<p>
+							Every adjustment renders through a WebGL2 shader
+							pipeline with optional 16-bit textures for
+							high-bit-depth editing — from tone curves to local
+							masks.
+						</p>
+					</div>
+					<div class="card rv">
+						<span class="num">04</span>
+						<h3>Privacy First</h3>
+						<p>
+							No telemetry, no cloud, no accounts, no data
+							collection. Exports carry no EXIF or location
+							metadata by design.
+						</p>
+					</div>
+					<div class="card rv">
+						<span class="num">05</span>
+						<h3>IDE-Like Workspace</h3>
+						<p>
+							Photoshop-style docking — drag, tab, float, or
+							minimize any panel. Named layouts, themes,
+							rebindable shortcuts, and detachable windows for
+							multi-monitor work.
+						</p>
+					</div>
+					<div class="card rv">
+						<span class="num">06</span>
+						<h3>Open Extension System</h3>
+						<p>
+							Install extensions straight from GitHub repos to add
+							panels, themes, and layouts. Any stock panel can be
+							disabled and replaced by a community version.
+						</p>
+					</div>
+					<div class="card rv">
+						<span class="num">07</span>
+						<h3>Complete Develop Module</h3>
+						<p>
+							Tone curves per channel, HSL mixer, color grading
+							wheels, sharpening and noise reduction, lens
+							corrections, crop and transform, radial / linear /
+							brush masks, heal and clone.
+						</p>
+					</div>
+					<div class="card rv">
+						<span class="num">08</span>
+						<h3>Lightroom-Style Culling</h3>
+						<p>
+							Ratings, color labels, pick / reject flags with the
+							keyboard shortcuts you already know. Filters,
+							sorting, EXIF and histogram — with background RAW
+							pre-decode so Develop opens instantly.
+						</p>
+					</div>
+					<div class="card rv">
+						<span class="num">09</span>
+						<h3>Batch GPU Export</h3>
+						<p>
+							JPEG, PNG, and WebP through the same pipeline used
+							for editing, with quality and long-edge controls.
+							Export many photos as a ZIP or separate files —
+							metadata-free.
+						</p>
+					</div>
+				</div>
+			</div>
+		</section>
 
-<section id="features">
-  <div class="wrap">
-    <div class="sec-head rv">
-      <span class="sec-tag">// features</span>
-      <h2>Built for serious editing</h2>
-      <p>Everything you expect from a professional RAW workflow — without the subscription, the cloud, or the lock-in.</p>
-    </div>
-    <div class="grid">
-      <div class="card rv"><span class="num">01</span><h3>Non-Destructive &amp; Portable</h3><p>Open a folder and edit. Originals are never touched — ratings, flags, and full edit history live in a <code>.safelight/</code> directory, so every project is fully portable.</p></div>
-      <div class="card rv"><span class="num">02</span><h3>Real RAW Support</h3><p>Full-resolution decoding via libraw-wasm plus an in-house linear-float CFA/DNG decoder. NEF, CR2/CR3, ARW, DNG, ORF, RAF, RW2 and many more.</p></div>
-      <div class="card rv"><span class="num">03</span><h3>GPU Shader Pipeline</h3><p>Every adjustment renders through a WebGL2 shader pipeline with optional 16-bit textures for high-bit-depth editing — from tone curves to local masks.</p></div>
-      <div class="card rv"><span class="num">04</span><h3>Privacy First</h3><p>No telemetry, no cloud, no accounts, no data collection. Exports carry no EXIF or location metadata by design.</p></div>
-      <div class="card rv"><span class="num">05</span><h3>IDE-Like Workspace</h3><p>Photoshop-style docking — drag, tab, float, or minimize any panel. Named layouts, themes, rebindable shortcuts, and detachable windows for multi-monitor work.</p></div>
-      <div class="card rv"><span class="num">06</span><h3>Open Extension System</h3><p>Install extensions straight from GitHub repos to add panels, themes, and layouts. Any stock panel can be disabled and replaced by a community version.</p></div>
-      <div class="card rv"><span class="num">07</span><h3>Complete Develop Module</h3><p>Tone curves per channel, HSL mixer, color grading wheels, sharpening and noise reduction, lens corrections, crop and transform, radial / linear / brush masks, heal and clone.</p></div>
-      <div class="card rv"><span class="num">08</span><h3>Lightroom-Style Culling</h3><p>Ratings, color labels, pick / reject flags with the keyboard shortcuts you already know. Filters, sorting, EXIF and histogram — with background RAW pre-decode so Develop opens instantly.</p></div>
-      <div class="card rv"><span class="num">09</span><h3>Batch GPU Export</h3><p>JPEG, PNG, and WebP through the same pipeline used for editing, with quality and long-edge controls. Export many photos as a ZIP or separate files — metadata-free.</p></div>
-    </div>
-  </div>
-</section>
+		<section id="screenshots" class="shots">
+			<div class="wrap">
+				<div class="sec-head rv">
+					<span class="sec-tag">// screenshots</span>
+					<h2>Your workspace, your rules</h2>
+					<p>
+						Library, Develop, and a fully dockable panel system —
+						arranged however you work.
+					</p>
+				</div>
+				<div class="ide rv">
+					<div class="ide-bar">
+						<span class="dot r"></span><span class="dot"></span
+						><span class="dot"></span>
+						<span class="ide-title">safelight — workspace</span>
+					</div>
+					<div class="ide-tabs" id="tabs">
+						<button
+							class="ide-tab on"
+							data-src="https://github.com/user-attachments/assets/4d9fc0f7-1af9-4040-8684-f927cc7fa757"
+							data-cap="LIBRARY — GRID VIEW · CULLING · FILTERS"
+						>
+							library.tsx
+						</button>
+						<button
+							class="ide-tab"
+							data-src="https://github.com/user-attachments/assets/960afdee-95d0-498b-9988-6c9b63a285a6"
+							data-cap="DEVELOP — TONE CURVES · HSL · COLOR GRADING"
+						>
+							develop.tsx
+						</button>
+						<button
+							class="ide-tab"
+							data-src="https://github.com/user-attachments/assets/fe9c8403-b46c-4f71-bf99-ed3c9b11104f"
+							data-cap="DEVELOP — LOCAL ADJUSTMENTS · MASKS"
+						>
+							masks.tsx
+						</button>
+						<button
+							class="ide-tab"
+							data-src="https://github.com/user-attachments/assets/811242de-0973-4378-bfb5-7add1433595e"
+							data-cap="WORKSPACE — DOCKING · CUSTOM LAYOUTS"
+						>
+							layout.json
+						</button>
+					</div>
+					<img
+						id="shot"
+						src="https://github.com/user-attachments/assets/4d9fc0f7-1af9-4040-8684-f927cc7fa757"
+						alt="Safelight screenshot"
+						loading="lazy"
+					/>
+				</div>
+				<div class="shot-cap" id="cap">
+					LIBRARY — GRID VIEW · CULLING · FILTERS
+				</div>
+			</div>
+		</section>
 
-<section id="screenshots" class="shots">
-  <div class="wrap">
-    <div class="sec-head rv">
-      <span class="sec-tag">// screenshots</span>
-      <h2>One workspace, your rules</h2>
-      <p>Library, Develop, and a fully dockable panel system — arranged however you work.</p>
-    </div>
-    <div class="ide rv">
-      <div class="ide-bar">
-        <span class="dot r"></span><span class="dot"></span><span class="dot"></span>
-        <span class="ide-title">safelight — workspace</span>
-      </div>
-      <div class="ide-tabs" id="tabs">
-        <button class="ide-tab on" data-src="https://github.com/user-attachments/assets/4d9fc0f7-1af9-4040-8684-f927cc7fa757" data-cap="LIBRARY — GRID VIEW · CULLING · FILTERS">library.tsx</button>
-        <button class="ide-tab" data-src="https://github.com/user-attachments/assets/960afdee-95d0-498b-9988-6c9b63a285a6" data-cap="DEVELOP — TONE CURVES · HSL · COLOR GRADING">develop.tsx</button>
-        <button class="ide-tab" data-src="https://github.com/user-attachments/assets/fe9c8403-b46c-4f71-bf99-ed3c9b11104f" data-cap="DEVELOP — LOCAL ADJUSTMENTS · MASKS">masks.tsx</button>
-        <button class="ide-tab" data-src="https://github.com/user-attachments/assets/811242de-0973-4378-bfb5-7add1433595e" data-cap="WORKSPACE — DOCKING · CUSTOM LAYOUTS">layout.json</button>
-      </div>
-      <img id="shot" src="https://github.com/user-attachments/assets/4d9fc0f7-1af9-4040-8684-f927cc7fa757" alt="Safelight screenshot" loading="lazy">
-    </div>
-    <div class="shot-cap" id="cap">LIBRARY — GRID VIEW · CULLING · FILTERS</div>
-  </div>
-</section>
+		<section id="download">
+			<div class="wrap">
+				<div class="sec-head rv">
+					<span class="sec-tag">// download</span>
+					<h2>Get Safelight 1.0</h2>
+					<p>
+						Pick your platform. No account, no installer telemetry,
+						no strings.
+					</p>
+				</div>
+				<div class="dl-grid">
+					<div class="dl hot rv">
+						<span class="badge">Recommended</span>
+						<h3>Windows Desktop</h3>
+						<p>
+							Fastest RAW decode path and full GPU acceleration.
+						</p>
+						<ul>
+							<li>Safelight Setup installer (.exe)</li>
+							<li>Native file-system access</li>
+							<li>Multi-window, multi-monitor</li>
+						</ul>
+						<a
+							class="btn btn-primary"
+							href="https://github.com/anthonyreimche/SafeLight/releases"
+							target="_blank"
+							>Download for Windows</a
+						>
+					</div>
+					<div class="dl rv">
+						<span
+							class="badge"
+							style="color: var(--mut); border-color: var(--line)"
+							>All distros</span
+						>
+						<h3>Linux</h3>
+						<p>Native packages for every major distribution.</p>
+						<ul>
+							<li>.deb — Debian / Ubuntu</li>
+							<li>.rpm — Fedora / openSUSE</li>
+							<li>.pacman — Arch / Manjaro</li>
+							<li>Flatpak &amp; portable AppImage</li>
+						</ul>
+						<a
+							class="btn btn-ghost"
+							href="https://github.com/anthonyreimche/SafeLight/releases"
+							target="_blank"
+							>Download for Linux</a
+						>
+					</div>
+				</div>
+				<div class="dl-src rv">
+					<div>
+						<h4>Browser / from source</h4>
+						<p>
+							Runs in any Chromium-based browser. Note: extensions
+							require the desktop app.
+						</p>
+					</div>
+					<div class="term">
+						<span class="p">$</span> git clone
+						https://github.com/anthonyreimche/SafeLight.git<br />
+						<span class="p">$</span> cd SafeLight &amp;&amp; npm
+						install &amp;&amp; npm run dev
+					</div>
+					<a
+						class="link-mono"
+						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/installation.md"
+						target="_blank"
+						>Install guide →</a
+					>
+				</div>
+			</div>
+		</section>
 
-<section id="download">
-  <div class="wrap">
-    <div class="sec-head rv">
-      <span class="sec-tag">// download</span>
-      <h2>Get Safelight 1.0</h2>
-      <p>Pick your platform. No account, no installer telemetry, no strings.</p>
-    </div>
-    <div class="dl-grid">
-      <div class="dl hot rv">
-        <span class="badge">Recommended</span>
-        <h3>Windows Desktop</h3>
-        <p>Fastest RAW decode path and full GPU acceleration.</p>
-        <ul>
-          <li>Safelight Setup installer (.exe)</li>
-          <li>Native file-system access</li>
-          <li>Multi-window, multi-monitor</li>
-        </ul>
-        <a class="btn btn-primary" href="https://github.com/anthonyreimche/SafeLight/releases" target="_blank">Download for Windows</a>
-      </div>
-      <div class="dl rv">
-        <span class="badge" style="color:var(--mut);border-color:var(--line)">All distros</span>
-        <h3>Linux</h3>
-        <p>Native packages for every major distribution.</p>
-        <ul>
-          <li>.deb — Debian / Ubuntu</li>
-          <li>.rpm — Fedora / openSUSE</li>
-          <li>.pacman — Arch / Manjaro</li>
-          <li>Flatpak &amp; portable AppImage</li>
-        </ul>
-        <a class="btn btn-ghost" href="https://github.com/anthonyreimche/SafeLight/releases" target="_blank">Download for Linux</a>
-      </div>
-    </div>
-    <div class="dl-src rv">
-      <div>
-        <h4>Browser / from source</h4>
-        <p>Runs in any Chromium-based browser. Note: extensions require the desktop app.</p>
-      </div>
-      <div class="term"><span class="p">$</span> git clone https://github.com/anthonyreimche/SafeLight.git<br>
-<span class="p">$</span> cd SafeLight &amp;&amp; npm install &amp;&amp; npm run dev</div>
-      <a class="link-mono" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/installation.md" target="_blank">Install guide →</a>
-    </div>
-  </div>
-</section>
+		<section id="docs">
+			<div class="wrap">
+				<div class="sec-head rv">
+					<span class="sec-tag">// documentation</span>
+					<h2>Read the docs</h2>
+				</div>
+				<div class="doc-grid rv">
+					<a
+						class="doc"
+						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/getting-started.md"
+						target="_blank"
+						><i>01</i>
+						<div>
+							<b>Getting Started</b
+							><span>First project, first edit</span>
+						</div></a
+					>
+					<a
+						class="doc"
+						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/installation.md"
+						target="_blank"
+						><i>02</i>
+						<div>
+							<b>Installation</b
+							><span>Desktop app &amp; source builds</span>
+						</div></a
+					>
+					<a
+						class="doc"
+						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user-guide.md"
+						target="_blank"
+						><i>03</i>
+						<div>
+							<b>User Guide</b><span>Complete feature docs</span>
+						</div></a
+					>
+					<a
+						class="doc"
+						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/extensions.md"
+						target="_blank"
+						><i>04</i>
+						<div>
+							<b>Extensions</b
+							><span>Install &amp; build extensions</span>
+						</div></a
+					>
+					<a
+						class="doc"
+						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/architecture.md"
+						target="_blank"
+						><i>05</i>
+						<div>
+							<b>Architecture</b><span>Technical overview</span>
+						</div></a
+					>
+					<a
+						class="doc"
+						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/api-documentation.md"
+						target="_blank"
+						><i>06</i>
+						<div>
+							<b>API Reference</b><span>Extension API</span>
+						</div></a
+					>
+					<a
+						class="doc"
+						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/changelog.md"
+						target="_blank"
+						><i>07</i>
+						<div>
+							<b>Changelog</b><span>What's new in 1.0</span>
+						</div></a
+					>
+					<a
+						class="doc"
+						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/contributing.md"
+						target="_blank"
+						><i>08</i>
+						<div>
+							<b>Contributing</b><span>Help build Safelight</span>
+						</div></a
+					>
+				</div>
+			</div>
+		</section>
 
-<section id="docs">
-  <div class="wrap">
-    <div class="sec-head rv">
-      <span class="sec-tag">// documentation</span>
-      <h2>Read the docs</h2>
-    </div>
-    <div class="doc-grid rv">
-      <a class="doc" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/getting-started.md" target="_blank"><i>01</i><div><b>Getting Started</b><span>First project, first edit</span></div></a>
-      <a class="doc" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/installation.md" target="_blank"><i>02</i><div><b>Installation</b><span>Desktop app &amp; source builds</span></div></a>
-      <a class="doc" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user-guide.md" target="_blank"><i>03</i><div><b>User Guide</b><span>Complete feature docs</span></div></a>
-      <a class="doc" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/extensions.md" target="_blank"><i>04</i><div><b>Extensions</b><span>Install &amp; build extensions</span></div></a>
-      <a class="doc" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/architecture.md" target="_blank"><i>05</i><div><b>Architecture</b><span>Technical overview</span></div></a>
-      <a class="doc" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/api-documentation.md" target="_blank"><i>06</i><div><b>API Reference</b><span>Extension API</span></div></a>
-      <a class="doc" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/changelog.md" target="_blank"><i>07</i><div><b>Changelog</b><span>What's new in 1.0</span></div></a>
-      <a class="doc" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/contributing.md" target="_blank"><i>08</i><div><b>Contributing</b><span>Help build Safelight</span></div></a>
-    </div>
-  </div>
-</section>
+		<section id="support">
+			<div class="wrap">
+				<div class="sec-head rv">
+					<span class="sec-tag">// support</span>
+					<h2>Questions? Answers.</h2>
+					<p>
+						Safelight is community-driven. Get help, report bugs, or
+						just ask.
+					</p>
+				</div>
+				<div class="sup-grid">
+					<div class="sup rv">
+						<svg viewBox="0 0 24 24">
+							<circle cx="12" cy="12" r="9" />
+							<path
+								d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.33c-.7.27-.9.84-.9 1.67m0 3h.01"
+							/>
+						</svg>
+						<h3>Q&amp;A / Discussions</h3>
+						<p>
+							Ask anything, share workflows, and vote on ideas in
+							GitHub Discussions.
+						</p>
+						<a
+							class="link"
+							href="https://github.com/anthonyreimche/SafeLight/discussions"
+							target="_blank"
+							>Open Discussions →</a
+						>
+					</div>
+					<div class="sup rv">
+						<svg viewBox="0 0 24 24">
+							<path d="M12 3l9 16H3l9-16z" />
+							<path d="M12 10v4m0 3h.01" />
+						</svg>
+						<h3>Report an Issue</h3>
+						<p>
+							Found a bug or have a feature request? File an issue
+							and we'll take a look.
+						</p>
+						<a
+							class="link"
+							href="https://github.com/anthonyreimche/SafeLight/issues"
+							target="_blank"
+							>GitHub Issues →</a
+						>
+					</div>
+					<div class="sup rv">
+						<svg viewBox="0 0 24 24">
+							<path d="M4 5h16v12H8l-4 4V5z" />
+						</svg>
+						<h3>FAQ</h3>
+						<p>
+							Common questions about formats, performance,
+							privacy, and the roadmap.
+						</p>
+						<a
+							class="link"
+							href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/faq.md"
+							target="_blank"
+							>Read the FAQ →</a
+						>
+					</div>
+					<div class="sup rv" style="border-color: var(--line-hot)">
+						<svg viewBox="0 0 24 24">
+							<path
+								d="M12 20s-7-4.6-9.2-9A5.2 5.2 0 0 1 12 6.6 5.2 5.2 0 0 1 21.2 11C19 15.4 12 20 12 20z"
+							/>
+						</svg>
+						<h3>Support Safelight</h3>
+						<p>
+							Safelight is free forever. If it saves you a
+							subscription, consider buying the developer a
+							coffee.
+						</p>
+						<a
+							class="link"
+							href="https://buymeacoffee.com/anthonyreimche"
+							target="_blank"
+							>Support →</a
+						>
+					</div>
+				</div>
+			</div>
+		</section>
 
-<section id="support">
-  <div class="wrap">
-    <div class="sec-head rv">
-      <span class="sec-tag">// support</span>
-      <h2>Questions? Answers.</h2>
-      <p>Safelight is community-driven. Get help, report bugs, or just ask.</p>
-    </div>
-    <div class="sup-grid">
-      <div class="sup rv">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.33c-.7.27-.9.84-.9 1.67m0 3h.01"/></svg>
-        <h3>Q&amp;A / Discussions</h3>
-        <p>Ask anything, share workflows, and vote on ideas in GitHub Discussions.</p>
-        <a class="link" href="https://github.com/anthonyreimche/SafeLight/discussions" target="_blank">Open Discussions →</a>
-      </div>
-      <div class="sup rv">
-        <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3l9-16z"/><path d="M12 10v4m0 3h.01"/></svg>
-        <h3>Report an Issue</h3>
-        <p>Found a bug or have a feature request? File an issue and we'll take a look.</p>
-        <a class="link" href="https://github.com/anthonyreimche/SafeLight/issues" target="_blank">GitHub Issues →</a>
-      </div>
-      <div class="sup rv">
-        <svg viewBox="0 0 24 24"><path d="M4 5h16v12H8l-4 4V5z"/></svg>
-        <h3>FAQ</h3>
-        <p>Common questions about formats, performance, privacy, and the roadmap.</p>
-        <a class="link" href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/faq.md" target="_blank">Read the FAQ →</a>
-      </div>
-      <div class="sup rv" style="border-color:var(--line-hot)">
-        <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9.2-9A5.2 5.2 0 0 1 12 6.6 5.2 5.2 0 0 1 21.2 11C19 15.4 12 20 12 20z"/></svg>
-        <h3>Support Safelight</h3>
-        <p>Safelight is free forever. If it saves you a subscription, consider buying the developer a coffee.</p>
-        <a class="link" href="https://buymeacoffee.com/anthonyreimche" target="_blank">Support →</a>
-      </div>
-    </div>
-  </div>
-</section>
+		<footer>
+			<div class="f-brand">Safe<b>light</b></div>
+			<p>
+				Free &amp; open source under the
+				<a
+					href="https://github.com/anthonyreimche/SafeLight/blob/main/LICENSE"
+					target="_blank"
+					>MIT License</a
+				>
+				·
+				<a
+					href="https://github.com/anthonyreimche/SafeLight"
+					target="_blank"
+					>github.com/anthonyreimche/SafeLight</a
+				>
+			</p>
+		</footer>
 
-<footer>
-  <div class="f-brand">Safe<b>light</b></div>
-  <p>Free &amp; open source under the <a href="https://github.com/anthonyreimche/SafeLight/blob/main/LICENSE" target="_blank">MIT License</a> · <a href="https://github.com/anthonyreimche/SafeLight" target="_blank">github.com/anthonyreimche/SafeLight</a></p>
-</footer>
-
-<script>
-// screenshot tabs
-const shot=document.getElementById('shot'),cap=document.getElementById('cap');
-document.getElementById('tabs').addEventListener('click',e=>{
-  const t=e.target.closest('.ide-tab');if(!t)return;
-  document.querySelectorAll('.ide-tab').forEach(x=>x.classList.remove('on'));
-  t.classList.add('on');shot.src=t.dataset.src;cap.textContent=t.dataset.cap;
-});
-// preload tab images
-document.querySelectorAll('.ide-tab').forEach(t=>{new Image().src=t.dataset.src});
-// mobile nav
-const burger=document.getElementById('burger'),links=document.querySelector('.nav-links');
-burger.addEventListener('click',()=>links.classList.toggle('open'));
-links.addEventListener('click',e=>{if(e.target.tagName==='A')links.classList.remove('open')});
-// mobile: tighter panel layout
-if(matchMedia('(max-width:860px)').matches){
-  const m=[['-20vw','-25vh','.62'],['20vw','-23vh','.62'],['-19vw','25vh','.6'],['20vw','27vh','.6']];
-  document.querySelectorAll('.fp:not(.far):not(.mid)').forEach((p,i)=>{
-    if(m[i]){p.style.setProperty('--x',m[i][0]);p.style.setProperty('--y',m[i][1]);p.style.setProperty('--s',m[i][2])}
-  });
-}
-// hero panels: tilt toward cursor + drag
-const fps=[...document.querySelectorAll('.fp')],pc=document.querySelector('.panels');
-if(fps.length&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
-  let mx=innerWidth/2,my=innerHeight*.44;
-  addEventListener('mousemove',e=>{mx=e.clientX;my=e.clientY},{passive:true});
-  const st=fps.map(()=>({x:0,y:0}));
-  (function tick(){
-    fps.forEach((p,i)=>{
-      const r=p.getBoundingClientRect(),s=st[i];
-      const ty=Math.max(-26,Math.min(26,(mx-(r.left+r.width/2))/22));
-      const tx=Math.max(-26,Math.min(26,((r.top+r.height/2)-my)/22));
-      s.x+=(tx-s.x)*.07;s.y+=(ty-s.y)*.07;
-      p.style.setProperty('--jrx',s.x.toFixed(2)+'deg');
-      p.style.setProperty('--jry',s.y.toFixed(2)+'deg');
-    });
-    requestAnimationFrame(tick);
-  })();
-}
-let drag=null,zi=10;
-fps.forEach(p=>{
-  p.addEventListener('pointerdown',e=>{
-    const pr=pc.getBoundingClientRect(),r=p.getBoundingClientRect();
-    drag={p,ox:r.left+r.width/2-(pr.left+pr.width*.5),oy:r.top+r.height/2-(pr.top+pr.height*.44),sx:e.clientX,sy:e.clientY};
-    p.classList.add('drag');p.style.zIndex=++zi;p.setPointerCapture(e.pointerId);e.preventDefault();
-  });
-  p.addEventListener('pointermove',e=>{
-    if(!drag||drag.p!==p)return;
-    p.style.setProperty('--x',(drag.ox+e.clientX-drag.sx)+'px');
-    p.style.setProperty('--y',(drag.oy+e.clientY-drag.sy)+'px');
-  });
-  const end=()=>{if(drag){drag.p.classList.remove('drag');drag=null}};
-  p.addEventListener('pointerup',end);p.addEventListener('pointercancel',end);
-});
-// scroll reveal
-const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.12});
-document.querySelectorAll('.rv').forEach(el=>io.observe(el));
-</script>
-</body>
+		<script>
+			// screenshot tabs
+			const shot = document.getElementById("shot"),
+				cap = document.getElementById("cap");
+			document.getElementById("tabs").addEventListener("click", (e) => {
+				const t = e.target.closest(".ide-tab");
+				if (!t) return;
+				document
+					.querySelectorAll(".ide-tab")
+					.forEach((x) => x.classList.remove("on"));
+				t.classList.add("on");
+				shot.src = t.dataset.src;
+				cap.textContent = t.dataset.cap;
+			});
+			// preload tab images
+			document.querySelectorAll(".ide-tab").forEach((t) => {
+				new Image().src = t.dataset.src;
+			});
+			// mobile nav
+			const burger = document.getElementById("burger"),
+				links = document.querySelector(".nav-links");
+			burger.addEventListener("click", () =>
+				links.classList.toggle("open"),
+			);
+			links.addEventListener("click", (e) => {
+				if (e.target.tagName === "A") links.classList.remove("open");
+			});
+			// mobile: tighter panel layout
+			if (matchMedia("(max-width:860px)").matches) {
+				const m = [
+					["-20vw", "-25vh", ".62"],
+					["20vw", "-23vh", ".62"],
+					["-19vw", "25vh", ".6"],
+					["20vw", "27vh", ".6"],
+				];
+				document
+					.querySelectorAll(".fp:not(.far):not(.mid)")
+					.forEach((p, i) => {
+						if (m[i]) {
+							p.style.setProperty("--x", m[i][0]);
+							p.style.setProperty("--y", m[i][1]);
+							p.style.setProperty("--s", m[i][2]);
+						}
+					});
+			}
+			// hero panels: tilt toward cursor + drag
+			const fps = [...document.querySelectorAll(".fp")],
+				pc = document.querySelector(".panels");
+			if (
+				fps.length &&
+				!matchMedia("(prefers-reduced-motion: reduce)").matches
+			) {
+				let mx = innerWidth / 2,
+					my = innerHeight * 0.44;
+				addEventListener(
+					"mousemove",
+					(e) => {
+						mx = e.clientX;
+						my = e.clientY;
+					},
+					{ passive: true },
+				);
+				const st = fps.map(() => ({ x: 0, y: 0 }));
+				(function tick() {
+					fps.forEach((p, i) => {
+						const r = p.getBoundingClientRect(),
+							s = st[i];
+						const ty = Math.max(
+							-26,
+							Math.min(26, (mx - (r.left + r.width / 2)) / 22),
+						);
+						const tx = Math.max(
+							-26,
+							Math.min(26, (r.top + r.height / 2 - my) / 22),
+						);
+						s.x += (tx - s.x) * 0.07;
+						s.y += (ty - s.y) * 0.07;
+						p.style.setProperty("--jrx", s.x.toFixed(2) + "deg");
+						p.style.setProperty("--jry", s.y.toFixed(2) + "deg");
+					});
+					requestAnimationFrame(tick);
+				})();
+			}
+			let drag = null,
+				zi = 10;
+			fps.forEach((p) => {
+				p.addEventListener("pointerdown", (e) => {
+					const pr = pc.getBoundingClientRect(),
+						r = p.getBoundingClientRect();
+					drag = {
+						p,
+						ox: r.left + r.width / 2 - (pr.left + pr.width * 0.5),
+						oy: r.top + r.height / 2 - (pr.top + pr.height * 0.44),
+						sx: e.clientX,
+						sy: e.clientY,
+					};
+					p.classList.add("drag");
+					p.style.zIndex = ++zi;
+					p.setPointerCapture(e.pointerId);
+					e.preventDefault();
+				});
+				p.addEventListener("pointermove", (e) => {
+					if (!drag || drag.p !== p) return;
+					p.style.setProperty(
+						"--x",
+						drag.ox + e.clientX - drag.sx + "px",
+					);
+					p.style.setProperty(
+						"--y",
+						drag.oy + e.clientY - drag.sy + "px",
+					);
+				});
+				const end = () => {
+					if (drag) {
+						drag.p.classList.remove("drag");
+						drag = null;
+					}
+				};
+				p.addEventListener("pointerup", end);
+				p.addEventListener("pointercancel", end);
+			});
+			// scroll reveal
+			const io = new IntersectionObserver(
+				(es) =>
+					es.forEach((e) => {
+						if (e.isIntersecting) {
+							e.target.classList.add("in");
+							io.unobserve(e.target);
+						}
+					}),
+				{ threshold: 0.12 },
+			);
+			document.querySelectorAll(".rv").forEach((el) => io.observe(el));
+		</script>
+	</body>
 </html>
