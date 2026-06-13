@@ -32,13 +32,10 @@ const DIST = path.join(__dirname, "..", "dist");
 // the same page in Chrome. Match Chrome's fast path explicitly.
 // ---------------------------------------------------------------------------
 if (process.platform === "linux") {
-  // On Linux, Chromium's GPU blocklist and sandbox restrictions commonly
-  // prevent WebGL2 from initialising even when the system GL drivers are fine.
-  // EGL is correct for native Wayland; on X11 the GLX/desktop backend is more
-  // compatible (EGL can silently fall back to software rendering on X11, which
-  // drops WebGL2 support even when the system drivers are fully capable).
-  const isWayland = !!process.env.WAYLAND_DISPLAY;
-  app.commandLine.appendSwitch("use-gl", isWayland ? "egl" : "desktop");
+  // On Linux, always use EGL — modern Electron builds ship without GLX so
+  // "desktop" silently falls back to SwiftShader software rendering, which
+  // loses WebGL2. EGL works for both Wayland and X11 (via Mesa EGL).
+  app.commandLine.appendSwitch("use-gl", "egl");
   app.commandLine.appendSwitch("disable-gpu-sandbox");
   app.commandLine.appendSwitch("enable-webgl");
 } else if (process.platform === "win32") {

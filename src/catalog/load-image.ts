@@ -5,32 +5,54 @@ import { rotateBitmap, rotateFloatRGBA } from "./orient";
 import { verifyPermission } from "./permissions";
 import { readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
 
-// Convert sRGB ImageBitmap to pseudo-linear Float32Array by applying inverse gamma
-// This allows embedded JPEG previews to be processed through the same shader pipeline
-// as true linear RAW data, with limited dynamic range compensation.
-async function bitmapToPseudoLinear(
+// Read an ImageBitmap into a linear Float32 RGBA image via a temporary WebGL2
+// framebuffer. This is more reliable than OffscreenCanvas.getContext("2d")
+// readback on Mesa/Linux, where accelerated 2D canvas readback can silently
+// return all-zero data.
+//
+// Pixel layout: texImage2D without UNPACK_FLIP_Y places image row 0 at texture
+// y=0 (OpenGL bottom). readPixels reads y=0 first (framebuffer bottom = texture
+// y=0 = image row 0), so the output array is already top-to-bottom — no flip
+// needed. This matches the layout the renderer expects for Float32 images.
+function bitmapToFloat(
   bitmap: ImageBitmap,
-): Promise<{ data: Float32Array; width: number; height: number }> {
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Failed to get 2D context");
-  ctx.drawImage(bitmap, 0, 0);
-  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  const pixels = imageData.data;
-  const floatData = new Float32Array(pixels.length);
+): { data: Float32Array; width: number; height: number } {
+  const { width, height } = bitmap;
+  const canvas = new OffscreenCanvas(width, height);
+  const gl = canvas.getContext("webgl2") as WebGL2RenderingContext | null;
+  if (!gl) throw new Error("WebGL2 unavailable for pixel readback");
 
-  // Inverse sRGB transfer function (IEC 61966-2-1) — matches the LUT in renderer.ts.
+  const tex = gl.createTexture();
+  if (!tex) throw new Error("createTexture failed");
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+
+  const fb = gl.createFramebuffer();
+  if (!fb) throw new Error("createFramebuffer failed");
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+
+  const pixels = new Uint8Array(width * height * 4);
+  gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+  gl.deleteFramebuffer(fb);
+  gl.deleteTexture(tex);
+
+  // Apply the inverse sRGB transfer function (IEC 61966-2-1) to linearise.
+  const data = new Float32Array(width * height * 4);
   for (let i = 0; i < pixels.length; i += 4) {
-    const r = pixels[i] / 255;
+    const r = pixels[i]     / 255;
     const g = pixels[i + 1] / 255;
     const b = pixels[i + 2] / 255;
-    floatData[i]     = r <= 0.04045 ? r / 12.92 : Math.pow((r + 0.055) / 1.055, 2.4);
-    floatData[i + 1] = g <= 0.04045 ? g / 12.92 : Math.pow((g + 0.055) / 1.055, 2.4);
-    floatData[i + 2] = b <= 0.04045 ? b / 12.92 : Math.pow((b + 0.055) / 1.055, 2.4);
-    floatData[i + 3] = 1.0;
+    data[i]     = r <= 0.04045 ? r / 12.92 : Math.pow((r + 0.055) / 1.055, 2.4);
+    data[i + 1] = g <= 0.04045 ? g / 12.92 : Math.pow((g + 0.055) / 1.055, 2.4);
+    data[i + 2] = b <= 0.04045 ? b / 12.92 : Math.pow((b + 0.055) / 1.055, 2.4);
+    data[i + 3] = 1.0;
   }
 
-  return { data: floatData, width: bitmap.width, height: bitmap.height };
+  return { data, width, height };
 }
 
 // A decoded image for the renderer: a linear float buffer (full sensor precision,
@@ -76,19 +98,22 @@ export async function loadPhotoImage(
           return { kind: "float", data: r.data, width: r.width, height: r.height };
         }
 
-        // If libraw fails, try converting the embedded preview to pseudo-linear
+        // If libraw fails, linearise the embedded JPEG preview via a WebGL2
+        // framebuffer readback (bitmapToFloat). This keeps the full float
+        // pipeline intact. The 2D-canvas readback (prior approach) fails
+        // silently on some Mesa/Linux drivers, returning all-zero data.
         const preview = await extractRawPreview(file);
         if (preview) {
           const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
           const upright = await rotateBitmap(bitmap, photo.rotation ?? 0);
           if (upright !== bitmap) bitmap.close();
-          const pseudoLinear = await bitmapToPseudoLinear(upright);
+          const floatImg = bitmapToFloat(upright);
           upright.close();
           return {
             kind: "float",
-            data: pseudoLinear.data,
-            width: pseudoLinear.width,
-            height: pseudoLinear.height,
+            data: floatImg.data,
+            width: floatImg.width,
+            height: floatImg.height,
             isFallbackPreview: true,
           };
         }
