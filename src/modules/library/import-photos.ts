@@ -83,6 +83,34 @@ async function getImageSource(file: File): Promise<Blob | null> {
   return file;
 }
 
+// Windows often leaves file.type empty for RAW formats. Map extensions to the
+// correct MIME types so the Info panel shows accurate metadata on all platforms.
+const RAW_MIME: Record<string, string> = {
+  ".nef": "image/x-nikon-nef",
+  ".nrw": "image/x-nikon-nef",
+  ".cr2": "image/x-canon-cr2",
+  ".cr3": "image/x-canon-cr3",
+  ".arw": "image/x-sony-arw",
+  ".sr2": "image/x-sony-sr2",
+  ".srw": "image/x-samsung-srw",
+  ".dng": "image/x-adobe-dng",
+  ".orf": "image/x-olympus-orf",
+  ".raf": "image/x-fuji-raf",
+  ".pef": "image/x-pentax-pef",
+  ".rw2": "image/x-panasonic-rw2",
+  ".iiq": "image/x-phaseone-iiq",
+  ".3fr": "image/x-hasselblad-3fr",
+  ".mos": "image/x-leaf-mos",
+  ".mrw": "image/x-minolta-mrw",
+  ".erf": "image/x-epson-erf",
+  ".x3f": "image/x-sigma-x3f",
+  ".kdc": "image/x-kodak-kdc",
+};
+
+function mimeTypeFromName(name: string): string {
+  return RAW_MIME[getExtension(name)] ?? "";
+}
+
 /** Build a catalog record for a file: thumbnail, EXIF, orientation. The caller
  *  fills in relPath/folder (they're project-relative). */
 export async function buildPhoto(
@@ -128,7 +156,7 @@ export async function buildPhoto(
     width,
     height,
     fileSize: file.size,
-    mimeType: file.type || (isRawFile(file) ? "image/x-nikon-nef" : ""),
+    mimeType: file.type || mimeTypeFromName(file.name),
     rating: 0,
     colorLabel: "none",
     flag: "none",

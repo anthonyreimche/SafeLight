@@ -47,7 +47,13 @@ if (process.platform === "linux") {
   //   4. A runtime GPU crash (window already visible) is left alone; the app
   //      handles it without relaunching.
   // ---------------------------------------------------------------------------
-  const ANGLE_BACKENDS = ["gl", "gles", "vulkan"];
+  // Vulkan + ozone-platform=wayland is incompatible (Chromium warns and may
+  // crash). When running under a native Wayland compositor, limit the probe
+  // list to OpenGL backends so the warning never appears and a stale cached
+  // "vulkan" value from a prior X11 session is silently ignored (indexOf
+  // returns -1, so angleIdx falls back to 0 = "gl").
+  const isWayland = !!process.env.WAYLAND_DISPLAY;
+  const ANGLE_BACKENDS = isWayland ? ["gl", "gles"] : ["gl", "gles", "vulkan"];
   const configDir = path.join(
     process.env.XDG_CONFIG_HOME ||
       path.join(process.env.HOME || "", ".config"),

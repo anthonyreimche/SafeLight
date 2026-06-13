@@ -63,6 +63,66 @@ export type DecodedImage =
   | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
   | { kind: "bitmap"; bitmap: ImageBitmap; cached?: boolean };
 
+// Compare the decoded RAW float image's channel balance against the embedded
+// JPEG preview (the camera's own rendering — always color-correct).
+// Returns true when the decode looks plausible, false when it should be rejected.
+//
+// Metric: compute the R/G and B/G ratios for each image in linear space,
+// then flag a mismatch when either ratio differs by more than 2×. This catches
+// the well-known LibRaw <0.21 Canon EOS R bug (wrong color matrix → badly
+// shifted R/B gains) without false-positives on legitimate warm/cool shots.
+async function rawColorMatchesPreview(
+  raw: { data: Float32Array; width: number; height: number },
+  previewBlob: Blob,
+): Promise<boolean> {
+  try {
+    // Downscale the preview to 64 px for a fast sample; use ImageBitmap resize
+    // so we don't pull a big JPEG into a canvas.
+    const thumb = await createImageBitmap(previewBlob, {
+      resizeWidth: 64,
+      resizeHeight: 64,
+      resizeQuality: "pixelated",
+    });
+    const pf = bitmapToFloat(thumb);
+    thumb.close();
+
+    // Mean R/G/B of the JPEG preview (linear after inverse-sRGB in bitmapToFloat).
+    let pR = 0, pG = 0, pB = 0;
+    for (let i = 0; i < pf.data.length; i += 4) {
+      pR += pf.data[i]; pG += pf.data[i + 1]; pB += pf.data[i + 2];
+    }
+    const pN = pf.data.length / 4;
+
+    // Mean R/G/B of the RAW decode, sampled at a stride to keep it fast.
+    const n = raw.width * raw.height;
+    const step = Math.max(1, Math.floor(n / 4096));
+    let rR = 0, rG = 0, rB = 0, rN = 0;
+    for (let i = 0; i < n * 4; i += step * 4) {
+      rR += raw.data[i]; rG += raw.data[i + 1]; rB += raw.data[i + 2]; rN++;
+    }
+
+    if (!rN || !pN) return true;
+    const rg = (rG / rN) || 1e-6;
+    const pg = (pG / pN) || 1e-6;
+
+    // Normalised R/G and B/G ratios for each source.
+    const rawRG = (rR / rN) / rg,  preRG = (pR / pN) / pg;
+    const rawBG = (rB / rN) / rg,  preBG = (pB / pN) / pg;
+
+    const rgFactor = Math.max(rawRG / preRG, preRG / rawRG);
+    const bgFactor = Math.max(rawBG / preBG, preBG / rawBG);
+
+    console.info(
+      `[load] RAW vs JPEG — R/G: ${rawRG.toFixed(2)} vs ${preRG.toFixed(2)} (×${rgFactor.toFixed(2)}),` +
+      ` B/G: ${rawBG.toFixed(2)} vs ${preBG.toFixed(2)} (×${bgFactor.toFixed(2)})`,
+    );
+
+    return rgFactor < 2.0 && bgFactor < 2.0;
+  } catch {
+    return true; // if comparison fails, trust the decode
+  }
+}
+
 // Prefer a full-precision linear RAW decode (so exposure/highlight recovery work
 // on the sensor's real data); otherwise fall back to the 8-bit bitmap path.
 export async function loadPhotoImage(
@@ -85,6 +145,10 @@ export async function loadPhotoImage(
 
         // Slow path: full libraw decode. Write result to cache asynchronously
         // so the next open hits the fast path above.
+        // Extract the embedded JPEG preview once — used both for the color
+        // validation below and as the fallback if the RAW decode looks wrong.
+        const preview = await extractRawPreview(file);
+
         const f = await decodeRawToFloat(file);
         if (f) {
           // libraw already applies EXIF orientation; the in-house path doesn't.
@@ -92,17 +156,26 @@ export async function loadPhotoImage(
             ? { data: f.data, width: f.width, height: f.height }
             : rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
 
-          // Write to cache in the background — don't block the render.
-          writeCachedPreview(file, r.data, r.width, r.height);
-
-          return { kind: "float", data: r.data, width: r.width, height: r.height };
+          // Validate the decode's color against the embedded JPEG preview.
+          // An unrecognised camera body (e.g. newer Canon EOS R bodies with
+          // LibRaw <0.21) produces grossly wrong R/G and B/G ratios. If either
+          // is off by more than 2× vs the preview, reject the decode and fall
+          // through to the JPEG-based float path below.
+          const colorOk = !preview || await rawColorMatchesPreview(r, preview);
+          if (colorOk) {
+            // Skip the cache when the decode was marginal (inferred dimensions).
+            if (!f.suspicious) {
+              writeCachedPreview(file, r.data, r.width, r.height);
+            }
+            return { kind: "float", data: r.data, width: r.width, height: r.height };
+          }
+          console.warn("[load] RAW color mismatch vs embedded JPEG — using JPEG fallback");
         }
 
-        // If libraw fails, linearise the embedded JPEG preview via a WebGL2
-        // framebuffer readback (bitmapToFloat). This keeps the full float
-        // pipeline intact. The 2D-canvas readback (prior approach) fails
-        // silently on some Mesa/Linux drivers, returning all-zero data.
-        const preview = await extractRawPreview(file);
+        // libraw failed or produced bad colors: linearise the embedded JPEG
+        // preview via a WebGL2 framebuffer readback (bitmapToFloat). This keeps
+        // the full float pipeline intact for edits, at the cost of JPEG dynamic
+        // range and the camera's own tone/sharpening baked in.
         if (preview) {
           const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
           const upright = await rotateBitmap(bitmap, photo.rotation ?? 0);

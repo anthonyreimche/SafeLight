@@ -163,7 +163,7 @@ export function useDevelopRenderer(
         setSource(
           image.isFallbackPreview
             ? `Preview ${image.width}×${image.height}`
-            : `RAW ${image.width}×${image.height}`,
+            : `RAW ${image.width}×${image.height} — ${lastLibRawStatus}`,
         );
       } else if (image.kind === "srgb16") {
         setSource(`Cached ${image.width}×${image.height}`);

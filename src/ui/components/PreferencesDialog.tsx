@@ -484,7 +484,8 @@ const CATEGORIES: ActionCategory[] = ["General", "Develop", "Library"];
 function ShortcutsSection() {
   const singleKeys = useSettings((s) => s.singleKeyShortcuts);
   const overrides = useKeybindings((s) => s.overrides);
-  const extActions = useExtensionActions((s) => Array.from(s.actions.values()));
+  const extActionsMap = useExtensionActions((s) => s.actions);
+  const extActions = Array.from(extActionsMap.values());
   const [capturing, setCapturing] = useState<string | null>(null);
 
   // While capturing, the global handlers stand down (they also listen in the

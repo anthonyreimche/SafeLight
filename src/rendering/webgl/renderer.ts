@@ -223,12 +223,32 @@ export class WebGLRenderer {
     // no UNORM RGBA16, so this is gated on the extension; absent it, we linearise
     // the cached preview on the CPU instead (see setImage).
     // Skippable via Preferences ▸ Performance ▸ High bit-depth previews.
+    //
+    // Probe: some Mesa/ANGLE drivers expose EXT_texture_norm16 but return
+    // GL_INVALID_OPERATION (0x0502) from generateMipmap for RGBA16 textures
+    // (reported in allocateMipmapLevelsForGeneration). Test with a 2×2 dummy
+    // texture before committing to the norm16 path — if the probe fails, leave
+    // haveNorm16 false so the srgb16 path falls through to srgb16ToFloatImage
+    // (CPU linearisation) and the plain RGBA16F mip chain that does work.
     const norm16 = getSettings().highBitDepth
       ? gl.getExtension("EXT_texture_norm16")
       : null;
     if (norm16) {
-      this.haveNorm16 = true;
-      this.norm16Format = (norm16 as { RGBA16_EXT: number }).RGBA16_EXT;
+      const fmt = (norm16 as { RGBA16_EXT: number }).RGBA16_EXT;
+      const probe = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, probe);
+      gl.texImage2D(gl.TEXTURE_2D, 0, fmt, 2, 2, 0, gl.RGBA, gl.UNSIGNED_SHORT,
+        new Uint16Array(16));
+      gl.generateMipmap(gl.TEXTURE_2D);
+      const probeErr = gl.getError();
+      gl.deleteTexture(probe);
+      while (gl.getError() !== gl.NO_ERROR) {} // drain any trailing errors
+      if (probeErr === gl.NO_ERROR) {
+        this.haveNorm16 = true;
+        this.norm16Format = fmt;
+      }
+      // else: norm16 extension exists but mipmap generation isn't supported on
+      // this driver — fall back silently to the RGBA16F float path.
     }
 
     // Compile with the active pipeline; a broken custom transform falls back

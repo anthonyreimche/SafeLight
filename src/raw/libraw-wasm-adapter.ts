@@ -110,8 +110,16 @@ export async function decodeRawFloatViaLibRaw(
       height = num(obj.height);
     } else {
       pixels = px as Uint8Array | Uint16Array;
-      width = num(meta.width) || num(meta.iwidth) || num(meta.raw_width);
-      height = num(meta.height) || num(meta.iheight) || num(meta.raw_height);
+      // libraw-wasm ≥1.3 exposes the processed output size as `cwidth`/`cheight`
+      // (C++ libraw_image_sizes_t.width/.height, renamed to avoid JS conflicts).
+      // Older field names `width`/`iwidth` are also tried for compatibility.
+      // raw_width/raw_height is the full sensor readout including optical-black
+      // borders — larger than the pixel data — so using it as the stride shifts
+      // the image down-right. Only fall back to it if nothing else resolves.
+      width  = num((meta as Record<string, unknown>).cwidth)
+            || num(meta.width) || num(meta.iwidth) || num(meta.raw_width);
+      height = num((meta as Record<string, unknown>).cheight)
+            || num(meta.height) || num(meta.iheight) || num(meta.raw_height);
     }
 
     if (width < 2 || height < 2 || !pixels || !("length" in pixels)) {
@@ -120,25 +128,41 @@ export async function decodeRawFloatViaLibRaw(
       return null;
     }
 
-    // Check if pixel data size is reasonable (at least 1 byte per pixel)
-    if (pixels.length < width * height) {
-      lastLibRawStatus = `insufficient pixel data (${pixels.length} bytes for ${width}×${height})`;
-      console.warn("[libraw]", lastLibRawStatus);
-      return null;
-    }
+    // Detect the per-pixel channel stride before the pixel-count check so we
+    // can validate the data length against the correct (channels * pixels) size.
+    // LibRaw may return 3-channel (RGB) or 4-channel (RGBX) data.
+    const strideGuess = pixels.length >= width * height * 4 ? 4
+                      : pixels.length >= width * height * 3 ? 3
+                      : pixels.length >= width * height     ? 1
+                      : 0;
 
-    const n = width * height;
-    // LibRaw may return 3-channel (RGB) or 4-channel (RGBX) data. Use the
-    // actual per-pixel stride for the loop so RGBX data isn't misread as RGB.
-    const stride = pixels.length >= n * 4 ? 4
-                 : pixels.length >= n * 3 ? 3
-                 : pixels.length >= n     ? 1
-                 : 0;
+    // If the guessed dimensions don't fit the data, the width from metadata is
+    // still wrong (e.g. cwidth not present and raw_width used as fallback).
+    // Recover by computing output width from pixel count + sensor aspect ratio.
+    let stride = strideGuess;
+    let inferredDims = false;
+    if (stride === 0 && num(meta.raw_width) > 0 && num(meta.raw_height) > 0) {
+      const rawW = num(meta.raw_width);
+      const rawH = num(meta.raw_height);
+      for (const ch of [4, 3, 1]) {
+        const totalPx = pixels.length / ch;
+        const aspect = rawW / rawH;
+        const w = Math.round(Math.sqrt(totalPx * aspect));
+        const h = Math.round(totalPx / w);
+        if (w > 2 && h > 2 && Math.abs(w * h - totalPx) <= w) {
+          width = w; height = h; stride = ch; inferredDims = true;
+          console.warn(`[libraw] inferred dims ${w}×${h} ch=${ch} from pixel count — cwidth/cheight missing`);
+          break;
+        }
+      }
+    }
     if (stride === 0) {
       lastLibRawStatus = `pixel/size mismatch (${pixels.length} for ${width}x${height})`;
       console.warn("[libraw]", lastLibRawStatus);
       return null;
     }
+
+    const n = width * height;
     const inv = pixels instanceof Uint16Array ? 1 / 65535 : 1 / 255;
     const data = new Float32Array(n * 4);
     for (let i = 0, o = 0, s = 0; i < n; i++, o += 4, s += stride) {
@@ -150,9 +174,34 @@ export async function decodeRawFloatViaLibRaw(
       data[o + 2] = b;
       data[o + 3] = 1;
     }
+
+    // Sanity-check: reject a decode where all channels are simultaneously
+    // near-clipped AND strongly colour-imbalanced — the hallmark of a bad
+    // WB/colour-matrix for an unrecognised camera, not a legitimately bright
+    // scene (which would have balanced channels near 1.0).
+    {
+      let sumR = 0, sumG = 0, sumB = 0;
+      const step = Math.max(1, Math.floor(n / 10000));
+      let samples = 0;
+      for (let i = 0; i < n * 4; i += 4 * step) {
+        sumR += data[i]; sumG += data[i + 1]; sumB += data[i + 2];
+        samples++;
+      }
+      const mR = sumR / samples, mG = sumG / samples, mB = sumB / samples;
+      const meanLum = (mR + mG + mB) / 3;
+      const maxCh = Math.max(mR, mG, mB);
+      const minCh = Math.min(mR, mG, mB);
+      // Blown + colour imbalance > 0.3 across channels = bad decode.
+      if (meanLum > 0.80 && (maxCh - minCh) > 0.30) {
+        lastLibRawStatus = `rejected: blown+imbalanced R=${mR.toFixed(2)} G=${mG.toFixed(2)} B=${mB.toFixed(2)}`;
+        console.warn("[libraw]", lastLibRawStatus);
+        return null;
+      }
+    }
+
     lastLibRawStatus = `libraw ${pixels instanceof Uint16Array ? 16 : 8}-bit ${stride}ch ${width}×${height}`;
-    console.info("[libraw] decoded", lastLibRawStatus);
-    return { data, width, height };
+    console.log("[libraw] decoded", lastLibRawStatus);
+    return { data, width, height, suspicious: inferredDims };
   } catch (e) {
     lastLibRawStatus = `decode error: ${e instanceof Error ? e.message : String(e)}`;
     console.warn("[libraw] decode failed", e);

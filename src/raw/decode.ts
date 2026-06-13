@@ -24,7 +24,9 @@ export interface RawFloatImage {
   data: Float32Array; // linear RGBA, row-major, top-left origin
   width: number;
   height: number;
-  oriented?: boolean; // true when the decoder already applied EXIF orientation
+  oriented?: boolean;   // true when the decoder already applied EXIF orientation
+  suspicious?: boolean; // true when the decode passed sanity checks but was marginal
+                        // — do not write to cache, let the next open re-decode
 }
 
 const DEFAULT_CFA: [number, number, number, number] = [0, 1, 1, 2]; // RGGB

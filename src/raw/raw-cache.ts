@@ -16,7 +16,9 @@ const DB_NAME = "safelight-raw-cache";
 // v2: old entries were 8-bit JPEG, incompatible.
 // v3: decode settings changed (noAutoBright off, highlight blend) — entries decoded
 //     with the old settings have clipped highlights baked in; drop them.
-const DB_VERSION = 3;
+// v4: libraw-wasm upgraded to 1.3.x; stale broken decodes from unrecognised camera
+//     bodies must be dropped so the new decoder gets a clean run.
+const DB_VERSION = 4;
 const STORE = "previews";
 // The cached-resolution cap and the cache on/off switch are preferences
 // (Preferences ▸ Performance). The live (cache-miss) decode still renders
