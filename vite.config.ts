@@ -1,7 +1,15 @@
 import path from "path";
+import { readFileSync } from "fs";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+
+// Single source of truth for the app version: package.json (the same field
+// electron-builder uses to name the installer). Inlined into the bundle as the
+// __APP_VERSION__ global so the About panel never drifts from the build.
+const pkg = JSON.parse(
+  readFileSync(path.resolve(__dirname, "package.json"), "utf-8"),
+) as { version: string };
 
 // libraw-wasm runs in a Web Worker on shared memory, which needs the page to be
 // cross-origin isolated (COOP/COEP). It also ships its own worker + .wasm using
@@ -17,6 +25,9 @@ const crossOriginIsolation = {
 const LIBRAW_VENDOR = path.resolve(__dirname, "src/raw/vendor/libraw-wasm/index.js");
 
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

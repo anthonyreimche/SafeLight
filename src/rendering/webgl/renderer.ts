@@ -638,8 +638,16 @@ export class WebGLRenderer {
     const gl = this.gl;
     this.maxEdge = maxEdge;
 
+    // The single imageTexture is reused across opens. The float path writes N
+    // RGBA16F mip levels by hand; a later norm16/8-bit load only rewrites level 0,
+    // so the leftover higher levels (wrong format/size) make the texture
+    // mipmap-incomplete -> generateMipmap throws 0x0502 and the LINEAR_MIPMAP_LINEAR
+    // sampler returns black on re-open. Recreate so every load starts level-clean.
+    gl.deleteTexture(this.imageTexture);
+    this.imageTexture = this.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     let mipsBuilt = false;
+    let uploaded = false;
     if ("kind" in image && image.kind === "srgb16" && this.haveNorm16) {
       // Cached develop preview, GPU path — upload the 16-bit sRGB data straight to a
       // normalized RGBA16 texture and let the shader's srgbToLinear (uLinear == false)
@@ -656,9 +664,18 @@ export class WebGLRenderer {
         gl.TEXTURE_2D, 0, this.norm16Format, image.width, image.height, 0,
         gl.RGBA, gl.UNSIGNED_SHORT, image.data,
       );
+      while (gl.getError() !== gl.NO_ERROR) {} // clear prior errors
       gl.generateMipmap(gl.TEXTURE_2D);
-      mipsBuilt = true;
-      {
+      if (gl.getError() !== gl.NO_ERROR) {
+        // The 2x2 constructor probe passed, but this driver fails generateMipmap
+        // on the full-size RGBA16 texture (returns 0x0502). An incomplete mip
+        // chain samples as black, so abandon norm16 for the session and fall
+        // through to the CPU-linearised float path (manual mips, known-good).
+        while (gl.getError() !== gl.NO_ERROR) {}
+        this.haveNorm16 = false;
+      } else {
+        mipsBuilt = true;
+        uploaded = true;
         // Heal / content-aware-fill source is 8-bit sRGB; the cached data is already
         // sRGB, so the high byte of each 16-bit sample is the 8-bit value directly.
         const u8 = new Uint8Array(image.data.length);
@@ -667,7 +684,8 @@ export class WebGLRenderer {
         this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
         setHealSourceImage(ds.data, ds.w, ds.h);
       }
-    } else if ("kind" in image) {
+    }
+    if (!uploaded && "kind" in image) {
       // Linear float (RAW) path — upload as RGBA16F so the develop pipeline keeps
       // ~10-bit precision AND real HDR headroom. The previous code quantised to 8-bit
       // sRGB (mipmaps need a filterable+renderable format), which meant a +5 exposure
@@ -712,7 +730,7 @@ export class WebGLRenderer {
         this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
         setHealSourceImage(ds.data, ds.w, ds.h);
       }
-    } else {
+    } else if (!("kind" in image)) {
       // 8-bit sRGB bitmap path
       this.imageWidth = image.width;
       this.imageHeight = image.height;

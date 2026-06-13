@@ -41,6 +41,11 @@ interface DevelopState {
   cycleCropGuide: () => void;
   cycleCropGuideFlip: () => void;
 
+  // White-balance eyedropper: when true, the next click on the image samples a
+  // neutral target and solves Temp/Tint. Ephemeral UI state, not persisted.
+  wbPicking: boolean;
+  setWbPicking: (v: boolean) => void;
+
   // Mask / retouch tool UI state (ephemeral, not persisted to history).
   activeTool: ToolMode;
   maskToolType: MaskType;
@@ -151,6 +156,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   cycleCropGuide: () => set((s) => ({ cropGuide: nextGuide(s.cropGuide) })),
   cycleCropGuideFlip: () =>
     set((s) => ({ cropGuideFlip: (s.cropGuideFlip + 1) % 4 })),
+
+  wbPicking: false,
+  setWbPicking: (wbPicking) => set({ wbPicking }),
 
   activeTool: "none",
   maskToolType: "radial",

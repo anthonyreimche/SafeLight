@@ -1,6 +1,8 @@
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
+import { AutoButton } from "@/ui/components/AutoButton";
 import { useDevelopStore } from "@/state/develop-store";
+import { useAutoAdjust } from "@/hooks/use-auto-adjust";
 import type { DevelopParams } from "@/catalog/types";
 
 type NumericParamKey = {
@@ -30,9 +32,12 @@ export function BasicPanel() {
   const params = useDevelopStore((s) => s.params);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
+  const histogram = useDevelopStore((s) => s.histogram);
+  const { autoTone } = useAutoAdjust();
 
   return (
     <Panel title="Basic">
+      <AutoButton onClick={autoTone} disabled={!histogram} title="Auto tone" />
       <div className="space-y-0.5">
         {basicSliders.map((s) => (
           <Slider

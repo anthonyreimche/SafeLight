@@ -1,9 +1,19 @@
 // File System Access permission helpers.
 //
-// File/directory handles persist in IndexedDB across sessions, but their read
-// permission resets to "prompt" — so on reload we can't read the originals
-// until access is re-verified (and, on a user gesture, re-requested). Until
-// then the app falls back to the stored thumbnail.
+// Dual-path access — same calling code, two backends:
+//
+//   • Browser: handles persist in IndexedDB but their permission resets to
+//     "prompt" on reload. queryPermission() returns "prompt", so the silent
+//     re-verify fails and the app falls back to the stored thumbnail until the
+//     user clicks "Reconnect originals" (requestPermission needs a gesture).
+//
+//   • Electron: the main process auto-grants "fileSystem" via
+//     setPermissionCheckHandler, so queryPermission() resolves "granted" with
+//     no gesture. The silent re-verify below succeeds and originals reconnect
+//     automatically; the click path is never reached except for moved files.
+//
+// Callers don't branch on platform — they always "try to access, then fall
+// back on the click". Electron just makes the try succeed.
 
 type AnyHandle = FileSystemFileHandle | FileSystemDirectoryHandle;
 

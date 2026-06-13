@@ -485,8 +485,19 @@ if (!app.requestSingleInstanceLock()) {
       "clipboard-sanitized-write", // navigator.clipboard.writeText
       "persistent-storage", // keep IndexedDB (project handles, cache) from eviction
     ]);
+    // requestPermission() — needs a user gesture (the Reconnect button / Open
+    // Folder click). Governs the browser-style re-grant path.
     session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) =>
       cb(ALLOWED_PERMISSIONS.has(permission))
+    );
+    // queryPermission() — synchronous, no gesture. Without this, a project
+    // handle restored from IndexedDB reports "prompt" on every cold start, so
+    // openLast() can't re-verify silently and the app falls back to the click.
+    // Granting "fileSystem" here lets queryPermission resolve "granted" up front:
+    // in Electron the originals reconnect automatically (Lightroom-style), and
+    // the click path is left as pure error-recovery for moved/missing files.
+    session.defaultSession.setPermissionCheckHandler((_wc, permission) =>
+      ALLOWED_PERMISSIONS.has(permission)
     );
     registerProtocol();
     registerPluginIpc();

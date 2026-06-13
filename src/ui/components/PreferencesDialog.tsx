@@ -58,6 +58,7 @@ const SECTIONS = [
   "Export",
   "Shortcuts",
   "Extensions",
+  "About",
 ] as const;
 type Section = (typeof SECTIONS)[number];
 
@@ -116,6 +117,7 @@ export function PreferencesDialog() {
             {section === "Export" && <ExportSection />}
             {section === "Shortcuts" && <ShortcutsSection />}
             {section === "Extensions" && <ExtensionsSection />}
+            {section === "About" && <AboutSection />}
           </div>
         </div>
         <div className="flex h-9 shrink-0 items-center justify-between border-t border-border bg-surface-2 px-3">
@@ -659,6 +661,62 @@ function ExtensionsSection() {
           Open Extensions panel
         </button>
       </Field>
+    </div>
+  );
+}
+
+function AboutSection() {
+  const native = window.safelightNative;
+  const repo = "https://github.com/anthonyreimche/SafeLight";
+  const rows: { label: string; value: string }[] = [
+    { label: "Version", value: `v${__APP_VERSION__}` },
+    ...(native
+      ? [
+          { label: "Electron", value: native.versions.electron },
+          { label: "Chromium", value: native.versions.chrome },
+          { label: "Platform", value: native.platform },
+        ]
+      : [{ label: "Environment", value: "Browser (dev)" }]),
+  ];
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <div className="text-[15px] font-semibold tracking-wide text-text-primary">
+          Safelight
+        </div>
+        <p className="mt-0.5 text-[11px] text-text-secondary">
+          A fast RAW photo editor.
+        </p>
+      </div>
+
+      <table className="w-full text-[11px]">
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.label} className="border-b border-border-subtle">
+              <td className="py-1 pr-3 text-text-muted">{r.label}</td>
+              <td className="py-1 text-right font-medium text-text-primary tabular-nums">
+                {r.value}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <Field label="Project">
+        <a
+          href={repo}
+          target="_blank"
+          rel="noreferrer"
+          className="text-[11px] text-slider-fill hover:underline"
+        >
+          {repo.replace("https://", "")}
+        </a>
+      </Field>
+
+      <p className="text-[10px] leading-relaxed text-text-muted">
+        © {new Date().getFullYear()} Anthony Reimche. MIT licensed.
+      </p>
     </div>
   );
 }

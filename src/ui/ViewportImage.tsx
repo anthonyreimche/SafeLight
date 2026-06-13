@@ -19,6 +19,9 @@ interface ViewportImageProps {
   // When provided, the viewport is a static fit (no zoom/pan) and renders this
   // overlay on top, given the displayed image rect in frame coordinates.
   overlay?: (rect: { x: number; y: number; w: number; h: number }) => ReactNode;
+  // When set, a click samples instead of zooming: receives the clicked point in
+  // canvas buffer pixels (the WB eyedropper). Cursor becomes a crosshair.
+  onPick?: (bufferX: number, bufferY: number) => void;
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
@@ -37,6 +40,7 @@ export function ViewportImage({
   loading,
   resetKey,
   overlay,
+  onPick,
 }: ViewportImageProps) {
   const cropMode = !!overlay;
   const frameRef = useRef<HTMLDivElement>(null);
@@ -112,6 +116,14 @@ export function ViewportImage({
   const handleClick = (clientX: number, clientY: number) => {
     const rect = frameRef.current?.getBoundingClientRect();
     if (!rect) return;
+    if (onPick) {
+      // Map the click into canvas buffer pixels (undo the CSS pan/scale).
+      const { effScale: s, effOffset: o } = stateRef.current;
+      const bx = (clientX - rect.left - o.x) / s;
+      const by = (clientY - rect.top - o.y) / s;
+      onPick(bx, by);
+      return;
+    }
     if (zoom == null) {
       // Zoom to 100% keeping the cursor's image point fixed.
       const cx = clientX - rect.left;
@@ -170,13 +182,15 @@ export function ViewportImage({
     handleClick(e.clientX, e.clientY);
   };
 
-  const cursor = cropMode
-    ? "default"
-    : dragging
-      ? "grabbing"
-      : zoom == null
-        ? "zoom-in"
-        : "zoom-out";
+  const cursor = onPick
+    ? "crosshair"
+    : cropMode
+      ? "default"
+      : dragging
+        ? "grabbing"
+        : zoom == null
+          ? "zoom-in"
+          : "zoom-out";
 
   const canvasStyle: CSSProperties = {
     position: "absolute",

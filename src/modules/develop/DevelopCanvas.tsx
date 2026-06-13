@@ -10,6 +10,8 @@ import {
 import { ViewportImage } from "@/ui/ViewportImage";
 import { CropOverlay } from "./CropOverlay";
 import { MaskOverlay } from "./MaskOverlay";
+import { useAutoAdjust } from "@/hooks/use-auto-adjust";
+import { sampleLinearRGB } from "@/rendering/sample-pixel";
 
 export function DevelopCanvas({
   photo,
@@ -39,6 +41,18 @@ export function DevelopCanvas({
   const cycleCropGuideFlip = useDevelopStore((s) => s.cycleCropGuideFlip);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
+  const wbPicking = useDevelopStore((s) => s.wbPicking);
+  const setWbPicking = useDevelopStore((s) => s.setWbPicking);
+  const { whiteBalanceFromSample } = useAutoAdjust();
+
+  // WB eyedropper: a click hands us the picked point in canvas buffer pixels.
+  // Drive the WB solver, re-sampling that same point after each re-render.
+  const onPick = (bx: number, by: number) => {
+    setWbPicking(false);
+    const cv = canvasRef.current;
+    if (!cv) return;
+    void whiteBalanceFromSample(() => sampleLinearRGB(cv, bx, by));
+  };
 
   const imageAspect = photo.height > 0 ? photo.width / photo.height : 1;
   // Inverse transform (transformed coord -> source UV) for crop constraints, the
@@ -96,6 +110,9 @@ export function DevelopCanvas({
       onZoomChange={onZoomChange}
       loading={loading}
       resetKey={photo.id}
+      onPick={
+        wbPicking && !cropping && activeTool === "none" ? onPick : undefined
+      }
       overlay={
         cropping
           ? (rect) => (
