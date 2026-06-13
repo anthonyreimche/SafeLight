@@ -16,6 +16,7 @@ interface LibraryListRowProps {
   active: boolean;
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
+  onDragStart?: (e: React.DragEvent) => void;
 }
 
 export function LibraryListRow({
@@ -24,6 +25,7 @@ export function LibraryListRow({
   active,
   onClick,
   onDoubleClick,
+  onDragStart,
 }: LibraryListRowProps) {
   const editedUrl = useEditedThumbUrl(photo.id);
   const originalUrl = useMemo(() => {
@@ -42,6 +44,8 @@ export function LibraryListRow({
   return (
     <div
       data-photo-id={photo.id}
+      draggable={!!onDragStart}
+      onDragStart={onDragStart}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       className={`flex cursor-pointer items-center gap-3 border-b border-border-subtle px-3 py-1.5 ${rowClass} ${

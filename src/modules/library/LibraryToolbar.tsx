@@ -1,6 +1,7 @@
 import { useUIStore } from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useProjectStore } from "@/project/project-store";
+import { exportPhotoData } from "@/project/folder-ops";
 import type { SortField } from "@/catalog/types";
 import { Slider } from "@/ui/components/Slider";
 
@@ -36,6 +37,15 @@ export function LibraryToolbar() {
     if (ok) removePhotos(ids);
   };
 
+  const handleExportData = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    const n = await exportPhotoData(ids);
+    window.alert(
+      `Wrote ${n} sidecar file${n === 1 ? "" : "s"} (“<name>.safelight.json”) next to the selected photo${ids.length === 1 ? "" : "s"}. Move the photos with their sidecars and the next project to scan them will pick up the ratings, labels and edits.`,
+    );
+  };
+
   return (
     <div className="flex items-center justify-between border-b border-border-subtle bg-surface-1 px-3 py-1.5">
       <div className="flex items-center gap-2">
@@ -64,6 +74,13 @@ export function LibraryToolbar() {
               className="rounded bg-surface-3 px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary"
             >
               {"⟳"}
+            </button>
+            <button
+              onClick={() => void handleExportData()}
+              title="Write .safelight.json sidecars (ratings, labels, edits) next to the selected files so the data follows them to another project"
+              className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary"
+            >
+              Export Data
             </button>
             <button
               onClick={handleRemove}

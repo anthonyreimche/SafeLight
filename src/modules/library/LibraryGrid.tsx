@@ -63,6 +63,18 @@ export function LibraryGrid() {
     setActiveModule("develop");
   };
 
+  // Drag photos onto a Folders-panel folder to move them. Dragging a photo
+  // that's part of the current selection drags the whole selection; dragging an
+  // unselected one drags just it.
+  const handleDragStart = (id: string, e: React.DragEvent) => {
+    const ids = selectedIds.has(id) ? [...selectedIds] : [id];
+    e.dataTransfer.setData(
+      "application/x-safelight-photos",
+      JSON.stringify(ids),
+    );
+    e.dataTransfer.effectAllowed = "move";
+  };
+
   if (photos.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-text-muted">
@@ -100,6 +112,7 @@ export function LibraryGrid() {
             active={activePhotoId === photo.id}
             onClick={(e) => handleClick(photo.id, e)}
             onDoubleClick={() => handleDoubleClick(photo.id)}
+            onDragStart={(e) => handleDragStart(photo.id, e)}
           />
         ))}
       </div>
@@ -121,6 +134,7 @@ export function LibraryGrid() {
           onClick={(e) => handleClick(photo.id, e)}
           onDoubleClick={() => handleDoubleClick(photo.id)}
           onRatingChange={(rating) => setRating(photo.id, rating)}
+          onDragStart={(e) => handleDragStart(photo.id, e)}
         />
       ))}
     </div>

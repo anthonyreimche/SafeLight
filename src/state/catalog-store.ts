@@ -27,6 +27,9 @@ interface CatalogState {
 
   removePhoto: (id: string) => Promise<void>;
   removePhotos: (ids: string[]) => Promise<void>;
+  /** Persist already-built photo records whose location changed (moved on disk).
+   *  Caller supplies updated relPath/folder/handles; thumbnails are unchanged. */
+  relocatePhotos: (updated: CatalogPhoto[]) => Promise<void>;
 
   setRating: (id: string, rating: number) => Promise<void>;
   setColorLabel: (id: string, label: ColorLabel) => Promise<void>;
@@ -163,6 +166,14 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         };
       });
       broadcast({ type: "catalog-change", payload: { action: "remove" } });
+    },
+
+    async relocatePhotos(updated) {
+      if (updated.length === 0) return;
+      await catalogStorage().putPhotos(updated);
+      const byId = new Map(updated.map((p) => [p.id, p] as const));
+      set((s) => ({ photos: s.photos.map((p) => byId.get(p.id) ?? p) }));
+      broadcast({ type: "catalog-change", payload: { action: "update" } });
     },
 
     async rotatePhotos(ids, deg) {

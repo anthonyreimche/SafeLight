@@ -11,7 +11,8 @@ import { preDecodeRawsForCache } from "@/modules/library/import-photos";
 import { setRawCacheDir } from "@/raw/raw-cache";
 import { ProjectStorage } from "./project-storage";
 import { getLastProject, saveLastProject } from "./recent";
-import type { FolderNode } from "./scan";
+import { isNativeFS, nativeDirectoryHandle, pickNativeDirectory } from "./native-fs";
+import { scanProject, type FolderNode } from "./scan";
 
 interface ProjectState {
   root: FileSystemDirectoryHandle | null;
@@ -27,6 +28,9 @@ interface ProjectState {
   openLast: () => Promise<void>;
   /** Called from the reconnect button: re-request permission, then open. */
   reconnectLast: () => Promise<boolean>;
+  /** Re-walk the open folder and refresh the tree (after a folder op on disk).
+   *  Cheap: lists directories only, never re-decodes photos. */
+  refreshTree: () => Promise<void>;
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -36,6 +40,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   opening: false,
 
   async openProjectPicker() {
+    // Electron: native folder picker → absolute path → path-backed handle, so
+    // the folder reconnects on next launch without a permission gesture.
+    if (isNativeFS()) {
+      const path = await pickNativeDirectory();
+      if (!path) return; // user cancelled
+      await get().openProject(nativeDirectoryHandle(path));
+      return;
+    }
     let handle: FileSystemDirectoryHandle;
     try {
       handle = await window.showDirectoryPicker({
@@ -93,5 +105,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!(await verifyPermission(handle, true, "readwrite"))) return false;
     await get().openProject(handle);
     return true;
+  },
+
+  async refreshTree() {
+    const root = get().root;
+    if (!root) return;
+    const { tree } = await scanProject(root);
+    set({ tree });
   },
 }));

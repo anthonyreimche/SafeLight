@@ -42,9 +42,9 @@ export async function scanProject(root: FileSystemDirectoryHandle): Promise<{
           count: 0,
         };
         await walk(entry, childPath, child);
-        // Hide folders with no photos anywhere beneath them.
-        if (child.count > 0 || child.children.length > 0)
-          node.children.push(child);
+        // Show every real (non-dot) folder, including empty ones, so newly
+        // created folders are visible and can be used as drop targets.
+        node.children.push(child);
       } else if (isSupportedName(entry.name)) {
         files.push({ path: childPath, handle: entry, parent: dir });
         node.count++;

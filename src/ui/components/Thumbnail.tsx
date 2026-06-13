@@ -11,6 +11,7 @@ interface ThumbnailProps {
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick?: () => void;
   onRatingChange?: (rating: number) => void;
+  onDragStart?: (e: React.DragEvent) => void;
 }
 
 export function Thumbnail({
@@ -21,6 +22,7 @@ export function Thumbnail({
   onClick,
   onDoubleClick,
   onRatingChange,
+  onDragStart,
 }: ThumbnailProps) {
   // Active (the photo open in Develop/Loupe) gets the brightest ring; other
   // members of a multi-selection get a clearly visible accent ring too.
@@ -52,6 +54,8 @@ export function Thumbnail({
       data-photo-id={photo.id}
       className={`group relative cursor-pointer overflow-hidden rounded bg-surface-1 ${borderClass}`}
       style={{ width: size, height: size }}
+      draggable={!!onDragStart}
+      onDragStart={onDragStart}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
     >

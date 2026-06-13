@@ -44,6 +44,21 @@ function folderOf(relPath: string): string {
   return i === -1 ? "" : relPath.slice(0, i);
 }
 
+// Sidecar written by folder-ops.exportPhotoData; kept in sync there. Inlined
+// (not imported) to avoid a project-storage ↔ folder-ops ↔ project-store cycle.
+const SIDECAR_SUFFIX = ".safelight.json";
+
+interface PhotoSidecar {
+  safelightSidecar?: number;
+  info?: {
+    rating?: number;
+    colorLabel?: CatalogPhoto["colorLabel"];
+    flag?: CatalogPhoto["flag"];
+    keywords?: string[];
+  };
+  maps?: { stack: EditState["stack"]; currentIndex: number } | null;
+}
+
 export interface OpenedProject {
   storage: ProjectStorage;
   tree: FolderNode;
@@ -115,6 +130,33 @@ export class ProjectStorage implements CatalogStorage {
           relPath: f.path,
           folder: folderOf(f.path),
         };
+        // Adopt a sidecar (ratings/labels + develop maps) that travelled with
+        // the file from another project, so the data follows the photo.
+        try {
+          const sc = await readJSON<PhotoSidecar>(
+            f.parent,
+            `${f.handle.name}${SIDECAR_SUFFIX}`,
+          );
+          if (sc && sc.safelightSidecar === 1) {
+            const info = sc.info ?? {};
+            if (typeof info.rating === "number") photo.rating = info.rating;
+            if (info.colorLabel) photo.colorLabel = info.colorLabel;
+            if (info.flag) photo.flag = info.flag;
+            if (Array.isArray(info.keywords)) photo.keywords = info.keywords;
+            if (sc.maps && Array.isArray(sc.maps.stack)) {
+              storage.edits.set(photo.id, {
+                photoId: photo.id,
+                stack: sc.maps.stack,
+                currentIndex:
+                  typeof sc.maps.currentIndex === "number"
+                    ? sc.maps.currentIndex
+                    : sc.maps.stack.length - 1,
+              });
+            }
+          }
+        } catch {
+          /* no/!invalid sidecar — ignore */
+        }
         if (photo.thumbnailBlob)
           await writeBlob(previews, `${photo.id}.jpg`, photo.thumbnailBlob);
         storage.lastThumb.set(photo.id, photo.thumbnailBlob);

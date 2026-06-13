@@ -1,0 +1,294 @@
+// Folder management for the Folders panel: create / rename folders, and move
+// folders or photos between folders by dragging. Every op mutates the real
+// directory tree on disk, then updates the affected catalog records (relPath /
+// folder / live handles) and refreshes the folder tree — no re-decode, so
+// ratings, edits and cached thumbnails (keyed by photo id) are preserved.
+
+import { useProjectStore } from "./project-store";
+import { useCatalogStore } from "@/state/catalog-store";
+import { useUIStore } from "@/state/ui-store";
+import { catalogStorage } from "@/catalog/storage";
+import { nativeFs, nativePathOf } from "./native-fs";
+import { writeJSON } from "./fs";
+import type { CatalogPhoto } from "@/catalog/types";
+
+/** Per-photo sidecar travelling next to the image file. Lets ratings/labels and
+ *  develop edits ("maps") follow the photo into another project folder. */
+export const SIDECAR_SUFFIX = ".safelight.json";
+
+export interface PhotoSidecar {
+  safelightSidecar: 1;
+  filename: string;
+  /** Catalog metadata the user set (not file-derived fields like EXIF). */
+  info: {
+    rating: number;
+    colorLabel: CatalogPhoto["colorLabel"];
+    flag: CatalogPhoto["flag"];
+    keywords: string[];
+  };
+  /** Develop edit history (its snapshots carry the masks = "maps"). */
+  maps: { stack: unknown[]; currentIndex: number } | null;
+}
+
+// ── relative-path helpers (posix separators, "" = project root) ──────────────
+function joinRel(dir: string, name: string): string {
+  return dir ? `${dir}/${name}` : name;
+}
+function dirnameRel(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? "" : p.slice(0, i);
+}
+function basename(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? p : p.slice(i + 1);
+}
+
+function root(): FileSystemDirectoryHandle | null {
+  return useProjectStore.getState().root;
+}
+
+/** Walk from the project root to a relative folder, optionally creating it. */
+async function resolveDir(
+  rootHandle: FileSystemDirectoryHandle,
+  rel: string,
+  create = false,
+): Promise<FileSystemDirectoryHandle> {
+  let dir = rootHandle;
+  if (!rel) return dir;
+  for (const seg of rel.split("/")) {
+    dir = await dir.getDirectoryHandle(seg, { create });
+  }
+  return dir;
+}
+
+// ── on-disk move (file or directory) ─────────────────────────────────────────
+// Electron: a single native rename moves a whole subtree atomically. Browser
+// (FSA) has no move API, so fall back to recursive copy + delete.
+
+async function moveOnDisk(
+  rootHandle: FileSystemDirectoryHandle,
+  srcRel: string,
+  destRel: string,
+  kind: "file" | "directory",
+): Promise<void> {
+  const fs = nativeFs();
+  const rootPath = nativePathOf(rootHandle);
+  if (fs && rootPath) {
+    const abs = (rel: string) => `${rootPath.replace(/[/\\]+$/, "")}/${rel}`;
+    await fs.move(abs(srcRel), abs(destRel));
+    return;
+  }
+  // FSA fallback.
+  const srcParent = await resolveDir(rootHandle, dirnameRel(srcRel));
+  const destParent = await resolveDir(rootHandle, dirnameRel(destRel), true);
+  if (kind === "file") {
+    await copyFile(srcParent, basename(srcRel), destParent, basename(destRel));
+  } else {
+    const srcDir = await srcParent.getDirectoryHandle(basename(srcRel));
+    await copyDir(srcDir, destParent, basename(destRel));
+  }
+  await srcParent.removeEntry(basename(srcRel), { recursive: kind === "directory" });
+}
+
+async function copyFile(
+  srcDir: FileSystemDirectoryHandle,
+  name: string,
+  destDir: FileSystemDirectoryHandle,
+  destName: string,
+): Promise<void> {
+  const fh = await srcDir.getFileHandle(name);
+  const file = await fh.getFile();
+  const out = await destDir.getFileHandle(destName, { create: true });
+  const w = await out.createWritable();
+  await w.write(file);
+  await w.close();
+}
+
+async function copyDir(
+  srcDir: FileSystemDirectoryHandle,
+  destParent: FileSystemDirectoryHandle,
+  newName: string,
+): Promise<void> {
+  const destDir = await destParent.getDirectoryHandle(newName, { create: true });
+  for await (const entry of srcDir.values()) {
+    if (entry.name.startsWith(".")) continue;
+    if (entry.kind === "directory") {
+      await copyDir(entry as FileSystemDirectoryHandle, destDir, entry.name);
+    } else {
+      await copyFile(srcDir, entry.name, destDir, entry.name);
+    }
+  }
+}
+
+// ── catalog updates ──────────────────────────────────────────────────────────
+
+/** Rebuild handle + path fields for every photo under `oldPrefix`, rewriting
+ *  the prefix to `newPrefix`, then persist them. */
+async function relocateSubtree(
+  rootHandle: FileSystemDirectoryHandle,
+  oldPrefix: string,
+  newPrefix: string,
+): Promise<void> {
+  const photos = useCatalogStore.getState().photos;
+  const dirCache = new Map<string, FileSystemDirectoryHandle>();
+  const dirFor = async (rel: string) => {
+    let d = dirCache.get(rel);
+    if (!d) {
+      d = await resolveDir(rootHandle, rel);
+      dirCache.set(rel, d);
+    }
+    return d;
+  };
+
+  const updated: CatalogPhoto[] = [];
+  for (const p of photos) {
+    const under = p.folder === oldPrefix || p.folder.startsWith(`${oldPrefix}/`);
+    if (!under) continue;
+    const newFolder = newPrefix + p.folder.slice(oldPrefix.length);
+    const dir = await dirFor(newFolder);
+    const fileHandle = await dir.getFileHandle(p.filename);
+    updated.push({
+      ...p,
+      folder: newFolder,
+      relPath: joinRel(newFolder, p.filename),
+      directoryHandle: dir,
+      fileHandle,
+    });
+  }
+  await useCatalogStore.getState().relocatePhotos(updated);
+}
+
+// ── public operations ────────────────────────────────────────────────────────
+
+/** Create a subfolder under `parentRel`. Returns its relative path, or null. */
+export async function createFolder(
+  parentRel: string,
+  name: string,
+): Promise<string | null> {
+  const rootHandle = root();
+  if (!rootHandle || !name.trim()) return null;
+  const clean = name.trim();
+  const parent = await resolveDir(rootHandle, parentRel, true);
+  await parent.getDirectoryHandle(clean, { create: true });
+  await useProjectStore.getState().refreshTree();
+  return joinRel(parentRel, clean);
+}
+
+/** Generate a folder name not already used among `siblingNames`. */
+export function uniqueFolderName(siblingNames: string[], base = "Untitled Folder"): string {
+  const taken = new Set(siblingNames);
+  if (!taken.has(base)) return base;
+  for (let i = 2; ; i++) if (!taken.has(`${base} ${i}`)) return `${base} ${i}`;
+}
+
+/** Rename a folder in place (same parent). No-op for the root or empty names. */
+export async function renameFolder(rel: string, newName: string): Promise<void> {
+  const rootHandle = root();
+  const clean = newName.trim();
+  if (!rootHandle || !rel || !clean || clean === basename(rel)) return;
+  const newRel = joinRel(dirnameRel(rel), clean);
+  await moveOnDisk(rootHandle, rel, newRel, "directory");
+  await relocateSubtree(rootHandle, rel, newRel);
+  await useProjectStore.getState().refreshTree();
+}
+
+/** Move a folder into `destParentRel` (""=root). Guards against moving a folder
+ *  into itself, into its own descendant, or back into its current parent. */
+export async function moveFolder(srcRel: string, destParentRel: string): Promise<void> {
+  const rootHandle = root();
+  if (!rootHandle || !srcRel) return;
+  if (destParentRel === srcRel || destParentRel.startsWith(`${srcRel}/`)) return;
+  if (dirnameRel(srcRel) === destParentRel) return;
+  const newRel = joinRel(destParentRel, basename(srcRel));
+  await resolveDir(rootHandle, destParentRel, true);
+  await moveOnDisk(rootHandle, srcRel, newRel, "directory");
+  await relocateSubtree(rootHandle, srcRel, newRel);
+  await useProjectStore.getState().refreshTree();
+}
+
+/** Move photos (by id) into folder `destRel`. */
+export async function movePhotos(ids: string[], destRel: string): Promise<void> {
+  const rootHandle = root();
+  if (!rootHandle || ids.length === 0) return;
+  const idSet = new Set(ids);
+  const photos = useCatalogStore.getState().photos.filter((p) => idSet.has(p.id));
+  const destDir = await resolveDir(rootHandle, destRel, true);
+
+  const updated: CatalogPhoto[] = [];
+  for (const p of photos) {
+    if (p.folder === destRel) continue; // already here
+    const newRel = joinRel(destRel, p.filename);
+    try {
+      await moveOnDisk(rootHandle, p.relPath, newRel, "file");
+      const fileHandle = await destDir.getFileHandle(p.filename);
+      updated.push({
+        ...p,
+        folder: destRel,
+        relPath: newRel,
+        directoryHandle: destDir,
+        fileHandle,
+      });
+    } catch (e) {
+      console.error(`[folder-ops] move ${p.relPath} → ${newRel} failed:`, e);
+    }
+  }
+  await useCatalogStore.getState().relocatePhotos(updated);
+  await useProjectStore.getState().refreshTree();
+}
+
+/** Delete a folder: drop its photos (and their previews/edits) from the catalog,
+ *  remove the directory from disk, then refresh the tree. No-op for the root. */
+export async function deleteFolder(rel: string): Promise<void> {
+  const rootHandle = root();
+  if (!rootHandle || !rel) return;
+  const ids = useCatalogStore
+    .getState()
+    .photos.filter((p) => p.folder === rel || p.folder.startsWith(`${rel}/`))
+    .map((p) => p.id);
+  await useCatalogStore.getState().removePhotos(ids);
+
+  const parent = await resolveDir(rootHandle, dirnameRel(rel));
+  try {
+    await parent.removeEntry(basename(rel), { recursive: true });
+  } catch (e) {
+    console.error(`[folder-ops] delete ${rel} failed:`, e);
+  }
+
+  const active = useUIStore.getState().activeFolder;
+  if (active !== null && (active === rel || active.startsWith(`${rel}/`))) {
+    useUIStore.getState().setActiveFolder(null);
+  }
+  await useProjectStore.getState().refreshTree();
+}
+
+/** Write a `<image>.safelight.json` sidecar next to each selected photo so its
+ *  ratings/labels and develop edits travel if the file is moved to another
+ *  project. Returns the number of sidecars written. */
+export async function exportPhotoData(ids: string[]): Promise<number> {
+  const idSet = new Set(ids);
+  const photos = useCatalogStore.getState().photos.filter((p) => idSet.has(p.id));
+  const storage = catalogStorage();
+  let written = 0;
+  for (const p of photos) {
+    if (!p.directoryHandle) continue;
+    const edit = await storage.getEditState(p.id);
+    const sidecar: PhotoSidecar = {
+      safelightSidecar: 1,
+      filename: p.filename,
+      info: {
+        rating: p.rating,
+        colorLabel: p.colorLabel,
+        flag: p.flag,
+        keywords: p.keywords,
+      },
+      maps: edit ? { stack: edit.stack, currentIndex: edit.currentIndex } : null,
+    };
+    try {
+      await writeJSON(p.directoryHandle, `${p.filename}${SIDECAR_SUFFIX}`, sidecar);
+      written++;
+    } catch (e) {
+      console.error(`[folder-ops] sidecar export ${p.relPath} failed:`, e);
+    }
+  }
+  return written;
+}

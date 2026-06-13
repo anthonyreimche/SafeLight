@@ -16,4 +16,17 @@ contextBridge.exposeInMainWorld("safelightNative", {
       ipcRenderer.invoke("plugins:search", String(query ?? ""), String(topic ?? "")),
     uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
   },
+  // Native file access by absolute path — backs the path-based handle adapters
+  // (src/project/native-fs.ts) so the project folder reconnects without an FSA
+  // permission gesture.
+  fs: {
+    read: (p) => ipcRenderer.invoke("fs:read", String(p)),
+    write: (p, data) => ipcRenderer.invoke("fs:write", String(p), data),
+    list: (p) => ipcRenderer.invoke("fs:list", String(p)),
+    mkdir: (p) => ipcRenderer.invoke("fs:mkdir", String(p)),
+    remove: (p) => ipcRenderer.invoke("fs:remove", String(p)),
+    move: (src, dest) => ipcRenderer.invoke("fs:move", String(src), String(dest)),
+    exists: (p) => ipcRenderer.invoke("fs:exists", String(p)),
+    pickDirectory: () => ipcRenderer.invoke("fs:pickDirectory"),
+  },
 });

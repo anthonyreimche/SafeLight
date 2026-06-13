@@ -232,6 +232,17 @@ declare global {
         /** Search GitHub for official extensions (repos with `topic`). */
         search(query: string, topic: string): Promise<ExtensionSearchResult[]>;
       };
+      /** Native file access by absolute path (path-based handle adapters). */
+      fs?: {
+        read(path: string): Promise<{ data: Uint8Array; mtimeMs: number; size: number }>;
+        write(path: string, data: Uint8Array): Promise<void>;
+        list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]>;
+        mkdir(path: string): Promise<void>;
+        remove(path: string): Promise<void>;
+        move(src: string, dest: string): Promise<void>;
+        exists(path: string): Promise<boolean>;
+        pickDirectory(): Promise<string | null>;
+      };
     };
   }
 }

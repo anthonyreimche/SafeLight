@@ -16,6 +16,7 @@ const {
   net,
   ipcMain,
   session,
+  dialog,
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -396,6 +397,66 @@ function registerPluginIpc() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Native file bridge. Lets the renderer read/write the open project folder by
+// absolute path instead of through File System Access handles. Paths don't
+// expire across sessions the way FSA permissions do, so the originals reconnect
+// on launch with no user gesture (Lightroom-style). Trust scope: the renderer
+// only ever loads our own bundle (navigation is locked to app://), so exposing
+// fs by path is the same trust level the app already runs at.
+// ---------------------------------------------------------------------------
+function registerFsIpc() {
+  ipcMain.handle("fs:read", async (_e, p) => {
+    const st = await fs.promises.stat(p);
+    const data = await fs.promises.readFile(p); // Buffer → Uint8Array in renderer
+    return { data, mtimeMs: st.mtimeMs, size: st.size };
+  });
+  ipcMain.handle("fs:write", async (_e, p, data) => {
+    await fs.promises.mkdir(path.dirname(p), { recursive: true });
+    await fs.promises.writeFile(p, Buffer.from(data));
+  });
+  ipcMain.handle("fs:list", async (_e, p) => {
+    let ents;
+    try {
+      ents = await fs.promises.readdir(p, { withFileTypes: true });
+    } catch (e) {
+      if (e && e.code === "ENOENT") return []; // missing dir → empty, like FSA
+      throw e;
+    }
+    return ents.map((d) => ({
+      name: d.name,
+      kind: d.isDirectory() ? "directory" : "file",
+    }));
+  });
+  ipcMain.handle("fs:mkdir", async (_e, p) => {
+    await fs.promises.mkdir(p, { recursive: true });
+  });
+  ipcMain.handle("fs:remove", async (_e, p) => {
+    await fs.promises.rm(p, { recursive: true, force: true });
+  });
+  // Move/rename a file or directory. Used by folder-ops for drag-to-reorganise
+  // and folder rename; one rename handles a whole subtree atomically.
+  ipcMain.handle("fs:move", async (_e, src, dest) => {
+    await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+    await fs.promises.rename(src, dest);
+  });
+  ipcMain.handle("fs:exists", async (_e, p) => {
+    try {
+      await fs.promises.access(p);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  ipcMain.handle("fs:pickDirectory", async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      properties: ["openDirectory"],
+    });
+    return canceled || !filePaths[0] ? null : filePaths[0];
+  });
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1500,
@@ -501,6 +562,7 @@ if (!app.requestSingleInstanceLock()) {
     );
     registerProtocol();
     registerPluginIpc();
+    registerFsIpc();
     createWindow();
 
     app.on("activate", () => {

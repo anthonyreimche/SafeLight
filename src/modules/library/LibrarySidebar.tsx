@@ -2,15 +2,28 @@
 // (quick catalog scopes + rating/label filters). Both are registered extension
 // contributions docked left of the grid by default.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Rating } from "@/ui/components/Rating";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { useProjectStore } from "@/project/project-store";
 import type { FolderNode } from "@/project/scan";
+import {
+  createFolder,
+  deleteFolder,
+  moveFolder,
+  movePhotos,
+  renameFolder,
+  uniqueFolderName,
+} from "@/project/folder-ops";
 import type { ColorLabel } from "@/catalog/types";
 import { isFilterActive, type RatingOp } from "./visible-photos";
+
+// Drag payload MIME types. Photos carry a JSON id array; a folder carries its
+// relative path. Custom types so folder rows only accept our own drags.
+const DND_PHOTOS = "application/x-safelight-photos";
+const DND_FOLDER = "application/x-safelight-folder";
 
 const LABEL_SWATCHES: { value: ColorLabel; className: string }[] = [
   { value: "red", className: "bg-label-red" },
@@ -30,6 +43,15 @@ const RATING_OP_SYMBOL: Record<RatingOp, string> = {
   neq: "≠",
 };
 
+// Shared row behaviour threaded down the folder tree.
+interface FolderTreeCtx {
+  activeFolder: string | null;
+  onSelect: (path: string) => void;
+  editing: string | null;
+  setEditing: (path: string | null) => void;
+  onNewFolder: (node: FolderNode) => void;
+}
+
 export function FoldersPanel() {
   const activeFolder = useUIStore((s) => s.activeFolder);
   const setActiveFolder = useUIStore((s) => s.setActiveFolder);
@@ -38,25 +60,31 @@ export function FoldersPanel() {
   const opening = useProjectStore((s) => s.opening);
   const openProjectPicker = useProjectStore((s) => s.openProjectPicker);
 
+  // relPath of the folder being renamed inline (null = none).
+  const [editing, setEditing] = useState<string | null>(null);
+
+  // Create a uniquely-named subfolder, then drop straight into rename mode.
+  const onNewFolder = async (node: FolderNode) => {
+    const name = uniqueFolderName(node.children.map((c) => c.name));
+    const created = await createFolder(node.path, name);
+    if (created) setEditing(created);
+  };
+
+  const ctx: FolderTreeCtx = {
+    activeFolder,
+    onSelect: setActiveFolder,
+    editing,
+    setEditing,
+    onNewFolder,
+  };
+
   return (
     <div className="flex flex-col gap-1 p-2">
       {tree ? (
         <>
-          <FolderRow
-            node={tree}
-            depth={0}
-            label={projectName || tree.name}
-            activeFolder={activeFolder}
-            onSelect={setActiveFolder}
-          />
+          <FolderRow node={tree} depth={0} label={projectName || tree.name} ctx={ctx} />
           {tree.children.map((c) => (
-            <FolderTree
-              key={c.path}
-              node={c}
-              depth={1}
-              activeFolder={activeFolder}
-              onSelect={setActiveFolder}
-            />
+            <FolderTree key={c.path} node={c} depth={1} ctx={ctx} />
           ))}
         </>
       ) : (
@@ -194,13 +222,11 @@ export function LibraryFiltersPanel() {
 function FolderTree({
   node,
   depth,
-  activeFolder,
-  onSelect,
+  ctx,
 }: {
   node: FolderNode;
   depth: number;
-  activeFolder: string | null;
-  onSelect: (path: string) => void;
+  ctx: FolderTreeCtx;
 }) {
   const [expanded, setExpanded] = useState(true);
   return (
@@ -208,20 +234,13 @@ function FolderTree({
       <FolderRow
         node={node}
         depth={depth}
-        activeFolder={activeFolder}
-        onSelect={onSelect}
+        ctx={ctx}
         expanded={node.children.length > 0 ? expanded : undefined}
         onToggle={() => setExpanded((e) => !e)}
       />
       {expanded &&
         node.children.map((c) => (
-          <FolderTree
-            key={c.path}
-            node={c}
-            depth={depth + 1}
-            activeFolder={activeFolder}
-            onSelect={onSelect}
-          />
+          <FolderTree key={c.path} node={c} depth={depth + 1} ctx={ctx} />
         ))}
     </>
   );
@@ -231,28 +250,84 @@ function FolderRow({
   node,
   depth,
   label,
-  activeFolder,
-  onSelect,
+  ctx,
   expanded,
   onToggle,
 }: {
   node: FolderNode;
   depth: number;
   label?: string;
-  activeFolder: string | null;
-  onSelect: (path: string) => void;
+  ctx: FolderTreeCtx;
   expanded?: boolean;
   onToggle?: () => void;
 }) {
-  const isActive = activeFolder === node.path;
+  const isActive = ctx.activeFolder === node.path;
+  const isRoot = node.path === "";
+  const isEditing = ctx.editing === node.path;
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelRef = useRef(false);
+
+  useEffect(() => {
+    if (isEditing) inputRef.current?.select();
+  }, [isEditing]);
+
+  // Single commit path: Enter/Escape just blur the input, and onBlur decides
+  // whether to apply (avoids renaming twice off the now-stale path).
+  const commitRename = (value: string) => {
+    ctx.setEditing(null);
+    if (cancelRef.current) {
+      cancelRef.current = false;
+      return;
+    }
+    void renameFolder(node.path, value);
+  };
+
+  const handleDelete = () => {
+    const ok = window.confirm(
+      `Delete the folder "${node.name}" and everything inside it from disk, and remove its photos from the catalog? This can't be undone.`,
+    );
+    if (ok) void deleteFolder(node.path);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const photos = e.dataTransfer.getData(DND_PHOTOS);
+    if (photos) {
+      void movePhotos(JSON.parse(photos) as string[], node.path);
+      return;
+    }
+    const folder = e.dataTransfer.getData(DND_FOLDER);
+    if (folder) void moveFolder(folder, node.path);
+  };
+
   return (
     <div
-      onClick={() => onSelect(node.path)}
+      draggable={!isRoot && !isEditing}
+      onDragStart={(e) => {
+        e.dataTransfer.setData(DND_FOLDER, node.path);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      onDragOver={(e) => {
+        const t = e.dataTransfer.types;
+        if (t.includes(DND_PHOTOS) || t.includes(DND_FOLDER)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (!dragOver) setDragOver(true);
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      onClick={() => ctx.onSelect(node.path)}
       style={{ paddingLeft: 8 + depth * 12 }}
-      className={`flex cursor-pointer items-center gap-1 rounded py-1 pr-2 text-[11px] ${
-        isActive
-          ? "bg-surface-3 text-text-primary"
-          : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+      className={`group flex cursor-pointer items-center gap-1 rounded py-1 pr-1 text-[11px] ${
+        dragOver
+          ? "bg-accent/20 ring-1 ring-accent"
+          : isActive
+            ? "bg-surface-3 text-text-primary"
+            : "text-text-secondary hover:bg-surface-2 hover:text-text-primary"
       }`}
     >
       {expanded !== undefined ? (
@@ -268,8 +343,68 @@ function FolderRow({
       ) : (
         <span className="w-3 shrink-0" />
       )}
-      <span className="flex-1 truncate">{label ?? node.name}</span>
-      {node.count > 0 && <span className="text-text-muted">{node.count}</span>}
+
+      {isEditing ? (
+        <input
+          ref={inputRef}
+          defaultValue={node.name}
+          autoFocus
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            else if (e.key === "Escape") {
+              cancelRef.current = true;
+              e.currentTarget.blur();
+            }
+          }}
+          onBlur={(e) => commitRename(e.currentTarget.value)}
+          className="min-w-0 flex-1 rounded bg-surface-1 px-1 text-[11px] text-text-primary outline-none ring-1 ring-accent"
+        />
+      ) : (
+        <span className="flex-1 truncate">{label ?? node.name}</span>
+      )}
+
+      {!isEditing && (
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            title="New subfolder"
+            onClick={(e) => {
+              e.stopPropagation();
+              void ctx.onNewFolder(node);
+            }}
+            className="hidden w-4 text-text-muted hover:text-text-primary group-hover:block"
+          >
+            +
+          </button>
+          {!isRoot && (
+            <>
+              <button
+                title="Rename folder"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  ctx.setEditing(node.path);
+                }}
+                className="hidden w-4 text-text-muted hover:text-text-primary group-hover:block"
+              >
+                ✎
+              </button>
+              <button
+                title="Delete folder"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDelete();
+                }}
+                className="hidden w-4 text-text-muted hover:text-label-red group-hover:block"
+              >
+                {"🗑"}
+              </button>
+            </>
+          )}
+          {node.count > 0 && (
+            <span className="ml-0.5 text-text-muted">{node.count}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
