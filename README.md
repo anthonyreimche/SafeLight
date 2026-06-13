@@ -81,13 +81,53 @@ See [docs/installation.md](docs/installation.md) for details.
 
 ## Roadmap
 
+**Develop**
 - Red eye correction
-- Image compare view
 - B&W and HDR editing support
-- HDR / focus stacking and photo merge
+- Clipping indicators — highlight/shadow warning overlays on the canvas
+- Range masks — luminance-range and color-range selection for local adjustments
+- Targeted adjustment tool (TAT) — click-drag on the photo to move the slider for the tone/HSL value under the cursor
+- Filmic / sigmoid tone mapping — film-like tone curve alternatives to the basic panel
+- Wavelet-based noise reduction — fine-scale luminance and color decomposition
+- Moiré reduction
+- Flat field and dark frame correction — subtract fixed-pattern sensor noise and lens illumination falloff
+- LUT import/export — 3D LUTs (.cube) and film simulations (HaldCLUT)
+- Focus mask overlay — highlight in-focus areas in the develop canvas
+
+**Library and organization**
+- Image compare view (before/after split and side-by-side)
+- Virtual copies — multiple edit versions of one photo without duplicating the file
+- Collections and smart collections — virtual groupings independent of folder structure
+- Photo stacking — collapse burst/similar shots into a single stack
+- Sync edits — apply the current photo's settings to all selected photos with per-panel granularity
+- Duplicate photo detection — find visually similar or hash-identical photos
+- Keywords and hierarchical keywording
+- IPTC/XMP metadata editing — copyright, caption, creator, rights fields
+- Face detection and tagging
+- Map module — GPS/geolocation-based photo browsing and tagging
+- Camera/card import wizard — detect connected cameras and SD cards, copy files with rename templates
+
+**Export and output**
 - Batch editing
+- Multiple export recipes — run several format/size/destination presets in one pass
+- Watermarking — text or image overlays on export
+- Soft proofing — simulate paper or screen output using ICC profiles
+- Color profile support — assign and convert ICC input/output profiles
+- Print module — multi-photo layout, contact sheet, color-managed printing
+- Slideshow module
+- Web gallery / publish services — generate HTML galleries or push to Flickr, SmugMug, etc.
+- Photo book module — page-layout tool for print-on-demand books
+
+**AI features**
 - AI masking via ONNX.js (Select Subject, Sky)
+- AI sky replacement
+- AI object removal / content-aware fill
+- AI portrait enhancement — skin, eyes, and portrait retouching
+- HDR / focus stacking and photo merge
+
+**Platform and integration**
 - Lightroom catalog import (sql.js)
+- Tethered shooting — live capture from camera via USB/WiFi
 - Mobile-responsive viewing
 - Extension marketplace and scaffolding tools
 

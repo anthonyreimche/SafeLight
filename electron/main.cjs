@@ -32,12 +32,77 @@ const DIST = path.join(__dirname, "..", "dist");
 // the same page in Chrome. Match Chrome's fast path explicitly.
 // ---------------------------------------------------------------------------
 if (process.platform === "linux") {
-  // On Linux, always use EGL — modern Electron builds ship without GLX so
-  // "desktop" silently falls back to SwiftShader software rendering, which
-  // loses WebGL2. EGL works for both Wayland and X11 (via Mesa EGL).
-  app.commandLine.appendSwitch("use-gl", "egl");
+  // ---------------------------------------------------------------------------
+  // ANGLE backend auto-detection with persistence.
+  //
+  // appendSwitch must run before app.ready, so GPU failures can't be caught
+  // inline. Strategy:
+  //   1. On first launch, read a cached backend from XDG config. If none,
+  //      start with "gl" (desktop OpenGL via ANGLE — broadest Mesa support).
+  //   2. If the GPU process fails before any window appears, delete the cache
+  //      and relaunch immediately with the next backend in the list ("gles",
+  //      then "vulkan"). The relaunch is invisible to the user.
+  //   3. On the first launch that survives to app.ready, write the working
+  //      backend to cache — subsequent cold starts skip the probe entirely.
+  //   4. A runtime GPU crash (window already visible) is left alone; the app
+  //      handles it without relaunching.
+  // ---------------------------------------------------------------------------
+  const ANGLE_BACKENDS = ["gl", "gles", "vulkan"];
+  const configDir = path.join(
+    process.env.XDG_CONFIG_HOME ||
+      path.join(process.env.HOME || "", ".config"),
+    "safelight"
+  );
+  const backendCache = path.join(configDir, "gpu-backend");
+
+  // Prefer the cached backend; fall back to the relaunch-index argv, then "gl".
+  let angleIdx = 0;
+  const idxArg = process.argv.find((a) => a.startsWith("--safelight-angle-idx="));
+  if (idxArg) {
+    angleIdx = parseInt(idxArg.split("=")[1], 10) || 0;
+  } else {
+    try {
+      const cached = fs.readFileSync(backendCache, "utf8").trim();
+      const ci = ANGLE_BACKENDS.indexOf(cached);
+      if (ci !== -1) angleIdx = ci;
+    } catch { /* no cache yet */ }
+  }
+  angleIdx = Math.max(0, Math.min(angleIdx, ANGLE_BACKENDS.length - 1));
+  const backend = ANGLE_BACKENDS[angleIdx];
+
+  app.commandLine.appendSwitch("use-angle", backend);
   app.commandLine.appendSwitch("disable-gpu-sandbox");
   app.commandLine.appendSwitch("enable-webgl");
+  // Native Wayland rendering (no XWayland overhead); auto-detects X11 too.
+  app.commandLine.appendSwitch("ozone-platform-hint", "auto");
+
+  // Persist the working backend once the app reaches ready (GPU confirmed OK).
+  app.whenReady().then(() => {
+    try {
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(backendCache, backend, "utf8");
+    } catch { /* non-fatal */ }
+  });
+
+  // On GPU process failure: clear the stale cache and relaunch with the next
+  // backend — but only if no window is visible yet (startup failure, not a
+  // runtime crash mid-session).
+  app.on("child-process-gone", (_event, details) => {
+    const failReasons = new Set(["crashed", "launch-failed", "abnormal-exit"]);
+    if (
+      details.type === "GPU" &&
+      failReasons.has(details.reason) &&
+      BrowserWindow.getAllWindows().length === 0 &&
+      angleIdx + 1 < ANGLE_BACKENDS.length
+    ) {
+      try { fs.unlinkSync(backendCache); } catch { /* already gone */ }
+      const args = process.argv
+        .slice(1)
+        .filter((a) => !a.startsWith("--safelight-angle-idx="));
+      app.relaunch({ args: [...args, `--safelight-angle-idx=${angleIdx + 1}`] });
+      app.exit(0);
+    }
+  });
 } else if (process.platform === "win32") {
   app.commandLine.appendSwitch("use-angle", "d3d11"); // modern ANGLE backend (no D3D9/WARP fallback)
 }

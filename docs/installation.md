@@ -93,10 +93,87 @@ npm run preview  # serve the production build locally
 
 ## Troubleshooting
 
-**"WebGL2 not supported"** — update your graphics drivers and make sure hardware acceleration is enabled. The desktop app forces the high-performance GPU automatically.
+### Windows
 
-**RAW files look soft or load as small previews (browser)** — full-speed RAW decoding needs cross-origin isolation, which the plain dev server does not provide in all configurations. Use the desktop app for guaranteed full-resolution RAW.
+**Windows SmartScreen blocks the installer** — the installer is signed with a local self-signed certificate, so Windows may show "Windows protected your PC." Click **More info → Run anyway**. To suppress this permanently, run `make-cert.ps1` as Administrator once to install the `CN=Safelight` root certificate machine-wide.
 
-**Photos missing after restart (browser)** — folder permissions expire between browser sessions. Click **Reconnect** in the top bar to re-grant access; the desktop app is not affected the same way once permission is granted.
+**"WebGL2 not supported"** — update your graphics drivers and make sure hardware acceleration is enabled. The desktop app forces the high-performance GPU (D3D11 ANGLE, discrete adapter) automatically; the browser requires it to be enabled in `chrome://settings/system`.
 
-**Port already in use** — Vite automatically tries the next port (5174, 5175, …).
+**App won't launch / black window** — open Task Manager, kill any orphaned `Safelight` processes, then relaunch. If the window is black, ensure your GPU drivers are up to date and that hardware acceleration is not blocked by a group policy.
+
+### macOS
+
+**"Safelight is damaged and can't be opened" (Gatekeeper)** — the `.dmg` is unsigned unless you supplied a Developer ID certificate at build time. Run this once in Terminal after mounting the DMG:
+
+```bash
+xattr -cr /Applications/Safelight.app
+```
+
+Then right-click the app → **Open** on first launch to bypass the Gatekeeper dialog. Subsequent launches work normally.
+
+**App is slow on Apple Silicon** — confirm Safelight is running natively (not under Rosetta 2): Activity Monitor → find Safelight → the Architecture column should say `Apple`. If it says `Intel`, reinstall from the `-arm64.dmg` build.
+
+### Linux
+
+**AppImage does nothing when double-clicked** — the file needs the executable bit:
+
+```bash
+chmod +x Safelight-<version>.AppImage
+./Safelight-<version>.AppImage
+```
+
+**AppImage error: "fuse: device not found"** — FUSE 2 is required. Install it:
+
+```bash
+# Debian/Ubuntu
+sudo apt install libfuse2
+# Fedora
+sudo dnf install fuse
+# Arch
+sudo pacman -S fuse2
+```
+
+Alternatively, extract and run without FUSE: `./Safelight-<version>.AppImage --appimage-extract && ./squashfs-root/AppRun`.
+
+**Flatpak — app has no access to files** — Flatpak sandboxing restricts filesystem access. Grant the needed path with Flatseal or from the command line:
+
+```bash
+flatpak override --user --filesystem=host io.github.anthonyreimche.Safelight
+```
+
+**`.deb` / `.rpm` install fails with dependency errors** — install the missing system libraries first. Common culprits:
+
+```bash
+# Debian/Ubuntu
+sudo apt install --fix-broken install
+# Fedora
+sudo dnf install libXScrnSaver libappindicator-gtk3
+```
+
+### RAW and image quality
+
+**RAW files look soft or load as small previews (browser)** — full-speed RAW decoding requires cross-origin isolation (`SharedArrayBuffer`), which the plain Vite dev server does not guarantee. Use the desktop app for full-resolution decoding. If you must use the browser, start the dev server and confirm the console shows `Cross-Origin-Opener-Policy: same-origin`.
+
+**Unsupported RAW format / file shows as grey tile** — Safelight falls back to the embedded JPEG preview if libraw-wasm can't decode the file. Very new camera models may need a libraw-wasm update. Check the [libraw supported cameras list](https://www.libraw.org/supported-cameras) and open a GitHub issue if your camera is listed but fails.
+
+**Colors look wrong after decoding** — check that the correct camera profile is applied (Preferences ▸ Color). Some cameras benefit from a DCP profile; export the photo with the "Use embedded profile" option and compare.
+
+### Projects and files
+
+**Photos missing after restart (browser)** — folder permissions expire between browser sessions. Click **Reconnect** in the top bar to re-grant access; the desktop app is not affected once permission is granted.
+
+**Edits lost / catalog not saving** — Safelight writes to `.safelight/` inside the project folder. Ensure the folder is not read-only and is not inside a path that sync software (OneDrive, Dropbox) has locked. If a sync conflict occurs, `.safelight/catalog.json` will have a backup alongside it — rename it to restore.
+
+**Extension install fails ("Failed to fetch")** — extension installation downloads from GitHub. Check your internet connection and, on corporate networks, whether `raw.githubusercontent.com` is allowed through the firewall. You can also install extensions manually: clone the repo to a local folder, then drag-and-drop the folder onto the Extensions panel.
+
+### Source builds
+
+**`npm run build:electron` fails with "Cannot find module"** — make sure you're on Node.js 18 or newer (`node -v`) and that `npm install` completed without errors. Delete `node_modules/` and `package-lock.json` and re-run `npm install` if you see version conflicts.
+
+**WSL2 Linux build fails with "rsync: command not found"** — install rsync in your WSL2 distro:
+
+```bash
+sudo apt install rsync   # Debian/Ubuntu
+```
+
+**Port already in use** — Vite automatically tries the next port (5174, 5175, …). If it keeps failing, find and kill the occupying process: `npx kill-port 5173`.
