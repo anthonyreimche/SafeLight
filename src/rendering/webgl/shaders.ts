@@ -169,6 +169,10 @@ vec3 linearToSrgbU(vec3 c) {
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
 
+// Pluggable display transform (Pixel Peeper): scene-linear HDR -> display-encoded.
+// Replaced via buildFragmentShader() when a non-default pipeline is active.
+//__PIPELINE_GLSL__
+
 // Per-channel highlight rolloff: values above the knee are folded smoothly into
 // [knee, 1] (a saturating shoulder), recovering blown highlights. With knee = 1
 // it's a plain clip (the default, no recovery); lowering the knee — driven by
@@ -1091,7 +1095,7 @@ void main() {
     lin = applyMaskLinear(lin, uMaskAdj0[mi], uMaskAdj1[mi], mcovs[mi], refT);
   }
 
-  vec3 disp = linearToSrgbU(lin); // per-channel, may exceed 1.0
+  vec3 disp = pipelineToDisplay(lin); // per-channel, may exceed 1.0 (built-in)
 
   // Contrast: S-curve applied per-channel, which naturally pushes
   // channel differences apart and increases perceived saturation with positive contrast.
@@ -1206,3 +1210,16 @@ void main() {
   fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }
 `;
+
+// The stock Safelight transform: plain unclamped sRGB encode, preserving HDR
+// headroom for the downstream highlight stages.
+export const DEFAULT_PIPELINE_GLSL = `vec3 pipelineToDisplay(vec3 lin) { return linearToSrgbU(lin); }`;
+
+/** Splice a pipeline's pipelineToDisplay definition into the develop shader.
+ *  Pass null/undefined for the built-in transform. */
+export function buildFragmentShader(pipelineGlsl?: string | null): string {
+  return FRAGMENT_SHADER.replace(
+    "//__PIPELINE_GLSL__",
+    pipelineGlsl || DEFAULT_PIPELINE_GLSL,
+  );
+}

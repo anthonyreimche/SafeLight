@@ -7,10 +7,12 @@ import type {
   LayoutContribution,
   PanelContribution,
   PanelSlot,
+  PipelineContribution,
   SettingsContribution,
   SliderIconContribution,
   ThemeContribution,
 } from "./types";
+import { unregisterExtensionActions } from "@/state/keybindings-store";
 
 export interface RegisteredPanel extends PanelContribution {
   extensionId: string;
@@ -27,6 +29,9 @@ export interface RegisteredLayout extends LayoutContribution {
 export interface RegisteredSettings extends SettingsContribution {
   extensionId: string;
 }
+export interface RegisteredPipeline extends PipelineContribution {
+  extensionId: string;
+}
 
 interface RegistryState {
   panels: Record<string, RegisteredPanel>;
@@ -35,6 +40,7 @@ interface RegistryState {
   layouts: Record<string, RegisteredLayout>;
   /** Keyed by extension id — one settings dialog per extension. */
   settings: Record<string, RegisteredSettings>;
+  pipelines: Record<string, RegisteredPipeline>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -43,6 +49,7 @@ export const useRegistry = create<RegistryState>(() => ({
   sliderIcons: {},
   layouts: {},
   settings: {},
+  pipelines: {},
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -84,6 +91,15 @@ export function registerSettings(
   }));
 }
 
+export function registerPipeline(
+  extensionId: string,
+  c: PipelineContribution,
+): void {
+  useRegistry.setState((s) => ({
+    pipelines: { ...s.pipelines, [c.id]: { ...c, extensionId } },
+  }));
+}
+
 /** Remove every contribution an extension made (uninstall/deactivate). */
 export function unregisterExtension(extensionId: string): void {
   const drop = <T extends { extensionId: string }>(map: Record<string, T>) =>
@@ -96,7 +112,9 @@ export function unregisterExtension(extensionId: string): void {
     sliderIcons: drop(s.sliderIcons),
     layouts: drop(s.layouts),
     settings: drop(s.settings),
+    pipelines: drop(s.pipelines),
   }));
+  unregisterExtensionActions(extensionId);
 }
 
 export function panelsForSlot(

@@ -103,6 +103,61 @@ export function resetAllBindings(): void {
   persist({});
 }
 
+// ─── Extension-registered actions ────────────────────────────────────────────
+
+interface ExtensionActionEntry {
+  extensionId: string;
+  id: string;
+  label: string;
+  category: ActionCategory;
+  def: string;
+  handler: () => void;
+}
+
+/** Reactive store so Preferences ▸ Shortcuts re-renders when extensions load. */
+export const useExtensionActions = create<{ actions: Map<string, ExtensionActionEntry> }>(
+  () => ({ actions: new Map() }),
+);
+
+export function registerExtensionAction(
+  extensionId: string,
+  c: { id: string; label: string; category?: ActionCategory; defaultCombo: string; handler: () => void },
+): void {
+  useExtensionActions.setState((s) => {
+    const next = new Map(s.actions);
+    next.set(c.id, {
+      extensionId,
+      id: c.id,
+      label: c.label,
+      category: c.category ?? "General",
+      def: c.defaultCombo,
+      handler: c.handler,
+    });
+    return { actions: next };
+  });
+}
+
+export function unregisterExtensionActions(extensionId: string): void {
+  useExtensionActions.setState((s) => {
+    const next = new Map(s.actions);
+    for (const [id, e] of next) {
+      if (e.extensionId === extensionId) next.delete(id);
+    }
+    return { actions: next };
+  });
+}
+
+/** Match the first extension action whose (possibly rebound) combo matches. */
+export function matchExtensionAction(e: KeyboardEvent): ExtensionActionEntry | null {
+  const combo = comboFromEvent(e);
+  if (!combo) return null;
+  const { overrides } = useKeybindings.getState();
+  for (const ea of useExtensionActions.getState().actions.values()) {
+    if ((overrides[ea.id] ?? ea.def) === combo) return ea;
+  }
+  return null;
+}
+
 /** Follow rebinds made in other windows. Call once at boot. */
 export function initKeybindings(): void {
   window.addEventListener("storage", (e) => {

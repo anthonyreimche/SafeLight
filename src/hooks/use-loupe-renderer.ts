@@ -6,6 +6,7 @@ import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedParams } from "@/catalog/edit-params";
 import { useCatalogStore } from "@/state/catalog-store";
+import { usePipelineStore } from "@/extensions/pipelines";
 
 // Loupe zooms to 1:1, so decode at (up to) full sensor resolution like Develop
 // rather than the 2560px interactive cap — otherwise a RAW whose libraw bitmap
@@ -37,6 +38,8 @@ export function useLoupeRenderer(
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
+  // Pixel Peeper: re-render when the active pipeline changes.
+  const pipelineId = usePipelineStore((s) => s.activeId);
 
   // Mirror the canvas's current buffer size into state so zoom can scale it.
   const syncSize = () => {
@@ -111,7 +114,8 @@ export function useLoupeRenderer(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photo.id, fileAccessNonce]);
 
-  // Re-render on the before/after toggle without reloading pixels.
+  // Re-render on the before/after toggle (or a pipeline change) without
+  // reloading pixels.
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
@@ -123,7 +127,7 @@ export function useLoupeRenderer(
       syncSize();
     });
     return () => cancelAnimationFrame(id);
-  }, [showBefore]);
+  }, [showBefore, pipelineId]);
 
   return { supported, loading, width: size.width, height: size.height };
 }

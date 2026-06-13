@@ -10,6 +10,7 @@ import { computeHistogram } from "@/rendering/histogram";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { getSettings } from "@/state/settings-store";
+import { usePipelineStore } from "@/extensions/pipelines";
 
 interface RendererStatus {
   supported: boolean;
@@ -37,6 +38,9 @@ export function useDevelopRenderer(
   const setHistogram = useDevelopStore((s) => s.setHistogram);
   const cropping = useDevelopStore((s) => s.cropping);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
+  // Pixel Peeper: re-render when the active pipeline changes (the renderer
+  // itself rebuilds its program inside render()).
+  const pipelineId = usePipelineStore((s) => s.activeId);
 
   // While cropping, render a view that encloses the rotated image so the crop
   // overlay can see the whole (straightened) frame; straighten stays applied.
@@ -197,7 +201,7 @@ export function useDevelopRenderer(
         updateHistogram();
       });
     }
-  }, [params, cropping]);
+  }, [params, cropping, pipelineId]);
 
   return {
     supported,

@@ -13,6 +13,7 @@ import {
   isBareKey,
   isEditableTarget,
   matchAction,
+  matchExtensionAction,
   shortcutsSuspended,
 } from "@/state/keybindings-store";
 import { togglePreferences } from "@/ui/components/PreferencesDialog";
@@ -42,7 +43,12 @@ export function useKeyboardShortcuts() {
       const action =
         matchAction(e, ["General"]) ??
         (inDevelop ? matchAction(e, ["Develop"]) : null);
-      if (!action) return;
+      if (!action) {
+        // Extension-registered shortcuts fire after built-ins.
+        const ext = matchExtensionAction(e);
+        if (ext) { e.preventDefault(); ext.handler(); }
+        return;
+      }
 
       if (
         GATED.has(action) &&

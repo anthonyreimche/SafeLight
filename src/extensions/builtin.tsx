@@ -97,6 +97,14 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
       });
       // "Safelight Dark" mirrors the index.css defaults so switching back is a
       // clean reset; vars listed here are the full themable surface.
+      // Built-in display transform: always present so Preferences ▸ Rendering
+      // has at least one option even when no extension is installed.
+      api.registerPipeline({
+        id: "core.pipeline",
+        name: "Built-in",
+        description:
+          "Safelight's stock pipeline: unclamped sRGB encode with HDR highlight handling and the default RAW base curve.",
+      });
       api.registerTheme({
         id: "core.dark",
         name: "Safelight Dark",

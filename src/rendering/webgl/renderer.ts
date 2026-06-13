@@ -10,7 +10,25 @@ import {
 } from "@/catalog/types";
 import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
-import { FRAGMENT_SHADER, VERTEX_SHADER } from "./shaders";
+import { buildFragmentShader, VERTEX_SHADER } from "./shaders";
+import {
+  BUILTIN_RESOLVED,
+  resolveActivePipeline,
+  type ResolvedPipeline,
+} from "@/extensions/pipelines";
+
+// Fixed attribute locations (bound before link), so every pipeline variant of
+// the program shares the one VAO — swapping pipelines never rebuilds geometry.
+const ATTR_POS = 0;
+const ATTR_UV = 1;
+
+// One compiled develop program per pipeline signature: switching transforms
+// (or back) is an O(1) swap with no shader recompile or uniform re-query.
+interface PipelineProgram {
+  program: WebGLProgram;
+  uniforms: Record<string, WebGLUniformLocation | null>;
+  skipBase: boolean;
+}
 import { bakeCoverage, coverageSignature, type CoverageItem } from "./mask-coverage";
 import { contentAwareFill } from "../content-aware-fill";
 import { setHealSourceImage } from "../heal-source";
@@ -182,6 +200,13 @@ export class WebGLRenderer {
   // GPU lacks it — then the cached preview falls back to the CPU-linearised float path.
   private haveNorm16 = false;
   private norm16Format = 0;
+  // Active render pipeline: signature of the GLSL compiled into the current
+  // program, compared against the (memoized) resolution on every render.
+  private pipelineSig = "";
+  private pipelineSkipBase = false;
+  private programCache = new Map<string, PipelineProgram>();
+  private vao: WebGLVertexArrayObject | null = null;
+  private quadBuf: WebGLBuffer | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", {
@@ -206,9 +231,15 @@ export class WebGLRenderer {
       this.norm16Format = (norm16 as { RGBA16_EXT: number }).RGBA16_EXT;
     }
 
-    this.program = this.createProgram(VERTEX_SHADER, FRAGMENT_SHADER);
+    // Compile with the active pipeline; a broken custom transform falls back
+    // to the built-in so the renderer always comes up.
+    const p = resolveActivePipeline();
+    const entry = this.entryFor(p);
+    this.program = entry.program;
+    this.uniforms = entry.uniforms;
+    this.pipelineSkipBase = entry.skipBase;
+    this.pipelineSig = p.sig;
     this.setupQuad();
-    this.cacheUniforms();
 
     this.imageTexture = this.createTexture();
     this.curveTexture = gl.createTexture();
@@ -334,6 +365,24 @@ export class WebGLRenderer {
     this.haveHealFill = true;
   }
 
+  // Program + uniform locations for a pipeline, cached by signature. A bad
+  // custom transform falls back to the built-in entry — cached under the
+  // failing sig too, so it isn't recompiled (and re-logged) every frame.
+  private entryFor(p: ResolvedPipeline): PipelineProgram {
+    let e = this.programCache.get(p.sig);
+    if (e) return e;
+    try {
+      const program = this.createProgram(VERTEX_SHADER, buildFragmentShader(p.glsl));
+      e = { program, uniforms: this.cacheUniformsFor(program), skipBase: p.skipBaseCurve };
+    } catch (err) {
+      if (!p.glsl) throw err; // built-in must compile
+      console.error(`[pipeline] "${p.id}" failed to compile; using built-in:`, err);
+      e = this.entryFor(BUILTIN_RESOLVED);
+    }
+    this.programCache.set(p.sig, e);
+    return e;
+  }
+
   private createProgram(vsSrc: string, fsSrc: string): WebGLProgram {
     const gl = this.gl;
     const vs = this.compileShader(gl.VERTEX_SHADER, vsSrc);
@@ -341,6 +390,10 @@ export class WebGLRenderer {
     const program = gl.createProgram();
     gl.attachShader(program, vs);
     gl.attachShader(program, fs);
+    // Pin attribute locations so the shared quad VAO is valid for every
+    // pipeline variant of the program.
+    gl.bindAttribLocation(program, ATTR_POS, "aPos");
+    gl.bindAttribLocation(program, ATTR_UV, "aUv");
     gl.linkProgram(program);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
       const log = gl.getProgramInfoLog(program);
@@ -366,27 +419,31 @@ export class WebGLRenderer {
 
   private setupQuad() {
     const gl = this.gl;
-    // pos.xy, uv.xy -- two triangles covering the viewport.
+    // pos.xy, uv.xy -- two triangles covering the viewport. Attribute
+    // locations are pinned (bindAttribLocation), so this one VAO serves every
+    // pipeline program — created once, never rebuilt.
     const data = new Float32Array([
       -1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, -1, 1, 0, 1, 1, -1, 1, 0, 1, 1, 1,
       1,
     ]);
     const vao = gl.createVertexArray();
+    this.vao = vao;
     gl.bindVertexArray(vao);
     const buffer = gl.createBuffer();
+    this.quadBuf = buffer;
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-
-    const posLoc = gl.getAttribLocation(this.program, "aPos");
-    const uvLoc = gl.getAttribLocation(this.program, "aUv");
-    gl.enableVertexAttribArray(posLoc);
-    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0);
-    gl.enableVertexAttribArray(uvLoc);
-    gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 16, 8);
+    gl.enableVertexAttribArray(ATTR_POS);
+    gl.vertexAttribPointer(ATTR_POS, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(ATTR_UV);
+    gl.vertexAttribPointer(ATTR_UV, 2, gl.FLOAT, false, 16, 8);
   }
 
-  private cacheUniforms() {
+  private cacheUniformsFor(
+    program: WebGLProgram,
+  ): Record<string, WebGLUniformLocation | null> {
     const gl = this.gl;
+    const u: Record<string, WebGLUniformLocation | null> = {};
     const names = [
       "uImage",
       "uCurve",
@@ -483,23 +540,24 @@ export class WebGLRenderer {
         "uMaskAdj2",
       ]) {
         const name = `${base}[${i}]`;
-        this.uniforms[name] = gl.getUniformLocation(this.program, name);
+        u[name] = gl.getUniformLocation(program, name);
       }
     }
     for (let i = 0; i < MAX_RETOUCH; i++) {
-      this.uniforms[`uSpotA[${i}]`] = gl.getUniformLocation(this.program, `uSpotA[${i}]`);
-      this.uniforms[`uSpotB[${i}]`] = gl.getUniformLocation(this.program, `uSpotB[${i}]`);
-      this.uniforms[`uSpotC[${i}]`] = gl.getUniformLocation(this.program, `uSpotC[${i}]`);
-      this.uniforms[`uSpotTint[${i}]`] = gl.getUniformLocation(this.program, `uSpotTint[${i}]`);
+      u[`uSpotA[${i}]`] = gl.getUniformLocation(program, `uSpotA[${i}]`);
+      u[`uSpotB[${i}]`] = gl.getUniformLocation(program, `uSpotB[${i}]`);
+      u[`uSpotC[${i}]`] = gl.getUniformLocation(program, `uSpotC[${i}]`);
+      u[`uSpotTint[${i}]`] = gl.getUniformLocation(program, `uSpotTint[${i}]`);
     }
     for (let i = 0; i < MAX_RETOUCH_BRUSH; i++) {
-      this.uniforms[`uRetouchCh[${i}]`] = gl.getUniformLocation(this.program, `uRetouchCh[${i}]`);
-      this.uniforms[`uRetouchData[${i}]`] = gl.getUniformLocation(this.program, `uRetouchData[${i}]`);
-      this.uniforms[`uRetouchRadius[${i}]`] = gl.getUniformLocation(this.program, `uRetouchRadius[${i}]`);
+      u[`uRetouchCh[${i}]`] = gl.getUniformLocation(program, `uRetouchCh[${i}]`);
+      u[`uRetouchData[${i}]`] = gl.getUniformLocation(program, `uRetouchData[${i}]`);
+      u[`uRetouchRadius[${i}]`] = gl.getUniformLocation(program, `uRetouchRadius[${i}]`);
     }
     for (const name of names) {
-      this.uniforms[name] = gl.getUniformLocation(this.program, name);
+      u[name] = gl.getUniformLocation(program, name);
     }
+    return u;
   }
 
   private createTexture(): WebGLTexture {
@@ -738,8 +796,22 @@ export class WebGLRenderer {
     // here painted a black frame on every crop/straighten/transform change.
   }
 
+  // Swap to the active pipeline's cached program when the selection changed
+  // since the last render. Steady state is one memoized resolve and a string
+  // compare; a switch is a Map lookup (compile only on first use of a sig).
+  private syncPipeline() {
+    const p = resolveActivePipeline();
+    if (p.sig === this.pipelineSig) return;
+    const e = this.entryFor(p);
+    this.program = e.program;
+    this.uniforms = e.uniforms;
+    this.pipelineSkipBase = e.skipBase;
+    this.pipelineSig = p.sig;
+  }
+
   render() {
     if (!this.hasImage || !this.params) return;
+    this.syncPipeline();
     this.resize();
     const gl = this.gl;
     const p = this.params;
@@ -757,7 +829,12 @@ export class WebGLRenderer {
 
     gl.uniform1i(u.uLinear, this.linear ? 1 : 0);
     gl.uniform1i(u.uIsFallbackPreview, this.isFallbackPreview ? 1 : 0);
-    gl.uniform1i(u.uApplyBaseCurve, this.applyBaseCurve ? 1 : 0);
+    // A replacement pipeline that brings its own tone curve (AgX, ACES, …)
+    // suppresses the default RAW base curve so it sees true scene-linear input.
+    gl.uniform1i(
+      u.uApplyBaseCurve,
+      this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
+    );
     gl.uniform1f(u.uExposure, p.exposure);
     gl.uniform1f(u.uContrast, p.contrast);
     gl.uniform1f(u.uHighlights, p.highlights);
@@ -1043,6 +1120,11 @@ export class WebGLRenderer {
     if (this.healFillTex) gl.deleteTexture(this.healFillTex);
     gl.deleteTexture(this.maskTexture);
     gl.deleteTexture(this.retouchTexture);
-    gl.deleteProgram(this.program);
+    if (this.vao) gl.deleteVertexArray(this.vao);
+    if (this.quadBuf) gl.deleteBuffer(this.quadBuf);
+    // Fallback entries can share a program under several sigs — dedupe.
+    const programs = new Set<WebGLProgram>([this.program]);
+    for (const e of this.programCache.values()) programs.add(e.program);
+    for (const prog of programs) gl.deleteProgram(prog);
   }
 }

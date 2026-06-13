@@ -8,27 +8,43 @@ import type { SafelightAPI } from "./types";
 import {
   registerLayout,
   registerPanel,
+  registerPipeline,
   registerSettings,
   registerSliderIcon,
   registerTheme,
 } from "./registry";
+import { applyPipeline, initPipelines, usePipelineStore } from "./pipelines";
 import {
   getExtSetting,
   initExtSettings,
   onExtSettingChange,
   setExtSetting,
 } from "./ext-settings";
-import { initKeybindings } from "@/state/keybindings-store";
-import { applyDockLayout, initDockLayouts, toggleDockPanel } from "./dock";
-import { applyTheme, initThemes } from "./themes";
+import {
+  getBinding,
+  initKeybindings,
+  registerExtensionAction,
+  useKeybindings,
+} from "@/state/keybindings-store";
+import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } from "./dock";
+import { applyTheme, initThemes, useThemeStore } from "./themes";
 import { initEnablement, loadBuiltins, loadExternalPlugins } from "./loader";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { Histogram } from "@/ui/components/Histogram";
+import { CurveEditor } from "@/ui/components/CurveEditor";
+import { Rating } from "@/ui/components/Rating";
+import { Thumbnail } from "@/ui/components/Thumbnail";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { initSettings, useSettings } from "@/state/settings-store";
+import { usePresetsStore } from "@/state/presets-store";
+import {
+  openPreferences,
+  closePreferences,
+  togglePreferences,
+} from "@/ui/components/PreferencesDialog";
 
 /** Every register* call made through a scoped API is tagged with the
  *  extension's id, so uninstalling can sweep all of its contributions. */
@@ -41,24 +57,35 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerTheme: (c) => registerTheme(extensionId, c),
     registerLayout: (c) => registerLayout(extensionId, c),
     registerSliderIcon: (c) => registerSliderIcon(extensionId, c),
+    registerPipeline: (c) => registerPipeline(extensionId, c),
+    registerKeybinding: (c) => registerExtensionAction(extensionId, c),
     registerSettings: (c) => registerSettings(extensionId, c),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),
       onChange: (cb) => onExtSettingChange(extensionId, cb),
     },
-    components: { Panel, Slider, Histogram },
+    components: { Panel, Slider, Histogram, CurveEditor, Rating, Thumbnail },
     stores: {
       useDevelopStore,
       useCatalogStore,
       useUIStore,
       useSettings,
+      usePresetsStore,
+      useKeybindings,
+      useThemeStore,
+      useLayoutStore,
+      usePipelineStore,
       /** For plugins that need their own state. */
       create,
     },
     dock: { togglePanel: toggleDockPanel },
     themes: { apply: applyTheme },
     layouts: { apply: applyDockLayout },
+    pipelines: { apply: applyPipeline },
+    preferences: { open: openPreferences, close: closePreferences, toggle: togglePreferences },
+    navigation: { goTo: (module) => useUIStore.getState().setActiveModule(module) },
+    keybindings: { getBinding },
   };
 }
 
@@ -74,6 +101,7 @@ export function initExtensionHost(): void {
   initExtSettings();
   initEnablement();
   initThemes();
+  initPipelines();
   initDockLayouts();
   void loadExternalPlugins();
 }

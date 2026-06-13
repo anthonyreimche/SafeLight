@@ -31,7 +31,19 @@ const DIST = path.join(__dirname, "..", "dist");
 // an old ANGLE backend, or SwiftShader software WebGL — all much slower than
 // the same page in Chrome. Match Chrome's fast path explicitly.
 // ---------------------------------------------------------------------------
-app.commandLine.appendSwitch("use-angle", "d3d11"); // modern ANGLE backend (no D3D9/WARP fallback)
+if (process.platform === "linux") {
+  // On Linux, Chromium's GPU blocklist and sandbox restrictions commonly
+  // prevent WebGL2 from initialising even when the system GL drivers are fine.
+  // EGL is correct for native Wayland; on X11 the GLX/desktop backend is more
+  // compatible (EGL can silently fall back to software rendering on X11, which
+  // drops WebGL2 support even when the system drivers are fully capable).
+  const isWayland = !!process.env.WAYLAND_DISPLAY;
+  app.commandLine.appendSwitch("use-gl", isWayland ? "egl" : "desktop");
+  app.commandLine.appendSwitch("disable-gpu-sandbox");
+  app.commandLine.appendSwitch("enable-webgl");
+} else if (process.platform === "win32") {
+  app.commandLine.appendSwitch("use-angle", "d3d11"); // modern ANGLE backend (no D3D9/WARP fallback)
+}
 app.commandLine.appendSwitch("force_high_performance_gpu"); // discrete GPU on dual-GPU machines
 app.commandLine.appendSwitch("ignore-gpu-blocklist"); // don't silently drop to SwiftShader
 app.commandLine.appendSwitch("enable-gpu-rasterization");

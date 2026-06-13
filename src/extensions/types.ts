@@ -65,6 +65,24 @@ export interface ThemeContribution {
   vars: Record<string, string>;
 }
 
+/** A render pipeline (scene-linear → display transform), selectable in the
+ *  Pixel Peeper panel. The GLSL must define
+ *    vec3 pipelineToDisplay(vec3 lin)
+ *  mapping scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to
+ *  display-encoded output. Helpers available: luma(), srgbToLinear(),
+ *  linearToSrgb(), linearToSrgbU(). */
+export interface PipelineContribution {
+  id: string;
+  name: string;
+  /** Shown under the picker when active. */
+  description?: string;
+  /** Body defining pipelineToDisplay; omit to reuse the built-in transform. */
+  glsl?: string;
+  /** Skip the default RAW base tone curve (set when the transform brings its
+   *  own contrast curve, e.g. AgX / ACES). */
+  skipBaseCurve?: boolean;
+}
+
 export interface SliderIconContribution {
   /** Referenced by Slider's `icon` prop, e.g. "core.exposure". */
   id: string;
@@ -136,6 +154,19 @@ export interface ExtensionManifest {
   main: string;
 }
 
+/** A keyboard shortcut contributed by an extension. The action appears in
+ *  Preferences ▸ Shortcuts and can be rebound by the user like any built-in. */
+export interface KeyActionContribution {
+  /** Unique action id, e.g. "my-ext.invert-colors". */
+  id: string;
+  label: string;
+  category?: "General" | "Develop" | "Library";
+  /** Default key combo in SafeLight combo format, e.g. "Ctrl+Shift+I". */
+  defaultCombo: string;
+  /** Called when the combo fires (or the user's rebind of it fires). */
+  handler(): void;
+}
+
 export interface SafelightAPI {
   version: 1;
   extensionId: string;
@@ -146,6 +177,10 @@ export interface SafelightAPI {
   registerTheme(c: ThemeContribution): void;
   registerLayout(c: LayoutContribution): void;
   registerSliderIcon(c: SliderIconContribution): void;
+  /** Register a render pipeline (display transform / tone mapper). */
+  registerPipeline(c: PipelineContribution): void;
+  /** Register a keyboard shortcut; appears in Preferences ▸ Shortcuts. */
+  registerKeybinding(c: KeyActionContribution): void;
   /** Declare a settings dialog (⚙ in the Extensions panel). */
   registerSettings(c: SettingsContribution): void;
   /** Persisted per-extension key/value settings. */
@@ -155,15 +190,25 @@ export interface SafelightAPI {
     /** Fires when any of this extension's settings change (any window). */
     onChange(cb: (key: string, value: unknown) => void): () => void;
   };
-  /** Reusable UI building blocks (Panel chrome, Slider, Histogram). */
+  /** Reusable UI building blocks (Panel, Slider, Histogram, CurveEditor, Rating, Thumbnail). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   components: Record<string, ComponentType<any>>;
-  /** Zustand hooks: useDevelopStore, useCatalogStore, useUIStore. */
+  /** Zustand hooks and the zustand `create` factory.
+   *  useDevelopStore, useCatalogStore, useUIStore, useSettings,
+   *  usePresetsStore, useKeybindings, useThemeStore, useLayoutStore,
+   *  usePipelineStore, create. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   stores: Record<string, any>;
   dock: { togglePanel(id: string): void };
   themes: { apply(id: string): void };
   layouts: { apply(id: string): void };
+  pipelines: { apply(id: string): void };
+  /** Open / close the Preferences dialog. */
+  preferences: { open(): void; close(): void; toggle(): void };
+  /** Navigate between app modules. */
+  navigation: { goTo(module: "library" | "develop"): void };
+  /** Read the current binding for any action id (built-in or extension). */
+  keybindings: { getBinding(actionId: string): string };
 }
 
 export interface ExtensionModule {

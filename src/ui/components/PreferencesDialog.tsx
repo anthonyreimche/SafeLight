@@ -13,6 +13,7 @@ import {
   resetBinding,
   setBinding,
   setShortcutsSuspended,
+  useExtensionActions,
   useKeybindings,
   type ActionCategory,
 } from "@/state/keybindings-store";
@@ -31,6 +32,11 @@ import {
   useSettings,
 } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
+import {
+  applyPipeline,
+  DEFAULT_PIPELINE,
+  usePipelineStore,
+} from "@/extensions/pipelines";
 import { clearRawCache } from "@/raw/raw-cache";
 import type { SortDirection, SortField } from "@/catalog/types";
 
@@ -47,6 +53,7 @@ export const togglePreferences = () =>
 const SECTIONS = [
   "Interface",
   "Library",
+  "Rendering",
   "Performance",
   "Export",
   "Shortcuts",
@@ -104,6 +111,7 @@ export function PreferencesDialog() {
           <div className="flex-1 overflow-y-auto p-4">
             {section === "Interface" && <InterfaceSection />}
             {section === "Library" && <LibrarySection />}
+            {section === "Rendering" && <RenderingSection />}
             {section === "Performance" && <PerformanceSection />}
             {section === "Export" && <ExportSection />}
             {section === "Shortcuts" && <ShortcutsSection />}
@@ -289,6 +297,43 @@ function LibrarySection() {
   );
 }
 
+function RenderingSection() {
+  const pipelines = useRegistry((s) => s.pipelines);
+  const activeId = usePipelineStore((s) => s.activeId);
+  const active = pipelines[activeId];
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Field
+        label="Display transform"
+        hint="How scene-linear image data is tone-mapped for display. Applies everywhere the pipeline renders — develop, loupe, thumbnails and export — so output matches the screen. Transforms from extensions appear here too."
+      >
+        <select
+          value={active ? activeId : DEFAULT_PIPELINE}
+          onChange={(e) => applyPipeline(e.target.value)}
+          className={selectCls}
+        >
+          {Object.values(pipelines).map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {active?.description && (
+        <p className="text-[10px] leading-relaxed text-text-muted">
+          {active.description}
+        </p>
+      )}
+      <p className="text-[10px] leading-relaxed text-text-muted">
+        Replacement transforms disable the default RAW base curve and interpret
+        the tone sliders through their own response — the same edit will read
+        differently between transforms by design.
+      </p>
+    </div>
+  );
+}
+
 function PerformanceSection() {
   const s = useSettings();
   const [cleared, setCleared] = useState(false);
@@ -439,6 +484,7 @@ const CATEGORIES: ActionCategory[] = ["General", "Develop", "Library"];
 function ShortcutsSection() {
   const singleKeys = useSettings((s) => s.singleKeyShortcuts);
   const overrides = useKeybindings((s) => s.overrides);
+  const extActions = useExtensionActions((s) => Array.from(s.actions.values()));
   const [capturing, setCapturing] = useState<string | null>(null);
 
   // While capturing, the global handlers stand down (they also listen in the
@@ -526,6 +572,51 @@ function ShortcutsSection() {
           </table>
         </div>
       ))}
+      {extActions.length > 0 && (
+        <div>
+          <div className={labelCls}>Extensions</div>
+          <table className="mt-1 w-full text-[11px]">
+            <tbody>
+              {extActions.map((a) => {
+                const combo = overrides[a.id] ?? a.def;
+                const overridden = a.id in overrides;
+                const conflict = conflicts.has(a.id);
+                return (
+                  <tr key={a.id} className="border-b border-border-subtle">
+                    <td className="py-1 pr-3 text-text-secondary">{a.label}</td>
+                    <td className="w-28 py-1 text-right">
+                      <button
+                        onClick={() => setCapturing(capturing === a.id ? null : a.id)}
+                        title={conflict ? "Conflicts with another shortcut" : undefined}
+                        className={`rounded px-2 py-0.5 font-medium ${
+                          capturing === a.id
+                            ? "bg-slider-fill text-white"
+                            : conflict
+                              ? "bg-surface-2 text-red-400"
+                              : "bg-surface-2 text-text-primary hover:bg-surface-3"
+                        }`}
+                      >
+                        {capturing === a.id ? "Press keys…" : prettyCombo(combo)}
+                      </button>
+                    </td>
+                    <td className="w-6 py-1 text-right">
+                      {overridden && (
+                        <button
+                          onClick={() => resetBinding(a.id)}
+                          title={`Reset to ${prettyCombo(a.def)}`}
+                          className="rounded px-1 text-text-muted hover:text-text-primary"
+                        >
+                          ↺
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div>
         <button onClick={resetAllBindings} className={btnCls}>
           Reset all shortcuts
