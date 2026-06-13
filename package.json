@@ -14,7 +14,8 @@
     "preview": "vite preview",
     "icon": "node electron/make-icon.cjs",
     "electron:dev": "vite build && electron .",
-    "build:electron": "npm run build && npm run icon && electron-builder --win"
+    "build:electron": "npm run build && npm run icon && electron-builder --win",
+    "build:linux": "npm run build && npm run icon && electron-builder --linux"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
@@ -53,24 +54,14 @@
     "removePackageScripts": true,
     "npmRebuild": false,
     "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": ["x64"]
-        }
-      ],
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
       "icon": "build/icon.ico",
       "signtoolOptions": {
         "publisherName": ["Safelight"]
       }
     },
     "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": ["x64", "arm64"]
-        }
-      ],
+      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
       "category": "public.app-category.photography",
       "icon": "build/icon.png"
     },
@@ -81,7 +72,36 @@
       "icon": "build/icon.png",
       "category": "Graphics",
       "synopsis": "Fast RAW photo editor",
-      "maintainer": "Safelight <anthonyreimche+safelight@gmail.com>"
+      "maintainer": "Safelight <anthonyreimche+safelight@gmail.com>",
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb",      "arch": ["x64"] }
+      ],
+      "mimeTypes": [
+        "image/jpeg", "image/png", "image/tiff", "image/webp",
+        "image/x-nikon-nef", "image/x-nikon-nrw",
+        "image/x-canon-cr2", "image/x-canon-cr3", "image/x-canon-crw",
+        "image/x-sony-arw", "image/x-sony-sr2",
+        "image/x-adobe-dng",
+        "image/x-olympus-orf",
+        "image/x-fuji-raf",
+        "image/x-pentax-pef",
+        "image/x-samsung-srw",
+        "image/x-panasonic-rw2",
+        "image/x-sigma-x3f",
+        "image/x-dcraw"
+      ]
+    },
+    "appImage": {
+      "artifactName": "Safelight-${version}.AppImage"
+    },
+    "deb": {
+      "packageCategory": "graphics",
+      "depends": [
+        "libgl1", "libegl1", "libgbm1", "libdrm2",
+        "libnss3", "libgtk-3-0", "libxss1", "libglib2.0-0"
+      ],
+      "recommends": ["libvulkan1"]
     },
     "flatpak": {
       "runtimeVersion": "24.08",
