@@ -41,7 +41,14 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(7,7,8,.78);b
 .nav-links a:hover{color:#fff}
 .nav-cta{margin-left:10px;padding:7px 18px;border:1px solid var(--red);color:#fff!important;border-radius:3px;transition:background .2s}
 .nav-cta:hover{background:var(--red)}
-@media(max-width:860px){.nav-links a:not(.nav-cta){display:none}}
+.nav-burger{display:none;margin-left:auto;background:none;border:1px solid var(--line);border-radius:3px;color:var(--mut);font-size:1.05rem;line-height:1;padding:6px 11px;cursor:pointer}
+@media(max-width:860px){
+  .nav-burger{display:block}
+  .nav-links{display:none;position:fixed;top:60px;left:0;right:0;flex-direction:column;gap:0;margin:0;padding:6px 24px 18px;background:rgba(9,9,11,.97);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+  .nav-links.open{display:flex}
+  .nav-links a{padding:13px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+  .nav-cta{margin:14px 0 0;text-align:center;border-bottom:none!important}
+}
 
 /* ---------- hero ---------- */
 .hero{position:relative;min-height:100vh;display:flex;flex-direction:column;justify-content:center;text-align:center;padding:120px 20px 60px;overflow:hidden}
@@ -94,7 +101,7 @@ nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(7,7,8,.78);b
 .fp .btns{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;padding:0 11px 4px;font-family:var(--mono);font-size:.56rem;color:#8f8f96;text-align:center}
 .fp .btns b{font-weight:400;background:#1d1d21;border:1px solid rgba(255,255,255,.06);border-radius:3px;padding:4px 0}
 .fp .btns b.on{background:#2c2c31;color:#e8e8ec}
-@media(max-width:860px){.fp.far,.fp.mid{display:none}.fp{--s:.7}}
+@media(max-width:860px){.fp.far,.fp.mid{display:none}.fp{touch-action:pan-y}.fp .hint{display:none}}
 @media (prefers-reduced-motion:reduce){.fp{animation-duration:0s}.fp-in{animation:none}}
 .hero-vig{position:absolute;inset:0;pointer-events:none;background:
   radial-gradient(ellipse 42% 38% at 50% 44%,rgba(7,7,8,.55) 0%,transparent 78%),
@@ -210,6 +217,30 @@ footer a:hover{color:var(--red)}
 /* ---------- reveal ---------- */
 .rv{opacity:0;transform:translateY(26px);transition:opacity .8s ease,transform .8s ease}
 .rv.in{opacity:1;transform:none}
+
+/* ---------- mobile ---------- */
+@media(max-width:768px){
+  .hero{padding:96px 16px 50px}
+  h1{font-size:2.2rem}
+  h1 br{display:none}
+  .kicker{font-size:.58rem;letter-spacing:.22em}
+  .kicker::before,.kicker::after{margin:0 8px}
+  .hero-sub{font-size:1rem;margin-bottom:34px}
+  .btn-row{gap:12px;margin-bottom:34px}
+  .btn{width:100%;max-width:320px;justify-content:center;padding:14px 20px}
+  section{padding:70px 0}
+  .sec-head{margin-bottom:40px}
+  .sec-head h2{font-size:1.9rem}
+  .stat{padding:22px 8px}
+  .stat b{font-size:1.5rem}
+  .ide-tabs{overflow-x:auto;scrollbar-width:none}
+  .ide-tabs::-webkit-scrollbar{display:none}
+  .ide-tab{padding:10px 16px;white-space:nowrap}
+  .term{font-size:.66rem}
+  .dl-src{gap:14px;padding:18px}
+  .dl-src .term{min-width:0;width:100%}
+  .dl,.sup,.card{padding:26px}
+}
 </style>
 </head>
 <body>
@@ -225,6 +256,7 @@ footer a:hover{color:var(--red)}
       <a href="#support">Support</a>
       <a class="nav-cta" href="https://github.com/anthonyreimche/SafeLight" target="_blank">GitHub</a>
     </div>
+    <button class="nav-burger" id="burger" aria-label="Menu">☰</button>
   </div>
 </nav>
 
@@ -475,6 +507,17 @@ document.getElementById('tabs').addEventListener('click',e=>{
 });
 // preload tab images
 document.querySelectorAll('.ide-tab').forEach(t=>{new Image().src=t.dataset.src});
+// mobile nav
+const burger=document.getElementById('burger'),links=document.querySelector('.nav-links');
+burger.addEventListener('click',()=>links.classList.toggle('open'));
+links.addEventListener('click',e=>{if(e.target.tagName==='A')links.classList.remove('open')});
+// mobile: tighter panel layout
+if(matchMedia('(max-width:860px)').matches){
+  const m=[['-20vw','-25vh','.62'],['20vw','-23vh','.62'],['-19vw','25vh','.6'],['20vw','27vh','.6']];
+  document.querySelectorAll('.fp:not(.far):not(.mid)').forEach((p,i)=>{
+    if(m[i]){p.style.setProperty('--x',m[i][0]);p.style.setProperty('--y',m[i][1]);p.style.setProperty('--s',m[i][2])}
+  });
+}
 // hero panels: tilt toward cursor + drag
 const fps=[...document.querySelectorAll('.fp')],pc=document.querySelector('.panels');
 if(fps.length&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
