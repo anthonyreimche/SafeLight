@@ -98,16 +98,24 @@ uniform float uGrainRoughness; // 0..100
 uniform float uImageAspect;
 
 
-// Local adjustment masks (linear / radial parametric, brush via texture).
+// Local adjustment masks. Each mask is a GROUP of components combined
+// (add = union, subtract = intersect-with-complement). Per-mask data is keyed by
+// mask index; component geometry lives in a flat per-component list.
 #define MAX_MASKS 8
+#define MAX_COMPONENTS 16
 uniform int uMaskCount;
 uniform sampler2D uMaskTex;        // RGBA brush coverage atlas
-uniform int uMaskType[MAX_MASKS];  // 0 linear, 1 radial, 2 brush
-uniform int uMaskInvert[MAX_MASKS];
-uniform int uMaskBrushCh[MAX_MASKS]; // channel 0..3 in uMaskTex
+uniform int uMaskInvert[MAX_MASKS];    // invert the whole combined coverage
 uniform float uMaskOpacity[MAX_MASKS]; // 0..1
-uniform vec4 uMaskGeoA[MAX_MASKS]; // linear: x0,y0,x1,y1 ; radial: cx,cy,rx,ry
-uniform vec4 uMaskGeoB[MAX_MASKS]; // radial: feather,_,_,_
+// Flat component list.
+uniform int uCompCount;
+uniform int uCompMaskIdx[MAX_COMPONENTS]; // parent mask index
+uniform int uCompMode[MAX_COMPONENTS];    // 0 add (max), 1 subtract (*(1-c))
+uniform int uCompType[MAX_COMPONENTS];    // 0 linear,1 radial,2 brush,3 luminance,4 color
+uniform int uCompInvert[MAX_COMPONENTS];
+uniform int uCompBrushCh[MAX_COMPONENTS]; // channel 0..3 in uMaskTex
+uniform vec4 uCompGeoA[MAX_COMPONENTS];   // lin:x0,y0,x1,y1 | rad:cx,cy,rx,ry | lum:lo,hi,feather,_ | color:hue,sat,hueTol,satTol
+uniform vec4 uCompGeoB[MAX_COMPONENTS];   // rad:feather,angle,_,_ | color:feather,_,_,_
 uniform vec4 uMaskAdj0[MAX_MASKS]; // exposure, contrast, highlights, shadows
 uniform vec4 uMaskAdj1[MAX_MASKS]; // saturation, temperature, tint, clarity
 uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, _, _, _
@@ -823,24 +831,24 @@ vec3 applyRetouch(vec2 uv, vec3 base) {
 }
 
 // ---- Local adjustment masks ------------------------------------------------
-float maskCoverage(int i, vec2 uv) {
-  int type = uMaskType[i];
+// Coverage of one component (0..1), before add/subtract combine. refCol is the
+// scene color (perceptual sRGB) for range-based components.
+float compCoverage(int i, vec2 uv, vec3 refCol) {
+  int type = uCompType[i];
   float m = 0.0;
   if (type == 0) {
     // Linear gradient: ramp 0->1 projected onto the drag direction.
-    vec2 p0 = uMaskGeoA[i].xy;
-    vec2 p1 = uMaskGeoA[i].zw;
+    vec2 p0 = uCompGeoA[i].xy;
+    vec2 p1 = uCompGeoA[i].zw;
     vec2 dir = p1 - p0;
     float len2 = max(dot(dir, dir), 1e-6);
     m = clamp(dot(uv - p0, dir) / len2, 0.0, 1.0);
   } else if (type == 1) {
-    // Radial: 1 inside, feathered to 0 at the edge. Worked in screen-proportional
-    // space (x scaled by aspect) so the ellipse and its rotation stay rigid on
-    // screen. Reduces to the plain (uv-ctr)/rad test when angle = 0.
-    vec2 ctr = uMaskGeoA[i].xy;
-    vec2 rad = max(uMaskGeoA[i].zw, vec2(1e-4));
-    float feather = uMaskGeoB[i].x;
-    float ang = uMaskGeoB[i].y;
+    // Radial: 1 inside, feathered to 0 at the edge, in screen-proportional space.
+    vec2 ctr = uCompGeoA[i].xy;
+    vec2 rad = max(uCompGeoA[i].zw, vec2(1e-4));
+    float feather = uCompGeoB[i].x;
+    float ang = uCompGeoB[i].y;
     vec2 q = vec2((uv.x - ctr.x) * uImageAspect, uv.y - ctr.y);
     float ca = cos(ang);
     float sa = sin(ang);
@@ -848,14 +856,36 @@ float maskCoverage(int i, vec2 uv) {
     vec2 radS = vec2(rad.x * uImageAspect, rad.y);
     float d = length(qr / radS);
     m = 1.0 - smoothstep(1.0 - feather, 1.0, d);
-  } else {
+  } else if (type == 2) {
     // Brush: prebaked coverage from the atlas channel.
     vec4 cov = texture(uMaskTex, uv);
-    int ch = uMaskBrushCh[i];
+    int ch = uCompBrushCh[i];
     m = ch == 0 ? cov.r : (ch == 1 ? cov.g : (ch == 2 ? cov.b : cov.a));
+  } else if (type == 3) {
+    // Luminance range: band-pass on scene luma, feathered either side.
+    float l = luma(refCol);
+    float lo = uCompGeoA[i].x;
+    float hi = uCompGeoA[i].y;
+    float fth = max(uCompGeoA[i].z, 1e-3);
+    float a = smoothstep(lo - fth, lo + fth, l);
+    float b = 1.0 - smoothstep(hi - fth, hi + fth, l);
+    m = clamp(min(a, b), 0.0, 1.0);
+  } else {
+    // Color range: circular hue distance + saturation distance, each within tol.
+    vec3 hsl = rgb2hsl(refCol);
+    float th = uCompGeoA[i].x;
+    float ts = uCompGeoA[i].y;
+    float hueTol = max(uCompGeoA[i].z, 1e-3);
+    float satTol = max(uCompGeoA[i].w, 1e-3);
+    float fth = max(uCompGeoB[i].x, 1e-3);
+    float hd = abs(fract(hsl.x - th + 0.5) - 0.5); // 0..0.5 circular hue distance
+    float hw = 1.0 - smoothstep(hueTol, hueTol + fth, hd);
+    float sd = abs(hsl.y - ts);
+    float sw = 1.0 - smoothstep(satTol, satTol + fth, sd);
+    m = clamp(hw * sw, 0.0, 1.0);
   }
-  if (uMaskInvert[i] == 1) m = 1.0 - m;
-  return clamp(m * uMaskOpacity[i], 0.0, 1.0);
+  if (uCompInvert[i] == 1) m = 1.0 - m;
+  return clamp(m, 0.0, 1.0);
 }
 
 // Mask stage 1 — scene-referred linear, BEFORE the display conversion and
@@ -1086,11 +1116,28 @@ void main() {
   // Local adjustment masks, stage 1: tonal + WB controls in scene-referred
   // linear with HDR headroom intact (Lightroom-style — this is what lets a
   // mask's Highlights/Exposure recover data the display stage can't see).
-  // Coverage is computed once here and reused by stage 2 below.
+  //
+  // First combine each mask's components into one coverage value: ADD unions
+  // (max), SUBTRACT carves away (×(1−c)), in list order. Then whole-mask invert
+  // and opacity. Coverage is reused by stage 2 below.
+  vec3 refCol = clamp(linearToSrgbU(lin), 0.0, 1.0); // scene color for range masks
   float mcovs[MAX_MASKS];
+  for (int mi = 0; mi < MAX_MASKS; mi++) mcovs[mi] = 0.0;
+  for (int ci = 0; ci < MAX_COMPONENTS; ci++) {
+    if (ci >= uCompCount) break;
+    int p = uCompMaskIdx[ci];
+    float cc = compCoverage(ci, srcUv, refCol);
+    if (uCompMode[ci] == 0) mcovs[p] = max(mcovs[p], cc);
+    else mcovs[p] = mcovs[p] * (1.0 - cc);
+  }
   for (int mi = 0; mi < MAX_MASKS; mi++) {
     if (mi >= uMaskCount) break;
-    mcovs[mi] = maskCoverage(mi, srcUv);
+    float mm = mcovs[mi];
+    if (uMaskInvert[mi] == 1) mm = 1.0 - mm;
+    mcovs[mi] = clamp(mm * uMaskOpacity[mi], 0.0, 1.0);
+  }
+  for (int mi = 0; mi < MAX_MASKS; mi++) {
+    if (mi >= uMaskCount) break;
     if (mcovs[mi] <= 0.0) continue;
     lin = applyMaskLinear(lin, uMaskAdj0[mi], uMaskAdj1[mi], mcovs[mi], refT);
   }

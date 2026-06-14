@@ -71,7 +71,9 @@ function makeFileHandle(fs: Bridge, p: string): FileSystemFileHandle {
     name: basename(p),
     async getFile(): Promise<File> {
       const { data, mtimeMs } = await fs.read(p);
-      return new File([data], basename(p), {
+      // fs.read returns a non-shared Uint8Array; cast past TS's generic
+      // ArrayBufferLike (which can't prove it isn't a SharedArrayBuffer).
+      return new File([data as BlobPart], basename(p), {
         type: mimeFromName(p),
         lastModified: mtimeMs,
       });

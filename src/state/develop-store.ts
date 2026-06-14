@@ -9,6 +9,8 @@ import type {
   HSLChannel,
   Mask,
   MaskAdjustments,
+  MaskComponent,
+  MaskComponentMode,
   MaskType,
   RetouchSpot,
   ToneCurveChannel,
@@ -49,7 +51,10 @@ interface DevelopState {
   // Mask / retouch tool UI state (ephemeral, not persisted to history).
   activeTool: ToolMode;
   maskToolType: MaskType;
+  maskCompMode: MaskComponentMode; // whether the next created component adds or subtracts
+  maskAddTarget: "new" | "current"; // start a fresh mask, or extend the selected one
   selectedMaskId: string | null;
+  selectedComponentId: string | null; // component being edited on-canvas
   selectedSpotId: string | null;
   brushSize: number; // image-height fraction
   brushFeather: number; // 0..1
@@ -60,7 +65,10 @@ interface DevelopState {
   retouchOpacity: number; // 0..100
   setActiveTool: (t: ToolMode) => void;
   setMaskToolType: (t: MaskType) => void;
+  setMaskCompMode: (m: MaskComponentMode) => void;
+  setMaskAddTarget: (t: "new" | "current") => void;
   selectMask: (id: string | null) => void;
+  selectComponent: (id: string | null) => void;
   selectSpot: (id: string | null) => void;
   setBrushSize: (v: number) => void;
   setBrushFeather: (v: number) => void;
@@ -74,7 +82,11 @@ interface DevelopState {
   addMask: (mask: Mask) => void;
   updateMask: (id: string, patch: Partial<Mask>) => void;
   updateMaskAdj: (id: string, patch: Partial<MaskAdjustments>) => void;
-  addBrushDab: (id: string, dab: BrushDab) => void;
+  // Component mutations within a mask.
+  addComponent: (maskId: string, comp: MaskComponent) => void;
+  updateComponent: (maskId: string, compId: string, patch: Partial<MaskComponent>) => void;
+  removeComponent: (maskId: string, compId: string) => void;
+  addBrushDab: (maskId: string, compId: string, dab: BrushDab) => void;
   removeMask: (id: string) => void;
   // Retouch data mutations.
   addSpot: (spot: RetouchSpot) => void;
@@ -162,7 +174,10 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
 
   activeTool: "none",
   maskToolType: "radial",
+  maskCompMode: "add",
+  maskAddTarget: "new",
   selectedMaskId: null,
+  selectedComponentId: null,
   selectedSpotId: null,
   brushSize: 0.08,
   brushFeather: 0.5,
@@ -173,7 +188,10 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   retouchOpacity: 100,
   setActiveTool: (activeTool) => set({ activeTool }),
   setMaskToolType: (maskToolType) => set({ maskToolType }),
+  setMaskCompMode: (maskCompMode) => set({ maskCompMode }),
+  setMaskAddTarget: (maskAddTarget) => set({ maskAddTarget }),
   selectMask: (selectedMaskId) => set({ selectedMaskId }),
+  selectComponent: (selectedComponentId) => set({ selectedComponentId }),
   selectSpot: (selectedSpotId) => set({ selectedSpotId }),
   setBrushSize: (brushSize) => set({ brushSize }),
   setBrushFeather: (brushFeather) => set({ brushFeather }),
@@ -189,6 +207,64 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
       return {
         params: { ...s.params, masks: [...s.params.masks, mask] },
         selectedMaskId: mask.id,
+        selectedComponentId: mask.components[mask.components.length - 1]?.id ?? null,
+      };
+    });
+    pushEdit(get);
+  },
+
+  addComponent(maskId, comp) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        masks: s.params.masks.map((m) =>
+          m.id === maskId ? { ...m, components: [...m.components, comp] } : m,
+        ),
+      },
+      selectedMaskId: maskId,
+      selectedComponentId: comp.id,
+    }));
+    pushEdit(get);
+  },
+
+  updateComponent(maskId, compId, patch) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        masks: s.params.masks.map((m) =>
+          m.id === maskId
+            ? {
+                ...m,
+                components: m.components.map((c) =>
+                  c.id === compId ? { ...c, ...patch } : c,
+                ),
+              }
+            : m,
+        ),
+      },
+    }));
+    pushEdit(get);
+  },
+
+  // Removing the last component removes the whole mask.
+  removeComponent(maskId, compId) {
+    set((s) => {
+      const masks: Mask[] = [];
+      for (const m of s.params.masks) {
+        if (m.id !== maskId) {
+          masks.push(m);
+          continue;
+        }
+        const components = m.components.filter((c) => c.id !== compId);
+        if (components.length > 0) masks.push({ ...m, components });
+        // else: drop the mask entirely
+      }
+      const maskGone = !masks.some((m) => m.id === maskId);
+      return {
+        params: { ...s.params, masks },
+        selectedMaskId: maskGone ? null : s.selectedMaskId,
+        selectedComponentId:
+          s.selectedComponentId === compId ? null : s.selectedComponentId,
       };
     });
     pushEdit(get);
@@ -216,13 +292,20 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     pushEdit(get);
   },
 
-  addBrushDab(id, dab) {
+  addBrushDab(maskId, compId, dab) {
     set((s) => ({
       params: {
         ...s.params,
         masks: s.params.masks.map((m) =>
-          m.id === id && m.brush
-            ? { ...m, brush: { ...m.brush, dabs: [...m.brush.dabs, dab] } }
+          m.id === maskId
+            ? {
+                ...m,
+                components: m.components.map((c) =>
+                  c.id === compId && c.brush
+                    ? { ...c, brush: { ...c.brush, dabs: [...c.brush.dabs, dab] } }
+                    : c,
+                ),
+              }
             : m,
         ),
       },
@@ -234,6 +317,8 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     set((s) => ({
       params: { ...s.params, masks: s.params.masks.filter((m) => m.id !== id) },
       selectedMaskId: s.selectedMaskId === id ? null : s.selectedMaskId,
+      selectedComponentId:
+        s.selectedMaskId === id ? null : s.selectedComponentId,
     }));
     pushEdit(get);
   },

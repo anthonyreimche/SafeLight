@@ -199,19 +199,58 @@ export interface BrushMaskGeo {
   feather: number; // 0..1 edge softness of each dab
 }
 
+// Luminance range: coverage is 1 for pixels whose luma falls inside [lo,hi],
+// feathered out over `feather` either side. Evaluated on the scene color
+// (perceptual sRGB) before mask adjustments.
+export interface LuminanceRangeGeo {
+  lo: number;      // 0..1 lower edge
+  hi: number;      // 0..1 upper edge
+  feather: number; // 0..1 edge smoothness
+}
+
+// Color range: coverage falls off with circular hue distance from `hue` and
+// linear saturation distance from `sat`, each within its tolerance.
+export interface ColorRangeGeo {
+  hue: number;     // 0..1 target hue
+  sat: number;     // 0..1 target saturation
+  hueTol: number;  // 0..1 hue tolerance (half-width)
+  satTol: number;  // 0..1 saturation tolerance (half-width)
+  feather: number; // 0..1 edge smoothness
+}
+
+// A mask is built from one or more components (Lightroom-style). Each component
+// contributes coverage that is either ADDED (union, max) or SUBTRACTED
+// (intersect-with-complement) into the mask's combined coverage, in list order.
+export type MaskComponentKind = MaskType | "luminance" | "color";
+export type MaskComponentMode = "add" | "subtract";
+
+export interface MaskComponent {
+  id: string;
+  kind: MaskComponentKind;
+  mode: MaskComponentMode;
+  invert: boolean; // invert this component's own coverage before combining
+  linear?: LinearMaskGeo;
+  radial?: RadialMaskGeo;
+  brush?: BrushMaskGeo;
+  luminance?: LuminanceRangeGeo;
+  color?: ColorRangeGeo;
+}
+
 export interface Mask {
   id: string;
-  type: MaskType;
   name: string;
-  invert: boolean;
+  invert: boolean; // invert the whole combined coverage
   opacity: number; // 0..100 overall strength
   adj: MaskAdjustments;
   panels: MaskPanelId[]; // which adjustment sub-panels are active for this mask
   hsl?: HSLAdjustments;  // present only while the "hsl" panel is added
   toneCurve?: ToneCurves; // present only while the "curve" panel is added
-  linear?: LinearMaskGeo;
-  radial?: RadialMaskGeo;
-  brush?: BrushMaskGeo;
+  components: MaskComponent[]; // at least one; combined in order
+}
+
+// First component's kind is the mask's representative type (icon / label).
+export function maskKind(m: Mask): MaskComponentKind {
+  return m.components[0]?.kind ?? "brush";
 }
 
 // A spot-removal target: paint the destination with pixels sampled from a
@@ -280,6 +319,14 @@ export const MAX_MASKS = 8;
 export const MAX_RETOUCH = 16;
 export const MAX_BRUSH_MASKS = 4; // brush coverage packs into one RGBA texture
 export const MAX_RETOUCH_BRUSH = 4; // brush-shaped retouch packs into one RGBA texture
+export const MAX_MASK_COMPONENTS = 16; // total components across all masks (shader cap)
+
+export function defaultLuminanceRange(): LuminanceRangeGeo {
+  return { lo: 0.25, hi: 0.75, feather: 0.1 };
+}
+export function defaultColorRange(): ColorRangeGeo {
+  return { hue: 0.5, sat: 0.5, hueTol: 0.08, satTol: 0.5, feather: 0.05 };
+}
 
 export function defaultMaskAdjustments(): MaskAdjustments {
   return {
@@ -596,20 +643,125 @@ function normalizeMaskPanels(p: unknown): MaskPanelId[] {
   return [...seen];
 }
 
+let normCompSeq = 0;
+const normCompId = () => `comp-${Date.now().toString(36)}-${normCompSeq++}`;
+
+function normLinear(g: Partial<LinearMaskGeo> | undefined): LinearMaskGeo {
+  return {
+    x0: clampN(g?.x0, -2, 2, 0.5),
+    y0: clampN(g?.y0, -2, 2, 0.2),
+    x1: clampN(g?.x1, -2, 2, 0.5),
+    y1: clampN(g?.y1, -2, 2, 0.8),
+  };
+}
+function normRadial(g: Partial<RadialMaskGeo> | undefined): RadialMaskGeo {
+  return {
+    cx: clampN(g?.cx, -2, 2, 0.5),
+    cy: clampN(g?.cy, -2, 2, 0.5),
+    rx: clampN(g?.rx, 0.001, 4, 0.3),
+    ry: clampN(g?.ry, 0.001, 4, 0.3),
+    feather: clampN(g?.feather, 0, 1, 0.5),
+    angle: clampN(g?.angle, -7, 7, 0),
+  };
+}
+function normBrush(g: Partial<BrushMaskGeo> | undefined): BrushMaskGeo {
+  const dabs = Array.isArray(g?.dabs) ? g!.dabs : [];
+  return {
+    feather: clampN(g?.feather, 0, 1, 0.5),
+    dabs: dabs
+      .filter((d): d is BrushDab => !!d && typeof d.x === "number")
+      .map((d) => ({
+        x: clampN(d.x, -2, 2, 0),
+        y: clampN(d.y, -2, 2, 0),
+        radius: clampN(d.radius, 0.001, 2, 0.05),
+        erase: !!d.erase,
+        feather: clampN(d.feather, 0, 1, 0.5),
+      })),
+  };
+}
+
+// Build a single component from a (possibly legacy) raw geometry object.
+function normComponent(raw: Partial<MaskComponent>): MaskComponent | null {
+  const kind = raw.kind;
+  const base = {
+    id: typeof raw.id === "string" ? raw.id : normCompId(),
+    mode: raw.mode === "subtract" ? ("subtract" as const) : ("add" as const),
+    invert: !!raw.invert,
+  };
+  if (kind === "linear" && raw.linear)
+    return { ...base, kind, linear: normLinear(raw.linear) };
+  if (kind === "radial" && raw.radial)
+    return { ...base, kind, radial: normRadial(raw.radial) };
+  if (kind === "brush")
+    return { ...base, kind, brush: normBrush(raw.brush) };
+  if (kind === "luminance")
+    return {
+      ...base,
+      kind,
+      luminance: {
+        lo: clampN(raw.luminance?.lo, 0, 1, 0.25),
+        hi: clampN(raw.luminance?.hi, 0, 1, 0.75),
+        feather: clampN(raw.luminance?.feather, 0, 1, 0.1),
+      },
+    };
+  if (kind === "color")
+    return {
+      ...base,
+      kind,
+      color: {
+        hue: clampN(raw.color?.hue, 0, 1, 0.5),
+        sat: clampN(raw.color?.sat, 0, 1, 0.5),
+        hueTol: clampN(raw.color?.hueTol, 0, 1, 0.08),
+        satTol: clampN(raw.color?.satTol, 0, 1, 0.5),
+        feather: clampN(raw.color?.feather, 0, 1, 0.05),
+      },
+    };
+  return null;
+}
+
+// Migrate a legacy single-geometry mask (type + linear/radial/brush at the top
+// level) into a one-component mask.
+function legacyComponent(raw: Partial<Mask & { type?: string }>): MaskComponent | null {
+  const t = (raw as { type?: string }).type;
+  const r = raw as Partial<Mask> & {
+    linear?: LinearMaskGeo;
+    radial?: RadialMaskGeo;
+    brush?: BrushMaskGeo;
+  };
+  if (t === "linear" && r.linear)
+    return { id: normCompId(), kind: "linear", mode: "add", invert: false, linear: normLinear(r.linear) };
+  if (t === "radial" && r.radial)
+    return { id: normCompId(), kind: "radial", mode: "add", invert: false, radial: normRadial(r.radial) };
+  if (t === "brush")
+    return { id: normCompId(), kind: "brush", mode: "add", invert: false, brush: normBrush(r.brush) };
+  return null;
+}
+
 function normalizeMasks(masks: unknown): Mask[] {
   if (!Array.isArray(masks)) return [];
   const out: Mask[] = [];
-  for (const raw of masks as Partial<Mask>[]) {
-    if (!raw || (raw.type !== "linear" && raw.type !== "radial" && raw.type !== "brush"))
-      continue;
+  for (const raw of masks as Partial<Mask & { type?: string }>[]) {
+    if (!raw) continue;
+
+    let components: MaskComponent[] = [];
+    if (Array.isArray(raw.components)) {
+      components = raw.components
+        .map((c) => normComponent(c as Partial<MaskComponent>))
+        .filter((c): c is MaskComponent => !!c);
+    } else {
+      const legacy = legacyComponent(raw);
+      if (legacy) components = [legacy];
+    }
+    if (components.length === 0) continue; // no usable geometry — drop
+
     const m: Mask = {
       id: typeof raw.id === "string" ? raw.id : `mask-${out.length}-${Date.now()}`,
-      type: raw.type,
-      name: typeof raw.name === "string" ? raw.name : raw.type,
+      name: typeof raw.name === "string" ? raw.name : components[0].kind,
       invert: !!raw.invert,
       opacity: clampN(raw.opacity, 0, 100, 100),
       adj: normalizeMaskAdjustments(raw.adj),
       panels: normalizeMaskPanels(raw.panels),
+      components,
     };
     if (raw.hsl) {
       m.hsl = {
@@ -619,39 +771,6 @@ function normalizeMasks(masks: unknown): Mask[] {
       };
     }
     if (raw.toneCurve) m.toneCurve = normalizeToneCurves(raw.toneCurve);
-    if (raw.type === "linear" && raw.linear) {
-      m.linear = {
-        x0: clampN(raw.linear.x0, -2, 2, 0.5),
-        y0: clampN(raw.linear.y0, -2, 2, 0.2),
-        x1: clampN(raw.linear.x1, -2, 2, 0.5),
-        y1: clampN(raw.linear.y1, -2, 2, 0.8),
-      };
-    } else if (raw.type === "radial" && raw.radial) {
-      m.radial = {
-        cx: clampN(raw.radial.cx, -2, 2, 0.5),
-        cy: clampN(raw.radial.cy, -2, 2, 0.5),
-        rx: clampN(raw.radial.rx, 0.001, 4, 0.3),
-        ry: clampN(raw.radial.ry, 0.001, 4, 0.3),
-        feather: clampN(raw.radial.feather, 0, 1, 0.5),
-        angle: clampN(raw.radial.angle, -7, 7, 0),
-      };
-    } else if (raw.type === "brush") {
-      const dabs = Array.isArray(raw.brush?.dabs) ? raw.brush!.dabs : [];
-      m.brush = {
-        feather: clampN(raw.brush?.feather, 0, 1, 0.5),
-        dabs: dabs
-          .filter((d): d is BrushDab => !!d && typeof d.x === "number")
-          .map((d) => ({
-            x: clampN(d.x, -2, 2, 0),
-            y: clampN(d.y, -2, 2, 0),
-            radius: clampN(d.radius, 0.001, 2, 0.05),
-            erase: !!d.erase,
-            feather: clampN(d.feather, 0, 1, 0.5),
-          })),
-      };
-    } else {
-      continue; // declared type but no geometry — drop
-    }
     out.push(m);
     if (out.length >= MAX_MASKS) break;
   }

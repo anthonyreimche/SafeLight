@@ -3,6 +3,7 @@ import {
   DEFAULT_CROP,
   HSL_CHANNELS,
   MAX_MASKS,
+  MAX_MASK_COMPONENTS,
   MAX_RETOUCH,
   MAX_RETOUCH_BRUSH,
   isDefaultHSL,
@@ -315,9 +316,14 @@ export class WebGLRenderer {
   }
 
   private updateMaskTexture(masks: Mask[]) {
-    const items: CoverageItem[] = masks
-      .filter((m) => m.type === "brush" && m.brush)
-      .map((m) => ({ id: m.id, dabs: m.brush!.dabs }));
+    // Brush coverage now comes from brush COMPONENTS across all masks (the atlas
+    // packs up to four into RGBA). Keyed by component id.
+    const items: CoverageItem[] = [];
+    for (const m of masks) {
+      for (const c of m.components) {
+        if (c.kind === "brush" && c.brush) items.push({ id: c.id, dabs: c.brush.dabs });
+      }
+    }
     const r = this.updateCoverageTexture(this.maskTexture, items, this.maskSig);
     this.maskSig = r.sig;
     this.maskChannelOf = r.channelOf;
@@ -546,18 +552,30 @@ export class WebGLRenderer {
       "uHaveHealFill",
       "uPatchPass",
     ];
-    // Per-element mask/retouch array uniforms (queried by indexed name).
+    // Per-mask array uniforms (queried by indexed name).
     for (let i = 0; i < MAX_MASKS; i++) {
       for (const base of [
-        "uMaskType",
         "uMaskInvert",
-        "uMaskBrushCh",
         "uMaskOpacity",
-        "uMaskGeoA",
-        "uMaskGeoB",
         "uMaskAdj0",
         "uMaskAdj1",
         "uMaskAdj2",
+      ]) {
+        const name = `${base}[${i}]`;
+        u[name] = gl.getUniformLocation(program, name);
+      }
+    }
+    // Per-component array uniforms.
+    u["uCompCount"] = gl.getUniformLocation(program, "uCompCount");
+    for (let i = 0; i < MAX_MASK_COMPONENTS; i++) {
+      for (const base of [
+        "uCompMaskIdx",
+        "uCompMode",
+        "uCompType",
+        "uCompInvert",
+        "uCompBrushCh",
+        "uCompGeoA",
+        "uCompGeoB",
       ]) {
         const name = `${base}[${i}]`;
         u[name] = gl.getUniformLocation(program, name);
@@ -963,26 +981,52 @@ export class WebGLRenderer {
     const masks = p.masks.slice(0, MAX_MASKS);
     gl.uniform1i(u.uMaskCount, masks.length);
     masks.forEach((m, i) => {
-      const type = m.type === "linear" ? 0 : m.type === "radial" ? 1 : 2;
-      gl.uniform1i(u[`uMaskType[${i}]`], type);
       gl.uniform1i(u[`uMaskInvert[${i}]`], m.invert ? 1 : 0);
-      gl.uniform1i(u[`uMaskBrushCh[${i}]`], this.maskChannelOf[m.id] ?? 0);
       gl.uniform1f(u[`uMaskOpacity[${i}]`], m.opacity / 100);
-      if (m.type === "linear" && m.linear) {
-        gl.uniform4f(u[`uMaskGeoA[${i}]`], m.linear.x0, m.linear.y0, m.linear.x1, m.linear.y1);
-        gl.uniform4f(u[`uMaskGeoB[${i}]`], 0, 0, 0, 0);
-      } else if (m.type === "radial" && m.radial) {
-        gl.uniform4f(u[`uMaskGeoA[${i}]`], m.radial.cx, m.radial.cy, m.radial.rx, m.radial.ry);
-        gl.uniform4f(u[`uMaskGeoB[${i}]`], m.radial.feather, m.radial.angle, 0, 0);
-      } else {
-        gl.uniform4f(u[`uMaskGeoA[${i}]`], 0, 0, 0, 0);
-        gl.uniform4f(u[`uMaskGeoB[${i}]`], 0, 0, 0, 0);
-      }
       const a: MaskAdjustments = m.adj;
       gl.uniform4f(u[`uMaskAdj0[${i}]`], a.exposure, a.contrast, a.highlights, a.shadows);
       gl.uniform4f(u[`uMaskAdj1[${i}]`], a.saturation, a.temperature, a.tint, a.clarity);
       gl.uniform4f(u[`uMaskAdj2[${i}]`], a.sharpness, 0, 0, 0);
     });
+
+    // Flatten components across masks into the flat shader list (cap at the
+    // shader's MAX_COMPONENTS). Each entry is tagged with its parent mask index.
+    let ci = 0;
+    for (let mi = 0; mi < masks.length && ci < MAX_MASK_COMPONENTS; mi++) {
+      for (const c of masks[mi].components) {
+        if (ci >= MAX_MASK_COMPONENTS) break;
+        const type =
+          c.kind === "linear" ? 0
+          : c.kind === "radial" ? 1
+          : c.kind === "brush" ? 2
+          : c.kind === "luminance" ? 3
+          : 4;
+        gl.uniform1i(u[`uCompMaskIdx[${ci}]`], mi);
+        gl.uniform1i(u[`uCompMode[${ci}]`], c.mode === "subtract" ? 1 : 0);
+        gl.uniform1i(u[`uCompType[${ci}]`], type);
+        gl.uniform1i(u[`uCompInvert[${ci}]`], c.invert ? 1 : 0);
+        gl.uniform1i(u[`uCompBrushCh[${ci}]`], this.maskChannelOf[c.id] ?? 0);
+        if (c.kind === "linear" && c.linear) {
+          gl.uniform4f(u[`uCompGeoA[${ci}]`], c.linear.x0, c.linear.y0, c.linear.x1, c.linear.y1);
+          gl.uniform4f(u[`uCompGeoB[${ci}]`], 0, 0, 0, 0);
+        } else if (c.kind === "radial" && c.radial) {
+          gl.uniform4f(u[`uCompGeoA[${ci}]`], c.radial.cx, c.radial.cy, c.radial.rx, c.radial.ry);
+          gl.uniform4f(u[`uCompGeoB[${ci}]`], c.radial.feather, c.radial.angle, 0, 0);
+        } else if (c.kind === "luminance" && c.luminance) {
+          gl.uniform4f(u[`uCompGeoA[${ci}]`], c.luminance.lo, c.luminance.hi, c.luminance.feather, 0);
+          gl.uniform4f(u[`uCompGeoB[${ci}]`], 0, 0, 0, 0);
+        } else if (c.kind === "color" && c.color) {
+          gl.uniform4f(u[`uCompGeoA[${ci}]`], c.color.hue, c.color.sat, c.color.hueTol, c.color.satTol);
+          gl.uniform4f(u[`uCompGeoB[${ci}]`], c.color.feather, 0, 0, 0);
+        } else {
+          // brush (geometry from atlas) or missing geometry
+          gl.uniform4f(u[`uCompGeoA[${ci}]`], 0, 0, 0, 0);
+          gl.uniform4f(u[`uCompGeoB[${ci}]`], 0, 0, 0, 0);
+        }
+        ci++;
+      }
+    }
+    gl.uniform1i(u.uCompCount, ci);
 
     // Optional per-mask sub-panels: HSL packed as 6 vec4s per mask
     // (hue lo/hi, sat lo/hi, lum lo/hi), curve flag selects the atlas row.
