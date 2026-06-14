@@ -25,6 +25,9 @@ export async function scanProject(root: FileSystemDirectoryHandle): Promise<{
 }> {
   const files: ScannedFile[] = [];
   const tree: FolderNode = { name: root.name, path: "", children: [], count: 0 };
+  // Tally of files skipped because their extension isn't a supported image, so a
+  // "folder has N but only M imported" gap is explainable instead of mysterious.
+  const skipped = new Map<string, number>();
 
   async function walk(
     dir: FileSystemDirectoryHandle,
@@ -48,11 +51,23 @@ export async function scanProject(root: FileSystemDirectoryHandle): Promise<{
       } else if (isSupportedName(entry.name)) {
         files.push({ path: childPath, handle: entry, parent: dir });
         node.count++;
+      } else {
+        const dot = entry.name.lastIndexOf(".");
+        const ext = (dot === -1 ? "(none)" : entry.name.slice(dot)).toLowerCase();
+        skipped.set(ext, (skipped.get(ext) ?? 0) + 1);
       }
     }
     node.children.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   await walk(root, "", tree);
+  if (skipped.size > 0) {
+    const total = [...skipped.values()].reduce((a, b) => a + b, 0);
+    const breakdown = [...skipped.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([ext, n]) => `${ext}×${n}`)
+      .join(", ");
+    console.info(`[scan] ${files.length} images; skipped ${total} non-image file(s): ${breakdown}`);
+  }
   return { files, tree };
 }

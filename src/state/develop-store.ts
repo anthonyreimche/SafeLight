@@ -59,7 +59,6 @@ interface DevelopState {
   brushSize: number; // image-height fraction
   brushFeather: number; // 0..1
   brushErase: boolean;
-  retouchMode: "heal" | "clone";
   retouchSize: number; // image-height fraction
   retouchFeather: number; // 0..100
   retouchOpacity: number; // 0..100
@@ -73,7 +72,6 @@ interface DevelopState {
   setBrushSize: (v: number) => void;
   setBrushFeather: (v: number) => void;
   setBrushErase: (v: boolean) => void;
-  setRetouchMode: (m: "heal" | "clone") => void;
   setRetouchSize: (v: number) => void;
   setRetouchFeather: (v: number) => void;
   setRetouchOpacity: (v: number) => void;
@@ -182,7 +180,6 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   brushSize: 0.08,
   brushFeather: 0.5,
   brushErase: false,
-  retouchMode: "heal",
   retouchSize: 0.04,
   retouchFeather: 50,
   retouchOpacity: 100,
@@ -196,7 +193,6 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   setBrushSize: (brushSize) => set({ brushSize }),
   setBrushFeather: (brushFeather) => set({ brushFeather }),
   setBrushErase: (brushErase) => set({ brushErase }),
-  setRetouchMode: (retouchMode) => set({ retouchMode }),
   setRetouchSize: (retouchSize) => set({ retouchSize }),
   setRetouchFeather: (retouchFeather) => set({ retouchFeather }),
   setRetouchOpacity: (retouchOpacity) => set({ retouchOpacity }),

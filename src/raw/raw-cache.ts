@@ -63,8 +63,14 @@ function idbReq<T>(req: IDBRequest<T>): Promise<T> {
 
 // ─── Key helpers ─────────────────────────────────────────────────────────────
 
-export function rawCacheKey(file: File): string {
-  return `${file.name}:${file.size}:${file.lastModified}`;
+// Cache key derived purely from the catalog record (project-relative path +
+// file size) — NOT from the File. This lets callers test cache existence without
+// opening the file: in Electron, File.getFile() reads the whole file off disk, so
+// keying on the File meant every reopen re-read every RAW just to build the key.
+// relPath is unique within a project and persisted, fileSize changes on most
+// edits, so the pair is a stable, cheap identity.
+export function rawCacheKey(relPath: string, fileSize: number): string {
+  return `${relPath}:${fileSize}`;
 }
 
 // ─── Project-folder cache ────────────────────────────────────────────────────
@@ -122,14 +128,14 @@ async function writeToDir(
  * no per-sample CPU math, half the bytes of the old Float32 buffer.
  */
 export async function readCachedPreview(
-  file: File,
+  key: string,
 ): Promise<{ data: Uint16Array; width: number; height: number } | null> {
   if (!getSettings().rawCacheEnabled) return null;
-  if (cacheDir) return readFromDir(rawCacheKey(file));
+  if (cacheDir) return readFromDir(key);
   try {
     const db = await getDB();
     const entry: CacheEntry | undefined = await idbReq(
-      db.transaction(STORE, "readonly").objectStore(STORE).get(rawCacheKey(file)),
+      db.transaction(STORE, "readonly").objectStore(STORE).get(key),
     );
     if (!entry) return null;
     const buf = await gunzip(entry.blob);
@@ -140,12 +146,39 @@ export async function readCachedPreview(
 }
 
 /**
+ * Set of cache keys currently present, read by listing the cache directory ONCE.
+ * The background pre-decode uses this to skip already-cached photos with zero
+ * per-file I/O (no getFile, no stat-per-photo) — critical in Electron, where
+ * getFile() reads the whole file. Empty set when caching is off or no project
+ * cache dir is set (the IndexedDB fallback only runs with no project open, where
+ * pre-decode doesn't).
+ */
+export async function cachedKeys(): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!getSettings().rawCacheEnabled || !cacheDir) return out;
+  try {
+    const dir = cacheDir as unknown as { keys(): AsyncIterable<string> };
+    for await (const name of dir.keys()) {
+      if (!name.endsWith(".bin")) continue;
+      try {
+        out.add(decodeURIComponent(name.slice(0, -4)));
+      } catch {
+        /* skip names that aren't ours */
+      }
+    }
+  } catch {
+    /* listing failed — treat as empty (everything will be (re)decoded) */
+  }
+  return out;
+}
+
+/**
  * Encode `data` (linear Float32 RGBA, already oriented) as a 16-bit sRGB,
  * gzip-compressed blob and write it to the cache. Fire-and-forget: errors are
  * silently discarded. Downsampled to CACHE_MAX_EDGE to bound the blob size.
  */
 export async function writeCachedPreview(
-  file: File,
+  key: string,
   data: Float32Array,
   width: number,
   height: number,
@@ -158,11 +191,11 @@ export async function writeCachedPreview(
       u16[i] = Math.round(linearToSrgb(ds.data[i]) * 65535);
     }
     if (cacheDir) {
-      await writeToDir(rawCacheKey(file), u16, ds.width, ds.height);
+      await writeToDir(key, u16, ds.width, ds.height);
       return;
     }
     const blob = await gzip(u16);
-    const entry: CacheEntry = { key: rawCacheKey(file), blob, width: ds.width, height: ds.height };
+    const entry: CacheEntry = { key, blob, width: ds.width, height: ds.height };
     const db = await getDB();
     await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).put(entry));
   } catch {
@@ -170,18 +203,18 @@ export async function writeCachedPreview(
   }
 }
 
-/** Remove a single file's cached preview (e.g., after file replacement). */
-export async function deleteCachedPreview(file: File): Promise<void> {
+/** Remove a single photo's cached preview (e.g., after file replacement). */
+export async function deleteCachedPreview(key: string): Promise<void> {
   if (cacheDir) {
     try {
-      await cacheDir.removeEntry(cacheFileName(rawCacheKey(file)));
+      await cacheDir.removeEntry(cacheFileName(key));
     } catch {}
     return;
   }
   try {
     const db = await getDB();
     await idbReq(
-      db.transaction(STORE, "readwrite").objectStore(STORE).delete(rawCacheKey(file)),
+      db.transaction(STORE, "readwrite").objectStore(STORE).delete(key),
     );
   } catch { /* ignore */ }
 }

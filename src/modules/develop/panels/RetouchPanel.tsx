@@ -5,7 +5,6 @@ import { MAX_RETOUCH } from "@/catalog/types";
 
 export function RetouchPanel() {
   const activeTool = useDevelopStore((s) => s.activeTool);
-  const retouchMode = useDevelopStore((s) => s.retouchMode);
   const retouchSize = useDevelopStore((s) => s.retouchSize);
   const retouchFeather = useDevelopStore((s) => s.retouchFeather);
   const retouchOpacity = useDevelopStore((s) => s.retouchOpacity);
@@ -13,7 +12,6 @@ export function RetouchPanel() {
   const selectedSpotId = useDevelopStore((s) => s.selectedSpotId);
 
   const setActiveTool = useDevelopStore((s) => s.setActiveTool);
-  const setRetouchMode = useDevelopStore((s) => s.setRetouchMode);
   const setRetouchSize = useDevelopStore((s) => s.setRetouchSize);
   const setRetouchFeather = useDevelopStore((s) => s.setRetouchFeather);
   const setRetouchOpacity = useDevelopStore((s) => s.setRetouchOpacity);
@@ -27,21 +25,10 @@ export function RetouchPanel() {
   // place; otherwise the sliders set the defaults for the next spot you create.
   const selected = spots.find((s) => s.id === selectedSpotId) ?? null;
 
-  const pick = (mode: "heal" | "clone") => {
-    setRetouchMode(mode);
-    setActiveTool("retouch");
-    // Clicking a mode while a spot is selected retargets that spot too.
-    if (selected && selected.mode !== mode) {
-      updateSpot(selected.id, { mode });
-      commitEdit("Spot Mode");
-    }
-  };
-
   // Slider value sources: selected spot when present, else the tool default.
   const sizeVal = Math.round((selected ? selected.radius : retouchSize) * 100);
   const featherVal = selected ? selected.feather : retouchFeather;
   const opacityVal = selected ? selected.opacity : retouchOpacity;
-  const activeMode = selected ? selected.mode : retouchMode;
 
   const onSize = (v: number) =>
     selected ? updateSpot(selected.id, { radius: v / 100 }) : setRetouchSize(v / 100);
@@ -54,43 +41,29 @@ export function RetouchPanel() {
   };
 
   return (
-    <Panel title="Heal / Clone" defaultOpen>
+    <Panel title="Heal" defaultOpen>
       <div className="space-y-2">
-        <div className="flex gap-1">
-          {(["heal", "clone"] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => pick(m)}
-              className={`flex-1 rounded px-1.5 py-1 text-[11px] capitalize ${
-                (active || selected) && activeMode === m
-                  ? "bg-accent/30 text-text-primary"
-                  : "bg-surface-2 text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-
         <div className="flex items-center justify-between">
+          <button
+            onClick={() => setActiveTool(active ? "none" : "retouch")}
+            className={`rounded px-2 py-1 text-[11px] ${
+              active
+                ? "bg-accent/30 text-text-primary"
+                : "bg-surface-2 text-text-secondary hover:text-text-primary"
+            }`}
+          >
+            {active ? "Done" : "Heal"}
+          </button>
           <span className="text-[10px] text-text-muted">
             {active
-              ? "Click or drag to remove · drag the source ring to resample"
+              ? "Click or drag · drag the source ring to resample"
               : `${spots.length}/${MAX_RETOUCH} spots`}
           </span>
-          {active && (
-            <button
-              onClick={() => setActiveTool("none")}
-              className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-text-secondary hover:text-text-primary"
-            >
-              Done
-            </button>
-          )}
         </div>
 
         <div className="space-y-0.5 rounded bg-surface-2/50 p-1.5">
           <div className="pb-0.5 text-[10px] uppercase tracking-wider text-text-muted">
-            {selected ? `Editing ${selected.mode} spot` : "New spot defaults"}
+            {selected ? "Editing spot" : "New spot defaults"}
           </div>
           <Slider
             label="Size"
@@ -133,7 +106,6 @@ export function RetouchPanel() {
                   // Open the spot for editing: select it and activate the tool so
                   // its source/destination handles appear on the image.
                   selectSpot(s.id);
-                  setRetouchMode(s.mode);
                   setActiveTool("retouch");
                 }}
                 className={`flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-[11px] ${
@@ -142,24 +114,8 @@ export function RetouchPanel() {
                     : "text-text-secondary hover:bg-surface-2"
                 }`}
               >
-                <span
-                  className="h-2 w-2 shrink-0 rounded-full"
-                  style={{ background: s.mode === "clone" ? "#ffd24a" : "#4affa3" }}
-                />
-                <span className="flex-1 truncate capitalize">
-                  {s.mode} {i + 1}
-                </span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    updateSpot(s.id, { mode: s.mode === "heal" ? "clone" : "heal" });
-                    commitEdit("Spot Mode");
-                  }}
-                  title="Toggle heal/clone"
-                  className="rounded px-1 text-text-muted hover:text-text-primary"
-                >
-                  ⇄
-                </button>
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "#4affa3" }} />
+                <span className="flex-1 truncate">Spot {i + 1}</span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();

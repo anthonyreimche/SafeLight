@@ -3,22 +3,50 @@
 // the catalog, with .safelight/ as its working directory.
 
 import { create } from "zustand";
-import { setCatalogStorage } from "@/catalog/storage";
+import type { CatalogPhoto } from "@/catalog/types";
+import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { verifyPermission } from "@/catalog/permissions";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
-import { preDecodeRawsForCache } from "@/modules/library/import-photos";
+import { preDecodeRawsForCache, repairMissingPreviews } from "@/modules/library/import-photos";
 import { setRawCacheDir } from "@/raw/raw-cache";
 import { ProjectStorage } from "./project-storage";
 import { getLastProject, saveLastProject } from "./recent";
 import { isNativeFS, nativeDirectoryHandle, pickNativeDirectory } from "./native-fs";
 import { scanProject, type FolderNode } from "./scan";
+import { visiblePhotos } from "@/modules/library/visible-photos";
+import {
+  requestThumbnail,
+  setThumbnailLoader,
+  thumbnailGen,
+} from "@/state/thumbnail-loader";
+
+// Best-effort flush of the debounced catalog on quit, so the last edits/imports
+// in the final save window aren't lost (incremental saves cover the rest).
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    void catalogStorage().flush?.();
+  });
+}
+
+// Schedule low-priority work for when the main thread is idle (falls back to a
+// short timeout where requestIdleCallback isn't available).
+function onIdle(fn: () => void): void {
+  const ric = (window as unknown as {
+    requestIdleCallback?: (cb: () => void) => void;
+  }).requestIdleCallback;
+  if (ric) ric(fn);
+  else setTimeout(fn, 200);
+}
 
 interface ProjectState {
   root: FileSystemDirectoryHandle | null;
   name: string;
   tree: FolderNode | null;
   opening: boolean;
+  /** New-file import progress for the loading bar. total=0 when not importing. */
+  importDone: number;
+  importTotal: number;
 
   /** Folder picker → open as project. Must run within a user gesture. */
   openProjectPicker: () => Promise<void>;
@@ -38,6 +66,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   name: "",
   tree: null,
   opening: false,
+  importDone: 0,
+  importTotal: 0,
 
   async openProjectPicker() {
     // Electron: native folder picker → absolute path → path-backed handle, so
@@ -62,28 +92,104 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   async openProject(handle) {
     if (get().opening) return;
-    set({ opening: true });
+    set({ opening: true, importDone: 0, importTotal: 0 });
     // Clear the old catalog immediately so the grid shows photos as they arrive
     // rather than showing the previous folder until the new one is fully loaded.
     useCatalogStore.getState().replaceCatalog([]);
     useUIStore.getState().setActiveFolder(null);
     try {
-      const opened = await ProjectStorage.open(handle, (photo) => {
-        useCatalogStore.getState().appendPhotos([photo]);
-      });
+      // Buffer streamed (newly-decoded) photos and flush once per frame, so a
+      // large import appends in a few batches instead of one re-render per photo.
+      let buf: CatalogPhoto[] = [];
+      let scheduled = false;
+      const flush = () => {
+        scheduled = false;
+        if (buf.length === 0) return;
+        useCatalogStore.getState().appendPhotos(buf);
+        buf = [];
+      };
+
+      // Queue cached previews for loading: visible cells request first (via the
+      // Thumbnail IntersectionObserver); when idle, enqueue the rest in view order.
+      const kickThumbnails = (photos: CatalogPhoto[], gen: number) => {
+        const ui = useUIStore.getState();
+        const toLoad = photos.filter((p) => !p.thumbnailUrl);
+        const inView = visiblePhotos(
+          toLoad,
+          ui.filter,
+          ui.sortField,
+          ui.sortDirection,
+          ui.activeFolder,
+        );
+        const seen = new Set(inView.map((p) => p.id));
+        const ordered = [...inView, ...toLoad.filter((p) => !seen.has(p.id))];
+        onIdle(() => {
+          if (thumbnailGen() !== gen) return; // a newer folder was opened
+          for (const p of ordered) requestThumbnail(p.id);
+        });
+      };
+
+      // Phase 1 — paint the grid from the saved catalog the instant it's read,
+      // before the disk scan, so skeletons appear with the UI rather than after.
+      let painted = false;
+      const onSkeletons = (
+        storage: ProjectStorage,
+        rawCacheDir: FileSystemDirectoryHandle,
+        skeletons: CatalogPhoto[],
+      ) => {
+        painted = true;
+        setRawCacheDir(rawCacheDir);
+        setCatalogStorage(storage);
+        set({ root: handle, name: handle.name });
+        const gen = setThumbnailLoader((id) => storage.readPreview(id));
+        useCatalogStore.getState().finalizeCatalog(skeletons);
+        kickThumbnails(skeletons, gen);
+      };
+
+      const opened = await ProjectStorage.open(
+        handle,
+        (photo) => {
+          buf.push(photo);
+          if (!scheduled) {
+            scheduled = true;
+            requestAnimationFrame(flush);
+          }
+        },
+        onSkeletons,
+        (done, total) => set({ importDone: done, importTotal: total }),
+      );
+      flush(); // drain any photos buffered since the last frame
       setRawCacheDir(opened.rawCacheDir);
       setCatalogStorage(opened.storage);
       set({ root: handle, name: handle.name, tree: opened.tree });
-      // Finalize with the authoritative sorted list. Uses finalizeCatalog so
-      // object URLs added during the progressive open are not revoked.
-      useCatalogStore.getState().finalizeCatalog(opened.photos);
+      // Phase 2 — the scan finished: attach handles, add new, drop removed. If we
+      // painted skeletons, reconcile (keeps already-loaded previews); otherwise
+      // (first import / no cache) finalize and kick off loading normally.
+      if (painted) {
+        useCatalogStore.getState().reconcileCatalog(opened.photos);
+      } else {
+        const gen = setThumbnailLoader((id) => opened.storage.readPreview(id));
+        useCatalogStore.getState().finalizeCatalog(opened.photos);
+        kickThumbnails(opened.photos, gen);
+      }
       await saveLastProject(handle);
-      // Background: pre-decode new RAWs so first Develop open is instant.
-      void preDecodeRawsForCache(opened.newPhotos);
+      // Persist the final import state now (don't rely on the debounced save or
+      // the best-effort beforeunload flush, which can be cut short on app quit),
+      // so newly-imported records survive even an immediate close.
+      void catalogStorage().flush?.();
+      // Background: fill in previews for any records imported without one (decode
+      // failed at scan time), updating them in place so they're never re-imported.
+      void repairMissingPreviews(opened.photos, (p) =>
+        useCatalogStore.getState().updatePhoto(p),
+      );
+      // Background: pre-decode RAWs so first Develop open is instant. Pass the
+      // full set (not just newPhotos) so any RAW left uncached by an interrupted
+      // earlier run is filled in now; the per-file check skips ones already done.
+      void preDecodeRawsForCache(opened.photos);
     } catch (e) {
       console.error("[project] open failed:", e);
     } finally {
-      set({ opening: false });
+      set({ opening: false, importDone: 0, importTotal: 0 });
     }
   },
 

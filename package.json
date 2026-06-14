@@ -1,7 +1,7 @@
 {
   "name": "safelight",
   "private": true,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Safelight — a fast RAW photo editor.",
   "homepage": "https://github.com/anthonyreimche/SafeLight",
   "desktopName": "safelight",
@@ -36,6 +36,9 @@
     "vite": "^8.0.16",
     "zustand": "^5.0.14"
   },
+  "overrides": {
+    "rimraf": "^5.0.10"
+  },
   "build": {
     "appId": "com.safelight.app",
     "productName": "Safelight",
@@ -54,14 +57,31 @@
     "removePackageScripts": true,
     "npmRebuild": false,
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "build/icon.ico",
       "signtoolOptions": {
-        "publisherName": ["Safelight"]
+        "publisherName": [
+          "Safelight"
+        ]
       }
     },
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
       "category": "public.app-category.photography",
       "icon": "build/icon.png"
     },
@@ -74,14 +94,31 @@
       "synopsis": "Fast RAW photo editor",
       "maintainer": "Safelight <anthonyreimche+safelight@gmail.com>",
       "target": [
-        { "target": "AppImage", "arch": ["x64"] },
-        { "target": "deb",      "arch": ["x64"] }
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "mimeTypes": [
-        "image/jpeg", "image/png", "image/tiff", "image/webp",
-        "image/x-nikon-nef", "image/x-nikon-nrw",
-        "image/x-canon-cr2", "image/x-canon-cr3", "image/x-canon-crw",
-        "image/x-sony-arw", "image/x-sony-sr2",
+        "image/jpeg",
+        "image/png",
+        "image/tiff",
+        "image/webp",
+        "image/x-nikon-nef",
+        "image/x-nikon-nrw",
+        "image/x-canon-cr2",
+        "image/x-canon-cr3",
+        "image/x-canon-crw",
+        "image/x-sony-arw",
+        "image/x-sony-sr2",
         "image/x-adobe-dng",
         "image/x-olympus-orf",
         "image/x-fuji-raf",
@@ -98,10 +135,18 @@
     "deb": {
       "packageCategory": "graphics",
       "depends": [
-        "libgl1", "libegl1", "libgbm1", "libdrm2",
-        "libnss3", "libgtk-3-0", "libxss1", "libglib2.0-0"
+        "libgl1",
+        "libegl1",
+        "libgbm1",
+        "libdrm2",
+        "libnss3",
+        "libgtk-3-0",
+        "libxss1",
+        "libglib2.0-0"
       ],
-      "recommends": ["libvulkan1"]
+      "recommends": [
+        "libvulkan1"
+      ]
     },
     "flatpak": {
       "runtimeVersion": "24.08",

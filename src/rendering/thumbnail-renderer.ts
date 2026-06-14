@@ -39,7 +39,9 @@ function getCtx(which: "thumb" | "hist"): Ctx | null {
 // (and the resulting JPEG) cheap while staying crisp at large grid sizes.
 // The cap is a preference (Preferences ▸ Library ▸ Thumbnail quality).
 // The histogram only needs enough pixels for a stable distribution.
-const MAX_HIST_EDGE = 512;
+// computeHistogram re-samples to ≤256px internally, so rendering larger than
+// that is wasted GPU + readback — render straight at 256.
+const MAX_HIST_EDGE = 256;
 
 // Render a photo through the develop pipeline on the given renderer, using the
 // SAME decode as Develop/Loupe/Export — full-res RAW float (with the base tone
@@ -87,7 +89,16 @@ export async function renderEditedThumbnail(
 }
 
 // Compute the histogram of a photo rendered through the develop pipeline with the
-// given params, so the Library histogram reflects edits and matches Develop.
+// given params, so the Library histogram reflects the saved edits.
+//
+// Lightweight by design: the Library Info histogram fires on every photo
+// selection, so it renders the already-decoded grid thumbnail (≤768px, in
+// memory) through the pipeline rather than re-running loadPhotoImage — which
+// would gunzip the multi-MB develop-cache blob (or do a full libraw decode) each
+// time you arrow through the grid. The trade-off is thumbnail-grade precision and
+// (for RAW) the camera's baked tone instead of the base curve; the full-precision
+// histogram still lives in Develop. Falls back to the full decode only when the
+// thumbnail isn't loaded yet.
 export async function renderPhotoHistogram(
   photo: CatalogPhoto,
   params: DevelopParams,
@@ -95,8 +106,20 @@ export async function renderPhotoHistogram(
 ): Promise<HistogramData | null> {
   const ctx = getCtx("hist");
   if (!ctx) return null;
-  const image = await loadPhotoImage(photo);
+
+  let image: DecodedImage | null = null;
+  if (photo.thumbnailBlob) {
+    try {
+      // Grid thumbnails are baked upright, so no extra orientation needed.
+      const bitmap = await createImageBitmap(photo.thumbnailBlob);
+      image = { kind: "bitmap", bitmap };
+    } catch {
+      image = null;
+    }
+  }
+  if (!image) image = await loadPhotoImage(photo);
   if (!image) return null;
+
   try {
     drawPhoto(ctx, image, params, maxEdge);
     return computeHistogram(ctx.canvas);

@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { useEditedThumbUrl } from "@/state/edited-thumbnails";
+import { requestThumbnail } from "@/state/thumbnail-loader";
 import { Rating } from "./Rating";
 
 interface ThumbnailProps {
@@ -49,8 +50,30 @@ export function Thumbnail({
   // Prefer the develop-edited render once it's ready; fall back to the original.
   const thumbUrl = editedUrl ?? originalUrl;
 
+  // Lazily pull the cached preview when this cell nears the viewport, so a freshly
+  // opened folder loads on-screen thumbnails first instead of all of them up front.
+  const cellRef = useRef<HTMLDivElement>(null);
+  const needsLoad = !thumbUrl;
+  useEffect(() => {
+    if (!needsLoad) return;
+    const el = cellRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          requestThumbnail(photo.id);
+          io.disconnect();
+        }
+      },
+      { rootMargin: "300px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [needsLoad, photo.id]);
+
   return (
     <div
+      ref={cellRef}
       data-photo-id={photo.id}
       className={`group relative cursor-pointer overflow-hidden rounded bg-surface-1 ${borderClass}`}
       style={{ width: size, height: size }}
@@ -67,9 +90,8 @@ export function Thumbnail({
           loading="lazy"
         />
       ) : (
-        <div className="flex h-full w-full items-center justify-center text-text-muted">
-          <span className="text-2xl">{"🖼"}</span>
-        </div>
+        // Skeleton while the cached preview is still loading.
+        <div className="h-full w-full animate-pulse bg-surface-2" />
       )}
 
       {labelColor && (

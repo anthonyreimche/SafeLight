@@ -165,7 +165,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
 
   // ── Develop: left rail ──
   panelExt("core.masks", "Masking", MasksPanel, "Local adjustments with brush, linear and radial masks.", left(0, 240)),
-  panelExt("core.retouch", "Heal / Clone", RetouchPanel, "Heal and clone spot removal.", left(1, 160)),
+  panelExt("core.retouch", "Heal", RetouchPanel, "Heal spot removal.", left(1, 160)),
   panelExt("core.presets", "Presets", PresetsPanel, "Save and apply develop presets.", left(2, 200)),
 
   // ── Library ──

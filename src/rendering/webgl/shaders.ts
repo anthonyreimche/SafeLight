@@ -111,11 +111,11 @@ uniform float uMaskOpacity[MAX_MASKS]; // 0..1
 uniform int uCompCount;
 uniform int uCompMaskIdx[MAX_COMPONENTS]; // parent mask index
 uniform int uCompMode[MAX_COMPONENTS];    // 0 add (max), 1 subtract (*(1-c))
-uniform int uCompType[MAX_COMPONENTS];    // 0 linear,1 radial,2 brush,3 luminance,4 color
+uniform int uCompType[MAX_COMPONENTS];    // 0 linear,1 radial,2 brush
 uniform int uCompInvert[MAX_COMPONENTS];
 uniform int uCompBrushCh[MAX_COMPONENTS]; // channel 0..3 in uMaskTex
-uniform vec4 uCompGeoA[MAX_COMPONENTS];   // lin:x0,y0,x1,y1 | rad:cx,cy,rx,ry | lum:lo,hi,feather,_ | color:hue,sat,hueTol,satTol
-uniform vec4 uCompGeoB[MAX_COMPONENTS];   // rad:feather,angle,_,_ | color:feather,_,_,_
+uniform vec4 uCompGeoA[MAX_COMPONENTS];   // lin:x0,y0,x1,y1 | rad:cx,cy,rx,ry
+uniform vec4 uCompGeoB[MAX_COMPONENTS];   // rad:feather,angle,_,_
 uniform vec4 uMaskAdj0[MAX_MASKS]; // exposure, contrast, highlights, shadows
 uniform vec4 uMaskAdj1[MAX_MASKS]; // saturation, temperature, tint, clarity
 uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, _, _, _
@@ -127,11 +127,11 @@ uniform vec4 uMaskHsl[MAX_MASKS * 6];
 uniform int uMaskHasCurve[MAX_MASKS];
 uniform sampler2D uMaskCurves;
 
-// Retouch (spot removal): heal / clone discs.
+// Retouch (spot removal): heal discs.
 #define MAX_SPOTS 16
 uniform int uSpotCount;
 uniform vec4 uSpotA[MAX_SPOTS]; // dstX, dstY, srcX, srcY
-uniform vec4 uSpotB[MAX_SPOTS]; // radius(height units), feather(0..1), opacity(0..1), mode(0 heal,1 clone)
+uniform vec4 uSpotB[MAX_SPOTS]; // radius(height units), feather(0..1), opacity(0..1), _reserved
 uniform vec4 uSpotC[MAX_SPOTS];    // cosA, sinA, 1/scale, _  (source rotate/scale)
 uniform vec4 uSpotTint[MAX_SPOTS]; // recolour offset rgb (encoded 0..1), _
 
@@ -140,7 +140,7 @@ uniform vec4 uSpotTint[MAX_SPOTS]; // recolour offset rgb (encoded 0..1), _
 uniform sampler2D uRetouchTex;
 uniform int uRetouchCount;
 uniform int uRetouchCh[MAX_RBRUSH];     // channel 0..3 in uRetouchTex
-uniform vec4 uRetouchData[MAX_RBRUSH];  // offX, offY (UV), opacity(0..1), mode(0 heal,1 clone)
+uniform vec4 uRetouchData[MAX_RBRUSH];  // offX, offY (UV), opacity(0..1), _reserved
 uniform float uRetouchRadius[MAX_RBRUSH]; // image-height units, for heal LOD
 uniform sampler2D uDevelopedSrc; // pass-1 developed image, source-UV space
 uniform bool uHaveDeveloped;     // true on the compositing pass (match in edited space)
@@ -831,9 +831,8 @@ vec3 applyRetouch(vec2 uv, vec3 base) {
 }
 
 // ---- Local adjustment masks ------------------------------------------------
-// Coverage of one component (0..1), before add/subtract combine. refCol is the
-// scene color (perceptual sRGB) for range-based components.
-float compCoverage(int i, vec2 uv, vec3 refCol) {
+// Coverage of one component (0..1), before add/subtract combine.
+float compCoverage(int i, vec2 uv) {
   int type = uCompType[i];
   float m = 0.0;
   if (type == 0) {
@@ -856,33 +855,11 @@ float compCoverage(int i, vec2 uv, vec3 refCol) {
     vec2 radS = vec2(rad.x * uImageAspect, rad.y);
     float d = length(qr / radS);
     m = 1.0 - smoothstep(1.0 - feather, 1.0, d);
-  } else if (type == 2) {
+  } else {
     // Brush: prebaked coverage from the atlas channel.
     vec4 cov = texture(uMaskTex, uv);
     int ch = uCompBrushCh[i];
     m = ch == 0 ? cov.r : (ch == 1 ? cov.g : (ch == 2 ? cov.b : cov.a));
-  } else if (type == 3) {
-    // Luminance range: band-pass on scene luma, feathered either side.
-    float l = luma(refCol);
-    float lo = uCompGeoA[i].x;
-    float hi = uCompGeoA[i].y;
-    float fth = max(uCompGeoA[i].z, 1e-3);
-    float a = smoothstep(lo - fth, lo + fth, l);
-    float b = 1.0 - smoothstep(hi - fth, hi + fth, l);
-    m = clamp(min(a, b), 0.0, 1.0);
-  } else {
-    // Color range: circular hue distance + saturation distance, each within tol.
-    vec3 hsl = rgb2hsl(refCol);
-    float th = uCompGeoA[i].x;
-    float ts = uCompGeoA[i].y;
-    float hueTol = max(uCompGeoA[i].z, 1e-3);
-    float satTol = max(uCompGeoA[i].w, 1e-3);
-    float fth = max(uCompGeoB[i].x, 1e-3);
-    float hd = abs(fract(hsl.x - th + 0.5) - 0.5); // 0..0.5 circular hue distance
-    float hw = 1.0 - smoothstep(hueTol, hueTol + fth, hd);
-    float sd = abs(hsl.y - ts);
-    float sw = 1.0 - smoothstep(satTol, satTol + fth, sd);
-    m = clamp(hw * sw, 0.0, 1.0);
   }
   if (uCompInvert[i] == 1) m = 1.0 - m;
   return clamp(m, 0.0, 1.0);
@@ -1120,13 +1097,12 @@ void main() {
   // First combine each mask's components into one coverage value: ADD unions
   // (max), SUBTRACT carves away (×(1−c)), in list order. Then whole-mask invert
   // and opacity. Coverage is reused by stage 2 below.
-  vec3 refCol = clamp(linearToSrgbU(lin), 0.0, 1.0); // scene color for range masks
   float mcovs[MAX_MASKS];
   for (int mi = 0; mi < MAX_MASKS; mi++) mcovs[mi] = 0.0;
   for (int ci = 0; ci < MAX_COMPONENTS; ci++) {
     if (ci >= uCompCount) break;
     int p = uCompMaskIdx[ci];
-    float cc = compCoverage(ci, srcUv, refCol);
+    float cc = compCoverage(ci, srcUv);
     if (uCompMode[ci] == 0) mcovs[p] = max(mcovs[p], cc);
     else mcovs[p] = mcovs[p] * (1.0 - cc);
   }

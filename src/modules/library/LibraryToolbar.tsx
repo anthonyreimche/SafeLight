@@ -27,6 +27,10 @@ export function LibraryToolbar() {
   const openProjectPicker = useProjectStore((s) => s.openProjectPicker);
   const opening = useProjectStore((s) => s.opening);
   const projectName = useProjectStore((s) => s.name);
+  const importDone = useProjectStore((s) => s.importDone);
+  const importTotal = useProjectStore((s) => s.importTotal);
+  const importing = importTotal > 0 && importDone < importTotal;
+  const importPct = importing ? Math.round((importDone / importTotal) * 100) : 0;
 
   const handleRemove = () => {
     const ids = [...selectedIds];
@@ -47,7 +51,18 @@ export function LibraryToolbar() {
   };
 
   return (
-    <div className="flex items-center justify-between border-b border-border-subtle bg-surface-1 px-3 py-1.5">
+    <div className="relative flex items-center justify-between border-b border-border-subtle bg-surface-1 px-3 py-1.5">
+      {importing && (
+        <div
+          className="absolute inset-x-0 bottom-0 h-0.5 bg-surface-3"
+          title={`Importing ${importDone} / ${importTotal}`}
+        >
+          <div
+            className="h-full bg-accent transition-[width] duration-150 ease-out"
+            style={{ width: `${importPct}%` }}
+          />
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <button
           onClick={() => void openProjectPicker()}
@@ -57,7 +72,9 @@ export function LibraryToolbar() {
           {opening ? "Opening…" : projectName ? `Open Folder… (${projectName})` : "Open Folder…"}
         </button>
         <span className="text-[10px] text-text-muted">
-          {photos.length} photos{selectedIds.size > 0 && ` · ${selectedIds.size} selected`}
+          {importing
+            ? `Importing ${importDone}/${importTotal}…`
+            : `${photos.length} photos${selectedIds.size > 0 ? ` · ${selectedIds.size} selected` : ""}`}
         </span>
         {selectedIds.size > 0 && (
           <>

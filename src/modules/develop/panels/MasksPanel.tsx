@@ -14,9 +14,7 @@ import type {
 } from "@/catalog/types";
 import {
   MAX_MASKS,
-  defaultColorRange,
   defaultHSL,
-  defaultLuminanceRange,
   defaultMaskAdjustments,
   defaultToneCurves,
 } from "@/catalog/types";
@@ -31,19 +29,12 @@ const KIND_ICON: Record<MaskComponentKind, string> = {
   radial: "◯",
   linear: "▤",
   brush: "✎",
-  luminance: "◐",
-  color: "⬤",
 };
 const KIND_LABEL: Record<MaskComponentKind, string> = {
   radial: "Radial",
   linear: "Linear",
   brush: "Brush",
-  luminance: "Luminance",
-  color: "Color",
 };
-
-let idSeq = 0;
-const genId = (p: string) => `${p}-${Date.now().toString(36)}-${idSeq++}`;
 
 type SliderDef = { key: keyof MaskAdjustments; label: string };
 
@@ -99,8 +90,6 @@ export function MasksPanel() {
   const removeMask = useDevelopStore((s) => s.removeMask);
   const updateMask = useDevelopStore((s) => s.updateMask);
   const updateMaskAdj = useDevelopStore((s) => s.updateMaskAdj);
-  const addMask = useDevelopStore((s) => s.addMask);
-  const addComponent = useDevelopStore((s) => s.addComponent);
   const updateComponent = useDevelopStore((s) => s.updateComponent);
   const removeComponent = useDevelopStore((s) => s.removeComponent);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
@@ -130,36 +119,6 @@ export function MasksPanel() {
     setMaskCompMode("add");
     setMaskAddTarget("new");
     setActiveTool("mask");
-  };
-
-  // Range components have no on-canvas geometry, so add them immediately.
-  const addRange = (kind: "luminance" | "color", mode: MaskComponentMode) => {
-    const comp: MaskComponent = {
-      id: genId("comp"),
-      kind,
-      mode,
-      invert: false,
-      ...(kind === "luminance"
-        ? { luminance: defaultLuminanceRange() }
-        : { color: defaultColorRange() }),
-    };
-    if (selected) {
-      addComponent(selected.id, comp);
-    } else {
-      const id = genId("mask");
-      const mask: Mask = {
-        id,
-        name: KIND_LABEL[kind],
-        invert: false,
-        opacity: 100,
-        adj: defaultMaskAdjustments(),
-        panels: ["basic"],
-        components: [comp],
-      };
-      addMask(mask);
-    }
-    setActiveTool("mask");
-    commitEdit("Add Mask Component");
   };
 
   // --- adjustment sub-panels (per mask) --------------------------------------
@@ -232,23 +191,6 @@ export function MasksPanel() {
             </button>
           ))}
         </div>
-        <div className="flex gap-1">
-          <button
-            onClick={() => addRange("luminance", "add")}
-            className="flex-1 rounded bg-surface-2 px-1.5 py-1 text-[11px] text-text-secondary hover:text-text-primary"
-            title="New luminance-range mask"
-          >
-            {KIND_ICON.luminance} Luminance
-          </button>
-          <button
-            onClick={() => addRange("color", "add")}
-            className="flex-1 rounded bg-surface-2 px-1.5 py-1 text-[11px] text-text-secondary hover:text-text-primary"
-            title="New color-range mask"
-          >
-            {KIND_ICON.color} Color
-          </button>
-        </div>
-
         <div className="flex items-center justify-between">
           <span className="text-[10px] text-text-muted">
             {masking
@@ -439,18 +381,6 @@ export function MasksPanel() {
                     {KIND_ICON[t.type]} {t.label}
                   </button>
                 ))}
-                <button
-                  onClick={() => addRange("luminance", mode)}
-                  className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary"
-                >
-                  {KIND_ICON.luminance} Lum
-                </button>
-                <button
-                  onClick={() => addRange("color", mode)}
-                  className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary"
-                >
-                  {KIND_ICON.color} Color
-                </button>
               </div>
             ))}
 
@@ -571,7 +501,7 @@ export function MasksPanel() {
   );
 }
 
-// Geometry/range controls for the selected component.
+// Geometry controls for the selected component.
 function ComponentControls({
   maskId,
   comp,
@@ -597,43 +527,6 @@ function ComponentControls({
           onChange={(v) => updateComponent(maskId, comp.id, { radial: { ...r, feather: v / 100 } })}
           onCommit={() => commitEdit("Mask Feather")}
         />
-      </div>
-    );
-  }
-  if (comp.kind === "luminance" && comp.luminance) {
-    const g = comp.luminance;
-    return (
-      <div className="space-y-0.5 rounded bg-surface-2/40 p-1.5">
-        <span className="text-[10px] uppercase tracking-wider text-text-muted">Luminance range</span>
-        <Slider label="Low" value={Math.round(g.lo * 100)} min={0} max={100} step={1} defaultValue={25}
-          onChange={(v) => updateComponent(maskId, comp.id, { luminance: { ...g, lo: Math.min(v / 100, g.hi) } })}
-          onCommit={() => commitEdit("Lum Range")} />
-        <Slider label="High" value={Math.round(g.hi * 100)} min={0} max={100} step={1} defaultValue={75}
-          onChange={(v) => updateComponent(maskId, comp.id, { luminance: { ...g, hi: Math.max(v / 100, g.lo) } })}
-          onCommit={() => commitEdit("Lum Range")} />
-        <Slider label="Smoothness" value={Math.round(g.feather * 100)} min={0} max={50} step={1} defaultValue={10}
-          onChange={(v) => updateComponent(maskId, comp.id, { luminance: { ...g, feather: v / 100 } })}
-          onCommit={() => commitEdit("Lum Range")} />
-      </div>
-    );
-  }
-  if (comp.kind === "color" && comp.color) {
-    const g = comp.color;
-    return (
-      <div className="space-y-0.5 rounded bg-surface-2/40 p-1.5">
-        <span className="text-[10px] uppercase tracking-wider text-text-muted">Color range</span>
-        <Slider label="Hue" value={Math.round(g.hue * 360)} min={0} max={360} step={1} defaultValue={180}
-          onChange={(v) => updateComponent(maskId, comp.id, { color: { ...g, hue: v / 360 } })}
-          onCommit={() => commitEdit("Color Range")} />
-        <Slider label="Hue range" value={Math.round(g.hueTol * 100)} min={1} max={50} step={1} defaultValue={8}
-          onChange={(v) => updateComponent(maskId, comp.id, { color: { ...g, hueTol: v / 100 } })}
-          onCommit={() => commitEdit("Color Range")} />
-        <Slider label="Sat range" value={Math.round(g.satTol * 100)} min={1} max={100} step={1} defaultValue={50}
-          onChange={(v) => updateComponent(maskId, comp.id, { color: { ...g, satTol: v / 100 } })}
-          onCommit={() => commitEdit("Color Range")} />
-        <Slider label="Smoothness" value={Math.round(g.feather * 100)} min={0} max={50} step={1} defaultValue={5}
-          onChange={(v) => updateComponent(maskId, comp.id, { color: { ...g, feather: v / 100 } })}
-          onCommit={() => commitEdit("Color Range")} />
       </div>
     );
   }

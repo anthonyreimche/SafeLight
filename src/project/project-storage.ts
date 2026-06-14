@@ -27,6 +27,9 @@ interface CatalogFile {
 }
 
 const SAVE_DELAY = 800;
+// Hard cap so a steady stream of writes (e.g. a long import) still flushes
+// periodically instead of the debounce sliding forever and persisting nothing.
+const MAX_SAVE_DELAY = 2500;
 
 function strip(p: CatalogPhoto): StoredPhoto {
   const {
@@ -73,6 +76,7 @@ export class ProjectStorage implements CatalogStorage {
   private edits = new Map<string, EditState>();
   private lastThumb = new Map<string, Blob | null>();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private firstDirtyAt = 0;
 
   private sl: FileSystemDirectoryHandle;
   private previews: FileSystemDirectoryHandle;
@@ -88,36 +92,70 @@ export class ProjectStorage implements CatalogStorage {
   static async open(
     root: FileSystemDirectoryHandle,
     onPhoto?: (photo: CatalogPhoto) => void,
+    onSkeletons?: (
+      storage: ProjectStorage,
+      rawCacheDir: FileSystemDirectoryHandle,
+      skeletons: CatalogPhoto[],
+    ) => void,
+    // Progress of decoding newly-discovered files (the slow part of opening).
+    // Fires once with done=0 when the new-file count is known, then per file.
+    onProgress?: (done: number, total: number) => void,
   ): Promise<OpenedProject> {
     const sl = await root.getDirectoryHandle(".safelight", { create: true });
     const previews = await sl.getDirectoryHandle("previews", { create: true });
     const rawCacheDir = await sl.getDirectoryHandle("raw", { create: true });
     const storage = new ProjectStorage(sl, previews);
 
-    const [saved, scan] = await Promise.all([
-      readJSON<CatalogFile>(sl, "catalog.json"),
-      scanProject(root),
-    ]);
-    const byRel = new Map(
-      (saved?.photos ?? []).map((p) => [p.relPath, p] as const),
-    );
+    // Read the saved catalog first (one quick read) and paint the grid from it
+    // immediately as skeleton records — no live handles, no previews — so the UI
+    // appears at once. The directory scan below then runs without blocking the
+    // first paint, attaching handles and finding new/removed files.
+    const saved = await readJSON<CatalogFile>(sl, "catalog.json");
+
+    // Seed saved edit histories up front so incremental saves during a long
+    // (resumable) import keep develop edits; orphans are pruned after the walk.
+    for (const e of saved?.edits ?? []) storage.edits.set(e.photoId, e);
+
+    const savedPhotos = saved?.photos ?? [];
+    if (savedPhotos.length > 0 && onSkeletons) {
+      const skeletons = savedPhotos.map(
+        (s): CatalogPhoto => ({
+          ...s,
+          directoryHandle: null,
+          fileHandle: null,
+          thumbnailBlob: null,
+          thumbnailUrl: null,
+        }),
+      );
+      for (const sk of skeletons) storage.photos.set(sk.id, sk);
+      onSkeletons(storage, rawCacheDir, skeletons);
+    }
+
+    const scan = await scanProject(root);
+    const byRel = new Map(savedPhotos.map((p) => [p.relPath, p] as const));
+
+    // New files (not in the saved catalog) are the ones that get decoded —
+    // the slow part of opening. Report progress against that count.
+    const newTotal = scan.files.reduce((n, f) => n + (byRel.has(f.path) ? 0 : 1), 0);
+    let newDone = 0;
+    onProgress?.(0, newTotal);
 
     const newPhotos: CatalogPhoto[] = [];
     const results = await mapLimit(scan.files, 8, async (f: ScannedFile) => {
       const prev = byRel.get(f.path);
       if (prev) {
-        // Known photo: reattach live handles, rehydrate the cached thumbnail.
-        const blob = await readBlob(previews, `${prev.id}.jpg`);
+        // Known photo: reattach live handles only. The cached preview is loaded
+        // later, on demand (visible cells first), so the open never blocks on
+        // hundreds of serial preview reads.
         const photo: CatalogPhoto = {
           ...prev,
           folder: folderOf(f.path),
           directoryHandle: f.parent,
           fileHandle: f.handle,
-          thumbnailBlob: blob,
-          thumbnailUrl: blob ? URL.createObjectURL(blob) : null,
+          thumbnailBlob: null,
+          thumbnailUrl: null,
         };
-        storage.lastThumb.set(photo.id, blob);
-        onPhoto?.(photo);
+        storage.photos.set(photo.id, photo);
         return photo;
       }
       // New file: decode, thumbnail, cache the preview on disk.
@@ -160,20 +198,29 @@ export class ProjectStorage implements CatalogStorage {
         if (photo.thumbnailBlob)
           await writeBlob(previews, `${photo.id}.jpg`, photo.thumbnailBlob);
         storage.lastThumb.set(photo.id, photo.thumbnailBlob);
+        storage.photos.set(photo.id, photo);
         newPhotos.push(photo);
         onPhoto?.(photo);
+        // Persist progress as we go: an interrupted import resumes from the last
+        // saved photo instead of re-decoding the whole folder next launch.
+        storage.scheduleSave();
+        onProgress?.(++newDone, newTotal);
         return photo;
       } catch {
+        onProgress?.(++newDone, newTotal);
         return null;
       }
     });
 
     const photos = results.filter((p): p is CatalogPhoto => p !== null);
+    // Rebuild the photo map from the scan result so any skeletons seeded above
+    // for files that have since vanished from disk are dropped.
+    storage.photos.clear();
     for (const p of photos) storage.photos.set(p.id, p);
 
-    // Keep edits only for photos that still exist on disk.
-    for (const e of saved?.edits ?? [])
-      if (storage.photos.has(e.photoId)) storage.edits.set(e.photoId, e);
+    // Drop edit histories whose photo no longer exists on disk.
+    for (const id of [...storage.edits.keys()])
+      if (!storage.photos.has(id)) storage.edits.delete(id);
 
     const removedCount = byRel.size - (photos.length - newPhotos.length);
     if (newPhotos.length > 0 || removedCount > 0) storage.scheduleSave();
@@ -185,6 +232,15 @@ export class ProjectStorage implements CatalogStorage {
 
   async getAllPhotos(): Promise<CatalogPhoto[]> {
     return [...this.photos.values()];
+  }
+
+  /** Read a photo's cached grid preview from disk. Used by the block thumbnail
+   *  loader on open; caches the blob so a later putPhoto won't needlessly rewrite
+   *  the same preview. */
+  async readPreview(id: string): Promise<Blob | null> {
+    const blob = await readBlob(this.previews, `${id}.jpg`);
+    if (blob) this.lastThumb.set(id, blob);
+    return blob;
   }
 
   async putPhoto(photo: CatalogPhoto): Promise<void> {
@@ -219,17 +275,35 @@ export class ProjectStorage implements CatalogStorage {
 
   async putEditState(editState: EditState): Promise<void> {
     this.edits.set(editState.photoId, editState);
-    this.scheduleSave();
+    // Persist edits immediately rather than on the debounce: develop commits are
+    // discrete, user-paced actions, and the beforeunload flush can be cut short
+    // on app quit — so a debounced edit made just before closing was being lost.
+    await this.save();
   }
 
   // ── persistence ────────────────────────────────────────────────────────────
 
   private scheduleSave(): void {
+    const now = Date.now();
+    if (!this.firstDirtyAt) this.firstDirtyAt = now;
     if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => void this.save(), SAVE_DELAY);
+    // Normal 800ms debounce, but never wait longer than MAX_SAVE_DELAY since the
+    // first un-saved change — so a continuous import durably persists progress.
+    const delay = Math.min(SAVE_DELAY, Math.max(0, MAX_SAVE_DELAY - (now - this.firstDirtyAt)));
+    this.saveTimer = setTimeout(() => void this.save(), delay);
+  }
+
+  /** Write any pending changes immediately (e.g. on app quit). */
+  async flush(): Promise<void> {
+    await this.save();
   }
 
   private async save(): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.firstDirtyAt = 0;
     try {
       const data: CatalogFile = {
         version: 1,

@@ -6,9 +6,11 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { parseExif, parseExifDate } from "@/catalog/exif";
 import { orientationToRotation } from "@/catalog/orient";
 import { extractRawPreview, getExtension, isRawFile } from "./raw-preview";
-import { decodeRawToFloat } from "@/raw/decode";
+import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
 import { rotateFloatRGBA } from "@/catalog/orient";
-import { readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
+import { cachedKeys, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
+import { getSettings } from "@/state/settings-store";
+import { catalogStorage } from "@/catalog/storage";
 
 const SUPPORTED_TYPES = new Set([
   "image/jpeg",
@@ -74,13 +76,39 @@ async function createThumbnail(
   return canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 });
 }
 
-// Resolve a decodable image Blob from a file: RAW files yield their embedded
-// JPEG preview, everything else decodes directly.
-async function getImageSource(file: File): Promise<Blob | null> {
+// Decode a file to an ImageBitmap for thumbnailing, robustly — a supported file
+// must never be silently dropped from the catalog.
+//
+//  - RAW: prefer the embedded JPEG preview (fast, camera-rendered). If the file
+//    has no browser-decodable preview (some RAWs only embed a lossless/SOF3
+//    preview, or none), fall back to a full libraw sensor decode instead of
+//    giving up. `oriented` is true for the libraw path (it already applied EXIF
+//    orientation, so the caller must NOT rotate again).
+//  - Everything else: decode directly.
+//
+// Returns null only when the pixels are genuinely undecodable.
+async function decodeImportBitmap(
+  file: File,
+): Promise<{ bitmap: ImageBitmap; oriented: boolean } | null> {
   if (isRawFile(file)) {
-    return extractRawPreview(file);
+    const preview = await extractRawPreview(file);
+    if (preview) {
+      try {
+        const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
+        return { bitmap, oriented: false };
+      } catch {
+        /* preview wasn't decodable after all — fall through to a full decode */
+      }
+    }
+    const bitmap = await decodeRawToBitmap(file);
+    return bitmap ? { bitmap, oriented: true } : null;
   }
-  return file;
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: "none" });
+    return { bitmap, oriented: false };
+  } catch {
+    return null;
+  }
 }
 
 // Windows often leaves file.type empty for RAW formats. Map extensions to the
@@ -120,22 +148,52 @@ export async function buildPhoto(
 ): Promise<CatalogPhoto | null> {
   if (!isSupported(file)) return null;
 
-  const source = await getImageSource(file);
-  if (!source) return null;
-
-  // EXIF comes from the original file (the RAW container, not its preview); it
-  // gives the orientation we bake into the thumbnail and re-apply at load time.
+  // EXIF first — it's independent of pixel decode, so even a file we can't
+  // decode yet still gets correct date/orientation metadata.
   const exif = await parseExif(file);
-  const rotation = orientationToRotation(exif.orientation);
 
-  let bitmap: ImageBitmap;
-  try {
-    // Decode raw pixels and apply orientation ourselves, so RAW (whose embedded
-    // preview often drops the tag) and JPEG end up identically upright.
-    bitmap = await createImageBitmap(source, { imageOrientation: "none" });
-  } catch {
-    return null;
+  // Fields common to both outcomes. A supported file is ALWAYS recorded so it
+  // imports exactly once and is never re-scanned as "new" on later opens — the
+  // id stays stable (edits/ratings stick to it) and the catalog count is honest.
+  const base = {
+    id: generateId(),
+    filename: file.name,
+    relPath: "",
+    folder: "",
+    directoryHandle,
+    fileHandle,
+    fileSize: file.size,
+    mimeType: file.type || mimeTypeFromName(file.name),
+    rating: 0,
+    colorLabel: "none" as const,
+    flag: "none" as const,
+    keywords: [],
+    dateCreated: parseExifDate(exif.dateTimeOriginal) ?? file.lastModified,
+    dateImported: Date.now(),
+    exif,
+  };
+
+  const decoded = await decodeImportBitmap(file);
+  if (!decoded) {
+    // Couldn't build a preview right now (e.g. a file briefly locked, or a format
+    // libraw can't yet read). Record it anyway with width 0 as the "preview not
+    // built" marker; repairMissingPreviews (and the next open) will retry — the
+    // photo is never re-imported, just updated in place later.
+    console.warn(`[import] preview deferred (decode failed for now): ${file.name}`);
+    return {
+      ...base,
+      thumbnailBlob: null,
+      thumbnailUrl: null,
+      width: 0,
+      height: 0,
+      rotation: orientationToRotation(exif.orientation),
+    };
   }
+
+  const { bitmap, oriented } = decoded;
+  // When the decoder already oriented the pixels (libraw fallback), rotation is 0
+  // so we don't rotate twice — and the decode path stays consistent at load time.
+  const rotation = oriented ? 0 : orientationToRotation(exif.orientation);
 
   const thumb = await createThumbnail(bitmap, rotation);
   const thumbUrl = URL.createObjectURL(thumb);
@@ -144,61 +202,106 @@ export async function buildPhoto(
   const width = swap ? bitmap.height : bitmap.width;
   const height = swap ? bitmap.width : bitmap.height;
 
-  const photo: CatalogPhoto = {
-    id: generateId(),
-    filename: file.name,
-    relPath: "",
-    folder: "",
-    directoryHandle,
-    fileHandle,
+  bitmap.close();
+  return {
+    ...base,
     thumbnailBlob: thumb,
     thumbnailUrl: thumbUrl,
     width,
     height,
-    fileSize: file.size,
-    mimeType: file.type || mimeTypeFromName(file.name),
-    rating: 0,
-    colorLabel: "none",
-    flag: "none",
     rotation,
-    keywords: [],
-    dateCreated: parseExifDate(exif.dateTimeOriginal) ?? file.lastModified,
-    dateImported: Date.now(),
-    exif,
   };
-
-  bitmap.close();
-  return photo;
 }
 
 /**
- * Pre-decode RAW files for newly discovered photos and write them to the
- * develop-preview cache (.safelight/raw/ in the open project) so the first
- * Develop open is instant instead of waiting for libraw.
- *
- * Runs sequentially (one at a time) to keep memory and CPU impact low while
- * the user browses the just-opened project. Already-cached photos are skipped.
- * Fire and forget.
+ * Retry building previews for records imported without one (width 0). Updates
+ * each in place — same id, so ratings/edits are untouched — writes its grid
+ * preview, persists, and notifies via `onRepaired` so the live grid refreshes.
+ * Records that still can't decode are left as-is and retried on a later open.
+ * Sequential + fire-and-forget, like the RAW pre-decode.
  */
-export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<void> {
-  const raws = photos.filter((p) => p.fileHandle && isRawFile({ name: p.filename } as File));
-
-  for (const photo of raws) {
+export async function repairMissingPreviews(
+  photos: CatalogPhoto[],
+  onRepaired?: (photo: CatalogPhoto) => void,
+): Promise<void> {
+  const todo = photos.filter((p) => p.fileHandle && p.width === 0);
+  for (const photo of todo) {
     try {
       const file = await photo.fileHandle!.getFile();
+      const decoded = await decodeImportBitmap(file);
+      if (!decoded) continue; // still can't — try again next open
 
-      // Skip if already cached (e.g., re-opened the same project).
-      const hit = await readCachedPreview(file);
-      if (hit) continue; // already cached
+      const { bitmap, oriented } = decoded;
+      const rotation = oriented ? 0 : orientationToRotation(photo.exif.orientation);
+      const thumb = await createThumbnail(bitmap, rotation);
+      const swap = rotation === 90 || rotation === 270;
+      const width = swap ? bitmap.height : bitmap.width;
+      const height = swap ? bitmap.width : bitmap.height;
+      bitmap.close();
 
+      const updated: CatalogPhoto = {
+        ...photo,
+        thumbnailBlob: thumb,
+        thumbnailUrl: URL.createObjectURL(thumb),
+        width,
+        height,
+        rotation,
+      };
+      await catalogStorage().putPhoto(updated); // writes the preview + persists
+      onRepaired?.(updated);
+
+      await new Promise<void>((res) => setTimeout(res, 0));
+    } catch {
+      // One failure shouldn't stop the rest.
+    }
+  }
+}
+
+/**
+ * Pre-decode RAW files and write them to the develop-preview cache
+ * (.safelight/raw/ in the open project) so the first Develop open is instant
+ * instead of waiting for libraw.
+ *
+ * Decode-once, cheaply: the cache directory is listed ONCE up front, and any
+ * photo whose cache key is already present is skipped without touching its file.
+ * The key is derived from the catalog record (relPath + fileSize), so deciding
+ * what to skip needs no getFile — which matters because in Electron getFile()
+ * reads the whole RAW off disk. So reopening a fully-cached project (this session
+ * or a future one) reads one directory listing and decodes nothing. Only files
+ * missing from the cache are opened and decoded, and each write lands in the same
+ * directory, so an interrupted run just resumes with the remainder next time.
+ *
+ * Runs sequentially (one at a time) to keep memory and CPU impact low while
+ * the user browses the just-opened project. Fire and forget.
+ */
+export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<void> {
+  if (!getSettings().rawCacheEnabled) return; // nothing to write; skip the decodes
+
+  const present = await cachedKeys(); // one directory listing
+  const todo = photos.filter(
+    (p) =>
+      p.fileHandle &&
+      isRawFile({ name: p.filename } as File) &&
+      !present.has(rawCacheKey(p.relPath, p.fileSize)),
+  );
+  if (todo.length === 0) return;
+
+  for (const photo of todo) {
+    try {
+      const file = await photo.fileHandle!.getFile();
       const f = await decodeRawToFloat(file);
-      if (!f) continue;
+      if (!f) continue; // failed decode is retried on a later open
 
       const r = f.oriented
         ? { data: f.data, width: f.width, height: f.height }
         : rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
 
-      await writeCachedPreview(file, r.data, r.width, r.height);
+      await writeCachedPreview(
+        rawCacheKey(photo.relPath, photo.fileSize),
+        r.data,
+        r.width,
+        r.height,
+      );
 
       // Yield to the event loop between files so the UI stays responsive.
       await new Promise<void>((res) => setTimeout(res, 0));

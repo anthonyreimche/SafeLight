@@ -42,4 +42,25 @@ export default defineConfig({
   },
   server: { headers: crossOriginIsolation },
   preview: { headers: crossOriginIsolation },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split heavy vendors into long-lived, separately-cached chunks so the
+        // entry bundle stays under Vite's 500 kB warning threshold. libraw-wasm
+        // is intentionally not matched here — it ships its own worker/.wasm.
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("dockview")) return "dockview";
+          if (
+            id.includes("react-dom") ||
+            id.includes("react-router") ||
+            id.includes("/scheduler/") ||
+            /node_modules\/react\//.test(id)
+          )
+            return "react";
+          return "vendor";
+        },
+      },
+    },
+  },
 });

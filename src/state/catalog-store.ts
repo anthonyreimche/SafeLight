@@ -24,6 +24,18 @@ interface CatalogState {
   /** Finalize a progressive open: set authoritative list without revoking URLs
    *  (photos are the same object references already shown during the open). */
   finalizeCatalog: (photos: CatalogPhoto[]) => void;
+  /** Attach freshly-read grid previews to existing photos (the open-time block
+   *  loader). One batched update per block; photos that already have a preview
+   *  are left untouched. */
+  mergeThumbnails: (updates: { id: string; blob: Blob }[]) => void;
+  /** Replace one photo record in place (same id) after its preview was rebuilt
+   *  in the background. Revokes the old object URL. Persistence is the caller's
+   *  job (the repair pass already wrote it via putPhoto). */
+  updatePhoto: (photo: CatalogPhoto) => void;
+  /** Replace the skeleton catalog with the post-scan list: attach live handles,
+   *  add newly-found photos, drop vanished ones — while keeping any previews that
+   *  already loaded during the skeleton phase. */
+  reconcileCatalog: (photos: CatalogPhoto[]) => void;
 
   removePhoto: (id: string) => Promise<void>;
   removePhotos: (ids: string[]) => Promise<void>;
@@ -120,6 +132,37 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       set((s) => ({ photos: [...s.photos, ...photos] }));
     },
 
+    mergeThumbnails(updates) {
+      if (updates.length === 0) return;
+      const byId = new Map(updates.map((u) => [u.id, u.blob] as const));
+      set((s) => ({
+        photos: s.photos.map((p) => {
+          const blob = byId.get(p.id);
+          // Skip if no blob for this photo, or it already has a preview (avoids
+          // leaking an object URL by overwriting a live one).
+          if (!blob || p.thumbnailUrl) return p;
+          return {
+            ...p,
+            thumbnailBlob: blob,
+            thumbnailUrl: URL.createObjectURL(blob),
+          };
+        }),
+      }));
+    },
+
+    updatePhoto(photo) {
+      set((s) => ({
+        photos: s.photos.map((p) => {
+          if (p.id !== photo.id) return p;
+          if (p.thumbnailUrl && p.thumbnailUrl !== photo.thumbnailUrl) {
+            URL.revokeObjectURL(p.thumbnailUrl);
+          }
+          return photo;
+        }),
+      }));
+      broadcast({ type: "catalog-change", payload: { action: "update", id: photo.id } });
+    },
+
     finalizeCatalog(photos) {
       // Same photo objects as those already appended — don't revoke their URLs.
       set({
@@ -127,6 +170,37 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         selectedIds: new Set(),
         activePhotoId: null,
         needsReconnect: false,
+      });
+      broadcast({ type: "catalog-change", payload: { action: "add" } });
+    },
+
+    reconcileCatalog(photos) {
+      const prevById = new Map(get().photos.map((p) => [p.id, p] as const));
+      const merged = photos.map((p) => {
+        // Carry over a preview that loaded during the skeleton phase.
+        const old = prevById.get(p.id);
+        if (old?.thumbnailUrl && !p.thumbnailUrl) {
+          return {
+            ...p,
+            thumbnailBlob: old.thumbnailBlob,
+            thumbnailUrl: old.thumbnailUrl,
+          };
+        }
+        return p;
+      });
+      // Revoke previews of photos that vanished on the rescan.
+      const keep = new Set(photos.map((p) => p.id));
+      for (const p of get().photos) {
+        if (!keep.has(p.id) && p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
+      }
+      set((s) => {
+        const selectedIds = new Set([...s.selectedIds].filter((id) => keep.has(id)));
+        return {
+          photos: merged,
+          selectedIds,
+          activePhotoId:
+            s.activePhotoId && keep.has(s.activePhotoId) ? s.activePhotoId : null,
+        };
       });
       broadcast({ type: "catalog-change", payload: { action: "add" } });
     },

@@ -346,7 +346,7 @@ export class WebGLRenderer {
       this.healSig = "";
       return;
     }
-    const heals = retouch.filter((s) => s.mode === "heal");
+    const heals = retouch;
     if (heals.length === 0 || !this.fillSrc) {
       this.haveHealFill = false;
       this.healSig = "";
@@ -995,12 +995,7 @@ export class WebGLRenderer {
     for (let mi = 0; mi < masks.length && ci < MAX_MASK_COMPONENTS; mi++) {
       for (const c of masks[mi].components) {
         if (ci >= MAX_MASK_COMPONENTS) break;
-        const type =
-          c.kind === "linear" ? 0
-          : c.kind === "radial" ? 1
-          : c.kind === "brush" ? 2
-          : c.kind === "luminance" ? 3
-          : 4;
+        const type = c.kind === "linear" ? 0 : c.kind === "radial" ? 1 : 2;
         gl.uniform1i(u[`uCompMaskIdx[${ci}]`], mi);
         gl.uniform1i(u[`uCompMode[${ci}]`], c.mode === "subtract" ? 1 : 0);
         gl.uniform1i(u[`uCompType[${ci}]`], type);
@@ -1012,12 +1007,6 @@ export class WebGLRenderer {
         } else if (c.kind === "radial" && c.radial) {
           gl.uniform4f(u[`uCompGeoA[${ci}]`], c.radial.cx, c.radial.cy, c.radial.rx, c.radial.ry);
           gl.uniform4f(u[`uCompGeoB[${ci}]`], c.radial.feather, c.radial.angle, 0, 0);
-        } else if (c.kind === "luminance" && c.luminance) {
-          gl.uniform4f(u[`uCompGeoA[${ci}]`], c.luminance.lo, c.luminance.hi, c.luminance.feather, 0);
-          gl.uniform4f(u[`uCompGeoB[${ci}]`], 0, 0, 0, 0);
-        } else if (c.kind === "color" && c.color) {
-          gl.uniform4f(u[`uCompGeoA[${ci}]`], c.color.hue, c.color.sat, c.color.hueTol, c.color.satTol);
-          gl.uniform4f(u[`uCompGeoB[${ci}]`], c.color.feather, 0, 0, 0);
         } else {
           // brush (geometry from atlas) or missing geometry
           gl.uniform4f(u[`uCompGeoA[${ci}]`], 0, 0, 0, 0);
@@ -1062,7 +1051,7 @@ export class WebGLRenderer {
         s.radius,
         s.feather / 100,
         s.opacity / 100,
-        s.mode === "clone" ? 1 : 0,
+        0, // reserved (was heal/clone mode)
       );
       const angle = s.angle ?? 0;
       const scale = s.scale ?? 1;
@@ -1096,7 +1085,7 @@ export class WebGLRenderer {
         s.srcX - s.dstX, // source offset, UV
         s.srcY - s.dstY,
         s.opacity / 100,
-        s.mode === "clone" ? 1 : 0,
+        0, // reserved (was heal/clone mode)
       );
       // Average dab radius drives the heal blur scale for this painted region.
       const dabs = s.dabs!;

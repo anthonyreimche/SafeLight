@@ -199,29 +199,10 @@ export interface BrushMaskGeo {
   feather: number; // 0..1 edge softness of each dab
 }
 
-// Luminance range: coverage is 1 for pixels whose luma falls inside [lo,hi],
-// feathered out over `feather` either side. Evaluated on the scene color
-// (perceptual sRGB) before mask adjustments.
-export interface LuminanceRangeGeo {
-  lo: number;      // 0..1 lower edge
-  hi: number;      // 0..1 upper edge
-  feather: number; // 0..1 edge smoothness
-}
-
-// Color range: coverage falls off with circular hue distance from `hue` and
-// linear saturation distance from `sat`, each within its tolerance.
-export interface ColorRangeGeo {
-  hue: number;     // 0..1 target hue
-  sat: number;     // 0..1 target saturation
-  hueTol: number;  // 0..1 hue tolerance (half-width)
-  satTol: number;  // 0..1 saturation tolerance (half-width)
-  feather: number; // 0..1 edge smoothness
-}
-
 // A mask is built from one or more components (Lightroom-style). Each component
 // contributes coverage that is either ADDED (union, max) or SUBTRACTED
 // (intersect-with-complement) into the mask's combined coverage, in list order.
-export type MaskComponentKind = MaskType | "luminance" | "color";
+export type MaskComponentKind = MaskType;
 export type MaskComponentMode = "add" | "subtract";
 
 export interface MaskComponent {
@@ -232,8 +213,6 @@ export interface MaskComponent {
   linear?: LinearMaskGeo;
   radial?: RadialMaskGeo;
   brush?: BrushMaskGeo;
-  luminance?: LuminanceRangeGeo;
-  color?: ColorRangeGeo;
 }
 
 export interface Mask {
@@ -254,12 +233,11 @@ export function maskKind(m: Mask): MaskComponentKind {
 }
 
 // A spot-removal target: paint the destination with pixels sampled from a
-// source offset. heal blends to match surrounding tone; clone copies verbatim.
+// source offset, recoloured to match the spot's surrounding tone (heal).
 // shape "circle" is a single disc; "brush" is a freehand painted region (dabs),
 // with the same source offset applied across the whole shape.
 export interface RetouchSpot {
   id: string;
-  mode: "heal" | "clone";
   shape: "circle" | "brush";
   dstX: number; // destination center / anchor (source-UV)
   dstY: number;
@@ -320,13 +298,6 @@ export const MAX_RETOUCH = 16;
 export const MAX_BRUSH_MASKS = 4; // brush coverage packs into one RGBA texture
 export const MAX_RETOUCH_BRUSH = 4; // brush-shaped retouch packs into one RGBA texture
 export const MAX_MASK_COMPONENTS = 16; // total components across all masks (shader cap)
-
-export function defaultLuminanceRange(): LuminanceRangeGeo {
-  return { lo: 0.25, hi: 0.75, feather: 0.1 };
-}
-export function defaultColorRange(): ColorRangeGeo {
-  return { hue: 0.5, sat: 0.5, hueTol: 0.08, satTol: 0.5, feather: 0.05 };
-}
 
 export function defaultMaskAdjustments(): MaskAdjustments {
   return {
@@ -694,28 +665,6 @@ function normComponent(raw: Partial<MaskComponent>): MaskComponent | null {
     return { ...base, kind, radial: normRadial(raw.radial) };
   if (kind === "brush")
     return { ...base, kind, brush: normBrush(raw.brush) };
-  if (kind === "luminance")
-    return {
-      ...base,
-      kind,
-      luminance: {
-        lo: clampN(raw.luminance?.lo, 0, 1, 0.25),
-        hi: clampN(raw.luminance?.hi, 0, 1, 0.75),
-        feather: clampN(raw.luminance?.feather, 0, 1, 0.1),
-      },
-    };
-  if (kind === "color")
-    return {
-      ...base,
-      kind,
-      color: {
-        hue: clampN(raw.color?.hue, 0, 1, 0.5),
-        sat: clampN(raw.color?.sat, 0, 1, 0.5),
-        hueTol: clampN(raw.color?.hueTol, 0, 1, 0.08),
-        satTol: clampN(raw.color?.satTol, 0, 1, 0.5),
-        feather: clampN(raw.color?.feather, 0, 1, 0.05),
-      },
-    };
   return null;
 }
 
@@ -797,7 +746,6 @@ function normalizeRetouch(spots: unknown): RetouchSpot[] {
         : undefined;
     out.push({
       id: typeof raw.id === "string" ? raw.id : `spot-${out.length}-${Date.now()}`,
-      mode: raw.mode === "clone" ? "clone" : "heal",
       shape,
       dstX: clampN(raw.dstX, -1, 2, 0.5),
       dstY: clampN(raw.dstY, -1, 2, 0.5),

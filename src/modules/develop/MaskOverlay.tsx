@@ -30,6 +30,75 @@ interface MaskOverlayProps {
 let idSeq = 0;
 const genId = (p: string) => `${p}-${Date.now().toString(36)}-${idSeq++}`;
 
+// Trace the outer boundary of a union of circles (screen space) as a single SVG
+// path, so a brush stroke shows one outline instead of one ring per dab.
+// Marching squares over a coverage field: inside where any circle contains the
+// node. Adjacent cells share crossing points exactly, so the emitted segments
+// form a continuous outline (round caps hide the seams). `cell` is grid step px.
+function unionOutlinePath(
+  circles: { x: number; y: number; r: number }[],
+  cell = 4,
+): string {
+  if (circles.length === 0) return "";
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const c of circles) {
+    minX = Math.min(minX, c.x - c.r);
+    minY = Math.min(minY, c.y - c.r);
+    maxX = Math.max(maxX, c.x + c.r);
+    maxY = Math.max(maxY, c.y + c.r);
+  }
+  minX -= cell; minY -= cell; maxX += cell; maxY += cell;
+  const cols = Math.max(1, Math.ceil((maxX - minX) / cell));
+  const rows = Math.max(1, Math.ceil((maxY - minY) / cell));
+  // Signed field at a grid node: > 0 inside the union (max of r^2 - dist^2).
+  const fieldAt = (gx: number, gy: number) => {
+    const px = minX + gx * cell, py = minY + gy * cell;
+    let v = -Infinity;
+    for (const c of circles) {
+      const dx = px - c.x, dy = py - c.y;
+      const s = c.r * c.r - (dx * dx + dy * dy);
+      if (s > v) v = s;
+    }
+    return v;
+  };
+  // Cache one row of node values at a time to avoid re-evaluating the field.
+  let parts = "";
+  let prevRow = new Float64Array(cols + 1);
+  for (let i = 0; i <= cols; i++) prevRow[i] = fieldAt(i, 0);
+  for (let j = 0; j < rows; j++) {
+    const nextRow = new Float64Array(cols + 1);
+    for (let i = 0; i <= cols; i++) nextRow[i] = fieldAt(i, j + 1);
+    const y0 = minY + j * cell, y1 = y0 + cell;
+    for (let i = 0; i < cols; i++) {
+      const v00 = prevRow[i], v10 = prevRow[i + 1];
+      const v01 = nextRow[i], v11 = nextRow[i + 1];
+      const code =
+        (v00 >= 0 ? 1 : 0) | (v10 >= 0 ? 2 : 0) | (v11 >= 0 ? 4 : 0) | (v01 >= 0 ? 8 : 0);
+      if (code === 0 || code === 15) continue;
+      const x0 = minX + i * cell, x1 = x0 + cell;
+      const T = (): [number, number] => [x0 + (v00 / (v00 - v10)) * cell, y0];
+      const R = (): [number, number] => [x1, y0 + (v10 / (v10 - v11)) * cell];
+      const B = (): [number, number] => [x0 + (v01 / (v01 - v11)) * cell, y1];
+      const L = (): [number, number] => [x0, y0 + (v00 / (v00 - v01)) * cell];
+      const seg = (a: [number, number], b: [number, number]) => {
+        parts += `M${a[0].toFixed(1)} ${a[1].toFixed(1)}L${b[0].toFixed(1)} ${b[1].toFixed(1)}`;
+      };
+      switch (code) {
+        case 1: case 14: seg(L(), T()); break;
+        case 2: case 13: seg(T(), R()); break;
+        case 3: case 12: seg(L(), R()); break;
+        case 4: case 11: seg(R(), B()); break;
+        case 6: case 9: seg(T(), B()); break;
+        case 7: case 8: seg(L(), B()); break;
+        case 5: seg(L(), T()); seg(R(), B()); break;
+        case 10: seg(T(), R()); seg(B(), L()); break;
+      }
+    }
+    prevRow = nextRow;
+  }
+  return parts;
+}
+
 const HIT = 13; // px handle hit radius (generous grips)
 const ROT_OFFSET = 0.06; // rotate-handle gap beyond the ellipse top (q-units)
 const SNAP = Math.PI / 12; // 15° rotation snap
@@ -172,9 +241,21 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
   function hitSpot(px: number, py: number): { kind: "spot-dst" | "spot-src"; id: string } | null {
     for (let i = spots.length - 1; i >= 0; i--) {
       const s = spots[i];
-      const src = toScreen(s.srcX, s.srcY);
-      if (Math.hypot(px - src.x, py - src.y) <= Math.max(HIT, radiusToScreen(s.radius))) {
-        return { kind: "spot-src", id: s.id };
+      // Source: a brush source can be grabbed anywhere on its (offset) shape;
+      // a circle source only near its anchor.
+      if (s.shape === "brush" && s.dabs) {
+        const ox = s.srcX - s.dstX, oy = s.srcY - s.dstY;
+        for (const d of s.dabs) {
+          const c = toScreen(d.x + ox, d.y + oy);
+          if (Math.hypot(px - c.x, py - c.y) <= Math.max(HIT, radiusToScreen(d.radius))) {
+            return { kind: "spot-src", id: s.id };
+          }
+        }
+      } else {
+        const src = toScreen(s.srcX, s.srcY);
+        if (Math.hypot(px - src.x, py - src.y) <= Math.max(HIT, radiusToScreen(s.radius))) {
+          return { kind: "spot-src", id: s.id };
+        }
       }
       if (s.shape === "brush" && s.dabs) {
         for (const d of s.dabs) {
@@ -235,22 +316,12 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
         return;
       }
       const id = genId("spot");
+      // Provisional source offset just so something shows while painting; the
+      // real source is chosen on pointer-up from the whole painted region (and
+      // can be dragged afterwards).
       const off = Math.max(0.04, st.retouchSize * 1.5);
-      let srcX = down.x - off / imageAspect;
-      let srcY = down.y - off;
-      let angle = 0;
-      let scale = 1;
-      let recolorR = 0;
-      let recolorG = 0;
-      let recolorB = 0;
-      if (st.retouchMode === "heal") {
-        const auto = findHealSource(down.x, down.y, st.retouchSize, imageAspect);
-        if (auto) {
-          srcX = auto.x; srcY = auto.y;
-          angle = auto.angle; scale = auto.scale;
-          recolorR = auto.r; recolorG = auto.g; recolorB = auto.b;
-        }
-      }
+      const srcX = down.x - off / imageAspect;
+      const srcY = down.y - off;
       const firstDab: BrushDab = {
         x: down.x,
         y: down.y,
@@ -260,7 +331,6 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       };
       const spot: RetouchSpot = {
         id,
-        mode: st.retouchMode,
         shape: "brush",
         dstX: down.x,
         dstY: down.y,
@@ -269,11 +339,11 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
         radius: st.retouchSize,
         feather: st.retouchFeather,
         opacity: st.retouchOpacity,
-        angle,
-        scale,
-        recolorR,
-        recolorG,
-        recolorB,
+        angle: 0,
+        scale: 1,
+        recolorR: 0,
+        recolorG: 0,
+        recolorB: 0,
         dabs: [firstDab],
       };
       st.addSpot(spot);
@@ -543,22 +613,24 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       }
       case "spot-src": {
         const s = st.params.retouch.find((sp) => sp.id === d.id);
-        const patch: Partial<RetouchSpot> = {
-          srcX: cur.x,
-          srcY: cur.y,
-          angle: 0,
-          scale: 1,
-          recolorR: 0,
-          recolorG: 0,
-          recolorB: 0,
-        };
-        if (s && s.mode === "heal") {
-          const off = healColorOffset(s.dstX, s.dstY, cur.x, cur.y, s.radius, imageAspect);
-          patch.recolorR = off.r;
-          patch.recolorG = off.g;
-          patch.recolorB = off.b;
+        if (s) {
+          // Relative move so the source can be grabbed anywhere on its shape.
+          // A manual move overrides the auto-fit rotation/scale.
+          const dx = cur.x - d.downSrc.x, dy = cur.y - d.downSrc.y;
+          const srcX = s.srcX + dx, srcY = s.srcY + dy;
+          const off = healColorOffset(s.dstX, s.dstY, srcX, srcY, s.radius, imageAspect);
+          const patch: Partial<RetouchSpot> = {
+            srcX,
+            srcY,
+            angle: 0,
+            scale: 1,
+            recolorR: off.r,
+            recolorG: off.g,
+            recolorB: off.b,
+          };
+          st.updateSpot(d.id!, patch);
+          d.downSrc = cur;
         }
-        st.updateSpot(d.id!, patch);
         break;
       }
     }
@@ -567,6 +639,40 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
   function findComp(d: { maskId?: string; compId?: string }): MaskComponent | undefined {
     const m = store().params.masks.find((mm) => mm.id === d.maskId);
     return m?.components.find((c) => c.id === d.compId);
+  }
+
+  // Choose the source for a freshly painted spot, from its whole painted region
+  // (centre + extent) rather than the first click. Heal auto-fits; clone just
+  // offsets clear of the region. Either can be dragged afterwards.
+  function chooseRetouchSource(id: string) {
+    const st = store();
+    const s = st.params.retouch.find((sp) => sp.id === id);
+    if (!s) return;
+    let cx = s.dstX, cy = s.dstY, rad = s.radius;
+    if (s.shape === "brush" && s.dabs && s.dabs.length > 0) {
+      let sx = 0, sy = 0;
+      for (const d of s.dabs) { sx += d.x; sy += d.y; }
+      cx = sx / s.dabs.length; cy = sy / s.dabs.length;
+      let m = 0;
+      for (const d of s.dabs) m = Math.max(m, Math.hypot(d.x - cx, d.y - cy) + d.radius);
+      rad = m;
+    }
+    const patch: Partial<RetouchSpot> = {};
+    const auto = findHealSource(cx, cy, rad, imageAspect);
+    if (auto) {
+      // Translate so the source shape lands centred on the auto-picked centre.
+      patch.srcX = s.dstX + (auto.x - cx);
+      patch.srcY = s.dstY + (auto.y - cy);
+      patch.angle = auto.angle; patch.scale = auto.scale;
+      patch.recolorR = auto.r; patch.recolorG = auto.g; patch.recolorB = auto.b;
+      st.updateSpot(id, patch);
+      return;
+    }
+    // No usable candidate: offset clear of the painted region.
+    const off = Math.max(0.04, rad * 2.2);
+    patch.srcX = s.dstX - off / imageAspect;
+    patch.srcY = s.dstY - off;
+    st.updateSpot(id, patch);
   }
 
   const onPointerUp = () => {
@@ -589,8 +695,12 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
         return;
       }
     }
-    if (d.kind === "retouch-paint" && d.dabs && d.dabs.length <= 1) {
-      st.updateSpot(d.id!, { shape: "circle", dabs: undefined });
+    if (d.kind === "retouch-paint") {
+      if (d.dabs && d.dabs.length <= 1) {
+        st.updateSpot(d.id!, { shape: "circle", dabs: undefined });
+      }
+      // Decide the source now that the whole stroke is known.
+      chooseRetouchSource(d.id!);
     }
     st.commitEdit(activeTool === "retouch" ? "Retouch" : "Mask");
   };
@@ -690,21 +800,29 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
           const dst = toScreen(s.dstX, s.dstY);
           const r = radiusToScreen(s.radius);
           const sel = s.id === selectedSpotId;
-          const col = s.mode === "clone" ? "#ffd24a" : "#4affa3";
+          const col = "#4affa3";
+          if (s.shape === "brush" && s.dabs && s.dabs.length > 0) {
+            // One outline for the whole painted region; the source mirrors that
+            // exact shape, translated by the source offset (transform is affine).
+            const circles = s.dabs.map((db) => {
+              const c = toScreen(db.x, db.y);
+              return { x: c.x, y: c.y, r: radiusToScreen(db.radius) };
+            });
+            const outline = unionOutlinePath(circles);
+            const dx = src.x - dst.x, dy = src.y - dst.y;
+            return (
+              <g key={s.id}>
+                <line x1={src.x} y1={src.y} x2={dst.x} y2={dst.y} stroke={col} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+                <path d={outline} fill="none" stroke={col} strokeWidth={1} strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" opacity={0.8} transform={`translate(${dx} ${dy})`} />
+                <path d={outline} fill="none" stroke={col} strokeWidth={sel ? 2 : 1.2} strokeLinecap="round" strokeLinejoin="round" />
+              </g>
+            );
+          }
           return (
             <g key={s.id}>
               <line x1={src.x} y1={src.y} x2={dst.x} y2={dst.y} stroke={col} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
               <circle cx={src.x} cy={src.y} r={r} fill="none" stroke={col} strokeWidth={1} strokeDasharray="2 2" />
-              {s.shape === "brush" && s.dabs ? (
-                s.dabs.map((db, j) => {
-                  const c = toScreen(db.x, db.y);
-                  return (
-                    <circle key={j} cx={c.x} cy={c.y} r={radiusToScreen(db.radius)} fill="none" stroke={col} strokeWidth={sel ? 1.2 : 0.8} opacity={0.7} />
-                  );
-                })
-              ) : (
-                <circle cx={dst.x} cy={dst.y} r={r} fill="none" stroke={col} strokeWidth={sel ? 2 : 1.2} />
-              )}
+              <circle cx={dst.x} cy={dst.y} r={r} fill="none" stroke={col} strokeWidth={sel ? 2 : 1.2} />
             </g>
           );
         })}

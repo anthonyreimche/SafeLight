@@ -12,6 +12,8 @@ export interface CatalogStorage {
   getEditState(photoId: string): Promise<EditState | undefined>;
   getAllEditStates(): Promise<EditState[]>;
   putEditState(editState: EditState): Promise<void>;
+  /** Write any pending (debounced) changes immediately, e.g. on app quit. */
+  flush?(): Promise<void>;
 }
 
 const empty: CatalogStorage = {

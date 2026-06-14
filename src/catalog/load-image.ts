@@ -3,7 +3,7 @@ import { extractRawPreview, isRawFile } from "@/modules/library/raw-preview";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
 import { rotateBitmap, rotateFloatRGBA } from "./orient";
 import { verifyPermission } from "./permissions";
-import { readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
+import { rawCacheKey, readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
 
 // Read an ImageBitmap into a linear Float32 RGBA image via a temporary WebGL2
 // framebuffer. This is more reliable than OffscreenCanvas.getContext("2d")
@@ -138,7 +138,8 @@ export async function loadPhotoImage(
         // and the shader does sRGB->linear, so there's no per-sample CPU decode and
         // the texture is half the bytes of the old Float32 path. Still full precision
         // (no 8-bit posterising under a big exposure push).
-        const cached = await readCachedPreview(file);
+        const cacheKey = rawCacheKey(photo.relPath, photo.fileSize);
+        const cached = await readCachedPreview(cacheKey);
         if (cached) {
           return { kind: "srgb16", data: cached.data, width: cached.width, height: cached.height };
         }
@@ -165,7 +166,7 @@ export async function loadPhotoImage(
           if (colorOk) {
             // Skip the cache when the decode was marginal (inferred dimensions).
             if (!f.suspicious) {
-              writeCachedPreview(file, r.data, r.width, r.height);
+              writeCachedPreview(cacheKey, r.data, r.width, r.height);
             }
             return { kind: "float", data: r.data, width: r.width, height: r.height };
           }
