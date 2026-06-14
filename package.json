@@ -37,7 +37,7 @@
     "zustand": "^5.0.14"
   },
   "overrides": {
-    "rimraf": "^5.0.10"
+    "@electron/asar": "^4.2.0"
   },
   "build": {
     "appId": "com.safelight.app",
