@@ -271,8 +271,12 @@ export async function repairMissingPreviews(
  * missing from the cache are opened and decoded, and each write lands in the same
  * directory, so an interrupted run just resumes with the remainder next time.
  *
- * Runs sequentially (one at a time) to keep memory and CPU impact low while
- * the user browses the just-opened project. Fire and forget.
+ * Runs as a small bounded pool (a few files at once) so the cache fills several
+ * times faster than the old one-at-a-time loop — which is what makes the FIRST
+ * Develop open hit a warm cache instead of racing a slow sequential walk. Each
+ * libraw decode runs in its own Web Worker, so concurrency genuinely uses extra
+ * cores; the pool is capped to keep memory/CPU sane while the user browses.
+ * Fire and forget.
  */
 export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<void> {
   if (!getSettings().rawCacheEnabled) return; // nothing to write; skip the decodes
@@ -286,11 +290,11 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
   );
   if (todo.length === 0) return;
 
-  for (const photo of todo) {
+  const decodeOne = async (photo: CatalogPhoto): Promise<void> => {
     try {
       const file = await photo.fileHandle!.getFile();
       const f = await decodeRawToFloat(file);
-      if (!f) continue; // failed decode is retried on a later open
+      if (!f) return; // failed decode is retried on a later open
 
       const r = f.oriented
         ? { data: f.data, width: f.width, height: f.height }
@@ -302,11 +306,26 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
         r.width,
         r.height,
       );
-
-      // Yield to the event loop between files so the UI stays responsive.
-      await new Promise<void>((res) => setTimeout(res, 0));
     } catch {
       // A single decode failure shouldn't stop the rest.
     }
-  }
+  };
+
+  // Bounded concurrency: 2 in flight. Still ~2× the old sequential walk, but a
+  // full-res float decode holds a large buffer (a 24MP frame ≈ 380 MB), so going
+  // wider risks OOM-ing the renderer while the user browses — which would also
+  // cost the just-written catalog. A shared index hands each worker the next
+  // file; workers yield between files so the UI thread keeps a slice.
+  const limit = Math.min(2, todo.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < todo.length) {
+      const photo = todo[next++];
+      await decodeOne(photo);
+      await new Promise<void>((res) => setTimeout(res, 0)); // yield to UI
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, todo.length) }, () => worker()),
+  );
 }

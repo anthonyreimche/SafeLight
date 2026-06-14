@@ -1,21 +1,25 @@
-import { useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { useEditedThumbUrl } from "@/state/edited-thumbnails";
 import { requestThumbnail } from "@/state/thumbnail-loader";
 import { Rating } from "./Rating";
 
+// Callbacks take the photo id so the parent can pass ONE stable function to every
+// cell (instead of a fresh per-cell closure). Combined with the memo() below, a
+// selection change only re-renders the two cells whose selected/active flipped —
+// not all (potentially hundreds of) visible cells.
 interface ThumbnailProps {
   photo: CatalogPhoto;
   selected: boolean;
   active: boolean;
   size: number;
-  onClick: (e: React.MouseEvent) => void;
-  onDoubleClick?: () => void;
-  onRatingChange?: (rating: number) => void;
-  onDragStart?: (e: React.DragEvent) => void;
+  onClick: (id: string, e: React.MouseEvent) => void;
+  onDoubleClick?: (id: string) => void;
+  onRatingChange?: (id: string, rating: number) => void;
+  onDragStart?: (id: string, e: React.DragEvent) => void;
 }
 
-export function Thumbnail({
+function ThumbnailImpl({
   photo,
   selected,
   active,
@@ -78,9 +82,9 @@ export function Thumbnail({
       className={`group relative cursor-pointer overflow-hidden rounded bg-surface-1 ${borderClass}`}
       style={{ width: size, height: size }}
       draggable={!!onDragStart}
-      onDragStart={onDragStart}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
+      onDragStart={onDragStart ? (e) => onDragStart(photo.id, e) : undefined}
+      onClick={(e) => onClick(photo.id, e)}
+      onDoubleClick={onDoubleClick ? () => onDoubleClick(photo.id) : undefined}
     >
       {thumbUrl ? (
         <img
@@ -114,11 +118,17 @@ export function Thumbnail({
 
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
         <p className="truncate text-[10px] text-text-primary">{photo.filename}</p>
-        <Rating value={photo.rating} onChange={onRatingChange} size="sm" />
+        <Rating
+          value={photo.rating}
+          onChange={onRatingChange ? (r) => onRatingChange(photo.id, r) : undefined}
+          size="sm"
+        />
       </div>
     </div>
   );
 }
+
+export const Thumbnail = memo(ThumbnailImpl);
 
 const colorLabelClasses: Record<string, string> = {
   red: "bg-label-red",

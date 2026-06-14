@@ -148,6 +148,23 @@ export function ViewportImage({
     moved: boolean;
   } | null>(null);
 
+  // Coalesce pan updates to one setOffset per animation frame. Pointer moves can
+  // fire faster than the display refresh (high-Hz mice/trackpads), and each
+  // setState forces a synchronous render — so without this a fast drag thrashes
+  // React and the pan stutters.
+  const panRaf = useRef<number | null>(null);
+  const pendingOffset = useRef<{ x: number; y: number } | null>(null);
+  const flushPan = () => {
+    panRaf.current = null;
+    if (pendingOffset.current) {
+      setOffset(pendingOffset.current);
+      pendingOffset.current = null;
+    }
+  };
+  useEffect(() => () => {
+    if (panRaf.current != null) cancelAnimationFrame(panRaf.current);
+  }, []);
+
   const onPointerDown = (e: ReactPointerEvent) => {
     if (cropMode || e.button !== 0) return;
     frameRef.current?.setPointerCapture(e.pointerId);
@@ -170,7 +187,8 @@ export function ViewportImage({
       if (zoom != null) setDragging(true);
     }
     if (d.moved && zoom != null) {
-      setOffset(clampOffset({ x: d.ox + dx, y: d.oy + dy }, zoom));
+      pendingOffset.current = clampOffset({ x: d.ox + dx, y: d.oy + dy }, zoom);
+      if (panRaf.current == null) panRaf.current = requestAnimationFrame(flushPan);
     }
   };
 
@@ -178,6 +196,10 @@ export function ViewportImage({
     const d = downRef.current;
     downRef.current = null;
     setDragging(false);
+    if (panRaf.current != null) {
+      cancelAnimationFrame(panRaf.current);
+      flushPan(); // apply the last pending position immediately
+    }
     if (!d || d.moved) return;
     handleClick(e.clientX, e.clientY);
   };

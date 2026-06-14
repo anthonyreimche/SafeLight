@@ -413,7 +413,19 @@ function registerFsIpc() {
   });
   ipcMain.handle("fs:write", async (_e, p, data) => {
     await fs.promises.mkdir(path.dirname(p), { recursive: true });
-    await fs.promises.writeFile(p, Buffer.from(data));
+    // Atomic write: write to a temp sibling, then rename over the target. A
+    // crash/quit mid-write leaves the existing file intact (rename is atomic on
+    // the same filesystem), so an interrupted save — e.g. the fire-and-forget
+    // beforeunload catalog flush on app quit — can never truncate catalog.json
+    // and trigger a spurious full re-import on the next launch.
+    const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      await fs.promises.writeFile(tmp, Buffer.from(data));
+      await fs.promises.rename(tmp, p);
+    } catch (err) {
+      await fs.promises.rm(tmp, { force: true }).catch(() => {});
+      throw err;
+    }
   });
   ipcMain.handle("fs:list", async (_e, p) => {
     let ents;

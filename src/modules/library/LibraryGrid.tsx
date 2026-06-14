@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { Thumbnail } from "@/ui/components/Thumbnail";
@@ -44,36 +44,51 @@ export function LibraryGrid() {
     el?.scrollIntoView({ block: "nearest" });
   }, [activePhotoId]);
 
-  const handleClick = (id: string, e: React.MouseEvent) => {
-    if (e.shiftKey) {
-      // Range over the on-screen order so it tracks the current sort/filter.
-      selectRange(
-        id,
-        visible.map((p) => p.id),
-      );
-    } else if (e.ctrlKey || e.metaKey) {
-      toggleSelect(id);
-    } else {
-      select(id);
-    }
-  };
+  // Stable handlers (passed to every memoized cell) so a selection re-renders
+  // only the cells whose selected/active flipped. The on-screen order for
+  // shift-range and the live selection for drag are read through refs / the
+  // store at call time, so these callbacks never need to change identity.
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
 
-  const handleDoubleClick = (id: string) => {
-    setActivePhoto(id);
-    setActiveModule("develop");
-  };
+  const handleClick = useCallback(
+    (id: string, e: React.MouseEvent) => {
+      if (e.shiftKey) {
+        selectRange(id, visibleRef.current.map((p) => p.id));
+      } else if (e.ctrlKey || e.metaKey) {
+        toggleSelect(id);
+      } else {
+        select(id);
+      }
+    },
+    [select, toggleSelect, selectRange],
+  );
+
+  const handleDoubleClick = useCallback(
+    (id: string) => {
+      setActivePhoto(id);
+      setActiveModule("develop");
+    },
+    [setActivePhoto, setActiveModule],
+  );
 
   // Drag photos onto a Folders-panel folder to move them. Dragging a photo
   // that's part of the current selection drags the whole selection; dragging an
   // unselected one drags just it.
-  const handleDragStart = (id: string, e: React.DragEvent) => {
-    const ids = selectedIds.has(id) ? [...selectedIds] : [id];
+  const handleDragStart = useCallback((id: string, e: React.DragEvent) => {
+    const sel = useCatalogStore.getState().selectedIds;
+    const ids = sel.has(id) ? [...sel] : [id];
     e.dataTransfer.setData(
       "application/x-safelight-photos",
       JSON.stringify(ids),
     );
     e.dataTransfer.effectAllowed = "move";
-  };
+  }, []);
+
+  const handleRate = useCallback(
+    (id: string, rating: number) => setRating(id, rating),
+    [setRating],
+  );
 
   if (photos.length === 0) {
     return (
@@ -110,9 +125,9 @@ export function LibraryGrid() {
             photo={photo}
             selected={selectedIds.has(photo.id)}
             active={activePhotoId === photo.id}
-            onClick={(e) => handleClick(photo.id, e)}
-            onDoubleClick={() => handleDoubleClick(photo.id)}
-            onDragStart={(e) => handleDragStart(photo.id, e)}
+            onClick={handleClick}
+            onDoubleClick={handleDoubleClick}
+            onDragStart={handleDragStart}
           />
         ))}
       </div>
@@ -131,10 +146,10 @@ export function LibraryGrid() {
           selected={selectedIds.has(photo.id)}
           active={activePhotoId === photo.id}
           size={gridSize}
-          onClick={(e) => handleClick(photo.id, e)}
-          onDoubleClick={() => handleDoubleClick(photo.id)}
-          onRatingChange={(rating) => setRating(photo.id, rating)}
-          onDragStart={(e) => handleDragStart(photo.id, e)}
+          onClick={handleClick}
+          onDoubleClick={handleDoubleClick}
+          onRatingChange={handleRate}
+          onDragStart={handleDragStart}
         />
       ))}
     </div>

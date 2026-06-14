@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { useEditedThumbUrl } from "@/state/edited-thumbnails";
 
@@ -14,12 +14,14 @@ interface LibraryListRowProps {
   photo: CatalogPhoto;
   selected: boolean;
   active: boolean;
-  onClick: (e: React.MouseEvent) => void;
-  onDoubleClick: () => void;
-  onDragStart?: (e: React.DragEvent) => void;
+  // Id-based callbacks so the parent passes one stable function to every row;
+  // with memo() below, a selection re-renders only the rows that changed.
+  onClick: (id: string, e: React.MouseEvent) => void;
+  onDoubleClick: (id: string) => void;
+  onDragStart?: (id: string, e: React.DragEvent) => void;
 }
 
-export function LibraryListRow({
+function LibraryListRowImpl({
   photo,
   selected,
   active,
@@ -45,9 +47,9 @@ export function LibraryListRow({
     <div
       data-photo-id={photo.id}
       draggable={!!onDragStart}
-      onDragStart={onDragStart}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
+      onDragStart={onDragStart ? (e) => onDragStart(photo.id, e) : undefined}
+      onClick={(e) => onClick(photo.id, e)}
+      onDoubleClick={() => onDoubleClick(photo.id)}
       className={`flex cursor-pointer items-center gap-3 border-b border-border-subtle px-3 py-1.5 ${rowClass} ${
         photo.flag === "reject" ? "opacity-50" : ""
       }`}
@@ -94,3 +96,5 @@ export function LibraryListRow({
     </div>
   );
 }
+
+export const LibraryListRow = memo(LibraryListRowImpl);

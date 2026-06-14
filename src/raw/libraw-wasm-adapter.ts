@@ -10,11 +10,16 @@
 
 import type { RawFloatImage } from "./decode";
 
-type LibRawCtor = new () => {
+type LibRawInstance = {
   open(data: Uint8Array, settings?: Record<string, unknown>): Promise<void>;
   metadata(full?: boolean): Promise<Record<string, unknown>>;
   imageData(): Promise<unknown>;
+  // The bundled libraw-wasm build spawns a Web Worker per instance and exposes
+  // no dispose method; reach in to terminate it so the worker (and the multi-MB
+  // WASM heap holding the decoded RAW) is freed after each decode.
+  worker?: Worker;
 };
+type LibRawCtor = new () => LibRawInstance;
 
 let ctorPromise: Promise<LibRawCtor | null> | null = null;
 
@@ -206,5 +211,13 @@ export async function decodeRawFloatViaLibRaw(
     lastLibRawStatus = `decode error: ${e instanceof Error ? e.message : String(e)}`;
     console.warn("[libraw] decode failed", e);
     return null;
+  } finally {
+    // Every decode constructs a fresh LibRaw (= a fresh Web Worker + WASM heap).
+    // Nothing recycles it, so without this each open/edit/thumbnail/export decode
+    // leaked a worker holding a full-res RAW buffer — memory climbed unbounded
+    // (tens of GB) while the GPU sat idle. Terminate it here.
+    try {
+      raw.worker?.terminate();
+    } catch { /* already gone */ }
   }
 }

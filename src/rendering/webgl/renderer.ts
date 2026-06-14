@@ -128,6 +128,42 @@ function halveRGBAF(src: Float32Array, w: number, h: number) {
   return { data: out, w: nw, h: nh };
 }
 
+// Box-average a linear Float32 RGBA image down so its long edge ≤ maxEdge.
+// Returns the input unchanged when it already fits. Bounds the GPU texture,
+// the hand-built float mip chain, AND the heal-source pass to the develop cap —
+// without this a full-res sensor decode (e.g. 24MP NEF → 384 MB Float32) was
+// uploaded whole, OOMing low-RAM machines even though the canvas was capped.
+function capFloatToEdge(
+  data: Float32Array,
+  W: number,
+  H: number,
+  maxEdge: number,
+): { data: Float32Array; width: number; height: number } {
+  const scale = Math.min(1, maxEdge / Math.max(W, H));
+  if (scale >= 1) return { data, width: W, height: H };
+  const w = Math.max(1, Math.round(W * scale));
+  const h = Math.max(1, Math.round(H * scale));
+  const out = new Float32Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const sy0 = Math.floor((y * H) / h);
+    const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * H) / h));
+    for (let x = 0; x < w; x++) {
+      const sx0 = Math.floor((x * W) / w);
+      const sx1 = Math.max(sx0 + 1, Math.floor(((x + 1) * W) / w));
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (let sy = sy0; sy < sy1; sy++) {
+        for (let sx = sx0; sx < sx1; sx++) {
+          const si = (sy * W + sx) * 4;
+          r += data[si]; g += data[si + 1]; b += data[si + 2]; a += data[si + 3]; n++;
+        }
+      }
+      const di = (y * w + x) * 4;
+      out[di] = r / n; out[di + 1] = g / n; out[di + 2] = b / n; out[di + 3] = a / n;
+    }
+  }
+  return { data: out, width: w, height: h };
+}
+
 function downsampleDrawable(img: TexImageSource, W: number, H: number) {
   const scale = Math.min(1, FILL_EDGE / Math.max(W, H));
   const w = Math.max(1, Math.round(W * scale));
@@ -714,16 +750,21 @@ export class WebGLRenderer {
       //
       // A cached (srgb16) preview also lands here when the GPU lacks EXT_texture_norm16:
       // it's linearised on the CPU (LUT) so it can ride the same scene-linear float path.
-      const fimg = image.kind === "srgb16" ? srgb16ToFloatImage(image) : image;
+      const fsrc = image.kind === "srgb16" ? srgb16ToFloatImage(image) : image;
+      // Bound the working texture to the develop cap. The live RAW decode is
+      // full sensor resolution; uploading it whole (plus the hand-built mip
+      // chain and heal pass) is what exhausted memory on low-RAM machines.
+      const src0 = fsrc.data instanceof Float32Array ? fsrc.data : new Float32Array(fsrc.data);
+      const fimg = capFloatToEdge(src0, fsrc.width, fsrc.height, maxEdge);
       this.imageWidth = fimg.width;
       this.imageHeight = fimg.height;
       // Texture now holds true linear scene values, so the shader must NOT sRGB-decode.
       this.linear = true;
-      this.isFallbackPreview = fimg.isFallbackPreview ?? isFallbackPreview;
+      this.isFallbackPreview = fsrc.isFallbackPreview ?? isFallbackPreview;
       // Real full-res RAW decode (not the pseudo-linear JPEG fallback) renders
       // scene-linear and flat; add the default tone curve to match other views.
       this.applyBaseCurve = !this.isFallbackPreview;
-      const f0 = fimg.data instanceof Float32Array ? fimg.data : new Float32Array(fimg.data);
+      const f0 = fimg.data;
       gl.texImage2D(
         gl.TEXTURE_2D, 0, gl.RGBA16F, fimg.width, fimg.height, 0,
         gl.RGBA, gl.FLOAT, f0,

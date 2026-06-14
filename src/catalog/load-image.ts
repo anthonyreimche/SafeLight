@@ -123,10 +123,20 @@ async function rawColorMatchesPreview(
   }
 }
 
+export interface LoadImageOptions {
+  // Called with a fast, near-full-res intermediate (the camera's embedded JPEG)
+  // as soon as it's available, BEFORE the slow libraw float decode finishes.
+  // Lets Develop paint a sharp image in ~1s on a cache miss instead of holding
+  // the soft 768px thumbnail for 5-10s while libraw runs. Only fires on the RAW
+  // slow path (a cache hit is already fast and skips it).
+  onPreview?: (image: DecodedImage) => void;
+}
+
 // Prefer a full-precision linear RAW decode (so exposure/highlight recovery work
 // on the sensor's real data); otherwise fall back to the 8-bit bitmap path.
 export async function loadPhotoImage(
   photo: CatalogPhoto,
+  opts?: LoadImageOptions,
 ): Promise<DecodedImage | null> {
   if (photo.fileHandle && (await verifyPermission(photo.fileHandle))) {
     try {
@@ -149,6 +159,19 @@ export async function loadPhotoImage(
         // Extract the embedded JPEG preview once — used both for the color
         // validation below and as the fallback if the RAW decode looks wrong.
         const preview = await extractRawPreview(file);
+
+        // Paint the embedded preview immediately (camera-rendered, decodes in
+        // ~1s) so the user sees a sharp frame while libraw grinds. The precise
+        // float decode swaps in below; a slight tonal shift on swap is expected
+        // (preview is camera-toned, the float decode is linear + base curve).
+        if (preview && opts?.onPreview) {
+          try {
+            const bm = await createImageBitmap(preview, { imageOrientation: "none" });
+            const upright = await rotateBitmap(bm, photo.rotation ?? 0);
+            if (upright !== bm) bm.close();
+            opts.onPreview({ kind: "bitmap", bitmap: upright });
+          } catch { /* preview paint is best-effort */ }
+        }
 
         const f = await decodeRawToFloat(file);
         if (f) {
@@ -173,23 +196,19 @@ export async function loadPhotoImage(
           console.warn("[load] RAW color mismatch vs embedded JPEG — using JPEG fallback");
         }
 
-        // libraw failed or produced bad colors: linearise the embedded JPEG
-        // preview via a WebGL2 framebuffer readback (bitmapToFloat). This keeps
-        // the full float pipeline intact for edits, at the cost of JPEG dynamic
-        // range and the camera's own tone/sharpening baked in.
+        // libraw failed or produced bad colors: fall back to the embedded JPEG
+        // preview as an 8-bit bitmap. We deliberately do NOT route it through
+        // bitmapToFloat's WebGL2 readback here — that spins up a second GL
+        // context (fragile on old Mesa/Linux GPUs, where readback can silently
+        // return all zeros → a black export/preview) and quadruples memory for
+        // no gain: the JPEG is already 8-bit sRGB with the camera's tone baked
+        // in, so there's no extra dynamic range to recover. The renderer's 8-bit
+        // bitmap path handles edits the same way it does for any JPEG.
         if (preview) {
           const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
           const upright = await rotateBitmap(bitmap, photo.rotation ?? 0);
           if (upright !== bitmap) bitmap.close();
-          const floatImg = bitmapToFloat(upright);
-          upright.close();
-          return {
-            kind: "float",
-            data: floatImg.data,
-            width: floatImg.width,
-            height: floatImg.height,
-            isFallbackPreview: true,
-          };
+          return { kind: "bitmap", bitmap: upright };
         }
       }
     } catch {

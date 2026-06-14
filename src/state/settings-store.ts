@@ -64,7 +64,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   thumbMaxEdge: 640,
   rawCacheEnabled: true,
   rawCacheMaxEdge: 3072,
-  developMaxEdge: 6144,
+  developMaxEdge: 4096,
   highBitDepth: true,
   liveHistogram: true,
   exportFormat: "image/jpeg",

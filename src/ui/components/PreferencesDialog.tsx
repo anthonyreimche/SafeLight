@@ -22,9 +22,9 @@ import { applyTheme, useThemeStore } from "@/extensions/themes";
 import {
   applyDockLayout,
   CUSTOM_LAYOUT,
-  toggleDockPanel,
   useLayoutStore,
 } from "@/extensions/dock";
+import { openExtensions } from "./ExtensionsDialog";
 import {
   DEFAULT_SETTINGS,
   resetSettings,
@@ -635,7 +635,7 @@ function ExtensionsSection() {
     <div className="flex flex-col gap-4">
       <Field
         label="Official extension topic"
-        hint="GitHub topic used to discover extensions in the Extensions panel."
+        hint="GitHub topic used to discover extensions in the Extensions window."
       >
         <input
           value={topic}
@@ -654,11 +654,11 @@ function ExtensionsSection() {
         <button
           onClick={() => {
             closePreferences();
-            toggleDockPanel("core.extensions");
+            openExtensions();
           }}
           className={btnCls}
         >
-          Open Extensions panel
+          Open Extensions…
         </button>
       </Field>
     </div>

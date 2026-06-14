@@ -36,8 +36,8 @@ function basename(p: string): string {
   return p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 }
 
-// Brand: lets saveLastProject/getLastProject recognise a native handle and pull
-// its absolute path back out.
+// Brand: lets the recent-projects store recognise a native handle and pull its
+// absolute path back out.
 const PATH = Symbol("safelight.nativePath");
 
 interface Pathed {

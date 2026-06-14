@@ -11,7 +11,12 @@ import { useUIStore } from "@/state/ui-store";
 import { preDecodeRawsForCache, repairMissingPreviews } from "@/modules/library/import-photos";
 import { setRawCacheDir } from "@/raw/raw-cache";
 import { ProjectStorage } from "./project-storage";
-import { getLastProject, saveLastProject } from "./recent";
+import {
+  addRecentProject,
+  getLastProject,
+  recentHandle,
+  type RecentProject,
+} from "./recent";
 import { isNativeFS, nativeDirectoryHandle, pickNativeDirectory } from "./native-fs";
 import { scanProject, type FolderNode } from "./scan";
 import { visiblePhotos } from "@/modules/library/visible-photos";
@@ -51,6 +56,9 @@ interface ProjectState {
   /** Folder picker → open as project. Must run within a user gesture. */
   openProjectPicker: () => Promise<void>;
   openProject: (handle: FileSystemDirectoryHandle) => Promise<void>;
+  /** Open a folder chosen from the welcome grid. Re-grants permission inside
+   *  the click gesture (browser), then opens via the normal openProject path. */
+  openRecent: (entry: RecentProject) => Promise<void>;
   /** Reopen the last project if its permission survived; otherwise flag the
    *  reconnect flow (re-granting needs a user gesture). */
   openLast: () => Promise<void>;
@@ -172,11 +180,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         useCatalogStore.getState().finalizeCatalog(opened.photos);
         kickThumbnails(opened.photos, gen);
       }
-      await saveLastProject(handle);
+      // Remember this folder for the welcome grid, with the first photo's grid
+      // preview as the card cover. Reattached photos load previews lazily, so
+      // fall back to reading the cover off disk when no blob is in memory yet.
+      const first = opened.photos[0];
+      const cover = first
+        ? first.thumbnailBlob ?? (await opened.storage.readPreview(first.id))
+        : null;
+      await addRecentProject(handle, cover);
       // Persist the final import state now (don't rely on the debounced save or
       // the best-effort beforeunload flush, which can be cut short on app quit),
       // so newly-imported records survive even an immediate close.
-      void catalogStorage().flush?.();
+      // AWAIT it: the background pre-decode below now runs several files in
+      // parallel and saturates disk/CPU; a fire-and-forget catalog write could
+      // lose that race and never land, re-importing everything on the next open.
+      // Flushing first guarantees catalog.json is durable before any heavy work.
+      await catalogStorage().flush?.();
       // Background: fill in previews for any records imported without one (decode
       // failed at scan time), updating them in place so they're never re-imported.
       void repairMissingPreviews(opened.photos, (p) =>
@@ -190,6 +209,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       console.error("[project] open failed:", e);
     } finally {
       set({ opening: false, importDone: 0, importTotal: 0 });
+    }
+  },
+
+  async openRecent(entry) {
+    const handle = recentHandle(entry);
+    if (!handle) return;
+    // Native handles have no permission API (verifyPermission treats them as
+    // readable); browser handles re-prompt here, which is allowed because this
+    // runs inside the card's click gesture.
+    if (await verifyPermission(handle, true, "readwrite")) {
+      await get().openProject(handle);
+    } else {
+      useCatalogStore.setState({ needsReconnect: true });
+      set({ name: handle.name });
     }
   },
 

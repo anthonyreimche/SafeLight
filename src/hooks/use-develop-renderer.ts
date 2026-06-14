@@ -145,8 +145,24 @@ export function useDevelopRenderer(
         } catch { /* ignore — thumbnail is optional */ }
       }
 
-      // Phase 2: full quality decode
-      const image = await loadPhotoImage(photo);
+      // Phase 1.5: on a RAW cache miss, paint the embedded JPEG preview the
+      // moment it's decoded (~1s) so the soft thumbnail is replaced by a sharp
+      // frame long before libraw's full float decode lands in Phase 2.
+      const image = await loadPhotoImage(photo, {
+        onPreview: (preview) => {
+          if (cancelled) {
+            if (preview.kind === "bitmap") preview.bitmap.close();
+            return;
+          }
+          const dims =
+            preview.kind === "bitmap"
+              ? `${preview.bitmap.width}×${preview.bitmap.height}`
+              : `${preview.width}×${preview.height}`;
+          renderImage(preview.kind === "bitmap" ? preview.bitmap : preview);
+          if (preview.kind === "bitmap") preview.bitmap.close();
+          setSource(`Preview ${dims} — loading full…`);
+        },
+      });
       if (cancelled) {
         if (image?.kind === "bitmap") image.bitmap.close();
         return;

@@ -31,8 +31,16 @@ function getChannel(): BroadcastChannel {
   return channel;
 }
 
+// Same-window subscribers. BroadcastChannel deliberately does NOT echo a message
+// back to the context that posted it, so without this the window that makes an
+// edit never hears its own `edit-update` — leaving the Library's edited-thumbnail
+// refresh to a 1s poll. We fan out locally too so same-window listeners react at
+// once. Handlers must not synchronously re-broadcast the same message type.
+const localListeners = new Set<(message: BroadcastMessage) => void>();
+
 export function broadcast(message: BroadcastMessage): void {
   getChannel().postMessage(message);
+  for (const l of [...localListeners]) l(message);
 }
 
 export function onBroadcast(
@@ -43,5 +51,9 @@ export function onBroadcast(
     handler(event.data);
   };
   ch.addEventListener("message", listener);
-  return () => ch.removeEventListener("message", listener);
+  localListeners.add(handler);
+  return () => {
+    ch.removeEventListener("message", listener);
+    localListeners.delete(handler);
+  };
 }

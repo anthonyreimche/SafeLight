@@ -1,9 +1,12 @@
-// Built-in extension manager (View ▸ Extensions): browses official extensions
-// (GitHub repos tagged with the safelight-extension topic) with live search,
-// manages installed plugins (enable / disable / settings / uninstall), lists
-// the pre-installed built-in extensions (disable only), and still accepts a
-// custom repo spec. Install / uninstall / search need the Electron bridge; the
-// plain browser build manages built-ins only.
+// Built-in extension manager, rendered inside the Extensions pop-up with a
+// Preferences-style sidebar:
+//   • Browse    — quick search of official extensions (GitHub repos tagged with
+//                 the safelight-extension topic), showing only uninstalled ones,
+//                 plus an importer for a custom repo.
+//   • Installed — everything already present: installed extensions first, then
+//                 the pre-installed built-ins.
+// Install / uninstall / search need the Electron bridge; the plain browser
+// build manages built-ins only.
 
 import { useEffect, useRef, useState } from "react";
 import type { ExtensionManifest, ExtensionSearchResult } from "./types";
@@ -19,7 +22,7 @@ import { ExtensionSettingsDialog } from "./ExtensionSettingsDialog";
 import { useSettings } from "@/state/settings-store";
 
 // Remember which repo each installed extension came from, so search results
-// can show an "Installed" state across sessions.
+// can tell which official extensions are already installed.
 const SOURCES_KEY = "sl_ext_sources";
 const readSources = (): Record<string, string> => {
   try {
@@ -55,6 +58,8 @@ const pruneSources = (installed: ExtensionManifest[]) => {
   }
 };
 
+type Section = "Browse" | "Installed";
+
 export function ExtensionManagerPanel() {
   const native = window.safelightNative;
   const topic = useSettings((s) => s.extensionTopic);
@@ -68,8 +73,9 @@ export function ExtensionManagerPanel() {
   const [busy, setBusy] = useState<string | null>(null); // spec being installed
   const [msg, setMsg] = useState<string | null>(null);
   const [settingsFor, setSettingsFor] = useState<{ id: string; name: string } | null>(null);
+  // Browse needs the bridge; default browser builds to the Installed view.
+  const [section, setSection] = useState<Section>(native ? "Browse" : "Installed");
   const searchSeq = useRef(0);
-
   const [reloadNonce, setReloadNonce] = useState(0);
 
   const refresh = () => {
@@ -121,6 +127,7 @@ export function ExtensionManagerPanel() {
     try {
       const manifest = await installFromGitHub(installSpec);
       if (fromSearch) rememberSource(manifest.id, fromSearch.fullName);
+      else setSpec(""); // clear the custom-import field on success
       setMsg(`Installed ${manifest.name}.`);
       refresh();
     } catch (e) {
@@ -152,8 +159,8 @@ export function ExtensionManagerPanel() {
     );
   };
 
-  // "Installed" in search results means: source remembered AND the extension
-  // is actually in the installed list — a stale source alone doesn't count.
+  // An official result counts as installed when its repo is remembered AND the
+  // extension is actually in the installed list — a stale source alone doesn't.
   const installedIds = new Set(list.map((m) => m.id));
   const installedRepos = new Set(
     Object.entries(readSources())
@@ -164,165 +171,181 @@ export function ExtensionManagerPanel() {
     installedRepos.has(r.fullName.toLowerCase());
   const enabled = (id: string) => !disabledIds.includes(id);
 
+  // Browse shows only what isn't installed yet.
+  const browsable = results?.filter((r) => !isInstalled(r)) ?? null;
+
   return (
-    <div className="flex flex-col gap-3 p-3 text-[11px]">
-      {/* ── Browse official extensions ── */}
-      {native ? (
-        <div>
-          <div className="flex items-center justify-between">
-            <SectionLabel>Browse official extensions</SectionLabel>
-            <button
-              onClick={reload}
-              disabled={searching}
-              title="Reload the extension list and search results"
-              className="rounded px-1 text-[12px] leading-none text-text-muted hover:text-text-primary disabled:opacity-40"
-            >
-              ↻
-            </button>
-          </div>
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search official extensions…"
-            spellCheck={false}
-            className="mt-1 w-full rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
-          />
-          <div className="mt-2 flex flex-col gap-1.5">
-            {searching && results === null && (
-              <div className="text-text-muted">Searching…</div>
-            )}
-            {results?.length === 0 && !searching && (
-              <div className="text-text-muted">
-                No extensions found{query ? ` for “${query}”` : ""} (topic:{" "}
-                {topic}).
-              </div>
-            )}
-            {results?.map((r) => {
-              const installed = isInstalled(r);
-              return (
-                <div
-                  key={r.fullName}
-                  className="flex items-start justify-between gap-2 rounded bg-surface-2 px-2 py-1.5"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-text-primary">
-                      {r.fullName}
-                      {r.stars > 0 && (
-                        <span className="ml-1.5 text-text-muted">★ {r.stars}</span>
-                      )}
-                    </div>
-                    {r.description && (
-                      <div className="truncate text-text-muted">
-                        {r.description}
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    disabled={busy !== null || installed}
-                    onClick={() => void install(r.fullName, r)}
-                    className={`shrink-0 rounded px-2 py-0.5 font-medium ${
-                      installed
-                        ? "text-text-muted"
-                        : "bg-slider-fill text-white hover:opacity-80 disabled:opacity-40"
-                    }`}
-                  >
-                    {installed
-                      ? "Installed"
-                      : busy === r.fullName
-                        ? "…"
-                        : "Install"}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : (
-        <div className="text-text-muted">
-          Installing extensions requires the desktop app. Built-in extensions
-          can still be managed below.
-        </div>
-      )}
-
-      {msg && <div className="text-text-secondary">{msg}</div>}
-
-      {/* ── Installed (external) ── */}
-      {native && (
-        <div>
-          <SectionLabel>Installed</SectionLabel>
-          {list.length === 0 ? (
-            <div className="mt-1 text-text-muted">
-              No extensions installed. Extensions register panels, themes and
-              layouts that appear in the View menu and Preferences.
-            </div>
-          ) : (
-            <div className="mt-1 flex flex-col gap-1.5">
-              {list.map((m) => (
-                <ExtensionRow
-                  key={m.id}
-                  name={m.name}
-                  version={m.version}
-                  description={m.description}
-                  enabled={enabled(m.id)}
-                  busy={busy !== null}
-                  hasSettings={!!extSettings[m.id]}
-                  onSettings={() => setSettingsFor({ id: m.id, name: m.name })}
-                  onToggle={() => toggle(m.id, !enabled(m.id))}
-                  onUninstall={() => void remove(m.id)}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Built-in (pre-installed; disable only) ── */}
-      <div>
-        <SectionLabel>Built-in</SectionLabel>
-        <div className="mt-1 flex flex-col gap-1.5">
-          {BUILTIN_EXTENSIONS.map((b) => (
-            <ExtensionRow
-              key={b.id}
-              name={b.name}
-              version={b.version}
-              description={b.description}
-              enabled={b.locked || enabled(b.id)}
-              locked={b.locked}
-              busy={busy !== null}
-              hasSettings={!!extSettings[b.id]}
-              onSettings={() => setSettingsFor({ id: b.id, name: b.name })}
-              onToggle={() => toggle(b.id, !enabled(b.id))}
-            />
-          ))}
-        </div>
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <div className="w-28 shrink-0 border-r border-border bg-surface-0/40 py-2">
+        {(["Browse", "Installed"] as Section[]).map((s) => (
+          <button
+            key={s}
+            onClick={() => setSection(s)}
+            className={`block w-full px-3 py-1.5 text-left text-[11px] tracking-wider ${
+              section === s
+                ? "bg-surface-3 text-text-primary"
+                : "text-text-secondary hover:text-text-primary"
+            }`}
+          >
+            {s}
+          </button>
+        ))}
       </div>
 
-      {/* ── Manual install ── */}
-      {native && (
-        <div>
-          <SectionLabel>Install from URL</SectionLabel>
-          <div className="mt-1 flex gap-1.5">
-            <input
-              value={spec}
-              onChange={(e) => setSpec(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && spec.trim() && busy === null)
-                  void install(spec.trim());
-              }}
-              placeholder="owner/repo, owner/repo#branch, or GitHub URL"
-              spellCheck={false}
-              className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
-            />
-            <button
-              disabled={busy !== null || !spec.trim()}
-              onClick={() => void install(spec.trim())}
-              className="rounded bg-surface-3 px-2.5 py-1 font-medium text-text-secondary hover:bg-surface-4 hover:text-text-primary disabled:opacity-40"
-            >
-              {busy === spec.trim() ? "…" : "Install"}
-            </button>
+      <div className="min-w-0 flex-1 overflow-y-auto p-3 text-[11px]">
+        {section === "Browse" ? (
+          native ? (
+            <div className="flex flex-col gap-3">
+              {/* Quick search */}
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search official extensions…"
+                    spellCheck={false}
+                    className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
+                  />
+                  <button
+                    onClick={reload}
+                    disabled={searching}
+                    title="Reload the extension list and search results"
+                    className="rounded px-1.5 text-[12px] leading-none text-text-muted hover:text-text-primary disabled:opacity-40"
+                  >
+                    ↻
+                  </button>
+                </div>
+                <div className="mt-2 flex flex-col gap-1.5">
+                  {searching && browsable === null && (
+                    <div className="text-text-muted">Searching…</div>
+                  )}
+                  {browsable?.length === 0 && !searching && (
+                    <div className="text-text-muted">
+                      No new extensions found{query ? ` for “${query}”` : ""}{" "}
+                      (topic: {topic}).
+                    </div>
+                  )}
+                  {browsable?.map((r) => (
+                    <div
+                      key={r.fullName}
+                      className="flex items-start justify-between gap-2 rounded bg-surface-2 px-2 py-1.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-text-primary">
+                          {r.fullName}
+                          {r.stars > 0 && (
+                            <span className="ml-1.5 text-text-muted">
+                              ★ {r.stars}
+                            </span>
+                          )}
+                        </div>
+                        {r.description && (
+                          <div className="truncate text-text-muted">
+                            {r.description}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        disabled={busy !== null}
+                        onClick={() => void install(r.fullName, r)}
+                        className="shrink-0 rounded bg-slider-fill px-2 py-0.5 font-medium text-white hover:opacity-80 disabled:opacity-40"
+                      >
+                        {busy === r.fullName ? "…" : "Install"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {msg && <div className="text-text-secondary">{msg}</div>}
+
+              {/* Import custom extension */}
+              <div className="border-t border-border-subtle pt-3">
+                <SectionLabel>Import custom extension</SectionLabel>
+                <div className="mt-1 flex gap-1.5">
+                  <input
+                    value={spec}
+                    onChange={(e) => setSpec(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && spec.trim() && busy === null)
+                        void install(spec.trim());
+                    }}
+                    placeholder="owner/repo, owner/repo#branch, or GitHub URL"
+                    spellCheck={false}
+                    className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
+                  />
+                  <button
+                    disabled={busy !== null || !spec.trim()}
+                    onClick={() => void install(spec.trim())}
+                    className="rounded bg-surface-3 px-2.5 py-1 font-medium text-text-secondary hover:bg-surface-4 hover:text-text-primary disabled:opacity-40"
+                  >
+                    {busy === spec.trim() ? "…" : "Import"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-text-muted">
+              Installing extensions requires the desktop app. Built-in extensions
+              can still be managed under Installed.
+            </div>
+          )
+        ) : (
+          // ── Installed: external installs first, then the built-ins ──
+          <div className="flex flex-col gap-3">
+            {native && (
+              <div>
+                <SectionLabel>Installed</SectionLabel>
+                {list.length === 0 ? (
+                  <div className="mt-1 text-text-muted">
+                    No extensions installed. Extensions register panels, themes
+                    and layouts that appear in the View menu and Preferences.
+                  </div>
+                ) : (
+                  <div className="mt-1 flex flex-col gap-1.5">
+                    {list.map((m) => (
+                      <ExtensionRow
+                        key={m.id}
+                        name={m.name}
+                        version={m.version}
+                        description={m.description}
+                        enabled={enabled(m.id)}
+                        busy={busy !== null}
+                        hasSettings={!!extSettings[m.id]}
+                        onSettings={() => setSettingsFor({ id: m.id, name: m.name })}
+                        onToggle={() => toggle(m.id, !enabled(m.id))}
+                        onUninstall={() => void remove(m.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div>
+              <SectionLabel>Built-in</SectionLabel>
+              <div className="mt-1 flex flex-col gap-1.5">
+                {BUILTIN_EXTENSIONS.map((b) => (
+                  <ExtensionRow
+                    key={b.id}
+                    name={b.name}
+                    version={b.version}
+                    description={b.description}
+                    enabled={b.locked || enabled(b.id)}
+                    locked={b.locked}
+                    busy={busy !== null}
+                    hasSettings={!!extSettings[b.id]}
+                    onSettings={() => setSettingsFor({ id: b.id, name: b.name })}
+                    onToggle={() => toggle(b.id, !enabled(b.id))}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {msg && <div className="text-text-secondary">{msg}</div>}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {settingsFor && (
         <ExtensionSettingsDialog
@@ -362,6 +385,7 @@ function ExtensionRow({
   onToggle: () => void;
   onUninstall?: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   return (
     <div
       className={`flex items-start justify-between gap-2 rounded bg-surface-2 px-2 py-1.5 ${
@@ -378,7 +402,13 @@ function ExtensionRow({
           )}
         </div>
         {description && (
-          <div className="truncate text-text-muted">{description}</div>
+          <div
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? "Click to collapse" : "Click to show full description"}
+            className={`cursor-pointer text-text-muted ${expanded ? "" : "truncate"}`}
+          >
+            {description}
+          </div>
         )}
       </div>
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5">

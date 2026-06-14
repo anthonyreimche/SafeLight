@@ -463,6 +463,10 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
       currentIndex: newIndex,
     };
     await catalogStorage().putEditState(editState);
+    // Announce the committed state so the Library refreshes this photo's thumbnail
+    // (and histogram) the moment it's edited — for any visible photo, in any
+    // window — instead of waiting on the periodic catalog poll.
+    broadcast({ type: "edit-update", payload: { photoId, params } });
   },
 
   undo() {

@@ -25,7 +25,6 @@ import { EditActionsPanel } from "@/modules/develop/DevelopSidebar";
 import { FoldersPanel, LibraryFiltersPanel } from "@/modules/library/LibrarySidebar";
 import { InfoPanel } from "@/modules/library/InfoPanel";
 import { ExportPanel } from "@/modules/export/ExportPanel";
-import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 
 export interface BuiltinExtension {
   id: string;
@@ -82,11 +81,8 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     description: "Extension manager, the stock themes and the Classic layout.",
     locked: true,
     activate(api) {
-      api.registerPanel({
-        id: "core.extensions",
-        title: "Extensions",
-        component: ExtensionManagerPanel,
-      });
+      // Extensions are managed in a pop-up (the puzzle button in the top bar),
+      // not a dockable panel — see ExtensionsDialog.
       // "Classic" has no explicit module defs: it resolves to the registry's
       // defaultDock placements, so extension panels join it automatically.
       api.registerLayout({
