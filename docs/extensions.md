@@ -79,15 +79,64 @@ export function activate(api) {
 - **Layouts** (`registerLayout`) — a named dock arrangement for the Layout menu. Each module defines rails (`side`, `width`, ordered panel ids) and optional floating panels. A layout with no `modules` resolves to the registry's `defaultDock` placements (this is what Classic does), so extension panels join it automatically.
 - **Slider icons** (`registerSliderIcon`) — inline SVG rendered at 12×12 beside a slider label, keyed by the slider's icon id (e.g. `core.exposure`).
 - **Settings** (`registerSettings`) — a declarative settings dialog with `boolean`, `number`, `string`, and `select` fields.
+- **Export processors** (`registerExportProcessor`) — a post-processing step called for each image after the WebGL pipeline encodes it to a Blob. Processors run in registration order, each receiving the Blob from the previous step. Declared `settings` fields appear as a collapsible section in the Export panel. See the [watermark example](#export-processor-example-watermark) below.
+- **Filename templates** (`registerFilenameTemplate`) — a named template string using `{variable}` placeholders. The template appears in the Export panel's Filename picker. Built-in variables: `{filename}`, `{ext}`, `{year}`, `{month}`, `{day}`, `{rating}`, `{camera}`, `{lens}`.
 
 All contributions are auto-tagged with the extension's id and swept when it is disabled or uninstalled.
+
+### Export processor example: watermark
+
+```js
+export function activate(api) {
+  api.registerExportProcessor({
+    id: "my-ext.watermark",
+    label: "Watermark",
+    settings: [
+      { key: "enabled",  label: "Enable",          type: "boolean", default: true },
+      { key: "text",     label: "Watermark text",  type: "string",  default: "© My Name" },
+      { key: "opacity",  label: "Opacity",         type: "number",  default: 50, min: 0, max: 100 },
+      { key: "position", label: "Position",        type: "select",
+        default: "bottom-right",
+        options: [
+          { value: "bottom-right", label: "Bottom right" },
+          { value: "bottom-left",  label: "Bottom left" },
+          { value: "top-right",    label: "Top right" },
+          { value: "top-left",     label: "Top left" },
+        ] },
+    ],
+    async process(blob, photo, settings) {
+      if (!settings.enabled) return blob;
+      const bitmap = await createImageBitmap(blob);
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(bitmap, 0, 0);
+      ctx.globalAlpha = settings.opacity / 100;
+      ctx.font = `${Math.round(bitmap.width * 0.02)}px sans-serif`;
+      ctx.fillStyle = "#ffffff";
+      const pad = bitmap.width * 0.02;
+      const [vert, horiz] = settings.position.split("-");
+      const x = horiz === "right" ? bitmap.width  - pad : pad;
+      const y = vert  === "bottom" ? bitmap.height - pad : pad * 2;
+      ctx.textAlign = horiz === "right" ? "right" : "left";
+      ctx.fillText(settings.text, x, y);
+      return canvas.convertToBlob({ type: blob.type, quality: 0.95 });
+    },
+  });
+
+  api.registerFilenameTemplate({
+    id: "my-ext.dated",
+    label: "Date + filename",
+    template: "{year}-{month}-{day}_{filename}",
+  });
+}
+```
 
 ## The API surface (`window.safelight`)
 
 Each extension receives a scoped `SafelightAPI` (`version: 1`):
 
 - `react` — the app's React instance (never bundle your own).
-- `registerPanel / registerTheme / registerLayout / registerSliderIcon / registerSettings` — contributions, described above.
+- `registerPanel / registerTheme / registerLayout / registerSliderIcon / registerSettings / registerExportProcessor / registerFilenameTemplate` — contributions, described above.
 - `settings.get(key, fallback)` / `settings.set(key, value)` / `settings.onChange(cb)` — persisted per-extension key/value settings (kept on disable, deleted on uninstall).
 - `components` — Safelight's stock `Panel`, `Slider`, and `Histogram` components, so extension UI matches the app.
 - `stores` — the live Zustand stores: `useDevelopStore` (edit params, history, histogram, mask/brush state), `useCatalogStore` (photos, selection, culling), `useUIStore` (active module, view options), `useSettings` (app preferences), plus `create` for an extension's own store.

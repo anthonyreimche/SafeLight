@@ -169,15 +169,47 @@ Presets are open JSON files:
 ## Export (`src/modules/export/export-image.ts`)
 
 ```typescript
+type ProcessorSettings = Record<string, Record<string, unknown>>;
+
 interface ExportSettings {
   format: "image/jpeg" | "image/png" | "image/webp";
-  quality: number;          // 0..1 (JPEG/WebP)
-  longEdge: number | null;  // null = original size
-  bundle: boolean;          // true = single ZIP
+  quality: number;              // 0..1 (JPEG/WebP)
+  longEdge: number | null;      // null = original size
+  delivery: "zip" | "files" | "folder";
+  colorSpace?: ColorSpaceId;    // default "srgb"
+  processorSettings?: ProcessorSettings; // per-processor field values keyed by processor id
+  filenameTemplateId?: string;  // active FilenameTemplateContribution id; undefined = default
 }
 ```
 
-Each photo renders through `WebGLRenderer` with its saved params, encodes to a Blob, and downloads individually or via the ZIP writer (`zip.ts`). Output carries no EXIF metadata.
+Each photo renders through `WebGLRenderer` with its saved params, encodes to a Blob, embeds the output ICC profile, then passes through every registered export processor in registration order before being written to disk or bundled. Output carries no EXIF metadata.
+
+`resolveFilenameTemplate(template, photo, format)` substitutes built-in variables (`{filename}`, `{ext}`, `{year}`, `{month}`, `{day}`, `{rating}`, `{camera}`, `{lens}`) from the `CatalogPhoto` record; unknown variables are left as-is.
+
+### Export processor contributions (`ExportProcessorContribution`)
+
+```typescript
+interface ExportProcessorContribution {
+  id: string;      // globally unique, e.g. "my-ext.watermark"
+  label: string;   // section header in the Export panel
+  settings?: ExportProcessorField[];  // fields rendered in the Export panel
+  process(blob: Blob, photo: CatalogPhoto, settings: Record<string, unknown>): Promise<Blob>;
+}
+```
+
+`ExportProcessorField` mirrors `SettingsField` — `boolean`, `number`, `string`, and `select` variants. Each field's `default` is merged with the user's current values before calling `process`. Processor errors are caught and logged; the unmodified input Blob is forwarded so a broken extension never silently drops an export.
+
+### Filename template contributions (`FilenameTemplateContribution`)
+
+```typescript
+interface FilenameTemplateContribution {
+  id: string;      // globally unique
+  label: string;   // shown in the Filename picker in the Export panel
+  template: string; // e.g. "{year}-{month}-{day}_{filename}"
+}
+```
+
+Built-in variables: `{filename}` (base name without extension), `{ext}`, `{year}`, `{month}`, `{day}`, `{rating}`, `{camera}`, `{lens}`. Unknown variables are left as `{variableName}`.
 
 ## Cross-Window Broadcast (`src/state/broadcast.ts`)
 
