@@ -57,8 +57,8 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "flag.unflag", label: "Remove flag", category: "Library", def: "U" },
   { id: "photo.prev", label: "Previous photo", category: "Library", def: "ArrowLeft" },
   { id: "photo.next", label: "Next photo", category: "Library", def: "ArrowRight" },
-  { id: "photo.rotateCCW", label: "Rotate left", category: "Library", def: "[" },
-  { id: "photo.rotateCW", label: "Rotate right", category: "Library", def: "]" },
+  { id: "photo.rotateCCW", label: "Rotate left", category: "Library", def: "Alt+[" },
+  { id: "photo.rotateCW", label: "Rotate right", category: "Library", def: "Alt+]" },
   { id: "photo.remove", label: "Remove from catalog", category: "Library", def: "Delete" },
 ];
 
