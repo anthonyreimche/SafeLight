@@ -29,6 +29,13 @@ interface ViewportImageProps {
   // When set, a click samples instead of zooming: receives the clicked point in
   // canvas buffer pixels (the WB eyedropper). Cursor becomes a crosshair.
   onPick?: (bufferX: number, bufferY: number) => void;
+  // For HSL picker: drag-based picking that receives pointer events.
+  // Called on pointer down, move (while dragging), and up.
+  onPickDrag?: {
+    onDown: (bufferX: number, bufferY: number) => void;
+    onMove: (bufferX: number, bufferY: number) => void;
+    onUp: () => void;
+  } | null;
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
@@ -49,6 +56,7 @@ export function ViewportImage({
   overlay,
   overlayZoomable,
   onPick,
+  onPickDrag,
 }: ViewportImageProps) {
   // A crop overlay locks the view to fit; a mask/heal overlay (overlayZoomable)
   // keeps the zoom/pan machinery live underneath it.
@@ -232,7 +240,24 @@ export function ViewportImage({
     if (panRaf.current != null) cancelAnimationFrame(panRaf.current);
   }, []);
 
+  // Track drag picking state
+  const pickDragRef = useRef<{ active: boolean }>({ active: false });
+
   const onPointerDown = (e: ReactPointerEvent) => {
+    // Drag picking mode (HSL picker)
+    if (onPickDrag && !overlay && e.button === 0) {
+      const rect = frameRef.current?.getBoundingClientRect();
+      if (rect) {
+        const { effScale: s, effOffset: o } = stateRef.current;
+        const bx = (e.clientX - rect.left - o.x) / s;
+        const by = (e.clientY - rect.top - o.y) / s;
+        pickDragRef.current.active = true;
+        onPickDrag.onDown(bx, by);
+        frameRef.current?.setPointerCapture(e.pointerId);
+      }
+      return;
+    }
+
     // Mask/heal pointer events bubble up from the overlay; only hijack them for
     // pan/zoom while a gesture key is held (otherwise the tool owns the drag).
     if (staticFit || (overlayZoomable && !zoomGesture) || e.button !== 0) return;
@@ -247,6 +272,18 @@ export function ViewportImage({
   };
 
   const onPointerMove = (e: ReactPointerEvent) => {
+    // Drag picking mode
+    if (pickDragRef.current.active && onPickDrag) {
+      const rect = frameRef.current?.getBoundingClientRect();
+      if (rect) {
+        const { effScale: s, effOffset: o } = stateRef.current;
+        const bx = (e.clientX - rect.left - o.x) / s;
+        const by = (e.clientY - rect.top - o.y) / s;
+        onPickDrag.onMove(bx, by);
+      }
+      return;
+    }
+
     const d = downRef.current;
     if (!d) return;
     const dx = e.clientX - d.x;
@@ -262,6 +299,13 @@ export function ViewportImage({
   };
 
   const onPointerUp = (e: ReactPointerEvent) => {
+    // Drag picking mode
+    if (pickDragRef.current.active) {
+      pickDragRef.current.active = false;
+      onPickDrag?.onUp();
+      return;
+    }
+
     const d = downRef.current;
     downRef.current = null;
     setDragging(false);
@@ -273,7 +317,7 @@ export function ViewportImage({
     handleClick(e.clientX, e.clientY);
   };
 
-  const cursor = onPick
+  const cursor = onPick || onPickDrag
     ? "crosshair"
     : staticFit
       ? "default"
