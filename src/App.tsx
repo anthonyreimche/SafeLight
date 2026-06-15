@@ -12,6 +12,7 @@ import { ExtensionsDialog } from "@/ui/components/ExtensionsDialog";
 import { LibraryView } from "@/modules/library/LibraryView";
 import { DevelopView } from "@/modules/develop/DevelopView";
 import { WelcomeView } from "@/modules/welcome/WelcomeView";
+import { UpdateBanner } from "@/update/UpdateBanner";
 
 function renderModule(module: AppModule) {
   switch (module) {
@@ -46,6 +47,7 @@ export function App() {
         {renderModule(dm)}
         <PreferencesDialog />
         <ExtensionsDialog />
+        <UpdateBanner />
       </>
     );
 
@@ -62,6 +64,7 @@ export function App() {
         </AppShell>
         <PreferencesDialog />
         <ExtensionsDialog />
+        <UpdateBanner />
       </>
     );
   }
@@ -73,6 +76,7 @@ export function App() {
         <WelcomeView />
         <PreferencesDialog />
         <ExtensionsDialog />
+        <UpdateBanner />
       </>
     );
   }
@@ -82,6 +86,7 @@ export function App() {
       {renderModule(activeModule)}
       <PreferencesDialog />
       <ExtensionsDialog />
+      <UpdateBanner />
     </>
   );
 }

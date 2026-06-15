@@ -41,6 +41,16 @@ import {
 import { clearRawCache } from "@/raw/raw-cache";
 import type { SortDirection, SortField } from "@/catalog/types";
 import { COLOR_SPACES } from "@/rendering/color-space";
+import {
+  checkForUpdateNow,
+  fetchAllReleases,
+  dismissVersion,
+  installVersion,
+  openUrl,
+  type CheckResult,
+  type ReleaseEntry,
+  type UpdateChannel,
+} from "@/update/update-checker";
 
 // ─── Open/close state (exported so the keyboard hook and TopBar can drive it) ─
 
@@ -60,6 +70,7 @@ const SECTIONS = [
   "Export",
   "Shortcuts",
   "Extensions",
+  "Updates",
   "About",
 ] as const;
 type Section = (typeof SECTIONS)[number];
@@ -125,6 +136,7 @@ export function PreferencesDialog() {
             {section === "Export" && <ExportSection />}
             {section === "Shortcuts" && <ShortcutsSection />}
             {section === "Extensions" && <ExtensionsSection />}
+            {section === "Updates" && <UpdatesSection />}
             {section === "About" && <AboutSection />}
           </div>
         </div>
@@ -723,6 +735,227 @@ function ExtensionsSection() {
   );
 }
 
+function DownloadButton({ tag }: { tag: string }) {
+  const [state, setState] = useState<"idle" | "downloading" | "error">("idle");
+  const [errMsg, setErrMsg] = useState("");
+
+  if (state === "downloading") {
+    return <span className="shrink-0 text-[10px] text-text-muted">Downloading…</span>;
+  }
+
+  return (
+    <div className="flex shrink-0 flex-col items-end gap-0.5">
+      <button
+        onClick={() => {
+          setState("downloading");
+          setErrMsg("");
+          installVersion(tag).catch((e: unknown) => {
+            setState("error");
+            setErrMsg(e instanceof Error ? e.message : String(e));
+          });
+        }}
+        className="rounded bg-slider-fill px-2 py-0.5 text-[10px] font-medium text-white hover:opacity-90"
+      >
+        Download
+      </button>
+      {state === "error" && (
+        <span className="max-w-[180px] truncate text-[9px] text-red-400" title={errMsg}>
+          {errMsg}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function CheckResultBadge({
+  result,
+  onDismiss,
+}: {
+  result: CheckResult;
+  onDismiss: () => void;
+}) {
+  switch (result.kind) {
+    case "network-error":
+      return (
+        <p className="text-[10px] text-red-400">
+          Could not reach GitHub. Check your internet connection.
+        </p>
+      );
+    case "parse-error":
+      return (
+        <p className="text-[10px] text-red-400">
+          GitHub responded with unexpected data. The API may be down.
+        </p>
+      );
+    case "no-releases":
+      return (
+        <p className="text-[10px] text-text-muted">
+          No published releases found for this channel.
+        </p>
+      );
+    case "current-version-unknown":
+      return (
+        <p className="text-[10px] text-red-400">
+          Could not read the running version (got: “{result.rawVersion}”). Try
+          rebuilding the app.
+        </p>
+      );
+    case "up-to-date":
+      return (
+        <p className="text-[10px] text-text-muted">
+          v{result.currentVersion} is the latest release.
+        </p>
+      );
+    case "update-available":
+      return (
+        <div className="flex items-center gap-2 rounded border border-border bg-surface-2 px-3 py-2 text-[11px]">
+          <span className="font-medium text-text-primary">
+            v{result.info.version} is available
+            <span className="ml-1 font-normal text-text-muted">
+              (you have v{result.currentVersion})
+            </span>
+          </span>
+          <button
+            onClick={() => openUrl(result.info.releasesUrl)}
+            className="rounded border border-border px-2 py-0.5 text-[10px] text-text-primary hover:bg-surface-3"
+          >
+            View release
+          </button>
+          <DownloadButton tag={result.info.tag} />
+          <button
+            onClick={() => {
+              dismissVersion(result.info.version);
+              onDismiss();
+            }}
+            className="ml-auto text-text-muted hover:text-text-primary"
+            title="Dismiss for this version"
+          >
+            ×
+          </button>
+        </div>
+      );
+  }
+}
+
+function UpdatesSection() {
+  const checkForUpdates = useSettings((s) => s.checkForUpdates);
+  const channel = useSettings((s) => s.updateChannel);
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<CheckResult | null>(null);
+  const [releases, setReleases] = useState<ReleaseEntry[] | null>(null);
+  const [loadingReleases, setLoadingReleases] = useState(false);
+  const [releasesError, setReleasesError] = useState(false);
+
+  const checkNow = async () => {
+    setChecking(true);
+    setResult(null);
+    const r = await checkForUpdateNow(__APP_VERSION__, channel);
+    setResult(r);
+    setChecking(false);
+  };
+
+  const loadReleases = async () => {
+    setLoadingReleases(true);
+    setReleasesError(false);
+    const r = await fetchAllReleases();
+    if (r === null) setReleasesError(true);
+    else setReleases(r);
+    setLoadingReleases(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <ToggleField
+        label="Check for updates on startup"
+        hint="Silently checks the GitHub releases API once on launch and shows a banner if a newer version is available. No data is sent."
+        checked={checkForUpdates}
+        onChange={(v) => updateSettings({ checkForUpdates: v })}
+      />
+
+      <Field
+        label="Update channel"
+        hint="Stable only notifies on new minor/major releases (vX.Y). All releases includes patch/bug-fix releases (vX.Y.Z)."
+      >
+        <OptionRow<UpdateChannel>
+          value={channel}
+          options={[
+            { value: "patch", label: "All releases" },
+            { value: "minor", label: "Stable only" },
+          ]}
+          onChange={(v) => updateSettings({ updateChannel: v })}
+        />
+      </Field>
+
+      <div className="border-t border-border-subtle pt-3" />
+
+      <Field label="Manual check">
+        <button
+          onClick={() => void checkNow()}
+          disabled={checking}
+          className={btnCls}
+        >
+          {checking ? "Checking…" : "Check now"}
+        </button>
+        {result && (
+          <div className="mt-2">
+            <CheckResultBadge result={result} onDismiss={() => setResult(null)} />
+          </div>
+        )}
+      </Field>
+
+      <div className="border-t border-border-subtle pt-3" />
+
+      <Field label="Release history">
+        {releases === null && !loadingReleases && (
+          <button
+            onClick={() => void loadReleases()}
+            className={btnCls}
+          >
+            Load releases
+          </button>
+        )}
+        {loadingReleases && (
+          <span className="text-[10px] text-text-muted">Loading…</span>
+        )}
+        {releasesError && (
+          <span className="text-[10px] text-red-400">Could not load releases. Check your connection.</span>
+        )}
+        {releases && releases.length > 0 && (
+          <div className="mt-1 flex flex-col gap-1">
+            {releases.map((r) => (
+              <div
+                key={r.version}
+                className="flex items-center gap-2 rounded border border-border-subtle bg-surface-2 px-3 py-1.5 text-[11px]"
+              >
+                <span className="font-medium text-text-primary tabular-nums">
+                  v{r.version}
+                </span>
+                {r.body && (
+                  <span className="flex-1 truncate text-text-muted" title={r.body}>
+                    {r.body.split("\n")[0].replace(/^[#\s*-]+/, "").trim()}
+                  </span>
+                )}
+                <button
+                  onClick={() => openUrl(r.releasesUrl)}
+                  className="ml-auto shrink-0 rounded border border-border px-2 py-0.5 text-[10px] text-text-primary hover:bg-surface-3"
+                >
+                  View release
+                </button>
+                <DownloadButton tag={r.tag} />
+              </div>
+            ))}
+          </div>
+        )}
+      </Field>
+
+      <p className="text-[10px] leading-relaxed text-text-muted">
+        Uses the public GitHub Releases API. Safelight does not auto-download or
+        auto-install updates.
+      </p>
+    </div>
+  );
+}
+
 function AboutSection() {
   const native = window.safelightNative;
   const repo = "https://github.com/anthonyreimche/SafeLight";
@@ -773,7 +1006,7 @@ function AboutSection() {
       </Field>
 
       <p className="text-[10px] leading-relaxed text-text-muted">
-        © {new Date().getFullYear()} Anthony Reimche. MIT licensed.
+        © {new Date().getFullYear()} Anthony Reimche. GPL-3.0 licensed.
       </p>
     </div>
   );

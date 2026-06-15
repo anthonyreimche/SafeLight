@@ -7,6 +7,7 @@
 import { create } from "zustand";
 import type { SortDirection, SortField } from "@/catalog/types";
 import type { ColorSpaceId } from "@/rendering/color-space";
+import type { UpdateChannel } from "@/update/update-checker";
 
 export type ExportFormatPref = "image/jpeg" | "image/png" | "image/webp";
 
@@ -60,6 +61,12 @@ export interface AppSettings {
   // ── Extensions ─────────────────────────────────────────────────────────
   /** GitHub topic that marks official extensions in the browser. */
   extensionTopic: string;
+
+  // ── Updates ────────────────────────────────────────────────────────────
+  /** Check GitHub for a newer release on startup and show a banner. */
+  checkForUpdates: boolean;
+  /** Which releases trigger a notification: "patch" = all, "minor" = stable only. */
+  updateChannel: UpdateChannel;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -83,6 +90,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   singleKeyShortcuts: true,
   writeXmpSidecars: false,
   extensionTopic: "safelight-extension",
+  checkForUpdates: true,
+  updateChannel: "patch",
 };
 
 const KEY = "sl_settings_v1";
