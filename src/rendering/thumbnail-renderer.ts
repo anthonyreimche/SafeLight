@@ -51,11 +51,13 @@ function drawPhoto(
   image: DecodedImage,
   params: DevelopParams,
   maxEdge: number,
+  asShotTemperature = 6500,
 ): void {
   const isFallback =
     image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
   // Cached develop preview is linear-encoded RAW; it needs the base tone curve.
   const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
+  ctx.renderer.setAsShotTemperature(asShotTemperature);
   ctx.renderer.setImage(
     image.kind === "bitmap" ? image.bitmap : image,
     maxEdge,
@@ -79,7 +81,7 @@ export async function renderEditedThumbnail(
   const image = await loadPhotoImage(photo);
   if (!image) return null;
   try {
-    drawPhoto(ctx, image, params, maxEdge);
+    drawPhoto(ctx, image, params, maxEdge, photo.exif.colorTemperature ?? 6500);
     return await new Promise<Blob | null>((resolve) =>
       ctx.canvas.toBlob((b) => resolve(b), "image/jpeg", 0.9),
     );
@@ -121,7 +123,7 @@ export async function renderPhotoHistogram(
   if (!image) return null;
 
   try {
-    drawPhoto(ctx, image, params, maxEdge);
+    drawPhoto(ctx, image, params, maxEdge, photo.exif.colorTemperature ?? 6500);
     return computeHistogram(ctx.canvas);
   } finally {
     if (image.kind === "bitmap") image.bitmap.close();

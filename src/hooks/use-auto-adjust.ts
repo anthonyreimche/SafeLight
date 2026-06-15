@@ -64,7 +64,7 @@ export function useAutoAdjust() {
     () =>
       run(() => {
         const s = useDevelopStore.getState();
-        const step = autoWhiteBalanceStep(s.histogram!, s.params);
+        const step = autoWhiteBalanceStep(s.histogram!, s.params, s.asShotTemperature);
         s.setParam("temperature", step.temperature);
         s.setParam("tint", step.tint);
         return step.done;
@@ -82,7 +82,7 @@ export function useAutoAdjust() {
         const s = useDevelopStore.getState();
         const rgb = sample();
         if (!rgb) return true;
-        const step = whiteBalanceStepFromLinear(rgb[0], rgb[1], rgb[2], s.params);
+        const step = whiteBalanceStepFromLinear(rgb[0], rgb[1], rgb[2], s.params, s.asShotTemperature);
         s.setParam("temperature", step.temperature);
         s.setParam("tint", step.tint);
         return step.done;

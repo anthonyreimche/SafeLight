@@ -59,6 +59,7 @@ uniform float uVibrance;
 uniform float uSaturation;
 uniform float uTemperature;
 uniform float uTint;
+uniform float uAsShotTemperature;
 
 uniform float uHslHue[8];
 uniform float uHslSat[8];
@@ -233,10 +234,10 @@ vec3 blackbodyLinear(float kelvin) {
 }
 
 // White balance as a Kelvin temperature (warming the image as the value rises)
-// plus a green↔magenta tint. Gains are derived so 6500K is
-// neutral, normalized on green to hold brightness.
-vec3 applyWhiteBalance(vec3 c, float kelvin, float tint) {
-  vec3 gain = blackbodyLinear(6500.0) / blackbodyLinear(kelvin);
+// plus a green↔magenta tint. Gains are derived so asShotK (the camera's
+// shooting WB, baked into the decoded pixels) is the neutral point.
+vec3 applyWhiteBalance(vec3 c, float kelvin, float tint, float asShotK) {
+  vec3 gain = blackbodyLinear(asShotK) / blackbodyLinear(kelvin);
   gain /= gain.g;
   gain.g *= 1.0 - (tint / 150.0) * 0.6; // +tint -> magenta, -tint -> green
   return c * gain;
@@ -1081,7 +1082,7 @@ void main() {
     }
   }
 
-  lin = applyWhiteBalance(lin, uTemperature, uTint);
+  lin = applyWhiteBalance(lin, uTemperature, uTint, uAsShotTemperature);
 
   // Scene tonal zone, captured BEFORE exposure. Highlights/Shadows classify pixels
   // by where they sat in the original scene, so a global exposure push (e.g. +5) does

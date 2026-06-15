@@ -31,6 +31,7 @@ export function useLoupeRenderer(
 ): RendererStatus {
   const rendererRef = useRef<WebGLRenderer | null>(null);
   const savedParamsRef = useRef<DevelopParams>(DEFAULT_DEVELOP_PARAMS);
+  const asShotTemp = photo.exif.colorTemperature ?? 6500;
   const showBeforeRef = useRef(showBefore);
   showBeforeRef.current = showBefore;
 
@@ -74,7 +75,7 @@ export function useLoupeRenderer(
     let cancelled = false;
     if (!rendererRef.current) return;
     setLoading(true);
-    Promise.all([loadPhotoImage(photo), loadSavedParams(photo.id)]).then(
+    Promise.all([loadPhotoImage(photo), loadSavedParams(photo.id, photo.exif.colorTemperature)]).then(
       ([image, saved]) => {
         const renderer = rendererRef.current;
         if (cancelled || !renderer) {
@@ -92,6 +93,7 @@ export function useLoupeRenderer(
           // Cached develop preview is linear-encoded RAW; it needs the base tone
           // curve, unlike a genuine camera-rendered bitmap.
           const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
+          renderer.setAsShotTemperature(photo.exif.colorTemperature ?? 6500);
           renderer.setImage(
             image.kind === "bitmap" ? image.bitmap : image,
             LOUPE_MAX_EDGE,
@@ -101,7 +103,7 @@ export function useLoupeRenderer(
           if (image.kind === "bitmap") image.bitmap.close();
         }
         renderer.setParams(
-          showBeforeRef.current ? DEFAULT_DEVELOP_PARAMS : saved,
+          showBeforeRef.current ? { ...DEFAULT_DEVELOP_PARAMS, temperature: asShotTemp } : saved,
         );
         renderer.render();
         syncSize();
@@ -120,7 +122,7 @@ export function useLoupeRenderer(
     const renderer = rendererRef.current;
     if (!renderer) return;
     renderer.setParams(
-      showBefore ? DEFAULT_DEVELOP_PARAMS : savedParamsRef.current,
+      showBefore ? { ...DEFAULT_DEVELOP_PARAMS, temperature: asShotTemp } : savedParamsRef.current,
     );
     const id = requestAnimationFrame(() => {
       renderer.render();

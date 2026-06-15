@@ -230,6 +230,7 @@ export class WebGLRenderer {
   private fillH = 0;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private params: DevelopParams | null = null;
+  private asShotTemperature = 6500;
   private hasImage = false;
   private imageWidth = 0;
   private imageHeight = 0;
@@ -547,6 +548,7 @@ export class WebGLRenderer {
       "uSaturation",
       "uTemperature",
       "uTint",
+      "uAsShotTemperature",
       "uHslHue",
       "uHslSat",
       "uHslLum",
@@ -884,6 +886,10 @@ export class WebGLRenderer {
     this.outSpace = space;
   }
 
+  setAsShotTemperature(kelvin: number) {
+    this.asShotTemperature = kelvin >= 2000 && kelvin <= 50000 ? kelvin : 6500;
+  }
+
   setParams(params: DevelopParams) {
     this.params = params;
     this.updateMaskTexture(params.masks);
@@ -974,6 +980,7 @@ export class WebGLRenderer {
     gl.uniform1f(u.uSaturation, p.saturation);
     gl.uniform1f(u.uTemperature, p.temperature);
     gl.uniform1f(u.uTint, p.tint);
+    gl.uniform1f(u.uAsShotTemperature, this.asShotTemperature);
 
     const crop = p.crop ?? DEFAULT_CROP;
     gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);

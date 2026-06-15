@@ -69,12 +69,13 @@ export interface WbStep {
  * way there (damped, to stay stable across iterations). `done` is true once the
  * three channel means agree to within ~1%.
  */
-export function autoWhiteBalanceStep(hist: HistogramData, params: DevelopParams): WbStep {
+export function autoWhiteBalanceStep(hist: HistogramData, params: DevelopParams, asShotTemperature = 6500): WbStep {
   return whiteBalanceStepFromLinear(
     meanLinear(hist.r),
     meanLinear(hist.g),
     meanLinear(hist.b),
     params,
+    asShotTemperature,
   );
 }
 
@@ -90,6 +91,7 @@ export function whiteBalanceStepFromLinear(
   mG: number,
   mB: number,
   params: DevelopParams,
+  asShotTemperature = 6500,
 ): WbStep {
   if (mR <= 0 || mG <= 0 || mB <= 0) {
     return { temperature: params.temperature, tint: params.tint, done: true };
@@ -102,12 +104,12 @@ export function whiteBalanceStepFromLinear(
     return { temperature: params.temperature, tint: params.tint, done: true };
   }
 
-  const bb65 = blackbodyLinear(6500);
+  const bbRef = blackbodyLinear(asShotTemperature);
   const gainsFor = (kelvin: number, tint: number): [number, number, number] => {
     const bb = blackbodyLinear(kelvin);
-    let gr = bb65[0] / bb[0];
-    const gNorm = bb65[1] / bb[1];
-    let gb = bb65[2] / bb[2];
+    let gr = bbRef[0] / bb[0];
+    const gNorm = bbRef[1] / bb[1];
+    let gb = bbRef[2] / bb[2];
     gr /= gNorm;
     gb /= gNorm;
     const gg = 1 - (tint / 150) * 0.6;
@@ -129,7 +131,7 @@ export function whiteBalanceStepFromLinear(
   for (let i = 0; i <= steps; i++) {
     const k = TEMP_MIN * Math.pow(TEMP_MAX / TEMP_MIN, i / steps);
     const bb = blackbodyLinear(k);
-    const err = Math.abs(Math.log((bb65[0] / bb[0]) / (bb65[2] / bb[2])) - targetLogRB);
+    const err = Math.abs(Math.log((bbRef[0] / bb[0]) / (bbRef[2] / bb[2])) - targetLogRB);
     if (err < bestErr) {
       bestErr = err;
       bestK = k;

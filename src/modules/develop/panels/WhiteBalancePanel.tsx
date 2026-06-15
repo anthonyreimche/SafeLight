@@ -11,6 +11,7 @@ export function WhiteBalancePanel() {
   const histogram = useDevelopStore((s) => s.histogram);
   const wbPicking = useDevelopStore((s) => s.wbPicking);
   const setWbPicking = useDevelopStore((s) => s.setWbPicking);
+  const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   const { autoWhiteBalance } = useAutoAdjust();
 
   return (
@@ -58,7 +59,7 @@ export function WhiteBalancePanel() {
           min={2000}
           max={50000}
           step={10}
-          defaultValue={6500}
+          defaultValue={asShotTemperature}
           onChange={(v) => setParam("temperature", v)}
           onCommit={() => commitEdit("Temperature")}
         />

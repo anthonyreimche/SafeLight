@@ -27,6 +27,7 @@ export interface RawFloatImage {
   oriented?: boolean;   // true when the decoder already applied EXIF orientation
   suspicious?: boolean; // true when the decode passed sanity checks but was marginal
                         // — do not write to cache, let the next open re-decode
+  colorTemperature?: number; // as-shot WB in Kelvin, derived from camera multipliers
 }
 
 const DEFAULT_CFA: [number, number, number, number] = [0, 1, 1, 2]; // RGGB

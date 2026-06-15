@@ -29,6 +29,7 @@ const TAG = {
   DateTimeOriginal: 0x9003,
   FocalLength: 0x920a,
   LensModel: 0xa434,
+  AsShotNeutral: 0xc628,
 } as const;
 
 interface Reader {
@@ -136,7 +137,80 @@ function parseTiff(view: DataView, base: number): ExifData {
     if (lens) exif.lens = lens;
   }
 
+  // DNG AsShotNeutral — sits in IFD0, gives per-channel neutral values.
+  const asnEntry = ifd0.get(TAG.AsShotNeutral);
+  if (asnEntry) {
+    const asn = readRationals(r, asnEntry);
+    if (asn.length >= 3 && asn[0] > 0 && asn[1] > 0 && asn[2] > 0) {
+      const kelvin = estimateKelvinFromNeutral(asn[0], asn[1], asn[2]);
+      if (kelvin >= 2000 && kelvin <= 50000) exif.colorTemperature = kelvin;
+    }
+  }
+
   return exif;
+}
+
+// Read an array of RATIONAL or SRATIONAL values as numbers.
+function readRationals(r: Reader, e: Entry): number[] {
+  if (e.type !== 5 && e.type !== 10) return [];
+  const signed = e.type === 10;
+  const sz = 8;
+  const start = dataOffset(r, e);
+  const out: number[] = [];
+  for (let i = 0; i < e.count; i++) {
+    const off = start + i * sz;
+    if (off + sz > r.view.byteLength) break;
+    const num = signed ? r.view.getInt32(off, r.le) : r.view.getUint32(off, r.le);
+    const den = signed ? r.view.getInt32(off + 4, r.le) : r.view.getUint32(off + 4, r.le);
+    out.push(den === 0 ? 0 : num / den);
+  }
+  return out;
+}
+
+// Estimate Kelvin colour temperature from AsShotNeutral (per-channel neutral
+// values). The WB gain is 1/neutral; we look for the Kelvin whose blackbody
+// R/B ratio best matches the gain R/B ratio, using Tanner Helland's fit
+// (same as the rendering shader).
+function estimateKelvinFromNeutral(nR: number, nG: number, nB: number): number {
+  // WB gains — green-normalised
+  const gR = (1 / nR) / (1 / nG);
+  const gB = (1 / nB) / (1 / nG);
+  const targetLogRB = Math.log(gR / gB);
+
+  let bestK = 6500;
+  let bestErr = Infinity;
+  const steps = 240;
+  for (let i = 0; i <= steps; i++) {
+    const logK = Math.log(2000) + (i / steps) * (Math.log(50000) - Math.log(2000));
+    const k = Math.exp(logK);
+    const bb = blackbodySrgb(k);
+    const ref = blackbodySrgb(6500);
+    const rGain = ref[0] / bb[0];
+    const bGain = ref[2] / bb[2];
+    const err = Math.abs(Math.log(rGain / bGain) - targetLogRB);
+    if (err < bestErr) { bestErr = err; bestK = k; }
+  }
+  return Math.round(bestK / 10) * 10;
+}
+
+// Tanner Helland's blackbody → sRGB approximation (matches the shader).
+function blackbodySrgb(kelvin: number): [number, number, number] {
+  const t = Math.max(1000, Math.min(50000, kelvin)) / 100;
+  let r: number, g: number, b: number;
+  if (t <= 66) {
+    r = 255;
+    g = 99.4708025861 * Math.log(t) - 161.1195681661;
+    b = t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  } else {
+    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
+    g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+    b = 255;
+  }
+  return [
+    Math.max(0, Math.min(255, r)),
+    Math.max(0, Math.min(255, g)),
+    Math.max(0, Math.min(255, b)),
+  ];
 }
 
 function readIFD(r: Reader, ifdOffset: number): Map<number, Entry> {

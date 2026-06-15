@@ -48,7 +48,7 @@ function LibraryHistogram() {
       return;
     }
     (async () => {
-      const params = await loadSavedParams(photo.id);
+      const params = await loadSavedParams(photo.id, photo.exif.colorTemperature);
       const hist = await renderPhotoHistogram(photo, params);
       if (!cancelled) setData(hist);
     })();

@@ -7,6 +7,7 @@ import { parseExif, parseExifDate } from "@/catalog/exif";
 import { orientationToRotation } from "@/catalog/orient";
 import { extractRawPreview, getExtension, isRawFile } from "./raw-preview";
 import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
+import { extractColorTemperature } from "@/raw/libraw-wasm-adapter";
 import { rotateFloatRGBA } from "@/catalog/orient";
 import { cachedKeys, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
 import { getSettings } from "@/state/settings-store";
@@ -116,7 +117,7 @@ async function floatToBitmap(
 // Returns null only when the pixels are genuinely undecodable.
 async function decodeImportBitmap(
   file: File,
-): Promise<{ bitmap: ImageBitmap; oriented: boolean } | null> {
+): Promise<{ bitmap: ImageBitmap; oriented: boolean; colorTemperature?: number } | null> {
   if (isRawFile(file)) {
     const preview = await extractRawPreview(file);
     if (preview) {
@@ -137,7 +138,7 @@ async function decodeImportBitmap(
     const f = await decodeRawToFloat(file);
     if (f) {
       const bm = await floatToBitmap(f.data, f.width, f.height);
-      return { bitmap: bm, oriented: f.oriented ?? false };
+      return { bitmap: bm, oriented: f.oriented ?? false, colorTemperature: f.colorTemperature };
     }
     return null;
   }
@@ -190,6 +191,17 @@ export async function buildPhoto(
   // decode yet still gets correct date/orientation metadata.
   const exif = await parseExif(file);
 
+  // For RAW files, extract the as-shot WB temperature from libraw's cam_mul
+  // (lightweight metadata-only — no pixel decode). parseExif covers DNG files
+  // via AsShotNeutral; this covers all other RAW formats.
+  if (isRawFile(file) && !exif.colorTemperature) {
+    try {
+      const buf = await file.arrayBuffer();
+      const kelvin = await extractColorTemperature(buf);
+      if (kelvin) exif.colorTemperature = kelvin;
+    } catch { /* non-critical */ }
+  }
+
   // Fields common to both outcomes. A supported file is ALWAYS recorded so it
   // imports exactly once and is never re-scanned as "new" on later opens — the
   // id stays stable (edits/ratings stick to it) and the catalog count is honest.
@@ -228,7 +240,10 @@ export async function buildPhoto(
     };
   }
 
-  const { bitmap, oriented } = decoded;
+  const { bitmap, oriented, colorTemperature } = decoded;
+  if (colorTemperature && !exif.colorTemperature) {
+    exif.colorTemperature = colorTemperature;
+  }
   // When the decoder already oriented the pixels (libraw fallback), rotation is 0
   // so we don't rotate twice — and the decode path stays consistent at load time.
   const rotation = oriented ? 0 : orientationToRotation(exif.orientation);
