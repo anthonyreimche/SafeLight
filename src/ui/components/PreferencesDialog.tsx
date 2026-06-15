@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from "react";
 import { create } from "zustand";
+import { pushEscapeHandler } from "@/ui/escape-stack";
 import {
   KEY_ACTIONS,
   comboFromEvent,
@@ -39,6 +40,7 @@ import {
 } from "@/extensions/pipelines";
 import { clearRawCache } from "@/raw/raw-cache";
 import type { SortDirection, SortField } from "@/catalog/types";
+import { COLOR_SPACES } from "@/rendering/color-space";
 
 // ─── Open/close state (exported so the keyboard hook and TopBar can drive it) ─
 
@@ -72,6 +74,12 @@ const SORT_FIELDS: { value: SortField; label: string }[] = [
 export function PreferencesDialog() {
   const open = useOpen((s) => s.open);
   const [section, setSection] = useState<Section>("Interface");
+  // Esc closes the dialog (via the shared modal stack, so a nested dialog on
+  // top closes first).
+  useEffect(() => {
+    if (!open) return;
+    return pushEscapeHandler(closePreferences);
+  }, [open]);
   if (!open) return null;
 
   return (
@@ -455,6 +463,26 @@ function ExportSection() {
           }
         />
       </Field>
+      <Field
+        label="Color space"
+        hint="Output profile. Pixels are converted and the matching ICC profile is embedded so other apps read the colors correctly. sRGB suits the web; Adobe RGB / ProPhoto keep a wider gamut for print."
+      >
+        <select
+          value={s.exportColorSpace}
+          onChange={(e) =>
+            updateSettings({
+              exportColorSpace: e.target.value as typeof s.exportColorSpace,
+            })
+          }
+          className={selectCls}
+        >
+          {COLOR_SPACES.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </Field>
       <ToggleField
         label="Bundle multiple photos as ZIP"
         checked={s.exportBundle}
@@ -620,6 +648,29 @@ function ShortcutsSection() {
           </table>
         </div>
       )}
+      <div>
+        <div className={labelCls}>Viewport (fixed)</div>
+        <table className="mt-1 w-full text-[11px]">
+          <tbody>
+            {[
+              ["Esc", "Exit tool / close dialog"],
+              ["Space", "Toggle zoom (fit ↔ 100%)"],
+              ["Ctrl/⌘ + Click", "Zoom in/out while masking or healing"],
+              ["Ctrl/⌘ + Drag", "Pan while zoomed"],
+            ].map(([combo, label]) => (
+              <tr key={combo} className="border-b border-border-subtle">
+                <td className="py-1 pr-3 text-text-secondary">{label}</td>
+                <td className="w-28 py-1 text-right">
+                  <span className="rounded bg-surface-2 px-2 py-0.5 font-medium text-text-muted">
+                    {combo}
+                  </span>
+                </td>
+                <td className="w-6" />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <div>
         <button onClick={resetAllBindings} className={btnCls}>
           Reset all shortcuts

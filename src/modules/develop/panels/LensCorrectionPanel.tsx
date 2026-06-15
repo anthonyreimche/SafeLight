@@ -24,7 +24,7 @@ export function LensCorrectionPanel() {
   const commitEdit = useDevelopStore((s) => s.commitEdit);
 
   return (
-    <Panel title="Lens Corrections" defaultOpen={false}>
+    <Panel title="Lens Correction" defaultOpen={false}>
       <div className="space-y-0.5">
         {SLIDERS.map((s) => (
           <Slider

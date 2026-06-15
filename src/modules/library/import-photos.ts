@@ -76,14 +76,41 @@ async function createThumbnail(
   return canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 });
 }
 
+// Bake a linear Float32 RGBA buffer down to an 8-bit sRGB ImageBitmap. The
+// thumbnail fallback when a RAW has no embedded preview AND decodeRawToBitmap
+// can't handle its compression (no registered getLibRaw hook): the float path
+// (libraw-wasm) still decodes it, so we sRGB-encode that here rather than drop
+// the file. HDR values above 1.0 are clamped.
+async function floatToBitmap(
+  data: Float32Array,
+  width: number,
+  height: number,
+): Promise<ImageBitmap> {
+  const out = new ImageData(width, height);
+  const px = out.data;
+  for (let i = 0, o = 0; i < width * height; i++, o += 4) {
+    for (let c = 0; c < 3; c++) {
+      let v = data[o + c];
+      v = v <= 0 ? 0 : v >= 1 ? 1 : v;
+      // Linear → sRGB (IEC 61966-2-1).
+      v = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+      px[o + c] = Math.round(v * 255);
+    }
+    px[o + 3] = 255;
+  }
+  return createImageBitmap(out);
+}
+
 // Decode a file to an ImageBitmap for thumbnailing, robustly — a supported file
 // must never be silently dropped from the catalog.
 //
 //  - RAW: prefer the embedded JPEG preview (fast, camera-rendered). If the file
 //    has no browser-decodable preview (some RAWs only embed a lossless/SOF3
 //    preview, or none), fall back to a full libraw sensor decode instead of
-//    giving up. `oriented` is true for the libraw path (it already applied EXIF
-//    orientation, so the caller must NOT rotate again).
+//    giving up — first decodeRawToBitmap (registered getLibRaw / in-house
+//    uncompressed CFA), then the float decode (libraw-wasm, every compression)
+//    baked to sRGB. `oriented` is true when the decoder already applied EXIF
+//    orientation, so the caller must NOT rotate again.
 //  - Everything else: decode directly.
 //
 // Returns null only when the pixels are genuinely undecodable.
@@ -101,7 +128,18 @@ async function decodeImportBitmap(
       }
     }
     const bitmap = await decodeRawToBitmap(file);
-    return bitmap ? { bitmap, oriented: true } : null;
+    if (bitmap) return { bitmap, oriented: true };
+
+    // No embedded preview and the bitmap decoder couldn't handle this RAW's
+    // compression. The float decode (libraw-wasm) handles every compression, so
+    // generate the thumbnail from it. It already applied EXIF orientation on the
+    // libraw path (oriented), but not on the in-house uncompressed fallback.
+    const f = await decodeRawToFloat(file);
+    if (f) {
+      const bm = await floatToBitmap(f.data, f.width, f.height);
+      return { bitmap: bm, oriented: f.oriented ?? false };
+    }
+    return null;
   }
   try {
     const bitmap = await createImageBitmap(file, { imageOrientation: "none" });
@@ -286,7 +324,7 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
     (p) =>
       p.fileHandle &&
       isRawFile({ name: p.filename } as File) &&
-      !present.has(rawCacheKey(p.relPath, p.fileSize)),
+      !present.has(rawCacheKey(p.relPath, p.fileSize, p.rotation ?? 0)),
   );
   if (todo.length === 0) return;
 
@@ -296,12 +334,10 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
       const f = await decodeRawToFloat(file);
       if (!f) return; // failed decode is retried on a later open
 
-      const r = f.oriented
-        ? { data: f.data, width: f.width, height: f.height }
-        : rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
+      const r = rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
 
       await writeCachedPreview(
-        rawCacheKey(photo.relPath, photo.fileSize),
+        rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0),
         r.data,
         r.width,
         r.height,

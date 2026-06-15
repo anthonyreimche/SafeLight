@@ -5,7 +5,7 @@ Safelight is a fast, project-based RAW photo editor. This guide takes you from l
 ## Launch Safelight
 
 - **Desktop app**: run the installed `Safelight` shortcut (see [Installation](installation.md)).
-- **From source**: `npm install`, then `npm run dev` and open the printed URL in a Chromium-based browser, or `npm run electron:dev` for a desktop window.
+- **From source** (Node.js 20.19+/22.12+): `npm install`, then `npm run dev` and open the printed URL in a Chromium-based browser, or `npm run electron:dev` for a desktop window. See [Installation](installation.md) to build your own installer.
 
 ## Open a Project
 

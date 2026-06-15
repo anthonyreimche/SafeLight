@@ -2,8 +2,10 @@
 // the existing ExtensionManagerPanel in a modal styled like Preferences, so
 // extensions are managed in a window instead of a dockable panel.
 
+import { useEffect } from "react";
 import { create } from "zustand";
 import { ExtensionManagerPanel } from "@/extensions/ExtensionManagerPanel";
+import { pushEscapeHandler } from "@/ui/escape-stack";
 
 const useOpen = create<{ open: boolean }>(() => ({ open: false }));
 export const openExtensions = () => useOpen.setState({ open: true });
@@ -13,6 +15,11 @@ export const toggleExtensions = () =>
 
 export function ExtensionsDialog() {
   const open = useOpen((s) => s.open);
+  // Esc closes the dialog, via the shared modal stack (topmost first).
+  useEffect(() => {
+    if (!open) return;
+    return pushEscapeHandler(closeExtensions);
+  }, [open]);
   if (!open) return null;
 
   return (

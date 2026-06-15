@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { CropRect } from "@/catalog/types";
 import { constrainCropToImage } from "@/rendering/crop-transform";
 import type { Mat3 } from "@/rendering/transform";
@@ -47,8 +47,6 @@ interface CropOverlayProps {
   onChange: (crop: CropRect) => void;
   onCommit: () => void;
   onLevel: (deg: number) => void;
-  onCycleGuide: () => void;
-  onFlipGuide: () => void;
 }
 
 export function CropOverlay({
@@ -66,8 +64,6 @@ export function CropOverlay({
   onChange,
   onCommit,
   onLevel,
-  onCycleGuide,
-  onFlipGuide,
 }: CropOverlayProps) {
   const dragRef = useRef<{
     mode: Handle;
@@ -84,27 +80,8 @@ export function CropOverlay({
   // normalized crop.w/crop.h terms, so a drag can flip the lock automatically.
   const normRatioFlip = aspect > 0 ? 1 / (aspect * imageAspect) : 0;
 
-  // While the crop overlay is mounted: "O" cycles the composition guide,
-  // Shift+O rotates / reflects it (Lightroom-style).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (
-        t &&
-        (t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.isContentEditable)
-      )
-        return;
-      if ((e.key === "o" || e.key === "O") && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault();
-        if (e.shiftKey) onFlipGuide();
-        else onCycleGuide();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onCycleGuide, onFlipGuide]);
+  // "O" cycles the composition guide and Shift+O flips it; both are handled
+  // centrally as rebindable shortcuts in use-keyboard-shortcuts.
 
   // straightened-frame point -> frame (screen) coords
   const toScreen = (px: number, py: number) => ({

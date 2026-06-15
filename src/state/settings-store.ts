@@ -6,6 +6,7 @@
 
 import { create } from "zustand";
 import type { SortDirection, SortField } from "@/catalog/types";
+import type { ColorSpaceId } from "@/rendering/color-space";
 
 export type ExportFormatPref = "image/jpeg" | "image/png" | "image/webp";
 
@@ -44,6 +45,8 @@ export interface AppSettings {
   exportQuality: number; // 1–100
   exportLongEdge: number | null; // null = original
   exportBundle: boolean; // zip when exporting multiple
+  /** Output color space; converts pixels and embeds the matching ICC profile. */
+  exportColorSpace: ColorSpaceId;
 
   // ── Shortcuts ──────────────────────────────────────────────────────────
   /** Single-letter shortcuts (G/D/F). Tab and Ctrl-combos always work. */
@@ -71,6 +74,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exportQuality: 90,
   exportLongEdge: null,
   exportBundle: true,
+  exportColorSpace: "srgb",
   singleKeyShortcuts: true,
   extensionTopic: "safelight-extension",
 };

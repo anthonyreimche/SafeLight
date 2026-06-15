@@ -27,7 +27,6 @@
 <img width="3840" height="2067" alt="image" src="https://github.com/user-attachments/assets/ca9f9fbb-6fd7-463d-8e6c-42f47165806e" />
 <img width="3840" height="2067" alt="image" src="https://github.com/user-attachments/assets/fe9c8403-b46c-4f71-bf99-ed3c9b11104f" />
 
-
 - Full undo/redo history with per-edit labels and reset
 - White balance, exposure, contrast, highlights/shadows, whites/blacks, texture, clarity, dehaze, vibrance, saturation
 - Point tone curves — RGB master plus individual red/green/blue channels
@@ -46,6 +45,7 @@
 ### Export
 
 - Batch JPEG, PNG, and WebP export through the same GPU pipeline used for editing
+- Output color space — sRGB, Display P3, Adobe RGB, or ProPhoto RGB, with the matching ICC profile embedded so other apps read the pixels correctly
 - Quality and long-edge resizing controls
 - Multiple photos as a single ZIP or separate files
 - Metadata-free output by design
@@ -81,12 +81,35 @@ See [docs/installation.md](docs/installation.md) for details.
 
 ## Roadmap
 
+Because everything in Safelight is an extension, planned work falls into two tracks. **Core** features are critical to a photo workflow and ship built in (as pre-installed extensions you can disable). **Extensions** are advanced or process-heavy tools that ship as separate, optional packages — install them from another repo only if you need them, so the base app stays lean.
+
+### Core (built-in)
+
 **Develop**
-- Red eye correction
 - B&W and HDR editing support
 - Clipping indicators — highlight/shadow warning overlays on the canvas
 - Range masks — luminance-range and color-range selection for local adjustments
 - Targeted adjustment tool (TAT) — click-drag on the photo to move the slider for the tone/HSL value under the cursor
+
+**Library and organization**
+- Image compare view (before/after split and side-by-side)
+- Virtual copies — multiple edit versions of one photo without duplicating the file
+- Collections and smart collections — virtual groupings independent of folder structure
+- Sync edits — apply the current photo's settings to all selected photos with per-panel granularity
+- Keywords and hierarchical keywording
+- IPTC/XMP metadata editing — copyright, caption, creator, rights fields
+
+**Export and output**
+- Multiple export recipes — run several format/size/destination presets in one pass
+- Watermarking — text or image overlays on export
+- Input color profile support — assign and convert ICC profiles on import (output-side ICC export already ships)
+
+**Platform**
+- Mobile-responsive viewing
+
+### Planned as extensions
+
+**Develop**
 - Filmic / sigmoid tone mapping — film-like tone curve alternatives to the basic panel
 - Wavelet-based noise reduction — fine-scale luminance and color decomposition
 - Moiré reduction
@@ -95,31 +118,20 @@ See [docs/installation.md](docs/installation.md) for details.
 - Focus mask overlay — highlight in-focus areas in the develop canvas
 
 **Library and organization**
-- Image compare view (before/after split and side-by-side)
-- Virtual copies — multiple edit versions of one photo without duplicating the file
-- Collections and smart collections — virtual groupings independent of folder structure
 - Photo stacking — collapse burst/similar shots into a single stack
-- Sync edits — apply the current photo's settings to all selected photos with per-panel granularity
 - Duplicate photo detection — find visually similar or hash-identical photos
-- Keywords and hierarchical keywording
-- IPTC/XMP metadata editing — copyright, caption, creator, rights fields
 - Face detection and tagging
 - Map module — GPS/geolocation-based photo browsing and tagging
-- Camera/card import wizard — detect connected cameras and SD cards, copy files with rename templates
 
 **Export and output**
-- Batch editing
-- Multiple export recipes — run several format/size/destination presets in one pass
-- Watermarking — text or image overlays on export
 - Soft proofing — simulate paper or screen output using ICC profiles
-- Color profile support — assign and convert ICC input/output profiles
 - Print module — multi-photo layout, contact sheet, color-managed printing
 - Slideshow module
 - Web gallery / publish services — generate HTML galleries or push to Flickr, SmugMug, etc.
 - Photo book module — page-layout tool for print-on-demand books
 
-**AI features**
-- AI masking via ONNX.js (Select Subject, Sky)
+**AI features** (ONNX.js models, downloaded on demand)
+- AI masking (Select Subject, Sky)
 - AI sky replacement
 - AI object removal / content-aware fill
 - AI portrait enhancement — skin, eyes, and portrait retouching
@@ -128,8 +140,6 @@ See [docs/installation.md](docs/installation.md) for details.
 **Platform and integration**
 - Lightroom catalog import (sql.js)
 - Tethered shooting — live capture from camera via USB/WiFi
-- Mobile-responsive viewing
-- Extension marketplace and scaffolding tools
 
 ## Documentation
 

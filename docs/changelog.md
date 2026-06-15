@@ -4,14 +4,6 @@ All notable changes to Safelight are documented in this file.
 
 ## [Unreleased]
 
-### Added
-- `build-scripts/` folder with one-click builds for every distribution target: Windows NSIS installer, Linux `.deb`, `.rpm`, `.pacman` (Arch/Manjaro), Flatpak, and AppImage (built via WSL2 on Windows), and a macOS `.dmg` script (run on a Mac)
-- Linux packaging config (`build.linux`) in package.json
-
-### Changed
-- `build-electron.bat` renamed and moved to `build-scripts/build-electron-windows-exe.bat`; it now prunes `release/` to the single signed installer file
-- Code-signing certificate subject changed to `CN=Safelight`
-
 ### Planned
 - Red eye correction
 - Image compare view
@@ -23,6 +15,38 @@ All notable changes to Safelight are documented in this file.
 - Mobile-responsive viewing
 - Camera profile / base tuning controls
 - Extension marketplace and scaffolding tools
+
+## [1.0.4] - 2026-06-14
+
+### Changed
+- Reworked the Masking panel and the mask/heal workflow for clearer per-mask controls
+- Faster application startup
+
+### Fixed
+- Re-importing a folder no longer duplicates or mis-keys existing photos
+
+## [1.0.3] - 2026-06-13
+
+### Fixed
+- Black-image rendering issue on certain RAW files
+- Folder support / project scanning fixes
+
+## [1.0.2] - 2026-06-13
+
+### Fixed
+- Assorted stability and rendering bug fixes
+
+## [1.0.1] - 2026-06-12
+
+### Added
+- `build-scripts/` folder with one-click builds for every distribution target: Windows NSIS installer, Linux `.deb`, `.rpm`, `.pacman` (Arch/Manjaro), Flatpak, and AppImage (built via WSL2 on Windows), and a macOS `.dmg` script (run on a Mac)
+- Linux packaging config (`build.linux`) in package.json
+
+### Changed
+- Improved Library browsing and Export
+- Forward-compatibility groundwork for the extension API
+- `build-electron.bat` renamed and moved to `build-scripts/build-electron-windows-exe.bat`; it now prunes `release/` to the single signed installer file
+- Code-signing certificate subject changed to `CN=Safelight`
 
 ## [1.0.0] - 2026-06-11
 

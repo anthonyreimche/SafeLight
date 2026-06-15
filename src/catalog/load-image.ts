@@ -148,7 +148,7 @@ export async function loadPhotoImage(
         // and the shader does sRGB->linear, so there's no per-sample CPU decode and
         // the texture is half the bytes of the old Float32 path. Still full precision
         // (no 8-bit posterising under a big exposure push).
-        const cacheKey = rawCacheKey(photo.relPath, photo.fileSize);
+        const cacheKey = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
         const cached = await readCachedPreview(cacheKey);
         if (cached) {
           return { kind: "srgb16", data: cached.data, width: cached.width, height: cached.height };
@@ -175,10 +175,11 @@ export async function loadPhotoImage(
 
         const f = await decodeRawToFloat(file);
         if (f) {
-          // libraw already applies EXIF orientation; the in-house path doesn't.
-          const r = f.oriented
-            ? { data: f.data, width: f.width, height: f.height }
-            : rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
+          // Always bake photo.rotation in. At import it's the EXIF orientation
+          // for the in-house decode (0 when libraw already oriented the pixels);
+          // manual [ / ] rotations then add 90° steps on top — so it must be
+          // applied for both decode paths, not just the un-oriented one.
+          const r = rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
 
           // Validate the decode's color against the embedded JPEG preview.
           // An unrecognised camera body (e.g. newer Canon EOS R bodies with

@@ -5,6 +5,7 @@
 // persist per-extension and apply immediately (api.settings.onChange fires as
 // you edit).
 
+import { useEffect } from "react";
 import { useRegistry } from "./registry";
 import {
   getAllExtSettings,
@@ -12,6 +13,7 @@ import {
   setExtSetting,
   useExtSettings,
 } from "./ext-settings";
+import { pushEscapeHandler } from "@/ui/escape-stack";
 import type { SettingsField } from "./types";
 
 export function ExtensionSettingsDialog({
@@ -25,6 +27,10 @@ export function ExtensionSettingsDialog({
 }) {
   const contrib = useRegistry((s) => s.settings[extensionId]);
   useExtSettings((s) => s[extensionId]); // re-render on value changes
+
+  // Mounted == open and always on top of the Extensions dialog, so Esc closes
+  // this first via the shared modal stack.
+  useEffect(() => pushEscapeHandler(onClose), [onClose]);
 
   return (
     <div

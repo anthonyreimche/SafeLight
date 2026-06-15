@@ -96,6 +96,7 @@ export function ExportPanel() {
       longEdge,
       bundle: delivery === "zip",
       delivery,
+      colorSpace: getSettings().exportColorSpace,
     };
     try {
       const result = await exportPhotos(

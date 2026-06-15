@@ -69,8 +69,16 @@ function idbReq<T>(req: IDBRequest<T>): Promise<T> {
 // keying on the File meant every reopen re-read every RAW just to build the key.
 // relPath is unique within a project and persisted, fileSize changes on most
 // edits, so the pair is a stable, cheap identity.
-export function rawCacheKey(relPath: string, fileSize: number): string {
-  return `${relPath}:${fileSize}`;
+export function rawCacheKey(
+  relPath: string,
+  fileSize: number,
+  rotation = 0,
+): string {
+  // Rotation is part of the identity: the cached preview is stored already
+  // oriented, so a different rotation must miss the cache and re-decode rather
+  // than return a stale orientation. Old (rotation-less) keys simply never
+  // match and get re-decoded once.
+  return `${relPath}:${fileSize}:${rotation}`;
 }
 
 // ─── Project-folder cache ────────────────────────────────────────────────────

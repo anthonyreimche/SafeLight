@@ -7,6 +7,7 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedParams } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
+import { embedColorProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { ZipWriter } from "./zip";
 
 export type ExportFormat = "image/jpeg" | "image/png" | "image/webp";
@@ -20,6 +21,8 @@ export interface ExportSettings {
   /** @deprecated Use deliveryMode instead */
   bundle: boolean;
   delivery: DeliveryMode;
+  /** Output color space (pixel convert + embedded ICC). Defaults to sRGB. */
+  colorSpace?: ColorSpaceId;
 }
 
 const ARCHIVE_NAME = "safelight-export.zip";
@@ -116,7 +119,9 @@ async function renderOne(
     );
     renderer.setParams(await loadSavedParams(photo.id));
     renderer.render();
-    return await canvasToBlob(canvas, settings.format, settings.quality);
+    const blob = await canvasToBlob(canvas, settings.format, settings.quality);
+    if (!blob) return null;
+    return embedColorProfile(blob, settings.colorSpace ?? "srgb");
   } finally {
     bitmap?.close();
   }
@@ -138,6 +143,9 @@ export async function exportPhotos(
   } catch {
     return { exported: 0, failed: photos.map((p) => p.filename) };
   }
+  // Wider-gamut export: the renderer converts pixels and renderOne embeds the
+  // matching ICC. Persists across the batch (one render context).
+  renderer.setOutputColorSpace(settings.colorSpace ?? "srgb");
 
   const delivery = settings.delivery ?? (settings.bundle ? "zip" : "files");
   const useZip = delivery === "zip" && photos.length > 1;

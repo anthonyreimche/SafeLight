@@ -29,12 +29,18 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "panels.toggle", label: "Hide / show all panels", category: "General", def: "Tab" },
   { id: "view.fullscreen", label: "Fullscreen", category: "General", def: "F" },
   { id: "app.preferences", label: "Preferences", category: "General", def: "Ctrl+," },
+  { id: "app.extensions", label: "Extensions", category: "General", def: "Ctrl+Shift+X" },
   // ── Develop ──
   { id: "develop.undo", label: "Undo edit", category: "Develop", def: "Ctrl+Z" },
   { id: "develop.redo", label: "Redo edit", category: "Develop", def: "Ctrl+Shift+Z", altDef: "Ctrl+Y" },
   { id: "develop.reset", label: "Reset all edits", category: "Develop", def: "Ctrl+Shift+R" },
   { id: "brush.smaller", label: "Shrink brush", category: "Develop", def: "[" },
   { id: "brush.larger", label: "Grow brush", category: "Develop", def: "]" },
+  { id: "brush.featherDown", label: "Less brush feather", category: "Develop", def: "Shift+[", altDef: "Shift+{" },
+  { id: "brush.featherUp", label: "More brush feather", category: "Develop", def: "Shift+]", altDef: "Shift+}" },
+  { id: "mask.delete", label: "Delete mask component", category: "Develop", def: "Delete", altDef: "Backspace" },
+  { id: "crop.cycleGuide", label: "Cycle crop guide", category: "Develop", def: "O" },
+  { id: "crop.flipGuide", label: "Flip crop guide", category: "Develop", def: "Shift+O" },
   // ── Library ──
   { id: "rate.0", label: "Clear rating", category: "Library", def: "0" },
   { id: "rate.1", label: "Rating ★", category: "Library", def: "1" },

@@ -13,6 +13,11 @@ import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
 import { buildFragmentShader, VERTEX_SHADER } from "./shaders";
 import {
+  OUT_SPACE_CODE,
+  outMatrixColumnMajor,
+  type ColorSpaceId,
+} from "../color-space";
+import {
   BUILTIN_RESOLVED,
   resolveActivePipeline,
   type ResolvedPipeline,
@@ -229,6 +234,9 @@ export class WebGLRenderer {
   private imageWidth = 0;
   private imageHeight = 0;
   private maxEdge = MAX_EDGE;
+  // Output color space. Live develop/loupe/thumbnails stay sRGB (a no-op in the
+  // shader); export sets a wider space so the encode + ICC match.
+  private outSpace: ColorSpaceId = "srgb";
   private linear = false;
   private isFallbackPreview = false;
   private applyBaseCurve = false;
@@ -509,6 +517,8 @@ export class WebGLRenderer {
     const names = [
       "uImage",
       "uCurve",
+      "uOutSpace",
+      "uOutMatrix",
       "uCrop",
       "uInvTransform",
       "uLinear",
@@ -868,6 +878,12 @@ export class WebGLRenderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, MAX_MASKS, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.maskCurveAtlas);
   }
 
+  // Output color space for subsequent renders. Default sRGB matches the screen;
+  // export uses this to convert pixels (and pairs it with an embedded ICC).
+  setOutputColorSpace(space: ColorSpaceId) {
+    this.outSpace = space;
+  }
+
   setParams(params: DevelopParams) {
     this.params = params;
     this.updateMaskTexture(params.masks);
@@ -923,6 +939,9 @@ export class WebGLRenderer {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
     gl.uniform1i(u.uCurve, 1);
+
+    gl.uniform1i(u.uOutSpace, OUT_SPACE_CODE[this.outSpace]);
+    gl.uniformMatrix3fv(u.uOutMatrix, false, outMatrixColumnMajor(this.outSpace));
 
     gl.uniform1i(u.uLinear, this.linear ? 1 : 0);
     gl.uniform1i(u.uIsFallbackPreview, this.isFallbackPreview ? 1 : 0);

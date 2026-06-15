@@ -37,8 +37,6 @@ export function DevelopCanvas({
   const constrainCrop = useDevelopStore((s) => s.constrainCrop);
   const cropGuide = useDevelopStore((s) => s.cropGuide);
   const cropGuideFlip = useDevelopStore((s) => s.cropGuideFlip);
-  const cycleCropGuide = useDevelopStore((s) => s.cycleCropGuide);
-  const cycleCropGuideFlip = useDevelopStore((s) => s.cycleCropGuideFlip);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
   const wbPicking = useDevelopStore((s) => s.wbPicking);
@@ -110,6 +108,7 @@ export function DevelopCanvas({
       onZoomChange={onZoomChange}
       loading={loading}
       resetKey={photo.id}
+      overlayZoomable={!cropping && activeTool !== "none"}
       onPick={
         wbPicking && !cropping && activeTool === "none" ? onPick : undefined
       }
@@ -128,8 +127,6 @@ export function DevelopCanvas({
                 constrain={constrainCrop}
                 guide={cropGuide}
                 guideFlip={cropGuideFlip}
-                onCycleGuide={cycleCropGuide}
-                onFlipGuide={cycleCropGuideFlip}
                 onChange={pushCrop}
                 onCommit={() => {
                   flushCrop();

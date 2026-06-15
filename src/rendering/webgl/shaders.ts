@@ -24,6 +24,11 @@ out vec4 fragColor;
 uniform sampler2D uImage;
 uniform sampler2D uCurve;
 
+// Output color space: 0 sRGB (no-op, live view), 1 Display-P3, 2 Adobe RGB,
+// 3 ProPhoto. uOutMatrix is sRGB-linear -> target-linear; only used when != 0.
+uniform int uOutSpace;
+uniform mat3 uOutMatrix;
+
 uniform vec4 uCrop;         // x, y, width, height (transformed image space, y-down)
 uniform mat3 uInvTransform; // transformed-image coord -> source UV (projective)
 uniform bool uLinear;       // true: source texture is linear float (RAW); skip sRGB decode
@@ -175,6 +180,19 @@ vec3 linearToSrgb(vec3 c) {
 vec3 linearToSrgbU(vec3 c) {
   c = max(c, 0.0);
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+// Convert the final sRGB-encoded display pixel into the selected output color
+// space: decode to linear sRGB primaries, rotate primaries with uOutMatrix, then
+// re-encode with the target transfer function (must match the ICC TRC built in
+// color-space.ts so the round-trip is lossless). No-op for sRGB (uOutSpace 0).
+vec3 encodeOutput(vec3 srgb) {
+  if (uOutSpace == 0) return srgb;
+  vec3 lin = clamp(uOutMatrix * srgbToLinear(srgb), 0.0, 1.0);
+  if (uOutSpace == 2) return pow(lin, vec3(1.0 / 2.19921875));        // Adobe RGB
+  if (uOutSpace == 3)                                                  // ProPhoto (ROMM)
+    return mix(lin * 16.0, pow(lin, vec3(1.0 / 1.8)), step(0.001953125, lin));
+  return linearToSrgb(lin);                                           // Display-P3 (sRGB TRC)
 }
 
 // Pluggable display transform (Pixel Peeper): scene-linear HDR -> display-encoded.
@@ -1230,7 +1248,7 @@ void main() {
   c = applyVignette(c, vUv);
   c = applyGrain(c, vUv);
 
-  fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+  fragColor = vec4(encodeOutput(clamp(c, 0.0, 1.0)), 1.0);
 }
 `;
 

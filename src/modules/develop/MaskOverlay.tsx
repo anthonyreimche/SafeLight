@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type {
   BrushDab,
   CropRect,
@@ -705,26 +705,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
     st.commitEdit(activeTool === "retouch" ? "Retouch" : "Mask");
   };
 
-  // Delete removes the selected component; Shift+[ / Shift+] tune brush feather.
-  useEffect(() => {
-    if (activeTool !== "mask") return;
-    const onKey = (e: KeyboardEvent) => {
-      const st = store();
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedMask && selectedComp) {
-        e.preventDefault();
-        st.removeComponent(selectedMask.id, selectedComp.id);
-        st.commitEdit("Delete Component");
-      } else if (e.shiftKey && (e.key === "{" || e.key === "[")) {
-        e.preventDefault();
-        st.setBrushFeather(Math.max(0, Math.round((st.brushFeather - 0.05) * 100) / 100));
-      } else if (e.shiftKey && (e.key === "}" || e.key === "]")) {
-        e.preventDefault();
-        st.setBrushFeather(Math.min(1, Math.round((st.brushFeather + 0.05) * 100) / 100));
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [activeTool, selectedMask, selectedComp, store]);
+  // Delete (remove component) and Shift+[ / Shift+] (brush feather) are handled
+  // centrally as rebindable shortcuts in use-keyboard-shortcuts.
 
   // --- rendering -------------------------------------------------------------
   const showBrushCursor = activeTool === "mask" && maskToolType === "brush" && cursor;

@@ -7,6 +7,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { isEditableTarget, shortcutsSuspended } from "@/state/keybindings-store";
 
 interface ViewportImageProps {
   canvasRef: RefObject<HTMLCanvasElement | null>;
@@ -16,9 +17,15 @@ interface ViewportImageProps {
   onZoomChange: (zoom: number | null) => void;
   loading?: boolean;
   resetKey?: string; // changing this snaps back to "fit" (e.g. a new photo)
-  // When provided, the viewport is a static fit (no zoom/pan) and renders this
-  // overlay on top, given the displayed image rect in frame coordinates.
+  // When provided, the viewport renders this overlay on top, given the displayed
+  // image rect in frame coordinates. By default an overlay forces a static fit
+  // (crop), but see overlayZoomable.
   overlay?: (rect: { x: number; y: number; w: number; h: number }) => ReactNode;
+  // When true (mask/heal overlays), zoom/pan stay active beneath the overlay:
+  // Ctrl/⌘+click toggles 100%↔fit at the cursor, Ctrl/⌘ or Space + drag pans,
+  // and the overlay turns click-through while the gesture key is held so the
+  // zoom/pan controls underneath receive the pointer.
+  overlayZoomable?: boolean;
   // When set, a click samples instead of zooming: receives the clicked point in
   // canvas buffer pixels (the WB eyedropper). Cursor becomes a crosshair.
   onPick?: (bufferX: number, bufferY: number) => void;
@@ -40,13 +47,19 @@ export function ViewportImage({
   loading,
   resetKey,
   overlay,
+  overlayZoomable,
   onPick,
 }: ViewportImageProps) {
-  const cropMode = !!overlay;
+  // A crop overlay locks the view to fit; a mask/heal overlay (overlayZoomable)
+  // keeps the zoom/pan machinery live underneath it.
+  const staticFit = !!overlay && !overlayZoomable;
   const frameRef = useRef<HTMLDivElement>(null);
   const [frame, setFrame] = useState({ w: 0, h: 0 });
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
+  // True while a zoom-gesture key (Ctrl/⌘ or Space) is held. Used to make a
+  // zoomable overlay click-through so the pointer reaches the pan/zoom layer.
+  const [zoomGesture, setZoomGesture] = useState(false);
 
   // A new image starts at fit, centered.
   useEffect(() => {
@@ -93,9 +106,9 @@ export function ViewportImage({
     return { x, y };
   };
 
-  const effScale = cropMode ? fitScale : (zoom ?? fitScale);
+  const effScale = staticFit ? fitScale : (zoom ?? fitScale);
   const effOffset =
-    cropMode || zoom == null ? centered(fitScale) : clampOffset(offset, zoom);
+    staticFit || zoom == null ? centered(fitScale) : clampOffset(offset, zoom);
 
   const stateRef = useRef({ effScale, effOffset });
   stateRef.current = { effScale, effOffset };
@@ -113,6 +126,24 @@ export function ViewportImage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoom]);
 
+  // Toggle 100%↔fit, anchoring the cursor's image point. cx/cy are frame-local.
+  // A null point (keyboard zoom with no known cursor) anchors at the centre.
+  const zoomToggleAt = (cx: number | null, cy: number | null) => {
+    if (zoom == null) {
+      const { effScale: s0, effOffset: o0 } = stateRef.current;
+      const target = 1;
+      const ax = cx ?? frame.w / 2;
+      const ay = cy ?? frame.h / 2;
+      const px = (ax - o0.x) / s0;
+      const py = (ay - o0.y) / s0;
+      setOffset(clampOffset({ x: ax - px * target, y: ay - py * target }, target));
+      skipRecenterRef.current = true;
+      onZoomChange(target);
+    } else {
+      onZoomChange(null);
+    }
+  };
+
   const handleClick = (clientX: number, clientY: number) => {
     const rect = frameRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -124,21 +155,57 @@ export function ViewportImage({
       onPick(bx, by);
       return;
     }
-    if (zoom == null) {
-      // Zoom to 100% keeping the cursor's image point fixed.
-      const cx = clientX - rect.left;
-      const cy = clientY - rect.top;
-      const { effScale: s0, effOffset: o0 } = stateRef.current;
-      const target = 1;
-      const px = (cx - o0.x) / s0;
-      const py = (cy - o0.y) / s0;
-      setOffset(clampOffset({ x: cx - px * target, y: cy - py * target }, target));
-      skipRecenterRef.current = true;
-      onZoomChange(target);
-    } else {
-      onZoomChange(null);
-    }
+    zoomToggleAt(clientX - rect.left, clientY - rect.top);
   };
+
+  // Keep a fresh closure for the window key listener (mounted once) to call.
+  const zoomToggleRef = useRef<(cx: number | null, cy: number | null) => void>(
+    () => {},
+  );
+  zoomToggleRef.current = zoomToggleAt;
+  // Last cursor position over the frame, so a keyboard zoom anchors there.
+  const lastPointer = useRef<{ x: number; y: number } | null>(null);
+
+  // Zoom-gesture keys. Space taps toggle zoom (also valid in the plain viewport);
+  // in a zoomable overlay, holding Ctrl/⌘ or Space turns the overlay click-
+  // through so the pointer drives zoom/pan instead of painting.
+  useEffect(() => {
+    if (staticFit) return;
+    const frameLocal = () => {
+      const r = frameRef.current?.getBoundingClientRect();
+      const p = lastPointer.current;
+      if (!r || !p) return { x: null, y: null };
+      return { x: p.x - r.left, y: p.y - r.top };
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (shortcutsSuspended() || isEditableTarget(e.target)) return;
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (!e.repeat) {
+          const { x, y } = frameLocal();
+          zoomToggleRef.current(x, y);
+        }
+        setZoomGesture(true);
+      } else if (overlayZoomable && (e.ctrlKey || e.metaKey)) {
+        setZoomGesture(true);
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space" || !(e.ctrlKey || e.metaKey)) setZoomGesture(false);
+    };
+    const onMove = (e: MouseEvent) => {
+      lastPointer.current = { x: e.clientX, y: e.clientY };
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("mousemove", onMove, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("mousemove", onMove, true);
+      setZoomGesture(false);
+    };
+  }, [staticFit, overlayZoomable]);
 
   const downRef = useRef<{
     x: number;
@@ -166,7 +233,9 @@ export function ViewportImage({
   }, []);
 
   const onPointerDown = (e: ReactPointerEvent) => {
-    if (cropMode || e.button !== 0) return;
+    // Mask/heal pointer events bubble up from the overlay; only hijack them for
+    // pan/zoom while a gesture key is held (otherwise the tool owns the drag).
+    if (staticFit || (overlayZoomable && !zoomGesture) || e.button !== 0) return;
     frameRef.current?.setPointerCapture(e.pointerId);
     downRef.current = {
       x: e.clientX,
@@ -206,7 +275,7 @@ export function ViewportImage({
 
   const cursor = onPick
     ? "crosshair"
-    : cropMode
+    : staticFit
       ? "default"
       : dragging
         ? "grabbing"
@@ -236,12 +305,24 @@ export function ViewportImage({
     >
       <canvas ref={canvasRef} style={canvasStyle} />
 
-      {overlay?.({
-        x: effOffset.x,
-        y: effOffset.y,
-        w: bufferWidth * effScale,
-        h: bufferHeight * effScale,
-      })}
+      {/* While a zoom-gesture key is held, the overlay turns click-through so
+          the pointer drives pan/zoom instead of the mask/heal tool. */}
+      {overlay && (
+        <div
+          className="absolute inset-0"
+          style={{
+            pointerEvents: overlayZoomable && zoomGesture ? "none" : undefined,
+          }}
+        >
+          {overlay({
+            x: effOffset.x,
+            y: effOffset.y,
+            w: bufferWidth * effScale,
+            h: bufferHeight * effScale,
+          })}
+          {/* overlay rect = displayed image region in frame coords */}
+        </div>
+      )}
 
       {loading && (
         <div className="absolute bottom-2 left-2 text-[10px] text-text-muted">
