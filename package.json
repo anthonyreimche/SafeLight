@@ -1,7 +1,7 @@
 {
   "name": "safelight",
   "private": true,
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Safelight — a fast RAW photo editor.",
   "homepage": "https://github.com/anthonyreimche/SafeLight",
   "desktopName": "safelight",
@@ -168,7 +168,10 @@
       ]
     },
     "flatpak": {
+      "runtime": "org.freedesktop.Platform",
       "runtimeVersion": "24.08",
+      "sdk": "org.freedesktop.Sdk",
+      "base": "org.electronjs.Electron2.BaseApp",
       "baseVersion": "24.08"
     },
     "nsis": {
