@@ -4,6 +4,8 @@
 
 import { create } from "zustand";
 import type {
+  ExportProcessorContribution,
+  FilenameTemplateContribution,
   LayoutContribution,
   PanelContribution,
   PanelSlot,
@@ -32,6 +34,14 @@ export interface RegisteredSettings extends SettingsContribution {
 export interface RegisteredPipeline extends PipelineContribution {
   extensionId: string;
 }
+export interface RegisteredExportProcessor extends ExportProcessorContribution {
+  extensionId: string;
+  /** Insertion index; processors run in registration order. */
+  order: number;
+}
+export interface RegisteredFilenameTemplate extends FilenameTemplateContribution {
+  extensionId: string;
+}
 
 interface RegistryState {
   panels: Record<string, RegisteredPanel>;
@@ -41,6 +51,8 @@ interface RegistryState {
   /** Keyed by extension id — one settings dialog per extension. */
   settings: Record<string, RegisteredSettings>;
   pipelines: Record<string, RegisteredPipeline>;
+  exportProcessors: Record<string, RegisteredExportProcessor>;
+  filenameTemplates: Record<string, RegisteredFilenameTemplate>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -50,6 +62,8 @@ export const useRegistry = create<RegistryState>(() => ({
   layouts: {},
   settings: {},
   pipelines: {},
+  exportProcessors: {},
+  filenameTemplates: {},
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -100,6 +114,33 @@ export function registerPipeline(
   }));
 }
 
+export function registerExportProcessor(
+  extensionId: string,
+  c: ExportProcessorContribution,
+): void {
+  useRegistry.setState((s) => {
+    const order = Object.keys(s.exportProcessors).length;
+    return {
+      exportProcessors: {
+        ...s.exportProcessors,
+        [c.id]: { ...c, extensionId, order },
+      },
+    };
+  });
+}
+
+export function registerFilenameTemplate(
+  extensionId: string,
+  c: FilenameTemplateContribution,
+): void {
+  useRegistry.setState((s) => ({
+    filenameTemplates: {
+      ...s.filenameTemplates,
+      [c.id]: { ...c, extensionId },
+    },
+  }));
+}
+
 /** Remove every contribution an extension made (uninstall/deactivate). */
 export function unregisterExtension(extensionId: string): void {
   const drop = <T extends { extensionId: string }>(map: Record<string, T>) =>
@@ -113,6 +154,8 @@ export function unregisterExtension(extensionId: string): void {
     layouts: drop(s.layouts),
     settings: drop(s.settings),
     pipelines: drop(s.pipelines),
+    exportProcessors: drop(s.exportProcessors),
+    filenameTemplates: drop(s.filenameTemplates),
   }));
   unregisterExtensionActions(extensionId);
 }

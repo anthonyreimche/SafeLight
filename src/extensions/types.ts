@@ -154,6 +154,85 @@ export interface ExtensionManifest {
   main: string;
 }
 
+/** One settings field used by an export processor's in-panel UI.
+ *  Mirrors SettingsField but scoped to a single processor. */
+export type ExportProcessorField =
+  | {
+      key: string;
+      label: string;
+      hint?: string;
+      type: "boolean";
+      default: boolean;
+    }
+  | {
+      key: string;
+      label: string;
+      hint?: string;
+      type: "number";
+      default: number;
+      min?: number;
+      max?: number;
+      step?: number;
+    }
+  | {
+      key: string;
+      label: string;
+      hint?: string;
+      type: "string";
+      default: string;
+      placeholder?: string;
+    }
+  | {
+      key: string;
+      label: string;
+      hint?: string;
+      type: "select";
+      default: string;
+      options: { value: string; label: string }[];
+    };
+
+/** A post-processing step called for each image after the WebGL pipeline
+ *  encodes it to a Blob. Processors run in registration order, each receiving
+ *  the Blob returned by the previous step. */
+export interface ExportProcessorContribution {
+  /** Globally unique, e.g. "my-ext.watermark". */
+  id: string;
+  /** Shown as a collapsible section header in the Export panel. */
+  label: string;
+  /** Optional settings that appear in the Export panel UI. */
+  settings?: ExportProcessorField[];
+  /**
+   * Called once per exported image.
+   * @param blob    The encoded image Blob from the previous pipeline stage.
+   * @param photo   The CatalogPhoto record (filename, exif, rating, …).
+   * @param settings  Current values of the declared settings fields.
+   * @returns       A new Blob, or the original if no modification was needed.
+   */
+  process(
+    blob: Blob,
+    photo: import("@/catalog/types").CatalogPhoto,
+    settings: Record<string, unknown>,
+  ): Promise<Blob>;
+}
+
+/** A filename template variable set contributed by an extension. Safelight
+ *  resolves the built-in variables ({filename}, {ext}, {year}, {month},
+ *  {day}, {rating}, {camera}, {lens}) from CatalogPhoto; extensions may
+ *  register additional templates. */
+export interface FilenameTemplateContribution {
+  /** Globally unique, e.g. "my-ext.date-template". */
+  id: string;
+  /** Human-readable name shown in the filename template picker (future UI). */
+  label: string;
+  /**
+   * Template string using {variable} placeholders. Built-in variables:
+   * {filename} base name without extension, {ext} format extension,
+   * {year} {month} {day} from EXIF date, {rating} star count (0-5),
+   * {camera} camera model, {lens} lens name.
+   */
+  template: string;
+}
+
 /** A keyboard shortcut contributed by an extension. The action appears in
  *  Preferences ▸ Shortcuts and can be rebound by the user like any built-in. */
 export interface KeyActionContribution {
@@ -183,6 +262,13 @@ export interface SafelightAPI {
   registerKeybinding(c: KeyActionContribution): void;
   /** Declare a settings dialog (⚙ in the Extensions panel). */
   registerSettings(c: SettingsContribution): void;
+  /** Register a post-export image processor. Processors run in registration
+   *  order, each receiving the Blob from the previous step. Settings declared
+   *  in `c.settings` appear as a collapsible section in the Export panel. */
+  registerExportProcessor(c: ExportProcessorContribution): void;
+  /** Contribute a filename template. Built-in variables are resolved by core;
+   *  the template appears in the Export panel's filename template picker. */
+  registerFilenameTemplate(c: FilenameTemplateContribution): void;
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;

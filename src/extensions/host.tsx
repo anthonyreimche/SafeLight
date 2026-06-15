@@ -6,6 +6,8 @@ import * as React from "react";
 import { create } from "zustand";
 import type { SafelightAPI } from "./types";
 import {
+  registerExportProcessor,
+  registerFilenameTemplate,
   registerLayout,
   registerPanel,
   registerPipeline,
@@ -60,6 +62,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerPipeline: (c) => registerPipeline(extensionId, c),
     registerKeybinding: (c) => registerExtensionAction(extensionId, c),
     registerSettings: (c) => registerSettings(extensionId, c),
+    registerExportProcessor: (c) => registerExportProcessor(extensionId, c),
+    registerFilenameTemplate: (c) => registerFilenameTemplate(extensionId, c),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),
