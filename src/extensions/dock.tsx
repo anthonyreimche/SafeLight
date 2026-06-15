@@ -6,6 +6,7 @@
 // Layouts persist per module; Tab hides everything and restores it unchanged.
 
 import {
+  Component,
   createContext,
   useContext,
   useEffect,
@@ -14,6 +15,33 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+
+class PanelErrorBoundary extends Component<
+  { id: string; children: ReactNode },
+  { error: unknown }
+> {
+  constructor(props: { id: string; children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: unknown) {
+    return { error };
+  }
+  render() {
+    if (this.state.error) {
+      const msg =
+        this.state.error instanceof Error
+          ? this.state.error.message
+          : String(this.state.error);
+      return (
+        <div className="p-3 text-[11px] text-red-400">
+          Panel "{this.props.id}" crashed: {msg}
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import { create } from "zustand";
 import { useRegistry } from "./registry";
 import type { AppModule } from "@/catalog/types";
@@ -559,7 +587,11 @@ function DockedPanel({ id }: { id: string }) {
   return (
     <div data-dock-panel={id} className="shrink-0 border-b border-border">
       <PanelHeader id={id} />
-      {!collapsed && <PanelBody id={id} />}
+      {!collapsed && (
+        <PanelErrorBoundary id={id}>
+          <PanelBody id={id} />
+        </PanelErrorBoundary>
+      )}
     </div>
   );
 }
@@ -606,7 +638,9 @@ function FloatingPanel({ id }: { id: string }) {
       <PanelHeader id={id} />
       {!collapsed && (
         <div className="max-h-[70vh] overflow-y-auto">
-          <PanelBody id={id} />
+          <PanelErrorBoundary id={id}>
+            <PanelBody id={id} />
+          </PanelErrorBoundary>
         </div>
       )}
       <div

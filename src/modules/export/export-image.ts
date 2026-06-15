@@ -8,11 +8,15 @@ import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedParams } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, type ColorSpaceId } from "@/rendering/color-space";
+import { useRegistry } from "@/extensions/registry";
 import { ZipWriter } from "./zip";
 
 export type ExportFormat = "image/jpeg" | "image/png" | "image/webp";
 
 export type DeliveryMode = "zip" | "files" | "folder";
+
+/** Per-processor settings map passed to exportPhotos from the Export panel. */
+export type ProcessorSettings = Record<string, Record<string, unknown>>;
 
 export interface ExportSettings {
   format: ExportFormat;
@@ -23,6 +27,12 @@ export interface ExportSettings {
   delivery: DeliveryMode;
   /** Output color space (pixel convert + embedded ICC). Defaults to sRGB. */
   colorSpace?: ColorSpaceId;
+  /** Current values for each registered export processor, keyed by processor
+   *  id. Missing keys fall back to the processor's declared field defaults. */
+  processorSettings?: ProcessorSettings;
+  /** Active filename template id (from a FilenameTemplateContribution), or
+   *  undefined to use the built-in base-name + extension behaviour. */
+  filenameTemplateId?: string;
 }
 
 const ARCHIVE_NAME = "safelight-export.zip";
@@ -61,6 +71,61 @@ export function exportFilename(
   return `${base}.${EXTENSION[format]}`;
 }
 
+/** Resolve a filename template string, substituting built-in variables from
+ *  the photo record. Unknown variables are left as-is. */
+export function resolveFilenameTemplate(
+  template: string,
+  photo: CatalogPhoto,
+  format: ExportFormat,
+): string {
+  const base = photo.filename.replace(/\.[^./\\]+$/, "") || photo.filename;
+  const ext = EXTENSION[format];
+  const exifDate = photo.exif.dateTimeOriginal ?? "";
+  // EXIF dates are "YYYY:MM:DD HH:MM:SS" or ISO; grab the first 10 chars.
+  const datePart = exifDate.replace(/:/g, "-").slice(0, 10);
+  const [year = "", month = "", day = ""] = datePart.split("-");
+  const vars: Record<string, string> = {
+    filename: base,
+    ext,
+    year,
+    month,
+    day,
+    rating: String(photo.rating),
+    camera: photo.exif.cameraModel ?? "",
+    lens: photo.exif.lens ?? "",
+  };
+  const result = template.replace(/{(\w+)}/g, (_, key: string) => vars[key] ?? `{${key}}`);
+  // Ensure the resolved name always ends with the format extension.
+  return result.endsWith(`.${ext}`) ? result : `${result}.${ext}`;
+}
+
+/** Run each registered export processor in registration order, chaining the
+ *  output Blob of each step into the next. Errors in a processor are caught
+ *  and logged; the unmodified input Blob is forwarded so a broken extension
+ *  never silently drops the export. */
+async function runProcessors(
+  blob: Blob,
+  photo: CatalogPhoto,
+  processorSettings: ProcessorSettings,
+): Promise<Blob> {
+  const processors = Object.values(
+    useRegistry.getState().exportProcessors,
+  ).sort((a, b) => a.order - b.order);
+  let current = blob;
+  for (const proc of processors) {
+    const defaults = Object.fromEntries(
+      (proc.settings ?? []).map((f) => [f.key, f.default]),
+    );
+    const settings = { ...defaults, ...(processorSettings[proc.id] ?? {}) };
+    try {
+      current = await proc.process(current, photo, settings);
+    } catch (err) {
+      console.error(`[safelight] export processor "${proc.id}" threw:`, err);
+    }
+  }
+  return current;
+}
+
 // Ensure a filename is unique within a batch by appending " (2)", " (3)", …
 // before the extension. Prevents collisions inside a ZIP and silent overwrites
 // when several files are downloaded to the same folder.
@@ -97,6 +162,7 @@ async function renderOne(
   canvas: HTMLCanvasElement,
   photo: CatalogPhoto,
   settings: ExportSettings,
+  processorSettings: ProcessorSettings,
 ): Promise<Blob | null> {
   // Same decode as Develop/Loupe: full-res RAW float when available (gets the
   // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
@@ -121,7 +187,8 @@ async function renderOne(
     renderer.render();
     const blob = await canvasToBlob(canvas, settings.format, settings.quality);
     if (!blob) return null;
-    return embedColorProfile(blob, settings.colorSpace ?? "srgb");
+    const profiled = await embedColorProfile(blob, settings.colorSpace ?? "srgb");
+    return runProcessors(profiled, photo, processorSettings);
   } finally {
     bitmap?.close();
   }
@@ -154,12 +221,21 @@ export async function exportPhotos(
   const failed: string[] = [];
   let exported = 0;
 
+  const procSettings = settings.processorSettings ?? {};
+  // Resolve the active filename template once (if any) for the batch.
+  const templateEntry = settings.filenameTemplateId
+    ? useRegistry.getState().filenameTemplates[settings.filenameTemplateId]
+    : undefined;
+
   try {
     for (let i = 0; i < photos.length; i++) {
       const photo = photos[i];
-      const blob = await renderOne(renderer, canvas, photo, settings);
+      const blob = await renderOne(renderer, canvas, photo, settings, procSettings);
       if (blob) {
-        const name = uniqueName(exportFilename(photo, settings.format), usedNames);
+        const rawName = templateEntry
+          ? resolveFilenameTemplate(templateEntry.template, photo, settings.format)
+          : exportFilename(photo, settings.format);
+        const name = uniqueName(rawName, usedNames);
         try {
           if (zip) {
             zip.add(name, new Uint8Array(await blob.arrayBuffer()));
