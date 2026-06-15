@@ -22,6 +22,9 @@ import type { HistogramData } from "@/rendering/histogram";
 import { catalogStorage } from "@/catalog/storage";
 import { broadcast } from "./broadcast";
 import { nextGuide, type CropGuide } from "@/modules/develop/crop-guides";
+import { writeXmpSidecar } from "@/catalog/xmp";
+import { getSettings } from "./settings-store";
+import { useCatalogStore } from "./catalog-store";
 
 interface DevelopState {
   photoId: string | null;
@@ -463,6 +466,21 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
       currentIndex: newIndex,
     };
     await catalogStorage().putEditState(editState);
+
+    // Write XMP sidecar if enabled (includes edit params in private namespace).
+    if (getSettings().writeXmpSidecars) {
+      const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
+      if (photo?.directoryHandle && photo?.fileHandle) {
+        try {
+          await writeXmpSidecar(photo.directoryHandle, photo.fileHandle.name, photo, editState, {
+            includePrivateNamespace: true,
+          });
+        } catch (e) {
+          console.warn(`[xmp] Failed to write sidecar for ${photo.filename}:`, e);
+        }
+      }
+    }
+
     // Announce the committed state so the Library refreshes this photo's thumbnail
     // (and histogram) the moment it's edited — for any visible photo, in any
     // window — instead of waiting on the periodic catalog poll.

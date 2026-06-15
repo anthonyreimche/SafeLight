@@ -5,6 +5,8 @@ import { rotateBlob, normalizeRotation } from "@/catalog/orient";
 import { useProjectStore } from "@/project/project-store";
 import { broadcast } from "./broadcast";
 import { useEditedThumbs } from "./edited-thumbnails";
+import { writeXmpSidecar, deleteXmpSidecar } from "@/catalog/xmp";
+import { getSettings } from "./settings-store";
 
 interface CatalogState {
   photos: CatalogPhoto[];
@@ -62,6 +64,21 @@ interface CatalogState {
 }
 
 export const useCatalogStore = create<CatalogState>((set, get) => {
+  // Helper to write XMP sidecars when the preference is enabled.
+  const maybeWriteXmpSidecars = async (photos: CatalogPhoto[]) => {
+    if (!getSettings().writeXmpSidecars) return;
+    for (const p of photos) {
+      if (!p.directoryHandle || !p.fileHandle) continue;
+      try {
+        // Get edit state for private namespace if available
+        const editState = await catalogStorage().getEditState(p.id);
+        await writeXmpSidecar(p.directoryHandle, p.fileHandle.name, p, editState ?? undefined);
+      } catch (e) {
+        console.warn(`[xmp] Failed to write sidecar for ${p.filename}:`, e);
+      }
+    }
+  };
+
   // Apply a field change to many photos at once: one storage write, one state
   // update, one broadcast. The single-photo setters delegate here as well.
   const commit = async (
@@ -72,6 +89,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     const updated = get().photos.filter((p) => idSet.has(p.id)).map(mutate);
     if (updated.length === 0) return;
     await catalogStorage().putPhotos(updated);
+    await maybeWriteXmpSidecars(updated);
     const byId = new Map(updated.map((p) => [p.id, p] as const));
     set((s) => ({ photos: s.photos.map((p) => byId.get(p.id) ?? p) }));
     broadcast({
@@ -206,6 +224,14 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     },
 
     async removePhoto(id) {
+      const photo = get().photos.find((p) => p.id === id);
+      if (photo?.directoryHandle && photo?.fileHandle) {
+        try {
+          await deleteXmpSidecar(photo.directoryHandle, photo.fileHandle.name);
+        } catch {
+          /* ignore deletion errors */
+        }
+      }
       await catalogStorage().deletePhoto(id);
       useEditedThumbs.getState().drop(id);
       set((s) => ({
@@ -223,6 +249,17 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     async removePhotos(ids) {
       if (ids.length === 0) return;
       const idSet = new Set(ids);
+      // Delete XMP sidecars for all photos being removed.
+      for (const id of ids) {
+        const photo = get().photos.find((p) => p.id === id);
+        if (photo?.directoryHandle && photo?.fileHandle) {
+          try {
+            await deleteXmpSidecar(photo.directoryHandle, photo.fileHandle.name);
+          } catch {
+            /* ignore deletion errors */
+          }
+        }
+      }
       for (const id of ids) {
         await catalogStorage().deletePhoto(id);
         useEditedThumbs.getState().drop(id);
