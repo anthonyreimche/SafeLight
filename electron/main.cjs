@@ -491,6 +491,12 @@ function createWindow() {
 
   win.once("ready-to-show", () => win.show());
 
+  // Detached windows (shortcuts, loupe, etc.): defer show until ready-to-show
+  // to avoid black frames on macOS — same pattern as the main window.
+  win.webContents.on("did-create-window", (childWin) => {
+    childWin.once("ready-to-show", () => childWin.show());
+  });
+
   win.webContents.setWindowOpenHandler(({ url }) => {
     // Internal windows = detachable modules (window.open to an app:// URL).
     // Allow them as native child windows with the same isolation settings so
@@ -500,6 +506,7 @@ function createWindow() {
       return {
         action: "allow",
         overrideBrowserWindowOptions: {
+          show: false,
           backgroundColor: "#1a1a1a",
           autoHideMenuBar: true,
           webPreferences: {
