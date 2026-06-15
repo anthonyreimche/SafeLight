@@ -98,42 +98,11 @@ jobs:
           echo "skip_macos=$has_dmg"       >> "$GITHUB_OUTPUT"
           echo "skip_linux=$has_appimage"  >> "$GITHUB_OUTPUT"
 
-  # ── 3. Build installers on every platform that still needs them ──────────────
-  build:
+  # ── 3a. Windows ──────────────────────────────────────────────────────────────
+  build-windows:
     needs: [tag, check]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            name: windows
-            ebflags: --win
-            targets: ''
-            artifacts: |
-              release/*.exe
-              release/*.blockmap
-          - os: macos-latest
-            name: macos
-            ebflags: --mac
-            targets: ''
-            artifacts: |
-              release/*.dmg
-              release/*.zip
-          - os: ubuntu-latest
-            name: linux
-            ebflags: --linux
-            targets: appimage deb pacman rpm flatpak
-            artifacts: |
-              release/*.AppImage
-              release/*.deb
-              release/*.pacman
-              release/*.rpm
-              release/*.flatpak
-    runs-on: ${{ matrix.os }}
-    if: |
-      (matrix.name == 'windows' && needs.check.outputs.skip_windows != 'true') ||
-      (matrix.name == 'macos'   && needs.check.outputs.skip_macos   != 'true') ||
-      (matrix.name == 'linux'   && needs.check.outputs.skip_linux   != 'true')
+    if: needs.check.outputs.skip_windows != 'true'
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -147,23 +116,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Flatpak tools (Linux only)
-        if: matrix.name == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder
-          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
-          sudo flatpak install -y flathub org.electronjs.Electron2.BaseApp//24.08
-
       - name: Build renderer + main
         run: npm run build
 
       - name: Generate icons
         run: npm run icon
 
-      - name: Build installers (${{ matrix.name }})
-        run: npx --no-install electron-builder ${{ matrix.ebflags }} ${{ matrix.targets }} --publish never
+      - name: Build installers (windows)
+        run: npx --no-install electron-builder --win --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -189,4 +149,127 @@ jobs:
             A huge thank you to everyone who contributed to this milestone — whether through code, bug reports, feature requests, or feedback. Your input directly shapes Safelight. 🙏
 
             See the full list of changes in the **[changelog](https://github.com/${{ github.repository }}/blob/main/docs/changelog.md)** and the auto-generated release notes below.
-          files: ${{ matrix.artifacts }}
+          files: |
+            release/*.exe
+            release/*.blockmap
+
+  # ── 3b. macOS ────────────────────────────────────────────────────────────────
+  build-macos:
+    needs: [tag, check]
+    if: needs.check.outputs.skip_macos != 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build renderer + main
+        run: npm run build
+
+      - name: Generate icons
+        run: npm run icon
+
+      - name: Build installers (macos)
+        run: npx --no-install electron-builder --mac --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installers to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: "Safelight ${{ needs.tag.outputs.tag }}"
+          draft: false
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          make_latest: true
+          body: |
+            ## Safelight ${{ needs.tag.outputs.tag }}
+
+            This release was automatically generated when milestone **${{ github.event.milestone.title }}** was closed.
+
+            ${{ github.event.milestone.description != '' && format('{0}', github.event.milestone.description) || '' }}
+
+            ---
+            ### Thank you
+            A huge thank you to everyone who contributed to this milestone — whether through code, bug reports, feature requests, or feedback. Your input directly shapes Safelight. 🙏
+
+            See the full list of changes in the **[changelog](https://github.com/${{ github.repository }}/blob/main/docs/changelog.md)** and the auto-generated release notes below.
+          files: |
+            release/*.dmg
+            release/*.zip
+
+  # ── 3c. Linux ────────────────────────────────────────────────────────────────
+  build-linux:
+    needs: [tag, check]
+    if: needs.check.outputs.skip_linux != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Flatpak tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+          sudo flatpak install -y flathub org.electronjs.Electron2.BaseApp//24.08
+
+      - name: Build renderer + main
+        run: npm run build
+
+      - name: Generate icons
+        run: npm run icon
+
+      - name: Build installers (linux)
+        run: npx --no-install electron-builder --linux appimage deb pacman rpm flatpak --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installers to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: "Safelight ${{ needs.tag.outputs.tag }}"
+          draft: false
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          make_latest: true
+          body: |
+            ## Safelight ${{ needs.tag.outputs.tag }}
+
+            This release was automatically generated when milestone **${{ github.event.milestone.title }}** was closed.
+
+            ${{ github.event.milestone.description != '' && format('{0}', github.event.milestone.description) || '' }}
+
+            ---
+            ### Thank you
+            A huge thank you to everyone who contributed to this milestone — whether through code, bug reports, feature requests, or feedback. Your input directly shapes Safelight. 🙏
+
+            See the full list of changes in the **[changelog](https://github.com/${{ github.repository }}/blob/main/docs/changelog.md)** and the auto-generated release notes below.
+          files: |
+            release/*.AppImage
+            release/*.deb
+            release/*.pacman
+            release/*.rpm
+            release/*.flatpak
