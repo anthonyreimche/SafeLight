@@ -1,0 +1,50 @@
+name: build-safelight
+
+# Runs on every PR and push to main to verify the build works on all platforms
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build renderer + main
+        run: npm run build
+
+      - name: Verify build artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          test -f dist/index.html
+          test -f electron/main.cjs
+          echo "Build artifacts verified on ${{ matrix.os }}"
+
+      - name: Verify build artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/index.html")) { exit 1 }
+          if (-not (Test-Path "electron/main.cjs")) { exit 1 }
+          Write-Host "Build artifacts verified on ${{ matrix.os }}"

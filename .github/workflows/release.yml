@@ -5,7 +5,7 @@ name: Release
 #
 #   Windows : NSIS .exe (x64)
 #   macOS   : .dmg (x64 + arm64)   — unsigned/ad-hoc
-#   Linux   : .AppImage (x64) + .deb (x64)
+#   Linux   : .AppImage (x64) + .deb (x64) + .pacman (Arch) + .flatpak + .rpm
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -27,21 +27,27 @@ jobs:
           - os: windows-latest
             name: windows
             ebflags: --win
+            targets: ''
             artifacts: |
               release/*.exe
               release/*.blockmap
           - os: macos-latest
             name: macos
             ebflags: --mac
+            targets: ''
             artifacts: |
               release/*.dmg
               release/*.zip
           - os: ubuntu-latest
             name: linux
             ebflags: --linux
+            targets: appimage deb pacman rpm flatpak
             artifacts: |
               release/*.AppImage
               release/*.deb
+              release/*.pacman
+              release/*.rpm
+              release/*.flatpak
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +71,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Flatpak tools (Linux only)
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
       - name: Build renderer + main
         run: npm run build
 
@@ -72,7 +85,7 @@ jobs:
         run: npm run icon
 
       - name: Build installers (${{ matrix.name }})
-        run: npx --no-install electron-builder ${{ matrix.ebflags }} --publish never
+        run: npx --no-install electron-builder ${{ matrix.ebflags }} ${{ matrix.targets }} --publish never
         env:
           # No Apple/Windows signing certs in CI — build unsigned/ad-hoc so it never blocks.
           CSC_IDENTITY_AUTO_DISCOVERY: false
