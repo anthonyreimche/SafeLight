@@ -1,0 +1,74 @@
+name: Release
+
+# Builds every installer and publishes them to a GitHub Release.
+# Trigger: push a version tag, e.g.  git tag v1.0.6 && git push origin v1.0.6
+#
+#   Windows : NSIS .exe (x64)
+#   macOS   : .dmg (x64 + arm64)   — unsigned/ad-hoc
+#   Linux   : .AppImage (x64) + .deb (x64)
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            ebflags: --win
+            artifacts: |
+              release/*.exe
+              release/*.blockmap
+          - os: macos-latest
+            name: macos
+            ebflags: --mac
+            artifacts: |
+              release/*.dmg
+              release/*.zip
+          - os: ubuntu-latest
+            name: linux
+            ebflags: --linux
+            artifacts: |
+              release/*.AppImage
+              release/*.deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build renderer + main
+        run: npm run build
+
+      - name: Generate icons
+        run: npm run icon
+
+      - name: Build installers (${{ matrix.name }})
+        run: npx --no-install electron-builder ${{ matrix.ebflags }} --publish never
+        env:
+          # No Apple/Windows signing certs in CI — build unsigned/ad-hoc so it never blocks.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installers to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Safelight ${{ github.ref_name }}
+          draft: false
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: ${{ matrix.artifacts }}
