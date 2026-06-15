@@ -22,21 +22,27 @@ jobs:
             const issue = context.payload.issue;
             const number = issue.number;
             const text = `${issue.title}\n${issue.body || ''}`.toLowerCase();
-            const has = (...words) => words.some(w => text.includes(w));
+            const has = (...words) => words.some(w => {
+              const re = new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+              return re.test(text);
+            });
 
             // --- Type (first match wins, but performance/build can co-apply) ---
             const typeLabels = new Set();
-            if (has('crash', 'broken', 'error', 'fails', 'fail ', 'freeze', 'hang', 'bug', 'regression', 'incorrect', "doesn't work", 'does not work', 'not working'))
+            if (has('crash', 'broken', 'error', 'fails', 'fail', 'freeze', 'hang', 'bug', 'regression', 'incorrect', 'does not work', 'not working'))
               typeLabels.add('type: bug');
-            if (has('slow', 'lag', 'performance', 'memory leak', 'leak', 'fps', 'stutter', 'too long', 'optimi'))
+            if (has('slow', 'lag', 'performance', 'perf', 'memory leak', 'leak', 'fps', 'stutter', 'too long', 'optimi'))
               typeLabels.add('type: performance');
-            if (has('build', 'installer', 'package', 'electron-builder', 'ci ', 'release', 'nsis', 'dmg', 'appimage', '.deb', 'sign'))
+            if (has('build', 'installer', 'package', 'electron-builder', 'ci', 'ci/', 'ci:', 'release', 'nsis', 'dmg', 'appimage', '.deb', 'sign'))
               typeLabels.add('type: build');
             if (has('readme', 'docs', 'documentation', 'typo', 'wording', 'comment'))
               typeLabels.add('type: docs');
-            if (has('feature', 'add support', 'would like', 'request', 'please add', 'ability to', 'support for', 'new '))
+            if (has('feature', 'add support', 'would like', 'request', 'please add', 'ability to', 'support for', 'new'))
               typeLabels.add('type: feature');
-            if (typeLabels.size === 0) typeLabels.add('type: enhancement');
+            if (typeLabels.size === 0) {
+              typeLabels.add('type: enhancement');
+              typeLabels.add('status: triage');
+            }
 
             // --- Area ---
             const areaLabels = new Set();

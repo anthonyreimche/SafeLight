@@ -7,6 +7,10 @@ name: Release
 #   macOS   : .dmg (x64 + arm64)   — unsigned/ad-hoc
 #   Linux   : .AppImage (x64) + .deb (x64)
 
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 on:
   push:
     tags: ['v*']
@@ -41,6 +45,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify tag matches package.json version
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(jq -r .version package.json)
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Error: Git tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Version verified: $PKG_VERSION"
 
       - uses: actions/setup-node@v4
         with:
