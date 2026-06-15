@@ -11,11 +11,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:app": "vite build",
     "preview": "vite preview",
     "icon": "node electron/make-icon.cjs",
     "electron:dev": "vite build && electron .",
-    "build:electron": "npm run build && npm run icon && electron-builder --win",
-    "build:linux": "npm run build && npm run icon && electron-builder --linux"
+    "build:electron": "npm run build:app && npm run icon && electron-builder --win",
+    "build:linux": "npm run build:app && npm run icon && electron-builder --linux"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.1",

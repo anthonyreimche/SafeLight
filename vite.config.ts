@@ -25,6 +25,7 @@ const crossOriginIsolation = {
 const LIBRAW_VENDOR = path.resolve(__dirname, "src/raw/vendor/libraw-wasm/index.js");
 
 export default defineConfig({
+  cacheDir: "node_modules/.vite-cache",
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },

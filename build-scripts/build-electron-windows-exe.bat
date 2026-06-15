@@ -18,17 +18,17 @@ if exist "node_modules\.package-lock.json" (
   node -e "const fs=require('fs');process.exit(fs.statSync('node_modules/.package-lock.json').mtimeMs>=fs.statSync('package-lock.json').mtimeMs?0:1)" && set "NEED_INSTALL=0"
 )
 if "%NEED_INSTALL%"=="1" (
-  call npm install --no-audit --no-fund
+  call npm install --no-audit --no-fund --prefer-offline --progress=false
   if errorlevel 1 goto :fail
 ) else (
   echo     node_modules up to date - skipping npm install.
 )
 
 echo.
-echo [2/6] Building web app (tsc + vite)...
+echo [2/6] Building web app (vite)...
 REM Clean dist so no stale hashed chunks from older builds ship in the asar.
 if exist "dist" rmdir /s /q "dist"
-call npm run build
+call npm run build:app
 if errorlevel 1 goto :fail
 
 echo.
