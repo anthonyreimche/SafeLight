@@ -1,0 +1,45 @@
+name: Sync Labels
+
+# Creates/updates the repo's label set from .github/labels.json.
+# Run manually from the Actions tab, or it runs automatically when labels.json changes.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/labels.json']
+
+permissions:
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upsert labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const labels = JSON.parse(fs.readFileSync('.github/labels.json', 'utf8'));
+            const { owner, repo } = context.repo;
+            for (const l of labels) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: l.name });
+                await github.rest.issues.updateLabel({
+                  owner, repo, name: l.name,
+                  new_name: l.name, color: l.color, description: l.description,
+                });
+                core.info(`updated: ${l.name}`);
+              } catch (e) {
+                if (e.status === 404) {
+                  await github.rest.issues.createLabel({
+                    owner, repo, name: l.name, color: l.color, description: l.description,
+                  });
+                  core.info(`created: ${l.name}`);
+                } else {
+                  throw e;
+                }
+              }
+            }

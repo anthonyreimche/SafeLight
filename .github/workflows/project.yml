@@ -1,0 +1,74 @@
+name: Project Board
+
+# Adds new issues and PRs to your GitHub Project board (your "to do list"),
+# then mirrors the priority label onto the board's Priority field.
+#
+# Requires (one-time setup, see .github/AUTOMATION.md):
+#   - Repo variable PROJECT_URL  = https://github.com/users/<you>/projects/<n>
+#   - Repo secret   ADD_TO_PROJECT_PAT = a classic PAT with "project" + "repo" scope
+#
+# If those are not set, the job no-ops instead of failing.
+
+on:
+  issues:
+    types: [opened, reopened, labeled]
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  add-and-prioritize:
+    runs-on: ubuntu-latest
+    if: ${{ vars.PROJECT_URL != '' }}
+    steps:
+      - name: Add to project board
+        id: add
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: ${{ vars.PROJECT_URL }}
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+
+      - name: Mirror priority label to board Priority field
+        if: ${{ steps.add.outputs.itemId != '' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          script: |
+            const itemId = ${{ toJSON(steps.add.outputs.itemId) }};
+
+            // Derive desired priority word from the labels on this issue/PR.
+            const labels = (context.payload.issue || context.payload.pull_request).labels || [];
+            const pLabel = labels.map(l => l.name).find(n => n.startsWith('priority: '));
+            if (!pLabel) { core.info('no priority label yet; skipping'); return; }
+            const word = pLabel.replace('priority: ', '').toLowerCase(); // critical|high|medium|low
+
+            // Look up the project + its single-select "Priority" field via the item.
+            const q = await github.graphql(`
+              query($item: ID!) {
+                node(id: $item) {
+                  ... on ProjectV2Item {
+                    project {
+                      id
+                      field(name: "Priority") {
+                        ... on ProjectV2SingleSelectField { id options { id name } }
+                      }
+                    }
+                  }
+                }
+              }`, { item: itemId });
+
+            const field = q.node?.project?.field;
+            if (!field) { core.info('board has no "Priority" single-select field; skipping'); return; }
+            const opt = field.options.find(o => o.name.toLowerCase().includes(word));
+            if (!opt) { core.info(`no board option matching "${word}"; skipping`); return; }
+
+            await github.graphql(`
+              mutation($p: ID!, $i: ID!, $f: ID!, $o: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $p, itemId: $i, fieldId: $f,
+                  value: { singleSelectOptionId: $o }
+                }) { projectV2Item { id } }
+              }`, { p: q.node.project.id, i: itemId, f: field.id, o: opt.id });
+            core.info(`set Priority = ${opt.name}`);

@@ -1,0 +1,96 @@
+name: Triage Issues
+
+# Auto-tags, prioritizes, and assigns a milestone to issues using keyword heuristics.
+# Runs on every new or edited issue. Idempotent — safe to re-run.
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify and label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const number = issue.number;
+            const text = `${issue.title}\n${issue.body || ''}`.toLowerCase();
+            const has = (...words) => words.some(w => text.includes(w));
+
+            // --- Type (first match wins, but performance/build can co-apply) ---
+            const typeLabels = new Set();
+            if (has('crash', 'broken', 'error', 'fails', 'fail ', 'freeze', 'hang', 'bug', 'regression', 'incorrect', "doesn't work", 'does not work', 'not working'))
+              typeLabels.add('type: bug');
+            if (has('slow', 'lag', 'performance', 'memory leak', 'leak', 'fps', 'stutter', 'too long', 'optimi'))
+              typeLabels.add('type: performance');
+            if (has('build', 'installer', 'package', 'electron-builder', 'ci ', 'release', 'nsis', 'dmg', 'appimage', '.deb', 'sign'))
+              typeLabels.add('type: build');
+            if (has('readme', 'docs', 'documentation', 'typo', 'wording', 'comment'))
+              typeLabels.add('type: docs');
+            if (has('feature', 'add support', 'would like', 'request', 'please add', 'ability to', 'support for', 'new '))
+              typeLabels.add('type: feature');
+            if (typeLabels.size === 0) typeLabels.add('type: enhancement');
+
+            // --- Area ---
+            const areaLabels = new Set();
+            if (has('raw', 'nef', 'cr2', 'cr3', 'crw', 'arw', 'dng', 'orf', 'raf', 'rw2', 'libraw', 'demosaic', 'white balance', 'tiff'))
+              areaLabels.add('area: raw');
+            if (has('ui', 'panel', 'layout', 'button', 'theme', 'dark mode', 'slider', 'menu bar', 'dockview', 'thumbnail', 'cursor'))
+              areaLabels.add('area: ui');
+            if (has('electron', 'window', 'native', 'file handle', 'filesystem', 'tray', 'menu', 'shortcut', 'ipc'))
+              areaLabels.add('area: electron');
+
+            // --- Priority (highest match wins) ---
+            let priority = 'priority: medium';
+            if (has('critical', 'crash', 'data loss', 'corrupt', 'cannot open', "can't open", 'blocker', 'urgent', 'security'))
+              priority = 'priority: critical';
+            else if (has('important', 'high priority', 'asap', 'broken', 'regression', 'leak'))
+              priority = 'priority: high';
+            else if (has('minor', 'nice to have', 'someday', 'low priority', 'cosmetic', 'typo', 'eventually'))
+              priority = 'priority: low';
+
+            const desired = [...typeLabels, ...areaLabels, priority];
+
+            // Remove any existing priority labels we are about to replace, keep others.
+            const current = (issue.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+            const toRemove = current.filter(
+              n => n.startsWith('priority: ') && n !== priority
+            );
+            for (const name of toRemove) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: number, name }); }
+              catch (e) { if (e.status !== 404) throw e; }
+            }
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: desired });
+            core.info(`labels: ${desired.join(', ')}`);
+
+            // --- Milestone planning by priority bucket ---
+            const bucket = {
+              'priority: critical': '🚀 Next Release',
+              'priority: high': '🚀 Next Release',
+              'priority: medium': '📋 Backlog',
+              'priority: low': '💤 Someday',
+            }[priority];
+
+            const milestones = await github.paginate(github.rest.issues.listMilestones, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            let ms = milestones.find(m => m.title === bucket);
+            if (!ms) {
+              ms = (await github.rest.issues.createMilestone({ owner, repo, title: bucket })).data;
+              core.info(`created milestone: ${bucket}`);
+            }
+            // Only set if unset or pointing at a different priority bucket.
+            const bucketTitles = ['🚀 Next Release', '📋 Backlog', '💤 Someday'];
+            const currentMs = issue.milestone && issue.milestone.title;
+            if (!currentMs || bucketTitles.includes(currentMs)) {
+              await github.rest.issues.update({ owner, repo, issue_number: number, milestone: ms.number });
+              core.info(`milestone: ${bucket}`);
+            }

@@ -1,0 +1,19 @@
+[
+  { "name": "type: bug", "color": "d73a4a", "description": "Something is broken or not working" },
+  { "name": "type: feature", "color": "0e8a16", "description": "New capability or feature request" },
+  { "name": "type: enhancement", "color": "a2eeef", "description": "Improvement to existing behavior" },
+  { "name": "type: performance", "color": "fbca04", "description": "Speed, memory, or responsiveness" },
+  { "name": "type: docs", "color": "0075ca", "description": "Documentation only" },
+  { "name": "type: build", "color": "5319e7", "description": "Build, packaging, installer, or CI" },
+
+  { "name": "area: raw", "color": "1d76db", "description": "RAW decoding / libraw / demosaic" },
+  { "name": "area: ui", "color": "c5def5", "description": "User interface, panels, layout, theme" },
+  { "name": "area: electron", "color": "bfd4f2", "description": "Electron shell, windows, menus, FS" },
+
+  { "name": "priority: critical", "color": "b60205", "description": "Crash, data loss, or blocker — fix now" },
+  { "name": "priority: high", "color": "d93f0b", "description": "Important, address soon" },
+  { "name": "priority: medium", "color": "fbca04", "description": "Normal priority (default)" },
+  { "name": "priority: low", "color": "0e8a16", "description": "Nice to have, no rush" },
+
+  { "name": "status: triage", "color": "ededed", "description": "Awaiting auto-classification or review" }
+]
