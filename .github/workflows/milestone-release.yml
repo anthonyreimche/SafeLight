@@ -1,13 +1,14 @@
 name: Milestone Release
 
-# When a milestone is closed, push a version tag to trigger the Release workflow.
+# When a milestone is closed, validates the title, creates a version tag,
+# builds all platform installers, and publishes a GitHub Release.
 #
 # Requirements:
-#   - The milestone title must be a semver version tag, e.g.  v1.2.0
-#   - package.json version must already match the milestone title (the
-#     Release workflow enforces this at build time)
+#   - Milestone title must be a semver version tag, e.g.  v1.2.0
+#   - package.json version must already match the milestone title
 #
-# The new tag push triggers release.yml automatically.
+# If the tag already exists the workflow fails immediately — a duplicate tag
+# means a release already shipped for this version and must not be overwritten.
 
 on:
   milestone:
@@ -20,8 +21,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  tag-and-release:
+  # ── 1. Validate the milestone title and create the git tag ──────────────────
+  tag:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,24 +36,125 @@ jobs:
         run: |
           TITLE="${{ github.event.milestone.title }}"
           if [[ ! "$TITLE" =~ ^v[0-9]+\.[0-9]+\.[0-9] ]]; then
-            echo "Milestone title '$TITLE' does not look like a version (expected v#.#.#). Skipping."
-            exit 0
+            echo "::error::Milestone title '$TITLE' is not a semver version (expected v#.#.#). Rename the milestone and try again."
+            exit 1
           fi
           echo "tag=$TITLE" >> "$GITHUB_OUTPUT"
 
+      - name: Fail if tag already exists
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse --verify "refs/tags/$TAG" > /dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists locally. A release for this version has already been created. Bump the version and use a new milestone."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists on the remote. A release for this version has already been published. Bump the version and use a new milestone."
+            exit 1
+          fi
+          echo "Tag $TAG is available."
+
+      - name: Verify package.json version matches milestone
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          TAG_VERSION="${TAG#v}"
+          PKG_VERSION=$(jq -r .version package.json)
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Milestone title $TAG does not match package.json version $PKG_VERSION. Update package.json to $TAG_VERSION before closing the milestone."
+            exit 1
+          fi
+          echo "Version verified: $PKG_VERSION"
+
       - name: Create and push git tag
-        if: steps.version.outputs.tag != ''
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git rev-parse --verify "refs/tags/$TAG" > /dev/null 2>&1; then
-            echo "Tag $TAG already exists locally — skipping."
-            exit 0
-          fi
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null 2>&1; then
-            echo "Tag $TAG already exists on remote — skipping."
-            exit 0
-          fi
           git tag "$TAG" -m "Release $TAG"
           git push origin "$TAG"
+
+  # ── 2. Build installers on every platform ───────────────────────────────────
+  build:
+    needs: tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+            ebflags: --win
+            targets: ''
+            artifacts: |
+              release/*.exe
+              release/*.blockmap
+          - os: macos-latest
+            name: macos
+            ebflags: --mac
+            targets: ''
+            artifacts: |
+              release/*.dmg
+              release/*.zip
+          - os: ubuntu-latest
+            name: linux
+            ebflags: --linux
+            targets: appimage deb pacman rpm flatpak
+            artifacts: |
+              release/*.AppImage
+              release/*.deb
+              release/*.pacman
+              release/*.rpm
+              release/*.flatpak
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Flatpak tools (Linux only)
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Build renderer + main
+        run: npm run build
+
+      - name: Generate icons
+        run: npm run icon
+
+      - name: Build installers (${{ matrix.name }})
+        run: npx --no-install electron-builder ${{ matrix.ebflags }} ${{ matrix.targets }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installers to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: "Safelight ${{ needs.tag.outputs.tag }}"
+          draft: false
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          body: |
+            ## Safelight ${{ needs.tag.outputs.tag }}
+
+            This release was automatically generated when milestone **${{ github.event.milestone.title }}** was closed.
+
+            ${{ github.event.milestone.description != '' && format('{0}', github.event.milestone.description) || '' }}
+
+            ---
+            ### Thank you
+            A huge thank you to everyone who contributed to this milestone — whether through code, bug reports, feature requests, or feedback. Your input directly shapes Safelight. 🙏
+
+            See the full list of changes in the **[changelog](https://github.com/${{ github.repository }}/blob/main/docs/changelog.md)** and the auto-generated release notes below.
+          files: ${{ matrix.artifacts }}
