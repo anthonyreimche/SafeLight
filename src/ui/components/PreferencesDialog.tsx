@@ -303,6 +303,13 @@ function LibrarySection() {
           }
         />
       </Field>
+      <div className="border-t border-border-subtle pt-3" />
+      <ToggleField
+        label="Write XMP sidecars"
+        hint="Save ratings, labels, and keywords to .xmp files alongside your images. Enables interoperability with Lightroom, Darktable, and other photo tools."
+        checked={s.writeXmpSidecars}
+        onChange={(v) => updateSettings({ writeXmpSidecars: v })}
+      />
     </div>
   );
 }

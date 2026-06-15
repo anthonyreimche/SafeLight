@@ -14,6 +14,7 @@ import type { CatalogStorage } from "@/catalog/storage";
 import { buildPhoto } from "@/modules/library/import-photos";
 import { mapLimit, readBlob, readJSON, removeEntry, writeBlob, writeJSON } from "./fs";
 import { scanProject, type FolderNode, type ScannedFile } from "./scan";
+import { readXmpSidecar, applyXmpToPhoto } from "@/catalog/xmp";
 
 type StoredPhoto = Omit<
   CatalogPhoto,
@@ -163,7 +164,7 @@ export class ProjectStorage implements CatalogStorage {
         const file = await f.handle.getFile();
         const built = await buildPhoto(file, f.parent, f.handle);
         if (!built) return null;
-        const photo: CatalogPhoto = {
+        let photo: CatalogPhoto = {
           ...built,
           relPath: f.path,
           folder: folderOf(f.path),
@@ -194,6 +195,17 @@ export class ProjectStorage implements CatalogStorage {
           }
         } catch {
           /* no/!invalid sidecar — ignore */
+        }
+
+        // Read XMP sidecar for interoperability with other photo tools.
+        // XMP values take precedence over safelight sidecar values.
+        try {
+          const xmp = await readXmpSidecar(f.parent, f.handle.name);
+          if (xmp) {
+            photo = applyXmpToPhoto(photo, xmp);
+          }
+        } catch {
+          /* no/invalid XMP — ignore */
         }
         if (photo.thumbnailBlob)
           await writeBlob(previews, `${photo.id}.jpg`, photo.thumbnailBlob);
