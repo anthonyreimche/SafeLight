@@ -17,7 +17,7 @@ import type {
 } from "@/catalog/types";
 import { MAX_MASKS, MAX_RETOUCH, normalizeParams } from "@/catalog/types";
 
-export type ToolMode = "none" | "mask" | "retouch";
+export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
 import type { HistogramData } from "@/rendering/histogram";
 import { catalogStorage } from "@/catalog/storage";
 import { broadcast } from "./broadcast";
@@ -51,6 +51,12 @@ interface DevelopState {
   // neutral target and solves Temp/Tint. Ephemeral UI state, not persisted.
   wbPicking: boolean;
   setWbPicking: (v: boolean) => void;
+
+  // HSL color picker: when true, click+drag on image adjusts HSL for sampled color.
+  hslPicking: boolean;
+  setHslPicking: (v: boolean) => void;
+  selectedHslBand: "hue" | "saturation" | "luminance";
+  setSelectedHslBand: (band: "hue" | "saturation" | "luminance") => void;
 
   // Mask / retouch tool UI state (ephemeral, not persisted to history).
   activeTool: ToolMode;
@@ -174,6 +180,11 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
 
   wbPicking: false,
   setWbPicking: (wbPicking) => set({ wbPicking }),
+
+  hslPicking: false,
+  setHslPicking: (hslPicking) => set({ hslPicking }),
+  selectedHslBand: "hue",
+  setSelectedHslBand: (selectedHslBand) => set({ selectedHslBand }),
 
   activeTool: "none",
   maskToolType: "radial",

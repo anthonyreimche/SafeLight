@@ -507,13 +507,16 @@ vec3 applyHSL(vec3 c) {
   float hueShift = 0.0;
   float satMul = 0.0;
   float lumAdd = 0.0;
+  
+  // Apply 8 fixed band adjustments with 45° falloff for full spectrum coverage
   for (int i = 0; i < 8; i++) {
     float dist = abs(mod(hueDeg - HSL_CENTERS[i] + 540.0, 360.0) - 180.0);
-    float w = max(0.0, 1.0 - dist / 35.0);
+    float w = max(0.0, 1.0 - dist / 45.0);
     hueShift += uHslHue[i] * w;
     satMul += uHslSat[i] * w;
     lumAdd += uHslLum[i] * w;
   }
+  
   hsl.x = fract(hsl.x + hueShift * (30.0 / 360.0));
   hsl.y = clamp(hsl.y * (1.0 + satMul), 0.0, 1.0);
   hsl.z = clamp(hsl.z + lumAdd * 0.4, 0.0, 1.0);

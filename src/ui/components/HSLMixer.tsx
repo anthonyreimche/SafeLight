@@ -24,12 +24,17 @@ export interface HSLMixerProps {
   value: HSLAdjustments;
   onChange: (band: HSLBand, channel: HSLChannel, value: number) => void;
   onCommit: (channel: HSLChannel) => void;
+  // Controlled band selection (for syncing with picker)
+  selectedBand?: HSLBand;
+  onBandChange?: (band: HSLBand) => void;
 }
 
 // Controlled 8-band hue/sat/lum mixer. Shared by the global HSL panel and
 // per-mask HSL sub-panels; state lives with the caller.
-export function HSLMixer({ value, onChange, onCommit }: HSLMixerProps) {
-  const [band, setBand] = useState<HSLBand>("hue");
+export function HSLMixer({ value, onChange, onCommit, selectedBand, onBandChange }: HSLMixerProps) {
+  const [internalBand, setInternalBand] = useState<HSLBand>("hue");
+  const band = selectedBand ?? internalBand;
+  const setBand = onBandChange ?? setInternalBand;
 
   return (
     <>
