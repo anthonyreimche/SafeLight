@@ -41,6 +41,77 @@ export let lastLibRawStatus = "not attempted";
 const num = (v: unknown): number =>
   typeof v === "number" && isFinite(v) ? v : 0;
 
+// Estimate Kelvin colour temperature from camera WB multipliers (R, G, B gains).
+// Searches log-Kelvin space for the blackbody whose R/B ratio best matches the
+// green-normalised gain ratio. Uses Tanner Helland's fit (same as the shader).
+function estimateKelvinFromMul(mulR: number, mulG: number, mulB: number): number {
+  const gR = mulR / mulG;
+  const gB = mulB / mulG;
+  const targetLogRB = Math.log(gR / gB);
+
+  let bestK = 6500;
+  let bestErr = Infinity;
+  const steps = 240;
+  for (let i = 0; i <= steps; i++) {
+    const logK = Math.log(2000) + (i / steps) * (Math.log(50000) - Math.log(2000));
+    const k = Math.exp(logK);
+    const bb = blackbodySrgb(k);
+    const ref = blackbodySrgb(6500);
+    const rGain = ref[0] / bb[0];
+    const bGain = ref[2] / bb[2];
+    const err = Math.abs(Math.log(rGain / bGain) - targetLogRB);
+    if (err < bestErr) { bestErr = err; bestK = k; }
+  }
+  return Math.round(bestK / 10) * 10;
+}
+
+// Tanner Helland's blackbody → sRGB approximation (matches the rendering shader).
+function blackbodySrgb(kelvin: number): [number, number, number] {
+  const t = Math.max(1000, Math.min(50000, kelvin)) / 100;
+  let r: number, g: number, b: number;
+  if (t <= 66) {
+    r = 255;
+    g = 99.4708025861 * Math.log(t) - 161.1195681661;
+    b = t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  } else {
+    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
+    g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+    b = 255;
+  }
+  return [
+    Math.max(0, Math.min(255, r)),
+    Math.max(0, Math.min(255, g)),
+    Math.max(0, Math.min(255, b)),
+  ];
+}
+
+// Lightweight metadata-only extraction: open the RAW, fetch color_data.cam_mul,
+// estimate Kelvin, and close — no pixel decode. Fast enough for import time.
+export async function extractColorTemperature(
+  buffer: ArrayBuffer,
+): Promise<number | undefined> {
+  if (typeof Worker === "undefined" || typeof SharedArrayBuffer === "undefined") return undefined;
+  if (buffer.byteLength < 1024 * 1024) return undefined;
+  const Ctor = await getCtor();
+  if (!Ctor) return undefined;
+
+  const raw = new Ctor();
+  try {
+    await raw.open(new Uint8Array(buffer), { useCameraWb: true });
+    const meta = await raw.metadata(true);
+    const colorData = meta.color_data as Record<string, unknown> | undefined;
+    const camMul = colorData?.cam_mul as number[] | undefined;
+    if (camMul && camMul.length >= 3 && camMul[0] > 0 && camMul[1] > 0 && camMul[2] > 0) {
+      return estimateKelvinFromMul(camMul[0], camMul[1], camMul[2]);
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  } finally {
+    try { raw.worker?.terminate(); } catch { /* already gone */ }
+  }
+}
+
 export async function decodeRawFloatViaLibRaw(
   buffer: ArrayBuffer,
 ): Promise<RawFloatImage | null> {
@@ -94,7 +165,7 @@ export async function decodeRawFloatViaLibRaw(
       highlight: 2,
       noAutoScale: false,
     });
-    const meta = await raw.metadata(false);
+    const meta = await raw.metadata(true);
     const px: unknown = await raw.imageData();
 
     // imageData() may return undefined on WASM errors even if metadata succeeded
@@ -204,9 +275,18 @@ export async function decodeRawFloatViaLibRaw(
       }
     }
 
+    // Extract the camera white-balance multipliers from color_data (libraw's
+    // imgdata.color.cam_mul[]) and estimate the as-shot Kelvin temperature.
+    let colorTemperature: number | undefined;
+    const colorData = meta.color_data as Record<string, unknown> | undefined;
+    const camMul = colorData?.cam_mul as number[] | undefined;
+    if (camMul && camMul.length >= 3 && camMul[0] > 0 && camMul[1] > 0 && camMul[2] > 0) {
+      colorTemperature = estimateKelvinFromMul(camMul[0], camMul[1], camMul[2]);
+    }
+
     lastLibRawStatus = `libraw ${pixels instanceof Uint16Array ? 16 : 8}-bit ${stride}ch ${width}×${height}`;
     console.log("[libraw] decoded", lastLibRawStatus);
-    return { data, width, height, suspicious: inferredDims };
+    return { data, width, height, suspicious: inferredDims, colorTemperature };
   } catch (e) {
     lastLibRawStatus = `decode error: ${e instanceof Error ? e.message : String(e)}`;
     console.warn("[libraw] decode failed", e);

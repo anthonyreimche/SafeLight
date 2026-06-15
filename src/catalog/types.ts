@@ -36,6 +36,7 @@ export interface ExifData {
   iso?: number;
   dateTimeOriginal?: string;
   orientation?: number; // EXIF Orientation tag (1..8)
+  colorTemperature?: number; // as-shot WB in Kelvin (from AsShotNeutral / libraw)
 }
 
 export interface EditState {

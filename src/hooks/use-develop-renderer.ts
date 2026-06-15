@@ -35,6 +35,7 @@ export function useDevelopRenderer(
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [source, setSource] = useState<string | null>(null);
   const params = useDevelopStore((s) => s.params);
+  const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   const setHistogram = useDevelopStore((s) => s.setHistogram);
   const cropping = useDevelopStore((s) => s.cropping);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
@@ -122,6 +123,7 @@ export function useDevelopRenderer(
     ) => {
       const renderer = rendererRef.current;
       if (cancelled || !renderer) return;
+      renderer.setAsShotTemperature(photo?.exif.colorTemperature ?? 6500);
       renderer.setImage(image, getSettings().developMaxEdge, isFallback, cachedRaw);
       const st = useDevelopStore.getState();
       renderer.setParams(forRender(st.params, st.cropping));
@@ -169,6 +171,24 @@ export function useDevelopRenderer(
       }
       if (!image) { setLoading(false); return; }
 
+      // After decode, photo.exif.colorTemperature may have been populated by
+      // the libraw path. Push it into the develop store so the UI & shader agree.
+      if (photo.exif.colorTemperature) {
+        const st = useDevelopStore.getState();
+        if (st.photoId === photo.id && st.asShotTemperature !== photo.exif.colorTemperature) {
+          const asShot = photo.exif.colorTemperature;
+          // If the store was initialised with the fallback (6500) because the EXIF
+          // wasn't available yet, and the current temperature still matches that
+          // fallback, update it to the real as-shot value.
+          const wasUninitialised = st.asShotTemperature === 6500;
+          const needsTempUpdate = wasUninitialised && st.params.temperature === 6500;
+          useDevelopStore.setState({
+            asShotTemperature: asShot,
+            ...(needsTempUpdate ? { params: { ...st.params, temperature: asShot } } : {}),
+          });
+        }
+      }
+
       const isFallback = image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
       // The cached develop preview is a linear-encoded RAW bitmap — it still
       // needs the base tone curve, unlike a genuine camera-rendered bitmap.
@@ -197,12 +217,14 @@ export function useDevelopRenderer(
 
     run();
     return () => { cancelled = true; };
-  }, [photo, fileAccessNonce]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photo?.id, fileAccessNonce]);
 
   // Re-render on parameter changes, coalesced to one frame.
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
+    renderer.setAsShotTemperature(asShotTemperature);
     renderer.setParams(forRender(params, cropping));
     // Coalesce to one render per frame, but don't cancel a pending frame on
     // re-run: a continuous drag changes params every frame, and cancelling each
@@ -217,7 +239,7 @@ export function useDevelopRenderer(
         updateHistogram();
       });
     }
-  }, [params, cropping, pipelineId]);
+  }, [params, cropping, pipelineId, asShotTemperature]);
 
   return {
     supported,

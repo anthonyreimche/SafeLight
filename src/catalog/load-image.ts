@@ -4,6 +4,7 @@ import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
 import { rotateBitmap, rotateFloatRGBA } from "./orient";
 import { verifyPermission } from "./permissions";
 import { rawCacheKey, readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
+import { catalogStorage } from "./storage";
 
 // Read an ImageBitmap into a linear Float32 RGBA image via a temporary WebGL2
 // framebuffer. This is more reliable than OffscreenCanvas.getContext("2d")
@@ -175,6 +176,14 @@ export async function loadPhotoImage(
 
         const f = await decodeRawToFloat(file);
         if (f) {
+          // Propagate the as-shot WB temperature from the decode to the photo's
+          // EXIF so the UI can display the camera's actual shooting temperature.
+          if (f.colorTemperature && !photo.exif.colorTemperature) {
+            photo.exif.colorTemperature = f.colorTemperature;
+            // Persist so the cached-preview fast path has it next time.
+            catalogStorage().putPhoto(photo);
+          }
+
           // Always bake photo.rotation in. At import it's the EXIF orientation
           // for the in-house decode (0 when libraw already oriented the pixels);
           // manual [ / ] rotations then add 90° steps on top — so it must be

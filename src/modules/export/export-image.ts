@@ -177,13 +177,14 @@ async function renderOne(
       image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
     // Cached develop preview is linear-encoded RAW; it needs the base tone curve.
     const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
+    renderer.setAsShotTemperature(photo.exif.colorTemperature ?? 6500);
     renderer.setImage(
       image.kind === "bitmap" ? image.bitmap : image,
       maxEdge,
       isFallback,
       cachedRaw,
     );
-    renderer.setParams(await loadSavedParams(photo.id));
+    renderer.setParams(await loadSavedParams(photo.id, photo.exif.colorTemperature));
     renderer.render();
     const blob = await canvasToBlob(canvas, settings.format, settings.quality);
     if (!blob) return null;

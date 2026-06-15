@@ -32,6 +32,7 @@ interface DevelopState {
   history: EditSnapshot[];
   historyIndex: number;
   histogram: HistogramData | null;
+  asShotTemperature: number;
 
   // Crop tool UI state (not part of the edit, so not persisted to history).
   cropping: boolean;
@@ -95,7 +96,7 @@ interface DevelopState {
   removeSpot: (id: string) => void;
 
   setHistogram: (histogram: HistogramData | null) => void;
-  loadEdit: (photoId: string) => Promise<void>;
+  loadEdit: (photoId: string, asShotTemperature?: number) => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
     key: K,
     value: DevelopParams[K],
@@ -156,6 +157,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   history: [],
   historyIndex: -1,
   histogram: null,
+  asShotTemperature: 6500,
 
   cropping: false,
   constrainCrop: true,
@@ -355,7 +357,8 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
 
   setHistogram: (histogram) => set({ histogram }),
 
-  async loadEdit(photoId: string) {
+  async loadEdit(photoId: string, asShotTemperature?: number) {
+    const asShot = asShotTemperature ?? 6500;
     const editState = await catalogStorage().getEditState(photoId);
     if (editState && editState.stack.length > 0) {
       // Older stacks lack the seeded "Original" snapshot — prepend one so the
@@ -367,7 +370,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
           {
             timestamp: stack[0].timestamp,
             label: "Original",
-            params: normalizeParams(undefined),
+            params: normalizeParams({ temperature: asShot }),
           },
           ...stack,
         ];
@@ -375,20 +378,24 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
       }
       set({
         photoId,
+        asShotTemperature: asShot,
         params: normalizeParams(stack[index].params),
         history: stack,
         historyIndex: index,
       });
     } else {
       // Seed history with the untouched state so undo can return to it.
+      // Use the camera's as-shot WB as the default temperature.
+      const initial = normalizeParams({ temperature: asShot });
       set({
         photoId,
-        params: normalizeParams(undefined),
+        asShotTemperature: asShot,
+        params: initial,
         history: [
           {
             timestamp: Date.now(),
             label: "Original",
-            params: normalizeParams(undefined),
+            params: initial,
           },
         ],
         historyIndex: 0,
@@ -496,7 +503,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   },
 
   async reset() {
-    const fresh = normalizeParams(undefined);
+    const fresh = normalizeParams({ temperature: get().asShotTemperature });
     set({ params: fresh });
     broadcast({
       type: "edit-update",

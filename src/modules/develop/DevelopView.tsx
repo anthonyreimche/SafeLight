@@ -20,7 +20,8 @@ export function DevelopView() {
 
   useEffect(() => {
     if (activePhotoId) {
-      loadEdit(activePhotoId);
+      const p = useCatalogStore.getState().photos.find((ph) => ph.id === activePhotoId);
+      loadEdit(activePhotoId, p?.exif.colorTemperature);
     }
   }, [activePhotoId, loadEdit]);
 
