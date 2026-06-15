@@ -134,6 +134,7 @@ jobs:
           tag_name: ${{ needs.tag.outputs.tag }}
           name: "Safelight ${{ needs.tag.outputs.tag }}"
           draft: false
+          prerelease: true
           generate_release_notes: true
           fail_on_unmatched_files: false
           make_latest: true
@@ -189,6 +190,7 @@ jobs:
           tag_name: ${{ needs.tag.outputs.tag }}
           name: "Safelight ${{ needs.tag.outputs.tag }}"
           draft: false
+          prerelease: true
           generate_release_notes: true
           fail_on_unmatched_files: false
           make_latest: true
@@ -252,6 +254,7 @@ jobs:
           tag_name: ${{ needs.tag.outputs.tag }}
           name: "Safelight ${{ needs.tag.outputs.tag }}"
           draft: false
+          prerelease: true
           generate_release_notes: true
           fail_on_unmatched_files: false
           make_latest: true
