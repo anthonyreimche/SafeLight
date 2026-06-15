@@ -1,0 +1,43 @@
+name: Milestone Release
+
+# When a milestone is closed, push a version tag to trigger the Release workflow.
+#
+# Requirements:
+#   - The milestone title must be a semver version tag, e.g.  v1.2.0
+#   - package.json version must already match the milestone title (the
+#     Release workflow enforces this at build time)
+#
+# The new tag push triggers release.yml automatically.
+
+on:
+  milestone:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate milestone title is a version tag
+        id: version
+        run: |
+          TITLE="${{ github.event.milestone.title }}"
+          if [[ ! "$TITLE" =~ ^v[0-9]+\.[0-9]+\.[0-9] ]]; then
+            echo "Milestone title '$TITLE' does not look like a version (expected v#.#.#). Skipping."
+            exit 0
+          fi
+          echo "tag=$TITLE" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push git tag
+        if: steps.version.outputs.tag != ''
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"

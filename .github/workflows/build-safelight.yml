@@ -48,3 +48,15 @@ jobs:
           if (-not (Test-Path "dist/index.html")) { exit 1 }
           if (-not (Test-Path "electron/main.cjs")) { exit 1 }
           Write-Host "Build artifacts verified on ${{ matrix.os }}"
+
+  build-safelight:
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: All builds passed
+        run: |
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "One or more builds failed"
+            exit 1
+          fi
