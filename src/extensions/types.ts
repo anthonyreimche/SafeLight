@@ -310,6 +310,18 @@ declare global {
     safelightNative?: {
       platform: string;
       versions: { electron: string; chrome: string };
+      /** Returns the live version string from package.json (bypasses the Vite build-time constant). */
+      appVersion(): Promise<string>;
+      /** In-app updater — downloads and runs the platform asset, then quits. */
+      updates: {
+        /** Download and install the asset for `tag` from `repo`, then quit/relaunch. */
+        install(repo: string, tag: string): Promise<void>;
+      };
+      /** GitHub Releases API proxy — runs in the main process to bypass the renderer CSP. */
+      releases: {
+        /** Fetch releases for `owner/repo`. Returns the raw GitHub API array. */
+        fetch(repo: string): Promise<{ tag_name: string; html_url: string; body: string | null; draft: boolean }[]>;
+      };
       plugins: {
         list(): Promise<ExtensionManifest[]>;
         /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. */

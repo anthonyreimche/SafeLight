@@ -9,6 +9,14 @@ contextBridge.exposeInMainWorld("safelightNative", {
     electron: process.versions.electron,
     chrome: process.versions.chrome,
   },
+  appVersion: () => ipcRenderer.invoke("app:version"),
+  updates: {
+    install: (repo, tag) =>
+      ipcRenderer.invoke("updates:install", String(repo), String(tag)),
+  },
+  releases: {
+    fetch: (repo) => ipcRenderer.invoke("releases:fetch", String(repo)),
+  },
   plugins: {
     list: () => ipcRenderer.invoke("plugins:list"),
     install: (spec) => ipcRenderer.invoke("plugins:install", String(spec)),

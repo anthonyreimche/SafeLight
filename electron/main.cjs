@@ -26,6 +26,20 @@ const { pathToFileURL } = require("node:url");
 const isDev = !app.isPackaged;
 const DIST = path.join(__dirname, "..", "dist");
 
+let _appVersion;
+function appVersion() {
+  if (!_appVersion) {
+    try {
+      _appVersion = JSON.parse(
+        fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
+      ).version;
+    } catch {
+      _appVersion = app.getVersion();
+    }
+  }
+  return _appVersion;
+}
+
 // ---------------------------------------------------------------------------
 // GPU / renderer performance. Must run before app `ready`.
 // Without these, packaged Electron on Windows can land on the integrated GPU,
@@ -381,7 +395,95 @@ async function searchExtensions(query, topic) {
   }));
 }
 
+async function fetchReleases(repo) {
+  // Called from the main process so net.fetch is not subject to the renderer
+  // CSP (connect-src 'self') that would block https:// requests.
+  const res = await net.fetch(
+    `https://api.github.com/repos/${repo}/releases?per_page=20`,
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "Safelight",
+      },
+    }
+  );
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// In-app updater. Downloads the platform-appropriate release asset and runs
+// it, then quits so the installer/AppImage can replace the running copy.
+// ---------------------------------------------------------------------------
+
+/** Pick the best asset URL for the current platform from a release assets array. */
+function pickAsset(assets) {
+  const names = assets.map((a) => ({ name: a.name.toLowerCase(), url: a.browser_download_url, orig: a.name }));
+  if (process.platform === "win32") {
+    const hit = names.find((a) => a.name.endsWith(".exe"));
+    return hit ? { url: hit.url, name: hit.orig, mode: "run-silent" } : null;
+  }
+  if (process.platform === "linux") {
+    // Prefer AppImage — self-contained and can be relaunched directly.
+    const appimage = names.find((a) => a.name.endsWith(".appimage"));
+    if (appimage) return { url: appimage.url, name: appimage.orig, mode: "appimage" };
+    // Fall back to the first package manager format available; open with system handler.
+    const pkg = names.find((a) =>
+      a.name.endsWith(".deb") || a.name.endsWith(".rpm") ||
+      a.name.endsWith(".pacman") || a.name.endsWith(".flatpak")
+    );
+    if (pkg) return { url: pkg.url, name: pkg.orig, mode: "open" };
+  }
+  // macOS / unknown: nothing to auto-install.
+  return null;
+}
+
+async function installRelease(repo, tag) {
+  const { spawn } = require("node:child_process");
+
+  // 1. Fetch the release assets list for the given tag.
+  const res = await net.fetch(
+    `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`,
+    { headers: { Accept: "application/vnd.github+json", "User-Agent": "Safelight" } }
+  );
+  if (!res.ok) throw new Error(`Could not fetch release metadata (${res.status})`);
+  const release = await res.json();
+  const asset = pickAsset(release.assets || []);
+  if (!asset) throw new Error("No installable asset found for your platform.");
+
+  // 2. Download to a temp file.
+  const tmpDir = app.getPath("temp");
+  const tmpFile = path.join(tmpDir, asset.name);
+  const dlRes = await net.fetch(asset.url, { headers: { "User-Agent": "Safelight" } });
+  if (!dlRes.ok) throw new Error(`Download failed (${dlRes.status})`);
+  const buf = Buffer.from(await dlRes.arrayBuffer());
+  fs.writeFileSync(tmpFile, buf);
+
+  // 3. Run / open.
+  if (asset.mode === "run-silent") {
+    // Open the installer via the OS shell (double-click equivalent) so it
+    // runs with the correct elevation prompt and UAC context. A small delay
+    // lets the shell finish registering the open before we exit.
+    await shell.openPath(tmpFile);
+    setTimeout(() => app.quit(), 500);
+  } else if (asset.mode === "appimage") {
+    // Make executable, relaunch from the new AppImage path, quit old instance.
+    fs.chmodSync(tmpFile, 0o755);
+    spawn(tmpFile, [], { detached: true, stdio: "ignore" }).unref();
+    setTimeout(() => app.quit(), 500);
+  } else {
+    // Package manager file (.deb, .rpm, etc.) — open with system handler so
+    // the user's package manager picks it up; we stay running.
+    await shell.openPath(tmpFile);
+  }
+}
+
 function registerPluginIpc() {
+  ipcMain.handle("app:version", () => appVersion());
+  ipcMain.handle("releases:fetch", (_e, repo) => fetchReleases(String(repo)));
+  ipcMain.handle("updates:install", (_e, repo, tag) =>
+    installRelease(String(repo), String(tag))
+  );
   ipcMain.handle("plugins:list", () => listPlugins());
   ipcMain.handle("plugins:install", (_e, spec) => installPlugin(spec));
   ipcMain.handle("plugins:search", (_e, query, topic) =>
