@@ -7,8 +7,8 @@ name: Milestone Release
 #   - Milestone title must be a semver version tag, e.g.  v1.2.0
 #   - package.json version must already match the milestone title
 #
-# If the tag already exists the workflow fails immediately — a duplicate tag
-# means a release already shipped for this version and must not be overwritten.
+# If the tag already exists it is deleted and recreated so re-closing a milestone
+# replaces the previous release (useful after a failed or partial build).
 
 on:
   milestone:
@@ -44,19 +44,18 @@ jobs:
           echo "Extracted tag: $TAG (from milestone '$TITLE')"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Fail if tag already exists
+      - name: Delete existing tag if present (re-release)
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          echo "Checking for existing tag: $TAG"
-          if git rev-parse --verify "refs/tags/$TAG" > /dev/null 2>&1; then
-            echo "::error::Tag $TAG already exists locally. A release for this version has already been created. Bump the version and use a new milestone."
-            exit 1
-          fi
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null 2>&1; then
-            echo "::error::Tag $TAG already exists on the remote. A release for this version has already been published. Bump the version and use a new milestone."
-            exit 1
+            echo "Tag $TAG already exists on remote — deleting for re-release."
+            git push origin ":refs/tags/$TAG"
+          else
+            echo "Tag $TAG does not exist yet — fresh release."
           fi
-          echo "Tag $TAG is available."
+          if git rev-parse --verify "refs/tags/$TAG" > /dev/null 2>&1; then
+            git tag -d "$TAG"
+          fi
 
       - name: Verify package.json version matches milestone
         run: |
@@ -149,6 +148,7 @@ jobs:
           draft: false
           generate_release_notes: true
           fail_on_unmatched_files: false
+          make_latest: true
           body: |
             ## Safelight ${{ needs.tag.outputs.tag }}
 
