@@ -19,12 +19,14 @@ import { MAX_MASKS, MAX_RETOUCH, normalizeParams } from "@/catalog/types";
 
 export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
 import type { HistogramData } from "@/rendering/histogram";
+import type { ResolvedProfile } from "@/lens-profiles/types";
 import { catalogStorage } from "@/catalog/storage";
 import { broadcast } from "./broadcast";
 import { nextGuide, type CropGuide } from "@/modules/develop/crop-guides";
 import { writeXmpSidecar } from "@/catalog/xmp";
 import { getSettings } from "./settings-store";
 import { useCatalogStore } from "./catalog-store";
+import { resolveLensForPhoto } from "./lens-resolve";
 
 interface DevelopState {
   photoId: string | null;
@@ -37,6 +39,10 @@ interface DevelopState {
   historyIndex: number;
   histogram: HistogramData | null;
   asShotTemperature: number;
+
+  // Resolved lens profile (ephemeral — recomputed per photo, not serialized).
+  resolvedLensProfile: ResolvedProfile | null;
+  detectedLensName: string | null;
 
   // Crop tool UI state (not part of the edit, so not persisted to history).
   cropping: boolean;
@@ -110,6 +116,8 @@ interface DevelopState {
   updateSpot: (id: string, patch: Partial<RetouchSpot>) => void;
   removeSpot: (id: string) => void;
 
+  setResolvedLensProfile: (profile: ResolvedProfile | null, lensName: string | null) => void;
+
   setHistogram: (histogram: HistogramData | null) => void;
   loadEdit: (photoId: string, asShotTemperature?: number) => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
@@ -177,6 +185,8 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   history: [],
   historyIndex: -1,
   histogram: null,
+  resolvedLensProfile: null,
+  detectedLensName: null,
   asShotTemperature: 6500,
 
   cropping: false,
@@ -393,6 +403,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     pushEdit(get);
   },
 
+  setResolvedLensProfile: (profile, lensName) =>
+    set({ resolvedLensProfile: profile, detectedLensName: lensName }),
+
   setHistogram: (histogram) => set({ histogram }),
 
   async loadEdit(photoId: string, asShotTemperature?: number) {
@@ -420,6 +433,8 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         params: normalizeParams(stack[index].params),
         history: stack,
         historyIndex: index,
+        resolvedLensProfile: null,
+        detectedLensName: null,
       });
     } else {
       // Seed history with the untouched state so undo can return to it.
@@ -437,8 +452,13 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
           },
         ],
         historyIndex: 0,
+        resolvedLensProfile: null,
+        detectedLensName: null,
       });
     }
+
+    // Resolve lens profile from EXIF (async, non-blocking)
+    void resolveLensForPhoto(photoId);
   },
 
   setParam(key, value) {

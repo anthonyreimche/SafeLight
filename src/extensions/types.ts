@@ -365,6 +365,9 @@ export interface SafelightAPI {
   /** Contribute a filename template. Built-in variables are resolved by core;
    *  the template appears in the Export panel's filename template picker. */
   registerFilenameTemplate(c: FilenameTemplateContribution): void;
+  /** Register a lens profile that overrides or supplements the built-in Lensfun
+   *  database. Extensions with priority > 0 are checked before Lensfun. */
+  registerLensProfile(c: import("@/lens-profiles/types").LensProfileContribution): void;
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;

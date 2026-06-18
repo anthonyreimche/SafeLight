@@ -129,8 +129,8 @@ async function decodeImportBitmap(
         /* preview wasn't decodable after all — fall through to a full decode */
       }
     }
-    const bitmap = await decodeRawToBitmap(file);
-    if (bitmap) return { bitmap, oriented: true };
+    const bitmapResult = await decodeRawToBitmap(file);
+    if (bitmapResult) return { bitmap: bitmapResult.bitmap, oriented: bitmapResult.oriented };
 
     // No embedded preview and the bitmap decoder couldn't handle this RAW's
     // compression. The float decode (libraw-wasm) handles every compression, so

@@ -83,11 +83,27 @@ uniform float uCGGlobalLuma;
 uniform float uCGShadowRange;    // 0..1
 uniform float uCGHighlightRange; // 0..1
 
-// Lens correction
+// Lens correction — manual sliders
 uniform float uLensDistortion;    // -100..100 (barrel/pincushion)
 uniform float uLensCA;            // 0..100 lateral chromatic aberration removal
 uniform float uLensDefringe;      // 0..100 purple/green fringe suppression
 uniform float uLensVignetting;    // -100..100 optical vignetting correction
+// Lens correction — profile-based (Lensfun models)
+uniform int   uLensDistModel;     // 0=none, 1=poly3, 2=poly5, 3=ptlens
+uniform float uLensDistA;
+uniform float uLensDistB;
+uniform float uLensDistC;
+uniform int   uLensTcaModel;      // 0=none, 1=linear, 2=poly3
+uniform float uLensTcaKr;
+uniform float uLensTcaKb;
+uniform float uLensTcaBr;
+uniform float uLensTcaCr;
+uniform float uLensTcaBb;
+uniform float uLensTcaCb;
+uniform float uLensVigK1;
+uniform float uLensVigK2;
+uniform float uLensVigK3;
+uniform float uLensAutoCropScale;
 
 //__CONTRIBUTED_UNIFORMS__
 
@@ -599,28 +615,77 @@ vec2 cropTransformUV(vec2 o) {
   return q.xy / q.z;
 }
 
-// Radial barrel/pincushion distortion correction applied to source UV.
-// k > 0 fixes barrel (outward bulge), k < 0 fixes pincushion (inward pinch).
+// Distortion correction: maps display UV to source UV.
+// Supports Lensfun profile models (poly3/poly5/ptlens) and manual slider.
 vec2 lensCorrectedUV(vec2 uv) {
   vec2 centered = uv - 0.5;
-  float r2 = dot(centered, centered);
-  float k = uLensDistortion * 0.0003; // scale factor: 100 → ~strong barrel fix
-  return 0.5 + centered * (1.0 + k * r2);
+  float r = length(centered * 2.0);
+  float r2 = r * r;
+
+  float scale = 1.0;
+
+  // Profile-based distortion model
+  if (uLensDistModel == 1) {
+    // POLY3: r_d = r * (1 - k1 + k1 * r^2)
+    scale = 1.0 - uLensDistB + uLensDistB * r2;
+  } else if (uLensDistModel == 2) {
+    // POLY5: r_d = r * (1 + k1 * r^2 + k2 * r^4)
+    scale = 1.0 + uLensDistB * r2 + uLensDistA * r2 * r2;
+  } else if (uLensDistModel == 3) {
+    // PTLENS: r_d = r * (a*r^3 + b*r^2 + c*r + 1-a-b-c)
+    scale = uLensDistA * r2 * r + uLensDistB * r2 + uLensDistC * r
+          + (1.0 - uLensDistA - uLensDistB - uLensDistC);
+  }
+
+  // Manual slider: additive single-coefficient barrel/pincushion
+  if (abs(uLensDistortion) > 0.001) {
+    scale += uLensDistortion * 0.0003 * r2;
+  }
+
+  vec2 result = 0.5 + centered * scale;
+
+  // Auto-crop: zoom in to hide edge artifacts
+  if (uLensAutoCropScale > 1.001) {
+    result = 0.5 + (result - 0.5) / uLensAutoCropScale;
+  }
+
+  return result;
 }
 
-// Lateral chromatic aberration correction: scale R and B channels outward/inward.
-// The fringing is radial from center so we shift the sample UV per channel.
+// Lateral chromatic aberration correction: scale R and B channels separately.
+// Supports Lensfun TCA models (linear/poly3) and manual slider.
 vec3 sampleWithCA(vec2 uv) {
-  float ca = uLensCA / 100.0 * 0.008; // max 0.8% offset at full strength
   vec2 centered = uv - 0.5;
-  float r2 = dot(centered, centered);
-  float scale = ca * r2 * 4.0; // quadratic: more at corners, zero at center
-  vec2 uvR = 0.5 + centered * (1.0 + scale);
-  vec2 uvB = 0.5 + centered * (1.0 - scale);
-  float r = texture(uImage, clamp(uvR, 0.0, 1.0)).r;
-  float g = texture(uImage, uv).g;
-  float b = texture(uImage, clamp(uvB, 0.0, 1.0)).b;
-  return vec3(r, g, b);
+  float r = length(centered * 2.0);
+  float r2 = r * r;
+
+  float scaleR = 1.0;
+  float scaleB = 1.0;
+
+  if (uLensTcaModel == 1) {
+    // LINEAR: simple scale per channel
+    scaleR = uLensTcaKr;
+    scaleB = uLensTcaKb;
+  } else if (uLensTcaModel == 2) {
+    // POLY3: r_out = br*r^3 + cr*r^2 + vr*r (per channel)
+    scaleR = uLensTcaBr * r2 + uLensTcaCr * r + uLensTcaKr;
+    scaleB = uLensTcaBb * r2 + uLensTcaCb * r + uLensTcaKb;
+  }
+
+  // Manual CA slider: additive quadratic offset
+  if (uLensCA > 0.001) {
+    float ca = uLensCA / 100.0 * 0.008;
+    float offset = ca * r2 * 4.0;
+    scaleR += offset;
+    scaleB -= offset;
+  }
+
+  vec2 uvR = 0.5 + centered * scaleR;
+  vec2 uvB = 0.5 + centered * scaleB;
+  float rv = texture(uImage, clamp(uvR, 0.0, 1.0)).r;
+  float g  = texture(uImage, uv).g;
+  float bv = texture(uImage, clamp(uvB, 0.0, 1.0)).b;
+  return vec3(rv, g, bv);
 }
 
 // Defringe: detect and suppress purple/green fringing by desaturating
@@ -629,25 +694,39 @@ vec3 applyDefringe(vec3 c, float amount) {
   if (amount < 0.001) return c;
   float l = luma(c);
   float chroma = length(c - vec3(l));
-  // Purple (~300°) and green (~120°) fringe hues have negative R-B and R-G relations
-  float purpleish = max(0.0, c.b - c.r) + max(0.0, c.b - c.g); // blue dominant
-  float greenish  = max(0.0, c.g - c.r) + max(0.0, c.g - c.b); // green dominant
+  float purpleish = max(0.0, c.b - c.r) + max(0.0, c.b - c.g);
+  float greenish  = max(0.0, c.g - c.r) + max(0.0, c.g - c.b);
   float fringeMag = clamp((purpleish + greenish) * 4.0, 0.0, 1.0);
   float suppress = clamp(amount / 100.0 * fringeMag * (chroma * 8.0), 0.0, 1.0);
   return mix(c, vec3(l), suppress);
 }
 
-// Lens optical vignetting correction (adds light to corners to flatten falloff).
+// Lens optical vignetting correction.
+// Profile: Lensfun polynomial (1 + k1*r^2 + k2*r^4 + k3*r^6).
+// Manual: cos^4-based slider for user tweaking.
 float lensVignetteFactor(vec2 uv) {
-  if (abs(uLensVignetting) < 0.001) return 1.0;
   vec2 centered = uv - 0.5;
-  float r2 = dot(centered, centered) * 4.0; // 0 at center, 1 at corners
-  // cos^4 law approximation: natural falloff then we correct against it
-  float falloff = pow(clamp(1.0 - r2 * 0.5, 0.0, 1.0), 2.0);
-  float correction = uLensVignetting > 0.0
-    ? 1.0 + (1.0 - falloff) * (uLensVignetting / 100.0) // brighten corners
-    : 1.0 - (1.0 - falloff) * (-uLensVignetting / 100.0); // darken corners
-  return clamp(correction, 0.0, 2.0);
+  float r2 = dot(centered, centered) * 4.0;
+
+  float factor = 1.0;
+
+  // Profile polynomial
+  if (abs(uLensVigK1) > 0.0001 || abs(uLensVigK2) > 0.0001 || abs(uLensVigK3) > 0.0001) {
+    float r4 = r2 * r2;
+    float r6 = r4 * r2;
+    factor = 1.0 + uLensVigK1 * r2 + uLensVigK2 * r4 + uLensVigK3 * r6;
+  }
+
+  // Manual slider: cos^4 approximation
+  if (abs(uLensVignetting) > 0.001) {
+    float falloff = pow(clamp(1.0 - r2 * 0.5, 0.0, 1.0), 2.0);
+    float manual = uLensVignetting > 0.0
+      ? 1.0 + (1.0 - falloff) * (uLensVignetting / 100.0)
+      : 1.0 - (1.0 - falloff) * (-uLensVignetting / 100.0);
+    factor *= manual;
+  }
+
+  return clamp(factor, 0.0, 4.0);
 }
 
 //__CONTRIBUTED_HELPERS__
@@ -916,7 +995,7 @@ void main() {
   }
   vec2 srcUv = cropTransformUV(vUv);
   // Lens distortion correction: remap srcUv before any sampling
-  if (abs(uLensDistortion) > 0.001) {
+  if (uLensDistModel > 0 || abs(uLensDistortion) > 0.001) {
     srcUv = lensCorrectedUV(srcUv);
   }
   // Content rotated out of frame by straighten reads as neutral dark, so corners
@@ -926,7 +1005,7 @@ void main() {
     return;
   }
   // Sample with chromatic aberration correction (CA splits R/B channels radially)
-  vec3 src = uLensCA > 0.001 ? sampleWithCA(srcUv) : texture(uImage, srcUv).rgb;
+  vec3 src = (uLensTcaModel > 0 || uLensCA > 0.001) ? sampleWithCA(srcUv) : texture(uImage, srcUv).rgb;
   // Spot removal (heal / clone): patch the source before any tone edits.
   if (uApplyRetouch && (uSpotCount > 0 || uRetouchCount > 0)) src = applyRetouch(srcUv, src);
   // Lens optical vignetting correction (flatten corner light falloff)

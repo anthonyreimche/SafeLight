@@ -1,7 +1,7 @@
 import type { CatalogPhoto } from "./types";
 import { extractRawPreview, isRawFile } from "@/modules/library/raw-preview";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
-import { rotateBitmap, rotateFloatRGBA } from "./orient";
+import { normalizeRotation, orientationToRotation, rotateBitmap, rotateFloatRGBA } from "./orient";
 import { verifyPermission } from "./permissions";
 import { rawCacheKey, readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
 import { catalogStorage } from "./storage";
@@ -184,11 +184,14 @@ export async function loadPhotoImage(
             catalogStorage().putPhoto(photo);
           }
 
-          // Always bake photo.rotation in. At import it's the EXIF orientation
-          // for the in-house decode (0 when libraw already oriented the pixels);
-          // manual [ / ] rotations then add 90° steps on top — so it must be
-          // applied for both decode paths, not just the un-oriented one.
-          const r = rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
+          // photo.rotation = EXIF orientation + manual user rotation (from import).
+          // When the decoder already oriented the pixels, subtract the EXIF portion
+          // so only manual rotation remains — otherwise we'd double-rotate.
+          let rotateDeg = photo.rotation ?? 0;
+          if (f.oriented) {
+            rotateDeg = normalizeRotation(rotateDeg - orientationToRotation(photo.exif?.orientation));
+          }
+          const r = rotateFloatRGBA(f.data, f.width, f.height, rotateDeg);
 
           // Validate the decode's color against the embedded JPEG preview.
           // An unrecognised camera body (e.g. newer Canon EOS R bodies with
@@ -244,10 +247,14 @@ export async function loadPhotoBitmap(
     try {
       const file = await photo.fileHandle.getFile();
       let raw: ImageBitmap | null = null;
+      let decoderOriented = false;
 
       if (isRawFile(file)) {
-        raw = await decodeRawToBitmap(file);
-        if (!raw) {
+        const result = await decodeRawToBitmap(file);
+        if (result) {
+          raw = result.bitmap;
+          decoderOriented = result.oriented;
+        } else {
           const preview = await extractRawPreview(file);
           raw = preview
             ? await createImageBitmap(preview, { imageOrientation: "none" })
@@ -258,7 +265,11 @@ export async function loadPhotoBitmap(
       }
 
       if (raw) {
-        const upright = await rotateBitmap(raw, photo.rotation ?? 0);
+        let rotateDeg = photo.rotation ?? 0;
+        if (decoderOriented) {
+          rotateDeg = normalizeRotation(rotateDeg - orientationToRotation(photo.exif?.orientation));
+        }
+        const upright = await rotateBitmap(raw, rotateDeg);
         if (upright !== raw) raw.close();
         return upright;
       }

@@ -31,3 +31,6 @@ build/safelight-cert.pfx
 *.sln
 *.sw?
 /.claude
+
+# Lensfun vendor database (5MB XML, regenerable — only ship the JSON)
+src/lens-profiles/vendor/

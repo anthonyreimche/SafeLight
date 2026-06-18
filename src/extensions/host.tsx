@@ -9,6 +9,7 @@ import {
   registerExportProcessor,
   registerFilenameTemplate,
   registerLayout,
+  registerLensProfile,
   registerPanel,
   registerPipeline,
   registerProcessingStage,
@@ -67,6 +68,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerSettings: (c) => registerSettings(extensionId, c),
     registerExportProcessor: (c) => registerExportProcessor(extensionId, c),
     registerFilenameTemplate: (c) => registerFilenameTemplate(extensionId, c),
+    registerLensProfile: (c) => registerLensProfile(extensionId, c),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),

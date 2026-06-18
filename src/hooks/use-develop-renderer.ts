@@ -35,6 +35,7 @@ export function useDevelopRenderer(
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   const cropping = useDevelopStore((s) => s.cropping);
   const showClipping = useDevelopStore((s) => s.showClipping);
+  const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
   const pipelineId = usePipelineStore((s) => s.activeId);
 
@@ -122,6 +123,7 @@ export function useDevelopRenderer(
         bridge.setImage(image, getSettings().developMaxEdge, isFallback);
       }
       const st = useDevelopStore.getState();
+      bridge.setLensProfile(st.resolvedLensProfile);
       bridge.setParams(forRender(st.params, st.cropping));
       bridge.render(true);
     };
@@ -210,35 +212,39 @@ export function useDevelopRenderer(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photo?.id, fileAccessNonce]);
 
-  // Re-render on parameter changes. Immediate frame skips the histogram
-  // (avoids double-render + readPixels in the worker during active drags).
-  // Histogram follows after params settle for 150ms.
-  const histTimerRef = useRef<number | null>(null);
+  // Re-render on parameter changes. The standard histogram (128x128 FBO +
+  // readPixels ~1ms on the worker) is included with every frame so it stays
+  // real-time. The extended histogram (float readback, ~3-5ms) is debounced
+  // to avoid stacking heavy readbacks during fast slider drags.
+  const extTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const bridge = bridgeRef.current;
     if (!bridge) return;
     bridge.setAsShotTemperature(asShotTemperature);
+    bridge.setLensProfile(resolvedLensProfile);
     bridge.setParams(forRender(params, cropping));
     if (rafIdRef.current == null) {
       rafIdRef.current = requestAnimationFrame(() => {
         rafIdRef.current = null;
-        bridgeRef.current?.render(false);
+        bridgeRef.current?.render(true, false);
       });
     }
-    if (histTimerRef.current != null) clearTimeout(histTimerRef.current);
-    histTimerRef.current = window.setTimeout(() => {
-      histTimerRef.current = null;
-      const ext = localStorage.getItem("sl_histogram_extended") === "1";
-      bridgeRef.current?.render(true, ext);
-    }, 150);
+    const ext = localStorage.getItem("sl_histogram_extended") === "1";
+    if (ext) {
+      if (extTimerRef.current != null) clearTimeout(extTimerRef.current);
+      extTimerRef.current = window.setTimeout(() => {
+        extTimerRef.current = null;
+        bridgeRef.current?.render(true, true);
+      }, 150);
+    }
     return () => {
-      if (histTimerRef.current != null) {
-        clearTimeout(histTimerRef.current);
-        histTimerRef.current = null;
+      if (extTimerRef.current != null) {
+        clearTimeout(extTimerRef.current);
+        extTimerRef.current = null;
       }
     };
-  }, [params, cropping, pipelineId, asShotTemperature]);
+  }, [params, cropping, pipelineId, asShotTemperature, resolvedLensProfile]);
 
   useEffect(() => {
     const bridge = bridgeRef.current;

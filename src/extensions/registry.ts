@@ -15,6 +15,7 @@ import type {
   SliderIconContribution,
   ThemeContribution,
 } from "./types";
+import type { LensProfileContribution } from "@/lens-profiles/types";
 import {
   registerStageParams,
   unregisterExtensionParams,
@@ -51,6 +52,9 @@ export interface RegisteredFilenameTemplate extends FilenameTemplateContribution
 export interface RegisteredProcessingStage extends ProcessingStageContribution {
   extensionId: string;
 }
+export interface RegisteredLensProfile extends LensProfileContribution {
+  extensionId: string;
+}
 
 interface RegistryState {
   panels: Record<string, RegisteredPanel>;
@@ -63,6 +67,7 @@ interface RegistryState {
   exportProcessors: Record<string, RegisteredExportProcessor>;
   filenameTemplates: Record<string, RegisteredFilenameTemplate>;
   processingStages: Record<string, RegisteredProcessingStage>;
+  lensProfiles: Record<string, RegisteredLensProfile>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -75,6 +80,7 @@ export const useRegistry = create<RegistryState>(() => ({
   exportProcessors: {},
   filenameTemplates: {},
   processingStages: {},
+  lensProfiles: {},
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -165,6 +171,15 @@ export function registerProcessingStage(
   }));
 }
 
+export function registerLensProfile(
+  extensionId: string,
+  c: LensProfileContribution,
+): void {
+  useRegistry.setState((s) => ({
+    lensProfiles: { ...s.lensProfiles, [c.id]: { ...c, extensionId } },
+  }));
+}
+
 /** Remove every contribution an extension made (uninstall/deactivate). */
 export function unregisterExtension(extensionId: string): void {
   const drop = <T extends { extensionId: string }>(map: Record<string, T>) =>
@@ -187,6 +202,7 @@ export function unregisterExtension(extensionId: string): void {
     exportProcessors: drop(s.exportProcessors),
     filenameTemplates: drop(s.filenameTemplates),
     processingStages: drop(s.processingStages),
+    lensProfiles: drop(s.lensProfiles),
   }));
   unregisterExtensionActions(extensionId);
 }

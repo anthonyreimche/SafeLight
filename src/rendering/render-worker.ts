@@ -1,4 +1,5 @@
 import type { DevelopParams } from "@/catalog/types";
+import type { ResolvedProfile } from "@/lens-profiles/types";
 import type { ProcessingStageContribution } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { BUILTIN_RESOLVED } from "@/extensions/pipelines";
@@ -22,6 +23,7 @@ export type WorkerRequest =
       baseCurveForBitmap?: boolean;
     }
   | { cmd: "setParams"; params: DevelopParams }
+  | { cmd: "setLensProfile"; profile: ResolvedProfile | null }
   | { cmd: "setAsShotTemperature"; kelvin: number }
   | { cmd: "render"; wantHistogram?: boolean; wantExtended?: boolean }
   | {
@@ -111,6 +113,12 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       case "setParams": {
         if (!renderer) break;
         renderer.setParams(msg.params);
+        break;
+      }
+
+      case "setLensProfile": {
+        if (!renderer) break;
+        renderer.setLensProfile(msg.profile);
         break;
       }
 

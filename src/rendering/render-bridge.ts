@@ -134,6 +134,10 @@ export class RenderBridge {
     this.post({ cmd: "setParams", params });
   }
 
+  setLensProfile(profile: import("@/lens-profiles/types").ResolvedProfile | null) {
+    this.post({ cmd: "setLensProfile", profile });
+  }
+
   setAsShotTemperature(kelvin: number) {
     this.post({ cmd: "setAsShotTemperature", kelvin });
   }

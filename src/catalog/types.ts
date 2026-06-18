@@ -143,6 +143,13 @@ export interface ColorGradingParams {
 }
 
 export interface LensCorrectionParams {
+  mode: "off" | "profile" | "manual";
+  profileId: string | null;
+  profileSource: "lensfun" | "extension" | null;
+  distortionEnabled: boolean;
+  caEnabled: boolean;
+  vignetteEnabled: boolean;
+  autoCrop: boolean;
   distortion: number;          // -100..100 (neg=barrel fix, pos=pincushion fix)
   chromaticAberration: number; // 0..100 lateral CA removal
   defringe: number;            // 0..100 fringe suppression amount
@@ -416,6 +423,13 @@ export function defaultHSL(): HSLAdjustments {
 }
 
 export const DEFAULT_LENS_CORRECTION: LensCorrectionParams = {
+  mode: "off",
+  profileId: null,
+  profileSource: null,
+  distortionEnabled: true,
+  caEnabled: true,
+  vignetteEnabled: true,
+  autoCrop: true,
   distortion: 0,
   chromaticAberration: 0,
   defringe: 0,
@@ -574,11 +588,28 @@ function normalizeLensCorrection(
     typeof v === "number" && isFinite(v) ? Math.min(100, Math.max(-100, v)) : d;
   const c0100 = (v: unknown, d: number) =>
     typeof v === "number" && isFinite(v) ? Math.min(100, Math.max(0, v)) : d;
+
+  const dist = c100(lc?.distortion, 0);
+  const ca = c0100(lc?.chromaticAberration, 0);
+  const defr = c0100(lc?.defringe, 0);
+  const vig = c100(lc?.vignetting, 0);
+
+  // Backward compat: old edits without a mode field that have nonzero sliders
+  // are treated as "manual" mode so they render identically.
+  const hasLegacyEdits = !lc?.mode && (dist !== 0 || ca !== 0 || defr !== 0 || vig !== 0);
+
   return {
-    distortion: c100(lc?.distortion, 0),
-    chromaticAberration: c0100(lc?.chromaticAberration, 0),
-    defringe: c0100(lc?.defringe, 0),
-    vignetting: c100(lc?.vignetting, 0),
+    mode: lc?.mode ?? (hasLegacyEdits ? "manual" : "off"),
+    profileId: lc?.profileId ?? null,
+    profileSource: lc?.profileSource ?? null,
+    distortionEnabled: lc?.distortionEnabled ?? true,
+    caEnabled: lc?.caEnabled ?? true,
+    vignetteEnabled: lc?.vignetteEnabled ?? true,
+    autoCrop: lc?.autoCrop ?? true,
+    distortion: dist,
+    chromaticAberration: ca,
+    defringe: defr,
+    vignetting: vig,
   };
 }
 
