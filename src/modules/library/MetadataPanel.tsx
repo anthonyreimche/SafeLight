@@ -38,6 +38,21 @@ function formatAltitude(v: number | undefined): string | undefined {
   return `${v} m`;
 }
 
+function formatDistance(v: number | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  if (v >= 1) return `${v} m`;
+  return `${Math.round(v * 100)} cm`;
+}
+
+function formatLens(e: {
+  lens?: string;
+  lensMake?: string;
+}): string | undefined {
+  if (!e.lens) return undefined;
+  if (e.lensMake && !e.lens.startsWith(e.lensMake)) return `${e.lensMake} ${e.lens}`;
+  return e.lens;
+}
+
 export function MetadataPanel() {
   const photo = useCatalogStore((s) =>
     s.photos.find((p) => p.id === s.activePhotoId),
@@ -55,17 +70,29 @@ export function MetadataPanel() {
   const hasGps = e.gpsLatitude !== undefined && e.gpsLongitude !== undefined;
 
   const rows: [string, string | undefined][] = [
+    ["Filename", photo.filename],
+    ["Artist", e.artist],
+    ["Copyright", e.copyright],
+    ["Description", e.imageDescription],
     ["Camera", camera || undefined],
-    ["Lens", e.lens],
+    ["Body S/N", e.bodySerial],
+    ["Software", e.software],
+    ["Lens", formatLens(e)],
+    ["Lens S/N", e.lensSerial],
     ["Focal length", formatFocal(e)],
+    ["Max aperture", e.maxAperture ? `f/${e.maxAperture}` : undefined],
     ["Aperture", e.aperture ? `f/${e.aperture}` : undefined],
     ["Shutter", e.shutterSpeed],
     ["ISO", e.iso ? `${e.iso}` : undefined],
-    ["Exposure", e.exposureProgram],
+    ["Program", e.exposureProgram],
+    ["Exp. mode", e.exposureMode],
     ["Exp. comp.", formatExposureComp(e.exposureCompensation)],
     ["Metering", e.meteringMode],
     ["White balance", e.whiteBalance],
     ["Flash", e.flash],
+    ["Focus dist.", formatDistance(e.subjectDistance)],
+    ["Scene", e.sceneCaptureType],
+    ["Color space", e.colorSpace],
     ["Date", formatDate(e.dateTimeOriginal)],
     ["Location", formatCoord(e.gpsLatitude, e.gpsLongitude)],
     ["Altitude", hasGps ? formatAltitude(e.gpsAltitude) : undefined],

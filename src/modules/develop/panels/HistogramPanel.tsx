@@ -26,6 +26,9 @@ export function HistogramPanel() {
   const histogram = useDevelopStore((s) => s.histogram);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
+  const showClipping = useDevelopStore((s) => s.showClipping);
+  const toggleClipping = useDevelopStore((s) => s.toggleClipping);
+  const setShowClipping = useDevelopStore((s) => s.setShowClipping);
 
   const dragRef = useRef<{
     key: keyof DevelopParams;
@@ -84,5 +87,14 @@ export function HistogramPanel() {
     commitEdit("Histogram Reset");
   };
 
-  return <Histogram data={histogram} onAdjust={onAdjust} onReset={onReset} />;
+  return (
+    <Histogram
+      data={histogram}
+      onAdjust={onAdjust}
+      onReset={onReset}
+      showClipping={showClipping}
+      onToggleClipping={toggleClipping}
+      onSetClipping={setShowClipping}
+    />
+  );
 }

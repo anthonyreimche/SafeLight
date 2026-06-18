@@ -51,6 +51,11 @@ interface DevelopState {
   cycleCropGuide: () => void;
   cycleCropGuideFlip: () => void;
 
+  // Clipping overlay: bitmask (bit 0 = shadows, bit 1 = highlights).
+  showClipping: 0 | 1 | 2 | 3;
+  setShowClipping: (mode: 0 | 1 | 2 | 3) => void;
+  toggleClipping: () => void;
+
   // White-balance eyedropper: when true, the next click on the image samples a
   // neutral target and solves Temp/Tint. Ephemeral UI state, not persisted.
   wbPicking: boolean;
@@ -186,6 +191,19 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   cycleCropGuide: () => set((s) => ({ cropGuide: nextGuide(s.cropGuide) })),
   cycleCropGuideFlip: () =>
     set((s) => ({ cropGuideFlip: (s.cropGuideFlip + 1) % 4 })),
+
+  showClipping: (() => {
+    try { const v = localStorage.getItem("sl_show_clipping"); return v === "1" ? 1 : v === "2" ? 2 : v === "3" ? 3 : 0; } catch { return 0; }
+  })() as 0 | 1 | 2 | 3,
+  setShowClipping: (mode) => {
+    set({ showClipping: mode });
+    try { localStorage.setItem("sl_show_clipping", String(mode)); } catch {}
+  },
+  toggleClipping: () => {
+    const next = (get().showClipping === 0 ? 3 : 0) as 0 | 3;
+    set({ showClipping: next });
+    try { localStorage.setItem("sl_show_clipping", String(next)); } catch {}
+  },
 
   wbPicking: false,
   setWbPicking: (wbPicking) => set({ wbPicking }),

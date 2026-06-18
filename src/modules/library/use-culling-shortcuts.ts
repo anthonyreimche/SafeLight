@@ -109,6 +109,12 @@ export function useCullingShortcuts(): void {
         return;
       }
 
+      if (action === "keyword.focus") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("sl-focus-keyword-input"));
+        return;
+      }
+
       if (action === "photo.prev" || action === "photo.next") {
         const ui = useUIStore.getState();
         const list = visiblePhotos(

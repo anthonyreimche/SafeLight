@@ -64,10 +64,16 @@ export function Histogram({
   data,
   onAdjust,
   onReset,
+  showClipping = 0,
+  onToggleClipping,
+  onSetClipping,
 }: {
   data: HistogramData | null;
   onAdjust?: (zone: HistogramZone, deltaPx: number, phase: Phase) => void;
   onReset?: (zone: HistogramZone) => void;
+  showClipping?: 0 | 1 | 2 | 3;
+  onToggleClipping?: () => void;
+  onSetClipping?: (mode: 0 | 1 | 2 | 3) => void;
 }) {
   const interactive = !!onAdjust;
   const [mode, setMode] = useState<Mode>(readHistMode);
@@ -98,13 +104,27 @@ export function Histogram({
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     if (extended && data?.extended) {
-      drawExtendedHistogram(ctx, width, H, data.extended, mode);
+      drawExtendedHistogram(ctx, width, H, data.extended, mode, showClipping);
     } else {
       drawHistogram(ctx, width, H, data, mode, interactive, hoverZone);
     }
-  }, [data, mode, width, interactive, hoverZone, extended]);
+  }, [data, mode, width, interactive, hoverZone, extended, showClipping]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (extended && onSetClipping && e.button === 0 && data?.extended) {
+      const x = e.nativeEvent.offsetX;
+      const y = e.nativeEvent.offsetY;
+      if (y < 16) {
+        if (x < width * 0.3 && data.extended.clipLow > 0.001) {
+          onSetClipping(((showClipping ^ 1) & 3) as 0 | 1 | 2 | 3);
+          return;
+        }
+        if (x > width * 0.7 && data.extended.clipHigh > 0.001) {
+          onSetClipping(((showClipping ^ 2) & 3) as 0 | 1 | 2 | 3);
+          return;
+        }
+      }
+    }
     if (!onAdjust || e.button !== 0 || extended) return;
     const frac = e.nativeEvent.offsetX / width;
     const { zone } = zoneAt(frac);
@@ -177,6 +197,20 @@ export function Histogram({
         >
           Ext
         </button>
+        {onToggleClipping && (
+          <button
+            onClick={onToggleClipping}
+            className={`flex-1 rounded py-0.5 text-[9px] font-medium uppercase tracking-wider ${
+              showClipping
+                ? "bg-surface-3"
+                : "text-text-muted hover:text-text-secondary"
+            }`}
+            style={showClipping ? { color: "#ff6b6b" } : undefined}
+            title="Toggle clipping overlay (J)"
+          >
+            Clip
+          </button>
+        )}
       </div>
     </div>
   );
@@ -296,6 +330,7 @@ function drawExtendedHistogram(
   h: number,
   ext: ExtendedHistogramData,
   mode: Mode,
+  showClipping = 0,
 ) {
   ctx.clearRect(0, 0, w, h);
   const { rangeMin, rangeMax, clipLow, clipHigh } = ext;
@@ -335,17 +370,31 @@ function drawExtendedHistogram(
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Clipping indicators at the top corners.
+  // Clipping indicators at the top corners. Active indicators get a filled background.
   ctx.font = "8px system-ui, sans-serif";
   ctx.textBaseline = "top";
+  const shadowActive = (showClipping & 1) !== 0;
+  const highlightActive = (showClipping & 2) !== 0;
   if (clipLow > 0.001) {
-    ctx.fillStyle = "rgba(100,180,255,0.9)";
+    const text = `${(clipLow * 100).toFixed(1)}%`;
+    if (shadowActive) {
+      const tw = ctx.measureText(text).width;
+      ctx.fillStyle = "rgba(50,100,200,0.5)";
+      ctx.fillRect(0, 0, tw + 6, 13);
+    }
+    ctx.fillStyle = shadowActive ? "rgba(130,200,255,1)" : "rgba(100,180,255,0.9)";
     ctx.textAlign = "left";
-    ctx.fillText(`${(clipLow * 100).toFixed(1)}%`, 2, 2);
+    ctx.fillText(text, 2, 2);
   }
   if (clipHigh > 0.001) {
-    ctx.fillStyle = "rgba(255,100,100,0.9)";
+    const text = `${(clipHigh * 100).toFixed(1)}%`;
+    if (highlightActive) {
+      const tw = ctx.measureText(text).width;
+      ctx.fillStyle = "rgba(200,60,60,0.5)";
+      ctx.fillRect(w - tw - 6, 0, tw + 6, 13);
+    }
+    ctx.fillStyle = highlightActive ? "rgba(255,130,130,1)" : "rgba(255,100,100,0.9)";
     ctx.textAlign = "right";
-    ctx.fillText(`${(clipHigh * 100).toFixed(1)}%`, w - 2, 2);
+    ctx.fillText(text, w - 2, 2);
   }
 }

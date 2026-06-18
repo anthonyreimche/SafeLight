@@ -286,6 +286,7 @@ uniform bool uLinear;
 uniform int uOutSpace;
 uniform mat3 uOutMatrix;
 uniform bool uRawHistogram;
+uniform int uShowClipping;
 
 ${uniformDecls.join("\n")}
 
@@ -321,6 +322,13 @@ void main() {
 
   if (uRawHistogram) {
     fragColor = vec4(color, 1.0);
+  } else if (uShowClipping > 0) {
+    vec3 display = clamp(color, 0.0, 1.0);
+    bool shadow = (uShowClipping & 1) != 0 && color.r <= 0.0 && color.g <= 0.0 && color.b <= 0.0;
+    bool highlight = (uShowClipping & 2) != 0 && (color.r >= 1.0 || color.g >= 1.0 || color.b >= 1.0);
+    fragColor = shadow ? vec4(0.2, 0.3, 1.0, 1.0)
+               : highlight ? vec4(1.0, 0.2, 0.2, 1.0)
+               : vec4(display, 1.0);
   } else {
     fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
   }

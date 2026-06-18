@@ -29,17 +29,29 @@ export type FlagStatus = "none" | "pick" | "reject";
 export interface ExifData {
   cameraMake?: string;
   cameraModel?: string;
+  bodySerial?: string;
   lens?: string;
+  lensMake?: string;
+  lensSerial?: string;
   focalLength?: number;
   focalLength35mm?: number;
   aperture?: number;
+  maxAperture?: number;
   shutterSpeed?: string;
   iso?: number;
   exposureCompensation?: number;
   exposureProgram?: string;
+  exposureMode?: string;
   meteringMode?: string;
   whiteBalance?: string;
   flash?: string;
+  subjectDistance?: number; // metres
+  sceneCaptureType?: string;
+  colorSpace?: string;
+  artist?: string;
+  copyright?: string;
+  software?: string;
+  imageDescription?: string;
   dateTimeOriginal?: string;
   orientation?: number; // EXIF Orientation tag (1..8)
   colorTemperature?: number; // as-shot WB in Kelvin (from AsShotNeutral / libraw)

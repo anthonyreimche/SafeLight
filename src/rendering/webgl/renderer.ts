@@ -303,6 +303,7 @@ export class WebGLRenderer {
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private params: DevelopParams | null = null;
   private asShotTemperature = 6500;
+  private showClipping = 0;
   private hasImage = false;
   private imageWidth = 0;
   private imageHeight = 0;
@@ -598,6 +599,7 @@ export class WebGLRenderer {
       "uIsFallbackPreview",
       "uApplyBaseCurve",
       "uRawHistogram",
+      "uShowClipping",
       "uExposure",
       "uContrast",
       "uHighlights",
@@ -966,6 +968,10 @@ export class WebGLRenderer {
     this.asShotTemperature = kelvin >= 2000 && kelvin <= 50000 ? kelvin : 6500;
   }
 
+  setShowClipping(mode: number) {
+    this.showClipping = mode & 3;
+  }
+
   setParams(params: DevelopParams) {
     this.params = params;
     this.updateMaskTexture(params.masks);
@@ -1042,6 +1048,7 @@ export class WebGLRenderer {
       u.uApplyBaseCurve,
       this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
     );
+    gl.uniform1i(u.uShowClipping, this.showClipping);
     gl.uniform1f(u.uExposure, p.exposure);
     gl.uniform1f(u.uContrast, p.contrast);
     gl.uniform1f(u.uHighlights, p.highlights);
@@ -1318,6 +1325,7 @@ export class WebGLRenderer {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
+    gl.uniform1i(this.uniforms.uShowClipping, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
     gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
     gl.drawArrays(gl.TRIANGLES, 0, 6);

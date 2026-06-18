@@ -4,6 +4,8 @@
 
 import { useEffect, useState } from "react";
 import { MetadataPanel } from "./MetadataPanel";
+import { KeywordEditor } from "./KeywordEditor";
+import { Panel } from "@/ui/components/Panel";
 import { Histogram } from "@/ui/components/Histogram";
 import type { HistogramData } from "@/rendering/histogram";
 import { renderPhotoHistogram } from "@/rendering/thumbnail-renderer";
@@ -15,6 +17,9 @@ export function InfoPanel() {
   return (
     <div className="flex flex-col">
       <LibraryHistogram />
+      <Panel title="Keywords">
+        <KeywordEditor />
+      </Panel>
       <MetadataPanel />
     </div>
   );

@@ -6,6 +6,7 @@
 
 import type { ComponentType } from "react";
 import type { PanelDockDefault, ProcessingStageContribution, SafelightAPI } from "./types";
+import { useDevelopStore } from "@/state/develop-store";
 import { HistogramPanel } from "@/modules/develop/panels/HistogramPanel";
 import { TuningPanel } from "@/modules/develop/panels/TuningPanel";
 import { CropPanel } from "@/modules/develop/panels/CropPanel";
@@ -24,6 +25,7 @@ import { PresetsPanel } from "@/modules/develop/panels/PresetsPanel";
 import { EditActionsPanel } from "@/modules/develop/DevelopSidebar";
 import { FoldersPanel, LibraryFiltersPanel } from "@/modules/library/LibrarySidebar";
 import { InfoPanel } from "@/modules/library/InfoPanel";
+import { KeywordsPanel } from "@/modules/library/KeywordsPanel";
 import { ExportPanel } from "@/modules/export/ExportPanel";
 
 export interface BuiltinExtension {
@@ -233,6 +235,13 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
       });
       api.registerProcessingStage(VIGNETTE_STAGE);
       api.registerProcessingStage(GRAIN_STAGE);
+      api.registerKeybinding({
+        id: "core.toggle-clipping",
+        label: "Toggle Clipping Overlay",
+        category: "Develop",
+        defaultCombo: "J",
+        handler: () => useDevelopStore.getState().toggleClipping(),
+      });
     },
   },
 
@@ -262,6 +271,9 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   }),
   panelExt("core.filters", "Filters", LibraryFiltersPanel, "Filter the grid by rating, flag and label.", {
     module: "library", direction: "left", order: 1, width: 240,
+  }),
+  panelExt("core.keywords", "Keywords", KeywordsPanel, "All keywords in the project with photo counts. Click to filter.", {
+    module: "library", direction: "left", order: 2, width: 240,
   }),
   panelExt("core.info", "Info", InfoPanel, "Metadata and EXIF for the selected photo.", {
     module: "library", direction: "right", order: 0, width: 280,

@@ -18,6 +18,7 @@ export interface LibraryFilter {
   ratingOp: RatingOp; // how photo.rating is compared to `rating`
   flag: FlagFilter;
   label: LabelFilter;
+  keywords: string[]; // photo must contain ALL of these keywords (AND)
 }
 
 export const NO_FILTER: LibraryFilter = {
@@ -25,6 +26,7 @@ export const NO_FILTER: LibraryFilter = {
   ratingOp: "gte",
   flag: "any",
   label: "any",
+  keywords: [],
 };
 
 // The rating filter is inert at "≥ 0" (matches everything); any other operator
@@ -43,7 +45,7 @@ function ratingMatches(rating: number, op: RatingOp, threshold: number): boolean
 }
 
 export function isFilterActive(f: LibraryFilter): boolean {
-  return ratingFilterActive(f) || f.flag !== "any" || f.label !== "any";
+  return ratingFilterActive(f) || f.flag !== "any" || f.label !== "any" || f.keywords.length > 0;
 }
 
 function matches(photo: CatalogPhoto, f: LibraryFilter): boolean {
@@ -54,6 +56,10 @@ function matches(photo: CatalogPhoto, f: LibraryFilter): boolean {
     return false;
   if (f.flag !== "any" && photo.flag !== f.flag) return false;
   if (f.label !== "any" && photo.colorLabel !== f.label) return false;
+  if (f.keywords.length > 0) {
+    const lower = photo.keywords.map((k) => k.toLowerCase());
+    if (!f.keywords.every((k) => lower.includes(k.toLowerCase()))) return false;
+  }
   return true;
 }
 

@@ -36,6 +36,7 @@ uniform bool uIsFallbackPreview; // true: source is pseudo-linear from 8-bit JPE
 uniform bool uApplyBaseCurve; // true: full-res RAW float decode -- add the default camera
                               // tone curve the already-rendered preview/export bitmaps carry
 uniform bool uRawHistogram;   // true: output linear unclamped values for extended histogram
+uniform int uShowClipping;    // bitmask: bit 0 = shadow clipping, bit 1 = highlight clipping
 
 uniform float uExposure;
 uniform float uContrast;
@@ -1173,6 +1174,13 @@ void main() {
 
   if (uRawHistogram) {
     fragColor = vec4(c, 1.0);
+  } else if (uShowClipping > 0) {
+    vec3 display = encodeOutput(clamp(c, 0.0, 1.0));
+    bool shadow = (uShowClipping & 1) != 0 && c.r <= 0.0 && c.g <= 0.0 && c.b <= 0.0;
+    bool highlight = (uShowClipping & 2) != 0 && (c.r >= 1.0 || c.g >= 1.0 || c.b >= 1.0);
+    fragColor = shadow ? vec4(0.2, 0.3, 1.0, 1.0)
+               : highlight ? vec4(1.0, 0.2, 0.2, 1.0)
+               : vec4(display, 1.0);
   } else {
     fragColor = vec4(encodeOutput(clamp(c, 0.0, 1.0)), 1.0);
   }

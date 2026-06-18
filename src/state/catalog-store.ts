@@ -55,6 +55,13 @@ interface CatalogState {
   applyFlag: (ids: string[], flag: FlagStatus) => Promise<void>;
   rotatePhotos: (ids: string[], deg: number) => Promise<void>;
 
+  addKeyword: (id: string, keyword: string) => Promise<void>;
+  removeKeyword: (id: string, keyword: string) => Promise<void>;
+  /** Add keywords to many photos at once. */
+  addKeywords: (ids: string[], keywords: string[]) => Promise<void>;
+  /** Remove keywords from many photos at once. */
+  removeKeywords: (ids: string[], keywords: string[]) => Promise<void>;
+
   select: (id: string) => void;
   selectRange: (id: string, orderedIds?: string[]) => void;
   toggleSelect: (id: string) => void;
@@ -333,6 +340,30 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     applyColorLabel: (ids, label) =>
       commit(ids, (p) => ({ ...p, colorLabel: label })),
     applyFlag: (ids, flag) => commit(ids, (p) => ({ ...p, flag })),
+
+    addKeyword: (id, keyword) =>
+      commit([id], (p) => ({
+        ...p,
+        keywords: p.keywords.includes(keyword) ? p.keywords : [...p.keywords, keyword],
+      })),
+    removeKeyword: (id, keyword) =>
+      commit([id], (p) => ({
+        ...p,
+        keywords: p.keywords.filter((k) => k !== keyword),
+      })),
+    addKeywords: (ids, keywords) =>
+      commit(ids, (p) => {
+        const existing = new Set(p.keywords);
+        const toAdd = keywords.filter((k) => !existing.has(k));
+        return toAdd.length > 0 ? { ...p, keywords: [...p.keywords, ...toAdd] } : p;
+      }),
+    removeKeywords: (ids, keywords) => {
+      const remove = new Set(keywords);
+      return commit(ids, (p) => ({
+        ...p,
+        keywords: p.keywords.filter((k) => !remove.has(k)),
+      }));
+    },
 
     select(id) {
       set({ selectedIds: new Set([id]), activePhotoId: id });

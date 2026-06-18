@@ -34,6 +34,7 @@ export function useDevelopRenderer(
   const params = useDevelopStore((s) => s.params);
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   const cropping = useDevelopStore((s) => s.cropping);
+  const showClipping = useDevelopStore((s) => s.showClipping);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
   const pipelineId = usePipelineStore((s) => s.activeId);
 
@@ -238,6 +239,13 @@ export function useDevelopRenderer(
       }
     };
   }, [params, cropping, pipelineId, asShotTemperature]);
+
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge) return;
+    bridge.setShowClipping(showClipping);
+    bridge.render(false);
+  }, [showClipping]);
 
   return {
     supported,

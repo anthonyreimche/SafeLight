@@ -19,9 +19,13 @@ const TYPE_SIZE: Record<number, number> = {
 };
 
 const TAG = {
+  ImageDescription: 0x010e,
   Make: 0x010f,
   Model: 0x0110,
   Orientation: 0x0112,
+  Software: 0x0131,
+  Artist: 0x013b,
+  Copyright: 0x8298,
   ExifIFD: 0x8769,
   GPSIFD: 0x8825,
   ExposureTime: 0x829a,
@@ -30,14 +34,21 @@ const TAG = {
   ISO: 0x8827,
   DateTimeOriginal: 0x9003,
   ExposureBias: 0x9204,
+  MaxAperture: 0x9205,
+  SubjectDistance: 0x9206,
   MeteringMode: 0x9207,
   LightSource: 0x9208,
   Flash: 0x9209,
   FocalLength: 0x920a,
+  ColorSpace: 0xa001,
   ExposureMode: 0xa402,
   WhiteBalance: 0xa403,
   FocalLength35mm: 0xa405,
+  SceneCaptureType: 0xa406,
+  BodySerial: 0xa431,
+  LensMake: 0xa433,
   LensModel: 0xa434,
+  LensSerial: 0xa435,
   AsShotNeutral: 0xc628,
 } as const;
 
@@ -124,10 +135,18 @@ function parseTiff(view: DataView, base: number): ExifData {
   const exif: ExifData = {};
   const ifd0 = readIFD(r, view.getUint32(base + 4, le));
 
+  const desc = asciiTag(r, ifd0.get(TAG.ImageDescription));
+  if (desc) exif.imageDescription = desc;
   const make = asciiTag(r, ifd0.get(TAG.Make));
   if (make) exif.cameraMake = make;
   const model = asciiTag(r, ifd0.get(TAG.Model));
   if (model) exif.cameraModel = model;
+  const software = asciiTag(r, ifd0.get(TAG.Software));
+  if (software) exif.software = software;
+  const artist = asciiTag(r, ifd0.get(TAG.Artist));
+  if (artist) exif.artist = artist;
+  const copyright = asciiTag(r, ifd0.get(TAG.Copyright));
+  if (copyright) exif.copyright = copyright;
 
   const orientation = numTag(r, ifd0.get(TAG.Orientation));
   if (orientation !== undefined) exif.orientation = orientation;
@@ -172,8 +191,29 @@ function parseTiff(view: DataView, base: number): ExifData {
     const date = asciiTag(r, e.get(TAG.DateTimeOriginal));
     if (date) exif.dateTimeOriginal = date;
 
+    const maxAp = ratTag(r, e.get(TAG.MaxAperture));
+    if (maxAp !== undefined) exif.maxAperture = round(Math.pow(Math.SQRT2, maxAp), 1);
+
+    const subDist = ratTag(r, e.get(TAG.SubjectDistance));
+    if (subDist !== undefined && subDist > 0 && subDist < 65535) exif.subjectDistance = round(subDist, 2);
+
+    const colorSpace = numTag(r, e.get(TAG.ColorSpace));
+    if (colorSpace !== undefined) exif.colorSpace = formatColorSpace(colorSpace);
+
+    const expMode = numTag(r, e.get(TAG.ExposureMode));
+    if (expMode !== undefined) exif.exposureMode = formatExposureMode(expMode);
+
+    const scene = numTag(r, e.get(TAG.SceneCaptureType));
+    if (scene !== undefined) exif.sceneCaptureType = formatSceneCaptureType(scene);
+
+    const bodySerial = asciiTag(r, e.get(TAG.BodySerial));
+    if (bodySerial) exif.bodySerial = bodySerial;
+    const lensMake = asciiTag(r, e.get(TAG.LensMake));
+    if (lensMake) exif.lensMake = lensMake;
     const lens = asciiTag(r, e.get(TAG.LensModel));
     if (lens) exif.lens = lens;
+    const lensSerial = asciiTag(r, e.get(TAG.LensSerial));
+    if (lensSerial) exif.lensSerial = lensSerial;
   }
 
   const gpsPtr = numTag(r, ifd0.get(TAG.GPSIFD));
@@ -418,6 +458,34 @@ function resolveWhiteBalance(
   if (whiteBalance === 0) return "Auto";
   if (whiteBalance === 1) return "Manual";
   return undefined;
+}
+
+function formatColorSpace(v: number): string | undefined {
+  if (v === 1) return "sRGB";
+  if (v === 2) return "Adobe RGB";
+  if (v === 65535) return "Uncalibrated";
+  return undefined;
+}
+
+const EXPOSURE_MODE: Record<number, string> = {
+  0: "Auto",
+  1: "Manual",
+  2: "Auto bracket",
+};
+
+function formatExposureMode(v: number): string | undefined {
+  return EXPOSURE_MODE[v];
+}
+
+const SCENE_CAPTURE: Record<number, string> = {
+  0: "Standard",
+  1: "Landscape",
+  2: "Portrait",
+  3: "Night",
+};
+
+function formatSceneCaptureType(v: number): string | undefined {
+  return SCENE_CAPTURE[v];
 }
 
 function formatFlash(v: number): string {

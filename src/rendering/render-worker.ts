@@ -36,6 +36,7 @@ export type WorkerRequest =
       maxEdge: number;
       quality?: number;
     }
+  | { cmd: "setShowClipping"; mode: number }
   | { cmd: "setStages"; stages: ProcessingStageContribution[] }
   | { cmd: "setPipeline"; pipeline: ResolvedPipeline }
   | { cmd: "dispose" };
@@ -154,6 +155,11 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
             respond({ type: "thumbnail", requestId: msg.requestId, blob });
           },
         );
+        break;
+      }
+
+      case "setShowClipping": {
+        if (renderer) renderer.setShowClipping(msg.mode);
         break;
       }
 
