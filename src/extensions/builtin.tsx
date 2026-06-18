@@ -208,8 +208,8 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
           "--color-text-primary": "#e0e0e0",
           "--color-text-secondary": "#888888",
           "--color-text-muted": "#555555",
-          "--color-accent": "#4a9eff",
-          "--color-accent-hover": "#6ab4ff",
+          "--color-accent": "#6e6e6e",
+          "--color-accent-hover": "#828282",
           "--color-slider-fill": "#5a5a5a",
         },
       });
@@ -228,8 +228,8 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
           "--color-text-primary": "#1c1c1c",
           "--color-text-secondary": "#5a5a5a",
           "--color-text-muted": "#979797",
-          "--color-accent": "#2f7fe0",
-          "--color-accent-hover": "#1f6fd0",
+          "--color-accent": "#636363",
+          "--color-accent-hover": "#525252",
           "--color-slider-fill": "#8a8a8a",
         },
       });
