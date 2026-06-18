@@ -1152,8 +1152,9 @@ void main() {
       knee = mix(0.85, 2.0, H);
       rolloff = mix(0.5, 1.5, H);
     }
-    // Scale rolloff with exposure to accommodate expanded dynamic range
-    rolloff *= max(exp2(max(E, 0.0)), 1.0);
+    // Scale rolloff with sqrt of gain — enough to preserve highlight separation
+    // at moderate exposure but lets high exposure (+5) push the image toward white
+    rolloff *= max(exp2(max(E, 0.0) * 0.5), 1.0);
 
     float Lsc = Lx;
     if (Lx > knee) {
