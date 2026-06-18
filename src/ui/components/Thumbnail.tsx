@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { useEditedThumbUrl } from "@/state/edited-thumbnails";
 import { requestThumbnail } from "@/state/thumbnail-loader";
@@ -53,6 +53,13 @@ function ThumbnailImpl({
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
   // Prefer the develop-edited render once it's ready; fall back to the original.
   const thumbUrl = editedUrl ?? originalUrl;
+  const [loaded, setLoaded] = useState(false);
+  const prevUrl = useRef(thumbUrl);
+  if (prevUrl.current !== thumbUrl) {
+    prevUrl.current = thumbUrl;
+    setLoaded(false);
+  }
+  const onLoad = useCallback(() => setLoaded(true), []);
 
   // Lazily pull the cached preview when this cell nears the viewport, so a freshly
   // opened folder loads on-screen thumbnails first instead of all of them up front.
@@ -91,7 +98,9 @@ function ThumbnailImpl({
           src={thumbUrl}
           alt={photo.filename}
           className={`h-full w-full object-contain transition group-hover:brightness-50 ${dimClass}`}
+          style={{ opacity: loaded ? 1 : 0, transition: "opacity 150ms ease-in" }}
           loading="lazy"
+          onLoad={onLoad}
         />
       ) : (
         // Skeleton while the cached preview is still loading.

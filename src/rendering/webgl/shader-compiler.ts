@@ -285,6 +285,7 @@ uniform mat3 uInvTransform;
 uniform bool uLinear;
 uniform int uOutSpace;
 uniform mat3 uOutMatrix;
+uniform bool uRawHistogram;
 
 ${uniformDecls.join("\n")}
 
@@ -318,7 +319,11 @@ void main() {
   // Processing stages
   ${stageBlocks.join("\n  ")}
 
-  fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+  if (uRawHistogram) {
+    fragColor = vec4(color, 1.0);
+  } else {
+    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+  }
 }
 `;
 }

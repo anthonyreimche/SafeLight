@@ -31,12 +31,21 @@ export interface ExifData {
   cameraModel?: string;
   lens?: string;
   focalLength?: number;
+  focalLength35mm?: number;
   aperture?: number;
   shutterSpeed?: string;
   iso?: number;
+  exposureCompensation?: number;
+  exposureProgram?: string;
+  meteringMode?: string;
+  whiteBalance?: string;
+  flash?: string;
   dateTimeOriginal?: string;
   orientation?: number; // EXIF Orientation tag (1..8)
   colorTemperature?: number; // as-shot WB in Kelvin (from AsShotNeutral / libraw)
+  gpsLatitude?: number;  // decimal degrees (positive = N, negative = S)
+  gpsLongitude?: number; // decimal degrees (positive = E, negative = W)
+  gpsAltitude?: number;  // metres above sea level
 }
 
 export interface EditState {

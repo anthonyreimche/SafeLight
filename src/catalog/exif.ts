@@ -23,13 +23,31 @@ const TAG = {
   Model: 0x0110,
   Orientation: 0x0112,
   ExifIFD: 0x8769,
+  GPSIFD: 0x8825,
   ExposureTime: 0x829a,
   FNumber: 0x829d,
+  ExposureProgram: 0x8822,
   ISO: 0x8827,
   DateTimeOriginal: 0x9003,
+  ExposureBias: 0x9204,
+  MeteringMode: 0x9207,
+  LightSource: 0x9208,
+  Flash: 0x9209,
   FocalLength: 0x920a,
+  ExposureMode: 0xa402,
+  WhiteBalance: 0xa403,
+  FocalLength35mm: 0xa405,
   LensModel: 0xa434,
   AsShotNeutral: 0xc628,
+} as const;
+
+const GPS_TAG = {
+  LatitudeRef: 0x0001,
+  Latitude: 0x0002,
+  LongitudeRef: 0x0003,
+  Longitude: 0x0004,
+  AltitudeRef: 0x0005,
+  Altitude: 0x0006,
 } as const;
 
 interface Reader {
@@ -124,17 +142,56 @@ function parseTiff(view: DataView, base: number): ExifData {
     const focal = ratTag(r, e.get(TAG.FocalLength));
     if (focal !== undefined) exif.focalLength = Math.round(focal);
 
+    const focal35 = numTag(r, e.get(TAG.FocalLength35mm));
+    if (focal35 !== undefined && focal35 > 0) exif.focalLength35mm = focal35;
+
     const iso = numTag(r, e.get(TAG.ISO));
     if (iso !== undefined) exif.iso = iso;
 
     const exposure = ratTag(r, e.get(TAG.ExposureTime));
     if (exposure !== undefined) exif.shutterSpeed = formatShutter(exposure);
 
+    const bias = ratTag(r, e.get(TAG.ExposureBias));
+    if (bias !== undefined) exif.exposureCompensation = round(bias, 2);
+
+    const program = numTag(r, e.get(TAG.ExposureProgram));
+    if (program !== undefined) exif.exposureProgram = formatExposureProgram(program);
+
+    const metering = numTag(r, e.get(TAG.MeteringMode));
+    if (metering !== undefined) exif.meteringMode = formatMeteringMode(metering);
+
+    const wb = resolveWhiteBalance(
+      numTag(r, e.get(TAG.LightSource)),
+      numTag(r, e.get(TAG.WhiteBalance)),
+    );
+    if (wb) exif.whiteBalance = wb;
+
+    const flash = numTag(r, e.get(TAG.Flash));
+    if (flash !== undefined) exif.flash = formatFlash(flash);
+
     const date = asciiTag(r, e.get(TAG.DateTimeOriginal));
     if (date) exif.dateTimeOriginal = date;
 
     const lens = asciiTag(r, e.get(TAG.LensModel));
     if (lens) exif.lens = lens;
+  }
+
+  const gpsPtr = numTag(r, ifd0.get(TAG.GPSIFD));
+  if (gpsPtr !== undefined) {
+    const g = readIFD(r, gpsPtr);
+    const lat = parseGpsCoord(r, g.get(GPS_TAG.Latitude), g.get(GPS_TAG.LatitudeRef));
+    const lon = parseGpsCoord(r, g.get(GPS_TAG.Longitude), g.get(GPS_TAG.LongitudeRef));
+    if (lat !== undefined) exif.gpsLatitude = lat;
+    if (lon !== undefined) exif.gpsLongitude = lon;
+    const altEntry = g.get(GPS_TAG.Altitude);
+    if (altEntry) {
+      let alt = ratTag(r, altEntry);
+      if (alt !== undefined) {
+        const altRef = numTagByte(r, g.get(GPS_TAG.AltitudeRef));
+        if (altRef === 1) alt = -alt;
+        exif.gpsAltitude = round(alt, 1);
+      }
+    }
   }
 
   // DNG AsShotNeutral — sits in IFD0, gives per-channel neutral values.
@@ -280,6 +337,96 @@ function ratTag(r: Reader, e: Entry | undefined): number | undefined {
     ? r.view.getInt32(off + 4, r.le)
     : r.view.getUint32(off + 4, r.le);
   return den === 0 ? undefined : num / den;
+}
+
+function numTagByte(r: Reader, e: Entry | undefined): number | undefined {
+  if (!e || e.type !== 1) return undefined;
+  const off = dataOffset(r, e);
+  if (off < 0 || off >= r.view.byteLength) return undefined;
+  return r.view.getUint8(off);
+}
+
+function parseGpsCoord(
+  r: Reader,
+  coordEntry: Entry | undefined,
+  refEntry: Entry | undefined,
+): number | undefined {
+  if (!coordEntry) return undefined;
+  const parts = readRationals(r, coordEntry);
+  if (parts.length < 3) return undefined;
+  let deg = parts[0] + parts[1] / 60 + parts[2] / 3600;
+  const ref = asciiTag(r, refEntry);
+  if (ref === "S" || ref === "W") deg = -deg;
+  return round(deg, 6);
+}
+
+const EXPOSURE_PROGRAM: Record<number, string> = {
+  1: "Manual",
+  2: "Program",
+  3: "Aperture priority",
+  4: "Shutter priority",
+  5: "Creative",
+  6: "Action",
+  7: "Portrait",
+  8: "Landscape",
+};
+
+function formatExposureProgram(v: number): string | undefined {
+  return EXPOSURE_PROGRAM[v];
+}
+
+const METERING_MODE: Record<number, string> = {
+  1: "Average",
+  2: "Center-weighted",
+  3: "Spot",
+  4: "Multi-spot",
+  5: "Multi-segment",
+  6: "Partial",
+};
+
+function formatMeteringMode(v: number): string | undefined {
+  return METERING_MODE[v];
+}
+
+const LIGHT_SOURCE: Record<number, string> = {
+  1: "Daylight",
+  2: "Fluorescent",
+  3: "Tungsten",
+  4: "Flash",
+  9: "Fine weather",
+  10: "Cloudy",
+  11: "Shade",
+  12: "Daylight fluorescent",
+  13: "Day white fluorescent",
+  14: "Cool white fluorescent",
+  15: "White fluorescent",
+  17: "Standard light A",
+  18: "Standard light B",
+  19: "Standard light C",
+  20: "D55",
+  21: "D65",
+  22: "D75",
+  23: "D50",
+  24: "ISO studio tungsten",
+};
+
+function resolveWhiteBalance(
+  lightSource: number | undefined,
+  whiteBalance: number | undefined,
+): string | undefined {
+  if (lightSource !== undefined && LIGHT_SOURCE[lightSource]) return LIGHT_SOURCE[lightSource];
+  if (whiteBalance === 0) return "Auto";
+  if (whiteBalance === 1) return "Manual";
+  return undefined;
+}
+
+function formatFlash(v: number): string {
+  const fired = (v & 1) !== 0;
+  const mode = (v >> 3) & 3; // 0=unknown, 1=compulsory, 2=suppressed, 3=auto
+  if (mode === 3) return fired ? "Auto, fired" : "Auto, did not fire";
+  if (mode === 2) return "Off";
+  if (mode === 1) return fired ? "On, fired" : "On, did not fire";
+  return fired ? "Fired" : "Did not fire";
 }
 
 function formatShutter(t: number): string {

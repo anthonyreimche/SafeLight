@@ -8,6 +8,7 @@ import { orientationToRotation } from "@/catalog/orient";
 import { extractRawPreview, getExtension, isRawFile } from "./raw-preview";
 import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
 import { extractColorTemperature } from "@/raw/libraw-wasm-adapter";
+import { decodePoolSize } from "@/raw/decode-pool";
 import { rotateFloatRGBA } from "@/catalog/orient";
 import { cachedKeys, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
 import { getSettings } from "@/state/settings-store";
@@ -362,12 +363,10 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
     }
   };
 
-  // Bounded concurrency: 2 in flight. Still ~2× the old sequential walk, but a
-  // full-res float decode holds a large buffer (a 24MP frame ≈ 380 MB), so going
-  // wider risks OOM-ing the renderer while the user browses — which would also
-  // cost the just-written catalog. A shared index hands each worker the next
-  // file; workers yield between files so the UI thread keeps a slice.
-  const limit = Math.min(2, todo.length);
+  // Bounded concurrency: match the persistent decode pool size (default 3).
+  // Each full-res float decode holds ~380 MB, but the pool caps total instances
+  // so memory stays bounded. Workers yield between files for the UI thread.
+  const limit = Math.min(decodePoolSize() || 2, todo.length);
   let next = 0;
   const worker = async (): Promise<void> => {
     while (next < todo.length) {

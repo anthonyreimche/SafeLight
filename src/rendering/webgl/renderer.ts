@@ -9,6 +9,7 @@ import {
   isDefaultHSL,
   isDefaultToneCurves,
 } from "@/catalog/types";
+import type { HistogramData } from "../histogram";
 import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
 import { buildFragmentShader, VERTEX_SHADER, type StageInjection } from "./shaders";
@@ -175,9 +176,15 @@ function downsampleDrawable(img: TexImageSource, W: number, H: number) {
   const scale = Math.min(1, FILL_EDGE / Math.max(W, H));
   const w = Math.max(1, Math.round(W * scale));
   const h = Math.max(1, Math.round(H * scale));
-  const c = document.createElement("canvas");
+  const c: HTMLCanvasElement | OffscreenCanvas =
+    typeof document !== "undefined"
+      ? document.createElement("canvas")
+      : new OffscreenCanvas(w, h);
   c.width = w; c.height = h;
-  const ctx = c.getContext("2d");
+  const ctx = c.getContext("2d") as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
   if (!ctx) return { data: new Uint8ClampedArray(w * h * 4), w, h };
   ctx.drawImage(img as CanvasImageSource, 0, 0, w, h);
   return { data: ctx.getImageData(0, 0, w, h).data, w, h };
@@ -215,8 +222,10 @@ function stageSort(a: ProcessingStageContribution, b: ProcessingStageContributio
   return (a.priority ?? 100) - (b.priority ?? 100);
 }
 
-function buildStageInjection(): { injection: StageInjection; sig: string } {
-  const stages = Object.values(useRegistry.getState().processingStages);
+function buildStageInjection(
+  injected?: ProcessingStageContribution[],
+): { injection: StageInjection; sig: string } {
+  const stages = injected ?? Object.values(useRegistry.getState().processingStages);
   const effects = stages
     .filter((s) => s.phase === "effects")
     .sort(stageSort);
@@ -249,8 +258,16 @@ function buildStageInjection(): { injection: StageInjection; sig: string } {
   };
 }
 
+export type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
+
+export interface WebGLRendererOpts {
+  highBitDepth?: boolean;
+  stages?: ProcessingStageContribution[];
+  pipeline?: ResolvedPipeline;
+}
+
 export class WebGLRenderer {
-  private canvas: HTMLCanvasElement;
+  private canvas: RenderCanvas;
   private gl: WebGL2RenderingContext;
   private program: WebGLProgram;
   private imageTexture: WebGLTexture;
@@ -277,6 +294,12 @@ export class WebGLRenderer {
   private fillSrc: Uint8ClampedArray | null = null;
   private fillW = 0;
   private fillH = 0;
+  // Small FBO for fast histogram computation (re-render at low res + readPixels).
+  private histFbo: WebGLFramebuffer | null = null;
+  private histTex: WebGLTexture | null = null;
+  private histFboF: WebGLFramebuffer | null = null;
+  private histTexF: WebGLTexture | null = null;
+  private haveColorBufferFloat = false;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private params: DevelopParams | null = null;
   private asShotTemperature = 6500;
@@ -303,30 +326,24 @@ export class WebGLRenderer {
   private programCache = new Map<string, PipelineProgram>();
   private vao: WebGLVertexArrayObject | null = null;
   private quadBuf: WebGLBuffer | null = null;
+  private injectedStages: ProcessingStageContribution[] | null = null;
+  private injectedPipeline: ResolvedPipeline | null = null;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: RenderCanvas, opts?: WebGLRendererOpts) {
     const gl = canvas.getContext("webgl2", {
       premultipliedAlpha: false,
       preserveDrawingBuffer: true,
-    });
+    }) as WebGL2RenderingContext | null;
     if (!gl) {
       throw new Error("WebGL2 not supported");
     }
     this.canvas = canvas;
     this.gl = gl;
+    if (opts?.stages) this.injectedStages = opts.stages;
+    if (opts?.pipeline) this.injectedPipeline = opts.pipeline;
 
-    // Normalized 16-bit textures (for the cached develop preview). Core WebGL2 has
-    // no UNORM RGBA16, so this is gated on the extension; absent it, we linearise
-    // the cached preview on the CPU instead (see setImage).
-    // Skippable via Preferences ▸ Performance ▸ High bit-depth previews.
-    //
-    // Probe: some Mesa/ANGLE drivers expose EXT_texture_norm16 but return
-    // GL_INVALID_OPERATION (0x0502) from generateMipmap for RGBA16 textures
-    // (reported in allocateMipmapLevelsForGeneration). Test with a 2×2 dummy
-    // texture before committing to the norm16 path — if the probe fails, leave
-    // haveNorm16 false so the srgb16 path falls through to srgb16ToFloatImage
-    // (CPU linearisation) and the plain RGBA16F mip chain that does work.
-    const norm16 = getSettings().highBitDepth
+    const highBitDepth = opts?.highBitDepth ?? getSettings().highBitDepth;
+    const norm16 = highBitDepth
       ? gl.getExtension("EXT_texture_norm16")
       : null;
     if (norm16) {
@@ -347,10 +364,12 @@ export class WebGLRenderer {
       // this driver — fall back silently to the RGBA16F float path.
     }
 
-    // Compile with the active pipeline + stages; a broken custom transform
-    // falls back to the built-in so the renderer always comes up.
-    const p = resolveActivePipeline();
-    const { injection, sig: sSig } = buildStageInjection();
+    this.haveColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
+
+    const p = this.injectedPipeline ?? resolveActivePipeline();
+    const { injection, sig: sSig } = buildStageInjection(
+      this.injectedStages ?? undefined,
+    );
     const entry = this.entryFor(p, injection, sSig);
     this.program = entry.program;
     this.uniforms = entry.uniforms;
@@ -578,6 +597,7 @@ export class WebGLRenderer {
       "uLinear",
       "uIsFallbackPreview",
       "uApplyBaseCurve",
+      "uRawHistogram",
       "uExposure",
       "uContrast",
       "uHighlights",
@@ -935,6 +955,9 @@ export class WebGLRenderer {
 
   // Output color space for subsequent renders. Default sRGB matches the screen;
   // export uses this to convert pixels (and pairs it with an embedded ICC).
+  get bufferWidth(): number { return this.canvas.width; }
+  get bufferHeight(): number { return this.canvas.height; }
+
   setOutputColorSpace(space: ColorSpaceId) {
     this.outSpace = space;
   }
@@ -968,12 +991,19 @@ export class WebGLRenderer {
     // here painted a black frame on every crop/straighten/transform change.
   }
 
-  // Swap to the active pipeline's cached program when the selection changed
-  // since the last render. Steady state is one memoized resolve and a string
-  // compare; a switch is a Map lookup (compile only on first use of a sig).
+  setStages(stages: ProcessingStageContribution[]) {
+    this.injectedStages = stages;
+  }
+
+  setActivePipeline(pipeline: ResolvedPipeline) {
+    this.injectedPipeline = pipeline;
+  }
+
   private syncPipeline() {
-    const p = resolveActivePipeline();
-    const { injection, sig: sSig } = buildStageInjection();
+    const p = this.injectedPipeline ?? resolveActivePipeline();
+    const { injection, sig: sSig } = buildStageInjection(
+      this.injectedStages ?? undefined,
+    );
     if (p.sig === this.pipelineSig && sSig === this.stageSig) return;
     const e = this.entryFor(p, injection, sSig);
     this.program = e.program;
@@ -1268,6 +1298,101 @@ export class WebGLRenderer {
       gl.uniform1i(u.uApplyRetouch, hasRetouch ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
+  }
+
+  computeHistogram(extended = false): HistogramData {
+    const gl = this.gl;
+    const HIST_SIZE = 128;
+
+    // Standard histogram: re-render at 128x128 into an RGBA8 FBO, readPixels.
+    if (!this.histFbo) {
+      this.histTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.histTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, HIST_SIZE, HIST_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.histFbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.histTex, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
+    gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    const px8 = new Uint8Array(HIST_SIZE * HIST_SIZE * 4);
+    gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, px8);
+
+    const r = new Uint32Array(256);
+    const g = new Uint32Array(256);
+    const b = new Uint32Array(256);
+    const luma = new Uint32Array(256);
+    for (let i = 0; i < px8.length; i += 4) {
+      const R = px8[i], G = px8[i + 1], B = px8[i + 2];
+      r[R]++; g[G]++; b[B]++;
+      luma[(0.2126 * R + 0.7152 * G + 0.0722 * B) | 0]++;
+    }
+
+    const result: HistogramData = { r, g, b, luma };
+
+    // Extended histogram: unclamped float readback for full-range distribution.
+    if (extended && this.haveColorBufferFloat) {
+      if (!this.histFboF) {
+        this.histTexF = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.histTexF);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, HIST_SIZE, HIST_SIZE, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        this.histFboF = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFboF);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.histTexF, 0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
+
+      gl.uniform1i(this.uniforms.uRawHistogram, 1);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFboF);
+      gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      const pxF = new Float32Array(HIST_SIZE * HIST_SIZE * 4);
+      gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.FLOAT, pxF);
+      gl.uniform1i(this.uniforms.uRawHistogram, 0);
+
+      const RMIN = -0.25, RMAX = 1.5, BINS = 256;
+      const range = RMAX - RMIN;
+      const er = new Uint32Array(BINS);
+      const eg = new Uint32Array(BINS);
+      const eb = new Uint32Array(BINS);
+      const el = new Uint32Array(BINS);
+      let clipLow = 0, clipHigh = 0;
+      const total = HIST_SIZE * HIST_SIZE;
+      for (let i = 0; i < pxF.length; i += 4) {
+        const R = pxF[i], G = pxF[i + 1], B = pxF[i + 2];
+        const L = 0.2126 * R + 0.7152 * G + 0.0722 * B;
+        if (R <= 0 && G <= 0 && B <= 0) clipLow++;
+        if (R >= 1 || G >= 1 || B >= 1) clipHigh++;
+        const binR = Math.max(0, Math.min(BINS - 1, ((R - RMIN) / range * BINS) | 0));
+        const binG = Math.max(0, Math.min(BINS - 1, ((G - RMIN) / range * BINS) | 0));
+        const binB = Math.max(0, Math.min(BINS - 1, ((B - RMIN) / range * BINS) | 0));
+        const binL = Math.max(0, Math.min(BINS - 1, ((L - RMIN) / range * BINS) | 0));
+        er[binR]++; eg[binG]++; eb[binB]++; el[binL]++;
+      }
+
+      result.extended = {
+        r: er, g: eg, b: eb, luma: el,
+        rangeMin: RMIN, rangeMax: RMAX,
+        clipLow: clipLow / total,
+        clipHigh: clipHigh / total,
+      };
+    }
+
+    // Restore main canvas framebuffer and viewport.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    return result;
   }
 
   // Create / resize the offscreen develop target (capped source size). Returns

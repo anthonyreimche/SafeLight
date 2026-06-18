@@ -7,6 +7,18 @@ export interface HistogramData {
   g: Uint32Array;
   b: Uint32Array;
   luma: Uint32Array;
+  extended?: ExtendedHistogramData;
+}
+
+export interface ExtendedHistogramData {
+  r: Uint32Array;
+  g: Uint32Array;
+  b: Uint32Array;
+  luma: Uint32Array;
+  rangeMin: number;
+  rangeMax: number;
+  clipLow: number;
+  clipHigh: number;
 }
 
 type Source = HTMLCanvasElement | OffscreenCanvas | ImageBitmap;

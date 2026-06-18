@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { HistogramData } from "@/rendering/histogram";
+import type { HistogramData, ExtendedHistogramData } from "@/rendering/histogram";
 
 type Mode = "luma" | "rgb" | "red" | "green" | "blue";
 
@@ -23,6 +23,7 @@ type Phase = "start" | "move" | "end";
 
 
 const HIST_MODE_KEY = "sl_histogram_mode";
+const HIST_EXT_KEY = "sl_histogram_extended";
 const VALID_MODES = new Set<string>(["luma", "rgb", "red", "green", "blue"]);
 
 function readHistMode(): Mode {
@@ -35,6 +36,14 @@ function readHistMode(): Mode {
 
 function writeHistMode(mode: Mode) {
   try { localStorage.setItem(HIST_MODE_KEY, mode); } catch {}
+}
+
+function readHistExtended(): boolean {
+  try { return localStorage.getItem(HIST_EXT_KEY) === "1"; } catch { return false; }
+}
+
+function writeHistExtended(v: boolean) {
+  try { localStorage.setItem(HIST_EXT_KEY, v ? "1" : "0"); } catch {}
 }
 
 const ZONES: { zone: HistogramZone; to: number; label: string }[] = [
@@ -57,13 +66,12 @@ export function Histogram({
   onReset,
 }: {
   data: HistogramData | null;
-  // When provided, the histogram becomes a draggable tonal control.
   onAdjust?: (zone: HistogramZone, deltaPx: number, phase: Phase) => void;
-  // Double-clicking a zone resets its mapped slider.
   onReset?: (zone: HistogramZone) => void;
 }) {
   const interactive = !!onAdjust;
   const [mode, setMode] = useState<Mode>(readHistMode);
+  const [extended, setExtended] = useState(readHistExtended);
   const [hoverZone, setHoverZone] = useState<HistogramZone | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -89,11 +97,15 @@ export function Histogram({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawHistogram(ctx, width, H, data, mode, interactive, hoverZone);
-  }, [data, mode, width, interactive, hoverZone]);
+    if (extended && data?.extended) {
+      drawExtendedHistogram(ctx, width, H, data.extended, mode);
+    } else {
+      drawHistogram(ctx, width, H, data, mode, interactive, hoverZone);
+    }
+  }, [data, mode, width, interactive, hoverZone, extended]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!onAdjust || e.button !== 0) return;
+    if (!onAdjust || e.button !== 0 || extended) return;
     const frac = e.nativeEvent.offsetX / width;
     const { zone } = zoneAt(frac);
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -107,7 +119,7 @@ export function Histogram({
     const d = dragRef.current;
     if (d) {
       onAdjust(d.zone, e.clientX - d.startX, "move");
-    } else {
+    } else if (!extended) {
       setHoverZone(zoneAt(e.nativeEvent.offsetX / width).zone);
     }
   };
@@ -120,7 +132,7 @@ export function Histogram({
   };
 
   const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!onReset) return;
+    if (!onReset || extended) return;
     onReset(zoneAt(e.nativeEvent.offsetX / width).zone);
   };
 
@@ -129,7 +141,7 @@ export function Histogram({
       <div ref={wrapRef} className="w-full">
         <canvas
           ref={canvasRef}
-          style={{ width, height: H, cursor: interactive ? "ew-resize" : "default" }}
+          style={{ width, height: H, cursor: interactive && !extended ? "ew-resize" : "default" }}
           className="w-full rounded bg-surface-0"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -155,6 +167,16 @@ export function Histogram({
             {m.label}
           </button>
         ))}
+        <button
+          onClick={() => { const next = !extended; setExtended(next); writeHistExtended(next); }}
+          className={`flex-1 rounded py-0.5 text-[9px] font-medium uppercase tracking-wider ${
+            extended
+              ? "bg-surface-3 text-text-primary"
+              : "text-text-muted hover:text-text-secondary"
+          }`}
+        >
+          Ext
+        </button>
       </div>
     </div>
   );
@@ -165,6 +187,12 @@ export function Histogram({
 function robustMax(bins: Uint32Array): number {
   let m = 1;
   for (let i = 1; i < 255; i++) if (bins[i] > m) m = bins[i];
+  return m;
+}
+
+function robustMaxFull(bins: Uint32Array): number {
+  let m = 1;
+  for (let i = 1; i < bins.length - 1; i++) if (bins[i] > m) m = bins[i];
   return m;
 }
 
@@ -181,8 +209,8 @@ function fillCurve(
   ctx.globalCompositeOperation = additive ? "lighter" : "source-over";
   ctx.beginPath();
   ctx.moveTo(0, h);
-  for (let i = 0; i < 256; i++) {
-    const x = (i / 255) * w;
+  for (let i = 0; i < bins.length; i++) {
+    const x = (i / (bins.length - 1)) * w;
     const y = h - Math.min(1, bins[i] / max) * (h - 1);
     ctx.lineTo(x, y);
   }
@@ -259,5 +287,65 @@ function drawHistogram(
         ctx.fillText(z.label, ((from + z.to) / 2) * w, 3);
       }
     }
+  }
+}
+
+function drawExtendedHistogram(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  ext: ExtendedHistogramData,
+  mode: Mode,
+) {
+  ctx.clearRect(0, 0, w, h);
+  const { rangeMin, rangeMax, clipLow, clipHigh } = ext;
+  const range = rangeMax - rangeMin;
+
+  // Position of the 0.0 and 1.0 boundaries in pixel space.
+  const x0 = ((0 - rangeMin) / range) * w;
+  const x1 = ((1 - rangeMin) / range) * w;
+
+  // Dim the out-of-range regions.
+  ctx.fillStyle = "rgba(255,255,255,0.03)";
+  ctx.fillRect(0, 0, x0, h);
+  ctx.fillRect(x1, 0, w - x1, h);
+
+  if (mode === "rgb") {
+    const max = Math.max(robustMaxFull(ext.r), robustMaxFull(ext.g), robustMaxFull(ext.b));
+    fillCurve(ctx, w, h, ext.r, max, "rgba(231,76,60,0.7)", true);
+    fillCurve(ctx, w, h, ext.g, max, "rgba(46,204,113,0.7)", true);
+    fillCurve(ctx, w, h, ext.b, max, "rgba(74,163,255,0.7)", true);
+  } else if (mode === "luma") {
+    fillCurve(ctx, w, h, ext.luma, robustMaxFull(ext.luma), "rgba(208,208,208,0.85)", false);
+  } else if (mode === "red") {
+    fillCurve(ctx, w, h, ext.r, robustMaxFull(ext.r), "rgba(231,76,60,0.85)", false);
+  } else if (mode === "green") {
+    fillCurve(ctx, w, h, ext.g, robustMaxFull(ext.g), "rgba(46,204,113,0.85)", false);
+  } else {
+    fillCurve(ctx, w, h, ext.b, robustMaxFull(ext.b), "rgba(74,163,255,0.85)", false);
+  }
+
+  // Black-point (0.0) and white-point (1.0) boundary lines.
+  ctx.strokeStyle = "rgba(255,255,255,0.2)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(x0, 0); ctx.lineTo(x0, h);
+  ctx.moveTo(x1, 0); ctx.lineTo(x1, h);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Clipping indicators at the top corners.
+  ctx.font = "8px system-ui, sans-serif";
+  ctx.textBaseline = "top";
+  if (clipLow > 0.001) {
+    ctx.fillStyle = "rgba(100,180,255,0.9)";
+    ctx.textAlign = "left";
+    ctx.fillText(`${(clipLow * 100).toFixed(1)}%`, 2, 2);
+  }
+  if (clipHigh > 0.001) {
+    ctx.fillStyle = "rgba(255,100,100,0.9)";
+    ctx.textAlign = "right";
+    ctx.fillText(`${(clipHigh * 100).toFixed(1)}%`, w - 2, 2);
   }
 }

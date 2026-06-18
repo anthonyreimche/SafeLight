@@ -35,6 +35,7 @@ uniform bool uLinear;       // true: source texture is linear float (RAW); skip 
 uniform bool uIsFallbackPreview; // true: source is pseudo-linear from 8-bit JPEG preview
 uniform bool uApplyBaseCurve; // true: full-res RAW float decode -- add the default camera
                               // tone curve the already-rendered preview/export bitmaps carry
+uniform bool uRawHistogram;   // true: output linear unclamped values for extended histogram
 
 uniform float uExposure;
 uniform float uContrast;
@@ -1170,7 +1171,11 @@ void main() {
   // Creative effects (contributed by processing stages)
   //__CONTRIBUTED_EFFECTS__
 
-  fragColor = vec4(encodeOutput(clamp(c, 0.0, 1.0)), 1.0);
+  if (uRawHistogram) {
+    fragColor = vec4(c, 1.0);
+  } else {
+    fragColor = vec4(encodeOutput(clamp(c, 0.0, 1.0)), 1.0);
+  }
 }
 `;
 

@@ -70,7 +70,7 @@ export function useEditedThumbnails(visible: CatalogPhoto[]) {
         } catch {
           // Leave it on the original thumbnail; attempted-set avoids retrying.
         }
-        await new Promise((r) => setTimeout(r, 40));
+        await new Promise((r) => setTimeout(r, 0));
       }
     } finally {
       pumpingRef.current = false;

@@ -32,6 +32,7 @@ import {
 import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } from "./dock";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
 import { initEnablement, loadBuiltins, loadExternalPlugins } from "./loader";
+import { warmDecodePool } from "@/raw/decode-pool";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { Histogram } from "@/ui/components/Histogram";
@@ -110,4 +111,5 @@ export function initExtensionHost(): void {
   initPipelines();
   initDockLayouts();
   void loadExternalPlugins();
+  void warmDecodePool();
 }

@@ -311,7 +311,7 @@ export function ViewportImage({
     setDragging(false);
     if (panRaf.current != null) {
       cancelAnimationFrame(panRaf.current);
-      flushPan(); // apply the last pending position immediately
+      flushPan();
     }
     if (!d || d.moved) return;
     handleClick(e.clientX, e.clientY);

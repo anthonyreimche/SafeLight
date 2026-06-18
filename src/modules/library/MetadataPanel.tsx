@@ -13,6 +13,31 @@ function formatDate(s: string | undefined): string | undefined {
   return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : s;
 }
 
+function formatFocal(e: { focalLength?: number; focalLength35mm?: number }): string | undefined {
+  if (!e.focalLength) return undefined;
+  if (e.focalLength35mm && e.focalLength35mm !== e.focalLength)
+    return `${e.focalLength} mm (${e.focalLength35mm} mm eq.)`;
+  return `${e.focalLength} mm`;
+}
+
+function formatExposureComp(v: number | undefined): string | undefined {
+  if (v === undefined || v === 0) return undefined;
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${v} EV`;
+}
+
+function formatCoord(lat: number | undefined, lon: number | undefined): string | undefined {
+  if (lat === undefined || lon === undefined) return undefined;
+  const ns = lat >= 0 ? "N" : "S";
+  const ew = lon >= 0 ? "E" : "W";
+  return `${Math.abs(lat).toFixed(4)}° ${ns}, ${Math.abs(lon).toFixed(4)}° ${ew}`;
+}
+
+function formatAltitude(v: number | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  return `${v} m`;
+}
+
 export function MetadataPanel() {
   const photo = useCatalogStore((s) =>
     s.photos.find((p) => p.id === s.activePhotoId),
@@ -27,14 +52,23 @@ export function MetadataPanel() {
 
   const e = photo.exif;
   const camera = [e.cameraMake, e.cameraModel].filter(Boolean).join(" ");
+  const hasGps = e.gpsLatitude !== undefined && e.gpsLongitude !== undefined;
+
   const rows: [string, string | undefined][] = [
     ["Camera", camera || undefined],
     ["Lens", e.lens],
-    ["Focal length", e.focalLength ? `${e.focalLength} mm` : undefined],
+    ["Focal length", formatFocal(e)],
     ["Aperture", e.aperture ? `f/${e.aperture}` : undefined],
     ["Shutter", e.shutterSpeed],
     ["ISO", e.iso ? `${e.iso}` : undefined],
+    ["Exposure", e.exposureProgram],
+    ["Exp. comp.", formatExposureComp(e.exposureCompensation)],
+    ["Metering", e.meteringMode],
+    ["White balance", e.whiteBalance],
+    ["Flash", e.flash],
     ["Date", formatDate(e.dateTimeOriginal)],
+    ["Location", formatCoord(e.gpsLatitude, e.gpsLongitude)],
+    ["Altitude", hasGps ? formatAltitude(e.gpsAltitude) : undefined],
     [
       "Dimensions",
       photo.width && photo.height
