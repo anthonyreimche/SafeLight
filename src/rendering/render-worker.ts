@@ -39,6 +39,7 @@ export type WorkerRequest =
       quality?: number;
     }
   | { cmd: "setShowClipping"; mode: number }
+  | { cmd: "computeHistogram"; wantExtended?: boolean }
   | { cmd: "setStages"; stages: ProcessingStageContribution[] }
   | { cmd: "setPipeline"; pipeline: ResolvedPipeline }
   | { cmd: "dispose" };
@@ -46,6 +47,7 @@ export type WorkerRequest =
 export type WorkerResponse =
   | { type: "ready" }
   | { type: "frame"; bitmap: ImageBitmap; width: number; height: number; histogram?: HistogramData }
+  | { type: "histogram"; histogram: HistogramData }
   | { type: "thumbnail"; requestId: string; blob: Blob }
   | { type: "error"; message: string };
 
@@ -168,6 +170,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
       case "setShowClipping": {
         if (renderer) renderer.setShowClipping(msg.mode);
+        break;
+      }
+
+      case "computeHistogram": {
+        if (!renderer) break;
+        const histogram = renderer.computeHistogram(!!msg.wantExtended);
+        respond({ type: "histogram", histogram });
         break;
       }
 

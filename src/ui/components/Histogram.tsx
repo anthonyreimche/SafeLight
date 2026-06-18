@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import type { HistogramData, ExtendedHistogramData } from "@/rendering/histogram";
+import { useEffect, useRef, useState, useCallback } from "react";
+import type { HistogramData } from "@/rendering/histogram";
 
 type Mode = "luma" | "rgb" | "red" | "green" | "blue";
 
@@ -23,7 +23,6 @@ type Phase = "start" | "move" | "end";
 
 
 const HIST_MODE_KEY = "sl_histogram_mode";
-const HIST_EXT_KEY = "sl_histogram_extended";
 const VALID_MODES = new Set<string>(["luma", "rgb", "red", "green", "blue"]);
 
 function readHistMode(): Mode {
@@ -36,14 +35,6 @@ function readHistMode(): Mode {
 
 function writeHistMode(mode: Mode) {
   try { localStorage.setItem(HIST_MODE_KEY, mode); } catch {}
-}
-
-function readHistExtended(): boolean {
-  try { return localStorage.getItem(HIST_EXT_KEY) === "1"; } catch { return false; }
-}
-
-function writeHistExtended(v: boolean) {
-  try { localStorage.setItem(HIST_EXT_KEY, v ? "1" : "0"); } catch {}
 }
 
 const ZONES: { zone: HistogramZone; to: number; label: string }[] = [
@@ -77,7 +68,6 @@ export function Histogram({
 }) {
   const interactive = !!onAdjust;
   const [mode, setMode] = useState<Mode>(readHistMode);
-  const [extended, setExtended] = useState(readHistExtended);
   const [hoverZone, setHoverZone] = useState<HistogramZone | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -94,24 +84,98 @@ export function Histogram({
     return () => ro.disconnect();
   }, []);
 
-  useEffect(() => {
+  // Smooth animation: lerp displayed bins toward incoming data so the
+  // histogram glides rather than jumping. The animation runs at display
+  // refresh rate and settles within ~6 frames.
+  const displayRef = useRef<{
+    r: Float32Array; g: Float32Array; b: Float32Array; luma: Float32Array;
+  } | null>(null);
+  const targetRef = useRef<HistogramData | null>(null);
+  const animRef = useRef<number | null>(null);
+  const prevSizeRef = useRef({ w: 0, h: 0 });
+
+  const LERP_RATE = 0.35;
+
+  const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = width * dpr;
-    canvas.height = H * dpr;
+    if (prevSizeRef.current.w !== width || prevSizeRef.current.h !== H) {
+      canvas.width = width * dpr;
+      canvas.height = H * dpr;
+      prevSizeRef.current = { w: width, h: H };
+    }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (extended && data?.extended) {
-      drawExtendedHistogram(ctx, width, H, data.extended, mode, showClipping);
-    } else {
-      drawHistogram(ctx, width, H, data, mode, interactive, hoverZone);
+
+    const d = displayRef.current;
+    const clip = targetRef.current?.extended;
+    if (!d) {
+      drawHistogram(ctx, width, H, null, mode, interactive, hoverZone, showClipping);
+      return;
     }
-  }, [data, mode, width, interactive, hoverZone, extended, showClipping]);
+
+    const snap: HistogramData = {
+      r: u32From(d.r), g: u32From(d.g), b: u32From(d.b), luma: u32From(d.luma),
+    };
+    drawHistogram(ctx, width, H, snap, mode, interactive, hoverZone, showClipping,
+      clip?.clipLow, clip?.clipHigh);
+  }, [width, mode, interactive, hoverZone, showClipping]);
+
+  // When new data arrives, set it as the animation target.
+  useEffect(() => {
+    targetRef.current = data;
+    if (data && !displayRef.current) {
+      displayRef.current = {
+        r: Float32Array.from(data.r),
+        g: Float32Array.from(data.g),
+        b: Float32Array.from(data.b),
+        luma: Float32Array.from(data.luma),
+      };
+    }
+  }, [data]);
+
+  // Animation loop: lerp display toward target, redraw, stop when settled.
+  useEffect(() => {
+    let running = true;
+
+    const tick = () => {
+      if (!running) return;
+      const d = displayRef.current;
+      const t = targetRef.current;
+
+      if (d && t) {
+        const settled =
+          lerpBins(d.r, t.r, LERP_RATE) &
+          lerpBins(d.g, t.g, LERP_RATE) &
+          lerpBins(d.b, t.b, LERP_RATE) &
+          lerpBins(d.luma, t.luma, LERP_RATE);
+        draw();
+        if (!settled) {
+          animRef.current = requestAnimationFrame(tick);
+          return;
+        }
+      } else {
+        draw();
+      }
+      animRef.current = null;
+    };
+
+    if (animRef.current != null) cancelAnimationFrame(animRef.current);
+    animRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      running = false;
+      if (animRef.current != null) {
+        cancelAnimationFrame(animRef.current);
+        animRef.current = null;
+      }
+    };
+  }, [data, draw]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (extended && onSetClipping && e.button === 0 && data?.extended) {
+    if (onSetClipping && e.button === 0 && data?.extended) {
       const x = e.nativeEvent.offsetX;
       const y = e.nativeEvent.offsetY;
       if (y < 16) {
@@ -125,7 +189,7 @@ export function Histogram({
         }
       }
     }
-    if (!onAdjust || e.button !== 0 || extended) return;
+    if (!onAdjust || e.button !== 0) return;
     const frac = e.nativeEvent.offsetX / width;
     const { zone } = zoneAt(frac);
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -139,7 +203,7 @@ export function Histogram({
     const d = dragRef.current;
     if (d) {
       onAdjust(d.zone, e.clientX - d.startX, "move");
-    } else if (!extended) {
+    } else {
       setHoverZone(zoneAt(e.nativeEvent.offsetX / width).zone);
     }
   };
@@ -152,7 +216,7 @@ export function Histogram({
   };
 
   const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!onReset || extended) return;
+    if (!onReset) return;
     onReset(zoneAt(e.nativeEvent.offsetX / width).zone);
   };
 
@@ -161,7 +225,7 @@ export function Histogram({
       <div ref={wrapRef} className="w-full">
         <canvas
           ref={canvasRef}
-          style={{ width, height: H, cursor: interactive && !extended ? "ew-resize" : "default" }}
+          style={{ width, height: H, cursor: interactive ? "ew-resize" : "default" }}
           className="w-full rounded bg-surface-0"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -187,16 +251,6 @@ export function Histogram({
             {m.label}
           </button>
         ))}
-        <button
-          onClick={() => { const next = !extended; setExtended(next); writeHistExtended(next); }}
-          className={`flex-1 rounded py-0.5 text-[9px] font-medium uppercase tracking-wider ${
-            extended
-              ? "bg-surface-3 text-text-primary"
-              : "text-text-muted hover:text-text-secondary"
-          }`}
-        >
-          Ext
-        </button>
         {onToggleClipping && (
           <button
             onClick={onToggleClipping}
@@ -216,17 +270,32 @@ export function Histogram({
   );
 }
 
+// Lerp each bin toward the target. Returns 1 (settled) when all bins are close enough.
+function lerpBins(display: Float32Array, target: Uint32Array, rate: number): number {
+  let settled = 1;
+  for (let i = 0; i < display.length; i++) {
+    const d = display[i], t = target[i];
+    if (Math.abs(d - t) < 1) {
+      display[i] = t;
+    } else {
+      display[i] = d + (t - d) * rate;
+      settled = 0;
+    }
+  }
+  return settled;
+}
+
+function u32From(f: Float32Array): Uint32Array {
+  const out = new Uint32Array(f.length);
+  for (let i = 0; i < f.length; i++) out[i] = f[i];
+  return out;
+}
+
 // Normalize to the tallest bin, ignoring the pure-black/white spikes (0 and 255)
 // that would otherwise flatten everything.
 function robustMax(bins: Uint32Array): number {
   let m = 1;
   for (let i = 1; i < 255; i++) if (bins[i] > m) m = bins[i];
-  return m;
-}
-
-function robustMaxFull(bins: Uint32Array): number {
-  let m = 1;
-  for (let i = 1; i < bins.length - 1; i++) if (bins[i] > m) m = bins[i];
   return m;
 }
 
@@ -254,6 +323,14 @@ function fillCurve(
   ctx.globalCompositeOperation = "source-over";
 }
 
+// Clipping overlay colors (matching the shader).
+const CLIP_SHADOW = "rgba(50,77,255,0.9)";
+const CLIP_HIGHLIGHT = "rgba(255,50,50,0.9)";
+const CLIP_SHADOW_ACTIVE = "rgba(100,140,255,1)";
+const CLIP_HIGHLIGHT_ACTIVE = "rgba(255,120,120,1)";
+const CLIP_SHADOW_BG = "rgba(50,77,255,0.35)";
+const CLIP_HIGHLIGHT_BG = "rgba(255,50,50,0.35)";
+
 function drawHistogram(
   ctx: CanvasRenderingContext2D,
   w: number,
@@ -262,6 +339,9 @@ function drawHistogram(
   mode: Mode,
   interactive: boolean,
   hoverZone: HistogramZone | null,
+  showClipping = 0,
+  clipLow?: number,
+  clipHigh?: number,
 ) {
   ctx.clearRect(0, 0, w, h);
 
@@ -322,78 +402,31 @@ function drawHistogram(
       }
     }
   }
-}
 
-function drawExtendedHistogram(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  h: number,
-  ext: ExtendedHistogramData,
-  mode: Mode,
-  showClipping = 0,
-) {
-  ctx.clearRect(0, 0, w, h);
-  const { rangeMin, rangeMax, clipLow, clipHigh } = ext;
-  const range = rangeMax - rangeMin;
-
-  // Position of the 0.0 and 1.0 boundaries in pixel space.
-  const x0 = ((0 - rangeMin) / range) * w;
-  const x1 = ((1 - rangeMin) / range) * w;
-
-  // Dim the out-of-range regions.
-  ctx.fillStyle = "rgba(255,255,255,0.03)";
-  ctx.fillRect(0, 0, x0, h);
-  ctx.fillRect(x1, 0, w - x1, h);
-
-  if (mode === "rgb") {
-    const max = Math.max(robustMaxFull(ext.r), robustMaxFull(ext.g), robustMaxFull(ext.b));
-    fillCurve(ctx, w, h, ext.r, max, "rgba(231,76,60,0.7)", true);
-    fillCurve(ctx, w, h, ext.g, max, "rgba(46,204,113,0.7)", true);
-    fillCurve(ctx, w, h, ext.b, max, "rgba(74,163,255,0.7)", true);
-  } else if (mode === "luma") {
-    fillCurve(ctx, w, h, ext.luma, robustMaxFull(ext.luma), "rgba(208,208,208,0.85)", false);
-  } else if (mode === "red") {
-    fillCurve(ctx, w, h, ext.r, robustMaxFull(ext.r), "rgba(231,76,60,0.85)", false);
-  } else if (mode === "green") {
-    fillCurve(ctx, w, h, ext.g, robustMaxFull(ext.g), "rgba(46,204,113,0.85)", false);
-  } else {
-    fillCurve(ctx, w, h, ext.b, robustMaxFull(ext.b), "rgba(74,163,255,0.85)", false);
-  }
-
-  // Black-point (0.0) and white-point (1.0) boundary lines.
-  ctx.strokeStyle = "rgba(255,255,255,0.2)";
-  ctx.lineWidth = 1;
-  ctx.setLineDash([3, 3]);
-  ctx.beginPath();
-  ctx.moveTo(x0, 0); ctx.lineTo(x0, h);
-  ctx.moveTo(x1, 0); ctx.lineTo(x1, h);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Clipping indicators at the top corners. Active indicators get a filled background.
-  ctx.font = "8px system-ui, sans-serif";
-  ctx.textBaseline = "top";
+  // Clipping percentages (lazy-loaded after params settle).
   const shadowActive = (showClipping & 1) !== 0;
   const highlightActive = (showClipping & 2) !== 0;
-  if (clipLow > 0.001) {
+  ctx.font = "8px system-ui, sans-serif";
+  ctx.textBaseline = "top";
+  if (clipLow != null && clipLow > 0.001) {
     const text = `${(clipLow * 100).toFixed(1)}%`;
     if (shadowActive) {
       const tw = ctx.measureText(text).width;
-      ctx.fillStyle = "rgba(50,100,200,0.5)";
+      ctx.fillStyle = CLIP_SHADOW_BG;
       ctx.fillRect(0, 0, tw + 6, 13);
     }
-    ctx.fillStyle = shadowActive ? "rgba(130,200,255,1)" : "rgba(100,180,255,0.9)";
+    ctx.fillStyle = shadowActive ? CLIP_SHADOW_ACTIVE : CLIP_SHADOW;
     ctx.textAlign = "left";
     ctx.fillText(text, 2, 2);
   }
-  if (clipHigh > 0.001) {
+  if (clipHigh != null && clipHigh > 0.001) {
     const text = `${(clipHigh * 100).toFixed(1)}%`;
     if (highlightActive) {
       const tw = ctx.measureText(text).width;
-      ctx.fillStyle = "rgba(200,60,60,0.5)";
+      ctx.fillStyle = CLIP_HIGHLIGHT_BG;
       ctx.fillRect(w - tw - 6, 0, tw + 6, 13);
     }
-    ctx.fillStyle = highlightActive ? "rgba(255,130,130,1)" : "rgba(255,100,100,0.9)";
+    ctx.fillStyle = highlightActive ? CLIP_HIGHLIGHT_ACTIVE : CLIP_HIGHLIGHT;
     ctx.textAlign = "right";
     ctx.fillText(text, w - 2, 2);
   }

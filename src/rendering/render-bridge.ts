@@ -19,6 +19,7 @@ export interface ThumbnailResult {
 }
 
 type FrameCallback = (frame: FrameResult) => void;
+type HistogramCallback = (histogram: HistogramData) => void;
 type ThumbnailCallback = (result: ThumbnailResult) => void;
 type ErrorCallback = (message: string) => void;
 
@@ -27,6 +28,7 @@ export class RenderBridge {
   private readyResolve: (() => void) | null = null;
   readonly ready: Promise<void>;
   private onFrame: FrameCallback | null = null;
+  private onHistogram: HistogramCallback | null = null;
   private onThumbnail: ThumbnailCallback | null = null;
   private onError: ErrorCallback | null = null;
   private disposed = false;
@@ -60,6 +62,9 @@ export class RenderBridge {
           height: msg.height,
           histogram: msg.histogram,
         });
+        break;
+      case "histogram":
+        this.onHistogram?.(msg.histogram);
         break;
       case "thumbnail": {
         const resolver = this.thumbResolvers.get(msg.requestId);
@@ -96,6 +101,7 @@ export class RenderBridge {
   // ------------------------------------------------------------------
 
   setOnFrame(cb: FrameCallback | null) { this.onFrame = cb; }
+  setOnHistogram(cb: HistogramCallback | null) { this.onHistogram = cb; }
   setOnThumbnail(cb: ThumbnailCallback | null) { this.onThumbnail = cb; }
   setOnError(cb: ErrorCallback | null) { this.onError = cb; }
 
@@ -195,6 +201,10 @@ export class RenderBridge {
 
   setShowClipping(mode: number) {
     this.post({ cmd: "setShowClipping", mode });
+  }
+
+  computeHistogram(wantExtended?: boolean) {
+    this.post({ cmd: "computeHistogram", wantExtended });
   }
 
   // ------------------------------------------------------------------

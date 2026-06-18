@@ -4,7 +4,7 @@
 
 import type { CatalogPhoto } from "@/catalog/types";
 import { parseExif, parseExifDate } from "@/catalog/exif";
-import { orientationToRotation } from "@/catalog/orient";
+import { normalizeRotation, orientationToRotation } from "@/catalog/orient";
 import { extractRawPreview, getExtension, isRawFile } from "./raw-preview";
 import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
 import { extractColorTemperature } from "@/raw/libraw-wasm-adapter";
@@ -357,7 +357,11 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
       const f = await decodeRawToFloat(file);
       if (!f) return; // failed decode is retried on a later open
 
-      const r = rotateFloatRGBA(f.data, f.width, f.height, photo.rotation ?? 0);
+      let rotateDeg = photo.rotation ?? 0;
+      if (f.oriented) {
+        rotateDeg = normalizeRotation(rotateDeg - orientationToRotation(photo.exif?.orientation));
+      }
+      const r = rotateFloatRGBA(f.data, f.width, f.height, rotateDeg);
 
       await writeCachedPreview(
         rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0),

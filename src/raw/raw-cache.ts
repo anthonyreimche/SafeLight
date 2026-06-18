@@ -33,7 +33,7 @@ export function rawCacheKey(
   fileSize: number,
   rotation = 0,
 ): string {
-  return `v2:${relPath}:${fileSize}:${rotation}`;
+  return `v3:${relPath}:${fileSize}:${rotation}`;
 }
 
 // ─── Project-folder cache ────────────────────────────────────────────────────

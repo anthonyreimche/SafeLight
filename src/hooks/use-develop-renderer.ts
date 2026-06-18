@@ -7,6 +7,7 @@ import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
+import { computeHistogram } from "@/rendering/histogram";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { getSettings } from "@/state/settings-store";
@@ -66,6 +67,7 @@ export function useDevelopRenderer(
     bridgeRef.current = bridge;
 
     const setHistogramRef = useDevelopStore.getState().setHistogram;
+    let histPending = false;
     bridge.setOnFrame((frame: FrameResult) => {
       if (cv.width !== frame.width) cv.width = frame.width;
       if (cv.height !== frame.height) cv.height = frame.height;
@@ -76,7 +78,23 @@ export function useDevelopRenderer(
           ? s
           : { width: frame.width, height: frame.height },
       );
-      if (frame.histogram) setHistogramRef(frame.histogram);
+      if (frame.histogram) {
+        setHistogramRef(frame.histogram);
+      } else if (!histPending) {
+        histPending = true;
+        setTimeout(() => {
+          histPending = false;
+          if (cv.width > 0 && cv.height > 0) {
+            const hist = computeHistogram(cv);
+            const prev = useDevelopStore.getState().histogram;
+            if (prev?.extended) hist.extended = prev.extended;
+            setHistogramRef(hist);
+          }
+        }, 0);
+      }
+    });
+    bridge.setOnHistogram((histogram) => {
+      setHistogramRef(histogram);
     });
 
     bridge.setOnError((msg) => {
@@ -88,6 +106,7 @@ export function useDevelopRenderer(
       if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
       bridge.setOnFrame(null);
+      bridge.setOnHistogram(null);
       bridge.setOnError(null);
       bridgeRef.current = null;
       ctxRef.current = null;
@@ -212,10 +231,9 @@ export function useDevelopRenderer(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photo?.id, fileAccessNonce]);
 
-  // Re-render on parameter changes. The standard histogram (128x128 FBO +
-  // readPixels ~1ms on the worker) is included with every frame so it stays
-  // real-time. The extended histogram (float readback, ~3-5ms) is debounced
-  // to avoid stacking heavy readbacks during fast slider drags.
+  // Re-render on parameter changes. The standard histogram is computed on
+  // the main thread from the already-drawn canvas (zero worker cost). The
+  // extended histogram (float readback) is debounced via the worker.
   const extTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -227,17 +245,14 @@ export function useDevelopRenderer(
     if (rafIdRef.current == null) {
       rafIdRef.current = requestAnimationFrame(() => {
         rafIdRef.current = null;
-        bridgeRef.current?.render(true, false);
+        bridgeRef.current?.render(false);
       });
     }
-    const ext = localStorage.getItem("sl_histogram_extended") === "1";
-    if (ext) {
-      if (extTimerRef.current != null) clearTimeout(extTimerRef.current);
-      extTimerRef.current = window.setTimeout(() => {
-        extTimerRef.current = null;
-        bridgeRef.current?.render(true, true);
-      }, 150);
-    }
+    if (extTimerRef.current != null) clearTimeout(extTimerRef.current);
+    extTimerRef.current = window.setTimeout(() => {
+      extTimerRef.current = null;
+      bridgeRef.current?.computeHistogram(true);
+    }, 150);
     return () => {
       if (extTimerRef.current != null) {
         clearTimeout(extTimerRef.current);

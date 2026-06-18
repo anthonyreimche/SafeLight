@@ -615,11 +615,19 @@ vec2 cropTransformUV(vec2 o) {
   return q.xy / q.z;
 }
 
+// Lensfun normalises r so r=1 at the sensor half-diagonal.
+// Aspect-correct UV center offset into that space.
+float lensRadius(vec2 centered) {
+  vec2 phys = vec2(centered.x * uImageAspect, centered.y);
+  float halfDiag = 0.5 * sqrt(uImageAspect * uImageAspect + 1.0);
+  return length(phys) / halfDiag;
+}
+
 // Distortion correction: maps display UV to source UV.
 // Supports Lensfun profile models (poly3/poly5/ptlens) and manual slider.
 vec2 lensCorrectedUV(vec2 uv) {
   vec2 centered = uv - 0.5;
-  float r = length(centered * 2.0);
+  float r = lensRadius(centered);
   float r2 = r * r;
 
   float scale = 1.0;
@@ -656,7 +664,7 @@ vec2 lensCorrectedUV(vec2 uv) {
 // Supports Lensfun TCA models (linear/poly3) and manual slider.
 vec3 sampleWithCA(vec2 uv) {
   vec2 centered = uv - 0.5;
-  float r = length(centered * 2.0);
+  float r = lensRadius(centered);
   float r2 = r * r;
 
   float scaleR = 1.0;
@@ -706,7 +714,8 @@ vec3 applyDefringe(vec3 c, float amount) {
 // Manual: cos^4-based slider for user tweaking.
 float lensVignetteFactor(vec2 uv) {
   vec2 centered = uv - 0.5;
-  float r2 = dot(centered, centered) * 4.0;
+  float r = lensRadius(centered);
+  float r2 = r * r;
 
   float factor = 1.0;
 
@@ -714,7 +723,8 @@ float lensVignetteFactor(vec2 uv) {
   if (abs(uLensVigK1) > 0.0001 || abs(uLensVigK2) > 0.0001 || abs(uLensVigK3) > 0.0001) {
     float r4 = r2 * r2;
     float r6 = r4 * r2;
-    factor = 1.0 + uLensVigK1 * r2 + uLensVigK2 * r4 + uLensVigK3 * r6;
+    float vig = 1.0 + uLensVigK1 * r2 + uLensVigK2 * r4 + uLensVigK3 * r6;
+    factor = 1.0 / max(vig, 0.01);
   }
 
   // Manual slider: cos^4 approximation
@@ -994,6 +1004,7 @@ void main() {
     return;
   }
   vec2 srcUv = cropTransformUV(vUv);
+  vec2 sensorUv = srcUv;
   // Lens distortion correction: remap srcUv before any sampling
   if (uLensDistModel > 0 || abs(uLensDistortion) > 0.001) {
     srcUv = lensCorrectedUV(srcUv);
@@ -1008,8 +1019,8 @@ void main() {
   vec3 src = (uLensTcaModel > 0 || uLensCA > 0.001) ? sampleWithCA(srcUv) : texture(uImage, srcUv).rgb;
   // Spot removal (heal / clone): patch the source before any tone edits.
   if (uApplyRetouch && (uSpotCount > 0 || uRetouchCount > 0)) src = applyRetouch(srcUv, src);
-  // Lens optical vignetting correction (flatten corner light falloff)
-  src *= lensVignetteFactor(srcUv);
+  // Vignetting depends on where light hit the sensor, not the remapped source
+  src *= lensVignetteFactor(sensorUv);
   float rawLuma = srcLuma(src);
 
   // Local-contrast detail (unsharp masks), measured from the source in a
