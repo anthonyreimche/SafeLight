@@ -233,6 +233,98 @@ export interface FilenameTemplateContribution {
   template: string;
 }
 
+// ---------------------------------------------------------------------------
+// Processing stage contributions (orchestrator pipeline)
+// ---------------------------------------------------------------------------
+
+export type GlslType =
+  | "float" | "int" | "bool"
+  | "vec2" | "vec3" | "vec4"
+  | "ivec2" | "ivec3" | "ivec4"
+  | "mat3" | "mat4"
+  | "sampler2D";
+
+export interface UniformDeclaration {
+  /** Parameter bag key, e.g. "exposure". Qualified at registration time as
+   *  "{stageId}.{key}", e.g. "core.exposure.exposure". */
+  key: string;
+  glslType: GlslType;
+  default: number | number[] | boolean;
+  range?: { min: number; max: number; step?: number };
+  label?: string;
+}
+
+export interface InterStageVariable {
+  /** Shared variable name, e.g. "refT". Emitted as `isv_{name}` in the shader. */
+  name: string;
+  glslType: "float" | "vec2" | "vec3" | "vec4";
+  /** GLSL initializer expression evaluated after this stage runs.
+   *  Omit if this stage only consumes the variable. */
+  producer?: string;
+}
+
+export interface TextureRequirement {
+  /** Parameter bag key for the texture data. */
+  key: string;
+  kind: "lut" | "coverage" | "dynamic";
+  width?: number;
+  height?: number;
+  format?: "rgba8" | "rgba16f" | "r8";
+}
+
+/** Fixed processing phases. Order is enforced by the shader compiler. */
+export type ProcessingPhase =
+  | "decode"
+  | "noise-reduction"
+  | "scene-linear"
+  | "tone-map"
+  | "display-adjust"
+  | "effects"
+  | "output-encode";
+
+/** Ordered phase list for the shader compiler's sort. */
+export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
+  "decode",
+  "noise-reduction",
+  "scene-linear",
+  "tone-map",
+  "display-adjust",
+  "effects",
+  "output-encode",
+];
+
+export interface ProcessingStageContribution {
+  /** Globally unique, e.g. "core.exposure" or "film-sim.halation". */
+  id: string;
+  name: string;
+  phase: ProcessingPhase;
+  /** Order within the phase. Lower = runs first. Default 100. */
+  priority?: number;
+
+  /** GLSL code fragment operating on `vec3 color` (read/write). */
+  glsl: string;
+  /** Helper functions available to this stage's glsl (namespaced by compiler). */
+  helpers?: string;
+
+  uniforms: UniformDeclaration[];
+
+  produces?: InterStageVariable[];
+  /** Names of InterStageVariables this stage reads. */
+  consumes?: string[];
+
+  textures?: TextureRequirement[];
+
+  /** Whether this stage participates in masked local adjustments. */
+  mask?: { maskable: true; maskPhase: "linear" | "display" };
+
+  /** Stage IDs this one should run after (soft dependency — skipped if absent). */
+  after?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard shortcuts
+// ---------------------------------------------------------------------------
+
 /** A keyboard shortcut contributed by an extension. The action appears in
  *  Preferences ▸ Shortcuts and can be rebound by the user like any built-in. */
 export interface KeyActionContribution {
@@ -258,6 +350,10 @@ export interface SafelightAPI {
   registerSliderIcon(c: SliderIconContribution): void;
   /** Register a render pipeline (display transform / tone mapper). */
   registerPipeline(c: PipelineContribution): void;
+  /** Register a GPU processing stage. The stage's GLSL fragment is compiled
+   *  into the single-pass develop shader at registration time. Unregistering
+   *  (or disabling the extension) removes the GLSL and recompiles. */
+  registerProcessingStage(c: ProcessingStageContribution): void;
   /** Register a keyboard shortcut; appears in Preferences ▸ Shortcuts. */
   registerKeybinding(c: KeyActionContribution): void;
   /** Declare a settings dialog (⚙ in the Extensions panel). */

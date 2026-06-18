@@ -45,6 +45,10 @@ set "CSC_KEY_PASSWORD=safelight"
 
 echo.
 echo [5/6] Packaging signed Windows installer (electron-builder)...
+REM Clean stale release artifacts so electron-builder doesn't race with
+REM Windows Defender holding a lock on a previous extraction.
+if exist "release\win-unpacked"     rmdir /s /q "release\win-unpacked"
+if exist "release\win-unpacked.tmp" rmdir /s /q "release\win-unpacked.tmp"
 call npx electron-builder --win --publish never
 if errorlevel 1 goto :fail
 

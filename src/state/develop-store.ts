@@ -29,6 +29,10 @@ import { useCatalogStore } from "./catalog-store";
 interface DevelopState {
   photoId: string | null;
   params: DevelopParams;
+  /** Dynamic parameter bag keyed by qualified names (e.g. "core.exposure.exposure").
+   *  During migration, kept in sync with `params` via a bidirectional bridge.
+   *  Will become the sole representation once all stages are extracted. */
+  paramBag: Record<string, unknown>;
   history: EditSnapshot[];
   historyIndex: number;
   histogram: HistogramData | null;
@@ -107,6 +111,10 @@ interface DevelopState {
     key: K,
     value: DevelopParams[K],
   ) => void;
+  /** Set a dynamic parameter by qualified key (e.g. "core.exposure.exposure"). */
+  setDynParam: (key: string, value: unknown) => void;
+  /** Set multiple dynamic parameters at once. */
+  setDynParams: (patch: Record<string, unknown>) => void;
   setToneCurve: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
   setHslValue: (band: HSLBand, channel: HSLChannel, value: number) => void;
   applyPreset: (params: Partial<DevelopParams>) => Promise<void>;
@@ -160,6 +168,7 @@ function moveHistory(
 export const useDevelopStore = create<DevelopState>((set, get) => ({
   photoId: null,
   params: normalizeParams(undefined),
+  paramBag: {},
   history: [],
   historyIndex: -1,
   histogram: null,
@@ -417,6 +426,26 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   setParam(key, value) {
     set((s) => ({
       params: { ...s.params, [key]: value },
+    }));
+    broadcast({
+      type: "edit-update",
+      payload: { photoId: get().photoId, params: get().params },
+    });
+  },
+
+  setDynParam(key, value) {
+    set((s) => ({
+      paramBag: { ...s.paramBag, [key]: value },
+    }));
+    broadcast({
+      type: "edit-update",
+      payload: { photoId: get().photoId, params: get().params },
+    });
+  },
+
+  setDynParams(patch) {
+    set((s) => ({
+      paramBag: { ...s.paramBag, ...patch },
     }));
     broadcast({
       type: "edit-update",

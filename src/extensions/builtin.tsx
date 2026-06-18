@@ -5,7 +5,7 @@
 // be replaced by a community version.
 
 import type { ComponentType } from "react";
-import type { PanelDockDefault, SafelightAPI } from "./types";
+import type { PanelDockDefault, ProcessingStageContribution, SafelightAPI } from "./types";
 import { HistogramPanel } from "@/modules/develop/panels/HistogramPanel";
 import { TuningPanel } from "@/modules/develop/panels/TuningPanel";
 import { CropPanel } from "@/modules/develop/panels/CropPanel";
@@ -71,6 +71,96 @@ const left = (order: number, height: number): PanelDockDefault => ({
   width: 240,
   height,
 });
+
+// ---------------------------------------------------------------------------
+// Processing stage contributions: GLSL extracted from the monolithic shader.
+// Each stage is injected back into the shader by buildFragmentShader when the
+// stage is registered; disabling the owning extension removes the GLSL.
+// ---------------------------------------------------------------------------
+
+const VIGNETTE_STAGE: ProcessingStageContribution = {
+  id: "core.vignette",
+  name: "Vignette",
+  phase: "effects",
+  priority: 50,
+  glsl: `c = applyVignette(c, vUv);`,
+  helpers: `vec3 applyVignette(vec3 c, vec2 uv) {
+  if (abs(uVignetteAmount) < 0.001) return c;
+  vec2 centered = uv - 0.5;
+  float roundness = uVignetteRoundness / 100.0;
+  float rx = abs(centered.x);
+  float ry = abs(centered.y);
+  float rect = max(rx, ry);
+  float circ = length(centered);
+  float r = mix(rect, circ, clamp(roundness + 0.5, 0.0, 1.0)) * 2.0;
+  float midpoint = mix(0.5, 1.5, 1.0 - uVignetteMidpoint / 100.0);
+  float feather = mix(0.05, 0.95, uVignetteFeather / 100.0);
+  float lo = max(0.0, midpoint - feather * 0.5);
+  float hi = midpoint + feather * 0.5;
+  float edge = smoothstep(lo, hi, r);
+  float vigAmt = uVignetteAmount / 100.0;
+  float darkening = vigAmt < 0.0 ? -vigAmt * edge : 0.0;
+  float lightening = vigAmt > 0.0 ?  vigAmt * edge : 0.0;
+  float hlProtect = uVignetteHighlights > 0.001
+    ? clamp(luma(c) * (uVignetteHighlights / 100.0) * 2.0, 0.0, 1.0)
+    : 0.0;
+  darkening *= (1.0 - hlProtect);
+  c = c * (1.0 - darkening) + c * lightening;
+  return clamp(c, 0.0, 1.0);
+}`,
+  uniforms: [
+    { key: "uVignetteAmount",     glslType: "float", default: 0, range: { min: -100, max: 100 }, label: "Amount" },
+    { key: "uVignetteMidpoint",   glslType: "float", default: 50, range: { min: 0, max: 100 }, label: "Midpoint" },
+    { key: "uVignetteRoundness",  glslType: "float", default: 0, range: { min: -100, max: 100 }, label: "Roundness" },
+    { key: "uVignetteFeather",    glslType: "float", default: 50, range: { min: 0, max: 100 }, label: "Feather" },
+    { key: "uVignetteHighlights", glslType: "float", default: 0, range: { min: 0, max: 100 }, label: "Highlights" },
+  ],
+};
+
+const GRAIN_STAGE: ProcessingStageContribution = {
+  id: "core.grain",
+  name: "Grain",
+  phase: "effects",
+  priority: 60,
+  glsl: `c = applyGrain(c, vUv);`,
+  helpers: `float hash(vec2 p) {
+  p = fract(p * vec2(234.34, 435.345));
+  p += dot(p, p + 34.23);
+  return fract(p.x * p.y);
+}
+
+float valueNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+vec3 applyGrain(vec3 c, vec2 uv) {
+  if (uGrainAmount < 0.001) return c;
+  float amount = uGrainAmount / 100.0 * 0.12;
+  float freq = mix(1600.0, 450.0, (uGrainSize - 25.0) / 75.0);
+  vec2 guv = vec2(uv.x * uImageAspect, uv.y) * freq;
+  float n = valueNoise(guv);
+  float rough = uGrainRoughness / 100.0;
+  if (rough > 0.001) {
+    float n2 = valueNoise(guv * 2.07 + 17.3);
+    n = mix(n, clamp(n + (n2 - 0.5) * 0.9, 0.0, 1.0), rough);
+  }
+  float lumaW = clamp(luma(c) * 1.5 + 0.2, 0.2, 1.0);
+  float grain = (n - 0.5) * 2.0 * amount * lumaW;
+  return clamp(c + grain, 0.0, 1.0);
+}`,
+  uniforms: [
+    { key: "uGrainAmount",    glslType: "float", default: 0, range: { min: 0, max: 100 }, label: "Amount" },
+    { key: "uGrainSize",      glslType: "float", default: 25, range: { min: 25, max: 100 }, label: "Size" },
+    { key: "uGrainRoughness", glslType: "float", default: 50, range: { min: 0, max: 100 }, label: "Roughness" },
+  ],
+};
 
 export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   // ── Core (locked): the Extensions manager, stock themes, Classic layout ──
@@ -141,6 +231,8 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
           "--color-slider-fill": "#8a8a8a",
         },
       });
+      api.registerProcessingStage(VIGNETTE_STAGE);
+      api.registerProcessingStage(GRAIN_STAGE);
     },
   },
 

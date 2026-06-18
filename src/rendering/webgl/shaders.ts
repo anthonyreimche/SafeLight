@@ -87,17 +87,7 @@ uniform float uLensCA;            // 0..100 lateral chromatic aberration removal
 uniform float uLensDefringe;      // 0..100 purple/green fringe suppression
 uniform float uLensVignetting;    // -100..100 optical vignetting correction
 
-// Effects: vignette
-uniform float uVignetteAmount;    // -100..100
-uniform float uVignetteMidpoint;  // 0..100
-uniform float uVignetteRoundness; // -100..100
-uniform float uVignetteFeather;   // 0..100
-uniform float uVignetteHighlights;// 0..100
-
-// Effects: grain
-uniform float uGrainAmount;    // 0..100
-uniform float uGrainSize;      // 25..100
-uniform float uGrainRoughness; // 0..100
+//__CONTRIBUTED_UNIFORMS__
 
 // Image aspect (width / height) — used so radial masks and round retouch discs
 // stay circular on screen despite the non-square source-UV space.
@@ -658,78 +648,7 @@ float lensVignetteFactor(vec2 uv) {
   return clamp(correction, 0.0, 2.0);
 }
 
-// Post-crop creative vignette
-vec3 applyVignette(vec3 c, vec2 uv) {
-  if (abs(uVignetteAmount) < 0.001) return c;
-  vec2 centered = uv - 0.5;
-  // Roundness: -1 = rectangular, 0 = ellipse, +1 = circular
-  float roundness = uVignetteRoundness / 100.0;
-  float rx = abs(centered.x);
-  float ry = abs(centered.y);
-  // Interpolate between Chebyshev (rect) and Euclidean (circle) norms
-  float rect = max(rx, ry);
-  float circ = length(centered);
-  float r = mix(rect, circ, clamp(roundness + 0.5, 0.0, 1.0)) * 2.0;
-  // Midpoint: how far the vignette reaches in (0=edges only, 1=reaches center)
-  float midpoint = mix(0.5, 1.5, 1.0 - uVignetteMidpoint / 100.0);
-  float feather = mix(0.05, 0.95, uVignetteFeather / 100.0);
-  float lo = max(0.0, midpoint - feather * 0.5);
-  float hi = midpoint + feather * 0.5;
-  float edge = smoothstep(lo, hi, r);
-  float vigAmt = uVignetteAmount / 100.0;
-  float darkening = vigAmt < 0.0 ? -vigAmt * edge : 0.0;
-  float lightening = vigAmt > 0.0 ?  vigAmt * edge : 0.0;
-  // Highlight priority: protect bright areas from darkening vignette
-  float hlProtect = uVignetteHighlights > 0.001
-    ? clamp(luma(c) * (uVignetteHighlights / 100.0) * 2.0, 0.0, 1.0)
-    : 0.0;
-  darkening *= (1.0 - hlProtect);
-  c = c * (1.0 - darkening) + c * lightening;
-  return clamp(c, 0.0, 1.0);
-}
-
-// Hash-based pseudo-random noise for film grain.
-float hash(vec2 p) {
-  p = fract(p * vec2(234.34, 435.345));
-  p += dot(p, p + 34.23);
-  return fract(p.x * p.y);
-}
-
-// Smooth 2D value noise: hashes a lattice and bilinearly interpolates with a
-// smoothstep fade. Unlike hash(floor(uv)) this has no hard square cells, so the
-// grain reads as soft organic specks rather than blocky pixels.
-float valueNoise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float a = hash(i);
-  float b = hash(i + vec2(1.0, 0.0));
-  float c = hash(i + vec2(0.0, 1.0));
-  float d = hash(i + vec2(1.0, 1.0));
-  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
-vec3 applyGrain(vec3 c, vec2 uv) {
-  if (uGrainAmount < 0.001) return c;
-  float amount = uGrainAmount / 100.0 * 0.12; // max ~12% peak grain
-  // Frequency: higher = finer grain. Much finer than the old 100..800 cells so
-  // the grain isn't oversized; Size scales from fine (25) to coarse (100).
-  // Aspect-corrected so specks stay round rather than stretched.
-  float freq = mix(1600.0, 450.0, (uGrainSize - 25.0) / 75.0);
-  vec2 guv = vec2(uv.x * uImageAspect, uv.y) * freq;
-  // Base soft speck; Roughness folds in a finer second octave to break it up.
-  float n = valueNoise(guv);
-  float rough = uGrainRoughness / 100.0;
-  if (rough > 0.001) {
-    float n2 = valueNoise(guv * 2.07 + 17.3);
-    n = mix(n, clamp(n + (n2 - 0.5) * 0.9, 0.0, 1.0), rough);
-  }
-  // Center the noise at 0 and scale. Luminance-weighted: less grain in shadows.
-  float lumaW = clamp(luma(c) * 1.5 + 0.2, 0.2, 1.0);
-  float grain = (n - 0.5) * 2.0 * amount * lumaW;
-  return clamp(c + grain, 0.0, 1.0);
-}
-
+//__CONTRIBUTED_HELPERS__
 
 // ---- Retouch: spot heal / clone -------------------------------------------
 // Heal keeps the source patch's fine detail but swaps its low-frequency content
@@ -1248,9 +1167,8 @@ void main() {
       c = maskCurve(c, mi, mcov);
   }
 
-  // Creative effects: vignette then grain (applied in display/output space)
-  c = applyVignette(c, vUv);
-  c = applyGrain(c, vUv);
+  // Creative effects (contributed by processing stages)
+  //__CONTRIBUTED_EFFECTS__
 
   fragColor = vec4(encodeOutput(clamp(c, 0.0, 1.0)), 1.0);
 }
@@ -1260,11 +1178,25 @@ void main() {
 // headroom for the downstream highlight stages.
 export const DEFAULT_PIPELINE_GLSL = `vec3 pipelineToDisplay(vec3 lin) { return linearToSrgbU(lin); }`;
 
-/** Splice a pipeline's pipelineToDisplay definition into the develop shader.
- *  Pass null/undefined for the built-in transform. */
-export function buildFragmentShader(pipelineGlsl?: string | null): string {
-  return FRAGMENT_SHADER.replace(
-    "//__PIPELINE_GLSL__",
-    pipelineGlsl || DEFAULT_PIPELINE_GLSL,
-  );
+/** Stage contributions passed to buildFragmentShader for hybrid injection. */
+export interface StageInjection {
+  uniforms: string;
+  helpers: string;
+  effects: string;
+}
+
+/** Splice pipeline GLSL and contributed processing stages into the develop
+ *  shader. Pass null/undefined pipeline for the built-in transform. The
+ *  stages parameter injects GLSL from registered ProcessingStageContributions
+ *  at the appropriate markers; omit it (or pass empty strings) when no stages
+ *  are registered. */
+export function buildFragmentShader(
+  pipelineGlsl?: string | null,
+  stages?: StageInjection,
+): string {
+  return FRAGMENT_SHADER
+    .replace("//__PIPELINE_GLSL__", pipelineGlsl || DEFAULT_PIPELINE_GLSL)
+    .replace("//__CONTRIBUTED_UNIFORMS__", stages?.uniforms ?? "")
+    .replace("//__CONTRIBUTED_HELPERS__", stages?.helpers ?? "")
+    .replace("//__CONTRIBUTED_EFFECTS__", stages?.effects ?? "");
 }

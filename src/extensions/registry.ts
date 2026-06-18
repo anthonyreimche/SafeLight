@@ -10,10 +10,16 @@ import type {
   PanelContribution,
   PanelSlot,
   PipelineContribution,
+  ProcessingStageContribution,
   SettingsContribution,
   SliderIconContribution,
   ThemeContribution,
 } from "./types";
+import {
+  registerStageParams,
+  unregisterExtensionParams,
+  unregisterStageParams,
+} from "./param-registry";
 import { unregisterExtensionActions } from "@/state/keybindings-store";
 
 export interface RegisteredPanel extends PanelContribution {
@@ -42,6 +48,9 @@ export interface RegisteredExportProcessor extends ExportProcessorContribution {
 export interface RegisteredFilenameTemplate extends FilenameTemplateContribution {
   extensionId: string;
 }
+export interface RegisteredProcessingStage extends ProcessingStageContribution {
+  extensionId: string;
+}
 
 interface RegistryState {
   panels: Record<string, RegisteredPanel>;
@@ -53,6 +62,7 @@ interface RegistryState {
   pipelines: Record<string, RegisteredPipeline>;
   exportProcessors: Record<string, RegisteredExportProcessor>;
   filenameTemplates: Record<string, RegisteredFilenameTemplate>;
+  processingStages: Record<string, RegisteredProcessingStage>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -64,6 +74,7 @@ export const useRegistry = create<RegistryState>(() => ({
   pipelines: {},
   exportProcessors: {},
   filenameTemplates: {},
+  processingStages: {},
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -141,12 +152,31 @@ export function registerFilenameTemplate(
   }));
 }
 
+export function registerProcessingStage(
+  extensionId: string,
+  c: ProcessingStageContribution,
+): void {
+  registerStageParams(c.id, extensionId, c.uniforms);
+  useRegistry.setState((s) => ({
+    processingStages: {
+      ...s.processingStages,
+      [c.id]: { ...c, extensionId },
+    },
+  }));
+}
+
 /** Remove every contribution an extension made (uninstall/deactivate). */
 export function unregisterExtension(extensionId: string): void {
   const drop = <T extends { extensionId: string }>(map: Record<string, T>) =>
     Object.fromEntries(
       Object.entries(map).filter(([, v]) => v.extensionId !== extensionId),
     );
+  // Clean up param descriptors for any processing stages owned by this extension
+  const stages = useRegistry.getState().processingStages;
+  for (const s of Object.values(stages)) {
+    if (s.extensionId === extensionId) unregisterStageParams(s.id);
+  }
+  unregisterExtensionParams(extensionId);
   useRegistry.setState((s) => ({
     panels: drop(s.panels),
     themes: drop(s.themes),
@@ -156,6 +186,7 @@ export function unregisterExtension(extensionId: string): void {
     pipelines: drop(s.pipelines),
     exportProcessors: drop(s.exportProcessors),
     filenameTemplates: drop(s.filenameTemplates),
+    processingStages: drop(s.processingStages),
   }));
   unregisterExtensionActions(extensionId);
 }

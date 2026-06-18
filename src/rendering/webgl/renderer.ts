@@ -11,7 +11,9 @@ import {
 } from "@/catalog/types";
 import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
-import { buildFragmentShader, VERTEX_SHADER } from "./shaders";
+import { buildFragmentShader, VERTEX_SHADER, type StageInjection } from "./shaders";
+import { useRegistry } from "@/extensions/registry";
+import { PROCESSING_PHASE_ORDER, type ProcessingStageContribution } from "@/extensions/types";
 import {
   OUT_SPACE_CODE,
   outMatrixColumnMajor,
@@ -200,6 +202,53 @@ function stampDisc(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Stage injection: collect active processing stages from the registry and
+// build the GLSL strings that buildFragmentShader splices into the monolith.
+// ---------------------------------------------------------------------------
+
+const phaseIndex = new Map(PROCESSING_PHASE_ORDER.map((p, i) => [p, i]));
+
+function stageSort(a: ProcessingStageContribution, b: ProcessingStageContribution): number {
+  const pi = (phaseIndex.get(a.phase) ?? 99) - (phaseIndex.get(b.phase) ?? 99);
+  if (pi !== 0) return pi;
+  return (a.priority ?? 100) - (b.priority ?? 100);
+}
+
+function buildStageInjection(): { injection: StageInjection; sig: string } {
+  const stages = Object.values(useRegistry.getState().processingStages);
+  const effects = stages
+    .filter((s) => s.phase === "effects")
+    .sort(stageSort);
+
+  if (effects.length === 0) {
+    return { injection: { uniforms: "", helpers: "", effects: "" }, sig: "" };
+  }
+
+  const uniformDecls: string[] = [];
+  const helperBlocks: string[] = [];
+  const stageBlocks: string[] = [];
+  const sigParts: string[] = [];
+
+  for (const s of effects) {
+    for (const u of s.uniforms) {
+      uniformDecls.push(`uniform ${u.glslType} ${u.key};`);
+    }
+    if (s.helpers) helperBlocks.push(s.helpers);
+    stageBlocks.push(s.glsl);
+    sigParts.push(s.id);
+  }
+
+  return {
+    injection: {
+      uniforms: uniformDecls.join("\n"),
+      helpers: helperBlocks.join("\n\n"),
+      effects: stageBlocks.join("\n  "),
+    },
+    sig: sigParts.join("|"),
+  };
+}
+
 export class WebGLRenderer {
   private canvas: HTMLCanvasElement;
   private gl: WebGL2RenderingContext;
@@ -246,9 +295,10 @@ export class WebGLRenderer {
   // GPU lacks it — then the cached preview falls back to the CPU-linearised float path.
   private haveNorm16 = false;
   private norm16Format = 0;
-  // Active render pipeline: signature of the GLSL compiled into the current
-  // program, compared against the (memoized) resolution on every render.
+  // Active render pipeline + stage signatures: compared on every render to
+  // detect when recompilation is needed (pipeline change or stage enable/disable).
   private pipelineSig = "";
+  private stageSig = "";
   private pipelineSkipBase = false;
   private programCache = new Map<string, PipelineProgram>();
   private vao: WebGLVertexArrayObject | null = null;
@@ -297,14 +347,16 @@ export class WebGLRenderer {
       // this driver — fall back silently to the RGBA16F float path.
     }
 
-    // Compile with the active pipeline; a broken custom transform falls back
-    // to the built-in so the renderer always comes up.
+    // Compile with the active pipeline + stages; a broken custom transform
+    // falls back to the built-in so the renderer always comes up.
     const p = resolveActivePipeline();
-    const entry = this.entryFor(p);
+    const { injection, sig: sSig } = buildStageInjection();
+    const entry = this.entryFor(p, injection, sSig);
     this.program = entry.program;
     this.uniforms = entry.uniforms;
     this.pipelineSkipBase = entry.skipBase;
     this.pipelineSig = p.sig;
+    this.stageSig = sSig;
     this.setupQuad();
 
     this.imageTexture = this.createTexture();
@@ -436,21 +488,22 @@ export class WebGLRenderer {
     this.haveHealFill = true;
   }
 
-  // Program + uniform locations for a pipeline, cached by signature. A bad
-  // custom transform falls back to the built-in entry — cached under the
-  // failing sig too, so it isn't recompiled (and re-logged) every frame.
-  private entryFor(p: ResolvedPipeline): PipelineProgram {
-    let e = this.programCache.get(p.sig);
+  // Program + uniform locations for a pipeline + stage set, cached by combined
+  // signature. A bad custom transform falls back to the built-in entry — cached
+  // under the failing sig too, so it isn't recompiled (and re-logged) every frame.
+  private entryFor(p: ResolvedPipeline, stageInj: StageInjection, sSig: string): PipelineProgram {
+    const cacheKey = `${p.sig}|${sSig}`;
+    let e = this.programCache.get(cacheKey);
     if (e) return e;
     try {
-      const program = this.createProgram(VERTEX_SHADER, buildFragmentShader(p.glsl));
+      const program = this.createProgram(VERTEX_SHADER, buildFragmentShader(p.glsl, stageInj));
       e = { program, uniforms: this.cacheUniformsFor(program), skipBase: p.skipBaseCurve };
     } catch (err) {
       if (!p.glsl) throw err; // built-in must compile
       console.error(`[pipeline] "${p.id}" failed to compile; using built-in:`, err);
-      e = this.entryFor(BUILTIN_RESOLVED);
+      e = this.entryFor(BUILTIN_RESOLVED, stageInj, sSig);
     }
-    this.programCache.set(p.sig, e);
+    this.programCache.set(cacheKey, e);
     return e;
   }
 
@@ -920,12 +973,14 @@ export class WebGLRenderer {
   // compare; a switch is a Map lookup (compile only on first use of a sig).
   private syncPipeline() {
     const p = resolveActivePipeline();
-    if (p.sig === this.pipelineSig) return;
-    const e = this.entryFor(p);
+    const { injection, sig: sSig } = buildStageInjection();
+    if (p.sig === this.pipelineSig && sSig === this.stageSig) return;
+    const e = this.entryFor(p, injection, sSig);
     this.program = e.program;
     this.uniforms = e.uniforms;
     this.pipelineSkipBase = e.skipBase;
     this.pipelineSig = p.sig;
+    this.stageSig = sSig;
   }
 
   render() {
@@ -1027,16 +1082,20 @@ export class WebGLRenderer {
     gl.uniform1f(u.uLensVignetting,   lc.vignetting);
 
     const vig = p.vignette;
-    gl.uniform1f(u.uVignetteAmount,    vig.amount);
-    gl.uniform1f(u.uVignetteMidpoint,  vig.midpoint);
-    gl.uniform1f(u.uVignetteRoundness, vig.roundness);
-    gl.uniform1f(u.uVignetteFeather,   vig.feather);
-    gl.uniform1f(u.uVignetteHighlights,vig.highlights);
+    if (u.uVignetteAmount != null) {
+      gl.uniform1f(u.uVignetteAmount,    vig.amount);
+      gl.uniform1f(u.uVignetteMidpoint,  vig.midpoint);
+      gl.uniform1f(u.uVignetteRoundness, vig.roundness);
+      gl.uniform1f(u.uVignetteFeather,   vig.feather);
+      gl.uniform1f(u.uVignetteHighlights,vig.highlights);
+    }
 
     const gr = p.grain;
-    gl.uniform1f(u.uGrainAmount,    gr.amount);
-    gl.uniform1f(u.uGrainSize,      gr.size);
-    gl.uniform1f(u.uGrainRoughness, gr.roughness);
+    if (u.uGrainAmount != null) {
+      gl.uniform1f(u.uGrainAmount,    gr.amount);
+      gl.uniform1f(u.uGrainSize,      gr.size);
+      gl.uniform1f(u.uGrainRoughness, gr.roughness);
+    }
 
     // Masks + retouch
     gl.uniform1f(u.uImageAspect, aspect);
