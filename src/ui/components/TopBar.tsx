@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useUIStore } from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
+import { useProjectStore } from "@/project/project-store";
 import {
   MODULES,
   MODULE_LABELS,
@@ -67,6 +68,7 @@ export function TopBar() {
   const activeModule = useUIStore((s) => s.activeModule);
   const setActiveModule = useUIStore((s) => s.setActiveModule);
   const detached = useUIStore((s) => s.detached);
+  const closeProject = useProjectStore((s) => s.closeProject);
   const needsReconnect = useCatalogStore((s) => s.needsReconnect);
   const reconnecting = useCatalogStore((s) => s.reconnecting);
   const reconnectFiles = useCatalogStore((s) => s.reconnectFiles);
@@ -127,9 +129,13 @@ export function TopBar() {
   return (
     <div className="flex h-9 items-center justify-between border-b border-border bg-surface-1 px-3">
       <div className="flex items-center gap-1">
-        <span className="mr-3 text-xs font-semibold tracking-widest text-text-secondary">
+        <button
+          onClick={closeProject}
+          title="Return to welcome screen"
+          className="mr-3 text-xs font-semibold tracking-widest text-text-secondary transition-colors hover:text-text-primary"
+        >
           SAFELIGHT
-        </span>
+        </button>
         {MODULES.map((m) => {
           const isDetached = detached.has(m);
           const isActive = activeModule === m && !isDetached;

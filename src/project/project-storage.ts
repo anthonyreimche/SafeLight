@@ -101,6 +101,7 @@ export class ProjectStorage implements CatalogStorage {
     // Progress of decoding newly-discovered files (the slow part of opening).
     // Fires once with done=0 when the new-file count is known, then per file.
     onProgress?: (done: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<OpenedProject> {
     const sl = await root.getDirectoryHandle(".safelight", { create: true });
     const previews = await sl.getDirectoryHandle("previews", { create: true });
@@ -160,6 +161,10 @@ export class ProjectStorage implements CatalogStorage {
         return photo;
       }
       // New file: decode, thumbnail, cache the preview on disk.
+      if (signal?.aborted) {
+        onProgress?.(++newDone, newTotal);
+        return null;
+      }
       try {
         const file = await f.handle.getFile();
         const built = await buildPhoto(file, f.parent, f.handle);
@@ -218,7 +223,8 @@ export class ProjectStorage implements CatalogStorage {
         storage.scheduleSave();
         onProgress?.(++newDone, newTotal);
         return photo;
-      } catch {
+      } catch (err) {
+        console.warn(`[import] skipped ${f.path}:`, err);
         onProgress?.(++newDone, newTotal);
         return null;
       }

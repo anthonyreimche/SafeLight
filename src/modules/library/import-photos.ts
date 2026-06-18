@@ -173,6 +173,13 @@ const RAW_MIME: Record<string, string> = {
   ".erf": "image/x-epson-erf",
   ".x3f": "image/x-sigma-x3f",
   ".kdc": "image/x-kodak-kdc",
+  ".srf": "image/x-sony-srf",
+  ".dcr": "image/x-kodak-dcr",
+  ".rwl": "image/x-leica-rwl",
+  ".fff": "image/x-hasselblad-fff",
+  ".gpr": "image/x-gopro-gpr",
+  ".mef": "image/x-mamiya-mef",
+  ".crw": "image/x-canon-crw",
 };
 
 function mimeTypeFromName(name: string): string {
@@ -224,7 +231,7 @@ export async function buildPhoto(
     exif,
   };
 
-  const decoded = await decodeImportBitmap(file);
+  const decoded = await decodeImportBitmap(file).catch(() => null);
   if (!decoded) {
     // Couldn't build a preview right now (e.g. a file briefly locked, or a format
     // libraw can't yet read). Record it anyway with width 0 as the "preview not

@@ -25,6 +25,7 @@ export function LibraryToolbar() {
   const photos = useCatalogStore((s) => s.photos);
   const selectedIds = useCatalogStore((s) => s.selectedIds);
   const openProjectPicker = useProjectStore((s) => s.openProjectPicker);
+  const stopImport = useProjectStore((s) => s.stopImport);
   const opening = useProjectStore((s) => s.opening);
   const projectName = useProjectStore((s) => s.name);
   const importDone = useProjectStore((s) => s.importDone);
@@ -76,6 +77,15 @@ export function LibraryToolbar() {
             ? `Importing ${importDone}/${importTotal}…`
             : `${photos.length} photos${selectedIds.size > 0 ? ` · ${selectedIds.size} selected` : ""}`}
         </span>
+        {importing && (
+          <button
+            onClick={stopImport}
+            className="rounded bg-surface-3 px-2 py-0.5 text-[10px] text-text-secondary hover:bg-surface-4 hover:text-label-red"
+            title="Stop importing new photos (already-imported photos are kept)"
+          >
+            Stop
+          </button>
+        )}
         {selectedIds.size > 0 && (
           <>
             <button

@@ -26,18 +26,8 @@ const { pathToFileURL } = require("node:url");
 const isDev = !app.isPackaged;
 const DIST = path.join(__dirname, "..", "dist");
 
-let _appVersion;
 function appVersion() {
-  if (!_appVersion) {
-    try {
-      _appVersion = JSON.parse(
-        fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
-      ).version;
-    } catch {
-      _appVersion = app.getVersion();
-    }
-  }
-  return _appVersion;
+  return app.getVersion();
 }
 
 // ---------------------------------------------------------------------------

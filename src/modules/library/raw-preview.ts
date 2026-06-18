@@ -22,6 +22,13 @@ const RAW_EXTENSIONS = new Set([
   ".erf",
   ".sr2",
   ".x3f",
+  ".srf",
+  ".dcr",
+  ".rwl",
+  ".fff",
+  ".gpr",
+  ".mef",
+  ".crw",
 ]);
 
 export function getExtension(name: string): string {
