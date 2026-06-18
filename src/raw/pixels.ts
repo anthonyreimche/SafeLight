@@ -45,7 +45,9 @@ export function unpackSamples(
   return out;
 }
 
-// Subtract black level and scale to 0..1, clamped. Returns a fresh Float32Array.
+// Subtract black level and scale so white maps to 1.0. Values above 1.0 are
+// preserved (not clamped) so the shader's channel reconstruction can detect
+// which CFA sites hit the sensor ceiling and recover color from unclipped neighbours.
 export function normalizePlane(
   raw: Uint16Array,
   black: number,
@@ -55,10 +57,8 @@ export function normalizePlane(
   const range = white - black;
   const inv = range > 0 ? 1 / range : 0;
   for (let i = 0; i < raw.length; i++) {
-    let v = (raw[i] - black) * inv;
-    if (v < 0) v = 0;
-    else if (v > 1) v = 1;
-    out[i] = v;
+    const v = (raw[i] - black) * inv;
+    out[i] = v < 0 ? 0 : v;
   }
   return out;
 }

@@ -627,6 +627,7 @@ export class WebGLRenderer {
       "uTemperature",
       "uTint",
       "uAsShotTemperature",
+      "uClipThreshold",
       "uHslHue",
       "uHslSat",
       "uHslLum",
@@ -1114,6 +1115,7 @@ export class WebGLRenderer {
     gl.uniform1f(u.uTemperature, p.temperature);
     gl.uniform1f(u.uTint, p.tint);
     gl.uniform1f(u.uAsShotTemperature, this.asShotTemperature);
+    gl.uniform1f(u.uClipThreshold, this.linear ? 0.98 : 0.0);
 
     const crop = p.crop ?? DEFAULT_CROP;
     gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
