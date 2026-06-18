@@ -117,7 +117,7 @@ export interface HSLAdjustments {
 }
 
 // Geometry/perspective transform applied to the whole image before the crop.
-// All values are -100..100 with 0 = no effect.
+// Numeric values are -100..100 with 0 = no effect.
 export interface TransformParams {
   perspectiveV: number; // vertical keystone (tilt top/bottom)
   perspectiveH: number; // horizontal keystone (tilt left/right)
@@ -125,6 +125,17 @@ export interface TransformParams {
   scale: number; // zoom in/out
   offsetX: number; // pan
   offsetY: number;
+  flipH: boolean; // mirror horizontal
+  flipV: boolean; // mirror vertical
+}
+
+export type UprightMode = "off" | "auto" | "level" | "vertical" | "full" | "guided";
+
+export interface GuidedLine {
+  x1: number; // normalized 0..1 source-UV
+  y1: number;
+  x2: number;
+  y2: number;
 }
 
 export interface ColorGradingRange {
@@ -312,6 +323,8 @@ export interface DevelopParams {
   straighten: number; // degrees, -45..45 (0 = none)
   crop: CropRect;
   transform: TransformParams;
+  uprightMode: UprightMode;
+  guidedLines: GuidedLine[];
   toneCurve: ToneCurves;
   hsl: HSLAdjustments;
   colorGrading: ColorGradingParams;
@@ -346,9 +359,11 @@ export const DEFAULT_TRANSFORM: TransformParams = {
   perspectiveV: 0,
   perspectiveH: 0,
   aspect: 0,
-  scale: 0,
+  scale: 100,
   offsetX: 0,
   offsetY: 0,
+  flipH: false,
+  flipV: false,
 };
 
 export const DEFAULT_TONE_CURVE: CurvePoint[] = [
@@ -477,6 +492,8 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   straighten: 0,
   crop: { ...DEFAULT_CROP },
   transform: { ...DEFAULT_TRANSFORM },
+  uprightMode: "off",
+  guidedLines: [],
   toneCurve: defaultToneCurves(),
   hsl: defaultHSL(),
   colorGrading: defaultColorGrading(),
@@ -492,14 +509,42 @@ function normalizeTransform(
 ): TransformParams {
   const c = (n: unknown) =>
     typeof n === "number" && isFinite(n) ? Math.max(-100, Math.min(100, n)) : 0;
+  const cScale = (n: unknown) => {
+    if (typeof n !== "number" || !isFinite(n)) return 100;
+    if (n < 50) return Math.max(50, Math.min(150, n + 100));
+    return Math.max(50, Math.min(150, n));
+  };
   return {
     perspectiveV: c(t?.perspectiveV),
     perspectiveH: c(t?.perspectiveH),
     aspect: c(t?.aspect),
-    scale: c(t?.scale),
+    scale: cScale(t?.scale),
     offsetX: c(t?.offsetX),
     offsetY: c(t?.offsetY),
+    flipH: t?.flipH === true,
+    flipV: t?.flipV === true,
   };
+}
+
+const UPRIGHT_MODES: UprightMode[] = ["off", "auto", "level", "vertical", "full", "guided"];
+
+function normalizeUprightMode(m: unknown): UprightMode {
+  return typeof m === "string" && UPRIGHT_MODES.includes(m as UprightMode)
+    ? (m as UprightMode)
+    : "off";
+}
+
+function normalizeGuidedLines(lines: unknown): GuidedLine[] {
+  if (!Array.isArray(lines)) return [];
+  const out: GuidedLine[] = [];
+  for (const l of lines) {
+    if (!l || typeof l.x1 !== "number") continue;
+    const c = (v: unknown) =>
+      typeof v === "number" && isFinite(v) ? Math.min(2, Math.max(-1, v)) : 0;
+    out.push({ x1: c(l.x1), y1: c(l.y1), x2: c(l.x2), y2: c(l.y2) });
+    if (out.length >= 4) break;
+  }
+  return out;
 }
 
 function clampStraighten(n: number): number {
@@ -831,6 +876,8 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
     tint: clampTint(p?.tint),
     crop: normalizeCrop(p?.crop),
     transform: normalizeTransform(p?.transform),
+    uprightMode: normalizeUprightMode(p?.uprightMode),
+    guidedLines: normalizeGuidedLines(p?.guidedLines),
     toneCurve: normalizeToneCurves(p?.toneCurve),
     hsl: {
       hue: { ...zeroHSLValues(), ...p?.hsl?.hue },

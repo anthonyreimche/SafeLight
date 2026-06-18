@@ -11,7 +11,7 @@ export interface Vec2 {
   y: number;
 }
 
-export function mat3Mul(a: Mat3, b: Mat3): Mat3 {
+function mat3Mul(a: Mat3, b: Mat3): Mat3 {
   const m: number[] = new Array(9);
   for (let r = 0; r < 3; r++) {
     for (let col = 0; col < 3; col++) {
@@ -42,8 +42,6 @@ export function mat3ColumnMajor(m: Mat3): Float32Array {
   ]);
 }
 
-const I: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-
 function rot(theta: number): Mat3 {
   const c = Math.cos(theta);
   const s = Math.sin(theta);
@@ -73,9 +71,11 @@ function coeffs(straighten: number, t: TransformParams, aspect: number) {
     gh: (t.perspectiveH / 100) * 0.6, // horizontal keystone
     gv: (t.perspectiveV / 100) * 0.6, // vertical keystone
     as: Math.pow(1.5, t.aspect / 100), // horizontal stretch factor
-    s: Math.pow(2, t.scale / 200), // zoom factor
+    s: Math.pow(2, (t.scale - 100) / 200), // zoom factor (100 = 1x)
     tx: (t.offsetX / 100) * 0.5 * aspect,
     ty: (t.offsetY / 100) * 0.5,
+    fh: t.flipH ? -1 : 1,
+    fv: t.flipV ? -1 : 1,
   };
 }
 
@@ -87,14 +87,16 @@ export function buildInverseTransform(
   transform: TransformParams,
   aspect: number,
 ): Mat3 {
-  const { theta, gh, gv, as, s, tx, ty } = coeffs(straighten, transform, aspect);
+  const { theta, gh, gv, as, s, tx, ty, fh, fv } = coeffs(straighten, transform, aspect);
   const [A, Ainv] = squareBasis(aspect);
-  // Msq_inv = Rot(θ) · Persp⁻¹ · Aspect⁻¹ · Scale⁻¹ · Offset⁻¹  (square space)
+  // Msq_inv = Rot(θ) · Flip · Persp⁻¹ · Aspect⁻¹ · Scale⁻¹ · Offset⁻¹  (square space)
+  const flipM = diag(fh, fv);
   const perspInv: Mat3 = [1, 0, 0, 0, 1, 0, -gh, -gv, 1];
   const aspectInv = diag(1 / as, as);
   const scaleInv = diag(1 / s, 1 / s);
   const offsetInv = translate(-tx, -ty);
-  let msq = mat3Mul(rot(theta), perspInv);
+  let msq = mat3Mul(rot(theta), flipM);
+  msq = mat3Mul(msq, perspInv);
   msq = mat3Mul(msq, aspectInv);
   msq = mat3Mul(msq, scaleInv);
   msq = mat3Mul(msq, offsetInv);
@@ -108,15 +110,39 @@ export function buildForwardTransform(
   transform: TransformParams,
   aspect: number,
 ): Mat3 {
-  const { theta, gh, gv, as, s, tx, ty } = coeffs(straighten, transform, aspect);
+  const { theta, gh, gv, as, s, tx, ty, fh, fv } = coeffs(straighten, transform, aspect);
   const [A, Ainv] = squareBasis(aspect);
-  // Msq = Offset · Scale · Aspect · Persp · Rot(−θ)
+  // Msq = Offset · Scale · Aspect · Persp · Flip · Rot(−θ)
   const persp: Mat3 = [1, 0, 0, 0, 1, 0, gh, gv, 1];
+  const flipM = diag(fh, fv);
   let msq = mat3Mul(translate(tx, ty), diag(s, s));
   msq = mat3Mul(msq, diag(as, 1 / as));
   msq = mat3Mul(msq, persp);
+  msq = mat3Mul(msq, flipM);
   msq = mat3Mul(msq, rot(-theta));
   return mat3Mul(Ainv, mat3Mul(msq, A));
 }
 
-export const IDENTITY3: Mat3 = I;
+// Compose an inverse transform with an inward crop scale so that `inside()`
+// rejects points that would sample outside the usable area after lens
+// distortion. `scale` is the auto-crop zoom factor (>= 1); the effective
+// source region shrinks to [0.5 - 0.5/scale, 0.5 + 0.5/scale] per axis.
+export function applyInsetToInverse(inv: Mat3, scale: number): Mat3 {
+  if (scale <= 1.001) return inv;
+  // Post-multiply by: u' = 0.5 + (u - 0.5) * scale = u*scale + 0.5*(1-scale)
+  const off = 0.5 * (1 - scale);
+  const inset: Mat3 = [scale, 0, off, 0, scale, off, 0, 0, 1];
+  return mat3Mul(inset, inv);
+}
+
+// Inverse of the above for the forward transform: shrink the image quad inward
+// so the crop overlay and move clamp use the smaller valid region.
+export function applyInsetToForward(fwd: Mat3, scale: number): Mat3 {
+  if (scale <= 1.001) return fwd;
+  // Pre-multiply source coords: u' = 0.5 + (u - 0.5) / scale = u/scale + 0.5*(1-1/scale)
+  const invS = 1 / scale;
+  const off = 0.5 * (1 - invS);
+  const shrink: Mat3 = [invS, 0, off, 0, invS, off, 0, 0, 1];
+  return mat3Mul(fwd, shrink);
+}
+

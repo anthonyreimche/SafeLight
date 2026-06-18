@@ -250,7 +250,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   panelExt("core.histogram", "Histogram", HistogramPanel, "Live RGB histogram of the rendered image.", right(1, 150)),
   panelExt("core.tuning", "Tuning", TuningPanel, "Camera profile and base tuning controls.", right(2, 180)),
   panelExt("core.crop", "Crop & Straighten", CropPanel, "Crop, straighten and aspect-ratio tools.", right(3, 150)),
-  panelExt("core.transform", "Transform", TransformPanel, "Perspective and geometry corrections.", right(4, 180)),
+  panelExt("core.transform", "Transform", TransformPanel, "Perspective, upright and geometry corrections.", right(4, 320)),
   panelExt("core.white-balance", "White Balance", WhiteBalancePanel, "Temperature and tint.", right(5, 120)),
   panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(6, 220)),
   panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(7, 220)),

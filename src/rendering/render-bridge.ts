@@ -1,4 +1,5 @@
-import type { DevelopParams } from "@/catalog/types";
+import type { DevelopParams, UprightMode } from "@/catalog/types";
+import type { UprightResult } from "./upright";
 import type { ProcessingStageContribution } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { resolveActivePipeline, usePipelineStore } from "@/extensions/pipelines";
@@ -21,6 +22,7 @@ export interface ThumbnailResult {
 type FrameCallback = (frame: FrameResult) => void;
 type HistogramCallback = (histogram: HistogramData) => void;
 type ThumbnailCallback = (result: ThumbnailResult) => void;
+type UprightCallback = (result: UprightResult) => void;
 type ErrorCallback = (message: string) => void;
 
 export class RenderBridge {
@@ -30,9 +32,11 @@ export class RenderBridge {
   private onFrame: FrameCallback | null = null;
   private onHistogram: HistogramCallback | null = null;
   private onThumbnail: ThumbnailCallback | null = null;
+  private onUpright: UprightCallback | null = null;
   private onError: ErrorCallback | null = null;
   private disposed = false;
   private thumbResolvers = new Map<string, (blob: Blob) => void>();
+  private uprightResolve: ((result: UprightResult) => void) | null = null;
 
   constructor() {
     this.worker = new Worker(
@@ -75,6 +79,13 @@ export class RenderBridge {
         this.onThumbnail?.({ requestId: msg.requestId, blob: msg.blob });
         break;
       }
+      case "upright":
+        if (this.uprightResolve) {
+          this.uprightResolve(msg.result);
+          this.uprightResolve = null;
+        }
+        this.onUpright?.(msg.result);
+        break;
       case "error":
         this.onError?.(msg.message);
         break;
@@ -103,6 +114,7 @@ export class RenderBridge {
   setOnFrame(cb: FrameCallback | null) { this.onFrame = cb; }
   setOnHistogram(cb: HistogramCallback | null) { this.onHistogram = cb; }
   setOnThumbnail(cb: ThumbnailCallback | null) { this.onThumbnail = cb; }
+  setOnUpright(cb: UprightCallback | null) { this.onUpright = cb; }
   setOnError(cb: ErrorCallback | null) { this.onError = cb; }
 
   // ------------------------------------------------------------------
@@ -205,6 +217,13 @@ export class RenderBridge {
 
   computeHistogram(wantExtended?: boolean) {
     this.post({ cmd: "computeHistogram", wantExtended });
+  }
+
+  computeUpright(mode: UprightMode): Promise<UprightResult> {
+    return new Promise<UprightResult>((resolve) => {
+      this.uprightResolve = resolve;
+      this.post({ cmd: "analyzeUpright", mode });
+    });
   }
 
   // ------------------------------------------------------------------

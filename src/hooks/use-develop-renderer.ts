@@ -67,7 +67,10 @@ export function useDevelopRenderer(
     bridgeRef.current = bridge;
 
     const setHistogramRef = useDevelopStore.getState().setHistogram;
-    let histPending = false;
+    let histTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastHistTime = 0;
+    const HIST_THROTTLE = 80;
+
     bridge.setOnFrame((frame: FrameResult) => {
       if (cv.width !== frame.width) cv.width = frame.width;
       if (cv.height !== frame.height) cv.height = frame.height;
@@ -80,17 +83,20 @@ export function useDevelopRenderer(
       );
       if (frame.histogram) {
         setHistogramRef(frame.histogram);
-      } else if (!histPending) {
-        histPending = true;
-        setTimeout(() => {
-          histPending = false;
+        lastHistTime = performance.now();
+      } else if (!histTimer) {
+        const elapsed = performance.now() - lastHistTime;
+        const delay = Math.max(0, HIST_THROTTLE - elapsed);
+        histTimer = setTimeout(() => {
+          histTimer = null;
+          lastHistTime = performance.now();
           if (cv.width > 0 && cv.height > 0) {
             const hist = computeHistogram(cv);
             const prev = useDevelopStore.getState().histogram;
             if (prev?.extended) hist.extended = prev.extended;
             setHistogramRef(hist);
           }
-        }, 0);
+        }, delay);
       }
     });
     bridge.setOnHistogram((histogram) => {
@@ -103,6 +109,7 @@ export function useDevelopRenderer(
 
     setSupported(true);
     return () => {
+      if (histTimer) { clearTimeout(histTimer); histTimer = null; }
       if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
       bridge.setOnFrame(null);

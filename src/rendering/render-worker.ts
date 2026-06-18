@@ -1,10 +1,11 @@
-import type { DevelopParams } from "@/catalog/types";
+import type { DevelopParams, UprightMode } from "@/catalog/types";
 import type { ResolvedProfile } from "@/lens-profiles/types";
 import type { ProcessingStageContribution } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { BUILTIN_RESOLVED } from "@/extensions/pipelines";
 import { WebGLRenderer } from "./webgl/renderer";
 import type { HistogramData } from "./histogram";
+import { detectLines, computeUprightCorrection, type UprightResult } from "./upright";
 
 // ---------------------------------------------------------------------------
 // Message types (worker ↔ main thread)
@@ -42,6 +43,7 @@ export type WorkerRequest =
   | { cmd: "computeHistogram"; wantExtended?: boolean }
   | { cmd: "setStages"; stages: ProcessingStageContribution[] }
   | { cmd: "setPipeline"; pipeline: ResolvedPipeline }
+  | { cmd: "analyzeUpright"; mode: UprightMode }
   | { cmd: "dispose" };
 
 export type WorkerResponse =
@@ -49,6 +51,7 @@ export type WorkerResponse =
   | { type: "frame"; bitmap: ImageBitmap; width: number; height: number; histogram?: HistogramData }
   | { type: "histogram"; histogram: HistogramData }
   | { type: "thumbnail"; requestId: string; blob: Blob }
+  | { type: "upright"; result: UprightResult }
   | { type: "error"; message: string };
 
 // ---------------------------------------------------------------------------
@@ -191,6 +194,16 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         latestPipeline = msg.pipeline;
         if (renderer) renderer.setActivePipeline(msg.pipeline);
         if (thumbRenderer) thumbRenderer.setActivePipeline(msg.pipeline);
+        break;
+      }
+
+      case "analyzeUpright": {
+        if (!renderer) break;
+        const pixels = renderer.readDownscaledPixels(256);
+        if (!pixels) break;
+        const lines = detectLines(pixels.data, pixels.w, pixels.h);
+        const result = computeUprightCorrection(lines, msg.mode, pixels.w, pixels.h);
+        respond({ type: "upright", result });
         break;
       }
 

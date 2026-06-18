@@ -59,6 +59,8 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "photo.next", label: "Next photo", category: "Library", def: "ArrowRight" },
   { id: "photo.rotateCCW", label: "Rotate left", category: "Library", def: "Alt+[" },
   { id: "photo.rotateCW", label: "Rotate right", category: "Library", def: "Alt+]" },
+  { id: "photo.flipH", label: "Flip horizontal", category: "Develop", def: "" },
+  { id: "photo.flipV", label: "Flip vertical", category: "Develop", def: "" },
   { id: "photo.remove", label: "Remove from catalog", category: "Library", def: "Delete" },
   { id: "keyword.focus", label: "Focus keyword input", category: "Library", def: "K" },
 ];

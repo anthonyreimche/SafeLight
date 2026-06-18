@@ -1508,6 +1508,30 @@ export class WebGLRenderer {
     return result;
   }
 
+  readDownscaledPixels(size: number): { data: Uint8Array; w: number; h: number } | null {
+    if (!this.imageWidth || !this.imageHeight) return null;
+    const gl = this.gl;
+    const fbo = gl.createFramebuffer();
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.uniform1i(this.uniforms.uShowClipping, 0);
+    gl.viewport(0, 0, size, size);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    const data = new Uint8Array(size * size * 4);
+    gl.readPixels(0, 0, size, size, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo);
+    gl.deleteTexture(tex);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    return { data, w: size, h: size };
+  }
+
   // Create / resize the offscreen develop target (capped source size). Returns
   // false if the framebuffer can't be completed, so the caller falls back.
   private prepareDevelopedTarget(): boolean {

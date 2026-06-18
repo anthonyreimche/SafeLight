@@ -7,9 +7,14 @@ import { fitCropToImage, transformedViewCrop } from "@/rendering/crop-transform"
 import {
   buildForwardTransform,
   buildInverseTransform,
+  applyInsetToInverse,
+  applyInsetToForward,
 } from "@/rendering/transform";
+import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
+import { computeGuidedCorrection } from "@/rendering/upright";
 import { ViewportImage } from "@/ui/ViewportImage";
 import { CropOverlay } from "./CropOverlay";
+import { GuidedOverlay } from "./GuidedOverlay";
 import { MaskOverlay } from "./MaskOverlay";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
 import { sampleLinearRGB } from "@/rendering/sample-pixel";
@@ -66,6 +71,10 @@ export function DevelopCanvas({
   const constrainCrop = useDevelopStore((s) => s.constrainCrop);
   const cropGuide = useDevelopStore((s) => s.cropGuide);
   const cropGuideFlip = useDevelopStore((s) => s.cropGuideFlip);
+  const uprightMode = useDevelopStore((s) => s.params.uprightMode);
+  const guidedLines = useDevelopStore((s) => s.params.guidedLines);
+  const lensCorrection = useDevelopStore((s) => s.params.lensCorrection);
+  const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
   const wbPicking = useDevelopStore((s) => s.wbPicking);
@@ -151,12 +160,29 @@ export function DevelopCanvas({
   };
 
   const imageAspect = photo.height > 0 ? photo.width / photo.height : 1;
+
+  // Compute the effective inset from lens distortion so the crop constraint
+  // treats the image as smaller (avoids sampling outside valid pixels).
+  let lensCropScale = 1;
+  if (lensCorrection.mode !== "off") {
+    const lp = resolvedLensProfile;
+    if (lensCorrection.mode === "profile" && lp?.distortion && lensCorrection.distortionEnabled) {
+      lensCropScale = computeAutoCropScale(
+        lp.distortion.model, lp.distortion.k, lensCorrection.distortion, imageAspect,
+      );
+    } else if (Math.abs(lensCorrection.distortion) > 0.001) {
+      lensCropScale = computeAutoCropScale("poly3", [0], lensCorrection.distortion, imageAspect);
+    }
+  }
+
   // Inverse transform (transformed coord -> source UV) for crop constraints, the
   // forward transform (image quad) for the move clamp, and the view region
   // enclosing the warped image for the crop overlay.
-  const inv = buildInverseTransform(straighten, transform, imageAspect);
-  const forward = buildForwardTransform(straighten, transform, imageAspect);
-  const viewCrop = transformedViewCrop(forward);
+  const invRaw = buildInverseTransform(straighten, transform, imageAspect);
+  const forwardRaw = buildForwardTransform(straighten, transform, imageAspect);
+  const inv = applyInsetToInverse(invRaw, lensCropScale);
+  const forward = applyInsetToForward(forwardRaw, lensCropScale);
+  const viewCrop = transformedViewCrop(forwardRaw);
 
   // Throttle crop writes to one per frame so a drag doesn't re-render the panels
   // on every pointer event.
@@ -244,7 +270,10 @@ export function DevelopCanvas({
                       "crop",
                       fitCropToImage(
                         crop,
-                        buildInverseTransform(deg, transform, imageAspect),
+                        applyInsetToInverse(
+                          buildInverseTransform(deg, transform, imageAspect),
+                          lensCropScale,
+                        ),
                       ),
                     );
                   }
@@ -252,17 +281,49 @@ export function DevelopCanvas({
                 }}
               />
             )
-          : activeTool !== "none"
+          : uprightMode === "guided"
             ? (rect) => (
-                <MaskOverlay
+                <GuidedOverlay
                   rect={rect}
-                  crop={crop}
-                  inv={inv}
-                  forward={forward}
-                  imageAspect={imageAspect}
+                  lines={guidedLines}
+                  onChange={(lines) => setParam("guidedLines", lines)}
+                  onCommit={() => {
+                    const st = useDevelopStore.getState();
+                    const result = computeGuidedCorrection(st.params.guidedLines, imageAspect);
+                    setParam("straighten", result.straighten);
+                    const next = {
+                      ...st.params.transform,
+                      perspectiveV: Math.round(result.perspectiveV),
+                      perspectiveH: Math.round(result.perspectiveH),
+                    };
+                    setParam("transform", next);
+                    if (constrainCrop) {
+                      setParam(
+                        "crop",
+                        fitCropToImage(
+                          st.params.crop,
+                          applyInsetToInverse(
+                            buildInverseTransform(result.straighten, next, imageAspect),
+                            lensCropScale,
+                          ),
+                        ),
+                      );
+                    }
+                    commitEdit("Guided Upright");
+                  }}
                 />
               )
-            : undefined
+            : activeTool !== "none"
+              ? (rect) => (
+                  <MaskOverlay
+                    rect={rect}
+                    crop={crop}
+                    inv={invRaw}
+                    forward={forwardRaw}
+                    imageAspect={imageAspect}
+                  />
+                )
+              : undefined
       }
     />
   );
