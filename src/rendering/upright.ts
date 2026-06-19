@@ -304,17 +304,20 @@ function vanishingPointPerspective(
 
   const sorted = [...verticals].sort((a, b) => b.votes - a.votes).slice(0, 8);
 
-  // Estimate the gv perspective coefficient from each line-pair vanishing point.
-  // gv = 1/relY mirrors the guided mode's gv = 1/(0.5 - vpY): the reciprocal
-  // correctly maps distant VPs to mild corrections and close VPs to strong ones.
   const estimates: { gv: number; weight: number }[] = [];
   for (let i = 0; i < sorted.length; i++) {
     for (let j = i + 1; j < sorted.length; j++) {
       const a = sorted[i], b = sorted[j];
+      // Only pair lines tilting in opposite directions from vertical.
+      // θ near 0 → tilts right, θ near π → tilts left. Same-tilt pairs
+      // produce VPs on the wrong side of center.
+      const devA = a.theta < Math.PI / 2 ? a.theta : a.theta - Math.PI;
+      const devB = b.theta < Math.PI / 2 ? b.theta : b.theta - Math.PI;
+      if (devA * devB >= 0) continue;
       const sinA = Math.sin(a.theta), cosA = Math.cos(a.theta);
       const sinB = Math.sin(b.theta), cosB = Math.cos(b.theta);
       const det = cosA * sinB - sinA * cosB;
-      if (Math.abs(det) < 0.01) continue;
+      if (Math.abs(det) < 0.002) continue;
       const iy = (b.rho * cosA - a.rho * cosB) / det;
       const relY = (iy - h / 2) / h;
       if (Math.abs(relY) < 0.05) continue;
@@ -324,7 +327,6 @@ function vanishingPointPerspective(
 
   if (estimates.length === 0) return 0;
 
-  // Vote-weighted median rejects outlier pairs from nearly-parallel same-side lines.
   estimates.sort((a, b) => a.gv - b.gv);
   const totalWeight = estimates.reduce((s, e) => s + e.weight, 0);
   let cumWeight = 0;
@@ -354,10 +356,17 @@ function vanishingPointPerspectiveH(
   for (let i = 0; i < sorted.length; i++) {
     for (let j = i + 1; j < sorted.length; j++) {
       const a = sorted[i], b = sorted[j];
+      // Only pair lines tilting in opposite directions from horizontal.
+      // θ > π/2 → tilts one way, θ < π/2 → tilts the other. Same-tilt
+      // pairs dominate when the VP's y-coordinate is off-center, producing
+      // VPs on the wrong side.
+      const devA = a.theta - Math.PI / 2;
+      const devB = b.theta - Math.PI / 2;
+      if (devA * devB >= 0) continue;
       const sinA = Math.sin(a.theta), cosA = Math.cos(a.theta);
       const sinB = Math.sin(b.theta), cosB = Math.cos(b.theta);
       const det = cosA * sinB - sinA * cosB;
-      if (Math.abs(det) < 0.01) continue;
+      if (Math.abs(det) < 0.002) continue;
       const ix = (a.rho * sinB - b.rho * sinA) / det;
       const relX = (ix - w / 2) / w;
       if (Math.abs(relX) < 0.05) continue;

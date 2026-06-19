@@ -11,6 +11,16 @@ import type { UpdateChannel } from "@/update/update-checker";
 
 export type ExportFormatPref = "image/jpeg" | "image/png" | "image/webp";
 
+export interface ExportPreset {
+  name: string;
+  format: ExportFormatPref;
+  quality: number;
+  longEdge: number | null;
+  colorSpace: ColorSpaceId;
+  sharpenAmount: number;
+  sharpenRadius: number;
+}
+
 export interface AppSettings {
   // ── Interface ──────────────────────────────────────────────────────────
   /** Whole-UI zoom (0.8–1.3). Applied as CSS zoom on <body>. */
@@ -48,6 +58,8 @@ export interface AppSettings {
   exportBundle: boolean; // zip when exporting multiple
   /** Output color space; converts pixels and embeds the matching ICC profile. */
   exportColorSpace: ColorSpaceId;
+  /** Saved export presets (format + quality + resolution + sharpening). */
+  exportPresets: ExportPreset[];
 
   // ── Shortcuts ──────────────────────────────────────────────────────────
   /** Single-letter shortcuts (G/D/F). Tab and Ctrl-combos always work. */
@@ -87,6 +99,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exportLongEdge: null,
   exportBundle: true,
   exportColorSpace: "srgb",
+  exportPresets: [],
   singleKeyShortcuts: true,
   writeXmpSidecars: false,
   extensionTopic: "safelight-extension",

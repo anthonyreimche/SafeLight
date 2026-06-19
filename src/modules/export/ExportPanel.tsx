@@ -1,4 +1,4 @@
-// Export as a dock panel (View ▸ Export from either module): format, quality,
+// Export as a dock panel (View > Export from either module): format, quality,
 // resolution and delivery settings plus the export action, in one column.
 
 import { useEffect, useMemo, useState } from "react";
@@ -14,7 +14,12 @@ import {
   type ExportSettings,
   type ProcessorSettings,
 } from "./export-image";
-import { getSettings } from "@/state/settings-store";
+import {
+  getSettings,
+  useSettings,
+  updateSettings,
+  type ExportPreset,
+} from "@/state/settings-store";
 
 const FORMATS: { value: ExportFormat; label: string }[] = [
   { value: "image/jpeg", label: "JPEG" },
@@ -121,7 +126,7 @@ export function ExportPanel() {
   const selectedIds = useCatalogStore((s) => s.selectedIds);
   const activePhotoId = useCatalogStore((s) => s.activePhotoId);
 
-  // Defaults come from Preferences ▸ Export; the panel state is per-session.
+  // Defaults come from Preferences > Export; the panel state is per-session.
   const [format, setFormat] = useState<ExportFormat>(getSettings().exportFormat);
   const [quality, setQuality] = useState(getSettings().exportQuality);
   const [longEdge, setLongEdge] = useState<number | null>(
@@ -135,6 +140,15 @@ export function ExportPanel() {
   );
   const [status, setStatus] = useState<string | null>(null);
 
+  // Output sharpening state.
+  const [sharpenAmount, setSharpenAmount] = useState(0);
+  const [sharpenRadius, setSharpenRadius] = useState(1.0);
+
+  // Presets from persistent settings.
+  const presets = useSettings((s) => s.exportPresets);
+  const [savingPreset, setSavingPreset] = useState(false);
+  const [presetName, setPresetName] = useState("");
+
   // Extension export processors and filename templates from the registry.
   const rawProcessors = useRegistry((s) => s.exportProcessors);
   const rawTemplates = useRegistry((s) => s.filenameTemplates);
@@ -147,7 +161,7 @@ export function ExportPanel() {
     [rawTemplates],
   );
 
-  // Per-processor field values; keyed by processorId → fieldKey → value.
+  // Per-processor field values; keyed by processorId -> fieldKey -> value.
   const [processorSettings, setProcessorSettings] = useState<ProcessorSettings>({});
   // Active filename template id (undefined = built-in behaviour).
   const [filenameTemplateId, setFilenameTemplateId] = useState<string | undefined>();
@@ -188,6 +202,40 @@ export function ExportPanel() {
     }
   }, [targets.length, delivery]);
 
+  // ── Preset helpers ──────────────────────────────────────────────────────
+
+  const loadPreset = (preset: ExportPreset) => {
+    setFormat(preset.format);
+    setQuality(preset.quality);
+    setLongEdge(preset.longEdge);
+    setSharpenAmount(preset.sharpenAmount);
+    setSharpenRadius(preset.sharpenRadius);
+  };
+
+  const savePreset = () => {
+    const name = presetName.trim();
+    if (!name) return;
+    const preset: ExportPreset = {
+      name,
+      format: format as ExportPreset["format"],
+      quality,
+      longEdge,
+      colorSpace: getSettings().exportColorSpace,
+      sharpenAmount,
+      sharpenRadius,
+    };
+    const existing = presets.filter((p) => p.name !== name);
+    updateSettings({ exportPresets: [...existing, preset] });
+    setSavingPreset(false);
+    setPresetName("");
+  };
+
+  const deletePreset = (name: string) => {
+    updateSettings({ exportPresets: presets.filter((p) => p.name !== name) });
+  };
+
+  // ── Folder picker ───────────────────────────────────────────────────────
+
   const pickFolder = async () => {
     try {
       const dir = await window.showDirectoryPicker({ mode: "readwrite", id: "safelight-export" });
@@ -223,6 +271,8 @@ export function ExportPanel() {
       colorSpace: getSettings().exportColorSpace,
       processorSettings,
       filenameTemplateId,
+      sharpenAmount,
+      sharpenRadius,
     };
     try {
       const result = await exportPhotos(
@@ -253,6 +303,30 @@ export function ExportPanel() {
 
   return (
     <div className="flex flex-col">
+      {presets.length > 0 && (
+        <Panel title="Preset">
+          <div className="flex flex-col gap-1">
+            {presets.map((p) => (
+              <div key={p.name} className="flex items-center gap-1">
+                <button
+                  onClick={() => loadPreset(p)}
+                  className={`flex-1 text-left ${optionBtn(false)}`}
+                >
+                  {p.name}
+                </button>
+                <button
+                  onClick={() => deletePreset(p.name)}
+                  className="rounded px-1.5 py-1 text-[10px] text-text-muted hover:text-text-primary"
+                  title="Delete preset"
+                >
+                  &times;
+                </button>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
       <Panel title="Format">
         <div className="flex gap-1">
           {FORMATS.map((f) => (
@@ -297,6 +371,32 @@ export function ExportPanel() {
         </p>
       </Panel>
 
+      <Panel title="Output Sharpening" defaultOpen={false}>
+        <Slider
+          label="Amount"
+          value={sharpenAmount}
+          min={0}
+          max={150}
+          step={1}
+          defaultValue={0}
+          onChange={setSharpenAmount}
+        />
+        <Slider
+          label="Radius"
+          value={sharpenRadius}
+          min={0.3}
+          max={3}
+          step={0.1}
+          defaultValue={1}
+          onChange={setSharpenRadius}
+        />
+        {sharpenAmount === 0 && (
+          <p className="mt-1 text-[10px] leading-snug text-text-muted">
+            Off. Increase amount to sharpen after resize.
+          </p>
+        )}
+      </Panel>
+
       <Panel title="Delivery">
         <div className="flex gap-1">
           {targets.length !== 1 && (
@@ -326,7 +426,7 @@ export function ExportPanel() {
           <p className="mt-2 text-[10px] leading-snug text-text-muted">
             {destDir ? (
               <>Saving to <span className="text-text-secondary">{destDir.name}</span>.{" "}
-              <button onClick={() => void pickFolder()} className="underline hover:text-text-primary">Change…</button></>
+              <button onClick={() => void pickFolder()} className="underline hover:text-text-primary">Change...</button></>
             ) : "A folder picker will open on export."}
           </p>
         ) : delivery === "zip" ? (
@@ -411,17 +511,50 @@ export function ExportPanel() {
                 targets.length === 1 ? "" : "s"
               } ready as ${format.split("/")[1].toUpperCase()}.`}
         </p>
-        <button
-          onClick={() => void handleExport()}
-          disabled={busy || targets.length === 0}
-          className="mt-2 w-full rounded bg-slider-fill px-3 py-2 text-xs font-medium text-white hover:bg-surface-4 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {busy && progress
-            ? `Exporting ${progress.done}/${progress.total}…`
-            : targets.length > 0
-              ? `Export ${targets.length}`
-              : "Export"}
-        </button>
+        <div className="mt-2 flex gap-1">
+          <button
+            onClick={() => void handleExport()}
+            disabled={busy || targets.length === 0}
+            className="flex-1 rounded bg-slider-fill px-3 py-2 text-xs font-medium text-white hover:bg-surface-4 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy && progress
+              ? `Exporting ${progress.done}/${progress.total}...`
+              : targets.length > 0
+                ? `Export ${targets.length}`
+                : "Export"}
+          </button>
+          {savingPreset ? (
+            <form
+              className="flex gap-1"
+              onSubmit={(e) => { e.preventDefault(); savePreset(); }}
+            >
+              <input
+                type="text"
+                value={presetName}
+                onChange={(e) => setPresetName(e.target.value)}
+                placeholder="Preset name"
+                autoFocus
+                className="w-24 rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary outline-none focus:ring-1 focus:ring-slider-fill"
+                onKeyDown={(e) => { if (e.key === "Escape") setSavingPreset(false); }}
+              />
+              <button
+                type="submit"
+                disabled={!presetName.trim()}
+                className="rounded bg-surface-3 px-2 py-1 text-[11px] text-text-primary hover:bg-surface-4 disabled:opacity-40"
+              >
+                Save
+              </button>
+            </form>
+          ) : (
+            <button
+              onClick={() => setSavingPreset(true)}
+              className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-muted hover:text-text-primary"
+              title="Save current settings as a preset"
+            >
+              Save...
+            </button>
+          )}
+        </div>
         {status && (
           <p className="mt-3 text-[11px] text-text-secondary">{status}</p>
         )}
