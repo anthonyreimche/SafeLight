@@ -12,6 +12,7 @@ import {
   type LogEntry,
   type LogLevel,
 } from "./log-capture";
+import { detachDevtools, isDevtoolsWindow, reattachDevtools } from "./detach";
 
 type Tab = "Console" | "Issues" | "System" | "Storage" | "Native";
 const TABS: Tab[] = ["Console", "Issues", "System", "Storage", "Native"];
@@ -37,16 +38,17 @@ const LEVEL_GLYPH: Record<LogLevel, string> = {
   result: "‹",
 };
 
-export function DevToolsPanel() {
+export function DevToolsPanel({ fill = false }: { fill?: boolean } = {}) {
   const [tab, setTab] = useState<Tab>("Console");
   const entries = useDevLog((s) => s.entries);
   const issueCount = useMemo(
     () => entries.filter((e) => e.level === "warn" || e.level === "error" || e.level === "exception").length,
     [entries],
   );
+  const inWindow = isDevtoolsWindow();
 
   return (
-    <div className="flex h-[420px] flex-col text-[11px]">
+    <div className={`flex flex-col text-[11px] ${fill ? "h-full" : "h-[420px]"}`}>
       {/* Tab strip */}
       <div className="flex shrink-0 items-center gap-0.5 border-b border-border-subtle bg-surface-2 px-1">
         {TABS.map((t) => (
@@ -70,6 +72,17 @@ export function DevToolsPanel() {
             )}
           </button>
         ))}
+        <div className="flex-1" />
+        {/* Pop the panel out to (or back from) its own OS window. */}
+        {!inWindow && (
+          <button
+            onClick={detachDevtools}
+            title="Open in a separate window"
+            className="mr-1 rounded px-1.5 py-0.5 text-[12px] leading-none text-text-muted hover:bg-surface-3 hover:text-text-primary"
+          >
+            ⧉
+          </button>
+        )}
       </div>
 
       <div className="min-h-0 flex-1">
@@ -78,6 +91,32 @@ export function DevToolsPanel() {
         {tab === "System" && <SystemTab />}
         {tab === "Storage" && <StorageTab />}
         {tab === "Native" && <NativeTab />}
+      </div>
+    </div>
+  );
+}
+
+/** Full-window host rendered in the detached Developer Tools window. */
+export function DevToolsWindow() {
+  useEffect(() => {
+    document.title = "SafeLight — Developer Tools";
+  }, []);
+  return (
+    <div className="flex h-screen flex-col bg-surface-1 text-text-primary">
+      <div className="flex h-8 shrink-0 items-center justify-between border-b border-border bg-surface-2 px-3">
+        <span className="text-[11px] uppercase tracking-widest text-text-secondary">
+          Developer Tools
+        </span>
+        <button
+          onClick={reattachDevtools}
+          title="Close and re-dock in the main window"
+          className="rounded px-2 py-0.5 text-[11px] text-text-muted hover:bg-surface-3 hover:text-text-primary"
+        >
+          ⧉ Re-dock
+        </button>
+      </div>
+      <div className="min-h-0 flex-1">
+        <DevToolsPanel fill />
       </div>
     </div>
   );
@@ -97,7 +136,7 @@ function ConsoleTab({
   const [filter, setFilter] = useState("");
   const [levels, setLevels] = useState<Set<LogLevel>>(new Set(ALL_LEVELS));
   const [autoscroll, setAutoscroll] = useState(true);
-  const [expanded, setExpanded] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const shown = useMemo(() => {

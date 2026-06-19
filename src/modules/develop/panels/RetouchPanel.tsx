@@ -21,6 +21,7 @@ export function RetouchPanel() {
   const removeSpot = useDevelopStore((s) => s.removeSpot);
   const updateSpot = useDevelopStore((s) => s.updateSpot);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
+  const setBrushPreview = useDevelopStore((s) => s.setBrushPreview);
 
   const active = activeTool === "retouch";
   const selected = spots.find((s) => s.id === selectedSpotId) ?? null;
@@ -30,10 +31,14 @@ export function RetouchPanel() {
   const opacityVal = selected ? selected.opacity : retouchOpacity;
   const modeVal = selected ? selected.mode : retouchMode;
 
-  const onSize = (v: number) =>
+  const onSize = (v: number) => {
+    setBrushPreview(true);
     selected ? updateSpot(selected.id, { radius: v / 100 }) : setRetouchSize(v / 100);
-  const onFeather = (v: number) =>
+  };
+  const onFeather = (v: number) => {
+    setBrushPreview(true);
     selected ? updateSpot(selected.id, { feather: v }) : setRetouchFeather(v);
+  };
   const onOpacity = (v: number) =>
     selected ? updateSpot(selected.id, { opacity: v }) : setRetouchOpacity(v);
   const onMode = (m: "heal" | "clone") => {
@@ -104,7 +109,7 @@ export function RetouchPanel() {
             step={1}
             defaultValue={4}
             onChange={onSize}
-            onCommit={commitIf("Spot Size")}
+            onCommit={() => { setBrushPreview(false); if (selected) commitEdit("Spot Size"); }}
           />
           <Slider
             label="Feather"
@@ -114,7 +119,7 @@ export function RetouchPanel() {
             step={1}
             defaultValue={50}
             onChange={onFeather}
-            onCommit={commitIf("Spot Feather")}
+            onCommit={() => { setBrushPreview(false); if (selected) commitEdit("Spot Feather"); }}
           />
           <Slider
             label="Opacity"

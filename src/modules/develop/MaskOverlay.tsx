@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import type { RefObject } from "react";
 import type {
   BrushDab,
   CropRect,
@@ -7,10 +8,11 @@ import type {
   RadialMaskGeo,
   RetouchSpot,
 } from "@/catalog/types";
-import { DEFAULT_MASK_PANELS, defaultMaskAdjustments } from "@/catalog/types";
+import { DEFAULT_MASK_PANELS, defaultColorRange, defaultMaskAdjustments } from "@/catalog/types";
 import { mat3Apply, type Mat3 } from "@/rendering/transform";
 import { useDevelopStore } from "@/state/develop-store";
 import { findHealSource, healColorOffset } from "@/rendering/heal-source";
+import { sampleLinearRGB } from "@/rendering/sample-pixel";
 
 interface Rect {
   x: number;
@@ -25,6 +27,8 @@ interface MaskOverlayProps {
   inv: Mat3; // transformed coord -> source UV
   forward: Mat3; // source UV -> transformed coord
   imageAspect: number;
+  // The displayed render canvas, sampled by the colour-range eyedropper.
+  canvasRef?: RefObject<HTMLCanvasElement | null>;
 }
 
 let idSeq = 0;
@@ -114,7 +118,10 @@ const COLOR = {
 
 type HandleId =
   | "radial-move"
-  | "radial-size"
+  | "radial-e"
+  | "radial-w"
+  | "radial-n"
+  | "radial-s"
   | "radial-rotate"
   | "linear-p0"
   | "linear-p1";
@@ -128,7 +135,7 @@ type DragKind =
   | "spot-src"
   | "retouch-paint";
 
-export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverlayProps) {
+export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }: MaskOverlayProps) {
   const activeTool = useDevelopStore((s) => s.activeTool);
   const maskToolType = useDevelopStore((s) => s.maskToolType);
   const masks = useDevelopStore((s) => s.params.masks);
@@ -137,6 +144,11 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
   const selectedComponentId = useDevelopStore((s) => s.selectedComponentId);
   const selectedSpotId = useDevelopStore((s) => s.selectedSpotId);
   const brushErase = useDevelopStore((s) => s.brushErase);
+  const brushSize = useDevelopStore((s) => s.brushSize);
+  const brushFeather = useDevelopStore((s) => s.brushFeather);
+  const brushPreview = useDevelopStore((s) => s.brushPreview);
+  const retouchSize = useDevelopStore((s) => s.retouchSize);
+  const retouchFeather = useDevelopStore((s) => s.retouchFeather);
 
   const [cursor, setCursor] = useState<{ x: number; y: number; alt: boolean } | null>(null);
   const [hovered, setHovered] = useState<HandleId | null>(null);
@@ -163,20 +175,18 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
   });
   const radialHandle = (
     r: RadialMaskGeo,
-    which: "center" | "size" | "rotate",
+    which: "center" | "e" | "w" | "n" | "s" | "rotate",
   ): { x: number; y: number } => {
     if (which === "center") return toScreen(r.cx, r.cy);
     const ca = Math.cos(r.angle);
     const sa = Math.sin(r.angle);
     let qx = 0;
     let qy = 0;
-    if (which === "size") {
-      qx = r.rx * imageAspect;
-      qy = 0;
-    } else {
-      qx = 0;
-      qy = -(r.ry + ROT_OFFSET);
-    }
+    if (which === "e") qx = r.rx * imageAspect;
+    else if (which === "w") qx = -r.rx * imageAspect;
+    else if (which === "n") qy = -r.ry;
+    else if (which === "s") qy = r.ry;
+    else qy = -(r.ry + ROT_OFFSET); // rotate
     const rqx = ca * qx - sa * qy;
     const rqy = sa * qx + ca * qy;
     const uv = uvFromQ(rqx, rqy, r.cx, r.cy);
@@ -225,8 +235,12 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
     if (c.kind === "radial" && c.radial) {
       const rot = radialHandle(c.radial, "rotate");
       if (Math.hypot(px - rot.x, py - rot.y) <= HIT) return { kind: "radial-rotate" };
-      const edge = radialHandle(c.radial, "size");
-      if (Math.hypot(px - edge.x, py - edge.y) <= HIT) return { kind: "radial-size" };
+      for (const [w, k] of [
+        ["e", "radial-e"], ["w", "radial-w"], ["n", "radial-n"], ["s", "radial-s"],
+      ] as const) {
+        const h = radialHandle(c.radial, w);
+        if (Math.hypot(px - h.x, py - h.y) <= HIT) return { kind: k };
+      }
       const ctr = radialHandle(c.radial, "center");
       if (Math.hypot(px - ctr.x, py - ctr.y) <= HIT) return { kind: "radial-move" };
     } else if (c.kind === "linear" && c.linear) {
@@ -280,6 +294,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
     const mask: Mask = {
       id,
       name: comp.kind[0].toUpperCase() + comp.kind.slice(1),
+      visible: true,
       invert: false,
       opacity: 100,
       adj: defaultMaskAdjustments(),
@@ -307,6 +322,22 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
     e.currentTarget.setPointerCapture(e.pointerId);
     const down = toSource(px, py);
     const st = store();
+
+    // Colour-range eyedropper: sample the pixel under the cursor (px/py are in
+    // render-buffer coords) into the selected colour-range component, then stop.
+    if (st.maskColorPicking && selectedMask && selectedComp?.kind === "colorRange") {
+      const cv = canvasRef?.current ?? null;
+      const rgb = cv ? sampleLinearRGB(cv, px, py) : null;
+      if (rgb) {
+        const cur = selectedComp.colorRange ?? defaultColorRange();
+        st.updateComponent(selectedMask.id, selectedComp.id, {
+          colorRange: { ...cur, r: rgb[0], g: rgb[1], b: rgb[2] },
+        });
+        st.commitEdit("Colour Range Pick");
+      }
+      st.setMaskColorPicking(false);
+      return;
+    }
 
     if (activeTool === "retouch") {
       const hit = hitSpot(px, py);
@@ -515,23 +546,53 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
         if (c?.radial) st.updateComponent(d.maskId!, d.compId!, { radial: { ...c.radial, cx: cur.x, cy: cur.y } });
         break;
       }
-      case "radial-size": {
+      case "radial-e":
+      case "radial-w":
+      case "radial-n":
+      case "radial-s": {
         const c = findComp(d);
         if (c?.radial) {
-          const qx = (cur.x - c.radial.cx) * imageAspect;
-          const qy = cur.y - c.radial.cy;
-          const ca = Math.cos(-c.radial.angle);
-          const sa = Math.sin(-c.radial.angle);
-          const lx = ca * qx - sa * qy;
-          const ly = sa * qx + ca * qy;
-          let rx = Math.max(0.002, Math.abs(lx) / imageAspect);
-          let ry = Math.max(0.002, Math.abs(ly));
-          if (shift) {
-            const r = Math.max(rx * imageAspect, ry);
-            rx = r / imageAspect;
-            ry = r;
+          const rr = c.radial;
+          const qx = (cur.x - rr.cx) * imageAspect;
+          const qy = cur.y - rr.cy;
+          const ca = Math.cos(-rr.angle);
+          const sa = Math.sin(-rr.angle);
+          const lx = ca * qx - sa * qy; // local x (aspect-scaled), along rx axis
+          const ly = sa * qx + ca * qy; // local y, along ry axis
+          const ra = rr.angle;
+          const horiz = d.kind === "radial-e" || d.kind === "radial-w";
+          // The dragged edge's new local position along its axis, plus the
+          // current radius (in the same local q-space) for that axis.
+          const local = horiz ? lx : ly;
+          const oldR = horiz ? rr.rx * imageAspect : rr.ry;
+          const sign = d.kind === "radial-e" || d.kind === "radial-s" ? 1 : -1;
+          let newR: number;
+          let cx = rr.cx;
+          let cy = rr.cy;
+          if (e.altKey) {
+            // Resize symmetrically about the centre.
+            newR = Math.abs(local);
+          } else {
+            // Anchor the opposite edge; the centre slides along the axis.
+            const anchor = -sign * oldR;
+            newR = Math.abs(local - anchor) / 2;
+            const cLocal = (local + anchor) / 2;
+            // Rotate the local offset (along this axis) back into source-UV.
+            const oqx = horiz ? Math.cos(ra) * cLocal : -Math.sin(ra) * cLocal;
+            const oqy = horiz ? Math.sin(ra) * cLocal : Math.cos(ra) * cLocal;
+            cx = rr.cx + oqx / imageAspect;
+            cy = rr.cy + oqy;
           }
-          st.updateComponent(d.maskId!, d.compId!, { radial: { ...c.radial, rx, ry } });
+          let rx = rr.rx;
+          let ry = rr.ry;
+          if (horiz) rx = Math.max(0.002, newR / imageAspect);
+          else ry = Math.max(0.002, newR);
+          if (shift) {
+            // Preserve aspect ratio: scale the other axis by the same factor.
+            if (horiz && rr.rx > 1e-4) ry = Math.max(0.002, rr.ry * (rx / rr.rx));
+            else if (!horiz && rr.ry > 1e-4) rx = Math.max(0.002, rr.rx * (ry / rr.ry));
+          }
+          st.updateComponent(d.maskId!, d.compId!, { radial: { ...rr, rx, ry, cx, cy } });
         }
         break;
       }
@@ -683,11 +744,14 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
     dragRef.current = null;
     if (!d) return;
     const st = store();
-    // Drop a barely-dragged radial/linear (a stray click).
+    // A bare click (no real drag) on empty canvas: drop the stray zero-size
+    // component and deselect, so clicking away dismisses the mask + overlay.
     if (d.kind === "create-radial") {
       const c = findComp(d);
       if (c?.radial && (c.radial.rx < 0.01 || c.radial.ry < 0.01)) {
         st.removeComponent(d.maskId!, d.compId!);
+        st.selectMask(null);
+        st.selectComponent(null);
         return;
       }
     }
@@ -695,6 +759,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       const c = findComp(d);
       if (c?.linear && Math.hypot(c.linear.x1 - c.linear.x0, c.linear.y1 - c.linear.y0) < 0.01) {
         st.removeComponent(d.maskId!, d.compId!);
+        st.selectMask(null);
+        st.selectComponent(null);
         return;
       }
     }
@@ -714,9 +780,19 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
   // --- rendering -------------------------------------------------------------
   const showBrushCursor = activeTool === "mask" && maskToolType === "brush" && cursor;
   const showSpotCursor = activeTool === "retouch" && cursor && !dragRef.current;
-  const brushPx = radiusToScreen(useDevelopStore.getState().brushSize);
-  const spotPx = radiusToScreen(useDevelopStore.getState().retouchSize);
+  // Reactive so the cursor ring resizes the instant [ / ] change the size.
+  const brushPx = radiusToScreen(brushSize);
+  const spotPx = radiusToScreen(retouchSize);
   const subErase = (cursor?.alt || brushErase) || store().maskCompMode === "subtract";
+  // Centre reference circle shown while a Size/Feather slider is dragged — for
+  // the mask brush or the heal brush (shared behaviour).
+  const showBrushRef =
+    brushPreview &&
+    ((activeTool === "mask" && maskToolType === "brush") || activeTool === "retouch");
+  const refRadiusPx = activeTool === "retouch" ? spotPx : brushPx;
+  const refFeather = activeTool === "retouch" ? retouchFeather / 100 : brushFeather;
+  const refCx = rect.x + rect.w / 2;
+  const refCy = rect.y + rect.h / 2;
 
   return (
     <div
@@ -728,8 +804,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       onPointerLeave={() => setCursor(null)}
     >
       <svg className="pointer-events-none absolute inset-0 h-full w-full">
-        {/* Mask components */}
-        {masks.flatMap((m) =>
+        {/* Mask components — only while the masking tool is active. */}
+        {activeTool === "mask" && masks.flatMap((m) =>
           m.components.map((c) => {
             const selComp = c.id === selectedComponentId && m.id === selectedMaskId;
             const sub = c.mode === "subtract";
@@ -738,9 +814,11 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
             const key = m.id + ":" + c.id;
             if (c.kind === "radial" && c.radial) {
               const ctr = radialHandle(c.radial, "center");
-              const edge = radialHandle(c.radial, "size");
               const rot = radialHandle(c.radial, "rotate");
               const big = (h: HandleId) => (hovered === h && selComp ? 6 : 5);
+              const sizeHandles = [
+                ["radial-e", "e"], ["radial-w", "w"], ["radial-n", "n"], ["radial-s", "s"],
+              ] as const;
               return (
                 <g key={key}>
                   <path
@@ -752,7 +830,10 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
                   />
                   {selComp && <line x1={ctr.x} y1={ctr.y} x2={rot.x} y2={rot.y} stroke={grip} strokeWidth={1} opacity={0.6} />}
                   {selComp && <circle cx={ctr.x} cy={ctr.y} r={big("radial-move")} fill={grip} />}
-                  {selComp && <circle cx={edge.x} cy={edge.y} r={big("radial-size")} fill="#fff" stroke={grip} strokeWidth={1.5} />}
+                  {selComp && sizeHandles.map(([id, w]) => {
+                    const h = radialHandle(c.radial!, w);
+                    return <circle key={id} cx={h.x} cy={h.y} r={big(id)} fill="#fff" stroke={grip} strokeWidth={1.5} />;
+                  })}
                   {selComp && <circle cx={rot.x} cy={rot.y} r={big("radial-rotate") + 1} fill={grip} stroke="#fff" strokeWidth={1.5} />}
                 </g>
               );
@@ -779,8 +860,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
           }),
         )}
 
-        {/* Retouch */}
-        {spots.map((s) => {
+        {/* Retouch — only while the retouch tool is active. */}
+        {activeTool === "retouch" && spots.map((s) => {
           const src = toScreen(s.srcX, s.srcY);
           const dst = toScreen(s.dstX, s.dstY);
           const r = radiusToScreen(s.radius);
@@ -829,12 +910,19 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
             <circle
               cx={cursor!.x}
               cy={cursor!.y}
-              r={Math.max(1, brushPx * (1 - store().brushFeather))}
+              r={Math.max(1, brushPx * (1 - brushFeather))}
               fill="none"
               stroke={subErase ? "#ff6b6b" : "#fff"}
               strokeWidth={0.6}
               opacity={0.4}
             />
+          </g>
+        )}
+        {/* Centre reference while dragging the Size / Feather sliders. */}
+        {showBrushRef && (
+          <g opacity={0.8}>
+            <circle cx={refCx} cy={refCy} r={Math.max(3, refRadiusPx)} fill="none" stroke="#fff" strokeWidth={1.2} />
+            <circle cx={refCx} cy={refCy} r={Math.max(1, refRadiusPx * (1 - refFeather))} fill="none" stroke="#fff" strokeWidth={0.6} opacity={0.5} />
           </g>
         )}
         {showSpotCursor && (

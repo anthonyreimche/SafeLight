@@ -31,6 +31,12 @@ uniform mat3 uOutMatrix;
 
 uniform vec4 uCrop;         // x, y, width, height (transformed image space, y-down)
 uniform mat3 uInvTransform; // transformed-image coord -> source UV (projective)
+// Viewport window into the displayed (cropped) image: x, y, width, height in
+// [0,1]. Default (0,0,1,1) renders the whole frame; a zoomed Develop view sets a
+// sub-rect so the output canvas (sized to the screen) samples that region of the
+// resident full-res source at 1:1 — crisp detail instead of CSS-upscaling a small
+// buffer. Everything downstream derives from srcUv, so the window applies once.
+uniform vec4 uViewport;
 uniform bool uLinear;       // true: source texture is linear float (RAW); skip sRGB decode
 uniform bool uIsFallbackPreview; // true: source is pseudo-linear from 8-bit JPEG preview
 uniform bool uApplyBaseCurve; // true: full-res RAW float decode -- add the default camera
@@ -115,30 +121,35 @@ uniform float uLensAutoCropScale;
 uniform float uImageAspect;
 
 
-// Local adjustment masks. Each mask is a GROUP of components combined
-// (add = union, subtract = intersect-with-complement). Per-mask data is keyed by
-// mask index; component geometry lives in a flat per-component list.
-#define MAX_MASKS 8
-#define MAX_COMPONENTS 16
+// Local adjustment masks. Each mask is a GROUP of components combined (add =
+// union, subtract = carve, intersect = confine). Per-mask data is keyed by mask
+// index; component geometry lives in a flat per-component list. Capacities are
+// fixed by the fragment uniform budget.
+#define MAX_MASKS 16
+#define MAX_COMPONENTS 24
 uniform int uMaskCount;
 uniform sampler2D uMaskTex;        // RGBA brush coverage atlas
 uniform int uMaskInvert[MAX_MASKS];    // invert the whole combined coverage
-uniform float uMaskOpacity[MAX_MASKS]; // 0..1
+uniform float uMaskOpacity[MAX_MASKS]; // 0..1 (0 = hidden / muted)
 // Flat component list.
 uniform int uCompCount;
 uniform int uCompMaskIdx[MAX_COMPONENTS]; // parent mask index
-uniform int uCompMode[MAX_COMPONENTS];    // 0 add (max), 1 subtract (*(1-c))
-uniform int uCompType[MAX_COMPONENTS];    // 0 linear,1 radial,2 brush
+uniform int uCompMode[MAX_COMPONENTS];    // 0 add (max), 1 subtract (*(1-c)), 2 intersect (*c)
+uniform int uCompType[MAX_COMPONENTS];    // 0 linear,1 radial,2 brush,3 lumRange,4 colorRange
 uniform int uCompInvert[MAX_COMPONENTS];
 uniform int uCompBrushCh[MAX_COMPONENTS]; // channel 0..3 in uMaskTex
-uniform vec4 uCompGeoA[MAX_COMPONENTS];   // lin:x0,y0,x1,y1 | rad:cx,cy,rx,ry
-uniform vec4 uCompGeoB[MAX_COMPONENTS];   // rad:feather,angle,_,_
+uniform vec4 uCompGeoA[MAX_COMPONENTS];   // lin:x0,y0,x1,y1 | rad:cx,cy,rx,ry | lum:lo,hi,loF,hiF | col:r,g,b,hueRange
+uniform vec4 uCompGeoB[MAX_COMPONENTS];   // rad:feather,angle,_,_ | col:satRange,smoothness,_,_
+// Coverage visualization: when uVizMask >= 0, tint the output by that mask's
+// combined coverage (pre-opacity) in uVizColor — the hover-to-see-coverage UX.
+uniform int uVizMask;
+uniform vec3 uVizColor;
+uniform float uVizStrength; // overlay opacity (animated fade in/out)
 uniform vec4 uMaskAdj0[MAX_MASKS]; // exposure, contrast, highlights, shadows
 uniform vec4 uMaskAdj1[MAX_MASKS]; // saturation, temperature, tint, clarity
 uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, _, _, _
-// Optional per-mask sub-panels: 8-band HSL (packed 6 vec4s per mask:
-// hue0-3, hue4-7, sat0-3, sat4-7, lum0-3, lum4-7) and an RGB tone-curve LUT
-// atlas (256 x MAX_MASKS; row mi at v=(mi+0.5)/MAX_MASKS).
+// Optional per-mask sub-panels: 8-band HSL (packed 6 vec4s per mask) and an RGB
+// tone-curve LUT atlas (256 x MAX_MASKS; row mi at v=(mi+0.5)/MAX_MASKS).
 uniform int uMaskHasHsl[MAX_MASKS];
 uniform vec4 uMaskHsl[MAX_MASKS * 6];
 uniform int uMaskHasCurve[MAX_MASKS];
@@ -889,23 +900,27 @@ vec3 applyRetouch(vec2 uv, vec3 base) {
 }
 
 // ---- Local adjustment masks ------------------------------------------------
-// Coverage of one component (0..1), before add/subtract combine.
-float compCoverage(int i, vec2 uv) {
+// Coverage of one component (0..1), before add/subtract combine. px is the
+// current pixel's working (scene-linear) colour and pxL its luma — used by the
+// parametric range masks (luminance / colour).
+float compCoverage(int i, vec2 uv, vec3 px, float pxL) {
   int type = uCompType[i];
+  vec4 gA = uCompGeoA[i];
+  vec4 gB = uCompGeoB[i];
   float m = 0.0;
   if (type == 0) {
     // Linear gradient: ramp 0->1 projected onto the drag direction.
-    vec2 p0 = uCompGeoA[i].xy;
-    vec2 p1 = uCompGeoA[i].zw;
+    vec2 p0 = gA.xy;
+    vec2 p1 = gA.zw;
     vec2 dir = p1 - p0;
     float len2 = max(dot(dir, dir), 1e-6);
     m = clamp(dot(uv - p0, dir) / len2, 0.0, 1.0);
   } else if (type == 1) {
     // Radial: 1 inside, feathered to 0 at the edge, in screen-proportional space.
-    vec2 ctr = uCompGeoA[i].xy;
-    vec2 rad = max(uCompGeoA[i].zw, vec2(1e-4));
-    float feather = uCompGeoB[i].x;
-    float ang = uCompGeoB[i].y;
+    vec2 ctr = gA.xy;
+    vec2 rad = max(gA.zw, vec2(1e-4));
+    float feather = gB.x;
+    float ang = gB.y;
     vec2 q = vec2((uv.x - ctr.x) * uImageAspect, uv.y - ctr.y);
     float ca = cos(ang);
     float sa = sin(ang);
@@ -913,6 +928,36 @@ float compCoverage(int i, vec2 uv) {
     vec2 radS = vec2(rad.x * uImageAspect, rad.y);
     float d = length(qr / radS);
     m = 1.0 - smoothstep(1.0 - feather, 1.0, d);
+  } else if (type == 3) {
+    // Luminance range: 1 inside [lo,hi], soft ramps of width loF/hiF at the ends.
+    float lo = gA.x;
+    float hi = gA.y;
+    float loF = max(gA.z, 1e-4);
+    float hiF = max(gA.w, 1e-4);
+    float lower = smoothstep(lo - loF, lo, pxL);
+    float upper = 1.0 - smoothstep(hi, hi + hiF, pxL);
+    m = lower * upper;
+  } else if (type == 4) {
+    // Colour range: closeness to a target colour, measured in hue + chroma.
+    vec3 tgt = gA.xyz;
+    float hueRange = max(gA.w, 1e-3);
+    float satRange = max(gB.x, 1e-3);
+    float smth = gB.y;
+    // Compare in a tone-normalized chroma space so exposure differences along
+    // the same hue don't break the match. Direction of the colour vector ~ hue,
+    // its length relative to luma ~ saturation.
+    float tL = max(luma(tgt), 1e-4);
+    vec3 pd = px - vec3(pxL);
+    vec3 td = tgt - vec3(tL);
+    float pLen = length(pd);
+    float tLen = length(td);
+    float hueDist = 1.0 - (dot(pd, td) / max(pLen * tLen, 1e-4)); // 0 = same hue
+    float satDist = abs(pLen / max(pxL, 1e-3) - tLen / tL);       // chroma mismatch
+    float hueM = 1.0 - smoothstep(hueRange, hueRange + smth + 1e-3, hueDist);
+    float satM = 1.0 - smoothstep(satRange, satRange + smth + 1e-3, satDist);
+    // Near-neutral target/pixel have no meaningful hue — fall back to chroma only.
+    float chromaW = smoothstep(0.01, 0.05, tLen);
+    m = mix(satM, hueM * satM, chromaW);
   } else {
     // Brush: prebaked coverage from the atlas channel.
     vec4 cov = texture(uMaskTex, uv);
@@ -981,7 +1026,7 @@ vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, float sharp, float m, vec2 uv) {
 }
 
 // Per-mask 8-band HSL mixer — same weighting as the global applyHSL, but the
-// band values come from the packed uMaskHsl vec4s. Band weights are built into
+// band values come from the per-mask data texture. Band weights are built into
 // two vec4s so the accumulation is three dot() pairs instead of dynamic
 // component indexing.
 vec3 maskHsl(vec3 c, int mi) {
@@ -1029,7 +1074,10 @@ void main() {
     fragColor = vec4(raw, 1.0);
     return;
   }
-  vec2 srcUv = cropTransformUV(vUv);
+  // Apply the viewport window before the crop/transform map so the whole
+  // pipeline (crop, geometry, lens, masks, retouch) stays anchored to the source.
+  vec2 viewUv = uViewport.xy + vUv * uViewport.zw;
+  vec2 srcUv = cropTransformUV(viewUv);
   vec2 sensorUv = srcUv;
   // Lens distortion correction: remap srcUv before any sampling
   if (uLensDistModel > 0 || abs(uLensDistortion) > 0.001) {
@@ -1228,17 +1276,23 @@ void main() {
   // and opacity. Coverage is reused by stage 2 below.
   float mcovs[MAX_MASKS];
   for (int mi = 0; mi < MAX_MASKS; mi++) mcovs[mi] = 0.0;
+  float mLuma = luma(lin);
   for (int ci = 0; ci < MAX_COMPONENTS; ci++) {
     if (ci >= uCompCount) break;
     int p = uCompMaskIdx[ci];
-    float cc = compCoverage(ci, srcUv);
-    if (uCompMode[ci] == 0) mcovs[p] = max(mcovs[p], cc);
-    else mcovs[p] = mcovs[p] * (1.0 - cc);
+    float cc = compCoverage(ci, srcUv, lin, mLuma);
+    if (uCompMode[ci] == 0) mcovs[p] = max(mcovs[p], cc);       // add (union)
+    else if (uCompMode[ci] == 1) mcovs[p] = mcovs[p] * (1.0 - cc); // subtract (carve)
+    else mcovs[p] = mcovs[p] * cc;                              // intersect
   }
+  // Combined coverage of the visualized mask (post-invert, pre-opacity), so even
+  // a fresh or 0-opacity mask still previews on hover.
+  float vizCov = 0.0;
   for (int mi = 0; mi < MAX_MASKS; mi++) {
     if (mi >= uMaskCount) break;
     float mm = mcovs[mi];
     if (uMaskInvert[mi] == 1) mm = 1.0 - mm;
+    if (mi == uVizMask) vizCov = mm;
     mcovs[mi] = clamp(mm * uMaskOpacity[mi], 0.0, 1.0);
   }
   for (int mi = 0; mi < MAX_MASKS; mi++) {
@@ -1396,7 +1450,10 @@ void main() {
                : highlight ? vec4(1.0, 0.2, 0.2, 1.0)
                : vec4(display, 1.0);
   } else {
-    fragColor = vec4(encodeOutput(clamp(c, 0.0, 1.0)), 1.0);
+    vec3 outRgb = encodeOutput(clamp(c, 0.0, 1.0));
+    // Coverage overlay: tint covered pixels toward the mask's colour on hover.
+    if (uVizMask >= 0) outRgb = mix(outRgb, uVizColor, vizCov * uVizStrength);
+    fragColor = vec4(outRgb, 1.0);
   }
 }
 `;

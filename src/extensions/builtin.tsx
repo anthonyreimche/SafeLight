@@ -29,6 +29,10 @@ import { KeywordsPanel } from "@/modules/library/KeywordsPanel";
 import { ExportPanel } from "@/modules/export/ExportPanel";
 import { DevToolsPanel } from "./devtools/DevToolsPanel";
 import { installLogCapture, uninstallLogCapture } from "./devtools/log-capture";
+import {
+  initDevtoolsDetachSync,
+  teardownDevtoolsDetachSync,
+} from "./devtools/detach";
 
 export interface BuiltinExtension {
   id: string;
@@ -330,6 +334,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     disabledByDefault: true,
     activate(api) {
       installLogCapture();
+      initDevtoolsDetachSync(); // cross-window re-dock control
       api.registerPanel({
         id: "core.devtools",
         title: "Developer Tools",
@@ -345,6 +350,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     },
     deactivate() {
       uninstallLogCapture();
+      teardownDevtoolsDetachSync();
     },
   },
 ];

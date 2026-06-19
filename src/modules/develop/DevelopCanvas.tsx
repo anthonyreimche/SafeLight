@@ -57,7 +57,7 @@ export function DevelopCanvas({
   onZoomChange: (zoom: number | null) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { supported, loading, width, height } = useDevelopRenderer(
+  const { supported, loading, width, height, setViewport } = useDevelopRenderer(
     canvasRef,
     photo,
   );
@@ -230,6 +230,7 @@ export function DevelopCanvas({
       bufferHeight={height}
       zoom={zoom}
       onZoomChange={onZoomChange}
+      onViewport={setViewport}
       loading={loading}
       resetKey={photo.id}
       overlayZoomable={!cropping && activeTool !== "none"}
@@ -319,6 +320,7 @@ export function DevelopCanvas({
                     inv={invRaw}
                     forward={forwardRaw}
                     imageAspect={imageAspect}
+                    canvasRef={canvasRef}
                   />
                 )
               : undefined

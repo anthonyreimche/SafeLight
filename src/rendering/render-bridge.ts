@@ -6,6 +6,7 @@ import { resolveActivePipeline, usePipelineStore } from "@/extensions/pipelines"
 import { useRegistry } from "@/extensions/registry";
 import type { HistogramData } from "./histogram";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
+import { getSettings, useSettings } from "@/state/settings-store";
 
 export interface FrameResult {
   bitmap: ImageBitmap;
@@ -35,8 +36,13 @@ export class RenderBridge {
   private onUpright: UprightCallback | null = null;
   private onError: ErrorCallback | null = null;
   private disposed = false;
-  private thumbResolvers = new Map<string, (blob: Blob) => void>();
+  // Resolves with the rendered blob, or null when the worker reports a cache miss
+  // (the caller then decodes + uploads + retries).
+  private thumbResolvers = new Map<string, (blob: Blob | null) => void>();
   private uprightResolve: ((result: UprightResult) => void) | null = null;
+  private sourceBoundResolvers = new Map<number, (hit: boolean) => void>();
+  private hasSourceResolvers = new Map<number, (has: boolean) => void>();
+  private reqIdSeq = 0;
 
   constructor() {
     this.worker = new Worker(
@@ -77,6 +83,30 @@ export class RenderBridge {
           resolver(msg.blob);
         }
         this.onThumbnail?.({ requestId: msg.requestId, blob: msg.blob });
+        break;
+      }
+      case "thumbnailMiss": {
+        const resolver = this.thumbResolvers.get(msg.requestId);
+        if (resolver) {
+          this.thumbResolvers.delete(msg.requestId);
+          resolver(null);
+        }
+        break;
+      }
+      case "sourceBound": {
+        const resolver = this.sourceBoundResolvers.get(msg.reqId);
+        if (resolver) {
+          this.sourceBoundResolvers.delete(msg.reqId);
+          resolver(msg.hit);
+        }
+        break;
+      }
+      case "hasSource": {
+        const resolver = this.hasSourceResolvers.get(msg.reqId);
+        if (resolver) {
+          this.hasSourceResolvers.delete(msg.reqId);
+          resolver(msg.has);
+        }
         break;
       }
       case "upright":
@@ -145,6 +175,80 @@ export class RenderBridge {
   }
 
   // ------------------------------------------------------------------
+  // GPU source cache
+  // ------------------------------------------------------------------
+
+  /** Bind a resident source as the develop renderer's active image. Resolves
+   *  true on a cache hit, false if the caller must decode + uploadSource. */
+  bindSource(key: string): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const reqId = ++this.reqIdSeq;
+      this.sourceBoundResolvers.set(reqId, resolve);
+      this.post({ cmd: "bindSource", reqId, key });
+    });
+  }
+
+  uploadSource(
+    target: "main" | "thumb",
+    key: string,
+    image:
+      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+      | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+      | { kind: "bitmap"; bitmap: ImageBitmap },
+    maxEdge?: number,
+    isFallbackPreview?: boolean,
+    baseCurveForBitmap?: boolean,
+    // false = upload into the cache without changing the active source (prefetch).
+    bind = true,
+  ) {
+    const transfer: Transferable[] = [];
+    if (image.kind === "float") transfer.push(image.data.buffer);
+    else if (image.kind === "srgb16") transfer.push(image.data.buffer);
+    else transfer.push(image.bitmap);
+    this.post(
+      { cmd: "uploadSource", target, key, image, maxEdge, isFallbackPreview, baseCurveForBitmap, bind },
+      transfer,
+    );
+  }
+
+  /** Is a source already resident in the given renderer's cache? */
+  hasSource(target: "main" | "thumb", key: string): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const reqId = ++this.reqIdSeq;
+      this.hasSourceResolvers.set(reqId, resolve);
+      this.post({ cmd: "hasSource", reqId, target, key });
+    });
+  }
+
+  setCacheBudget(bytes: number) {
+    this.post({ cmd: "setCacheBudget", bytes });
+  }
+
+  setViewport(
+    roi: { x: number; y: number; w: number; h: number } | null,
+    outW?: number,
+    outH?: number,
+  ) {
+    this.post({ cmd: "setViewport", roi, outW, outH });
+  }
+
+  // Render a thumbnail from a resident source. Resolves null on a cache miss so
+  // the caller can decode + uploadSource("thumb", …) and retry.
+  renderThumbnailFromSource(opts: {
+    requestId: string;
+    key: string;
+    params: DevelopParams;
+    asShotTemperature: number;
+    maxEdge: number;
+    quality?: number;
+  }): Promise<Blob | null> {
+    return new Promise<Blob | null>((resolve) => {
+      this.thumbResolvers.set(opts.requestId, resolve);
+      this.post({ cmd: "renderThumbnailFromSource", ...opts });
+    });
+  }
+
+  // ------------------------------------------------------------------
   // Parameters
   // ------------------------------------------------------------------
 
@@ -201,8 +305,10 @@ export class RenderBridge {
     maxEdge: number;
     quality?: number;
   }): Promise<Blob> {
-    return new Promise<Blob>((resolve) => {
-      this.thumbResolvers.set(opts.requestId, resolve);
+    return new Promise<Blob>((resolve, reject) => {
+      this.thumbResolvers.set(opts.requestId, (blob) =>
+        blob ? resolve(blob) : reject(new Error("thumbnail render failed")),
+      );
       this.renderThumbnail(opts);
     });
   }
@@ -213,6 +319,12 @@ export class RenderBridge {
 
   setShowClipping(mode: number) {
     this.post({ cmd: "setShowClipping", mode });
+  }
+
+  // Coverage overlay: tint the given mask index (or -1 = off) in `color` at
+  // `strength` (animated fade).
+  setMaskViz(index: number, color: [number, number, number], strength: number) {
+    this.post({ cmd: "setMaskViz", index, color, strength });
   }
 
   computeHistogram(wantExtended?: boolean) {
@@ -275,6 +387,16 @@ export function getRenderBridge(): RenderBridge {
 
     syncStages();
     syncPipeline();
+
+    // Push the GPU source-cache budget now and whenever the preference changes.
+    singleton.setCacheBudget(getSettings().gpuSourceCacheBytes);
+    let prevBudget = getSettings().gpuSourceCacheBytes;
+    useSettings.subscribe((s) => {
+      if (s.gpuSourceCacheBytes !== prevBudget) {
+        prevBudget = s.gpuSourceCacheBytes;
+        singleton?.setCacheBudget(prevBudget);
+      }
+    });
 
     let prevStages = useRegistry.getState().processingStages;
     let prevPipelines = useRegistry.getState().pipelines;

@@ -6,7 +6,6 @@ import { Thumbnail } from "@/ui/components/Thumbnail";
 import { VirtualGrid } from "@/ui/components/VirtualGrid";
 import { LibraryListRow } from "./LibraryListRow";
 import { visiblePhotos } from "./visible-photos";
-import { useEditedThumbnails } from "./use-edited-thumbnails";
 
 export function LibraryGrid() {
   const photos = useCatalogStore((s) => s.photos);
@@ -30,8 +29,6 @@ export function LibraryGrid() {
     () => visiblePhotos(photos, filter, sortField, sortDirection, activeFolder),
     [photos, activeFolder, filter, sortField, sortDirection],
   );
-
-  useEditedThumbnails(visible);
 
   const activeIndex = useMemo(
     () => (activePhotoId ? visible.findIndex((p) => p.id === activePhotoId) : -1),

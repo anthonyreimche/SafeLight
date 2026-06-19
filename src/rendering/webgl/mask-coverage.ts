@@ -49,10 +49,18 @@ export function bakeCoverage(
   const list = items.slice(0, 4);
   if (list.length === 0) return null;
 
-  const canvas = document.createElement("canvas");
+  // The renderer runs in a Web Worker (no `document`), so fall back to an
+  // OffscreenCanvas there; the main thread can still use a DOM canvas.
+  const canvas: HTMLCanvasElement | OffscreenCanvas =
+    typeof document !== "undefined"
+      ? document.createElement("canvas")
+      : new OffscreenCanvas(BAKE_SIZE, BAKE_SIZE);
   canvas.width = BAKE_SIZE;
   canvas.height = BAKE_SIZE;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d") as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
   if (!ctx) return null;
 
   const out = new Uint8Array(BAKE_SIZE * BAKE_SIZE * 4);

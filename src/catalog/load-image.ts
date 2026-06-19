@@ -124,6 +124,14 @@ async function rawColorMatchesPreview(
   }
 }
 
+// Stable key for a photo's decoded source pixels, used by the GPU source cache.
+// Develop edits are parameters (not pixels), so only identity + baked rotation
+// change the decoded buffer. A rotation change re-decodes under a new key; the old
+// entry ages out via LRU.
+export function photoSourceKey(photo: CatalogPhoto): string {
+  return `${photo.id}:${photo.rotation ?? 0}`;
+}
+
 export interface LoadImageOptions {
   // Called with a fast, near-full-res intermediate (the camera's embedded JPEG)
   // as soon as it's available, BEFORE the slow libraw float decode finishes.

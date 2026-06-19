@@ -36,6 +36,16 @@ interface ViewportImageProps {
     onMove: (bufferX: number, bufferY: number) => void;
     onUp: () => void;
   } | null;
+  // When provided, zoomed views render only the visible window at screen
+  // resolution (crisp 1:1 from the resident full-res source) instead of CSS-
+  // upscaling the fit buffer. Called with the window in normalized image coords
+  // and the device-pixel output size; null returns to the whole-frame fit render.
+  // Fit mode (zoom == null) is unaffected.
+  onViewport?: (
+    roi: { x: number; y: number; w: number; h: number } | null,
+    outW: number,
+    outH: number,
+  ) => void;
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
@@ -57,6 +67,7 @@ export function ViewportImage({
   overlayZoomable,
   onPick,
   onPickDrag,
+  onViewport,
 }: ViewportImageProps) {
   // A crop overlay locks the view to fit; a mask/heal overlay (overlayZoomable)
   // keeps the zoom/pan machinery live underneath it.
@@ -89,20 +100,30 @@ export function ViewportImage({
     return () => ro.disconnect();
   }, []);
 
-  const hasImage =
-    bufferWidth > 0 && bufferHeight > 0 && frame.w > 0 && frame.h > 0;
-  const fitScale = hasImage
-    ? Math.min(frame.w / bufferWidth, frame.h / bufferHeight)
-    : 1;
+  // ROI zoom: render just the visible window from the resident full-res source.
+  const roiMode = !staticFit && zoom != null && !!onViewport;
+
+  // Logical full-image buffer dims. In fit mode the worker renders the whole
+  // image so this equals the live buffer; in ROI-zoom mode the live buffer holds
+  // only the window, so pan/zoom math reuses the dims captured during fit.
+  const fitBufferRef = useRef({ w: 0, h: 0 });
+  if (zoom == null && bufferWidth > 0 && bufferHeight > 0) {
+    fitBufferRef.current = { w: bufferWidth, h: bufferHeight };
+  }
+  const imgW = roiMode && fitBufferRef.current.w > 0 ? fitBufferRef.current.w : bufferWidth;
+  const imgH = roiMode && fitBufferRef.current.h > 0 ? fitBufferRef.current.h : bufferHeight;
+
+  const hasImage = imgW > 0 && imgH > 0 && frame.w > 0 && frame.h > 0;
+  const fitScale = hasImage ? Math.min(frame.w / imgW, frame.h / imgH) : 1;
 
   const centered = (s: number) => ({
-    x: (frame.w - bufferWidth * s) / 2,
-    y: (frame.h - bufferHeight * s) / 2,
+    x: (frame.w - imgW * s) / 2,
+    y: (frame.h - imgH * s) / 2,
   });
 
   const clampOffset = (o: { x: number; y: number }, s: number) => {
-    const iw = bufferWidth * s;
-    const ih = bufferHeight * s;
+    const iw = imgW * s;
+    const ih = imgH * s;
     const x =
       iw <= frame.w
         ? (frame.w - iw) / 2
@@ -120,6 +141,34 @@ export function ViewportImage({
 
   const stateRef = useRef({ effScale, effOffset });
   stateRef.current = { effScale, effOffset };
+
+  // Emit the visible window (normalized image coords) + device-pixel output size
+  // whenever the zoomed view moves, so the renderer can draw it crisply at 1:1.
+  // In fit mode (or without a handler) clear the ROI so the whole frame renders.
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  useEffect(() => {
+    if (!onViewport) return;
+    if (!roiMode || !hasImage) {
+      onViewport(null, 0, 0);
+      return;
+    }
+    const z = zoom as number;
+    // Visible region of the logical image, in image pixels, from the pan offset.
+    const x0 = -effOffset.x / z;
+    const y0 = -effOffset.y / z;
+    const roi = {
+      x: x0 / imgW,
+      y: y0 / imgH,
+      w: frame.w / z / imgW,
+      h: frame.h / z / imgH,
+    };
+    // Clamp to [0,1]; the image fully covers the frame at zoom ≥ fit.
+    roi.x = Math.max(0, Math.min(1, roi.x));
+    roi.y = Math.max(0, Math.min(1, roi.y));
+    roi.w = Math.max(0.001, Math.min(1 - roi.x, roi.w));
+    roi.h = Math.max(0.001, Math.min(1 - roi.y, roi.h));
+    onViewport(roi, Math.round(frame.w * dpr), Math.round(frame.h * dpr));
+  }, [roiMode, hasImage, zoom, effOffset.x, effOffset.y, frame.w, frame.h, imgW, imgH, dpr, onViewport]);
 
   // Recenter on external zoom changes (status-bar buttons). Cursor-anchored
   // zooms set the offset themselves and skip this via the ref.
@@ -327,16 +376,28 @@ export function ViewportImage({
           ? "zoom-in"
           : "zoom-out";
 
-  const canvasStyle: CSSProperties = {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    width: bufferWidth || 1,
-    height: bufferHeight || 1,
-    transformOrigin: "0 0",
-    transform: `translate(${effOffset.x}px, ${effOffset.y}px) scale(${effScale})`,
-    willChange: "transform",
-  };
+  // In ROI mode the worker has already rendered the visible window, so the canvas
+  // simply fills the frame 1:1 (no CSS scale). Otherwise the fit/zoom view scales
+  // and pans the full-image buffer with a CSS transform as before.
+  const canvasStyle: CSSProperties = roiMode
+    ? {
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: "100%",
+        height: "100%",
+        willChange: "transform",
+      }
+    : {
+        position: "absolute",
+        left: 0,
+        top: 0,
+        width: bufferWidth || 1,
+        height: bufferHeight || 1,
+        transformOrigin: "0 0",
+        transform: `translate(${effOffset.x}px, ${effOffset.y}px) scale(${effScale})`,
+        willChange: "transform",
+      };
 
   return (
     <div
@@ -359,12 +420,17 @@ export function ViewportImage({
           }}
         >
           {overlay({
+            // Where the FULL image sits at the current pan/zoom, in frame
+            // coords. In fit/CSS-zoom mode imgW===bufferWidth so this is the
+            // displayed image rect; in ROI-zoom mode the live buffer holds only
+            // the window, so we must use the full-image dims (imgW/imgH) — else
+            // overlay coords (masks, heal) drift with zoom.
             x: effOffset.x,
             y: effOffset.y,
-            w: bufferWidth * effScale,
-            h: bufferHeight * effScale,
+            w: imgW * effScale,
+            h: imgH * effScale,
           })}
-          {/* overlay rect = displayed image region in frame coords */}
+          {/* overlay rect = full image region in frame coords */}
         </div>
       )}
 

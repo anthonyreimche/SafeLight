@@ -6,6 +6,8 @@ import { useProjectStore } from "@/project/project-store";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useWindowSync } from "@/hooks/use-window-sync";
 import { detachedModule, MODULE_LABELS } from "@/state/detach";
+import { isDevtoolsWindow } from "@/extensions/devtools/detach";
+import { DevToolsWindow } from "@/extensions/devtools/DevToolsPanel";
 import { AppShell } from "@/ui/components/AppShell";
 import { PreferencesDialog } from "@/ui/components/PreferencesDialog";
 import { ExtensionsDialog } from "@/ui/components/ExtensionsDialog";
@@ -33,14 +35,20 @@ export function App() {
   useKeyboardShortcuts();
   useWindowSync();
 
-  // A detached window is dedicated to a single module.
+  // A detached window is dedicated to a single module, or to the Developer
+  // Tools panel.
   const dm = detachedModule();
+  const devtoolsWindow = isDevtoolsWindow();
 
   // Detached windows reopen the shared project automatically so they have data;
   // the main window instead lands on the welcome grid and opens on a click.
   useEffect(() => {
     if (dm) loadCatalog();
   }, [dm, loadCatalog]);
+
+  // The Developer Tools window renders only the panel — no module, no project.
+  if (devtoolsWindow) return <DevToolsWindow />;
+
   if (dm)
     return (
       <>

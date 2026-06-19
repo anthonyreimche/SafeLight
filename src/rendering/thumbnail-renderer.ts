@@ -3,8 +3,6 @@ import type { DecodedImage } from "@/catalog/load-image";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { computeHistogram, type HistogramData } from "@/rendering/histogram";
 import { WebGLRenderer } from "./webgl/renderer";
-import { getRenderBridge } from "./render-bridge";
-import { getSettings } from "@/state/settings-store";
 
 // The histogram renderer still runs on the main thread — it's lightweight
 // (256px) and uses thumbnail bitmaps that are already in memory.
@@ -29,41 +27,6 @@ function getHistCtx(): Ctx | null {
 }
 
 const MAX_HIST_EDGE = 256;
-
-let thumbCounter = 0;
-
-export async function renderEditedThumbnail(
-  photo: CatalogPhoto,
-  params: DevelopParams,
-  maxEdge: number = getSettings().thumbMaxEdge,
-): Promise<Blob | null> {
-  const image = await loadPhotoImage(photo);
-  if (!image) return null;
-
-  const bridge = getRenderBridge();
-  await bridge.ready;
-
-  const requestId = `thumb_${++thumbCounter}`;
-  const asShotTemperature = photo.exif.colorTemperature ?? 6500;
-
-  try {
-    const bridgeImage =
-      image.kind === "bitmap"
-        ? ({ kind: "bitmap" as const, bitmap: image.bitmap })
-        : image;
-
-    return await bridge.renderThumbnailAsync({
-      requestId,
-      image: bridgeImage,
-      params,
-      asShotTemperature,
-      maxEdge,
-      quality: 0.9,
-    });
-  } catch {
-    return null;
-  }
-}
 
 // Compute the histogram of a photo rendered through the develop pipeline with the
 // given params, so the Library histogram reflects the saved edits.

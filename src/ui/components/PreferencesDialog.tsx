@@ -424,6 +424,27 @@ function PerformanceSection() {
           }
         />
       </Field>
+      <Field
+        label="GPU source cache"
+        hint="GPU memory budget for resident decoded RAW sources. Larger keeps more photos ready for instant re-open and crisp zoom; least-recently-used sources are evicted past the budget."
+      >
+        <OptionRow
+          value={s.gpuSourceCacheBytes}
+          options={[
+            { value: 256 * 1024 * 1024, label: "256 MB" },
+            { value: 512 * 1024 * 1024, label: "512 MB" },
+            { value: 1024 * 1024 * 1024, label: "1 GB" },
+            { value: 2048 * 1024 * 1024, label: "2 GB" },
+          ]}
+          onChange={(v) => updateSettings({ gpuSourceCacheBytes: v })}
+        />
+      </Field>
+      <ToggleField
+        label="Prefetch neighbours"
+        hint="While editing a photo, background-decode the previous/next photo so stepping to it is instant. Off saves CPU/VRAM at the cost of a short decode on each step."
+        checked={s.developPrefetchNeighbors}
+        onChange={(v) => updateSettings({ developPrefetchNeighbors: v })}
+      />
       <ToggleField
         label="High bit-depth previews"
         hint="16-bit GPU textures for cached previews (smoother gradients). Turn off to halve texture memory. Applies when Develop is reopened."

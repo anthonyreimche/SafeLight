@@ -3,6 +3,11 @@
 // Issues tabs can replay them. Installed only while the extension is active and
 // fully removed on deactivate — disabling the extension restores the pristine
 // console (the orchestrator rule: a disabled extension does no work).
+//
+// Entries are mirrored across windows over a BroadcastChannel, so the panel
+// detached into its own OS window (see detach.ts) shows the main window's
+// console too. Each window tags its entries with a per-window prefix so ids
+// stay unique in the merged buffer.
 
 import { create } from "zustand";
 
@@ -17,7 +22,8 @@ export type LogLevel =
   | "result"; // the value a REPL command returned
 
 export interface LogEntry {
-  id: number;
+  /** Globally unique across windows: `${windowTag}-${counter}`. */
+  id: string;
   level: LogLevel;
   /** Formatted argument strings, joined with spaces for display. */
   parts: string[];
@@ -32,21 +38,52 @@ export const useDevLog = create<{ entries: LogEntry[] }>(() => ({
   entries: [],
 }));
 
+// ─── Cross-window mirroring ─────────────────────────────────────────────────
+
+const LOG_CHANNEL = "safelight-devtools-log";
+const WIN_TAG = Math.random().toString(36).slice(2, 8);
 let nextId = 1;
 
-/** Append an entry, trimming the ring buffer to MAX_ENTRIES. */
+type Wire =
+  | { kind: "entry"; entry: LogEntry }
+  | { kind: "sync-request" }
+  | { kind: "sync-response"; entries: LogEntry[] };
+
+let logChannel: BroadcastChannel | null = null;
+
+/** Add entries to the store, de-duped by id and kept in time order. */
+function ingest(input: LogEntry | LogEntry[]): void {
+  const incoming = (Array.isArray(input) ? input : [input]).filter(Boolean);
+  if (!incoming.length) return;
+  useDevLog.setState((s) => {
+    const have = new Set(s.entries.map((e) => e.id));
+    const fresh = incoming.filter((e) => !have.has(e.id));
+    if (!fresh.length) return s;
+    const merged = [...s.entries, ...fresh].sort((a, b) => a.time - b.time);
+    return {
+      entries:
+        merged.length > MAX_ENTRIES
+          ? merged.slice(merged.length - MAX_ENTRIES)
+          : merged,
+    };
+  });
+}
+
+/** Append a locally-captured entry and mirror it to other windows. */
 export function pushEntry(
   level: LogLevel,
   parts: string[],
   stack?: string,
 ): void {
-  const entry: LogEntry = { id: nextId++, level, parts, stack, time: Date.now() };
-  useDevLog.setState((s) => {
-    const entries = s.entries.length >= MAX_ENTRIES
-      ? [...s.entries.slice(s.entries.length - MAX_ENTRIES + 1), entry]
-      : [...s.entries, entry];
-    return { entries };
-  });
+  const entry: LogEntry = {
+    id: `${WIN_TAG}-${nextId++}`,
+    level,
+    parts,
+    stack,
+    time: Date.now(),
+  };
+  ingest(entry);
+  logChannel?.postMessage({ kind: "entry", entry } satisfies Wire);
 }
 
 export function clearLog(): void {
@@ -122,6 +159,28 @@ export function installLogCapture(): void {
   if (installed) return;
   installed = true;
 
+  // Mirror entries across windows and pull history from any peer already
+  // capturing (so a freshly-detached window isn't blank).
+  try {
+    logChannel = new BroadcastChannel(LOG_CHANNEL);
+    logChannel.onmessage = (e: MessageEvent<Wire>) => {
+      const m = e.data;
+      if (m.kind === "entry") ingest(m.entry);
+      else if (m.kind === "sync-response") ingest(m.entries);
+      else if (m.kind === "sync-request") {
+        const cur = useDevLog.getState().entries;
+        if (cur.length)
+          logChannel?.postMessage({
+            kind: "sync-response",
+            entries: cur.slice(-500),
+          } satisfies Wire);
+      }
+    };
+    logChannel.postMessage({ kind: "sync-request" } satisfies Wire);
+  } catch {
+    logChannel = null;
+  }
+
   for (const method of PATCHED) {
     const original = console[method].bind(console) as (...a: unknown[]) => void;
     originals.set(method, original);
@@ -168,4 +227,6 @@ export function uninstallLogCapture(): void {
   if (onRejection) window.removeEventListener("unhandledrejection", onRejection);
   onError = null;
   onRejection = null;
+  logChannel?.close();
+  logChannel = null;
 }

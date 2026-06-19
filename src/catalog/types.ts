@@ -196,6 +196,9 @@ export interface MaskAdjustments {
   sharpness: number;
 }
 
+// Geometric mask tools the user can pick from the toolbar. Parametric range
+// masks (lumRange/colorRange) are component KINDS but not standalone "tools" in
+// the same sense — they're added from the component menu and have no canvas drag.
 export type MaskType = "linear" | "radial" | "brush";
 
 // Adjustment sub-panels a mask can carry. Each mask opts into the panels it
@@ -240,11 +243,35 @@ export interface BrushMaskGeo {
   feather: number; // 0..1 edge softness of each dab
 }
 
+// Luminance-range mask: selects pixels whose luma falls in [lo, hi], with a
+// soft falloff of width loFeather/hiFeather at each end. All in 0..1 over the
+// (developed, scene-linear) pixel luminance. Global by default — meant to be
+// INTERSECTED with a geometric component to confine it to a region.
+export interface LumRangeGeo {
+  lo: number;
+  hi: number;
+  loFeather: number; // 0..1 ramp width below lo
+  hiFeather: number; // 0..1 ramp width above hi
+}
+
+// Color-range mask: selects pixels near a target colour. The target is stored
+// in scene-LINEAR RGB (the picker converts the sampled sRGB pixel to linear) so
+// it compares directly against the pipeline's working colour. hueRange/satRange
+// set the tolerance; smoothness softens the selection edge.
+export interface ColorRangeGeo {
+  r: number; // target colour, linear RGB
+  g: number;
+  b: number;
+  hueRange: number; // 0..1 hue tolerance
+  satRange: number; // 0..1 saturation/chroma tolerance
+  smoothness: number; // 0..1 edge softness
+}
+
 // A mask is built from one or more components (Lightroom-style). Each component
-// contributes coverage that is either ADDED (union, max) or SUBTRACTED
-// (intersect-with-complement) into the mask's combined coverage, in list order.
-export type MaskComponentKind = MaskType;
-export type MaskComponentMode = "add" | "subtract";
+// contributes coverage that is ADDED (union, max), SUBTRACTED (carve, ×(1−c)),
+// or INTERSECTED (×c) into the mask's combined coverage, in list order.
+export type MaskComponentKind = MaskType | "lumRange" | "colorRange";
+export type MaskComponentMode = "add" | "subtract" | "intersect";
 
 export interface MaskComponent {
   id: string;
@@ -254,11 +281,14 @@ export interface MaskComponent {
   linear?: LinearMaskGeo;
   radial?: RadialMaskGeo;
   brush?: BrushMaskGeo;
+  lumRange?: LumRangeGeo;
+  colorRange?: ColorRangeGeo;
 }
 
 export interface Mask {
   id: string;
   name: string;
+  visible: boolean; // when false the mask is muted (no effect), but still listed
   invert: boolean; // invert the whole combined coverage
   opacity: number; // 0..100 overall strength
   adj: MaskAdjustments;
@@ -340,11 +370,11 @@ export interface DevelopParams {
   retouch: RetouchSpot[];
 }
 
-export const MAX_MASKS = 8;
+export const MAX_MASKS = 16;
 export const MAX_RETOUCH = 32;
 export const MAX_BRUSH_MASKS = 4; // brush coverage packs into one RGBA texture
 export const MAX_RETOUCH_BRUSH = 4; // brush-shaped retouch packs into one RGBA texture
-export const MAX_MASK_COMPONENTS = 16; // total components across all masks (shader cap)
+export const MAX_MASK_COMPONENTS = 24; // total components across all masks (shader cap)
 
 export function defaultMaskAdjustments(): MaskAdjustments {
   return {
@@ -358,6 +388,38 @@ export function defaultMaskAdjustments(): MaskAdjustments {
     clarity: 0,
     sharpness: 0,
   };
+}
+
+export function defaultLumRange(): LumRangeGeo {
+  return { lo: 0.0, hi: 1.0, loFeather: 0.1, hiFeather: 0.1 };
+}
+
+export function defaultColorRange(): ColorRangeGeo {
+  // Neutral mid-grey target until the user picks a colour.
+  return { r: 0.18, g: 0.18, b: 0.18, hueRange: 0.15, satRange: 0.3, smoothness: 0.25 };
+}
+
+// Per-mask overlay/swatch colour, keyed by list index. Distinct, saturated hues
+// so the list swatch and the on-image coverage overlay stay legible together.
+const MASK_COLORS: readonly [number, number, number][] = [
+  [0.30, 0.69, 1.00], // blue
+  [1.00, 0.42, 0.42], // red
+  [0.45, 0.85, 0.45], // green
+  [1.00, 0.78, 0.30], // amber
+  [0.78, 0.55, 1.00], // purple
+  [0.30, 0.85, 0.80], // teal
+  [1.00, 0.55, 0.80], // pink
+  [0.80, 0.80, 0.45], // olive
+];
+
+export function maskColor(index: number): [number, number, number] {
+  return [...MASK_COLORS[((index % MASK_COLORS.length) + MASK_COLORS.length) % MASK_COLORS.length]];
+}
+
+// CSS rgb() string for the same palette (panel swatches).
+export function maskColorCss(index: number): string {
+  const [r, g, b] = maskColor(index);
+  return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
 }
 
 export const DEFAULT_TRANSFORM: TransformParams = {
@@ -721,9 +783,6 @@ function normalizeMaskPanels(p: unknown): MaskPanelId[] {
   return [...seen];
 }
 
-let normCompSeq = 0;
-const normCompId = () => `comp-${Date.now().toString(36)}-${normCompSeq++}`;
-
 function normLinear(g: Partial<LinearMaskGeo> | undefined): LinearMaskGeo {
   return {
     x0: clampN(g?.x0, -2, 2, 0.5),
@@ -758,12 +817,36 @@ function normBrush(g: Partial<BrushMaskGeo> | undefined): BrushMaskGeo {
   };
 }
 
+function normLumRange(g: Partial<LumRangeGeo> | undefined): LumRangeGeo {
+  return {
+    lo: clampN(g?.lo, 0, 1, 0),
+    hi: clampN(g?.hi, 0, 1, 1),
+    loFeather: clampN(g?.loFeather, 0, 1, 0.1),
+    hiFeather: clampN(g?.hiFeather, 0, 1, 0.1),
+  };
+}
+function normColorRange(g: Partial<ColorRangeGeo> | undefined): ColorRangeGeo {
+  return {
+    r: clampN(g?.r, 0, 16, 0.18),
+    g: clampN(g?.g, 0, 16, 0.18),
+    b: clampN(g?.b, 0, 16, 0.18),
+    hueRange: clampN(g?.hueRange, 0, 1, 0.15),
+    satRange: clampN(g?.satRange, 0, 1, 0.3),
+    smoothness: clampN(g?.smoothness, 0, 1, 0.25),
+  };
+}
+
 // Build a single component from a (possibly legacy) raw geometry object.
-function normComponent(raw: Partial<MaskComponent>): MaskComponent | null {
+function normComponent(raw: Partial<MaskComponent>, fallbackId: string): MaskComponent | null {
   const kind = raw.kind;
   const base = {
-    id: typeof raw.id === "string" ? raw.id : normCompId(),
-    mode: raw.mode === "subtract" ? ("subtract" as const) : ("add" as const),
+    id: typeof raw.id === "string" ? raw.id : fallbackId,
+    mode:
+      raw.mode === "subtract"
+        ? ("subtract" as const)
+        : raw.mode === "intersect"
+          ? ("intersect" as const)
+          : ("add" as const),
     invert: !!raw.invert,
   };
   if (kind === "linear" && raw.linear)
@@ -772,12 +855,16 @@ function normComponent(raw: Partial<MaskComponent>): MaskComponent | null {
     return { ...base, kind, radial: normRadial(raw.radial) };
   if (kind === "brush")
     return { ...base, kind, brush: normBrush(raw.brush) };
+  if (kind === "lumRange")
+    return { ...base, kind, lumRange: normLumRange(raw.lumRange) };
+  if (kind === "colorRange")
+    return { ...base, kind, colorRange: normColorRange(raw.colorRange) };
   return null;
 }
 
 // Migrate a legacy single-geometry mask (type + linear/radial/brush at the top
 // level) into a one-component mask.
-function legacyComponent(raw: Partial<Mask & { type?: string }>): MaskComponent | null {
+function legacyComponent(raw: Partial<Mask & { type?: string }>, fallbackId: string): MaskComponent | null {
   const t = (raw as { type?: string }).type;
   const r = raw as Partial<Mask> & {
     linear?: LinearMaskGeo;
@@ -785,11 +872,11 @@ function legacyComponent(raw: Partial<Mask & { type?: string }>): MaskComponent 
     brush?: BrushMaskGeo;
   };
   if (t === "linear" && r.linear)
-    return { id: normCompId(), kind: "linear", mode: "add", invert: false, linear: normLinear(r.linear) };
+    return { id: fallbackId, kind: "linear", mode: "add", invert: false, linear: normLinear(r.linear) };
   if (t === "radial" && r.radial)
-    return { id: normCompId(), kind: "radial", mode: "add", invert: false, radial: normRadial(r.radial) };
+    return { id: fallbackId, kind: "radial", mode: "add", invert: false, radial: normRadial(r.radial) };
   if (t === "brush")
-    return { id: normCompId(), kind: "brush", mode: "add", invert: false, brush: normBrush(r.brush) };
+    return { id: fallbackId, kind: "brush", mode: "add", invert: false, brush: normBrush(r.brush) };
   return null;
 }
 
@@ -799,20 +886,27 @@ function normalizeMasks(masks: unknown): Mask[] {
   for (const raw of masks as Partial<Mask & { type?: string }>[]) {
     if (!raw) continue;
 
+    // Deterministic position-based fallback ids so normalizing the same saved
+    // data twice yields identical output. A time-based id here makes the edit
+    // signature change on every call, which retriggers thumbnail rendering (and
+    // a full RAW decode) on every poll of the Library's edited-thumbnail sync.
+    const maskId = typeof raw.id === "string" ? raw.id : `mask-${out.length}`;
+
     let components: MaskComponent[] = [];
     if (Array.isArray(raw.components)) {
       components = raw.components
-        .map((c) => normComponent(c as Partial<MaskComponent>))
+        .map((c, i) => normComponent(c as Partial<MaskComponent>, `${maskId}-c${i}`))
         .filter((c): c is MaskComponent => !!c);
     } else {
-      const legacy = legacyComponent(raw);
+      const legacy = legacyComponent(raw, `${maskId}-c0`);
       if (legacy) components = [legacy];
     }
     if (components.length === 0) continue; // no usable geometry — drop
 
     const m: Mask = {
-      id: typeof raw.id === "string" ? raw.id : `mask-${out.length}-${Date.now()}`,
+      id: maskId,
       name: typeof raw.name === "string" ? raw.name : components[0].kind,
+      visible: raw.visible !== false, // default visible; only an explicit false mutes
       invert: !!raw.invert,
       opacity: clampN(raw.opacity, 0, 100, 100),
       adj: normalizeMaskAdjustments(raw.adj),
@@ -852,7 +946,7 @@ function normalizeRetouch(spots: unknown): RetouchSpot[] {
             }))
         : undefined;
     out.push({
-      id: typeof raw.id === "string" ? raw.id : `spot-${out.length}-${Date.now()}`,
+      id: typeof raw.id === "string" ? raw.id : `spot-${out.length}`,
       shape,
       mode: raw.mode === "clone" ? "clone" : "heal",
       visible: raw.visible !== false,

@@ -46,6 +46,12 @@ export interface AppSettings {
   // ── Render pipeline ────────────────────────────────────────────────────
   /** Resolution cap of the Develop render buffer (true 1:1 zoom vs. memory). */
   developMaxEdge: 4096 | 6144 | 8192;
+  /** GPU memory budget (bytes) for resident decoded RAW sources. Larger keeps
+   *  more photos ready for instant re-open and crisp zoom, at the cost of VRAM. */
+  gpuSourceCacheBytes: number;
+  /** Background-decode the previous/next photo while editing so navigating to it
+   *  is instant. Off saves CPU/VRAM at the cost of a decode on each step. */
+  developPrefetchNeighbors: boolean;
   /** 16-bit GPU textures for cached previews when the GPU supports them. */
   highBitDepth: boolean;
   /** Recompute the histogram on every render (off = after edits settle). */
@@ -92,6 +98,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   rawCacheEnabled: true,
   rawCacheMaxEdge: 3072,
   developMaxEdge: 4096,
+  gpuSourceCacheBytes: 512 * 1024 * 1024,
+  developPrefetchNeighbors: true,
   highBitDepth: true,
   liveHistogram: true,
   exportFormat: "image/jpeg",

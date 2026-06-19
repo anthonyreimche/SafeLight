@@ -48,6 +48,25 @@ import { getSettings } from "@/state/settings-store";
 // a larger value (or the image's own long edge) to render at full size.
 const MAX_EDGE = 2560;
 
+// Default GPU source-cache budget (bytes) before LRU eviction kicks in. Overridable
+// per renderer via setCacheBudget (driven by the gpuSourceCacheBytes preference).
+const DEFAULT_SOURCE_CACHE_BYTES = 512 * 1024 * 1024;
+
+// A decoded source kept resident on the GPU. `tex` is owned by the cache; its
+// derived render state is restored verbatim on bind so a re-open matches the
+// original decode exactly.
+interface SourceEntry {
+  tex: WebGLTexture;
+  width: number;
+  height: number;
+  linear: boolean;
+  applyBaseCurve: boolean;
+  isFallbackPreview: boolean;
+  fill: { data: Uint8ClampedArray; w: number; h: number } | null;
+  bytes: number;
+  lastUsed: number;
+}
+
 // Working resolution for the CPU heal-source search (and the disabled
 // content-aware fill). Big enough that thin structures (edges, lines) survive
 // the downscale so the source picker can match and continue them; the search
@@ -307,6 +326,10 @@ export class WebGLRenderer {
   private autoCropScale = 1;
   private asShotTemperature = 6500;
   private showClipping = 0;
+  // Coverage-visualization overlay: -1 = off, else the mask index to tint.
+  private vizMask = -1;
+  private vizColor: [number, number, number] = [0.9, 0.25, 0.25];
+  private vizStrength = 0.5;
   private hasImage = false;
   private imageWidth = 0;
   private imageHeight = 0;
@@ -332,6 +355,25 @@ export class WebGLRenderer {
   private quadBuf: WebGLBuffer | null = null;
   private injectedStages: ProcessingStageContribution[] | null = null;
   private injectedPipeline: ResolvedPipeline | null = null;
+
+  // ── GPU-resident source cache ──────────────────────────────────────────
+  // Decoded sources kept resident keyed by sourceKey (photo id + decode variant)
+  // so re-opening a photo or re-rendering its (edited) thumbnail reuses the
+  // uploaded texture instead of decoding + uploading again. Bounded by a byte
+  // budget with LRU eviction; the currently-bound source is pinned.
+  private sourceCache = new Map<string, SourceEntry>();
+  private currentSourceKey: string | null = null;
+  // True while this.imageTexture is owned by the renderer (legacy setImage path)
+  // rather than the cache. A cache-owned texture must not be deleted on the next
+  // load or on dispose — the cache owns its lifetime.
+  private imageTextureOwned = true;
+  private cacheBudgetBytes = DEFAULT_SOURCE_CACHE_BYTES;
+  private useTick = 0;
+  // Viewport window into the displayed image (null = whole frame). When set, the
+  // output canvas is sized to roiOut and only the window is rendered at that
+  // resolution (crisp zoom). See setViewport.
+  private roi: { x: number; y: number; w: number; h: number } | null = null;
+  private roiOut: { w: number; h: number } | null = null;
 
   constructor(canvas: RenderCanvas, opts?: WebGLRendererOpts) {
     const gl = canvas.getContext("webgl2", {
@@ -598,11 +640,15 @@ export class WebGLRenderer {
       "uOutMatrix",
       "uCrop",
       "uInvTransform",
+      "uViewport",
       "uLinear",
       "uIsFallbackPreview",
       "uApplyBaseCurve",
       "uRawHistogram",
       "uShowClipping",
+      "uVizMask",
+      "uVizColor",
+      "uVizStrength",
       "uExposure",
       "uContrast",
       "uHighlights",
@@ -699,13 +745,7 @@ export class WebGLRenderer {
     ];
     // Per-mask array uniforms (queried by indexed name).
     for (let i = 0; i < MAX_MASKS; i++) {
-      for (const base of [
-        "uMaskInvert",
-        "uMaskOpacity",
-        "uMaskAdj0",
-        "uMaskAdj1",
-        "uMaskAdj2",
-      ]) {
+      for (const base of ["uMaskInvert", "uMaskOpacity", "uMaskAdj0", "uMaskAdj1", "uMaskAdj2"]) {
         const name = `${base}[${i}]`;
         u[name] = gl.getUniformLocation(program, name);
       }
@@ -714,13 +754,7 @@ export class WebGLRenderer {
     u["uCompCount"] = gl.getUniformLocation(program, "uCompCount");
     for (let i = 0; i < MAX_MASK_COMPONENTS; i++) {
       for (const base of [
-        "uCompMaskIdx",
-        "uCompMode",
-        "uCompType",
-        "uCompInvert",
-        "uCompBrushCh",
-        "uCompGeoA",
-        "uCompGeoB",
+        "uCompMaskIdx", "uCompMode", "uCompType", "uCompInvert", "uCompBrushCh", "uCompGeoA", "uCompGeoB",
       ]) {
         const name = `${base}[${i}]`;
         u[name] = gl.getUniformLocation(program, name);
@@ -806,8 +840,13 @@ export class WebGLRenderer {
     // so the leftover higher levels (wrong format/size) make the texture
     // mipmap-incomplete -> generateMipmap throws 0x0502 and the LINEAR_MIPMAP_LINEAR
     // sampler returns black on re-open. Recreate so every load starts level-clean.
-    gl.deleteTexture(this.imageTexture);
+    // Only free the previous texture if the renderer owns it. A cache-owned
+    // texture (left bound after bindSource) belongs to the cache, which manages
+    // its lifetime via eviction; freeing it here would corrupt a cached entry.
+    if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
     this.imageTexture = this.createTexture();
+    this.imageTextureOwned = true;
+    this.currentSourceKey = null;
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     let mipsBuilt = false;
     let uploaded = false;
@@ -927,6 +966,154 @@ export class WebGLRenderer {
     this.resize();
   }
 
+  // ── GPU-resident source cache ──────────────────────────────────────────
+
+  /** Set the LRU byte budget; evicts immediately if already over. */
+  setCacheBudget(bytes: number) {
+    this.cacheBudgetBytes = Math.max(0, bytes);
+    this.evictToBudget();
+  }
+
+  /** Is a decoded source for this key already resident? */
+  hasSource(key: string): boolean {
+    return this.sourceCache.has(key);
+  }
+
+  // Decode-and-upload a source under `key`, then bind it as active. Reuses the
+  // full setImage upload path, then transfers ownership of the resulting texture
+  // (plus its derived render state) into the cache so a later bindSource(key) is
+  // a zero-decode swap.
+  uploadSource(
+    key: string,
+    image:
+      | ImageBitmap
+      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+      | { kind: "srgb16"; data: Uint16Array; width: number; height: number },
+    maxEdge: number = MAX_EDGE,
+    isFallbackPreview = false,
+    baseCurveForBitmap = false,
+    // When false, the source is uploaded into the cache but the previously-active
+    // source is re-bound afterwards — used to prefetch neighbours without
+    // disturbing the displayed image.
+    bind = true,
+  ) {
+    const prevKey = this.currentSourceKey;
+    // Drop any stale entry for this key (e.g. re-decode after an edit changed the
+    // pixels) so we don't leak its texture.
+    this.dropSource(key);
+    this.setImage(image, maxEdge, isFallbackPreview, baseCurveForBitmap);
+    // setImage built into this.imageTexture and marked it owned; hand it to the cache.
+    const entry: SourceEntry = {
+      tex: this.imageTexture,
+      width: this.imageWidth,
+      height: this.imageHeight,
+      linear: this.linear,
+      applyBaseCurve: this.applyBaseCurve,
+      isFallbackPreview: this.isFallbackPreview,
+      fill: this.fillSrc ? { data: this.fillSrc, w: this.fillW, h: this.fillH } : null,
+      bytes: this.estimateSourceBytes(this.imageWidth, this.imageHeight, this.linear),
+      lastUsed: ++this.useTick,
+    };
+    this.sourceCache.set(key, entry);
+    this.imageTextureOwned = false; // the cache owns this texture now
+    this.currentSourceKey = key;
+    // Prefetch: restore the source that was active before so the display is
+    // unchanged. No render() runs here, so nothing repaints in between.
+    if (!bind && prevKey && prevKey !== key && this.sourceCache.has(prevKey)) {
+      this.bindSource(prevKey);
+    }
+    this.evictToBudget();
+  }
+
+  // Bind a resident source as the active image without re-decoding. Returns false
+  // if the key isn't cached (caller should decode + uploadSource).
+  bindSource(key: string): boolean {
+    const e = this.sourceCache.get(key);
+    if (!e) return false;
+    const gl = this.gl;
+    // Release an orphan owned texture (a prior legacy setImage) before pointing
+    // at the cached one; never free another cache entry's texture.
+    if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
+    this.imageTexture = e.tex;
+    this.imageTextureOwned = false;
+    this.imageWidth = e.width;
+    this.imageHeight = e.height;
+    this.linear = e.linear;
+    this.applyBaseCurve = e.applyBaseCurve;
+    this.isFallbackPreview = e.isFallbackPreview;
+    // Restore the heal/content-aware-fill source for this image and force a
+    // recompute on the next setParams (the global heal singleton is shared).
+    if (e.fill) {
+      this.fillSrc = e.fill.data;
+      this.fillW = e.fill.w;
+      this.fillH = e.fill.h;
+      setHealSourceImage(e.fill.data, e.fill.w, e.fill.h);
+    } else {
+      this.fillSrc = null;
+    }
+    this.healSig = "";
+    this.haveHealFill = false;
+    e.lastUsed = ++this.useTick;
+    this.currentSourceKey = key;
+    this.hasImage = true;
+    this.resize();
+    return true;
+  }
+
+  private dropSource(key: string) {
+    const e = this.sourceCache.get(key);
+    if (!e) return;
+    // If the entry's texture is currently bound, detach it first so we don't free
+    // it out from under the active view; mark the slot owned so it's cleaned up
+    // normally on the next load.
+    if (this.currentSourceKey === key) {
+      this.imageTextureOwned = true; // adopt: it's about to stop being a cache tex
+      this.currentSourceKey = null;
+    } else {
+      this.gl.deleteTexture(e.tex);
+    }
+    this.sourceCache.delete(key);
+  }
+
+  private estimateSourceBytes(w: number, h: number, linear: boolean): number {
+    // RGBA16F (float RAW) / RGBA16 (norm16) = 8 bytes/px; 8-bit bitmap = 4.
+    // ×4/3 accounts for the mip chain.
+    const bpp = linear || this.haveNorm16 ? 8 : 4;
+    return Math.round(w * h * bpp * (4 / 3));
+  }
+
+  private evictToBudget() {
+    let total = 0;
+    for (const e of this.sourceCache.values()) total += e.bytes;
+    if (total <= this.cacheBudgetBytes) return;
+    // Evict least-recently-used first; never evict the pinned (bound) source.
+    const ordered = [...this.sourceCache.entries()].sort(
+      (a, b) => a[1].lastUsed - b[1].lastUsed,
+    );
+    for (const [key, e] of ordered) {
+      if (total <= this.cacheBudgetBytes) break;
+      if (key === this.currentSourceKey) continue;
+      this.gl.deleteTexture(e.tex);
+      this.sourceCache.delete(key);
+      total -= e.bytes;
+    }
+  }
+
+  // ── Viewport (zoom ROI) ────────────────────────────────────────────────
+
+  // Render only `roi` (a window into the displayed image, normalized [0,1]) into
+  // an output sized to outW×outH. Pass null to return to the whole-frame, crop-
+  // capped sizing. Used by a zoomed Develop/Loupe view to draw the visible region
+  // at screen resolution from the resident full-res source.
+  setViewport(
+    roi: { x: number; y: number; w: number; h: number } | null,
+    outW?: number,
+    outH?: number,
+  ) {
+    this.roi = roi;
+    this.roiOut = roi && outW && outH ? { w: Math.max(1, Math.round(outW)), h: Math.max(1, Math.round(outH)) } : null;
+  }
+
   // Size the output canvas to the cropped region (capped at maxEdge). Driven by
   // both setImage and setParams, since the crop lives in the develop params.
   private resize() {
@@ -934,6 +1121,19 @@ export class WebGLRenderer {
     const crop = this.params?.crop ?? DEFAULT_CROP;
     const cw = this.imageWidth * crop.width;
     const ch = this.imageHeight * crop.height;
+    // Zoom ROI: render the window at the requested screen size, but never allocate
+    // more output pixels than the source actually provides within the window
+    // (beyond that we'd just be upscaling — wasted memory and no extra detail).
+    if (this.roi && this.roiOut) {
+      const maxW = Math.max(1, Math.round(cw * this.roi.w));
+      const maxH = Math.max(1, Math.round(ch * this.roi.h));
+      const w = Math.min(this.roiOut.w, maxW);
+      const h = Math.min(this.roiOut.h, maxH);
+      if (this.canvas.width !== w) this.canvas.width = w;
+      if (this.canvas.height !== h) this.canvas.height = h;
+      this.gl.viewport(0, 0, w, h);
+      return;
+    }
     const longEdge = Math.max(cw, ch);
     const scale = longEdge > 0 ? Math.min(1, this.maxEdge / longEdge) : 1;
     const w = Math.max(1, Math.round(cw * scale));
@@ -992,6 +1192,13 @@ export class WebGLRenderer {
 
   setShowClipping(mode: number) {
     this.showClipping = mode & 3;
+  }
+
+  // Drive the coverage overlay. index < 0 disables it; strength animates the fade.
+  setMaskViz(index: number, color: [number, number, number], strength: number) {
+    this.vizMask = index;
+    this.vizColor = color;
+    this.vizStrength = strength;
   }
 
   setLensProfile(profile: import("@/lens-profiles/types").ResolvedProfile | null) {
@@ -1094,6 +1301,9 @@ export class WebGLRenderer {
       this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
     );
     gl.uniform1i(u.uShowClipping, this.showClipping);
+    gl.uniform1i(u.uVizMask, this.vizMask);
+    gl.uniform3f(u.uVizColor, this.vizColor[0], this.vizColor[1], this.vizColor[2]);
+    gl.uniform1f(u.uVizStrength, this.vizStrength);
     gl.uniform1f(u.uExposure, p.exposure);
     gl.uniform1f(u.uContrast, p.contrast);
     gl.uniform1f(u.uHighlights, p.highlights);
@@ -1124,6 +1334,8 @@ export class WebGLRenderer {
 
     const crop = p.crop ?? DEFAULT_CROP;
     gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
+    const vp = this.roi;
+    gl.uniform4f(u.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
     const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
     gl.uniformMatrix3fv(
       u.uInvTransform,
@@ -1256,7 +1468,9 @@ export class WebGLRenderer {
     gl.uniform1i(u.uMaskCount, masks.length);
     masks.forEach((m, i) => {
       gl.uniform1i(u[`uMaskInvert[${i}]`], m.invert ? 1 : 0);
-      gl.uniform1f(u[`uMaskOpacity[${i}]`], m.opacity / 100);
+      // Hidden masks apply no adjustment (opacity 0) but still compute coverage,
+      // so the coverage overlay can preview them. Coverage is sampled pre-opacity.
+      gl.uniform1f(u[`uMaskOpacity[${i}]`], m.visible === false ? 0 : m.opacity / 100);
       const a: MaskAdjustments = m.adj;
       gl.uniform4f(u[`uMaskAdj0[${i}]`], a.exposure, a.contrast, a.highlights, a.shadows);
       gl.uniform4f(u[`uMaskAdj1[${i}]`], a.saturation, a.temperature, a.tint, a.clarity);
@@ -1269,9 +1483,15 @@ export class WebGLRenderer {
     for (let mi = 0; mi < masks.length && ci < MAX_MASK_COMPONENTS; mi++) {
       for (const c of masks[mi].components) {
         if (ci >= MAX_MASK_COMPONENTS) break;
-        const type = c.kind === "linear" ? 0 : c.kind === "radial" ? 1 : 2;
+        const type =
+          c.kind === "linear" ? 0
+          : c.kind === "radial" ? 1
+          : c.kind === "lumRange" ? 3
+          : c.kind === "colorRange" ? 4
+          : 2; // brush
+        const mode = c.mode === "subtract" ? 1 : c.mode === "intersect" ? 2 : 0;
         gl.uniform1i(u[`uCompMaskIdx[${ci}]`], mi);
-        gl.uniform1i(u[`uCompMode[${ci}]`], c.mode === "subtract" ? 1 : 0);
+        gl.uniform1i(u[`uCompMode[${ci}]`], mode);
         gl.uniform1i(u[`uCompType[${ci}]`], type);
         gl.uniform1i(u[`uCompInvert[${ci}]`], c.invert ? 1 : 0);
         gl.uniform1i(u[`uCompBrushCh[${ci}]`], this.maskChannelOf[c.id] ?? 0);
@@ -1281,8 +1501,15 @@ export class WebGLRenderer {
         } else if (c.kind === "radial" && c.radial) {
           gl.uniform4f(u[`uCompGeoA[${ci}]`], c.radial.cx, c.radial.cy, c.radial.rx, c.radial.ry);
           gl.uniform4f(u[`uCompGeoB[${ci}]`], c.radial.feather, c.radial.angle, 0, 0);
+        } else if (c.kind === "lumRange" && c.lumRange) {
+          const lr = c.lumRange;
+          gl.uniform4f(u[`uCompGeoA[${ci}]`], lr.lo, lr.hi, lr.loFeather, lr.hiFeather);
+          gl.uniform4f(u[`uCompGeoB[${ci}]`], 0, 0, 0, 0);
+        } else if (c.kind === "colorRange" && c.colorRange) {
+          const cr = c.colorRange;
+          gl.uniform4f(u[`uCompGeoA[${ci}]`], cr.r, cr.g, cr.b, cr.hueRange);
+          gl.uniform4f(u[`uCompGeoB[${ci}]`], cr.satRange, cr.smoothness, 0, 0);
         } else {
-          // brush (geometry from atlas) or missing geometry
           gl.uniform4f(u[`uCompGeoA[${ci}]`], 0, 0, 0, 0);
           gl.uniform4f(u[`uCompGeoB[${ci}]`], 0, 0, 0, 0);
         }
@@ -1291,8 +1518,8 @@ export class WebGLRenderer {
     }
     gl.uniform1i(u.uCompCount, ci);
 
-    // Optional per-mask sub-panels: HSL packed as 6 vec4s per mask
-    // (hue lo/hi, sat lo/hi, lum lo/hi), curve flag selects the atlas row.
+    // Optional per-mask sub-panels: HSL packed as 6 vec4s per mask; curve flag
+    // selects the atlas row.
     const hasHsl = new Int32Array(MAX_MASKS);
     const hasCurve = new Int32Array(MAX_MASKS);
     const hslData = new Float32Array(MAX_MASKS * 24);
@@ -1441,6 +1668,7 @@ export class WebGLRenderer {
     }
 
     gl.uniform1i(this.uniforms.uShowClipping, 0);
+    gl.uniform1i(this.uniforms.uVizMask, -1);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
     gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -1556,6 +1784,7 @@ export class WebGLRenderer {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     gl.uniform1i(u.uShowClipping, 0);
+    gl.uniform1i(u.uVizMask, -1);
     gl.viewport(0, 0, w, h);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     const data = new Uint8Array(w * h * 4);
@@ -1634,7 +1863,11 @@ export class WebGLRenderer {
 
   dispose() {
     const gl = this.gl;
-    gl.deleteTexture(this.imageTexture);
+    // Free every resident source, plus the active image texture if the renderer
+    // still owns it (a cache-owned active texture is freed by the loop above).
+    for (const e of this.sourceCache.values()) gl.deleteTexture(e.tex);
+    this.sourceCache.clear();
+    if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
     gl.deleteTexture(this.curveTexture);
     gl.deleteTexture(this.maskCurveTexture);
     if (this.developedTex) gl.deleteTexture(this.developedTex);

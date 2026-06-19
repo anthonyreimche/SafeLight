@@ -3,10 +3,11 @@ import type { RefObject } from "react";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
-import { loadPhotoImage } from "@/catalog/load-image";
+import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { loadSavedParams } from "@/catalog/edit-params";
 import { useCatalogStore } from "@/state/catalog-store";
 import { usePipelineStore } from "@/extensions/pipelines";
+import { getSettings } from "@/state/settings-store";
 
 // Loupe zooms to 1:1, so decode at (up to) full sensor resolution like Develop
 // rather than the 2560px interactive cap — otherwise a RAW whose libraw bitmap
@@ -58,6 +59,7 @@ export function useLoupeRenderer(
     if (!canvasRef.current) return;
     try {
       rendererRef.current = new WebGLRenderer(canvasRef.current);
+      rendererRef.current.setCacheBudget(getSettings().gpuSourceCacheBytes);
       setSupported(true);
     } catch (err) {
       console.error("WebGL renderer init failed:", err);
@@ -73,9 +75,15 @@ export function useLoupeRenderer(
   // unrelated catalog updates (e.g. rating) don't trigger a reload.
   useEffect(() => {
     let cancelled = false;
-    if (!rendererRef.current) return;
+    const renderer0 = rendererRef.current;
+    if (!renderer0) return;
     setLoading(true);
-    Promise.all([loadPhotoImage(photo), loadSavedParams(photo.id, photo.exif.colorTemperature)]).then(
+    // Fast path: the decoded source is already resident on the GPU — bind it and
+    // skip the decode entirely (bindSource is synchronous on the main thread).
+    const key = photoSourceKey(photo);
+    const hit = renderer0.bindSource(key);
+    const imageP = hit ? Promise.resolve(null) : loadPhotoImage(photo);
+    Promise.all([imageP, loadSavedParams(photo.id, photo.exif.colorTemperature)]).then(
       ([image, saved]) => {
         const renderer = rendererRef.current;
         if (cancelled || !renderer) {
@@ -84,17 +92,19 @@ export function useLoupeRenderer(
           return;
         }
         savedParamsRef.current = saved;
-        if (image) {
+        renderer.setAsShotTemperature(photo.exif.colorTemperature ?? 6500);
+        if (!hit && image) {
           // Same decode as Develop: full-res RAW float when available (gets the
           // base tone curve in the renderer), else the 8-bit bitmap. Keeps Loupe
-          // pixel-consistent with Develop at full resolution.
+          // pixel-consistent with Develop at full resolution. Cache it so the next
+          // open of this photo is a bindSource hit.
           const isFallback =
             image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
           // Cached develop preview is linear-encoded RAW; it needs the base tone
           // curve, unlike a genuine camera-rendered bitmap.
           const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
-          renderer.setAsShotTemperature(photo.exif.colorTemperature ?? 6500);
-          renderer.setImage(
+          renderer.uploadSource(
+            key,
             image.kind === "bitmap" ? image.bitmap : image,
             LOUPE_MAX_EDGE,
             isFallback,

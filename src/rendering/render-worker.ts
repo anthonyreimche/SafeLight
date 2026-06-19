@@ -40,10 +40,38 @@ export type WorkerRequest =
       quality?: number;
     }
   | { cmd: "setShowClipping"; mode: number }
+  | { cmd: "setMaskViz"; index: number; color: [number, number, number]; strength: number }
   | { cmd: "computeHistogram"; wantExtended?: boolean }
   | { cmd: "setStages"; stages: ProcessingStageContribution[] }
   | { cmd: "setPipeline"; pipeline: ResolvedPipeline }
   | { cmd: "analyzeUpright"; mode: UprightMode }
+  // ── GPU source cache ──
+  | { cmd: "bindSource"; reqId: number; key: string }
+  | {
+      cmd: "uploadSource";
+      target: "main" | "thumb";
+      key: string;
+      image:
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+        | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+        | { kind: "bitmap"; bitmap: ImageBitmap };
+      maxEdge?: number;
+      isFallbackPreview?: boolean;
+      baseCurveForBitmap?: boolean;
+      bind?: boolean;
+    }
+  | { cmd: "hasSource"; reqId: number; target: "main" | "thumb"; key: string }
+  | { cmd: "setCacheBudget"; bytes: number }
+  | { cmd: "setViewport"; roi: { x: number; y: number; w: number; h: number } | null; outW?: number; outH?: number }
+  | {
+      cmd: "renderThumbnailFromSource";
+      requestId: string;
+      key: string;
+      params: DevelopParams;
+      asShotTemperature: number;
+      maxEdge: number;
+      quality?: number;
+    }
   | { cmd: "dispose" };
 
 export type WorkerResponse =
@@ -51,6 +79,9 @@ export type WorkerResponse =
   | { type: "frame"; bitmap: ImageBitmap; width: number; height: number; histogram?: HistogramData }
   | { type: "histogram"; histogram: HistogramData }
   | { type: "thumbnail"; requestId: string; blob: Blob }
+  | { type: "thumbnailMiss"; requestId: string; key: string }
+  | { type: "sourceBound"; reqId: number; hit: boolean }
+  | { type: "hasSource"; reqId: number; has: boolean }
   | { type: "upright"; result: UprightResult }
   | { type: "error"; message: string };
 
@@ -68,6 +99,10 @@ let thumbRenderer: WebGLRenderer | null = null;
 
 let latestStages: ProcessingStageContribution[] = [];
 let latestPipeline: ResolvedPipeline = BUILTIN_RESOLVED;
+// Mirrors the gpuSourceCacheBytes preference. The develop renderer gets the full
+// budget (full-res sources are large); the thumb renderer caches tiny sources, so
+// a quarter holds many. 0 until the first setCacheBudget message.
+let cacheBudgetBytes = 0;
 
 function ensureThumbRenderer(): WebGLRenderer {
   if (thumbRenderer) return thumbRenderer;
@@ -77,6 +112,7 @@ function ensureThumbRenderer(): WebGLRenderer {
     pipeline: latestPipeline,
     stages: latestStages,
   });
+  if (cacheBudgetBytes > 0) thumbRenderer.setCacheBudget(cacheBudgetBytes / 4);
   return thumbRenderer;
 }
 
@@ -176,6 +212,11 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         break;
       }
 
+      case "setMaskViz": {
+        if (renderer) renderer.setMaskViz(msg.index, msg.color, msg.strength);
+        break;
+      }
+
       case "computeHistogram": {
         if (!renderer) break;
         const histogram = renderer.computeHistogram(!!msg.wantExtended);
@@ -194,6 +235,62 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         latestPipeline = msg.pipeline;
         if (renderer) renderer.setActivePipeline(msg.pipeline);
         if (thumbRenderer) thumbRenderer.setActivePipeline(msg.pipeline);
+        break;
+      }
+
+      case "bindSource": {
+        const hit = !!renderer && renderer.bindSource(msg.key);
+        respond({ type: "sourceBound", reqId: msg.reqId, hit });
+        break;
+      }
+
+      case "uploadSource": {
+        const target = msg.target === "thumb" ? ensureThumbRenderer() : renderer;
+        if (!target) break;
+        const img = msg.image;
+        const bind = msg.bind ?? true;
+        if (img.kind === "bitmap") {
+          target.uploadSource(msg.key, img.bitmap, msg.maxEdge, msg.isFallbackPreview, msg.baseCurveForBitmap, bind);
+        } else {
+          target.uploadSource(msg.key, img, msg.maxEdge, msg.isFallbackPreview, false, bind);
+        }
+        break;
+      }
+
+      case "hasSource": {
+        const target = msg.target === "thumb" ? thumbRenderer : renderer;
+        respond({ type: "hasSource", reqId: msg.reqId, has: !!target && target.hasSource(msg.key) });
+        break;
+      }
+
+      case "setCacheBudget": {
+        cacheBudgetBytes = msg.bytes;
+        renderer?.setCacheBudget(msg.bytes);
+        thumbRenderer?.setCacheBudget(msg.bytes / 4);
+        break;
+      }
+
+      case "setViewport": {
+        renderer?.setViewport(msg.roi, msg.outW, msg.outH);
+        break;
+      }
+
+      case "renderThumbnailFromSource": {
+        const tr = ensureThumbRenderer();
+        if (!tr.bindSource(msg.key)) {
+          respond({ type: "thumbnailMiss", requestId: msg.requestId, key: msg.key });
+          break;
+        }
+        tr.setAsShotTemperature(msg.asShotTemperature);
+        tr.setParams(msg.params);
+        tr.render();
+        if (!thumbCanvas) break;
+        const quality = msg.quality ?? 0.8;
+        thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
+          (blob) => {
+            respond({ type: "thumbnail", requestId: msg.requestId, blob });
+          },
+        );
         break;
       }
 

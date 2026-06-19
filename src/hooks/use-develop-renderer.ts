@@ -1,15 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
+
+// Coverage overlay: a single red tint, faded in/out for all masks.
+const VIZ_COLOR: [number, number, number] = [0.9, 0.25, 0.25];
+const VIZ_STRENGTH = 0.5;
 import { transformedViewCrop } from "@/rendering/crop-transform";
 import { buildForwardTransform } from "@/rendering/transform";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
-import { loadPhotoImage } from "@/catalog/load-image";
+import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
 import { computeHistogram } from "@/rendering/histogram";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
+import { useUIStore } from "@/state/ui-store";
+import { visiblePhotos } from "@/modules/library/visible-photos";
 import { getSettings } from "@/state/settings-store";
 import { usePipelineStore } from "@/extensions/pipelines";
 
@@ -19,6 +25,14 @@ interface RendererStatus {
   width: number;
   height: number;
   source: string | null;
+  // Render only `roi` (a window into the displayed image, normalized [0,1]) at
+  // outW×outH device pixels — crisp zoom from the resident full-res source. Pass
+  // null to return to the whole-frame fit render.
+  setViewport: (
+    roi: { x: number; y: number; w: number; h: number } | null,
+    outW?: number,
+    outH?: number,
+  ) => void;
 }
 
 export function useDevelopRenderer(
@@ -37,6 +51,9 @@ export function useDevelopRenderer(
   const cropping = useDevelopStore((s) => s.cropping);
   const showClipping = useDevelopStore((s) => s.showClipping);
   const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
+  const hoveredMaskId = useDevelopStore((s) => s.hoveredMaskId);
+  const selectedMaskId = useDevelopStore((s) => s.selectedMaskId);
+  const maskTab = useDevelopStore((s) => s.maskTab);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
   const pipelineId = usePipelineStore((s) => s.activeId);
 
@@ -128,6 +145,9 @@ export function useDevelopRenderer(
 
     setLoading(true);
 
+    // When cacheKey is set, the image is uploaded into the GPU source cache
+    // (the final full decode) so a later re-open is a zero-decode bindSource;
+    // otherwise it's a transient setImage (thumbnail/preview frames).
     const sendImage = (
       image:
         | ImageBitmap
@@ -135,18 +155,16 @@ export function useDevelopRenderer(
         | { kind: "srgb16"; data: Uint16Array; width: number; height: number },
       isFallback = false,
       cachedRaw = false,
+      cacheKey?: string,
     ) => {
       if (cancelled) return;
       bridge.setAsShotTemperature(photo?.exif.colorTemperature ?? 6500);
-      if (image instanceof ImageBitmap) {
-        bridge.setImage(
-          { kind: "bitmap", bitmap: image },
-          getSettings().developMaxEdge,
-          isFallback,
-          cachedRaw,
-        );
+      const maxEdge = getSettings().developMaxEdge;
+      const src = image instanceof ImageBitmap ? { kind: "bitmap" as const, bitmap: image } : image;
+      if (cacheKey) {
+        bridge.uploadSource("main", cacheKey, src, maxEdge, isFallback, cachedRaw);
       } else {
-        bridge.setImage(image, getSettings().developMaxEdge, isFallback);
+        bridge.setImage(src, maxEdge, isFallback, cachedRaw);
       }
       const st = useDevelopStore.getState();
       bridge.setLensProfile(st.resolvedLensProfile);
@@ -154,8 +172,92 @@ export function useDevelopRenderer(
       bridge.render(true);
     };
 
+    // Re-render from an already-resident source (bindSource hit) — no decode.
+    const renderResident = () => {
+      if (cancelled) return;
+      bridge.setAsShotTemperature(photo?.exif.colorTemperature ?? 6500);
+      const st = useDevelopStore.getState();
+      bridge.setLensProfile(st.resolvedLensProfile);
+      bridge.setParams(forRender(st.params, st.cropping));
+      bridge.render(true);
+    };
+
+    // Mirror the photo's as-shot WB into the develop store (same logic on a cache
+    // hit and after a fresh decode).
+    const syncAsShotTemp = () => {
+      if (!photo?.exif.colorTemperature) return;
+      const st = useDevelopStore.getState();
+      if (st.photoId === photo.id && st.asShotTemperature !== photo.exif.colorTemperature) {
+        const asShot = photo.exif.colorTemperature;
+        const wasUninitialised = st.asShotTemperature === 6500;
+        const needsTempUpdate = wasUninitialised && st.params.temperature === 6500;
+        useDevelopStore.setState({
+          asShotTemperature: asShot,
+          ...(needsTempUpdate ? { params: { ...st.params, temperature: asShot } } : {}),
+        });
+      }
+    };
+
+    // Background-decode the prev/next photo (in the Library's visible order) so
+    // navigating to it is an instant bindSource hit. Best-effort and cancellable;
+    // gated by a preference. Uploads with bind=false so the displayed image is
+    // untouched. Runs after a short delay so rapid navigation skips it.
+    const prefetchNeighbors = async () => {
+      if (!getSettings().developPrefetchNeighbors) return;
+      await new Promise((r) => setTimeout(r, 250));
+      if (cancelled) return;
+      const ui = useUIStore.getState();
+      const ordered = visiblePhotos(
+        useCatalogStore.getState().photos,
+        ui.filter,
+        ui.sortField,
+        ui.sortDirection,
+        ui.activeFolder,
+      );
+      const idx = ordered.findIndex((p) => p.id === photo.id);
+      if (idx < 0) return;
+      const neighbours = [ordered[idx + 1], ordered[idx - 1]].filter(Boolean);
+      const maxEdge = getSettings().developMaxEdge;
+      for (const np of neighbours) {
+        if (cancelled) return;
+        const nk = photoSourceKey(np);
+        if (await bridge.hasSource("main", nk)) continue;
+        if (cancelled) return;
+        const image = await loadPhotoImage(np);
+        if (cancelled || !image) {
+          if (image?.kind === "bitmap") image.bitmap.close();
+          return;
+        }
+        if (image.kind === "bitmap") {
+          bridge.uploadSource("main", nk, { kind: "bitmap", bitmap: image.bitmap }, maxEdge, false, image.cached, false);
+        } else {
+          bridge.uploadSource("main", nk, image, maxEdge, image.kind === "float" ? image.isFallbackPreview : false, false, false);
+        }
+      }
+    };
+
     const run = async () => {
       await bridge.ready;
+
+      // Clear any zoom window left over from the previously open photo so the
+      // first frame renders the whole image (ViewportImage re-emits an ROI if the
+      // new photo ends up zoomed).
+      bridge.setViewport(null);
+
+      const key = photoSourceKey(photo);
+
+      // Fast path: the decoded source is already resident on the GPU from a prior
+      // open/thumbnail render — bind and render without decoding (instant re-entry).
+      if (await bridge.bindSource(key)) {
+        if (cancelled) return;
+        syncAsShotTemp();
+        renderResident();
+        setSource("RAW — resident in GPU");
+        setLoading(false);
+        void prefetchNeighbors();
+        return;
+      }
+      if (cancelled) return;
 
       if (photo.thumbnailBlob) {
         try {
@@ -193,25 +295,15 @@ export function useDevelopRenderer(
       }
       if (!image) { setLoading(false); return; }
 
-      if (photo.exif.colorTemperature) {
-        const st = useDevelopStore.getState();
-        if (st.photoId === photo.id && st.asShotTemperature !== photo.exif.colorTemperature) {
-          const asShot = photo.exif.colorTemperature;
-          const wasUninitialised = st.asShotTemperature === 6500;
-          const needsTempUpdate = wasUninitialised && st.params.temperature === 6500;
-          useDevelopStore.setState({
-            asShotTemperature: asShot,
-            ...(needsTempUpdate ? { params: { ...st.params, temperature: asShot } } : {}),
-          });
-        }
-      }
+      syncAsShotTemp();
 
       const isFallback = image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
       const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
+      // Cache the final full decode under `key` so the next open is a bindSource hit.
       if (image.kind === "bitmap") {
-        sendImage(image.bitmap, isFallback, cachedRaw);
+        sendImage(image.bitmap, isFallback, cachedRaw, key);
       } else {
-        sendImage(image, isFallback);
+        sendImage(image, isFallback, false, key);
       }
 
       if (image.kind === "float") {
@@ -231,6 +323,7 @@ export function useDevelopRenderer(
         );
       }
       setLoading(false);
+      void prefetchNeighbors();
     };
 
     run();
@@ -275,11 +368,57 @@ export function useDevelopRenderer(
     bridge.render(false);
   }, [showClipping]);
 
+  // Coverage overlay: shown when a mask row is hovered, or when the selected
+  // mask is open on the Coverage tab. Always red; the strength fades in/out.
+  const vizAnim = useRef({ idx: -1, cur: 0, target: 0, raf: null as number | null });
+  useEffect(() => {
+    const vizId =
+      hoveredMaskId ?? (selectedMaskId && maskTab === "coverage" ? selectedMaskId : null);
+    const idx = vizId ? params.masks.findIndex((m) => m.id === vizId) : -1;
+    const a = vizAnim.current;
+    if (idx >= 0) a.idx = idx; // keep last index while fading out
+    a.target = idx >= 0 ? VIZ_STRENGTH : 0;
+    const tick = () => {
+      const bridge = bridgeRef.current;
+      if (!bridge) { a.raf = null; return; }
+      a.cur += (a.target - a.cur) * 0.3;
+      if (Math.abs(a.target - a.cur) < 0.01) a.cur = a.target;
+      const activeIdx = a.cur > 0.002 ? a.idx : -1;
+      bridge.setMaskViz(activeIdx, VIZ_COLOR, a.cur);
+      bridge.render(false);
+      a.raf = a.cur !== a.target ? requestAnimationFrame(tick) : null;
+    };
+    if (a.raf == null) a.raf = requestAnimationFrame(tick);
+    return () => {
+      if (a.raf != null) { cancelAnimationFrame(a.raf); a.raf = null; }
+    };
+  }, [hoveredMaskId, selectedMaskId, maskTab, params.masks]);
+
+  const setViewport = useCallback(
+    (
+      roi: { x: number; y: number; w: number; h: number } | null,
+      outW?: number,
+      outH?: number,
+    ) => {
+      const bridge = bridgeRef.current;
+      if (!bridge) return;
+      bridge.setViewport(roi, outW, outH);
+      if (rafIdRef.current == null) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          rafIdRef.current = null;
+          bridgeRef.current?.render(false);
+        });
+      }
+    },
+    [],
+  );
+
   return {
     supported,
     loading,
     width: size.width,
     height: size.height,
     source,
+    setViewport,
   };
 }

@@ -212,9 +212,36 @@ function houghLines(
     const minVotes = Math.max(10, Math.round(Math.sqrt(w * h) * 0.03));
     if (bestVal < minVotes) break;
 
+    // Sub-bin refinement: fit a parabola to the peak and its two neighbors in
+    // each axis. Keystone correction hinges on sub-degree convergence angles,
+    // far finer than the 0.5° bin; without this the angle snaps to the bin
+    // centre and the vanishing point (and its sign) can be wrong. Offsets are
+    // bounded to ±0.5 bin.
+    const parabolicOffset = (a: number, b: number, c: number): number => {
+      const denom = a - 2 * b + c;
+      if (denom === 0) return 0;
+      return Math.max(-0.5, Math.min(0.5, (0.5 * (a - c)) / denom));
+    };
+    let dT = 0;
+    if (bestT > 0 && bestT < THETA_BINS - 1) {
+      dT = parabolicOffset(
+        acc[bestR * THETA_BINS + bestT - 1],
+        bestVal,
+        acc[bestR * THETA_BINS + bestT + 1],
+      );
+    }
+    let dR = 0;
+    if (bestR > 0 && bestR < rhoSize - 1) {
+      dR = parabolicOffset(
+        acc[(bestR - 1) * THETA_BINS + bestT],
+        bestVal,
+        acc[(bestR + 1) * THETA_BINS + bestT],
+      );
+    }
+
     peaks.push({
-      rho: bestR - rhoMax,
-      theta: bestT * THETA_STEP,
+      rho: bestR + dR - rhoMax,
+      theta: (bestT + dT) * THETA_STEP,
       votes: bestVal,
     });
 
@@ -243,7 +270,7 @@ export function detectLines(
   return houghLines(edgeMask, w, h, 40);
 }
 
-function classifyLines(lines: DetectedLine[]) {
+function classifyLines(lines: DetectedLine[], w: number, h: number) {
   if (lines.length === 0) return { horizontal: [], vertical: [] };
 
   const maxVotes = Math.max(...lines.map((l) => l.votes));
@@ -252,15 +279,28 @@ function classifyLines(lines: DetectedLine[]) {
 
   const HORIZ_RANGE = 30 * (Math.PI / 180);
   const VERT_RANGE = 30 * (Math.PI / 180);
+  // The render buffer is flush to the image edge, so the frame itself shows up
+  // as four strong axis-aligned lines (x≈0/w, y≈0/h). Two such lines with a
+  // sub-degree θ difference fabricate a far-off vanishing point and a phantom
+  // keystone. Drop any line that runs along the image border.
+  const marginX = Math.max(3, w * 0.02);
+  const marginY = Math.max(3, h * 0.02);
 
   const horizontal: DetectedLine[] = [];
   const vertical: DetectedLine[] = [];
 
   for (const line of strong) {
     const t = line.theta;
+    const sin = Math.sin(t), cos = Math.cos(t);
     if (Math.abs(t - Math.PI / 2) < HORIZ_RANGE) {
+      // y where the line crosses the vertical centerline (x = w/2).
+      const y = (line.rho - (w / 2) * cos) / sin;
+      if (y < marginY || y > h - marginY) continue;
       horizontal.push(line);
     } else if (t < VERT_RANGE || t > Math.PI - VERT_RANGE) {
+      // x where the line crosses the horizontal centerline (y = h/2).
+      const x = (line.rho - (h / 2) * sin) / cos;
+      if (x < marginX || x > w - marginX) continue;
       vertical.push(line);
     }
   }
@@ -268,110 +308,139 @@ function classifyLines(lines: DetectedLine[]) {
   return { horizontal, vertical };
 }
 
-function wrapDeviation(theta: number, refAngle: number): number {
-  let d = theta - refAngle;
-  while (d > Math.PI / 2) d -= Math.PI;
-  while (d < -Math.PI / 2) d += Math.PI;
-  return d;
-}
-
-function weightedMedianAngle(lines: DetectedLine[], refAngle: number): number {
-  if (lines.length === 0) return 0;
-
-  const entries = lines.map((l) => ({
-    deviation: wrapDeviation(l.theta, refAngle),
-    weight: l.votes,
-  }));
-  entries.sort((a, b) => a.deviation - b.deviation);
-
-  const totalWeight = entries.reduce((s, e) => s + e.weight, 0);
-  let cumWeight = 0;
-  for (const e of entries) {
-    cumWeight += e.weight;
-    if (cumWeight >= totalWeight / 2) return e.deviation;
-  }
-  return entries[entries.length - 1].deviation;
-}
-
 // ── Vanishing point → perspective coefficient ───────────────────────────────
 
-// Vote-weighted median of a set of (value, weight) samples. Robust to the
-// outlier intersections thrown by near-parallel line pairs.
-function weightedMedian(samples: { value: number; weight: number }[]): number {
-  if (samples.length === 0) return 0;
-  const s = [...samples].sort((a, b) => a.value - b.value);
-  const total = s.reduce((acc, e) => acc + e.weight, 0);
-  let cum = 0;
-  for (const e of s) {
-    cum += e.weight;
-    if (cum >= total / 2) return e.value;
-  }
-  return s[s.length - 1].value;
+// Convert a Hough line (ρ, θ in pixels) to the normalized [0,1] endpoint form
+// used by the guided pipeline, so detected and hand-drawn lines run through the
+// exact same vanishing-point math. Each axis is normalized independently
+// (x/w, y/h); the guided gh formula reapplies the aspect ratio.
+function houghToGuidedLine(l: DetectedLine, w: number, h: number): GuidedLine {
+  const c = Math.cos(l.theta), s = Math.sin(l.theta);
+  const px = l.rho * c, py = l.rho * s; // foot of the perpendicular
+  const dx = -s, dy = c;                // direction along the line
+  const len = Math.hypot(w, h);
+  return {
+    x1: (px - len * dx) / w, y1: (py - len * dy) / h,
+    x2: (px + len * dx) / w, y2: (py + len * dy) / h,
+  };
 }
 
-// Robust vanishing point from line-pair intersections. Aggregates the VP
-// POSITION (median of intersection coordinate), then the caller maps it to a
-// perspective coefficient with a single reciprocal. Aggregating position — not
-// the reciprocal coefficient — is the crux: for mild convergence the per-pair
-// relX/relY scatter across zero, so a median of 1/rel would swing through ±∞
-// and flip sign, whereas a median of the position lands cleanly on the true VP.
-// This mirrors the guided mode, which averages vpX/vpY then takes 1/(0.5−vp).
-//
-// `axis` selects which intersection coordinate to return: "y" for vertical
-// lines (VP height drives vertical keystone), "x" for horizontal lines.
-function vanishingPointPosition(
-  lines: DetectedLine[],
-  axis: "x" | "y",
-): number | null {
-  const sorted = [...lines].sort((a, b) => b.votes - a.votes).slice(0, 8);
-  const samples: { value: number; weight: number }[] = [];
-  for (let i = 0; i < sorted.length; i++) {
-    for (let j = i + 1; j < sorted.length; j++) {
-      const a = sorted[i], b = sorted[j];
-      const sinA = Math.sin(a.theta), cosA = Math.cos(a.theta);
-      const sinB = Math.sin(b.theta), cosB = Math.cos(b.theta);
-      // |det| = |sin(θb − θa)|; ~0 means the pair is parallel (VP at infinity).
-      const det = cosA * sinB - sinA * cosB;
-      if (Math.abs(det) < 1e-3) continue;
-      const value =
-        axis === "y"
-          ? (b.rho * cosA - a.rho * cosB) / det
-          : (a.rho * sinB - b.rho * sinA) / det;
-      samples.push({ value, weight: a.votes + b.votes });
+// Theil–Sen slope of (x → y) samples: the median of all pairwise slopes. Robust
+// to a misdetected line (one bad slope can't drag the median the way it drags a
+// least-squares fit), which matters because a single outlier among the detected
+// lines would otherwise fabricate a keystone. Null if no pair has x-spread.
+function regressionSlope(pts: { x: number; y: number }[]): number | null {
+  const slopes: number[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      const dx = pts[j].x - pts[i].x;
+      if (Math.abs(dx) < 1e-6) continue;
+      slopes.push((pts[j].y - pts[i].y) / dx);
     }
   }
-  if (samples.length === 0) return null;
-  return weightedMedian(samples);
+  if (slopes.length === 0) return null;
+  slopes.sort((a, b) => a - b);
+  const m = Math.floor(slopes.length / 2);
+  return slopes.length % 2 ? slopes[m] : (slopes[m - 1] + slopes[m]) / 2;
 }
 
-function vanishingPointPerspective(
-  verticals: DetectedLine[],
-  _w: number,
-  h: number,
-): number {
-  if (verticals.length < 2) return 0;
-  const iy = vanishingPointPosition(verticals, "y");
-  if (iy === null) return 0;
-  // gv = 1/relY mirrors the guided mode's gv = 1/(0.5 − vpY): the reciprocal
-  // maps distant VPs to mild corrections and close VPs to strong ones.
-  const relY = (iy - h / 2) / h;
-  if (Math.abs(relY) < 0.05) return 0;
-  return ((1 / relY) * 100) / 0.6;
+// Keystone coefficient from a converging line family by regressing each line's
+// slope against its position (all in normalized [0,1] coords). Converging lines
+// have slope that varies linearly with position; the regression slope is
+// exactly 1/(centre−VP), so a single fit yields the vanishing point. Crucially,
+// PARALLEL lines have constant slope → regression slope 0 → no correction, with
+// per-line angle noise averaging out instead of fabricating a phantom VP (which
+// pairwise intersection does). `axis` = "x" for horizontal lines (slope dy/dx
+// vs. y-position → gh·aspect) or "y" for vertical lines (slope dx/dy vs.
+// x-position → gv).
+function keystoneSlope(lines: GuidedLine[], axis: "x" | "y"): number | null {
+  const pts: { x: number; y: number }[] = [];
+  for (const l of lines) {
+    const dx = l.x2 - l.x1, dy = l.y2 - l.y1;
+    if (axis === "x") {
+      if (Math.abs(dx) < 1e-9) continue;
+      const yc = l.y1 + (dy * (0.5 - l.x1)) / dx; // height at x = 0.5
+      pts.push({ x: yc, y: dy / dx });
+    } else {
+      if (Math.abs(dy) < 1e-9) continue;
+      const xc = l.x1 + (dx * (0.5 - l.y1)) / dy; // x at y = 0.5
+      pts.push({ x: xc, y: dx / dy });
+    }
+  }
+  return regressionSlope(pts);
 }
 
-function vanishingPointPerspectiveH(
-  horizontals: DetectedLine[],
-  w: number,
-  h: number,
-): number {
-  if (horizontals.length < 2) return 0;
-  const ix = vanishingPointPosition(horizontals, "x");
-  if (ix === null) return 0;
-  // Match the guided mode's gh = −1/((vpX − 0.5)·aspect) once the caller negates.
-  const aspect = w / h;
-  const relX = (ix - w / 2) / w;
-  if (Math.abs(relX) < 0.05) return 0;
-  return ((1 / (relX * aspect)) * 100) / 0.6;
+// Shared upright core. Computes straighten + keystone from already-classified
+// horizontal and vertical lines (normalized endpoints). Both the guided mode
+// and every auto mode call this; they differ only in which lines they feed it.
+function guidedCore(
+  hLines: GuidedLine[],
+  vLines: GuidedLine[],
+  imageAspect: number,
+): UprightResult {
+  const clamp100 = (v: number) => Math.max(-100, Math.min(100, v));
+  let perspectiveV = 0;
+  let perspectiveH = 0;
+
+  // Both families estimate the SAME image rotation. Compute each independently,
+  // then average — never sum, or modes that see both (Auto/Full) double the
+  // straighten relative to Level/Vert which see only one.
+  let straightenH: number | null = null;
+  let straightenV: number | null = null;
+
+  // Straighten from horizontal lines (normalize direction → rightward).
+  if (hLines.length >= 1) {
+    let totalAngle = 0;
+    for (const line of hLines) {
+      let dx = (line.x2 - line.x1) * imageAspect;
+      let dy = line.y2 - line.y1;
+      if (dx < 0) { dx = -dx; dy = -dy; }
+      totalAngle += Math.atan2(dy, dx);
+    }
+    straightenH = ((totalAngle / hLines.length) * 180) / Math.PI;
+  }
+
+  // Straighten from vertical lines (tilt of the upright direction).
+  if (vLines.length >= 1) {
+    let totalTilt = 0;
+    for (const line of vLines) {
+      let dx = (line.x2 - line.x1) * imageAspect;
+      let dy = line.y2 - line.y1;
+      if (dy > 0) { dx = -dx; dy = -dy; }
+      totalTilt += Math.atan2(dx, -dy);
+    }
+    straightenV = ((totalTilt / vLines.length) * 180) / Math.PI;
+  }
+
+  let straighten = 0;
+  if (straightenH !== null && straightenV !== null) {
+    straighten = (straightenH + straightenV) / 2;
+  } else if (straightenH !== null) {
+    straighten = straightenH;
+  } else if (straightenV !== null) {
+    straighten = straightenV;
+  }
+
+  // Vertical perspective: regress vertical-line slope (dx/dy) against x-position.
+  // The fitted slope equals the gv keystone coefficient directly.
+  if (vLines.length >= 2) {
+    const gv = keystoneSlope(vLines, "y");
+    if (gv !== null) perspectiveV = clamp100((gv / 0.6) * 100);
+  }
+
+  // Horizontal perspective: regress horizontal-line slope (dy/dx) against
+  // y-position. The fitted slope is gh in square space; divide by aspect to
+  // match the normalized gh coefficient.
+  if (hLines.length >= 2) {
+    const sh = keystoneSlope(hLines, "x");
+    if (sh !== null) perspectiveH = clamp100((sh / imageAspect / 0.6) * 100);
+  }
+
+  return {
+    straighten: Math.max(-45, Math.min(45, straighten)),
+    perspectiveV,
+    perspectiveH,
+  };
 }
 
 // ── Upright correction computation ──────────────────────────────────────────
@@ -382,46 +451,51 @@ export function computeUprightCorrection(
   w: number,
   h: number,
 ): UprightResult {
-  const { horizontal, vertical } = classifyLines(lines);
+  const { horizontal, vertical } = classifyLines(lines, w, h);
+  const aspect = w / h;
+  // Keep only the strongest lines per axis. Detection emits echoes and raster
+  // artifacts alongside the real architectural lines; those spurious peaks have
+  // far fewer votes, and including them poisons the vanishing-point median.
+  const strongest = (arr: DetectedLine[]) =>
+    [...arr].sort((a, b) => b.votes - a.votes).slice(0, 8);
+  const hLines = strongest(horizontal).map((l) => houghToGuidedLine(l, w, h));
+  const vLines = strongest(vertical).map((l) => houghToGuidedLine(l, w, h));
 
   const clampS = (v: number) => Math.max(-20, Math.min(20, v));
   const clampP = (v: number) => Math.max(-100, Math.min(100, v));
 
   switch (mode) {
     case "level": {
-      const deviation = weightedMedianAngle(horizontal, Math.PI / 2);
+      // Horizontal lines only — straighten to the horizon, no perspective.
+      const c = guidedCore(hLines, [], aspect);
+      return { straighten: clampS(c.straighten), perspectiveV: 0, perspectiveH: 0 };
+    }
+
+    case "vertical": {
+      // Vertical lines only — correct vertical convergence and tilt.
+      const c = guidedCore([], vLines, aspect);
       return {
-        straighten: clampS((deviation * 180) / Math.PI),
-        perspectiveV: 0,
+        straighten: clampS(c.straighten),
+        perspectiveV: clampP(c.perspectiveV),
         perspectiveH: 0,
       };
     }
 
-    case "vertical": {
-      const vertAngle = weightedMedianAngle(vertical, 0);
-      const perspV = vanishingPointPerspective(vertical, w, h);
+    case "auto": {
+      // Both axes — straighten plus vertical and horizontal keystone.
+      const c = guidedCore(hLines, vLines, aspect);
       return {
-        straighten: clampS((vertAngle * 180) / Math.PI),
-        perspectiveV: clampP(-perspV),
-        perspectiveH: 0,
+        straighten: clampS(c.straighten),
+        perspectiveV: clampP(c.perspectiveV),
+        perspectiveH: clampP(c.perspectiveH),
       };
     }
 
     case "full": {
-      const horizDev = weightedMedianAngle(horizontal, Math.PI / 2);
-      const vertAngle = weightedMedianAngle(vertical, 0);
-      const perspV = vanishingPointPerspective(vertical, w, h);
-      const perspH = vanishingPointPerspectiveH(horizontal, w, h);
-      const straightenH = (horizDev * 180) / Math.PI;
-      const straightenV = (vertAngle * 180) / Math.PI;
-      const hasH = horizontal.length > 0;
-      const hasV = vertical.length > 0;
-      let straightenDeg = 0;
-      if (hasH && hasV) straightenDeg = (straightenH + straightenV) / 2;
-      else if (hasH) straightenDeg = straightenH;
-      else if (hasV) straightenDeg = straightenV;
-      const pV = clampP(-perspV);
-      const pH = clampP(-perspH);
+      // Auto plus aspect compensation for the keystone-induced stretch.
+      const c = guidedCore(hLines, vLines, aspect);
+      const pV = clampP(c.perspectiveV);
+      const pH = clampP(c.perspectiveH);
       const gv = (pV / 100) * 0.6;
       const gh = (pH / 100) * 0.6;
       const stretchV = 1 / (1 - 0.25 * gv * gv);
@@ -429,30 +503,10 @@ export function computeUprightCorrection(
       const distortion = stretchV / stretchH;
       const aspectCorr = (100 * Math.log(1 / distortion)) / Math.log(1.5);
       return {
-        straighten: clampS(straightenDeg),
+        straighten: clampS(c.straighten),
         perspectiveV: pV,
         perspectiveH: pH,
         aspect: clampP(aspectCorr),
-      };
-    }
-
-    case "auto": {
-      const horizDev = weightedMedianAngle(horizontal, Math.PI / 2);
-      const vertAngle = weightedMedianAngle(vertical, 0);
-      const perspV = vanishingPointPerspective(vertical, w, h);
-      const perspH = vanishingPointPerspectiveH(horizontal, w, h);
-      const straightenH = (horizDev * 180) / Math.PI;
-      const straightenV = (vertAngle * 180) / Math.PI;
-      const hasH = horizontal.length > 0;
-      const hasV = vertical.length > 0;
-      let straightenDeg = 0;
-      if (hasH && hasV) straightenDeg = (straightenH + straightenV) / 2;
-      else if (hasH) straightenDeg = straightenH;
-      else if (hasV) straightenDeg = straightenV;
-      return {
-        straighten: clampS(straightenDeg),
-        perspectiveV: clampP(-perspV),
-        perspectiveH: clampP(-perspH),
       };
     }
 
@@ -462,18 +516,6 @@ export function computeUprightCorrection(
 }
 
 // ── Guided mode correction ──────────────────────────────────────────────────
-
-function guidedLineIntersect(
-  a: GuidedLine,
-  b: GuidedLine,
-): { x: number; y: number } | null {
-  const dxa = a.x2 - a.x1, dya = a.y2 - a.y1;
-  const dxb = b.x2 - b.x1, dyb = b.y2 - b.y1;
-  const det = dxa * dyb - dya * dxb;
-  if (Math.abs(det) < 1e-10) return null;
-  const t = ((b.x1 - a.x1) * dyb - (b.y1 - a.y1) * dxb) / det;
-  return { x: a.x1 + t * dxa, y: a.y1 + t * dya };
-}
 
 export function computeGuidedCorrection(
   guidedLines: GuidedLine[],
@@ -498,85 +540,5 @@ export function computeGuidedCorrection(
     }
   }
 
-  let straighten = 0;
-  let perspectiveV = 0;
-  let perspectiveH = 0;
-
-  // Straighten from horizontal lines (normalize direction → rightward)
-  if (hLines.length >= 1) {
-    let totalAngle = 0;
-    for (const line of hLines) {
-      let dx = (line.x2 - line.x1) * imageAspect;
-      let dy = line.y2 - line.y1;
-      if (dx < 0) { dx = -dx; dy = -dy; }
-      totalAngle += Math.atan2(dy, dx);
-    }
-    straighten = ((totalAngle / hLines.length) * 180) / Math.PI;
-  }
-
-  // Straighten from vertical lines (normalize direction → upward)
-  if (vLines.length === 1) {
-    let dx = (vLines[0].x2 - vLines[0].x1) * imageAspect;
-    let dy = vLines[0].y2 - vLines[0].y1;
-    if (dy > 0) { dx = -dx; dy = -dy; }
-    const tilt = Math.atan2(dx, -dy);
-    straighten += ((tilt * 180) / Math.PI);
-  }
-
-  // Vertical perspective: compute VP from vertical line pairs.
-  // VP above image center → lines converge upward → perspectiveV > 0 corrects.
-  if (vLines.length >= 2) {
-    let vpYSum = 0, vpCount = 0;
-    for (let i = 0; i < vLines.length; i++) {
-      for (let j = i + 1; j < vLines.length; j++) {
-        const vp = guidedLineIntersect(vLines[i], vLines[j]);
-        if (vp) { vpYSum += vp.y; vpCount++; }
-      }
-    }
-    if (vpCount > 0) {
-      const vpY = vpYSum / vpCount;
-      const rel = vpY - 0.5;
-      if (Math.abs(rel) > 0.01) {
-        // gv = 1/(0.5 - vpY) makes top wider when VP is above center
-        const gv = 1 / (0.5 - vpY);
-        perspectiveV = Math.max(-100, Math.min(100, (gv / 0.6) * 100));
-      }
-    }
-
-    // Average tilt of vertical lines for straighten contribution
-    let totalTilt = 0;
-    for (const line of vLines) {
-      let dx = (line.x2 - line.x1) * imageAspect;
-      let dy = line.y2 - line.y1;
-      if (dy > 0) { dx = -dx; dy = -dy; }
-      totalTilt += Math.atan2(dx, -dy);
-    }
-    straighten += ((totalTilt / vLines.length) * 180) / Math.PI;
-  }
-
-  // Horizontal perspective: compute VP from horizontal line pairs.
-  // VP to the right → lines converge right → perspectiveH < 0 corrects.
-  if (hLines.length >= 2) {
-    let vpXSum = 0, vpCount = 0;
-    for (let i = 0; i < hLines.length; i++) {
-      for (let j = i + 1; j < hLines.length; j++) {
-        const vp = guidedLineIntersect(hLines[i], hLines[j]);
-        if (vp) { vpXSum += vp.x; vpCount++; }
-      }
-    }
-    if (vpCount > 0) {
-      const vpX = vpXSum / vpCount;
-      const rel = vpX - 0.5;
-      if (Math.abs(rel) > 0.01) {
-        const gh = -1 / ((vpX - 0.5) * imageAspect);
-        perspectiveH = Math.max(-100, Math.min(100, (gh / 0.6) * 100));
-      }
-    }
-  }
-
-  return {
-    straighten: Math.max(-45, Math.min(45, straighten)),
-    perspectiveV,
-    perspectiveH,
-  };
+  return guidedCore(hLines, vLines, imageAspect);
 }

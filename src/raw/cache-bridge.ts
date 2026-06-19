@@ -58,7 +58,19 @@ function send<T>(msg: CacheRequest, transfer?: Transferable[]): Promise<T> {
 
 export function setCacheDirOnWorker(dir: FileSystemDirectoryHandle | null): void {
   const w = getWorker();
-  ready!.then(() => w.postMessage({ cmd: "setCacheDir", dir } satisfies CacheRequest));
+  ready!
+    .then(() => {
+      try {
+        w.postMessage({ cmd: "setCacheDir", dir } satisfies CacheRequest);
+      } catch {
+        // Some environments (notably an Electron File System Access polyfill)
+        // expose directory handles as plain objects that structuredClone can't
+        // serialise, so postMessage throws DataCloneError. Fall back to the
+        // worker's IndexedDB cache rather than crashing folder open.
+        w.postMessage({ cmd: "setCacheDir", dir: null } satisfies CacheRequest);
+      }
+    })
+    .catch(() => {});
 }
 
 export async function workerReadCachedPreview(

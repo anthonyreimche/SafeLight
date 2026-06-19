@@ -15,7 +15,15 @@ import type {
   RetouchSpot,
   ToneCurveChannel,
 } from "@/catalog/types";
-import { MAX_MASKS, MAX_RETOUCH, normalizeParams } from "@/catalog/types";
+import {
+  MAX_MASKS,
+  MAX_RETOUCH,
+  defaultColorRange,
+  defaultLumRange,
+  defaultMaskAdjustments,
+  DEFAULT_MASK_PANELS,
+  normalizeParams,
+} from "@/catalog/types";
 
 export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
 import type { HistogramData } from "@/rendering/histogram";
@@ -70,6 +78,11 @@ interface DevelopState {
   // HSL color picker: when true, click+drag on image adjusts HSL for sampled color.
   hslPicking: boolean;
   setHslPicking: (v: boolean) => void;
+
+  // Mask colour-range eyedropper: when true, the next image click samples a
+  // target colour into the selected colour-range component. Ephemeral.
+  maskColorPicking: boolean;
+  setMaskColorPicking: (v: boolean) => void;
   selectedHslBand: "hue" | "saturation" | "luminance";
   setSelectedHslBand: (band: "hue" | "saturation" | "luminance") => void;
 
@@ -80,6 +93,9 @@ interface DevelopState {
   maskAddTarget: "new" | "current"; // start a fresh mask, or extend the selected one
   selectedMaskId: string | null;
   selectedComponentId: string | null; // component being edited on-canvas
+  hoveredMaskId: string | null; // mask hovered in the panel list -> coverage overlay
+  maskTab: "coverage" | "adjust"; // selected-mask editor tab (gates the overlay)
+  brushPreview: boolean; // true while a brush size/feather slider is being dragged
   selectedSpotId: string | null;
   brushSize: number; // image-height fraction
   brushFeather: number; // 0..1
@@ -94,6 +110,9 @@ interface DevelopState {
   setMaskAddTarget: (t: "new" | "current") => void;
   selectMask: (id: string | null) => void;
   selectComponent: (id: string | null) => void;
+  setHoveredMaskId: (id: string | null) => void;
+  setMaskTab: (tab: "coverage" | "adjust") => void;
+  setBrushPreview: (v: boolean) => void;
   selectSpot: (id: string | null) => void;
   setBrushSize: (v: number) => void;
   setBrushFeather: (v: number) => void;
@@ -107,10 +126,15 @@ interface DevelopState {
   addMask: (mask: Mask) => void;
   updateMask: (id: string, patch: Partial<Mask>) => void;
   updateMaskAdj: (id: string, patch: Partial<MaskAdjustments>) => void;
+  renameMask: (id: string, name: string) => void;
   // Component mutations within a mask.
   addComponent: (maskId: string, comp: MaskComponent) => void;
   updateComponent: (maskId: string, compId: string, patch: Partial<MaskComponent>) => void;
   removeComponent: (maskId: string, compId: string) => void;
+  cycleComponentMode: (maskId: string, compId: string) => void;
+  // Add a parametric range component (luminance / colour). Appends to the
+  // selected mask (as an intersect by default) or starts a new mask.
+  addRangeComponent: (kind: "lumRange" | "colorRange") => void;
   addBrushDab: (maskId: string, compId: string, dab: BrushDab) => void;
   removeMask: (id: string) => void;
   // Retouch data mutations.
@@ -140,6 +164,11 @@ interface DevelopState {
   canUndo: () => boolean;
   canRedo: () => boolean;
 }
+
+// Shared id generator for masks / components created from the panel (range
+// masks have no canvas gesture, so they're built here rather than in the overlay).
+let idSeq = 0;
+const genId = (p: string) => `${p}-${Date.now().toString(36)}-${idSeq++}`;
 
 // Broadcast the current params so the renderer re-renders live during a mask /
 // retouch gesture. History is written separately by commitEdit at gesture end.
@@ -222,6 +251,8 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
 
   hslPicking: false,
   setHslPicking: (hslPicking) => set({ hslPicking }),
+  maskColorPicking: false,
+  setMaskColorPicking: (maskColorPicking) => set({ maskColorPicking }),
   selectedHslBand: "hue",
   setSelectedHslBand: (selectedHslBand) => set({ selectedHslBand }),
 
@@ -231,6 +262,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   maskAddTarget: "new",
   selectedMaskId: null,
   selectedComponentId: null,
+  hoveredMaskId: null,
+  maskTab: "coverage",
+  brushPreview: false,
   selectedSpotId: null,
   brushSize: 0.08,
   brushFeather: 0.5,
@@ -245,6 +279,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   setMaskAddTarget: (maskAddTarget) => set({ maskAddTarget }),
   selectMask: (selectedMaskId) => set({ selectedMaskId }),
   selectComponent: (selectedComponentId) => set({ selectedComponentId }),
+  setHoveredMaskId: (hoveredMaskId) => set({ hoveredMaskId }),
+  setMaskTab: (maskTab) => set({ maskTab }),
+  setBrushPreview: (brushPreview) => set({ brushPreview }),
   selectSpot: (selectedSpotId) => set({ selectedSpotId }),
   setBrushSize: (brushSize) => set({ brushSize }),
   setBrushFeather: (brushFeather) => set({ brushFeather }),
@@ -278,6 +315,65 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
       selectedComponentId: comp.id,
     }));
     pushEdit(get);
+  },
+
+  // Cycle a component's combine mode: add -> subtract -> intersect -> add.
+  cycleComponentMode(maskId, compId) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        masks: s.params.masks.map((m) =>
+          m.id === maskId
+            ? {
+                ...m,
+                components: m.components.map((c) => {
+                  if (c.id !== compId) return c;
+                  const next: MaskComponentMode =
+                    c.mode === "add" ? "subtract" : c.mode === "subtract" ? "intersect" : "add";
+                  return { ...c, mode: next };
+                }),
+              }
+            : m,
+        ),
+      },
+    }));
+    pushEdit(get);
+  },
+
+  addRangeComponent(kind) {
+    const geo =
+      kind === "lumRange"
+        ? { lumRange: defaultLumRange() }
+        : { colorRange: defaultColorRange() };
+    const s = get();
+    const sel = s.params.masks.find((m) => m.id === s.selectedMaskId) ?? null;
+    if (sel) {
+      // Range masks are usually used to confine an existing region -> intersect.
+      const comp: MaskComponent = {
+        id: genId("comp"),
+        kind,
+        mode: sel.components.length > 0 ? "intersect" : "add",
+        invert: false,
+        ...geo,
+      };
+      get().addComponent(sel.id, comp);
+      return;
+    }
+    // No mask selected: start a new mask anchored on the range component.
+    const id = genId("mask");
+    const mask: Mask = {
+      id,
+      name: kind === "lumRange" ? "Luminance" : "Color",
+      visible: true,
+      invert: false,
+      opacity: 100,
+      adj: defaultMaskAdjustments(),
+      panels: [...DEFAULT_MASK_PANELS],
+      components: [
+        { id: genId("comp"), kind, mode: "add", invert: false, ...geo },
+      ],
+    };
+    get().addMask(mask);
   },
 
   updateComponent(maskId, compId, patch) {
@@ -340,6 +436,16 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         masks: s.params.masks.map((m) =>
           m.id === id ? { ...m, adj: { ...m.adj, ...patch } } : m,
         ),
+      },
+    }));
+    pushEdit(get);
+  },
+
+  renameMask(id, name) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        masks: s.params.masks.map((m) => (m.id === id ? { ...m, name } : m)),
       },
     }));
     pushEdit(get);

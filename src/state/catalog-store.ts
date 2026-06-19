@@ -4,7 +4,6 @@ import { catalogStorage } from "@/catalog/storage";
 import { rotateBlob, normalizeRotation } from "@/catalog/orient";
 import { useProjectStore } from "@/project/project-store";
 import { broadcast } from "./broadcast";
-import { useEditedThumbs } from "./edited-thumbnails";
 import { writeXmpSidecar, deleteXmpSidecar } from "@/catalog/xmp";
 import { getSettings } from "./settings-store";
 
@@ -240,7 +239,6 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         }
       }
       await catalogStorage().deletePhoto(id);
-      useEditedThumbs.getState().drop(id);
       set((s) => ({
         photos: s.photos.filter((p) => p.id !== id),
         selectedIds: (() => {
@@ -269,7 +267,6 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       }
       for (const id of ids) {
         await catalogStorage().deletePhoto(id);
-        useEditedThumbs.getState().drop(id);
       }
       set((s) => {
         const selectedIds = new Set(s.selectedIds);
