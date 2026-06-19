@@ -332,6 +332,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       const spot: RetouchSpot = {
         id,
         shape: "brush",
+        mode: st.retouchMode,
+        visible: true,
         dstX: down.x,
         dstY: down.y,
         srcX,
@@ -614,20 +616,20 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
       case "spot-src": {
         const s = st.params.retouch.find((sp) => sp.id === d.id);
         if (s) {
-          // Relative move so the source can be grabbed anywhere on its shape.
-          // A manual move overrides the auto-fit rotation/scale.
           const dx = cur.x - d.downSrc.x, dy = cur.y - d.downSrc.y;
           const srcX = s.srcX + dx, srcY = s.srcY + dy;
-          const off = healColorOffset(s.dstX, s.dstY, srcX, srcY, s.radius, imageAspect);
           const patch: Partial<RetouchSpot> = {
             srcX,
             srcY,
             angle: 0,
             scale: 1,
-            recolorR: off.r,
-            recolorG: off.g,
-            recolorB: off.b,
           };
+          if (s.mode !== "clone") {
+            const off = healColorOffset(s.dstX, s.dstY, srcX, srcY, s.radius, imageAspect);
+            patch.recolorR = off.r;
+            patch.recolorG = off.g;
+            patch.recolorB = off.b;
+          }
           st.updateSpot(d.id!, patch);
           d.downSrc = cur;
         }
@@ -660,11 +662,12 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect }: MaskOverl
     const patch: Partial<RetouchSpot> = {};
     const auto = findHealSource(cx, cy, rad, imageAspect);
     if (auto) {
-      // Translate so the source shape lands centred on the auto-picked centre.
       patch.srcX = s.dstX + (auto.x - cx);
       patch.srcY = s.dstY + (auto.y - cy);
       patch.angle = auto.angle; patch.scale = auto.scale;
-      patch.recolorR = auto.r; patch.recolorG = auto.g; patch.recolorB = auto.b;
+      if (s.mode !== "clone") {
+        patch.recolorR = auto.r; patch.recolorG = auto.g; patch.recolorB = auto.b;
+      }
       st.updateSpot(id, patch);
       return;
     }

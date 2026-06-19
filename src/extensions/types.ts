@@ -429,6 +429,30 @@ declare global {
         /** Search GitHub for official extensions (repos with `topic`). */
         search(query: string, topic: string): Promise<ExtensionSearchResult[]>;
       };
+      /** Renderer-side control of the window's Chrome DevTools. Backs the
+       *  Developer Tools extension's Native tab. */
+      devtools?: {
+        open(mode?: "right" | "bottom" | "undocked" | "detach"): Promise<void>;
+        close(): Promise<void>;
+        toggle(): Promise<void>;
+        isOpen(): Promise<boolean>;
+        /** Reload the renderer. `hard` ignores the HTTP cache. */
+        reload(hard?: boolean): Promise<void>;
+      };
+      /** Main-process diagnostics for the Developer Tools System / Native tabs. */
+      diagnostics?: {
+        /** chromium GPU feature status (app.getGPUFeatureStatus()). */
+        gpuInfo(): Promise<Record<string, string>>;
+        /** Per-process CPU / memory metrics (app.getAppMetrics()). */
+        metrics(): Promise<
+          {
+            type: string;
+            pid: number;
+            cpuPercent: number;
+            memoryMB: number;
+          }[]
+        >;
+      };
       /** Native file access by absolute path (path-based handle adapters). */
       fs?: {
         read(path: string): Promise<{ data: Uint8Array; mtimeMs: number; size: number }>;

@@ -27,6 +27,8 @@ import { FoldersPanel, LibraryFiltersPanel } from "@/modules/library/LibrarySide
 import { InfoPanel } from "@/modules/library/InfoPanel";
 import { KeywordsPanel } from "@/modules/library/KeywordsPanel";
 import { ExportPanel } from "@/modules/export/ExportPanel";
+import { DevToolsPanel } from "./devtools/DevToolsPanel";
+import { installLogCapture, uninstallLogCapture } from "./devtools/log-capture";
 
 export interface BuiltinExtension {
   id: string;
@@ -35,7 +37,12 @@ export interface BuiltinExtension {
   description?: string;
   /** Locked extensions can't be disabled (the Extensions manager itself). */
   locked?: boolean;
+  /** Ships inactive — seeded into the disabled list on first launch. */
+  disabledByDefault?: boolean;
   activate(api: SafelightAPI): void;
+  /** Tear down side effects when disabled (built-ins can't be uninstalled, but
+   *  may patch globals — e.g. Developer Tools patches console). */
+  deactivate?(): void;
 }
 
 const V = "1.0.0";
@@ -309,4 +316,35 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   panelExt("core.export", "Export", ExportPanel, "Export photos with format, size and quality options.", {
     module: "library", direction: "right", order: 1, width: 280,
   }),
+
+  // ── Developer Tools (disabled by default) ──
+  // Enable from Extensions ▸ Installed, then open via View ▸ Developer Tools.
+  // Activation installs the console/error capture; disabling removes it so a
+  // disabled extension leaves the console untouched.
+  {
+    id: "core.devtools",
+    name: "Developer Tools",
+    version: V,
+    description:
+      "In-app inspector: console, errors/warnings, system & WebGL info, localStorage editor and Electron DevTools controls. Disabled by default.",
+    disabledByDefault: true,
+    activate(api) {
+      installLogCapture();
+      api.registerPanel({
+        id: "core.devtools",
+        title: "Developer Tools",
+        component: DevToolsPanel,
+      });
+      api.registerKeybinding({
+        id: "core.devtools.toggle",
+        label: "Toggle Developer Tools Panel",
+        category: "General",
+        defaultCombo: "Ctrl+Alt+I",
+        handler: () => api.dock.togglePanel("core.devtools"),
+      });
+    },
+    deactivate() {
+      uninstallLogCapture();
+    },
+  },
 ];

@@ -49,7 +49,9 @@ function persistDisabled(ids: string[]): void {
 async function applyEnablement(id: string, enabled: boolean): Promise<void> {
   const builtin = BUILTIN_EXTENSIONS.find((b) => b.id === id);
   if (!enabled) {
-    if (!builtin) {
+    if (builtin) {
+      builtin.deactivate?.(); // tear down side effects (e.g. console patches)
+    } else {
       loaded.get(id)?.deactivate?.();
       loaded.delete(id);
     }
@@ -97,10 +99,47 @@ export function initEnablement(): void {
   });
 }
 
+// ─── Disabled-by-default seeding ───────────────────────────────────────────
+// Some built-ins (e.g. Developer Tools) ship inactive. They can't simply be
+// added to the disabled list at build time — that would re-disable them every
+// launch even after the user enables them. Instead we seed each such id into
+// the disabled list exactly once and remember that we did, so the user's later
+// choice is what sticks. New default-off built-ins added in future versions are
+// seeded on the first launch that includes them.
+
+const SEEDED_KEY = "sl_ext_default_seeded";
+
+function loadSeeded(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(SEEDED_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function seedDefaultDisabled(): void {
+  const seeded = loadSeeded();
+  const newlySeeded = BUILTIN_EXTENSIONS.filter(
+    (b) => b.disabledByDefault && !b.locked && !seeded.includes(b.id),
+  ).map((b) => b.id);
+  if (newlySeeded.length === 0) return;
+
+  const disabled = useDisabledExtensions.getState().ids;
+  const nextDisabled = [...disabled];
+  for (const id of newlySeeded)
+    if (!nextDisabled.includes(id)) nextDisabled.push(id);
+  persistDisabled(nextDisabled);
+  try {
+    localStorage.setItem(SEEDED_KEY, JSON.stringify([...seeded, ...newlySeeded]));
+  } catch {}
+}
+
 // ─── Loading ─────────────────────────────────────────────────────────────────
 
 /** Activate every built-in extension that isn't disabled. */
 export function loadBuiltins(): void {
+  seedDefaultDisabled(); // default-off built-ins start disabled on first launch
   for (const ext of BUILTIN_EXTENSIONS) {
     if (ext.locked || !isExtensionDisabled(ext.id)) {
       ext.activate(makeScopedAPI(ext.id));

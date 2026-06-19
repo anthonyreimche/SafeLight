@@ -1020,8 +1020,9 @@ export class WebGLRenderer {
     this.updateAutoCropScale();
     this.updateMaskTexture(params.masks);
     this.updateMaskCurveTexture(params.masks);
-    this.updateRetouchTexture(params.retouch);
-    this.updateHealFill(params.retouch);
+    const visibleRetouch = params.retouch.filter((s) => s.visible !== false);
+    this.updateRetouchTexture(visibleRetouch);
+    this.updateHealFill(visibleRetouch);
     const lut = buildRGBCurveLUT(params.toneCurve);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
@@ -1315,7 +1316,9 @@ export class WebGLRenderer {
     gl.uniform1i(u.uMaskCurves, 6);
 
     // Circular spots -> parametric array; brush-shaped retouch -> coverage atlas.
-    const circles = p.retouch.filter((s) => s.shape !== "brush").slice(0, MAX_RETOUCH);
+    // Filter out hidden spots before uploading.
+    const visibleSpots = p.retouch.filter((s) => s.visible !== false);
+    const circles = visibleSpots.filter((s) => s.shape !== "brush").slice(0, MAX_RETOUCH);
     gl.uniform1i(u.uSpotCount, circles.length);
     circles.forEach((s, i) => {
       gl.uniform4f(u[`uSpotA[${i}]`], s.dstX, s.dstY, s.srcX, s.srcY);
@@ -1324,7 +1327,7 @@ export class WebGLRenderer {
         s.radius,
         s.feather / 100,
         s.opacity / 100,
-        0, // reserved (was heal/clone mode)
+        0,
       );
       const angle = s.angle ?? 0;
       const scale = s.scale ?? 1;
@@ -1335,11 +1338,13 @@ export class WebGLRenderer {
         1 / (scale || 1),
         0,
       );
+      // Clone mode: zero the tint so source pixels are copied verbatim.
+      const isClone = s.mode === "clone";
       gl.uniform4f(
         u[`uSpotTint[${i}]`],
-        s.recolorR ?? 0,
-        s.recolorG ?? 0,
-        s.recolorB ?? 0,
+        isClone ? 0 : (s.recolorR ?? 0),
+        isClone ? 0 : (s.recolorG ?? 0),
+        isClone ? 0 : (s.recolorB ?? 0),
         0,
       );
     });
@@ -1347,7 +1352,7 @@ export class WebGLRenderer {
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.retouchTexture);
     gl.uniform1i(u.uRetouchTex, 3);
-    const brushSpots = p.retouch
+    const brushSpots = visibleSpots
       .filter((s) => s.shape === "brush" && s.dabs && s.dabs.length > 0)
       .slice(0, MAX_RETOUCH_BRUSH);
     gl.uniform1i(u.uRetouchCount, brushSpots.length);
@@ -1358,7 +1363,7 @@ export class WebGLRenderer {
         s.srcX - s.dstX, // source offset, UV
         s.srcY - s.dstY,
         s.opacity / 100,
-        0, // reserved (was heal/clone mode)
+        0,
       );
       // Average dab radius drives the heal blur scale for this painted region.
       const dabs = s.dabs!;

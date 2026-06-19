@@ -87,6 +87,7 @@ interface DevelopState {
   retouchSize: number; // image-height fraction
   retouchFeather: number; // 0..100
   retouchOpacity: number; // 0..100
+  retouchMode: "heal" | "clone";
   setActiveTool: (t: ToolMode) => void;
   setMaskToolType: (t: MaskType) => void;
   setMaskCompMode: (m: MaskComponentMode) => void;
@@ -100,6 +101,7 @@ interface DevelopState {
   setRetouchSize: (v: number) => void;
   setRetouchFeather: (v: number) => void;
   setRetouchOpacity: (v: number) => void;
+  setRetouchMode: (v: "heal" | "clone") => void;
 
   // Mask data mutations (persisted; commitEdit ends a gesture for undo).
   addMask: (mask: Mask) => void;
@@ -236,6 +238,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   retouchSize: 0.04,
   retouchFeather: 50,
   retouchOpacity: 100,
+  retouchMode: "heal" as const,
   setActiveTool: (activeTool) => set({ activeTool }),
   setMaskToolType: (maskToolType) => set({ maskToolType }),
   setMaskCompMode: (maskCompMode) => set({ maskCompMode }),
@@ -249,6 +252,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   setRetouchSize: (retouchSize) => set({ retouchSize }),
   setRetouchFeather: (retouchFeather) => set({ retouchFeather }),
   setRetouchOpacity: (retouchOpacity) => set({ retouchOpacity }),
+  setRetouchMode: (retouchMode) => set({ retouchMode }),
 
   addMask(mask) {
     set((s) => {

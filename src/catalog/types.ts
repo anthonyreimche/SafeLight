@@ -280,6 +280,8 @@ export function maskKind(m: Mask): MaskComponentKind {
 export interface RetouchSpot {
   id: string;
   shape: "circle" | "brush";
+  mode: "heal" | "clone";
+  visible: boolean;
   dstX: number; // destination center / anchor (source-UV)
   dstY: number;
   srcX: number; // sample source center / anchor (source-UV)
@@ -339,7 +341,7 @@ export interface DevelopParams {
 }
 
 export const MAX_MASKS = 8;
-export const MAX_RETOUCH = 16;
+export const MAX_RETOUCH = 32;
 export const MAX_BRUSH_MASKS = 4; // brush coverage packs into one RGBA texture
 export const MAX_RETOUCH_BRUSH = 4; // brush-shaped retouch packs into one RGBA texture
 export const MAX_MASK_COMPONENTS = 16; // total components across all masks (shader cap)
@@ -852,6 +854,8 @@ function normalizeRetouch(spots: unknown): RetouchSpot[] {
     out.push({
       id: typeof raw.id === "string" ? raw.id : `spot-${out.length}-${Date.now()}`,
       shape,
+      mode: raw.mode === "clone" ? "clone" : "heal",
+      visible: raw.visible !== false,
       dstX: clampN(raw.dstX, -1, 2, 0.5),
       dstY: clampN(raw.dstY, -1, 2, 0.5),
       srcX: clampN(raw.srcX, -1, 2, 0.5),

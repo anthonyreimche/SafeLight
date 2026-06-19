@@ -145,7 +145,7 @@ uniform int uMaskHasCurve[MAX_MASKS];
 uniform sampler2D uMaskCurves;
 
 // Retouch (spot removal): heal discs.
-#define MAX_SPOTS 16
+#define MAX_SPOTS 32
 uniform int uSpotCount;
 uniform vec4 uSpotA[MAX_SPOTS]; // dstX, dstY, srcX, srcY
 uniform vec4 uSpotB[MAX_SPOTS]; // radius(height units), feather(0..1), opacity(0..1), _reserved

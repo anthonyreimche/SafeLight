@@ -561,6 +561,47 @@ function registerFsIpc() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Developer Tools extension bridge. Lets the (opt-in, disabled-by-default)
+// Developer Tools panel drive the window's Chrome DevTools and read main-process
+// diagnostics. Gated by the renderer: the panel only exists when the user
+// enables the extension.
+// ---------------------------------------------------------------------------
+function registerDevtoolsIpc() {
+  const senderWindow = (e) => BrowserWindow.fromWebContents(e.sender);
+  const DEVTOOLS_MODES = new Set(["right", "bottom", "undocked", "detach"]);
+
+  ipcMain.handle("devtools:open", (e, mode) => {
+    const wc = senderWindow(e)?.webContents;
+    if (wc) wc.openDevTools({ mode: DEVTOOLS_MODES.has(mode) ? mode : "detach" });
+  });
+  ipcMain.handle("devtools:close", (e) => senderWindow(e)?.webContents.closeDevTools());
+  ipcMain.handle("devtools:toggle", (e) => {
+    const wc = senderWindow(e)?.webContents;
+    if (!wc) return;
+    if (wc.isDevToolsOpened()) wc.closeDevTools();
+    else wc.openDevTools({ mode: "detach" });
+  });
+  ipcMain.handle("devtools:isOpen", (e) => !!senderWindow(e)?.webContents.isDevToolsOpened());
+  ipcMain.handle("devtools:reload", (e, hard) => {
+    const wc = senderWindow(e)?.webContents;
+    if (!wc) return;
+    if (hard) wc.reloadIgnoringCache();
+    else wc.reload();
+  });
+
+  ipcMain.handle("diagnostics:gpuInfo", () => app.getGPUFeatureStatus());
+  ipcMain.handle("diagnostics:metrics", () =>
+    app.getAppMetrics().map((m) => ({
+      type: m.type,
+      pid: m.pid,
+      cpuPercent: m.cpu ? m.cpu.percentCPUUsage : 0,
+      // workingSetSize is reported in kilobytes.
+      memoryMB: m.memory ? m.memory.workingSetSize / 1024 : 0,
+    }))
+  );
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1500,
@@ -575,7 +616,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      devTools: isDev,
+      // Enabled in packaged builds too so the opt-in Developer Tools extension
+      // can open DevTools; it never auto-opens outside dev (see below).
+      devTools: true,
       spellcheck: false,
       backgroundThrottling: false,
     },
@@ -606,7 +649,7 @@ function createWindow() {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: true,
-            devTools: isDev,
+            devTools: true,
             backgroundThrottling: false,
           },
         },
@@ -674,6 +717,7 @@ if (!app.requestSingleInstanceLock()) {
     registerProtocol();
     registerPluginIpc();
     registerFsIpc();
+    registerDevtoolsIpc();
     createWindow();
 
     app.on("activate", () => {

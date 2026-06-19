@@ -295,51 +295,68 @@ function weightedMedianAngle(lines: DetectedLine[], refAngle: number): number {
 
 // ── Vanishing point → perspective coefficient ───────────────────────────────
 
+// Vote-weighted median of a set of (value, weight) samples. Robust to the
+// outlier intersections thrown by near-parallel line pairs.
+function weightedMedian(samples: { value: number; weight: number }[]): number {
+  if (samples.length === 0) return 0;
+  const s = [...samples].sort((a, b) => a.value - b.value);
+  const total = s.reduce((acc, e) => acc + e.weight, 0);
+  let cum = 0;
+  for (const e of s) {
+    cum += e.weight;
+    if (cum >= total / 2) return e.value;
+  }
+  return s[s.length - 1].value;
+}
+
+// Robust vanishing point from line-pair intersections. Aggregates the VP
+// POSITION (median of intersection coordinate), then the caller maps it to a
+// perspective coefficient with a single reciprocal. Aggregating position — not
+// the reciprocal coefficient — is the crux: for mild convergence the per-pair
+// relX/relY scatter across zero, so a median of 1/rel would swing through ±∞
+// and flip sign, whereas a median of the position lands cleanly on the true VP.
+// This mirrors the guided mode, which averages vpX/vpY then takes 1/(0.5−vp).
+//
+// `axis` selects which intersection coordinate to return: "y" for vertical
+// lines (VP height drives vertical keystone), "x" for horizontal lines.
+function vanishingPointPosition(
+  lines: DetectedLine[],
+  axis: "x" | "y",
+): number | null {
+  const sorted = [...lines].sort((a, b) => b.votes - a.votes).slice(0, 8);
+  const samples: { value: number; weight: number }[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      const a = sorted[i], b = sorted[j];
+      const sinA = Math.sin(a.theta), cosA = Math.cos(a.theta);
+      const sinB = Math.sin(b.theta), cosB = Math.cos(b.theta);
+      // |det| = |sin(θb − θa)|; ~0 means the pair is parallel (VP at infinity).
+      const det = cosA * sinB - sinA * cosB;
+      if (Math.abs(det) < 1e-3) continue;
+      const value =
+        axis === "y"
+          ? (b.rho * cosA - a.rho * cosB) / det
+          : (a.rho * sinB - b.rho * sinA) / det;
+      samples.push({ value, weight: a.votes + b.votes });
+    }
+  }
+  if (samples.length === 0) return null;
+  return weightedMedian(samples);
+}
+
 function vanishingPointPerspective(
   verticals: DetectedLine[],
   _w: number,
   h: number,
 ): number {
   if (verticals.length < 2) return 0;
-
-  const sorted = [...verticals].sort((a, b) => b.votes - a.votes).slice(0, 8);
-
-  const estimates: { gv: number; weight: number }[] = [];
-  for (let i = 0; i < sorted.length; i++) {
-    for (let j = i + 1; j < sorted.length; j++) {
-      const a = sorted[i], b = sorted[j];
-      // Only pair lines tilting in opposite directions from vertical.
-      // θ near 0 → tilts right, θ near π → tilts left. Same-tilt pairs
-      // produce VPs on the wrong side of center.
-      const devA = a.theta < Math.PI / 2 ? a.theta : a.theta - Math.PI;
-      const devB = b.theta < Math.PI / 2 ? b.theta : b.theta - Math.PI;
-      if (devA * devB >= 0) continue;
-      const sinA = Math.sin(a.theta), cosA = Math.cos(a.theta);
-      const sinB = Math.sin(b.theta), cosB = Math.cos(b.theta);
-      const det = cosA * sinB - sinA * cosB;
-      if (Math.abs(det) < 0.002) continue;
-      const iy = (b.rho * cosA - a.rho * cosB) / det;
-      const relY = (iy - h / 2) / h;
-      if (Math.abs(relY) < 0.05) continue;
-      estimates.push({ gv: 1 / relY, weight: a.votes + b.votes });
-    }
-  }
-
-  if (estimates.length === 0) return 0;
-
-  estimates.sort((a, b) => a.gv - b.gv);
-  const totalWeight = estimates.reduce((s, e) => s + e.weight, 0);
-  let cumWeight = 0;
-  let medianGV = estimates[0].gv;
-  for (const e of estimates) {
-    cumWeight += e.weight;
-    if (cumWeight >= totalWeight / 2) {
-      medianGV = e.gv;
-      break;
-    }
-  }
-
-  return (medianGV * 100) / 0.6;
+  const iy = vanishingPointPosition(verticals, "y");
+  if (iy === null) return 0;
+  // gv = 1/relY mirrors the guided mode's gv = 1/(0.5 − vpY): the reciprocal
+  // maps distant VPs to mild corrections and close VPs to strong ones.
+  const relY = (iy - h / 2) / h;
+  if (Math.abs(relY) < 0.05) return 0;
+  return ((1 / relY) * 100) / 0.6;
 }
 
 function vanishingPointPerspectiveH(
@@ -348,47 +365,13 @@ function vanishingPointPerspectiveH(
   h: number,
 ): number {
   if (horizontals.length < 2) return 0;
-
-  const sorted = [...horizontals].sort((a, b) => b.votes - a.votes).slice(0, 8);
+  const ix = vanishingPointPosition(horizontals, "x");
+  if (ix === null) return 0;
+  // Match the guided mode's gh = −1/((vpX − 0.5)·aspect) once the caller negates.
   const aspect = w / h;
-
-  const estimates: { gh: number; weight: number }[] = [];
-  for (let i = 0; i < sorted.length; i++) {
-    for (let j = i + 1; j < sorted.length; j++) {
-      const a = sorted[i], b = sorted[j];
-      // Only pair lines tilting in opposite directions from horizontal.
-      // θ > π/2 → tilts one way, θ < π/2 → tilts the other. Same-tilt
-      // pairs dominate when the VP's y-coordinate is off-center, producing
-      // VPs on the wrong side.
-      const devA = a.theta - Math.PI / 2;
-      const devB = b.theta - Math.PI / 2;
-      if (devA * devB >= 0) continue;
-      const sinA = Math.sin(a.theta), cosA = Math.cos(a.theta);
-      const sinB = Math.sin(b.theta), cosB = Math.cos(b.theta);
-      const det = cosA * sinB - sinA * cosB;
-      if (Math.abs(det) < 0.002) continue;
-      const ix = (a.rho * sinB - b.rho * sinA) / det;
-      const relX = (ix - w / 2) / w;
-      if (Math.abs(relX) < 0.05) continue;
-      estimates.push({ gh: 1 / (relX * aspect), weight: a.votes + b.votes });
-    }
-  }
-
-  if (estimates.length === 0) return 0;
-
-  estimates.sort((a, b) => a.gh - b.gh);
-  const totalWeight = estimates.reduce((s, e) => s + e.weight, 0);
-  let cumWeight = 0;
-  let medianGH = estimates[0].gh;
-  for (const e of estimates) {
-    cumWeight += e.weight;
-    if (cumWeight >= totalWeight / 2) {
-      medianGH = e.gh;
-      break;
-    }
-  }
-
-  return (medianGH * 100) / 0.6;
+  const relX = (ix - w / 2) / w;
+  if (Math.abs(relX) < 0.05) return 0;
+  return ((1 / (relX * aspect)) * 100) / 0.6;
 }
 
 // ── Upright correction computation ──────────────────────────────────────────
