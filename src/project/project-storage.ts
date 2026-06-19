@@ -14,7 +14,7 @@ import type { CatalogStorage } from "@/catalog/storage";
 import { buildPhoto } from "@/modules/library/import-photos";
 import { mapLimit, readBlob, readJSON, removeEntry, writeBlob, writeJSON } from "./fs";
 import { scanProject, type FolderNode, type ScannedFile } from "./scan";
-import { readXmpSidecar, applyXmpToPhoto } from "@/catalog/xmp";
+import { emitPhotoImport } from "@/extensions/registry";
 
 type StoredPhoto = Omit<
   CatalogPhoto,
@@ -202,15 +202,17 @@ export class ProjectStorage implements CatalogStorage {
           /* no/!invalid sidecar — ignore */
         }
 
-        // Read XMP sidecar for interoperability with other photo tools.
-        // XMP values take precedence over safelight sidecar values.
+        // Let extensions (e.g. XMP Tools) contribute metadata read from
+        // sidecars. Their values take precedence over the SafeLight sidecar.
         try {
-          const xmp = await readXmpSidecar(f.parent, f.handle.name);
-          if (xmp) {
-            photo = applyXmpToPhoto(photo, xmp);
-          }
+          const ov = await emitPhotoImport({
+            photo,
+            dir: f.parent,
+            fileName: f.handle.name,
+          });
+          if (ov) photo = { ...photo, ...ov };
         } catch {
-          /* no/invalid XMP — ignore */
+          /* extension import failed — ignore */
         }
         if (photo.thumbnailBlob)
           await writeBlob(previews, `${photo.id}.jpg`, photo.thumbnailBlob);

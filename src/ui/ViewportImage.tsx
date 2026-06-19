@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -46,6 +47,10 @@ interface ViewportImageProps {
     outW: number,
     outH: number,
   ) => void;
+  // Bump this number to crossfade the displayed frame: the current canvas pixels
+  // are snapshotted and faded out over the freshly-rendered frame beneath. Used
+  // for the Presets hover preview so the look eases in/out instead of snapping.
+  fadeToken?: number;
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
@@ -68,6 +73,7 @@ export function ViewportImage({
   onPick,
   onPickDrag,
   onViewport,
+  fadeToken,
 }: ViewportImageProps) {
   // A crop overlay locks the view to fit; a mask/heal overlay (overlayZoomable)
   // keeps the zoom/pan machinery live underneath it.
@@ -289,6 +295,36 @@ export function ViewportImage({
     if (panRaf.current != null) cancelAnimationFrame(panRaf.current);
   }, []);
 
+  // Crossfade: when fadeToken changes, snapshot the current frame into an
+  // overlay canvas (the display canvas is a 2D canvas, so drawImage is reliable)
+  // and fade it out over the new frame the renderer draws underneath.
+  const fadeRef = useRef<HTMLCanvasElement>(null);
+  const seenFadeToken = useRef(fadeToken);
+  useLayoutEffect(() => {
+    if (fadeToken == null || fadeToken === seenFadeToken.current) return;
+    seenFadeToken.current = fadeToken;
+    const src = canvasRef.current;
+    const dst = fadeRef.current;
+    if (!src || !dst || !src.width || !src.height) return;
+    dst.width = src.width;
+    dst.height = src.height;
+    const c = dst.getContext("2d");
+    if (!c) return;
+    try {
+      c.drawImage(src, 0, 0);
+    } catch {
+      return; // tainted/empty source — skip the fade rather than throw
+    }
+    dst.style.transition = "none";
+    dst.style.opacity = "1";
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        dst.style.transition = "opacity 220ms ease-out";
+        dst.style.opacity = "0";
+      }),
+    );
+  }, [fadeToken, canvasRef]);
+
   // Track drag picking state
   const pickDragRef = useRef<{ active: boolean }>({ active: false });
 
@@ -409,6 +445,15 @@ export function ViewportImage({
       onPointerUp={onPointerUp}
     >
       <canvas ref={canvasRef} style={canvasStyle} />
+
+      {/* Crossfade overlay: holds the previous frame and fades to reveal the new
+          one. Same transform as the canvas so it stays aligned; click-through.
+          Resting opacity 0 — the layout effect drives the fade. */}
+      <canvas
+        ref={fadeRef}
+        aria-hidden
+        style={{ ...canvasStyle, opacity: 0, pointerEvents: "none" }}
+      />
 
       {/* While a zoom-gesture key is held, the overlay turns click-through so
           the pointer drives pan/zoom instead of the mask/heal tool. */}

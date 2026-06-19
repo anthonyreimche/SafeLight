@@ -18,8 +18,9 @@ import {
 } from "./loader";
 import { BUILTIN_EXTENSIONS } from "./builtin";
 import { useRegistry } from "./registry";
-import { ExtensionSettingsDialog } from "./ExtensionSettingsDialog";
 import { useSettings } from "@/state/settings-store";
+import { openPreferences } from "@/ui/components/PreferencesDialog";
+import { closeExtensions } from "@/ui/components/ExtensionsDialog";
 
 // Remember which repo each installed extension came from, so search results
 // can tell which official extensions are already installed.
@@ -72,7 +73,12 @@ export function ExtensionManagerPanel() {
   const [spec, setSpec] = useState("");
   const [busy, setBusy] = useState<string | null>(null); // spec being installed
   const [msg, setMsg] = useState<string | null>(null);
-  const [settingsFor, setSettingsFor] = useState<{ id: string; name: string } | null>(null);
+  // The ⚙ button deep-links into Preferences ▸ Extensions (this extension's
+  // section), replacing the old standalone per-extension dialog.
+  const openSettings = (id: string) => {
+    closeExtensions();
+    openPreferences(id);
+  };
   // Browse needs the bridge; default browser builds to the Installed view.
   const [section, setSection] = useState<Section>(native ? "Browse" : "Installed");
   const searchSeq = useRef(0);
@@ -312,7 +318,7 @@ export function ExtensionManagerPanel() {
                         enabled={enabled(m.id)}
                         busy={busy !== null}
                         hasSettings={!!extSettings[m.id]}
-                        onSettings={() => setSettingsFor({ id: m.id, name: m.name })}
+                        onSettings={() => openSettings(m.id)}
                         onToggle={() => toggle(m.id, !enabled(m.id))}
                         onUninstall={() => void remove(m.id)}
                       />
@@ -335,7 +341,7 @@ export function ExtensionManagerPanel() {
                     locked={b.locked}
                     busy={busy !== null}
                     hasSettings={!!extSettings[b.id]}
-                    onSettings={() => setSettingsFor({ id: b.id, name: b.name })}
+                    onSettings={() => openSettings(b.id)}
                     onToggle={() => toggle(b.id, !enabled(b.id))}
                   />
                 ))}
@@ -347,13 +353,6 @@ export function ExtensionManagerPanel() {
         )}
       </div>
 
-      {settingsFor && (
-        <ExtensionSettingsDialog
-          extensionId={settingsFor.id}
-          extensionName={settingsFor.name}
-          onClose={() => setSettingsFor(null)}
-        />
-      )}
     </div>
   );
 }

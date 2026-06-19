@@ -344,27 +344,14 @@ function regressionSlope(pts: { x: number; y: number }[]): number | null {
   return slopes.length % 2 ? slopes[m] : (slopes[m - 1] + slopes[m]) / 2;
 }
 
-function median(values: number[]): number {
-  const s = [...values].sort((a, b) => a - b);
-  const m = Math.floor(s.length / 2);
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-}
-
-// Fit a converging line family by regressing each line's normalized slope
-// against its position. Converging lines have slope varying linearly with
-// position, so the fit yields two decoupled quantities:
-//   • slope     — d(lineSlope)/d(position) = the keystone coefficient (1/(centre
-//                 −VP)). Parallel lines → 0 → no correction, with per-line angle
-//                 noise averaging out instead of fabricating a phantom VP.
-//   • centerTilt — the line slope at the image centre (position 0.5). The
-//                 convergence term vanishes there, so this is the pure rotation,
-//                 free of the keystone bias that skews a raw tilt average.
+// Keystone coefficient from a converging line family by regressing each line's
+// normalized slope against its position. Converging lines have slope varying
+// linearly with position, so the regression slope is exactly the keystone
+// coefficient (1/(centre−VP)). Parallel lines → slope 0 → no correction, with
+// per-line angle noise averaging out instead of fabricating a phantom VP.
 // `axis` = "x" for horizontal lines (slope dy/dx vs. y) or "y" for vertical
 // lines (slope dx/dy vs. x). All in normalized [0,1] coords.
-function keystoneFit(
-  lines: GuidedLine[],
-  axis: "x" | "y",
-): { slope: number; centerTilt: number } | null {
+function keystoneSlope(lines: GuidedLine[], axis: "x" | "y"): number | null {
   const pts: { x: number; y: number }[] = [];
   for (const l of lines) {
     const dx = l.x2 - l.x1, dy = l.y2 - l.y1;
@@ -376,11 +363,7 @@ function keystoneFit(
       pts.push({ x: l.x1 + (dx * (0.5 - l.y1)) / dy, y: dx / dy }); // (x@y=.5, dx/dy)
     }
   }
-  if (pts.length === 0) return null;
-  const slope = regressionSlope(pts) ?? 0; // 0 when positions don't spread (parallel)
-  // Rotation = line slope at position 0.5, robust to outliers via the median.
-  const centerTilt = median(pts.map((p) => p.y - slope * (p.x - 0.5)));
-  return { slope, centerTilt };
+  return pts.length === 0 ? null : regressionSlope(pts);
 }
 
 // Shared upright core. Computes straighten + keystone from already-classified
@@ -395,26 +378,36 @@ function guidedCore(
   let perspectiveV = 0;
   let perspectiveH = 0;
 
-  // Both families estimate the SAME rotation; compute each from its fit's
-  // centre tilt (decoupled from convergence) and average — never sum, or modes
-  // that see both (Auto/Full) double it relative to Level/Vert which see one.
+  // Rotation: both families estimate the SAME roll, so compute each from the
+  // mean line tilt and AVERAGE — never sum, or modes that see both (Auto/Full)
+  // double it relative to Level/Vert which see one. The mean tilt carries a mild
+  // convergence bias, but it is stable on real, unevenly distributed detected
+  // lines (unlike extrapolating a regression to image centre).
   let straightenH: number | null = null;
   let straightenV: number | null = null;
 
-  const fitV = vLines.length >= 1 ? keystoneFit(vLines, "y") : null;
-  if (fitV) {
-    perspectiveV = clamp100((fitV.slope / 0.6) * 100);
-    // Vertical lean → rotation: physical tilt = atan(aspect·slope_norm); guided
-    // sign convention is its negation.
-    straightenV = (-Math.atan(fitV.centerTilt * imageAspect) * 180) / Math.PI;
+  // Straighten from horizontal lines (normalize direction → rightward).
+  if (hLines.length >= 1) {
+    let total = 0;
+    for (const line of hLines) {
+      let dx = (line.x2 - line.x1) * imageAspect;
+      let dy = line.y2 - line.y1;
+      if (dx < 0) { dx = -dx; dy = -dy; }
+      total += Math.atan2(dy, dx);
+    }
+    straightenH = ((total / hLines.length) * 180) / Math.PI;
   }
 
-  const fitH = hLines.length >= 1 ? keystoneFit(hLines, "x") : null;
-  if (fitH) {
-    // Slope is gh in square space; /aspect gives the normalized gh coefficient.
-    perspectiveH = clamp100((fitH.slope / imageAspect / 0.6) * 100);
-    // Horizontal tilt → rotation: physical tilt = atan(slope_norm / aspect).
-    straightenH = (Math.atan(fitH.centerTilt / imageAspect) * 180) / Math.PI;
+  // Straighten from vertical lines (normalize direction → upward).
+  if (vLines.length >= 1) {
+    let total = 0;
+    for (const line of vLines) {
+      let dx = (line.x2 - line.x1) * imageAspect;
+      let dy = line.y2 - line.y1;
+      if (dy > 0) { dx = -dx; dy = -dy; }
+      total += Math.atan2(dx, -dy);
+    }
+    straightenV = ((total / vLines.length) * 180) / Math.PI;
   }
 
   let straighten = 0;
@@ -424,6 +417,18 @@ function guidedCore(
     straighten = straightenH;
   } else if (straightenV !== null) {
     straighten = straightenV;
+  }
+
+  // Vertical perspective: regression slope IS the gv keystone coefficient.
+  if (vLines.length >= 2) {
+    const gv = keystoneSlope(vLines, "y");
+    if (gv !== null) perspectiveV = clamp100((gv / 0.6) * 100);
+  }
+
+  // Horizontal perspective: slope is gh in square space; /aspect normalizes it.
+  if (hLines.length >= 2) {
+    const sh = keystoneSlope(hLines, "x");
+    if (sh !== null) perspectiveH = clamp100((sh / imageAspect / 0.6) * 100);
   }
 
   return {

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CatalogPhoto, CropRect } from "@/catalog/types";
 import { HSL_CHANNELS } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
@@ -62,6 +62,19 @@ export function DevelopCanvas({
     photo,
   );
 
+  // Crossfade the canvas whenever the hover preview turns on, off, or switches
+  // to another preset, so the look eases in/out instead of snapping.
+  const previewParams = useDevelopStore((s) => s.previewParams);
+  const [fadeToken, setFadeToken] = useState(0);
+  const fadeInit = useRef(false);
+  useEffect(() => {
+    if (!fadeInit.current) {
+      fadeInit.current = true;
+      return;
+    }
+    setFadeToken((t) => t + 1);
+  }, [previewParams]);
+
   const cropping = useDevelopStore((s) => s.cropping);
   const activeTool = useDevelopStore((s) => s.activeTool);
   const crop = useDevelopStore((s) => s.params.crop);
@@ -72,6 +85,7 @@ export function DevelopCanvas({
   const cropGuide = useDevelopStore((s) => s.cropGuide);
   const cropGuideFlip = useDevelopStore((s) => s.cropGuideFlip);
   const uprightMode = useDevelopStore((s) => s.params.uprightMode);
+  const guidedEditing = useDevelopStore((s) => s.guidedEditing);
   const guidedLines = useDevelopStore((s) => s.params.guidedLines);
   const lensCorrection = useDevelopStore((s) => s.params.lensCorrection);
   const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
@@ -233,6 +247,7 @@ export function DevelopCanvas({
       onViewport={setViewport}
       loading={loading}
       resetKey={photo.id}
+      fadeToken={fadeToken}
       overlayZoomable={!cropping && activeTool !== "none"}
       onPick={wbPicking && !cropping && activeTool === "none" ? onWbPick : undefined}
       onPickDrag={
@@ -282,7 +297,7 @@ export function DevelopCanvas({
                 }}
               />
             )
-          : uprightMode === "guided"
+          : uprightMode === "guided" && guidedEditing
             ? (rect) => (
                 <GuidedOverlay
                   rect={rect}

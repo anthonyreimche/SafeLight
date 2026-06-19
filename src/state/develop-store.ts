@@ -31,14 +31,17 @@ import type { ResolvedProfile } from "@/lens-profiles/types";
 import { catalogStorage } from "@/catalog/storage";
 import { broadcast } from "./broadcast";
 import { nextGuide, type CropGuide } from "@/modules/develop/crop-guides";
-import { writeXmpSidecar } from "@/catalog/xmp";
-import { getSettings } from "./settings-store";
+import { emitEditCommit } from "@/extensions/registry";
 import { useCatalogStore } from "./catalog-store";
 import { resolveLensForPhoto } from "./lens-resolve";
 
 interface DevelopState {
   photoId: string | null;
   params: DevelopParams;
+  /** Transient render-only override: when set, the renderer draws these params
+   *  instead of `params` without touching history (used for preset hover
+   *  preview). Cleared on mouse-out, on apply, and when switching photos. */
+  previewParams: DevelopParams | null;
   /** Dynamic parameter bag keyed by qualified names (e.g. "core.exposure.exposure").
    *  During migration, kept in sync with `params` via a bidirectional bridge.
    *  Will become the sole representation once all stages are extracted. */
@@ -51,6 +54,12 @@ interface DevelopState {
   // Resolved lens profile (ephemeral — recomputed per photo, not serialized).
   resolvedLensProfile: ResolvedProfile | null;
   detectedLensName: string | null;
+
+  // Whether the guided-upright drawing overlay is open. Transient: guided can be
+  // the selected upright mode without the line-drawing overlay capturing the
+  // canvas, so this is separate from params.uprightMode and not persisted.
+  guidedEditing: boolean;
+  setGuidedEditing: (v: boolean) => void;
 
   // Crop tool UI state (not part of the edit, so not persisted to history).
   cropping: boolean;
@@ -157,6 +166,9 @@ interface DevelopState {
   setToneCurve: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
   setHslValue: (band: HSLBand, channel: HSLChannel, value: number) => void;
   applyPreset: (params: Partial<DevelopParams>) => Promise<void>;
+  /** Set (or clear with null) the render-only preview params. No history write,
+   *  no broadcast — purely local to the Develop canvas. */
+  setPreviewParams: (params: Partial<DevelopParams> | null) => void;
   commitEdit: (label: string) => Promise<void>;
   undo: () => void;
   redo: () => void;
@@ -212,6 +224,7 @@ function moveHistory(
 export const useDevelopStore = create<DevelopState>((set, get) => ({
   photoId: null,
   params: normalizeParams(undefined),
+  previewParams: null,
   paramBag: {},
   history: [],
   historyIndex: -1,
@@ -219,6 +232,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   resolvedLensProfile: null,
   detectedLensName: null,
   asShotTemperature: 6500,
+
+  guidedEditing: false,
+  setGuidedEditing: (guidedEditing) => set({ guidedEditing }),
 
   cropping: false,
   constrainCrop: true,
@@ -541,10 +557,12 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         photoId,
         asShotTemperature: asShot,
         params: normalizeParams(stack[index].params),
+        previewParams: null,
         history: stack,
         historyIndex: index,
         resolvedLensProfile: null,
         detectedLensName: null,
+        guidedEditing: false,
       });
     } else {
       // Seed history with the untouched state so undo can return to it.
@@ -554,6 +572,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         photoId,
         asShotTemperature: asShot,
         params: initial,
+        previewParams: null,
         history: [
           {
             timestamp: Date.now(),
@@ -564,6 +583,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         historyIndex: 0,
         resolvedLensProfile: null,
         detectedLensName: null,
+        guidedEditing: false,
       });
     }
 
@@ -631,12 +651,16 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   },
 
   async applyPreset(params) {
-    set({ params: normalizeParams(params) });
+    set({ previewParams: null, params: normalizeParams(params) });
     broadcast({
       type: "edit-update",
       payload: { photoId: get().photoId, params: get().params },
     });
     await get().commitEdit("Preset");
+  },
+
+  setPreviewParams(params) {
+    set({ previewParams: params ? normalizeParams(params) : null });
   },
 
   async commitEdit(label: string) {
@@ -662,19 +686,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     };
     await catalogStorage().putEditState(editState);
 
-    // Write XMP sidecar if enabled (includes edit params in private namespace).
-    if (getSettings().writeXmpSidecars) {
-      const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
-      if (photo?.directoryHandle && photo?.fileHandle) {
-        try {
-          await writeXmpSidecar(photo.directoryHandle, photo.fileHandle.name, photo, editState, {
-            includePrivateNamespace: true,
-          });
-        } catch (e) {
-          console.warn(`[xmp] Failed to write sidecar for ${photo.filename}:`, e);
-        }
-      }
-    }
+    // Let extensions (e.g. XMP Tools) persist the committed edit elsewhere.
+    const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
+    if (photo) await emitEditCommit({ photo, editState });
 
     // Announce the committed state so the Library refreshes this photo's thumbnail
     // (and histogram) the moment it's edited — for any visible photo, in any

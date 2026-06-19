@@ -11,6 +11,7 @@ import { maxCropForTransform } from "@/rendering/crop-transform";
 import { buildInverseTransform, applyInsetToInverse } from "@/rendering/transform";
 import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
 import { getRenderBridge } from "@/rendering/render-bridge";
+import { computeGuidedCorrection } from "@/rendering/upright";
 
 function getLensCropScale(imageAspect: number): number {
   const st = useDevelopStore.getState();
@@ -39,6 +40,8 @@ export function TransformPanel() {
   const transform = useDevelopStore((s) => s.params.transform);
   const straighten = useDevelopStore((s) => s.params.straighten);
   const uprightMode = useDevelopStore((s) => s.params.uprightMode);
+  const guidedEditing = useDevelopStore((s) => s.guidedEditing);
+  const setGuidedEditing = useDevelopStore((s) => s.setGuidedEditing);
   const constrainCrop = useDevelopStore((s) => s.constrainCrop);
   const setConstrainCrop = useDevelopStore((s) => s.setConstrainCrop);
   const setParam = useDevelopStore((s) => s.setParam);
@@ -74,13 +77,42 @@ export function TransformPanel() {
 
   const applyUpright = async (mode: UprightMode) => {
     if (mode === "off") {
+      // Clear the upright correction: zero the sliders it drives and reset tilt.
+      const next: TransformParams = {
+        ...useDevelopStore.getState().params.transform,
+        perspectiveV: 0,
+        perspectiveH: 0,
+        aspect: 0,
+      };
+      setGuidedEditing(false);
       setParam("uprightMode", "off");
+      setParam("straighten", 0);
+      setParam("transform", next);
+      fitCrop(0, next);
+      commitEdit("Upright off");
       return;
     }
     if (mode === "guided") {
-      setParam("uprightMode", uprightMode === "guided" ? "off" : "guided");
+      // Guided stays the selected mode. The button toggles the drawing overlay:
+      // open it on entry, close it on "Done" (which releases the canvas without
+      // dropping the mode). Either way, recompute from the lines drawn so far.
+      const closing = uprightMode === "guided" && guidedEditing;
+      setParam("uprightMode", "guided");
+      setGuidedEditing(!closing);
+      const st = useDevelopStore.getState();
+      const result = computeGuidedCorrection(st.params.guidedLines, imageAspect);
+      const next: TransformParams = {
+        ...st.params.transform,
+        perspectiveV: Math.round(result.perspectiveV),
+        perspectiveH: Math.round(result.perspectiveH),
+      };
+      setParam("straighten", result.straighten);
+      setParam("transform", next);
+      fitCrop(result.straighten, next);
+      commitEdit("Guided Upright");
       return;
     }
+    setGuidedEditing(false);
     setParam("uprightMode", mode);
     setAnalyzing(true);
     try {
@@ -106,9 +138,10 @@ export function TransformPanel() {
       <div className="space-y-0.5">
         <div className="flex gap-0.5 mb-1">
           {UPRIGHT_MODES.map((u) => {
-            const isGuided = u.mode === "guided";
             const active = uprightMode === u.mode;
-            const label = isGuided && active ? "Done" : u.label;
+            // While the guided overlay is open the button finishes editing.
+            const label =
+              u.mode === "guided" && active && guidedEditing ? "Done" : u.label;
             return (
               <button
                 key={u.mode}

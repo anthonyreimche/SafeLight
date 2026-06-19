@@ -6,12 +6,14 @@ import * as React from "react";
 import { create } from "zustand";
 import type { SafelightAPI } from "./types";
 import {
+  registerCatalogHooks,
   registerExportProcessor,
   registerFilenameTemplate,
   registerLayout,
   registerLensProfile,
   registerPanel,
   registerPipeline,
+  registerPresetImporter,
   registerProcessingStage,
   registerSettings,
   registerSliderIcon,
@@ -69,6 +71,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerExportProcessor: (c) => registerExportProcessor(extensionId, c),
     registerFilenameTemplate: (c) => registerFilenameTemplate(extensionId, c),
     registerLensProfile: (c) => registerLensProfile(extensionId, c),
+    registerCatalogHooks: (c) => registerCatalogHooks(extensionId, c),
+    registerPresetImporter: (c) => registerPresetImporter(extensionId, c),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),

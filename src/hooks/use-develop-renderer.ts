@@ -46,7 +46,9 @@ export function useDevelopRenderer(
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [source, setSource] = useState<string | null>(null);
-  const params = useDevelopStore((s) => s.params);
+  // Effective params: a hover preview (e.g. from the Presets panel) overrides
+  // the committed params for rendering only, without touching history.
+  const params = useDevelopStore((s) => s.previewParams ?? s.params);
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   const cropping = useDevelopStore((s) => s.cropping);
   const showClipping = useDevelopStore((s) => s.showClipping);

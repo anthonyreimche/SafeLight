@@ -15,6 +15,8 @@ import { ViewMenu } from "./ViewMenu";
 import { LayoutMenu } from "./LayoutMenu";
 import { openPreferences } from "./PreferencesDialog";
 import { openExtensions } from "./ExtensionsDialog";
+import { useDisabledExtensions } from "@/extensions/loader";
+import { detachDevtools } from "@/extensions/devtools/detach";
 
 const iconBtnCls =
   "rounded px-2 py-1 text-text-secondary transition-colors hover:text-text-primary";
@@ -34,6 +36,34 @@ function GearIcon() {
     >
       <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
       <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function BugIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m8 2 1.88 1.88" />
+      <path d="M14.12 3.88 16 2" />
+      <path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1" />
+      <path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6" />
+      <path d="M12 20v-9" />
+      <path d="M6.53 9C4.6 8.8 3 7.1 3 5" />
+      <path d="M6 13H2" />
+      <path d="M3 21c0-2.1 1.7-3.9 3.8-4" />
+      <path d="M20.97 5c0 2.1-1.6 3.8-3.5 4" />
+      <path d="M22 13h-4" />
+      <path d="M17.2 17c2.1.1 3.8 1.9 3.8 4" />
     </svg>
   );
 }
@@ -58,7 +88,7 @@ function BlocksIcon() {
 }
 
 const prefsButton = (
-  <button onClick={openPreferences} title="Preferences (Ctrl+,)" className={iconBtnCls}>
+  <button onClick={() => openPreferences()} title="Preferences (Ctrl+,)" className={iconBtnCls}>
     <GearIcon />
   </button>
 );
@@ -72,6 +102,8 @@ export function TopBar() {
   const needsReconnect = useCatalogStore((s) => s.needsReconnect);
   const reconnecting = useCatalogStore((s) => s.reconnecting);
   const reconnectFiles = useCatalogStore((s) => s.reconnectFiles);
+  // The bug button only appears while the Developer Tools extension is enabled.
+  const devtoolsEnabled = useDisabledExtensions((s) => !s.ids.includes("core.devtools"));
 
   // Browsers only allow re-requesting file permission inside a user gesture, so
   // we arm a one-time listener: the first click anywhere triggers the reconnect.
@@ -168,12 +200,21 @@ export function TopBar() {
         <ViewMenu />
         <LayoutMenu />
         <div className="mx-1 h-4 w-px bg-border" />
-        <button onClick={openPreferences} title="Preferences (Ctrl+,)" className={iconBtnCls}>
+        <button onClick={() => openPreferences()} title="Preferences (Ctrl+,)" className={iconBtnCls}>
           <GearIcon />
         </button>
         <button onClick={openExtensions} title="Extensions" className={iconBtnCls}>
           <BlocksIcon />
         </button>
+        {devtoolsEnabled && (
+          <button
+            onClick={detachDevtools}
+            title="Open Developer Tools in a separate window"
+            className={iconBtnCls}
+          >
+            <BugIcon />
+          </button>
+        )}
       </div>
       <div className="flex items-center gap-2">{reconnectButton}</div>
     </div>

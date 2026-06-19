@@ -1,8 +1,17 @@
 // XMP sidecar file support for interoperability with other photo tools.
 // Implements reading and writing of XMP metadata to .xmp files alongside
 // original images (DSC_0012.NEF → DSC_0012.xmp, DSC_0012.JPG → DSC_0012_jpg.xmp).
+//
+// Moved verbatim out of the app core (was src/catalog/xmp.ts) so XMP support is
+// an optional, installable extension. Only the type-import path changed.
 
-import type { CatalogPhoto, ColorLabel, FlagStatus, DevelopParams, EditState } from "./types";
+import type {
+  CatalogPhoto,
+  ColorLabel,
+  FlagStatus,
+  DevelopParams,
+  EditState,
+} from "./safelight";
 
 // ── Sidecar filename generation ─────────────────────────────────────────────
 
@@ -50,14 +59,14 @@ export interface XmpMetadata {
 /** Parse XMP XML and extract metadata fields. */
 export function parseXmp(xmpXml: string): XmpMetadata {
   const result: XmpMetadata = {};
-  
+
   // Parse rating: <xmp:Rating>3</xmp:Rating>
   const ratingMatch = xmpXml.match(/<xmp:Rating>(\d)<\/xmp:Rating>/);
   if (ratingMatch) {
     const rating = parseInt(ratingMatch[1], 10);
     if (rating >= 0 && rating <= 5) result.rating = rating;
   }
-  
+
   // Parse label: <xmp:Label>Red</xmp:Label>
   const labelMatch = xmpXml.match(/<xmp:Label>([^<]+)<\/xmp:Label>/);
   if (labelMatch) {
@@ -66,7 +75,7 @@ export function parseXmp(xmpXml: string): XmpMetadata {
       result.label = label;
     }
   }
-  
+
   // Parse flag from photoshop:Urgency (1=high/pick, 8=low/reject) or custom fields
   const urgencyMatch = xmpXml.match(/<photoshop:Urgency>(\d)<\/photoshop:Urgency>/);
   if (urgencyMatch) {
@@ -79,7 +88,7 @@ export function parseXmp(xmpXml: string): XmpMetadata {
   const rejectMatch = xmpXml.match(/<xmp:RejectFlag>(true|1)<\/xmp:RejectFlag>/i);
   if (rejectMatch) result.flag = "reject";
   else if (pickMatch) result.flag = "pick";
-  
+
   // Parse keywords from dc:subject bag
   const subjectMatch = xmpXml.match(/<dc:subject>\s*<rdf:Bag>([\s\S]*?)<\/rdf:Bag>\s*<\/dc:subject>/);
   if (subjectMatch) {
@@ -92,7 +101,7 @@ export function parseXmp(xmpXml: string): XmpMetadata {
     }
     if (keywords.length > 0) result.keywords = keywords;
   }
-  
+
   // Parse hierarchical keywords from lr:hierarchicalSubject
   const hierMatch = xmpXml.match(/<lr:hierarchicalSubject>\s*<rdf:Bag>([\s\S]*?)<\/rdf:Bag>\s*<\/lr:hierarchicalSubject>/);
   if (hierMatch) {
@@ -105,7 +114,7 @@ export function parseXmp(xmpXml: string): XmpMetadata {
     }
     if (keywords.length > 0) result.hierarchicalKeywords = keywords;
   }
-  
+
   return result;
 }
 
@@ -123,7 +132,7 @@ export function generateXmp(
     '  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
     '    <rdf:Description',
   ];
-  
+
   // Add namespace declarations
   lines.push(`      xmlns:xmp="${NAMESPACES.xmp}"`);
   lines.push(`      xmlns:dc="${NAMESPACES.dc}"`);
@@ -133,25 +142,25 @@ export function generateXmp(
     lines.push(`      xmlns:safelight="${NAMESPACES.safelight}"`);
   }
   lines.push('      rdf:about="">');
-  
+
   // Rating
   if (photo.rating > 0) {
     lines.push(`      <xmp:Rating>${photo.rating}</xmp:Rating>`);
   }
-  
+
   // Label (convert "none" to empty, others to Title Case)
   if (photo.colorLabel && photo.colorLabel !== "none") {
     const labelTitle = photo.colorLabel.charAt(0).toUpperCase() + photo.colorLabel.slice(1);
     lines.push(`      <xmp:Label>${escapeXml(labelTitle)}</xmp:Label>`);
   }
-  
+
   // Flag - use photoshop:Urgency (1=pick/high, 8=reject/low)
   if (photo.flag === "pick") {
     lines.push('      <photoshop:Urgency>1</photoshop:Urgency>');
   } else if (photo.flag === "reject") {
     lines.push('      <photoshop:Urgency>8</photoshop:Urgency>');
   }
-  
+
   // Keywords
   if (photo.keywords.length > 0) {
     lines.push('      <dc:subject>');
@@ -162,7 +171,7 @@ export function generateXmp(
     lines.push('        </rdf:Bag>');
     lines.push('      </dc:subject>');
   }
-  
+
   // Hierarchical keywords (flatten hierarchy for now)
   if (photo.keywords.length > 0) {
     lines.push('      <lr:hierarchicalSubject>');
@@ -173,7 +182,7 @@ export function generateXmp(
     lines.push('        </rdf:Bag>');
     lines.push('      </lr:hierarchicalSubject>');
   }
-  
+
   // Private Safelight namespace for edit params (round-tripping)
   if (options?.includePrivateNamespace && editState) {
     const currentEdit = editState.stack[editState.currentIndex];
@@ -184,11 +193,11 @@ export function generateXmp(
       lines.push(`      <safelight:EditHistory>${escapeXml(JSON.stringify(editState.stack.map(s => ({ timestamp: s.timestamp, label: s.label }))))}</safelight:EditHistory>`);
     }
   }
-  
+
   lines.push('    </rdf:Description>');
   lines.push('  </rdf:RDF>');
   lines.push('</x:xmpmeta>');
-  
+
   return lines.join('\n');
 }
 
@@ -230,7 +239,7 @@ export async function writeXmpSidecar(
 ): Promise<void> {
   const xmpName = getXmpSidecarName(imageFilename);
   const xmpXml = generateXmp(photo, editState, options);
-  
+
   const handle = await parentDir.getFileHandle(xmpName, { create: true });
   const writable = await handle.createWritable();
   await writable.write(xmpXml);
@@ -252,22 +261,18 @@ export async function deleteXmpSidecar(
 
 // ── Import Helpers ───────────────────────────────────────────────────────────
 
+/** Build the CatalogPhoto field overrides for an imported XMP (only fields
+ *  actually present in the sidecar), to be merged onto the photo record. */
+export function xmpToPhotoOverrides(xmp: XmpMetadata): Partial<CatalogPhoto> {
+  const updated: Partial<CatalogPhoto> = {};
+  if (xmp.rating !== undefined) updated.rating = xmp.rating;
+  if (xmp.label !== undefined) updated.colorLabel = xmp.label;
+  if (xmp.flag !== undefined) updated.flag = xmp.flag;
+  if (xmp.keywords !== undefined && xmp.keywords.length > 0) updated.keywords = xmp.keywords;
+  return updated;
+}
+
 /** Apply XMP metadata to a CatalogPhoto (non-destructive: only sets if present). */
 export function applyXmpToPhoto(photo: CatalogPhoto, xmp: XmpMetadata): CatalogPhoto {
-  const updated = { ...photo };
-  
-  if (xmp.rating !== undefined) {
-    updated.rating = xmp.rating;
-  }
-  if (xmp.label !== undefined) {
-    updated.colorLabel = xmp.label;
-  }
-  if (xmp.flag !== undefined) {
-    updated.flag = xmp.flag;
-  }
-  if (xmp.keywords !== undefined && xmp.keywords.length > 0) {
-    updated.keywords = xmp.keywords;
-  }
-  
-  return updated;
+  return { ...photo, ...xmpToPhotoOverrides(xmp) };
 }

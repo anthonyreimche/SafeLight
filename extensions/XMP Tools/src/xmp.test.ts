@@ -1,8 +1,8 @@
-// Simple tests for XMP sidecar functionality
-// Run with: node --experimental-strip-types src/catalog/xmp.test.ts
+// Tests for XMP sidecar functionality.
+// Run with: node --experimental-strip-types src/xmp.test.ts
 
 import { parseXmp, generateXmp, getXmpSidecarName, applyXmpToPhoto } from "./xmp.ts";
-import type { CatalogPhoto, ColorLabel, FlagStatus } from "./types.ts";
+import type { CatalogPhoto, ColorLabel, FlagStatus } from "./safelight";
 
 // Test getXmpSidecarName
 function testSidecarNames() {
@@ -97,24 +97,12 @@ function testGenerateXmp() {
   const photo: CatalogPhoto = {
     id: "test-123",
     filename: "DSC_0012.NEF",
-    relPath: "2024/DSC_0012.NEF",
-    folder: "2024",
     directoryHandle: null,
     fileHandle: null,
-    thumbnailBlob: null,
-    thumbnailUrl: null,
-    width: 6000,
-    height: 4000,
-    fileSize: 25000000,
-    mimeType: "image/x-nikon-nef",
     rating: 3,
     colorLabel: "blue" as ColorLabel,
     flag: "pick" as FlagStatus,
-    rotation: 0,
     keywords: ["portrait", "studio"],
-    dateCreated: Date.now(),
-    dateImported: Date.now(),
-    exif: {},
   };
 
   const xmp = generateXmp(photo);
@@ -182,24 +170,12 @@ function testRoundTrip() {
   const photo: CatalogPhoto = {
     id: "test-456",
     filename: "IMG_5678.jpg",
-    relPath: "IMG_5678.jpg",
-    folder: "",
     directoryHandle: null,
     fileHandle: null,
-    thumbnailBlob: null,
-    thumbnailUrl: null,
-    width: 4000,
-    height: 3000,
-    fileSize: 5000000,
-    mimeType: "image/jpeg",
     rating: 5,
     colorLabel: "purple" as ColorLabel,
     flag: "none" as FlagStatus,
-    rotation: 0,
     keywords: ["nature", "macro", "flowers"],
-    dateCreated: Date.now(),
-    dateImported: Date.now(),
-    exif: {},
   };
 
   // Generate XMP
@@ -261,6 +237,7 @@ function runTests() {
     console.log("✓ All tests passed!");
   } else {
     console.log("✗ Some tests failed");
+    process.exitCode = 1;
   }
   return passed === total;
 }

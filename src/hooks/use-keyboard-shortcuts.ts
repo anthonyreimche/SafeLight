@@ -51,9 +51,10 @@ export function useKeyboardShortcuts() {
         } else if (d.wbPicking) {
           e.preventDefault();
           d.setWbPicking(false);
-        } else if (d.params.uprightMode === "guided") {
+        } else if (d.params.uprightMode === "guided" && d.guidedEditing) {
+          // Close the guided drawing overlay but keep guided as the active mode.
           e.preventDefault();
-          d.setParam("uprightMode", "off");
+          d.setGuidedEditing(false);
         } else if (d.activeTool !== "none") {
           e.preventDefault();
           d.setActiveTool("none");

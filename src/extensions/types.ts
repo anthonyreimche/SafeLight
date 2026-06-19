@@ -126,12 +126,19 @@ export type SettingsField =
       options: { value: string; label: string }[];
     };
 
-/** Declarative settings dialog, opened from the Extensions panel. Values are
- *  persisted per-extension and read back with api.settings.get(). */
+/** Declarative settings, shown as the extension's section in Preferences ▸
+ *  Extensions. Values are persisted per-extension and read back with
+ *  api.settings.get(). The declarative `fields` are auto-rendered by the host
+ *  (themed, searchable); supply `component` only for genuinely custom UI. */
 export interface SettingsContribution {
-  /** Dialog title; defaults to the extension's name. */
+  /** Section title; defaults to the extension's name. */
   title?: string;
   fields: SettingsField[];
+  /** Sort position within the Extensions group (lower = higher up). Default 100. */
+  order?: number;
+  /** Escape hatch: render this instead of the declarative `fields`. Receives no
+   *  props — read/write values via api.settings inside the component. */
+  component?: ComponentType;
 }
 
 /** A repo found by the official-extension search (GitHub topic). */
@@ -322,6 +329,67 @@ export interface ProcessingStageContribution {
 }
 
 // ---------------------------------------------------------------------------
+// Catalog lifecycle hooks (orchestrator)
+// ---------------------------------------------------------------------------
+
+/** Subscribe to catalog lifecycle events. Lets an extension own a side concern
+ *  (e.g. XMP sidecars) without core knowing about it. All handlers are async and
+ *  awaited; a throwing handler is logged and skipped so one extension can't break
+ *  a save or an import. */
+export interface CatalogHooksContribution {
+  /** Globally unique, e.g. "my-ext.xmp". */
+  id: string;
+  /** Called for each newly discovered photo during a project scan. Return a
+   *  partial CatalogPhoto to merge onto the record (e.g. rating/label/keywords
+   *  read from a sidecar). Later handlers' fields win, matching the old
+   *  single-XMP precedence over the SafeLight sidecar. */
+  onPhotoImport?(ctx: {
+    photo: import("@/catalog/types").CatalogPhoto;
+    dir: FileSystemDirectoryHandle;
+    fileName: string;
+  }): Promise<Partial<import("@/catalog/types").CatalogPhoto> | void>;
+  /** Called after one or more photos' metadata (rating/label/flag/keywords)
+   *  is committed. `getEditState` lazily fetches a photo's edit stack. */
+  onMetadataChange?(ctx: {
+    photos: import("@/catalog/types").CatalogPhoto[];
+    getEditState(id: string): Promise<import("@/catalog/types").EditState | null>;
+  }): Promise<void>;
+  /** Called after a develop edit is committed to history. */
+  onEditCommit?(ctx: {
+    photo: import("@/catalog/types").CatalogPhoto;
+    editState: import("@/catalog/types").EditState;
+  }): Promise<void>;
+  /** Called when a photo is removed from the catalog. */
+  onPhotoRemove?(ctx: {
+    photo: import("@/catalog/types").CatalogPhoto;
+    dir: FileSystemDirectoryHandle;
+    fileName: string;
+  }): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Preset importers
+// ---------------------------------------------------------------------------
+
+/** Teach the Presets panel to import preset files from other apps. The panel's
+ *  Import picker offers each registered importer's file extensions; a matching
+ *  file is routed to `parse`. */
+export interface PresetImporterContribution {
+  /** Globally unique, e.g. "my-ext.lightroom". */
+  id: string;
+  /** Shown in the import picker, e.g. "Lightroom preset (.xmp)". */
+  label: string;
+  /** File extensions handled, lowercase with leading dot, e.g. [".xmp"]. */
+  extensions: string[];
+  /** Parse a chosen file into a named set of develop params, or null if the
+   *  file isn't a recognizable preset of this kind. */
+  parse(file: File): Promise<{
+    name: string;
+    params: Partial<import("@/catalog/types").DevelopParams>;
+  } | null>;
+}
+
+// ---------------------------------------------------------------------------
 // Keyboard shortcuts
 // ---------------------------------------------------------------------------
 
@@ -368,6 +436,12 @@ export interface SafelightAPI {
   /** Register a lens profile that overrides or supplements the built-in Lensfun
    *  database. Extensions with priority > 0 are checked before Lensfun. */
   registerLensProfile(c: import("@/lens-profiles/types").LensProfileContribution): void;
+  /** Subscribe to catalog lifecycle events (photo import / metadata change /
+   *  edit commit / photo remove). Lets an extension own a side concern such as
+   *  XMP sidecars without core depending on it. */
+  registerCatalogHooks(c: CatalogHooksContribution): void;
+  /** Teach the Presets panel to import preset files from other applications. */
+  registerPresetImporter(c: PresetImporterContribution): void;
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;
@@ -388,8 +462,9 @@ export interface SafelightAPI {
   themes: { apply(id: string): void };
   layouts: { apply(id: string): void };
   pipelines: { apply(id: string): void };
-  /** Open / close the Preferences dialog. */
-  preferences: { open(): void; close(): void; toggle(): void };
+  /** Open / close the Preferences dialog. `open` may take a section id (a core
+   *  section's id or an extension id) to deep-link straight to that section. */
+  preferences: { open(sectionId?: string): void; close(): void; toggle(): void };
   /** Navigate between app modules. */
   navigation: { goTo(module: "library" | "develop"): void };
   /** Read the current binding for any action id (built-in or extension). */

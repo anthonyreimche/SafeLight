@@ -1,0 +1,12 @@
+{
+  "name": "safelight-xmp-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "XMP sidecar + Lightroom preset import extension for SafeLight.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "install-local": "node scripts/install.mjs",
+    "test": "node --experimental-strip-types src/xmp.test.ts && node --experimental-strip-types src/lightroom-import.test.ts"
+  }
+}

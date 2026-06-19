@@ -3,9 +3,10 @@
 // persisted settings store immediately — there is no OK/Apply; close when done.
 // Theme and layout drive their own stores (themes.ts / dock.ts) directly.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { pushEscapeHandler } from "@/ui/escape-stack";
+import { SettingsFieldList } from "@/extensions/SettingsFieldList";
 import {
   KEY_ACTIONS,
   comboFromEvent,
@@ -54,26 +55,127 @@ import {
 
 // ─── Open/close state (exported so the keyboard hook and TopBar can drive it) ─
 
-const useOpen = create<{ open: boolean }>(() => ({ open: false }));
-export const openPreferences = () => useOpen.setState({ open: true });
-export const closePreferences = () => useOpen.setState({ open: false });
+const useOpen = create<{ open: boolean; target?: string }>(() => ({
+  open: false,
+}));
+/** Open Preferences, optionally deep-linked to a section id (a core section's
+ *  id or an extension id). */
+export const openPreferences = (sectionId?: string) =>
+  useOpen.setState({ open: true, target: sectionId });
+export const closePreferences = () =>
+  useOpen.setState({ open: false, target: undefined });
 export const togglePreferences = () =>
-  useOpen.setState((s) => ({ open: !s.open }));
+  useOpen.setState((s) => ({ open: !s.open, target: undefined }));
 
 // ─── Sections ────────────────────────────────────────────────────────────────
+// The window is data-driven: a list of sections grouped into "General" (core,
+// each backed by a bespoke component) and "Extensions" (one per extension that
+// registered settings, auto-rendered from its declarative fields). `keywords`
+// feeds the header search — for core sections it lists their field labels so a
+// search can find a setting without a full declarative rewrite.
 
-const SECTIONS = [
-  "Interface",
-  "Library",
-  "Rendering",
-  "Performance",
-  "Export",
-  "Shortcuts",
-  "Extensions",
-  "Updates",
-  "About",
-] as const;
-type Section = (typeof SECTIONS)[number];
+type PrefGroup = "General" | "Extensions";
+
+interface PrefSection {
+  id: string;
+  label: string;
+  group: PrefGroup;
+  keywords: string[];
+  order?: number;
+  render: (query: string) => React.ReactNode;
+}
+
+const CORE_SECTIONS: PrefSection[] = [
+  {
+    id: "Interface",
+    label: "Interface",
+    group: "General",
+    keywords: [
+      "Theme",
+      "Panel layout",
+      "Interface scale",
+      "Reduce motion",
+      "Interface font",
+    ],
+    render: () => <InterfaceSection />,
+  },
+  {
+    id: "Library",
+    label: "Library",
+    group: "General",
+    keywords: ["Default grid size", "Default sort", "Thumbnail quality"],
+    render: () => <LibrarySection />,
+  },
+  {
+    id: "Rendering",
+    label: "Rendering",
+    group: "General",
+    keywords: ["Display transform", "tone map", "pipeline"],
+    render: () => <RenderingSection />,
+  },
+  {
+    id: "Performance",
+    label: "Performance",
+    group: "General",
+    keywords: [
+      "Cache decoded RAW previews",
+      "Cached preview resolution",
+      "Clear preview cache",
+      "Develop render resolution",
+      "GPU source cache",
+      "Prefetch neighbours",
+      "High bit-depth previews",
+      "Live histogram",
+    ],
+    render: () => <PerformanceSection />,
+  },
+  {
+    id: "Export",
+    label: "Export",
+    group: "General",
+    keywords: [
+      "Default format",
+      "Default quality",
+      "Default resolution",
+      "Color space",
+      "Bundle multiple photos as ZIP",
+    ],
+    render: () => <ExportSection />,
+  },
+  {
+    id: "Shortcuts",
+    label: "Shortcuts",
+    group: "General",
+    keywords: ["Single-key shortcuts", "keybindings", "keyboard"],
+    render: () => <ShortcutsSection />,
+  },
+  {
+    id: "Extensions",
+    label: "Extensions",
+    group: "General",
+    keywords: ["Official extension topic", "Manage", "plugins"],
+    render: () => <ExtensionsSection />,
+  },
+  {
+    id: "Updates",
+    label: "Updates",
+    group: "General",
+    keywords: [
+      "Check for updates on startup",
+      "Update channel",
+      "Manual check",
+      "Release history",
+    ],
+    render: () => <UpdatesSection />,
+  },
+  {
+    id: "About",
+    label: "About",
+    group: "General",
+    keywords: ["Version", "Electron", "Chromium", "Platform", "Project", "license"],
+    render: () => <AboutSection />,
+  },
+];
 
 const SORT_FIELDS: { value: SortField; label: string }[] = [
   { value: "dateImported", label: "Date imported" },
@@ -82,16 +184,94 @@ const SORT_FIELDS: { value: SortField; label: string }[] = [
   { value: "rating", label: "Rating" },
 ];
 
+const GROUPS: PrefGroup[] = ["General", "Extensions"];
+
 export function PreferencesDialog() {
   const open = useOpen((s) => s.open);
-  const [section, setSection] = useState<Section>("Interface");
-  // Esc closes the dialog (via the shared modal stack, so a nested dialog on
-  // top closes first).
+  const target = useOpen((s) => s.target);
+  const extSettings = useRegistry((s) => s.settings);
+  const [sectionId, setSectionId] = useState<string>("Interface");
+  const [query, setQuery] = useState("");
+
+  // Latest query in a ref so the (capture-phase) escape handler can read it
+  // without re-registering on every keystroke.
+  const queryRef = useRef("");
+  queryRef.current = query;
+
+  // One section per extension that registered settings — auto-rendered from its
+  // declarative fields, or its custom component if it supplied one.
+  const extSections = useMemo<PrefSection[]>(
+    () =>
+      Object.entries(extSettings)
+        .map(([id, c]) => ({
+          id,
+          label: c.title ?? id,
+          group: "Extensions" as const,
+          order: c.order ?? 100,
+          keywords: c.fields.flatMap((f) => [f.label, f.hint ?? ""]),
+          render: (q: string) => {
+            const Custom = c.component;
+            return Custom ? (
+              <Custom />
+            ) : (
+              <SettingsFieldList extensionId={id} fields={c.fields} query={q} />
+            );
+          },
+        }))
+        .sort(
+          (a, b) => (a.order - b.order) || a.label.localeCompare(b.label),
+        ),
+    [extSettings],
+  );
+
+  const sections = useMemo(
+    () => [...CORE_SECTIONS, ...extSections],
+    [extSections],
+  );
+
+  const q = query.trim().toLowerCase();
+  const visible = useMemo(
+    () =>
+      sections.filter(
+        (s) =>
+          !q ||
+          s.label.toLowerCase().includes(q) ||
+          s.keywords.some((k) => k.toLowerCase().includes(q)),
+      ),
+    [sections, q],
+  );
+
+  // Deep-link: when opened with a target id, jump there and clear any search.
+  useEffect(() => {
+    if (open && target) {
+      setSectionId(target);
+      setQuery("");
+    }
+  }, [open, target]);
+
+  // Keep the selection valid as search filters the list (or an extension that
+  // owned the open section is uninstalled).
   useEffect(() => {
     if (!open) return;
-    return pushEscapeHandler(closePreferences);
+    if (!visible.some((s) => s.id === sectionId)) {
+      setSectionId(visible[0]?.id ?? "Interface");
+    }
+  }, [open, visible, sectionId]);
+
+  // Esc clears the search first, then closes (via the shared modal stack, so a
+  // nested dialog on top still closes before us).
+  useEffect(() => {
+    if (!open) return;
+    return pushEscapeHandler(() => {
+      if (queryRef.current) setQuery("");
+      else closePreferences();
+    });
   }, [open]);
+
   if (!open) return null;
+
+  const active = sections.find((s) => s.id === sectionId) ?? visible[0];
+  const hasExtensions = visible.some((s) => s.group === "Extensions");
 
   return (
     <div
@@ -101,10 +281,17 @@ export function PreferencesDialog() {
       }}
     >
       <div className="flex h-[480px] w-[640px] max-w-[92vw] flex-col overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl">
-        <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-surface-2 px-3">
+        <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border bg-surface-2 px-3">
           <span className="text-[11px] font-semibold uppercase tracking-widest text-text-secondary">
             Preferences
           </span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search settings…"
+            spellCheck={false}
+            className="ml-auto w-44 rounded bg-surface-1 px-2 py-0.5 text-[11px] text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
+          />
           <button
             onClick={closePreferences}
             className="rounded px-1.5 text-[14px] leading-none text-text-muted hover:text-text-primary"
@@ -113,32 +300,42 @@ export function PreferencesDialog() {
           </button>
         </div>
         <div className="flex min-h-0 flex-1">
-          <div className="w-36 shrink-0 border-r border-border bg-surface-0/40 py-2">
-            {SECTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => setSection(s)}
-                className={`block w-full px-3 py-1.5 text-left text-[11px] tracking-wider ${
-                  section === s
-                    ? "bg-surface-3 text-text-primary"
-                    : "text-text-secondary hover:text-text-primary"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
+          <div className="w-36 shrink-0 overflow-y-auto border-r border-border bg-surface-0/40 py-2">
+            {visible.length === 0 && (
+              <div className="px-3 py-1.5 text-[11px] text-text-muted">
+                No matches
+              </div>
+            )}
+            {GROUPS.map((g) => {
+              const items = visible.filter((s) => s.group === g);
+              if (items.length === 0) return null;
+              return (
+                <div key={g} className="mb-1">
+                  {/* Show group headers only once the Extensions group exists —
+                      otherwise a lone "General" header is just noise. */}
+                  {hasExtensions && (
+                    <div className="px-3 pb-0.5 pt-1 text-[9px] uppercase tracking-widest text-text-muted">
+                      {g}
+                    </div>
+                  )}
+                  {items.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => setSectionId(s.id)}
+                      className={`block w-full truncate px-3 py-1.5 text-left text-[11px] tracking-wider ${
+                        active?.id === s.id
+                          ? "bg-surface-3 text-text-primary"
+                          : "text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
           </div>
-          <div className="flex-1 overflow-y-auto p-4">
-            {section === "Interface" && <InterfaceSection />}
-            {section === "Library" && <LibrarySection />}
-            {section === "Rendering" && <RenderingSection />}
-            {section === "Performance" && <PerformanceSection />}
-            {section === "Export" && <ExportSection />}
-            {section === "Shortcuts" && <ShortcutsSection />}
-            {section === "Extensions" && <ExtensionsSection />}
-            {section === "Updates" && <UpdatesSection />}
-            {section === "About" && <AboutSection />}
-          </div>
+          <div className="flex-1 overflow-y-auto p-4">{active?.render(q)}</div>
         </div>
         <div className="flex h-9 shrink-0 items-center justify-between border-t border-border bg-surface-2 px-3">
           <button
@@ -315,13 +512,6 @@ function LibrarySection() {
           }
         />
       </Field>
-      <div className="border-t border-border-subtle pt-3" />
-      <ToggleField
-        label="Write XMP sidecars"
-        hint="Save ratings, labels, and keywords to .xmp files alongside your images. Enables interoperability with Lightroom, Darktable, and other photo tools."
-        checked={s.writeXmpSidecars}
-        onChange={(v) => updateSettings({ writeXmpSidecars: v })}
-      />
     </div>
   );
 }

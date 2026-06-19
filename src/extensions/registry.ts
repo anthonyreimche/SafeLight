@@ -3,13 +3,16 @@
 // community version. Reactive (zustand) so UI updates as plugins load.
 
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import type {
+  CatalogHooksContribution,
   ExportProcessorContribution,
   FilenameTemplateContribution,
   LayoutContribution,
   PanelContribution,
   PanelSlot,
   PipelineContribution,
+  PresetImporterContribution,
   ProcessingStageContribution,
   SettingsContribution,
   SliderIconContribution,
@@ -55,6 +58,12 @@ export interface RegisteredProcessingStage extends ProcessingStageContribution {
 export interface RegisteredLensProfile extends LensProfileContribution {
   extensionId: string;
 }
+export interface RegisteredCatalogHooks extends CatalogHooksContribution {
+  extensionId: string;
+}
+export interface RegisteredPresetImporter extends PresetImporterContribution {
+  extensionId: string;
+}
 
 interface RegistryState {
   panels: Record<string, RegisteredPanel>;
@@ -68,6 +77,9 @@ interface RegistryState {
   filenameTemplates: Record<string, RegisteredFilenameTemplate>;
   processingStages: Record<string, RegisteredProcessingStage>;
   lensProfiles: Record<string, RegisteredLensProfile>;
+  /** Keyed by contribution id. */
+  catalogHooks: Record<string, RegisteredCatalogHooks>;
+  presetImporters: Record<string, RegisteredPresetImporter>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -81,6 +93,8 @@ export const useRegistry = create<RegistryState>(() => ({
   filenameTemplates: {},
   processingStages: {},
   lensProfiles: {},
+  catalogHooks: {},
+  presetImporters: {},
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -180,6 +194,94 @@ export function registerLensProfile(
   }));
 }
 
+export function registerCatalogHooks(
+  extensionId: string,
+  c: CatalogHooksContribution,
+): void {
+  useRegistry.setState((s) => ({
+    catalogHooks: { ...s.catalogHooks, [c.id]: { ...c, extensionId } },
+  }));
+}
+
+export function registerPresetImporter(
+  extensionId: string,
+  c: PresetImporterContribution,
+): void {
+  useRegistry.setState((s) => ({
+    presetImporters: { ...s.presetImporters, [c.id]: { ...c, extensionId } },
+  }));
+}
+
+// ─── Catalog hook emitters (called by core) ─────────────────────────────────
+// Each awaits every registered handler. A handler that throws is logged and
+// skipped so a misbehaving extension can't break an import or a save.
+
+type ImportCtx = Parameters<NonNullable<CatalogHooksContribution["onPhotoImport"]>>[0];
+type MetadataCtx = Parameters<NonNullable<CatalogHooksContribution["onMetadataChange"]>>[0];
+type EditCommitCtx = Parameters<NonNullable<CatalogHooksContribution["onEditCommit"]>>[0];
+type RemoveCtx = Parameters<NonNullable<CatalogHooksContribution["onPhotoRemove"]>>[0];
+
+function catalogHookList(): RegisteredCatalogHooks[] {
+  return Object.values(useRegistry.getState().catalogHooks);
+}
+
+/** Run every onPhotoImport handler and merge their returned partials (later
+ *  handlers win). Returns the merged overrides, or null if none contributed. */
+export async function emitPhotoImport(
+  ctx: ImportCtx,
+): Promise<Partial<import("@/catalog/types").CatalogPhoto> | null> {
+  let merged: Partial<import("@/catalog/types").CatalogPhoto> | null = null;
+  for (const h of catalogHookList()) {
+    if (!h.onPhotoImport) continue;
+    try {
+      const ov = await h.onPhotoImport(ctx);
+      if (ov) merged = { ...(merged ?? {}), ...ov };
+    } catch (e) {
+      console.warn(`[ext:${h.extensionId}] onPhotoImport failed:`, e);
+    }
+  }
+  return merged;
+}
+
+export async function emitMetadataChange(ctx: MetadataCtx): Promise<void> {
+  for (const h of catalogHookList()) {
+    if (!h.onMetadataChange) continue;
+    try {
+      await h.onMetadataChange(ctx);
+    } catch (e) {
+      console.warn(`[ext:${h.extensionId}] onMetadataChange failed:`, e);
+    }
+  }
+}
+
+export async function emitEditCommit(ctx: EditCommitCtx): Promise<void> {
+  for (const h of catalogHookList()) {
+    if (!h.onEditCommit) continue;
+    try {
+      await h.onEditCommit(ctx);
+    } catch (e) {
+      console.warn(`[ext:${h.extensionId}] onEditCommit failed:`, e);
+    }
+  }
+}
+
+export async function emitPhotoRemove(ctx: RemoveCtx): Promise<void> {
+  for (const h of catalogHookList()) {
+    if (!h.onPhotoRemove) continue;
+    try {
+      await h.onPhotoRemove(ctx);
+    } catch (e) {
+      console.warn(`[ext:${h.extensionId}] onPhotoRemove failed:`, e);
+    }
+  }
+}
+
+/** Reactive list of registered preset importers, for the Presets panel.
+ *  useShallow so the freshly-built array doesn't trigger an update loop. */
+export function usePresetImporters(): RegisteredPresetImporter[] {
+  return useRegistry(useShallow((s) => Object.values(s.presetImporters)));
+}
+
 /** Remove every contribution an extension made (uninstall/deactivate). */
 export function unregisterExtension(extensionId: string): void {
   const drop = <T extends { extensionId: string }>(map: Record<string, T>) =>
@@ -203,6 +305,8 @@ export function unregisterExtension(extensionId: string): void {
     filenameTemplates: drop(s.filenameTemplates),
     processingStages: drop(s.processingStages),
     lensProfiles: drop(s.lensProfiles),
+    catalogHooks: drop(s.catalogHooks),
+    presetImporters: drop(s.presetImporters),
   }));
   unregisterExtensionActions(extensionId);
 }

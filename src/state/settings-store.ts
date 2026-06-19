@@ -71,11 +71,6 @@ export interface AppSettings {
   /** Single-letter shortcuts (G/D/F). Tab and Ctrl-combos always work. */
   singleKeyShortcuts: boolean;
 
-  // ── Metadata ────────────────────────────────────────────────────────────
-  /** Write XMP sidecar files alongside original images for interoperability
-   *  with other photo tools (Lightroom, Darktable, etc.). */
-  writeXmpSidecars: boolean;
-
   // ── Extensions ─────────────────────────────────────────────────────────
   /** GitHub topic that marks official extensions in the browser. */
   extensionTopic: string;
@@ -109,7 +104,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exportColorSpace: "srgb",
   exportPresets: [],
   singleKeyShortcuts: true,
-  writeXmpSidecars: false,
   extensionTopic: "safelight-extension",
   checkForUpdates: true,
   updateChannel: "patch",
