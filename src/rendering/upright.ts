@@ -344,30 +344,43 @@ function regressionSlope(pts: { x: number; y: number }[]): number | null {
   return slopes.length % 2 ? slopes[m] : (slopes[m - 1] + slopes[m]) / 2;
 }
 
-// Keystone coefficient from a converging line family by regressing each line's
-// slope against its position (all in normalized [0,1] coords). Converging lines
-// have slope that varies linearly with position; the regression slope is
-// exactly 1/(centre−VP), so a single fit yields the vanishing point. Crucially,
-// PARALLEL lines have constant slope → regression slope 0 → no correction, with
-// per-line angle noise averaging out instead of fabricating a phantom VP (which
-// pairwise intersection does). `axis` = "x" for horizontal lines (slope dy/dx
-// vs. y-position → gh·aspect) or "y" for vertical lines (slope dx/dy vs.
-// x-position → gv).
-function keystoneSlope(lines: GuidedLine[], axis: "x" | "y"): number | null {
+function median(values: number[]): number {
+  const s = [...values].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+// Fit a converging line family by regressing each line's normalized slope
+// against its position. Converging lines have slope varying linearly with
+// position, so the fit yields two decoupled quantities:
+//   • slope     — d(lineSlope)/d(position) = the keystone coefficient (1/(centre
+//                 −VP)). Parallel lines → 0 → no correction, with per-line angle
+//                 noise averaging out instead of fabricating a phantom VP.
+//   • centerTilt — the line slope at the image centre (position 0.5). The
+//                 convergence term vanishes there, so this is the pure rotation,
+//                 free of the keystone bias that skews a raw tilt average.
+// `axis` = "x" for horizontal lines (slope dy/dx vs. y) or "y" for vertical
+// lines (slope dx/dy vs. x). All in normalized [0,1] coords.
+function keystoneFit(
+  lines: GuidedLine[],
+  axis: "x" | "y",
+): { slope: number; centerTilt: number } | null {
   const pts: { x: number; y: number }[] = [];
   for (const l of lines) {
     const dx = l.x2 - l.x1, dy = l.y2 - l.y1;
     if (axis === "x") {
       if (Math.abs(dx) < 1e-9) continue;
-      const yc = l.y1 + (dy * (0.5 - l.x1)) / dx; // height at x = 0.5
-      pts.push({ x: yc, y: dy / dx });
+      pts.push({ x: l.y1 + (dy * (0.5 - l.x1)) / dx, y: dy / dx }); // (y@x=.5, dy/dx)
     } else {
       if (Math.abs(dy) < 1e-9) continue;
-      const xc = l.x1 + (dx * (0.5 - l.y1)) / dy; // x at y = 0.5
-      pts.push({ x: xc, y: dx / dy });
+      pts.push({ x: l.x1 + (dx * (0.5 - l.y1)) / dy, y: dx / dy }); // (x@y=.5, dx/dy)
     }
   }
-  return regressionSlope(pts);
+  if (pts.length === 0) return null;
+  const slope = regressionSlope(pts) ?? 0; // 0 when positions don't spread (parallel)
+  // Rotation = line slope at position 0.5, robust to outliers via the median.
+  const centerTilt = median(pts.map((p) => p.y - slope * (p.x - 0.5)));
+  return { slope, centerTilt };
 }
 
 // Shared upright core. Computes straighten + keystone from already-classified
@@ -382,34 +395,26 @@ function guidedCore(
   let perspectiveV = 0;
   let perspectiveH = 0;
 
-  // Both families estimate the SAME image rotation. Compute each independently,
-  // then average — never sum, or modes that see both (Auto/Full) double the
-  // straighten relative to Level/Vert which see only one.
+  // Both families estimate the SAME rotation; compute each from its fit's
+  // centre tilt (decoupled from convergence) and average — never sum, or modes
+  // that see both (Auto/Full) double it relative to Level/Vert which see one.
   let straightenH: number | null = null;
   let straightenV: number | null = null;
 
-  // Straighten from horizontal lines (normalize direction → rightward).
-  if (hLines.length >= 1) {
-    let totalAngle = 0;
-    for (const line of hLines) {
-      let dx = (line.x2 - line.x1) * imageAspect;
-      let dy = line.y2 - line.y1;
-      if (dx < 0) { dx = -dx; dy = -dy; }
-      totalAngle += Math.atan2(dy, dx);
-    }
-    straightenH = ((totalAngle / hLines.length) * 180) / Math.PI;
+  const fitV = vLines.length >= 1 ? keystoneFit(vLines, "y") : null;
+  if (fitV) {
+    perspectiveV = clamp100((fitV.slope / 0.6) * 100);
+    // Vertical lean → rotation: physical tilt = atan(aspect·slope_norm); guided
+    // sign convention is its negation.
+    straightenV = (-Math.atan(fitV.centerTilt * imageAspect) * 180) / Math.PI;
   }
 
-  // Straighten from vertical lines (tilt of the upright direction).
-  if (vLines.length >= 1) {
-    let totalTilt = 0;
-    for (const line of vLines) {
-      let dx = (line.x2 - line.x1) * imageAspect;
-      let dy = line.y2 - line.y1;
-      if (dy > 0) { dx = -dx; dy = -dy; }
-      totalTilt += Math.atan2(dx, -dy);
-    }
-    straightenV = ((totalTilt / vLines.length) * 180) / Math.PI;
+  const fitH = hLines.length >= 1 ? keystoneFit(hLines, "x") : null;
+  if (fitH) {
+    // Slope is gh in square space; /aspect gives the normalized gh coefficient.
+    perspectiveH = clamp100((fitH.slope / imageAspect / 0.6) * 100);
+    // Horizontal tilt → rotation: physical tilt = atan(slope_norm / aspect).
+    straightenH = (Math.atan(fitH.centerTilt / imageAspect) * 180) / Math.PI;
   }
 
   let straighten = 0;
@@ -419,21 +424,6 @@ function guidedCore(
     straighten = straightenH;
   } else if (straightenV !== null) {
     straighten = straightenV;
-  }
-
-  // Vertical perspective: regress vertical-line slope (dx/dy) against x-position.
-  // The fitted slope equals the gv keystone coefficient directly.
-  if (vLines.length >= 2) {
-    const gv = keystoneSlope(vLines, "y");
-    if (gv !== null) perspectiveV = clamp100((gv / 0.6) * 100);
-  }
-
-  // Horizontal perspective: regress horizontal-line slope (dy/dx) against
-  // y-position. The fitted slope is gh in square space; divide by aspect to
-  // match the normalized gh coefficient.
-  if (hLines.length >= 2) {
-    const sh = keystoneSlope(hLines, "x");
-    if (sh !== null) perspectiveH = clamp100((sh / imageAspect / 0.6) * 100);
   }
 
   return {

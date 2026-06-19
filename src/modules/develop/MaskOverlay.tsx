@@ -866,7 +866,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
           const dst = toScreen(s.dstX, s.dstY);
           const r = radiusToScreen(s.radius);
           const sel = s.id === selectedSpotId;
-          const col = "#4affa3";
+          const col = "#e0e0e0";
           if (s.shape === "brush" && s.dabs && s.dabs.length > 0) {
             // One outline for the whole painted region; the source mirrors that
             // exact shape, translated by the source offset (transform is affine).
@@ -926,7 +926,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
           </g>
         )}
         {showSpotCursor && (
-          <circle cx={cursor!.x} cy={cursor!.y} r={Math.max(3, spotPx)} fill="none" stroke="#4affa3" strokeWidth={1} opacity={0.8} />
+          <circle cx={cursor!.x} cy={cursor!.y} r={Math.max(3, spotPx)} fill="none" stroke="#e0e0e0" strokeWidth={1} opacity={0.8} />
         )}
       </svg>
     </div>

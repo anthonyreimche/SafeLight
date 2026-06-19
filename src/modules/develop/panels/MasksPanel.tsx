@@ -273,7 +273,13 @@ export function MasksPanel() {
           </span>
           {masking && (
             <button
-              onClick={() => setActiveTool("none")}
+              onClick={() => {
+                setActiveTool("none");
+                // Deselect so the list collapses and the coverage overlay clears.
+                selectMask(null);
+                selectComponent(null);
+                setHoveredMaskId(null);
+              }}
               className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-text-secondary hover:text-text-primary"
             >
               Done
@@ -349,6 +355,9 @@ export function MasksPanel() {
                       updateMask(m.id, { visible: m.visible === false });
                       commitEdit("Mask Visibility");
                     }}
+                    // Hovering the visibility toggle shouldn't preview coverage.
+                    onMouseEnter={() => setHoveredMaskId(null)}
+                    onMouseLeave={() => setHoveredMaskId(m.id)}
                     title={m.visible !== false ? "Hide" : "Show"}
                     className={`shrink-0 rounded px-0.5 ${
                       m.visible !== false

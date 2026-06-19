@@ -63,7 +63,14 @@ export function RetouchPanel() {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <button
-            onClick={() => setActiveTool(active ? "none" : "retouch")}
+            onClick={() => {
+              if (active) {
+                setActiveTool("none");
+                selectSpot(null); // deselect so the list collapses
+              } else {
+                setActiveTool("retouch");
+              }
+            }}
             className={`rounded px-2 py-1 text-[11px] ${
               active
                 ? "bg-accent/30 text-text-primary"
@@ -148,17 +155,13 @@ export function RetouchPanel() {
                     : "text-text-secondary hover:bg-surface-2"
                 }`}
               >
-                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "#4affa3" }} />
-                <span className="flex-1 truncate">
-                  {s.mode === "clone" ? "Clone" : "Heal"} {i + 1}
-                </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleVisibility(s.id, s.visible !== false);
                   }}
                   title={s.visible !== false ? "Hide" : "Show"}
-                  className={`rounded px-1 ${
+                  className={`shrink-0 rounded px-0.5 ${
                     s.visible !== false
                       ? "text-text-muted hover:text-text-primary"
                       : "text-text-muted/40 hover:text-text-primary"
@@ -166,6 +169,9 @@ export function RetouchPanel() {
                 >
                   {s.visible !== false ? "◉" : "○"}
                 </button>
+                <span className="flex-1 truncate">
+                  {s.mode === "clone" ? "Clone" : "Heal"} {i + 1}
+                </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
