@@ -3,7 +3,7 @@ import type { CatalogPhoto, CropRect } from "@/catalog/types";
 import { HSL_CHANNELS } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
 import { useDevelopStore } from "@/state/develop-store";
-import { fitCropToImage, transformedViewCrop } from "@/rendering/crop-transform";
+import { fitCropToImage, maxCropForTransform, transformedViewCrop } from "@/rendering/crop-transform";
 import {
   buildForwardTransform,
   buildInverseTransform,
@@ -285,6 +285,9 @@ export function DevelopCanvas({
             ? (rect) => (
                 <GuidedOverlay
                   rect={rect}
+                  forward={forwardRaw}
+                  inv={invRaw}
+                  crop={crop}
                   lines={guidedLines}
                   onChange={(lines) => setParam("guidedLines", lines)}
                   onCommit={() => {
@@ -298,16 +301,11 @@ export function DevelopCanvas({
                     };
                     setParam("transform", next);
                     if (constrainCrop) {
-                      setParam(
-                        "crop",
-                        fitCropToImage(
-                          st.params.crop,
-                          applyInsetToInverse(
-                            buildInverseTransform(result.straighten, next, imageAspect),
-                            lensCropScale,
-                          ),
-                        ),
+                      const guidedInv = applyInsetToInverse(
+                        buildInverseTransform(result.straighten, next, imageAspect),
+                        lensCropScale,
                       );
+                      setParam("crop", maxCropForTransform(guidedInv, st.cropAspect));
                     }
                     commitEdit("Guided Upright");
                   }}

@@ -268,11 +268,18 @@ function classifyLines(lines: DetectedLine[]) {
   return { horizontal, vertical };
 }
 
+function wrapDeviation(theta: number, refAngle: number): number {
+  let d = theta - refAngle;
+  while (d > Math.PI / 2) d -= Math.PI;
+  while (d < -Math.PI / 2) d += Math.PI;
+  return d;
+}
+
 function weightedMedianAngle(lines: DetectedLine[], refAngle: number): number {
   if (lines.length === 0) return 0;
 
   const entries = lines.map((l) => ({
-    deviation: l.theta - refAngle,
+    deviation: wrapDeviation(l.theta, refAngle),
     weight: l.votes,
   }));
   entries.sort((a, b) => a.deviation - b.deviation);
@@ -297,67 +304,82 @@ function vanishingPointPerspective(
 
   const sorted = [...verticals].sort((a, b) => b.votes - a.votes).slice(0, 8);
 
-  let sumX = 0, sumY = 0, count = 0;
+  // Estimate the gv perspective coefficient from each line-pair vanishing point.
+  // gv = 1/relY mirrors the guided mode's gv = 1/(0.5 - vpY): the reciprocal
+  // correctly maps distant VPs to mild corrections and close VPs to strong ones.
+  const estimates: { gv: number; weight: number }[] = [];
   for (let i = 0; i < sorted.length; i++) {
     for (let j = i + 1; j < sorted.length; j++) {
       const a = sorted[i], b = sorted[j];
       const sinA = Math.sin(a.theta), cosA = Math.cos(a.theta);
       const sinB = Math.sin(b.theta), cosB = Math.cos(b.theta);
       const det = cosA * sinB - sinA * cosB;
-      if (Math.abs(det) < 1e-6) continue;
-      const ix = (a.rho * sinB - b.rho * sinA) / det;
+      if (Math.abs(det) < 0.01) continue;
       const iy = (b.rho * cosA - a.rho * cosB) / det;
-      sumX += ix;
-      sumY += iy;
-      count++;
+      const relY = (iy - h / 2) / h;
+      if (Math.abs(relY) < 0.05) continue;
+      estimates.push({ gv: 1 / relY, weight: a.votes + b.votes });
     }
   }
 
-  if (count === 0) return 0;
+  if (estimates.length === 0) return 0;
 
-  const vpY = sumY / count;
-  const imgCenterY = h / 2;
-  const relVP = (vpY - imgCenterY) / h;
+  // Vote-weighted median rejects outlier pairs from nearly-parallel same-side lines.
+  estimates.sort((a, b) => a.gv - b.gv);
+  const totalWeight = estimates.reduce((s, e) => s + e.weight, 0);
+  let cumWeight = 0;
+  let medianGV = estimates[0].gv;
+  for (const e of estimates) {
+    cumWeight += e.weight;
+    if (cumWeight >= totalWeight / 2) {
+      medianGV = e.gv;
+      break;
+    }
+  }
 
-  const maxCoeff = 0.6;
-  const sensitivity = 2.0;
-  const raw = Math.tanh(relVP * sensitivity) * maxCoeff;
-  return (raw / maxCoeff) * 100;
+  return (medianGV * 100) / 0.6;
 }
 
 function vanishingPointPerspectiveH(
   horizontals: DetectedLine[],
   w: number,
-  _h: number,
+  h: number,
 ): number {
   if (horizontals.length < 2) return 0;
 
   const sorted = [...horizontals].sort((a, b) => b.votes - a.votes).slice(0, 8);
+  const aspect = w / h;
 
-  let sumX = 0, count = 0;
+  const estimates: { gh: number; weight: number }[] = [];
   for (let i = 0; i < sorted.length; i++) {
     for (let j = i + 1; j < sorted.length; j++) {
       const a = sorted[i], b = sorted[j];
       const sinA = Math.sin(a.theta), cosA = Math.cos(a.theta);
       const sinB = Math.sin(b.theta), cosB = Math.cos(b.theta);
       const det = cosA * sinB - sinA * cosB;
-      if (Math.abs(det) < 1e-6) continue;
+      if (Math.abs(det) < 0.01) continue;
       const ix = (a.rho * sinB - b.rho * sinA) / det;
-      sumX += ix;
-      count++;
+      const relX = (ix - w / 2) / w;
+      if (Math.abs(relX) < 0.05) continue;
+      estimates.push({ gh: 1 / (relX * aspect), weight: a.votes + b.votes });
     }
   }
 
-  if (count === 0) return 0;
+  if (estimates.length === 0) return 0;
 
-  const vpX = sumX / count;
-  const imgCenterX = w / 2;
-  const relVP = (vpX - imgCenterX) / w;
+  estimates.sort((a, b) => a.gh - b.gh);
+  const totalWeight = estimates.reduce((s, e) => s + e.weight, 0);
+  let cumWeight = 0;
+  let medianGH = estimates[0].gh;
+  for (const e of estimates) {
+    cumWeight += e.weight;
+    if (cumWeight >= totalWeight / 2) {
+      medianGH = e.gh;
+      break;
+    }
+  }
 
-  const maxCoeff = 0.6;
-  const sensitivity = 2.0;
-  const raw = Math.tanh(relVP * sensitivity) * maxCoeff;
-  return (raw / maxCoeff) * 100;
+  return (medianGH * 100) / 0.6;
 }
 
 // ── Upright correction computation ──────────────────────────────────────────
@@ -400,6 +422,12 @@ export function computeUprightCorrection(
       const perspH = vanishingPointPerspectiveH(horizontal, w, h);
       const straightenH = (horizDev * 180) / Math.PI;
       const straightenV = (vertAngle * 180) / Math.PI;
+      const hasH = horizontal.length > 0;
+      const hasV = vertical.length > 0;
+      let straightenDeg = 0;
+      if (hasH && hasV) straightenDeg = (straightenH + straightenV) / 2;
+      else if (hasH) straightenDeg = straightenH;
+      else if (hasV) straightenDeg = straightenV;
       const pV = clampP(-perspV);
       const pH = clampP(-perspH);
       const gv = (pV / 100) * 0.6;
@@ -409,7 +437,7 @@ export function computeUprightCorrection(
       const distortion = stretchV / stretchH;
       const aspectCorr = (100 * Math.log(1 / distortion)) / Math.log(1.5);
       return {
-        straighten: clampS((straightenH + straightenV) / 2),
+        straighten: clampS(straightenDeg),
         perspectiveV: pV,
         perspectiveH: pH,
         aspect: clampP(aspectCorr),
@@ -421,13 +449,18 @@ export function computeUprightCorrection(
       const vertAngle = weightedMedianAngle(vertical, 0);
       const perspV = vanishingPointPerspective(vertical, w, h);
       const perspH = vanishingPointPerspectiveH(horizontal, w, h);
-      const dampening = 0.75;
       const straightenH = (horizDev * 180) / Math.PI;
       const straightenV = (vertAngle * 180) / Math.PI;
+      const hasH = horizontal.length > 0;
+      const hasV = vertical.length > 0;
+      let straightenDeg = 0;
+      if (hasH && hasV) straightenDeg = (straightenH + straightenV) / 2;
+      else if (hasH) straightenDeg = straightenH;
+      else if (hasV) straightenDeg = straightenV;
       return {
-        straighten: clampS(((straightenH + straightenV) / 2) * dampening),
-        perspectiveV: clampP(-perspV * dampening),
-        perspectiveH: clampP(-perspH * dampening),
+        straighten: clampS(straightenDeg),
+        perspectiveV: clampP(-perspV),
+        perspectiveH: clampP(-perspH),
       };
     }
 
@@ -495,7 +528,7 @@ export function computeGuidedCorrection(
     let dy = vLines[0].y2 - vLines[0].y1;
     if (dy > 0) { dx = -dx; dy = -dy; }
     const tilt = Math.atan2(dx, -dy);
-    straighten += ((tilt * 180) / Math.PI) * 0.5;
+    straighten += ((tilt * 180) / Math.PI);
   }
 
   // Vertical perspective: compute VP from vertical line pairs.
@@ -526,7 +559,7 @@ export function computeGuidedCorrection(
       if (dy > 0) { dx = -dx; dy = -dy; }
       totalTilt += Math.atan2(dx, -dy);
     }
-    straighten += ((totalTilt / vLines.length) * 180) / Math.PI * 0.5;
+    straighten += ((totalTilt / vLines.length) * 180) / Math.PI;
   }
 
   // Horizontal perspective: compute VP from horizontal line pairs.

@@ -619,6 +619,8 @@ export class WebGLRenderer {
       "uLuminanceNR",
       "uLumNRDetail",
       "uLumNRContrast",
+      "uLumNRShadows",
+      "uLumNRHighlights",
       "uColorNR",
       "uColorNRDetail",
       "uColorNRSmooth",
@@ -1107,6 +1109,8 @@ export class WebGLRenderer {
     gl.uniform1f(u.uLuminanceNR, p.luminanceNR);
     gl.uniform1f(u.uLumNRDetail, p.luminanceNRDetail);
     gl.uniform1f(u.uLumNRContrast, p.luminanceNRContrast);
+    gl.uniform1f(u.uLumNRShadows, p.luminanceNRShadows);
+    gl.uniform1f(u.uLumNRHighlights, p.luminanceNRHighlights);
     gl.uniform1f(u.uColorNR, p.colorNR);
     gl.uniform1f(u.uColorNRDetail, p.colorNRDetail);
     gl.uniform1f(u.uColorNRSmooth, p.colorNRSmoothness);
@@ -1237,6 +1241,7 @@ export class WebGLRenderer {
       gl.uniform1f(u.uGrainAmount,    gr.amount);
       gl.uniform1f(u.uGrainSize,      gr.size);
       gl.uniform1f(u.uGrainRoughness, gr.roughness);
+      gl.uniform1f(u.uGrainColor,     gr.color);
     }
 
     // Masks + retouch
@@ -1511,25 +1516,78 @@ export class WebGLRenderer {
   readDownscaledPixels(size: number): { data: Uint8Array; w: number; h: number } | null {
     if (!this.imageWidth || !this.imageHeight) return null;
     const gl = this.gl;
+
+    // Maintain aspect ratio instead of forcing a square
+    const aspect = this.imageWidth / this.imageHeight;
+    let w: number, h: number;
+    if (aspect >= 1) {
+      w = size;
+      h = Math.max(1, Math.round(size / aspect));
+    } else {
+      h = size;
+      w = Math.max(1, Math.round(size * aspect));
+    }
+
     const fbo = gl.createFramebuffer();
     const tex = gl.createTexture();
+    // Use a high texture unit so we don't clobber the image on TEXTURE0
+    gl.activeTexture(gl.TEXTURE7);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    gl.uniform1i(this.uniforms.uShowClipping, 0);
-    gl.viewport(0, 0, size, size);
+
+    // Temporarily override transform and crop to identity so we detect lines
+    // in the raw image, not in an already-corrected view.
+    const u = this.uniforms;
+    const IDENTITY_MAT3 = new Float32Array([1,0,0, 0,1,0, 0,0,1]);
+    gl.uniform4f(u.uCrop, 0, 0, 1, 1);
+    gl.uniformMatrix3fv(u.uInvTransform, false, IDENTITY_MAT3);
+
+    // Re-bind the source image on unit 0 so the shader samples it correctly
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
+    gl.uniform1i(u.uShowClipping, 0);
+    gl.viewport(0, 0, w, h);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
-    const data = new Uint8Array(size * size * 4);
-    gl.readPixels(0, 0, size, size, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    const data = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteFramebuffer(fbo);
+
+    // glReadPixels returns rows bottom-up; flip so row 0 = top of image,
+    // matching the orientation the Hough line detector expects.
+    const stride = w * 4;
+    for (let top = 0, bot = h - 1; top < bot; top++, bot--) {
+      const tOff = top * stride;
+      const bOff = bot * stride;
+      for (let i = 0; i < stride; i++) {
+        const tmp = data[tOff + i];
+        data[tOff + i] = data[bOff + i];
+        data[bOff + i] = tmp;
+      }
+    }
+
+    // Restore the real transform and crop uniforms
+    if (this.params) {
+      const crop = this.params.crop ?? DEFAULT_CROP;
+      gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
+      const imgAspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+      gl.uniformMatrix3fv(
+        u.uInvTransform,
+        false,
+        mat3ColumnMajor(buildInverseTransform(this.params.straighten, this.params.transform, imgAspect)),
+      );
+    }
+
+    gl.activeTexture(gl.TEXTURE7);
     gl.deleteTexture(tex);
+    gl.deleteFramebuffer(fbo);
+    gl.activeTexture(gl.TEXTURE0);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    return { data, w: size, h: size };
+    return { data, w, h };
   }
 
   // Create / resize the offscreen develop target (capped source size). Returns

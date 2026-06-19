@@ -54,6 +54,8 @@ uniform float uSharpenMasking;   // 0..100
 uniform float uLuminanceNR;
 uniform float uLumNRDetail;      // 0..100
 uniform float uLumNRContrast;    // 0..100
+uniform float uLumNRShadows;     // 0..100
+uniform float uLumNRHighlights;  // 0..100
 uniform float uColorNR;
 uniform float uColorNRDetail;    // 0..100
 uniform float uColorNRSmooth;    // 0..100
@@ -623,7 +625,7 @@ vec3 applyColorGrading(vec3 c) {
   float lumaAdj = shadowW    * (uCGShadowLuma / 100.0) * 0.25
                 + midW       * (uCGMidLuma    / 100.0) * 0.25
                 + highlightW * (uCGHighLuma   / 100.0) * 0.25
-                + (uCGGlobalLuma / 100.0) * 0.20;
+                + (uCGGlobalLuma / 100.0) * 0.25;
   c += vec3(lumaAdj);
 
   return clamp(c, 0.0, 1.0);
@@ -1099,17 +1101,41 @@ void main() {
       lin = mix(ratioCur, ratioBlur, blend) * ls; // keep luma, smooth chroma only
     }
     if (lumNR > 0.001) {
-      // Luminance NR changes only the LUMA, leaving chroma/saturation intact, by
-      // ratio-scaling toward the local-average luma. (An additive luma shift, the
-      // old approach, desaturates in linear light — the "luminance changes chroma"
-      // bug.) Edge-protected so texture survives.
-      float edgeThresh = mix(0.14, 0.03, uLumNRDetail / 100.0);
-      float contrastBias = mix(0.0, 0.05, uLumNRContrast / 100.0);
+      float detailPres = uLumNRDetail / 100.0;
       float ls = max(luma(lin), 1e-4);
-      float edge = abs(ls - lb);
-      float w = lumNR * (1.0 - smoothstep(max(edgeThresh - contrastBias, 0.0), edgeThresh, edge));
-      float targetL = mix(ls, lb, w);
-      lin *= targetL / ls;
+
+      float shadowBias = uLumNRShadows / 100.0;
+      float highlightBias = uLumNRHighlights / 100.0;
+      float zoneMult = 1.0
+        + shadowBias * (1.0 - smoothstep(0.0, 0.35, ls))
+        - highlightBias * smoothstep(0.65, 1.0, ls);
+      float effectiveNR = lumNR * clamp(zoneMult, 0.0, 2.0);
+
+      vec3 b1raw = textureLod(uImage, srcUv, 1.0).rgb;
+      float l1 = luma(uLinear ? b1raw : srgbToLinear(b1raw));
+      float l2 = lb;
+      vec3 b3raw = textureLod(uImage, srcUv, 3.0).rgb;
+      float l3 = luma(uLinear ? b3raw : srgbToLinear(b3raw));
+
+      float d1 = ls - l1;
+      float d2 = l1 - l2;
+      float d3 = l2 - l3;
+
+      float t1 = mix(0.06, 0.015, detailPres);
+      float shrink1 = effectiveNR * t1;
+      float shrink2 = effectiveNR * t1 * 1.8 * 0.4;
+      float shrink3 = effectiveNR * t1 * 3.5 * 0.15;
+      d1 = sign(d1) * max(abs(d1) - shrink1, 0.0);
+      d2 = sign(d2) * max(abs(d2) - shrink2, 0.0);
+      d3 = sign(d3) * max(abs(d3) - shrink3, 0.0);
+
+      float targetL = l3 + d3 + d2 + d1;
+      float contrastBias = uLumNRContrast / 100.0;
+      float edgeMag = abs(ls - l2);
+      float edgeProtect = smoothstep(0.01, mix(0.12, 0.03, contrastBias), edgeMag);
+      targetL = mix(targetL, ls, edgeProtect);
+
+      lin *= max(targetL, 1e-4) / ls;
     }
   }
 
@@ -1152,6 +1178,9 @@ void main() {
       knee = mix(0.85, 2.0, H);
       rolloff = mix(0.5, 1.5, H);
     }
+    // Slope at the knee is (1-knee)/rolloff; clamp so it never exceeds 1.0,
+    // otherwise midtones just above a low knee get lifted instead of compressed.
+    rolloff = max(rolloff, 1.0 - knee);
     // Scale rolloff with sqrt of gain — enough to preserve highlight separation
     // at moderate exposure but lets high exposure (+5) push the image toward white
     rolloff *= max(exp2(max(E, 0.0) * 0.5), 1.0);

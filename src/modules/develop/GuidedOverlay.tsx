@@ -1,5 +1,7 @@
 import { useRef, useCallback } from "react";
-import type { GuidedLine } from "@/catalog/types";
+import type { CropRect, GuidedLine } from "@/catalog/types";
+import type { Mat3 } from "@/rendering/transform";
+import { mat3Apply } from "@/rendering/transform";
 
 interface Rect {
   x: number;
@@ -14,23 +16,34 @@ const HANDLE_COLOR = "#ffffff";
 
 interface GuidedOverlayProps {
   rect: Rect;
+  forward: Mat3;
+  inv: Mat3;
+  crop: CropRect;
   lines: GuidedLine[];
   onChange: (lines: GuidedLine[]) => void;
   onCommit: () => void;
 }
 
-function toScreen(nx: number, ny: number, rect: Rect): { sx: number; sy: number } {
-  return { sx: rect.x + nx * rect.w, sy: rect.y + ny * rect.h };
+function uvToScreen(nx: number, ny: number, forward: Mat3, rect: Rect, crop: CropRect) {
+  const p = mat3Apply(forward, nx, ny);
+  const cx = (p.x - crop.x) / crop.width;
+  const cy = (p.y - crop.y) / crop.height;
+  return { sx: rect.x + cx * rect.w, sy: rect.y + cy * rect.h };
 }
 
-function toNorm(sx: number, sy: number, rect: Rect): { nx: number; ny: number } {
+function screenToUV(sx: number, sy: number, inv: Mat3, rect: Rect, crop: CropRect) {
+  const canvasX = (sx - rect.x) / rect.w;
+  const canvasY = (sy - rect.y) / rect.h;
+  const imageX = crop.x + canvasX * crop.width;
+  const imageY = crop.y + canvasY * crop.height;
+  const p = mat3Apply(inv, imageX, imageY);
   return {
-    nx: Math.max(0, Math.min(1, (sx - rect.x) / rect.w)),
-    ny: Math.max(0, Math.min(1, (sy - rect.y) / rect.h)),
+    nx: Math.max(0, Math.min(1, p.x)),
+    ny: Math.max(0, Math.min(1, p.y)),
   };
 }
 
-export function GuidedOverlay({ rect, lines, onChange, onCommit }: GuidedOverlayProps) {
+export function GuidedOverlay({ rect, forward, inv, crop, lines, onChange, onCommit }: GuidedOverlayProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{
     lineIdx: number;
@@ -59,14 +72,14 @@ export function GuidedOverlay({ rect, lines, onChange, onCommit }: GuidedOverlay
     (sx: number, sy: number): { lineIdx: number; endpoint: "p1" | "p2" } | null => {
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        const p1 = toScreen(line.x1, line.y1, rect);
-        const p2 = toScreen(line.x2, line.y2, rect);
+        const p1 = uvToScreen(line.x1, line.y1, forward, rect, crop);
+        const p2 = uvToScreen(line.x2, line.y2, forward, rect, crop);
         if (Math.hypot(sx - p1.sx, sy - p1.sy) < HIT) return { lineIdx: i, endpoint: "p1" };
         if (Math.hypot(sx - p2.sx, sy - p2.sy) < HIT) return { lineIdx: i, endpoint: "p2" };
       }
       return null;
     },
-    [lines, rect],
+    [lines, forward, rect, crop],
   );
 
   const onPointerDown = useCallback(
@@ -91,12 +104,12 @@ export function GuidedOverlay({ rect, lines, onChange, onCommit }: GuidedOverlay
           origLine: { ...line },
         };
       } else {
-        const norm = toNorm(sx, sy, rect);
+        const uv = screenToUV(sx, sy, inv, rect, crop);
         const newLine: GuidedLine = {
-          x1: norm.nx,
-          y1: norm.ny,
-          x2: norm.nx,
-          y2: norm.ny,
+          x1: uv.nx,
+          y1: uv.ny,
+          x2: uv.nx,
+          y2: uv.ny,
         };
         const newLines = [...lines, newLine];
         onChange(newLines);
@@ -108,7 +121,7 @@ export function GuidedOverlay({ rect, lines, onChange, onCommit }: GuidedOverlay
         };
       }
     },
-    [lines, rect, hitTest, onChange],
+    [lines, rect, inv, crop, hitTest, onChange],
   );
 
   const onPointerMove = useCallback(
@@ -118,22 +131,22 @@ export function GuidedOverlay({ rect, lines, onChange, onCommit }: GuidedOverlay
 
       const { lineIdx, endpoint } = dragRef.current;
       const { sx, sy } = getLocalCoords(e);
-      const norm = toNorm(sx, sy, rect);
+      const uv = screenToUV(sx, sy, inv, rect, crop);
       const updated = [...lines];
       const line = { ...updated[lineIdx] };
 
       if (endpoint === "p1") {
-        line.x1 = norm.nx;
-        line.y1 = norm.ny;
+        line.x1 = uv.nx;
+        line.y1 = uv.ny;
       } else {
-        line.x2 = norm.nx;
-        line.y2 = norm.ny;
+        line.x2 = uv.nx;
+        line.y2 = uv.ny;
       }
 
       updated[lineIdx] = line;
       onChange(updated);
     },
-    [lines, rect, onChange, getLocalCoords],
+    [lines, rect, inv, crop, onChange, getLocalCoords],
   );
 
   const onPointerUp = useCallback(
@@ -144,10 +157,9 @@ export function GuidedOverlay({ rect, lines, onChange, onCommit }: GuidedOverlay
       const { lineIdx } = dragRef.current;
       const line = lines[lineIdx];
       if (line) {
-        const len = Math.hypot(
-          (line.x2 - line.x1) * rect.w,
-          (line.y2 - line.y1) * rect.h,
-        );
+        const p1 = uvToScreen(line.x1, line.y1, forward, rect, crop);
+        const p2 = uvToScreen(line.x2, line.y2, forward, rect, crop);
+        const len = Math.hypot(p2.sx - p1.sx, p2.sy - p1.sy);
         if (len < 10) {
           onChange(lines.filter((_, i) => i !== lineIdx));
         }
@@ -155,7 +167,7 @@ export function GuidedOverlay({ rect, lines, onChange, onCommit }: GuidedOverlay
       dragRef.current = null;
       onCommit();
     },
-    [lines, rect, onChange, onCommit],
+    [lines, forward, rect, crop, onChange, onCommit],
   );
 
   const removeLine = useCallback(
@@ -183,8 +195,8 @@ export function GuidedOverlay({ rect, lines, onChange, onCommit }: GuidedOverlay
       onPointerUp={onPointerUp}
     >
       {lines.map((line, i) => {
-        const p1 = toScreen(line.x1, line.y1, rect);
-        const p2 = toScreen(line.x2, line.y2, rect);
+        const p1 = uvToScreen(line.x1, line.y1, forward, rect, crop);
+        const p2 = uvToScreen(line.x2, line.y2, forward, rect, crop);
         const midX = (p1.sx + p2.sx) / 2;
         const midY = (p1.sy + p2.sy) / 2;
 
@@ -218,7 +230,6 @@ export function GuidedOverlay({ rect, lines, onChange, onCommit }: GuidedOverlay
               strokeWidth={1.5}
               style={{ cursor: "grab", pointerEvents: "all" }}
             />
-            {/* Delete button */}
             <g
               style={{ cursor: "pointer" }}
               onClick={(e) => {

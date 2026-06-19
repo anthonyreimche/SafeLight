@@ -54,7 +54,6 @@ export function useKeyboardShortcuts() {
         } else if (d.params.uprightMode === "guided") {
           e.preventDefault();
           d.setParam("uprightMode", "off");
-          d.commitEdit("Exit guided");
         } else if (d.activeTool !== "none") {
           e.preventDefault();
           d.setActiveTool("none");

@@ -1,15 +1,13 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import {
-  DEFAULT_TRANSFORM,
-  type CropRect,
   type TransformParams,
   type UprightMode,
 } from "@/catalog/types";
-import { fitCropToImage } from "@/rendering/crop-transform";
+import { maxCropForTransform } from "@/rendering/crop-transform";
 import { buildInverseTransform, applyInsetToInverse } from "@/rendering/transform";
 import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
 import { getRenderBridge } from "@/rendering/render-bridge";
@@ -28,15 +26,6 @@ function getLensCropScale(imageAspect: number): number {
   return 1;
 }
 
-const SLIDERS: { key: keyof TransformParams; label: string }[] = [
-  { key: "perspectiveV", label: "Vertical" },
-  { key: "perspectiveH", label: "Horizontal" },
-  { key: "aspect", label: "Aspect" },
-  { key: "scale", label: "Scale" },
-  { key: "offsetX", label: "X Offset" },
-  { key: "offsetY", label: "Y Offset" },
-];
-
 const UPRIGHT_MODES: { mode: UprightMode; label: string }[] = [
   { mode: "off", label: "Off" },
   { mode: "level", label: "Level" },
@@ -51,6 +40,7 @@ export function TransformPanel() {
   const straighten = useDevelopStore((s) => s.params.straighten);
   const uprightMode = useDevelopStore((s) => s.params.uprightMode);
   const constrainCrop = useDevelopStore((s) => s.constrainCrop);
+  const setConstrainCrop = useDevelopStore((s) => s.setConstrainCrop);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
   const activePhotoId = useCatalogStore((s) => s.activePhotoId);
@@ -60,9 +50,16 @@ export function TransformPanel() {
   const photo = photos.find((p) => p.id === activePhotoId);
   const imageAspect = photo && photo.height > 0 ? photo.width / photo.height : 1;
 
-  // Crop as it was before this drag began; fitting against it (rather than the
-  // live shrinking crop) lets reducing a transform un-crop back outward.
-  const baseCropRef = useRef<CropRect | null>(null);
+  const cropAspect = useDevelopStore((s) => s.cropAspect);
+
+  const fitCrop = (nextStraighten: number, nextTransform: TransformParams) => {
+    if (!constrainCrop) return;
+    const inv = applyInsetToInverse(
+      buildInverseTransform(nextStraighten, nextTransform, imageAspect),
+      getLensCropScale(imageAspect),
+    );
+    setParam("crop", maxCropForTransform(inv, cropAspect));
+  };
 
   const onChange = (key: keyof TransformParams, v: number) => {
     const next: TransformParams = {
@@ -71,31 +68,17 @@ export function TransformPanel() {
     };
     setParam("transform", next);
     if (constrainCrop) {
-      if (!baseCropRef.current) {
-        baseCropRef.current = useDevelopStore.getState().params.crop;
-      }
-      setParam(
-        "crop",
-        fitCropToImage(
-          baseCropRef.current,
-          applyInsetToInverse(
-            buildInverseTransform(straighten, next, imageAspect),
-            getLensCropScale(imageAspect),
-          ),
-        ),
-      );
+      fitCrop(straighten, next);
     }
   };
 
   const applyUpright = async (mode: UprightMode) => {
     if (mode === "off") {
       setParam("uprightMode", "off");
-      commitEdit("Upright off");
       return;
     }
     if (mode === "guided") {
-      setParam("uprightMode", "guided");
-      commitEdit("Upright guided");
+      setParam("uprightMode", uprightMode === "guided" ? "off" : "guided");
       return;
     }
     setParam("uprightMode", mode);
@@ -111,71 +94,60 @@ export function TransformPanel() {
         ...(result.aspect != null ? { aspect: Math.round(result.aspect) } : {}),
       };
       setParam("transform", next);
-      if (constrainCrop) {
-        setParam(
-          "crop",
-          fitCropToImage(
-            st.params.crop,
-            applyInsetToInverse(
-              buildInverseTransform(result.straighten, next, imageAspect),
-              getLensCropScale(imageAspect),
-            ),
-          ),
-        );
-      }
+      fitCrop(result.straighten, next);
       commitEdit(`Upright ${mode}`);
     } finally {
       setAnalyzing(false);
     }
   };
 
-  const reset = () => {
-    setParam("transform", { ...DEFAULT_TRANSFORM });
-    setParam("uprightMode", "off");
-    commitEdit("Transform reset");
-  };
-
   return (
     <Panel title="Transform" defaultOpen={false}>
       <div className="space-y-0.5">
         <div className="flex gap-0.5 mb-1">
-          {UPRIGHT_MODES.map((u) => (
-            <button
-              key={u.mode}
-              disabled={analyzing}
-              onClick={() => applyUpright(u.mode)}
-              className={`flex-1 rounded px-1 py-0.5 text-[10px] ${
-                uprightMode === u.mode
-                  ? "bg-accent text-text-primary"
-                  : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
-              }`}
-            >
-              {u.label}
-            </button>
-          ))}
+          {UPRIGHT_MODES.map((u) => {
+            const isGuided = u.mode === "guided";
+            const active = uprightMode === u.mode;
+            const label = isGuided && active ? "Done" : u.label;
+            return (
+              <button
+                key={u.mode}
+                disabled={analyzing}
+                onClick={() => applyUpright(u.mode)}
+                className={`flex-1 rounded px-1 py-0.5 text-[10px] ${
+                  active
+                    ? "bg-accent text-text-primary"
+                    : "bg-surface-2 text-text-secondary hover:bg-surface-3 hover:text-text-primary"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
-        {SLIDERS.map((s) => (
-          <Slider
-            key={s.key}
-            label={s.label}
-            value={transform[s.key] as number}
-            min={-100}
-            max={100}
-            step={1}
-            onChange={(v) => onChange(s.key, v)}
-            onCommit={() => {
-              baseCropRef.current = null;
-              commitEdit("Transform");
-            }}
-          />
-        ))}
 
-        <button
-          onClick={reset}
-          className="mt-1 w-full rounded bg-surface-2 px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary"
-        >
-          Reset transform
-        </button>
+        <Slider label="Vertical" value={transform.perspectiveV} min={-100} max={100} step={1}
+          onChange={(v) => onChange("perspectiveV", v)}
+          onCommit={() => commitEdit("Transform")}
+        />
+        <Slider label="Horizontal" value={transform.perspectiveH} min={-100} max={100} step={1}
+          onChange={(v) => onChange("perspectiveH", v)}
+          onCommit={() => commitEdit("Transform")}
+        />
+        <Slider label="Aspect" value={transform.aspect} min={-100} max={100} step={1}
+          onChange={(v) => onChange("aspect", v)}
+          onCommit={() => commitEdit("Transform")}
+        />
+
+        <label className="flex items-center gap-1.5 pt-1 text-[11px] text-text-secondary">
+          <input
+            type="checkbox"
+            checked={constrainCrop}
+            onChange={(e) => setConstrainCrop(e.target.checked)}
+            className="accent-slider-fill"
+          />
+          Constrain crop
+        </label>
       </div>
     </Panel>
   );

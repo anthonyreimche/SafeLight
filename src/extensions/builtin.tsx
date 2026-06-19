@@ -125,42 +125,69 @@ const GRAIN_STAGE: ProcessingStageContribution = {
   phase: "effects",
   priority: 60,
   glsl: `c = applyGrain(c, vUv);`,
-  helpers: `float hash(vec2 p) {
-  p = fract(p * vec2(234.34, 435.345));
-  p += dot(p, p + 34.23);
-  return fract(p.x * p.y);
+  helpers: `float grainHash(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
 }
 
-float valueNoise(vec2 p) {
+float gaussGrain(vec2 seed) {
+  float u1 = max(grainHash(seed), 1e-6);
+  float u2 = grainHash(seed + vec2(127.1, 311.7));
+  return sqrt(-2.0 * log(u1)) * cos(6.28318530718 * u2);
+}
+
+float grainNoise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float a = hash(i);
-  float b = hash(i + vec2(1.0, 0.0));
-  float c = hash(i + vec2(0.0, 1.0));
-  float d = hash(i + vec2(1.0, 1.0));
-  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  float g00 = gaussGrain(i);
+  float g10 = gaussGrain(i + vec2(1.0, 0.0));
+  float g01 = gaussGrain(i + vec2(0.0, 1.0));
+  float g11 = gaussGrain(i + vec2(1.0, 1.0));
+  return mix(mix(g00, g10, f.x), mix(g01, g11, f.x), f.y);
 }
 
 vec3 applyGrain(vec3 c, vec2 uv) {
   if (uGrainAmount < 0.001) return c;
-  float amount = uGrainAmount / 100.0 * 0.12;
-  float freq = mix(1600.0, 450.0, (uGrainSize - 25.0) / 75.0);
-  vec2 guv = vec2(uv.x * uImageAspect, uv.y) * freq;
-  float n = valueNoise(guv);
+  float amount = uGrainAmount / 100.0;
+  float sizeT = (uGrainSize - 25.0) / 75.0;
   float rough = uGrainRoughness / 100.0;
-  if (rough > 0.001) {
-    float n2 = valueNoise(guv * 2.07 + 17.3);
-    n = mix(n, clamp(n + (n2 - 0.5) * 0.9, 0.0, 1.0), rough);
+  float chromaVar = uGrainColor / 100.0;
+  float freq = mix(1400.0, 200.0, sizeT * sizeT);
+  vec2 guv = vec2(uv.x * uImageAspect, uv.y) * freq;
+  float L = luma(c);
+  float density = mix(0.08, 1.0, sqrt(clamp(L, 0.0, 1.0)));
+  float sigma = amount * density * 0.14;
+  if (chromaVar < 0.01) {
+    float n = grainNoise(guv);
+    if (rough > 0.15) {
+      float t = (rough - 0.15) / 0.85;
+      n += grainNoise(guv * 2.17 + 17.3) * 0.5 * t;
+    }
+    c += vec3(n * sigma);
+  } else {
+    float rFreq = 1.0 + 0.25 * chromaVar;
+    float bFreq = 1.0 - 0.15 * chromaVar;
+    float nR = grainNoise(guv * rFreq);
+    float nG = grainNoise(guv + vec2(43.7, 91.3));
+    float nB = grainNoise(guv * bFreq + vec2(71.9, 37.1));
+    if (rough > 0.15) {
+      float t = (rough - 0.15) / 0.85;
+      nR += grainNoise(guv * rFreq * 2.17 + 17.3) * 0.5 * t;
+      nG += grainNoise((guv + vec2(43.7, 91.3)) * 2.17 + 17.3) * 0.5 * t;
+      nB += grainNoise((guv * bFreq + vec2(71.9, 37.1)) * 2.17 + 17.3) * 0.5 * t;
+    }
+    c.r += nR * sigma;
+    c.g += nG * sigma;
+    c.b += nB * sigma;
   }
-  float lumaW = clamp(luma(c) * 1.5 + 0.2, 0.2, 1.0);
-  float grain = (n - 0.5) * 2.0 * amount * lumaW;
-  return clamp(c + grain, 0.0, 1.0);
+  return clamp(c, 0.0, 1.0);
 }`,
   uniforms: [
     { key: "uGrainAmount",    glslType: "float", default: 0, range: { min: 0, max: 100 }, label: "Amount" },
     { key: "uGrainSize",      glslType: "float", default: 25, range: { min: 25, max: 100 }, label: "Size" },
     { key: "uGrainRoughness", glslType: "float", default: 50, range: { min: 0, max: 100 }, label: "Roughness" },
+    { key: "uGrainColor",     glslType: "float", default: 0, range: { min: 0, max: 100 }, label: "Color" },
   ],
 };
 
@@ -249,8 +276,8 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   panelExt("core.edit", "Edit", EditActionsPanel, "Undo, redo and reset actions for the current edit.", right(0, 76)),
   panelExt("core.histogram", "Histogram", HistogramPanel, "Live RGB histogram of the rendered image.", right(1, 150)),
   panelExt("core.tuning", "Tuning", TuningPanel, "Camera profile and base tuning controls.", right(2, 180)),
-  panelExt("core.crop", "Crop & Straighten", CropPanel, "Crop, straighten and aspect-ratio tools.", right(3, 150)),
-  panelExt("core.transform", "Transform", TransformPanel, "Perspective, upright and geometry corrections.", right(4, 320)),
+  panelExt("core.transform", "Transform", TransformPanel, "Perspective, upright and geometry corrections.", right(3, 320)),
+  panelExt("core.crop", "Crop & Straighten", CropPanel, "Crop, straighten and aspect-ratio tools.", right(4, 150)),
   panelExt("core.white-balance", "White Balance", WhiteBalancePanel, "Temperature and tint.", right(5, 120)),
   panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(6, 220)),
   panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(7, 220)),

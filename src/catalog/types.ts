@@ -177,8 +177,9 @@ export interface VignetteParams {
 
 export interface GrainParams {
   amount: number;     // 0..100
-  size: number;       // 25..100 grain clumpiness
-  roughness: number;  // 0..100 regularity
+  size: number;       // 25..100 crystal size (larger = coarser grain)
+  roughness: number;  // 0..100 crystal size variation (higher = more irregular)
+  color: number;      // 0..100 polychromatic grain (0 = mono, 100 = full per-channel)
 }
 
 // Local adjustments carried by a mask. A subset of the global develop controls,
@@ -313,6 +314,8 @@ export interface DevelopParams {
   luminanceNR: number;       // 0..100 luminance noise reduction
   luminanceNRDetail: number; // 0..100 luminance detail preservation
   luminanceNRContrast: number; // 0..100 luminance contrast preservation
+  luminanceNRShadows: number;    // 0..100 extra NR weight in shadows
+  luminanceNRHighlights: number; // 0..100 reduce NR weight in highlights
   colorNR: number;           // 0..100 color (chroma) noise reduction
   colorNRDetail: number;     // 0..100 color detail preservation
   colorNRSmoothness: number; // 0..100 color smoothness
@@ -463,6 +466,7 @@ export const DEFAULT_GRAIN: GrainParams = {
   amount: 0,
   size: 25,
   roughness: 50,
+  color: 0,
 };
 
 export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
@@ -482,6 +486,8 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   luminanceNR: 0,
   luminanceNRDetail: 50,
   luminanceNRContrast: 0,
+  luminanceNRShadows: 0,
+  luminanceNRHighlights: 0,
   colorNR: 25,
   colorNRDetail: 50,
   colorNRSmoothness: 50,
@@ -681,6 +687,7 @@ function normalizeGrain(
     amount: c(g?.amount, 0, 100, 0),
     size: c(g?.size, 25, 100, 25),
     roughness: c(g?.roughness, 0, 100, 50),
+    color: c(g?.color, 0, 100, 0),
   };
 }
 

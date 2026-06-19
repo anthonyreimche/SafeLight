@@ -19,9 +19,11 @@ const SHARPENING_SLIDERS: SliderDef[] = [
 ];
 
 const LUM_NR_SLIDERS: SliderDef[] = [
-  { key: "luminanceNR",         label: "Luminance", min: 0, max: 100, step: 1 },
-  { key: "luminanceNRDetail",   label: "Detail",    min: 0, max: 100, step: 1 },
-  { key: "luminanceNRContrast", label: "Contrast",  min: 0, max: 100, step: 1 },
+  { key: "luminanceNR",             label: "Luminance",  min: 0, max: 100, step: 1 },
+  { key: "luminanceNRDetail",       label: "Detail",     min: 0, max: 100, step: 1 },
+  { key: "luminanceNRContrast",     label: "Contrast",   min: 0, max: 100, step: 1 },
+  { key: "luminanceNRShadows",      label: "Shadows",    min: 0, max: 100, step: 1 },
+  { key: "luminanceNRHighlights",   label: "Highlights", min: 0, max: 100, step: 1 },
 ];
 
 const COLOR_NR_SLIDERS: SliderDef[] = [
