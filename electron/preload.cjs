@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("safelightNative", {
     repoMeta: (repo) => ipcRenderer.invoke("github:repoMeta", String(repo)),
     readme: (repo, ref) =>
       ipcRenderer.invoke("github:readme", String(repo), String(ref ?? "HEAD")),
+    ogImage: (repo) => ipcRenderer.invoke("github:ogImage", String(repo)),
   },
   plugins: {
     list: () => ipcRenderer.invoke("plugins:list"),

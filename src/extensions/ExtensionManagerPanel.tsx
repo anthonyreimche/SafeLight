@@ -390,9 +390,10 @@ export function ExtensionManagerPanel() {
                 </div>
               ) : (
                 <div className="grid grid-cols-4 gap-2">
-                  {browsable?.map((r) => (
+                  {browsable?.map((r, i) => (
                     <ExtensionCard
                       key={r.fullName}
+                      index={i}
                       result={r}
                       installing={busy === r.fullName}
                       disabled={busy !== null}
@@ -540,12 +541,14 @@ export function ExtensionManagerPanel() {
 // A browse-result preview card: repo thumbnail, name, description, stars, and a
 // category tag. Clicking the body opens the detail page; Install stays inline.
 function ExtensionCard({
+  index,
   result,
   installing,
   disabled,
   onOpen,
   onInstall,
 }: {
+  index: number;
   result: ExtensionSearchResult;
   installing: boolean;
   disabled: boolean;
@@ -554,15 +557,75 @@ function ExtensionCard({
 }) {
   const cat = categoryFor(result.topics);
   const short = result.fullName.split("/")[1] ?? result.fullName;
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  // Start on GitHub's auto card (instant, no round-trip), then resolve the repo's
+  // real og:image. We only swap when it's an actual custom social preview (served
+  // off repository-images.githubusercontent.com); a repo with no preview resolves
+  // back to an opengraph.githubassets.com card identical to what we already show,
+  // so we skip the redundant reload.
+  const [thumb, setThumb] = useState(
+    `https://opengraph.githubassets.com/1/${result.fullName}`,
+  );
+  useEffect(() => {
+    const gh = window.safelightNative?.github;
+    if (!gh?.ogImage) return;
+    let alive = true;
+    gh.ogImage(result.fullName)
+      .then((url) => {
+        if (alive && url && !url.startsWith("https://opengraph.githubassets.com/"))
+          setThumb(url);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [result.fullName]);
+
+  // Cascade the cards in instead of popping the whole grid at once: each card
+  // fades/rises in, staggered by its position (capped so a full page of 25 still
+  // finishes quickly). `fill: backwards` holds it hidden until its turn. Honour
+  // reduced-motion by leaving the card at its natural (visible) style.
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)
+      return;
+    const anim = el.animate(
+      [
+        { opacity: 0, transform: "translateY(6px)" },
+        { opacity: 1, transform: "none" },
+      ],
+      {
+        duration: 240,
+        delay: Math.min(index * 35, 420),
+        easing: "ease-out",
+        fill: "backwards",
+      },
+    );
+    return () => anim.cancel();
+    // Mount-only: index is the position at first paint; re-filtering remounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
-    <div className="flex flex-col overflow-hidden rounded border border-border-subtle bg-surface-2">
+    <div
+      ref={cardRef}
+      className="flex flex-col overflow-hidden rounded border border-border-subtle bg-surface-2"
+    >
       <button onClick={onOpen} className="block text-left">
         <div className="aspect-[2/1] w-full overflow-hidden bg-surface-3">
           <img
-            src={`https://opengraph.githubassets.com/1/${result.fullName}`}
+            src={thumb}
             alt=""
             loading="lazy"
             className="h-full w-full object-cover"
+            // Fade each thumbnail up from the grey placeholder as it arrives,
+            // so they appear progressively rather than all snapping in at once.
+            style={{
+              opacity: imgLoaded ? 1 : 0,
+              transition: "opacity 200ms ease-out",
+            }}
+            onLoad={() => setImgLoaded(true)}
             onError={(e) => (e.currentTarget.style.visibility = "hidden")}
           />
         </div>

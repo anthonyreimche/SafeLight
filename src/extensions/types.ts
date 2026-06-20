@@ -628,6 +628,9 @@ declare global {
         repoMeta(repo: string): Promise<ExtensionRepoMeta>;
         /** Raw README text for "owner/repo" at `ref`, or null if none exists. */
         readme(repo: string, ref?: string): Promise<string | null>;
+        /** The repo's real og:image URL — a custom social preview when the owner
+         *  uploaded one, else GitHub's auto-generated card. Never rejects. */
+        ogImage(repo: string): Promise<string>;
       };
       plugins: {
         list(): Promise<ExtensionManifest[]>;
