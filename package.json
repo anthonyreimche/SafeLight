@@ -10,6 +10,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
+    "test": "vitest run",
     "build": "tsc && vite build",
     "build:app": "vite build",
     "preview": "vite preview",
@@ -35,6 +36,7 @@
     "tailwindcss": "^4.3.1",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
+    "vitest": "^4.1.9",
     "zustand": "^5.0.14"
   },
   "overrides": {
