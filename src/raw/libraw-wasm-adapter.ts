@@ -9,31 +9,7 @@
 // reason so a silent fallback can be diagnosed.
 
 import type { RawFloatImage } from "./decode";
-
-type LibRawInstance = {
-  open(data: Uint8Array, settings?: Record<string, unknown>): Promise<void>;
-  metadata(full?: boolean): Promise<Record<string, unknown>>;
-  imageData(): Promise<unknown>;
-  // The bundled libraw-wasm build spawns a Web Worker per instance and exposes
-  // no dispose method; reach in to terminate it so the worker (and the multi-MB
-  // WASM heap holding the decoded RAW) is freed after each decode.
-  worker?: Worker;
-};
-type LibRawCtor = new () => LibRawInstance;
-
-let ctorPromise: Promise<LibRawCtor | null> | null = null;
-
-async function getCtor(): Promise<LibRawCtor | null> {
-  if (!ctorPromise) {
-    ctorPromise = import("libraw-wasm")
-      .then((m) => (m.default ?? null) as LibRawCtor | null)
-      .catch((e) => {
-        console.warn("[libraw] module import failed", e);
-        return null;
-      });
-  }
-  return ctorPromise;
-}
+import { acquireInstance, releaseInstance } from "./decode-pool";
 
 // Why the most recent attempt did (not) use libraw — surfaced in the UI.
 export let lastLibRawStatus = "not attempted";
@@ -92,10 +68,10 @@ export async function extractColorTemperature(
 ): Promise<number | undefined> {
   if (typeof Worker === "undefined" || typeof SharedArrayBuffer === "undefined") return undefined;
   if (buffer.byteLength < 1024 * 1024) return undefined;
-  const Ctor = await getCtor();
-  if (!Ctor) return undefined;
 
-  const raw = new Ctor();
+  const raw = await acquireInstance();
+  if (!raw) return undefined;
+
   try {
     await raw.open(new Uint8Array(buffer), { useCameraWb: true });
     const meta = await raw.metadata(true);
@@ -108,7 +84,7 @@ export async function extractColorTemperature(
   } catch {
     return undefined;
   } finally {
-    try { raw.worker?.terminate(); } catch { /* already gone */ }
+    releaseInstance(raw);
   }
 }
 
@@ -139,13 +115,12 @@ export async function decodeRawFloatViaLibRaw(
     return null;
   }
   
-  const Ctor = await getCtor();
-  if (!Ctor) {
-    lastLibRawStatus = "module failed to load";
+  const raw = await acquireInstance();
+  if (!raw) {
+    lastLibRawStatus = "decode pool unavailable";
     return null;
   }
 
-  const raw = new Ctor();
   try {
     await raw.open(new Uint8Array(buffer), {
       outputBps: 16,
@@ -292,12 +267,6 @@ export async function decodeRawFloatViaLibRaw(
     console.warn("[libraw] decode failed", e);
     return null;
   } finally {
-    // Every decode constructs a fresh LibRaw (= a fresh Web Worker + WASM heap).
-    // Nothing recycles it, so without this each open/edit/thumbnail/export decode
-    // leaked a worker holding a full-res RAW buffer — memory climbed unbounded
-    // (tens of GB) while the GPU sat idle. Terminate it here.
-    try {
-      raw.worker?.terminate();
-    } catch { /* already gone */ }
+    releaseInstance(raw);
   }
 }

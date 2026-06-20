@@ -2,7 +2,7 @@
 // (quick catalog scopes + rating/label filters). Both are registered extension
 // contributions docked left of the grid by default.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Rating } from "@/ui/components/Rating";
 import { useCatalogStore } from "@/state/catalog-store";
@@ -205,6 +205,8 @@ export function LibraryFiltersPanel() {
             </div>
           </div>
 
+          <KeywordFilterField />
+
           <button
             onClick={clearFilters}
             disabled={!active}
@@ -214,6 +216,142 @@ export function LibraryFiltersPanel() {
           </button>
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function KeywordFilterField() {
+  const photos = useCatalogStore((s) => s.photos);
+  const filter = useUIStore((s) => s.filter);
+  const setFilter = useUIStore((s) => s.setFilter);
+  const [input, setInput] = useState("");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedIdx, setSelectedIdx] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const allKeywords = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of photos) {
+      for (const k of p.keywords) {
+        counts.set(k, (counts.get(k) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [photos]);
+
+  const suggestions = useMemo(() => {
+    const q = input.trim().toLowerCase();
+    if (!q) return [];
+    const active = new Set(filter.keywords.map((k) => k.toLowerCase()));
+    return [...allKeywords.entries()]
+      .filter(([k]) => k.toLowerCase().includes(q) && !active.has(k.toLowerCase()))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6);
+  }, [input, allKeywords, filter.keywords]);
+
+  useEffect(() => setSelectedIdx(0), [suggestions.length]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const addKeywordFilter = (keyword: string) => {
+    const k = keyword.trim();
+    if (!k || filter.keywords.includes(k)) return;
+    setFilter({ keywords: [...filter.keywords, k] });
+    setInput("");
+    setShowSuggestions(false);
+  };
+
+  const removeKeywordFilter = (keyword: string) => {
+    setFilter({ keywords: filter.keywords.filter((k) => k !== keyword) });
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      if (showSuggestions && suggestions.length > 0) {
+        addKeywordFilter(suggestions[selectedIdx][0]);
+      } else {
+        addKeywordFilter(input);
+      }
+    } else if (e.key === "Escape") {
+      setShowSuggestions(false);
+    } else if (e.key === "ArrowDown" && showSuggestions) {
+      e.preventDefault();
+      setSelectedIdx((i) => Math.min(i + 1, suggestions.length - 1));
+    } else if (e.key === "ArrowUp" && showSuggestions) {
+      e.preventDefault();
+      setSelectedIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Backspace" && input === "" && filter.keywords.length > 0) {
+      removeKeywordFilter(filter.keywords[filter.keywords.length - 1]);
+    }
+  };
+
+  if (allKeywords.size === 0) return null;
+
+  return (
+    <div ref={containerRef} className="space-y-1.5">
+      <span className="text-[11px] text-text-secondary">Keyword</span>
+      {filter.keywords.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {filter.keywords.map((k) => (
+            <span
+              key={k}
+              className="inline-flex items-center gap-0.5 rounded bg-accent/20 px-1.5 py-0.5 text-[10px] text-text-primary"
+            >
+              {k}
+              <button
+                onClick={() => removeKeywordFilter(k)}
+                className="ml-0.5 text-text-muted hover:text-text-primary"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="relative">
+        <input
+          value={input}
+          onChange={(e) => {
+            setInput(e.target.value);
+            setShowSuggestions(true);
+          }}
+          onFocus={() => setShowSuggestions(true)}
+          onKeyDown={handleKeyDown}
+          placeholder="Filter by keyword…"
+          className="w-full rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary placeholder:text-text-muted outline-none focus:ring-1 focus:ring-accent"
+        />
+        {showSuggestions && suggestions.length > 0 && (
+          <div className="absolute left-0 right-0 top-full z-50 mt-0.5 rounded border border-border bg-surface-1 py-0.5 shadow-lg">
+            {suggestions.map(([keyword, count], i) => (
+              <button
+                key={keyword}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  addKeywordFilter(keyword);
+                }}
+                onMouseEnter={() => setSelectedIdx(i)}
+                className={`flex w-full items-center justify-between px-2 py-1 text-[11px] ${
+                  i === selectedIdx
+                    ? "bg-accent/20 text-text-primary"
+                    : "text-text-secondary hover:bg-surface-2"
+                }`}
+              >
+                <span>{keyword}</span>
+                <span className="text-text-muted">{count}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

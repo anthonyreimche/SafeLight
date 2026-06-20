@@ -9,9 +9,13 @@ import {
   isDefaultHSL,
   isDefaultToneCurves,
 } from "@/catalog/types";
+import type { HistogramData } from "../histogram";
 import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
-import { buildFragmentShader, VERTEX_SHADER } from "./shaders";
+import { buildFragmentShader, VERTEX_SHADER, type StageInjection } from "./shaders";
+import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
+import { useRegistry } from "@/extensions/registry";
+import { PROCESSING_PHASE_ORDER, type ProcessingStageContribution } from "@/extensions/types";
 import {
   OUT_SPACE_CODE,
   outMatrixColumnMajor,
@@ -43,6 +47,25 @@ import { getSettings } from "@/state/settings-store";
 // Default cap on render resolution for interactive performance. Export passes
 // a larger value (or the image's own long edge) to render at full size.
 const MAX_EDGE = 2560;
+
+// Default GPU source-cache budget (bytes) before LRU eviction kicks in. Overridable
+// per renderer via setCacheBudget (driven by the gpuSourceCacheBytes preference).
+const DEFAULT_SOURCE_CACHE_BYTES = 512 * 1024 * 1024;
+
+// A decoded source kept resident on the GPU. `tex` is owned by the cache; its
+// derived render state is restored verbatim on bind so a re-open matches the
+// original decode exactly.
+interface SourceEntry {
+  tex: WebGLTexture;
+  width: number;
+  height: number;
+  linear: boolean;
+  applyBaseCurve: boolean;
+  isFallbackPreview: boolean;
+  fill: { data: Uint8ClampedArray; w: number; h: number } | null;
+  bytes: number;
+  lastUsed: number;
+}
 
 // Working resolution for the CPU heal-source search (and the disabled
 // content-aware fill). Big enough that thin structures (edges, lines) survive
@@ -173,9 +196,15 @@ function downsampleDrawable(img: TexImageSource, W: number, H: number) {
   const scale = Math.min(1, FILL_EDGE / Math.max(W, H));
   const w = Math.max(1, Math.round(W * scale));
   const h = Math.max(1, Math.round(H * scale));
-  const c = document.createElement("canvas");
+  const c: HTMLCanvasElement | OffscreenCanvas =
+    typeof document !== "undefined"
+      ? document.createElement("canvas")
+      : new OffscreenCanvas(w, h);
   c.width = w; c.height = h;
-  const ctx = c.getContext("2d");
+  const ctx = c.getContext("2d") as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
   if (!ctx) return { data: new Uint8ClampedArray(w * h * 4), w, h };
   ctx.drawImage(img as CanvasImageSource, 0, 0, w, h);
   return { data: ctx.getImageData(0, 0, w, h).data, w, h };
@@ -200,8 +229,65 @@ function stampDisc(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Stage injection: collect active processing stages from the registry and
+// build the GLSL strings that buildFragmentShader splices into the monolith.
+// ---------------------------------------------------------------------------
+
+const phaseIndex = new Map(PROCESSING_PHASE_ORDER.map((p, i) => [p, i]));
+
+function stageSort(a: ProcessingStageContribution, b: ProcessingStageContribution): number {
+  const pi = (phaseIndex.get(a.phase) ?? 99) - (phaseIndex.get(b.phase) ?? 99);
+  if (pi !== 0) return pi;
+  return (a.priority ?? 100) - (b.priority ?? 100);
+}
+
+function buildStageInjection(
+  injected?: ProcessingStageContribution[],
+): { injection: StageInjection; sig: string } {
+  const stages = injected ?? Object.values(useRegistry.getState().processingStages);
+  const effects = stages
+    .filter((s) => s.phase === "effects")
+    .sort(stageSort);
+
+  if (effects.length === 0) {
+    return { injection: { uniforms: "", helpers: "", effects: "" }, sig: "" };
+  }
+
+  const uniformDecls: string[] = [];
+  const helperBlocks: string[] = [];
+  const stageBlocks: string[] = [];
+  const sigParts: string[] = [];
+
+  for (const s of effects) {
+    for (const u of s.uniforms) {
+      uniformDecls.push(`uniform ${u.glslType} ${u.key};`);
+    }
+    if (s.helpers) helperBlocks.push(s.helpers);
+    stageBlocks.push(s.glsl);
+    sigParts.push(s.id);
+  }
+
+  return {
+    injection: {
+      uniforms: uniformDecls.join("\n"),
+      helpers: helperBlocks.join("\n\n"),
+      effects: stageBlocks.join("\n  "),
+    },
+    sig: sigParts.join("|"),
+  };
+}
+
+export type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
+
+export interface WebGLRendererOpts {
+  highBitDepth?: boolean;
+  stages?: ProcessingStageContribution[];
+  pipeline?: ResolvedPipeline;
+}
+
 export class WebGLRenderer {
-  private canvas: HTMLCanvasElement;
+  private canvas: RenderCanvas;
   private gl: WebGL2RenderingContext;
   private program: WebGLProgram;
   private imageTexture: WebGLTexture;
@@ -228,9 +314,22 @@ export class WebGLRenderer {
   private fillSrc: Uint8ClampedArray | null = null;
   private fillW = 0;
   private fillH = 0;
+  // Small FBO for fast histogram computation (re-render at low res + readPixels).
+  private histFbo: WebGLFramebuffer | null = null;
+  private histTex: WebGLTexture | null = null;
+  private histFboF: WebGLFramebuffer | null = null;
+  private histTexF: WebGLTexture | null = null;
+  private haveColorBufferFloat = false;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   private params: DevelopParams | null = null;
+  private lensProfile: import("@/lens-profiles/types").ResolvedProfile | null = null;
+  private autoCropScale = 1;
   private asShotTemperature = 6500;
+  private showClipping = 0;
+  // Coverage-visualization overlay: -1 = off, else the mask index to tint.
+  private vizMask = -1;
+  private vizColor: [number, number, number] = [0.9, 0.25, 0.25];
+  private vizStrength = 0.5;
   private hasImage = false;
   private imageWidth = 0;
   private imageHeight = 0;
@@ -246,37 +345,51 @@ export class WebGLRenderer {
   // GPU lacks it — then the cached preview falls back to the CPU-linearised float path.
   private haveNorm16 = false;
   private norm16Format = 0;
-  // Active render pipeline: signature of the GLSL compiled into the current
-  // program, compared against the (memoized) resolution on every render.
+  // Active render pipeline + stage signatures: compared on every render to
+  // detect when recompilation is needed (pipeline change or stage enable/disable).
   private pipelineSig = "";
+  private stageSig = "";
   private pipelineSkipBase = false;
   private programCache = new Map<string, PipelineProgram>();
   private vao: WebGLVertexArrayObject | null = null;
   private quadBuf: WebGLBuffer | null = null;
+  private injectedStages: ProcessingStageContribution[] | null = null;
+  private injectedPipeline: ResolvedPipeline | null = null;
 
-  constructor(canvas: HTMLCanvasElement) {
+  // ── GPU-resident source cache ──────────────────────────────────────────
+  // Decoded sources kept resident keyed by sourceKey (photo id + decode variant)
+  // so re-opening a photo or re-rendering its (edited) thumbnail reuses the
+  // uploaded texture instead of decoding + uploading again. Bounded by a byte
+  // budget with LRU eviction; the currently-bound source is pinned.
+  private sourceCache = new Map<string, SourceEntry>();
+  private currentSourceKey: string | null = null;
+  // True while this.imageTexture is owned by the renderer (legacy setImage path)
+  // rather than the cache. A cache-owned texture must not be deleted on the next
+  // load or on dispose — the cache owns its lifetime.
+  private imageTextureOwned = true;
+  private cacheBudgetBytes = DEFAULT_SOURCE_CACHE_BYTES;
+  private useTick = 0;
+  // Viewport window into the displayed image (null = whole frame). When set, the
+  // output canvas is sized to roiOut and only the window is rendered at that
+  // resolution (crisp zoom). See setViewport.
+  private roi: { x: number; y: number; w: number; h: number } | null = null;
+  private roiOut: { w: number; h: number } | null = null;
+
+  constructor(canvas: RenderCanvas, opts?: WebGLRendererOpts) {
     const gl = canvas.getContext("webgl2", {
       premultipliedAlpha: false,
       preserveDrawingBuffer: true,
-    });
+    }) as WebGL2RenderingContext | null;
     if (!gl) {
       throw new Error("WebGL2 not supported");
     }
     this.canvas = canvas;
     this.gl = gl;
+    if (opts?.stages) this.injectedStages = opts.stages;
+    if (opts?.pipeline) this.injectedPipeline = opts.pipeline;
 
-    // Normalized 16-bit textures (for the cached develop preview). Core WebGL2 has
-    // no UNORM RGBA16, so this is gated on the extension; absent it, we linearise
-    // the cached preview on the CPU instead (see setImage).
-    // Skippable via Preferences ▸ Performance ▸ High bit-depth previews.
-    //
-    // Probe: some Mesa/ANGLE drivers expose EXT_texture_norm16 but return
-    // GL_INVALID_OPERATION (0x0502) from generateMipmap for RGBA16 textures
-    // (reported in allocateMipmapLevelsForGeneration). Test with a 2×2 dummy
-    // texture before committing to the norm16 path — if the probe fails, leave
-    // haveNorm16 false so the srgb16 path falls through to srgb16ToFloatImage
-    // (CPU linearisation) and the plain RGBA16F mip chain that does work.
-    const norm16 = getSettings().highBitDepth
+    const highBitDepth = opts?.highBitDepth ?? getSettings().highBitDepth;
+    const norm16 = highBitDepth
       ? gl.getExtension("EXT_texture_norm16")
       : null;
     if (norm16) {
@@ -297,14 +410,18 @@ export class WebGLRenderer {
       // this driver — fall back silently to the RGBA16F float path.
     }
 
-    // Compile with the active pipeline; a broken custom transform falls back
-    // to the built-in so the renderer always comes up.
-    const p = resolveActivePipeline();
-    const entry = this.entryFor(p);
+    this.haveColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
+
+    const p = this.injectedPipeline ?? resolveActivePipeline();
+    const { injection, sig: sSig } = buildStageInjection(
+      this.injectedStages ?? undefined,
+    );
+    const entry = this.entryFor(p, injection, sSig);
     this.program = entry.program;
     this.uniforms = entry.uniforms;
     this.pipelineSkipBase = entry.skipBase;
     this.pipelineSig = p.sig;
+    this.stageSig = sSig;
     this.setupQuad();
 
     this.imageTexture = this.createTexture();
@@ -436,21 +553,22 @@ export class WebGLRenderer {
     this.haveHealFill = true;
   }
 
-  // Program + uniform locations for a pipeline, cached by signature. A bad
-  // custom transform falls back to the built-in entry — cached under the
-  // failing sig too, so it isn't recompiled (and re-logged) every frame.
-  private entryFor(p: ResolvedPipeline): PipelineProgram {
-    let e = this.programCache.get(p.sig);
+  // Program + uniform locations for a pipeline + stage set, cached by combined
+  // signature. A bad custom transform falls back to the built-in entry — cached
+  // under the failing sig too, so it isn't recompiled (and re-logged) every frame.
+  private entryFor(p: ResolvedPipeline, stageInj: StageInjection, sSig: string): PipelineProgram {
+    const cacheKey = `${p.sig}|${sSig}`;
+    let e = this.programCache.get(cacheKey);
     if (e) return e;
     try {
-      const program = this.createProgram(VERTEX_SHADER, buildFragmentShader(p.glsl));
+      const program = this.createProgram(VERTEX_SHADER, buildFragmentShader(p.glsl, stageInj));
       e = { program, uniforms: this.cacheUniformsFor(program), skipBase: p.skipBaseCurve };
     } catch (err) {
       if (!p.glsl) throw err; // built-in must compile
       console.error(`[pipeline] "${p.id}" failed to compile; using built-in:`, err);
-      e = this.entryFor(BUILTIN_RESOLVED);
+      e = this.entryFor(BUILTIN_RESOLVED, stageInj, sSig);
     }
-    this.programCache.set(p.sig, e);
+    this.programCache.set(cacheKey, e);
     return e;
   }
 
@@ -522,9 +640,15 @@ export class WebGLRenderer {
       "uOutMatrix",
       "uCrop",
       "uInvTransform",
+      "uViewport",
       "uLinear",
       "uIsFallbackPreview",
       "uApplyBaseCurve",
+      "uRawHistogram",
+      "uShowClipping",
+      "uVizMask",
+      "uVizColor",
+      "uVizStrength",
       "uExposure",
       "uContrast",
       "uHighlights",
@@ -541,6 +665,8 @@ export class WebGLRenderer {
       "uLuminanceNR",
       "uLumNRDetail",
       "uLumNRContrast",
+      "uLumNRShadows",
+      "uLumNRHighlights",
       "uColorNR",
       "uColorNRDetail",
       "uColorNRSmooth",
@@ -549,6 +675,7 @@ export class WebGLRenderer {
       "uTemperature",
       "uTint",
       "uAsShotTemperature",
+      "uClipThreshold",
       "uHslHue",
       "uHslSat",
       "uHslLum",
@@ -566,11 +693,27 @@ export class WebGLRenderer {
       "uCGGlobalLuma",
       "uCGShadowRange",
       "uCGHighlightRange",
-      // Lens corrections
+      // Lens corrections — manual sliders
       "uLensDistortion",
       "uLensCA",
       "uLensDefringe",
       "uLensVignetting",
+      // Lens corrections — profile-based
+      "uLensDistModel",
+      "uLensDistA",
+      "uLensDistB",
+      "uLensDistC",
+      "uLensTcaModel",
+      "uLensTcaKr",
+      "uLensTcaKb",
+      "uLensTcaBr",
+      "uLensTcaCr",
+      "uLensTcaBb",
+      "uLensTcaCb",
+      "uLensVigK1",
+      "uLensVigK2",
+      "uLensVigK3",
+      "uLensAutoCropScale",
       // Effects: vignette
       "uVignetteAmount",
       "uVignetteMidpoint",
@@ -602,13 +745,7 @@ export class WebGLRenderer {
     ];
     // Per-mask array uniforms (queried by indexed name).
     for (let i = 0; i < MAX_MASKS; i++) {
-      for (const base of [
-        "uMaskInvert",
-        "uMaskOpacity",
-        "uMaskAdj0",
-        "uMaskAdj1",
-        "uMaskAdj2",
-      ]) {
+      for (const base of ["uMaskInvert", "uMaskOpacity", "uMaskAdj0", "uMaskAdj1", "uMaskAdj2"]) {
         const name = `${base}[${i}]`;
         u[name] = gl.getUniformLocation(program, name);
       }
@@ -617,13 +754,7 @@ export class WebGLRenderer {
     u["uCompCount"] = gl.getUniformLocation(program, "uCompCount");
     for (let i = 0; i < MAX_MASK_COMPONENTS; i++) {
       for (const base of [
-        "uCompMaskIdx",
-        "uCompMode",
-        "uCompType",
-        "uCompInvert",
-        "uCompBrushCh",
-        "uCompGeoA",
-        "uCompGeoB",
+        "uCompMaskIdx", "uCompMode", "uCompType", "uCompInvert", "uCompBrushCh", "uCompGeoA", "uCompGeoB",
       ]) {
         const name = `${base}[${i}]`;
         u[name] = gl.getUniformLocation(program, name);
@@ -709,8 +840,13 @@ export class WebGLRenderer {
     // so the leftover higher levels (wrong format/size) make the texture
     // mipmap-incomplete -> generateMipmap throws 0x0502 and the LINEAR_MIPMAP_LINEAR
     // sampler returns black on re-open. Recreate so every load starts level-clean.
-    gl.deleteTexture(this.imageTexture);
+    // Only free the previous texture if the renderer owns it. A cache-owned
+    // texture (left bound after bindSource) belongs to the cache, which manages
+    // its lifetime via eviction; freeing it here would corrupt a cached entry.
+    if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
     this.imageTexture = this.createTexture();
+    this.imageTextureOwned = true;
+    this.currentSourceKey = null;
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     let mipsBuilt = false;
     let uploaded = false;
@@ -830,6 +966,154 @@ export class WebGLRenderer {
     this.resize();
   }
 
+  // ── GPU-resident source cache ──────────────────────────────────────────
+
+  /** Set the LRU byte budget; evicts immediately if already over. */
+  setCacheBudget(bytes: number) {
+    this.cacheBudgetBytes = Math.max(0, bytes);
+    this.evictToBudget();
+  }
+
+  /** Is a decoded source for this key already resident? */
+  hasSource(key: string): boolean {
+    return this.sourceCache.has(key);
+  }
+
+  // Decode-and-upload a source under `key`, then bind it as active. Reuses the
+  // full setImage upload path, then transfers ownership of the resulting texture
+  // (plus its derived render state) into the cache so a later bindSource(key) is
+  // a zero-decode swap.
+  uploadSource(
+    key: string,
+    image:
+      | ImageBitmap
+      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+      | { kind: "srgb16"; data: Uint16Array; width: number; height: number },
+    maxEdge: number = MAX_EDGE,
+    isFallbackPreview = false,
+    baseCurveForBitmap = false,
+    // When false, the source is uploaded into the cache but the previously-active
+    // source is re-bound afterwards — used to prefetch neighbours without
+    // disturbing the displayed image.
+    bind = true,
+  ) {
+    const prevKey = this.currentSourceKey;
+    // Drop any stale entry for this key (e.g. re-decode after an edit changed the
+    // pixels) so we don't leak its texture.
+    this.dropSource(key);
+    this.setImage(image, maxEdge, isFallbackPreview, baseCurveForBitmap);
+    // setImage built into this.imageTexture and marked it owned; hand it to the cache.
+    const entry: SourceEntry = {
+      tex: this.imageTexture,
+      width: this.imageWidth,
+      height: this.imageHeight,
+      linear: this.linear,
+      applyBaseCurve: this.applyBaseCurve,
+      isFallbackPreview: this.isFallbackPreview,
+      fill: this.fillSrc ? { data: this.fillSrc, w: this.fillW, h: this.fillH } : null,
+      bytes: this.estimateSourceBytes(this.imageWidth, this.imageHeight, this.linear),
+      lastUsed: ++this.useTick,
+    };
+    this.sourceCache.set(key, entry);
+    this.imageTextureOwned = false; // the cache owns this texture now
+    this.currentSourceKey = key;
+    // Prefetch: restore the source that was active before so the display is
+    // unchanged. No render() runs here, so nothing repaints in between.
+    if (!bind && prevKey && prevKey !== key && this.sourceCache.has(prevKey)) {
+      this.bindSource(prevKey);
+    }
+    this.evictToBudget();
+  }
+
+  // Bind a resident source as the active image without re-decoding. Returns false
+  // if the key isn't cached (caller should decode + uploadSource).
+  bindSource(key: string): boolean {
+    const e = this.sourceCache.get(key);
+    if (!e) return false;
+    const gl = this.gl;
+    // Release an orphan owned texture (a prior legacy setImage) before pointing
+    // at the cached one; never free another cache entry's texture.
+    if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
+    this.imageTexture = e.tex;
+    this.imageTextureOwned = false;
+    this.imageWidth = e.width;
+    this.imageHeight = e.height;
+    this.linear = e.linear;
+    this.applyBaseCurve = e.applyBaseCurve;
+    this.isFallbackPreview = e.isFallbackPreview;
+    // Restore the heal/content-aware-fill source for this image and force a
+    // recompute on the next setParams (the global heal singleton is shared).
+    if (e.fill) {
+      this.fillSrc = e.fill.data;
+      this.fillW = e.fill.w;
+      this.fillH = e.fill.h;
+      setHealSourceImage(e.fill.data, e.fill.w, e.fill.h);
+    } else {
+      this.fillSrc = null;
+    }
+    this.healSig = "";
+    this.haveHealFill = false;
+    e.lastUsed = ++this.useTick;
+    this.currentSourceKey = key;
+    this.hasImage = true;
+    this.resize();
+    return true;
+  }
+
+  private dropSource(key: string) {
+    const e = this.sourceCache.get(key);
+    if (!e) return;
+    // If the entry's texture is currently bound, detach it first so we don't free
+    // it out from under the active view; mark the slot owned so it's cleaned up
+    // normally on the next load.
+    if (this.currentSourceKey === key) {
+      this.imageTextureOwned = true; // adopt: it's about to stop being a cache tex
+      this.currentSourceKey = null;
+    } else {
+      this.gl.deleteTexture(e.tex);
+    }
+    this.sourceCache.delete(key);
+  }
+
+  private estimateSourceBytes(w: number, h: number, linear: boolean): number {
+    // RGBA16F (float RAW) / RGBA16 (norm16) = 8 bytes/px; 8-bit bitmap = 4.
+    // ×4/3 accounts for the mip chain.
+    const bpp = linear || this.haveNorm16 ? 8 : 4;
+    return Math.round(w * h * bpp * (4 / 3));
+  }
+
+  private evictToBudget() {
+    let total = 0;
+    for (const e of this.sourceCache.values()) total += e.bytes;
+    if (total <= this.cacheBudgetBytes) return;
+    // Evict least-recently-used first; never evict the pinned (bound) source.
+    const ordered = [...this.sourceCache.entries()].sort(
+      (a, b) => a[1].lastUsed - b[1].lastUsed,
+    );
+    for (const [key, e] of ordered) {
+      if (total <= this.cacheBudgetBytes) break;
+      if (key === this.currentSourceKey) continue;
+      this.gl.deleteTexture(e.tex);
+      this.sourceCache.delete(key);
+      total -= e.bytes;
+    }
+  }
+
+  // ── Viewport (zoom ROI) ────────────────────────────────────────────────
+
+  // Render only `roi` (a window into the displayed image, normalized [0,1]) into
+  // an output sized to outW×outH. Pass null to return to the whole-frame, crop-
+  // capped sizing. Used by a zoomed Develop/Loupe view to draw the visible region
+  // at screen resolution from the resident full-res source.
+  setViewport(
+    roi: { x: number; y: number; w: number; h: number } | null,
+    outW?: number,
+    outH?: number,
+  ) {
+    this.roi = roi;
+    this.roiOut = roi && outW && outH ? { w: Math.max(1, Math.round(outW)), h: Math.max(1, Math.round(outH)) } : null;
+  }
+
   // Size the output canvas to the cropped region (capped at maxEdge). Driven by
   // both setImage and setParams, since the crop lives in the develop params.
   private resize() {
@@ -837,6 +1121,19 @@ export class WebGLRenderer {
     const crop = this.params?.crop ?? DEFAULT_CROP;
     const cw = this.imageWidth * crop.width;
     const ch = this.imageHeight * crop.height;
+    // Zoom ROI: render the window at the requested screen size, but never allocate
+    // more output pixels than the source actually provides within the window
+    // (beyond that we'd just be upscaling — wasted memory and no extra detail).
+    if (this.roi && this.roiOut) {
+      const maxW = Math.max(1, Math.round(cw * this.roi.w));
+      const maxH = Math.max(1, Math.round(ch * this.roi.h));
+      const w = Math.min(this.roiOut.w, maxW);
+      const h = Math.min(this.roiOut.h, maxH);
+      if (this.canvas.width !== w) this.canvas.width = w;
+      if (this.canvas.height !== h) this.canvas.height = h;
+      this.gl.viewport(0, 0, w, h);
+      return;
+    }
     const longEdge = Math.max(cw, ch);
     const scale = longEdge > 0 ? Math.min(1, this.maxEdge / longEdge) : 1;
     const w = Math.max(1, Math.round(cw * scale));
@@ -882,6 +1179,9 @@ export class WebGLRenderer {
 
   // Output color space for subsequent renders. Default sRGB matches the screen;
   // export uses this to convert pixels (and pairs it with an embedded ICC).
+  get bufferWidth(): number { return this.canvas.width; }
+  get bufferHeight(): number { return this.canvas.height; }
+
   setOutputColorSpace(space: ColorSpaceId) {
     this.outSpace = space;
   }
@@ -890,12 +1190,46 @@ export class WebGLRenderer {
     this.asShotTemperature = kelvin >= 2000 && kelvin <= 50000 ? kelvin : 6500;
   }
 
+  setShowClipping(mode: number) {
+    this.showClipping = mode & 3;
+  }
+
+  // Drive the coverage overlay. index < 0 disables it; strength animates the fade.
+  setMaskViz(index: number, color: [number, number, number], strength: number) {
+    this.vizMask = index;
+    this.vizColor = color;
+    this.vizStrength = strength;
+  }
+
+  setLensProfile(profile: import("@/lens-profiles/types").ResolvedProfile | null) {
+    this.lensProfile = profile;
+    this.updateAutoCropScale();
+  }
+
+  private updateAutoCropScale() {
+    const lc = this.params?.lensCorrection;
+    const lp = this.lensProfile;
+    if (lc?.mode === "profile" && lp?.distortion && lc.distortionEnabled) {
+      const aspect = this.imageWidth && this.imageHeight
+        ? this.imageWidth / this.imageHeight : 1.5;
+      this.autoCropScale = computeAutoCropScale(
+        lp.distortion.model, lp.distortion.k, lc.distortion, aspect,
+      );
+    } else if (lc?.mode === "manual" && Math.abs(lc.distortion) > 0.001) {
+      this.autoCropScale = 1; // manual mode: no auto-crop (user controls distortion directly)
+    } else {
+      this.autoCropScale = 1;
+    }
+  }
+
   setParams(params: DevelopParams) {
     this.params = params;
+    this.updateAutoCropScale();
     this.updateMaskTexture(params.masks);
     this.updateMaskCurveTexture(params.masks);
-    this.updateRetouchTexture(params.retouch);
-    this.updateHealFill(params.retouch);
+    const visibleRetouch = params.retouch.filter((s) => s.visible !== false);
+    this.updateRetouchTexture(visibleRetouch);
+    this.updateHealFill(visibleRetouch);
     const lut = buildRGBCurveLUT(params.toneCurve);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
@@ -915,17 +1249,26 @@ export class WebGLRenderer {
     // here painted a black frame on every crop/straighten/transform change.
   }
 
-  // Swap to the active pipeline's cached program when the selection changed
-  // since the last render. Steady state is one memoized resolve and a string
-  // compare; a switch is a Map lookup (compile only on first use of a sig).
+  setStages(stages: ProcessingStageContribution[]) {
+    this.injectedStages = stages;
+  }
+
+  setActivePipeline(pipeline: ResolvedPipeline) {
+    this.injectedPipeline = pipeline;
+  }
+
   private syncPipeline() {
-    const p = resolveActivePipeline();
-    if (p.sig === this.pipelineSig) return;
-    const e = this.entryFor(p);
+    const p = this.injectedPipeline ?? resolveActivePipeline();
+    const { injection, sig: sSig } = buildStageInjection(
+      this.injectedStages ?? undefined,
+    );
+    if (p.sig === this.pipelineSig && sSig === this.stageSig) return;
+    const e = this.entryFor(p, injection, sSig);
     this.program = e.program;
     this.uniforms = e.uniforms;
     this.pipelineSkipBase = e.skipBase;
     this.pipelineSig = p.sig;
+    this.stageSig = sSig;
   }
 
   render() {
@@ -957,6 +1300,10 @@ export class WebGLRenderer {
       u.uApplyBaseCurve,
       this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
     );
+    gl.uniform1i(u.uShowClipping, this.showClipping);
+    gl.uniform1i(u.uVizMask, this.vizMask);
+    gl.uniform3f(u.uVizColor, this.vizColor[0], this.vizColor[1], this.vizColor[2]);
+    gl.uniform1f(u.uVizStrength, this.vizStrength);
     gl.uniform1f(u.uExposure, p.exposure);
     gl.uniform1f(u.uContrast, p.contrast);
     gl.uniform1f(u.uHighlights, p.highlights);
@@ -973,6 +1320,8 @@ export class WebGLRenderer {
     gl.uniform1f(u.uLuminanceNR, p.luminanceNR);
     gl.uniform1f(u.uLumNRDetail, p.luminanceNRDetail);
     gl.uniform1f(u.uLumNRContrast, p.luminanceNRContrast);
+    gl.uniform1f(u.uLumNRShadows, p.luminanceNRShadows);
+    gl.uniform1f(u.uLumNRHighlights, p.luminanceNRHighlights);
     gl.uniform1f(u.uColorNR, p.colorNR);
     gl.uniform1f(u.uColorNRDetail, p.colorNRDetail);
     gl.uniform1f(u.uColorNRSmooth, p.colorNRSmoothness);
@@ -981,9 +1330,12 @@ export class WebGLRenderer {
     gl.uniform1f(u.uTemperature, p.temperature);
     gl.uniform1f(u.uTint, p.tint);
     gl.uniform1f(u.uAsShotTemperature, this.asShotTemperature);
+    gl.uniform1f(u.uClipThreshold, this.linear ? 0.98 : 0.0);
 
     const crop = p.crop ?? DEFAULT_CROP;
     gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
+    const vp = this.roi;
+    gl.uniform4f(u.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
     const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
     gl.uniformMatrix3fv(
       u.uInvTransform,
@@ -1021,22 +1373,89 @@ export class WebGLRenderer {
     gl.uniform1f(u.uCGHighlightRange, cg.highlightRange / 100);
 
     const lc = p.lensCorrection;
-    gl.uniform1f(u.uLensDistortion,   lc.distortion);
-    gl.uniform1f(u.uLensCA,           lc.chromaticAberration);
-    gl.uniform1f(u.uLensDefringe,     lc.defringe);
-    gl.uniform1f(u.uLensVignetting,   lc.vignetting);
+    const lp = this.lensProfile;
+    const useProfile = lc.mode === "profile" && lp;
+
+    // Manual sliders — in profile mode, distortion/CA/vignetting sliders are
+    // additive fine-tuning; in manual mode they are the sole source.
+    gl.uniform1f(u.uLensDistortion,   lc.mode !== "off" ? lc.distortion : 0);
+    gl.uniform1f(u.uLensCA,           lc.mode === "manual" ? lc.chromaticAberration : 0);
+    gl.uniform1f(u.uLensDefringe,     lc.mode !== "off" ? lc.defringe : 0);
+    gl.uniform1f(u.uLensVignetting,   lc.mode === "manual" ? lc.vignetting : 0);
+
+    // Profile-based uniforms
+    if (useProfile && lp.distortion && lc.distortionEnabled) {
+      const d = lp.distortion;
+      const modelInt = d.model === "poly3" ? 1 : d.model === "poly5" ? 2 : 3;
+      gl.uniform1i(u.uLensDistModel,  modelInt);
+      gl.uniform1f(u.uLensDistA,      d.k[0] ?? 0);
+      gl.uniform1f(u.uLensDistB,      d.k.length > 1 ? d.k[1] : d.k[0] ?? 0);
+      gl.uniform1f(u.uLensDistC,      d.k[2] ?? 0);
+    } else {
+      gl.uniform1i(u.uLensDistModel,  0);
+      gl.uniform1f(u.uLensDistA,      0);
+      gl.uniform1f(u.uLensDistB,      0);
+      gl.uniform1f(u.uLensDistC,      0);
+    }
+
+    if (useProfile && lp.tca && lc.caEnabled) {
+      const t = lp.tca;
+      gl.uniform1i(u.uLensTcaModel,   t.model === "linear" ? 1 : 2);
+      if (t.model === "linear") {
+        gl.uniform1f(u.uLensTcaKr,    t.k[0] ?? 1);
+        gl.uniform1f(u.uLensTcaKb,    t.k[1] ?? 1);
+        gl.uniform1f(u.uLensTcaBr,    0);
+        gl.uniform1f(u.uLensTcaCr,    0);
+        gl.uniform1f(u.uLensTcaBb,    0);
+        gl.uniform1f(u.uLensTcaCb,    0);
+      } else {
+        // poly3: [br, cr, vr, bb, cb, vb]
+        gl.uniform1f(u.uLensTcaBr,    t.k[0] ?? 0);
+        gl.uniform1f(u.uLensTcaCr,    t.k[1] ?? 0);
+        gl.uniform1f(u.uLensTcaKr,    t.k[2] ?? 1);
+        gl.uniform1f(u.uLensTcaBb,    t.k[3] ?? 0);
+        gl.uniform1f(u.uLensTcaCb,    t.k[4] ?? 0);
+        gl.uniform1f(u.uLensTcaKb,    t.k[5] ?? 1);
+      }
+    } else {
+      gl.uniform1i(u.uLensTcaModel,   0);
+      gl.uniform1f(u.uLensTcaKr,      1);
+      gl.uniform1f(u.uLensTcaKb,      1);
+      gl.uniform1f(u.uLensTcaBr,      0);
+      gl.uniform1f(u.uLensTcaCr,      0);
+      gl.uniform1f(u.uLensTcaBb,      0);
+      gl.uniform1f(u.uLensTcaCb,      0);
+    }
+
+    if (useProfile && lp.vignetting && lc.vignetteEnabled) {
+      gl.uniform1f(u.uLensVigK1,      lp.vignetting.k[0]);
+      gl.uniform1f(u.uLensVigK2,      lp.vignetting.k[1]);
+      gl.uniform1f(u.uLensVigK3,      lp.vignetting.k[2]);
+    } else {
+      gl.uniform1f(u.uLensVigK1,      0);
+      gl.uniform1f(u.uLensVigK2,      0);
+      gl.uniform1f(u.uLensVigK3,      0);
+    }
+
+    // Auto-crop scale
+    gl.uniform1f(u.uLensAutoCropScale, lc.autoCrop && lc.mode !== "off" ? (this.autoCropScale ?? 1) : 1);
 
     const vig = p.vignette;
-    gl.uniform1f(u.uVignetteAmount,    vig.amount);
-    gl.uniform1f(u.uVignetteMidpoint,  vig.midpoint);
-    gl.uniform1f(u.uVignetteRoundness, vig.roundness);
-    gl.uniform1f(u.uVignetteFeather,   vig.feather);
-    gl.uniform1f(u.uVignetteHighlights,vig.highlights);
+    if (u.uVignetteAmount != null) {
+      gl.uniform1f(u.uVignetteAmount,    vig.amount);
+      gl.uniform1f(u.uVignetteMidpoint,  vig.midpoint);
+      gl.uniform1f(u.uVignetteRoundness, vig.roundness);
+      gl.uniform1f(u.uVignetteFeather,   vig.feather);
+      gl.uniform1f(u.uVignetteHighlights,vig.highlights);
+    }
 
     const gr = p.grain;
-    gl.uniform1f(u.uGrainAmount,    gr.amount);
-    gl.uniform1f(u.uGrainSize,      gr.size);
-    gl.uniform1f(u.uGrainRoughness, gr.roughness);
+    if (u.uGrainAmount != null) {
+      gl.uniform1f(u.uGrainAmount,    gr.amount);
+      gl.uniform1f(u.uGrainSize,      gr.size);
+      gl.uniform1f(u.uGrainRoughness, gr.roughness);
+      gl.uniform1f(u.uGrainColor,     gr.color);
+    }
 
     // Masks + retouch
     gl.uniform1f(u.uImageAspect, aspect);
@@ -1049,7 +1468,9 @@ export class WebGLRenderer {
     gl.uniform1i(u.uMaskCount, masks.length);
     masks.forEach((m, i) => {
       gl.uniform1i(u[`uMaskInvert[${i}]`], m.invert ? 1 : 0);
-      gl.uniform1f(u[`uMaskOpacity[${i}]`], m.opacity / 100);
+      // Hidden masks apply no adjustment (opacity 0) but still compute coverage,
+      // so the coverage overlay can preview them. Coverage is sampled pre-opacity.
+      gl.uniform1f(u[`uMaskOpacity[${i}]`], m.visible === false ? 0 : m.opacity / 100);
       const a: MaskAdjustments = m.adj;
       gl.uniform4f(u[`uMaskAdj0[${i}]`], a.exposure, a.contrast, a.highlights, a.shadows);
       gl.uniform4f(u[`uMaskAdj1[${i}]`], a.saturation, a.temperature, a.tint, a.clarity);
@@ -1062,9 +1483,15 @@ export class WebGLRenderer {
     for (let mi = 0; mi < masks.length && ci < MAX_MASK_COMPONENTS; mi++) {
       for (const c of masks[mi].components) {
         if (ci >= MAX_MASK_COMPONENTS) break;
-        const type = c.kind === "linear" ? 0 : c.kind === "radial" ? 1 : 2;
+        const type =
+          c.kind === "linear" ? 0
+          : c.kind === "radial" ? 1
+          : c.kind === "lumRange" ? 3
+          : c.kind === "colorRange" ? 4
+          : 2; // brush
+        const mode = c.mode === "subtract" ? 1 : c.mode === "intersect" ? 2 : 0;
         gl.uniform1i(u[`uCompMaskIdx[${ci}]`], mi);
-        gl.uniform1i(u[`uCompMode[${ci}]`], c.mode === "subtract" ? 1 : 0);
+        gl.uniform1i(u[`uCompMode[${ci}]`], mode);
         gl.uniform1i(u[`uCompType[${ci}]`], type);
         gl.uniform1i(u[`uCompInvert[${ci}]`], c.invert ? 1 : 0);
         gl.uniform1i(u[`uCompBrushCh[${ci}]`], this.maskChannelOf[c.id] ?? 0);
@@ -1074,8 +1501,15 @@ export class WebGLRenderer {
         } else if (c.kind === "radial" && c.radial) {
           gl.uniform4f(u[`uCompGeoA[${ci}]`], c.radial.cx, c.radial.cy, c.radial.rx, c.radial.ry);
           gl.uniform4f(u[`uCompGeoB[${ci}]`], c.radial.feather, c.radial.angle, 0, 0);
+        } else if (c.kind === "lumRange" && c.lumRange) {
+          const lr = c.lumRange;
+          gl.uniform4f(u[`uCompGeoA[${ci}]`], lr.lo, lr.hi, lr.loFeather, lr.hiFeather);
+          gl.uniform4f(u[`uCompGeoB[${ci}]`], 0, 0, 0, 0);
+        } else if (c.kind === "colorRange" && c.colorRange) {
+          const cr = c.colorRange;
+          gl.uniform4f(u[`uCompGeoA[${ci}]`], cr.r, cr.g, cr.b, cr.hueRange);
+          gl.uniform4f(u[`uCompGeoB[${ci}]`], cr.satRange, cr.smoothness, 0, 0);
         } else {
-          // brush (geometry from atlas) or missing geometry
           gl.uniform4f(u[`uCompGeoA[${ci}]`], 0, 0, 0, 0);
           gl.uniform4f(u[`uCompGeoB[${ci}]`], 0, 0, 0, 0);
         }
@@ -1084,8 +1518,8 @@ export class WebGLRenderer {
     }
     gl.uniform1i(u.uCompCount, ci);
 
-    // Optional per-mask sub-panels: HSL packed as 6 vec4s per mask
-    // (hue lo/hi, sat lo/hi, lum lo/hi), curve flag selects the atlas row.
+    // Optional per-mask sub-panels: HSL packed as 6 vec4s per mask; curve flag
+    // selects the atlas row.
     const hasHsl = new Int32Array(MAX_MASKS);
     const hasCurve = new Int32Array(MAX_MASKS);
     const hslData = new Float32Array(MAX_MASKS * 24);
@@ -1109,7 +1543,9 @@ export class WebGLRenderer {
     gl.uniform1i(u.uMaskCurves, 6);
 
     // Circular spots -> parametric array; brush-shaped retouch -> coverage atlas.
-    const circles = p.retouch.filter((s) => s.shape !== "brush").slice(0, MAX_RETOUCH);
+    // Filter out hidden spots before uploading.
+    const visibleSpots = p.retouch.filter((s) => s.visible !== false);
+    const circles = visibleSpots.filter((s) => s.shape !== "brush").slice(0, MAX_RETOUCH);
     gl.uniform1i(u.uSpotCount, circles.length);
     circles.forEach((s, i) => {
       gl.uniform4f(u[`uSpotA[${i}]`], s.dstX, s.dstY, s.srcX, s.srcY);
@@ -1118,7 +1554,7 @@ export class WebGLRenderer {
         s.radius,
         s.feather / 100,
         s.opacity / 100,
-        0, // reserved (was heal/clone mode)
+        0,
       );
       const angle = s.angle ?? 0;
       const scale = s.scale ?? 1;
@@ -1129,11 +1565,13 @@ export class WebGLRenderer {
         1 / (scale || 1),
         0,
       );
+      // Clone mode: zero the tint so source pixels are copied verbatim.
+      const isClone = s.mode === "clone";
       gl.uniform4f(
         u[`uSpotTint[${i}]`],
-        s.recolorR ?? 0,
-        s.recolorG ?? 0,
-        s.recolorB ?? 0,
+        isClone ? 0 : (s.recolorR ?? 0),
+        isClone ? 0 : (s.recolorG ?? 0),
+        isClone ? 0 : (s.recolorB ?? 0),
         0,
       );
     });
@@ -1141,7 +1579,7 @@ export class WebGLRenderer {
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.retouchTexture);
     gl.uniform1i(u.uRetouchTex, 3);
-    const brushSpots = p.retouch
+    const brushSpots = visibleSpots
       .filter((s) => s.shape === "brush" && s.dabs && s.dabs.length > 0)
       .slice(0, MAX_RETOUCH_BRUSH);
     gl.uniform1i(u.uRetouchCount, brushSpots.length);
@@ -1152,7 +1590,7 @@ export class WebGLRenderer {
         s.srcX - s.dstX, // source offset, UV
         s.srcY - s.dstY,
         s.opacity / 100,
-        0, // reserved (was heal/clone mode)
+        0,
       );
       // Average dab radius drives the heal blur scale for this painted region.
       const dabs = s.dabs!;
@@ -1211,6 +1649,181 @@ export class WebGLRenderer {
     }
   }
 
+  computeHistogram(extended = false): HistogramData {
+    const gl = this.gl;
+    const HIST_SIZE = 128;
+
+    // Standard histogram: re-render at 128x128 into an RGBA8 FBO, readPixels.
+    if (!this.histFbo) {
+      this.histTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.histTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, HIST_SIZE, HIST_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.histFbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.histTex, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    gl.uniform1i(this.uniforms.uShowClipping, 0);
+    gl.uniform1i(this.uniforms.uVizMask, -1);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
+    gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    const px8 = new Uint8Array(HIST_SIZE * HIST_SIZE * 4);
+    gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, px8);
+
+    const r = new Uint32Array(256);
+    const g = new Uint32Array(256);
+    const b = new Uint32Array(256);
+    const luma = new Uint32Array(256);
+    for (let i = 0; i < px8.length; i += 4) {
+      const R = px8[i], G = px8[i + 1], B = px8[i + 2];
+      r[R]++; g[G]++; b[B]++;
+      luma[(0.2126 * R + 0.7152 * G + 0.0722 * B) | 0]++;
+    }
+
+    const result: HistogramData = { r, g, b, luma };
+
+    // Extended histogram: unclamped float readback for full-range distribution.
+    if (extended && this.haveColorBufferFloat) {
+      if (!this.histFboF) {
+        this.histTexF = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.histTexF);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, HIST_SIZE, HIST_SIZE, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        this.histFboF = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFboF);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.histTexF, 0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
+
+      gl.uniform1i(this.uniforms.uRawHistogram, 1);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFboF);
+      gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      const pxF = new Float32Array(HIST_SIZE * HIST_SIZE * 4);
+      gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.FLOAT, pxF);
+      gl.uniform1i(this.uniforms.uRawHistogram, 0);
+
+      const RMIN = -0.25, RMAX = 1.5, BINS = 256;
+      const range = RMAX - RMIN;
+      const er = new Uint32Array(BINS);
+      const eg = new Uint32Array(BINS);
+      const eb = new Uint32Array(BINS);
+      const el = new Uint32Array(BINS);
+      let clipLow = 0, clipHigh = 0;
+      const total = HIST_SIZE * HIST_SIZE;
+      for (let i = 0; i < pxF.length; i += 4) {
+        const R = pxF[i], G = pxF[i + 1], B = pxF[i + 2];
+        const L = 0.2126 * R + 0.7152 * G + 0.0722 * B;
+        if (R <= 0 && G <= 0 && B <= 0) clipLow++;
+        if (R >= 1 || G >= 1 || B >= 1) clipHigh++;
+        const binR = Math.max(0, Math.min(BINS - 1, ((R - RMIN) / range * BINS) | 0));
+        const binG = Math.max(0, Math.min(BINS - 1, ((G - RMIN) / range * BINS) | 0));
+        const binB = Math.max(0, Math.min(BINS - 1, ((B - RMIN) / range * BINS) | 0));
+        const binL = Math.max(0, Math.min(BINS - 1, ((L - RMIN) / range * BINS) | 0));
+        er[binR]++; eg[binG]++; eb[binB]++; el[binL]++;
+      }
+
+      result.extended = {
+        r: er, g: eg, b: eb, luma: el,
+        rangeMin: RMIN, rangeMax: RMAX,
+        clipLow: clipLow / total,
+        clipHigh: clipHigh / total,
+      };
+    }
+
+    // Restore main canvas framebuffer and viewport.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    return result;
+  }
+
+  readDownscaledPixels(size: number): { data: Uint8Array; w: number; h: number } | null {
+    if (!this.imageWidth || !this.imageHeight) return null;
+    const gl = this.gl;
+
+    // Maintain aspect ratio instead of forcing a square
+    const aspect = this.imageWidth / this.imageHeight;
+    let w: number, h: number;
+    if (aspect >= 1) {
+      w = size;
+      h = Math.max(1, Math.round(size / aspect));
+    } else {
+      h = size;
+      w = Math.max(1, Math.round(size * aspect));
+    }
+
+    const fbo = gl.createFramebuffer();
+    const tex = gl.createTexture();
+    // Use a high texture unit so we don't clobber the image on TEXTURE0
+    gl.activeTexture(gl.TEXTURE7);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+
+    // Temporarily override transform and crop to identity so we detect lines
+    // in the raw image, not in an already-corrected view.
+    const u = this.uniforms;
+    const IDENTITY_MAT3 = new Float32Array([1,0,0, 0,1,0, 0,0,1]);
+    gl.uniform4f(u.uCrop, 0, 0, 1, 1);
+    gl.uniformMatrix3fv(u.uInvTransform, false, IDENTITY_MAT3);
+
+    // Re-bind the source image on unit 0 so the shader samples it correctly
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
+    gl.uniform1i(u.uShowClipping, 0);
+    gl.uniform1i(u.uVizMask, -1);
+    gl.viewport(0, 0, w, h);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    const data = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // glReadPixels returns rows bottom-up; flip so row 0 = top of image,
+    // matching the orientation the Hough line detector expects.
+    const stride = w * 4;
+    for (let top = 0, bot = h - 1; top < bot; top++, bot--) {
+      const tOff = top * stride;
+      const bOff = bot * stride;
+      for (let i = 0; i < stride; i++) {
+        const tmp = data[tOff + i];
+        data[tOff + i] = data[bOff + i];
+        data[bOff + i] = tmp;
+      }
+    }
+
+    // Restore the real transform and crop uniforms
+    if (this.params) {
+      const crop = this.params.crop ?? DEFAULT_CROP;
+      gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
+      const imgAspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+      gl.uniformMatrix3fv(
+        u.uInvTransform,
+        false,
+        mat3ColumnMajor(buildInverseTransform(this.params.straighten, this.params.transform, imgAspect)),
+      );
+    }
+
+    gl.activeTexture(gl.TEXTURE7);
+    gl.deleteTexture(tex);
+    gl.deleteFramebuffer(fbo);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    return { data, w, h };
+  }
+
   // Create / resize the offscreen develop target (capped source size). Returns
   // false if the framebuffer can't be completed, so the caller falls back.
   private prepareDevelopedTarget(): boolean {
@@ -1250,7 +1863,11 @@ export class WebGLRenderer {
 
   dispose() {
     const gl = this.gl;
-    gl.deleteTexture(this.imageTexture);
+    // Free every resident source, plus the active image texture if the renderer
+    // still owns it (a cache-owned active texture is freed by the loop above).
+    for (const e of this.sourceCache.values()) gl.deleteTexture(e.tex);
+    this.sourceCache.clear();
+    if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
     gl.deleteTexture(this.curveTexture);
     gl.deleteTexture(this.maskCurveTexture);
     if (this.developedTex) gl.deleteTexture(this.developedTex);

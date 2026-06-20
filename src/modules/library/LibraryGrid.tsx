@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
+import type { CatalogPhoto } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { Thumbnail } from "@/ui/components/Thumbnail";
+import { VirtualGrid } from "@/ui/components/VirtualGrid";
 import { LibraryListRow } from "./LibraryListRow";
 import { visiblePhotos } from "./visible-photos";
-import { useEditedThumbnails } from "./use-edited-thumbnails";
+import { useGridFilters, useLibrarySorts } from "@/extensions/registry";
 
 export function LibraryGrid() {
   const photos = useCatalogStore((s) => s.photos);
@@ -23,26 +25,38 @@ export function LibraryGrid() {
   const sortDirection = useUIStore((s) => s.sortDirection);
   const clearFilters = useUIStore((s) => s.clearFilters);
   const activeFolder = useUIStore((s) => s.activeFolder);
+  const gridFilters = useGridFilters();
+  const librarySorts = useLibrarySorts();
+  const customCompare = librarySorts.find((s) => s.id === sortField)?.compare;
 
   const visible = useMemo(
-    () => visiblePhotos(photos, filter, sortField, sortDirection, activeFolder),
-    [photos, activeFolder, filter, sortField, sortDirection],
+    () =>
+      visiblePhotos(
+        photos,
+        filter,
+        sortField,
+        sortDirection,
+        activeFolder,
+        gridFilters.map((g) => g.test),
+        customCompare,
+      ),
+    [
+      photos,
+      activeFolder,
+      filter,
+      sortField,
+      sortDirection,
+      gridFilters,
+      customCompare,
+    ],
   );
 
-  // Keep grid/list thumbnails showing the develop-edited result, rendered in the
-  // background while the Library is on screen.
-  useEditedThumbnails(visible);
+  const activeIndex = useMemo(
+    () => (activePhotoId ? visible.findIndex((p) => p.id === activePhotoId) : -1),
+    [activePhotoId, visible],
+  );
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Keep the active photo on screen as keyboard navigation moves through it.
-  useEffect(() => {
-    if (!activePhotoId || !scrollRef.current) return;
-    const el = scrollRef.current.querySelector(
-      `[data-photo-id="${CSS.escape(activePhotoId)}"]`,
-    );
-    el?.scrollIntoView({ block: "nearest" });
-  }, [activePhotoId]);
+  const getKey = useCallback((p: CatalogPhoto) => p.id, []);
 
   // Stable handlers (passed to every memoized cell) so a selection re-renders
   // only the cells whose selected/active flipped. The on-screen order for
@@ -118,10 +132,16 @@ export function LibraryGrid() {
 
   if (viewMode === "list") {
     return (
-      <div ref={scrollRef} className="flex flex-1 flex-col overflow-y-auto">
-        {visible.map((photo) => (
+      <VirtualGrid
+        items={visible}
+        cellHeight={53}
+        columns={1}
+        overscan={6}
+        getKey={getKey}
+        scrollToIndex={activeIndex >= 0 ? activeIndex : undefined}
+        className="flex-1"
+        renderCell={(photo) => (
           <LibraryListRow
-            key={photo.id}
             photo={photo}
             selected={selectedIds.has(photo.id)}
             active={activePhotoId === photo.id}
@@ -129,19 +149,24 @@ export function LibraryGrid() {
             onDoubleClick={handleDoubleClick}
             onDragStart={handleDragStart}
           />
-        ))}
-      </div>
+        )}
+      />
     );
   }
 
   return (
-    <div
-      ref={scrollRef}
-      className="flex flex-1 flex-wrap content-start gap-2 overflow-y-auto p-3"
-    >
-      {visible.map((photo) => (
+    <VirtualGrid
+      items={visible}
+      cellWidth={gridSize}
+      cellHeight={gridSize}
+      gap={8}
+      padding={12}
+      overscan={3}
+      getKey={getKey}
+      scrollToIndex={activeIndex >= 0 ? activeIndex : undefined}
+      className="flex-1"
+      renderCell={(photo) => (
         <Thumbnail
-          key={photo.id}
           photo={photo}
           selected={selectedIds.has(photo.id)}
           active={activePhotoId === photo.id}
@@ -151,7 +176,7 @@ export function LibraryGrid() {
           onRatingChange={handleRate}
           onDragStart={handleDragStart}
         />
-      ))}
-    </div>
+      )}
+    />
   );
 }

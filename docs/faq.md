@@ -6,11 +6,11 @@ Frequently asked questions about Safelight.
 
 ### What is Safelight?
 
-Safelight is a free, open-source, privacy-first RAW photo editor. It combines GPU-accelerated professional editing tools with an IDE-style extensible interface, and ships as a Windows desktop app (Electron) and a browser app.
+Safelight is a free, open-source, privacy-first RAW photo editor. It combines GPU-accelerated professional editing tools with an IDE-style extensible interface, and ships as a desktop app (Electron) for Windows, Linux, and macOS, plus a browser app.
 
 ### Is Safelight free?
 
-Yes — completely free and open source (MIT). No subscriptions, no hidden costs.
+Yes — completely free and open source (GPL v3). No subscriptions, no hidden costs.
 
 ### Does Safelight work offline?
 
@@ -50,15 +50,19 @@ Yes. Safelight decodes RAW at full resolution via libraw-wasm, with an in-house 
 
 ### Can I make local adjustments?
 
-Yes — radial, linear, and brush masks (up to 8 per photo) with per-mask exposure, contrast, tone, color, and clarity, plus heal/clone spot removal (up to 16 spots).
+Yes — masks built from radial, linear, brush, luminance-range, and color-range components (up to 8 masks per photo, 16 components total) combined with add/subtract/intersect, with per-mask exposure, contrast, tone, color, clarity, and optional sub-panels. Plus heal/clone spot removal (up to 16 spots). Geometry tools include crop, straighten, transform, and automatic/guided Upright perspective correction.
 
 ### Can I use presets?
 
-Yes. Presets are an open, human-readable JSON format (`safelight-preset`) that you can save, apply, export, and import — easy to share or generate.
+Yes. Presets are an open, human-readable JSON format (`safelight-preset`) that you can save, apply, export, and import — easy to share or generate. The bundled XMP Tools extension also imports Lightroom `.xmp` presets.
+
+### Can I compare before/after?
+
+Yes — the bundled Image Comparison extension adds hold-to-preview and a draggable before/after split to the Develop canvas.
 
 ### Can I import Lightroom catalogs?
 
-Not yet — it's on the roadmap (via sql.js).
+Full catalog import isn't built in yet (it's on the roadmap via sql.js), but the bundled XMP Tools extension reads/writes XMP sidecars and imports Lightroom presets.
 
 ### Does Safelight support batch editing or AI masking?
 
@@ -72,7 +76,7 @@ Every shortcut is rebindable in Preferences (Ctrl+,) ▸ Shortcuts. Single-lette
 
 ### What can extensions do?
 
-Add or replace panels (every stock panel can be disabled and swapped for a community version), add themes, layouts, and slider icons, and persist their own settings. See [Extensions](extensions.md).
+A lot — the core is a blind orchestrator that extensions fill in. They can add or replace panels (every stock panel can be disabled and swapped), add themes, layouts, slider icons, keyboard shortcuts, and UI slots; contribute display transforms (tone mappers) and lens profiles; own catalog side concerns via lifecycle hooks (e.g. XMP sidecars); add Library sorts, grid filters, and preset importers; and add export processors and filename templates. See [Extensions](extensions.md).
 
 ### Are extensions safe?
 

@@ -15,24 +15,51 @@ import type {
   RetouchSpot,
   ToneCurveChannel,
 } from "@/catalog/types";
-import { MAX_MASKS, MAX_RETOUCH, normalizeParams } from "@/catalog/types";
+import {
+  MAX_MASKS,
+  MAX_RETOUCH,
+  defaultColorRange,
+  defaultLumRange,
+  defaultMaskAdjustments,
+  DEFAULT_MASK_PANELS,
+  normalizeParams,
+} from "@/catalog/types";
 
 export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
 import type { HistogramData } from "@/rendering/histogram";
+import type { ResolvedProfile } from "@/lens-profiles/types";
 import { catalogStorage } from "@/catalog/storage";
 import { broadcast } from "./broadcast";
 import { nextGuide, type CropGuide } from "@/modules/develop/crop-guides";
-import { writeXmpSidecar } from "@/catalog/xmp";
-import { getSettings } from "./settings-store";
+import { emitEditCommit } from "@/extensions/registry";
 import { useCatalogStore } from "./catalog-store";
+import { resolveLensForPhoto } from "./lens-resolve";
 
 interface DevelopState {
   photoId: string | null;
   params: DevelopParams;
+  /** Transient render-only override: when set, the renderer draws these params
+   *  instead of `params` without touching history (used for preset hover
+   *  preview). Cleared on mouse-out, on apply, and when switching photos. */
+  previewParams: DevelopParams | null;
+  /** Dynamic parameter bag keyed by qualified names (e.g. "core.exposure.exposure").
+   *  During migration, kept in sync with `params` via a bidirectional bridge.
+   *  Will become the sole representation once all stages are extracted. */
+  paramBag: Record<string, unknown>;
   history: EditSnapshot[];
   historyIndex: number;
   histogram: HistogramData | null;
   asShotTemperature: number;
+
+  // Resolved lens profile (ephemeral — recomputed per photo, not serialized).
+  resolvedLensProfile: ResolvedProfile | null;
+  detectedLensName: string | null;
+
+  // Whether the guided-upright drawing overlay is open. Transient: guided can be
+  // the selected upright mode without the line-drawing overlay capturing the
+  // canvas, so this is separate from params.uprightMode and not persisted.
+  guidedEditing: boolean;
+  setGuidedEditing: (v: boolean) => void;
 
   // Crop tool UI state (not part of the edit, so not persisted to history).
   cropping: boolean;
@@ -47,6 +74,11 @@ interface DevelopState {
   cycleCropGuide: () => void;
   cycleCropGuideFlip: () => void;
 
+  // Clipping overlay: bitmask (bit 0 = shadows, bit 1 = highlights).
+  showClipping: 0 | 1 | 2 | 3;
+  setShowClipping: (mode: 0 | 1 | 2 | 3) => void;
+  toggleClipping: () => void;
+
   // White-balance eyedropper: when true, the next click on the image samples a
   // neutral target and solves Temp/Tint. Ephemeral UI state, not persisted.
   wbPicking: boolean;
@@ -55,6 +87,11 @@ interface DevelopState {
   // HSL color picker: when true, click+drag on image adjusts HSL for sampled color.
   hslPicking: boolean;
   setHslPicking: (v: boolean) => void;
+
+  // Mask colour-range eyedropper: when true, the next image click samples a
+  // target colour into the selected colour-range component. Ephemeral.
+  maskColorPicking: boolean;
+  setMaskColorPicking: (v: boolean) => void;
   selectedHslBand: "hue" | "saturation" | "luminance";
   setSelectedHslBand: (band: "hue" | "saturation" | "luminance") => void;
 
@@ -65,6 +102,9 @@ interface DevelopState {
   maskAddTarget: "new" | "current"; // start a fresh mask, or extend the selected one
   selectedMaskId: string | null;
   selectedComponentId: string | null; // component being edited on-canvas
+  hoveredMaskId: string | null; // mask hovered in the panel list -> coverage overlay
+  maskTab: "coverage" | "adjust"; // selected-mask editor tab (gates the overlay)
+  brushPreview: boolean; // true while a brush size/feather slider is being dragged
   selectedSpotId: string | null;
   brushSize: number; // image-height fraction
   brushFeather: number; // 0..1
@@ -72,12 +112,16 @@ interface DevelopState {
   retouchSize: number; // image-height fraction
   retouchFeather: number; // 0..100
   retouchOpacity: number; // 0..100
+  retouchMode: "heal" | "clone";
   setActiveTool: (t: ToolMode) => void;
   setMaskToolType: (t: MaskType) => void;
   setMaskCompMode: (m: MaskComponentMode) => void;
   setMaskAddTarget: (t: "new" | "current") => void;
   selectMask: (id: string | null) => void;
   selectComponent: (id: string | null) => void;
+  setHoveredMaskId: (id: string | null) => void;
+  setMaskTab: (tab: "coverage" | "adjust") => void;
+  setBrushPreview: (v: boolean) => void;
   selectSpot: (id: string | null) => void;
   setBrushSize: (v: number) => void;
   setBrushFeather: (v: number) => void;
@@ -85,15 +129,21 @@ interface DevelopState {
   setRetouchSize: (v: number) => void;
   setRetouchFeather: (v: number) => void;
   setRetouchOpacity: (v: number) => void;
+  setRetouchMode: (v: "heal" | "clone") => void;
 
   // Mask data mutations (persisted; commitEdit ends a gesture for undo).
   addMask: (mask: Mask) => void;
   updateMask: (id: string, patch: Partial<Mask>) => void;
   updateMaskAdj: (id: string, patch: Partial<MaskAdjustments>) => void;
+  renameMask: (id: string, name: string) => void;
   // Component mutations within a mask.
   addComponent: (maskId: string, comp: MaskComponent) => void;
   updateComponent: (maskId: string, compId: string, patch: Partial<MaskComponent>) => void;
   removeComponent: (maskId: string, compId: string) => void;
+  cycleComponentMode: (maskId: string, compId: string) => void;
+  // Add a parametric range component (luminance / colour). Appends to the
+  // selected mask (as an intersect by default) or starts a new mask.
+  addRangeComponent: (kind: "lumRange" | "colorRange") => void;
   addBrushDab: (maskId: string, compId: string, dab: BrushDab) => void;
   removeMask: (id: string) => void;
   // Retouch data mutations.
@@ -101,15 +151,24 @@ interface DevelopState {
   updateSpot: (id: string, patch: Partial<RetouchSpot>) => void;
   removeSpot: (id: string) => void;
 
+  setResolvedLensProfile: (profile: ResolvedProfile | null, lensName: string | null) => void;
+
   setHistogram: (histogram: HistogramData | null) => void;
   loadEdit: (photoId: string, asShotTemperature?: number) => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
     key: K,
     value: DevelopParams[K],
   ) => void;
+  /** Set a dynamic parameter by qualified key (e.g. "core.exposure.exposure"). */
+  setDynParam: (key: string, value: unknown) => void;
+  /** Set multiple dynamic parameters at once. */
+  setDynParams: (patch: Record<string, unknown>) => void;
   setToneCurve: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
   setHslValue: (band: HSLBand, channel: HSLChannel, value: number) => void;
   applyPreset: (params: Partial<DevelopParams>) => Promise<void>;
+  /** Set (or clear with null) the render-only preview params. No history write,
+   *  no broadcast — purely local to the Develop canvas. */
+  setPreviewParams: (params: Partial<DevelopParams> | null) => void;
   commitEdit: (label: string) => Promise<void>;
   undo: () => void;
   redo: () => void;
@@ -117,6 +176,11 @@ interface DevelopState {
   canUndo: () => boolean;
   canRedo: () => boolean;
 }
+
+// Shared id generator for masks / components created from the panel (range
+// masks have no canvas gesture, so they're built here rather than in the overlay).
+let idSeq = 0;
+const genId = (p: string) => `${p}-${Date.now().toString(36)}-${idSeq++}`;
 
 // Broadcast the current params so the renderer re-renders live during a mask /
 // retouch gesture. History is written separately by commitEdit at gesture end.
@@ -160,10 +224,17 @@ function moveHistory(
 export const useDevelopStore = create<DevelopState>((set, get) => ({
   photoId: null,
   params: normalizeParams(undefined),
+  previewParams: null,
+  paramBag: {},
   history: [],
   historyIndex: -1,
   histogram: null,
+  resolvedLensProfile: null,
+  detectedLensName: null,
   asShotTemperature: 6500,
+
+  guidedEditing: false,
+  setGuidedEditing: (guidedEditing) => set({ guidedEditing }),
 
   cropping: false,
   constrainCrop: true,
@@ -178,11 +249,26 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   cycleCropGuideFlip: () =>
     set((s) => ({ cropGuideFlip: (s.cropGuideFlip + 1) % 4 })),
 
+  showClipping: (() => {
+    try { const v = localStorage.getItem("sl_show_clipping"); return v === "1" ? 1 : v === "2" ? 2 : v === "3" ? 3 : 0; } catch { return 0; }
+  })() as 0 | 1 | 2 | 3,
+  setShowClipping: (mode) => {
+    set({ showClipping: mode });
+    try { localStorage.setItem("sl_show_clipping", String(mode)); } catch {}
+  },
+  toggleClipping: () => {
+    const next = (get().showClipping === 0 ? 3 : 0) as 0 | 3;
+    set({ showClipping: next });
+    try { localStorage.setItem("sl_show_clipping", String(next)); } catch {}
+  },
+
   wbPicking: false,
   setWbPicking: (wbPicking) => set({ wbPicking }),
 
   hslPicking: false,
   setHslPicking: (hslPicking) => set({ hslPicking }),
+  maskColorPicking: false,
+  setMaskColorPicking: (maskColorPicking) => set({ maskColorPicking }),
   selectedHslBand: "hue",
   setSelectedHslBand: (selectedHslBand) => set({ selectedHslBand }),
 
@@ -192,6 +278,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   maskAddTarget: "new",
   selectedMaskId: null,
   selectedComponentId: null,
+  hoveredMaskId: null,
+  maskTab: "coverage",
+  brushPreview: false,
   selectedSpotId: null,
   brushSize: 0.08,
   brushFeather: 0.5,
@@ -199,12 +288,16 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   retouchSize: 0.04,
   retouchFeather: 50,
   retouchOpacity: 100,
+  retouchMode: "heal" as const,
   setActiveTool: (activeTool) => set({ activeTool }),
   setMaskToolType: (maskToolType) => set({ maskToolType }),
   setMaskCompMode: (maskCompMode) => set({ maskCompMode }),
   setMaskAddTarget: (maskAddTarget) => set({ maskAddTarget }),
   selectMask: (selectedMaskId) => set({ selectedMaskId }),
   selectComponent: (selectedComponentId) => set({ selectedComponentId }),
+  setHoveredMaskId: (hoveredMaskId) => set({ hoveredMaskId }),
+  setMaskTab: (maskTab) => set({ maskTab }),
+  setBrushPreview: (brushPreview) => set({ brushPreview }),
   selectSpot: (selectedSpotId) => set({ selectedSpotId }),
   setBrushSize: (brushSize) => set({ brushSize }),
   setBrushFeather: (brushFeather) => set({ brushFeather }),
@@ -212,6 +305,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   setRetouchSize: (retouchSize) => set({ retouchSize }),
   setRetouchFeather: (retouchFeather) => set({ retouchFeather }),
   setRetouchOpacity: (retouchOpacity) => set({ retouchOpacity }),
+  setRetouchMode: (retouchMode) => set({ retouchMode }),
 
   addMask(mask) {
     set((s) => {
@@ -237,6 +331,65 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
       selectedComponentId: comp.id,
     }));
     pushEdit(get);
+  },
+
+  // Cycle a component's combine mode: add -> subtract -> intersect -> add.
+  cycleComponentMode(maskId, compId) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        masks: s.params.masks.map((m) =>
+          m.id === maskId
+            ? {
+                ...m,
+                components: m.components.map((c) => {
+                  if (c.id !== compId) return c;
+                  const next: MaskComponentMode =
+                    c.mode === "add" ? "subtract" : c.mode === "subtract" ? "intersect" : "add";
+                  return { ...c, mode: next };
+                }),
+              }
+            : m,
+        ),
+      },
+    }));
+    pushEdit(get);
+  },
+
+  addRangeComponent(kind) {
+    const geo =
+      kind === "lumRange"
+        ? { lumRange: defaultLumRange() }
+        : { colorRange: defaultColorRange() };
+    const s = get();
+    const sel = s.params.masks.find((m) => m.id === s.selectedMaskId) ?? null;
+    if (sel) {
+      // Range masks are usually used to confine an existing region -> intersect.
+      const comp: MaskComponent = {
+        id: genId("comp"),
+        kind,
+        mode: sel.components.length > 0 ? "intersect" : "add",
+        invert: false,
+        ...geo,
+      };
+      get().addComponent(sel.id, comp);
+      return;
+    }
+    // No mask selected: start a new mask anchored on the range component.
+    const id = genId("mask");
+    const mask: Mask = {
+      id,
+      name: kind === "lumRange" ? "Luminance" : "Color",
+      visible: true,
+      invert: false,
+      opacity: 100,
+      adj: defaultMaskAdjustments(),
+      panels: [...DEFAULT_MASK_PANELS],
+      components: [
+        { id: genId("comp"), kind, mode: "add", invert: false, ...geo },
+      ],
+    };
+    get().addMask(mask);
   },
 
   updateComponent(maskId, compId, patch) {
@@ -304,6 +457,16 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     pushEdit(get);
   },
 
+  renameMask(id, name) {
+    set((s) => ({
+      params: {
+        ...s.params,
+        masks: s.params.masks.map((m) => (m.id === id ? { ...m, name } : m)),
+      },
+    }));
+    pushEdit(get);
+  },
+
   addBrushDab(maskId, compId, dab) {
     set((s) => ({
       params: {
@@ -366,6 +529,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     pushEdit(get);
   },
 
+  setResolvedLensProfile: (profile, lensName) =>
+    set({ resolvedLensProfile: profile, detectedLensName: lensName }),
+
   setHistogram: (histogram) => set({ histogram }),
 
   async loadEdit(photoId: string, asShotTemperature?: number) {
@@ -391,8 +557,12 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         photoId,
         asShotTemperature: asShot,
         params: normalizeParams(stack[index].params),
+        previewParams: null,
         history: stack,
         historyIndex: index,
+        resolvedLensProfile: null,
+        detectedLensName: null,
+        guidedEditing: false,
       });
     } else {
       // Seed history with the untouched state so undo can return to it.
@@ -402,6 +572,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         photoId,
         asShotTemperature: asShot,
         params: initial,
+        previewParams: null,
         history: [
           {
             timestamp: Date.now(),
@@ -410,13 +581,39 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
           },
         ],
         historyIndex: 0,
+        resolvedLensProfile: null,
+        detectedLensName: null,
+        guidedEditing: false,
       });
     }
+
+    // Resolve lens profile from EXIF (async, non-blocking)
+    void resolveLensForPhoto(photoId);
   },
 
   setParam(key, value) {
     set((s) => ({
       params: { ...s.params, [key]: value },
+    }));
+    broadcast({
+      type: "edit-update",
+      payload: { photoId: get().photoId, params: get().params },
+    });
+  },
+
+  setDynParam(key, value) {
+    set((s) => ({
+      paramBag: { ...s.paramBag, [key]: value },
+    }));
+    broadcast({
+      type: "edit-update",
+      payload: { photoId: get().photoId, params: get().params },
+    });
+  },
+
+  setDynParams(patch) {
+    set((s) => ({
+      paramBag: { ...s.paramBag, ...patch },
     }));
     broadcast({
       type: "edit-update",
@@ -454,12 +651,16 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   },
 
   async applyPreset(params) {
-    set({ params: normalizeParams(params) });
+    set({ previewParams: null, params: normalizeParams(params) });
     broadcast({
       type: "edit-update",
       payload: { photoId: get().photoId, params: get().params },
     });
     await get().commitEdit("Preset");
+  },
+
+  setPreviewParams(params) {
+    set({ previewParams: params ? normalizeParams(params) : null });
   },
 
   async commitEdit(label: string) {
@@ -485,19 +686,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     };
     await catalogStorage().putEditState(editState);
 
-    // Write XMP sidecar if enabled (includes edit params in private namespace).
-    if (getSettings().writeXmpSidecars) {
-      const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
-      if (photo?.directoryHandle && photo?.fileHandle) {
-        try {
-          await writeXmpSidecar(photo.directoryHandle, photo.fileHandle.name, photo, editState, {
-            includePrivateNamespace: true,
-          });
-        } catch (e) {
-          console.warn(`[xmp] Failed to write sidecar for ${photo.filename}:`, e);
-        }
-      }
-    }
+    // Let extensions persist the committed edit elsewhere.
+    const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
+    if (photo) await emitEditCommit({ photo, editState });
 
     // Announce the committed state so the Library refreshes this photo's thumbnail
     // (and histogram) the moment it's edited — for any visible photo, in any

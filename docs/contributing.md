@@ -20,16 +20,17 @@ Node.js 20.19+ or 22.12+ required (Vite 8 minimum; Node 22 LTS recommended). The
 
 ## Where Things Live
 
-- `src/catalog/` — photo records, EXIF, edit params, storage interface
+- `src/catalog/` — photo records, EXIF, develop params, storage interface, limits
 - `src/project/` — project folders and `.safelight/` persistence
 - `src/raw/` — RAW decoding (libraw-wasm adapter, TIFF/CFA, cache)
-- `src/modules/` — library, develop (and its panels), export
-- `src/extensions/` — registry, host API, loader, docking, themes, built-ins
-- `src/rendering/` — WebGL renderer, shaders, image math
+- `src/lens-profiles/` — Lensfun-derived lens correction database + resolver
+- `src/modules/` — library, develop (and its panels), export, loupe
+- `src/extensions/` — registry, host API, loader, docking, themes, pipelines, built-ins
+- `src/rendering/` — render worker + bridge, WebGL renderer, shaders, image math
 - `src/state/` — Zustand stores, broadcast, keybindings
-- `electron/` — desktop shell
+- `electron/` — desktop shell and plugin host
 
-See [Architecture](architecture.md) for the full picture.
+Two things to keep in mind: rendering runs in a **Web Worker on an `OffscreenCanvas`**, so render-path code must not touch the DOM; and the core is a **blind orchestrator** — built-in panels and tools are pre-installed extensions registered through the same `SafelightAPI` external plugins use, so prefer adding a contribution over wiring something directly into the shell. See [Architecture](architecture.md) for the full picture.
 
 ## Building Extensions Instead
 
@@ -47,16 +48,15 @@ Commit message style: `feat: …`, `fix: …`, `docs: …`, `refactor: …`.
 ## Areas Where Help Is Wanted
 
 - Red eye correction
-- Image compare view
 - B&W and HDR image support
 - HDR / focus stacking and photo merge
-- Batch editing
+- Batch editing / sync edits
 - AI masking via ONNX.js (Select Subject, Sky)
 - Lightroom catalog import (sql.js)
 - Mobile-responsive viewing
-- Camera profiles / base tuning (the Tuning panel is currently a stub)
-- Extension marketplace, templates, and scaffolding
-- macOS / Linux desktop builds
+- Camera profiles / base tuning
+- Migrating built-in develop tools to extension-contributed GPU processing stages
+- Extension templates and scaffolding
 - Tests
 
 ## Questions

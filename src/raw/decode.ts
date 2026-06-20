@@ -81,7 +81,9 @@ export async function decodeRawToFloat(
   }
 }
 
-export async function decodeRawToBitmap(file: Blob): Promise<ImageBitmap | null> {
+export async function decodeRawToBitmap(
+  file: Blob,
+): Promise<{ bitmap: ImageBitmap; oriented: boolean } | null> {
   let buffer: ArrayBuffer;
   try {
     buffer = await file.arrayBuffer();
@@ -95,20 +97,21 @@ export async function decodeRawToBitmap(file: Blob): Promise<ImageBitmap | null>
     try {
       const d = await lib.decode(buffer);
       if (d && d.rgba.length >= d.width * d.height * 4) {
-        return rgbaToBitmap(d.rgba, d.width, d.height);
+        const bitmap = await rgbaToBitmap(d.rgba, d.width, d.height);
+        return { bitmap, oriented: true };
       }
     } catch {
       // fall through to the in-house path
     }
   }
 
-  // 2. In-house decode of uncompressed CFA data.
+  // 2. In-house decode of uncompressed CFA data (sensor-native orientation).
   try {
     const reader = new TiffReader(buffer);
     const info = findRawIfd(reader);
     if (info && info.compression === COMPRESSION.None) {
       const bitmap = await developUncompressed(reader, info);
-      if (bitmap) return bitmap;
+      if (bitmap) return { bitmap, oriented: false };
     }
   } catch {
     // not a TIFF stream we understand

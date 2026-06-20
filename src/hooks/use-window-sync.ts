@@ -13,7 +13,11 @@ export function useWindowSync() {
 
     const off = onBroadcast((msg) => {
       if (msg.type === "selection-change") {
-        useCatalogStore.getState().setActivePhoto(msg.payload.activePhotoId);
+        // Apply the remote change locally but don't echo it back — re-broadcasting
+        // a received selection makes windows ping-pong forever (see setActivePhoto).
+        useCatalogStore
+          .getState()
+          .setActivePhoto(msg.payload.activePhotoId, { broadcast: false });
       } else if (!dm && msg.type === "attach") {
         const ui = useUIStore.getState();
         ui.markAttached(msg.payload.module);

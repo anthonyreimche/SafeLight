@@ -1,7 +1,7 @@
 {
   "name": "safelight",
   "private": true,
-  "version": "1.0.5",
+  "version": "2.0.0",
   "description": "Safelight — a fast RAW photo editor.",
   "homepage": "https://github.com/anthonyreimche/SafeLight",
   "desktopName": "safelight",
@@ -10,6 +10,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
+    "test": "vitest run",
     "build": "tsc && vite build",
     "build:app": "vite build",
     "preview": "vite preview",
@@ -35,6 +36,7 @@
     "tailwindcss": "^4.3.1",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
+    "vitest": "^4.1.9",
     "zustand": "^5.0.14"
   },
   "overrides": {
@@ -51,7 +53,8 @@
     "files": [
       "dist/**/*",
       "electron/main.cjs",
-      "electron/preload.cjs"
+      "electron/preload.cjs",
+      "package.json"
     ],
     "asar": true,
     "compression": "normal",

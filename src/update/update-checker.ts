@@ -2,6 +2,8 @@
 // against the latest tag on the GitHub releases API and stores whether the
 // user has dismissed a particular version so the banner doesn't reappear.
 
+import { parseSemver, isNewer } from "./semver";
+
 const REPO = "anthonyreimche/SafeLight";
 const API_URL = `https://api.github.com/repos/${REPO}/releases?per_page=20`;
 const DISMISS_KEY = "sl_update_dismissed_v1";
@@ -56,22 +58,6 @@ interface GHRelease {
   html_url: string;
   body: string | null;
   draft: boolean;
-}
-
-/** Parse semver-ish tags like "v1.2.3" or "1.2.3" into [major, minor, patch]. */
-function parseSemver(tag: string): [number, number, number] {
-  const m = tag.replace(/^v/, "").match(/^(\d+)\.(\d+)\.(\d+)/);
-  if (!m) return [0, 0, 0];
-  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
-}
-
-/** Returns true when `candidate` is strictly newer than `current`. */
-function isNewer(current: string, candidate: string): boolean {
-  const [cMaj, cMin, cPat] = parseSemver(current);
-  const [nMaj, nMin, nPat] = parseSemver(candidate);
-  if (nMaj !== cMaj) return nMaj > cMaj;
-  if (nMin !== cMin) return nMin > cMin;
-  return nPat > cPat;
 }
 
 /**

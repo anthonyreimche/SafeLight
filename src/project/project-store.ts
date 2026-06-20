@@ -44,6 +44,15 @@ function onIdle(fn: () => void): void {
   else setTimeout(fn, 200);
 }
 
+// Module-level abort controller for the current import, so stopImport() can
+// cancel the expensive decode loop without touching Zustand (AbortController is
+// mutable and shouldn't trigger re-renders).
+let importAbort: AbortController | null = null;
+
+// Generation counter — bumped on each openProject / closeProject so that an
+// in-flight open whose generation no longer matches skips its finalization.
+let openGen = 0;
+
 interface ProjectState {
   root: FileSystemDirectoryHandle | null;
   name: string;
@@ -64,6 +73,11 @@ interface ProjectState {
   openLast: () => Promise<void>;
   /** Called from the reconnect button: re-request permission, then open. */
   reconnectLast: () => Promise<boolean>;
+  /** Cancel an in-progress import. Already-imported photos are kept; the rest
+   *  will be picked up on the next folder open. */
+  stopImport: () => void;
+  /** Close the current project and return to the welcome screen. */
+  closeProject: () => void;
   /** Re-walk the open folder and refresh the tree (after a folder op on disk).
    *  Cheap: lists directories only, never re-decodes photos. */
   refreshTree: () => Promise<void>;
@@ -100,6 +114,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   async openProject(handle) {
     if (get().opening) return;
+    const gen = ++openGen;
+    importAbort = new AbortController();
+    const signal = importAbort.signal;
     set({ opening: true, importDone: 0, importTotal: 0 });
     // Clear the old catalog immediately so the grid shows photos as they arrive
     // rather than showing the previous folder until the new one is fully loaded.
@@ -119,7 +136,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
       // Queue cached previews for loading: visible cells request first (via the
       // Thumbnail IntersectionObserver); when idle, enqueue the rest in view order.
-      const kickThumbnails = (photos: CatalogPhoto[], gen: number) => {
+      const kickThumbnails = (photos: CatalogPhoto[], thumbGen: number) => {
         const ui = useUIStore.getState();
         const toLoad = photos.filter((p) => !p.thumbnailUrl);
         const inView = visiblePhotos(
@@ -132,7 +149,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         const seen = new Set(inView.map((p) => p.id));
         const ordered = [...inView, ...toLoad.filter((p) => !seen.has(p.id))];
         onIdle(() => {
-          if (thumbnailGen() !== gen) return; // a newer folder was opened
+          if (thumbnailGen() !== thumbGen) return; // a newer folder was opened
           for (const p of ordered) requestThumbnail(p.id);
         });
       };
@@ -145,18 +162,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         rawCacheDir: FileSystemDirectoryHandle,
         skeletons: CatalogPhoto[],
       ) => {
+        if (gen !== openGen) return;
         painted = true;
         setRawCacheDir(rawCacheDir);
         setCatalogStorage(storage);
         set({ root: handle, name: handle.name });
-        const gen = setThumbnailLoader((id) => storage.readPreview(id));
+        const thumbGen = setThumbnailLoader((id) => storage.readPreview(id));
         useCatalogStore.getState().finalizeCatalog(skeletons);
-        kickThumbnails(skeletons, gen);
+        kickThumbnails(skeletons, thumbGen);
       };
 
       const opened = await ProjectStorage.open(
         handle,
         (photo) => {
+          if (gen !== openGen) return;
           buf.push(photo);
           if (!scheduled) {
             scheduled = true;
@@ -164,8 +183,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           }
         },
         onSkeletons,
-        (done, total) => set({ importDone: done, importTotal: total }),
+        (done, total) => {
+          if (gen === openGen) set({ importDone: done, importTotal: total });
+        },
+        signal,
       );
+      buf = []; // discard any stragglers if cancelled
+      if (gen !== openGen) return;
       flush(); // drain any photos buffered since the last frame
       setRawCacheDir(opened.rawCacheDir);
       setCatalogStorage(opened.storage);
@@ -176,9 +200,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       if (painted) {
         useCatalogStore.getState().reconcileCatalog(opened.photos);
       } else {
-        const gen = setThumbnailLoader((id) => opened.storage.readPreview(id));
+        const thumbGen = setThumbnailLoader((id) => opened.storage.readPreview(id));
         useCatalogStore.getState().finalizeCatalog(opened.photos);
-        kickThumbnails(opened.photos, gen);
+        kickThumbnails(opened.photos, thumbGen);
       }
       // Remember this folder for the welcome grid, with the first photo's grid
       // preview as the card cover. Reattached photos load previews lazily, so
@@ -187,6 +211,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const cover = first
         ? first.thumbnailBlob ?? (await opened.storage.readPreview(first.id))
         : null;
+      if (gen !== openGen) return;
       await addRecentProject(handle, cover);
       // Persist the final import state now (don't rely on the debounced save or
       // the best-effort beforeunload flush, which can be cut short on app quit),
@@ -208,7 +233,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     } catch (e) {
       console.error("[project] open failed:", e);
     } finally {
-      set({ opening: false, importDone: 0, importTotal: 0 });
+      if (gen === openGen) {
+        importAbort = null;
+        set({ opening: false, importDone: 0, importTotal: 0 });
+      }
     }
   },
 
@@ -244,6 +272,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!(await verifyPermission(handle, true, "readwrite"))) return false;
     await get().openProject(handle);
     return true;
+  },
+
+  stopImport() {
+    importAbort?.abort();
+  },
+
+  closeProject() {
+    ++openGen;
+    importAbort?.abort();
+    importAbort = null;
+    if (get().root) {
+      try { void catalogStorage().flush?.(); } catch { /* best effort */ }
+    }
+    set({ root: null, name: "", tree: null, opening: false, importDone: 0, importTotal: 0 });
+    useCatalogStore.getState().replaceCatalog([]);
   },
 
   async refreshTree() {

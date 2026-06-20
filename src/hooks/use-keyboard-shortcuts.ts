@@ -51,6 +51,10 @@ export function useKeyboardShortcuts() {
         } else if (d.wbPicking) {
           e.preventDefault();
           d.setWbPicking(false);
+        } else if (d.params.uprightMode === "guided" && d.guidedEditing) {
+          // Close the guided drawing overlay but keep guided as the active mode.
+          e.preventDefault();
+          d.setGuidedEditing(false);
         } else if (d.activeTool !== "none") {
           e.preventDefault();
           d.setActiveTool("none");
@@ -85,6 +89,19 @@ export function useKeyboardShortcuts() {
             e.preventDefault();
             void cat.rotatePhotos(ids, rot === "photo.rotateCCW" ? -90 : 90);
           }
+          return;
+        }
+
+        const flip = matchAction(e, ["Develop"]);
+        if (flip === "photo.flipH" || flip === "photo.flipV") {
+          e.preventDefault();
+          const dev = useDevelopStore.getState();
+          const axis = flip === "photo.flipH" ? "flipH" : "flipV";
+          dev.setParam("transform", {
+            ...dev.params.transform,
+            [axis]: !dev.params.transform[axis],
+          });
+          dev.commitEdit(flip === "photo.flipH" ? "Flip horizontal" : "Flip vertical");
           return;
         }
       }

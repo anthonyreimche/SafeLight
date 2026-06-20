@@ -5,8 +5,23 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { DEFAULT_CROP, type CropRect } from "@/catalog/types";
 import { computeCropForAspect, fitCropToImage } from "@/rendering/crop-transform";
-import { buildInverseTransform } from "@/rendering/transform";
+import { buildInverseTransform, applyInsetToInverse } from "@/rendering/transform";
+import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
 import { CROP_GUIDES } from "../crop-guides";
+
+function getLensCropScale(imageAspect: number): number {
+  const st = useDevelopStore.getState();
+  const lc = st.params.lensCorrection;
+  if (lc.mode === "off") return 1;
+  const lp = st.resolvedLensProfile;
+  if (lc.mode === "profile" && lp?.distortion && lc.distortionEnabled) {
+    return computeAutoCropScale(lp.distortion.model, lp.distortion.k, lc.distortion, imageAspect);
+  }
+  if (Math.abs(lc.distortion) > 0.001) {
+    return computeAutoCropScale("poly3", [0], lc.distortion, imageAspect);
+  }
+  return 1;
+}
 
 // ratio is width:height in pixels. 0 = Free (no lock); -1 = Original (locks to
 // the source image's own aspect, resolved per photo). Locked ratios can be
@@ -70,7 +85,10 @@ export function CropPanel() {
     if (constrainCrop) {
       next = fitCropToImage(
         next,
-        buildInverseTransform(straighten, transform, imageAspect),
+        applyInsetToInverse(
+          buildInverseTransform(straighten, transform, imageAspect),
+          getLensCropScale(imageAspect),
+        ),
       );
     }
     setParam("crop", next);
@@ -171,7 +189,10 @@ export function CropPanel() {
                 "crop",
                 fitCropToImage(
                   baseCropRef.current,
-                  buildInverseTransform(s, transform, imageAspect),
+                  applyInsetToInverse(
+                    buildInverseTransform(s, transform, imageAspect),
+                    getLensCropScale(imageAspect),
+                  ),
                 ),
               );
             }

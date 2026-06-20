@@ -4,9 +4,7 @@ import { catalogStorage } from "@/catalog/storage";
 import { rotateBlob, normalizeRotation } from "@/catalog/orient";
 import { useProjectStore } from "@/project/project-store";
 import { broadcast } from "./broadcast";
-import { useEditedThumbs } from "./edited-thumbnails";
-import { writeXmpSidecar, deleteXmpSidecar } from "@/catalog/xmp";
-import { getSettings } from "./settings-store";
+import { emitMetadataChange, emitPhotoRemove } from "@/extensions/registry";
 
 interface CatalogState {
   photos: CatalogPhoto[];
@@ -55,30 +53,22 @@ interface CatalogState {
   applyFlag: (ids: string[], flag: FlagStatus) => Promise<void>;
   rotatePhotos: (ids: string[], deg: number) => Promise<void>;
 
+  addKeyword: (id: string, keyword: string) => Promise<void>;
+  removeKeyword: (id: string, keyword: string) => Promise<void>;
+  /** Add keywords to many photos at once. */
+  addKeywords: (ids: string[], keywords: string[]) => Promise<void>;
+  /** Remove keywords from many photos at once. */
+  removeKeywords: (ids: string[], keywords: string[]) => Promise<void>;
+
   select: (id: string) => void;
   selectRange: (id: string, orderedIds?: string[]) => void;
   toggleSelect: (id: string) => void;
   selectAll: () => void;
   deselectAll: () => void;
-  setActivePhoto: (id: string | null) => void;
+  setActivePhoto: (id: string | null, options?: { broadcast?: boolean }) => void;
 }
 
 export const useCatalogStore = create<CatalogState>((set, get) => {
-  // Helper to write XMP sidecars when the preference is enabled.
-  const maybeWriteXmpSidecars = async (photos: CatalogPhoto[]) => {
-    if (!getSettings().writeXmpSidecars) return;
-    for (const p of photos) {
-      if (!p.directoryHandle || !p.fileHandle) continue;
-      try {
-        // Get edit state for private namespace if available
-        const editState = await catalogStorage().getEditState(p.id);
-        await writeXmpSidecar(p.directoryHandle, p.fileHandle.name, p, editState ?? undefined);
-      } catch (e) {
-        console.warn(`[xmp] Failed to write sidecar for ${p.filename}:`, e);
-      }
-    }
-  };
-
   // Apply a field change to many photos at once: one storage write, one state
   // update, one broadcast. The single-photo setters delegate here as well.
   const commit = async (
@@ -89,7 +79,10 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     const updated = get().photos.filter((p) => idSet.has(p.id)).map(mutate);
     if (updated.length === 0) return;
     await catalogStorage().putPhotos(updated);
-    await maybeWriteXmpSidecars(updated);
+    await emitMetadataChange({
+      photos: updated,
+      getEditState: (id) => catalogStorage().getEditState(id).then((e) => e ?? null),
+    });
     const byId = new Map(updated.map((p) => [p.id, p] as const));
     set((s) => ({ photos: s.photos.map((p) => byId.get(p.id) ?? p) }));
     broadcast({
@@ -226,14 +219,13 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     async removePhoto(id) {
       const photo = get().photos.find((p) => p.id === id);
       if (photo?.directoryHandle && photo?.fileHandle) {
-        try {
-          await deleteXmpSidecar(photo.directoryHandle, photo.fileHandle.name);
-        } catch {
-          /* ignore deletion errors */
-        }
+        await emitPhotoRemove({
+          photo,
+          dir: photo.directoryHandle,
+          fileName: photo.fileHandle.name,
+        });
       }
       await catalogStorage().deletePhoto(id);
-      useEditedThumbs.getState().drop(id);
       set((s) => ({
         photos: s.photos.filter((p) => p.id !== id),
         selectedIds: (() => {
@@ -249,20 +241,19 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     async removePhotos(ids) {
       if (ids.length === 0) return;
       const idSet = new Set(ids);
-      // Delete XMP sidecars for all photos being removed.
+      // Let extensions react to removal (e.g. delete XMP sidecars).
       for (const id of ids) {
         const photo = get().photos.find((p) => p.id === id);
         if (photo?.directoryHandle && photo?.fileHandle) {
-          try {
-            await deleteXmpSidecar(photo.directoryHandle, photo.fileHandle.name);
-          } catch {
-            /* ignore deletion errors */
-          }
+          await emitPhotoRemove({
+            photo,
+            dir: photo.directoryHandle,
+            fileName: photo.fileHandle.name,
+          });
         }
       }
       for (const id of ids) {
         await catalogStorage().deletePhoto(id);
-        useEditedThumbs.getState().drop(id);
       }
       set((s) => {
         const selectedIds = new Set(s.selectedIds);
@@ -334,6 +325,30 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       commit(ids, (p) => ({ ...p, colorLabel: label })),
     applyFlag: (ids, flag) => commit(ids, (p) => ({ ...p, flag })),
 
+    addKeyword: (id, keyword) =>
+      commit([id], (p) => ({
+        ...p,
+        keywords: p.keywords.includes(keyword) ? p.keywords : [...p.keywords, keyword],
+      })),
+    removeKeyword: (id, keyword) =>
+      commit([id], (p) => ({
+        ...p,
+        keywords: p.keywords.filter((k) => k !== keyword),
+      })),
+    addKeywords: (ids, keywords) =>
+      commit(ids, (p) => {
+        const existing = new Set(p.keywords);
+        const toAdd = keywords.filter((k) => !existing.has(k));
+        return toAdd.length > 0 ? { ...p, keywords: [...p.keywords, ...toAdd] } : p;
+      }),
+    removeKeywords: (ids, keywords) => {
+      const remove = new Set(keywords);
+      return commit(ids, (p) => ({
+        ...p,
+        keywords: p.keywords.filter((k) => !remove.has(k)),
+      }));
+    },
+
     select(id) {
       set({ selectedIds: new Set([id]), activePhotoId: id });
       broadcast({ type: "selection-change", payload: { activePhotoId: id } });
@@ -394,10 +409,14 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       set({ selectedIds: new Set(), activePhotoId: null });
     },
 
-    setActivePhoto(id) {
+    setActivePhoto(id, options) {
       if (get().activePhotoId === id) return; // avoids cross-window echo loops
       set({ activePhotoId: id });
-      if (id) {
+      // A change received FROM another window must not be re-broadcast: the
+      // original broadcast already reached every window directly, and echoing it
+      // lets two windows ping-pong between interleaved ids forever (rapid clicks
+      // arriving across the async channel never match the same-value guard above).
+      if (id && options?.broadcast !== false) {
         broadcast({ type: "selection-change", payload: { activePhotoId: id } });
       }
     },

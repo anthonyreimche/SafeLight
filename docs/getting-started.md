@@ -13,9 +13,9 @@ Safelight is project-based: instead of importing photos into a central catalog, 
 
 1. In the **Library** module, click **Open Folder** in the Folders panel.
 2. Pick any folder containing photos. Safelight scans it (including subfolders) and builds thumbnails.
-3. All catalog data — ratings, flags, labels, and edit history — is written to a hidden `.safelight/` directory inside that folder. Your project travels with the folder; originals are never modified.
+3. All catalog data — ratings, flags, labels, keywords, and edit history — is written to a hidden `.safelight/` directory inside that folder. Your project travels with the folder; originals are never modified.
 
-Safelight remembers your last project and reopens it on launch. Browsers reset folder permissions between sessions, so you may see a **Reconnect** prompt — one click re-grants access.
+Safelight reopens your last project on launch when **Restore last project** is enabled. Browsers reset folder permissions between sessions, so you may see a **Reconnect** prompt — one click re-grants access.
 
 Supported formats: JPEG, PNG, WebP, AVIF, TIFF, and RAW (NEF, CR2, CR3, ARW, DNG, ORF, RAF, PEF, SRW, RW2, IIQ, 3FR, NRW, KDC, MOS, MRW, ERF, SR2, X3F).
 
@@ -26,7 +26,7 @@ In the Library grid (defaults match Lightroom; everything is rebindable in Prefe
 - **1–5** rate, **0** clear rating
 - **6–9** color labels (red, yellow, green, blue)
 - **P** pick, **X** reject, **U** unflag
-- **← →** previous/next photo, **[ ]** rotate
+- **← →** previous/next photo, **Alt+[ ]** rotate, **K** focus keywords
 - Filter the grid by rating, flag, and label using the Filters panel
 
 ## Edit
@@ -35,21 +35,21 @@ Double-click a photo (or press **D**) to open it in the **Develop** module. Tool
 
 - White Balance, Basic, Tone Curve, HSL, and Color Grading for tone and color
 - Detail for sharpening and noise reduction; Lens Correction and Effects for optics and finishing
-- Crop & Straighten and Transform for geometry
-- Masking and Heal/Clone for local adjustments and retouching
+- Crop & Straighten, Transform, and Upright for geometry
+- Masking (radial / linear / brush / range components) and Heal/Clone for local adjustments and retouching
 
 Tips: hold **Shift** while dragging a slider for fine control, double-click to reset it, and use **Ctrl+Z / Ctrl+Shift+Z** for undo/redo. All edits are non-destructive.
 
 ## Export
 
-Open the **Export** panel (View ▸ Export, docked in Library by default), select photos, choose JPEG/PNG/WebP, quality, and an optional long-edge limit, then export — multiple photos can be bundled into a single ZIP.
+Open the **Export** panel (View ▸ Export, docked in Library by default), select photos, choose JPEG/PNG/WebP, quality, an output color space, and an optional long-edge limit, then export — multiple photos can be bundled into a single ZIP.
 
 ## Make It Yours
 
 - **Panels**: drag to dock, tab, float, or minimize any panel; toggle them from the **View** menu. Layouts persist per module.
 - **Layouts and themes**: switch named layouts from the **Layout** menu and themes from the **View** menu.
 - **Shortcuts**: rebind any key in **Preferences (Ctrl+,) ▸ Shortcuts**.
-- **Extensions**: install community panels and themes from GitHub via **View ▸ Extensions** — see [Extensions](extensions.md).
+- **Extensions**: install community panels, tools, and themes from GitHub via **View ▸ Extensions** (Ctrl+Shift+X) — see [Extensions](extensions.md).
 
 ## Next Steps
 

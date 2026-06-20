@@ -29,14 +29,35 @@ export type FlagStatus = "none" | "pick" | "reject";
 export interface ExifData {
   cameraMake?: string;
   cameraModel?: string;
+  bodySerial?: string;
   lens?: string;
+  lensMake?: string;
+  lensSerial?: string;
   focalLength?: number;
+  focalLength35mm?: number;
   aperture?: number;
+  maxAperture?: number;
   shutterSpeed?: string;
   iso?: number;
+  exposureCompensation?: number;
+  exposureProgram?: string;
+  exposureMode?: string;
+  meteringMode?: string;
+  whiteBalance?: string;
+  flash?: string;
+  subjectDistance?: number; // metres
+  sceneCaptureType?: string;
+  colorSpace?: string;
+  artist?: string;
+  copyright?: string;
+  software?: string;
+  imageDescription?: string;
   dateTimeOriginal?: string;
   orientation?: number; // EXIF Orientation tag (1..8)
   colorTemperature?: number; // as-shot WB in Kelvin (from AsShotNeutral / libraw)
+  gpsLatitude?: number;  // decimal degrees (positive = N, negative = S)
+  gpsLongitude?: number; // decimal degrees (positive = E, negative = W)
+  gpsAltitude?: number;  // metres above sea level
 }
 
 export interface EditState {
@@ -96,7 +117,7 @@ export interface HSLAdjustments {
 }
 
 // Geometry/perspective transform applied to the whole image before the crop.
-// All values are -100..100 with 0 = no effect.
+// Numeric values are -100..100 with 0 = no effect.
 export interface TransformParams {
   perspectiveV: number; // vertical keystone (tilt top/bottom)
   perspectiveH: number; // horizontal keystone (tilt left/right)
@@ -104,6 +125,17 @@ export interface TransformParams {
   scale: number; // zoom in/out
   offsetX: number; // pan
   offsetY: number;
+  flipH: boolean; // mirror horizontal
+  flipV: boolean; // mirror vertical
+}
+
+export type UprightMode = "off" | "auto" | "level" | "vertical" | "full" | "guided";
+
+export interface GuidedLine {
+  x1: number; // normalized 0..1 source-UV
+  y1: number;
+  x2: number;
+  y2: number;
 }
 
 export interface ColorGradingRange {
@@ -122,6 +154,13 @@ export interface ColorGradingParams {
 }
 
 export interface LensCorrectionParams {
+  mode: "off" | "profile" | "manual";
+  profileId: string | null;
+  profileSource: "lensfun" | "extension" | null;
+  distortionEnabled: boolean;
+  caEnabled: boolean;
+  vignetteEnabled: boolean;
+  autoCrop: boolean;
   distortion: number;          // -100..100 (neg=barrel fix, pos=pincushion fix)
   chromaticAberration: number; // 0..100 lateral CA removal
   defringe: number;            // 0..100 fringe suppression amount
@@ -138,8 +177,9 @@ export interface VignetteParams {
 
 export interface GrainParams {
   amount: number;     // 0..100
-  size: number;       // 25..100 grain clumpiness
-  roughness: number;  // 0..100 regularity
+  size: number;       // 25..100 crystal size (larger = coarser grain)
+  roughness: number;  // 0..100 crystal size variation (higher = more irregular)
+  color: number;      // 0..100 polychromatic grain (0 = mono, 100 = full per-channel)
 }
 
 // Local adjustments carried by a mask. A subset of the global develop controls,
@@ -156,6 +196,9 @@ export interface MaskAdjustments {
   sharpness: number;
 }
 
+// Geometric mask tools the user can pick from the toolbar. Parametric range
+// masks (lumRange/colorRange) are component KINDS but not standalone "tools" in
+// the same sense — they're added from the component menu and have no canvas drag.
 export type MaskType = "linear" | "radial" | "brush";
 
 // Adjustment sub-panels a mask can carry. Each mask opts into the panels it
@@ -200,11 +243,35 @@ export interface BrushMaskGeo {
   feather: number; // 0..1 edge softness of each dab
 }
 
+// Luminance-range mask: selects pixels whose luma falls in [lo, hi], with a
+// soft falloff of width loFeather/hiFeather at each end. All in 0..1 over the
+// (developed, scene-linear) pixel luminance. Global by default — meant to be
+// INTERSECTED with a geometric component to confine it to a region.
+export interface LumRangeGeo {
+  lo: number;
+  hi: number;
+  loFeather: number; // 0..1 ramp width below lo
+  hiFeather: number; // 0..1 ramp width above hi
+}
+
+// Color-range mask: selects pixels near a target colour. The target is stored
+// in scene-LINEAR RGB (the picker converts the sampled sRGB pixel to linear) so
+// it compares directly against the pipeline's working colour. hueRange/satRange
+// set the tolerance; smoothness softens the selection edge.
+export interface ColorRangeGeo {
+  r: number; // target colour, linear RGB
+  g: number;
+  b: number;
+  hueRange: number; // 0..1 hue tolerance
+  satRange: number; // 0..1 saturation/chroma tolerance
+  smoothness: number; // 0..1 edge softness
+}
+
 // A mask is built from one or more components (Lightroom-style). Each component
-// contributes coverage that is either ADDED (union, max) or SUBTRACTED
-// (intersect-with-complement) into the mask's combined coverage, in list order.
-export type MaskComponentKind = MaskType;
-export type MaskComponentMode = "add" | "subtract";
+// contributes coverage that is ADDED (union, max), SUBTRACTED (carve, ×(1−c)),
+// or INTERSECTED (×c) into the mask's combined coverage, in list order.
+export type MaskComponentKind = MaskType | "lumRange" | "colorRange";
+export type MaskComponentMode = "add" | "subtract" | "intersect";
 
 export interface MaskComponent {
   id: string;
@@ -214,11 +281,14 @@ export interface MaskComponent {
   linear?: LinearMaskGeo;
   radial?: RadialMaskGeo;
   brush?: BrushMaskGeo;
+  lumRange?: LumRangeGeo;
+  colorRange?: ColorRangeGeo;
 }
 
 export interface Mask {
   id: string;
   name: string;
+  visible: boolean; // when false the mask is muted (no effect), but still listed
   invert: boolean; // invert the whole combined coverage
   opacity: number; // 0..100 overall strength
   adj: MaskAdjustments;
@@ -240,6 +310,8 @@ export function maskKind(m: Mask): MaskComponentKind {
 export interface RetouchSpot {
   id: string;
   shape: "circle" | "brush";
+  mode: "heal" | "clone";
+  visible: boolean;
   dstX: number; // destination center / anchor (source-UV)
   dstY: number;
   srcX: number; // sample source center / anchor (source-UV)
@@ -274,6 +346,8 @@ export interface DevelopParams {
   luminanceNR: number;       // 0..100 luminance noise reduction
   luminanceNRDetail: number; // 0..100 luminance detail preservation
   luminanceNRContrast: number; // 0..100 luminance contrast preservation
+  luminanceNRShadows: number;    // 0..100 extra NR weight in shadows
+  luminanceNRHighlights: number; // 0..100 reduce NR weight in highlights
   colorNR: number;           // 0..100 color (chroma) noise reduction
   colorNRDetail: number;     // 0..100 color detail preservation
   colorNRSmoothness: number; // 0..100 color smoothness
@@ -284,6 +358,8 @@ export interface DevelopParams {
   straighten: number; // degrees, -45..45 (0 = none)
   crop: CropRect;
   transform: TransformParams;
+  uprightMode: UprightMode;
+  guidedLines: GuidedLine[];
   toneCurve: ToneCurves;
   hsl: HSLAdjustments;
   colorGrading: ColorGradingParams;
@@ -294,11 +370,11 @@ export interface DevelopParams {
   retouch: RetouchSpot[];
 }
 
-export const MAX_MASKS = 8;
-export const MAX_RETOUCH = 16;
+export const MAX_MASKS = 16;
+export const MAX_RETOUCH = 32;
 export const MAX_BRUSH_MASKS = 4; // brush coverage packs into one RGBA texture
 export const MAX_RETOUCH_BRUSH = 4; // brush-shaped retouch packs into one RGBA texture
-export const MAX_MASK_COMPONENTS = 16; // total components across all masks (shader cap)
+export const MAX_MASK_COMPONENTS = 24; // total components across all masks (shader cap)
 
 export function defaultMaskAdjustments(): MaskAdjustments {
   return {
@@ -314,13 +390,47 @@ export function defaultMaskAdjustments(): MaskAdjustments {
   };
 }
 
+export function defaultLumRange(): LumRangeGeo {
+  return { lo: 0.0, hi: 1.0, loFeather: 0.1, hiFeather: 0.1 };
+}
+
+export function defaultColorRange(): ColorRangeGeo {
+  // Neutral mid-grey target until the user picks a colour.
+  return { r: 0.18, g: 0.18, b: 0.18, hueRange: 0.15, satRange: 0.3, smoothness: 0.25 };
+}
+
+// Per-mask overlay/swatch colour, keyed by list index. Distinct, saturated hues
+// so the list swatch and the on-image coverage overlay stay legible together.
+const MASK_COLORS: readonly [number, number, number][] = [
+  [0.30, 0.69, 1.00], // blue
+  [1.00, 0.42, 0.42], // red
+  [0.45, 0.85, 0.45], // green
+  [1.00, 0.78, 0.30], // amber
+  [0.78, 0.55, 1.00], // purple
+  [0.30, 0.85, 0.80], // teal
+  [1.00, 0.55, 0.80], // pink
+  [0.80, 0.80, 0.45], // olive
+];
+
+export function maskColor(index: number): [number, number, number] {
+  return [...MASK_COLORS[((index % MASK_COLORS.length) + MASK_COLORS.length) % MASK_COLORS.length]];
+}
+
+// CSS rgb() string for the same palette (panel swatches).
+export function maskColorCss(index: number): string {
+  const [r, g, b] = maskColor(index);
+  return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+}
+
 export const DEFAULT_TRANSFORM: TransformParams = {
   perspectiveV: 0,
   perspectiveH: 0,
   aspect: 0,
-  scale: 0,
+  scale: 100,
   offsetX: 0,
   offsetY: 0,
+  flipH: false,
+  flipV: false,
 };
 
 export const DEFAULT_TONE_CURVE: CurvePoint[] = [
@@ -395,6 +505,13 @@ export function defaultHSL(): HSLAdjustments {
 }
 
 export const DEFAULT_LENS_CORRECTION: LensCorrectionParams = {
+  mode: "off",
+  profileId: null,
+  profileSource: null,
+  distortionEnabled: true,
+  caEnabled: true,
+  vignetteEnabled: true,
+  autoCrop: true,
   distortion: 0,
   chromaticAberration: 0,
   defringe: 0,
@@ -413,6 +530,7 @@ export const DEFAULT_GRAIN: GrainParams = {
   amount: 0,
   size: 25,
   roughness: 50,
+  color: 0,
 };
 
 export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
@@ -432,6 +550,8 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   luminanceNR: 0,
   luminanceNRDetail: 50,
   luminanceNRContrast: 0,
+  luminanceNRShadows: 0,
+  luminanceNRHighlights: 0,
   colorNR: 25,
   colorNRDetail: 50,
   colorNRSmoothness: 50,
@@ -442,6 +562,8 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   straighten: 0,
   crop: { ...DEFAULT_CROP },
   transform: { ...DEFAULT_TRANSFORM },
+  uprightMode: "off",
+  guidedLines: [],
   toneCurve: defaultToneCurves(),
   hsl: defaultHSL(),
   colorGrading: defaultColorGrading(),
@@ -457,14 +579,42 @@ function normalizeTransform(
 ): TransformParams {
   const c = (n: unknown) =>
     typeof n === "number" && isFinite(n) ? Math.max(-100, Math.min(100, n)) : 0;
+  const cScale = (n: unknown) => {
+    if (typeof n !== "number" || !isFinite(n)) return 100;
+    if (n < 50) return Math.max(50, Math.min(150, n + 100));
+    return Math.max(50, Math.min(150, n));
+  };
   return {
     perspectiveV: c(t?.perspectiveV),
     perspectiveH: c(t?.perspectiveH),
     aspect: c(t?.aspect),
-    scale: c(t?.scale),
+    scale: cScale(t?.scale),
     offsetX: c(t?.offsetX),
     offsetY: c(t?.offsetY),
+    flipH: t?.flipH === true,
+    flipV: t?.flipV === true,
   };
+}
+
+const UPRIGHT_MODES: UprightMode[] = ["off", "auto", "level", "vertical", "full", "guided"];
+
+function normalizeUprightMode(m: unknown): UprightMode {
+  return typeof m === "string" && UPRIGHT_MODES.includes(m as UprightMode)
+    ? (m as UprightMode)
+    : "off";
+}
+
+function normalizeGuidedLines(lines: unknown): GuidedLine[] {
+  if (!Array.isArray(lines)) return [];
+  const out: GuidedLine[] = [];
+  for (const l of lines) {
+    if (!l || typeof l.x1 !== "number") continue;
+    const c = (v: unknown) =>
+      typeof v === "number" && isFinite(v) ? Math.min(2, Math.max(-1, v)) : 0;
+    out.push({ x1: c(l.x1), y1: c(l.y1), x2: c(l.x2), y2: c(l.y2) });
+    if (out.length >= 4) break;
+  }
+  return out;
 }
 
 function clampStraighten(n: number): number {
@@ -553,11 +703,28 @@ function normalizeLensCorrection(
     typeof v === "number" && isFinite(v) ? Math.min(100, Math.max(-100, v)) : d;
   const c0100 = (v: unknown, d: number) =>
     typeof v === "number" && isFinite(v) ? Math.min(100, Math.max(0, v)) : d;
+
+  const dist = c100(lc?.distortion, 0);
+  const ca = c0100(lc?.chromaticAberration, 0);
+  const defr = c0100(lc?.defringe, 0);
+  const vig = c100(lc?.vignetting, 0);
+
+  // Backward compat: old edits without a mode field that have nonzero sliders
+  // are treated as "manual" mode so they render identically.
+  const hasLegacyEdits = !lc?.mode && (dist !== 0 || ca !== 0 || defr !== 0 || vig !== 0);
+
   return {
-    distortion: c100(lc?.distortion, 0),
-    chromaticAberration: c0100(lc?.chromaticAberration, 0),
-    defringe: c0100(lc?.defringe, 0),
-    vignetting: c100(lc?.vignetting, 0),
+    mode: lc?.mode ?? (hasLegacyEdits ? "manual" : "off"),
+    profileId: lc?.profileId ?? null,
+    profileSource: lc?.profileSource ?? null,
+    distortionEnabled: lc?.distortionEnabled ?? true,
+    caEnabled: lc?.caEnabled ?? true,
+    vignetteEnabled: lc?.vignetteEnabled ?? true,
+    autoCrop: lc?.autoCrop ?? true,
+    distortion: dist,
+    chromaticAberration: ca,
+    defringe: defr,
+    vignetting: vig,
   };
 }
 
@@ -584,6 +751,7 @@ function normalizeGrain(
     amount: c(g?.amount, 0, 100, 0),
     size: c(g?.size, 25, 100, 25),
     roughness: c(g?.roughness, 0, 100, 50),
+    color: c(g?.color, 0, 100, 0),
   };
 }
 
@@ -614,9 +782,6 @@ function normalizeMaskPanels(p: unknown): MaskPanelId[] {
     if ((MASK_PANEL_IDS as string[]).includes(id)) seen.add(id as MaskPanelId);
   return [...seen];
 }
-
-let normCompSeq = 0;
-const normCompId = () => `comp-${Date.now().toString(36)}-${normCompSeq++}`;
 
 function normLinear(g: Partial<LinearMaskGeo> | undefined): LinearMaskGeo {
   return {
@@ -652,12 +817,36 @@ function normBrush(g: Partial<BrushMaskGeo> | undefined): BrushMaskGeo {
   };
 }
 
+function normLumRange(g: Partial<LumRangeGeo> | undefined): LumRangeGeo {
+  return {
+    lo: clampN(g?.lo, 0, 1, 0),
+    hi: clampN(g?.hi, 0, 1, 1),
+    loFeather: clampN(g?.loFeather, 0, 1, 0.1),
+    hiFeather: clampN(g?.hiFeather, 0, 1, 0.1),
+  };
+}
+function normColorRange(g: Partial<ColorRangeGeo> | undefined): ColorRangeGeo {
+  return {
+    r: clampN(g?.r, 0, 16, 0.18),
+    g: clampN(g?.g, 0, 16, 0.18),
+    b: clampN(g?.b, 0, 16, 0.18),
+    hueRange: clampN(g?.hueRange, 0, 1, 0.15),
+    satRange: clampN(g?.satRange, 0, 1, 0.3),
+    smoothness: clampN(g?.smoothness, 0, 1, 0.25),
+  };
+}
+
 // Build a single component from a (possibly legacy) raw geometry object.
-function normComponent(raw: Partial<MaskComponent>): MaskComponent | null {
+function normComponent(raw: Partial<MaskComponent>, fallbackId: string): MaskComponent | null {
   const kind = raw.kind;
   const base = {
-    id: typeof raw.id === "string" ? raw.id : normCompId(),
-    mode: raw.mode === "subtract" ? ("subtract" as const) : ("add" as const),
+    id: typeof raw.id === "string" ? raw.id : fallbackId,
+    mode:
+      raw.mode === "subtract"
+        ? ("subtract" as const)
+        : raw.mode === "intersect"
+          ? ("intersect" as const)
+          : ("add" as const),
     invert: !!raw.invert,
   };
   if (kind === "linear" && raw.linear)
@@ -666,12 +855,16 @@ function normComponent(raw: Partial<MaskComponent>): MaskComponent | null {
     return { ...base, kind, radial: normRadial(raw.radial) };
   if (kind === "brush")
     return { ...base, kind, brush: normBrush(raw.brush) };
+  if (kind === "lumRange")
+    return { ...base, kind, lumRange: normLumRange(raw.lumRange) };
+  if (kind === "colorRange")
+    return { ...base, kind, colorRange: normColorRange(raw.colorRange) };
   return null;
 }
 
 // Migrate a legacy single-geometry mask (type + linear/radial/brush at the top
 // level) into a one-component mask.
-function legacyComponent(raw: Partial<Mask & { type?: string }>): MaskComponent | null {
+function legacyComponent(raw: Partial<Mask & { type?: string }>, fallbackId: string): MaskComponent | null {
   const t = (raw as { type?: string }).type;
   const r = raw as Partial<Mask> & {
     linear?: LinearMaskGeo;
@@ -679,11 +872,11 @@ function legacyComponent(raw: Partial<Mask & { type?: string }>): MaskComponent 
     brush?: BrushMaskGeo;
   };
   if (t === "linear" && r.linear)
-    return { id: normCompId(), kind: "linear", mode: "add", invert: false, linear: normLinear(r.linear) };
+    return { id: fallbackId, kind: "linear", mode: "add", invert: false, linear: normLinear(r.linear) };
   if (t === "radial" && r.radial)
-    return { id: normCompId(), kind: "radial", mode: "add", invert: false, radial: normRadial(r.radial) };
+    return { id: fallbackId, kind: "radial", mode: "add", invert: false, radial: normRadial(r.radial) };
   if (t === "brush")
-    return { id: normCompId(), kind: "brush", mode: "add", invert: false, brush: normBrush(r.brush) };
+    return { id: fallbackId, kind: "brush", mode: "add", invert: false, brush: normBrush(r.brush) };
   return null;
 }
 
@@ -693,20 +886,27 @@ function normalizeMasks(masks: unknown): Mask[] {
   for (const raw of masks as Partial<Mask & { type?: string }>[]) {
     if (!raw) continue;
 
+    // Deterministic position-based fallback ids so normalizing the same saved
+    // data twice yields identical output. A time-based id here makes the edit
+    // signature change on every call, which retriggers thumbnail rendering (and
+    // a full RAW decode) on every poll of the Library's edited-thumbnail sync.
+    const maskId = typeof raw.id === "string" ? raw.id : `mask-${out.length}`;
+
     let components: MaskComponent[] = [];
     if (Array.isArray(raw.components)) {
       components = raw.components
-        .map((c) => normComponent(c as Partial<MaskComponent>))
+        .map((c, i) => normComponent(c as Partial<MaskComponent>, `${maskId}-c${i}`))
         .filter((c): c is MaskComponent => !!c);
     } else {
-      const legacy = legacyComponent(raw);
+      const legacy = legacyComponent(raw, `${maskId}-c0`);
       if (legacy) components = [legacy];
     }
     if (components.length === 0) continue; // no usable geometry — drop
 
     const m: Mask = {
-      id: typeof raw.id === "string" ? raw.id : `mask-${out.length}-${Date.now()}`,
+      id: maskId,
       name: typeof raw.name === "string" ? raw.name : components[0].kind,
+      visible: raw.visible !== false, // default visible; only an explicit false mutes
       invert: !!raw.invert,
       opacity: clampN(raw.opacity, 0, 100, 100),
       adj: normalizeMaskAdjustments(raw.adj),
@@ -746,8 +946,10 @@ function normalizeRetouch(spots: unknown): RetouchSpot[] {
             }))
         : undefined;
     out.push({
-      id: typeof raw.id === "string" ? raw.id : `spot-${out.length}-${Date.now()}`,
+      id: typeof raw.id === "string" ? raw.id : `spot-${out.length}`,
       shape,
+      mode: raw.mode === "clone" ? "clone" : "heal",
+      visible: raw.visible !== false,
       dstX: clampN(raw.dstX, -1, 2, 0.5),
       dstY: clampN(raw.dstY, -1, 2, 0.5),
       srcX: clampN(raw.srcX, -1, 2, 0.5),
@@ -779,6 +981,8 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
     tint: clampTint(p?.tint),
     crop: normalizeCrop(p?.crop),
     transform: normalizeTransform(p?.transform),
+    uprightMode: normalizeUprightMode(p?.uprightMode),
+    guidedLines: normalizeGuidedLines(p?.guidedLines),
     toneCurve: normalizeToneCurves(p?.toneCurve),
     hsl: {
       hue: { ...zeroHSLValues(), ...p?.hsl?.hue },

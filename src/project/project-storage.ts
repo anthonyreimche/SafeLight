@@ -11,10 +11,11 @@
 
 import type { CatalogPhoto, EditState } from "@/catalog/types";
 import type { CatalogStorage } from "@/catalog/storage";
-import { buildPhoto } from "@/modules/library/import-photos";
+import { buildPhoto, buildPreviewBlob } from "@/modules/library/import-photos";
+import { getSettings } from "@/state/settings-store";
 import { mapLimit, readBlob, readJSON, removeEntry, writeBlob, writeJSON } from "./fs";
 import { scanProject, type FolderNode, type ScannedFile } from "./scan";
-import { readXmpSidecar, applyXmpToPhoto } from "@/catalog/xmp";
+import { emitPhotoImport } from "@/extensions/registry";
 
 type StoredPhoto = Omit<
   CatalogPhoto,
@@ -101,6 +102,7 @@ export class ProjectStorage implements CatalogStorage {
     // Progress of decoding newly-discovered files (the slow part of opening).
     // Fires once with done=0 when the new-file count is known, then per file.
     onProgress?: (done: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<OpenedProject> {
     const sl = await root.getDirectoryHandle(".safelight", { create: true });
     const previews = await sl.getDirectoryHandle("previews", { create: true });
@@ -160,6 +162,10 @@ export class ProjectStorage implements CatalogStorage {
         return photo;
       }
       // New file: decode, thumbnail, cache the preview on disk.
+      if (signal?.aborted) {
+        onProgress?.(++newDone, newTotal);
+        return null;
+      }
       try {
         const file = await f.handle.getFile();
         const built = await buildPhoto(file, f.parent, f.handle);
@@ -197,17 +203,19 @@ export class ProjectStorage implements CatalogStorage {
           /* no/!invalid sidecar — ignore */
         }
 
-        // Read XMP sidecar for interoperability with other photo tools.
-        // XMP values take precedence over safelight sidecar values.
+        // Let extensions contribute metadata read from sidecars. Their values
+        // take precedence over the SafeLight sidecar.
         try {
-          const xmp = await readXmpSidecar(f.parent, f.handle.name);
-          if (xmp) {
-            photo = applyXmpToPhoto(photo, xmp);
-          }
+          const ov = await emitPhotoImport({
+            photo,
+            dir: f.parent,
+            fileName: f.handle.name,
+          });
+          if (ov) photo = { ...photo, ...ov };
         } catch {
-          /* no/invalid XMP — ignore */
+          /* extension import failed — ignore */
         }
-        if (photo.thumbnailBlob)
+        if (photo.thumbnailBlob && getSettings().persistPreviews)
           await writeBlob(previews, `${photo.id}.jpg`, photo.thumbnailBlob);
         storage.lastThumb.set(photo.id, photo.thumbnailBlob);
         storage.photos.set(photo.id, photo);
@@ -218,7 +226,8 @@ export class ProjectStorage implements CatalogStorage {
         storage.scheduleSave();
         onProgress?.(++newDone, newTotal);
         return photo;
-      } catch {
+      } catch (err) {
+        console.warn(`[import] skipped ${f.path}:`, err);
         onProgress?.(++newDone, newTotal);
         return null;
       }
@@ -246,21 +255,37 @@ export class ProjectStorage implements CatalogStorage {
     return [...this.photos.values()];
   }
 
-  /** Read a photo's cached grid preview from disk. Used by the block thumbnail
-   *  loader on open; caches the blob so a later putPhoto won't needlessly rewrite
-   *  the same preview. */
+  /** Read a photo's grid preview for the block thumbnail loader. Normally reads
+   *  the cached <id>.jpg from disk (and caches the blob so a later putPhoto won't
+   *  needlessly rewrite it). When "Store previews on disk" is off — or the disk
+   *  copy is missing — it rebuilds the preview from the source file on demand. */
   async readPreview(id: string): Promise<Blob | null> {
-    const blob = await readBlob(this.previews, `${id}.jpg`);
-    if (blob) this.lastThumb.set(id, blob);
-    return blob;
+    if (getSettings().persistPreviews) {
+      const blob = await readBlob(this.previews, `${id}.jpg`);
+      if (blob) {
+        this.lastThumb.set(id, blob);
+        return blob;
+      }
+    }
+    const photo = this.photos.get(id);
+    if (photo) {
+      const blob = await buildPreviewBlob(photo);
+      if (blob) {
+        this.lastThumb.set(id, blob);
+        return blob;
+      }
+    }
+    return null;
   }
 
   async putPhoto(photo: CatalogPhoto): Promise<void> {
     this.photos.set(photo.id, photo);
-    // Persist the thumbnail only when it actually changed (e.g. rotation).
+    // Persist the thumbnail only when it actually changed (e.g. rotation), and
+    // only when previews are kept on disk.
     if (photo.thumbnailBlob && this.lastThumb.get(photo.id) !== photo.thumbnailBlob) {
       this.lastThumb.set(photo.id, photo.thumbnailBlob);
-      await writeBlob(this.previews, `${photo.id}.jpg`, photo.thumbnailBlob);
+      if (getSettings().persistPreviews)
+        await writeBlob(this.previews, `${photo.id}.jpg`, photo.thumbnailBlob);
     }
     this.scheduleSave();
   }

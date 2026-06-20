@@ -8,6 +8,7 @@ export function RetouchPanel() {
   const retouchSize = useDevelopStore((s) => s.retouchSize);
   const retouchFeather = useDevelopStore((s) => s.retouchFeather);
   const retouchOpacity = useDevelopStore((s) => s.retouchOpacity);
+  const retouchMode = useDevelopStore((s) => s.retouchMode);
   const spots = useDevelopStore((s) => s.params.retouch);
   const selectedSpotId = useDevelopStore((s) => s.selectedSpotId);
 
@@ -15,29 +16,46 @@ export function RetouchPanel() {
   const setRetouchSize = useDevelopStore((s) => s.setRetouchSize);
   const setRetouchFeather = useDevelopStore((s) => s.setRetouchFeather);
   const setRetouchOpacity = useDevelopStore((s) => s.setRetouchOpacity);
+  const setRetouchMode = useDevelopStore((s) => s.setRetouchMode);
   const selectSpot = useDevelopStore((s) => s.selectSpot);
   const removeSpot = useDevelopStore((s) => s.removeSpot);
   const updateSpot = useDevelopStore((s) => s.updateSpot);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
+  const setBrushPreview = useDevelopStore((s) => s.setBrushPreview);
 
   const active = activeTool === "retouch";
-  // When a spot is selected its properties drive the sliders so they edit it in
-  // place; otherwise the sliders set the defaults for the next spot you create.
   const selected = spots.find((s) => s.id === selectedSpotId) ?? null;
 
-  // Slider value sources: selected spot when present, else the tool default.
   const sizeVal = Math.round((selected ? selected.radius : retouchSize) * 100);
   const featherVal = selected ? selected.feather : retouchFeather;
   const opacityVal = selected ? selected.opacity : retouchOpacity;
+  const modeVal = selected ? selected.mode : retouchMode;
 
-  const onSize = (v: number) =>
+  const onSize = (v: number) => {
+    setBrushPreview(true);
     selected ? updateSpot(selected.id, { radius: v / 100 }) : setRetouchSize(v / 100);
-  const onFeather = (v: number) =>
+  };
+  const onFeather = (v: number) => {
+    setBrushPreview(true);
     selected ? updateSpot(selected.id, { feather: v }) : setRetouchFeather(v);
+  };
   const onOpacity = (v: number) =>
     selected ? updateSpot(selected.id, { opacity: v }) : setRetouchOpacity(v);
+  const onMode = (m: "heal" | "clone") => {
+    if (selected) {
+      updateSpot(selected.id, { mode: m });
+      commitEdit("Spot Mode");
+    } else {
+      setRetouchMode(m);
+    }
+  };
   const commitIf = (label: string) => () => {
     if (selected) commitEdit(label);
+  };
+
+  const toggleVisibility = (id: string, currentVisible: boolean) => {
+    updateSpot(id, { visible: !currentVisible });
+    commitEdit("Spot Visibility");
   };
 
   return (
@@ -45,7 +63,14 @@ export function RetouchPanel() {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <button
-            onClick={() => setActiveTool(active ? "none" : "retouch")}
+            onClick={() => {
+              if (active) {
+                setActiveTool("none");
+                selectSpot(null); // deselect so the list collapses
+              } else {
+                setActiveTool("retouch");
+              }
+            }}
             className={`rounded px-2 py-1 text-[11px] ${
               active
                 ? "bg-accent/30 text-text-primary"
@@ -65,6 +90,24 @@ export function RetouchPanel() {
           <div className="pb-0.5 text-[10px] uppercase tracking-wider text-text-muted">
             {selected ? "Editing spot" : "New spot defaults"}
           </div>
+
+          {/* Clone / Heal mode toggle */}
+          <div className="flex gap-1 pb-1">
+            {(["heal", "clone"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => onMode(m)}
+                className={`flex-1 rounded px-2 py-0.5 text-[10px] capitalize ${
+                  modeVal === m
+                    ? "bg-accent/30 text-text-primary"
+                    : "bg-surface-2 text-text-secondary hover:text-text-primary"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+
           <Slider
             label="Size"
             value={sizeVal}
@@ -73,7 +116,7 @@ export function RetouchPanel() {
             step={1}
             defaultValue={4}
             onChange={onSize}
-            onCommit={commitIf("Spot Size")}
+            onCommit={() => { setBrushPreview(false); if (selected) commitEdit("Spot Size"); }}
           />
           <Slider
             label="Feather"
@@ -83,7 +126,7 @@ export function RetouchPanel() {
             step={1}
             defaultValue={50}
             onChange={onFeather}
-            onCommit={commitIf("Spot Feather")}
+            onCommit={() => { setBrushPreview(false); if (selected) commitEdit("Spot Feather"); }}
           />
           <Slider
             label="Opacity"
@@ -103,8 +146,6 @@ export function RetouchPanel() {
               <div
                 key={s.id}
                 onClick={() => {
-                  // Open the spot for editing: select it and activate the tool so
-                  // its source/destination handles appear on the image.
                   selectSpot(s.id);
                   setActiveTool("retouch");
                 }}
@@ -114,8 +155,23 @@ export function RetouchPanel() {
                     : "text-text-secondary hover:bg-surface-2"
                 }`}
               >
-                <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "#4affa3" }} />
-                <span className="flex-1 truncate">Spot {i + 1}</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleVisibility(s.id, s.visible !== false);
+                  }}
+                  title={s.visible !== false ? "Hide" : "Show"}
+                  className={`shrink-0 rounded px-0.5 ${
+                    s.visible !== false
+                      ? "text-text-muted hover:text-text-primary"
+                      : "text-text-muted/40 hover:text-text-primary"
+                  }`}
+                >
+                  {s.visible !== false ? "◉" : "○"}
+                </button>
+                <span className="flex-1 truncate">
+                  {s.mode === "clone" ? "Clone" : "Heal"} {i + 1}
+                </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();

@@ -18,6 +18,7 @@ const GRAIN_SLIDERS: GrainSlider[] = [
   { key: "amount",    label: "Amount",    min: 0,  max: 100, step: 1 },
   { key: "size",      label: "Size",      min: 25, max: 100, step: 1 },
   { key: "roughness", label: "Roughness", min: 0,  max: 100, step: 1 },
+  { key: "color",     label: "Color",     min: 0,  max: 100, step: 1 },
 ];
 
 function SectionHeader({ title }: { title: string }) {
