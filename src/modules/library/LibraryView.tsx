@@ -1,5 +1,6 @@
 import { AppShell } from "@/ui/components/AppShell";
 import { LibraryToolbar } from "./LibraryToolbar";
+import { LibrarySubBar } from "./LibrarySubBar";
 import { LibraryGrid } from "./LibraryGrid";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useCullingShortcuts } from "./use-culling-shortcuts";
@@ -21,6 +22,7 @@ export function LibraryView() {
       }
     >
       <LibraryToolbar />
+      <LibrarySubBar />
       <LibraryGrid />
     </AppShell>
   );

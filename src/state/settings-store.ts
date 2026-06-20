@@ -11,6 +11,13 @@ import type { UpdateChannel } from "@/update/update-checker";
 
 export type ExportFormatPref = "image/jpeg" | "image/png" | "image/webp";
 
+/** How grid previews are built for RAW files on import:
+ *  - "auto": use the embedded camera JPEG when it's already at least the
+ *    thumbnail resolution, otherwise render the sensor for a sharper preview.
+ *  - "embedded": always use the embedded JPEG (fastest import, camera look).
+ *  - "rendered": always decode the RAW sensor (slower, neutral/accurate). */
+export type PreviewSource = "auto" | "embedded" | "rendered";
+
 export interface ExportPreset {
   name: string;
   format: ExportFormatPref;
@@ -39,14 +46,25 @@ export interface AppSettings {
   defaultGridSize: number; // px, 120–360
   defaultSortField: SortField;
   defaultSortDirection: SortDirection;
-  /** Long edge of rendered thumbnails (quality vs. memory/speed). */
-  thumbMaxEdge: 320 | 640 | 960;
   /** Prompt for confirmation before removing photos from the catalog. */
   confirmRemovePhotos: boolean;
 
-  // ── Develop / performance ──────────────────────────────────────────────
-  /** Cache decoded RAW previews (IndexedDB or <project>/.safelight/raw). */
+  // ── Previews / thumbnails ──────────────────────────────────────────────
+  /** How RAW grid previews are built on import (see PreviewSource). */
+  previewSource: PreviewSource;
+  /** Long edge of rendered thumbnails (quality vs. memory/speed). */
+  thumbMaxEdge: 320 | 640 | 960;
+  /** Persist grid previews to <project>/.safelight/previews. Off = memory-only,
+   *  rebuilt on demand each open (keeps the project folder small). */
+  persistPreviews: boolean;
+
+  // ── Develop cache ──────────────────────────────────────────────────────
+  /** Cache decoded RAW develop previews (IndexedDB or <project>/.safelight/raw).
+   *  Master switch: off = never read or write the develop cache. */
   rawCacheEnabled: boolean;
+  /** When caching is on, pre-decode the whole catalog on open ("Cache all").
+   *  Off = "As needed": only cache photos as they're opened in Develop. */
+  rawCachePrefetch: boolean;
   /** Long-edge cap of cached previews (bigger = sharper re-opens, more disk). */
   rawCacheMaxEdge: 2048 | 3072 | 4096;
 
@@ -103,9 +121,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultGridSize: 200,
   defaultSortField: "dateImported",
   defaultSortDirection: "desc",
-  thumbMaxEdge: 640,
   confirmRemovePhotos: true,
+  previewSource: "auto",
+  thumbMaxEdge: 640,
+  persistPreviews: true,
   rawCacheEnabled: true,
+  rawCachePrefetch: true,
   rawCacheMaxEdge: 3072,
   developMaxEdge: 4096,
   gpuSourceCacheBytes: 512 * 1024 * 1024,

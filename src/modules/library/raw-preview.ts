@@ -29,6 +29,8 @@ const RAW_EXTENSIONS = new Set([
   ".gpr",
   ".mef",
   ".crw",
+  ".raw", // generic/Panasonic/Leica sensor dump — libraw decodes it
+  ".mdc", // Minolta RD175 — libraw decodes it
 ]);
 
 export function getExtension(name: string): string {

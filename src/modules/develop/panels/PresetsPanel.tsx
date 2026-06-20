@@ -17,7 +17,7 @@ interface PendingSave {
 }
 
 export function PresetsPanel() {
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [saving, setSaving] = useState(false);
   const [collision, setCollision] = useState<{ existingId: string; pending: PendingSave } | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -91,12 +91,12 @@ export function PresetsPanel() {
     <div
       key={preset.id}
       className="group relative flex items-center justify-between rounded px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-2"
-      onMouseEnter={() => {
-        setHoveredId(preset.id);
+      onMouseEnter={(e) => {
+        setHovered({ id: preset.id, anchor: e.currentTarget });
         setPreviewParams(effective(preset.params));
       }}
       onMouseLeave={() => {
-        setHoveredId((id) => (id === preset.id ? null : id));
+        setHovered((h) => (h?.id === preset.id ? null : h));
         setPreviewParams(null);
       }}
     >
@@ -116,8 +116,12 @@ export function PresetsPanel() {
       >
         ✕
       </button>
-      {hoveredId === preset.id && (
-        <PresetTooltip name={preset.name} diffs={summarizePreset(preset.params)} />
+      {hovered?.id === preset.id && (
+        <PresetTooltip
+          name={preset.name}
+          diffs={summarizePreset(preset.params)}
+          anchor={hovered.anchor}
+        />
       )}
     </div>
   );

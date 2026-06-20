@@ -225,7 +225,21 @@ async function handleClear(): Promise<void> {
 }
 
 async function handleKeys(): Promise<string[]> {
-  if (!cacheDir) return [];
+  // No directory handle (e.g. Electron, whose FS-Access polyfill can't be cloned
+  // into the worker) → the cache lives in IndexedDB, so enumerate that instead.
+  // Returning [] here would make preDecodeRawsForCache re-decode every RAW on
+  // every open, since it would never see the entries write() actually stored.
+  if (!cacheDir) {
+    try {
+      const db = await getDB();
+      const keys = await idbReq(
+        db.transaction(STORE, "readonly").objectStore(STORE).getAllKeys(),
+      );
+      return keys.map((k) => String(k));
+    } catch {
+      return [];
+    }
+  }
   const out: string[] = [];
   try {
     for await (const name of (cacheDir as unknown as { keys(): AsyncIterable<string> }).keys()) {

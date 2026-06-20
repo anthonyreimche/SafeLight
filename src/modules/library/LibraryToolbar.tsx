@@ -4,6 +4,8 @@ import { useProjectStore } from "@/project/project-store";
 import { exportPhotoData } from "@/project/folder-ops";
 import type { SortField } from "@/catalog/types";
 import { Slider } from "@/ui/components/Slider";
+import { Slot } from "@/extensions/Slot";
+import { useLibrarySorts } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
@@ -33,6 +35,7 @@ export function LibraryToolbar() {
   const importTotal = useProjectStore((s) => s.importTotal);
   const importing = importTotal > 0 && importDone < importTotal;
   const importPct = importing ? Math.round((importDone / importTotal) * 100) : 0;
+  const librarySorts = useLibrarySorts();
 
   const handleRemove = () => {
     const ids = [...selectedIds];
@@ -76,6 +79,7 @@ export function LibraryToolbar() {
         >
           {opening ? "Opening…" : projectName ? `Open Folder… (${projectName})` : "Open Folder…"}
         </button>
+        <Slot name="library-toolbar" />
         <span className="text-[10px] text-text-muted">
           {importing
             ? `Importing ${importDone}/${importTotal}…`
@@ -127,7 +131,7 @@ export function LibraryToolbar() {
         <div className="flex items-center gap-1">
           <select
             value={sortField}
-            onChange={(e) => setSort(e.target.value as SortField, sortDirection)}
+            onChange={(e) => setSort(e.target.value, sortDirection)}
             className="rounded bg-surface-2 px-1.5 py-1 text-[11px] text-text-secondary outline-none hover:text-text-primary"
           >
             {SORT_OPTIONS.map((o) => (
@@ -135,6 +139,15 @@ export function LibraryToolbar() {
                 {o.label}
               </option>
             ))}
+            {librarySorts.length > 0 && (
+              <optgroup label="Metadata">
+                {librarySorts.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
           <button
             onClick={() =>

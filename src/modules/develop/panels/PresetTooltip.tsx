@@ -1,16 +1,64 @@
+import { useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { PresetDiff } from "../preset-summary";
 
 interface Props {
   name: string;
   diffs: PresetDiff[];
+  /** The hovered row the tooltip is anchored to. */
+  anchor: HTMLElement;
 }
 
-/** Hover popover listing a preset's non-default adjustments. Positioned to the
- *  left of its row (panels live on the right rail) so it doesn't clip off the
- *  narrow sidebar. Rendered inside a `relative` row. */
-export function PresetTooltip({ name, diffs }: Props) {
-  return (
-    <div className="pointer-events-none absolute right-full top-0 z-50 mr-2 w-48 rounded border border-[var(--color-border)] bg-[var(--color-surface-1)] p-2 text-[11px] shadow-xl">
+const GAP = 8;
+const MARGIN = 8;
+
+/** Hover popover listing a preset's non-default adjustments. Rendered in a
+ *  portal at the document level so it's never clipped by the panel's scroll
+ *  region, and flips to whichever side of the panel has room in the viewport. */
+export function PresetTooltip({ name, diffs, anchor }: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const place = () => {
+      const a = anchor.getBoundingClientRect();
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+
+      // Prefer the right side; flip left if it would overflow the viewport.
+      const fitsRight = a.right + GAP + w + MARGIN <= window.innerWidth;
+      const left = fitsRight ? a.right + GAP : a.left - GAP - w;
+
+      // Align to the row's top, clamped within the viewport.
+      const top = Math.max(
+        MARGIN,
+        Math.min(a.top, window.innerHeight - h - MARGIN),
+      );
+      setPos({ top, left });
+    };
+
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [anchor, name, diffs]);
+
+  return createPortal(
+    <div
+      ref={ref}
+      className="pointer-events-none fixed z-[1000] w-48 rounded border border-[var(--color-border)] bg-[var(--color-surface-1)] p-2 text-[11px] shadow-xl"
+      style={{
+        top: pos?.top ?? 0,
+        left: pos?.left ?? 0,
+        visibility: pos ? "visible" : "hidden",
+      }}
+    >
       <div className="mb-1 truncate font-semibold text-[var(--color-text)]">
         {name}
       </div>
@@ -31,6 +79,7 @@ export function PresetTooltip({ name, diffs }: Props) {
           ))}
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }

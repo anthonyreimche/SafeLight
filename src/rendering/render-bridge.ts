@@ -42,6 +42,7 @@ export class RenderBridge {
   private uprightResolve: ((result: UprightResult) => void) | null = null;
   private sourceBoundResolvers = new Map<number, (hit: boolean) => void>();
   private hasSourceResolvers = new Map<number, (has: boolean) => void>();
+  private captureResolvers = new Map<number, (bitmap: ImageBitmap) => void>();
   private reqIdSeq = 0;
 
   constructor() {
@@ -106,6 +107,14 @@ export class RenderBridge {
         if (resolver) {
           this.hasSourceResolvers.delete(msg.reqId);
           resolver(msg.has);
+        }
+        break;
+      }
+      case "captured": {
+        const resolver = this.captureResolvers.get(msg.reqId);
+        if (resolver) {
+          this.captureResolvers.delete(msg.reqId);
+          resolver(msg.bitmap);
         }
         break;
       }
@@ -254,6 +263,18 @@ export class RenderBridge {
 
   setParams(params: DevelopParams) {
     this.post({ cmd: "setParams", params });
+  }
+
+  /** Render one frame with `params` (at the current source + viewport) to an
+   *  ImageBitmap, without touching the live display. Used to grab a "before"
+   *  frame for before/after comparison overlays. The live params are restored
+   *  in the worker afterwards. */
+  capture(params: DevelopParams): Promise<ImageBitmap> {
+    return new Promise<ImageBitmap>((resolve) => {
+      const reqId = ++this.reqIdSeq;
+      this.captureResolvers.set(reqId, resolve);
+      this.post({ cmd: "capture", reqId, params });
+    });
   }
 
   setLensProfile(profile: import("@/lens-profiles/types").ResolvedProfile | null) {

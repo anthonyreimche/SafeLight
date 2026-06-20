@@ -40,7 +40,11 @@ import {
   usePipelineStore,
 } from "@/extensions/pipelines";
 import { clearRawCache } from "@/raw/raw-cache";
-import { rebuildThumbnails } from "@/modules/library/import-photos";
+import {
+  preDecodeRawsForCache,
+  rebuildThumbnails,
+} from "@/modules/library/import-photos";
+import type { PreviewSource } from "@/state/settings-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import type { SortDirection, SortField } from "@/catalog/types";
 import { COLOR_SPACES } from "@/rendering/color-space";
@@ -105,8 +109,25 @@ const CORE_SECTIONS: PrefSection[] = [
     id: "Library",
     label: "Library",
     group: "General",
-    keywords: ["Default grid size", "Default sort", "Thumbnail quality"],
+    keywords: ["Default grid size", "Default sort", "Confirm before removing"],
     render: () => <LibrarySection />,
+  },
+  {
+    id: "Previews",
+    label: "Previews",
+    group: "General",
+    keywords: [
+      "Preview source",
+      "Embedded JPEG",
+      "Thumbnail quality",
+      "Store previews on disk",
+      "Develop cache",
+      "Cache all",
+      "Cached preview resolution",
+      "Clear preview cache",
+      "Rebuild thumbnails",
+    ],
+    render: () => <PreviewsSection />,
   },
   {
     id: "Rendering",
@@ -120,10 +141,8 @@ const CORE_SECTIONS: PrefSection[] = [
     label: "Performance",
     group: "General",
     keywords: [
-      "Cache decoded RAW previews",
-      "Cached preview resolution",
-      "Clear preview cache",
       "Develop render resolution",
+      "Open photos at",
       "GPU source cache",
       "Prefetch neighbours",
       "High bit-depth previews",
@@ -505,22 +524,6 @@ function LibrarySection() {
           </select>
         </div>
       </Field>
-      <Field
-        label="Thumbnail quality"
-        hint="Long edge of rendered grid thumbnails. Higher is sharper but slower; takes effect on newly rendered thumbnails."
-      >
-        <OptionRow
-          value={s.thumbMaxEdge}
-          options={[
-            { value: 320, label: "Fast (320px)" },
-            { value: 640, label: "Balanced (640px)" },
-            { value: 960, label: "Sharp (960px)" },
-          ]}
-          onChange={(v) =>
-            updateSettings({ thumbMaxEdge: v as 320 | 640 | 960 })
-          }
-        />
-      </Field>
       <ToggleField
         label="Confirm before removing photos"
         hint="Ask for confirmation when removing photos from the catalog. The originals on disk are never deleted either way."
@@ -568,8 +571,19 @@ function RenderingSection() {
   );
 }
 
-function PerformanceSection() {
+// Cache-mode tri-state derived from two booleans: caching off, or on with/without
+// the eager full-catalog prefetch. Stored as two flags so existing settings
+// migrate for free (rawCacheEnabled stays meaningful; prefetch defaults on).
+type CacheMode = "eager" | "ondemand" | "off";
+
+function PreviewsSection() {
   const s = useSettings();
+  const cacheMode: CacheMode = !s.rawCacheEnabled
+    ? "off"
+    : s.rawCachePrefetch
+      ? "eager"
+      : "ondemand";
+
   const [cleared, setCleared] = useState(false);
   const [rebuild, setRebuild] = useState<{ done: number; total: number } | null>(
     null,
@@ -585,14 +599,99 @@ function PerformanceSection() {
       (p) => useCatalogStore.getState().updatePhoto(p),
     );
   };
+
+  const [cacheAll, setCacheAll] = useState<{ done: number; total: number } | null>(
+    null,
+  );
+  const cachingAll = cacheAll !== null && cacheAll.done < cacheAll.total;
+  const handleCacheAll = () => {
+    const photos = useCatalogStore.getState().photos;
+    if (photos.length === 0 || cachingAll || !s.rawCacheEnabled) return;
+    setCacheAll({ done: 0, total: 1 }); // placeholder until the real count lands
+    void preDecodeRawsForCache(photos, {
+      force: true,
+      onProgress: (done, total) => setCacheAll({ done, total }),
+    });
+  };
+
   return (
     <div className="flex flex-col gap-4">
+      <Field
+        label="Preview source"
+        hint="How RAW grid previews are built. Embedded uses the camera's JPEG (fastest). Rendered always decodes the RAW (neutral, slower). Auto uses the embedded JPEG when it's already sharp enough, else renders."
+      >
+        <OptionRow
+          value={s.previewSource}
+          options={[
+            { value: "auto", label: "Auto" },
+            { value: "embedded", label: "Embedded JPEG" },
+            { value: "rendered", label: "Rendered" },
+          ]}
+          onChange={(v) => updateSettings({ previewSource: v as PreviewSource })}
+        />
+      </Field>
+      <Field
+        label="Thumbnail quality"
+        hint="Long edge of rendered grid thumbnails. Higher is sharper but slower; takes effect on newly rendered thumbnails."
+      >
+        <OptionRow
+          value={s.thumbMaxEdge}
+          options={[
+            { value: 320, label: "Fast (320px)" },
+            { value: 640, label: "Balanced (640px)" },
+            { value: 960, label: "Sharp (960px)" },
+          ]}
+          onChange={(v) =>
+            updateSettings({ thumbMaxEdge: v as 320 | 640 | 960 })
+          }
+        />
+      </Field>
       <ToggleField
-        label="Cache decoded RAW previews"
-        hint="Re-opening a photo in Develop loads in ~50ms instead of re-decoding (3–8s). Stored in the project folder or the browser."
-        checked={s.rawCacheEnabled}
-        onChange={(v) => updateSettings({ rawCacheEnabled: v })}
+        label="Store previews on disk"
+        hint="Save grid previews in the project's .safelight/previews folder so they load instantly next open. Off keeps the folder small but rebuilds previews on demand each open."
+        checked={s.persistPreviews}
+        onChange={(v) => updateSettings({ persistPreviews: v })}
       />
+      <Field
+        label="Grid thumbnails"
+        hint="Re-decodes every photo in the open project and regenerates its grid thumbnail at the current Thumbnail quality. Use after changing the settings above."
+      >
+        <button onClick={handleRebuild} disabled={rebuilding} className={btnCls}>
+          {rebuilding ? "Rebuilding…" : "Rebuild thumbnails"}
+        </button>
+        {rebuild !== null && (
+          <span className="ml-2 text-[10px] text-text-muted">
+            {rebuilding
+              ? `${rebuild.done} / ${rebuild.total}`
+              : `Rebuilt ${rebuild.total}.`}
+          </span>
+        )}
+      </Field>
+
+      <div className="border-t border-border-subtle pt-3">
+        <div className={labelCls}>Develop cache</div>
+      </div>
+      <Field
+        label="Cache decoded RAW previews"
+        hint="Re-opening a photo in Develop loads in ~50ms instead of re-decoding (3–8s). Cache all decodes the whole catalog on open; As needed only caches photos as you open them; Off never caches."
+      >
+        <OptionRow
+          value={cacheMode}
+          options={[
+            { value: "eager", label: "Cache all" },
+            { value: "ondemand", label: "As needed" },
+            { value: "off", label: "Off" },
+          ]}
+          onChange={(v) => {
+            if (v === "off") updateSettings({ rawCacheEnabled: false });
+            else
+              updateSettings({
+                rawCacheEnabled: true,
+                rawCachePrefetch: v === "eager",
+              });
+          }}
+        />
+      </Field>
       <Field
         label="Cached preview resolution"
         hint="Long-edge cap of cached previews. Live edits always render full resolution."
@@ -609,39 +708,49 @@ function PerformanceSection() {
           }
         />
       </Field>
-      <Field label="Cache storage">
-        <button
-          onClick={() => {
-            setCleared(false);
-            void clearRawCache().then(() => setCleared(true));
-          }}
-          className={btnCls}
-        >
-          Clear preview cache
-        </button>
+      <Field
+        label="Cache storage"
+        hint="Cache all photos in the open project now, or clear the cache to reclaim disk space."
+      >
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleCacheAll}
+            disabled={cachingAll || !s.rawCacheEnabled}
+            className={btnCls}
+          >
+            {cachingAll ? "Caching…" : "Cache all now"}
+          </button>
+          <button
+            onClick={() => {
+              setCleared(false);
+              void clearRawCache().then(() => setCleared(true));
+            }}
+            className={btnCls}
+          >
+            Clear preview cache
+          </button>
+        </div>
+        {cacheAll !== null && (
+          <span className="ml-2 text-[10px] text-text-muted">
+            {cachingAll
+              ? `${cacheAll.done} / ${cacheAll.total}`
+              : cacheAll.total === 0
+                ? "Already cached."
+                : `Cached ${cacheAll.total}.`}
+          </span>
+        )}
         {cleared && (
           <span className="ml-2 text-[10px] text-text-muted">Cleared.</span>
         )}
       </Field>
-      <Field
-        label="Grid thumbnails"
-        hint="Re-decodes every photo in the open project and regenerates its grid thumbnail at the current Thumbnail quality. Use after changing that setting."
-      >
-        <button onClick={handleRebuild} disabled={rebuilding} className={btnCls}>
-          {rebuilding ? "Rebuilding…" : "Rebuild thumbnails"}
-        </button>
-        {rebuild !== null && (
-          <span className="ml-2 text-[10px] text-text-muted">
-            {rebuilding
-              ? `${rebuild.done} / ${rebuild.total}`
-              : `Rebuilt ${rebuild.total}.`}
-          </span>
-        )}
-      </Field>
+    </div>
+  );
+}
 
-      <div className="border-t border-border-subtle pt-3">
-        <div className={labelCls}>Render pipeline</div>
-      </div>
+function PerformanceSection() {
+  const s = useSettings();
+  return (
+    <div className="flex flex-col gap-4">
       <Field
         label="Develop render resolution"
         hint="Cap of the Develop render buffer. Higher keeps 100% zoom true 1:1 on large sensors but uses more GPU memory. Applies when a photo is reopened."

@@ -9,13 +9,16 @@ import {
   registerCatalogHooks,
   registerExportProcessor,
   registerFilenameTemplate,
+  registerGridFilter,
   registerLayout,
+  registerLibrarySort,
   registerLensProfile,
   registerPanel,
   registerPipeline,
   registerPresetImporter,
   registerProcessingStage,
   registerSettings,
+  registerSlot,
   registerSliderIcon,
   registerTheme,
 } from "./registry";
@@ -34,6 +37,7 @@ import {
 } from "@/state/keybindings-store";
 import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } from "./dock";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
+import { captureDevelopFrame, useDevelopOverlay } from "./develop-host";
 import {
   checkAllExtensionUpdates,
   initEnablement,
@@ -78,6 +82,9 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerLensProfile: (c) => registerLensProfile(extensionId, c),
     registerCatalogHooks: (c) => registerCatalogHooks(extensionId, c),
     registerPresetImporter: (c) => registerPresetImporter(extensionId, c),
+    registerGridFilter: (c) => registerGridFilter(extensionId, c),
+    registerSlot: (c) => registerSlot(extensionId, c),
+    registerLibrarySort: (c) => registerLibrarySort(extensionId, c),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),
@@ -104,6 +111,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     preferences: { open: openPreferences, close: closePreferences, toggle: togglePreferences },
     navigation: { goTo: (module) => useUIStore.getState().setActiveModule(module) },
     keybindings: { getBinding },
+    develop: { useDevelopOverlay, captureFrame: captureDevelopFrame },
   };
 }
 

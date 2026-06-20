@@ -8,7 +8,6 @@ import type { ComponentType } from "react";
 import type { PanelDockDefault, ProcessingStageContribution, SafelightAPI } from "./types";
 import { useDevelopStore } from "@/state/develop-store";
 import { HistogramPanel } from "@/modules/develop/panels/HistogramPanel";
-import { TuningPanel } from "@/modules/develop/panels/TuningPanel";
 import { CropPanel } from "@/modules/develop/panels/CropPanel";
 import { TransformPanel } from "@/modules/develop/panels/TransformPanel";
 import { WhiteBalancePanel } from "@/modules/develop/panels/WhiteBalancePanel";
@@ -28,11 +27,13 @@ import { InfoPanel } from "@/modules/library/InfoPanel";
 import { KeywordsPanel } from "@/modules/library/KeywordsPanel";
 import { ExportPanel } from "@/modules/export/ExportPanel";
 import { DevToolsPanel } from "./devtools/DevToolsPanel";
+import { DevSettings } from "./devtools/DevSettings";
 import { installLogCapture, uninstallLogCapture } from "./devtools/log-capture";
 import {
   initDevtoolsDetachSync,
   teardownDevtoolsDetachSync,
 } from "./devtools/detach";
+import { initDevFolder, teardownDevFolder } from "./devtools/dev-folder";
 
 export interface BuiltinExtension {
   id: string;
@@ -286,17 +287,16 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   // ── Develop: right rail ──
   panelExt("core.edit", "Edit", EditActionsPanel, "Undo, redo and reset actions for the current edit.", right(0, 76)),
   panelExt("core.histogram", "Histogram", HistogramPanel, "Live RGB histogram of the rendered image.", right(1, 150)),
-  panelExt("core.tuning", "Tuning", TuningPanel, "Camera profile and base tuning controls.", right(2, 180)),
-  panelExt("core.transform", "Transform", TransformPanel, "Perspective, upright and geometry corrections.", right(3, 320)),
-  panelExt("core.crop", "Crop & Straighten", CropPanel, "Crop, straighten and aspect-ratio tools.", right(4, 150)),
-  panelExt("core.white-balance", "White Balance", WhiteBalancePanel, "Temperature and tint.", right(5, 120)),
-  panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(6, 220)),
-  panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(7, 220)),
-  panelExt("core.color-grading", "Color Grading", ColorGradingPanel, "Shadow / midtone / highlight color wheels.", right(8, 200)),
-  panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(9, 150)),
-  panelExt("core.lens-correction", "Lens Correction", LensCorrectionPanel, "Distortion and vignette correction.", right(10, 120)),
-  panelExt("core.effects", "Effects", EffectsPanel, "Vignette, grain and dehaze.", right(11, 150)),
-  panelExt("core.hsl", "HSL", HSLPanel, "Per-color hue, saturation and luminance mixer.", right(12, 220)),
+  panelExt("core.transform", "Transform", TransformPanel, "Perspective, upright and geometry corrections.", right(2, 320)),
+  panelExt("core.crop", "Crop & Straighten", CropPanel, "Crop, straighten and aspect-ratio tools.", right(3, 150)),
+  panelExt("core.white-balance", "White Balance", WhiteBalancePanel, "Temperature and tint.", right(4, 120)),
+  panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(5, 220)),
+  panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(6, 220)),
+  panelExt("core.color-grading", "Color Grading", ColorGradingPanel, "Shadow / midtone / highlight color wheels.", right(7, 200)),
+  panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(8, 150)),
+  panelExt("core.lens-correction", "Lens Correction", LensCorrectionPanel, "Distortion and vignette correction.", right(9, 120)),
+  panelExt("core.effects", "Effects", EffectsPanel, "Vignette, grain and dehaze.", right(10, 150)),
+  panelExt("core.hsl", "HSL", HSLPanel, "Per-color hue, saturation and luminance mixer.", right(11, 220)),
 
   // ── Develop: left rail ──
   panelExt("core.masks", "Masking", MasksPanel, "Local adjustments with brush, linear and radial masks.", left(0, 240)),
@@ -335,10 +335,19 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     activate(api) {
       installLogCapture();
       initDevtoolsDetachSync(); // cross-window re-dock control
+      initDevFolder(); // scan the configured dev folder, if any
       api.registerPanel({
         id: "core.devtools",
         title: "Developer Tools",
         component: DevToolsPanel,
+      });
+      // Dev-folder configuration lives in this extension's own settings section
+      // (Preferences ▸ Developer Tools), so it disappears when the extension is
+      // disabled. No declarative fields — a custom component drives it all.
+      api.registerSettings({
+        title: "Developer Tools",
+        fields: [],
+        component: DevSettings,
       });
       api.registerKeybinding({
         id: "core.devtools.toggle",
@@ -351,6 +360,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     deactivate() {
       uninstallLogCapture();
       teardownDevtoolsDetachSync();
+      teardownDevFolder(); // unload every dev-folder extension
     },
   },
 ];

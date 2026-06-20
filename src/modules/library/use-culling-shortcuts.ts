@@ -19,6 +19,7 @@ import {
   shortcutsSuspended,
 } from "@/state/keybindings-store";
 import { visiblePhotos } from "./visible-photos";
+import { gridFilterPredicates, librarySortCompare } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
 
 const LABELS: Record<string, ColorLabel> = {
@@ -127,6 +128,8 @@ export function useCullingShortcuts(): void {
           ui.sortField,
           ui.sortDirection,
           ui.activeFolder,
+          gridFilterPredicates(),
+          librarySortCompare(ui.sortField),
         );
         if (list.length === 0) return;
         e.preventDefault();

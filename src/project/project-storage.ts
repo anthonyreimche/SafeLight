@@ -11,7 +11,8 @@
 
 import type { CatalogPhoto, EditState } from "@/catalog/types";
 import type { CatalogStorage } from "@/catalog/storage";
-import { buildPhoto } from "@/modules/library/import-photos";
+import { buildPhoto, buildPreviewBlob } from "@/modules/library/import-photos";
+import { getSettings } from "@/state/settings-store";
 import { mapLimit, readBlob, readJSON, removeEntry, writeBlob, writeJSON } from "./fs";
 import { scanProject, type FolderNode, type ScannedFile } from "./scan";
 import { emitPhotoImport } from "@/extensions/registry";
@@ -202,8 +203,8 @@ export class ProjectStorage implements CatalogStorage {
           /* no/!invalid sidecar — ignore */
         }
 
-        // Let extensions (e.g. XMP Tools) contribute metadata read from
-        // sidecars. Their values take precedence over the SafeLight sidecar.
+        // Let extensions contribute metadata read from sidecars. Their values
+        // take precedence over the SafeLight sidecar.
         try {
           const ov = await emitPhotoImport({
             photo,
@@ -214,7 +215,7 @@ export class ProjectStorage implements CatalogStorage {
         } catch {
           /* extension import failed — ignore */
         }
-        if (photo.thumbnailBlob)
+        if (photo.thumbnailBlob && getSettings().persistPreviews)
           await writeBlob(previews, `${photo.id}.jpg`, photo.thumbnailBlob);
         storage.lastThumb.set(photo.id, photo.thumbnailBlob);
         storage.photos.set(photo.id, photo);
@@ -254,21 +255,37 @@ export class ProjectStorage implements CatalogStorage {
     return [...this.photos.values()];
   }
 
-  /** Read a photo's cached grid preview from disk. Used by the block thumbnail
-   *  loader on open; caches the blob so a later putPhoto won't needlessly rewrite
-   *  the same preview. */
+  /** Read a photo's grid preview for the block thumbnail loader. Normally reads
+   *  the cached <id>.jpg from disk (and caches the blob so a later putPhoto won't
+   *  needlessly rewrite it). When "Store previews on disk" is off — or the disk
+   *  copy is missing — it rebuilds the preview from the source file on demand. */
   async readPreview(id: string): Promise<Blob | null> {
-    const blob = await readBlob(this.previews, `${id}.jpg`);
-    if (blob) this.lastThumb.set(id, blob);
-    return blob;
+    if (getSettings().persistPreviews) {
+      const blob = await readBlob(this.previews, `${id}.jpg`);
+      if (blob) {
+        this.lastThumb.set(id, blob);
+        return blob;
+      }
+    }
+    const photo = this.photos.get(id);
+    if (photo) {
+      const blob = await buildPreviewBlob(photo);
+      if (blob) {
+        this.lastThumb.set(id, blob);
+        return blob;
+      }
+    }
+    return null;
   }
 
   async putPhoto(photo: CatalogPhoto): Promise<void> {
     this.photos.set(photo.id, photo);
-    // Persist the thumbnail only when it actually changed (e.g. rotation).
+    // Persist the thumbnail only when it actually changed (e.g. rotation), and
+    // only when previews are kept on disk.
     if (photo.thumbnailBlob && this.lastThumb.get(photo.id) !== photo.thumbnailBlob) {
       this.lastThumb.set(photo.id, photo.thumbnailBlob);
-      await writeBlob(this.previews, `${photo.id}.jpg`, photo.thumbnailBlob);
+      if (getSettings().persistPreviews)
+        await writeBlob(this.previews, `${photo.id}.jpg`, photo.thumbnailBlob);
     }
     this.scheduleSave();
   }

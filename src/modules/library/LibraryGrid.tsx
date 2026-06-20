@@ -6,6 +6,7 @@ import { Thumbnail } from "@/ui/components/Thumbnail";
 import { VirtualGrid } from "@/ui/components/VirtualGrid";
 import { LibraryListRow } from "./LibraryListRow";
 import { visiblePhotos } from "./visible-photos";
+import { useGridFilters, useLibrarySorts } from "@/extensions/registry";
 
 export function LibraryGrid() {
   const photos = useCatalogStore((s) => s.photos);
@@ -24,10 +25,30 @@ export function LibraryGrid() {
   const sortDirection = useUIStore((s) => s.sortDirection);
   const clearFilters = useUIStore((s) => s.clearFilters);
   const activeFolder = useUIStore((s) => s.activeFolder);
+  const gridFilters = useGridFilters();
+  const librarySorts = useLibrarySorts();
+  const customCompare = librarySorts.find((s) => s.id === sortField)?.compare;
 
   const visible = useMemo(
-    () => visiblePhotos(photos, filter, sortField, sortDirection, activeFolder),
-    [photos, activeFolder, filter, sortField, sortDirection],
+    () =>
+      visiblePhotos(
+        photos,
+        filter,
+        sortField,
+        sortDirection,
+        activeFolder,
+        gridFilters.map((g) => g.test),
+        customCompare,
+      ),
+    [
+      photos,
+      activeFolder,
+      filter,
+      sortField,
+      sortDirection,
+      gridFilters,
+      customCompare,
+    ],
   );
 
   const activeIndex = useMemo(

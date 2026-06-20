@@ -24,6 +24,11 @@ export type WorkerRequest =
       baseCurveForBitmap?: boolean;
     }
   | { cmd: "setParams"; params: DevelopParams }
+  // Render one frame with `params` to an ImageBitmap returned out-of-band (NOT
+  // blitted to the display) so an extension can grab a "before" frame at the
+  // current source + viewport without disturbing the live view. The live params
+  // are restored afterwards. See render-bridge.capture().
+  | { cmd: "capture"; reqId: number; params: DevelopParams }
   | { cmd: "setLensProfile"; profile: ResolvedProfile | null }
   | { cmd: "setAsShotTemperature"; kelvin: number }
   | { cmd: "render"; wantHistogram?: boolean; wantExtended?: boolean }
@@ -81,6 +86,7 @@ export type WorkerResponse =
   | { type: "thumbnail"; requestId: string; blob: Blob }
   | { type: "thumbnailMiss"; requestId: string; key: string }
   | { type: "sourceBound"; reqId: number; hit: boolean }
+  | { type: "captured"; reqId: number; bitmap: ImageBitmap }
   | { type: "hasSource"; reqId: number; has: boolean }
   | { type: "upright"; result: UprightResult }
   | { type: "error"; message: string };
@@ -99,6 +105,11 @@ let thumbRenderer: WebGLRenderer | null = null;
 
 let latestStages: ProcessingStageContribution[] = [];
 let latestPipeline: ResolvedPipeline = BUILTIN_RESOLVED;
+// The last params pushed to the develop renderer. A `capture` swaps in override
+// params, renders, then restores these so a later display render (e.g. from a
+// viewport or clipping change that doesn't re-send params) isn't left showing
+// the captured frame's look.
+let lastParams: DevelopParams | null = null;
 // Mirrors the gpuSourceCacheBytes preference. The develop renderer gets the full
 // budget (full-res sources are large); the thumb renderer caches tiny sources, so
 // a quarter holds many. 0 until the first setCacheBudget message.
@@ -153,7 +164,26 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
       case "setParams": {
         if (!renderer) break;
+        lastParams = msg.params;
         renderer.setParams(msg.params);
+        break;
+      }
+
+      case "capture": {
+        // Render `params` to a detached bitmap without touching the display
+        // canvas the main thread blits from. transferToImageBitmap() resets the
+        // offscreen, so the next live render() repaints it; restoring lastParams
+        // keeps the renderer's uniform state in sync with the live view.
+        if (!renderer || !canvas) {
+          const blank = new OffscreenCanvas(1, 1);
+          respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
+          break;
+        }
+        renderer.setParams(msg.params);
+        renderer.render();
+        const captured = canvas.transferToImageBitmap();
+        if (lastParams) renderer.setParams(lastParams);
+        respond({ type: "captured", reqId: msg.reqId, bitmap: captured }, [captured]);
         break;
       }
 

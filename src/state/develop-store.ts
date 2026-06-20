@@ -686,7 +686,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     };
     await catalogStorage().putEditState(editState);
 
-    // Let extensions (e.g. XMP Tools) persist the committed edit elsewhere.
+    // Let extensions persist the committed edit elsewhere.
     const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
     if (photo) await emitEditCommit({ photo, editState });
 

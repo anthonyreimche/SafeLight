@@ -38,8 +38,9 @@ import {
   type StoreSort,
 } from "./store-ui";
 import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
+import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
 
-type Section = "Browse" | "Installed";
+type Section = "Browse" | "Installed" | "Dev";
 
 const SORTS: { id: StoreSort; label: string }[] = [
   { id: "popular", label: "Popular" },
@@ -52,6 +53,9 @@ export function ExtensionManagerPanel() {
   const topic = useSettings((s) => s.extensionTopic);
   const checkUpdates = useSettings((s) => s.checkExtensionUpdates);
   const disabledIds = useDisabledExtensions((s) => s.ids);
+  // The Dev tab rides along with the Developer Tools extension: it only exists
+  // while that extension is enabled, mirroring its top-bar bug button.
+  const devtoolsEnabled = !disabledIds.includes("core.devtools");
   const extSettings = useRegistry((s) => s.settings);
   const view = useExtStoreUI((s) => s.view);
   const selected = useExtStoreUI((s) => s.selected);
@@ -80,6 +84,12 @@ export function ExtensionManagerPanel() {
 
   // Always open to the list, not a stale detail page from a previous session.
   useEffect(() => back(), [back]);
+
+  // If Developer Tools is disabled while the Dev tab is open, fall back.
+  useEffect(() => {
+    if (section === "Dev" && !devtoolsEnabled)
+      setSection(native ? "Browse" : "Installed");
+  }, [section, devtoolsEnabled, native]);
 
   const refresh = () => {
     native?.plugins
@@ -294,7 +304,11 @@ export function ExtensionManagerPanel() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       <div className="w-28 shrink-0 border-r border-border bg-surface-0/40 py-2">
-        {(["Browse", "Installed"] as Section[]).map((s) => (
+        {([
+          "Browse",
+          "Installed",
+          ...(devtoolsEnabled ? (["Dev"] as Section[]) : []),
+        ] as Section[]).map((s) => (
           <button
             key={s}
             onClick={() => setSection(s)}
@@ -310,7 +324,9 @@ export function ExtensionManagerPanel() {
       </div>
 
       <div className="min-w-0 flex-1 overflow-y-auto p-3 text-[11px]">
-        {section === "Browse" ? (
+        {section === "Dev" && devtoolsEnabled ? (
+          <DevExtensionsTab />
+        ) : section === "Browse" ? (
           native ? (
             <div className="flex flex-col gap-3">
               {/* Search + sort */}

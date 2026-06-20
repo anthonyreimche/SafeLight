@@ -14,8 +14,6 @@
     "build:app": "vite build",
     "preview": "vite preview",
     "icon": "node electron/make-icon.cjs",
-    "ext:xmp:build": "node \"extensions/XMP Tools/scripts/build.mjs\"",
-    "ext:xmp:install": "node \"extensions/XMP Tools/scripts/install.mjs\"",
     "electron:dev": "vite build && electron .",
     "build:electron": "npm run build:app && npm run icon && electron-builder --win",
     "build:linux": "npm run build:app && npm run icon && electron-builder --linux"

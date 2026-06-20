@@ -65,7 +65,7 @@ interface CatalogState {
   toggleSelect: (id: string) => void;
   selectAll: () => void;
   deselectAll: () => void;
-  setActivePhoto: (id: string | null) => void;
+  setActivePhoto: (id: string | null, options?: { broadcast?: boolean }) => void;
 }
 
 export const useCatalogStore = create<CatalogState>((set, get) => {
@@ -409,10 +409,14 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       set({ selectedIds: new Set(), activePhotoId: null });
     },
 
-    setActivePhoto(id) {
+    setActivePhoto(id, options) {
       if (get().activePhotoId === id) return; // avoids cross-window echo loops
       set({ activePhotoId: id });
-      if (id) {
+      // A change received FROM another window must not be re-broadcast: the
+      // original broadcast already reached every window directly, and echoing it
+      // lets two windows ping-pong between interleaved ids forever (rapid clicks
+      // arriving across the async channel never match the same-value guard above).
+      if (id && options?.broadcast !== false) {
         broadcast({ type: "selection-change", payload: { activePhotoId: id } });
       }
     },

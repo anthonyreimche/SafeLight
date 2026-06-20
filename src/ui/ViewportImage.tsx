@@ -54,6 +54,11 @@ interface ViewportImageProps {
   // are snapshotted and faded out over the freshly-rendered frame beneath. Used
   // for the Presets hover preview so the look eases in/out instead of snapping.
   fadeToken?: number;
+  // Reports where the image pixels are actually shown on screen, in frame-local
+  // coords, whenever the fit/zoom/pan layout changes. Lets a sibling overlay
+  // (e.g. a before/after split) align to the displayed image. In fit mode this
+  // is the letterboxed image rect; in ROI-zoom mode the window fills the frame.
+  onLayout?: (rect: { x: number; y: number; w: number; h: number }) => void;
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
@@ -78,6 +83,7 @@ export function ViewportImage({
   onPickDrag,
   onViewport,
   fadeToken,
+  onLayout,
 }: ViewportImageProps) {
   // A crop overlay locks the view to fit; a mask/heal overlay (overlayZoomable)
   // keeps the zoom/pan machinery live underneath it.
@@ -179,6 +185,16 @@ export function ViewportImage({
     roi.h = Math.max(0.001, Math.min(1 - roi.y, roi.h));
     onViewport(roi, Math.round(frame.w * dpr), Math.round(frame.h * dpr));
   }, [roiMode, hasImage, zoom, effOffset.x, effOffset.y, frame.w, frame.h, imgW, imgH, dpr, onViewport]);
+
+  // Report the on-screen image rect to a sibling overlay. In ROI-zoom mode the
+  // worker has already rendered just the visible window to fill the frame, so
+  // the pixels cover it edge-to-edge; in fit/CSS mode they sit at the letterbox.
+  useEffect(() => {
+    if (!onLayout) return;
+    if (!hasImage) return;
+    if (roiMode) onLayout({ x: 0, y: 0, w: frame.w, h: frame.h });
+    else onLayout({ x: effOffset.x, y: effOffset.y, w: imgW * effScale, h: imgH * effScale });
+  }, [onLayout, hasImage, roiMode, effOffset.x, effOffset.y, effScale, imgW, imgH, frame.w, frame.h]);
 
   // Recenter on external zoom changes (status-bar buttons). Cursor-anchored
   // zooms set the offset themselves and skip this via the ref.

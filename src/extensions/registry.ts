@@ -8,13 +8,17 @@ import type {
   CatalogHooksContribution,
   ExportProcessorContribution,
   FilenameTemplateContribution,
+  GridFilterContribution,
   LayoutContribution,
+  LibrarySortContribution,
   PanelContribution,
   PanelSlot,
   PipelineContribution,
   PresetImporterContribution,
   ProcessingStageContribution,
   SettingsContribution,
+  SlotContribution,
+  SlotName,
   SliderIconContribution,
   ThemeContribution,
 } from "./types";
@@ -64,6 +68,15 @@ export interface RegisteredCatalogHooks extends CatalogHooksContribution {
 export interface RegisteredPresetImporter extends PresetImporterContribution {
   extensionId: string;
 }
+export interface RegisteredGridFilter extends GridFilterContribution {
+  extensionId: string;
+}
+export interface RegisteredSlot extends SlotContribution {
+  extensionId: string;
+}
+export interface RegisteredLibrarySort extends LibrarySortContribution {
+  extensionId: string;
+}
 
 interface RegistryState {
   panels: Record<string, RegisteredPanel>;
@@ -80,6 +93,12 @@ interface RegistryState {
   /** Keyed by contribution id. */
   catalogHooks: Record<string, RegisteredCatalogHooks>;
   presetImporters: Record<string, RegisteredPresetImporter>;
+  /** Keyed by contribution id. Extra predicates that narrow the Library grid. */
+  gridFilters: Record<string, RegisteredGridFilter>;
+  /** Keyed by contribution id. Components mounted into named core UI slots. */
+  slots: Record<string, RegisteredSlot>;
+  /** Keyed by contribution id. Extra Library sort orders. */
+  librarySorts: Record<string, RegisteredLibrarySort>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -95,6 +114,9 @@ export const useRegistry = create<RegistryState>(() => ({
   lensProfiles: {},
   catalogHooks: {},
   presetImporters: {},
+  gridFilters: {},
+  slots: {},
+  librarySorts: {},
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -212,6 +234,75 @@ export function registerPresetImporter(
   }));
 }
 
+export function registerGridFilter(
+  extensionId: string,
+  c: GridFilterContribution,
+): void {
+  useRegistry.setState((s) => ({
+    gridFilters: { ...s.gridFilters, [c.id]: { ...c, extensionId } },
+  }));
+}
+
+export function registerSlot(extensionId: string, c: SlotContribution): void {
+  useRegistry.setState((s) => ({
+    slots: { ...s.slots, [c.id]: { ...c, extensionId } },
+  }));
+}
+
+/** Reactive list of grid-filter predicates, for LibraryGrid. useShallow so the
+ *  freshly-built array doesn't trigger an update loop. */
+export function useGridFilters(): RegisteredGridFilter[] {
+  return useRegistry(useShallow((s) => Object.values(s.gridFilters)));
+}
+
+/** Non-reactive snapshot for code outside React (e.g. culling navigation). */
+export function gridFilterPredicates(): ((
+  p: import("@/catalog/types").CatalogPhoto,
+) => boolean)[] {
+  return Object.values(useRegistry.getState().gridFilters).map((g) => g.test);
+}
+
+/** Fire every registered grid filter's onClear (the "Clear filters" action). */
+export function runGridFilterClears(): void {
+  for (const g of Object.values(useRegistry.getState().gridFilters)) g.onClear?.();
+}
+
+/** Reactive, order-sorted list of components contributed to a UI slot. */
+export function useSlot(name: SlotName): RegisteredSlot[] {
+  return useRegistry(
+    useShallow((s) =>
+      Object.values(s.slots)
+        .filter((c) => c.slot === name)
+        .sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
+    ),
+  );
+}
+
+export function registerLibrarySort(
+  extensionId: string,
+  c: LibrarySortContribution,
+): void {
+  useRegistry.setState((s) => ({
+    librarySorts: { ...s.librarySorts, [c.id]: { ...c, extensionId } },
+  }));
+}
+
+/** Reactive list of extension-contributed Library sort orders, for the toolbar. */
+export function useLibrarySorts(): RegisteredLibrarySort[] {
+  return useRegistry(useShallow((s) => Object.values(s.librarySorts)));
+}
+
+/** The comparator for a sort id, or undefined if it's a built-in / unknown sort.
+ *  Non-reactive snapshot for code outside React (e.g. culling navigation). */
+export function librarySortCompare(
+  id: string,
+): ((
+  a: import("@/catalog/types").CatalogPhoto,
+  b: import("@/catalog/types").CatalogPhoto,
+) => number) | undefined {
+  return useRegistry.getState().librarySorts[id]?.compare;
+}
+
 // ─── Catalog hook emitters (called by core) ─────────────────────────────────
 // Each awaits every registered handler. A handler that throws is logged and
 // skipped so a misbehaving extension can't break an import or a save.
@@ -307,6 +398,9 @@ export function unregisterExtension(extensionId: string): void {
     lensProfiles: drop(s.lensProfiles),
     catalogHooks: drop(s.catalogHooks),
     presetImporters: drop(s.presetImporters),
+    gridFilters: drop(s.gridFilters),
+    slots: drop(s.slots),
+    librarySorts: drop(s.librarySorts),
   }));
   unregisterExtensionActions(extensionId);
 }

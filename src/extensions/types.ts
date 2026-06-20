@@ -449,6 +449,67 @@ export interface KeyActionContribution {
   handler(): void;
 }
 
+// ---------------------------------------------------------------------------
+// Library grid filter predicates (generic — lets an extension narrow the grid
+// beyond the built-in rating/flag/label filter, e.g. text / EXIF search)
+// ---------------------------------------------------------------------------
+
+/** A predicate applied as an extra AND step in the Library grid's
+ *  visible-photos derivation. Core stays blind to *why* a photo is hidden — the
+ *  extension owns the matching logic and re-registers (same id, fresh `test`)
+ *  whenever its query changes. */
+export interface GridFilterContribution {
+  /** Globally unique, e.g. "my-ext.search". */
+  id: string;
+  /** Return false to hide the photo from the grid (and from culling nav). */
+  test(photo: import("@/catalog/types").CatalogPhoto): boolean;
+  /** Invoked by the Library "Clear filters" action so search clears too. */
+  onClear?(): void;
+}
+
+// ---------------------------------------------------------------------------
+// Library sort orders (generic — lets an extension add sort options to the
+// Library toolbar's sort dropdown, e.g. by camera / lens)
+// ---------------------------------------------------------------------------
+
+/** An extra sort order offered in the Library sort dropdown. The comparator is
+ *  ascending; the toolbar's direction toggle flips it. */
+export interface LibrarySortContribution {
+  /** Globally unique, also the persisted sort id, e.g. "my-ext.camera". */
+  id: string;
+  /** Shown in the sort dropdown. */
+  label: string;
+  /** Ascending comparator over two photos (return <0, 0, >0). */
+  compare(
+    a: import("@/catalog/types").CatalogPhoto,
+    b: import("@/catalog/types").CatalogPhoto,
+  ): number;
+}
+
+// ---------------------------------------------------------------------------
+// UI slots (generic named mount points in core chrome)
+// ---------------------------------------------------------------------------
+
+/** Named regions of core UI an extension may render into. "library-subbar" is a
+ *  full-width bar directly below the Library toolbar (only rendered when an
+ *  extension contributes to it). "develop-toolbar" sits in the Develop status
+ *  bar (left of the zoom controls); "develop-canvas-overlay" is a click-through
+ *  layer covering the Develop canvas, aligned via `api.develop`. */
+export type SlotName =
+  | "library-toolbar"
+  | "library-subbar"
+  | "develop-toolbar"
+  | "develop-canvas-overlay";
+
+export interface SlotContribution {
+  /** Globally unique, e.g. "my-ext.search-bar". */
+  id: string;
+  slot: SlotName;
+  component: ComponentType;
+  /** Sort position within the slot (lower = earlier). Default 100. */
+  order?: number;
+}
+
 export interface SafelightAPI {
   version: 1;
   extensionId: string;
@@ -485,6 +546,14 @@ export interface SafelightAPI {
   registerCatalogHooks(c: CatalogHooksContribution): void;
   /** Teach the Presets panel to import preset files from other applications. */
   registerPresetImporter(c: PresetImporterContribution): void;
+  /** Contribute a predicate that further narrows the Library grid (e.g. text or
+   *  EXIF search). Re-register with the same id to update the predicate; the
+   *  grid and culling navigation re-derive against it. */
+  registerGridFilter(c: GridFilterContribution): void;
+  /** Render a component into a named core UI slot (e.g. the Library toolbar). */
+  registerSlot(c: SlotContribution): void;
+  /** Add a sort order to the Library toolbar's sort dropdown. */
+  registerLibrarySort(c: LibrarySortContribution): void;
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;
@@ -512,6 +581,19 @@ export interface SafelightAPI {
   navigation: { goTo(module: "library" | "develop"): void };
   /** Read the current binding for any action id (built-in or extension). */
   keybindings: { getBinding(actionId: string): string };
+  /** Develop-canvas integration for overlays (e.g. before/after comparison).
+   *  `useDevelopOverlay` returns the displayed image rect + a change nonce
+   *  (call from a "develop-canvas-overlay" component); `captureFrame` renders an
+   *  off-screen frame with arbitrary params, aligned to the live view. */
+  develop: {
+    useDevelopOverlay(): {
+      rect: { x: number; y: number; w: number; h: number } | null;
+      nonce: number;
+    };
+    captureFrame(
+      params: import("@/catalog/types").DevelopParams,
+    ): Promise<ImageBitmap>;
+  };
 }
 
 export interface ExtensionModule {

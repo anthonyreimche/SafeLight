@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CatalogPhoto, CropRect } from "@/catalog/types";
 import { HSL_CHANNELS } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
@@ -14,6 +14,9 @@ import {
 import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
 import { computeGuidedCorrection } from "@/rendering/upright";
 import { ViewportImage } from "@/ui/ViewportImage";
+import { Slot } from "@/extensions/Slot";
+import { DevelopOverlayProvider } from "@/extensions/develop-host";
+import type { OverlayRect } from "@/extensions/develop-host";
 import { CropOverlay } from "./CropOverlay";
 import { GuidedOverlay } from "./GuidedOverlay";
 import { MaskOverlay } from "./MaskOverlay";
@@ -61,6 +64,24 @@ export function DevelopCanvas({
   const { supported, loading, width, height, setViewport } = useDevelopRenderer(
     canvasRef,
     photo,
+  );
+
+  // Geometry of the displayed image + a nonce that bumps on any view change, so
+  // extension overlays (e.g. before/after) can align and refresh. Generic: core
+  // doesn't know what's mounted into the develop-canvas-overlay slot.
+  const [overlayRect, setOverlayRect] = useState<OverlayRect | null>(null);
+  const [overlayNonce, setOverlayNonce] = useState(0);
+  const handleLayout = useCallback((r: OverlayRect) => {
+    setOverlayRect((prev) =>
+      prev && prev.x === r.x && prev.y === r.y && prev.w === r.w && prev.h === r.h
+        ? prev
+        : r,
+    );
+    setOverlayNonce((n) => n + 1);
+  }, []);
+  const overlayState = useMemo(
+    () => ({ rect: overlayRect, nonce: overlayNonce }),
+    [overlayRect, overlayNonce],
   );
 
   // Crossfade the canvas whenever the hover preview turns on, off, or switches
@@ -240,6 +261,7 @@ export function DevelopCanvas({
   }
 
   return (
+    <div className="relative h-full w-full">
     <ViewportImage
       canvasRef={canvasRef}
       bufferWidth={width}
@@ -247,6 +269,7 @@ export function DevelopCanvas({
       zoom={zoom}
       onZoomChange={onZoomChange}
       onViewport={setViewport}
+      onLayout={handleLayout}
       loading={loading}
       resetKey={photo.id}
       initialZoom={openZoom === "100" ? 1 : null}
@@ -344,5 +367,13 @@ export function DevelopCanvas({
               : undefined
       }
     />
+      {/* Extension overlay layer (e.g. before/after split). Click-through by
+          default; interactive children opt back in via pointerEvents. */}
+      <DevelopOverlayProvider value={overlayState}>
+        <div className="pointer-events-none absolute inset-0">
+          <Slot name="develop-canvas-overlay" />
+        </div>
+      </DevelopOverlayProvider>
+    </div>
   );
 }

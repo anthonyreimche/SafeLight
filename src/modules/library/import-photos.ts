@@ -6,12 +6,13 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { parseExif, parseExifDate } from "@/catalog/exif";
 import { normalizeRotation, orientationToRotation } from "@/catalog/orient";
 import { extractRawPreview, getExtension, isRawFile } from "./raw-preview";
+import { decodeNetpbm, isNetpbmName } from "./netpbm";
 import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
 import { extractColorTemperature } from "@/raw/libraw-wasm-adapter";
 import { decodePoolSize } from "@/raw/decode-pool";
 import { rotateFloatRGBA } from "@/catalog/orient";
 import { cachedKeys, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
-import { getSettings } from "@/state/settings-store";
+import { getSettings, type PreviewSource } from "@/state/settings-store";
 import { catalogStorage } from "@/catalog/storage";
 
 const SUPPORTED_TYPES = new Set([
@@ -30,6 +31,10 @@ const SUPPORTED_EXTENSIONS = new Set([
   ".avif",
   ".tiff",
   ".tif",
+  ".ppm",
+  ".pgm",
+  ".pbm",
+  ".pnm",
 ]);
 
 /** Name-only check used by the project scanner (no File object needed). */
@@ -106,48 +111,110 @@ async function floatToBitmap(
 }
 
 // Decode a file to an ImageBitmap for thumbnailing, robustly — a supported file
-// must never be silently dropped from the catalog.
+// must never be silently dropped from the catalog. The `source` preference
+// (Preferences ▸ Previews) steers the RAW path:
 //
-//  - RAW: prefer the embedded JPEG preview (fast, camera-rendered). If the file
-//    has no browser-decodable preview (some RAWs only embed a lossless/SOF3
-//    preview, or none), fall back to a full libraw sensor decode instead of
-//    giving up — first decodeRawToBitmap (registered getLibRaw / in-house
-//    uncompressed CFA), then the float decode (libraw-wasm, every compression)
-//    baked to sRGB. `oriented` is true when the decoder already applied EXIF
-//    orientation, so the caller must NOT rotate again.
-//  - Everything else: decode directly.
+//  - "embedded": use the camera's embedded JPEG (fast). Falls back to a full
+//    decode only when the file has no decodable embedded preview.
+//  - "rendered": always decode the RAW sensor (neutral/accurate). Falls back to
+//    the embedded JPEG only if every decode fails, rather than dropping the file.
+//  - "auto" (default): use the embedded JPEG when it's already at least the
+//    thumbnail resolution, otherwise render the sensor for a sharper preview.
+//
+// The decode chain is decodeRawToBitmap (registered getLibRaw / in-house
+// uncompressed CFA) then the float decode (libraw-wasm, every compression) baked
+// to sRGB. `oriented` is true when the decoder already applied EXIF orientation,
+// so the caller must NOT rotate again. Non-RAW files decode directly.
 //
 // Returns null only when the pixels are genuinely undecodable.
 async function decodeImportBitmap(
   file: File,
+  source: PreviewSource = getSettings().previewSource,
 ): Promise<{ bitmap: ImageBitmap; oriented: boolean; colorTemperature?: number } | null> {
   if (isRawFile(file)) {
-    const preview = await extractRawPreview(file);
-    if (preview) {
-      try {
-        const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
-        return { bitmap, oriented: false };
-      } catch {
-        /* preview wasn't decodable after all — fall through to a full decode */
+    // Embedded camera JPEG: accepted outright in "embedded" mode, and in "auto"
+    // when it's already big enough for the grid. Otherwise kept as a last-resort
+    // fallback so a "rendered" decode that fails never drops the file.
+    let embedded: ImageBitmap | null = null;
+    if (source !== "rendered") {
+      const preview = await extractRawPreview(file);
+      if (preview) {
+        try {
+          const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
+          const longEdge = Math.max(bitmap.width, bitmap.height);
+          if (source === "embedded" || longEdge >= getSettings().thumbMaxEdge) {
+            return { bitmap, oriented: false };
+          }
+          embedded = bitmap; // too small for "auto" — render instead, keep as fallback
+        } catch {
+          /* preview wasn't decodable after all — fall through to a full decode */
+        }
       }
     }
-    const bitmapResult = await decodeRawToBitmap(file);
-    if (bitmapResult) return { bitmap: bitmapResult.bitmap, oriented: bitmapResult.oriented };
 
-    // No embedded preview and the bitmap decoder couldn't handle this RAW's
-    // compression. The float decode (libraw-wasm) handles every compression, so
-    // generate the thumbnail from it. It already applied EXIF orientation on the
-    // libraw path (oriented), but not on the in-house uncompressed fallback.
+    const bitmapResult = await decodeRawToBitmap(file);
+    if (bitmapResult) {
+      embedded?.close();
+      return { bitmap: bitmapResult.bitmap, oriented: bitmapResult.oriented };
+    }
+
+    // The bitmap decoder couldn't handle this RAW's compression. The float decode
+    // (libraw-wasm) handles every compression, so generate the thumbnail from it.
     const f = await decodeRawToFloat(file);
     if (f) {
+      embedded?.close();
       const bm = await floatToBitmap(f.data, f.width, f.height);
       return { bitmap: bm, oriented: f.oriented ?? false, colorTemperature: f.colorTemperature };
     }
+
+    // Every decode failed. Fall back to the embedded JPEG (the one we set aside in
+    // "auto", or a fresh extract in "rendered") rather than drop the file.
+    if (embedded) return { bitmap: embedded, oriented: false };
+    if (source === "rendered") {
+      const preview = await extractRawPreview(file);
+      if (preview) {
+        try {
+          const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
+          return { bitmap, oriented: false };
+        } catch {
+          /* genuinely undecodable */
+        }
+      }
+    }
     return null;
+  }
+  if (isNetpbmName(file.name)) {
+    const bitmap = await decodeNetpbm(file);
+    return bitmap ? { bitmap, oriented: false } : null;
   }
   try {
     const bitmap = await createImageBitmap(file, { imageOrientation: "none" });
     return { bitmap, oriented: false };
+  } catch {
+    return null;
+  }
+}
+
+/** Build a grid preview blob for a photo straight from its source file, at the
+ *  current Thumbnail quality. Used to rebuild previews on demand when "Store
+ *  previews on disk" is off (memory-only mode). Returns null if it can't decode. */
+export async function buildPreviewBlob(photo: CatalogPhoto): Promise<Blob | null> {
+  if (!photo.fileHandle) return null;
+  try {
+    const file = await photo.fileHandle.getFile();
+    const decoded = await decodeImportBitmap(file);
+    if (!decoded) return null;
+    const { bitmap, oriented } = decoded;
+    // Bake to the photo's canonical orientation (EXIF + manual). When the decode
+    // already oriented the pixels, subtract the EXIF portion so we don't rotate
+    // twice — mirrors the load path.
+    const rotation = photo.rotation ?? orientationToRotation(photo.exif.orientation);
+    const bakeRotation = oriented
+      ? normalizeRotation(rotation - orientationToRotation(photo.exif.orientation))
+      : rotation;
+    const blob = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
+    bitmap.close();
+    return blob;
   } catch {
     return null;
   }
@@ -254,14 +321,14 @@ export async function buildPhoto(
   if (colorTemperature && !exif.colorTemperature) {
     exif.colorTemperature = colorTemperature;
   }
-  // When the decoder already oriented the pixels (libraw fallback), rotation is 0
-  // so we don't rotate twice — and the decode path stays consistent at load time.
-  const rotation = oriented ? 0 : orientationToRotation(exif.orientation);
+  // Rotation needed to bake THIS decode upright for the stored thumbnail: 0 when
+  // the decoder already oriented the pixels (libraw), else the EXIF orientation.
+  const bakeRotation = oriented ? 0 : orientationToRotation(exif.orientation);
 
-  const thumb = await createThumbnail(bitmap, rotation, getSettings().thumbMaxEdge);
+  const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
   const thumbUrl = URL.createObjectURL(thumb);
 
-  const swap = rotation === 90 || rotation === 270;
+  const swap = bakeRotation === 90 || bakeRotation === 270;
   const width = swap ? bitmap.height : bitmap.width;
   const height = swap ? bitmap.width : bitmap.height;
 
@@ -272,7 +339,12 @@ export async function buildPhoto(
     thumbnailUrl: thumbUrl,
     width,
     height,
-    rotation,
+    // Canonical: the total rotation that brings SENSOR-NATIVE pixels upright,
+    // always including the EXIF orientation — independent of which decoder
+    // oriented the thumbnail above. Load-time decoders that pre-orient subtract
+    // this EXIF portion (load-image.ts); storing 0 here would make them
+    // over-rotate, so the develop view wouldn't match this thumbnail.
+    rotation: orientationToRotation(exif.orientation),
   };
 }
 
@@ -295,9 +367,16 @@ export async function repairMissingPreviews(
       if (!decoded) continue; // still can't — try again next open
 
       const { bitmap, oriented } = decoded;
-      const rotation = oriented ? 0 : orientationToRotation(photo.exif.orientation);
-      const thumb = await createThumbnail(bitmap, rotation, getSettings().thumbMaxEdge);
-      const swap = rotation === 90 || rotation === 270;
+      // Keep the photo's canonical rotation (EXIF + manual). The thumbnail only
+      // needs to bake whatever this decode hasn't already applied: when the
+      // decoder pre-oriented the pixels, subtract the EXIF portion so only the
+      // manual rotation is baked.
+      const rotation = photo.rotation ?? orientationToRotation(photo.exif.orientation);
+      const bakeRotation = oriented
+        ? normalizeRotation(rotation - orientationToRotation(photo.exif.orientation))
+        : rotation;
+      const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
+      const swap = bakeRotation === 90 || bakeRotation === 270;
       const width = swap ? bitmap.height : bitmap.width;
       const height = swap ? bitmap.width : bitmap.height;
       bitmap.close();
@@ -343,9 +422,15 @@ export async function rebuildThumbnails(
       const decoded = await decodeImportBitmap(file);
       if (decoded) {
         const { bitmap, oriented } = decoded;
-        const rotation = oriented ? 0 : orientationToRotation(photo.exif.orientation);
-        const thumb = await createThumbnail(bitmap, rotation, getSettings().thumbMaxEdge);
-        const swap = rotation === 90 || rotation === 270;
+        // Preserve the photo's canonical rotation (EXIF + any manual rotation);
+        // a rebuild changes pixels, not orientation. Bake only what this decode
+        // hasn't already applied — subtract the EXIF portion when pre-oriented.
+        const rotation = photo.rotation ?? orientationToRotation(photo.exif.orientation);
+        const bakeRotation = oriented
+          ? normalizeRotation(rotation - orientationToRotation(photo.exif.orientation))
+          : rotation;
+        const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
+        const swap = bakeRotation === 90 || bakeRotation === 270;
         const width = swap ? bitmap.height : bitmap.width;
         const height = swap ? bitmap.width : bitmap.height;
         bitmap.close();
@@ -390,8 +475,16 @@ export async function rebuildThumbnails(
  * cores; the pool is capped to keep memory/CPU sane while the user browses.
  * Fire and forget.
  */
-export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<void> {
-  if (!getSettings().rawCacheEnabled) return; // nothing to write; skip the decodes
+export async function preDecodeRawsForCache(
+  photos: CatalogPhoto[],
+  opts?: { force?: boolean; onProgress?: (done: number, total: number) => void },
+): Promise<void> {
+  const s = getSettings();
+  // Master switch off → never write the cache, even for a forced "Cache all now".
+  if (!s.rawCacheEnabled) return;
+  // "As needed" mode skips the background pass (only opened photos get cached),
+  // unless the user explicitly asked to cache everything now.
+  if (!opts?.force && !s.rawCachePrefetch) return;
 
   const present = await cachedKeys(); // one directory listing
   const todo = photos.filter(
@@ -400,7 +493,9 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
       isRawFile({ name: p.filename } as File) &&
       !present.has(rawCacheKey(p.relPath, p.fileSize, p.rotation ?? 0)),
   );
+  opts?.onProgress?.(0, todo.length);
   if (todo.length === 0) return;
+  let done = 0;
 
   const decodeOne = async (photo: CatalogPhoto): Promise<void> => {
     try {
@@ -422,6 +517,8 @@ export async function preDecodeRawsForCache(photos: CatalogPhoto[]): Promise<voi
       );
     } catch {
       // A single decode failure shouldn't stop the rest.
+    } finally {
+      opts?.onProgress?.(++done, todo.length);
     }
   };
 

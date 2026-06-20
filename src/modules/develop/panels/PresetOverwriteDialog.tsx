@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 interface Props {
   name: string;
   onOverwrite: () => void;
@@ -13,6 +15,14 @@ export function PresetOverwriteDialog({
   onSaveAsNew,
   onCancel,
 }: Props) {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onCancel]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
@@ -26,10 +36,10 @@ export function PresetOverwriteDialog({
         </p>
         <div className="flex justify-end gap-2">
           <button
-            className="rounded bg-[var(--color-surface-2)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
-            onClick={onCancel}
+            className="rounded bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-white hover:opacity-90"
+            onClick={onOverwrite}
           >
-            Cancel
+            Overwrite
           </button>
           <button
             className="rounded bg-[var(--color-surface-2)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)] hover:text-[var(--color-text)]"
@@ -38,10 +48,10 @@ export function PresetOverwriteDialog({
             Save as new
           </button>
           <button
-            className="rounded bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-white hover:opacity-90"
-            onClick={onOverwrite}
+            className="rounded bg-[var(--color-surface-2)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
+            onClick={onCancel}
           >
-            Overwrite
+            Cancel
           </button>
         </div>
       </div>
