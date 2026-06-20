@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import path from "path";
 import { readFileSync } from "fs";
 import { defineConfig } from "vite";
@@ -43,6 +44,12 @@ export default defineConfig({
   },
   server: { headers: crossOriginIsolation },
   preview: { headers: crossOriginIsolation },
+  // Unit tests for the app live alongside source as `*.test.ts`. Scoped to src/
+  // so vitest never collects the extension packages' self-contained node tests
+  // (extensions/**, run via their own `npm test`).
+  test: {
+    include: ["src/**/*.test.ts"],
+  },
   build: {
     rollupOptions: {
       output: {
