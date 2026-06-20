@@ -3,6 +3,7 @@ import type { CatalogPhoto, CropRect } from "@/catalog/types";
 import { HSL_CHANNELS } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
 import { useDevelopStore } from "@/state/develop-store";
+import { useSettings } from "@/state/settings-store";
 import { fitCropToImage, maxCropForTransform, transformedViewCrop } from "@/rendering/crop-transform";
 import {
   buildForwardTransform,
@@ -65,6 +66,7 @@ export function DevelopCanvas({
   // Crossfade the canvas whenever the hover preview turns on, off, or switches
   // to another preset, so the look eases in/out instead of snapping.
   const previewParams = useDevelopStore((s) => s.previewParams);
+  const openZoom = useSettings((s) => s.developOpenZoom);
   const [fadeToken, setFadeToken] = useState(0);
   const fadeInit = useRef(false);
   useEffect(() => {
@@ -247,6 +249,7 @@ export function DevelopCanvas({
       onViewport={setViewport}
       loading={loading}
       resetKey={photo.id}
+      initialZoom={openZoom === "100" ? 1 : null}
       fadeToken={fadeToken}
       overlayZoomable={!cropping && activeTool !== "none"}
       onPick={wbPicking && !cropping && activeTool === "none" ? onWbPick : undefined}

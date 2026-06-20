@@ -19,6 +19,7 @@ import {
   shortcutsSuspended,
 } from "@/state/keybindings-store";
 import { visiblePhotos } from "./visible-photos";
+import { getSettings } from "@/state/settings-store";
 
 const LABELS: Record<string, ColorLabel> = {
   "label.red": "red",
@@ -95,10 +96,13 @@ export function useCullingShortcuts(): void {
         if (targetIds.length === 0) return;
         e.preventDefault();
         const n = targetIds.length;
-        const ok = window.confirm(
-          `Remove ${n} photo${n === 1 ? "" : "s"} from the catalog? The original file${n === 1 ? "" : "s"} on disk won't be deleted.`,
-        );
-        if (ok) catalog.removePhotos(targetIds);
+        if (getSettings().confirmRemovePhotos) {
+          const ok = window.confirm(
+            `Remove ${n} photo${n === 1 ? "" : "s"} from the catalog? The original file${n === 1 ? "" : "s"} on disk won't be deleted.`,
+          );
+          if (!ok) return;
+        }
+        catalog.removePhotos(targetIds);
         return;
       }
 

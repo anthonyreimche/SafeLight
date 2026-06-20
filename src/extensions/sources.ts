@@ -1,0 +1,53 @@
+// Remembers which GitHub repo ("owner/repo") each installed extension came from.
+// The Browse list uses it to tell which official results are already installed,
+// and the detail view + update checker use it to find an installed extension's
+// repo. A manifest's own `repository` field takes precedence when present.
+
+import type { ExtensionManifest } from "./types";
+
+const SOURCES_KEY = "sl_ext_sources";
+
+export const readSources = (): Record<string, string> => {
+  try {
+    return JSON.parse(localStorage.getItem(SOURCES_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+};
+
+export const rememberSource = (manifestId: string, fullName: string): void => {
+  try {
+    localStorage.setItem(
+      SOURCES_KEY,
+      JSON.stringify({ ...readSources(), [manifestId]: fullName.toLowerCase() }),
+    );
+  } catch {}
+};
+
+export const forgetSource = (manifestId: string): void => {
+  try {
+    const { [manifestId]: _omit, ...rest } = readSources();
+    localStorage.setItem(SOURCES_KEY, JSON.stringify(rest));
+  } catch {}
+};
+
+// Drop remembered sources whose extension is no longer installed (e.g. an
+// uninstall that never cleaned up) so search results don't stay "Installed".
+export const pruneSources = (installed: ExtensionManifest[]): void => {
+  const src = readSources();
+  const ids = new Set(installed.map((m) => m.id));
+  const kept = Object.entries(src).filter(([id]) => ids.has(id));
+  if (kept.length !== Object.keys(src).length) {
+    try {
+      localStorage.setItem(SOURCES_KEY, JSON.stringify(Object.fromEntries(kept)));
+    } catch {}
+  }
+};
+
+/** The "owner/repo" for an installed extension: its manifest `repository` if
+ *  declared, otherwise the remembered install source. Null when neither exists. */
+export const repoFor = (manifest: ExtensionManifest): string | null => {
+  if (manifest.repository && /^[\w.-]+\/[\w.-]+$/.test(manifest.repository))
+    return manifest.repository;
+  return readSources()[manifest.id] ?? null;
+};

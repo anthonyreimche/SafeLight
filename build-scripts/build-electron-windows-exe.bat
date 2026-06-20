@@ -42,6 +42,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\make-cert.ps1"
 if errorlevel 1 goto :fail
 set "CSC_LINK=%CD%\build\safelight-cert.pfx"
 set "CSC_KEY_PASSWORD=safelight"
+REM Skip RFC3161 timestamping. It only keeps a signature valid past the cert's
+REM expiry, which is meaningless for a locally-trusted self-signed cert - and it
+REM costs one slow network round-trip to timestamp.digicert.com PER signed
+REM binary (Safelight.exe, elevate.exe, the uninstaller, Setup.exe). Disabling
+REM it makes the [5/6] signing step near-instant.
+set "ELECTRON_BUILDER_OFFLINE=true"
 
 echo.
 echo [5/6] Packaging signed Windows installer (electron-builder)...

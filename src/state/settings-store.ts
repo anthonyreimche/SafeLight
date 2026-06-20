@@ -30,12 +30,19 @@ export interface AppSettings {
   /** UI font: CSS font-family string. "" = the built-in mono stack. */
   uiFont: string;
 
+  // ── Startup ────────────────────────────────────────────────────────────
+  /** Reopen the most-recently-used project on launch instead of the welcome
+   *  grid. Falls back to the grid if the folder can't be reopened. */
+  restoreLastProject: boolean;
+
   // ── Library ────────────────────────────────────────────────────────────
   defaultGridSize: number; // px, 120–360
   defaultSortField: SortField;
   defaultSortDirection: SortDirection;
   /** Long edge of rendered thumbnails (quality vs. memory/speed). */
   thumbMaxEdge: 320 | 640 | 960;
+  /** Prompt for confirmation before removing photos from the catalog. */
+  confirmRemovePhotos: boolean;
 
   // ── Develop / performance ──────────────────────────────────────────────
   /** Cache decoded RAW previews (IndexedDB or <project>/.safelight/raw). */
@@ -56,6 +63,8 @@ export interface AppSettings {
   highBitDepth: boolean;
   /** Recompute the histogram on every render (off = after edits settle). */
   liveHistogram: boolean;
+  /** Zoom a photo opens at in Develop: fit-to-window or 100% (1:1). */
+  developOpenZoom: "fit" | "100";
 
   // ── Export defaults ────────────────────────────────────────────────────
   exportFormat: ExportFormatPref;
@@ -74,6 +83,10 @@ export interface AppSettings {
   // ── Extensions ─────────────────────────────────────────────────────────
   /** GitHub topic that marks official extensions in the browser. */
   extensionTopic: string;
+  /** Check installed extensions for newer releases on launch (shows a badge). */
+  checkExtensionUpdates: boolean;
+  /** Silently install extension updates in the background when found. */
+  autoUpdateExtensions: boolean;
 
   // ── Updates ────────────────────────────────────────────────────────────
   /** Check GitHub for a newer release on startup and show a banner. */
@@ -86,10 +99,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   uiScale: 1,
   reduceMotion: false,
   uiFont: "",
+  restoreLastProject: false,
   defaultGridSize: 200,
   defaultSortField: "dateImported",
   defaultSortDirection: "desc",
   thumbMaxEdge: 640,
+  confirmRemovePhotos: true,
   rawCacheEnabled: true,
   rawCacheMaxEdge: 3072,
   developMaxEdge: 4096,
@@ -97,6 +112,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   developPrefetchNeighbors: true,
   highBitDepth: true,
   liveHistogram: true,
+  developOpenZoom: "fit",
   exportFormat: "image/jpeg",
   exportQuality: 90,
   exportLongEdge: null,
@@ -105,6 +121,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exportPresets: [],
   singleKeyShortcuts: true,
   extensionTopic: "safelight-extension",
+  checkExtensionUpdates: true,
+  autoUpdateExtensions: false,
   checkForUpdates: true,
   updateChannel: "patch",
 };

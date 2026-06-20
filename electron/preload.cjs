@@ -17,6 +17,12 @@ contextBridge.exposeInMainWorld("safelightNative", {
   releases: {
     fetch: (repo) => ipcRenderer.invoke("releases:fetch", String(repo)),
   },
+  // GitHub repo metadata + README for the Extensions store detail view.
+  github: {
+    repoMeta: (repo) => ipcRenderer.invoke("github:repoMeta", String(repo)),
+    readme: (repo, ref) =>
+      ipcRenderer.invoke("github:readme", String(repo), String(ref ?? "HEAD")),
+  },
   plugins: {
     list: () => ipcRenderer.invoke("plugins:list"),
     install: (spec) => ipcRenderer.invoke("plugins:install", String(spec)),

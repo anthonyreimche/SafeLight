@@ -170,7 +170,11 @@ const CSP = [
   "script-src 'self' 'wasm-unsafe-eval' blob:",
   "worker-src 'self' blob:",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
+  // https: lets the Extensions store show remote previews: repo thumbnails,
+  // owner avatars, and images inside rendered extension READMEs (badges,
+  // screenshots). Images can't execute code, and script-src/connect-src stay
+  // locked to 'self', so this widens display only — no new code or data egress.
+  "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
   "connect-src 'self' data: blob:",
   "object-src 'none'",
@@ -382,6 +386,7 @@ async function searchExtensions(query, topic) {
     description: r.description,
     stars: r.stargazers_count || 0,
     updatedAt: r.updated_at,
+    topics: Array.isArray(r.topics) ? r.topics : [],
   }));
 }
 
@@ -399,6 +404,58 @@ async function fetchReleases(repo) {
   );
   if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
   return res.json();
+}
+
+// Validate an "owner/repo" string before interpolating it into a GitHub URL.
+function validRepo(repo) {
+  return /^[\w.-]+\/[\w.-]+$/.test(String(repo));
+}
+
+// Repo metadata for the Extensions detail view — runs in the main process to
+// bypass the renderer CSP. Returns a normalised subset so we never leak the raw
+// GitHub payload (or its many embedded URLs) into the renderer.
+async function fetchRepoMeta(repo) {
+  if (!validRepo(repo)) throw new Error("Bad repository");
+  const res = await net.fetch(`https://api.github.com/repos/${repo}`, {
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "Safelight" },
+  });
+  if (res.status === 403 || res.status === 429)
+    throw new Error("GitHub rate limit reached — try again in a minute.");
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
+  const r = await res.json();
+  return {
+    fullName: r.full_name,
+    description: r.description ?? null,
+    stars: r.stargazers_count || 0,
+    openIssues: r.open_issues_count || 0,
+    updatedAt: r.pushed_at || r.updated_at || "",
+    license: r.license && r.license.spdx_id !== "NOASSERTION" ? r.license.spdx_id : null,
+    topics: Array.isArray(r.topics) ? r.topics : [],
+    homepage: r.homepage || null,
+    htmlUrl: r.html_url,
+    defaultBranch: r.default_branch || "HEAD",
+    ownerLogin: r.owner ? r.owner.login : "",
+    ownerAvatarUrl: r.owner ? r.owner.avatar_url : null,
+    hasIssues: !!r.has_issues,
+    hasDiscussions: !!r.has_discussions,
+    ogImageUrl: `https://opengraph.githubassets.com/1/${r.full_name}`,
+  };
+}
+
+// Raw README text for the Extensions detail view. Returns null when the repo
+// has no README (404) so the UI can fall back to the manifest description.
+async function fetchReadme(repo, ref) {
+  if (!validRepo(repo)) throw new Error("Bad repository");
+  const branch = encodeURIComponent(String(ref || "HEAD"));
+  for (const name of ["README.md", "readme.md", "README.markdown", "README"]) {
+    const res = await net.fetch(
+      `https://raw.githubusercontent.com/${repo}/${branch}/${name}`,
+      { headers: { "User-Agent": "Safelight" } }
+    );
+    if (res.ok) return res.text();
+    if (res.status !== 404) throw new Error(`GitHub error: ${res.status}`);
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +528,10 @@ async function installRelease(repo, tag) {
 function registerPluginIpc() {
   ipcMain.handle("app:version", () => appVersion());
   ipcMain.handle("releases:fetch", (_e, repo) => fetchReleases(String(repo)));
+  ipcMain.handle("github:repoMeta", (_e, repo) => fetchRepoMeta(String(repo)));
+  ipcMain.handle("github:readme", (_e, repo, ref) =>
+    fetchReadme(String(repo), String(ref ?? "HEAD"))
+  );
   ipcMain.handle("updates:install", (_e, repo, tag) =>
     installRelease(String(repo), String(tag))
   );

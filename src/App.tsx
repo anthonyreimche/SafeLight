@@ -3,6 +3,7 @@ import type { AppModule } from "@/catalog/types";
 import { useUIStore } from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useProjectStore } from "@/project/project-store";
+import { getSettings } from "@/state/settings-store";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useWindowSync } from "@/hooks/use-window-sync";
 import { detachedModule, MODULE_LABELS } from "@/state/detach";
@@ -45,6 +46,17 @@ export function App() {
   useEffect(() => {
     if (dm) loadCatalog();
   }, [dm, loadCatalog]);
+
+  // Main window only: optionally reopen the most-recent project on launch.
+  // openLast() verifies permission silently and, if it can't reconnect (e.g. a
+  // browser handle whose permission lapsed), leaves the welcome grid in place
+  // rather than blocking startup. Runs once on mount.
+  useEffect(() => {
+    if (dm || devtoolsWindow) return;
+    if (!getSettings().restoreLastProject) return;
+    void useProjectStore.getState().openLast();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // The Developer Tools window renders only the panel — no module, no project.
   if (devtoolsWindow) return <DevToolsWindow />;

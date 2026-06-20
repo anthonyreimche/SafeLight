@@ -34,7 +34,12 @@ import {
 } from "@/state/keybindings-store";
 import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } from "./dock";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
-import { initEnablement, loadBuiltins, loadExternalPlugins } from "./loader";
+import {
+  checkAllExtensionUpdates,
+  initEnablement,
+  loadBuiltins,
+  loadExternalPlugins,
+} from "./loader";
 import { warmDecodePool } from "@/raw/decode-pool";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
@@ -116,6 +121,8 @@ export function initExtensionHost(): void {
   initThemes();
   initPipelines();
   initDockLayouts();
-  void loadExternalPlugins();
+  // Load external plugins, then quietly check them for updates (and auto-update
+  // if the user opted in). The check is gated on a setting and rate-limited.
+  void loadExternalPlugins().then(() => void checkAllExtensionUpdates());
   void warmDecodePool();
 }

@@ -15,6 +15,10 @@ import { applySavedTheme } from "./themes";
 import { makeScopedAPI } from "./host";
 import { deleteExtensionSettings } from "./ext-settings";
 import { BUILTIN_EXTENSIONS } from "./builtin";
+import { isNewer } from "@/update/semver";
+import { repoFor } from "./sources";
+import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
+import { getSettings } from "@/state/settings-store";
 
 const loaded = new Map<string, ExtensionModule>();
 
@@ -200,4 +204,102 @@ export async function uninstallPlugin(id: string): Promise<void> {
   deleteExtensionSettings(id); // forget its persisted settings too
   persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
   await native?.plugins.uninstall(id); // deletes <userData>/plugins/<id>/
+}
+
+// ─── Updates ───────────────────────────────────────────────────────────────
+// An extension's latest version is the newest non-draft GitHub release tag of
+// the repo it was installed from. We require Releases (the same convention the
+// app's own updater uses) — a repo with no releases simply has "no update info".
+
+const UPDATE_CHECK_TTL = 6 * 60 * 60 * 1000; // re-check at most every 6h
+
+/** Newest non-draft release tag for "owner/repo", or null if none / no bridge. */
+async function latestReleaseTag(fullName: string): Promise<string | null> {
+  const native = window.safelightNative;
+  if (!native?.releases) return null;
+  const releases = await native.releases.fetch(fullName);
+  const best = releases.find((r) => !r.draft);
+  return best?.tag_name ?? null;
+}
+
+/** Check one installed extension for a newer release and cache the result.
+ *  Returns the cached result when checked within the TTL (unless `force`). */
+export async function checkExtensionUpdate(
+  manifest: ExtensionManifest,
+  force = false,
+): Promise<ExtUpdateInfo | null> {
+  const repo = repoFor(manifest);
+  if (!repo) return null; // built-in / custom import with no known repo
+  const cached = useExtStoreUI.getState().updates[manifest.id];
+  if (!force && cached && Date.now() - cached.checkedAt < UPDATE_CHECK_TTL)
+    return cached;
+  let latestTag: string | null = null;
+  try {
+    latestTag = await latestReleaseTag(repo);
+  } catch {
+    return cached ?? null; // network hiccup — keep any prior result
+  }
+  const info: ExtUpdateInfo = {
+    latestTag,
+    hasUpdate: !!latestTag && isNewer(manifest.version, latestTag),
+    checkedAt: Date.now(),
+  };
+  useExtStoreUI.getState().setUpdate(manifest.id, info);
+  return info;
+}
+
+/** Reinstall an extension at `tag`, preserving its settings and enabled state.
+ *  The install overwrites <userData>/plugins/<id>/ in place. */
+export async function updateExtension(
+  id: string,
+  fullName: string,
+  tag: string,
+): Promise<ExtensionManifest> {
+  // Tear down the running instance, then reinstall the new tag live. Settings
+  // are deliberately NOT deleted (unlike uninstall) so the update is seamless.
+  loaded.get(id)?.deactivate?.();
+  loaded.delete(id);
+  unregisterExtension(id);
+  const manifest = await installFromGitHub(`${fullName}#${tag}`);
+  useExtStoreUI.getState().setUpdate(id, {
+    latestTag: tag,
+    hasUpdate: false,
+    checkedAt: Date.now(),
+  });
+  return manifest;
+}
+
+/** Background check on launch: refresh update info for every installed
+ *  extension, and auto-update when the user has opted in. Throttled so we don't
+ *  fire a burst of GitHub requests. Gated by the checkExtensionUpdates setting. */
+export async function checkAllExtensionUpdates(): Promise<void> {
+  const native = window.safelightNative;
+  if (!native?.releases) return;
+  const settings = getSettings();
+  if (!settings.checkExtensionUpdates) return;
+  let list: ExtensionManifest[];
+  try {
+    list = await native.plugins.list();
+  } catch {
+    return;
+  }
+  const CONCURRENCY = 3;
+  for (let i = 0; i < list.length; i += CONCURRENCY) {
+    const slice = list.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      slice.map(async (m) => {
+        const info = await checkExtensionUpdate(m);
+        if (info?.hasUpdate && info.latestTag && settings.autoUpdateExtensions) {
+          const repo = repoFor(m);
+          if (repo) {
+            try {
+              await updateExtension(m.id, repo, info.latestTag);
+            } catch (e) {
+              console.error(`[extensions] auto-update failed for ${m.id}:`, e);
+            }
+          }
+        }
+      }),
+    );
+  }
 }

@@ -89,6 +89,19 @@ export function useDevelopRenderer(
     let histTimer: ReturnType<typeof setTimeout> | null = null;
     let lastHistTime = 0;
     const HIST_THROTTLE = 80;
+    // When live histogram is off, recompute only once edits go quiet for this long.
+    const HIST_SETTLE = 250;
+
+    const recomputeHistogram = () => {
+      histTimer = null;
+      lastHistTime = performance.now();
+      if (cv.width > 0 && cv.height > 0) {
+        const hist = computeHistogram(cv);
+        const prev = useDevelopStore.getState().histogram;
+        if (prev?.extended) hist.extended = prev.extended;
+        setHistogramRef(hist);
+      }
+    };
 
     bridge.setOnFrame((frame: FrameResult) => {
       if (cv.width !== frame.width) cv.width = frame.width;
@@ -103,19 +116,18 @@ export function useDevelopRenderer(
       if (frame.histogram) {
         setHistogramRef(frame.histogram);
         lastHistTime = performance.now();
-      } else if (!histTimer) {
-        const elapsed = performance.now() - lastHistTime;
-        const delay = Math.max(0, HIST_THROTTLE - elapsed);
-        histTimer = setTimeout(() => {
-          histTimer = null;
-          lastHistTime = performance.now();
-          if (cv.width > 0 && cv.height > 0) {
-            const hist = computeHistogram(cv);
-            const prev = useDevelopStore.getState().histogram;
-            if (prev?.extended) hist.extended = prev.extended;
-            setHistogramRef(hist);
-          }
-        }, delay);
+      } else if (getSettings().liveHistogram) {
+        // Live: recompute continuously while editing, throttled to HIST_THROTTLE.
+        if (!histTimer) {
+          const elapsed = performance.now() - lastHistTime;
+          const delay = Math.max(0, HIST_THROTTLE - elapsed);
+          histTimer = setTimeout(recomputeHistogram, delay);
+        }
+      } else {
+        // Off: debounce — reset on every frame so we only recompute after the
+        // edit settles, instead of on each intermediate frame.
+        if (histTimer) clearTimeout(histTimer);
+        histTimer = setTimeout(recomputeHistogram, HIST_SETTLE);
       }
     });
     bridge.setOnHistogram((histogram) => {

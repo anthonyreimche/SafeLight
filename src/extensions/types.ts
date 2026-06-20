@@ -148,9 +148,35 @@ export interface ExtensionSearchResult {
   description: string | null;
   stars: number;
   updatedAt: string;
+  /** GitHub repo topics — drive the store's category chips. */
+  topics?: string[];
 }
 
-/** safelight.json at the root of an extension repo. */
+/** Normalised GitHub repo metadata for the Extensions store detail view.
+ *  A subset of the GitHub repos API, shaped in the Electron main process. */
+export interface ExtensionRepoMeta {
+  fullName: string;
+  description: string | null;
+  stars: number;
+  openIssues: number;
+  updatedAt: string;
+  license: string | null;
+  topics: string[];
+  homepage: string | null;
+  htmlUrl: string;
+  /** Branch to fetch the README and resolve relative asset links against. */
+  defaultBranch: string;
+  ownerLogin: string;
+  ownerAvatarUrl: string | null;
+  hasIssues: boolean;
+  hasDiscussions: boolean;
+  /** GitHub's social-preview card — a usable thumbnail with no manifest icon. */
+  ogImageUrl: string;
+}
+
+/** safelight.json at the root of an extension repo. All fields beyond the core
+ *  five (id/name/version/main) are optional and additive — older manifests load
+ *  unchanged; the store simply shows richer detail when they're present. */
 export interface ExtensionManifest {
   id: string;
   name: string;
@@ -159,6 +185,23 @@ export interface ExtensionManifest {
   author?: string;
   /** Entry ESM bundle, relative to the extension folder, e.g. "dist/index.js". */
   main: string;
+  /** Icon URL (absolute, or relative to the repo's default branch). */
+  icon?: string;
+  /** Store categories, e.g. ["Panels", "Color"]. Preferred over repo topics. */
+  categories?: string[];
+  /** Free-form search keywords. */
+  keywords?: string[];
+  /** Project homepage / docs URL. */
+  homepage?: string;
+  /** Source repo as "owner/repo" — lets a custom-imported extension self-declare
+   *  its repo so the detail view can show its README without a remembered source. */
+  repository?: string;
+  /** Screenshot URLs (absolute, or relative to the repo's default branch). */
+  screenshots?: string[];
+  /** SPDX license id, e.g. "MIT". */
+  license?: string;
+  /** Minimum SafeLight version required, e.g. "1.2.0". Blocks install below it. */
+  minAppVersion?: string;
 }
 
 /** One settings field used by an export processor's in-panel UI.
@@ -495,6 +538,14 @@ declare global {
       releases: {
         /** Fetch releases for `owner/repo`. Returns the raw GitHub API array. */
         fetch(repo: string): Promise<{ tag_name: string; html_url: string; body: string | null; draft: boolean }[]>;
+      };
+      /** GitHub repo metadata + README proxy for the Extensions store detail view.
+       *  Optional: absent in the plain-browser build and older Electron builds. */
+      github?: {
+        /** Normalised repo metadata for "owner/repo". */
+        repoMeta(repo: string): Promise<ExtensionRepoMeta>;
+        /** Raw README text for "owner/repo" at `ref`, or null if none exists. */
+        readme(repo: string, ref?: string): Promise<string | null>;
       };
       plugins: {
         list(): Promise<ExtensionManifest[]>;

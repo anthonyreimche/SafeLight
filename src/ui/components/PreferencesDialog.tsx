@@ -40,6 +40,8 @@ import {
   usePipelineStore,
 } from "@/extensions/pipelines";
 import { clearRawCache } from "@/raw/raw-cache";
+import { rebuildThumbnails } from "@/modules/library/import-photos";
+import { useCatalogStore } from "@/state/catalog-store";
 import type { SortDirection, SortField } from "@/catalog/types";
 import { COLOR_SPACES } from "@/rendering/color-space";
 import {
@@ -363,6 +365,7 @@ function InterfaceSection() {
   const activeLayout = useLayoutStore((s) => s.activeId);
   const uiScale = useSettings((s) => s.uiScale);
   const reduceMotion = useSettings((s) => s.reduceMotion);
+  const restoreLastProject = useSettings((s) => s.restoreLastProject);
 
   return (
     <div className="flex flex-col gap-4">
@@ -411,6 +414,12 @@ function InterfaceSection() {
         hint="Minimize animated UI affordances."
         checked={reduceMotion}
         onChange={(v) => updateSettings({ reduceMotion: v })}
+      />
+      <ToggleField
+        label="Restore last project on launch"
+        hint="Reopen the most-recently-used project at startup instead of the welcome grid. Falls back to the grid if the folder can't be reopened."
+        checked={restoreLastProject}
+        onChange={(v) => updateSettings({ restoreLastProject: v })}
       />
       <FontField />
     </div>
@@ -512,6 +521,12 @@ function LibrarySection() {
           }
         />
       </Field>
+      <ToggleField
+        label="Confirm before removing photos"
+        hint="Ask for confirmation when removing photos from the catalog. The originals on disk are never deleted either way."
+        checked={s.confirmRemovePhotos}
+        onChange={(v) => updateSettings({ confirmRemovePhotos: v })}
+      />
     </div>
   );
 }
@@ -556,6 +571,20 @@ function RenderingSection() {
 function PerformanceSection() {
   const s = useSettings();
   const [cleared, setCleared] = useState(false);
+  const [rebuild, setRebuild] = useState<{ done: number; total: number } | null>(
+    null,
+  );
+  const rebuilding = rebuild !== null && rebuild.done < rebuild.total;
+  const handleRebuild = () => {
+    const photos = useCatalogStore.getState().photos;
+    if (photos.length === 0 || rebuilding) return;
+    setRebuild({ done: 0, total: photos.length });
+    void rebuildThumbnails(
+      photos,
+      (done, total) => setRebuild({ done, total }),
+      (p) => useCatalogStore.getState().updatePhoto(p),
+    );
+  };
   return (
     <div className="flex flex-col gap-4">
       <ToggleField
@@ -594,6 +623,21 @@ function PerformanceSection() {
           <span className="ml-2 text-[10px] text-text-muted">Cleared.</span>
         )}
       </Field>
+      <Field
+        label="Grid thumbnails"
+        hint="Re-decodes every photo in the open project and regenerates its grid thumbnail at the current Thumbnail quality. Use after changing that setting."
+      >
+        <button onClick={handleRebuild} disabled={rebuilding} className={btnCls}>
+          {rebuilding ? "Rebuilding…" : "Rebuild thumbnails"}
+        </button>
+        {rebuild !== null && (
+          <span className="ml-2 text-[10px] text-text-muted">
+            {rebuilding
+              ? `${rebuild.done} / ${rebuild.total}`
+              : `Rebuilt ${rebuild.total}.`}
+          </span>
+        )}
+      </Field>
 
       <div className="border-t border-border-subtle pt-3">
         <div className={labelCls}>Render pipeline</div>
@@ -611,6 +655,21 @@ function PerformanceSection() {
           ]}
           onChange={(v) =>
             updateSettings({ developMaxEdge: v as 4096 | 6144 | 8192 })
+          }
+        />
+      </Field>
+      <Field
+        label="Open photos at"
+        hint="Zoom a photo opens at in Develop. Fit shows the whole frame; 100% opens at 1:1 (pixel-accurate)."
+      >
+        <OptionRow
+          value={s.developOpenZoom}
+          options={[
+            { value: "fit", label: "Fit" },
+            { value: "100", label: "100%" },
+          ]}
+          onChange={(v) =>
+            updateSettings({ developOpenZoom: v as "fit" | "100" })
           }
         />
       </Field>
@@ -912,6 +971,8 @@ function ShortcutsSection() {
 
 function ExtensionsSection() {
   const topic = useSettings((s) => s.extensionTopic);
+  const checkExtensionUpdates = useSettings((s) => s.checkExtensionUpdates);
+  const autoUpdateExtensions = useSettings((s) => s.autoUpdateExtensions);
   return (
     <div className="flex flex-col gap-4">
       <Field
@@ -931,6 +992,18 @@ function ExtensionsSection() {
           className={inputCls}
         />
       </Field>
+      <ToggleField
+        label="Check extensions for updates"
+        hint="On launch, compare installed extensions against the latest GitHub release and flag any with an update available."
+        checked={checkExtensionUpdates}
+        onChange={(v) => updateSettings({ checkExtensionUpdates: v })}
+      />
+      <ToggleField
+        label="Auto-update extensions"
+        hint="Silently install extension updates in the background when found. Off by default — updates are flagged for you to apply manually."
+        checked={autoUpdateExtensions}
+        onChange={(v) => updateSettings({ autoUpdateExtensions: v })}
+      />
       <Field label="Manage">
         <button
           onClick={() => {

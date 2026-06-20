@@ -17,7 +17,10 @@ interface ViewportImageProps {
   zoom: number | null; // null = fit; number = scale (1 = 100% of buffer)
   onZoomChange: (zoom: number | null) => void;
   loading?: boolean;
-  resetKey?: string; // changing this snaps back to "fit" (e.g. a new photo)
+  resetKey?: string; // changing this snaps back to the initial zoom (e.g. a new photo)
+  // Zoom a fresh photo (resetKey change) opens at. null = fit (default); a number
+  // = that scale (1 = 100%). Lets the Develop loupe honor the user's preference.
+  initialZoom?: number | null;
   // When provided, the viewport renders this overlay on top, given the displayed
   // image rect in frame coordinates. By default an overlay forces a static fit
   // (crop), but see overlayZoomable.
@@ -68,6 +71,7 @@ export function ViewportImage({
   onZoomChange,
   loading,
   resetKey,
+  initialZoom = null,
   overlay,
   overlayZoomable,
   onPick,
@@ -86,11 +90,11 @@ export function ViewportImage({
   // zoomable overlay click-through so the pointer reaches the pan/zoom layer.
   const [zoomGesture, setZoomGesture] = useState(false);
 
-  // A new image starts at fit, centered.
+  // A new image starts at the initial zoom (fit by default), centered.
   useEffect(() => {
     setOffset({ x: 0, y: 0 });
-    onZoomChange(null);
-    // onZoomChange is a stable setter; intentionally not a dependency.
+    onZoomChange(initialZoom);
+    // onZoomChange is a stable setter; initialZoom is read at reset time only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey]);
 

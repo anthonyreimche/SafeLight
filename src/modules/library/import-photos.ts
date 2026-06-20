@@ -51,8 +51,10 @@ function generateId(): string {
   return crypto.randomUUID();
 }
 
-// 768px long edge keeps thumbnails crisp even at the largest grid cell (400px
-// square, which crops to cover — so the short edge must comfortably exceed it).
+// Long edge of the stored thumbnail. The caller passes the user's "Thumbnail
+// quality" preference (thumbMaxEdge); the 768 fallback keeps thumbnails crisp at
+// the largest grid cell (400px square, which crops to cover — so the short edge
+// must comfortably exceed it) if no preference is supplied.
 async function createThumbnail(
   bitmap: ImageBitmap,
   rotation: number,
@@ -256,7 +258,7 @@ export async function buildPhoto(
   // so we don't rotate twice — and the decode path stays consistent at load time.
   const rotation = oriented ? 0 : orientationToRotation(exif.orientation);
 
-  const thumb = await createThumbnail(bitmap, rotation);
+  const thumb = await createThumbnail(bitmap, rotation, getSettings().thumbMaxEdge);
   const thumbUrl = URL.createObjectURL(thumb);
 
   const swap = rotation === 90 || rotation === 270;
@@ -294,7 +296,7 @@ export async function repairMissingPreviews(
 
       const { bitmap, oriented } = decoded;
       const rotation = oriented ? 0 : orientationToRotation(photo.exif.orientation);
-      const thumb = await createThumbnail(bitmap, rotation);
+      const thumb = await createThumbnail(bitmap, rotation, getSettings().thumbMaxEdge);
       const swap = rotation === 90 || rotation === 270;
       const width = swap ? bitmap.height : bitmap.width;
       const height = swap ? bitmap.width : bitmap.height;
@@ -315,6 +317,55 @@ export async function repairMissingPreviews(
     } catch {
       // One failure shouldn't stop the rest.
     }
+  }
+}
+
+/**
+ * Re-decode every catalog photo and regenerate its grid preview at the current
+ * "Thumbnail quality" (thumbMaxEdge). Unlike repairMissingPreviews this rebuilds
+ * ALL previews, not just missing ones — it's the way a changed thumbMaxEdge takes
+ * effect on an existing library, since known photos are otherwise never re-decoded
+ * on open. Updates each photo in place (same id) and rewrites its disk preview.
+ * Reports progress so a Preferences button can show "12 / 340". Sequential to keep
+ * memory sane; one failure doesn't stop the rest.
+ */
+export async function rebuildThumbnails(
+  photos: CatalogPhoto[],
+  onProgress?: (done: number, total: number) => void,
+  onRebuilt?: (photo: CatalogPhoto) => void,
+): Promise<void> {
+  const todo = photos.filter((p) => p.fileHandle);
+  let done = 0;
+  onProgress?.(0, todo.length);
+  for (const photo of todo) {
+    try {
+      const file = await photo.fileHandle!.getFile();
+      const decoded = await decodeImportBitmap(file);
+      if (decoded) {
+        const { bitmap, oriented } = decoded;
+        const rotation = oriented ? 0 : orientationToRotation(photo.exif.orientation);
+        const thumb = await createThumbnail(bitmap, rotation, getSettings().thumbMaxEdge);
+        const swap = rotation === 90 || rotation === 270;
+        const width = swap ? bitmap.height : bitmap.width;
+        const height = swap ? bitmap.width : bitmap.height;
+        bitmap.close();
+
+        const updated: CatalogPhoto = {
+          ...photo,
+          thumbnailBlob: thumb,
+          thumbnailUrl: URL.createObjectURL(thumb),
+          width,
+          height,
+          rotation,
+        };
+        await catalogStorage().putPhoto(updated); // writes the preview + persists
+        onRebuilt?.(updated);
+      }
+    } catch {
+      // One failure shouldn't stop the rest.
+    }
+    onProgress?.(++done, todo.length);
+    await new Promise<void>((res) => setTimeout(res, 0));
   }
 }
 

@@ -4,6 +4,7 @@ import { useProjectStore } from "@/project/project-store";
 import { exportPhotoData } from "@/project/folder-ops";
 import type { SortField } from "@/catalog/types";
 import { Slider } from "@/ui/components/Slider";
+import { getSettings } from "@/state/settings-store";
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: "dateImported", label: "Imported" },
@@ -36,10 +37,13 @@ export function LibraryToolbar() {
   const handleRemove = () => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
-    const ok = window.confirm(
-      `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted (they'll reappear on the next folder scan).`,
-    );
-    if (ok) removePhotos(ids);
+    if (getSettings().confirmRemovePhotos) {
+      const ok = window.confirm(
+        `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted (they'll reappear on the next folder scan).`,
+      );
+      if (!ok) return;
+    }
+    removePhotos(ids);
   };
 
   const handleExportData = async () => {

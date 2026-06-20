@@ -118,7 +118,7 @@ Active module (`"library" | "develop"`), grid view mode and size, sorting, and t
 
 ### useSettings
 
-Application preferences (see Preferences in the [User Guide](user-guide.md)): `uiScale`, `reduceMotion`, `uiFont`, `defaultGridSize`, `defaultSortField/Direction`, `thumbMaxEdge`, `rawCacheEnabled`, `rawCacheMaxEdge`, `developMaxEdge`, `highBitDepth`, `liveHistogram`, `exportFormat/Quality/LongEdge/Bundle`, `singleKeyShortcuts`, `extensionTopic`. Read imperatively with `getSettings()`; write with `updateSettings(patch)`.
+Application preferences (see Preferences in the [User Guide](user-guide.md)): `uiScale`, `reduceMotion`, `uiFont`, `restoreLastProject`, `defaultGridSize`, `defaultSortField/Direction`, `thumbMaxEdge`, `confirmRemovePhotos`, `rawCacheEnabled`, `rawCacheMaxEdge`, `developMaxEdge`, `developOpenZoom`, `highBitDepth`, `liveHistogram`, `exportFormat/Quality/LongEdge/Bundle`, `singleKeyShortcuts`, `extensionTopic`. Read imperatively with `getSettings()`; write with `updateSettings(patch)`.
 
 ## Storage (`src/catalog/storage.ts`, `src/project/`)
 
