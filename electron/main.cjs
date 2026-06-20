@@ -157,7 +157,14 @@ const MIME = {
 
 const ISOLATION_HEADERS = {
   "Cross-Origin-Opener-Policy": "same-origin",
-  "Cross-Origin-Embedder-Policy": "require-corp",
+  // `credentialless` (not `require-corp`) keeps the app cross-origin-isolated —
+  // crossOriginIsolated stays true, so SharedArrayBuffer / libraw-wasm threads
+  // still work — while letting no-cors cross-origin images load without a CORP
+  // header. That's what the Extensions store needs: GitHub OG thumbnails, owner
+  // avatars, and remote README screenshots/badges are served without
+  // Cross-Origin-Resource-Policy, so under require-corp they were blocked and
+  // rendered as blank/grey cards.
+  "Cross-Origin-Embedder-Policy": "credentialless",
   "Cross-Origin-Resource-Policy": "same-origin",
 };
 
@@ -414,6 +421,59 @@ function validRepo(repo) {
 // Repo metadata for the Extensions detail view — runs in the main process to
 // bypass the renderer CSP. Returns a normalised subset so we never leak the raw
 // GitHub payload (or its many embedded URLs) into the renderer.
+// GitHub's auto-generated summary card (repo name, description, stats). Always
+// available, but it is NOT the owner's uploaded social preview.
+function autoOgCard(repo) {
+  return `https://opengraph.githubassets.com/1/${repo}`;
+}
+
+// Resolve a repo's real og:image. When the owner uploaded a custom social
+// preview, GitHub points og:image at repository-images.githubusercontent.com;
+// otherwise it's the auto-generated card above. There is no unauthenticated REST
+// field for this, so we read <meta property="og:image"> from the repo's HTML.
+// Cached in-process (TTL) — the URL only changes when the owner edits the
+// preview, and a browse grid asks for ~25 of these at once.
+const ogImageCache = new Map(); // repo(lowercase) -> { url, at }
+const OG_TTL_MS = 6 * 60 * 60 * 1000;
+
+async function fetchOgImage(repo) {
+  if (!validRepo(repo)) return autoOgCard(repo);
+  const key = repo.toLowerCase();
+  const hit = ogImageCache.get(key);
+  if (hit && Date.now() - hit.at < OG_TTL_MS) return hit.url;
+  let url = autoOgCard(repo);
+  try {
+    const res = await net.fetch(`https://github.com/${repo}`, {
+      headers: { "User-Agent": "Safelight", Accept: "text/html" },
+    });
+    if (res.ok && res.body) {
+      // og:image lives in <head>, so stop reading once we've seen it (or hit a
+      // cap) rather than downloading the whole page for every card.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let html = "";
+      while (html.length < 150000) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        html += decoder.decode(value, { stream: true });
+        if (/property=["']og:image["']/i.test(html)) break;
+      }
+      try {
+        await reader.cancel();
+      } catch {}
+      const m =
+        html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+        html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+      if (m && /^https:\/\//i.test(m[1])) url = m[1];
+    }
+  } catch {
+    // Network/parse failure → keep the auto card. Never throw: a missing
+    // thumbnail must not break the browse grid.
+  }
+  ogImageCache.set(key, { url, at: Date.now() });
+  return url;
+}
+
 async function fetchRepoMeta(repo) {
   if (!validRepo(repo)) throw new Error("Bad repository");
   const res = await net.fetch(`https://api.github.com/repos/${repo}`, {
@@ -438,7 +498,7 @@ async function fetchRepoMeta(repo) {
     ownerAvatarUrl: r.owner ? r.owner.avatar_url : null,
     hasIssues: !!r.has_issues,
     hasDiscussions: !!r.has_discussions,
-    ogImageUrl: `https://opengraph.githubassets.com/1/${r.full_name}`,
+    ogImageUrl: await fetchOgImage(r.full_name),
   };
 }
 
@@ -529,6 +589,7 @@ function registerPluginIpc() {
   ipcMain.handle("app:version", () => appVersion());
   ipcMain.handle("releases:fetch", (_e, repo) => fetchReleases(String(repo)));
   ipcMain.handle("github:repoMeta", (_e, repo) => fetchRepoMeta(String(repo)));
+  ipcMain.handle("github:ogImage", (_e, repo) => fetchOgImage(String(repo)));
   ipcMain.handle("github:readme", (_e, repo, ref) =>
     fetchReadme(String(repo), String(ref ?? "HEAD"))
   );

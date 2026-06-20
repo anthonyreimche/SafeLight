@@ -17,7 +17,11 @@ const pkg = JSON.parse(
 // import.meta.url, so it must be excluded from Vite's dep pre-bundling.
 const crossOriginIsolation = {
   "Cross-Origin-Opener-Policy": "same-origin",
-  "Cross-Origin-Embedder-Policy": "require-corp",
+  // `credentialless` keeps the page cross-origin-isolated (SharedArrayBuffer
+  // stays enabled) while still loading no-cors cross-origin images without a
+  // CORP header — the Extensions store's GitHub thumbnails, avatars, and remote
+  // README images. Kept in sync with electron/main.cjs ISOLATION_HEADERS.
+  "Cross-Origin-Embedder-Policy": "credentialless",
 };
 
 // Vendored LibRaw WASM built from ybouane/LibRaw-Wasm @ libraw 0.22.1.
