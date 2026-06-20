@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { CurveEditor } from "@/ui/components/CurveEditor";
@@ -19,21 +20,48 @@ import {
   defaultToneCurves,
 } from "@/catalog/types";
 
-const TOOL_LABELS: { type: MaskType; label: string }[] = [
+// Tools that create a component by dragging on the canvas.
+const GEO_TOOLS: { type: MaskType; label: string }[] = [
   { type: "radial", label: "Radial" },
   { type: "linear", label: "Linear" },
   { type: "brush", label: "Brush" },
+];
+// Parametric ranges: created instantly (no canvas drag).
+const RANGE_TOOLS: { kind: "lumRange" | "colorRange"; label: string }[] = [
+  { kind: "lumRange", label: "Luminance Range" },
+  { kind: "colorRange", label: "Color Range" },
 ];
 
 const KIND_ICON: Record<MaskComponentKind, string> = {
   radial: "◯",
   linear: "▤",
   brush: "✎",
+  lumRange: "◐",
+  colorRange: "⬤",
 };
 const KIND_LABEL: Record<MaskComponentKind, string> = {
   radial: "Radial",
   linear: "Linear",
   brush: "Brush",
+  lumRange: "Luminance",
+  colorRange: "Color",
+};
+
+// Mode chip glyph + colour. add = union, subtract = carve, intersect = confine.
+const MODE_GLYPH: Record<MaskComponentMode, string> = {
+  add: "+",
+  subtract: "−",
+  intersect: "∩",
+};
+const MODE_CLASS: Record<MaskComponentMode, string> = {
+  add: "text-accent",
+  subtract: "text-label-yellow",
+  intersect: "text-label-blue",
+};
+const MODE_TITLE: Record<MaskComponentMode, string> = {
+  add: "Add (union) — click to cycle",
+  subtract: "Subtract (carve) — click to cycle",
+  intersect: "Intersect (confine) — click to cycle",
 };
 
 type SliderDef = { key: keyof MaskAdjustments; label: string };
@@ -87,24 +115,34 @@ export function MasksPanel() {
   const setMaskAddTarget = useDevelopStore((s) => s.setMaskAddTarget);
   const selectMask = useDevelopStore((s) => s.selectMask);
   const selectComponent = useDevelopStore((s) => s.selectComponent);
+  const setHoveredMaskId = useDevelopStore((s) => s.setHoveredMaskId);
   const removeMask = useDevelopStore((s) => s.removeMask);
+  const renameMask = useDevelopStore((s) => s.renameMask);
   const updateMask = useDevelopStore((s) => s.updateMask);
   const updateMaskAdj = useDevelopStore((s) => s.updateMaskAdj);
   const updateComponent = useDevelopStore((s) => s.updateComponent);
   const removeComponent = useDevelopStore((s) => s.removeComponent);
+  const cycleComponentMode = useDevelopStore((s) => s.cycleComponentMode);
+  const addRangeComponent = useDevelopStore((s) => s.addRangeComponent);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
   const setBrushSize = useDevelopStore((s) => s.setBrushSize);
   const setBrushFeather = useDevelopStore((s) => s.setBrushFeather);
   const setBrushErase = useDevelopStore((s) => s.setBrushErase);
+  const tab = useDevelopStore((s) => s.maskTab);
+  const setTab = useDevelopStore((s) => s.setMaskTab);
+  const setBrushPreview = useDevelopStore((s) => s.setBrushPreview);
 
   const masking = activeTool === "mask";
   const selected = masks.find((m) => m.id === selectedMaskId) ?? null;
   const selectedComp =
     selected?.components.find((c) => c.id === selectedComponentId) ?? null;
 
+  const [addOpen, setAddOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+
   // --- creation helpers ------------------------------------------------------
-  // Arm a geometric tool. With a mask selected we extend it; otherwise the next
-  // drag starts a fresh mask.
+  // Arm a geometric tool to extend the selected mask (or start fresh if none).
   const armTool = (t: MaskType, mode: MaskComponentMode) => {
     setMaskToolType(t);
     setMaskCompMode(mode);
@@ -112,13 +150,38 @@ export function MasksPanel() {
     setActiveTool("mask");
   };
 
-  // Start a brand-new mask with a geometric tool.
+  // Start a brand-new mask with a geometric tool (drag on canvas to draw).
   const newMaskTool = (t: MaskType) => {
     selectMask(null);
     setMaskToolType(t);
     setMaskCompMode("add");
     setMaskAddTarget("new");
     setActiveTool("mask");
+  };
+
+  // "Create Mask" menu: a fresh mask of any kind.
+  const createMask = (kind: MaskComponentKind) => {
+    setCreateOpen(false);
+    setTab("coverage");
+    if (kind === "lumRange" || kind === "colorRange") {
+      selectMask(null);
+      addRangeComponent(kind);
+      commitEdit("New Mask");
+    } else {
+      newMaskTool(kind);
+    }
+  };
+
+  // "+ Add" menu: append a component to the selected mask.
+  const addToSelected = (kind: MaskComponentKind) => {
+    setAddOpen(false);
+    if (kind === "lumRange" || kind === "colorRange") {
+      addRangeComponent(kind);
+      commitEdit("Add Component");
+    } else {
+      // Draw in "add" mode; the per-row mode chip flips it to subtract/intersect.
+      armTool(kind, "add");
+    }
   };
 
   // --- adjustment sub-panels (per mask) --------------------------------------
@@ -165,32 +228,41 @@ export function MasksPanel() {
     selectComponent(c.id);
     if (c.kind === "radial" || c.kind === "linear" || c.kind === "brush") {
       setMaskToolType(c.kind);
-      setMaskCompMode(c.mode);
+      setMaskCompMode(c.mode === "subtract" ? "subtract" : "add");
       setMaskAddTarget("current");
       setActiveTool("mask");
     }
   };
 
+  // Distinct component kinds in a mask, for the list-row icon summary.
+  const kindSummary = (m: Mask): MaskComponentKind[] => {
+    const seen: MaskComponentKind[] = [];
+    for (const c of m.components) if (!seen.includes(c.kind)) seen.push(c.kind);
+    return seen;
+  };
+
   return (
     <Panel title="Masking" defaultOpen>
       <div className="space-y-2">
-        {/* New-mask tools */}
-        <div className="flex gap-1">
-          {TOOL_LABELS.map((t) => (
-            <button
-              key={t.type}
-              onClick={() => newMaskTool(t.type)}
-              className={`flex-1 rounded px-1.5 py-1 text-[11px] ${
-                masking && !selected && maskToolType === t.type
-                  ? "bg-accent/30 text-text-primary"
-                  : "bg-surface-2 text-text-secondary hover:text-text-primary"
-              }`}
-              title={`New ${t.label.toLowerCase()} mask`}
-            >
-              {KIND_ICON[t.type]} {t.label}
-            </button>
-          ))}
+        {/* Create new mask */}
+        <div className="relative">
+          <button
+            onClick={() => {
+              setCreateOpen((v) => !v);
+              setAddOpen(false);
+            }}
+            className="flex w-full items-center justify-center gap-1 rounded bg-surface-2 px-2 py-1.5 text-[11px] text-text-secondary hover:text-text-primary"
+          >
+            + Create Mask ▾
+          </button>
+          {createOpen && (
+            <ToolMenu
+              onPick={(k) => createMask(k)}
+              onClose={() => setCreateOpen(false)}
+            />
+          )}
         </div>
+
         <div className="flex items-center justify-between">
           <span className="text-[10px] text-text-muted">
             {masking
@@ -201,7 +273,13 @@ export function MasksPanel() {
           </span>
           {masking && (
             <button
-              onClick={() => setActiveTool("none")}
+              onClick={() => {
+                setActiveTool("none");
+                // Deselect so the list collapses and the coverage overlay clears.
+                selectMask(null);
+                selectComponent(null);
+                setHoveredMaskId(null);
+              }}
               className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-text-secondary hover:text-text-primary"
             >
               Done
@@ -209,6 +287,8 @@ export function MasksPanel() {
           )}
         </div>
 
+        {/* Brush settings — available while the brush tool is active, including
+            before the first stroke of a new brush mask. */}
         {masking && maskToolType === "brush" && (
           <div className="space-y-0.5 rounded bg-surface-2/50 p-1.5">
             <Slider
@@ -218,7 +298,11 @@ export function MasksPanel() {
               max={50}
               step={1}
               defaultValue={8}
-              onChange={(v) => setBrushSize(v / 100)}
+              onChange={(v) => {
+                setBrushSize(v / 100);
+                setBrushPreview(true);
+              }}
+              onCommit={() => setBrushPreview(false)}
             />
             <Slider
               label="Feather"
@@ -227,7 +311,11 @@ export function MasksPanel() {
               max={100}
               step={1}
               defaultValue={50}
-              onChange={(v) => setBrushFeather(v / 100)}
+              onChange={(v) => {
+                setBrushFeather(v / 100);
+                setBrushPreview(true);
+              }}
+              onCommit={() => setBrushPreview(false)}
             />
             <label className="flex items-center gap-1.5 px-0.5 text-[11px] text-text-secondary">
               <input
@@ -237,16 +325,15 @@ export function MasksPanel() {
                 style={{ accentColor: "var(--color-slider-fill)" }}
               />
               Erase
-              <span className="text-text-muted">· Alt erase · [ ] size · ⇧[ ] feather</span>
+              <span className="text-text-muted">· Alt erase · [ ] size</span>
             </label>
           </div>
         )}
 
-        {/* Mask list */}
+        {/* Mask list (layer rows) */}
         {masks.length > 0 && (
           <div className="space-y-0.5">
             {masks.map((m) => {
-              const k = m.components[0]?.kind ?? "brush";
               const sel = m.id === selectedMaskId;
               return (
                 <div
@@ -254,19 +341,65 @@ export function MasksPanel() {
                   onClick={() => {
                     selectMask(m.id);
                     selectComponent(m.components[0]?.id ?? null);
+                    setTab("coverage");
                   }}
-                  className={`flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-[11px] ${
+                  onMouseEnter={() => setHoveredMaskId(m.id)}
+                  onMouseLeave={() => setHoveredMaskId(null)}
+                  className={`group flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-[11px] ${
                     sel ? "bg-accent/20 text-text-primary" : "text-text-secondary hover:bg-surface-2"
-                  }`}
+                  } ${m.visible === false ? "opacity-50" : ""}`}
                 >
-                  <span className="w-3 shrink-0 text-center text-text-muted">{KIND_ICON[k]}</span>
-                  <span className="flex-1 truncate">
-                    {m.name}
-                    <span className="text-text-muted">
-                      {" "}
-                      ({m.components.length})
-                    </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updateMask(m.id, { visible: m.visible === false });
+                      commitEdit("Mask Visibility");
+                    }}
+                    // Hovering the visibility toggle shouldn't preview coverage.
+                    onMouseEnter={() => setHoveredMaskId(null)}
+                    onMouseLeave={() => setHoveredMaskId(m.id)}
+                    title={m.visible !== false ? "Hide" : "Show"}
+                    className={`shrink-0 rounded px-0.5 ${
+                      m.visible !== false
+                        ? "text-text-muted hover:text-text-primary"
+                        : "text-text-muted/40 hover:text-text-primary"
+                    }`}
+                  >
+                    {m.visible !== false ? "◉" : "○"}
+                  </button>
+                  <span className="shrink-0 text-text-muted">
+                    {kindSummary(m).map((k) => KIND_ICON[k]).join(" ")}
                   </span>
+                  {renaming?.id === m.id ? (
+                    <input
+                      autoFocus
+                      value={renaming.value}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setRenaming({ id: m.id, value: e.target.value })}
+                      onBlur={() => {
+                        const v = renaming.value.trim();
+                        if (v) renameMask(m.id, v);
+                        setRenaming(null);
+                        commitEdit("Rename Mask");
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                        if (e.key === "Escape") setRenaming(null);
+                      }}
+                      className="min-w-0 flex-1 rounded bg-surface-3 px-1 text-[11px] text-text-primary outline-none"
+                    />
+                  ) : (
+                    <span
+                      className="flex-1 truncate"
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        setRenaming({ id: m.id, value: m.name });
+                      }}
+                    >
+                      {m.name}
+                      <span className="text-text-muted"> ({m.components.length})</span>
+                    </span>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -274,7 +407,7 @@ export function MasksPanel() {
                       commitEdit("Mask Invert");
                     }}
                     title="Invert whole mask"
-                    className={`rounded px-1 ${m.invert ? "text-accent" : "text-text-muted hover:text-text-primary"}`}
+                    className={`rounded px-1 ${m.invert ? "text-accent" : "text-text-muted opacity-0 hover:text-text-primary group-hover:opacity-100"}`}
                   >
                     ⊘
                   </button>
@@ -285,7 +418,7 @@ export function MasksPanel() {
                       commitEdit("Delete Mask");
                     }}
                     title="Delete mask"
-                    className="rounded px-1 text-text-muted hover:text-label-red"
+                    className="rounded px-1 text-text-muted opacity-0 hover:text-label-red group-hover:opacity-100"
                   >
                     ×
                   </button>
@@ -295,203 +428,206 @@ export function MasksPanel() {
           </div>
         )}
 
-        {/* Selected mask: components + add/subtract + adjustments */}
+        {/* Selected mask editor: Coverage / Adjust tabs */}
         {selected && (
-          <div className="space-y-1.5 border-t border-border-subtle pt-2">
-            {/* Component list */}
-            <div className="space-y-0.5">
-              <span className="text-[10px] uppercase tracking-wider text-text-muted">
-                Components
-              </span>
-              {selected.components.map((c) => {
-                const sel = c.id === selectedComponentId;
-                const sub = c.mode === "subtract";
-                return (
-                  <div
-                    key={c.id}
-                    onClick={() => editComp(selected, c)}
-                    className={`flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-[11px] ${
-                      sel ? "bg-accent/20 text-text-primary" : "text-text-secondary hover:bg-surface-2"
-                    }`}
-                  >
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        updateComponent(selected.id, c.id, {
-                          mode: sub ? "add" : "subtract",
-                        });
-                        commitEdit("Component Mode");
-                      }}
-                      title={sub ? "Subtract — click for Add" : "Add — click for Subtract"}
-                      className={`w-4 shrink-0 rounded text-center font-bold ${
-                        sub ? "text-label-yellow" : "text-accent"
-                      }`}
-                    >
-                      {sub ? "−" : "+"}
-                    </button>
-                    <span className="w-3 shrink-0 text-center text-text-muted">
-                      {KIND_ICON[c.kind]}
-                    </span>
-                    <span className="flex-1 truncate">{KIND_LABEL[c.kind]}</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        updateComponent(selected.id, c.id, { invert: !c.invert });
-                        commitEdit("Component Invert");
-                      }}
-                      title="Invert this component"
-                      className={`rounded px-1 ${c.invert ? "text-accent" : "text-text-muted hover:text-text-primary"}`}
-                    >
-                      ⊘
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeComponent(selected.id, c.id);
-                        commitEdit("Delete Component");
-                      }}
-                      title="Delete component"
-                      className="rounded px-1 text-text-muted hover:text-label-red"
-                    >
-                      ×
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Add / Subtract rows */}
-            {(["add", "subtract"] as MaskComponentMode[]).map((mode) => (
-              <div key={mode} className="flex flex-wrap items-center gap-1">
-                <span
-                  className={`text-[10px] font-semibold ${mode === "subtract" ? "text-label-yellow" : "text-accent"}`}
+          <div className="space-y-2 border-t border-border-subtle pt-2">
+            <div className="flex gap-1 rounded bg-surface-2 p-0.5">
+              {(["coverage", "adjust"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`flex-1 rounded px-2 py-1 text-[11px] capitalize ${
+                    tab === t
+                      ? "bg-accent/30 text-text-primary"
+                      : "text-text-secondary hover:text-text-primary"
+                  }`}
                 >
-                  {mode === "subtract" ? "Subtract:" : "Add:"}
-                </span>
-                {TOOL_LABELS.map((t) => (
-                  <button
-                    key={t.type}
-                    onClick={() => armTool(t.type, mode)}
-                    className={`rounded px-1.5 py-0.5 text-[10px] ${
-                      masking && maskToolType === t.type && maskCompMode === mode
-                        ? "bg-accent/30 text-text-primary"
-                        : "bg-surface-2 text-text-secondary hover:text-text-primary"
-                    }`}
-                  >
-                    {KIND_ICON[t.type]} {t.label}
-                  </button>
-                ))}
-              </div>
-            ))}
-
-            {/* Selected-component geometry controls */}
-            {selectedComp && (
-              <ComponentControls
-                key={selectedComp.id}
-                maskId={selected.id}
-                comp={selectedComp}
-                updateComponent={updateComponent}
-                commitEdit={commitEdit}
-              />
-            )}
-
-            {/* Per-mask adjustments */}
-            <div className="flex items-center justify-between pt-1">
-              <span className="text-[10px] uppercase tracking-wider text-text-muted">
-                {selected.name} adjustments
-              </span>
-              <button
-                onClick={resetAdj}
-                title="Reset this mask's adjustments"
-                className="rounded px-1 text-[10px] text-text-muted hover:text-text-primary"
-              >
-                Reset
-              </button>
+                  {t}
+                </button>
+              ))}
             </div>
-            <Slider
-              label="Amount"
-              value={selected.opacity}
-              min={0}
-              max={100}
-              step={1}
-              defaultValue={100}
-              onChange={(v) => updateMask(selected.id, { opacity: v })}
-              onCommit={() => commitEdit("Mask Amount")}
-            />
 
-            {PANEL_DEFS.filter((d) => selected.panels.includes(d.id)).map((def) => (
-              <div key={def.id} className="rounded bg-surface-2/40 p-1.5">
-                <div className="mb-1 flex items-center justify-between">
+            {tab === "coverage" ? (
+              <div className="space-y-1.5">
+                {/* Component stack */}
+                <div className="space-y-0.5">
+                  {selected.components.map((c) => {
+                    const sel = c.id === selectedComponentId;
+                    return (
+                      <div
+                        key={c.id}
+                        onClick={() => editComp(selected, c)}
+                        className={`flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-[11px] ${
+                          sel ? "bg-accent/20 text-text-primary" : "text-text-secondary hover:bg-surface-2"
+                        }`}
+                      >
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            cycleComponentMode(selected.id, c.id);
+                            commitEdit("Component Mode");
+                          }}
+                          title={MODE_TITLE[c.mode]}
+                          className={`w-4 shrink-0 rounded text-center font-bold ${MODE_CLASS[c.mode]}`}
+                        >
+                          {MODE_GLYPH[c.mode]}
+                        </button>
+                        <span className="w-3 shrink-0 text-center text-text-muted">
+                          {KIND_ICON[c.kind]}
+                        </span>
+                        <span className="flex-1 truncate">{KIND_LABEL[c.kind]}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateComponent(selected.id, c.id, { invert: !c.invert });
+                            commitEdit("Component Invert");
+                          }}
+                          title="Invert this component"
+                          className={`rounded px-1 ${c.invert ? "text-accent" : "text-text-muted hover:text-text-primary"}`}
+                        >
+                          ⊘
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeComponent(selected.id, c.id);
+                            commitEdit("Delete Component");
+                          }}
+                          title="Delete component"
+                          className="rounded px-1 text-text-muted hover:text-label-red"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Add component to this mask */}
+                <div className="relative">
+                  <button
+                    onClick={() => {
+                      setAddOpen((v) => !v);
+                      setCreateOpen(false);
+                    }}
+                    className="flex w-full items-center justify-center gap-1 rounded bg-surface-2 px-2 py-1 text-[10px] text-text-secondary hover:text-text-primary"
+                  >
+                    + Add Component ▾
+                  </button>
+                  {addOpen && (
+                    <ToolMenu onPick={(k) => addToSelected(k)} onClose={() => setAddOpen(false)} />
+                  )}
+                </div>
+
+                {/* Selected-component geometry / range controls */}
+                {selectedComp && (
+                  <ComponentControls
+                    key={selectedComp.id}
+                    maskId={selected.id}
+                    comp={selectedComp}
+                  />
+                )}
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
                   <span className="text-[10px] uppercase tracking-wider text-text-muted">
-                    {def.label}
+                    Amount
                   </span>
                   <button
-                    onClick={() => removePanel(def.id)}
-                    title={`Remove ${def.label} (resets its values)`}
-                    className="rounded px-1 text-text-muted hover:text-label-red"
+                    onClick={resetAdj}
+                    title="Reset this mask's adjustments"
+                    className="rounded px-1 text-[10px] text-text-muted hover:text-text-primary"
                   >
-                    ×
+                    Reset
                   </button>
                 </div>
-                {def.sliders && (
-                  <div className="space-y-0.5">
-                    {def.sliders.map((s) => (
-                      <Slider
-                        key={s.key}
-                        label={s.label}
-                        value={selected.adj[s.key]}
-                        min={-100}
-                        max={100}
-                        step={1}
-                        defaultValue={0}
-                        onChange={(v) => updateMaskAdj(selected.id, { [s.key]: v })}
-                        onCommit={() => commitEdit(`Mask ${s.label}`)}
+                <Slider
+                  label="Opacity"
+                  value={selected.opacity}
+                  min={0}
+                  max={100}
+                  step={1}
+                  defaultValue={100}
+                  onChange={(v) => updateMask(selected.id, { opacity: v })}
+                  onCommit={() => commitEdit("Mask Amount")}
+                />
+
+                {PANEL_DEFS.filter((d) => selected.panels.includes(d.id)).map((def) => (
+                  <div key={def.id} className="rounded bg-surface-2/40 p-1.5">
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-[10px] uppercase tracking-wider text-text-muted">
+                        {def.label}
+                      </span>
+                      <button
+                        onClick={() => removePanel(def.id)}
+                        title={`Remove ${def.label} (resets its values)`}
+                        className="rounded px-1 text-text-muted hover:text-label-red"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    {def.sliders && (
+                      <div className="space-y-0.5">
+                        {def.sliders.map((s) => (
+                          <Slider
+                            key={s.key}
+                            label={s.label}
+                            value={selected.adj[s.key]}
+                            min={-100}
+                            max={100}
+                            step={1}
+                            defaultValue={0}
+                            onChange={(v) => updateMaskAdj(selected.id, { [s.key]: v })}
+                            onCommit={() => commitEdit(`Mask ${s.label}`)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {def.id === "curve" && (
+                      <CurveEditor
+                        compact
+                        curves={selected.toneCurve ?? defaultToneCurves()}
+                        onChange={(channel, points) =>
+                          updateMask(selected.id, {
+                            toneCurve: {
+                              ...(selected.toneCurve ?? defaultToneCurves()),
+                              [channel]: points,
+                            },
+                          })
+                        }
+                        onCommit={() => commitEdit("Mask Tone Curve")}
                       />
+                    )}
+                    {def.id === "hsl" && (
+                      <HSLMixer
+                        value={selected.hsl ?? defaultHSL()}
+                        onChange={(band, channel, v) => {
+                          const h = selected.hsl ?? defaultHSL();
+                          updateMask(selected.id, {
+                            hsl: { ...h, [band]: { ...h[band], [channel]: v } },
+                          });
+                        }}
+                        onCommit={(channel) => commitEdit(`Mask HSL ${channel}`)}
+                      />
+                    )}
+                  </div>
+                ))}
+
+                {availablePanels.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className="text-[10px] text-text-muted">Adjust:</span>
+                    {availablePanels.map((d) => (
+                      <button
+                        key={d.id}
+                        onClick={() => addPanel(d.id)}
+                        className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary"
+                      >
+                        + {d.label}
+                      </button>
                     ))}
                   </div>
                 )}
-                {def.id === "curve" && (
-                  <CurveEditor
-                    compact
-                    curves={selected.toneCurve ?? defaultToneCurves()}
-                    onChange={(channel, points) =>
-                      updateMask(selected.id, {
-                        toneCurve: {
-                          ...(selected.toneCurve ?? defaultToneCurves()),
-                          [channel]: points,
-                        },
-                      })
-                    }
-                    onCommit={() => commitEdit("Mask Tone Curve")}
-                  />
-                )}
-                {def.id === "hsl" && (
-                  <HSLMixer
-                    value={selected.hsl ?? defaultHSL()}
-                    onChange={(band, channel, v) => {
-                      const h = selected.hsl ?? defaultHSL();
-                      updateMask(selected.id, {
-                        hsl: { ...h, [band]: { ...h[band], [channel]: v } },
-                      });
-                    }}
-                    onCommit={(channel) => commitEdit(`Mask HSL ${channel}`)}
-                  />
-                )}
-              </div>
-            ))}
-
-            {availablePanels.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1">
-                <span className="text-[10px] text-text-muted">Adjust:</span>
-                {availablePanels.map((d) => (
-                  <button
-                    key={d.id}
-                    onClick={() => addPanel(d.id)}
-                    className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary"
-                  >
-                    + {d.label}
-                  </button>
-                ))}
               </div>
             )}
           </div>
@@ -501,18 +637,53 @@ export function MasksPanel() {
   );
 }
 
-// Geometry controls for the selected component.
-function ComponentControls({
-  maskId,
-  comp,
-  updateComponent,
-  commitEdit,
+// Dropdown listing every component kind (geometric + parametric ranges).
+function ToolMenu({
+  onPick,
+  onClose,
 }: {
-  maskId: string;
-  comp: MaskComponent;
-  updateComponent: (maskId: string, compId: string, patch: Partial<MaskComponent>) => void;
-  commitEdit: (label: string) => void;
+  onPick: (kind: MaskComponentKind) => void;
+  onClose: () => void;
 }) {
+  return (
+    <>
+      {/* Click-away catcher. */}
+      <div className="fixed inset-0 z-10" onClick={onClose} />
+      <div className="absolute left-0 right-0 top-full z-20 mt-0.5 space-y-0.5 rounded border border-border-subtle bg-surface-3 p-1 shadow-lg">
+        {GEO_TOOLS.map((t) => (
+          <button
+            key={t.type}
+            onClick={() => onPick(t.type)}
+            className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+          >
+            <span className="w-3 text-center text-text-muted">{KIND_ICON[t.type]}</span>
+            {t.label}
+          </button>
+        ))}
+        <div className="my-0.5 border-t border-border-subtle" />
+        {RANGE_TOOLS.map((t) => (
+          <button
+            key={t.kind}
+            onClick={() => onPick(t.kind)}
+            className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+          >
+            <span className="w-3 text-center text-text-muted">{KIND_ICON[t.kind]}</span>
+            {t.label}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// Geometry / range controls for the selected component.
+function ComponentControls({ maskId, comp }: { maskId: string; comp: MaskComponent }) {
+  const updateComponent = useDevelopStore((s) => s.updateComponent);
+  const commitEdit = useDevelopStore((s) => s.commitEdit);
+  const maskColorPicking = useDevelopStore((s) => s.maskColorPicking);
+  const setMaskColorPicking = useDevelopStore((s) => s.setMaskColorPicking);
+  const setActiveTool = useDevelopStore((s) => s.setActiveTool);
+
   if (comp.kind === "radial" && comp.radial) {
     const r = comp.radial;
     return (
@@ -530,5 +701,74 @@ function ComponentControls({
       </div>
     );
   }
+
+  if (comp.kind === "lumRange" && comp.lumRange) {
+    const g = comp.lumRange;
+    const pct = (v: number) => Math.round(v * 100);
+    const set = (patch: Partial<typeof g>) =>
+      updateComponent(maskId, comp.id, { lumRange: { ...g, ...patch } });
+    return (
+      <div className="space-y-0.5 rounded bg-surface-2/40 p-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-text-muted">
+          Luminance range
+        </span>
+        <Slider label="Low" value={pct(g.lo)} min={0} max={100} step={1} defaultValue={0}
+          onChange={(v) => set({ lo: Math.min(v / 100, g.hi) })}
+          onCommit={() => commitEdit("Lum Range")} />
+        <Slider label="High" value={pct(g.hi)} min={0} max={100} step={1} defaultValue={100}
+          onChange={(v) => set({ hi: Math.max(v / 100, g.lo) })}
+          onCommit={() => commitEdit("Lum Range")} />
+        <Slider label="Low Falloff" value={pct(g.loFeather)} min={0} max={100} step={1} defaultValue={10}
+          onChange={(v) => set({ loFeather: v / 100 })}
+          onCommit={() => commitEdit("Lum Range")} />
+        <Slider label="High Falloff" value={pct(g.hiFeather)} min={0} max={100} step={1} defaultValue={10}
+          onChange={(v) => set({ hiFeather: v / 100 })}
+          onCommit={() => commitEdit("Lum Range")} />
+      </div>
+    );
+  }
+
+  if (comp.kind === "colorRange" && comp.colorRange) {
+    const g = comp.colorRange;
+    const pct = (v: number) => Math.round(v * 100);
+    const set = (patch: Partial<typeof g>) =>
+      updateComponent(maskId, comp.id, { colorRange: { ...g, ...patch } });
+    // Approximate display swatch from the stored linear target.
+    const lin2srgb = (v: number) =>
+      Math.round((v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055) * 255);
+    const swatch = `rgb(${lin2srgb(g.r)}, ${lin2srgb(g.g)}, ${lin2srgb(g.b)})`;
+    return (
+      <div className="space-y-0.5 rounded bg-surface-2/40 p-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] uppercase tracking-wider text-text-muted">Color range</span>
+          <button
+            onClick={() => {
+              setActiveTool("mask");
+              setMaskColorPicking(!maskColorPicking);
+            }}
+            title="Pick a target colour from the image"
+            className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
+              maskColorPicking
+                ? "border-accent text-accent"
+                : "border-border-subtle text-text-secondary hover:text-text-primary"
+            }`}
+          >
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: swatch }} />
+            Pick
+          </button>
+        </div>
+        <Slider label="Hue Range" value={pct(g.hueRange)} min={0} max={100} step={1} defaultValue={15}
+          onChange={(v) => set({ hueRange: v / 100 })}
+          onCommit={() => commitEdit("Color Range")} />
+        <Slider label="Sat Range" value={pct(g.satRange)} min={0} max={100} step={1} defaultValue={30}
+          onChange={(v) => set({ satRange: v / 100 })}
+          onCommit={() => commitEdit("Color Range")} />
+        <Slider label="Smoothness" value={pct(g.smoothness)} min={0} max={100} step={1} defaultValue={25}
+          onChange={(v) => set({ smoothness: v / 100 })}
+          onCommit={() => commitEdit("Color Range")} />
+      </div>
+    );
+  }
+
   return null;
 }

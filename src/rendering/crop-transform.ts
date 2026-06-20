@@ -286,3 +286,19 @@ export function fitCropToImage(crop: CropRect, inv: Mat3): CropRect {
   const h = crop.height * lo;
   return { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
 }
+
+// Largest centered crop that fits inside the transformed image. When
+// cropAspect > 0 the crop keeps that ratio; otherwise it scales a full-frame
+// rectangle uniformly. Used by "constrain crop" to maximise the visible area.
+export function maxCropForTransform(
+  inv: Mat3,
+  cropAspect: number,
+): CropRect {
+  const full: CropRect = cropAspect > 0
+    ? computeCropForAspect(cropAspect, 1)
+    : { x: 0, y: 0, width: 1, height: 1 };
+  return fitCropToImage(
+    { x: 0.5 - full.width / 2, y: 0.5 - full.height / 2, width: full.width, height: full.height },
+    inv,
+  );
+}

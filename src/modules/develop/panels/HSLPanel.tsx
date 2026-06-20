@@ -25,20 +25,35 @@ export function HSLPanel() {
   }, [hslPicking, setHslPicking]);
 
   return (
-    <Panel title="HSL / Color">
-      {/* Picker button at top like Auto buttons */}
-      <div className="mb-2 flex justify-end">
+    <Panel title="HSL">
+      <div className="mb-2 flex items-center">
         <button
           type="button"
           onClick={() => setHslPicking(!hslPicking)}
-          className={`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider transition-colors ${
+          aria-pressed={hslPicking}
+          className={`flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider ${
             hslPicking
-              ? "border-accent bg-accent text-white"
-              : "border-border-subtle text-text-secondary hover:text-text-primary hover:border-border"
+              ? "border-accent bg-accent/30 text-text-primary"
+              : "border-border-subtle text-text-secondary hover:border-border hover:text-text-primary"
           }`}
           title={`Drag up/down on image to adjust ${selectedBand}`}
         >
-          {hslPicking ? "Picking..." : "Picker"}
+          <svg
+            width="11"
+            height="11"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m2 22 1-1h3l9-9" />
+            <path d="M3 21v-3l9-9" />
+            <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z" />
+          </svg>
+          Picker
         </button>
       </div>
 

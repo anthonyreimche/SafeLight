@@ -1,6 +1,7 @@
 import { create } from "zustand";
-import type { AppModule, SortDirection, SortField, ViewMode } from "@/catalog/types";
+import type { AppModule, SortDirection, ViewMode } from "@/catalog/types";
 import { NO_FILTER, type LibraryFilter } from "@/modules/library/visible-photos";
+import { runGridFilterClears } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
 
 interface UIState {
@@ -10,9 +11,10 @@ interface UIState {
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
 
-  sortField: SortField;
+  // A built-in SortField or an extension-contributed sort id.
+  sortField: string;
   sortDirection: SortDirection;
-  setSort: (field: SortField, direction: SortDirection) => void;
+  setSort: (field: string, direction: SortDirection) => void;
 
   filter: LibraryFilter;
   setFilter: (patch: Partial<LibraryFilter>) => void;
@@ -44,7 +46,12 @@ export const useUIStore = create<UIState>((set) => ({
 
   filter: NO_FILTER,
   setFilter: (patch) => set((s) => ({ filter: { ...s.filter, ...patch } })),
-  clearFilters: () => set({ filter: NO_FILTER }),
+  clearFilters: () => {
+    // Also clear any extension-contributed grid filters (e.g. the search bar),
+    // so "Clear filters" empties both the filter panel and the search.
+    runGridFilterClears();
+    set({ filter: NO_FILTER });
+  },
 
   activeFolder: null,
   setActiveFolder: (path) => set({ activeFolder: path }),

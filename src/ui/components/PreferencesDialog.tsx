@@ -3,9 +3,10 @@
 // persisted settings store immediately — there is no OK/Apply; close when done.
 // Theme and layout drive their own stores (themes.ts / dock.ts) directly.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { pushEscapeHandler } from "@/ui/escape-stack";
+import { SettingsFieldList } from "@/extensions/SettingsFieldList";
 import {
   KEY_ACTIONS,
   comboFromEvent,
@@ -39,6 +40,12 @@ import {
   usePipelineStore,
 } from "@/extensions/pipelines";
 import { clearRawCache } from "@/raw/raw-cache";
+import {
+  preDecodeRawsForCache,
+  rebuildThumbnails,
+} from "@/modules/library/import-photos";
+import type { PreviewSource } from "@/state/settings-store";
+import { useCatalogStore } from "@/state/catalog-store";
 import type { SortDirection, SortField } from "@/catalog/types";
 import { COLOR_SPACES } from "@/rendering/color-space";
 import {
@@ -54,26 +61,142 @@ import {
 
 // ─── Open/close state (exported so the keyboard hook and TopBar can drive it) ─
 
-const useOpen = create<{ open: boolean }>(() => ({ open: false }));
-export const openPreferences = () => useOpen.setState({ open: true });
-export const closePreferences = () => useOpen.setState({ open: false });
+const useOpen = create<{ open: boolean; target?: string }>(() => ({
+  open: false,
+}));
+/** Open Preferences, optionally deep-linked to a section id (a core section's
+ *  id or an extension id). */
+export const openPreferences = (sectionId?: string) =>
+  useOpen.setState({ open: true, target: sectionId });
+export const closePreferences = () =>
+  useOpen.setState({ open: false, target: undefined });
 export const togglePreferences = () =>
-  useOpen.setState((s) => ({ open: !s.open }));
+  useOpen.setState((s) => ({ open: !s.open, target: undefined }));
 
 // ─── Sections ────────────────────────────────────────────────────────────────
+// The window is data-driven: a list of sections grouped into "General" (core,
+// each backed by a bespoke component) and "Extensions" (one per extension that
+// registered settings, auto-rendered from its declarative fields). `keywords`
+// feeds the header search — for core sections it lists their field labels so a
+// search can find a setting without a full declarative rewrite.
 
-const SECTIONS = [
-  "Interface",
-  "Library",
-  "Rendering",
-  "Performance",
-  "Export",
-  "Shortcuts",
-  "Extensions",
-  "Updates",
-  "About",
-] as const;
-type Section = (typeof SECTIONS)[number];
+type PrefGroup = "General" | "Extensions";
+
+interface PrefSection {
+  id: string;
+  label: string;
+  group: PrefGroup;
+  keywords: string[];
+  order?: number;
+  render: (query: string) => React.ReactNode;
+}
+
+const CORE_SECTIONS: PrefSection[] = [
+  {
+    id: "Interface",
+    label: "Interface",
+    group: "General",
+    keywords: [
+      "Theme",
+      "Panel layout",
+      "Interface scale",
+      "Reduce motion",
+      "Interface font",
+    ],
+    render: () => <InterfaceSection />,
+  },
+  {
+    id: "Library",
+    label: "Library",
+    group: "General",
+    keywords: ["Default grid size", "Default sort", "Confirm before removing"],
+    render: () => <LibrarySection />,
+  },
+  {
+    id: "Previews",
+    label: "Previews",
+    group: "General",
+    keywords: [
+      "Preview source",
+      "Embedded JPEG",
+      "Thumbnail quality",
+      "Store previews on disk",
+      "Develop cache",
+      "Cache all",
+      "Cached preview resolution",
+      "Clear preview cache",
+      "Rebuild thumbnails",
+    ],
+    render: () => <PreviewsSection />,
+  },
+  {
+    id: "Rendering",
+    label: "Rendering",
+    group: "General",
+    keywords: ["Display transform", "tone map", "pipeline"],
+    render: () => <RenderingSection />,
+  },
+  {
+    id: "Performance",
+    label: "Performance",
+    group: "General",
+    keywords: [
+      "Develop render resolution",
+      "Open photos at",
+      "GPU source cache",
+      "Prefetch neighbours",
+      "High bit-depth previews",
+      "Live histogram",
+    ],
+    render: () => <PerformanceSection />,
+  },
+  {
+    id: "Export",
+    label: "Export",
+    group: "General",
+    keywords: [
+      "Default format",
+      "Default quality",
+      "Default resolution",
+      "Color space",
+      "Bundle multiple photos as ZIP",
+    ],
+    render: () => <ExportSection />,
+  },
+  {
+    id: "Shortcuts",
+    label: "Shortcuts",
+    group: "General",
+    keywords: ["Single-key shortcuts", "keybindings", "keyboard"],
+    render: () => <ShortcutsSection />,
+  },
+  {
+    id: "Extensions",
+    label: "Extensions",
+    group: "General",
+    keywords: ["Official extension topic", "Manage", "plugins"],
+    render: () => <ExtensionsSection />,
+  },
+  {
+    id: "Updates",
+    label: "Updates",
+    group: "General",
+    keywords: [
+      "Check for updates on startup",
+      "Update channel",
+      "Manual check",
+      "Release history",
+    ],
+    render: () => <UpdatesSection />,
+  },
+  {
+    id: "About",
+    label: "About",
+    group: "General",
+    keywords: ["Version", "Electron", "Chromium", "Platform", "Project", "license"],
+    render: () => <AboutSection />,
+  },
+];
 
 const SORT_FIELDS: { value: SortField; label: string }[] = [
   { value: "dateImported", label: "Date imported" },
@@ -82,16 +205,94 @@ const SORT_FIELDS: { value: SortField; label: string }[] = [
   { value: "rating", label: "Rating" },
 ];
 
+const GROUPS: PrefGroup[] = ["General", "Extensions"];
+
 export function PreferencesDialog() {
   const open = useOpen((s) => s.open);
-  const [section, setSection] = useState<Section>("Interface");
-  // Esc closes the dialog (via the shared modal stack, so a nested dialog on
-  // top closes first).
+  const target = useOpen((s) => s.target);
+  const extSettings = useRegistry((s) => s.settings);
+  const [sectionId, setSectionId] = useState<string>("Interface");
+  const [query, setQuery] = useState("");
+
+  // Latest query in a ref so the (capture-phase) escape handler can read it
+  // without re-registering on every keystroke.
+  const queryRef = useRef("");
+  queryRef.current = query;
+
+  // One section per extension that registered settings — auto-rendered from its
+  // declarative fields, or its custom component if it supplied one.
+  const extSections = useMemo<PrefSection[]>(
+    () =>
+      Object.entries(extSettings)
+        .map(([id, c]) => ({
+          id,
+          label: c.title ?? id,
+          group: "Extensions" as const,
+          order: c.order ?? 100,
+          keywords: c.fields.flatMap((f) => [f.label, f.hint ?? ""]),
+          render: (q: string) => {
+            const Custom = c.component;
+            return Custom ? (
+              <Custom />
+            ) : (
+              <SettingsFieldList extensionId={id} fields={c.fields} query={q} />
+            );
+          },
+        }))
+        .sort(
+          (a, b) => (a.order - b.order) || a.label.localeCompare(b.label),
+        ),
+    [extSettings],
+  );
+
+  const sections = useMemo(
+    () => [...CORE_SECTIONS, ...extSections],
+    [extSections],
+  );
+
+  const q = query.trim().toLowerCase();
+  const visible = useMemo(
+    () =>
+      sections.filter(
+        (s) =>
+          !q ||
+          s.label.toLowerCase().includes(q) ||
+          s.keywords.some((k) => k.toLowerCase().includes(q)),
+      ),
+    [sections, q],
+  );
+
+  // Deep-link: when opened with a target id, jump there and clear any search.
+  useEffect(() => {
+    if (open && target) {
+      setSectionId(target);
+      setQuery("");
+    }
+  }, [open, target]);
+
+  // Keep the selection valid as search filters the list (or an extension that
+  // owned the open section is uninstalled).
   useEffect(() => {
     if (!open) return;
-    return pushEscapeHandler(closePreferences);
+    if (!visible.some((s) => s.id === sectionId)) {
+      setSectionId(visible[0]?.id ?? "Interface");
+    }
+  }, [open, visible, sectionId]);
+
+  // Esc clears the search first, then closes (via the shared modal stack, so a
+  // nested dialog on top still closes before us).
+  useEffect(() => {
+    if (!open) return;
+    return pushEscapeHandler(() => {
+      if (queryRef.current) setQuery("");
+      else closePreferences();
+    });
   }, [open]);
+
   if (!open) return null;
+
+  const active = sections.find((s) => s.id === sectionId) ?? visible[0];
+  const hasExtensions = visible.some((s) => s.group === "Extensions");
 
   return (
     <div
@@ -101,10 +302,17 @@ export function PreferencesDialog() {
       }}
     >
       <div className="flex h-[480px] w-[640px] max-w-[92vw] flex-col overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl">
-        <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-surface-2 px-3">
+        <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border bg-surface-2 px-3">
           <span className="text-[11px] font-semibold uppercase tracking-widest text-text-secondary">
             Preferences
           </span>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search settings…"
+            spellCheck={false}
+            className="ml-auto w-44 rounded bg-surface-1 px-2 py-0.5 text-[11px] text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
+          />
           <button
             onClick={closePreferences}
             className="rounded px-1.5 text-[14px] leading-none text-text-muted hover:text-text-primary"
@@ -113,32 +321,42 @@ export function PreferencesDialog() {
           </button>
         </div>
         <div className="flex min-h-0 flex-1">
-          <div className="w-36 shrink-0 border-r border-border bg-surface-0/40 py-2">
-            {SECTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => setSection(s)}
-                className={`block w-full px-3 py-1.5 text-left text-[11px] tracking-wider ${
-                  section === s
-                    ? "bg-surface-3 text-text-primary"
-                    : "text-text-secondary hover:text-text-primary"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
+          <div className="w-36 shrink-0 overflow-y-auto border-r border-border bg-surface-0/40 py-2">
+            {visible.length === 0 && (
+              <div className="px-3 py-1.5 text-[11px] text-text-muted">
+                No matches
+              </div>
+            )}
+            {GROUPS.map((g) => {
+              const items = visible.filter((s) => s.group === g);
+              if (items.length === 0) return null;
+              return (
+                <div key={g} className="mb-1">
+                  {/* Show group headers only once the Extensions group exists —
+                      otherwise a lone "General" header is just noise. */}
+                  {hasExtensions && (
+                    <div className="px-3 pb-0.5 pt-1 text-[9px] uppercase tracking-widest text-text-muted">
+                      {g}
+                    </div>
+                  )}
+                  {items.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => setSectionId(s.id)}
+                      className={`block w-full truncate px-3 py-1.5 text-left text-[11px] tracking-wider ${
+                        active?.id === s.id
+                          ? "bg-surface-3 text-text-primary"
+                          : "text-text-secondary hover:text-text-primary"
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
           </div>
-          <div className="flex-1 overflow-y-auto p-4">
-            {section === "Interface" && <InterfaceSection />}
-            {section === "Library" && <LibrarySection />}
-            {section === "Rendering" && <RenderingSection />}
-            {section === "Performance" && <PerformanceSection />}
-            {section === "Export" && <ExportSection />}
-            {section === "Shortcuts" && <ShortcutsSection />}
-            {section === "Extensions" && <ExtensionsSection />}
-            {section === "Updates" && <UpdatesSection />}
-            {section === "About" && <AboutSection />}
-          </div>
+          <div className="flex-1 overflow-y-auto p-4">{active?.render(q)}</div>
         </div>
         <div className="flex h-9 shrink-0 items-center justify-between border-t border-border bg-surface-2 px-3">
           <button
@@ -166,6 +384,7 @@ function InterfaceSection() {
   const activeLayout = useLayoutStore((s) => s.activeId);
   const uiScale = useSettings((s) => s.uiScale);
   const reduceMotion = useSettings((s) => s.reduceMotion);
+  const restoreLastProject = useSettings((s) => s.restoreLastProject);
 
   return (
     <div className="flex flex-col gap-4">
@@ -214,6 +433,12 @@ function InterfaceSection() {
         hint="Minimize animated UI affordances."
         checked={reduceMotion}
         onChange={(v) => updateSettings({ reduceMotion: v })}
+      />
+      <ToggleField
+        label="Restore last project on launch"
+        hint="Reopen the most-recently-used project at startup instead of the welcome grid. Falls back to the grid if the folder can't be reopened."
+        checked={restoreLastProject}
+        onChange={(v) => updateSettings({ restoreLastProject: v })}
       />
       <FontField />
     </div>
@@ -299,28 +524,11 @@ function LibrarySection() {
           </select>
         </div>
       </Field>
-      <Field
-        label="Thumbnail quality"
-        hint="Long edge of rendered grid thumbnails. Higher is sharper but slower; takes effect on newly rendered thumbnails."
-      >
-        <OptionRow
-          value={s.thumbMaxEdge}
-          options={[
-            { value: 320, label: "Fast (320px)" },
-            { value: 640, label: "Balanced (640px)" },
-            { value: 960, label: "Sharp (960px)" },
-          ]}
-          onChange={(v) =>
-            updateSettings({ thumbMaxEdge: v as 320 | 640 | 960 })
-          }
-        />
-      </Field>
-      <div className="border-t border-border-subtle pt-3" />
       <ToggleField
-        label="Write XMP sidecars"
-        hint="Save ratings, labels, and keywords to .xmp files alongside your images. Enables interoperability with Lightroom, Darktable, and other photo tools."
-        checked={s.writeXmpSidecars}
-        onChange={(v) => updateSettings({ writeXmpSidecars: v })}
+        label="Confirm before removing photos"
+        hint="Ask for confirmation when removing photos from the catalog. The originals on disk are never deleted either way."
+        checked={s.confirmRemovePhotos}
+        onChange={(v) => updateSettings({ confirmRemovePhotos: v })}
       />
     </div>
   );
@@ -363,17 +571,127 @@ function RenderingSection() {
   );
 }
 
-function PerformanceSection() {
+// Cache-mode tri-state derived from two booleans: caching off, or on with/without
+// the eager full-catalog prefetch. Stored as two flags so existing settings
+// migrate for free (rawCacheEnabled stays meaningful; prefetch defaults on).
+type CacheMode = "eager" | "ondemand" | "off";
+
+function PreviewsSection() {
   const s = useSettings();
+  const cacheMode: CacheMode = !s.rawCacheEnabled
+    ? "off"
+    : s.rawCachePrefetch
+      ? "eager"
+      : "ondemand";
+
   const [cleared, setCleared] = useState(false);
+  const [rebuild, setRebuild] = useState<{ done: number; total: number } | null>(
+    null,
+  );
+  const rebuilding = rebuild !== null && rebuild.done < rebuild.total;
+  const handleRebuild = () => {
+    const photos = useCatalogStore.getState().photos;
+    if (photos.length === 0 || rebuilding) return;
+    setRebuild({ done: 0, total: photos.length });
+    void rebuildThumbnails(
+      photos,
+      (done, total) => setRebuild({ done, total }),
+      (p) => useCatalogStore.getState().updatePhoto(p),
+    );
+  };
+
+  const [cacheAll, setCacheAll] = useState<{ done: number; total: number } | null>(
+    null,
+  );
+  const cachingAll = cacheAll !== null && cacheAll.done < cacheAll.total;
+  const handleCacheAll = () => {
+    const photos = useCatalogStore.getState().photos;
+    if (photos.length === 0 || cachingAll || !s.rawCacheEnabled) return;
+    setCacheAll({ done: 0, total: 1 }); // placeholder until the real count lands
+    void preDecodeRawsForCache(photos, {
+      force: true,
+      onProgress: (done, total) => setCacheAll({ done, total }),
+    });
+  };
+
   return (
     <div className="flex flex-col gap-4">
+      <Field
+        label="Preview source"
+        hint="How RAW grid previews are built. Embedded uses the camera's JPEG (fastest). Rendered always decodes the RAW (neutral, slower). Auto uses the embedded JPEG when it's already sharp enough, else renders."
+      >
+        <OptionRow
+          value={s.previewSource}
+          options={[
+            { value: "auto", label: "Auto" },
+            { value: "embedded", label: "Embedded JPEG" },
+            { value: "rendered", label: "Rendered" },
+          ]}
+          onChange={(v) => updateSettings({ previewSource: v as PreviewSource })}
+        />
+      </Field>
+      <Field
+        label="Thumbnail quality"
+        hint="Long edge of rendered grid thumbnails. Higher is sharper but slower; takes effect on newly rendered thumbnails."
+      >
+        <OptionRow
+          value={s.thumbMaxEdge}
+          options={[
+            { value: 320, label: "Fast (320px)" },
+            { value: 640, label: "Balanced (640px)" },
+            { value: 960, label: "Sharp (960px)" },
+          ]}
+          onChange={(v) =>
+            updateSettings({ thumbMaxEdge: v as 320 | 640 | 960 })
+          }
+        />
+      </Field>
       <ToggleField
-        label="Cache decoded RAW previews"
-        hint="Re-opening a photo in Develop loads in ~50ms instead of re-decoding (3–8s). Stored in the project folder or the browser."
-        checked={s.rawCacheEnabled}
-        onChange={(v) => updateSettings({ rawCacheEnabled: v })}
+        label="Store previews on disk"
+        hint="Save grid previews in the project's .safelight/previews folder so they load instantly next open. Off keeps the folder small but rebuilds previews on demand each open."
+        checked={s.persistPreviews}
+        onChange={(v) => updateSettings({ persistPreviews: v })}
       />
+      <Field
+        label="Grid thumbnails"
+        hint="Re-decodes every photo in the open project and regenerates its grid thumbnail at the current Thumbnail quality. Use after changing the settings above."
+      >
+        <button onClick={handleRebuild} disabled={rebuilding} className={btnCls}>
+          {rebuilding ? "Rebuilding…" : "Rebuild thumbnails"}
+        </button>
+        {rebuild !== null && (
+          <span className="ml-2 text-[10px] text-text-muted">
+            {rebuilding
+              ? `${rebuild.done} / ${rebuild.total}`
+              : `Rebuilt ${rebuild.total}.`}
+          </span>
+        )}
+      </Field>
+
+      <div className="border-t border-border-subtle pt-3">
+        <div className={labelCls}>Develop cache</div>
+      </div>
+      <Field
+        label="Cache decoded RAW previews"
+        hint="Re-opening a photo in Develop loads in ~50ms instead of re-decoding (3–8s). Cache all decodes the whole catalog on open; As needed only caches photos as you open them; Off never caches."
+      >
+        <OptionRow
+          value={cacheMode}
+          options={[
+            { value: "eager", label: "Cache all" },
+            { value: "ondemand", label: "As needed" },
+            { value: "off", label: "Off" },
+          ]}
+          onChange={(v) => {
+            if (v === "off") updateSettings({ rawCacheEnabled: false });
+            else
+              updateSettings({
+                rawCacheEnabled: true,
+                rawCachePrefetch: v === "eager",
+              });
+          }}
+        />
+      </Field>
       <Field
         label="Cached preview resolution"
         hint="Long-edge cap of cached previews. Live edits always render full resolution."
@@ -390,24 +708,49 @@ function PerformanceSection() {
           }
         />
       </Field>
-      <Field label="Cache storage">
-        <button
-          onClick={() => {
-            setCleared(false);
-            void clearRawCache().then(() => setCleared(true));
-          }}
-          className={btnCls}
-        >
-          Clear preview cache
-        </button>
+      <Field
+        label="Cache storage"
+        hint="Cache all photos in the open project now, or clear the cache to reclaim disk space."
+      >
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleCacheAll}
+            disabled={cachingAll || !s.rawCacheEnabled}
+            className={btnCls}
+          >
+            {cachingAll ? "Caching…" : "Cache all now"}
+          </button>
+          <button
+            onClick={() => {
+              setCleared(false);
+              void clearRawCache().then(() => setCleared(true));
+            }}
+            className={btnCls}
+          >
+            Clear preview cache
+          </button>
+        </div>
+        {cacheAll !== null && (
+          <span className="ml-2 text-[10px] text-text-muted">
+            {cachingAll
+              ? `${cacheAll.done} / ${cacheAll.total}`
+              : cacheAll.total === 0
+                ? "Already cached."
+                : `Cached ${cacheAll.total}.`}
+          </span>
+        )}
         {cleared && (
           <span className="ml-2 text-[10px] text-text-muted">Cleared.</span>
         )}
       </Field>
+    </div>
+  );
+}
 
-      <div className="border-t border-border-subtle pt-3">
-        <div className={labelCls}>Render pipeline</div>
-      </div>
+function PerformanceSection() {
+  const s = useSettings();
+  return (
+    <div className="flex flex-col gap-4">
       <Field
         label="Develop render resolution"
         hint="Cap of the Develop render buffer. Higher keeps 100% zoom true 1:1 on large sensors but uses more GPU memory. Applies when a photo is reopened."
@@ -424,6 +767,42 @@ function PerformanceSection() {
           }
         />
       </Field>
+      <Field
+        label="Open photos at"
+        hint="Zoom a photo opens at in Develop. Fit shows the whole frame; 100% opens at 1:1 (pixel-accurate)."
+      >
+        <OptionRow
+          value={s.developOpenZoom}
+          options={[
+            { value: "fit", label: "Fit" },
+            { value: "100", label: "100%" },
+          ]}
+          onChange={(v) =>
+            updateSettings({ developOpenZoom: v as "fit" | "100" })
+          }
+        />
+      </Field>
+      <Field
+        label="GPU source cache"
+        hint="GPU memory budget for resident decoded RAW sources. Larger keeps more photos ready for instant re-open and crisp zoom; least-recently-used sources are evicted past the budget."
+      >
+        <OptionRow
+          value={s.gpuSourceCacheBytes}
+          options={[
+            { value: 256 * 1024 * 1024, label: "256 MB" },
+            { value: 512 * 1024 * 1024, label: "512 MB" },
+            { value: 1024 * 1024 * 1024, label: "1 GB" },
+            { value: 2048 * 1024 * 1024, label: "2 GB" },
+          ]}
+          onChange={(v) => updateSettings({ gpuSourceCacheBytes: v })}
+        />
+      </Field>
+      <ToggleField
+        label="Prefetch neighbours"
+        hint="While editing a photo, background-decode the previous/next photo so stepping to it is instant. Off saves CPU/VRAM at the cost of a short decode on each step."
+        checked={s.developPrefetchNeighbors}
+        onChange={(v) => updateSettings({ developPrefetchNeighbors: v })}
+      />
       <ToggleField
         label="High bit-depth previews"
         hint="16-bit GPU textures for cached previews (smoother gradients). Turn off to halve texture memory. Applies when Develop is reopened."
@@ -701,6 +1080,8 @@ function ShortcutsSection() {
 
 function ExtensionsSection() {
   const topic = useSettings((s) => s.extensionTopic);
+  const checkExtensionUpdates = useSettings((s) => s.checkExtensionUpdates);
+  const autoUpdateExtensions = useSettings((s) => s.autoUpdateExtensions);
   return (
     <div className="flex flex-col gap-4">
       <Field
@@ -720,6 +1101,18 @@ function ExtensionsSection() {
           className={inputCls}
         />
       </Field>
+      <ToggleField
+        label="Check extensions for updates"
+        hint="On launch, compare installed extensions against the latest GitHub release and flag any with an update available."
+        checked={checkExtensionUpdates}
+        onChange={(v) => updateSettings({ checkExtensionUpdates: v })}
+      />
+      <ToggleField
+        label="Auto-update extensions"
+        hint="Silently install extension updates in the background when found. Off by default — updates are flagged for you to apply manually."
+        checked={autoUpdateExtensions}
+        onChange={(v) => updateSettings({ autoUpdateExtensions: v })}
+      />
       <Field label="Manage">
         <button
           onClick={() => {

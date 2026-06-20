@@ -17,12 +17,31 @@ contextBridge.exposeInMainWorld("safelightNative", {
   releases: {
     fetch: (repo) => ipcRenderer.invoke("releases:fetch", String(repo)),
   },
+  // GitHub repo metadata + README for the Extensions store detail view.
+  github: {
+    repoMeta: (repo) => ipcRenderer.invoke("github:repoMeta", String(repo)),
+    readme: (repo, ref) =>
+      ipcRenderer.invoke("github:readme", String(repo), String(ref ?? "HEAD")),
+  },
   plugins: {
     list: () => ipcRenderer.invoke("plugins:list"),
     install: (spec) => ipcRenderer.invoke("plugins:install", String(spec)),
     search: (query, topic) =>
       ipcRenderer.invoke("plugins:search", String(query ?? ""), String(topic ?? "")),
     uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
+  },
+  // Chrome DevTools control + main-process diagnostics for the opt-in
+  // Developer Tools extension (src/extensions/devtools/).
+  devtools: {
+    open: (mode) => ipcRenderer.invoke("devtools:open", String(mode ?? "detach")),
+    close: () => ipcRenderer.invoke("devtools:close"),
+    toggle: () => ipcRenderer.invoke("devtools:toggle"),
+    isOpen: () => ipcRenderer.invoke("devtools:isOpen"),
+    reload: (hard) => ipcRenderer.invoke("devtools:reload", !!hard),
+  },
+  diagnostics: {
+    gpuInfo: () => ipcRenderer.invoke("diagnostics:gpuInfo"),
+    metrics: () => ipcRenderer.invoke("diagnostics:metrics"),
   },
   // Native file access by absolute path — backs the path-based handle adapters
   // (src/project/native-fs.ts) so the project folder reconnects without an FSA

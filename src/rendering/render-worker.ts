@@ -1,0 +1,366 @@
+import type { DevelopParams, UprightMode } from "@/catalog/types";
+import type { ResolvedProfile } from "@/lens-profiles/types";
+import type { ProcessingStageContribution } from "@/extensions/types";
+import type { ResolvedPipeline } from "@/extensions/pipelines";
+import { BUILTIN_RESOLVED } from "@/extensions/pipelines";
+import { WebGLRenderer } from "./webgl/renderer";
+import type { HistogramData } from "./histogram";
+import { detectLines, computeUprightCorrection, type UprightResult } from "./upright";
+
+// ---------------------------------------------------------------------------
+// Message types (worker ↔ main thread)
+// ---------------------------------------------------------------------------
+
+export type WorkerRequest =
+  | { cmd: "init"; width: number; height: number }
+  | {
+      cmd: "setImage";
+      image:
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+        | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+        | { kind: "bitmap"; bitmap: ImageBitmap };
+      maxEdge?: number;
+      isFallbackPreview?: boolean;
+      baseCurveForBitmap?: boolean;
+    }
+  | { cmd: "setParams"; params: DevelopParams }
+  // Render one frame with `params` to an ImageBitmap returned out-of-band (NOT
+  // blitted to the display) so an extension can grab a "before" frame at the
+  // current source + viewport without disturbing the live view. The live params
+  // are restored afterwards. See render-bridge.capture().
+  | { cmd: "capture"; reqId: number; params: DevelopParams }
+  | { cmd: "setLensProfile"; profile: ResolvedProfile | null }
+  | { cmd: "setAsShotTemperature"; kelvin: number }
+  | { cmd: "render"; wantHistogram?: boolean; wantExtended?: boolean }
+  | {
+      cmd: "renderThumbnail";
+      requestId: string;
+      image:
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+        | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+        | { kind: "bitmap"; bitmap: ImageBitmap };
+      params: DevelopParams;
+      asShotTemperature: number;
+      maxEdge: number;
+      quality?: number;
+    }
+  | { cmd: "setShowClipping"; mode: number }
+  | { cmd: "setMaskViz"; index: number; color: [number, number, number]; strength: number }
+  | { cmd: "computeHistogram"; wantExtended?: boolean }
+  | { cmd: "setStages"; stages: ProcessingStageContribution[] }
+  | { cmd: "setPipeline"; pipeline: ResolvedPipeline }
+  | { cmd: "analyzeUpright"; mode: UprightMode }
+  // ── GPU source cache ──
+  | { cmd: "bindSource"; reqId: number; key: string }
+  | {
+      cmd: "uploadSource";
+      target: "main" | "thumb";
+      key: string;
+      image:
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
+        | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+        | { kind: "bitmap"; bitmap: ImageBitmap };
+      maxEdge?: number;
+      isFallbackPreview?: boolean;
+      baseCurveForBitmap?: boolean;
+      bind?: boolean;
+    }
+  | { cmd: "hasSource"; reqId: number; target: "main" | "thumb"; key: string }
+  | { cmd: "setCacheBudget"; bytes: number }
+  | { cmd: "setViewport"; roi: { x: number; y: number; w: number; h: number } | null; outW?: number; outH?: number }
+  | {
+      cmd: "renderThumbnailFromSource";
+      requestId: string;
+      key: string;
+      params: DevelopParams;
+      asShotTemperature: number;
+      maxEdge: number;
+      quality?: number;
+    }
+  | { cmd: "dispose" };
+
+export type WorkerResponse =
+  | { type: "ready" }
+  | { type: "frame"; bitmap: ImageBitmap; width: number; height: number; histogram?: HistogramData }
+  | { type: "histogram"; histogram: HistogramData }
+  | { type: "thumbnail"; requestId: string; blob: Blob }
+  | { type: "thumbnailMiss"; requestId: string; key: string }
+  | { type: "sourceBound"; reqId: number; hit: boolean }
+  | { type: "captured"; reqId: number; bitmap: ImageBitmap }
+  | { type: "hasSource"; reqId: number; has: boolean }
+  | { type: "upright"; result: UprightResult }
+  | { type: "error"; message: string };
+
+// ---------------------------------------------------------------------------
+// Worker state
+// ---------------------------------------------------------------------------
+
+let canvas: OffscreenCanvas | null = null;
+let renderer: WebGLRenderer | null = null;
+
+// Separate offscreen canvas + renderer for thumbnails so a thumbnail render
+// doesn't clobber the develop canvas mid-frame.
+let thumbCanvas: OffscreenCanvas | null = null;
+let thumbRenderer: WebGLRenderer | null = null;
+
+let latestStages: ProcessingStageContribution[] = [];
+let latestPipeline: ResolvedPipeline = BUILTIN_RESOLVED;
+// The last params pushed to the develop renderer. A `capture` swaps in override
+// params, renders, then restores these so a later display render (e.g. from a
+// viewport or clipping change that doesn't re-send params) isn't left showing
+// the captured frame's look.
+let lastParams: DevelopParams | null = null;
+// Mirrors the gpuSourceCacheBytes preference. The develop renderer gets the full
+// budget (full-res sources are large); the thumb renderer caches tiny sources, so
+// a quarter holds many. 0 until the first setCacheBudget message.
+let cacheBudgetBytes = 0;
+
+function ensureThumbRenderer(): WebGLRenderer {
+  if (thumbRenderer) return thumbRenderer;
+  thumbCanvas = new OffscreenCanvas(512, 512);
+  thumbRenderer = new WebGLRenderer(thumbCanvas, {
+    highBitDepth: false,
+    pipeline: latestPipeline,
+    stages: latestStages,
+  });
+  if (cacheBudgetBytes > 0) thumbRenderer.setCacheBudget(cacheBudgetBytes / 4);
+  return thumbRenderer;
+}
+
+// ---------------------------------------------------------------------------
+// Message handler
+// ---------------------------------------------------------------------------
+
+self.onmessage = (e: MessageEvent<WorkerRequest>) => {
+  const msg = e.data;
+  try {
+    switch (msg.cmd) {
+      case "init": {
+        canvas = new OffscreenCanvas(msg.width, msg.height);
+        renderer = new WebGLRenderer(canvas, {
+          highBitDepth: true,
+          pipeline: BUILTIN_RESOLVED,
+          stages: [],
+        });
+        respond({ type: "ready" });
+        break;
+      }
+
+      case "setImage": {
+        if (!renderer) break;
+        const img = msg.image;
+        if (img.kind === "bitmap") {
+          renderer.setImage(
+            img.bitmap,
+            msg.maxEdge,
+            msg.isFallbackPreview,
+            msg.baseCurveForBitmap,
+          );
+        } else {
+          renderer.setImage(img, msg.maxEdge, msg.isFallbackPreview);
+        }
+        break;
+      }
+
+      case "setParams": {
+        if (!renderer) break;
+        lastParams = msg.params;
+        renderer.setParams(msg.params);
+        break;
+      }
+
+      case "capture": {
+        // Render `params` to a detached bitmap without touching the display
+        // canvas the main thread blits from. transferToImageBitmap() resets the
+        // offscreen, so the next live render() repaints it; restoring lastParams
+        // keeps the renderer's uniform state in sync with the live view.
+        if (!renderer || !canvas) {
+          const blank = new OffscreenCanvas(1, 1);
+          respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
+          break;
+        }
+        renderer.setParams(msg.params);
+        renderer.render();
+        const captured = canvas.transferToImageBitmap();
+        if (lastParams) renderer.setParams(lastParams);
+        respond({ type: "captured", reqId: msg.reqId, bitmap: captured }, [captured]);
+        break;
+      }
+
+      case "setLensProfile": {
+        if (!renderer) break;
+        renderer.setLensProfile(msg.profile);
+        break;
+      }
+
+      case "setAsShotTemperature": {
+        if (!renderer) break;
+        renderer.setAsShotTemperature(msg.kelvin);
+        break;
+      }
+
+      case "render": {
+        if (!renderer || !canvas) break;
+        renderer.render();
+        const bitmap = canvas.transferToImageBitmap();
+        const resp: WorkerResponse = {
+          type: "frame",
+          bitmap,
+          width: renderer.bufferWidth,
+          height: renderer.bufferHeight,
+        };
+        if (msg.wantHistogram) {
+          resp.histogram = renderer.computeHistogram(!!msg.wantExtended);
+        }
+        respond(resp, [bitmap]);
+        break;
+      }
+
+      case "renderThumbnail": {
+        const tr = ensureThumbRenderer();
+        const img = msg.image;
+        if (img.kind === "bitmap") {
+          tr.setImage(img.bitmap, msg.maxEdge);
+        } else {
+          tr.setImage(img, msg.maxEdge);
+        }
+        tr.setAsShotTemperature(msg.asShotTemperature);
+        tr.setParams(msg.params);
+        tr.render();
+        if (!thumbCanvas) break;
+        const quality = msg.quality ?? 0.8;
+        thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
+          (blob) => {
+            respond({ type: "thumbnail", requestId: msg.requestId, blob });
+          },
+        );
+        break;
+      }
+
+      case "setShowClipping": {
+        if (renderer) renderer.setShowClipping(msg.mode);
+        break;
+      }
+
+      case "setMaskViz": {
+        if (renderer) renderer.setMaskViz(msg.index, msg.color, msg.strength);
+        break;
+      }
+
+      case "computeHistogram": {
+        if (!renderer) break;
+        const histogram = renderer.computeHistogram(!!msg.wantExtended);
+        respond({ type: "histogram", histogram });
+        break;
+      }
+
+      case "setStages": {
+        latestStages = msg.stages;
+        if (renderer) renderer.setStages(msg.stages);
+        if (thumbRenderer) thumbRenderer.setStages(msg.stages);
+        break;
+      }
+
+      case "setPipeline": {
+        latestPipeline = msg.pipeline;
+        if (renderer) renderer.setActivePipeline(msg.pipeline);
+        if (thumbRenderer) thumbRenderer.setActivePipeline(msg.pipeline);
+        break;
+      }
+
+      case "bindSource": {
+        const hit = !!renderer && renderer.bindSource(msg.key);
+        respond({ type: "sourceBound", reqId: msg.reqId, hit });
+        break;
+      }
+
+      case "uploadSource": {
+        const target = msg.target === "thumb" ? ensureThumbRenderer() : renderer;
+        if (!target) break;
+        const img = msg.image;
+        const bind = msg.bind ?? true;
+        if (img.kind === "bitmap") {
+          target.uploadSource(msg.key, img.bitmap, msg.maxEdge, msg.isFallbackPreview, msg.baseCurveForBitmap, bind);
+        } else {
+          target.uploadSource(msg.key, img, msg.maxEdge, msg.isFallbackPreview, false, bind);
+        }
+        break;
+      }
+
+      case "hasSource": {
+        const target = msg.target === "thumb" ? thumbRenderer : renderer;
+        respond({ type: "hasSource", reqId: msg.reqId, has: !!target && target.hasSource(msg.key) });
+        break;
+      }
+
+      case "setCacheBudget": {
+        cacheBudgetBytes = msg.bytes;
+        renderer?.setCacheBudget(msg.bytes);
+        thumbRenderer?.setCacheBudget(msg.bytes / 4);
+        break;
+      }
+
+      case "setViewport": {
+        renderer?.setViewport(msg.roi, msg.outW, msg.outH);
+        break;
+      }
+
+      case "renderThumbnailFromSource": {
+        const tr = ensureThumbRenderer();
+        if (!tr.bindSource(msg.key)) {
+          respond({ type: "thumbnailMiss", requestId: msg.requestId, key: msg.key });
+          break;
+        }
+        tr.setAsShotTemperature(msg.asShotTemperature);
+        tr.setParams(msg.params);
+        tr.render();
+        if (!thumbCanvas) break;
+        const quality = msg.quality ?? 0.8;
+        thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
+          (blob) => {
+            respond({ type: "thumbnail", requestId: msg.requestId, blob });
+          },
+        );
+        break;
+      }
+
+      case "analyzeUpright": {
+        if (!renderer) break;
+        const pixels = renderer.readDownscaledPixels(256);
+        if (!pixels) break;
+        const lines = detectLines(pixels.data, pixels.w, pixels.h);
+        const result = computeUprightCorrection(lines, msg.mode, pixels.w, pixels.h);
+        respond({ type: "upright", result });
+        break;
+      }
+
+      case "dispose": {
+        renderer?.dispose();
+        renderer = null;
+        canvas = null;
+        thumbRenderer?.dispose();
+        thumbRenderer = null;
+        thumbCanvas = null;
+        break;
+      }
+    }
+  } catch (err) {
+    respond({
+      type: "error",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
+const workerScope = self as unknown as {
+  postMessage(msg: unknown, transfer: Transferable[]): void;
+  postMessage(msg: unknown): void;
+};
+
+function respond(msg: WorkerResponse, transfer?: Transferable[]) {
+  if (transfer) {
+    workerScope.postMessage(msg, transfer);
+  } else {
+    workerScope.postMessage(msg);
+  }
+}

@@ -126,12 +126,19 @@ export type SettingsField =
       options: { value: string; label: string }[];
     };
 
-/** Declarative settings dialog, opened from the Extensions panel. Values are
- *  persisted per-extension and read back with api.settings.get(). */
+/** Declarative settings, shown as the extension's section in Preferences ▸
+ *  Extensions. Values are persisted per-extension and read back with
+ *  api.settings.get(). The declarative `fields` are auto-rendered by the host
+ *  (themed, searchable); supply `component` only for genuinely custom UI. */
 export interface SettingsContribution {
-  /** Dialog title; defaults to the extension's name. */
+  /** Section title; defaults to the extension's name. */
   title?: string;
   fields: SettingsField[];
+  /** Sort position within the Extensions group (lower = higher up). Default 100. */
+  order?: number;
+  /** Escape hatch: render this instead of the declarative `fields`. Receives no
+   *  props — read/write values via api.settings inside the component. */
+  component?: ComponentType;
 }
 
 /** A repo found by the official-extension search (GitHub topic). */
@@ -141,9 +148,35 @@ export interface ExtensionSearchResult {
   description: string | null;
   stars: number;
   updatedAt: string;
+  /** GitHub repo topics — drive the store's category chips. */
+  topics?: string[];
 }
 
-/** safelight.json at the root of an extension repo. */
+/** Normalised GitHub repo metadata for the Extensions store detail view.
+ *  A subset of the GitHub repos API, shaped in the Electron main process. */
+export interface ExtensionRepoMeta {
+  fullName: string;
+  description: string | null;
+  stars: number;
+  openIssues: number;
+  updatedAt: string;
+  license: string | null;
+  topics: string[];
+  homepage: string | null;
+  htmlUrl: string;
+  /** Branch to fetch the README and resolve relative asset links against. */
+  defaultBranch: string;
+  ownerLogin: string;
+  ownerAvatarUrl: string | null;
+  hasIssues: boolean;
+  hasDiscussions: boolean;
+  /** GitHub's social-preview card — a usable thumbnail with no manifest icon. */
+  ogImageUrl: string;
+}
+
+/** safelight.json at the root of an extension repo. All fields beyond the core
+ *  five (id/name/version/main) are optional and additive — older manifests load
+ *  unchanged; the store simply shows richer detail when they're present. */
 export interface ExtensionManifest {
   id: string;
   name: string;
@@ -152,6 +185,23 @@ export interface ExtensionManifest {
   author?: string;
   /** Entry ESM bundle, relative to the extension folder, e.g. "dist/index.js". */
   main: string;
+  /** Icon URL (absolute, or relative to the repo's default branch). */
+  icon?: string;
+  /** Store categories, e.g. ["Panels", "Color"]. Preferred over repo topics. */
+  categories?: string[];
+  /** Free-form search keywords. */
+  keywords?: string[];
+  /** Project homepage / docs URL. */
+  homepage?: string;
+  /** Source repo as "owner/repo" — lets a custom-imported extension self-declare
+   *  its repo so the detail view can show its README without a remembered source. */
+  repository?: string;
+  /** Screenshot URLs (absolute, or relative to the repo's default branch). */
+  screenshots?: string[];
+  /** SPDX license id, e.g. "MIT". */
+  license?: string;
+  /** Minimum SafeLight version required, e.g. "1.2.0". Blocks install below it. */
+  minAppVersion?: string;
 }
 
 /** One settings field used by an export processor's in-panel UI.
@@ -233,6 +283,159 @@ export interface FilenameTemplateContribution {
   template: string;
 }
 
+// ---------------------------------------------------------------------------
+// Processing stage contributions (orchestrator pipeline)
+// ---------------------------------------------------------------------------
+
+export type GlslType =
+  | "float" | "int" | "bool"
+  | "vec2" | "vec3" | "vec4"
+  | "ivec2" | "ivec3" | "ivec4"
+  | "mat3" | "mat4"
+  | "sampler2D";
+
+export interface UniformDeclaration {
+  /** Parameter bag key, e.g. "exposure". Qualified at registration time as
+   *  "{stageId}.{key}", e.g. "core.exposure.exposure". */
+  key: string;
+  glslType: GlslType;
+  default: number | number[] | boolean;
+  range?: { min: number; max: number; step?: number };
+  label?: string;
+}
+
+export interface InterStageVariable {
+  /** Shared variable name, e.g. "refT". Emitted as `isv_{name}` in the shader. */
+  name: string;
+  glslType: "float" | "vec2" | "vec3" | "vec4";
+  /** GLSL initializer expression evaluated after this stage runs.
+   *  Omit if this stage only consumes the variable. */
+  producer?: string;
+}
+
+export interface TextureRequirement {
+  /** Parameter bag key for the texture data. */
+  key: string;
+  kind: "lut" | "coverage" | "dynamic";
+  width?: number;
+  height?: number;
+  format?: "rgba8" | "rgba16f" | "r8";
+}
+
+/** Fixed processing phases. Order is enforced by the shader compiler. */
+export type ProcessingPhase =
+  | "decode"
+  | "noise-reduction"
+  | "scene-linear"
+  | "tone-map"
+  | "display-adjust"
+  | "effects"
+  | "output-encode";
+
+/** Ordered phase list for the shader compiler's sort. */
+export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
+  "decode",
+  "noise-reduction",
+  "scene-linear",
+  "tone-map",
+  "display-adjust",
+  "effects",
+  "output-encode",
+];
+
+export interface ProcessingStageContribution {
+  /** Globally unique, e.g. "core.exposure" or "film-sim.halation". */
+  id: string;
+  name: string;
+  phase: ProcessingPhase;
+  /** Order within the phase. Lower = runs first. Default 100. */
+  priority?: number;
+
+  /** GLSL code fragment operating on `vec3 color` (read/write). */
+  glsl: string;
+  /** Helper functions available to this stage's glsl (namespaced by compiler). */
+  helpers?: string;
+
+  uniforms: UniformDeclaration[];
+
+  produces?: InterStageVariable[];
+  /** Names of InterStageVariables this stage reads. */
+  consumes?: string[];
+
+  textures?: TextureRequirement[];
+
+  /** Whether this stage participates in masked local adjustments. */
+  mask?: { maskable: true; maskPhase: "linear" | "display" };
+
+  /** Stage IDs this one should run after (soft dependency — skipped if absent). */
+  after?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Catalog lifecycle hooks (orchestrator)
+// ---------------------------------------------------------------------------
+
+/** Subscribe to catalog lifecycle events. Lets an extension own a side concern
+ *  (e.g. XMP sidecars) without core knowing about it. All handlers are async and
+ *  awaited; a throwing handler is logged and skipped so one extension can't break
+ *  a save or an import. */
+export interface CatalogHooksContribution {
+  /** Globally unique, e.g. "my-ext.xmp". */
+  id: string;
+  /** Called for each newly discovered photo during a project scan. Return a
+   *  partial CatalogPhoto to merge onto the record (e.g. rating/label/keywords
+   *  read from a sidecar). Later handlers' fields win, matching the old
+   *  single-XMP precedence over the SafeLight sidecar. */
+  onPhotoImport?(ctx: {
+    photo: import("@/catalog/types").CatalogPhoto;
+    dir: FileSystemDirectoryHandle;
+    fileName: string;
+  }): Promise<Partial<import("@/catalog/types").CatalogPhoto> | void>;
+  /** Called after one or more photos' metadata (rating/label/flag/keywords)
+   *  is committed. `getEditState` lazily fetches a photo's edit stack. */
+  onMetadataChange?(ctx: {
+    photos: import("@/catalog/types").CatalogPhoto[];
+    getEditState(id: string): Promise<import("@/catalog/types").EditState | null>;
+  }): Promise<void>;
+  /** Called after a develop edit is committed to history. */
+  onEditCommit?(ctx: {
+    photo: import("@/catalog/types").CatalogPhoto;
+    editState: import("@/catalog/types").EditState;
+  }): Promise<void>;
+  /** Called when a photo is removed from the catalog. */
+  onPhotoRemove?(ctx: {
+    photo: import("@/catalog/types").CatalogPhoto;
+    dir: FileSystemDirectoryHandle;
+    fileName: string;
+  }): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Preset importers
+// ---------------------------------------------------------------------------
+
+/** Teach the Presets panel to import preset files from other apps. The panel's
+ *  Import picker offers each registered importer's file extensions; a matching
+ *  file is routed to `parse`. */
+export interface PresetImporterContribution {
+  /** Globally unique, e.g. "my-ext.lightroom". */
+  id: string;
+  /** Shown in the import picker, e.g. "Lightroom preset (.xmp)". */
+  label: string;
+  /** File extensions handled, lowercase with leading dot, e.g. [".xmp"]. */
+  extensions: string[];
+  /** Parse a chosen file into a named set of develop params, or null if the
+   *  file isn't a recognizable preset of this kind. */
+  parse(file: File): Promise<{
+    name: string;
+    params: Partial<import("@/catalog/types").DevelopParams>;
+  } | null>;
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard shortcuts
+// ---------------------------------------------------------------------------
+
 /** A keyboard shortcut contributed by an extension. The action appears in
  *  Preferences ▸ Shortcuts and can be rebound by the user like any built-in. */
 export interface KeyActionContribution {
@@ -244,6 +447,67 @@ export interface KeyActionContribution {
   defaultCombo: string;
   /** Called when the combo fires (or the user's rebind of it fires). */
   handler(): void;
+}
+
+// ---------------------------------------------------------------------------
+// Library grid filter predicates (generic — lets an extension narrow the grid
+// beyond the built-in rating/flag/label filter, e.g. text / EXIF search)
+// ---------------------------------------------------------------------------
+
+/** A predicate applied as an extra AND step in the Library grid's
+ *  visible-photos derivation. Core stays blind to *why* a photo is hidden — the
+ *  extension owns the matching logic and re-registers (same id, fresh `test`)
+ *  whenever its query changes. */
+export interface GridFilterContribution {
+  /** Globally unique, e.g. "my-ext.search". */
+  id: string;
+  /** Return false to hide the photo from the grid (and from culling nav). */
+  test(photo: import("@/catalog/types").CatalogPhoto): boolean;
+  /** Invoked by the Library "Clear filters" action so search clears too. */
+  onClear?(): void;
+}
+
+// ---------------------------------------------------------------------------
+// Library sort orders (generic — lets an extension add sort options to the
+// Library toolbar's sort dropdown, e.g. by camera / lens)
+// ---------------------------------------------------------------------------
+
+/** An extra sort order offered in the Library sort dropdown. The comparator is
+ *  ascending; the toolbar's direction toggle flips it. */
+export interface LibrarySortContribution {
+  /** Globally unique, also the persisted sort id, e.g. "my-ext.camera". */
+  id: string;
+  /** Shown in the sort dropdown. */
+  label: string;
+  /** Ascending comparator over two photos (return <0, 0, >0). */
+  compare(
+    a: import("@/catalog/types").CatalogPhoto,
+    b: import("@/catalog/types").CatalogPhoto,
+  ): number;
+}
+
+// ---------------------------------------------------------------------------
+// UI slots (generic named mount points in core chrome)
+// ---------------------------------------------------------------------------
+
+/** Named regions of core UI an extension may render into. "library-subbar" is a
+ *  full-width bar directly below the Library toolbar (only rendered when an
+ *  extension contributes to it). "develop-toolbar" sits in the Develop status
+ *  bar (left of the zoom controls); "develop-canvas-overlay" is a click-through
+ *  layer covering the Develop canvas, aligned via `api.develop`. */
+export type SlotName =
+  | "library-toolbar"
+  | "library-subbar"
+  | "develop-toolbar"
+  | "develop-canvas-overlay";
+
+export interface SlotContribution {
+  /** Globally unique, e.g. "my-ext.search-bar". */
+  id: string;
+  slot: SlotName;
+  component: ComponentType;
+  /** Sort position within the slot (lower = earlier). Default 100. */
+  order?: number;
 }
 
 export interface SafelightAPI {
@@ -258,6 +522,10 @@ export interface SafelightAPI {
   registerSliderIcon(c: SliderIconContribution): void;
   /** Register a render pipeline (display transform / tone mapper). */
   registerPipeline(c: PipelineContribution): void;
+  /** Register a GPU processing stage. The stage's GLSL fragment is compiled
+   *  into the single-pass develop shader at registration time. Unregistering
+   *  (or disabling the extension) removes the GLSL and recompiles. */
+  registerProcessingStage(c: ProcessingStageContribution): void;
   /** Register a keyboard shortcut; appears in Preferences ▸ Shortcuts. */
   registerKeybinding(c: KeyActionContribution): void;
   /** Declare a settings dialog (⚙ in the Extensions panel). */
@@ -269,6 +537,23 @@ export interface SafelightAPI {
   /** Contribute a filename template. Built-in variables are resolved by core;
    *  the template appears in the Export panel's filename template picker. */
   registerFilenameTemplate(c: FilenameTemplateContribution): void;
+  /** Register a lens profile that overrides or supplements the built-in Lensfun
+   *  database. Extensions with priority > 0 are checked before Lensfun. */
+  registerLensProfile(c: import("@/lens-profiles/types").LensProfileContribution): void;
+  /** Subscribe to catalog lifecycle events (photo import / metadata change /
+   *  edit commit / photo remove). Lets an extension own a side concern such as
+   *  XMP sidecars without core depending on it. */
+  registerCatalogHooks(c: CatalogHooksContribution): void;
+  /** Teach the Presets panel to import preset files from other applications. */
+  registerPresetImporter(c: PresetImporterContribution): void;
+  /** Contribute a predicate that further narrows the Library grid (e.g. text or
+   *  EXIF search). Re-register with the same id to update the predicate; the
+   *  grid and culling navigation re-derive against it. */
+  registerGridFilter(c: GridFilterContribution): void;
+  /** Render a component into a named core UI slot (e.g. the Library toolbar). */
+  registerSlot(c: SlotContribution): void;
+  /** Add a sort order to the Library toolbar's sort dropdown. */
+  registerLibrarySort(c: LibrarySortContribution): void;
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;
@@ -289,12 +574,26 @@ export interface SafelightAPI {
   themes: { apply(id: string): void };
   layouts: { apply(id: string): void };
   pipelines: { apply(id: string): void };
-  /** Open / close the Preferences dialog. */
-  preferences: { open(): void; close(): void; toggle(): void };
+  /** Open / close the Preferences dialog. `open` may take a section id (a core
+   *  section's id or an extension id) to deep-link straight to that section. */
+  preferences: { open(sectionId?: string): void; close(): void; toggle(): void };
   /** Navigate between app modules. */
   navigation: { goTo(module: "library" | "develop"): void };
   /** Read the current binding for any action id (built-in or extension). */
   keybindings: { getBinding(actionId: string): string };
+  /** Develop-canvas integration for overlays (e.g. before/after comparison).
+   *  `useDevelopOverlay` returns the displayed image rect + a change nonce
+   *  (call from a "develop-canvas-overlay" component); `captureFrame` renders an
+   *  off-screen frame with arbitrary params, aligned to the live view. */
+  develop: {
+    useDevelopOverlay(): {
+      rect: { x: number; y: number; w: number; h: number } | null;
+      nonce: number;
+    };
+    captureFrame(
+      params: import("@/catalog/types").DevelopParams,
+    ): Promise<ImageBitmap>;
+  };
 }
 
 export interface ExtensionModule {
@@ -322,6 +621,14 @@ declare global {
         /** Fetch releases for `owner/repo`. Returns the raw GitHub API array. */
         fetch(repo: string): Promise<{ tag_name: string; html_url: string; body: string | null; draft: boolean }[]>;
       };
+      /** GitHub repo metadata + README proxy for the Extensions store detail view.
+       *  Optional: absent in the plain-browser build and older Electron builds. */
+      github?: {
+        /** Normalised repo metadata for "owner/repo". */
+        repoMeta(repo: string): Promise<ExtensionRepoMeta>;
+        /** Raw README text for "owner/repo" at `ref`, or null if none exists. */
+        readme(repo: string, ref?: string): Promise<string | null>;
+      };
       plugins: {
         list(): Promise<ExtensionManifest[]>;
         /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. */
@@ -329,6 +636,30 @@ declare global {
         uninstall(id: string): Promise<void>;
         /** Search GitHub for official extensions (repos with `topic`). */
         search(query: string, topic: string): Promise<ExtensionSearchResult[]>;
+      };
+      /** Renderer-side control of the window's Chrome DevTools. Backs the
+       *  Developer Tools extension's Native tab. */
+      devtools?: {
+        open(mode?: "right" | "bottom" | "undocked" | "detach"): Promise<void>;
+        close(): Promise<void>;
+        toggle(): Promise<void>;
+        isOpen(): Promise<boolean>;
+        /** Reload the renderer. `hard` ignores the HTTP cache. */
+        reload(hard?: boolean): Promise<void>;
+      };
+      /** Main-process diagnostics for the Developer Tools System / Native tabs. */
+      diagnostics?: {
+        /** chromium GPU feature status (app.getGPUFeatureStatus()). */
+        gpuInfo(): Promise<Record<string, string>>;
+        /** Per-process CPU / memory metrics (app.getAppMetrics()). */
+        metrics(): Promise<
+          {
+            type: string;
+            pid: number;
+            cpuPercent: number;
+            memoryMB: number;
+          }[]
+        >;
       };
       /** Native file access by absolute path (path-based handle adapters). */
       fs?: {

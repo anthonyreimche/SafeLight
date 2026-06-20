@@ -15,6 +15,10 @@ import { applySavedTheme } from "./themes";
 import { makeScopedAPI } from "./host";
 import { deleteExtensionSettings } from "./ext-settings";
 import { BUILTIN_EXTENSIONS } from "./builtin";
+import { isNewer } from "@/update/semver";
+import { repoFor } from "./sources";
+import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
+import { getSettings } from "@/state/settings-store";
 
 const loaded = new Map<string, ExtensionModule>();
 
@@ -49,7 +53,9 @@ function persistDisabled(ids: string[]): void {
 async function applyEnablement(id: string, enabled: boolean): Promise<void> {
   const builtin = BUILTIN_EXTENSIONS.find((b) => b.id === id);
   if (!enabled) {
-    if (!builtin) {
+    if (builtin) {
+      builtin.deactivate?.(); // tear down side effects (e.g. console patches)
+    } else {
       loaded.get(id)?.deactivate?.();
       loaded.delete(id);
     }
@@ -97,10 +103,47 @@ export function initEnablement(): void {
   });
 }
 
+// ─── Disabled-by-default seeding ───────────────────────────────────────────
+// Some built-ins (e.g. Developer Tools) ship inactive. They can't simply be
+// added to the disabled list at build time — that would re-disable them every
+// launch even after the user enables them. Instead we seed each such id into
+// the disabled list exactly once and remember that we did, so the user's later
+// choice is what sticks. New default-off built-ins added in future versions are
+// seeded on the first launch that includes them.
+
+const SEEDED_KEY = "sl_ext_default_seeded";
+
+function loadSeeded(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(SEEDED_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function seedDefaultDisabled(): void {
+  const seeded = loadSeeded();
+  const newlySeeded = BUILTIN_EXTENSIONS.filter(
+    (b) => b.disabledByDefault && !b.locked && !seeded.includes(b.id),
+  ).map((b) => b.id);
+  if (newlySeeded.length === 0) return;
+
+  const disabled = useDisabledExtensions.getState().ids;
+  const nextDisabled = [...disabled];
+  for (const id of newlySeeded)
+    if (!nextDisabled.includes(id)) nextDisabled.push(id);
+  persistDisabled(nextDisabled);
+  try {
+    localStorage.setItem(SEEDED_KEY, JSON.stringify([...seeded, ...newlySeeded]));
+  } catch {}
+}
+
 // ─── Loading ─────────────────────────────────────────────────────────────────
 
 /** Activate every built-in extension that isn't disabled. */
 export function loadBuiltins(): void {
+  seedDefaultDisabled(); // default-off built-ins start disabled on first launch
   for (const ext of BUILTIN_EXTENSIONS) {
     if (ext.locked || !isExtensionDisabled(ext.id)) {
       ext.activate(makeScopedAPI(ext.id));
@@ -161,4 +204,102 @@ export async function uninstallPlugin(id: string): Promise<void> {
   deleteExtensionSettings(id); // forget its persisted settings too
   persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
   await native?.plugins.uninstall(id); // deletes <userData>/plugins/<id>/
+}
+
+// ─── Updates ───────────────────────────────────────────────────────────────
+// An extension's latest version is the newest non-draft GitHub release tag of
+// the repo it was installed from. We require Releases (the same convention the
+// app's own updater uses) — a repo with no releases simply has "no update info".
+
+const UPDATE_CHECK_TTL = 6 * 60 * 60 * 1000; // re-check at most every 6h
+
+/** Newest non-draft release tag for "owner/repo", or null if none / no bridge. */
+async function latestReleaseTag(fullName: string): Promise<string | null> {
+  const native = window.safelightNative;
+  if (!native?.releases) return null;
+  const releases = await native.releases.fetch(fullName);
+  const best = releases.find((r) => !r.draft);
+  return best?.tag_name ?? null;
+}
+
+/** Check one installed extension for a newer release and cache the result.
+ *  Returns the cached result when checked within the TTL (unless `force`). */
+export async function checkExtensionUpdate(
+  manifest: ExtensionManifest,
+  force = false,
+): Promise<ExtUpdateInfo | null> {
+  const repo = repoFor(manifest);
+  if (!repo) return null; // built-in / custom import with no known repo
+  const cached = useExtStoreUI.getState().updates[manifest.id];
+  if (!force && cached && Date.now() - cached.checkedAt < UPDATE_CHECK_TTL)
+    return cached;
+  let latestTag: string | null = null;
+  try {
+    latestTag = await latestReleaseTag(repo);
+  } catch {
+    return cached ?? null; // network hiccup — keep any prior result
+  }
+  const info: ExtUpdateInfo = {
+    latestTag,
+    hasUpdate: !!latestTag && isNewer(manifest.version, latestTag),
+    checkedAt: Date.now(),
+  };
+  useExtStoreUI.getState().setUpdate(manifest.id, info);
+  return info;
+}
+
+/** Reinstall an extension at `tag`, preserving its settings and enabled state.
+ *  The install overwrites <userData>/plugins/<id>/ in place. */
+export async function updateExtension(
+  id: string,
+  fullName: string,
+  tag: string,
+): Promise<ExtensionManifest> {
+  // Tear down the running instance, then reinstall the new tag live. Settings
+  // are deliberately NOT deleted (unlike uninstall) so the update is seamless.
+  loaded.get(id)?.deactivate?.();
+  loaded.delete(id);
+  unregisterExtension(id);
+  const manifest = await installFromGitHub(`${fullName}#${tag}`);
+  useExtStoreUI.getState().setUpdate(id, {
+    latestTag: tag,
+    hasUpdate: false,
+    checkedAt: Date.now(),
+  });
+  return manifest;
+}
+
+/** Background check on launch: refresh update info for every installed
+ *  extension, and auto-update when the user has opted in. Throttled so we don't
+ *  fire a burst of GitHub requests. Gated by the checkExtensionUpdates setting. */
+export async function checkAllExtensionUpdates(): Promise<void> {
+  const native = window.safelightNative;
+  if (!native?.releases) return;
+  const settings = getSettings();
+  if (!settings.checkExtensionUpdates) return;
+  let list: ExtensionManifest[];
+  try {
+    list = await native.plugins.list();
+  } catch {
+    return;
+  }
+  const CONCURRENCY = 3;
+  for (let i = 0; i < list.length; i += CONCURRENCY) {
+    const slice = list.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      slice.map(async (m) => {
+        const info = await checkExtensionUpdate(m);
+        if (info?.hasUpdate && info.latestTag && settings.autoUpdateExtensions) {
+          const repo = repoFor(m);
+          if (repo) {
+            try {
+              await updateExtension(m.id, repo, info.latestTag);
+            } catch (e) {
+              console.error(`[extensions] auto-update failed for ${m.id}:`, e);
+            }
+          }
+        }
+      }),
+    );
+  }
 }

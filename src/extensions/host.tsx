@@ -6,12 +6,19 @@ import * as React from "react";
 import { create } from "zustand";
 import type { SafelightAPI } from "./types";
 import {
+  registerCatalogHooks,
   registerExportProcessor,
   registerFilenameTemplate,
+  registerGridFilter,
   registerLayout,
+  registerLibrarySort,
+  registerLensProfile,
   registerPanel,
   registerPipeline,
+  registerPresetImporter,
+  registerProcessingStage,
   registerSettings,
+  registerSlot,
   registerSliderIcon,
   registerTheme,
 } from "./registry";
@@ -30,7 +37,14 @@ import {
 } from "@/state/keybindings-store";
 import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } from "./dock";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
-import { initEnablement, loadBuiltins, loadExternalPlugins } from "./loader";
+import { captureDevelopFrame, useDevelopOverlay } from "./develop-host";
+import {
+  checkAllExtensionUpdates,
+  initEnablement,
+  loadBuiltins,
+  loadExternalPlugins,
+} from "./loader";
+import { warmDecodePool } from "@/raw/decode-pool";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { Histogram } from "@/ui/components/Histogram";
@@ -60,10 +74,17 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerLayout: (c) => registerLayout(extensionId, c),
     registerSliderIcon: (c) => registerSliderIcon(extensionId, c),
     registerPipeline: (c) => registerPipeline(extensionId, c),
+    registerProcessingStage: (c) => registerProcessingStage(extensionId, c),
     registerKeybinding: (c) => registerExtensionAction(extensionId, c),
     registerSettings: (c) => registerSettings(extensionId, c),
     registerExportProcessor: (c) => registerExportProcessor(extensionId, c),
     registerFilenameTemplate: (c) => registerFilenameTemplate(extensionId, c),
+    registerLensProfile: (c) => registerLensProfile(extensionId, c),
+    registerCatalogHooks: (c) => registerCatalogHooks(extensionId, c),
+    registerPresetImporter: (c) => registerPresetImporter(extensionId, c),
+    registerGridFilter: (c) => registerGridFilter(extensionId, c),
+    registerSlot: (c) => registerSlot(extensionId, c),
+    registerLibrarySort: (c) => registerLibrarySort(extensionId, c),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),
@@ -90,6 +111,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     preferences: { open: openPreferences, close: closePreferences, toggle: togglePreferences },
     navigation: { goTo: (module) => useUIStore.getState().setActiveModule(module) },
     keybindings: { getBinding },
+    develop: { useDevelopOverlay, captureFrame: captureDevelopFrame },
   };
 }
 
@@ -107,5 +129,8 @@ export function initExtensionHost(): void {
   initThemes();
   initPipelines();
   initDockLayouts();
-  void loadExternalPlugins();
+  // Load external plugins, then quietly check them for updates (and auto-update
+  // if the user opted in). The check is gated on a setting and rate-limited.
+  void loadExternalPlugins().then(() => void checkAllExtensionUpdates());
+  void warmDecodePool();
 }

@@ -1,13 +1,13 @@
 # Safelight
 
-**Safelight 1.0** is a fast, free, open-source RAW photo editor for Windows and the browser. It pairs professional, GPU-accelerated imaging tools with the customizability of a modern IDE: every panel is an extension that can be rearranged, replaced, or supplemented by the community.
+**Safelight 2.0** is a fast, free, open-source RAW photo editor for Windows, Linux, macOS, and the browser. It pairs professional, GPU-accelerated imaging tools with the customizability of a modern IDE: the core is a *blind orchestrator* and every panel, tool, and display transform is an extension that can be rearranged, replaced, or supplemented by the community.
 
 - **Non-destructive and project-based** — open a folder of photos and edit. Your originals are never touched; ratings, flags, and edit history live in a `.safelight/` directory inside the project folder, so a project is fully portable.
 - **Real RAW support** — full-resolution RAW decoding via libraw-wasm plus an in-house linear-float decoder for uncompressed CFA/DNG, covering NEF, CR2/CR3, ARW, DNG, ORF, RAF, RW2, and many more, with automatic fallback to the embedded preview.
-- **GPU pipeline** — every adjustment renders through a WebGL2 shader pipeline with optional 16-bit textures for high-bit-depth editing.
+- **GPU pipeline** — every adjustment renders through a WebGL2 shader pipeline that runs in a Web Worker on an `OffscreenCanvas`, with optional 16-bit textures for high-bit-depth editing.
 - **Privacy-first** — zero cost, zero subscription, fully offline. No telemetry, no cloud, no data collection. Exports carry no EXIF or location metadata.
 - **IDE-like workspace** — Photoshop-style docking (drag, tab, minimize, float any panel), named layouts, themes, rebindable keyboard shortcuts, and detachable modules for multi-monitor work.
-- **Open extension system** — install extensions straight from GitHub repos to add panels, themes, layouts, and more; any stock panel can be disabled and replaced by a community version.
+- **Open extension system** — install extensions straight from GitHub repos to add panels, themes, layouts, display transforms, lens profiles, export processors, Library sorts/filters, catalog hooks, and more; any stock panel can be disabled and replaced by a community version. Ships with example extensions (Advanced Library Sort, Image Comparison, XMP Tools).
 
 ## Features
 
@@ -31,14 +31,15 @@
 - White balance, exposure, contrast, highlights/shadows, whites/blacks, texture, clarity, dehaze, vibrance, saturation
 - Point tone curves — RGB master plus individual red/green/blue channels
 - HSL mixer for 8 color bands
-- Color grading wheels (shadows / midtones / highlights with luma)
+- Color grading wheels (shadows / midtones / highlights / global with luma)
 - Detail panel: capture sharpening (amount, radius, detail, masking) and luminance/color noise reduction
-- Lens corrections: distortion, fringing, defringe, vignetting
+- Lens corrections: profile-based (Lensfun database, matched from EXIF) or manual distortion, fringing, defringe, vignetting
 - Effects: post-crop vignette and film grain
 - Crop with guide overlays, straighten (Ctrl+drag to level), aspect lock, constrain-to-image
-- Transform: perspective, aspect, scale, and offset geometry corrections
-- Local adjustments: radial, linear, and brush masks with per-mask exposure, contrast, tone, color, and clarity
+- Transform plus Upright perspective correction (Auto / Level / Vertical / Full / Guided)
+- Local adjustments: masks built from radial, linear, brush, luminance-range, and color-range components combined with add/subtract/intersect, with per-mask tone, color, clarity, and optional sub-panels
 - Heal and clone spot removal with size, feather, and opacity control
+- On-canvas shadow/highlight clipping indicators
 - Presets in an open, human-readable JSON format with import/export
 - 1:1 loupe zoom and pan; hold Shift on any slider for fine adjustment, double-click to reset
 
@@ -46,8 +47,9 @@
 
 - Batch JPEG, PNG, and WebP export through the same GPU pipeline used for editing
 - Output color space — sRGB, Display P3, Adobe RGB, or ProPhoto RGB, with the matching ICC profile embedded so other apps read the pixels correctly
-- Quality and long-edge resizing controls
-- Multiple photos as a single ZIP or separate files
+- Quality, long-edge resizing, and output sharpening controls
+- Filename templates and post-encode export processors (e.g. watermarking) via extensions
+- Multiple photos as a single ZIP, separate files, or into a chosen folder
 - Metadata-free output by design
 
 ### Workspace
@@ -65,6 +67,8 @@
 **Windows desktop (recommended):** download the latest `Safelight Setup` installer from the [releases page](../../releases), or build it yourself with `build-scripts\build-electron-windows-exe.bat`. The desktop app enables the fastest RAW decode path and full GPU acceleration.
 
 **Linux:** grab the package for your distro from the [releases page](../../releases) — `.deb` (Debian/Ubuntu), `.rpm` (Fedora/openSUSE), `.pacman` (Arch/Manjaro), Flatpak, or portable AppImage. See [Installation](docs/installation.md) for install commands and how to build them yourself from `build-scripts\`.
+
+**macOS:** download the universal `.dmg` (Intel + Apple Silicon) from the [releases page](../../releases), or build it on a Mac with `build-scripts/build-macos-dmg.sh`. See [Installation](docs/installation.md#macos-dmg).
 
 **From source:**
 
@@ -87,17 +91,14 @@ Because everything in Safelight is an extension, planned work falls into two tra
 
 **Develop**
 - B&W and HDR editing support
-- Clipping indicators — highlight/shadow warning overlays on the canvas
-- Range masks — luminance-range and color-range selection for local adjustments
 - Targeted adjustment tool (TAT) — click-drag on the photo to move the slider for the tone/HSL value under the cursor
 
 **Library and organization**
-- Image compare view (before/after split and side-by-side)
 - Virtual copies — multiple edit versions of one photo without duplicating the file
 - Collections and smart collections — virtual groupings independent of folder structure
 - Sync edits — apply the current photo's settings to all selected photos with per-panel granularity
-- Keywords and hierarchical keywording
-- IPTC/XMP metadata editing — copyright, caption, creator, rights fields
+- Hierarchical keywording (flat keyword tagging already ships)
+- IPTC/XMP metadata editing — copyright, caption, creator, rights fields (XMP sidecar read/write already ships via the XMP Tools extension)
 
 **Export and output**
 - Multiple export recipes — run several format/size/destination presets in one pass
@@ -159,4 +160,4 @@ Safelight is community-driven. Bug reports, code, extensions, documentation, and
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL v3 — see [LICENSE](LICENSE).

@@ -6,15 +6,43 @@ All notable changes to Safelight are documented in this file.
 
 ### Planned
 - Red eye correction
-- Image compare view
 - B&W and HDR image support
 - HDR / focus stacking and photo merge
-- Batch editing
+- Batch editing / sync edits
 - AI masking via ONNX.js (Select Subject, Sky)
 - Lightroom catalog import (sql.js)
 - Mobile-responsive viewing
 - Camera profile / base tuning controls
-- Extension marketplace and scaffolding tools
+- Stage-by-stage migration of the develop shader to extension-contributed processing stages
+
+## [2.0.0] - 2026-06
+
+The orchestrator release. The core became a **blind orchestrator**: it exposes contribution points and extensions fill them, with every stock panel and tool now a pre-installed extension registered through the same public API external plugins use.
+
+### Architecture
+- Rendering moved into a **Web Worker on an `OffscreenCanvas`** (`render-worker` + `RenderBridge`); no render-path code touches the DOM. Added a budget-bounded GPU source cache for instant photo switching.
+- Greatly expanded the extension API beyond panels/themes/layouts/slider icons/settings to include: render pipelines (display transforms), GPU processing stages (forward path), keyboard shortcuts, export processors, filename templates, lens profiles, catalog lifecycle hooks, preset importers, grid filters, library sorts, and named UI slots — plus `preferences`, `navigation`, `keybindings`, `pipelines`, and `develop` (overlay + off-screen capture) API objects.
+- Installable extensions now live at the repo-root `extensions/` folder, are built with rolldown, and install into `<userData>/plugins/` served under the cross-origin-isolated `app://` origin.
+- Extensions store rebuilt as a GitHub-backed app store (master/detail, READMEs, categories, update checks).
+
+### Develop
+- **Upright** perspective correction (Auto / Level / Vertical / Full / Guided, with on-canvas guide lines).
+- **Mask components** model: each mask combines radial / linear / brush / luminance-range / color-range components with add / subtract / intersect, plus opt-in per-mask sub-panels (white balance, HSL, tone curve, detail).
+- **Global** color-grading wheel alongside shadows / midtones / highlights; white-balance and HSL eyedroppers; on-canvas clipping indicators.
+
+### Library & Export
+- Keyword tagging and a dedicated Metadata panel; sixth **purple** color label.
+- Export gained output color-space conversion with embedded ICC profiles (sRGB / Display P3 / Adobe RGB / ProPhoto), output sharpening, folder delivery, filename templates, and export-processor extensions.
+
+### Bundled extensions
+- **Advanced Library Sort** — sort by camera / lens / focal length / ISO, a live search bar, and saved smart searches.
+- **Image Comparison** — hold-to-preview and draggable before/after split in Develop.
+- **XMP Tools** — XMP sidecar read/write and Lightroom preset import via catalog hooks.
+
+### Platform
+- Built-in Lensfun-derived lens-correction database with EXIF matching.
+- Linux packaging across deb / rpm / pacman / AppImage / Flatpak; macOS universal `.dmg`; in-app update checker with patch/minor channels.
+- Stack: React 19, TypeScript 6, Vite 8, TailwindCSS 4, Zustand 5, dockview 6, Electron 42.
 
 ## [1.0.4] - 2026-06-14
 

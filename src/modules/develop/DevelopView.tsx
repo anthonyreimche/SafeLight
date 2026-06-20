@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/ui/components/AppShell";
 import { DevelopCanvas } from "./DevelopCanvas";
+import { Slot } from "@/extensions/Slot";
 import { ZoomControls } from "@/ui/ZoomControls";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
@@ -32,7 +33,10 @@ export function DevelopView() {
         activePhoto && (
           <div className="flex w-full items-center justify-between">
             <span>{activePhoto.filename}</span>
-            <ZoomControls zoom={zoom} onChange={setZoom} />
+            <div className="flex items-center gap-3">
+              <Slot name="develop-toolbar" />
+              <ZoomControls zoom={zoom} onChange={setZoom} />
+            </div>
           </div>
         )
       }

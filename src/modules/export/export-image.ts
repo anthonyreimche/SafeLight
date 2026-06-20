@@ -9,6 +9,7 @@ import { loadSavedParams } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { useRegistry } from "@/extensions/registry";
+import { applyOutputSharpening } from "./sharpen";
 import { ZipWriter } from "./zip";
 
 export type ExportFormat = "image/jpeg" | "image/png" | "image/webp";
@@ -33,6 +34,10 @@ export interface ExportSettings {
   /** Active filename template id (from a FilenameTemplateContribution), or
    *  undefined to use the built-in base-name + extension behaviour. */
   filenameTemplateId?: string;
+  /** Output sharpening amount (0–150). 0 disables sharpening. */
+  sharpenAmount?: number;
+  /** Output sharpening radius in pixels (0.3–3.0). */
+  sharpenRadius?: number;
 }
 
 const ARCHIVE_NAME = "safelight-export.zip";
@@ -186,7 +191,10 @@ async function renderOne(
     );
     renderer.setParams(await loadSavedParams(photo.id, photo.exif.colorTemperature));
     renderer.render();
-    const blob = await canvasToBlob(canvas, settings.format, settings.quality);
+    const encodeCanvas = (settings.sharpenAmount ?? 0) > 0
+      ? applyOutputSharpening(canvas, settings.sharpenAmount!, settings.sharpenRadius ?? 1)
+      : canvas;
+    const blob = await canvasToBlob(encodeCanvas, settings.format, settings.quality);
     if (!blob) return null;
     const profiled = await embedColorProfile(blob, settings.colorSpace ?? "srgb");
     return runProcessors(profiled, photo, processorSettings);

@@ -1,15 +1,24 @@
-import { useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CatalogPhoto, CropRect } from "@/catalog/types";
 import { HSL_CHANNELS } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
 import { useDevelopStore } from "@/state/develop-store";
-import { fitCropToImage, transformedViewCrop } from "@/rendering/crop-transform";
+import { useSettings } from "@/state/settings-store";
+import { fitCropToImage, maxCropForTransform, transformedViewCrop } from "@/rendering/crop-transform";
 import {
   buildForwardTransform,
   buildInverseTransform,
+  applyInsetToInverse,
+  applyInsetToForward,
 } from "@/rendering/transform";
+import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
+import { computeGuidedCorrection } from "@/rendering/upright";
 import { ViewportImage } from "@/ui/ViewportImage";
+import { Slot } from "@/extensions/Slot";
+import { DevelopOverlayProvider } from "@/extensions/develop-host";
+import type { OverlayRect } from "@/extensions/develop-host";
 import { CropOverlay } from "./CropOverlay";
+import { GuidedOverlay } from "./GuidedOverlay";
 import { MaskOverlay } from "./MaskOverlay";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
 import { sampleLinearRGB } from "@/rendering/sample-pixel";
@@ -52,10 +61,42 @@ export function DevelopCanvas({
   onZoomChange: (zoom: number | null) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { supported, loading, width, height } = useDevelopRenderer(
+  const { supported, loading, width, height, setViewport } = useDevelopRenderer(
     canvasRef,
     photo,
   );
+
+  // Geometry of the displayed image + a nonce that bumps on any view change, so
+  // extension overlays (e.g. before/after) can align and refresh. Generic: core
+  // doesn't know what's mounted into the develop-canvas-overlay slot.
+  const [overlayRect, setOverlayRect] = useState<OverlayRect | null>(null);
+  const [overlayNonce, setOverlayNonce] = useState(0);
+  const handleLayout = useCallback((r: OverlayRect) => {
+    setOverlayRect((prev) =>
+      prev && prev.x === r.x && prev.y === r.y && prev.w === r.w && prev.h === r.h
+        ? prev
+        : r,
+    );
+    setOverlayNonce((n) => n + 1);
+  }, []);
+  const overlayState = useMemo(
+    () => ({ rect: overlayRect, nonce: overlayNonce }),
+    [overlayRect, overlayNonce],
+  );
+
+  // Crossfade the canvas whenever the hover preview turns on, off, or switches
+  // to another preset, so the look eases in/out instead of snapping.
+  const previewParams = useDevelopStore((s) => s.previewParams);
+  const openZoom = useSettings((s) => s.developOpenZoom);
+  const [fadeToken, setFadeToken] = useState(0);
+  const fadeInit = useRef(false);
+  useEffect(() => {
+    if (!fadeInit.current) {
+      fadeInit.current = true;
+      return;
+    }
+    setFadeToken((t) => t + 1);
+  }, [previewParams]);
 
   const cropping = useDevelopStore((s) => s.cropping);
   const activeTool = useDevelopStore((s) => s.activeTool);
@@ -66,6 +107,11 @@ export function DevelopCanvas({
   const constrainCrop = useDevelopStore((s) => s.constrainCrop);
   const cropGuide = useDevelopStore((s) => s.cropGuide);
   const cropGuideFlip = useDevelopStore((s) => s.cropGuideFlip);
+  const uprightMode = useDevelopStore((s) => s.params.uprightMode);
+  const guidedEditing = useDevelopStore((s) => s.guidedEditing);
+  const guidedLines = useDevelopStore((s) => s.params.guidedLines);
+  const lensCorrection = useDevelopStore((s) => s.params.lensCorrection);
+  const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
   const wbPicking = useDevelopStore((s) => s.wbPicking);
@@ -151,12 +197,29 @@ export function DevelopCanvas({
   };
 
   const imageAspect = photo.height > 0 ? photo.width / photo.height : 1;
+
+  // Compute the effective inset from lens distortion so the crop constraint
+  // treats the image as smaller (avoids sampling outside valid pixels).
+  let lensCropScale = 1;
+  if (lensCorrection.mode !== "off") {
+    const lp = resolvedLensProfile;
+    if (lensCorrection.mode === "profile" && lp?.distortion && lensCorrection.distortionEnabled) {
+      lensCropScale = computeAutoCropScale(
+        lp.distortion.model, lp.distortion.k, lensCorrection.distortion, imageAspect,
+      );
+    } else if (Math.abs(lensCorrection.distortion) > 0.001) {
+      lensCropScale = computeAutoCropScale("poly3", [0], lensCorrection.distortion, imageAspect);
+    }
+  }
+
   // Inverse transform (transformed coord -> source UV) for crop constraints, the
   // forward transform (image quad) for the move clamp, and the view region
   // enclosing the warped image for the crop overlay.
-  const inv = buildInverseTransform(straighten, transform, imageAspect);
-  const forward = buildForwardTransform(straighten, transform, imageAspect);
-  const viewCrop = transformedViewCrop(forward);
+  const invRaw = buildInverseTransform(straighten, transform, imageAspect);
+  const forwardRaw = buildForwardTransform(straighten, transform, imageAspect);
+  const inv = applyInsetToInverse(invRaw, lensCropScale);
+  const forward = applyInsetToForward(forwardRaw, lensCropScale);
+  const viewCrop = transformedViewCrop(forwardRaw);
 
   // Throttle crop writes to one per frame so a drag doesn't re-render the panels
   // on every pointer event.
@@ -198,14 +261,19 @@ export function DevelopCanvas({
   }
 
   return (
+    <div className="relative h-full w-full">
     <ViewportImage
       canvasRef={canvasRef}
       bufferWidth={width}
       bufferHeight={height}
       zoom={zoom}
       onZoomChange={onZoomChange}
+      onViewport={setViewport}
+      onLayout={handleLayout}
       loading={loading}
       resetKey={photo.id}
+      initialZoom={openZoom === "100" ? 1 : null}
+      fadeToken={fadeToken}
       overlayZoomable={!cropping && activeTool !== "none"}
       onPick={wbPicking && !cropping && activeTool === "none" ? onWbPick : undefined}
       onPickDrag={
@@ -244,7 +312,10 @@ export function DevelopCanvas({
                       "crop",
                       fitCropToImage(
                         crop,
-                        buildInverseTransform(deg, transform, imageAspect),
+                        applyInsetToInverse(
+                          buildInverseTransform(deg, transform, imageAspect),
+                          lensCropScale,
+                        ),
                       ),
                     );
                   }
@@ -252,18 +323,57 @@ export function DevelopCanvas({
                 }}
               />
             )
-          : activeTool !== "none"
+          : uprightMode === "guided" && guidedEditing
             ? (rect) => (
-                <MaskOverlay
+                <GuidedOverlay
                   rect={rect}
+                  forward={forwardRaw}
+                  inv={invRaw}
                   crop={crop}
-                  inv={inv}
-                  forward={forward}
-                  imageAspect={imageAspect}
+                  lines={guidedLines}
+                  onChange={(lines) => setParam("guidedLines", lines)}
+                  onCommit={() => {
+                    const st = useDevelopStore.getState();
+                    const result = computeGuidedCorrection(st.params.guidedLines, imageAspect);
+                    setParam("straighten", result.straighten);
+                    const next = {
+                      ...st.params.transform,
+                      perspectiveV: Math.round(result.perspectiveV),
+                      perspectiveH: Math.round(result.perspectiveH),
+                    };
+                    setParam("transform", next);
+                    if (constrainCrop) {
+                      const guidedInv = applyInsetToInverse(
+                        buildInverseTransform(result.straighten, next, imageAspect),
+                        lensCropScale,
+                      );
+                      setParam("crop", maxCropForTransform(guidedInv, st.cropAspect));
+                    }
+                    commitEdit("Guided Upright");
+                  }}
                 />
               )
-            : undefined
+            : activeTool !== "none"
+              ? (rect) => (
+                  <MaskOverlay
+                    rect={rect}
+                    crop={crop}
+                    inv={invRaw}
+                    forward={forwardRaw}
+                    imageAspect={imageAspect}
+                    canvasRef={canvasRef}
+                  />
+                )
+              : undefined
       }
     />
+      {/* Extension overlay layer (e.g. before/after split). Click-through by
+          default; interactive children opt back in via pointerEvents. */}
+      <DevelopOverlayProvider value={overlayState}>
+        <div className="pointer-events-none absolute inset-0">
+          <Slot name="develop-canvas-overlay" />
+        </div>
+      </DevelopOverlayProvider>
+    </div>
   );
 }

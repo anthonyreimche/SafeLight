@@ -6,7 +6,6 @@ import type {
   CatalogPhoto,
   ColorLabel,
   SortDirection,
-  SortField,
 } from "@/catalog/types";
 
 export type FlagFilter = "any" | "pick" | "reject";
@@ -18,6 +17,7 @@ export interface LibraryFilter {
   ratingOp: RatingOp; // how photo.rating is compared to `rating`
   flag: FlagFilter;
   label: LabelFilter;
+  keywords: string[]; // photo must contain ALL of these keywords (AND)
 }
 
 export const NO_FILTER: LibraryFilter = {
@@ -25,6 +25,7 @@ export const NO_FILTER: LibraryFilter = {
   ratingOp: "gte",
   flag: "any",
   label: "any",
+  keywords: [],
 };
 
 // The rating filter is inert at "≥ 0" (matches everything); any other operator
@@ -43,7 +44,7 @@ function ratingMatches(rating: number, op: RatingOp, threshold: number): boolean
 }
 
 export function isFilterActive(f: LibraryFilter): boolean {
-  return ratingFilterActive(f) || f.flag !== "any" || f.label !== "any";
+  return ratingFilterActive(f) || f.flag !== "any" || f.label !== "any" || f.keywords.length > 0;
 }
 
 function matches(photo: CatalogPhoto, f: LibraryFilter): boolean {
@@ -54,10 +55,16 @@ function matches(photo: CatalogPhoto, f: LibraryFilter): boolean {
     return false;
   if (f.flag !== "any" && photo.flag !== f.flag) return false;
   if (f.label !== "any" && photo.colorLabel !== f.label) return false;
+  if (f.keywords.length > 0) {
+    const lower = photo.keywords.map((k) => k.toLowerCase());
+    if (!f.keywords.every((k) => lower.includes(k.toLowerCase()))) return false;
+  }
   return true;
 }
 
-function sortValue(p: CatalogPhoto, field: SortField): number | string {
+// `field` is a built-in SortField; unknown ids (e.g. an extension sort handled
+// via customCompare) fall through to the dateImported default.
+function sortValue(p: CatalogPhoto, field: string): number | string {
   switch (field) {
     case "filename":
       return p.filename.toLowerCase();
@@ -79,21 +86,38 @@ function inFolder(p: CatalogPhoto, folder: string): boolean {
 export function visiblePhotos(
   photos: CatalogPhoto[],
   filter: LibraryFilter,
-  sortField: SortField,
+  // A built-in SortField or an extension sort id (resolved via customCompare).
+  sortField: string,
   sortDir: SortDirection,
   folder: string | null = null,
+  // Extra predicates (e.g. an extension's text/EXIF search). ANDed with the
+  // built-in filter so culling walks exactly what the grid shows.
+  predicates: ((p: CatalogPhoto) => boolean)[] = [],
+  // Ascending comparator for an extension-contributed sort; when given it
+  // replaces the built-in field comparator (direction + tiebreak still apply).
+  customCompare?: (a: CatalogPhoto, b: CatalogPhoto) => number,
 ): CatalogPhoto[] {
   const dir = sortDir === "asc" ? 1 : -1;
   // .filter() already returns a fresh array, so sorting it in place is safe.
   return photos
-    .filter((p) => (folder === null || inFolder(p, folder)) && matches(p, filter))
+    .filter(
+      (p) =>
+        (folder === null || inFolder(p, folder)) &&
+        matches(p, filter) &&
+        predicates.every((fn) => fn(p)),
+    )
     .sort((a, b) => {
-      const av = sortValue(a, sortField);
-      const bv = sortValue(b, sortField);
-      let c =
-        typeof av === "string" && typeof bv === "string"
-          ? av.localeCompare(bv)
-          : (av as number) - (bv as number);
+      let c: number;
+      if (customCompare) {
+        c = customCompare(a, b);
+      } else {
+        const av = sortValue(a, sortField);
+        const bv = sortValue(b, sortField);
+        c =
+          typeof av === "string" && typeof bv === "string"
+            ? av.localeCompare(bv)
+            : (av as number) - (bv as number);
+      }
       if (c === 0) c = a.dateImported - b.dateImported; // stable tiebreak
       return c * dir;
     });

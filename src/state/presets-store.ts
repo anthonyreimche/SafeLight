@@ -4,7 +4,13 @@ import type { DevelopParams } from "@/catalog/types";
 export interface Preset {
   id: string;
   name: string;
-  params: DevelopParams;
+  /** Optional group/folder name. Presets without a group render ungrouped. */
+  group?: string;
+  /** Only the adjustments this preset carries. Applying merges these over the
+   *  photo's current params (Lightroom-style partial presets), so a preset can
+   *  hold as little as a single slider. Older full-snapshot presets simply carry
+   *  every key. */
+  params: Partial<DevelopParams>;
 }
 
 const STORAGE_KEY = "safelight-presets";
@@ -22,23 +28,49 @@ function saveToStorage(presets: Preset[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
 }
 
+/** Return `base` if no preset uses it, else the first free "`base` N" suffix.
+ *  Comparison is case-insensitive, matching the panel's collision check. */
+export function nextAvailableName(presets: Preset[], base: string): string {
+  const taken = new Set(presets.map((p) => p.name.toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let n = 2; ; n++) {
+    const candidate = `${base} ${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
 interface PresetsState {
   presets: Preset[];
-  add: (name: string, params: DevelopParams) => void;
+  add: (name: string, params: Partial<DevelopParams>, group?: string) => void;
+  /** Replace an existing preset's params/group in place (keeps id, name, position). */
+  update: (id: string, params: Partial<DevelopParams>, group?: string) => void;
   remove: (id: string) => void;
 }
 
 export const usePresetsStore = create<PresetsState>((set) => ({
   presets: loadFromStorage(),
 
-  add(name, params) {
+  add(name, params, group) {
     set((s) => {
       const preset: Preset = {
         id: crypto.randomUUID(),
         name,
+        group: group?.trim() || undefined,
         params: structuredClone(params),
       };
       const presets = [...s.presets, preset];
+      saveToStorage(presets);
+      return { presets };
+    });
+  },
+
+  update(id, params, group) {
+    set((s) => {
+      const presets = s.presets.map((p) =>
+        p.id === id
+          ? { ...p, group: group?.trim() || undefined, params: structuredClone(params) }
+          : p,
+      );
       saveToStorage(presets);
       return { presets };
     });

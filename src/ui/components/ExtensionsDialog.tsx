@@ -29,7 +29,7 @@ export function ExtensionsDialog() {
         if (e.target === e.currentTarget) closeExtensions();
       }}
     >
-      <div className="flex h-[560px] w-[560px] max-w-[92vw] flex-col overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl">
+      <div className="flex h-[640px] max-h-[90vh] w-[960px] max-w-[94vw] flex-col overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl">
         <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-surface-2 px-3">
           <span className="text-[11px] font-semibold uppercase tracking-widest text-text-secondary">
             Extensions

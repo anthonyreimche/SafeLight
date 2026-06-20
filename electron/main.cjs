@@ -26,18 +26,8 @@ const { pathToFileURL } = require("node:url");
 const isDev = !app.isPackaged;
 const DIST = path.join(__dirname, "..", "dist");
 
-let _appVersion;
 function appVersion() {
-  if (!_appVersion) {
-    try {
-      _appVersion = JSON.parse(
-        fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
-      ).version;
-    } catch {
-      _appVersion = app.getVersion();
-    }
-  }
-  return _appVersion;
+  return app.getVersion();
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +170,11 @@ const CSP = [
   "script-src 'self' 'wasm-unsafe-eval' blob:",
   "worker-src 'self' blob:",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
+  // https: lets the Extensions store show remote previews: repo thumbnails,
+  // owner avatars, and images inside rendered extension READMEs (badges,
+  // screenshots). Images can't execute code, and script-src/connect-src stay
+  // locked to 'self', so this widens display only — no new code or data egress.
+  "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
   "connect-src 'self' data: blob:",
   "object-src 'none'",
@@ -392,6 +386,7 @@ async function searchExtensions(query, topic) {
     description: r.description,
     stars: r.stargazers_count || 0,
     updatedAt: r.updated_at,
+    topics: Array.isArray(r.topics) ? r.topics : [],
   }));
 }
 
@@ -409,6 +404,58 @@ async function fetchReleases(repo) {
   );
   if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
   return res.json();
+}
+
+// Validate an "owner/repo" string before interpolating it into a GitHub URL.
+function validRepo(repo) {
+  return /^[\w.-]+\/[\w.-]+$/.test(String(repo));
+}
+
+// Repo metadata for the Extensions detail view — runs in the main process to
+// bypass the renderer CSP. Returns a normalised subset so we never leak the raw
+// GitHub payload (or its many embedded URLs) into the renderer.
+async function fetchRepoMeta(repo) {
+  if (!validRepo(repo)) throw new Error("Bad repository");
+  const res = await net.fetch(`https://api.github.com/repos/${repo}`, {
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "Safelight" },
+  });
+  if (res.status === 403 || res.status === 429)
+    throw new Error("GitHub rate limit reached — try again in a minute.");
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
+  const r = await res.json();
+  return {
+    fullName: r.full_name,
+    description: r.description ?? null,
+    stars: r.stargazers_count || 0,
+    openIssues: r.open_issues_count || 0,
+    updatedAt: r.pushed_at || r.updated_at || "",
+    license: r.license && r.license.spdx_id !== "NOASSERTION" ? r.license.spdx_id : null,
+    topics: Array.isArray(r.topics) ? r.topics : [],
+    homepage: r.homepage || null,
+    htmlUrl: r.html_url,
+    defaultBranch: r.default_branch || "HEAD",
+    ownerLogin: r.owner ? r.owner.login : "",
+    ownerAvatarUrl: r.owner ? r.owner.avatar_url : null,
+    hasIssues: !!r.has_issues,
+    hasDiscussions: !!r.has_discussions,
+    ogImageUrl: `https://opengraph.githubassets.com/1/${r.full_name}`,
+  };
+}
+
+// Raw README text for the Extensions detail view. Returns null when the repo
+// has no README (404) so the UI can fall back to the manifest description.
+async function fetchReadme(repo, ref) {
+  if (!validRepo(repo)) throw new Error("Bad repository");
+  const branch = encodeURIComponent(String(ref || "HEAD"));
+  for (const name of ["README.md", "readme.md", "README.markdown", "README"]) {
+    const res = await net.fetch(
+      `https://raw.githubusercontent.com/${repo}/${branch}/${name}`,
+      { headers: { "User-Agent": "Safelight" } }
+    );
+    if (res.ok) return res.text();
+    if (res.status !== 404) throw new Error(`GitHub error: ${res.status}`);
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +528,10 @@ async function installRelease(repo, tag) {
 function registerPluginIpc() {
   ipcMain.handle("app:version", () => appVersion());
   ipcMain.handle("releases:fetch", (_e, repo) => fetchReleases(String(repo)));
+  ipcMain.handle("github:repoMeta", (_e, repo) => fetchRepoMeta(String(repo)));
+  ipcMain.handle("github:readme", (_e, repo, ref) =>
+    fetchReadme(String(repo), String(ref ?? "HEAD"))
+  );
   ipcMain.handle("updates:install", (_e, repo, tag) =>
     installRelease(String(repo), String(tag))
   );
@@ -571,6 +622,47 @@ function registerFsIpc() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Developer Tools extension bridge. Lets the (opt-in, disabled-by-default)
+// Developer Tools panel drive the window's Chrome DevTools and read main-process
+// diagnostics. Gated by the renderer: the panel only exists when the user
+// enables the extension.
+// ---------------------------------------------------------------------------
+function registerDevtoolsIpc() {
+  const senderWindow = (e) => BrowserWindow.fromWebContents(e.sender);
+  const DEVTOOLS_MODES = new Set(["right", "bottom", "undocked", "detach"]);
+
+  ipcMain.handle("devtools:open", (e, mode) => {
+    const wc = senderWindow(e)?.webContents;
+    if (wc) wc.openDevTools({ mode: DEVTOOLS_MODES.has(mode) ? mode : "detach" });
+  });
+  ipcMain.handle("devtools:close", (e) => senderWindow(e)?.webContents.closeDevTools());
+  ipcMain.handle("devtools:toggle", (e) => {
+    const wc = senderWindow(e)?.webContents;
+    if (!wc) return;
+    if (wc.isDevToolsOpened()) wc.closeDevTools();
+    else wc.openDevTools({ mode: "detach" });
+  });
+  ipcMain.handle("devtools:isOpen", (e) => !!senderWindow(e)?.webContents.isDevToolsOpened());
+  ipcMain.handle("devtools:reload", (e, hard) => {
+    const wc = senderWindow(e)?.webContents;
+    if (!wc) return;
+    if (hard) wc.reloadIgnoringCache();
+    else wc.reload();
+  });
+
+  ipcMain.handle("diagnostics:gpuInfo", () => app.getGPUFeatureStatus());
+  ipcMain.handle("diagnostics:metrics", () =>
+    app.getAppMetrics().map((m) => ({
+      type: m.type,
+      pid: m.pid,
+      cpuPercent: m.cpu ? m.cpu.percentCPUUsage : 0,
+      // workingSetSize is reported in kilobytes.
+      memoryMB: m.memory ? m.memory.workingSetSize / 1024 : 0,
+    }))
+  );
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1500,
@@ -585,7 +677,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      devTools: isDev,
+      // Enabled in packaged builds too so the opt-in Developer Tools extension
+      // can open DevTools; it never auto-opens outside dev (see below).
+      devTools: true,
       spellcheck: false,
       backgroundThrottling: false,
     },
@@ -616,7 +710,7 @@ function createWindow() {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: true,
-            devTools: isDev,
+            devTools: true,
             backgroundThrottling: false,
           },
         },
@@ -684,6 +778,7 @@ if (!app.requestSingleInstanceLock()) {
     registerProtocol();
     registerPluginIpc();
     registerFsIpc();
+    registerDevtoolsIpc();
     createWindow();
 
     app.on("activate", () => {
