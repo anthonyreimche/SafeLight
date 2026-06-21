@@ -153,7 +153,10 @@ export function loadBuiltins(): void {
 
 async function loadPlugin(manifest: ExtensionManifest): Promise<void> {
   if (loaded.has(manifest.id)) return;
-  const url = `${location.origin}/__plugins__/${manifest.id}/${manifest.main}`;
+  // Cache-bust by version: the renderer caches a dynamic import() by URL, so
+  // without a per-version query an updated bundle keeps running the module that
+  // was imported at launch. Bumping the manifest version now re-imports it.
+  const url = `${location.origin}/__plugins__/${manifest.id}/${manifest.main}?v=${encodeURIComponent(manifest.version)}`;
   const mod = (await import(/* @vite-ignore */ url)) as Partial<ExtensionModule>;
   if (typeof mod.activate !== "function")
     throw new Error(`${manifest.id}: bundle has no activate(api) export`);
@@ -192,6 +195,15 @@ export async function installFromGitHub(
   persistDisabled(
     useDisabledExtensions.getState().ids.filter((x) => x !== manifest.id),
   );
+  // Updating over a live version: tear the old one down and drop it from the
+  // loaded set so loadPlugin re-imports the freshly-downloaded bundle (the
+  // versioned URL above makes that a real re-import, not a cache hit).
+  const prev = loaded.get(manifest.id);
+  if (prev) {
+    prev.deactivate?.();
+    loaded.delete(manifest.id);
+    unregisterExtension(manifest.id);
+  }
   await loadPlugin(manifest); // live, no restart
   return manifest;
 }

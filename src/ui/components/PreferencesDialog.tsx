@@ -3,7 +3,7 @@
 // persisted settings store immediately — there is no OK/Apply; close when done.
 // Theme and layout drive their own stores (themes.ts / dock.ts) directly.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { SettingsFieldList } from "@/extensions/SettingsFieldList";
@@ -119,6 +119,22 @@ const sectionMatches = (s: PrefSection, q: string): boolean =>
 interface SearchGroup {
   section: PrefSection;
   items: PrefSetting[];
+}
+
+// While searching, section bodies render their *real* controls inside this
+// context. The Field/Toggle/Slider wrappers read it and hide themselves when
+// their label/hint doesn't match — so the results show the matching settings as
+// live, editable controls rather than static text. Empty string = no filtering.
+const PrefSearchContext = createContext("");
+
+/** A field wrapper is visible when there's no active filter, or its text matches it. */
+function useFieldVisible(label: string, hint?: string): boolean {
+  const q = useContext(PrefSearchContext);
+  if (!q) return true;
+  return (
+    label.toLowerCase().includes(q) ||
+    (hint?.toLowerCase().includes(q) ?? false)
+  );
 }
 
 const CORE_SECTIONS: PrefSection[] = [
@@ -556,56 +572,31 @@ function SearchResults({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-2">
-      {groups.map(({ section, items }) => (
-        <div key={section.id} className="mb-1">
-          <button
-            onClick={() => onPick(section.id)}
-            className="flex w-full items-center gap-1 px-2 py-1 text-left text-[9px] uppercase tracking-widest text-text-muted hover:text-text-secondary"
-          >
-            {section.group === "Extensions" && (
-              <span className="opacity-70">Extensions ›</span>
-            )}
-            {section.label}
-          </button>
-          {/* A section that matched only via its title/synonyms has no specific
-              setting to show — offer a jump-to-section row instead. */}
-          {items.length === 0 ? (
+    <div className="flex-1 overflow-y-auto p-4">
+      {groups.map(({ section, items }) => {
+        // Sections matched by a specific setting render only the matching
+        // controls (filter = query). Sections matched only by their title or a
+        // synonym have no single setting to isolate, so show the whole panel.
+        const filter = items.length > 0 ? query : "";
+        return (
+          <div key={section.id} className="mb-6 last:mb-0">
             <button
               onClick={() => onPick(section.id)}
-              className="block w-full rounded px-3 py-1.5 text-left text-[11px] text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+              title={`Open ${section.label}`}
+              className="mb-2 flex items-center gap-1 text-[9px] uppercase tracking-widest text-text-muted hover:text-text-secondary"
             >
-              Open {section.label}…
+              {section.group === "Extensions" && (
+                <span className="opacity-70">Extensions ›</span>
+              )}
+              {section.label}
             </button>
-          ) : (
-            items.map((it) => (
-              <button
-                key={it.label}
-                onClick={() => onPick(section.id)}
-                className="block w-full rounded px-3 py-1.5 text-left text-[11px] text-text-primary hover:bg-surface-2"
-              >
-                <Highlight text={it.label} query={query} />
-              </button>
-            ))
-          )}
-        </div>
-      ))}
+            <PrefSearchContext.Provider value={filter}>
+              {section.render(filter)}
+            </PrefSearchContext.Provider>
+          </div>
+        );
+      })}
     </div>
-  );
-}
-
-// Bold the matched substring of a setting label so the query stands out.
-function Highlight({ text, query }: { text: string; query: string }) {
-  const i = text.toLowerCase().indexOf(query);
-  if (i < 0) return <>{text}</>;
-  return (
-    <>
-      {text.slice(0, i)}
-      <mark className="rounded bg-slider-fill/30 text-text-primary">
-        {text.slice(i, i + query.length)}
-      </mark>
-      {text.slice(i + query.length)}
-    </>
   );
 }
 
@@ -1659,6 +1650,7 @@ function Field({
   hint?: string;
   children: React.ReactNode;
 }) {
+  if (!useFieldVisible(label, hint)) return null;
   return (
     <div>
       <div className={labelCls}>{label}</div>
@@ -1683,6 +1675,7 @@ function ToggleField({
   checked: boolean;
   onChange: (v: boolean) => void;
 }) {
+  if (!useFieldVisible(label, hint)) return null;
   return (
     <div>
       <button
@@ -1728,6 +1721,7 @@ function SliderField({
   format: (v: number) => string;
   onChange: (v: number) => void;
 }) {
+  if (!useFieldVisible(label)) return null;
   const pct = ((value - min) / (max - min)) * 100;
   return (
     <div>
