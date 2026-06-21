@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld("safelightNative", {
     search: (query, topic) =>
       ipcRenderer.invoke("plugins:search", String(query ?? ""), String(topic ?? "")),
     uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
+    latestVersion: (repo) =>
+      ipcRenderer.invoke("plugins:latest-version", String(repo)),
   },
   // Chrome DevTools control + main-process diagnostics for the opt-in
   // Developer Tools extension (src/extensions/devtools/).

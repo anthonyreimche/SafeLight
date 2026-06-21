@@ -18,7 +18,8 @@ export type Async<T> =
 
 /** Latest-version check for one installed extension. */
 export interface ExtUpdateInfo {
-  /** Newest release tag found on GitHub, or null if none / no repo. */
+  /** Latest version from the repo's safelight.json on GitHub, or null if no
+   *  repo / unreachable. (Named `latestTag` for history; it's a version now.) */
   latestTag: string | null;
   /** True when latestTag is strictly newer than the installed version. */
   hasUpdate: boolean;

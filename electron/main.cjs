@@ -437,6 +437,33 @@ async function fetchReleases(repo) {
   return res.json();
 }
 
+// The `version` from the repo's root safelight.json on its default branch — the
+// same field the installed manifest exposes, so the extension updater can detect
+// a pushed version bump without requiring a GitHub Release. Null on any failure
+// (missing manifest, private repo, network) so the caller simply skips the check.
+async function fetchManifestVersion(repo) {
+  if (!validRepo(repo)) return null;
+  try {
+    const res = await net.fetch(
+      `https://api.github.com/repos/${repo}/contents/safelight.json`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "Safelight",
+        },
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || typeof data.content !== "string") return null;
+    const json = Buffer.from(data.content, data.encoding || "base64").toString("utf8");
+    const manifest = JSON.parse(json);
+    return typeof manifest.version === "string" ? manifest.version : null;
+  } catch {
+    return null;
+  }
+}
+
 // Validate an "owner/repo" string before interpolating it into a GitHub URL.
 function validRepo(repo) {
   return /^[\w.-]+\/[\w.-]+$/.test(String(repo));
@@ -624,6 +651,9 @@ function registerPluginIpc() {
   ipcMain.handle("plugins:install", (_e, spec) => installPlugin(spec));
   ipcMain.handle("plugins:search", (_e, query, topic) =>
     searchExtensions(query, topic)
+  );
+  ipcMain.handle("plugins:latest-version", (_e, repo) =>
+    fetchManifestVersion(String(repo))
   );
   ipcMain.handle("plugins:uninstall", (_e, id) => {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))

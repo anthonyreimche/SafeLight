@@ -703,6 +703,10 @@ declare global {
         uninstall(id: string): Promise<void>;
         /** Search GitHub for official extensions (repos with `topic`). */
         search(query: string, topic: string): Promise<ExtensionSearchResult[]>;
+        /** The `version` from the repo's root safelight.json on its default
+         *  branch, or null. Lets the updater detect a pushed version bump
+         *  without a GitHub Release. Optional: absent in older Electron builds. */
+        latestVersion?(repo: string): Promise<string | null>;
       };
       /** Renderer-side control of the window's Chrome DevTools. Backs the
        *  Developer Tools extension's Native tab. */

@@ -225,16 +225,16 @@ export async function uninstallPlugin(id: string): Promise<void> {
 
 const UPDATE_CHECK_TTL = 6 * 60 * 60 * 1000; // re-check at most every 6h
 
-/** Newest non-draft release tag for "owner/repo", or null if none / no bridge. */
-async function latestReleaseTag(fullName: string): Promise<string | null> {
+/** The version in the repo's default-branch safelight.json, or null. This is the
+ *  same field the installed manifest exposes, so a pushed version bump is an
+ *  update — no GitHub Release required (install/browse already track HEAD). */
+async function latestRepoVersion(fullName: string): Promise<string | null> {
   const native = window.safelightNative;
-  if (!native?.releases) return null;
-  const releases = await native.releases.fetch(fullName);
-  const best = releases.find((r) => !r.draft);
-  return best?.tag_name ?? null;
+  if (!native?.plugins?.latestVersion) return null;
+  return native.plugins.latestVersion(fullName);
 }
 
-/** Check one installed extension for a newer release and cache the result.
+/** Check one installed extension for a newer version and cache the result.
  *  Returns the cached result when checked within the TTL (unless `force`). */
 export async function checkExtensionUpdate(
   manifest: ExtensionManifest,
@@ -245,36 +245,38 @@ export async function checkExtensionUpdate(
   const cached = useExtStoreUI.getState().updates[manifest.id];
   if (!force && cached && Date.now() - cached.checkedAt < UPDATE_CHECK_TTL)
     return cached;
-  let latestTag: string | null = null;
+  let latest: string | null = null;
   try {
-    latestTag = await latestReleaseTag(repo);
+    latest = await latestRepoVersion(repo);
   } catch {
     return cached ?? null; // network hiccup — keep any prior result
   }
   const info: ExtUpdateInfo = {
-    latestTag,
-    hasUpdate: !!latestTag && isNewer(manifest.version, latestTag),
+    latestTag: latest,
+    hasUpdate: !!latest && isNewer(manifest.version, latest),
     checkedAt: Date.now(),
   };
   useExtStoreUI.getState().setUpdate(manifest.id, info);
   return info;
 }
 
-/** Reinstall an extension at `tag`, preserving its settings and enabled state.
- *  The install overwrites <userData>/plugins/<id>/ in place. */
+/** Reinstall an extension from its repo's HEAD, preserving settings and enabled
+ *  state. The install overwrites <userData>/plugins/<id>/ in place. The third
+ *  arg (the detected latest version) is informational; the install always pulls
+ *  HEAD, whose latest commit carries that version (bumps aren't git tags). */
 export async function updateExtension(
   id: string,
   fullName: string,
-  tag: string,
+  _version: string,
 ): Promise<ExtensionManifest> {
-  // Tear down the running instance, then reinstall the new tag live. Settings
-  // are deliberately NOT deleted (unlike uninstall) so the update is seamless.
+  // Tear down the running instance, then reinstall live. Settings are
+  // deliberately NOT deleted (unlike uninstall) so the update is seamless.
   loaded.get(id)?.deactivate?.();
   loaded.delete(id);
   unregisterExtension(id);
-  const manifest = await installFromGitHub(`${fullName}#${tag}`);
+  const manifest = await installFromGitHub(fullName); // HEAD = latest version
   useExtStoreUI.getState().setUpdate(id, {
-    latestTag: tag,
+    latestTag: manifest.version,
     hasUpdate: false,
     checkedAt: Date.now(),
   });
@@ -286,7 +288,7 @@ export async function updateExtension(
  *  fire a burst of GitHub requests. Gated by the checkExtensionUpdates setting. */
 export async function checkAllExtensionUpdates(): Promise<void> {
   const native = window.safelightNative;
-  if (!native?.releases) return;
+  if (!native?.plugins?.latestVersion) return;
   const settings = getSettings();
   if (!settings.checkExtensionUpdates) return;
   let list: ExtensionManifest[];
