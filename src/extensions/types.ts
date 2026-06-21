@@ -618,6 +618,10 @@ export interface SafelightAPI {
   registerSlot(c: SlotContribution): void;
   /** Add a sort order to the Library toolbar's sort dropdown. */
   registerLibrarySort(c: LibrarySortContribution): void;
+  /** Register the fallback "Reset to defaults" action shown on every panel's
+   *  dock header that has no `onReset` of its own. One handler app-wide (last
+   *  registrant wins); the built-in Edit panel registers a whole-edit reset. */
+  registerDefaultPanelReset(fn: () => void): void;
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;

@@ -22,6 +22,7 @@ import {
   registerSlot,
   registerSliderIcon,
   registerTheme,
+  registerDefaultPanelReset,
 } from "./registry";
 import { applyPipeline, initPipelines, usePipelineStore } from "./pipelines";
 import { setStageTexture } from "@/rendering/render-bridge";
@@ -89,6 +90,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerGridFilter: (c) => registerGridFilter(extensionId, c),
     registerSlot: (c) => registerSlot(extensionId, c),
     registerLibrarySort: (c) => registerLibrarySort(extensionId, c),
+    registerDefaultPanelReset: (fn) => registerDefaultPanelReset(extensionId, fn),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),

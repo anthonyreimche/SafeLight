@@ -561,7 +561,9 @@ function PanelBody({ id }: { id: string }) {
 function PanelHeader({ id }: { id: string }) {
   const containerRef = useContext(ContainerCtx);
   const title = useRegistry((s) => s.panels[id]?.title ?? id);
-  const onReset = useRegistry((s) => s.panels[id]?.onReset);
+  // The panel's own reset if it declared one, else the global fallback (the Edit
+  // panel registers a whole-edit reset), so EVERY panel header offers it.
+  const onReset = useRegistry((s) => s.panels[id]?.onReset ?? s.defaultPanelReset?.fn);
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (

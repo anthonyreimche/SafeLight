@@ -293,7 +293,25 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   },
 
   // ── Develop: right rail ──
-  panelExt("core.edit", "Edit", EditActionsPanel, "Undo, redo and reset actions for the current edit.", right(0, 76)),
+  {
+    id: "core.edit",
+    name: "Edit",
+    version: V,
+    description: "Undo, redo and reset actions for the current edit.",
+    activate: (api) => {
+      api.registerPanel({
+        id: "core.edit",
+        title: "Edit",
+        component: EditActionsPanel,
+        defaultDock: right(0, 76),
+      });
+      // Universal fallback reset: right-clicking ANY panel header that doesn't
+      // declare its own onReset offers "Reset to defaults", resetting the whole
+      // develop edit. Panels with a scoped reset (Basic, White Balance, …) keep
+      // theirs; this just covers every other panel.
+      api.registerDefaultPanelReset(() => void useDevelopStore.getState().reset());
+    },
+  },
   panelExt("core.histogram", "Histogram", HistogramPanel, "Live RGB histogram of the rendered image.", right(1, 150)),
   panelExt("core.transform", "Transform", TransformPanel, "Perspective, upright and geometry corrections.", right(2, 320), () => {
     const st = useDevelopStore.getState();
