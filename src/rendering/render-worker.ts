@@ -1,6 +1,6 @@
 import type { DevelopParams, UprightMode } from "@/catalog/types";
 import type { ResolvedProfile } from "@/lens-profiles/types";
-import type { ProcessingStageContribution } from "@/extensions/types";
+import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { BUILTIN_RESOLVED } from "@/extensions/pipelines";
 import { WebGLRenderer } from "./webgl/renderer";
@@ -25,6 +25,7 @@ export type WorkerRequest =
     }
   | { cmd: "setParams"; params: DevelopParams }
   | { cmd: "setContributedParams"; bag: Record<string, unknown> }
+  | { cmd: "setStageTextures"; bag: Record<string, StageTextureData> }
   // Render one frame with `params` to an ImageBitmap returned out-of-band (NOT
   // blitted to the display) so an extension can grab a "before" frame at the
   // current source + viewport without disturbing the live view. The live params
@@ -109,6 +110,9 @@ let latestPipeline: ResolvedPipeline = BUILTIN_RESOLVED;
 // Generic param bag for extension-contributed stage uniforms. Persisted so a
 // newly-created thumb renderer inherits it; the renderer keeps its own copy.
 let latestParamBag: Record<string, unknown> = {};
+// Stage textures (e.g. baked LUT atlases), keyed by qualified key. Persisted so a
+// newly-created thumb renderer inherits them.
+let latestStageTextures: Record<string, StageTextureData> = {};
 // The last params pushed to the develop renderer. A `capture` swaps in override
 // params, renders, then restores these so a later display render (e.g. from a
 // viewport or clipping change that doesn't re-send params) isn't left showing
@@ -129,6 +133,7 @@ function ensureThumbRenderer(): WebGLRenderer {
   });
   if (cacheBudgetBytes > 0) thumbRenderer.setCacheBudget(cacheBudgetBytes / 4);
   thumbRenderer.setContributedParams(latestParamBag);
+  thumbRenderer.setStageTextures(latestStageTextures);
   return thumbRenderer;
 }
 
@@ -178,6 +183,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         latestParamBag = msg.bag;
         renderer?.setContributedParams(msg.bag);
         thumbRenderer?.setContributedParams(msg.bag);
+        break;
+      }
+
+      case "setStageTextures": {
+        latestStageTextures = msg.bag;
+        renderer?.setStageTextures(msg.bag);
+        thumbRenderer?.setStageTextures(msg.bag);
         break;
       }
 

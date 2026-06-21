@@ -24,6 +24,7 @@ import {
   registerTheme,
 } from "./registry";
 import { applyPipeline, initPipelines, usePipelineStore } from "./pipelines";
+import { setStageTexture } from "@/rendering/render-bridge";
 import {
   getExtSetting,
   initExtSettings,
@@ -77,6 +78,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerPipeline: (c) => registerPipeline(extensionId, c),
     registerProcessingStage: (c) => registerProcessingStage(extensionId, c),
     unregisterProcessingStage: (id) => unregisterProcessingStage(extensionId, id),
+    setStageTexture: (stageId, key, tex) => setStageTexture(`${stageId}.${key}`, tex),
     registerKeybinding: (c) => registerExtensionAction(extensionId, c),
     registerSettings: (c) => registerSettings(extensionId, c),
     registerExportProcessor: (c) => registerExportProcessor(extensionId, c),

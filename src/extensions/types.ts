@@ -326,6 +326,20 @@ export interface TextureRequirement {
   format?: "rgba8" | "rgba16f" | "r8";
 }
 
+/** Runtime pixel data for a processing stage's declared texture (e.g. a baked
+ *  3D-LUT atlas), supplied via api.setStageTexture. The renderer uploads it once
+ *  per version change and binds it to the stage's sampler each frame — so the
+ *  data can be swapped (a different film stock) without recompiling the shader. */
+export interface StageTextureData {
+  /** Tightly-packed pixels, row-major. rgba8 → 4 bytes/texel, r8 → 1. */
+  data: Uint8Array;
+  width: number;
+  height: number;
+  format: "rgba8" | "r8";
+  /** Bump when `data` changes under the same key to force a GPU re-upload. */
+  version: number;
+}
+
 /** Fixed processing phases. Order is enforced by the shader compiler. */
 export type ProcessingPhase =
   | "decode"
@@ -567,6 +581,15 @@ export interface SafelightAPI {
   /** Remove a single processing stage this extension registered (by id), e.g.
    *  to turn a feature off without disabling the whole extension. */
   unregisterProcessingStage(id: string): void;
+  /** Supply (or clear, with null) the pixel data for a processing stage's
+   *  declared texture — e.g. a baked LUT atlas. Bound to the stage's sampler
+   *  (named by the texture's `key`) on every frame; re-call with a bumped
+   *  `version` to swap the data without recompiling the shader. */
+  setStageTexture(
+    stageId: string,
+    key: string,
+    tex: StageTextureData | null,
+  ): void;
   /** Register a keyboard shortcut; appears in Preferences ▸ Shortcuts. */
   registerKeybinding(c: KeyActionContribution): void;
   /** Declare a settings dialog (⚙ in the Extensions panel). */

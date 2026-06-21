@@ -272,6 +272,13 @@ export class RenderBridge {
     this.post({ cmd: "setContributedParams", bag });
   }
 
+  /** Pixel data (baked LUT atlases, etc.) for processing-stage textures, keyed
+   *  by qualified key "{stageId}.{key}". Structured-cloned to the worker (not
+   *  transferred) so the caller keeps its buffers and can re-push on a swap. */
+  setStageTextures(bag: Record<string, import("@/extensions/types").StageTextureData>) {
+    this.post({ cmd: "setStageTextures", bag });
+  }
+
   /** Render one frame with `params` (at the current source + viewport) to an
    *  ImageBitmap, without touching the live display. Used to grab a "before"
    *  frame for before/after comparison overlays. The live params are restored
@@ -397,6 +404,22 @@ let singleton: RenderBridge | null = null;
 let unsubStages: (() => void) | null = null;
 let unsubPipeline: (() => void) | null = null;
 
+// Stage textures live here (not in the per-photo param bag — they're bulk static
+// data tied to the stage, not the edit). Extensions push via api.setStageTexture;
+// the bag is replayed when the bridge (re)initialises.
+const stageTextures: Record<string, import("@/extensions/types").StageTextureData> = {};
+
+/** Set or clear (null) a processing stage's texture by qualified key
+ *  "{stageId}.{key}". Forwards the full bag to the worker. */
+export function setStageTexture(
+  qualifiedKey: string,
+  tex: import("@/extensions/types").StageTextureData | null,
+): void {
+  if (tex) stageTextures[qualifiedKey] = tex;
+  else delete stageTextures[qualifiedKey];
+  singleton?.setStageTextures(stageTextures);
+}
+
 function syncStages() {
   if (!singleton) return;
   const stages = useRegistry.getState().processingStages;
@@ -415,6 +438,8 @@ export function getRenderBridge(): RenderBridge {
 
     syncStages();
     syncPipeline();
+    // Replay any stage textures registered before the bridge existed.
+    if (Object.keys(stageTextures).length > 0) singleton.setStageTextures(stageTextures);
 
     // Push the GPU source-cache budget now and whenever the preference changes.
     singleton.setCacheBudget(getSettings().gpuSourceCacheBytes);

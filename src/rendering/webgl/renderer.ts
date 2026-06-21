@@ -29,6 +29,7 @@ import {
   type ProcessingPhase,
   type ProcessingStageContribution,
   type StagePass,
+  type StageTextureData,
 } from "@/extensions/types";
 import {
   OUT_SPACE_CODE,
@@ -50,6 +51,12 @@ const ATTR_UV = 1;
 // the develop shader (image, curve, masks, retouch, developed, heal, …).
 const PREPASS_UNIT_BASE = 8;
 const MAX_PREPASS_STAGES = 4;
+
+// Extension stage textures (baked LUT atlases, etc.) bind to units above the
+// prepass range. WebGL2 guarantees >= 16 fragment texture units, so 12-15 are
+// always available.
+const STAGE_TEX_UNIT_BASE = PREPASS_UNIT_BASE + MAX_PREPASS_STAGES; // 12
+const MAX_STAGE_TEXTURES = 4;
 
 // One compiled develop program per pipeline signature: switching transforms
 // (or back) is an O(1) swap with no shader recompile or uniform re-query.
@@ -272,6 +279,15 @@ interface ContributedBinding {
   default: number | number[] | boolean;
 }
 
+/** A stage-declared texture (e.g. a LUT atlas), resolved to its namespaced
+ *  sampler so render() can bind its uploaded data each frame. */
+interface StageTextureBinding {
+  /** Qualified key "{stageId}.{key}" — also the stage-texture bag key. */
+  qualifiedKey: string;
+  /** Namespaced sampler identifier, e.g. "u_ab12_lut". */
+  glslName: string;
+}
+
 /** Which injection group a phase maps to. Linear-space phases operate on `lin`
  *  (the scene-linear working color); display-space phases operate on `c`. */
 function phaseGroup(
@@ -431,6 +447,7 @@ function buildStageInjection(
   injection: StageInjection;
   sig: string;
   bindings: ContributedBinding[];
+  textureBindings: StageTextureBinding[];
   prepass: PrepassStage[];
   hasNoiseReduction: boolean;
 } {
@@ -444,6 +461,7 @@ function buildStageInjection(
   const helperBlocks: string[] = [];
   const groups = { noiseReduction: [] as string[], sceneLinear: [] as string[], effects: [] as string[] };
   const bindings: ContributedBinding[] = [];
+  const textureBindings: StageTextureBinding[] = [];
   const prepass: PrepassStage[] = [];
   const sigParts: string[] = [];
   let hasNoiseReduction = false;
@@ -474,12 +492,24 @@ function buildStageInjection(
         default: u.default,
       });
     }
+    // Stage textures (e.g. baked LUT atlases): emit one namespaced sampler per
+    // declared texture, exposed to the inline glsl / helpers under its `key`,
+    // and recorded so render() can bind the uploaded data. Part of the sig so a
+    // change in the texture set recompiles, but a data swap (same set) doesn't.
+    for (const t of s.textures ?? []) {
+      const glslName = uPfx + t.key;
+      uniformDecls.push(`uniform sampler2D ${glslName};`);
+      textureBindings.push({ qualifiedKey: `${s.id}.${t.key}`, glslName });
+      sigParts.push(`${s.id}~tex:${t.key}`);
+    }
+
     let helperNames: string[] = [];
     if (s.helpers) {
       helperNames = extractHelperNames(s.helpers);
       let h = s.helpers;
       for (const n of helperNames) h = h.replaceAll(n, hPfx + n);
       for (const u of s.uniforms) h = h.replaceAll(u.key, uPfx + u.key);
+      for (const t of s.textures ?? []) h = h.replaceAll(t.key, uPfx + t.key);
       helperBlocks.push(h);
     }
 
@@ -508,7 +538,8 @@ function buildStageInjection(
       );
     }
 
-    const inline = rewriteGlsl(s.glsl, s.uniforms, uPfx, hPfx, helperNames);
+    let inline = rewriteGlsl(s.glsl, s.uniforms, uPfx, hPfx, helperNames);
+    for (const t of s.textures ?? []) inline = inline.replaceAll(t.key, uPfx + t.key);
     groups[group].push(`{\n${prelude}${inline}\n}`);
     sigParts.push(`${s.id}:${simpleHash(s.glsl)}`);
   }
@@ -523,6 +554,7 @@ function buildStageInjection(
     },
     sig: sigParts.join("|"),
     bindings,
+    textureBindings,
     prepass,
     hasNoiseReduction,
   };
@@ -576,6 +608,13 @@ export class WebGLRenderer {
   // setContributedParams (the develop store's generic param bag).
   private contributedBindings: ContributedBinding[] = [];
   private contributedParams: Record<string, unknown> = {};
+  // Extension stage textures: namespaced sampler bindings (rebuilt with the stage
+  // set), the latest pixel data per qualified key, and the GPU textures we've
+  // uploaded (cached by version so an unchanged stock isn't re-uploaded).
+  private stageTextureBindings: StageTextureBinding[] = [];
+  private stageTextures: Record<string, StageTextureData> = {};
+  private uploadedStageTex = new Map<string, { tex: WebGLTexture; version: number }>();
+  private dummyStageTex: WebGLTexture | null = null;
   // Multi-pass prepass framework: ping-pong float targets, per-stage result
   // textures, and cached pass programs (keyed by stageSig|stageId|passIdx).
   private prepassStages: PrepassStage[] = [];
@@ -690,10 +729,11 @@ export class WebGLRenderer {
     this.haveColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
 
     const p = this.injectedPipeline ?? resolveActivePipeline();
-    const { injection, sig: sSig, bindings, prepass, hasNoiseReduction } = buildStageInjection(
+    const { injection, sig: sSig, bindings, textureBindings, prepass, hasNoiseReduction } = buildStageInjection(
       this.injectedStages ?? undefined,
     );
     this.contributedBindings = bindings;
+    this.stageTextureBindings = textureBindings;
     this.prepassStages = prepass;
     this.hasContribNR = hasNoiseReduction;
     const entry = this.entryFor(p, injection, sSig);
@@ -1063,6 +1103,10 @@ export class WebGLRenderer {
     // Prepass result samplers (one per passes-bearing stage).
     for (const ps of this.prepassStages) {
       u[ps.resultUniform] = gl.getUniformLocation(program, ps.resultUniform);
+    }
+    // Extension stage-texture samplers (LUT atlases), keyed by qualified key.
+    for (const tb of this.stageTextureBindings) {
+      u[tb.qualifiedKey] = gl.getUniformLocation(program, tb.glslName);
     }
     return u;
   }
@@ -1552,17 +1596,67 @@ export class WebGLRenderer {
     this.contributedParams = bag;
   }
 
+  /** Latest pixel data for extension stage textures, keyed by qualified key.
+   *  Uploaded lazily at draw time; an unchanged `version` is a no-op. */
+  setStageTextures(bag: Record<string, StageTextureData>) {
+    this.stageTextures = bag;
+  }
+
+  /** A 1×1 opaque-black texture bound to any stage sampler that has no data yet,
+   *  so the sampler always points at a complete texture. */
+  private ensureDummyStageTex(): WebGLTexture {
+    const gl = this.gl;
+    if (this.dummyStageTex) return this.dummyStageTex;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([0, 0, 0, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.dummyStageTex = tex;
+    return tex;
+  }
+
+  /** Upload (or reuse) the GPU texture for a stage texture by qualified key.
+   *  Re-uploads only when the supplied `version` changes. */
+  private ensureStageTexture(qk: string): WebGLTexture {
+    const gl = this.gl;
+    const data = this.stageTextures[qk];
+    if (!data) return this.ensureDummyStageTex();
+    const cached = this.uploadedStageTex.get(qk);
+    if (cached && cached.version === data.version) return cached.tex;
+    const tex = cached?.tex ?? gl.createTexture()!;
+    const isR8 = data.format === "r8";
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, isR8 ? 1 : 4);
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, isR8 ? gl.R8 : gl.RGBA8,
+      data.width, data.height, 0,
+      isR8 ? gl.RED : gl.RGBA, gl.UNSIGNED_BYTE, data.data,
+    );
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.uploadedStageTex.set(qk, { tex, version: data.version });
+    return tex;
+  }
+
   setActivePipeline(pipeline: ResolvedPipeline) {
     this.injectedPipeline = pipeline;
   }
 
   private syncPipeline() {
     const p = this.injectedPipeline ?? resolveActivePipeline();
-    const { injection, sig: sSig, bindings, prepass, hasNoiseReduction } = buildStageInjection(
+    const { injection, sig: sSig, bindings, textureBindings, prepass, hasNoiseReduction } = buildStageInjection(
       this.injectedStages ?? undefined,
     );
     if (p.sig === this.pipelineSig && sSig === this.stageSig) return;
     this.contributedBindings = bindings;
+    this.stageTextureBindings = textureBindings;
     this.prepassStages = prepass;
     this.hasContribNR = hasNoiseReduction;
     // Pass programs are keyed by stageSig; a stage-set change invalidates them
@@ -1775,6 +1869,23 @@ export class WebGLRenderer {
       if (loc == null) continue;
       const value = this.contributedParams[b.qualifiedKey] ?? b.default;
       bindUniformByType(gl, loc, b.glslType, value);
+    }
+
+    // Extension stage textures (baked LUT atlases). Bound to units 12.. (above
+    // the fixed 0-7 and prepass 8-11 ranges), so they stay resident through the
+    // mask/retouch binds below and the draw passes. Like the scalar uniforms,
+    // the sampler binding persists on the program across both draw paths.
+    {
+      let unit = STAGE_TEX_UNIT_BASE;
+      for (const tb of this.stageTextureBindings) {
+        if (unit >= STAGE_TEX_UNIT_BASE + MAX_STAGE_TEXTURES) break;
+        const loc = u[tb.qualifiedKey];
+        if (loc == null) continue;
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, this.ensureStageTexture(tb.qualifiedKey));
+        gl.uniform1i(loc, unit);
+        unit++;
+      }
     }
 
     // Masks + retouch
@@ -2417,6 +2528,10 @@ export class WebGLRenderer {
       gl.deleteFramebuffer(t.fbo);
     }
     this.stageResultTargets.clear();
+    // Extension stage textures (LUT atlases) + the shared dummy.
+    for (const e of this.uploadedStageTex.values()) gl.deleteTexture(e.tex);
+    this.uploadedStageTex.clear();
+    if (this.dummyStageTex) gl.deleteTexture(this.dummyStageTex);
     for (const e of this.passPrograms.values()) gl.deleteProgram(e.program);
     this.passPrograms.clear();
     // Fallback entries can share a program under several sigs — dedupe.
