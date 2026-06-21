@@ -28,6 +28,7 @@ import {
 } from "@/extensions/dock";
 import { openExtensions } from "./ExtensionsDialog";
 import {
+  CANVAS_SURROUND_SHADES,
   DEFAULT_SETTINGS,
   resetSettings,
   updateSettings,
@@ -146,11 +147,12 @@ const CORE_SECTIONS: PrefSection[] = [
       "Theme",
       "Panel layout",
       "Interface scale",
+      "Canvas surround",
       "Reduce motion",
       "Restore last project on launch",
       "Interface font",
     ),
-    keywords: [],
+    keywords: ["surround", "background", "grey", "gray", "neutral"],
     render: () => <InterfaceSection />,
   },
   {
@@ -653,6 +655,7 @@ function InterfaceSection() {
         format={(v) => `${Math.round(v * 100)}%`}
         onChange={(v) => updateSettings({ uiScale: v })}
       />
+      <CanvasSurroundField />
       <ToggleField
         label="Reduce motion"
         hint="Minimize animated UI affordances."
@@ -666,6 +669,60 @@ function InterfaceSection() {
         onChange={(v) => updateSettings({ restoreLastProject: v })}
       />
       <FontField />
+    </div>
+  );
+}
+
+function CanvasSurroundField() {
+  const override = useSettings((s) => s.canvasSurroundOverride);
+  const surround = useSettings((s) => s.canvasSurround);
+  if (!useFieldVisible("Canvas surround", "color behind the image in Develop"))
+    return null;
+  return (
+    <div>
+      <button
+        onClick={() => updateSettings({ canvasSurroundOverride: !override })}
+        className="flex w-full items-center justify-between gap-3 text-left"
+      >
+        <span className="text-[11px] text-text-primary">Canvas surround</span>
+        <span
+          className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
+            override ? "bg-slider-fill" : "bg-surface-3"
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${
+              override ? "left-3.5" : "left-0.5"
+            }`}
+          />
+        </span>
+      </button>
+      <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
+        Override the theme with a fixed neutral grey behind the image in Develop.
+        A mid-grey surround keeps brightness, contrast and saturation perception
+        accurate while editing. Off = follow the active theme.
+      </p>
+      <div
+        className={`mt-2 flex gap-1.5 transition-opacity ${
+          override ? "" : "pointer-events-none opacity-40"
+        }`}
+      >
+        {CANVAS_SURROUND_SHADES.map((shade) => (
+          <button
+            key={shade.value}
+            title={shade.label}
+            aria-label={shade.label}
+            disabled={!override}
+            onClick={() => updateSettings({ canvasSurround: shade.value })}
+            className={`h-7 flex-1 rounded border transition-all ${
+              surround === shade.value
+                ? "border-slider-fill ring-1 ring-slider-fill"
+                : "border-border hover:border-text-muted"
+            }`}
+            style={{ background: shade.value }}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -1061,6 +1118,7 @@ function ExportSection() {
             { value: "image/jpeg", label: "JPEG" },
             { value: "image/png", label: "PNG" },
             { value: "image/webp", label: "WebP" },
+            { value: "image/tiff", label: "TIFF" },
           ]}
           onChange={(v) =>
             updateSettings({
@@ -1069,6 +1127,23 @@ function ExportSection() {
           }
         />
       </Field>
+      {s.exportFormat === "image/tiff" && (
+        <Field
+          label="TIFF bit depth"
+          hint="16-bit preserves the full editing precision (best for further work or print); 8-bit is smaller and universally compatible."
+        >
+          <OptionRow
+            value={s.exportTiffBitDepth}
+            options={[
+              { value: 8, label: "8-bit" },
+              { value: 16, label: "16-bit" },
+            ]}
+            onChange={(v) =>
+              updateSettings({ exportTiffBitDepth: v as 8 | 16 })
+            }
+          />
+        </Field>
+      )}
       <SliderField
         label="Default quality"
         value={s.exportQuality}

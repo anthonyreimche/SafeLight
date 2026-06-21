@@ -1,19 +1,22 @@
 @import "tailwindcss";
 
+/* These defaults mirror the "Safelight Neutral" theme (see builtin.tsx) so the
+   at-rest UI — before any theme vars are injected on boot — is already the
+   neutral, achromatic mid-grey the app ships with. Keep the two in sync. */
 @theme {
-  --color-surface-0: #0a0a0a;
-  --color-surface-1: #111111;
-  --color-surface-2: #1a1a1a;
-  --color-surface-3: #242424;
-  --color-surface-4: #2e2e2e;
-  --color-border: #333333;
-  --color-border-subtle: #222222;
-  --color-text-primary: #e0e0e0;
-  --color-text-secondary: #888888;
-  --color-text-muted: #555555;
-  --color-accent: #5a5a5a;
-  --color-accent-hover: #6e6e6e;
-  --color-slider-fill: #5a5a5a;
+  --color-surface-0: #2d2d2d;
+  --color-surface-1: #333333;
+  --color-surface-2: #3a3a3a;
+  --color-surface-3: #424242;
+  --color-surface-4: #4d4d4d;
+  --color-border: #525252;
+  --color-border-subtle: #3a3a3a;
+  --color-text-primary: #e6e6e6;
+  --color-text-secondary: #9a9a9a;
+  --color-text-muted: #6a6a6a;
+  --color-accent: #707070;
+  --color-accent-hover: #808080;
+  --color-slider-fill: #707070;
   --color-rating: #f5c542;
   --color-flag-pick: #ffffff;
   --color-flag-reject: #444444;

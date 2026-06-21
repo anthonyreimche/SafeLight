@@ -62,7 +62,7 @@ export function DevelopCanvas({
   onZoomChange: (zoom: number | null) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { supported, loading, width, height, setViewport } = useDevelopRenderer(
+  const { supported, loading, width, height, sourceWidth, sourceHeight, setViewport } = useDevelopRenderer(
     canvasRef,
     photo,
   );
@@ -193,7 +193,16 @@ export function DevelopCanvas({
     }
   };
 
-  const imageAspect = photo.height > 0 ? photo.width / photo.height : 1;
+  // Use the real decoded source aspect (upright) when available, so aspect-locked
+  // crops match the pixels on screen even when stored metadata is transposed by
+  // a decode path that orients differently (see use-develop-renderer). Falls back
+  // to metadata until the first frame decodes.
+  const imageAspect =
+    sourceWidth > 0 && sourceHeight > 0
+      ? sourceWidth / sourceHeight
+      : photo.height > 0
+        ? photo.width / photo.height
+        : 1;
 
   // Compute the effective inset from lens distortion so the crop constraint
   // treats the image as smaller (avoids sampling outside valid pixels).

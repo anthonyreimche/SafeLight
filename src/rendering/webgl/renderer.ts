@@ -602,6 +602,9 @@ export class WebGLRenderer {
   private histFboF: WebGLFramebuffer | null = null;
   private histTexF: WebGLTexture | null = null;
   private haveColorBufferFloat = false;
+  // When set, render()'s final composite pass draws into this framebuffer instead
+  // of the default (8-bit canvas). Used by captureFloatFrame for 16-bit export.
+  private outputFbo: WebGLFramebuffer | null = null;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   // Extension-contributed stage uniforms (namespaced) and their live values.
   // Bindings are rebuilt whenever the stage set changes; values arrive via
@@ -2071,7 +2074,7 @@ export class WebGLRenderer {
 
       // Pass 2 -> develop from the patched copy (now the spot is already gone,
       // so texture/clarity/sharpening can't invert it). Retouch off this pass.
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.outputFbo);
       gl.viewport(0, 0, this.canvas.width, this.canvas.height);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
@@ -2085,7 +2088,7 @@ export class WebGLRenderer {
       this.runPrepasses(this.imageTexture, `e${this.sourceEpoch}`);
       gl.useProgram(this.program);
       this.bindPrepassResults();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.outputFbo);
       gl.viewport(0, 0, this.canvas.width, this.canvas.height);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
@@ -2094,6 +2097,68 @@ export class WebGLRenderer {
       gl.uniform1i(u.uApplyRetouch, hasRetouch ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
+  }
+
+  // Render the current frame into an RGBA16F framebuffer and read back the
+  // float pixels — top-down, RGBA, display-encoded in [0,1] (HDR highlights may
+  // exceed 1; the caller clamps). Drives the same render() path as the canvas,
+  // so all develop/extension stages are baked in. Returns null when float render
+  // targets aren't available, so the caller falls back to the 8-bit path.
+  captureFloatFrame(): { data: Float32Array; width: number; height: number } | null {
+    if (!this.hasImage || !this.params || !this.haveColorBufferFloat) return null;
+    const gl = this.gl;
+    // Size the canvas/viewport exactly as a normal render would (crop-capped).
+    this.syncPipeline();
+    this.resize();
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+
+    const tex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE7);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (!complete) {
+      gl.deleteFramebuffer(fbo);
+      gl.activeTexture(gl.TEXTURE7);
+      gl.deleteTexture(tex);
+      gl.activeTexture(gl.TEXTURE0);
+      return null;
+    }
+
+    // Redirect render()'s final composite into our float FBO, then read it back.
+    this.outputFbo = fbo;
+    try {
+      this.render();
+    } finally {
+      this.outputFbo = null;
+    }
+    const raw = new Float32Array(w * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, raw);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    gl.deleteFramebuffer(fbo);
+    gl.activeTexture(gl.TEXTURE7);
+    gl.deleteTexture(tex);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+
+    // glReadPixels rows come back bottom-up; flip to top-down image order.
+    const stride = w * 4;
+    const data = new Float32Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      data.set(raw.subarray((h - 1 - y) * stride, (h - y) * stride), y * stride);
+    }
+    return { data, width: w, height: h };
   }
 
   computeHistogram(extended = false): HistogramData {

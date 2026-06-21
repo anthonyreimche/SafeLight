@@ -154,6 +154,14 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
   const [hovered, setHovered] = useState<HandleId | null>(null);
 
   // --- coordinate transforms -------------------------------------------------
+  // Pointer position in frame-local CSS px (the space `rect` is in). Derived
+  // from clientX/clientY because Chromium/Electron mis-scale offsetX/Y under
+  // non-100% Windows display scaling, which would drift brush dabs and the
+  // brush-circle cursor away from the pointer.
+  const frameXY = (e: React.PointerEvent) => {
+    const b = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - b.left, y: e.clientY - b.top };
+  };
   const toSource = (px: number, py: number) => {
     const ox = (px - rect.x) / rect.w;
     const oy = (py - rect.y) / rect.h;
@@ -317,8 +325,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
   // --- pointer handlers ------------------------------------------------------
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    const px = e.nativeEvent.offsetX;
-    const py = e.nativeEvent.offsetY;
+    const { x: px, y: py } = frameXY(e);
     e.currentTarget.setPointerCapture(e.pointerId);
     const down = toSource(px, py);
     const st = store();
@@ -500,8 +507,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
-    const px = e.nativeEvent.offsetX;
-    const py = e.nativeEvent.offsetY;
+    const { x: px, y: py } = frameXY(e);
     setCursor({ x: px, y: py, alt: e.altKey });
     const d = dragRef.current;
     if (!d) {

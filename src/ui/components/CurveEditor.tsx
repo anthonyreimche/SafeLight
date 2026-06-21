@@ -57,6 +57,19 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
 
   const update = (next: CurvePoint[]) => onChange(channel, next);
 
+  // Pointer position in the canvas's `size`-unit space. Derived from clientX/Y
+  // and the element rect rather than offsetX/offsetY, which Chromium/Electron
+  // mis-scale under non-100% Windows display scaling; the rect ratio also
+  // corrects for any CSS stretching of the canvas.
+  const localXY = (
+    e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>,
+  ) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const sx = r.width > 0 ? size / r.width : 1;
+    const sy = r.height > 0 ? size / r.height : 1;
+    return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy };
+  };
+
   const toData = (cx: number, cy: number): CurvePoint => {
     const plot = size - 2 * PAD;
     return {
@@ -79,8 +92,7 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const cx = e.nativeEvent.offsetX;
-    const cy = e.nativeEvent.offsetY;
+    const { x: cx, y: cy } = localXY(e);
     e.currentTarget.setPointerCapture(e.pointerId);
 
     let idx = findPoint(cx, cy);
@@ -96,7 +108,8 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const idx = draggingRef.current;
     if (idx === null) return;
-    const d = toData(e.nativeEvent.offsetX, e.nativeEvent.offsetY);
+    const { x, y } = localXY(e);
+    const d = toData(x, y);
     const next = points.map((p) => ({ ...p }));
     const isFirst = idx === 0;
     const isLast = idx === points.length - 1;
@@ -121,7 +134,8 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   };
 
   const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const idx = findPoint(e.nativeEvent.offsetX, e.nativeEvent.offsetY);
+    const { x, y } = localXY(e);
+    const idx = findPoint(x, y);
     if (idx > 0 && idx < points.length - 1) {
       update(points.filter((_, i) => i !== idx));
       onCommit();

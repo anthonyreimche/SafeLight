@@ -25,6 +25,12 @@ const FORMATS: { value: ExportFormat; label: string }[] = [
   { value: "image/jpeg", label: "JPEG" },
   { value: "image/png", label: "PNG" },
   { value: "image/webp", label: "WebP" },
+  { value: "image/tiff", label: "TIFF" },
+];
+
+const TIFF_DEPTHS: { value: 8 | 16; label: string }[] = [
+  { value: 8, label: "8-bit" },
+  { value: 16, label: "16-bit" },
 ];
 
 const RESOLUTIONS: { value: number | null; label: string }[] = [
@@ -132,6 +138,9 @@ export function ExportPanel() {
   const [longEdge, setLongEdge] = useState<number | null>(
     getSettings().exportLongEdge,
   );
+  const [tiffBitDepth, setTiffBitDepth] = useState<8 | 16>(
+    getSettings().exportTiffBitDepth,
+  );
   const [delivery, setDelivery] = useState<DeliveryMode>("folder");
   const [destDir, setDestDir] = useState<FileSystemDirectoryHandle | null>(null);
   const [busy, setBusy] = useState(false);
@@ -193,7 +202,8 @@ export function ExportPanel() {
     return [];
   }, [photos, selectedIds, activePhotoId]);
 
-  const hasQuality = format !== "image/png";
+  const hasQuality = format === "image/jpeg" || format === "image/webp";
+  const isTiff = format === "image/tiff";
 
   // Revert to Files when dropping to a single photo (ZIP/Folder are multi-only).
   useEffect(() => {
@@ -210,6 +220,7 @@ export function ExportPanel() {
     setLongEdge(preset.longEdge);
     setSharpenAmount(preset.sharpenAmount);
     setSharpenRadius(preset.sharpenRadius);
+    if (preset.tiffBitDepth) setTiffBitDepth(preset.tiffBitDepth);
   };
 
   const savePreset = () => {
@@ -223,6 +234,7 @@ export function ExportPanel() {
       colorSpace: getSettings().exportColorSpace,
       sharpenAmount,
       sharpenRadius,
+      tiffBitDepth,
     };
     const existing = presets.filter((p) => p.name !== name);
     updateSettings({ exportPresets: [...existing, preset] });
@@ -273,6 +285,7 @@ export function ExportPanel() {
       filenameTemplateId,
       sharpenAmount,
       sharpenRadius,
+      tiffBitDepth,
     };
     try {
       const result = await exportPhotos(
@@ -340,6 +353,27 @@ export function ExportPanel() {
           ))}
         </div>
       </Panel>
+
+      {isTiff && (
+        <Panel title="Bit Depth">
+          <div className="flex gap-1">
+            {TIFF_DEPTHS.map((d) => (
+              <button
+                key={d.value}
+                onClick={() => setTiffBitDepth(d.value)}
+                className={`flex-1 ${optionBtn(tiffBitDepth === d.value)}`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-[10px] leading-snug text-text-muted">
+            {tiffBitDepth === 16
+              ? "16-bit keeps the full editing precision for further work. Output sharpening is applied at 8-bit only."
+              : "8-bit is smaller and universally compatible."}
+          </p>
+        </Panel>
+      )}
 
       {hasQuality && (
         <Panel title="Quality">

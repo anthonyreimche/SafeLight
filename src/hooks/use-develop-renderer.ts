@@ -24,6 +24,10 @@ interface RendererStatus {
   loading: boolean;
   width: number;
   height: number;
+  // True decoded source dimensions (upright), for image-aspect-dependent UI like
+  // the crop overlay. 0 until the first frame decodes.
+  sourceWidth: number;
+  sourceHeight: number;
   source: string | null;
   // Render only `roi` (a window into the displayed image, normalized [0,1]) at
   // outW×outH device pixels — crisp zoom from the resident full-res source. Pass
@@ -45,6 +49,9 @@ export function useDevelopRenderer(
   const [supported, setSupported] = useState(true);
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  // True dimensions of the decoded source last handed to the renderer (already
+  // upright). Drives the image aspect — see `aspect` below.
+  const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
   const [source, setSource] = useState<string | null>(null);
   // Effective params: a hover preview (e.g. from the Presets panel) overrides
   // the committed params for rendering only, without touching history.
@@ -61,7 +68,20 @@ export function useDevelopRenderer(
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
   const pipelineId = usePipelineStore((s) => s.activeId);
 
-  const aspect = photo && photo.height > 0 ? photo.width / photo.height : 1;
+  // Aspect of the image as actually decoded and shown on screen. We prefer the
+  // real buffer dims (set from every image handed to the renderer) over
+  // photo.width/height, because RAW decode paths disagree on whether they bake
+  // EXIF orientation: libraw rotates the pixels, the CFA and embedded-JPEG
+  // fallbacks don't. When the path that ran at develop differs from the one that
+  // ran at import, stored metadata can be transposed relative to the pixels on
+  // screen — which skewed every aspect-locked crop (e.g. 1:1 drawn tall). Using
+  // the live buffer keeps the GPU transform and the crop overlay in agreement.
+  const aspect =
+    sourceSize.width > 0 && sourceSize.height > 0
+      ? sourceSize.width / sourceSize.height
+      : photo && photo.height > 0
+        ? photo.width / photo.height
+        : 1;
   const forRender = (p: DevelopParams, crop: boolean): DevelopParams =>
     crop
       ? {
@@ -177,6 +197,15 @@ export function useDevelopRenderer(
       bridge.setAsShotTemperature(photo?.exif.colorTemperature ?? 6500);
       const maxEdge = getSettings().developMaxEdge;
       const src = image instanceof ImageBitmap ? { kind: "bitmap" as const, bitmap: image } : image;
+      // Record the real source aspect from what we're actually rendering, so the
+      // crop overlay and GPU transform never disagree with the pixels on screen.
+      if (image.width > 0 && image.height > 0) {
+        setSourceSize((s) =>
+          s.width === image.width && s.height === image.height
+            ? s
+            : { width: image.width, height: image.height },
+        );
+      }
       if (cacheKey) {
         bridge.uploadSource("main", cacheKey, src, maxEdge, isFallback, cachedRaw);
       } else {
@@ -378,7 +407,13 @@ export function useDevelopRenderer(
         extTimerRef.current = null;
       }
     };
-  }, [params, paramBag, cropping, pipelineId, asShotTemperature, resolvedLensProfile]);
+  }, [params, paramBag, cropping, pipelineId, asShotTemperature, resolvedLensProfile, aspect]);
+
+  // A new photo starts from metadata aspect until its buffer decodes, so a
+  // failed/slow decode never leaves the previous photo's aspect in place.
+  useEffect(() => {
+    setSourceSize({ width: 0, height: 0 });
+  }, [photo?.id]);
 
   useEffect(() => {
     const bridge = bridgeRef.current;
@@ -437,6 +472,8 @@ export function useDevelopRenderer(
     loading,
     width: size.width,
     height: size.height,
+    sourceWidth: sourceSize.width,
+    sourceHeight: sourceSize.height,
     source,
     setViewport,
   };

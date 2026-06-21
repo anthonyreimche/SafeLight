@@ -6,7 +6,7 @@ import { create } from "zustand";
 import { useRegistry } from "./registry";
 
 const THEME_KEY = "sl_theme";
-export const DEFAULT_THEME = "core.dark";
+export const DEFAULT_THEME = "core.neutral";
 
 export const useThemeStore = create<{ activeId: string }>(() => ({
   activeId: DEFAULT_THEME,

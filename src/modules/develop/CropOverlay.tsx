@@ -32,6 +32,29 @@ const DIM = "rgba(0, 0, 0, 0.55)";
 const clamp = (v: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, v));
 
+// CSS cursor matching the handle under the pointer, so resizing reads as
+// resizing rather than a bare crosshair.
+const cursorFor = (h: Handle | null): string => {
+  switch (h) {
+    case "move":
+      return "move";
+    case "nw":
+    case "se":
+      return "nwse-resize";
+    case "ne":
+    case "sw":
+      return "nesw-resize";
+    case "n":
+    case "s":
+      return "ns-resize";
+    case "e":
+    case "w":
+      return "ew-resize";
+    default:
+      return "crosshair";
+  }
+};
+
 interface CropOverlayProps {
   rect: Rect; // displayed canvas rect (frame coords); shows the viewCrop region
   crop: CropRect; // transformed-frame, normalized to the image
@@ -74,6 +97,17 @@ export function CropOverlay({
   const [line, setLine] = useState<{ x: number; y: number; dx: number; dy: number } | null>(
     null,
   );
+  // Drives the hover cursor; also reflects the active handle while dragging.
+  const [hoverHandle, setHoverHandle] = useState<Handle | null>(null);
+
+  // Pointer position in frame-local CSS px — the same space the handles are
+  // drawn in. We compute it from clientX/clientY rather than offsetX/offsetY
+  // because Chromium/Electron report offsetX/Y in the wrong scale under
+  // non-100% Windows display scaling, which made handle hit-testing miss.
+  const frameXY = (e: React.PointerEvent) => {
+    const b = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - b.left, y: e.clientY - b.top };
+  };
 
   const normRatio = aspect > 0 ? aspect / imageAspect : 0; // crop.w / crop.h
   // The same pixel ratio in the opposite orientation (e.g. 3:2 → 2:3), in
@@ -120,23 +154,30 @@ export function CropOverlay({
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    const px = e.nativeEvent.offsetX;
-    const py = e.nativeEvent.offsetY;
+    const { x: px, y: py } = frameXY(e);
     e.currentTarget.setPointerCapture(e.pointerId);
 
     if (e.ctrlKey || e.metaKey) {
       dragRef.current = { mode: "level", startCrop: crop, sx: e.clientX, sy: e.clientY };
+      setHoverHandle("level");
       setLine({ x: px, y: py, dx: 0, dy: 0 });
       return;
     }
     const mode = hitTest(px, py);
     if (!mode) return;
+    setHoverHandle(mode);
     dragRef.current = { mode, startCrop: crop, sx: e.clientX, sy: e.clientY };
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current;
-    if (!d) return;
+    if (!d) {
+      // Idle hover: reflect the handle under the cursor so the pointer shows a
+      // matching resize arrow (and signals the handles are grabbable).
+      const { x: px, y: py } = frameXY(e);
+      setHoverHandle(e.ctrlKey || e.metaKey ? "level" : hitTest(px, py));
+      return;
+    }
     if (d.mode === "level") {
       setLine((l) => (l ? { ...l, dx: e.clientX - d.sx, dy: e.clientY - d.sy } : l));
       return;
@@ -185,10 +226,13 @@ export function CropOverlay({
   return (
     <div
       className="absolute inset-0"
-      style={{ cursor: "crosshair", touchAction: "none" }}
+      style={{ cursor: cursorFor(hoverHandle), touchAction: "none" }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerLeave={() => {
+        if (!dragRef.current) setHoverHandle(null);
+      }}
     >
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute" style={{ left: 0, top: 0, right: 0, height: Math.max(0, by), background: DIM }} />

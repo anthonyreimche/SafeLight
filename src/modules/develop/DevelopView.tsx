@@ -41,7 +41,14 @@ export function DevelopView() {
         )
       }
     >
-      <div className="flex flex-1 items-center justify-center overflow-hidden p-4">
+      <div
+        className="flex flex-1 items-center justify-center overflow-hidden p-4"
+        style={{
+          // Neutral surround behind the image. Follows the theme unless the
+          // user overrides it (Preferences ▸ Interface ▸ Canvas surround).
+          background: "var(--color-canvas-surround, var(--color-surface-0))",
+        }}
+      >
         {activePhoto ? (
           <DevelopCanvas
             key={activePhoto.id}

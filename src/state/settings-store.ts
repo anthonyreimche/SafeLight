@@ -9,7 +9,17 @@ import type { SortDirection, SortField } from "@/catalog/types";
 import type { ColorSpaceId } from "@/rendering/color-space";
 import type { UpdateChannel } from "@/update/update-checker";
 
-export type ExportFormatPref = "image/jpeg" | "image/png" | "image/webp";
+export type ExportFormatPref = "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
+
+/** The five neutral-grey surround shades, dark → light. The middle steps sit
+ *  around the ~18% middle-grey that's standard for color-critical viewing. */
+export const CANVAS_SURROUND_SHADES: { value: string; label: string }[] = [
+  { value: "#000000", label: "Black" },
+  { value: "#2b2b2b", label: "Charcoal" },
+  { value: "#4d4d4d", label: "Mid grey" },
+  { value: "#6e6e6e", label: "Grey" },
+  { value: "#909090", label: "Light grey" },
+];
 
 /** How grid previews are built for RAW files on import:
  *  - "auto": use the embedded camera JPEG when it's already at least the
@@ -26,6 +36,8 @@ export interface ExportPreset {
   colorSpace: ColorSpaceId;
   sharpenAmount: number;
   sharpenRadius: number;
+  /** Bits per sample for TIFF export (8 or 16); absent on older presets. */
+  tiffBitDepth?: 8 | 16;
 }
 
 export interface AppSettings {
@@ -36,6 +48,14 @@ export interface AppSettings {
   reduceMotion: boolean;
   /** UI font: CSS font-family string. "" = the built-in mono stack. */
   uiFont: string;
+  /** Override the theme's color behind the image in Develop with a fixed neutral
+   *  grey (see canvasSurround). Off = the surround follows the active theme. A
+   *  neutral mid-grey surround keeps brightness/contrast/saturation perception
+   *  accurate while editing, independent of the chrome theme. */
+  canvasSurroundOverride: boolean;
+  /** The fixed surround shade used when canvasSurroundOverride is on. One of
+   *  CANVAS_SURROUND_SHADES (a neutral grey hex). */
+  canvasSurround: string;
 
   // ── Startup ────────────────────────────────────────────────────────────
   /** Reopen the most-recently-used project on launch instead of the welcome
@@ -94,6 +114,8 @@ export interface AppSettings {
   exportBundle: boolean; // zip when exporting multiple
   /** Output color space; converts pixels and embeds the matching ICC profile. */
   exportColorSpace: ColorSpaceId;
+  /** Default bits per sample for TIFF export (8 or 16). */
+  exportTiffBitDepth: 8 | 16;
   /** Saved export presets (format + quality + resolution + sharpening). */
   exportPresets: ExportPreset[];
 
@@ -120,6 +142,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   uiScale: 1,
   reduceMotion: false,
   uiFont: "",
+  canvasSurroundOverride: false,
+  canvasSurround: "#4d4d4d",
   restoreLastProject: false,
   defaultGridSize: 200,
   defaultSortField: "dateImported",
@@ -143,6 +167,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exportLongEdge: null,
   exportBundle: true,
   exportColorSpace: "srgb",
+  exportTiffBitDepth: 16,
   exportPresets: [],
   singleKeyShortcuts: true,
   extensionTopic: "safelight-extension",
@@ -177,6 +202,16 @@ function applySideEffects(s: AppSettings): void {
     document.documentElement.style.setProperty("--font-mono", s.uiFont);
   } else {
     document.documentElement.style.removeProperty("--font-mono");
+  }
+  // Canvas surround override: set a fixed shade on :root, or remove it so the
+  // surround falls back to the theme's --color-surface-0 (see ViewportImage).
+  if (s.canvasSurroundOverride) {
+    document.documentElement.style.setProperty(
+      "--color-canvas-surround",
+      s.canvasSurround,
+    );
+  } else {
+    document.documentElement.style.removeProperty("--color-canvas-surround");
   }
 }
 

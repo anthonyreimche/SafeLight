@@ -7,12 +7,13 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
-import { embedColorProfile, type ColorSpaceId } from "@/rendering/color-space";
+import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { useRegistry } from "@/extensions/registry";
 import { applyOutputSharpening } from "./sharpen";
+import { encodeTiff } from "./tiff";
 import { ZipWriter } from "./zip";
 
-export type ExportFormat = "image/jpeg" | "image/png" | "image/webp";
+export type ExportFormat = "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
 
 export type DeliveryMode = "zip" | "files" | "folder";
 
@@ -38,6 +39,9 @@ export interface ExportSettings {
   sharpenAmount?: number;
   /** Output sharpening radius in pixels (0.3–3.0). */
   sharpenRadius?: number;
+  /** Bits per sample for TIFF export. 16-bit needs float render targets and
+   *  falls back to 8-bit when unavailable. Ignored for non-TIFF formats. */
+  tiffBitDepth?: 8 | 16;
 }
 
 const ARCHIVE_NAME = "safelight-export.zip";
@@ -57,6 +61,7 @@ const EXTENSION: Record<ExportFormat, string> = {
   "image/jpeg": "jpg",
   "image/png": "png",
   "image/webp": "webp",
+  "image/tiff": "tif",
 };
 
 function canvasToBlob(
@@ -65,6 +70,51 @@ function canvasToBlob(
   quality: number,
 ): Promise<Blob | null> {
   return new Promise((resolve) => canvas.toBlob(resolve, format, quality));
+}
+
+// ICC bytes to embed in a TIFF, or undefined for sRGB (the assumed default, and
+// what the rest of the app treats as "no tag needed").
+function tiffIcc(colorSpace: ColorSpaceId): Uint8Array | undefined {
+  return colorSpace === "srgb" ? undefined : buildIccProfile(colorSpace);
+}
+
+// 8-bit TIFF: read the rendered canvas (already through optional sharpening) as
+// top-down RGBA via a 2D context, since a WebGL canvas has no getImageData.
+function encode8BitTiff(
+  source: HTMLCanvasElement,
+  colorSpace: ColorSpaceId,
+): Blob {
+  const c = document.createElement("canvas");
+  c.width = source.width;
+  c.height = source.height;
+  const ctx = c.getContext("2d")!;
+  ctx.drawImage(source, 0, 0);
+  const rgba = ctx.getImageData(0, 0, c.width, c.height).data;
+  const bytes = encodeTiff(rgba, c.width, c.height, {
+    bitDepth: 8,
+    icc: tiffIcc(colorSpace),
+  });
+  return new Blob([bytes as BlobPart], { type: "image/tiff" });
+}
+
+// 16-bit TIFF: quantise the float capture (display-encoded [0,1]) to 16-bit
+// unsigned samples. Output sharpening is a separate 8-bit canvas pass and is
+// not applied here.
+function encode16BitTiff(
+  cap: { data: Float32Array; width: number; height: number },
+  colorSpace: ColorSpaceId,
+): Blob {
+  const { data, width, height } = cap;
+  const u16 = new Uint16Array(width * height * 4);
+  for (let i = 0; i < u16.length; i++) {
+    const v = data[i];
+    u16[i] = v <= 0 ? 0 : v >= 1 ? 65535 : Math.round(v * 65535);
+  }
+  const bytes = encodeTiff(u16, width, height, {
+    bitDepth: 16,
+    icc: tiffIcc(colorSpace),
+  });
+  return new Blob([bytes as BlobPart], { type: "image/tiff" });
 }
 
 // Output filename: original base name + the chosen format's extension.
@@ -192,13 +242,28 @@ async function renderOne(
     const saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
     renderer.setContributedParams(saved.paramBag);
     renderer.setParams(saved.params);
+    const colorSpace = settings.colorSpace ?? "srgb";
+
+    // 16-bit TIFF: read the develop pipeline's float output directly so the
+    // extra precision survives. Falls through to the 8-bit path when the device
+    // can't render to a float target.
+    if (settings.format === "image/tiff" && (settings.tiffBitDepth ?? 8) === 16) {
+      const cap = renderer.captureFloatFrame();
+      if (cap) {
+        return runProcessors(encode16BitTiff(cap, colorSpace), photo, processorSettings);
+      }
+    }
+
     renderer.render();
     const encodeCanvas = (settings.sharpenAmount ?? 0) > 0
       ? applyOutputSharpening(canvas, settings.sharpenAmount!, settings.sharpenRadius ?? 1)
       : canvas;
+    if (settings.format === "image/tiff") {
+      return runProcessors(encode8BitTiff(encodeCanvas, colorSpace), photo, processorSettings);
+    }
     const blob = await canvasToBlob(encodeCanvas, settings.format, settings.quality);
     if (!blob) return null;
-    const profiled = await embedColorProfile(blob, settings.colorSpace ?? "srgb");
+    const profiled = await embedColorProfile(blob, colorSpace);
     return runProcessors(profiled, photo, processorSettings);
   } finally {
     bitmap?.close();

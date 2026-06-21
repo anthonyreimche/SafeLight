@@ -174,24 +174,34 @@ export function Histogram({
     };
   }, [data, draw]);
 
+  // Pointer position relative to the canvas, with the live displayed width.
+  // Uses clientX/Y + the element rect instead of offsetX/offsetY, which
+  // Chromium/Electron mis-scale under non-100% Windows display scaling; `w` is
+  // the real on-screen width so fractions are correct even before the
+  // ResizeObserver-tracked `width` catches up.
+  const localXY = (
+    e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>,
+  ) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width || width };
+  };
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const { x, y, w } = localXY(e);
     if (onSetClipping && e.button === 0 && data?.extended) {
-      const x = e.nativeEvent.offsetX;
-      const y = e.nativeEvent.offsetY;
       if (y < 16) {
-        if (x < width * 0.3 && data.extended.clipLow > 0.001) {
+        if (x < w * 0.3 && data.extended.clipLow > 0.001) {
           onSetClipping(((showClipping ^ 1) & 3) as 0 | 1 | 2 | 3);
           return;
         }
-        if (x > width * 0.7 && data.extended.clipHigh > 0.001) {
+        if (x > w * 0.7 && data.extended.clipHigh > 0.001) {
           onSetClipping(((showClipping ^ 2) & 3) as 0 | 1 | 2 | 3);
           return;
         }
       }
     }
     if (!onAdjust || e.button !== 0) return;
-    const frac = e.nativeEvent.offsetX / width;
-    const { zone } = zoneAt(frac);
+    const { zone } = zoneAt(x / w);
     e.currentTarget.setPointerCapture(e.pointerId);
     dragRef.current = { startX: e.clientX, zone };
     setHoverZone(zone);
@@ -204,7 +214,8 @@ export function Histogram({
     if (d) {
       onAdjust(d.zone, e.clientX - d.startX, "move");
     } else {
-      setHoverZone(zoneAt(e.nativeEvent.offsetX / width).zone);
+      const { x, w } = localXY(e);
+      setHoverZone(zoneAt(x / w).zone);
     }
   };
 
@@ -217,7 +228,8 @@ export function Histogram({
 
   const onDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!onReset) return;
-    onReset(zoneAt(e.nativeEvent.offsetX / width).zone);
+    const { x, w } = localXY(e);
+    onReset(zoneAt(x / w).zone);
   };
 
   return (

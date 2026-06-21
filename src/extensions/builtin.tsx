@@ -230,8 +230,12 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
         description:
           "Stacked tool rails on the left and right of the main view — the traditional darkroom arrangement.",
       });
-      // "Safelight Dark" mirrors the index.css defaults so switching back is a
-      // clean reset; vars listed here are the full themable surface.
+      // "Safelight Neutral" (the default) mirrors the index.css defaults so
+      // switching back is a clean reset; vars listed here are the full themable
+      // surface. It follows darktable's rule of an achromatic, mid-grey UI — no
+      // pure black/white and no color cast — so the chrome and the image
+      // surround don't perceptually skew the brightness/contrast/saturation of
+      // the photo being edited.
       // Built-in display transform: always present so Preferences ▸ Rendering
       // has at least one option even when no extension is installed.
       api.registerPipeline({
@@ -239,6 +243,29 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
         name: "Built-in",
         description:
           "Safelight's stock pipeline: unclamped sRGB encode with HDR highlight handling and the default RAW base curve.",
+      });
+      api.registerTheme({
+        id: "core.neutral",
+        name: "Safelight Neutral",
+        colorScheme: "dark",
+        vars: {
+          // Achromatic (R=G=B) throughout — no color cast. surface-0 doubles as
+          // the Develop image surround (see DevelopView): a neutral mid-grey,
+          // not stark black, per darktable's perceptual rules.
+          "--color-surface-0": "#2d2d2d",
+          "--color-surface-1": "#333333",
+          "--color-surface-2": "#3a3a3a",
+          "--color-surface-3": "#424242",
+          "--color-surface-4": "#4d4d4d",
+          "--color-border": "#525252",
+          "--color-border-subtle": "#3a3a3a",
+          "--color-text-primary": "#e6e6e6",
+          "--color-text-secondary": "#9a9a9a",
+          "--color-text-muted": "#6a6a6a",
+          "--color-accent": "#707070",
+          "--color-accent-hover": "#808080",
+          "--color-slider-fill": "#707070",
+        },
       });
       api.registerTheme({
         id: "core.dark",
