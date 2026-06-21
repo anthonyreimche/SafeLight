@@ -409,6 +409,19 @@ let unsubPipeline: (() => void) | null = null;
 // the bag is replayed when the bridge (re)initialises.
 const stageTextures: Record<string, import("@/extensions/types").StageTextureData> = {};
 
+// Stage and stage-texture changes don't flow through the param-driven develop
+// render effect, so an extension swapping a stage or its textures (e.g. picking
+// a film stock) wouldn't repaint until the next interaction. Redraw here,
+// rAF-debounced so a swap (re-register + N texture uploads) coalesces into one.
+let stageRenderRaf: number | null = null;
+function requestStageRender(): void {
+  if (!singleton || stageRenderRaf != null) return;
+  stageRenderRaf = requestAnimationFrame(() => {
+    stageRenderRaf = null;
+    singleton?.render(false);
+  });
+}
+
 /** Set or clear (null) a processing stage's texture by qualified key
  *  "{stageId}.{key}". Forwards the full bag to the worker. */
 export function setStageTexture(
@@ -418,6 +431,7 @@ export function setStageTexture(
   if (tex) stageTextures[qualifiedKey] = tex;
   else delete stageTextures[qualifiedKey];
   singleton?.setStageTextures(stageTextures);
+  requestStageRender();
 }
 
 function syncStages() {
@@ -457,6 +471,7 @@ export function getRenderBridge(): RenderBridge {
       if (s.processingStages !== prevStages) {
         prevStages = s.processingStages;
         syncStages();
+        requestStageRender();
       }
       if (s.pipelines !== prevPipelines) {
         prevPipelines = s.pipelines;
