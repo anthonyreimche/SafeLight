@@ -249,22 +249,29 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
         name: "Safelight Neutral",
         colorScheme: "dark",
         vars: {
-          // Achromatic (R=G=B) throughout — no color cast. surface-0 doubles as
-          // the Develop image surround (see DevelopView): a neutral mid-grey,
-          // not stark black, per darktable's perceptual rules.
-          "--color-surface-0": "#2d2d2d",
-          "--color-surface-1": "#333333",
-          "--color-surface-2": "#3a3a3a",
-          "--color-surface-3": "#424242",
-          "--color-surface-4": "#4d4d4d",
-          "--color-border": "#525252",
-          "--color-border-subtle": "#3a3a3a",
-          "--color-text-primary": "#e6e6e6",
-          "--color-text-secondary": "#9a9a9a",
-          "--color-text-muted": "#6a6a6a",
-          "--color-accent": "#707070",
-          "--color-accent-hover": "#808080",
-          "--color-slider-fill": "#707070",
+          // Achromatic (R=G=B) throughout — no color cast. A bright mid-grey
+          // chrome modelled on darktable/Ansel: the whole field of view sits
+          // near middle grey so it doesn't perceptually skew the image's
+          // brightness/contrast/saturation while editing. Surfaces ascend from
+          // the recessed base; text is near-white and borders are dark for
+          // Ansel-like contrast. The Develop image surround is a separate true
+          // middle grey (#777) set via the canvas-surround setting, not a
+          // surface here.
+          "--color-surface-0": "#525252",
+          "--color-surface-1": "#5e5e5e",
+          "--color-surface-2": "#686868",
+          "--color-surface-3": "#747474",
+          "--color-surface-4": "#828282",
+          "--color-border": "#3b3b3b",
+          "--color-border-subtle": "#4a4a4a",
+          "--color-text-primary": "#f4f4f4",
+          "--color-text-secondary": "#d0d0d0",
+          "--color-text-muted": "#9c9c9c",
+          // Dark achromatic accent so active controls/selection (white text on
+          // accent) stay legible against the light chrome.
+          "--color-accent": "#2e2e2e",
+          "--color-accent-hover": "#3c3c3c",
+          "--color-slider-fill": "#2e2e2e",
         },
       });
       api.registerTheme({
@@ -309,13 +316,10 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
       });
       api.registerProcessingStage(VIGNETTE_STAGE);
       api.registerProcessingStage(GRAIN_STAGE);
-      api.registerKeybinding({
-        id: "core.toggle-clipping",
-        label: "Toggle Clipping Overlay",
-        category: "Develop",
-        defaultCombo: "J",
-        handler: () => useDevelopStore.getState().toggleClipping(),
-      });
+      // Clipping / color-assessment / surround shortcuts are core actions, so
+      // they live in the central KEY_ACTIONS registry (conflict-checked,
+      // Develop-scoped) rather than the extension-action path — see
+      // keybindings-store.ts and use-keyboard-shortcuts.ts.
     },
   },
 

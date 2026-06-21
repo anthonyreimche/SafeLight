@@ -81,6 +81,12 @@ interface DevelopState {
   setShowClipping: (mode: 0 | 1 | 2 | 3) => void;
   toggleClipping: () => void;
 
+  // Color assessment (ISO 12646 proofing): frames the image in brilliant white
+  // on a fixed middle-grey surround, giving the eye a white + neutral reference
+  // for judging tone and color (as darktable's Ctrl+B mode). Persisted.
+  colorAssessment: boolean;
+  toggleColorAssessment: () => void;
+
   // White-balance eyedropper: when true, the next click on the image samples a
   // neutral target and solves Temp/Tint. Ephemeral UI state, not persisted.
   wbPicking: boolean;
@@ -274,6 +280,15 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     const next = (get().showClipping === 0 ? 3 : 0) as 0 | 3;
     set({ showClipping: next });
     try { localStorage.setItem("sl_show_clipping", String(next)); } catch {}
+  },
+
+  colorAssessment: (() => {
+    try { return localStorage.getItem("sl_color_assessment") === "1"; } catch { return false; }
+  })(),
+  toggleColorAssessment: () => {
+    const next = !get().colorAssessment;
+    set({ colorAssessment: next });
+    try { localStorage.setItem("sl_color_assessment", next ? "1" : "0"); } catch {}
   },
 
   wbPicking: false,

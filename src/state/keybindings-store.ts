@@ -34,6 +34,10 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "develop.undo", label: "Undo edit", category: "Develop", def: "Ctrl+Z" },
   { id: "develop.redo", label: "Redo edit", category: "Develop", def: "Ctrl+Shift+Z", altDef: "Ctrl+Y" },
   { id: "develop.reset", label: "Reset all edits", category: "Develop", def: "Ctrl+Shift+R" },
+  { id: "develop.toggleClipping", label: "Toggle clipping overlay", category: "Develop", def: "J" },
+  { id: "develop.colorAssessment", label: "Toggle color assessment", category: "Develop", def: "Ctrl+B" },
+  { id: "develop.surroundDarker", label: "Surround darker", category: "Develop", def: "Ctrl+Shift+[" },
+  { id: "develop.surroundLighter", label: "Surround lighter", category: "Develop", def: "Ctrl+Shift+]" },
   { id: "brush.smaller", label: "Shrink brush", category: "Develop", def: "[" },
   { id: "brush.larger", label: "Grow brush", category: "Develop", def: "]" },
   { id: "brush.featherDown", label: "Less brush feather", category: "Develop", def: "Shift+[", altDef: "Shift+{" },
@@ -248,22 +252,43 @@ export function matchAction(
 }
 
 /** Conflicts: same combo used twice in scopes that can both be active
- *  (same category, or one of them General). Returns the set of action ids. */
+ *  (same category, or one of them General). Returns the set of action ids.
+ *  Extension-registered actions participate too — they match globally
+ *  (matchExtensionAction ignores scope), so they're treated as if General and
+ *  can collide with anything sharing their combo. Without this, those "private"
+ *  keys would conflict undetected. */
 export function findConflicts(
   overrides: Record<string, string>,
 ): Set<string> {
   const out = new Set<string>();
-  const combo = (a: KeyAction) => overrides[a.id] ?? a.def;
-  for (let i = 0; i < KEY_ACTIONS.length; i++) {
-    for (let j = i + 1; j < KEY_ACTIONS.length; j++) {
-      const a = KEY_ACTIONS[i];
-      const b = KEY_ACTIONS[j];
+  // `global` actions overlap every scope (they fire in any module).
+  type Entry = { id: string; category: ActionCategory; combo: string; global: boolean };
+  const entries: Entry[] = [
+    ...KEY_ACTIONS.map((a) => ({
+      id: a.id,
+      category: a.category,
+      combo: overrides[a.id] ?? a.def,
+      global: false,
+    })),
+    ...Array.from(useExtensionActions.getState().actions.values()).map((e) => ({
+      id: e.id,
+      category: e.category,
+      combo: overrides[e.id] ?? e.def,
+      global: true,
+    })),
+  ];
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const a = entries[i];
+      const b = entries[j];
       const overlap =
+        a.global ||
+        b.global ||
         a.category === b.category ||
         a.category === "General" ||
         b.category === "General";
       // Unbound actions (empty combo) never conflict — flip H/V ship unbound.
-      if (overlap && combo(a) !== "" && combo(a) === combo(b)) {
+      if (overlap && a.combo !== "" && a.combo === b.combo) {
         out.add(a.id);
         out.add(b.id);
       }

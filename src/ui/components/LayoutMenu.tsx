@@ -9,12 +9,15 @@ import {
   CUSTOM_LAYOUT,
   applyDockLayout,
   useLayoutStore,
+  useUserLayouts,
 } from "@/extensions/dock";
+import { openPreferences } from "./PreferencesDialog";
 
 export function LayoutMenu() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const layouts = useRegistry((s) => s.layouts);
+  const userLayouts = useUserLayouts((s) => s.layouts);
   const activeId = useLayoutStore((s) => s.activeId);
 
   useEffect(() => {
@@ -27,6 +30,9 @@ export function LayoutMenu() {
   }, [open]);
 
   const layoutList = Object.values(layouts).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  const userList = Object.values(userLayouts).sort((a, b) =>
     a.name.localeCompare(b.name),
   );
 
@@ -44,6 +50,25 @@ export function LayoutMenu() {
       </button>
       {open && (
         <div className="absolute left-0 top-full z-50 mt-1 max-h-[70vh] w-56 overflow-y-auto rounded border border-border bg-surface-2 py-1 shadow-xl">
+          <MenuItem
+            checked={activeId === CUSTOM_LAYOUT}
+            title="Your own arrangement. Any change you make to a layout is saved here."
+            onClick={() => applyDockLayout(CUSTOM_LAYOUT)}
+          >
+            Custom
+          </MenuItem>
+          {userList.map((l) => (
+            <MenuItem
+              key={l.id}
+              checked={activeId === l.id}
+              onClick={() => applyDockLayout(l.id)}
+            >
+              {l.name}
+            </MenuItem>
+          ))}
+          {layoutList.length > 0 && (
+            <div className="my-1 border-t border-border-subtle" />
+          )}
           {layoutList.map((l) => (
             <MenuItem
               key={l.id}
@@ -56,11 +81,14 @@ export function LayoutMenu() {
           ))}
           <div className="my-1 border-t border-border-subtle" />
           <MenuItem
-            checked={activeId === CUSTOM_LAYOUT}
-            title="Your own arrangement. Any change you make to a preset is saved here."
-            onClick={() => applyDockLayout(CUSTOM_LAYOUT)}
+            checked={false}
+            title="Add, rename or delete layouts in Preferences"
+            onClick={() => {
+              setOpen(false);
+              openPreferences("Interface");
+            }}
           >
-            Custom
+            Manage layouts…
           </MenuItem>
         </div>
       )}

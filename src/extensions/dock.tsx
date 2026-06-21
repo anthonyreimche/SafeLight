@@ -209,6 +209,50 @@ function markLayoutCustom() {
     setActiveLayout(CUSTOM_LAYOUT);
 }
 
+// ── User layouts: named arrangements the user saves from their current dock.
+// Stored locally (not through the extension registry) but listed and applied
+// alongside the registered presets — they share the active-id space and the
+// same ModuleLayoutDef shape. Captured across both modules so switching modules
+// keeps the saved arrangement.
+
+export interface UserLayout {
+  id: string;
+  name: string;
+  modules: Partial<Record<AppModule, ModuleLayoutDef>>;
+}
+
+const USER_LAYOUTS_KEY = "sl_user_layouts";
+
+function loadUserLayouts(): Record<string, UserLayout> {
+  try {
+    const raw = localStorage.getItem(USER_LAYOUTS_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export const useUserLayouts = create<{ layouts: Record<string, UserLayout> }>(
+  () => ({ layouts: loadUserLayouts() }),
+);
+
+function persistUserLayouts(layouts: Record<string, UserLayout>) {
+  useUserLayouts.setState({ layouts });
+  try {
+    localStorage.setItem(USER_LAYOUTS_KEY, JSON.stringify(layouts));
+  } catch {}
+}
+
+/** A unique "Layout N" name not already taken. */
+function defaultLayoutName(layouts: Record<string, UserLayout>): string {
+  const names = new Set(Object.values(layouts).map((l) => l.name));
+  for (let i = 1; ; i++) {
+    const name = `Layout ${i}`;
+    if (!names.has(name)) return name;
+  }
+}
+
 /** Switch the active layout and rebuild the current module's dock. */
 export function applyDockLayout(id: string): void {
   setActiveLayout(id);
@@ -219,6 +263,10 @@ export function applyDockLayout(id: string): void {
 /** Keep the layout choice in sync across windows (like themes). */
 export function initDockLayouts(): void {
   window.addEventListener("storage", (e) => {
+    if (e.key === USER_LAYOUTS_KEY) {
+      useUserLayouts.setState({ layouts: loadUserLayouts() });
+      return;
+    }
     if (e.key !== LAYOUT_PREF_KEY || !e.newValue) return;
     if (e.newValue === useLayoutStore.getState().activeId) return;
     useLayoutStore.setState({ activeId: e.newValue });
@@ -236,8 +284,13 @@ function railsFromDef(module: AppModule, def: ModuleLayoutDef): RailState[] {
   }));
 }
 
-/** Build dock state for `module` from the active layout. */
-function loadModuleLayout(module: AppModule) {
+/** Resolve dock state for `module` under the active layout, without applying it. */
+function resolveModuleState(module: AppModule): {
+  rails: RailState[];
+  floating: Record<string, FloatState>;
+  zOrder: string[];
+  collapsed: Record<string, boolean>;
+} {
   const activeId = useLayoutStore.getState().activeId;
   let rails: RailState[] | null = null;
   let floating: Record<string, FloatState> = {};
@@ -255,24 +308,111 @@ function loadModuleLayout(module: AppModule) {
     zOrder = saved?.zOrder ?? null;
     collapsed = saved?.collapsed ?? {};
   } else {
-    const def = useRegistry.getState().layouts[activeId]?.modules?.[module];
+    // A user layout wins over a registered preset if the id ever collides.
+    const def =
+      useUserLayouts.getState().layouts[activeId]?.modules?.[module] ??
+      useRegistry.getState().layouts[activeId]?.modules?.[module];
     if (def) {
       rails = railsFromDef(module, def);
       floating = def.floating ?? {};
     }
   }
   rails ??= seedDefaults(module);
+  return { rails, floating, zOrder: zOrder ?? Object.keys(floating), collapsed };
+}
+
+/** Build dock state for `module` from the active layout. */
+function loadModuleLayout(module: AppModule) {
+  const { rails, floating, zOrder, collapsed } = resolveModuleState(module);
   useDockStore.setState({
     module,
     rails,
     floating,
-    zOrder: zOrder ?? Object.keys(floating),
+    zOrder,
     collapsed,
     hidden: false,
     open: openList(rails, floating),
     drag: null,
     target: null,
   });
+}
+
+// ── User-layout capture + CRUD ──────────────────────────────────────────────
+
+const LAYOUT_MODULES: AppModule[] = ["library", "develop"];
+
+/** Convert live rail/floating state into the serializable ModuleLayoutDef. */
+function moduleDefFromState(
+  rails: RailState[],
+  floating: Record<string, FloatState>,
+): ModuleLayoutDef {
+  const def: ModuleLayoutDef = {
+    rails: rails.map((r) => ({
+      side: r.side,
+      width: r.width,
+      panels: [...r.panels],
+    })),
+  };
+  if (Object.keys(floating).length) def.floating = { ...floating };
+  return def;
+}
+
+/** Snapshot the current arrangement of every module. The active module is read
+ *  live from the dock; the others are resolved from the active layout. */
+function captureCurrentLayout(): Partial<Record<AppModule, ModuleLayoutDef>> {
+  const s = useDockStore.getState();
+  const out: Partial<Record<AppModule, ModuleLayoutDef>> = {};
+  for (const m of LAYOUT_MODULES) {
+    const { rails, floating } = s.module === m ? s : resolveModuleState(m);
+    out[m] = moduleDefFromState(rails, floating);
+  }
+  return out;
+}
+
+/** Save the current arrangement as a new named layout and switch to it. */
+export function addUserLayout(name?: string): string {
+  const layouts = useUserLayouts.getState().layouts;
+  const id = `user.${Date.now().toString(36)}`;
+  persistUserLayouts({
+    ...layouts,
+    [id]: {
+      id,
+      name: name?.trim() || defaultLayoutName(layouts),
+      modules: captureCurrentLayout(),
+    },
+  });
+  setActiveLayout(id);
+  return id;
+}
+
+/** Overwrite an existing user layout with the current arrangement. */
+export function updateUserLayout(id: string): void {
+  const existing = useUserLayouts.getState().layouts[id];
+  if (!existing) return;
+  persistUserLayouts({
+    ...useUserLayouts.getState().layouts,
+    [id]: { ...existing, modules: captureCurrentLayout() },
+  });
+  // The dock now matches the saved layout again, so re-select it (editing a
+  // preset/layout flips the active id to Custom).
+  setActiveLayout(id);
+}
+
+export function renameUserLayout(id: string, name: string): void {
+  const existing = useUserLayouts.getState().layouts[id];
+  if (!existing || !name.trim()) return;
+  persistUserLayouts({
+    ...useUserLayouts.getState().layouts,
+    [id]: { ...existing, name: name.trim() },
+  });
+}
+
+export function deleteUserLayout(id: string): void {
+  const next = { ...useUserLayouts.getState().layouts };
+  if (!(id in next)) return;
+  delete next[id];
+  persistUserLayouts(next);
+  if (useLayoutStore.getState().activeId === id) applyDockLayout(CUSTOM_LAYOUT);
 }
 
 function initModule(module: AppModule) {

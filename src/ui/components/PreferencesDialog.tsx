@@ -22,9 +22,14 @@ import {
 import { useRegistry } from "@/extensions/registry";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import {
+  addUserLayout,
   applyDockLayout,
   CUSTOM_LAYOUT,
+  deleteUserLayout,
+  renameUserLayout,
+  updateUserLayout,
   useLayoutStore,
+  useUserLayouts,
 } from "@/extensions/dock";
 import { openExtensions } from "./ExtensionsDialog";
 import {
@@ -138,6 +143,16 @@ function useFieldVisible(label: string, hint?: string): boolean {
   );
 }
 
+// Fixed viewport gestures shown (read-only) at the bottom of the Shortcuts
+// section. Hoisted to module scope so both the search index (Shortcuts `items`)
+// and the section render share one source of truth. [combo, description].
+const VIEWPORT_FIXED: [string, string][] = [
+  ["Esc", "Exit tool / close dialog"],
+  ["Space", "Toggle zoom (fit ↔ 100%)"],
+  ["Ctrl/⌘ + Click", "Zoom in/out while masking or healing"],
+  ["Ctrl/⌘ + Drag", "Pan while zoomed"],
+];
+
 const CORE_SECTIONS: PrefSection[] = [
   {
     id: "Interface",
@@ -148,11 +163,12 @@ const CORE_SECTIONS: PrefSection[] = [
       "Panel layout",
       "Interface scale",
       "Canvas surround",
+      "Color assessment border",
       "Reduce motion",
       "Restore last project on launch",
       "Interface font",
     ),
-    keywords: ["surround", "background", "grey", "gray", "neutral"],
+    keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border"],
     render: () => <InterfaceSection />,
   },
   {
@@ -224,7 +240,11 @@ const CORE_SECTIONS: PrefSection[] = [
     id: "Shortcuts",
     label: "Shortcuts",
     group: "General",
-    items: settings("Single-key shortcuts"),
+    items: settings(
+      "Single-key shortcuts",
+      ...KEY_ACTIONS.map((a) => a.label),
+      ...VIEWPORT_FIXED.map(([, label]) => label),
+    ),
     keywords: ["keybindings", "keyboard"],
     render: () => <ShortcutsSection />,
   },
@@ -606,10 +626,9 @@ function SearchResults({
 
 function InterfaceSection() {
   const themes = useRegistry((s) => s.themes);
-  const layouts = useRegistry((s) => s.layouts);
   const activeTheme = useThemeStore((s) => s.activeId);
-  const activeLayout = useLayoutStore((s) => s.activeId);
   const uiScale = useSettings((s) => s.uiScale);
+  const assessBorderPct = useSettings((s) => s.assessBorderPct);
   const reduceMotion = useSettings((s) => s.reduceMotion);
   const restoreLastProject = useSettings((s) => s.restoreLastProject);
 
@@ -630,22 +649,7 @@ function InterfaceSection() {
             ))}
         </select>
       </Field>
-      <Field label="Panel layout">
-        <select
-          value={activeLayout}
-          onChange={(e) => applyDockLayout(e.target.value)}
-          className={selectCls}
-        >
-          <option value={CUSTOM_LAYOUT}>Custom (your arrangement)</option>
-          {Object.values(layouts)
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
-              </option>
-            ))}
-        </select>
-      </Field>
+      <LayoutField />
       <SliderField
         label="Interface scale"
         value={uiScale}
@@ -656,6 +660,15 @@ function InterfaceSection() {
         onChange={(v) => updateSettings({ uiScale: v })}
       />
       <CanvasSurroundField />
+      <SliderField
+        label="Color assessment border"
+        value={assessBorderPct}
+        min={1}
+        max={12}
+        step={0.5}
+        format={(v) => `${v}%`}
+        onChange={(v) => updateSettings({ assessBorderPct: v })}
+      />
       <ToggleField
         label="Reduce motion"
         hint="Minimize animated UI affordances."
@@ -670,6 +683,240 @@ function InterfaceSection() {
       />
       <FontField />
     </div>
+  );
+}
+
+// Panel-layout manager: a selectable list of layouts (Custom + the user's saved
+// layouts + read-only presets contributed by extensions). User layouts can be
+// updated to the current arrangement, renamed inline, or deleted; "Add layout"
+// captures the current dock as a new named layout. Replaces the old dropdown —
+// a dropdown can only pick, and the user now needs to manage the list.
+function LayoutField() {
+  const presets = useRegistry((s) => s.layouts);
+  const userLayouts = useUserLayouts((s) => s.layouts);
+  const activeId = useLayoutStore((s) => s.activeId);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+  // Guards against committing twice when Enter (or Esc) unmounts the input and
+  // fires its blur handler too. Reset each time an input opens.
+  const committedRef = useRef(false);
+
+  // While an inline name input is open, Esc cancels it (top of the modal
+  // escape stack) instead of closing Preferences.
+  const inputOpen = adding || editingId !== null;
+  useEffect(() => {
+    if (!inputOpen) return;
+    return pushEscapeHandler(() => {
+      committedRef.current = true; // suppress the unmount blur-commit
+      setAdding(false);
+      setEditingId(null);
+    });
+  }, [inputOpen]);
+
+  if (!useFieldVisible("Panel layout", "dock arrangement window")) return null;
+
+  const userList = Object.values(userLayouts).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  const presetList = Object.values(presets).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+
+  const startRename = (id: string, name: string) => {
+    committedRef.current = false;
+    setAdding(false);
+    setEditingId(id);
+    setDraft(name);
+  };
+  const commitRename = () => {
+    if (committedRef.current) return;
+    committedRef.current = true;
+    if (editingId) renameUserLayout(editingId, draft);
+    setEditingId(null);
+  };
+  const startAdd = () => {
+    committedRef.current = false;
+    setEditingId(null);
+    setAdding(true);
+    setDraft("");
+  };
+  const commitAdd = () => {
+    if (committedRef.current) return;
+    committedRef.current = true;
+    addUserLayout(draft);
+    setAdding(false);
+    setDraft("");
+  };
+
+  const nameInput = (onCommit: () => void) => (
+    <div className="flex items-center gap-1.5 bg-surface-2 px-2 py-1">
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") onCommit();
+        }}
+        onBlur={onCommit}
+        placeholder="Layout name"
+        spellCheck={false}
+        className="min-w-0 flex-1 rounded bg-surface-1 px-1.5 py-0.5 text-[11px] text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
+      />
+      <button
+        // Commit happens on blur; mousedown would blur the input first and make
+        // this a no-op, so commit here and let blur see the cleared state.
+        onMouseDown={(e) => {
+          e.preventDefault();
+          onCommit();
+        }}
+        className="rounded bg-slider-fill px-2 py-0.5 text-[10px] font-medium text-white hover:opacity-90"
+      >
+        Save
+      </button>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className={labelCls}>Panel layout</div>
+      <div className="mt-1.5 overflow-hidden rounded border border-border">
+        <LayoutRow
+          active={activeId === CUSTOM_LAYOUT}
+          name="Custom"
+          hint="Your live arrangement — any change you make to a layout is kept here."
+          onClick={() => applyDockLayout(CUSTOM_LAYOUT)}
+        />
+        {userList.map((l) =>
+          editingId === l.id ? (
+            <div key={l.id} className="border-t border-border-subtle">
+              {nameInput(commitRename)}
+            </div>
+          ) : (
+            <LayoutRow
+              key={l.id}
+              active={activeId === l.id}
+              name={l.name}
+              onClick={() => applyDockLayout(l.id)}
+              actions={
+                <>
+                  <RowButton
+                    title="Save the current arrangement into this layout"
+                    onClick={() => updateUserLayout(l.id)}
+                  >
+                    ↻
+                  </RowButton>
+                  <RowButton
+                    title="Rename"
+                    onClick={() => startRename(l.id, l.name)}
+                  >
+                    ✎
+                  </RowButton>
+                  <RowButton
+                    title="Delete layout"
+                    onClick={() => deleteUserLayout(l.id)}
+                  >
+                    ×
+                  </RowButton>
+                </>
+              }
+            />
+          ),
+        )}
+        {adding && (
+          <div className="border-t border-border-subtle">
+            {nameInput(commitAdd)}
+          </div>
+        )}
+        {presetList.length > 0 && (
+          <div className="border-t border-border bg-surface-0/30 px-2 py-1 text-[9px] uppercase tracking-widest text-text-muted">
+            Presets
+          </div>
+        )}
+        {presetList.map((l) => (
+          <LayoutRow
+            key={l.id}
+            active={activeId === l.id}
+            name={l.name}
+            hint={l.description}
+            onClick={() => applyDockLayout(l.id)}
+          />
+        ))}
+      </div>
+      <div className="mt-2">
+        <button onClick={startAdd} className={btnCls}>
+          + Add layout
+        </button>
+      </div>
+      <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
+        Saves the current panel arrangement (both Library and Develop) as a named
+        layout. Switch layouts here or from the Layout menu in the top bar.
+      </p>
+    </div>
+  );
+}
+
+function LayoutRow({
+  active,
+  name,
+  hint,
+  onClick,
+  actions,
+}: {
+  active: boolean;
+  name: string;
+  hint?: string;
+  onClick: () => void;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div
+      className={`group flex items-center border-t border-border-subtle first:border-t-0 ${
+        active ? "bg-surface-3" : "hover:bg-surface-2"
+      }`}
+    >
+      <button
+        onClick={onClick}
+        title={hint}
+        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+      >
+        <span className="w-3 shrink-0 text-[11px] text-slider-fill">
+          {active ? "✓" : ""}
+        </span>
+        <span
+          className={`truncate text-[11px] ${
+            active ? "text-text-primary" : "text-text-secondary"
+          }`}
+        >
+          {name}
+        </span>
+      </button>
+      {actions && (
+        <div className="flex shrink-0 items-center gap-0.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+          {actions}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RowButton({
+  title,
+  onClick,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      title={title}
+      onClick={onClick}
+      className="rounded px-1.5 py-0.5 text-[12px] leading-none text-text-muted hover:bg-surface-4 hover:text-text-primary"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -698,9 +945,10 @@ function CanvasSurroundField() {
         </span>
       </button>
       <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
-        Override the theme with a fixed neutral grey behind the image in Develop.
-        A mid-grey surround keeps brightness, contrast and saturation perception
-        accurate while editing. Off = follow the active theme.
+        A fixed neutral grey behind the image in Develop, independent of the
+        theme. A middle grey keeps brightness, contrast and saturation
+        perception accurate while editing (as darktable and Ansel do). Off =
+        follow the active theme. Also adjustable from the Develop toolbar.
       </p>
       <div
         className={`mt-2 flex gap-1.5 transition-opacity ${
@@ -1248,6 +1496,53 @@ function ShortcutsSection() {
 
   const conflicts = findConflicts(overrides);
 
+  // When the Preferences search is active, show only the bindings whose label
+  // matches — otherwise the whole key list buries the one you searched for. The
+  // explanatory text and reset button are chrome, so they hide while searching.
+  const filterQ = useContext(PrefSearchContext);
+  const matches = (label: string) => !filterQ || label.toLowerCase().includes(filterQ);
+
+  // One editable binding row, shared by the built-in categories and extensions.
+  const bindingRow = (a: { id: string; label: string; def: string }) => {
+    const combo = overrides[a.id] ?? a.def;
+    const overridden = a.id in overrides;
+    const conflict = conflicts.has(a.id);
+    return (
+      <tr key={a.id} className="border-b border-border-subtle">
+        <td className="py-1 pr-3 text-text-secondary">{a.label}</td>
+        <td className="w-28 py-1 text-right">
+          <button
+            onClick={() => setCapturing(capturing === a.id ? null : a.id)}
+            title={conflict ? "Conflicts with another shortcut" : undefined}
+            className={`rounded px-2 py-0.5 font-medium ${
+              capturing === a.id
+                ? "bg-slider-fill text-white"
+                : conflict
+                  ? "bg-surface-2 text-red-400"
+                  : "bg-surface-2 text-text-primary hover:bg-surface-3"
+            }`}
+          >
+            {capturing === a.id ? "Press keys…" : prettyCombo(combo)}
+          </button>
+        </td>
+        <td className="w-6 py-1 text-right">
+          {overridden && (
+            <button
+              onClick={() => resetBinding(a.id)}
+              title={`Reset to ${prettyCombo(a.def)}`}
+              className="rounded px-1 text-text-muted hover:text-text-primary"
+            >
+              ↺
+            </button>
+          )}
+        </td>
+      </tr>
+    );
+  };
+
+  const extVisible = extActions.filter((a) => matches(a.label));
+  const fixedVisible = VIEWPORT_FIXED.filter(([, label]) => matches(label));
+
   return (
     <div className="flex flex-col gap-4">
       <ToggleField
@@ -1256,130 +1551,61 @@ function ShortcutsSection() {
         checked={singleKeys}
         onChange={(v) => updateSettings({ singleKeyShortcuts: v })}
       />
-      <p className="text-[10px] leading-relaxed text-text-muted">
-        Click a shortcut, then press the new keys. Esc cancels. Develop and
-        Library shortcuts may share keys — they're active in different modules.
-      </p>
-      {CATEGORIES.map((cat) => (
-        <div key={cat}>
-          <div className={labelCls}>{cat}</div>
-          <table className="mt-1 w-full text-[11px]">
-            <tbody>
-              {KEY_ACTIONS.filter((a) => a.category === cat).map((a) => {
-                const combo = overrides[a.id] ?? a.def;
-                const overridden = a.id in overrides;
-                const conflict = conflicts.has(a.id);
-                return (
-                  <tr key={a.id} className="border-b border-border-subtle">
-                    <td className="py-1 pr-3 text-text-secondary">{a.label}</td>
-                    <td className="w-28 py-1 text-right">
-                      <button
-                        onClick={() =>
-                          setCapturing(capturing === a.id ? null : a.id)
-                        }
-                        title={conflict ? "Conflicts with another shortcut" : undefined}
-                        className={`rounded px-2 py-0.5 font-medium ${
-                          capturing === a.id
-                            ? "bg-slider-fill text-white"
-                            : conflict
-                              ? "bg-surface-2 text-red-400"
-                              : "bg-surface-2 text-text-primary hover:bg-surface-3"
-                        }`}
-                      >
-                        {capturing === a.id ? "Press keys…" : prettyCombo(combo)}
-                      </button>
-                    </td>
-                    <td className="w-6 py-1 text-right">
-                      {overridden && (
-                        <button
-                          onClick={() => resetBinding(a.id)}
-                          title={`Reset to ${prettyCombo(a.def)}`}
-                          className="rounded px-1 text-text-muted hover:text-text-primary"
-                        >
-                          ↺
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      ))}
-      {extActions.length > 0 && (
+      {!filterQ && (
+        <p className="text-[10px] leading-relaxed text-text-muted">
+          Click a shortcut, then press the new keys. Esc cancels. Develop and
+          Library shortcuts may share keys — they're active in different modules.
+        </p>
+      )}
+      {CATEGORIES.map((cat) => {
+        const acts = KEY_ACTIONS.filter(
+          (a) => a.category === cat && matches(a.label),
+        );
+        if (acts.length === 0) return null;
+        return (
+          <div key={cat}>
+            <div className={labelCls}>{cat}</div>
+            <table className="mt-1 w-full text-[11px]">
+              <tbody>{acts.map(bindingRow)}</tbody>
+            </table>
+          </div>
+        );
+      })}
+      {extVisible.length > 0 && (
         <div>
           <div className={labelCls}>Extensions</div>
           <table className="mt-1 w-full text-[11px]">
+            <tbody>{extVisible.map(bindingRow)}</tbody>
+          </table>
+        </div>
+      )}
+      {fixedVisible.length > 0 && (
+        <div>
+          <div className={labelCls}>Viewport (fixed)</div>
+          <table className="mt-1 w-full text-[11px]">
             <tbody>
-              {extActions.map((a) => {
-                const combo = overrides[a.id] ?? a.def;
-                const overridden = a.id in overrides;
-                const conflict = conflicts.has(a.id);
-                return (
-                  <tr key={a.id} className="border-b border-border-subtle">
-                    <td className="py-1 pr-3 text-text-secondary">{a.label}</td>
-                    <td className="w-28 py-1 text-right">
-                      <button
-                        onClick={() => setCapturing(capturing === a.id ? null : a.id)}
-                        title={conflict ? "Conflicts with another shortcut" : undefined}
-                        className={`rounded px-2 py-0.5 font-medium ${
-                          capturing === a.id
-                            ? "bg-slider-fill text-white"
-                            : conflict
-                              ? "bg-surface-2 text-red-400"
-                              : "bg-surface-2 text-text-primary hover:bg-surface-3"
-                        }`}
-                      >
-                        {capturing === a.id ? "Press keys…" : prettyCombo(combo)}
-                      </button>
-                    </td>
-                    <td className="w-6 py-1 text-right">
-                      {overridden && (
-                        <button
-                          onClick={() => resetBinding(a.id)}
-                          title={`Reset to ${prettyCombo(a.def)}`}
-                          className="rounded px-1 text-text-muted hover:text-text-primary"
-                        >
-                          ↺
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
+              {fixedVisible.map(([combo, label]) => (
+                <tr key={combo} className="border-b border-border-subtle">
+                  <td className="py-1 pr-3 text-text-secondary">{label}</td>
+                  <td className="w-28 py-1 text-right">
+                    <span className="rounded bg-surface-2 px-2 py-0.5 font-medium text-text-muted">
+                      {combo}
+                    </span>
+                  </td>
+                  <td className="w-6" />
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
       )}
-      <div>
-        <div className={labelCls}>Viewport (fixed)</div>
-        <table className="mt-1 w-full text-[11px]">
-          <tbody>
-            {[
-              ["Esc", "Exit tool / close dialog"],
-              ["Space", "Toggle zoom (fit ↔ 100%)"],
-              ["Ctrl/⌘ + Click", "Zoom in/out while masking or healing"],
-              ["Ctrl/⌘ + Drag", "Pan while zoomed"],
-            ].map(([combo, label]) => (
-              <tr key={combo} className="border-b border-border-subtle">
-                <td className="py-1 pr-3 text-text-secondary">{label}</td>
-                <td className="w-28 py-1 text-right">
-                  <span className="rounded bg-surface-2 px-2 py-0.5 font-medium text-text-muted">
-                    {combo}
-                  </span>
-                </td>
-                <td className="w-6" />
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div>
-        <button onClick={resetAllBindings} className={btnCls}>
-          Reset all shortcuts
-        </button>
-      </div>
+      {!filterQ && (
+        <div>
+          <button onClick={resetAllBindings} className={btnCls}>
+            Reset all shortcuts
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -64,6 +64,12 @@ interface ViewportImageProps {
     visible: { x: number; y: number; w: number; h: number },
     image: { x: number; y: number; w: number; h: number },
   ) => void;
+  // ISO 12646 color-assessment mode: frame the displayed image in brilliant
+  // white (a paper-white reference). The surround grey is set by the parent.
+  colorAssessment?: boolean;
+  // Width of the color-assessment mat as a fraction of the smaller viewport
+  // dimension (resolution-independent). Defaults to 0.045 (4.5%).
+  assessBorder?: number;
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
@@ -89,6 +95,8 @@ export function ViewportImage({
   onViewport,
   fadeToken,
   onLayout,
+  colorAssessment,
+  assessBorder = 0.045,
 }: ViewportImageProps) {
   // A crop overlay locks the view to fit; a mask/heal overlay (overlayZoomable)
   // keeps the zoom/pan machinery live underneath it.
@@ -121,9 +129,6 @@ export function ViewportImage({
     return () => ro.disconnect();
   }, []);
 
-  // ROI zoom: render just the visible window from the resident full-res source.
-  const roiMode = !staticFit && zoom != null && !!onViewport;
-
   // Logical full-image buffer dims. In fit mode the worker renders the whole
   // image so this equals the live buffer; in ROI-zoom mode the live buffer holds
   // only the window, so pan/zoom math reuses the dims captured during fit.
@@ -131,11 +136,39 @@ export function ViewportImage({
   if (zoom == null && bufferWidth > 0 && bufferHeight > 0) {
     fitBufferRef.current = { w: bufferWidth, h: bufferHeight };
   }
-  const imgW = roiMode && fitBufferRef.current.w > 0 ? fitBufferRef.current.w : bufferWidth;
-  const imgH = roiMode && fitBufferRef.current.h > 0 ? fitBufferRef.current.h : bufferHeight;
+  // Stable full-image dims: the dims captured during fit, falling back to the
+  // live buffer until the first fit render lands.
+  const logicalW = fitBufferRef.current.w > 0 ? fitBufferRef.current.w : bufferWidth;
+  const logicalH = fitBufferRef.current.h > 0 ? fitBufferRef.current.h : bufferHeight;
 
-  const hasImage = imgW > 0 && imgH > 0 && frame.w > 0 && frame.h > 0;
-  const fitScale = hasImage ? Math.min(frame.w / imgW, frame.h / imgH) : 1;
+  const hasImage = logicalW > 0 && logicalH > 0 && frame.w > 0 && frame.h > 0;
+
+  // Color-assessment mat: a brilliant-white band hugging the image. In fit mode
+  // we shrink the image to leave room for the band inside the frame, so "Assess"
+  // frames the whole image plus its white surround. Computed up front so the fit
+  // scale can reserve the border.
+  const matBorder = Math.max(2, Math.round(Math.min(frame.w, frame.h) * assessBorder));
+  const showMat = !!colorAssessment && hasImage;
+  const fitInset = showMat && zoom == null ? matBorder : 0;
+
+  const fitScale = hasImage
+    ? Math.min((frame.w - fitInset * 2) / logicalW, (frame.h - fitInset * 2) / logicalH)
+    : 1;
+  // The image fully covers the frame only at/above the cover scale. ROI render
+  // fills the frame edge-to-edge, so it's valid only there; below it (a zoom-out
+  // past fit) we letterbox with a CSS scale instead — otherwise the window is
+  // stretched to the frame's aspect ratio and the image deforms.
+  const coverScale = hasImage
+    ? Math.max(frame.w / logicalW, frame.h / logicalH)
+    : 1;
+
+  // ROI zoom: render just the visible window from the resident full-res source,
+  // but only while the image covers the frame; below cover we render whole-frame.
+  const roiMode =
+    !staticFit && zoom != null && !!onViewport && zoom >= coverScale - 1e-3;
+
+  const imgW = roiMode ? logicalW : bufferWidth;
+  const imgH = roiMode ? logicalH : bufferHeight;
 
   const centered = (s: number) => ({
     x: (frame.w - imgW * s) / 2,
@@ -464,6 +497,14 @@ export function ViewportImage({
         willChange: "transform",
       };
 
+  // Color-assessment white mat: a brilliant-white band hugging the displayed
+  // image, painted behind the canvas. In ROI-zoom mode the pixels fill the
+  // frame, so the band sits at the frame edges; in fit/CSS mode it wraps the
+  // letterboxed image. Border scales with the viewport, clamped to sane bounds.
+  const display = roiMode
+    ? { x: 0, y: 0, w: frame.w, h: frame.h }
+    : { x: effOffset.x, y: effOffset.y, w: imgW * effScale, h: imgH * effScale };
+
   return (
     <div
       ref={frameRef}
@@ -473,6 +514,20 @@ export function ViewportImage({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
     >
+      {showMat && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: display.x - matBorder,
+            top: display.y - matBorder,
+            width: display.w + matBorder * 2,
+            height: display.h + matBorder * 2,
+            background: "#ffffff",
+            pointerEvents: "none",
+          }}
+        />
+      )}
       <canvas ref={canvasRef} style={canvasStyle} />
 
       {/* Crossfade overlay: holds the previous frame and fades to reveal the new

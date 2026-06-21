@@ -85,6 +85,7 @@ export function DevelopCanvas({
   // to another preset, so the look eases in/out instead of snapping.
   const previewParams = useDevelopStore((s) => s.previewParams);
   const openZoom = useSettings((s) => s.developOpenZoom);
+  const assessBorderPct = useSettings((s) => s.assessBorderPct);
   const [fadeToken, setFadeToken] = useState(0);
   const fadeInit = useRef(false);
   useEffect(() => {
@@ -96,6 +97,7 @@ export function DevelopCanvas({
   }, [previewParams]);
 
   const cropping = useDevelopStore((s) => s.cropping);
+  const colorAssessment = useDevelopStore((s) => s.colorAssessment);
   const activeTool = useDevelopStore((s) => s.activeTool);
   const crop = useDevelopStore((s) => s.params.crop);
   const straighten = useDevelopStore((s) => s.params.straighten);
@@ -309,6 +311,8 @@ export function DevelopCanvas({
       onZoomChange={onZoomChange}
       onViewport={setViewport}
       onLayout={handleLayout}
+      colorAssessment={colorAssessment}
+      assessBorder={assessBorderPct / 100}
       loading={loading}
       resetKey={photo.id}
       initialZoom={openZoom === "100" ? 1 : null}

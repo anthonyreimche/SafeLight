@@ -11,14 +11,15 @@ import type { UpdateChannel } from "@/update/update-checker";
 
 export type ExportFormatPref = "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
 
-/** The five neutral-grey surround shades, dark → light. The middle steps sit
- *  around the ~18% middle-grey that's standard for color-critical viewing. */
+/** The five neutral-grey surround shades, dark → light, on darktable's own grey
+ *  ladder and centred on #777777 — the ~18% middle grey both darktable and
+ *  Ansel use for the darkroom canvas, the standard for color-critical viewing. */
 export const CANVAS_SURROUND_SHADES: { value: string; label: string }[] = [
-  { value: "#000000", label: "Black" },
-  { value: "#2b2b2b", label: "Charcoal" },
-  { value: "#4d4d4d", label: "Mid grey" },
-  { value: "#6e6e6e", label: "Grey" },
-  { value: "#909090", label: "Light grey" },
+  { value: "#3b3b3b", label: "Dark grey" },
+  { value: "#525252", label: "Grey" },
+  { value: "#686868", label: "Mid grey" },
+  { value: "#777777", label: "Middle grey" },
+  { value: "#8a8a8a", label: "Light grey" },
 ];
 
 /** How grid previews are built for RAW files on import:
@@ -48,14 +49,19 @@ export interface AppSettings {
   reduceMotion: boolean;
   /** UI font: CSS font-family string. "" = the built-in mono stack. */
   uiFont: string;
-  /** Override the theme's color behind the image in Develop with a fixed neutral
-   *  grey (see canvasSurround). Off = the surround follows the active theme. A
-   *  neutral mid-grey surround keeps brightness/contrast/saturation perception
-   *  accurate while editing, independent of the chrome theme. */
+  /** Use a fixed neutral-grey shade behind the image in Develop (see
+   *  canvasSurround), independent of the theme. On by default — a middle-grey
+   *  surround keeps brightness/contrast/saturation perception accurate while
+   *  editing, like darktable/Ansel. Off = the surround follows the active
+   *  theme's surface-0 instead. */
   canvasSurroundOverride: boolean;
   /** The fixed surround shade used when canvasSurroundOverride is on. One of
-   *  CANVAS_SURROUND_SHADES (a neutral grey hex). */
+   *  CANVAS_SURROUND_SHADES (a neutral grey hex). Defaults to middle grey. */
   canvasSurround: string;
+  /** Width of the white color-assessment mat as a percentage of the smaller
+   *  viewport dimension (resolution-independent). Tunable so the band reads
+   *  right on any display size. */
+  assessBorderPct: number;
 
   // ── Startup ────────────────────────────────────────────────────────────
   /** Reopen the most-recently-used project on launch instead of the welcome
@@ -142,8 +148,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   uiScale: 1,
   reduceMotion: false,
   uiFont: "",
-  canvasSurroundOverride: false,
-  canvasSurround: "#4d4d4d",
+  canvasSurroundOverride: true,
+  canvasSurround: "#777777",
+  assessBorderPct: 4.5,
   restoreLastProject: false,
   defaultGridSize: 200,
   defaultSortField: "dateImported",
@@ -226,6 +233,26 @@ export function updateSettings(patch: Partial<AppSettings>): void {
 
 export function resetSettings(): void {
   updateSettings({ ...DEFAULT_SETTINGS });
+}
+
+/** Step the Develop surround one rung darker (-1) or lighter (+1) through
+ *  CANVAS_SURROUND_SHADES, pinning a fixed shade (so it works even when the
+ *  surround was following the theme). Shared by the toolbar widget and the
+ *  keybindings. Clamps at the ends of the ladder. */
+export function stepCanvasSurround(dir: -1 | 1): void {
+  const found = CANVAS_SURROUND_SHADES.findIndex(
+    (s) => s.value === getSettings().canvasSurround,
+  );
+  // -1 (no stored shade) falls back to the middle-grey rung.
+  const idx = found === -1 ? CANVAS_SURROUND_SHADES.length - 2 : found;
+  const next = Math.min(
+    CANVAS_SURROUND_SHADES.length - 1,
+    Math.max(0, idx + dir),
+  );
+  updateSettings({
+    canvasSurroundOverride: true,
+    canvasSurround: CANVAS_SURROUND_SHADES[next].value,
+  });
 }
 
 /** Call once at boot: apply side effects and follow changes in other windows. */

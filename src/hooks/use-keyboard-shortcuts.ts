@@ -7,7 +7,7 @@ import { useUIStore } from "@/state/ui-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { toggleDockVisibility } from "@/extensions/dock";
-import { getSettings } from "@/state/settings-store";
+import { getSettings, stepCanvasSurround } from "@/state/settings-store";
 import { detachedModule } from "@/state/detach";
 import {
   getBinding,
@@ -147,6 +147,11 @@ export function useKeyboardShortcuts() {
         "brush.flowUp": ds.activeTool === "mask",
         "crop.cycleGuide": ds.cropping,
         "crop.flipGuide": ds.cropping,
+        // Surround steppers only act when the canvas surround is enabled in
+        // Preferences; otherwise the surround follows the theme and there's
+        // nothing to step, so let the key through.
+        "develop.surroundDarker": getSettings().canvasSurroundOverride,
+        "develop.surroundLighter": getSettings().canvasSurroundOverride,
       };
       if (action in modeActive && !modeActive[action]) return;
 
@@ -230,6 +235,18 @@ export function useKeyboardShortcuts() {
           break;
         case "crop.flipGuide":
           ds.cycleCropGuideFlip();
+          break;
+        case "develop.toggleClipping":
+          ds.toggleClipping();
+          break;
+        case "develop.colorAssessment":
+          ds.toggleColorAssessment();
+          break;
+        case "develop.surroundDarker":
+          stepCanvasSurround(-1);
+          break;
+        case "develop.surroundLighter":
+          stepCanvasSurround(1);
           break;
       }
     };
