@@ -50,7 +50,7 @@ jobs:
               release/*.flatpak
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Verify tag matches package.json version
         shell: bash
@@ -63,7 +63,7 @@ jobs:
           fi
           echo "Version verified: $PKG_VERSION"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
