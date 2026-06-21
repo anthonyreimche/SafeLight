@@ -99,10 +99,6 @@ interface RegistryState {
   slots: Record<string, RegisteredSlot>;
   /** Keyed by contribution id. Extra Library sort orders. */
   librarySorts: Record<string, RegisteredLibrarySort>;
-  /** Fallback "Reset to defaults" action offered on EVERY panel's dock header
-   *  when the panel declares no `onReset` of its own. Owned by one extension
-   *  (the built-in Edit panel registers a whole-edit reset). */
-  defaultPanelReset: { extensionId: string; fn: () => void } | null;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -121,7 +117,6 @@ export const useRegistry = create<RegistryState>(() => ({
   gridFilters: {},
   slots: {},
   librarySorts: {},
-  defaultPanelReset: null,
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -310,15 +305,6 @@ export function registerLibrarySort(
   }));
 }
 
-/** Register the fallback reset action used by every panel that has no `onReset`
- *  of its own. Last registrant wins; swept when its extension is removed. */
-export function registerDefaultPanelReset(
-  extensionId: string,
-  fn: () => void,
-): void {
-  useRegistry.setState({ defaultPanelReset: { extensionId, fn } });
-}
-
 /** Reactive list of extension-contributed Library sort orders, for the toolbar. */
 export function useLibrarySorts(): RegisteredLibrarySort[] {
   return useRegistry(useShallow((s) => Object.values(s.librarySorts)));
@@ -433,8 +419,6 @@ export function unregisterExtension(extensionId: string): void {
     gridFilters: drop(s.gridFilters),
     slots: drop(s.slots),
     librarySorts: drop(s.librarySorts),
-    defaultPanelReset:
-      s.defaultPanelReset?.extensionId === extensionId ? null : s.defaultPanelReset,
   }));
   unregisterExtensionActions(extensionId);
 }
