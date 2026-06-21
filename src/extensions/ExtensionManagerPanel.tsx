@@ -1,5 +1,8 @@
 // Built-in extension manager, rendered inside the Extensions window as a
 // Preferences-style master/detail "store":
+//   • Updates   — installed extensions with a newer GitHub release, each with
+//                 an Update button. First in the sidebar so pending updates are
+//                 the first thing seen; a badge shows the count.
 //   • Browse    — search official extensions (GitHub repos tagged with the
 //                 safelight-extension topic), shown as preview cards with
 //                 category chips + a sort control, plus a custom-repo importer.
@@ -40,7 +43,7 @@ import {
 import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
 import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
 
-type Section = "Browse" | "Installed" | "Dev";
+type Section = "Updates" | "Browse" | "Installed" | "Dev";
 
 const SORTS: { id: StoreSort; label: string }[] = [
   { id: "popular", label: "Popular" },
@@ -109,6 +112,13 @@ export function ExtensionManagerPanel() {
     if (!checkUpdates) return;
     for (const m of list) void checkExtensionUpdate(m);
   }, [list, checkUpdates]);
+
+  // Opening the Updates tab is an explicit ask, so check even when the automatic
+  // update-check setting is off. Still TTL-guarded, so it's a no-op when fresh.
+  useEffect(() => {
+    if (section !== "Updates") return;
+    for (const m of list) void checkExtensionUpdate(m);
+  }, [section, list]);
 
   const reload = () => {
     setMsg(null);
@@ -202,6 +212,14 @@ export function ExtensionManagerPanel() {
   const isInstalled = (r: ExtensionSearchResult) =>
     installedRepos.has(r.fullName.toLowerCase());
   const enabled = (id: string) => !disabledIds.includes(id);
+
+  // Installed extensions with a newer release available — drives the Updates tab
+  // and its sidebar badge. Needs a known repo to update from (built-ins / custom
+  // imports without a source can't be updated).
+  const updatable = list.filter((m) => {
+    const upd = updates[m.id];
+    return !!upd?.hasUpdate && !!upd.latestTag && !!repoFor(m);
+  });
 
   // Browse shows only what isn't installed, filtered by category and sorted.
   const browsable = (() => {
@@ -305,6 +323,7 @@ export function ExtensionManagerPanel() {
     <div className="flex min-h-0 min-w-0 flex-1">
       <div className="w-28 shrink-0 border-r border-border bg-surface-0/40 py-2">
         {([
+          ...(native ? (["Updates"] as Section[]) : []),
           "Browse",
           "Installed",
           ...(devtoolsEnabled ? (["Dev"] as Section[]) : []),
@@ -312,13 +331,18 @@ export function ExtensionManagerPanel() {
           <button
             key={s}
             onClick={() => setSection(s)}
-            className={`block w-full px-3 py-1.5 text-left text-[11px] tracking-wider ${
+            className={`flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] tracking-wider ${
               section === s
                 ? "bg-surface-3 text-text-primary"
                 : "text-text-secondary hover:text-text-primary"
             }`}
           >
-            {s}
+            <span>{s}</span>
+            {s === "Updates" && updatable.length > 0 && (
+              <span className="rounded-full bg-slider-fill px-1.5 text-[9px] font-medium leading-[14px] text-white">
+                {updatable.length}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -326,6 +350,61 @@ export function ExtensionManagerPanel() {
       <div className="min-w-0 flex-1 overflow-y-auto p-3 text-[11px]">
         {section === "Dev" && devtoolsEnabled ? (
           <DevExtensionsTab />
+        ) : section === "Updates" ? (
+          // ── Updates: installed extensions with a newer release ──
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <SectionLabel>
+                {updatable.length > 0
+                  ? `${updatable.length} update${updatable.length > 1 ? "s" : ""} available`
+                  : "Updates"}
+              </SectionLabel>
+              <button
+                onClick={() => {
+                  setMsg(null);
+                  for (const m of list) void checkExtensionUpdate(m, true);
+                }}
+                disabled={busy !== null}
+                title="Check all installed extensions for new releases"
+                className="rounded px-1.5 text-[12px] leading-none text-text-muted hover:text-text-primary disabled:opacity-40"
+              >
+                ↻
+              </button>
+            </div>
+
+            {updatable.length === 0 ? (
+              <div className="text-text-muted">
+                All installed extensions are up to date. Updating downloads the
+                latest release and reinstalls the extension in place; your
+                settings are kept.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {updatable.map((m) => {
+                  const upd = updates[m.id]!;
+                  const repo = repoFor(m)!;
+                  return (
+                    <ExtensionRow
+                      key={m.id}
+                      name={m.name}
+                      version={m.version}
+                      description={`New version ${upd.latestTag} available`}
+                      enabled={enabled(m.id)}
+                      busy={busy !== null}
+                      hasSettings={!!extSettings[m.id]}
+                      onOpen={() => openDetail(repo)}
+                      onUpdate={() => void update(m.id, repo, upd.latestTag!)}
+                      onSettings={() => openSettings(m.id)}
+                      onToggle={() => toggle(m.id, !enabled(m.id))}
+                      onUninstall={() => void remove(m.id)}
+                    />
+                  );
+                })}
+              </div>
+            )}
+
+            {msg && <div className="text-text-secondary">{msg}</div>}
+          </div>
         ) : section === "Browse" ? (
           native ? (
             <div className="flex flex-col gap-3">

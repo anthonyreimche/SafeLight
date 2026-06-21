@@ -1,7 +1,7 @@
 {
   "name": "safelight",
   "private": true,
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Safelight — a fast RAW photo editor.",
   "homepage": "https://github.com/anthonyreimche/SafeLight",
   "desktopName": "safelight",

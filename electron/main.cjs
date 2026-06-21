@@ -281,6 +281,26 @@ function validManifest(m) {
   );
 }
 
+// True when this app build is older than the extension's declared minimum
+// supported version. Dotted versions only; a missing part reads as 0. Mirrors
+// the renderer's semver helper so a too-old install is refused before any files
+// are written (the renderer can't know minAppVersion until the manifest lands).
+function appOlderThan(minVersion) {
+  const parse = (v) =>
+    String(v)
+      .replace(/^v/i, "")
+      .split(".")
+      .map((n) => parseInt(n, 10) || 0);
+  const cur = parse(appVersion());
+  const want = parse(minVersion);
+  for (let i = 0; i < 3; i++) {
+    const a = cur[i] || 0;
+    const b = want[i] || 0;
+    if (a !== b) return a < b;
+  }
+  return false;
+}
+
 function listPlugins() {
   const dir = pluginsDir();
   if (!fs.existsSync(dir)) return [];
@@ -351,6 +371,10 @@ async function installPlugin(spec) {
   if (!manifestFile) throw new Error("Repo has no safelight.json manifest");
   const manifest = JSON.parse(manifestFile.data.toString("utf8"));
   if (!validManifest(manifest)) throw new Error("Invalid safelight.json");
+  if (manifest.minAppVersion && appOlderThan(manifest.minAppVersion))
+    throw new Error(
+      `"${manifest.name}" requires SafeLight ${manifest.minAppVersion} or newer — you have ${appVersion()}. Update SafeLight first.`
+    );
   if (!files.some((f) => f.name === manifest.main))
     throw new Error(`Entry bundle "${manifest.main}" not found in repo`);
 

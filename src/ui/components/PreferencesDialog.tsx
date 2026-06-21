@@ -76,19 +76,49 @@ export const togglePreferences = () =>
 // ─── Sections ────────────────────────────────────────────────────────────────
 // The window is data-driven: a list of sections grouped into "General" (core,
 // each backed by a bespoke component) and "Extensions" (one per extension that
-// registered settings, auto-rendered from its declarative fields). `keywords`
-// feeds the header search — for core sections it lists their field labels so a
-// search can find a setting without a full declarative rewrite.
+// registered settings, auto-rendered from its declarative fields).
+//
+// Two things feed the header search:
+//   • `items` — the individual settings in a section (display label + the text
+//     they're searchable by). The search results list shows these directly, each
+//     tagged with its section, so a query surfaces specific settings and where
+//     they live rather than a whole tab.
+//   • `keywords` — extra section-level synonyms (e.g. "tone map", "plugins") that
+//     match the section as a whole when no individual item label fits.
 
 type PrefGroup = "General" | "Extensions";
+
+interface PrefSetting {
+  /** Display label shown in search results. */
+  label: string;
+  /** Lowercase text this setting matches against (label + hint + option labels). */
+  terms: string;
+}
 
 interface PrefSection {
   id: string;
   label: string;
   group: PrefGroup;
+  items: PrefSetting[];
   keywords: string[];
   order?: number;
   render: (query: string) => React.ReactNode;
+}
+
+/** Build PrefSettings from a plain list of labels (core sections, no per-item hints). */
+const settings = (...labels: string[]): PrefSetting[] =>
+  labels.map((label) => ({ label, terms: label.toLowerCase() }));
+
+/** A section matches a (lowercased) query via its title, any setting, or a synonym. */
+const sectionMatches = (s: PrefSection, q: string): boolean =>
+  s.label.toLowerCase().includes(q) ||
+  s.items.some((it) => it.terms.includes(q)) ||
+  s.keywords.some((k) => k.toLowerCase().includes(q));
+
+/** One section's worth of search hits: the matching settings (empty = title/synonym match only). */
+interface SearchGroup {
+  section: PrefSection;
+  items: PrefSetting[];
 }
 
 const CORE_SECTIONS: PrefSection[] = [
@@ -96,104 +126,121 @@ const CORE_SECTIONS: PrefSection[] = [
     id: "Interface",
     label: "Interface",
     group: "General",
-    keywords: [
+    items: settings(
       "Theme",
       "Panel layout",
       "Interface scale",
       "Reduce motion",
+      "Restore last project on launch",
       "Interface font",
-    ],
+    ),
+    keywords: [],
     render: () => <InterfaceSection />,
   },
   {
     id: "Library",
     label: "Library",
     group: "General",
-    keywords: ["Default grid size", "Default sort", "Confirm before removing"],
+    items: settings(
+      "Default grid size",
+      "Default sort",
+      "Confirm before removing photos",
+    ),
+    keywords: [],
     render: () => <LibrarySection />,
   },
   {
     id: "Previews",
     label: "Previews",
     group: "General",
-    keywords: [
+    items: settings(
       "Preview source",
-      "Embedded JPEG",
       "Thumbnail quality",
       "Store previews on disk",
-      "Develop cache",
-      "Cache all",
+      "Grid thumbnails",
+      "Cache decoded RAW previews",
       "Cached preview resolution",
-      "Clear preview cache",
-      "Rebuild thumbnails",
-    ],
+      "Cache storage",
+    ),
+    keywords: ["Embedded JPEG", "Rebuild thumbnails", "Clear preview cache"],
     render: () => <PreviewsSection />,
   },
   {
     id: "Rendering",
     label: "Rendering",
     group: "General",
-    keywords: ["Display transform", "tone map", "pipeline"],
+    items: settings("Display transform"),
+    keywords: ["tone map", "pipeline"],
     render: () => <RenderingSection />,
   },
   {
     id: "Performance",
     label: "Performance",
     group: "General",
-    keywords: [
+    items: settings(
       "Develop render resolution",
       "Open photos at",
       "GPU source cache",
       "Prefetch neighbours",
       "High bit-depth previews",
       "Live histogram",
-    ],
+    ),
+    keywords: [],
     render: () => <PerformanceSection />,
   },
   {
     id: "Export",
     label: "Export",
     group: "General",
-    keywords: [
+    items: settings(
       "Default format",
       "Default quality",
       "Default resolution",
       "Color space",
       "Bundle multiple photos as ZIP",
-    ],
+    ),
+    keywords: [],
     render: () => <ExportSection />,
   },
   {
     id: "Shortcuts",
     label: "Shortcuts",
     group: "General",
-    keywords: ["Single-key shortcuts", "keybindings", "keyboard"],
+    items: settings("Single-key shortcuts"),
+    keywords: ["keybindings", "keyboard"],
     render: () => <ShortcutsSection />,
   },
   {
     id: "Extensions",
     label: "Extensions",
     group: "General",
-    keywords: ["Official extension topic", "Manage", "plugins"],
+    items: settings(
+      "Official extension topic",
+      "Check extensions for updates",
+      "Auto-update extensions",
+    ),
+    keywords: ["Manage", "plugins"],
     render: () => <ExtensionsSection />,
   },
   {
     id: "Updates",
     label: "Updates",
     group: "General",
-    keywords: [
+    items: settings(
       "Check for updates on startup",
       "Update channel",
       "Manual check",
       "Release history",
-    ],
+    ),
+    keywords: [],
     render: () => <UpdatesSection />,
   },
   {
     id: "About",
     label: "About",
     group: "General",
-    keywords: ["Version", "Electron", "Chromium", "Platform", "Project", "license"],
+    items: settings("Version", "Project"),
+    keywords: ["Electron", "Chromium", "Platform", "license"],
     render: () => <AboutSection />,
   },
 ];
@@ -207,17 +254,52 @@ const SORT_FIELDS: { value: SortField; label: string }[] = [
 
 const GROUPS: PrefGroup[] = ["General", "Extensions"];
 
+// Section-rail width: user-adjustable via the drag handle, persisted across
+// sessions. Clamped so the rail can't collapse to nothing or swallow the panel.
+const RAIL_MIN = 120;
+const RAIL_MAX = 320;
+const RAIL_DEFAULT = 144; // matches the old fixed w-36
+const RAIL_STORE_KEY = "safelight.prefs.railWidth";
+const loadRailWidth = () => {
+  const saved = Number(localStorage.getItem(RAIL_STORE_KEY));
+  return saved >= RAIL_MIN && saved <= RAIL_MAX ? saved : RAIL_DEFAULT;
+};
+
 export function PreferencesDialog() {
   const open = useOpen((s) => s.open);
   const target = useOpen((s) => s.target);
   const extSettings = useRegistry((s) => s.settings);
   const [sectionId, setSectionId] = useState<string>("Interface");
   const [query, setQuery] = useState("");
+  const [railWidth, setRailWidth] = useState(loadRailWidth);
 
   // Latest query in a ref so the (capture-phase) escape handler can read it
   // without re-registering on every keystroke.
   const queryRef = useRef("");
   queryRef.current = query;
+
+  // Drag-to-resize the section rail. Pointer capture keeps the drag alive even
+  // when the cursor outruns the 1px handle; the final width is persisted on up.
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+  const onHandleDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startW: railWidth };
+    (e.target as Element).setPointerCapture(e.pointerId);
+  };
+  const onHandleMove = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    const next = Math.min(
+      RAIL_MAX,
+      Math.max(RAIL_MIN, dragRef.current.startW + (e.clientX - dragRef.current.startX)),
+    );
+    setRailWidth(next);
+  };
+  const onHandleUp = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    localStorage.setItem(RAIL_STORE_KEY, String(railWidth));
+    (e.target as Element).releasePointerCapture(e.pointerId);
+  };
 
   // One section per extension that registered settings — auto-rendered from its
   // declarative fields, or its custom component if it supplied one.
@@ -229,7 +311,17 @@ export function PreferencesDialog() {
           label: c.title ?? id,
           group: "Extensions" as const,
           order: c.order ?? 100,
-          keywords: c.fields.flatMap((f) => [f.label, f.hint ?? ""]),
+          items: c.fields.map((f) => ({
+            label: f.label,
+            terms: [
+              f.label,
+              f.hint ?? "",
+              ...(f.type === "select" ? f.options.map((o) => o.label) : []),
+            ]
+              .join(" ")
+              .toLowerCase(),
+          })),
+          keywords: [],
           render: (q: string) => {
             const Custom = c.component;
             return Custom ? (
@@ -252,15 +344,24 @@ export function PreferencesDialog() {
 
   const q = query.trim().toLowerCase();
   const visible = useMemo(
-    () =>
-      sections.filter(
-        (s) =>
-          !q ||
-          s.label.toLowerCase().includes(q) ||
-          s.keywords.some((k) => k.toLowerCase().includes(q)),
-      ),
+    () => sections.filter((s) => !q || sectionMatches(s, q)),
     [sections, q],
   );
+
+  // Flat, grouped-by-section search results: the individual settings that match,
+  // each landing under its section so the user sees the setting *and* where it
+  // lives. A section that matches only via its label/synonyms (no specific item)
+  // still appears, as a single jump-to-section entry.
+  const results = useMemo<SearchGroup[]>(() => {
+    if (!q) return [];
+    const out: SearchGroup[] = [];
+    for (const s of sections) {
+      const items = s.items.filter((it) => it.terms.includes(q));
+      if (items.length === 0 && !sectionMatches(s, q)) continue;
+      out.push({ section: s, items });
+    }
+    return out;
+  }, [sections, q]);
 
   // Deep-link: when opened with a target id, jump there and clear any search.
   useEffect(() => {
@@ -301,18 +402,52 @@ export function PreferencesDialog() {
         if (e.target === e.currentTarget) closePreferences();
       }}
     >
-      <div className="flex h-[480px] w-[640px] max-w-[92vw] flex-col overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl">
+      <div className="flex h-[640px] max-h-[90vh] w-[960px] max-w-[94vw] flex-col overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl">
         <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border bg-surface-2 px-3">
           <span className="text-[11px] font-semibold uppercase tracking-widest text-text-secondary">
             Preferences
           </span>
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search settings…"
-            spellCheck={false}
-            className="ml-auto w-44 rounded bg-surface-1 px-2 py-0.5 text-[11px] text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
-          />
+          <div className="relative ml-auto flex items-center">
+            <svg
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+              className="pointer-events-none absolute left-2 h-3 w-3 text-text-muted"
+            >
+              <circle
+                cx="7"
+                cy="7"
+                r="4.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+              />
+              <line
+                x1="10.5"
+                y1="10.5"
+                x2="14"
+                y2="14"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+              />
+            </svg>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search settings…"
+              spellCheck={false}
+              className="w-48 rounded bg-surface-1 py-0.5 pl-7 pr-6 text-[11px] text-text-primary outline-none transition-[width] placeholder:text-text-muted focus:w-64 focus:bg-surface-3"
+            />
+            {query && (
+              <button
+                onClick={() => setQuery("")}
+                title="Clear search"
+                className="absolute right-1 rounded px-1 text-[12px] leading-none text-text-muted hover:text-text-primary"
+              >
+                ×
+              </button>
+            )}
+          </div>
           <button
             onClick={closePreferences}
             className="rounded px-1.5 text-[14px] leading-none text-text-muted hover:text-text-primary"
@@ -321,42 +456,62 @@ export function PreferencesDialog() {
           </button>
         </div>
         <div className="flex min-h-0 flex-1">
-          <div className="w-36 shrink-0 overflow-y-auto border-r border-border bg-surface-0/40 py-2">
-            {visible.length === 0 && (
-              <div className="px-3 py-1.5 text-[11px] text-text-muted">
-                No matches
-              </div>
-            )}
-            {GROUPS.map((g) => {
-              const items = visible.filter((s) => s.group === g);
-              if (items.length === 0) return null;
-              return (
-                <div key={g} className="mb-1">
-                  {/* Show group headers only once the Extensions group exists —
-                      otherwise a lone "General" header is just noise. */}
-                  {hasExtensions && (
-                    <div className="px-3 pb-0.5 pt-1 text-[9px] uppercase tracking-widest text-text-muted">
-                      {g}
+          {q ? (
+            // Search mode: a flat results list (setting → its section) replaces the
+            // rail+panel. Picking a result jumps to that section and clears search.
+            <SearchResults
+              groups={results}
+              query={q}
+              onPick={(id) => {
+                setSectionId(id);
+                setQuery("");
+              }}
+            />
+          ) : (
+            <>
+              <div
+                style={{ width: railWidth }}
+                className="shrink-0 overflow-y-auto bg-surface-0/40 py-2"
+              >
+                {GROUPS.map((g) => {
+                  const items = visible.filter((s) => s.group === g);
+                  if (items.length === 0) return null;
+                  return (
+                    <div key={g} className="mb-1">
+                      {/* Show group headers only once the Extensions group exists —
+                          otherwise a lone "General" header is just noise. */}
+                      {hasExtensions && (
+                        <div className="px-3 pb-0.5 pt-1 text-[9px] uppercase tracking-widest text-text-muted">
+                          {g}
+                        </div>
+                      )}
+                      {items.map((s) => (
+                        <button
+                          key={s.id}
+                          onClick={() => setSectionId(s.id)}
+                          className={`block w-full truncate px-3 py-1.5 text-left text-[11px] tracking-wider ${
+                            active?.id === s.id
+                              ? "bg-surface-3 text-text-primary"
+                              : "text-text-secondary hover:text-text-primary"
+                          }`}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
                     </div>
-                  )}
-                  {items.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => setSectionId(s.id)}
-                      className={`block w-full truncate px-3 py-1.5 text-left text-[11px] tracking-wider ${
-                        active?.id === s.id
-                          ? "bg-surface-3 text-text-primary"
-                          : "text-text-secondary hover:text-text-primary"
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-          <div className="flex-1 overflow-y-auto p-4">{active?.render(q)}</div>
+                  );
+                })}
+              </div>
+              <div
+                onPointerDown={onHandleDown}
+                onPointerMove={onHandleMove}
+                onPointerUp={onHandleUp}
+                title="Drag to resize"
+                className="w-1 shrink-0 cursor-col-resize touch-none border-r border-border hover:bg-slider-fill/40"
+              />
+              <div className="flex-1 overflow-y-auto p-4">{active?.render(q)}</div>
+            </>
+          )}
         </div>
         <div className="flex h-9 shrink-0 items-center justify-between border-t border-border bg-surface-2 px-3">
           <button
@@ -372,6 +527,85 @@ export function PreferencesDialog() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── Search results ──────────────────────────────────────────────────────────
+// Shown in place of the rail+panel while the search box has text. Each matching
+// setting is listed under its section heading, so the result tells you both the
+// setting and where to find it. Clicking either the setting or the heading opens
+// that section.
+
+function SearchResults({
+  groups,
+  query,
+  onPick,
+}: {
+  groups: SearchGroup[];
+  query: string;
+  onPick: (sectionId: string) => void;
+}) {
+  if (groups.length === 0) {
+    return (
+      <div className="flex-1 overflow-y-auto p-4">
+        <p className="text-[11px] leading-relaxed text-text-muted">
+          No settings match “{query}”.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-2">
+      {groups.map(({ section, items }) => (
+        <div key={section.id} className="mb-1">
+          <button
+            onClick={() => onPick(section.id)}
+            className="flex w-full items-center gap-1 px-2 py-1 text-left text-[9px] uppercase tracking-widest text-text-muted hover:text-text-secondary"
+          >
+            {section.group === "Extensions" && (
+              <span className="opacity-70">Extensions ›</span>
+            )}
+            {section.label}
+          </button>
+          {/* A section that matched only via its title/synonyms has no specific
+              setting to show — offer a jump-to-section row instead. */}
+          {items.length === 0 ? (
+            <button
+              onClick={() => onPick(section.id)}
+              className="block w-full rounded px-3 py-1.5 text-left text-[11px] text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+            >
+              Open {section.label}…
+            </button>
+          ) : (
+            items.map((it) => (
+              <button
+                key={it.label}
+                onClick={() => onPick(section.id)}
+                className="block w-full rounded px-3 py-1.5 text-left text-[11px] text-text-primary hover:bg-surface-2"
+              >
+                <Highlight text={it.label} query={query} />
+              </button>
+            ))
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Bold the matched substring of a setting label so the query stands out.
+function Highlight({ text, query }: { text: string; query: string }) {
+  const i = text.toLowerCase().indexOf(query);
+  if (i < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, i)}
+      <mark className="rounded bg-slider-fill/30 text-text-primary">
+        {text.slice(i, i + query.length)}
+      </mark>
+      {text.slice(i + query.length)}
+    </>
   );
 }
 

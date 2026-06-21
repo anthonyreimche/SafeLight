@@ -11,7 +11,7 @@ The Extensions panel (**View ▸ Extensions**, or **Ctrl+Shift+X**) is a GitHub-
 - **Install** — browse official extensions (GitHub repos tagged with the `safelight-extension` topic; configurable in Preferences ▸ Extensions) or enter `owner/repo`, `owner/repo#branch`, or a github.com URL. The repo is downloaded into `<userData>/plugins/<id>/` and activated live — no restart.
 - **Disable / enable** — the toggle on each row deactivates an extension and removes its contributions while keeping its files and settings. Re-enabling is instant.
 - **Settings** — extensions that call `registerSettings` get a section in **Preferences ▸ Extensions**.
-- **Update** — the store checks each installed extension's latest GitHub release; updates can be applied manually or, opt-in, automatically (Preferences ▸ Extensions). Settings survive updates.
+- **Update** — the store checks each installed extension's latest GitHub release. The **Updates** tab (first in the sidebar, with a badge showing the count) lists every installed extension that has a newer release; its Update button downloads the new release and reinstalls the extension in place — no restart, and your settings are kept. Updates can also be applied from an extension's detail page or, opt-in, automatically (Preferences ▸ Extensions). An update that declares a higher `minAppVersion` than your build is refused until you update Safelight itself.
 - **Uninstall** — removes the extension *and deletes its files and stored settings*.
 
 Built-in panels appear under **Built-in**; they can be disabled but not uninstalled. **Safelight Core** (the extension manager, stock themes, the Classic layout, and the built-in display transform) is locked and always on.
@@ -106,7 +106,7 @@ Finally, **tag the GitHub repo with the `safelight-extension` topic** so it appe
 }
 ```
 
-Only `id`, `name`, `version`, and `main` are required; everything else (`description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `license`, `minAppVersion`) is optional and enriches the store detail view. `minAppVersion` blocks installs on older Safelight builds.
+Only `id`, `name`, `version`, and `main` are required; everything else (`description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `license`, `minAppVersion`) is optional and enriches the store detail view. `minAppVersion` is the **minimum supported Safelight version** — the oldest build the extension works on. Installs (and updates) on an older build are refused before any files are written, and the app reports the version it needs; the extension's detail page also flags the mismatch. Set it whenever you depend on an API or contribution point added in a specific release. Versions are compared as dotted `major.minor.patch` (a `v` prefix and missing parts are tolerated).
 
 The bundle must export `activate(api)` (and optionally `deactivate()`). **Do not bundle React** — use `api.react`, the app's own instance. The example extensions are built with [rolldown](https://rolldown.rs/); any bundler that emits a single ESM file with React left external works.
 
