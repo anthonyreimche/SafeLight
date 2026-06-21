@@ -442,6 +442,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
             radius: st.brushSize,
             erase: e.altKey || st.brushErase,
             feather: st.brushFeather,
+            opacity: st.brushOpacity,
+            flow: st.brushFlow,
           });
         }
       } else {
@@ -451,6 +453,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
           radius: st.brushSize,
           erase: e.altKey || st.brushErase,
           feather: st.brushFeather,
+          opacity: st.brushOpacity,
+          flow: st.brushFlow,
         });
       }
       lastBrushPt.current = down;
@@ -635,6 +639,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
             radius: st.brushSize,
             erase: e.altKey || st.brushErase,
             feather: st.brushFeather,
+            opacity: st.brushOpacity,
+            flow: st.brushFlow,
           });
           d.lastDab = cur;
           lastBrushPt.current = cur;

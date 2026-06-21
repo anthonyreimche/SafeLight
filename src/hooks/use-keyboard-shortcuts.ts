@@ -58,6 +58,13 @@ export function useKeyboardShortcuts() {
         } else if (d.activeTool !== "none") {
           e.preventDefault();
           d.setActiveTool("none");
+        } else if (d.selectedMaskId || d.selectedComponentId) {
+          // Tool already exited but a mask is still selected: a second Esc clears
+          // the selection, collapsing the mask editor and coverage overlay.
+          e.preventDefault();
+          d.selectMask(null);
+          d.selectComponent(null);
+          d.setHoveredMaskId(null);
         }
         return;
       }
@@ -134,6 +141,10 @@ export function useKeyboardShortcuts() {
           !!ds.selectedComponentId,
         "brush.featherDown": ds.activeTool === "mask",
         "brush.featherUp": ds.activeTool === "mask",
+        "brush.opacityDown": ds.activeTool === "mask",
+        "brush.opacityUp": ds.activeTool === "mask",
+        "brush.flowDown": ds.activeTool === "mask",
+        "brush.flowUp": ds.activeTool === "mask",
         "crop.cycleGuide": ds.cropping,
         "crop.flipGuide": ds.cropping,
       };
@@ -192,6 +203,22 @@ export function useKeyboardShortcuts() {
           const dir = action === "brush.featherUp" ? 1 : -1;
           const next = Math.round((ds.brushFeather + dir * 0.05) * 100) / 100;
           ds.setBrushFeather(Math.max(0, Math.min(1, next)));
+          break;
+        }
+        case "brush.opacityDown":
+        case "brush.opacityUp": {
+          // Adjust the mask brush's coverage ceiling in 0.1 steps (0.01..1).
+          const dir = action === "brush.opacityUp" ? 1 : -1;
+          const next = Math.round((ds.brushOpacity + dir * 0.1) * 100) / 100;
+          ds.setBrushOpacity(Math.max(0.01, Math.min(1, next)));
+          break;
+        }
+        case "brush.flowDown":
+        case "brush.flowUp": {
+          // Adjust the mask brush's per-dab flow in 0.1 steps (0.01..1).
+          const dir = action === "brush.flowUp" ? 1 : -1;
+          const next = Math.round((ds.brushFlow + dir * 0.1) * 100) / 100;
+          ds.setBrushFlow(Math.max(0.01, Math.min(1, next)));
           break;
         }
         case "mask.delete":

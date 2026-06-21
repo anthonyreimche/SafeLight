@@ -1628,14 +1628,20 @@ export class WebGLRenderer {
     const cached = this.uploadedStageTex.get(qk);
     if (cached && cached.version === data.version) return cached.tex;
     const tex = cached?.tex ?? gl.createTexture()!;
-    const isR8 = data.format === "r8";
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, isR8 ? 1 : 4);
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, isR8 ? gl.R8 : gl.RGBA8,
-      data.width, data.height, 0,
-      isR8 ? gl.RED : gl.RGBA, gl.UNSIGNED_BYTE, data.data,
-    );
+    // Format → (internalformat, format, type). Half-float (rgba16f/r16f) is fed
+    // from Float32Array with type FLOAT (WebGL2 converts) and is linear-
+    // filterable in core WebGL2 — used for LUTs and spectral tables that need
+    // interpolation and >8-bit precision.
+    let internal: number, fmt: number, type: number, align: number;
+    switch (data.format) {
+      case "r8":      internal = gl.R8;      fmt = gl.RED;  type = gl.UNSIGNED_BYTE; align = 1; break;
+      case "rgba16f": internal = gl.RGBA16F; fmt = gl.RGBA; type = gl.FLOAT;         align = 4; break;
+      case "r16f":    internal = gl.R16F;    fmt = gl.RED;  type = gl.FLOAT;         align = 4; break;
+      default:        internal = gl.RGBA8;   fmt = gl.RGBA; type = gl.UNSIGNED_BYTE; align = 4; break;
+    }
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, align);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, data.width, data.height, 0, fmt, type, data.data);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);

@@ -27,7 +27,7 @@ export function coverageSignature(items: CoverageItem[]): string {
         it.dabs
           .map(
             (d) =>
-              `${d.x.toFixed(4)},${d.y.toFixed(4)},${d.radius.toFixed(4)},${d.feather.toFixed(3)},${d.erase ? 1 : 0}`,
+              `${d.x.toFixed(4)},${d.y.toFixed(4)},${d.radius.toFixed(4)},${d.feather.toFixed(3)},${(d.opacity ?? 1).toFixed(3)},${(d.flow ?? 1).toFixed(3)},${d.erase ? 1 : 0}`,
           )
           .join("|"),
     )
@@ -36,12 +36,14 @@ export function coverageSignature(items: CoverageItem[]): string {
 
 // Bake up to four coverage items into an RGBA atlas. Returns null when empty.
 //
-// Coverage is encoded as luminance on an opaque black canvas, and dabs are
-// composited with "lighten" (per-pixel max) for paint and "darken" (min) for
-// erase. Taking the max — rather than summing alpha — means overlapping dabs
-// combine as a union without washing out their soft edges, so a soft dab and a
-// hard dab painted into the same mask each keep their own feather. Each dab's
-// feather sets the width of its own radial falloff.
+// Two controls shape each dab, mirroring a classic paint brush:
+//   • flow — how much coverage one dab deposits. Overlapping dabs accumulate
+//     (alpha "source-over"), so a low-flow brush builds density gradually as
+//     strokes pass back over an area; erase dabs remove coverage the same way.
+//   • opacity — the ceiling that build-up can reach. Each paint dab raises a
+//     separate per-pixel ceiling (max of its own opacity); the final coverage
+//     is the accumulated flow clamped to that ceiling.
+// At the defaults (flow 1, opacity 1) a stroke fills solidly to full coverage.
 export function bakeCoverage(
   items: CoverageItem[],
   imageAspect: number,
@@ -66,51 +68,74 @@ export function bakeCoverage(
   const out = new Uint8Array(BAKE_SIZE * BAKE_SIZE * 4);
   const channelOf: Record<string, number> = {};
   const aspect = imageAspect > 0 ? imageAspect : 1;
+  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
+  // Stamp one dab's unit disc with the given composite op; addStops fills in the
+  // radial gradient (the solid centre runs out to `core`, then falls off).
+  const stamp = (
+    dab: BrushDab,
+    op: GlobalCompositeOperation,
+    addStops: (g: CanvasGradient, core: number) => void,
+  ) => {
+    const ry = dab.radius * BAKE_SIZE;
+    const rx = (dab.radius / aspect) * BAKE_SIZE;
+    if (rx < 0.3 || ry < 0.3) return;
+    const core = clamp01(1 - dab.feather); // solid centre fraction
+    ctx.save();
+    ctx.translate(dab.x * BAKE_SIZE, dab.y * BAKE_SIZE);
+    ctx.scale(rx, ry);
+    const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    addStops(grad, core);
+    ctx.globalCompositeOperation = op;
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(0, 0, 1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  };
 
   list.forEach((item, ch) => {
     channelOf[item.id] = ch;
 
-    // Opaque black base; coverage lives in the luminance (R) channel.
+    // ── Pass 1: coverage with flow build-up, in the alpha channel ──
+    // Transparent base. Paint deposits `flow` alpha (source-over accumulates);
+    // erase removes it (destination-out).
+    ctx.globalCompositeOperation = "source-over";
+    ctx.clearRect(0, 0, BAKE_SIZE, BAKE_SIZE);
+    for (const dab of item.dabs) {
+      const a = clamp01(dab.flow ?? 1).toFixed(4);
+      stamp(dab, dab.erase ? "destination-out" : "source-over", (g, core) => {
+        g.addColorStop(0, `rgba(255,255,255,${a})`);
+        g.addColorStop(core, `rgba(255,255,255,${a})`);
+        g.addColorStop(1, "rgba(255,255,255,0)");
+      });
+    }
+    const cover = ctx.getImageData(0, 0, BAKE_SIZE, BAKE_SIZE).data;
+
+    // ── Pass 2: opacity ceiling (luminance, paint dabs only) ──
+    // Each paint dab raises the ceiling to its own opacity via max(); erase
+    // dabs don't cap anything.
     ctx.globalCompositeOperation = "source-over";
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, BAKE_SIZE, BAKE_SIZE);
-
     for (const dab of item.dabs) {
-      const ry = dab.radius * BAKE_SIZE;
-      const rx = (dab.radius / aspect) * BAKE_SIZE;
-      if (rx < 0.3 || ry < 0.3) continue;
-      const core = Math.max(0, Math.min(1, 1 - dab.feather)); // solid centre fraction
-
-      ctx.save();
-      ctx.translate(dab.x * BAKE_SIZE, dab.y * BAKE_SIZE);
-      ctx.scale(rx, ry);
-      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-      if (dab.erase) {
-        // Punch a hole: 0 (erased) in the core, fading to white (no-op) at the
-        // edge, combined with the existing coverage by min().
-        grad.addColorStop(0, "#000");
-        grad.addColorStop(core, "#000");
-        grad.addColorStop(1, "#fff");
-        ctx.globalCompositeOperation = "darken";
-      } else {
-        // Paint: full coverage in the core, fading to 0 at the edge, combined by
-        // max() so it unions cleanly with neighbouring dabs.
-        grad.addColorStop(0, "#fff");
-        grad.addColorStop(core, "#fff");
-        grad.addColorStop(1, "#000");
-        ctx.globalCompositeOperation = "lighten";
-      }
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(0, 0, 1, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+      if (dab.erase) continue;
+      const lvl = Math.round(clamp01(dab.opacity ?? 1) * 255);
+      const fill = `rgb(${lvl},${lvl},${lvl})`;
+      stamp(dab, "lighten", (g, core) => {
+        g.addColorStop(0, fill);
+        g.addColorStop(core, fill);
+        g.addColorStop(1, "#000");
+      });
     }
     ctx.globalCompositeOperation = "source-over";
+    const ceil = ctx.getImageData(0, 0, BAKE_SIZE, BAKE_SIZE).data;
 
-    const img = ctx.getImageData(0, 0, BAKE_SIZE, BAKE_SIZE).data;
+    // Final coverage = accumulated flow clamped to the per-pixel opacity ceiling.
     for (let i = 0; i < BAKE_SIZE * BAKE_SIZE; i++) {
-      out[i * 4 + ch] = img[i * 4]; // R channel holds the coverage value
+      const a = cover[i * 4 + 3]; // accumulated flow (alpha)
+      const c = ceil[i * 4]; // opacity ceiling (luminance)
+      out[i * 4 + ch] = a < c ? a : c;
     }
   });
 

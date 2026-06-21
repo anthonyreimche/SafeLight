@@ -331,11 +331,14 @@ export interface TextureRequirement {
  *  per version change and binds it to the stage's sampler each frame — so the
  *  data can be swapped (a different film stock) without recompiling the shader. */
 export interface StageTextureData {
-  /** Tightly-packed pixels, row-major. rgba8 → 4 bytes/texel, r8 → 1. */
-  data: Uint8Array;
+  /** Tightly-packed pixels, row-major. rgba8/r8 → Uint8Array (4 / 1 bytes per
+   *  texel); rgba16f/r16f → Float32Array (4 / 1 floats per texel), uploaded to a
+   *  half-float texture (linear-filterable in WebGL2) for interpolatable data
+   *  like LUTs and spectral tables. */
+  data: Uint8Array | Float32Array;
   width: number;
   height: number;
-  format: "rgba8" | "r8";
+  format: "rgba8" | "r8" | "rgba16f" | "r16f";
   /** Bump when `data` changes under the same key to force a GPU re-upload. */
   version: number;
 }

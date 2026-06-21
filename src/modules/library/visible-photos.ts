@@ -7,6 +7,7 @@ import type {
   ColorLabel,
   SortDirection,
 } from "@/catalog/types";
+import { getSettings } from "@/state/settings-store";
 
 export type FlagFilter = "any" | "pick" | "reject";
 export type LabelFilter = "any" | ColorLabel;
@@ -78,9 +79,18 @@ function sortValue(p: CatalogPhoto, field: string): number | string {
   }
 }
 
-// A photo is in scope when it lives in `folder` or any subfolder of it.
+// A photo is in scope when it lives directly in `folder`. Subfolders are
+// included only when the showSubfolderPhotos preference is on — including for
+// the project root (""), so the root node respects the preference too and only
+// the "All Photos" scope (folder === null) ever shows the whole catalog. Read
+// here, not threaded through callers, so the grid, keyboard culling, develop
+// navigation and thumbnail prefetch all scope to exactly the same set.
 function inFolder(p: CatalogPhoto, folder: string): boolean {
-  return p.folder === folder || p.folder.startsWith(`${folder}/`) || folder === "";
+  if (p.folder === folder) return true;
+  if (!getSettings().showSubfolderPhotos) return false;
+  // Root ("") is a prefix of every path; guard so "" doesn't match via the
+  // empty-string startsWith and to avoid a leading-slash mismatch.
+  return folder === "" || p.folder.startsWith(`${folder}/`);
 }
 
 export function visiblePhotos(

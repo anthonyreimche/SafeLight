@@ -1,6 +1,7 @@
 import type { CatalogPhoto } from "./types";
 import { extractRawPreview, isRawFile } from "@/modules/library/raw-preview";
 import { decodeNetpbm, isNetpbmName } from "@/modules/library/netpbm";
+import { decodeTiff, isTiffName } from "@/modules/library/tiff-image";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
 import { normalizeRotation, orientationToRotation, rotateBitmap, rotateFloatRGBA } from "./orient";
 import { verifyPermission } from "./permissions";
@@ -271,6 +272,8 @@ export async function loadPhotoBitmap(
         }
       } else if (isNetpbmName(file.name)) {
         raw = await decodeNetpbm(file);
+      } else if (isTiffName(file.name)) {
+        raw = await decodeTiff(file);
       } else {
         raw = await createImageBitmap(file, { imageOrientation: "none" });
       }

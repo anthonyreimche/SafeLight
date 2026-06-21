@@ -21,6 +21,9 @@ export interface CatalogPhoto {
   dateCreated: number;
   dateImported: number;
   exif: ExifData;
+  /** Set when the last decode attempt failed (no thumbnail). Human-readable
+   *  reason for the grid's warning tooltip; cleared once a preview is built. */
+  decodeError?: string;
 }
 
 export type ColorLabel = "none" | "red" | "yellow" | "green" | "blue" | "purple";
@@ -221,6 +224,8 @@ export interface BrushDab {
   radius: number;
   erase: boolean;
   feather: number; // 0..1 edge softness, captured from the brush at paint time
+  opacity?: number; // 0..1 coverage ceiling; absent = 1 (full). Captured at paint time.
+  flow?: number; // 0..1 per-dab deposit; absent = 1 (full). Captured at paint time.
 }
 
 // Linear gradient geometry: effect ramps 0->1 from p0 to p1 (source-UV).
@@ -817,6 +822,8 @@ function normBrush(g: Partial<BrushMaskGeo> | undefined): BrushMaskGeo {
         radius: clampN(d.radius, 0.001, 2, 0.05),
         erase: !!d.erase,
         feather: clampN(d.feather, 0, 1, 0.5),
+        opacity: clampN(d.opacity, 0, 1, 1),
+        flow: clampN(d.flow, 0, 1, 1),
       })),
   };
 }
@@ -947,6 +954,8 @@ function normalizeRetouch(spots: unknown): RetouchSpot[] {
               radius: clampN(d.radius, 0.001, 2, 0.04),
               erase: !!d.erase,
               feather: clampN(d.feather, 0, 1, 0.5),
+              opacity: clampN(d.opacity, 0, 1, 1),
+              flow: clampN(d.flow, 0, 1, 1),
             }))
         : undefined;
     out.push({

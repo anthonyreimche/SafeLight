@@ -104,6 +104,16 @@ function ThumbnailImpl({
           loading="lazy"
           onLoad={onLoad}
         />
+      ) : photo.decodeError ? (
+        // Decode failed — show a static warning + reason on hover, not an endless
+        // pulsing skeleton that reads as "still loading".
+        <div
+          className="flex h-full w-full flex-col items-center justify-center gap-1 bg-surface-2 text-text-secondary"
+          title={`Couldn't decode ${photo.filename}: ${photo.decodeError}`}
+        >
+          <span className="text-lg leading-none">{"⚠"}</span>
+          <span className="px-1 text-center text-[9px] leading-tight">no preview</span>
+        </div>
       ) : (
         // Skeleton while the cached preview is still loading.
         <div className="h-full w-full animate-pulse bg-surface-2" />

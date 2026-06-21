@@ -110,6 +110,8 @@ interface DevelopState {
   selectedSpotId: string | null;
   brushSize: number; // image-height fraction
   brushFeather: number; // 0..1
+  brushOpacity: number; // 0..1 coverage ceiling
+  brushFlow: number; // 0..1 per-dab deposit
   brushErase: boolean;
   retouchSize: number; // image-height fraction
   retouchFeather: number; // 0..100
@@ -127,6 +129,8 @@ interface DevelopState {
   selectSpot: (id: string | null) => void;
   setBrushSize: (v: number) => void;
   setBrushFeather: (v: number) => void;
+  setBrushOpacity: (v: number) => void;
+  setBrushFlow: (v: number) => void;
   setBrushErase: (v: boolean) => void;
   setRetouchSize: (v: number) => void;
   setRetouchFeather: (v: number) => void;
@@ -294,6 +298,8 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   selectedSpotId: null,
   brushSize: 0.08,
   brushFeather: 0.5,
+  brushOpacity: 1,
+  brushFlow: 1,
   brushErase: false,
   retouchSize: 0.04,
   retouchFeather: 50,
@@ -311,6 +317,8 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   selectSpot: (selectedSpotId) => set({ selectedSpotId }),
   setBrushSize: (brushSize) => set({ brushSize }),
   setBrushFeather: (brushFeather) => set({ brushFeather }),
+  setBrushOpacity: (brushOpacity) => set({ brushOpacity }),
+  setBrushFlow: (brushFlow) => set({ brushFlow }),
   setBrushErase: (brushErase) => set({ brushErase }),
   setRetouchSize: (retouchSize) => set({ retouchSize }),
   setRetouchFeather: (retouchFeather) => set({ retouchFeather }),

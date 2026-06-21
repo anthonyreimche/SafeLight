@@ -48,6 +48,9 @@ export interface AppSettings {
   defaultSortDirection: SortDirection;
   /** Prompt for confirmation before removing photos from the catalog. */
   confirmRemovePhotos: boolean;
+  /** When a folder is selected, also show photos in its subfolders. Off =
+   *  only photos directly inside the selected folder. */
+  showSubfolderPhotos: boolean;
 
   // ── Previews / thumbnails ──────────────────────────────────────────────
   /** How RAW grid previews are built on import (see PreviewSource). */
@@ -122,6 +125,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultSortField: "dateImported",
   defaultSortDirection: "desc",
   confirmRemovePhotos: true,
+  showSubfolderPhotos: false,
   previewSource: "auto",
   thumbMaxEdge: 640,
   persistPreviews: true,

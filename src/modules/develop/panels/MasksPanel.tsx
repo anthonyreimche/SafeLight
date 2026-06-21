@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type MouseEvent as ReactMouseEvent, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { CurveEditor } from "@/ui/components/CurveEditor";
@@ -107,6 +107,8 @@ export function MasksPanel() {
   const selectedComponentId = useDevelopStore((s) => s.selectedComponentId);
   const brushSize = useDevelopStore((s) => s.brushSize);
   const brushFeather = useDevelopStore((s) => s.brushFeather);
+  const brushOpacity = useDevelopStore((s) => s.brushOpacity);
+  const brushFlow = useDevelopStore((s) => s.brushFlow);
   const brushErase = useDevelopStore((s) => s.brushErase);
 
   const setActiveTool = useDevelopStore((s) => s.setActiveTool);
@@ -127,6 +129,8 @@ export function MasksPanel() {
   const commitEdit = useDevelopStore((s) => s.commitEdit);
   const setBrushSize = useDevelopStore((s) => s.setBrushSize);
   const setBrushFeather = useDevelopStore((s) => s.setBrushFeather);
+  const setBrushOpacity = useDevelopStore((s) => s.setBrushOpacity);
+  const setBrushFlow = useDevelopStore((s) => s.setBrushFlow);
   const setBrushErase = useDevelopStore((s) => s.setBrushErase);
   const tab = useDevelopStore((s) => s.maskTab);
   const setTab = useDevelopStore((s) => s.setMaskTab);
@@ -241,9 +245,18 @@ export function MasksPanel() {
     return seen;
   };
 
+  // Clicking empty panel space (not a row/button, which sit on child elements)
+  // deselects the current mask, collapsing its editor.
+  const deselectOnBackground = (e: ReactMouseEvent) => {
+    if (e.target !== e.currentTarget) return;
+    selectMask(null);
+    selectComponent(null);
+    setHoveredMaskId(null);
+  };
+
   return (
     <Panel title="Masking" defaultOpen>
-      <div className="space-y-2">
+      <div className="space-y-2" onClick={deselectOnBackground}>
         {/* Create new mask */}
         <div className="relative">
           <button
@@ -317,6 +330,32 @@ export function MasksPanel() {
               }}
               onCommit={() => setBrushPreview(false)}
             />
+            <Slider
+              label="Opacity"
+              value={Math.round(brushOpacity * 100)}
+              min={1}
+              max={100}
+              step={1}
+              defaultValue={100}
+              onChange={(v) => {
+                setBrushOpacity(v / 100);
+                setBrushPreview(true);
+              }}
+              onCommit={() => setBrushPreview(false)}
+            />
+            <Slider
+              label="Flow"
+              value={Math.round(brushFlow * 100)}
+              min={1}
+              max={100}
+              step={1}
+              defaultValue={100}
+              onChange={(v) => {
+                setBrushFlow(v / 100);
+                setBrushPreview(true);
+              }}
+              onCommit={() => setBrushPreview(false)}
+            />
             <label className="flex items-center gap-1.5 px-0.5 text-[11px] text-text-secondary">
               <input
                 type="checkbox"
@@ -325,14 +364,14 @@ export function MasksPanel() {
                 style={{ accentColor: "var(--color-slider-fill)" }}
               />
               Erase
-              <span className="text-text-muted">· Alt erase · [ ] size</span>
+              <span className="text-text-muted">· Alt erase · [ ] size · ⇧ feather · , . opacity · ⇧, ⇧. flow</span>
             </label>
           </div>
         )}
 
         {/* Mask list (layer rows) */}
         {masks.length > 0 && (
-          <div className="space-y-0.5">
+          <div className="space-y-0.5" onClick={deselectOnBackground}>
             {masks.map((m) => {
               const sel = m.id === selectedMaskId;
               return (

@@ -750,6 +750,12 @@ function LibrarySection() {
         </div>
       </Field>
       <ToggleField
+        label="Show photos in subfolders"
+        hint="When a folder is selected, also show photos from its subfolders. Off shows only photos directly inside the selected folder."
+        checked={s.showSubfolderPhotos}
+        onChange={(v) => updateSettings({ showSubfolderPhotos: v })}
+      />
+      <ToggleField
         label="Confirm before removing photos"
         hint="Ask for confirmation when removing photos from the catalog. The originals on disk are never deleted either way."
         checked={s.confirmRemovePhotos}

@@ -5,10 +5,17 @@
 import type { CatalogPhoto } from "@/catalog/types";
 import { parseExif, parseExifDate } from "@/catalog/exif";
 import { normalizeRotation, orientationToRotation } from "@/catalog/orient";
-import { extractRawPreview, getExtension, isRawFile } from "./raw-preview";
+import {
+  extractRawPreview,
+  getExtension,
+  isRawFile,
+  prefersEmbeddedPreview,
+  distrustsEmbeddedPreview,
+} from "./raw-preview";
 import { decodeNetpbm, isNetpbmName } from "./netpbm";
+import { decodeTiff, isTiffName } from "./tiff-image";
 import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
-import { extractColorTemperature } from "@/raw/libraw-wasm-adapter";
+import { extractColorTemperature, lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
 import { decodePoolSize } from "@/raw/decode-pool";
 import { rotateFloatRGBA } from "@/catalog/orient";
 import { cachedKeys, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
@@ -110,6 +117,37 @@ async function floatToBitmap(
   return createImageBitmap(out);
 }
 
+// Heuristic: does a decoded LINEAR float image look like a broken decode —
+// essentially black, or a flat constant — rather than a real photograph? Used to
+// fall back to the camera's embedded preview when a sensor render comes out
+// garbage (libraw mis-decoding an unusual container, e.g. CIFF/Foveon). Safe even
+// on a false positive: the embedded preview shows the same scene. Thresholds are
+// deliberately conservative so a legitimately dark or low-contrast photo is NOT
+// flagged — a real photograph always has at least a few pixels well above black.
+function looksDegenerate(data: Float32Array, width: number, height: number): boolean {
+  const n = width * height;
+  if (n <= 0) return true;
+  const toSrgb = (v: number) =>
+    v <= 0 ? 0 : v >= 1 ? 1 : v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+  const step = Math.max(1, Math.floor(n / 4096)); // sample ~4k pixels
+  let maxSrgb = 0;
+  let minLum = Infinity;
+  let maxLum = -Infinity;
+  for (let i = 0; i < n; i += step) {
+    const o = i * 4;
+    const lum = 0.2126 * data[o] + 0.7152 * data[o + 1] + 0.0722 * data[o + 2];
+    if (lum < minLum) minLum = lum;
+    if (lum > maxLum) maxLum = lum;
+    const s = toSrgb(lum);
+    if (s > maxSrgb) maxSrgb = s;
+  }
+  // Whole frame near-black (brightest sampled pixel < 5% sRGB) — no real photo is.
+  if (maxSrgb < 0.05) return true;
+  // Perfectly flat (constant) frame — a decode artifact, not a photograph.
+  if (maxLum - minLum < 1e-4) return true;
+  return false;
+}
+
 // Decode a file to an ImageBitmap for thumbnailing, robustly — a supported file
 // must never be silently dropped from the catalog. The `source` preference
 // (Preferences ▸ Previews) steers the RAW path:
@@ -132,17 +170,30 @@ async function decodeImportBitmap(
   source: PreviewSource = getSettings().previewSource,
 ): Promise<{ bitmap: ImageBitmap; oriented: boolean; colorTemperature?: number } | null> {
   if (isRawFile(file)) {
+    // CRW & friends: the JPEG byte-scan can't find their real thumbnail and
+    // returns a gray-noise false match, but libraw decodes them correctly — so
+    // ignore the embedded preview entirely and render (as if "rendered" mode).
+    const renderOnly = distrustsEmbeddedPreview(file);
+    const effectiveSource: PreviewSource = renderOnly ? "rendered" : source;
+
     // Embedded camera JPEG: accepted outright in "embedded" mode, and in "auto"
     // when it's already big enough for the grid. Otherwise kept as a last-resort
     // fallback so a "rendered" decode that fails never drops the file.
     let embedded: ImageBitmap | null = null;
-    if (source !== "rendered") {
+    if (effectiveSource !== "rendered") {
       const preview = await extractRawPreview(file);
       if (preview) {
         try {
           const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
           const longEdge = Math.max(bitmap.width, bitmap.height);
-          if (source === "embedded" || longEdge >= getSettings().thumbMaxEdge) {
+          // Use the embedded preview outright in "embedded" mode, when it's
+          // already grid-sized, or for formats whose sensor render is unreliable
+          // (X3F/Foveon) — a small camera preview beats a broken libraw decode.
+          if (
+            effectiveSource === "embedded" ||
+            longEdge >= getSettings().thumbMaxEdge ||
+            prefersEmbeddedPreview(file)
+          ) {
             return { bitmap, oriented: false };
           }
           embedded = bitmap; // too small for "auto" — render instead, keep as fallback
@@ -159,18 +210,22 @@ async function decodeImportBitmap(
     }
 
     // The bitmap decoder couldn't handle this RAW's compression. The float decode
-    // (libraw-wasm) handles every compression, so generate the thumbnail from it.
+    // (libraw-wasm) handles every compression, so generate the thumbnail from it —
+    // unless the render looks degenerate (near-black/flat) and we still hold a
+    // camera preview, in which case that trustworthy preview wins.
     const f = await decodeRawToFloat(file);
-    if (f) {
+    if (f && !(embedded && looksDegenerate(f.data, f.width, f.height))) {
       embedded?.close();
       const bm = await floatToBitmap(f.data, f.width, f.height);
       return { bitmap: bm, oriented: f.oriented ?? false, colorTemperature: f.colorTemperature };
     }
 
     // Every decode failed. Fall back to the embedded JPEG (the one we set aside in
-    // "auto", or a fresh extract in "rendered") rather than drop the file.
+    // "auto", or a fresh extract in "rendered") rather than drop the file. Skip
+    // this for renderOnly formats (CRW) — their byte-scan preview is gray noise,
+    // so a ⚠ "no preview" tile is more honest than a garbage thumbnail.
     if (embedded) return { bitmap: embedded, oriented: false };
-    if (source === "rendered") {
+    if (effectiveSource === "rendered" && !renderOnly) {
       const preview = await extractRawPreview(file);
       if (preview) {
         try {
@@ -185,6 +240,12 @@ async function decodeImportBitmap(
   }
   if (isNetpbmName(file.name)) {
     const bitmap = await decodeNetpbm(file);
+    return bitmap ? { bitmap, oriented: false } : null;
+  }
+  // TIFF: createImageBitmap can't decode it, so route through UTIF. Pixels come
+  // back sensor-native (oriented: false), so the caller bakes EXIF orientation.
+  if (isTiffName(file.name)) {
+    const bitmap = await decodeTiff(file);
     return bitmap ? { bitmap, oriented: false } : null;
   }
   try {
@@ -255,6 +316,15 @@ function mimeTypeFromName(name: string): string {
   return RAW_MIME[getExtension(name)] ?? "";
 }
 
+/** Human-readable reason the decode chain produced no preview, for the grid's
+ *  warning tooltip. RAW failures surface libraw's last status (the chain ends at
+ *  libraw); TIFF/other report the format generically. */
+function decodeFailureReason(file: File): string {
+  if (isRawFile(file)) return `RAW decode failed — ${lastLibRawStatus}`;
+  if (isTiffName(file.name)) return "TIFF decode failed (unsupported variant)";
+  return "no decoder could read this file";
+}
+
 /** Build a catalog record for a file: thumbnail, EXIF, orientation. The caller
  *  fills in relPath/folder (they're project-relative). */
 export async function buildPhoto(
@@ -314,6 +384,7 @@ export async function buildPhoto(
       width: 0,
       height: 0,
       rotation: orientationToRotation(exif.orientation),
+      decodeError: decodeFailureReason(file),
     };
   }
 
@@ -388,6 +459,7 @@ export async function repairMissingPreviews(
         width,
         height,
         rotation,
+        decodeError: undefined, // a preview built this time — clear the marker
       };
       await catalogStorage().putPhoto(updated); // writes the preview + persists
       onRepaired?.(updated);

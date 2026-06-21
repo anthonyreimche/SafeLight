@@ -108,8 +108,10 @@ export async function decodeRawFloatViaLibRaw(
     return null;
   }
   
-  // Check if buffer is reasonable size (at least 1MB for a RAW file)
-  if (buffer.byteLength < 1024 * 1024) {
+  // Sanity floor only — reject obviously-truncated/empty files, but keep small
+  // legacy RAWs (old Canon CRW, Kodak KDC, some Hasselblad 3FR) which are well
+  // under 1 MB yet decode fine. A 64 KB floor still catches corrupt stubs.
+  if (buffer.byteLength < 64 * 1024) {
     lastLibRawStatus = `file too small (${buffer.byteLength} bytes)`;
     console.warn("[libraw]", lastLibRawStatus);
     return null;
@@ -242,8 +244,12 @@ export async function decodeRawFloatViaLibRaw(
       const meanLum = (mR + mG + mB) / 3;
       const maxCh = Math.max(mR, mG, mB);
       const minCh = Math.min(mR, mG, mB);
+      // Sigma Foveon (X3F) stacks three photodiodes per pixel, so its linear
+      // pre-matrix output is legitimately channel-imbalanced — this Bayer-tuned
+      // WB heuristic would false-reject valid X3F decodes, so skip it for Foveon.
+      const isFoveon = num((meta as Record<string, unknown>).is_foveon) > 0;
       // Blown + colour imbalance > 0.3 across channels = bad decode.
-      if (meanLum > 0.80 && (maxCh - minCh) > 0.30) {
+      if (!isFoveon && meanLum > 0.80 && (maxCh - minCh) > 0.30) {
         lastLibRawStatus = `rejected: blown+imbalanced R=${mR.toFixed(2)} G=${mG.toFixed(2)} B=${mB.toFixed(2)}`;
         console.warn("[libraw]", lastLibRawStatus);
         return null;

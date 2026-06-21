@@ -186,5 +186,8 @@
       "createStartMenuShortcut": true,
       "shortcutName": "Safelight"
     }
+  },
+  "dependencies": {
+    "utif2": "^4.1.0"
   }
 }

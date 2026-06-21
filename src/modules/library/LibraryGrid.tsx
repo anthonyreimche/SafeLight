@@ -9,7 +9,7 @@ import { LibraryListRow } from "./LibraryListRow";
 import { visiblePhotos } from "./visible-photos";
 import { useGridFilters, useLibrarySorts } from "@/extensions/registry";
 import { exportPhotoData } from "@/project/folder-ops";
-import { getSettings } from "@/state/settings-store";
+import { getSettings, useSettings } from "@/state/settings-store";
 
 export function LibraryGrid() {
   const photos = useCatalogStore((s) => s.photos);
@@ -30,6 +30,9 @@ export function LibraryGrid() {
   const sortDirection = useUIStore((s) => s.sortDirection);
   const clearFilters = useUIStore((s) => s.clearFilters);
   const activeFolder = useUIStore((s) => s.activeFolder);
+  // Subscribe so the grid re-derives when the subfolder preference toggles;
+  // visiblePhotos reads the value itself (see inFolder).
+  const showSubfolderPhotos = useSettings((s) => s.showSubfolderPhotos);
   const gridFilters = useGridFilters();
   const librarySorts = useLibrarySorts();
   const customCompare = librarySorts.find((s) => s.id === sortField)?.compare;
@@ -48,6 +51,7 @@ export function LibraryGrid() {
     [
       photos,
       activeFolder,
+      showSubfolderPhotos,
       filter,
       sortField,
       sortDirection,

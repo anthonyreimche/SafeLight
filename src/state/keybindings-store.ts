@@ -38,6 +38,10 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "brush.larger", label: "Grow brush", category: "Develop", def: "]" },
   { id: "brush.featherDown", label: "Less brush feather", category: "Develop", def: "Shift+[", altDef: "Shift+{" },
   { id: "brush.featherUp", label: "More brush feather", category: "Develop", def: "Shift+]", altDef: "Shift+}" },
+  { id: "brush.opacityDown", label: "Less brush opacity", category: "Develop", def: "," },
+  { id: "brush.opacityUp", label: "More brush opacity", category: "Develop", def: "." },
+  { id: "brush.flowDown", label: "Less brush flow", category: "Develop", def: "Shift+,", altDef: "Shift+<" },
+  { id: "brush.flowUp", label: "More brush flow", category: "Develop", def: "Shift+.", altDef: "Shift+>" },
   { id: "mask.delete", label: "Delete mask component", category: "Develop", def: "Delete", altDef: "Backspace" },
   { id: "crop.cycleGuide", label: "Cycle crop guide", category: "Develop", def: "O" },
   { id: "crop.flipGuide", label: "Flip crop guide", category: "Develop", def: "Shift+O" },
@@ -258,7 +262,8 @@ export function findConflicts(
         a.category === b.category ||
         a.category === "General" ||
         b.category === "General";
-      if (overlap && combo(a) === combo(b)) {
+      // Unbound actions (empty combo) never conflict — flip H/V ship unbound.
+      if (overlap && combo(a) !== "" && combo(a) === combo(b)) {
         out.add(a.id);
         out.add(b.id);
       }
