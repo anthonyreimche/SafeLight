@@ -198,6 +198,10 @@ export function registerProcessingStage(
   extensionId: string,
   c: ProcessingStageContribution,
 ): void {
+  // Clear any prior descriptors for this id first, so re-registering the same
+  // stage with a different uniform set (e.g. swapping denoise methods) fully
+  // replaces its params instead of leaking the old ones.
+  unregisterStageParams(c.id);
   registerStageParams(c.id, extensionId, c.uniforms);
   useRegistry.setState((s) => ({
     processingStages: {
@@ -205,6 +209,20 @@ export function registerProcessingStage(
       [c.id]: { ...c, extensionId },
     },
   }));
+}
+
+/** Remove a single processing stage (e.g. a denoise method set to "Off") without
+ *  disabling the whole extension. The render bridge re-syncs + recompiles. */
+export function unregisterProcessingStage(extensionId: string, id: string): void {
+  unregisterStageParams(id);
+  useRegistry.setState((s) => {
+    const owner = s.processingStages[id];
+    // Only the owning extension may remove it.
+    if (!owner || owner.extensionId !== extensionId) return s;
+    const next = { ...s.processingStages };
+    delete next[id];
+    return { processingStages: next };
+  });
 }
 
 export function registerLensProfile(

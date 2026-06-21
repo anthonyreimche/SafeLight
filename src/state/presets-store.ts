@@ -11,6 +11,10 @@ export interface Preset {
    *  hold as little as a single slider. Older full-snapshot presets simply carry
    *  every key. */
   params: Partial<DevelopParams>;
+  /** Extension-contributed processing-stage params (e.g. denoise), keyed by
+   *  qualified key. Stored whole; merged over the photo's current bag on apply.
+   *  Absent on older presets and on file-imported presets. */
+  paramBag?: Record<string, unknown>;
 }
 
 const STORAGE_KEY = "safelight-presets";
@@ -41,22 +45,34 @@ export function nextAvailableName(presets: Preset[], base: string): string {
 
 interface PresetsState {
   presets: Preset[];
-  add: (name: string, params: Partial<DevelopParams>, group?: string) => void;
+  add: (
+    name: string,
+    params: Partial<DevelopParams>,
+    group?: string,
+    paramBag?: Record<string, unknown>,
+  ) => void;
   /** Replace an existing preset's params/group in place (keeps id, name, position). */
-  update: (id: string, params: Partial<DevelopParams>, group?: string) => void;
+  update: (
+    id: string,
+    params: Partial<DevelopParams>,
+    group?: string,
+    paramBag?: Record<string, unknown>,
+  ) => void;
   remove: (id: string) => void;
 }
 
 export const usePresetsStore = create<PresetsState>((set) => ({
   presets: loadFromStorage(),
 
-  add(name, params, group) {
+  add(name, params, group, paramBag) {
     set((s) => {
+      const hasBag = paramBag && Object.keys(paramBag).length > 0;
       const preset: Preset = {
         id: crypto.randomUUID(),
         name,
         group: group?.trim() || undefined,
         params: structuredClone(params),
+        ...(hasBag ? { paramBag: structuredClone(paramBag) } : {}),
       };
       const presets = [...s.presets, preset];
       saveToStorage(presets);
@@ -64,11 +80,17 @@ export const usePresetsStore = create<PresetsState>((set) => ({
     });
   },
 
-  update(id, params, group) {
+  update(id, params, group, paramBag) {
     set((s) => {
+      const hasBag = paramBag && Object.keys(paramBag).length > 0;
       const presets = s.presets.map((p) =>
         p.id === id
-          ? { ...p, group: group?.trim() || undefined, params: structuredClone(params) }
+          ? {
+              ...p,
+              group: group?.trim() || undefined,
+              params: structuredClone(params),
+              paramBag: hasBag ? structuredClone(paramBag) : undefined,
+            }
           : p,
       );
       saveToStorage(presets);

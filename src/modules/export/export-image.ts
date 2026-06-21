@@ -5,7 +5,7 @@
 
 import type { CatalogPhoto } from "@/catalog/types";
 import { loadPhotoImage } from "@/catalog/load-image";
-import { loadSavedParams } from "@/catalog/edit-params";
+import { loadSavedEdit } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { useRegistry } from "@/extensions/registry";
@@ -189,7 +189,9 @@ async function renderOne(
       isFallback,
       cachedRaw,
     );
-    renderer.setParams(await loadSavedParams(photo.id, photo.exif.colorTemperature));
+    const saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
+    renderer.setContributedParams(saved.paramBag);
+    renderer.setParams(saved.params);
     renderer.render();
     const encodeCanvas = (settings.sharpenAmount ?? 0) > 0
       ? applyOutputSharpening(canvas, settings.sharpenAmount!, settings.sharpenRadius ?? 1)
@@ -215,7 +217,11 @@ export async function exportPhotos(
   const canvas = document.createElement("canvas");
   let renderer: WebGLRenderer;
   try {
-    renderer = new WebGLRenderer(canvas);
+    // Pass the registered processing stages so extension GPU stages (e.g.
+    // denoise) are baked into exported pixels, not just the live preview.
+    renderer = new WebGLRenderer(canvas, {
+      stages: Object.values(useRegistry.getState().processingStages),
+    });
   } catch {
     return { exported: 0, failed: photos.map((p) => p.filename) };
   }

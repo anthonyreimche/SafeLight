@@ -36,6 +36,8 @@ Two things to keep in mind: rendering runs in a **Web Worker on an `OffscreenCan
 
 If your feature is a new panel, theme, or tool, consider shipping it as an extension rather than a core change — no fork required, and users can install it straight from your GitHub repo. See [Extensions](extensions.md) and the [API reference](api-documentation.md). Tag the repo with the `safelight-extension` topic so it appears in the in-app browser.
 
+While developing, enable the built-in **Developer Tools** extension (disabled by default) and point it at a local folder of your built extensions to load them live with reload-on-rebuild — no GitHub reinstall per change. See [Developing & debugging](extensions.md#developing--debugging) for the full loop, the in-app console/REPL, and common load errors.
+
 ## Workflow
 
 1. Branch from `main`: `feature/<name>` or `fix/<description>`

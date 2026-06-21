@@ -4,9 +4,10 @@ import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
-import { loadSavedParams } from "@/catalog/edit-params";
+import { loadSavedEdit } from "@/catalog/edit-params";
 import { useCatalogStore } from "@/state/catalog-store";
 import { usePipelineStore } from "@/extensions/pipelines";
+import { useRegistry } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
 
 // Loupe zooms to 1:1, so decode at (up to) full sensor resolution like Develop
@@ -32,6 +33,7 @@ export function useLoupeRenderer(
 ): RendererStatus {
   const rendererRef = useRef<WebGLRenderer | null>(null);
   const savedParamsRef = useRef<DevelopParams>(DEFAULT_DEVELOP_PARAMS);
+  const savedParamBagRef = useRef<Record<string, unknown>>({});
   const asShotTemp = photo.exif.colorTemperature ?? 6500;
   const showBeforeRef = useRef(showBefore);
   showBeforeRef.current = showBefore;
@@ -58,7 +60,9 @@ export function useLoupeRenderer(
   useEffect(() => {
     if (!canvasRef.current) return;
     try {
-      rendererRef.current = new WebGLRenderer(canvasRef.current);
+      rendererRef.current = new WebGLRenderer(canvasRef.current, {
+        stages: Object.values(useRegistry.getState().processingStages),
+      });
       rendererRef.current.setCacheBudget(getSettings().gpuSourceCacheBytes);
       setSupported(true);
     } catch (err) {
@@ -83,15 +87,17 @@ export function useLoupeRenderer(
     const key = photoSourceKey(photo);
     const hit = renderer0.bindSource(key);
     const imageP = hit ? Promise.resolve(null) : loadPhotoImage(photo);
-    Promise.all([imageP, loadSavedParams(photo.id, photo.exif.colorTemperature)]).then(
-      ([image, saved]) => {
+    Promise.all([imageP, loadSavedEdit(photo.id, photo.exif.colorTemperature)]).then(
+      ([image, edit]) => {
         const renderer = rendererRef.current;
         if (cancelled || !renderer) {
           if (image?.kind === "bitmap") image.bitmap.close();
           setLoading(false);
           return;
         }
+        const saved = edit.params;
         savedParamsRef.current = saved;
+        savedParamBagRef.current = edit.paramBag;
         renderer.setAsShotTemperature(photo.exif.colorTemperature ?? 6500);
         if (!hit && image) {
           // Same decode as Develop: full-res RAW float when available (gets the
@@ -112,6 +118,7 @@ export function useLoupeRenderer(
           );
           if (image.kind === "bitmap") image.bitmap.close();
         }
+        renderer.setContributedParams(showBeforeRef.current ? {} : edit.paramBag);
         renderer.setParams(
           showBeforeRef.current ? { ...DEFAULT_DEVELOP_PARAMS, temperature: asShotTemp } : saved,
         );
@@ -131,6 +138,7 @@ export function useLoupeRenderer(
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
+    renderer.setContributedParams(showBefore ? {} : savedParamBagRef.current);
     renderer.setParams(
       showBefore ? { ...DEFAULT_DEVELOP_PARAMS, temperature: asShotTemp } : savedParamsRef.current,
     );

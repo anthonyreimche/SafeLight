@@ -11,10 +11,12 @@ import {
   useContext,
   useEffect,
   useRef,
+  useState,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
+import { ContextMenu } from "@/ui/components/ContextMenu";
 
 class PanelErrorBoundary extends Component<
   { id: string; children: ReactNode },
@@ -559,10 +561,20 @@ function PanelBody({ id }: { id: string }) {
 function PanelHeader({ id }: { id: string }) {
   const containerRef = useContext(ContainerCtx);
   const title = useRegistry((s) => s.panels[id]?.title ?? id);
+  const onReset = useRegistry((s) => s.panels[id]?.onReset);
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <div
       onPointerDown={(e) => startHeaderDrag(id, e, containerRef?.current ?? null)}
+      onContextMenu={
+        onReset
+          ? (e) => {
+              e.preventDefault();
+              setMenu({ x: e.clientX, y: e.clientY });
+            }
+          : undefined
+      }
       className="flex h-7 shrink-0 cursor-grab select-none items-center gap-1.5 border-b border-border-subtle bg-surface-2 px-2"
     >
       <span className="w-2 text-[9px] text-text-muted">
@@ -578,6 +590,14 @@ function PanelHeader({ id }: { id: string }) {
       >
         ×
       </button>
+      {menu && onReset && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={[{ label: "Reset to defaults", onClick: onReset }]}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   );
 }

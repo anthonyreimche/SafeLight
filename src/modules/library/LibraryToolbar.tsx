@@ -27,10 +27,7 @@ export function LibraryToolbar() {
   const rotatePhotos = useCatalogStore((s) => s.rotatePhotos);
   const photos = useCatalogStore((s) => s.photos);
   const selectedIds = useCatalogStore((s) => s.selectedIds);
-  const openProjectPicker = useProjectStore((s) => s.openProjectPicker);
   const stopImport = useProjectStore((s) => s.stopImport);
-  const opening = useProjectStore((s) => s.opening);
-  const projectName = useProjectStore((s) => s.name);
   const importDone = useProjectStore((s) => s.importDone);
   const importTotal = useProjectStore((s) => s.importTotal);
   const importing = importTotal > 0 && importDone < importTotal;
@@ -72,13 +69,6 @@ export function LibraryToolbar() {
         </div>
       )}
       <div className="flex items-center gap-2">
-        <button
-          onClick={() => void openProjectPicker()}
-          disabled={opening}
-          className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary disabled:opacity-50"
-        >
-          {opening ? "Opening…" : projectName ? `Open Folder… (${projectName})` : "Open Folder…"}
-        </button>
         <Slot name="library-toolbar" />
         <span className="text-[10px] text-text-muted">
           {importing

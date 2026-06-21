@@ -20,7 +20,76 @@ Safelight ships three example extensions in the repo's `extensions/` folder that
 
 ## Anatomy of an extension
 
-A repo needs two things: a `safelight.json` manifest at the root, and a prebuilt ESM bundle (commit your `dist/`, or attach it to the branch you install from).
+A repo needs two things: a `safelight.json` manifest at the root, and a prebuilt ESM bundle (commit your `dist/`, or attach it to the branch you install from). Safelight installs an extension by downloading the repo and importing `main` **as-is** — there is no build step on the user's machine.
+
+### Repo layout
+
+How much structure you need depends on whether you have a build step.
+
+**No build (themes and small panels).** Hand-write a single ESM file and point `main` straight at it. This is the *entire* [Slate theme](https://github.com/anthonyreimche/Slate-Theme-for-Safelight) — three files:
+
+```
+safelight-theme-slate/
+├─ safelight.json     # manifest — "main": "index.js"
+├─ index.js           # the bundle; exports activate(api)
+└─ README.md          # rendered in the store detail view
+```
+
+```js
+// index.js — Slate, a cool blue-gray dark theme.
+export function activate(api) {
+  api.registerTheme({
+    id: "theme-slate.theme",
+    name: "Slate",
+    colorScheme: "dark",
+    vars: {
+      "--color-surface-0": "#0d1117",
+      "--color-accent": "#58a6ff",
+      // …the rest of the theme's CSS variables
+    },
+  });
+}
+```
+
+```json
+// safelight.json
+{ "id": "theme-slate", "name": "Slate", "version": "1.0.0",
+  "description": "Cool blue-gray dark theme.", "author": "Tokyo", "main": "index.js" }
+```
+
+**With a build (anything using JSX/TypeScript or npm dependencies).** Author in `src/`, bundle to `dist/`, and commit `dist/` so installs need no toolchain:
+
+```
+my-extension/
+├─ safelight.json       # "main": "dist/index.js"
+├─ src/
+│  └─ index.js          # your source
+├─ dist/
+│  └─ index.js          # built ESM bundle — COMMIT THIS (or attach to a release)
+├─ rolldown.config.mjs  # bundler config
+├─ package.json
+└─ README.md
+```
+
+Three build invariants, regardless of bundler:
+
+- **Emit one self-contained ESM file** with an `activate(api)` export (and optional `deactivate()`).
+- **Leave React external.** Safelight injects its own instance as `api.react`; a second copy breaks hooks. The example extensions build UI with `React.createElement` off `api.react` rather than JSX imports. The bundled examples use [rolldown](https://rolldown.rs/), but any bundler that can mark React external works:
+
+  ```js
+  // rolldown.config.mjs
+  export default {
+    input: "src/index.js",
+    external: ["react", "react-dom", "react/jsx-runtime"],
+    output: { file: "dist/index.js", format: "esm" },
+  };
+  ```
+
+- **Commit the built `dist/`** (or attach it to the branch/release you tell users to install from) — the store fetches files, it does not run your build.
+
+Finally, **tag the GitHub repo with the `safelight-extension` topic** so it appears in the in-app store, and (optionally) add an [og:image / icon](#store-listing-thumbnail-readme--metadata) for a good thumbnail.
+
+### Manifest
 
 ```json
 {
@@ -218,6 +287,54 @@ Each extension receives a scoped `SafelightAPI` (`version: 1`). Highlights:
 - `develop.useDevelopOverlay()` / `develop.captureFrame(params)` for canvas overlays.
 
 In the desktop build, `window.safelightNative` exposes a locked-down native bridge (plugin host, updater, GitHub proxy, path-based filesystem, diagnostics) — feature-detect it, as it's absent in the browser. See the [API Documentation](api-documentation.md) for the full surface and types.
+
+## Store listing (thumbnail, README & metadata)
+
+The Extensions store builds your detail page from your repo — you don't host anything. Three inputs drive it:
+
+- **Thumbnail / icon.** The detail view picks the first available of: `manifest.icon` → the repo's **og:image** (GitHub social preview) → the owner's avatar. So you have two ways to set a deliberate thumbnail:
+  - Add `"icon": "icon.png"` to `safelight.json` (a path relative to the repo's default branch, or an absolute `https:` URL). Square, ~256×256 reads best at the 48×48 the store renders it.
+  - Or upload a **custom social preview** under the repo's *Settings ▸ General ▸ Social preview* (1280×640). With no manifest icon, Safelight uses this; with none uploaded, GitHub's auto-generated card is used as a last resort. (The store's CSP allows remote `https:` images for exactly this.)
+- **README.** Your repo's `README.md` is fetched and rendered on the detail page (relative image links resolve against the default branch). This is the main description users read — lead with what the extension does and a screenshot.
+- **Metadata.** `description`, `author`, `categories`, `keywords`, `license`, `homepage`, `screenshots`, and `minAppVersion` from the manifest enrich the listing; stars / last-updated / open-issues come live from GitHub. `categories` drive the store's category chips (preferred over repo topics). `minAppVersion` blocks installs on older Safelight builds.
+
+## Developing & debugging
+
+Safelight ships an in-app **Developer Tools** extension that is **disabled by default** (it's a built-in under Extensions ▸ Installed). Enabling it installs console/error capture and unlocks the live-loading workflow below; disabling it tears all of that down so a normal user's console stays untouched. Enable it once, then reach for it whenever you build an extension.
+
+### Enable it
+
+Extensions panel (**Ctrl+Shift+X**) ▸ **Installed** ▸ toggle **Developer Tools** on. Open the panel from **View ▸ Developer Tools** or **Ctrl+Alt+I**. It docks like any panel and can be popped out into its own OS window (the ⧉ button).
+
+The panel has five tabs:
+
+- **Console** — captured `console.*` output with level filters, text search, and an inline **REPL** (evaluate JS against the running app; `window.safelight` is the extension API, handy for poking at stores). Note: the Electron shell ships a strict CSP without `unsafe-eval`, so the REPL's `eval` is refused there — use the **Native** tab to open Chrome DevTools instead.
+- **Issues** — warnings and errors only, with a count badge.
+- **System** — app/runtime versions, platform, cross-origin-isolation status (affects RAW decode), WebGL vendor/renderer/limits, JS heap, and (desktop) GPU feature status.
+- **Storage** — a `localStorage` browser/editor (Safelight keys are `sl_*`).
+- **Native** (desktop only) — open/dock/toggle the real Chrome DevTools, reload (soft/hard), and per-process CPU/memory metrics.
+
+### Live-load from a folder (the iterate loop)
+
+Reinstalling from GitHub on every change is slow. Instead, point Safelight at a **local folder of built extensions** and it loads them live — **desktop app only** (it reads bundle bytes over the native filesystem bridge).
+
+1. **Extensions ▸ Dev** (or **Preferences ▸ Developer Tools**) ▸ **Choose folder…**
+2. Each immediate subfolder of that folder is treated as one extension — the *same* `safelight.json` + built-bundle layout an installed extension uses:
+   ```
+   my-dev-folder/
+   ├─ theme-slate/        →  safelight.json + index.js
+   └─ my-extension/       →  safelight.json + dist/index.js
+   ```
+3. Edit and rebuild your extension, then hit **↻ Reload** on its row (or **Rescan** for the whole folder). The old instance is deactivated and its contributions swept before the new one activates — no app restart.
+
+The Dev tab shows each discovered extension's load status; a failed load shows the error inline. The configured path lives in the Developer Tools extension's own settings, so disabling that extension unloads every dev extension and forgets the path.
+
+### Common load errors
+
+- **`safelight.json is missing 'id' or 'main'`** — both are required; check the manifest path and JSON validity.
+- **`bundle has no activate(api) export`** — your bundle must `export function activate(api)`. Usually means React wasn't left external (so the bundle threw on import) or the entry file is wrong.
+- **Blank/unstyled UI** — Tailwind utility classes aren't compiled for runtime bundles (see the styling note above). Use theme CSS variables + inline styles, or `api.components`.
+- **Hooks crash (`Invalid hook call`)** — you bundled your own React. Mark `react`/`react-dom`/`react/jsx-runtime` external and use `api.react`.
 
 ## Tips
 

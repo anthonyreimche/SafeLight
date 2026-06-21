@@ -265,6 +265,13 @@ export class RenderBridge {
     this.post({ cmd: "setParams", params });
   }
 
+  /** Generic param bag for extension-contributed processing-stage uniforms,
+   *  keyed by qualified key "{stageId}.{key}". Pushed to both the develop and
+   *  thumbnail renderers in the worker. */
+  setContributedParams(bag: Record<string, unknown>) {
+    this.post({ cmd: "setContributedParams", bag });
+  }
+
   /** Render one frame with `params` (at the current source + viewport) to an
    *  ImageBitmap, without touching the live display. Used to grab a "before"
    *  frame for before/after comparison overlays. The live params are restored

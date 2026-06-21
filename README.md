@@ -91,7 +91,6 @@ Because everything in Safelight is an extension, planned work falls into two tra
 
 **Develop**
 - B&W and HDR editing support
-- Targeted adjustment tool (TAT) — click-drag on the photo to move the slider for the tone/HSL value under the cursor
 
 **Library and organization**
 - Virtual copies — multiple edit versions of one photo without duplicating the file
@@ -127,9 +126,7 @@ Because everything in Safelight is an extension, planned work falls into two tra
 **Export and output**
 - Soft proofing — simulate paper or screen output using ICC profiles
 - Print module — multi-photo layout, contact sheet, color-managed printing
-- Slideshow module
 - Web gallery / publish services — generate HTML galleries or push to Flickr, SmugMug, etc.
-- Photo book module — page-layout tool for print-on-demand books
 
 **AI features** (ONNX.js models, downloaded on demand)
 - AI masking (Select Subject, Sky)

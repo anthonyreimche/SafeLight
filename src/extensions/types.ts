@@ -30,6 +30,10 @@ export interface PanelContribution {
   /** Sort position within the slot (lower = higher up). Default 100. */
   order?: number;
   defaultDock?: PanelDockDefault;
+  /** Reset this panel's values to their defaults. When set, right-clicking the
+   *  panel's dock header offers "Reset to defaults". Should be a single
+   *  undoable action. */
+  onReset?: () => void;
 }
 
 /** One dock column in a layout preset. Panels listed top→bottom. */
@@ -343,6 +347,31 @@ export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
   "output-encode",
 ];
 
+/** One full-screen GPU pass run BEFORE the main develop draw. Passes ping-pong
+ *  through framebuffers in source-UV space at source resolution, so iterative
+ *  and neighbourhood algorithms (à trous wavelets, non-local means, separable
+ *  blurs) that a single inline fragment can't express become possible.
+ *
+ *  Contract: the body mutates `vec3 c`, initialised to `readPrev(vUv)` — linear
+ *  scene RGB sampled from the previous pass (or the source image for the first
+ *  pass). Sample neighbours with `readPrev(uv)`. The final pass's output is
+ *  exposed to the owning stage's inline `glsl` as `vec3 stageResult` (sampled at
+ *  the current pixel). Engine-provided uniforms/helpers in every pass:
+ *    uniform vec2 uTexel;      // 1.0 / passResolution
+ *    uniform int  uPassIndex;  // current iteration, 0 .. uPassCount-1
+ *    uniform int  uPassCount;  // this pass's `iterations`
+ *    vec3 readPrev(vec2 uv);   // linear RGB of the previous pass at uv
+ *    float luma(vec3); vec3 srgbToLinear(vec3); vec3 linearToSrgb(vec3);
+ *  Pass `uniforms` share the owning stage's qualified-key namespace, so the same
+ *  param (e.g. "{id}.lumaAmount") can drive both the pass and the inline glsl. */
+export interface StagePass {
+  glsl: string;
+  helpers?: string;
+  /** Ping-pong iterations; uPassIndex runs 0..iterations-1. Default 1. */
+  iterations?: number;
+  uniforms?: UniformDeclaration[];
+}
+
 export interface ProcessingStageContribution {
   /** Globally unique, e.g. "core.exposure" or "film-sim.halation". */
   id: string;
@@ -357,6 +386,10 @@ export interface ProcessingStageContribution {
   helpers?: string;
 
   uniforms: UniformDeclaration[];
+
+  /** Optional pre-passes (see StagePass). Their final result is bound for this
+   *  stage's inline `glsl` as `vec3 stageResult`. */
+  passes?: StagePass[];
 
   produces?: InterStageVariable[];
   /** Names of InterStageVariables this stage reads. */
@@ -499,7 +532,11 @@ export type SlotName =
   | "library-toolbar"
   | "library-subbar"
   | "develop-toolbar"
-  | "develop-canvas-overlay";
+  | "develop-canvas-overlay"
+  // Inside the Detail panel's Noise Reduction area. When an extension contributes
+  // here (e.g. an alternative denoise method), the panel renders the slot in place
+  // of the built-in NR sliders.
+  | "develop-detail";
 
 export interface SlotContribution {
   /** Globally unique, e.g. "my-ext.search-bar". */
@@ -523,9 +560,13 @@ export interface SafelightAPI {
   /** Register a render pipeline (display transform / tone mapper). */
   registerPipeline(c: PipelineContribution): void;
   /** Register a GPU processing stage. The stage's GLSL fragment is compiled
-   *  into the single-pass develop shader at registration time. Unregistering
-   *  (or disabling the extension) removes the GLSL and recompiles. */
+   *  into the single-pass develop shader at registration time. Re-registering
+   *  the same id replaces it (and its params); disabling the extension removes
+   *  it. The shader recompiles on any such change. */
   registerProcessingStage(c: ProcessingStageContribution): void;
+  /** Remove a single processing stage this extension registered (by id), e.g.
+   *  to turn a feature off without disabling the whole extension. */
+  unregisterProcessingStage(id: string): void;
   /** Register a keyboard shortcut; appears in Preferences ▸ Shortcuts. */
   registerKeybinding(c: KeyActionContribution): void;
   /** Declare a settings dialog (⚙ in the Extensions panel). */

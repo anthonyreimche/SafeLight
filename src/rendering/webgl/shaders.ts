@@ -58,6 +58,7 @@ uniform float uSharpenRadius;    // 1..3
 uniform float uSharpenDetail;    // 0..100
 uniform float uSharpenMasking;   // 0..100
 uniform float uLuminanceNR;
+uniform bool uSkipCoreNR;        // true when an extension denoise stage is active
 uniform float uLumNRDetail;      // 0..100
 uniform float uLumNRContrast;    // 0..100
 uniform float uLumNRShadows;     // 0..100
@@ -1122,13 +1123,19 @@ void main() {
     lin = srgbToLinear(c);
   }
 
+  // Contributed noise-reduction stages (extension-owned), on scene-linear lin,
+  // before exposure so denoising isn't amplified -- same rationale as core NR.
+  //__CONTRIBUTED_NOISE_REDUCTION__
+
   // Noise reduction, applied before exposure so it isn't amplified. Color NR
   // replaces chroma with a blurred (mip) version -- kills the rainbow speckle
   // that big exposure pushes reveal; Luminance NR eases luma toward the blur in
   // flat areas while protecting edges.
   float colorNR = uColorNR / 100.0;
   float lumNR = uLuminanceNR / 100.0;
-  if (colorNR > 0.001 || lumNR > 0.001) {
+  // An extension denoise stage (in the noise-reduction phase) replaces — not
+  // stacks on — the built-in NR, so skip this block when one is active.
+  if (!uSkipCoreNR && (colorNR > 0.001 || lumNR > 0.001)) {
     vec3 b = textureLod(uImage, srcUv, 2.0).rgb;
     vec3 blurLin = uLinear ? b : srgbToLinear(b);
     float lb = luma(blurLin);
@@ -1301,6 +1308,10 @@ void main() {
     lin = applyMaskLinear(lin, uMaskAdj0[mi], uMaskAdj1[mi], mcovs[mi], refT);
   }
 
+  // Contributed scene-linear stages (extension-owned), on lin after all the
+  // core linear edits and just before the display transform.
+  //__CONTRIBUTED_SCENE_LINEAR__
+
   // Display conversion: the filmic shoulder guarantees bounded linear values,
   // so clamping here is safe and prevents downstream display-space operations
   // from ever seeing values > 1.0 (which broke contrast, dehaze, etc.).
@@ -1462,10 +1473,17 @@ void main() {
 // headroom for the downstream highlight stages.
 export const DEFAULT_PIPELINE_GLSL = `vec3 pipelineToDisplay(vec3 lin) { return linearToSrgbU(lin); }`;
 
-/** Stage contributions passed to buildFragmentShader for hybrid injection. */
+/** Stage contributions passed to buildFragmentShader for hybrid injection.
+ *  GLSL is grouped by the processing phase it targets. `noiseReduction` and
+ *  `sceneLinear` blocks run on the scene-linear working color `vec3 lin`
+ *  (HDR, pre-display-transform); `effects` blocks run on the display-encoded
+ *  `vec3 c` (as the legacy vignette/grain stages always have). `uniforms` and
+ *  `helpers` are global declarations shared by every group. */
 export interface StageInjection {
   uniforms: string;
   helpers: string;
+  noiseReduction: string;
+  sceneLinear: string;
   effects: string;
 }
 
@@ -1482,5 +1500,7 @@ export function buildFragmentShader(
     .replace("//__PIPELINE_GLSL__", pipelineGlsl || DEFAULT_PIPELINE_GLSL)
     .replace("//__CONTRIBUTED_UNIFORMS__", stages?.uniforms ?? "")
     .replace("//__CONTRIBUTED_HELPERS__", stages?.helpers ?? "")
+    .replace("//__CONTRIBUTED_NOISE_REDUCTION__", stages?.noiseReduction ?? "")
+    .replace("//__CONTRIBUTED_SCENE_LINEAR__", stages?.sceneLinear ?? "")
     .replace("//__CONTRIBUTED_EFFECTS__", stages?.effects ?? "");
 }

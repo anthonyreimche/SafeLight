@@ -17,6 +17,7 @@ interface LibraryListRowProps {
   // with memo() below, a selection re-renders only the rows that changed.
   onClick: (id: string, e: React.MouseEvent) => void;
   onDoubleClick: (id: string) => void;
+  onContextMenu?: (id: string, e: React.MouseEvent) => void;
   onDragStart?: (id: string, e: React.DragEvent) => void;
 }
 
@@ -26,6 +27,7 @@ function LibraryListRowImpl({
   active,
   onClick,
   onDoubleClick,
+  onContextMenu,
   onDragStart,
 }: LibraryListRowProps) {
   const thumbUrl = useMemo(() => {
@@ -47,6 +49,7 @@ function LibraryListRowImpl({
       onDragStart={onDragStart ? (e) => onDragStart(photo.id, e) : undefined}
       onClick={(e) => onClick(photo.id, e)}
       onDoubleClick={() => onDoubleClick(photo.id)}
+      onContextMenu={onContextMenu ? (e) => onContextMenu(photo.id, e) : undefined}
       className={`flex cursor-pointer items-center gap-3 border-b border-border-subtle px-3 py-1.5 ${rowClass} ${
         photo.flag === "reject" ? "opacity-50" : ""
       }`}

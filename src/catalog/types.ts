@@ -70,6 +70,10 @@ export interface EditSnapshot {
   timestamp: number;
   label: string;
   params: DevelopParams;
+  /** Generic extension-contributed processing-stage params (e.g. denoise),
+   *  keyed by qualified key "{stageId}.{key}". Optional so pre-existing stacks
+   *  load unchanged; validated on load via normalizeParamBag. */
+  paramBag?: Record<string, unknown>;
 }
 
 export interface CurvePoint {

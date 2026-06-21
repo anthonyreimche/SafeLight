@@ -1,12 +1,15 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { Thumbnail } from "@/ui/components/Thumbnail";
 import { VirtualGrid } from "@/ui/components/VirtualGrid";
+import { ContextMenu, type ContextMenuEntry } from "@/ui/components/ContextMenu";
 import { LibraryListRow } from "./LibraryListRow";
 import { visiblePhotos } from "./visible-photos";
 import { useGridFilters, useLibrarySorts } from "@/extensions/registry";
+import { exportPhotoData } from "@/project/folder-ops";
+import { getSettings } from "@/state/settings-store";
 
 export function LibraryGrid() {
   const photos = useCatalogStore((s) => s.photos);
@@ -16,6 +19,8 @@ export function LibraryGrid() {
   const toggleSelect = useCatalogStore((s) => s.toggleSelect);
   const selectRange = useCatalogStore((s) => s.selectRange);
   const setRating = useCatalogStore((s) => s.setRating);
+  const rotatePhotos = useCatalogStore((s) => s.rotatePhotos);
+  const removePhotos = useCatalogStore((s) => s.removePhotos);
   const setActivePhoto = useCatalogStore((s) => s.setActivePhoto);
   const setActiveModule = useUIStore((s) => s.setActiveModule);
   const gridSize = useUIStore((s) => s.gridSize);
@@ -104,6 +109,83 @@ export function LibraryGrid() {
     [setRating],
   );
 
+  // Right-clicking a photo that's part of the current selection targets the
+  // whole selection; right-clicking an unselected one selects just it first
+  // (mirrors the drag behavior). The targeted ids are captured when the menu
+  // opens so later actions don't depend on the live selection.
+  const [menu, setMenu] = useState<{ x: number; y: number; ids: string[] } | null>(null);
+  const handleContextMenu = useCallback(
+    (id: string, e: React.MouseEvent) => {
+      e.preventDefault();
+      const sel = useCatalogStore.getState().selectedIds;
+      let ids: string[];
+      if (sel.has(id)) {
+        ids = [...sel];
+      } else {
+        select(id);
+        ids = [id];
+      }
+      setMenu({ x: e.clientX, y: e.clientY, ids });
+    },
+    [select],
+  );
+
+  const handleExportData = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
+    const n = await exportPhotoData(ids);
+    window.alert(
+      `Wrote ${n} sidecar file${n === 1 ? "" : "s"} (“<name>.safelight.json”) next to the selected photo${ids.length === 1 ? "" : "s"}. Move the photos with their sidecars and the next project to scan them will pick up the ratings, labels and edits.`,
+    );
+  }, []);
+
+  const handleRemove = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      if (getSettings().confirmRemovePhotos) {
+        const ok = window.confirm(
+          `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted (they'll reappear on the next folder scan).`,
+        );
+        if (!ok) return;
+      }
+      removePhotos(ids);
+    },
+    [removePhotos],
+  );
+
+  const menuItems = useMemo<ContextMenuEntry[]>(() => {
+    if (!menu) return [];
+    const { ids } = menu;
+    const n = ids.length;
+    const suffix = n > 1 ? ` (${n})` : "";
+    return [
+      {
+        label: "Open in Develop",
+        disabled: n !== 1,
+        onClick: () => {
+          setActivePhoto(ids[0]);
+          setActiveModule("develop");
+        },
+      },
+      "separator",
+      { label: `Rotate clockwise${suffix}`, onClick: () => rotatePhotos(ids, 90) },
+      {
+        label: `Rotate counter-clockwise${suffix}`,
+        onClick: () => rotatePhotos(ids, -90),
+      },
+      "separator",
+      { label: `Export data…${suffix}`, onClick: () => void handleExportData(ids) },
+      "separator",
+      { label: `Remove${suffix}`, danger: true, onClick: () => handleRemove(ids) },
+    ];
+  }, [
+    menu,
+    rotatePhotos,
+    handleExportData,
+    handleRemove,
+    setActivePhoto,
+    setActiveModule,
+  ]);
+
   if (photos.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-text-muted">
@@ -130,53 +212,70 @@ export function LibraryGrid() {
     );
   }
 
+  const contextMenu = menu && (
+    <ContextMenu
+      x={menu.x}
+      y={menu.y}
+      items={menuItems}
+      onClose={() => setMenu(null)}
+    />
+  );
+
   if (viewMode === "list") {
     return (
-      <VirtualGrid
-        items={visible}
-        cellHeight={53}
-        columns={1}
-        overscan={6}
-        getKey={getKey}
-        scrollToIndex={activeIndex >= 0 ? activeIndex : undefined}
-        className="flex-1"
-        renderCell={(photo) => (
-          <LibraryListRow
-            photo={photo}
-            selected={selectedIds.has(photo.id)}
-            active={activePhotoId === photo.id}
-            onClick={handleClick}
-            onDoubleClick={handleDoubleClick}
-            onDragStart={handleDragStart}
-          />
-        )}
-      />
+      <>
+        <VirtualGrid
+          items={visible}
+          cellHeight={53}
+          columns={1}
+          overscan={6}
+          getKey={getKey}
+          scrollToIndex={activeIndex >= 0 ? activeIndex : undefined}
+          className="flex-1"
+          renderCell={(photo) => (
+            <LibraryListRow
+              photo={photo}
+              selected={selectedIds.has(photo.id)}
+              active={activePhotoId === photo.id}
+              onClick={handleClick}
+              onDoubleClick={handleDoubleClick}
+              onContextMenu={handleContextMenu}
+              onDragStart={handleDragStart}
+            />
+          )}
+        />
+        {contextMenu}
+      </>
     );
   }
 
   return (
-    <VirtualGrid
-      items={visible}
-      cellWidth={gridSize}
-      cellHeight={gridSize}
-      gap={8}
-      padding={12}
-      overscan={3}
-      getKey={getKey}
-      scrollToIndex={activeIndex >= 0 ? activeIndex : undefined}
-      className="flex-1"
-      renderCell={(photo) => (
-        <Thumbnail
-          photo={photo}
-          selected={selectedIds.has(photo.id)}
-          active={activePhotoId === photo.id}
-          size={gridSize}
-          onClick={handleClick}
-          onDoubleClick={handleDoubleClick}
-          onRatingChange={handleRate}
-          onDragStart={handleDragStart}
-        />
-      )}
-    />
+    <>
+      <VirtualGrid
+        items={visible}
+        cellWidth={gridSize}
+        cellHeight={gridSize}
+        gap={8}
+        padding={12}
+        overscan={3}
+        getKey={getKey}
+        scrollToIndex={activeIndex >= 0 ? activeIndex : undefined}
+        className="flex-1"
+        renderCell={(photo) => (
+          <Thumbnail
+            photo={photo}
+            selected={selectedIds.has(photo.id)}
+            active={activePhotoId === photo.id}
+            size={gridSize}
+            onClick={handleClick}
+            onDoubleClick={handleDoubleClick}
+            onContextMenu={handleContextMenu}
+            onRatingChange={handleRate}
+            onDragStart={handleDragStart}
+          />
+        )}
+      />
+      {contextMenu}
+    </>
   );
 }

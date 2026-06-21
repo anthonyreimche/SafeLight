@@ -9,19 +9,26 @@ import { summarizePreset } from "../preset-summary";
 import { PresetTooltip } from "./PresetTooltip";
 import { PresetOverwriteDialog } from "./PresetOverwriteDialog";
 import { PresetSaveDialog } from "./PresetSaveDialog";
+import { PresetDeleteDialog } from "./PresetDeleteDialog";
+import { ContextMenu } from "@/ui/components/ContextMenu";
 
 interface PendingSave {
   name: string;
   group: string;
   params: Partial<DevelopParams>;
+  paramBag?: Record<string, unknown>;
 }
 
 export function PresetsPanel() {
   const [hovered, setHovered] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [updating, setUpdating] = useState<Preset | null>(null);
+  const [menu, setMenu] = useState<{ preset: Preset; x: number; y: number } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Preset | null>(null);
   const [collision, setCollision] = useState<{ existingId: string; pending: PendingSave } | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const params = useDevelopStore((s) => s.params);
+  const paramBag = useDevelopStore((s) => s.paramBag);
   const applyPreset = useDevelopStore((s) => s.applyPreset);
   const setPreviewParams = useDevelopStore((s) => s.setPreviewParams);
   const presets = usePresetsStore((s) => s.presets);
@@ -55,6 +62,14 @@ export function PresetsPanel() {
     return { ungrouped, named };
   }, [presets, groups]);
 
+  // Always clear any hover preview before removing, so the viewport doesn't
+  // keep showing a deleted preset's preview (the row unmounts, so its
+  // onMouseLeave never fires).
+  const deletePreset = (id: string) => {
+    setPreviewParams(null);
+    removePreset(id);
+  };
+
   const commitSave = (pending: PendingSave) => {
     const existing = presets.find(
       (p) => p.name.toLowerCase() === pending.name.toLowerCase(),
@@ -63,7 +78,7 @@ export function PresetsPanel() {
       setCollision({ existingId: existing.id, pending });
       return;
     }
-    addPreset(pending.name, pending.params, pending.group);
+    addPreset(pending.name, pending.params, pending.group, pending.paramBag);
   };
 
   const handleImport = async () => {
@@ -99,18 +114,25 @@ export function PresetsPanel() {
         setHovered((h) => (h?.id === preset.id ? null : h));
         setPreviewParams(null);
       }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        // Drop the hover preview so the menu isn't shown over a previewed look.
+        setPreviewParams(null);
+        setHovered(null);
+        setMenu({ preset, x: e.clientX, y: e.clientY });
+      }}
     >
       <button
         onClick={() => {
           setPreviewParams(null);
-          applyPreset(effective(preset.params));
+          applyPreset(effective(preset.params), preset.paramBag);
         }}
         className="min-w-0 flex-1 truncate text-left hover:text-text-primary"
       >
         {preset.name}
       </button>
       <button
-        onClick={() => removePreset(preset.id)}
+        onClick={() => setConfirmDelete(preset)}
         className="ml-1 text-text-muted opacity-0 hover:text-label-red group-hover:opacity-100"
         title="Delete preset"
       >
@@ -182,15 +204,61 @@ export function PresetsPanel() {
         </div>
       )}
 
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={[
+            {
+              label: "Update with current settings",
+              onClick: () => setUpdating(menu.preset),
+            },
+            { label: "Delete", danger: true, onClick: () => setConfirmDelete(menu.preset) },
+          ]}
+          onClose={() => setMenu(null)}
+        />
+      )}
+
       {saving && (
         <PresetSaveDialog
           params={params}
           groups={groups}
           onSave={(result) => {
             setSaving(false);
-            commitSave(result);
+            // Capture the live contributed-param bag (e.g. denoise) alongside
+            // the selected DevelopParams so the preset restores both.
+            commitSave({ ...result, paramBag });
           }}
           onCancel={() => setSaving(false)}
+        />
+      )}
+
+      {/* "Update with current settings": same dialog as Save, but preloaded with
+          the preset's name/group as a confirmation, writing back to the same
+          preset id (with the current live params). */}
+      {updating && (
+        <PresetSaveDialog
+          params={params}
+          groups={groups}
+          initialName={updating.name}
+          initialGroup={updating.group}
+          saveLabel="Update preset"
+          onSave={(result) => {
+            updatePreset(updating.id, result.params, result.group, paramBag);
+            setUpdating(null);
+          }}
+          onCancel={() => setUpdating(null)}
+        />
+      )}
+
+      {confirmDelete && (
+        <PresetDeleteDialog
+          name={confirmDelete.name}
+          onDelete={() => {
+            deletePreset(confirmDelete.id);
+            setConfirmDelete(null);
+          }}
+          onCancel={() => setConfirmDelete(null)}
         />
       )}
 
@@ -198,7 +266,12 @@ export function PresetsPanel() {
         <PresetOverwriteDialog
           name={collision.pending.name}
           onOverwrite={() => {
-            updatePreset(collision.existingId, collision.pending.params, collision.pending.group);
+            updatePreset(
+              collision.existingId,
+              collision.pending.params,
+              collision.pending.group,
+              collision.pending.paramBag,
+            );
             setCollision(null);
           }}
           onSaveAsNew={() => {
@@ -206,6 +279,7 @@ export function PresetsPanel() {
               nextAvailableName(presets, collision.pending.name),
               collision.pending.params,
               collision.pending.group,
+              collision.pending.paramBag,
             );
             setCollision(null);
           }}

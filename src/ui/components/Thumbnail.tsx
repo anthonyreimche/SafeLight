@@ -14,6 +14,7 @@ interface ThumbnailProps {
   size: number;
   onClick: (id: string, e: React.MouseEvent) => void;
   onDoubleClick?: (id: string) => void;
+  onContextMenu?: (id: string, e: React.MouseEvent) => void;
   onRatingChange?: (id: string, rating: number) => void;
   onDragStart?: (id: string, e: React.DragEvent) => void;
 }
@@ -25,6 +26,7 @@ function ThumbnailImpl({
   size,
   onClick,
   onDoubleClick,
+  onContextMenu,
   onRatingChange,
   onDragStart,
 }: ThumbnailProps) {
@@ -91,6 +93,7 @@ function ThumbnailImpl({
       onDragStart={onDragStart ? (e) => onDragStart(photo.id, e) : undefined}
       onClick={(e) => onClick(photo.id, e)}
       onDoubleClick={onDoubleClick ? () => onDoubleClick(photo.id) : undefined}
+      onContextMenu={onContextMenu ? (e) => onContextMenu(photo.id, e) : undefined}
     >
       {thumbUrl ? (
         <img

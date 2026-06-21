@@ -8,6 +8,9 @@ interface Props {
   /** Existing group names, offered as autocomplete. */
   groups: string[];
   initialName?: string;
+  initialGroup?: string;
+  /** Label for the confirm button (defaults to "Save preset"). */
+  saveLabel?: string;
   onSave: (result: {
     name: string;
     group: string;
@@ -23,12 +26,14 @@ export function PresetSaveDialog({
   params,
   groups,
   initialName,
+  initialGroup,
+  saveLabel = "Save preset",
   onSave,
   onCancel,
 }: Props) {
   const fields = useMemo(() => presetFields(params), [params]);
   const [name, setName] = useState(initialName ?? "");
-  const [group, setGroup] = useState("");
+  const [group, setGroup] = useState(initialGroup ?? "");
   const [showAll, setShowAll] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(fields.filter((f) => f.changed).map((f) => f.id)),
@@ -140,7 +145,7 @@ export function PresetSaveDialog({
             className="rounded bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             onClick={submit}
           >
-            Save preset
+            {saveLabel}
           </button>
         </div>
       </div>

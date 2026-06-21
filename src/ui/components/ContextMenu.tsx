@@ -1,0 +1,90 @@
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
+export interface ContextMenuItem {
+  label: string;
+  onClick: () => void;
+  /** Render in the red danger color (e.g. Remove). */
+  danger?: boolean;
+  disabled?: boolean;
+}
+
+/** A horizontal divider between groups of items. */
+export type ContextMenuEntry = ContextMenuItem | "separator";
+
+interface Props {
+  x: number;
+  y: number;
+  items: ContextMenuEntry[];
+  onClose: () => void;
+}
+
+/** Generic right-click menu positioned at the cursor and clamped to the
+ *  viewport. Closes on outside click, Escape, scroll, or selecting an item. */
+export function ContextMenu({ x, y, items, onClose }: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ x, y });
+
+  // Clamp into the viewport once we know the menu's measured size.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    setPos({
+      x: Math.min(x, window.innerWidth - width - 4),
+      y: Math.min(y, window.innerHeight - height - 4),
+    });
+  }, [x, y]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    // Capture phase: close even when the scroll happens inside a nested scroller.
+    window.addEventListener("scroll", onClose, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", onClose, true);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50"
+      onMouseDown={onClose}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div
+        ref={ref}
+        className="absolute min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-1)] py-1 text-[11px] shadow-xl"
+        style={{ left: pos.x, top: pos.y }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        {items.map((item, i) =>
+          item === "separator" ? (
+            <div
+              key={`sep-${i}`}
+              className="my-1 border-t border-[var(--color-border)]"
+            />
+          ) : (
+            <button
+              key={item.label}
+              disabled={item.disabled}
+              className={`block w-full px-3 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-40 ${
+                item.danger
+                  ? "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-label-red)]"
+                  : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+              }`}
+              onClick={() => {
+                item.onClick();
+                onClose();
+              }}
+            >
+              {item.label}
+            </button>
+          ),
+        )}
+      </div>
+    </div>
+  );
+}

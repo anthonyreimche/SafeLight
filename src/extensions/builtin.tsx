@@ -6,6 +6,7 @@
 
 import type { ComponentType } from "react";
 import type { PanelDockDefault, ProcessingStageContribution, SafelightAPI } from "./types";
+import type { DevelopParams } from "@/catalog/types";
 import { useDevelopStore } from "@/state/develop-store";
 import { HistogramPanel } from "@/modules/develop/panels/HistogramPanel";
 import { CropPanel } from "@/modules/develop/panels/CropPanel";
@@ -60,13 +61,20 @@ const panelExt = (
   component: ComponentType,
   description: string,
   defaultDock?: PanelDockDefault,
+  onReset?: () => void,
 ): BuiltinExtension => ({
   id,
   name: title,
   version: V,
   description,
-  activate: (api) => api.registerPanel({ id, title, component, defaultDock }),
+  activate: (api) => api.registerPanel({ id, title, component, defaultDock, onReset }),
 });
+
+// Right-click "Reset to defaults" for a develop panel: reset just its own param
+// keys (one undoable edit). Crop and Transform also clear their ephemeral UI
+// state (aspect lock / guided-line editing) alongside the params.
+const resetDevelop = (keys: (keyof DevelopParams)[], label: string) => () =>
+  void useDevelopStore.getState().resetParams(keys, label);
 
 // Lightroom-style rails, Photoshop-style docking: each panel stacks in the
 // left/right column by default and can be dragged, tabbed, minimized, or
@@ -287,16 +295,24 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   // ── Develop: right rail ──
   panelExt("core.edit", "Edit", EditActionsPanel, "Undo, redo and reset actions for the current edit.", right(0, 76)),
   panelExt("core.histogram", "Histogram", HistogramPanel, "Live RGB histogram of the rendered image.", right(1, 150)),
-  panelExt("core.transform", "Transform", TransformPanel, "Perspective, upright and geometry corrections.", right(2, 320)),
-  panelExt("core.crop", "Crop & Straighten", CropPanel, "Crop, straighten and aspect-ratio tools.", right(3, 150)),
-  panelExt("core.white-balance", "White Balance", WhiteBalancePanel, "Temperature and tint.", right(4, 120)),
-  panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(5, 220)),
-  panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(6, 220)),
-  panelExt("core.color-grading", "Color Grading", ColorGradingPanel, "Shadow / midtone / highlight color wheels.", right(7, 200)),
-  panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(8, 150)),
-  panelExt("core.lens-correction", "Lens Correction", LensCorrectionPanel, "Distortion and vignette correction.", right(9, 120)),
-  panelExt("core.effects", "Effects", EffectsPanel, "Vignette, grain and dehaze.", right(10, 150)),
-  panelExt("core.hsl", "HSL", HSLPanel, "Per-color hue, saturation and luminance mixer.", right(11, 220)),
+  panelExt("core.transform", "Transform", TransformPanel, "Perspective, upright and geometry corrections.", right(2, 320), () => {
+    const st = useDevelopStore.getState();
+    st.setGuidedEditing(false);
+    void st.resetParams(["transform", "straighten", "uprightMode", "guidedLines"], "Reset Transform");
+  }),
+  panelExt("core.crop", "Crop & Straighten", CropPanel, "Crop, straighten and aspect-ratio tools.", right(3, 150), () => {
+    const st = useDevelopStore.getState();
+    st.setCropAspect(0);
+    void st.resetParams(["crop", "straighten"], "Reset Crop & Straighten");
+  }),
+  panelExt("core.white-balance", "White Balance", WhiteBalancePanel, "Temperature and tint.", right(4, 120), resetDevelop(["temperature", "tint"], "Reset White Balance")),
+  panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(5, 220), resetDevelop(["exposure", "contrast", "highlights", "shadows", "whites", "blacks", "texture", "clarity", "dehaze", "vibrance", "saturation"], "Reset Basic")),
+  panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(6, 220), resetDevelop(["toneCurve"], "Reset Tone Curve")),
+  panelExt("core.color-grading", "Color Grading", ColorGradingPanel, "Shadow / midtone / highlight color wheels.", right(7, 200), resetDevelop(["colorGrading"], "Reset Color Grading")),
+  panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(8, 150), resetDevelop(["sharpening", "sharpenRadius", "sharpenDetail", "sharpenMasking", "luminanceNR", "luminanceNRDetail", "luminanceNRContrast", "luminanceNRShadows", "luminanceNRHighlights", "colorNR", "colorNRDetail", "colorNRSmoothness"], "Reset Detail")),
+  panelExt("core.lens-correction", "Lens Correction", LensCorrectionPanel, "Distortion and vignette correction.", right(9, 120), resetDevelop(["lensCorrection"], "Reset Lens Correction")),
+  panelExt("core.effects", "Effects", EffectsPanel, "Vignette, grain and dehaze.", right(10, 150), resetDevelop(["vignette", "grain"], "Reset Effects")),
+  panelExt("core.hsl", "HSL", HSLPanel, "Per-color hue, saturation and luminance mixer.", right(11, 220), resetDevelop(["hsl"], "Reset HSL")),
 
   // ── Develop: left rail ──
   panelExt("core.masks", "Masking", MasksPanel, "Local adjustments with brush, linear and radial masks.", left(0, 240)),

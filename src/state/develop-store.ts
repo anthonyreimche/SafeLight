@@ -22,6 +22,7 @@ import {
   defaultLumRange,
   defaultMaskAdjustments,
   DEFAULT_MASK_PANELS,
+  DEFAULT_DEVELOP_PARAMS,
   normalizeParams,
 } from "@/catalog/types";
 
@@ -32,6 +33,7 @@ import { catalogStorage } from "@/catalog/storage";
 import { broadcast } from "./broadcast";
 import { nextGuide, type CropGuide } from "@/modules/develop/crop-guides";
 import { emitEditCommit } from "@/extensions/registry";
+import { normalizeParamBag } from "@/extensions/param-registry";
 import { useCatalogStore } from "./catalog-store";
 import { resolveLensForPhoto } from "./lens-resolve";
 
@@ -165,11 +167,18 @@ interface DevelopState {
   setDynParams: (patch: Record<string, unknown>) => void;
   setToneCurve: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
   setHslValue: (band: HSLBand, channel: HSLChannel, value: number) => void;
-  applyPreset: (params: Partial<DevelopParams>) => Promise<void>;
+  applyPreset: (
+    params: Partial<DevelopParams>,
+    paramBag?: Record<string, unknown>,
+  ) => Promise<void>;
   /** Set (or clear with null) the render-only preview params. No history write,
    *  no broadcast — purely local to the Develop canvas. */
   setPreviewParams: (params: Partial<DevelopParams> | null) => void;
   commitEdit: (label: string) => Promise<void>;
+  /** Reset just the given top-level param keys to their defaults (temperature
+   *  falls back to the photo's as-shot WB), as one undoable edit. Backs the
+   *  per-panel "Reset to defaults" header action. */
+  resetParams: (keys: (keyof DevelopParams)[], label: string) => Promise<void>;
   undo: () => void;
   redo: () => void;
   reset: () => Promise<void>;
@@ -207,6 +216,7 @@ function moveHistory(
   set({
     historyIndex: newIndex,
     params: { ...history[newIndex].params },
+    paramBag: { ...(history[newIndex].paramBag ?? {}) },
   });
   broadcast({
     type: "edit-update",
@@ -548,6 +558,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
             timestamp: stack[0].timestamp,
             label: "Original",
             params: normalizeParams({ temperature: asShot }),
+            paramBag: {},
           },
           ...stack,
         ];
@@ -557,6 +568,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         photoId,
         asShotTemperature: asShot,
         params: normalizeParams(stack[index].params),
+        paramBag: normalizeParamBag(stack[index].paramBag),
         previewParams: null,
         history: stack,
         historyIndex: index,
@@ -572,12 +584,14 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         photoId,
         asShotTemperature: asShot,
         params: initial,
+        paramBag: {},
         previewParams: null,
         history: [
           {
             timestamp: Date.now(),
             label: "Original",
             params: initial,
+            paramBag: {},
           },
         ],
         historyIndex: 0,
@@ -650,8 +664,16 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     });
   },
 
-  async applyPreset(params) {
-    set({ previewParams: null, params: normalizeParams(params) });
+  async applyPreset(params, paramBag) {
+    set((s) => ({
+      previewParams: null,
+      params: normalizeParams(params),
+      // Merge the preset's contributed params over the current bag (a partial
+      // preset leaves untouched extension settings in place).
+      paramBag: paramBag
+        ? { ...s.paramBag, ...normalizeParamBag(paramBag) }
+        : s.paramBag,
+    }));
     broadcast({
       type: "edit-update",
       payload: { photoId: get().photoId, params: get().params },
@@ -664,13 +686,14 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   },
 
   async commitEdit(label: string) {
-    const { photoId, params, history, historyIndex } = get();
+    const { photoId, params, paramBag, history, historyIndex } = get();
     if (!photoId) return;
 
     const snapshot: EditSnapshot = {
       timestamp: Date.now(),
       label,
       params: { ...params },
+      paramBag: { ...paramBag },
     };
 
     const trimmed = history.slice(0, historyIndex + 1);
@@ -704,9 +727,27 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     moveHistory(get, set, +1);
   },
 
+  async resetParams(keys, label) {
+    const { photoId, asShotTemperature } = get();
+    if (keys.length === 0) return;
+    set((s) => {
+      const next = { ...s.params } as unknown as Record<string, unknown>;
+      const defaults = DEFAULT_DEVELOP_PARAMS as unknown as Record<string, unknown>;
+      for (const k of keys) {
+        next[k] = k === "temperature" ? asShotTemperature : structuredClone(defaults[k]);
+      }
+      return { params: next as unknown as DevelopParams };
+    });
+    broadcast({
+      type: "edit-update",
+      payload: { photoId, params: get().params },
+    });
+    await get().commitEdit(label);
+  },
+
   async reset() {
     const fresh = normalizeParams({ temperature: get().asShotTemperature });
-    set({ params: fresh });
+    set({ params: fresh, paramBag: {} });
     broadcast({
       type: "edit-update",
       payload: { photoId: get().photoId, params: fresh },

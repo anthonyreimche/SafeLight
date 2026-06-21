@@ -24,6 +24,7 @@ export type WorkerRequest =
       baseCurveForBitmap?: boolean;
     }
   | { cmd: "setParams"; params: DevelopParams }
+  | { cmd: "setContributedParams"; bag: Record<string, unknown> }
   // Render one frame with `params` to an ImageBitmap returned out-of-band (NOT
   // blitted to the display) so an extension can grab a "before" frame at the
   // current source + viewport without disturbing the live view. The live params
@@ -105,6 +106,9 @@ let thumbRenderer: WebGLRenderer | null = null;
 
 let latestStages: ProcessingStageContribution[] = [];
 let latestPipeline: ResolvedPipeline = BUILTIN_RESOLVED;
+// Generic param bag for extension-contributed stage uniforms. Persisted so a
+// newly-created thumb renderer inherits it; the renderer keeps its own copy.
+let latestParamBag: Record<string, unknown> = {};
 // The last params pushed to the develop renderer. A `capture` swaps in override
 // params, renders, then restores these so a later display render (e.g. from a
 // viewport or clipping change that doesn't re-send params) isn't left showing
@@ -124,6 +128,7 @@ function ensureThumbRenderer(): WebGLRenderer {
     stages: latestStages,
   });
   if (cacheBudgetBytes > 0) thumbRenderer.setCacheBudget(cacheBudgetBytes / 4);
+  thumbRenderer.setContributedParams(latestParamBag);
   return thumbRenderer;
 }
 
@@ -166,6 +171,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         if (!renderer) break;
         lastParams = msg.params;
         renderer.setParams(msg.params);
+        break;
+      }
+
+      case "setContributedParams": {
+        latestParamBag = msg.bag;
+        renderer?.setContributedParams(msg.bag);
+        thumbRenderer?.setContributedParams(msg.bag);
         break;
       }
 

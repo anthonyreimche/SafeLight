@@ -13,9 +13,23 @@ import type { HistogramData } from "../histogram";
 import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
 import { buildFragmentShader, VERTEX_SHADER, type StageInjection } from "./shaders";
+import {
+  uniformPrefix,
+  helperPrefix,
+  extractHelperNames,
+  emitUniformDecl,
+  rewriteGlsl,
+  simpleHash,
+} from "./shader-compiler";
 import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
 import { useRegistry } from "@/extensions/registry";
-import { PROCESSING_PHASE_ORDER, type ProcessingStageContribution } from "@/extensions/types";
+import {
+  PROCESSING_PHASE_ORDER,
+  type GlslType,
+  type ProcessingPhase,
+  type ProcessingStageContribution,
+  type StagePass,
+} from "@/extensions/types";
 import {
   OUT_SPACE_CODE,
   outMatrixColumnMajor,
@@ -31,6 +45,11 @@ import {
 // the program shares the one VAO — swapping pipelines never rebuilds geometry.
 const ATTR_POS = 0;
 const ATTR_UV = 1;
+
+// Prepass result samplers bind to texture units >= this; units 0-7 are taken by
+// the develop shader (image, curve, masks, retouch, developed, heal, …).
+const PREPASS_UNIT_BASE = 8;
+const MAX_PREPASS_STAGES = 4;
 
 // One compiled develop program per pipeline signature: switching transforms
 // (or back) is an O(1) swap with no shader recompile or uniform re-query.
@@ -242,39 +261,270 @@ function stageSort(a: ProcessingStageContribution, b: ProcessingStageContributio
   return (a.priority ?? 100) - (b.priority ?? 100);
 }
 
+/** A single extension-contributed uniform, resolved to its namespaced GLSL name
+ *  so render() can bind its value generically from the contributed param bag. */
+interface ContributedBinding {
+  /** Qualified key "{stageId}.{key}" — the param-bag key and uniform-cache key. */
+  qualifiedKey: string;
+  /** Namespaced GLSL identifier, e.g. "u_ab12_lumaAmount". */
+  glslName: string;
+  glslType: GlslType;
+  default: number | number[] | boolean;
+}
+
+/** Which injection group a phase maps to. Linear-space phases operate on `lin`
+ *  (the scene-linear working color); display-space phases operate on `c`. */
+function phaseGroup(
+  phase: ProcessingPhase,
+): "noiseReduction" | "sceneLinear" | "effects" {
+  switch (phase) {
+    case "decode":
+    case "noise-reduction":
+      return "noiseReduction";
+    case "scene-linear":
+    case "tone-map":
+      return "sceneLinear";
+    default: // display-adjust, effects, output-encode
+      return "effects";
+  }
+}
+
+/** Bind one value to a uniform by its declared GLSL type. mat3/mat4/sampler2D
+ *  are not driven by the scalar param bag (samplers are bound by the prepass
+ *  framework), so they're skipped here. */
+function bindUniformByType(
+  gl: WebGL2RenderingContext,
+  loc: WebGLUniformLocation,
+  type: GlslType,
+  value: unknown,
+): void {
+  switch (type) {
+    case "float": gl.uniform1f(loc, value as number); break;
+    case "int": gl.uniform1i(loc, (value as number) | 0); break;
+    case "bool": gl.uniform1i(loc, value ? 1 : 0); break;
+    case "vec2": { const v = value as number[]; gl.uniform2f(loc, v[0], v[1]); break; }
+    case "vec3": { const v = value as number[]; gl.uniform3f(loc, v[0], v[1], v[2]); break; }
+    case "vec4": { const v = value as number[]; gl.uniform4f(loc, v[0], v[1], v[2], v[3]); break; }
+    case "ivec2": { const v = value as number[]; gl.uniform2i(loc, v[0] | 0, v[1] | 0); break; }
+    case "ivec3": { const v = value as number[]; gl.uniform3i(loc, v[0] | 0, v[1] | 0, v[2] | 0); break; }
+    case "ivec4": { const v = value as number[]; gl.uniform4i(loc, v[0] | 0, v[1] | 0, v[2] | 0, v[3] | 0); break; }
+    default: break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-pass prepass framework
+// ---------------------------------------------------------------------------
+
+// Passes render a plain fullscreen quad in SOURCE-UV space — no V flip — so that
+// stageResult sampled at srcUv in the main shader aligns with uImage[srcUv].
+const PASS_VERTEX_SHADER = `#version 300 es
+in vec2 aPos;
+in vec2 aUv;
+out vec2 vUv;
+void main() {
+  vUv = aUv;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+`;
+
+// Reproduce the main shader's pre-NR transform (linearize + RAW base curve) so a
+// prepass result lives in the same tonal space as `lin` at the NR marker — then
+// the stage's inline glsl can blend stageResult into lin without a tone shift.
+const PASS_SHARED_GLSL = `
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+vec3 srgbToLinear(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linearToSrgb(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 linearToSrgbU(vec3 c) {
+  c = max(c, 0.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+uniform sampler2D uPrevPass;
+uniform vec2 uTexel;
+uniform int uPassIndex;
+uniform int uPassCount;
+uniform bool uPrevRaw;            // true only for the first read of the source
+uniform bool uSrcLinear;
+uniform bool uIsFallbackPreview;
+uniform bool uApplyBaseCurve;
+vec3 toLin(vec3 src) {
+  vec3 lin = uSrcLinear ? src : (uIsFallbackPreview ? src : srgbToLinear(src));
+  if (uApplyBaseCurve) {
+    vec3 d  = linearToSrgbU(lin);
+    vec3 dc = clamp(d, 0.0, 1.0);
+    vec3 s  = dc * dc * (3.0 - 2.0 * dc);
+    vec3 cc = mix(dc, s, 0.55) + max(d - 1.0, 0.0);
+    lin = srgbToLinear(cc);
+  }
+  return lin;
+}
+vec3 readPrev(vec2 uv) {
+  vec3 s = texture(uPrevPass, uv).rgb;
+  return uPrevRaw ? toLin(s) : s;
+}
+`;
+
+interface PrepassPass {
+  fragmentSource: string;
+  iterations: number;
+  bindings: ContributedBinding[];
+}
+
+interface PrepassStage {
+  stageId: string;
+  /** Sampler name the main shader reads stageResult from. */
+  resultUniform: string;
+  passes: PrepassPass[];
+}
+
+/** Build a complete fragment program for one StagePass, namespacing its uniforms
+ *  + helpers under the owning stage's prefix so they share the stage's param keys. */
+function buildPassFragment(
+  stageId: string,
+  pass: StagePass,
+): { fragmentSource: string; bindings: ContributedBinding[] } {
+  const uPfx = uniformPrefix(stageId);
+  const hPfx = helperPrefix(stageId);
+  const uniforms = pass.uniforms ?? [];
+  const bindings: ContributedBinding[] = uniforms.map((u) => ({
+    qualifiedKey: `${stageId}.${u.key}`,
+    glslName: uPfx + u.key,
+    glslType: u.glslType,
+    default: u.default,
+  }));
+  const uniformDecls = uniforms.map((u) => emitUniformDecl(u, uPfx)).join("\n");
+  const helperNames = pass.helpers ? extractHelperNames(pass.helpers) : [];
+  let helpers = "";
+  if (pass.helpers) {
+    let h = pass.helpers;
+    for (const n of helperNames) h = h.replaceAll(n, hPfx + n);
+    for (const u of uniforms) h = h.replaceAll(u.key, uPfx + u.key);
+    helpers = h;
+  }
+  const body = rewriteGlsl(pass.glsl, uniforms, uPfx, hPfx, helperNames);
+  const fragmentSource = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+${uniformDecls}
+${PASS_SHARED_GLSL}
+${helpers}
+void main() {
+  vec3 c = readPrev(vUv);
+  {
+${body}
+  }
+  fragColor = vec4(c, 1.0);
+}
+`;
+  return { fragmentSource, bindings };
+}
+
 function buildStageInjection(
   injected?: ProcessingStageContribution[],
-): { injection: StageInjection; sig: string } {
-  const stages = injected ?? Object.values(useRegistry.getState().processingStages);
-  const effects = stages
-    .filter((s) => s.phase === "effects")
+): {
+  injection: StageInjection;
+  sig: string;
+  bindings: ContributedBinding[];
+  prepass: PrepassStage[];
+  hasNoiseReduction: boolean;
+} {
+  const stages = (
+    injected ?? Object.values(useRegistry.getState().processingStages)
+  )
+    .slice()
     .sort(stageSort);
-
-  if (effects.length === 0) {
-    return { injection: { uniforms: "", helpers: "", effects: "" }, sig: "" };
-  }
 
   const uniformDecls: string[] = [];
   const helperBlocks: string[] = [];
-  const stageBlocks: string[] = [];
+  const groups = { noiseReduction: [] as string[], sceneLinear: [] as string[], effects: [] as string[] };
+  const bindings: ContributedBinding[] = [];
+  const prepass: PrepassStage[] = [];
   const sigParts: string[] = [];
+  let hasNoiseReduction = false;
 
-  for (const s of effects) {
-    for (const u of s.uniforms) {
-      uniformDecls.push(`uniform ${u.glslType} ${u.key};`);
+  for (const s of stages) {
+    const group = phaseGroup(s.phase);
+    if (!s.id.startsWith("core.") && s.phase === "noise-reduction") hasNoiseReduction = true;
+    // Core stages (vignette/grain) keep raw uniform names: their values are
+    // bound by hand in render() from typed DevelopParams, not the param bag.
+    if (s.id.startsWith("core.")) {
+      for (const u of s.uniforms) uniformDecls.push(`uniform ${u.glslType} ${u.key};`);
+      if (s.helpers) helperBlocks.push(s.helpers);
+      groups[group].push(`{\n${s.glsl}\n}`);
+      sigParts.push(s.id);
+      continue;
     }
-    if (s.helpers) helperBlocks.push(s.helpers);
-    stageBlocks.push(s.glsl);
-    sigParts.push(s.id);
+
+    // Extension stages: namespace uniforms + helpers so two extensions never
+    // collide, and record bindings so render() can drive them from the bag.
+    const uPfx = uniformPrefix(s.id);
+    const hPfx = helperPrefix(s.id);
+    for (const u of s.uniforms) {
+      uniformDecls.push(emitUniformDecl(u, uPfx));
+      bindings.push({
+        qualifiedKey: `${s.id}.${u.key}`,
+        glslName: uPfx + u.key,
+        glslType: u.glslType,
+        default: u.default,
+      });
+    }
+    let helperNames: string[] = [];
+    if (s.helpers) {
+      helperNames = extractHelperNames(s.helpers);
+      let h = s.helpers;
+      for (const n of helperNames) h = h.replaceAll(n, hPfx + n);
+      for (const u of s.uniforms) h = h.replaceAll(u.key, uPfx + u.key);
+      helperBlocks.push(h);
+    }
+
+    // Prepass-bearing stages: expose the prepass result to the inline glsl as
+    // `vec3 stageResult` and compile a program per pass. Pass uniforms join the
+    // same namespace so one param key can drive both the pass and the inline glsl.
+    let prelude = "";
+    if (s.passes && s.passes.length > 0) {
+      const resultUniform = `${uPfx}stageResult`;
+      uniformDecls.push(`uniform sampler2D ${resultUniform};`);
+      prelude = `vec3 stageResult = texture(${resultUniform}, srcUv).rgb;\n`;
+      const passes: PrepassPass[] = s.passes.map((p) => {
+        const built = buildPassFragment(s.id, p);
+        for (const b of built.bindings) {
+          if (!bindings.some((x) => x.qualifiedKey === b.qualifiedKey)) bindings.push(b);
+        }
+        return {
+          fragmentSource: built.fragmentSource,
+          iterations: Math.max(1, p.iterations ?? 1),
+          bindings: built.bindings,
+        };
+      });
+      prepass.push({ stageId: s.id, resultUniform, passes });
+      sigParts.push(
+        `${s.id}#${s.passes.map((p) => simpleHash(p.glsl)).join(",")}`,
+      );
+    }
+
+    const inline = rewriteGlsl(s.glsl, s.uniforms, uPfx, hPfx, helperNames);
+    groups[group].push(`{\n${prelude}${inline}\n}`);
+    sigParts.push(`${s.id}:${simpleHash(s.glsl)}`);
   }
 
   return {
     injection: {
       uniforms: uniformDecls.join("\n"),
       helpers: helperBlocks.join("\n\n"),
-      effects: stageBlocks.join("\n  "),
+      noiseReduction: groups.noiseReduction.join("\n  "),
+      sceneLinear: groups.sceneLinear.join("\n  "),
+      effects: groups.effects.join("\n  "),
     },
     sig: sigParts.join("|"),
+    bindings,
+    prepass,
+    hasNoiseReduction,
   };
 }
 
@@ -321,6 +571,33 @@ export class WebGLRenderer {
   private histTexF: WebGLTexture | null = null;
   private haveColorBufferFloat = false;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
+  // Extension-contributed stage uniforms (namespaced) and their live values.
+  // Bindings are rebuilt whenever the stage set changes; values arrive via
+  // setContributedParams (the develop store's generic param bag).
+  private contributedBindings: ContributedBinding[] = [];
+  private contributedParams: Record<string, unknown> = {};
+  // Multi-pass prepass framework: ping-pong float targets, per-stage result
+  // textures, and cached pass programs (keyed by stageSig|stageId|passIdx).
+  private prepassStages: PrepassStage[] = [];
+  // True when a contributed noise-reduction stage is active → skip built-in NR.
+  private hasContribNR = false;
+  private ppTex: [WebGLTexture | null, WebGLTexture | null] = [null, null];
+  private ppFbo: [WebGLFramebuffer | null, WebGLFramebuffer | null] = [null, null];
+  private ppW = 0;
+  private ppH = 0;
+  private ppInternalFormat = 0; // gl.RGBA16F or gl.RGBA8
+  private stageResultTargets = new Map<string, { tex: WebGLTexture; fbo: WebGLFramebuffer; w: number; h: number }>();
+  private passPrograms = new Map<string, { program: WebGLProgram; locs: Record<string, WebGLUniformLocation | null> }>();
+  // Result texture + assigned texture unit per prepass stage, filled by
+  // runPrepasses each frame and bound onto the main program before the draw.
+  private prepassResults: { resultUniform: string; tex: WebGLTexture; unit: number }[] = [];
+  // Per-stage signature of the last prepass run; lets runPrepasses skip the
+  // (expensive) passes and reuse the cached result when nothing it depends on
+  // (source, this stage's pass params, dims, linearization) changed — so editing
+  // unrelated controls (exposure, etc.) doesn't recompute denoise.
+  private prepassSigs = new Map<string, string>();
+  // Bumped whenever the active source texture is swapped (setImage / bindSource).
+  private sourceEpoch = 0;
   private params: DevelopParams | null = null;
   private lensProfile: import("@/lens-profiles/types").ResolvedProfile | null = null;
   private autoCropScale = 1;
@@ -413,9 +690,12 @@ export class WebGLRenderer {
     this.haveColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
 
     const p = this.injectedPipeline ?? resolveActivePipeline();
-    const { injection, sig: sSig } = buildStageInjection(
+    const { injection, sig: sSig, bindings, prepass, hasNoiseReduction } = buildStageInjection(
       this.injectedStages ?? undefined,
     );
+    this.contributedBindings = bindings;
+    this.prepassStages = prepass;
+    this.hasContribNR = hasNoiseReduction;
     const entry = this.entryFor(p, injection, sSig);
     this.program = entry.program;
     this.uniforms = entry.uniforms;
@@ -663,6 +943,7 @@ export class WebGLRenderer {
       "uSharpenDetail",
       "uSharpenMasking",
       "uLuminanceNR",
+      "uSkipCoreNR",
       "uLumNRDetail",
       "uLumNRContrast",
       "uLumNRShadows",
@@ -774,6 +1055,15 @@ export class WebGLRenderer {
     for (const name of names) {
       u[name] = gl.getUniformLocation(program, name);
     }
+    // Extension-contributed stage uniforms, keyed by qualified key so render()
+    // can resolve location + value together from the param bag.
+    for (const b of this.contributedBindings) {
+      u[b.qualifiedKey] = gl.getUniformLocation(program, b.glslName);
+    }
+    // Prepass result samplers (one per passes-bearing stage).
+    for (const ps of this.prepassStages) {
+      u[ps.resultUniform] = gl.getUniformLocation(program, ps.resultUniform);
+    }
     return u;
   }
 
@@ -847,6 +1137,7 @@ export class WebGLRenderer {
     this.imageTexture = this.createTexture();
     this.imageTextureOwned = true;
     this.currentSourceKey = null;
+    this.sourceEpoch++;
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     let mipsBuilt = false;
     let uploaded = false;
@@ -1036,6 +1327,7 @@ export class WebGLRenderer {
     if (this.imageTextureOwned) gl.deleteTexture(this.imageTexture);
     this.imageTexture = e.tex;
     this.imageTextureOwned = false;
+    this.sourceEpoch++;
     this.imageWidth = e.width;
     this.imageHeight = e.height;
     this.linear = e.linear;
@@ -1253,16 +1545,33 @@ export class WebGLRenderer {
     this.injectedStages = stages;
   }
 
+  /** Generic param bag driving extension-contributed stage uniforms, keyed by
+   *  qualified key "{stageId}.{key}". Unknown keys are simply never looked up;
+   *  a stage uniform with no entry falls back to its declared default. */
+  setContributedParams(bag: Record<string, unknown>) {
+    this.contributedParams = bag;
+  }
+
   setActivePipeline(pipeline: ResolvedPipeline) {
     this.injectedPipeline = pipeline;
   }
 
   private syncPipeline() {
     const p = this.injectedPipeline ?? resolveActivePipeline();
-    const { injection, sig: sSig } = buildStageInjection(
+    const { injection, sig: sSig, bindings, prepass, hasNoiseReduction } = buildStageInjection(
       this.injectedStages ?? undefined,
     );
     if (p.sig === this.pipelineSig && sSig === this.stageSig) return;
+    this.contributedBindings = bindings;
+    this.prepassStages = prepass;
+    this.hasContribNR = hasNoiseReduction;
+    // Pass programs are keyed by stageSig; a stage-set change invalidates them
+    // and the prepass result cache.
+    if (sSig !== this.stageSig) {
+      for (const e of this.passPrograms.values()) this.gl.deleteProgram(e.program);
+      this.passPrograms.clear();
+      this.prepassSigs.clear();
+    }
     const e = this.entryFor(p, injection, sSig);
     this.program = e.program;
     this.uniforms = e.uniforms;
@@ -1318,6 +1627,7 @@ export class WebGLRenderer {
     gl.uniform1f(u.uSharpenDetail, p.sharpenDetail);
     gl.uniform1f(u.uSharpenMasking, p.sharpenMasking);
     gl.uniform1f(u.uLuminanceNR, p.luminanceNR);
+    gl.uniform1i(u.uSkipCoreNR, this.hasContribNR ? 1 : 0);
     gl.uniform1f(u.uLumNRDetail, p.luminanceNRDetail);
     gl.uniform1f(u.uLumNRContrast, p.luminanceNRContrast);
     gl.uniform1f(u.uLumNRShadows, p.luminanceNRShadows);
@@ -1455,6 +1765,16 @@ export class WebGLRenderer {
       gl.uniform1f(u.uGrainSize,      gr.size);
       gl.uniform1f(u.uGrainRoughness, gr.roughness);
       gl.uniform1f(u.uGrainColor,     gr.color);
+    }
+
+    // Extension-contributed stage uniforms, driven by the generic param bag.
+    // Uniforms persist on the program, so binding here once (before the draw
+    // passes below) covers both the single-pass and retouch two-pass paths.
+    for (const b of this.contributedBindings) {
+      const loc = u[b.qualifiedKey];
+      if (loc == null) continue;
+      const value = this.contributedParams[b.qualifiedKey] ?? b.default;
+      bindUniformByType(gl, loc, b.glslType, value);
     }
 
     // Masks + retouch
@@ -1625,6 +1945,13 @@ export class WebGLRenderer {
       gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
       gl.generateMipmap(gl.TEXTURE_2D);
 
+      // Prepasses (e.g. denoise) read the PATCHED source so heal happens before
+      // detail; results are bound onto the main program for pass 2. The patched
+      // source varies with retouch/heal geometry, so fold those into the cache key.
+      this.runPrepasses(this.developedTex!, `e${this.sourceEpoch}|r${this.retouchSig}|h${this.healSig}`);
+      gl.useProgram(this.program);
+      this.bindPrepassResults();
+
       // Pass 2 -> develop from the patched copy (now the spot is already gone,
       // so texture/clarity/sharpening can't invert it). Retouch off this pass.
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1638,6 +1965,9 @@ export class WebGLRenderer {
     } else {
       // No retouch (or no offscreen target): single pass. The in-shader retouch
       // is the fallback when the framebuffer can't be created.
+      this.runPrepasses(this.imageTexture, `e${this.sourceEpoch}`);
+      gl.useProgram(this.program);
+      this.bindPrepassResults();
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, this.canvas.width, this.canvas.height);
       gl.activeTexture(gl.TEXTURE0);
@@ -1824,6 +2154,208 @@ export class WebGLRenderer {
     return { data, w, h };
   }
 
+  // ── Multi-pass prepass framework ────────────────────────────────────────
+
+  // Source-capped dimensions the prepasses render at (matches the develop target
+  // sizing, so a prepass result sampled at srcUv aligns 1:1 with uImage[srcUv]).
+  private prepassDims(): { w: number; h: number } {
+    const longEdge = Math.max(this.imageWidth, this.imageHeight);
+    const scale = longEdge > 0 ? Math.min(1, this.maxEdge / longEdge) : 1;
+    return {
+      w: Math.max(1, Math.round(this.imageWidth * scale)),
+      h: Math.max(1, Math.round(this.imageHeight * scale)),
+    };
+  }
+
+  private allocTarget(tex: WebGLTexture, fbo: WebGLFramebuffer, w: number, h: number): boolean {
+    const gl = this.gl;
+    const internal = this.haveColorBufferFloat ? gl.RGBA16F : gl.RGBA8;
+    const type = this.haveColorBufferFloat ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, gl.RGBA, type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return ok;
+  }
+
+  // Lazily (re)allocate the two ping-pong targets. RGBA16F when float render
+  // targets are supported, else RGBA8 (denoise still works, clamps HDR). Returns
+  // false if a complete framebuffer can't be made (prepasses are then skipped).
+  private ensurePingPong(w: number, h: number): boolean {
+    const gl = this.gl;
+    const internal = this.haveColorBufferFloat ? gl.RGBA16F : gl.RGBA8;
+    if (this.ppTex[0] && this.ppW === w && this.ppH === h && this.ppInternalFormat === internal) {
+      return true;
+    }
+    for (let i = 0; i < 2; i++) {
+      if (!this.ppTex[i]) this.ppTex[i] = gl.createTexture();
+      if (!this.ppFbo[i]) this.ppFbo[i] = gl.createFramebuffer();
+      if (!this.allocTarget(this.ppTex[i]!, this.ppFbo[i]!, w, h)) {
+        this.ppW = 0;
+        this.ppH = 0;
+        return false;
+      }
+    }
+    this.ppW = w;
+    this.ppH = h;
+    this.ppInternalFormat = internal;
+    return true;
+  }
+
+  private ensureStageResult(stageId: string, w: number, h: number) {
+    const gl = this.gl;
+    let t = this.stageResultTargets.get(stageId);
+    if (!t) {
+      t = { tex: gl.createTexture()!, fbo: gl.createFramebuffer()!, w: 0, h: 0 };
+      this.stageResultTargets.set(stageId, t);
+    }
+    if (t.w !== w || t.h !== h) {
+      this.allocTarget(t.tex, t.fbo, w, h);
+      t.w = w;
+      t.h = h;
+    }
+    return t;
+  }
+
+  private getPassProgram(key: string, fragmentSource: string, bindings: ContributedBinding[]) {
+    let e = this.passPrograms.get(key);
+    if (e) return e;
+    const program = this.createProgram(PASS_VERTEX_SHADER, fragmentSource);
+    const gl = this.gl;
+    const locs: Record<string, WebGLUniformLocation | null> = {};
+    for (const n of [
+      "uPrevPass", "uTexel", "uPassIndex", "uPassCount",
+      "uPrevRaw", "uSrcLinear", "uIsFallbackPreview", "uApplyBaseCurve",
+    ]) {
+      locs[n] = gl.getUniformLocation(program, n);
+    }
+    for (const b of bindings) locs[b.glslName] = gl.getUniformLocation(program, b.glslName);
+    e = { program, locs };
+    this.passPrograms.set(key, e);
+    return e;
+  }
+
+  // True when the param bag holds a non-zero value for any of this stage's keys,
+  // i.e. the stage actually does something this frame. Lets an untouched denoise
+  // stage cost nothing (its inline glsl early-outs on a zero amount anyway).
+  private prepassActive(stageId: string): boolean {
+    const prefix = stageId + ".";
+    for (const [k, v] of Object.entries(this.contributedParams)) {
+      if (k.startsWith(prefix) && typeof v === "number" && v !== 0) return true;
+    }
+    return false;
+  }
+
+  // Signature of everything a stage's prepass RESULT depends on: the source
+  // (srcSig), pass-resolution, linearization flags, and this stage's PASS param
+  // values (inline blend params don't affect the prepass, so they're excluded —
+  // that's what makes dragging Luminance Amount, exposure, etc. a cache hit).
+  private prepassSig(stage: PrepassStage, srcSig: string, w: number, h: number, baseCurve: number): string {
+    let params = "";
+    for (const pass of stage.passes) {
+      for (const b of pass.bindings) {
+        params += `${b.qualifiedKey}=${String(this.contributedParams[b.qualifiedKey] ?? b.default)};`;
+      }
+    }
+    return `${srcSig}|${w}x${h}|${this.linear ? 1 : 0}${this.isFallbackPreview ? 1 : 0}${baseCurve}|${params}`;
+  }
+
+  // Run every prepass stage against `srcTex` (the develop source — patched when
+  // retouch is active). `srcSig` identifies the source contents for caching.
+  // Leaves results in per-stage targets and records the unit bindings the main
+  // draw applies via bindPrepassResults().
+  private runPrepasses(srcTex: WebGLTexture, srcSig: string) {
+    this.prepassResults = [];
+    if (this.prepassStages.length === 0) return;
+    const gl = this.gl;
+    const { w, h } = this.prepassDims();
+    const haveTargets = this.ensurePingPong(w, h);
+    const baseCurve = this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0;
+
+    let unit = PREPASS_UNIT_BASE;
+    for (const stage of this.prepassStages) {
+      if (unit >= PREPASS_UNIT_BASE + MAX_PREPASS_STAGES) break;
+      // Inactive (or no float targets): bind the raw source as the result. The
+      // inline glsl blends with amount 0, so the value is never actually used.
+      if (!haveTargets || !this.prepassActive(stage.stageId)) {
+        this.prepassResults.push({ resultUniform: stage.resultUniform, tex: srcTex, unit: unit++ });
+        continue;
+      }
+
+      // Cache hit: nothing the prepass depends on changed — reuse the result and
+      // skip the passes entirely.
+      const sig = this.prepassSig(stage, srcSig, w, h, baseCurve);
+      const cached = this.stageResultTargets.get(stage.stageId);
+      if (cached && cached.w === w && cached.h === h && this.prepassSigs.get(stage.stageId) === sig) {
+        this.prepassResults.push({ resultUniform: stage.resultUniform, tex: cached.tex, unit: unit++ });
+        continue;
+      }
+
+      let readTex: WebGLTexture = srcTex;
+      let prevRaw = true;            // first read linearizes + base-curves the source
+      let writeIdx = 0;
+      let lastIdx = 0;
+      for (const pass of stage.passes) {
+        const key = `${this.stageSig}|${stage.stageId}|${pass.fragmentSource.length}`;
+        const prog = this.getPassProgram(key, pass.fragmentSource, pass.bindings);
+        for (let it = 0; it < pass.iterations; it++) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, this.ppFbo[writeIdx]);
+          gl.viewport(0, 0, w, h);
+          gl.useProgram(prog.program);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, readTex);
+          gl.uniform1i(prog.locs.uPrevPass!, 0);
+          gl.uniform2f(prog.locs.uTexel!, 1 / w, 1 / h);
+          gl.uniform1i(prog.locs.uPassIndex!, it);
+          gl.uniform1i(prog.locs.uPassCount!, pass.iterations);
+          gl.uniform1i(prog.locs.uPrevRaw!, prevRaw ? 1 : 0);
+          gl.uniform1i(prog.locs.uSrcLinear!, this.linear ? 1 : 0);
+          gl.uniform1i(prog.locs.uIsFallbackPreview!, this.isFallbackPreview ? 1 : 0);
+          gl.uniform1i(prog.locs.uApplyBaseCurve!, baseCurve);
+          for (const b of pass.bindings) {
+            const loc = prog.locs[b.glslName];
+            if (loc == null) continue;
+            bindUniformByType(gl, loc, b.glslType, this.contributedParams[b.qualifiedKey] ?? b.default);
+          }
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+          readTex = this.ppTex[writeIdx]!;
+          prevRaw = false;
+          lastIdx = writeIdx;
+          writeIdx = 1 - writeIdx;
+        }
+      }
+
+      // Copy the final ping-pong result into the stage's dedicated target so the
+      // next stage's ping-pong doesn't clobber it.
+      const target = this.ensureStageResult(stage.stageId, w, h);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.ppFbo[lastIdx]);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, target.fbo);
+      gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+      this.prepassSigs.set(stage.stageId, this.prepassSig(stage, srcSig, w, h, baseCurve));
+      this.prepassResults.push({ resultUniform: stage.resultUniform, tex: target.tex, unit: unit++ });
+    }
+  }
+
+  // Bind each prepass result onto the (already active) main program.
+  private bindPrepassResults() {
+    const gl = this.gl;
+    for (const r of this.prepassResults) {
+      const loc = this.uniforms[r.resultUniform];
+      if (loc == null) continue;
+      gl.activeTexture(gl.TEXTURE0 + r.unit);
+      gl.bindTexture(gl.TEXTURE_2D, r.tex);
+      gl.uniform1i(loc, r.unit);
+    }
+  }
+
   // Create / resize the offscreen develop target (capped source size). Returns
   // false if the framebuffer can't be completed, so the caller falls back.
   private prepareDevelopedTarget(): boolean {
@@ -1877,6 +2409,16 @@ export class WebGLRenderer {
     gl.deleteTexture(this.retouchTexture);
     if (this.vao) gl.deleteVertexArray(this.vao);
     if (this.quadBuf) gl.deleteBuffer(this.quadBuf);
+    // Prepass framework: ping-pong targets, per-stage results, pass programs.
+    for (const t of this.ppTex) if (t) gl.deleteTexture(t);
+    for (const f of this.ppFbo) if (f) gl.deleteFramebuffer(f);
+    for (const t of this.stageResultTargets.values()) {
+      gl.deleteTexture(t.tex);
+      gl.deleteFramebuffer(t.fbo);
+    }
+    this.stageResultTargets.clear();
+    for (const e of this.passPrograms.values()) gl.deleteProgram(e.program);
+    this.passPrograms.clear();
     // Fallback entries can share a program under several sigs — dedupe.
     const programs = new Set<WebGLProgram>([this.program]);
     for (const e of this.programCache.values()) programs.add(e.program);

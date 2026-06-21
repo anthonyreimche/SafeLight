@@ -20,11 +20,11 @@ function hashStageId(stageId: string): string {
   return (h >>> 0).toString(36).slice(0, 4);
 }
 
-function uniformPrefix(stageId: string): string {
+export function uniformPrefix(stageId: string): string {
   return `u_${hashStageId(stageId)}_`;
 }
 
-function helperPrefix(stageId: string): string {
+export function helperPrefix(stageId: string): string {
   return `_${hashStageId(stageId)}_`;
 }
 
@@ -49,7 +49,7 @@ function stageOrder(
 // GLSL rewriting: prefix uniform and helper references in stage code
 // ---------------------------------------------------------------------------
 
-function rewriteGlsl(
+export function rewriteGlsl(
   glsl: string,
   uniforms: UniformDeclaration[],
   uPrefix: string,
@@ -66,7 +66,7 @@ function rewriteGlsl(
   return out;
 }
 
-function extractHelperNames(helpers: string): string[] {
+export function extractHelperNames(helpers: string): string[] {
   const names: string[] = [];
   const re = /\b(?:float|vec[234]|mat[34]|int|bool|void)\s+([a-zA-Z_]\w*)\s*\(/g;
   let m: RegExpExecArray | null;
@@ -80,7 +80,7 @@ function extractHelperNames(helpers: string): string[] {
 // Uniform declaration emission
 // ---------------------------------------------------------------------------
 
-function emitUniformDecl(u: UniformDeclaration, prefix: string): string {
+export function emitUniformDecl(u: UniformDeclaration, prefix: string): string {
   const name = prefix + u.key;
   if (u.glslType === "sampler2D") return `uniform sampler2D ${name};`;
   return `uniform ${u.glslType} ${name};`;
@@ -106,7 +106,7 @@ function defaultForType(t: string): string {
 // Compiler signature (for program caching)
 // ---------------------------------------------------------------------------
 
-function simpleHash(s: string): string {
+export function simpleHash(s: string): string {
   let h = 0;
   for (let i = 0; i < s.length; i++)
     h = ((h << 5) - h + s.charCodeAt(i)) | 0;

@@ -1,6 +1,8 @@
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
+import { useSlot } from "@/extensions/registry";
+import { Slot } from "@/extensions/Slot";
 import type { DevelopParams } from "@/catalog/types";
 
 interface SliderDef {
@@ -69,12 +71,24 @@ function SliderGroup({
 }
 
 export function DetailPanel() {
+  // An extension denoise method (e.g. wavelet) contributes controls here; when it
+  // does, its UI replaces the built-in mip-blur NR sliders (which the core shader
+  // also stops applying — see uSkipCoreNR). Empty → the built-in NR shows.
+  const denoiseControls = useSlot("develop-detail");
+  const hasCustomNR = denoiseControls.length > 0;
+
   return (
     <Panel title="Detail">
       <div className="space-y-1">
         <SliderGroup title="Sharpening" sliders={SHARPENING_SLIDERS} />
-        <SliderGroup title="Noise Reduction" sliders={LUM_NR_SLIDERS} />
-        <SliderGroup title="" sliders={COLOR_NR_SLIDERS} />
+        {hasCustomNR ? (
+          <Slot name="develop-detail" />
+        ) : (
+          <>
+            <SliderGroup title="Noise Reduction" sliders={LUM_NR_SLIDERS} />
+            <SliderGroup title="" sliders={COLOR_NR_SLIDERS} />
+          </>
+        )}
       </div>
     </Panel>
   );

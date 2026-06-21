@@ -49,6 +49,8 @@ export function useDevelopRenderer(
   // Effective params: a hover preview (e.g. from the Presets panel) overrides
   // the committed params for rendering only, without touching history.
   const params = useDevelopStore((s) => s.previewParams ?? s.params);
+  // Generic param bag for extension-contributed processing stages (e.g. denoise).
+  const paramBag = useDevelopStore((s) => s.paramBag);
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   const cropping = useDevelopStore((s) => s.cropping);
   const showClipping = useDevelopStore((s) => s.showClipping);
@@ -182,6 +184,7 @@ export function useDevelopRenderer(
       }
       const st = useDevelopStore.getState();
       bridge.setLensProfile(st.resolvedLensProfile);
+      bridge.setContributedParams(st.paramBag);
       bridge.setParams(forRender(st.params, st.cropping));
       bridge.render(true);
     };
@@ -192,6 +195,7 @@ export function useDevelopRenderer(
       bridge.setAsShotTemperature(photo?.exif.colorTemperature ?? 6500);
       const st = useDevelopStore.getState();
       bridge.setLensProfile(st.resolvedLensProfile);
+      bridge.setContributedParams(st.paramBag);
       bridge.setParams(forRender(st.params, st.cropping));
       bridge.render(true);
     };
@@ -355,6 +359,7 @@ export function useDevelopRenderer(
     if (!bridge) return;
     bridge.setAsShotTemperature(asShotTemperature);
     bridge.setLensProfile(resolvedLensProfile);
+    bridge.setContributedParams(paramBag);
     bridge.setParams(forRender(params, cropping));
     if (rafIdRef.current == null) {
       rafIdRef.current = requestAnimationFrame(() => {
@@ -373,7 +378,7 @@ export function useDevelopRenderer(
         extTimerRef.current = null;
       }
     };
-  }, [params, cropping, pipelineId, asShotTemperature, resolvedLensProfile]);
+  }, [params, paramBag, cropping, pipelineId, asShotTemperature, resolvedLensProfile]);
 
   useEffect(() => {
     const bridge = bridgeRef.current;
