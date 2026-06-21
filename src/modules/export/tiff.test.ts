@@ -19,7 +19,7 @@ function sample8(): Uint8Array {
 describe("encodeTiff", () => {
   it("writes a decodable 8-bit RGB TIFF with the right pixels", () => {
     const bytes = encodeTiff(sample8(), 2, 2, { bitDepth: 8 });
-    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 
     const ifds = UTIF.decode(ab);
     expect(ifds.length).toBe(1);
@@ -41,7 +41,7 @@ describe("encodeTiff", () => {
       0, 0, 65535, 65535, /**/ 12345, 54321, 600, 65535,
     ]);
     const bytes = encodeTiff(px, 2, 2, { bitDepth: 16 });
-    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 
     const ifds = UTIF.decode(ab);
     UTIF.decodeImage(ab, ifds[0]);
@@ -62,7 +62,7 @@ describe("encodeTiff", () => {
   it("embeds an ICC profile when provided", () => {
     const icc = buildIccProfile("adobe-rgb");
     const bytes = encodeTiff(sample8(), 2, 2, { bitDepth: 8, icc });
-    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     const ifds = UTIF.decode(ab);
     const tag = ifds[0]["t34675"] as unknown;
     expect(tag).toBeDefined();

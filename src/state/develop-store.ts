@@ -36,6 +36,7 @@ import { emitEditCommit } from "@/extensions/registry";
 import { normalizeParamBag } from "@/extensions/param-registry";
 import { useCatalogStore } from "./catalog-store";
 import { resolveLensForPhoto } from "./lens-resolve";
+import { regenerateEditedThumbnail } from "./edited-thumbnail";
 
 interface DevelopState {
   photoId: string | null;
@@ -709,7 +710,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   },
 
   async commitEdit(label: string) {
-    const { photoId, params, paramBag, history, historyIndex } = get();
+    const { photoId, params, paramBag, history, historyIndex, asShotTemperature } = get();
     if (!photoId) return;
 
     const snapshot: EditSnapshot = {
@@ -736,9 +737,14 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
     if (photo) await emitEditCommit({ photo, editState });
 
-    // Announce the committed state so the Library refreshes this photo's thumbnail
-    // (and histogram) the moment it's edited — for any visible photo, in any
-    // window — instead of waiting on the periodic catalog poll.
+    // Re-render this one photo's grid thumbnail from its committed look (cheap,
+    // in-memory, single photo — not the removed folder-wide pump). Fire and
+    // forget so the commit stays snappy.
+    regenerateEditedThumbnail(photoId, params, asShotTemperature);
+
+    // Announce the committed state so the Library refreshes this photo's
+    // histogram the moment it's edited — for any visible photo, in any window —
+    // instead of waiting on the periodic catalog poll.
     broadcast({ type: "edit-update", payload: { photoId, params } });
   },
 
