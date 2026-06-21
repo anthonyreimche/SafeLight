@@ -293,7 +293,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   },
 
   // ── Develop: right rail ──
-  panelExt("core.edit", "Edit", EditActionsPanel, "Undo, redo and reset actions for the current edit.", right(0, 76)),
+  panelExt("core.edit", "Edit", EditActionsPanel, "Undo, redo and reset actions for the current edit.", right(0, 76), () => void useDevelopStore.getState().reset()),
   panelExt("core.histogram", "Histogram", HistogramPanel, "Live RGB histogram of the rendered image.", right(1, 150)),
   panelExt("core.transform", "Transform", TransformPanel, "Perspective, upright and geometry corrections.", right(2, 320), () => {
     const st = useDevelopStore.getState();
@@ -315,8 +315,17 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   panelExt("core.hsl", "HSL", HSLPanel, "Per-color hue, saturation and luminance mixer.", right(11, 220), resetDevelop(["hsl"], "Reset HSL")),
 
   // ── Develop: left rail ──
-  panelExt("core.masks", "Masking", MasksPanel, "Local adjustments with brush, linear and radial masks.", left(0, 240)),
-  panelExt("core.retouch", "Heal", RetouchPanel, "Heal spot removal.", left(1, 160)),
+  panelExt("core.masks", "Masking", MasksPanel, "Local adjustments with brush, linear and radial masks.", left(0, 240), () => {
+    const st = useDevelopStore.getState();
+    st.selectMask(null);
+    st.selectComponent(null);
+    void st.resetParams(["masks"], "Reset Masking");
+  }),
+  panelExt("core.retouch", "Heal", RetouchPanel, "Heal spot removal.", left(1, 160), () => {
+    const st = useDevelopStore.getState();
+    st.selectSpot(null);
+    void st.resetParams(["retouch"], "Reset Heal");
+  }),
   panelExt("core.presets", "Presets", PresetsPanel, "Save and apply develop presets.", left(2, 200)),
 
   // ── Library ──
