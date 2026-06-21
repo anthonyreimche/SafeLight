@@ -10,6 +10,7 @@ import {
   buildInverseTransform,
   applyInsetToInverse,
   applyInsetToForward,
+  mat3Apply,
 } from "@/rendering/transform";
 import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
 import { computeGuidedCorrection } from "@/rendering/upright";
@@ -70,19 +71,15 @@ export function DevelopCanvas({
   // extension overlays (e.g. before/after) can align and refresh. Generic: core
   // doesn't know what's mounted into the develop-canvas-overlay slot.
   const [overlayRect, setOverlayRect] = useState<OverlayRect | null>(null);
+  const [overlayImageRect, setOverlayImageRect] = useState<OverlayRect | null>(null);
   const [overlayNonce, setOverlayNonce] = useState(0);
-  const handleLayout = useCallback((r: OverlayRect) => {
-    setOverlayRect((prev) =>
-      prev && prev.x === r.x && prev.y === r.y && prev.w === r.w && prev.h === r.h
-        ? prev
-        : r,
-    );
+  const sameRect = (a: OverlayRect | null, r: OverlayRect) =>
+    !!a && a.x === r.x && a.y === r.y && a.w === r.w && a.h === r.h;
+  const handleLayout = useCallback((r: OverlayRect, image: OverlayRect) => {
+    setOverlayRect((prev) => (sameRect(prev, r) ? prev : r));
+    setOverlayImageRect((prev) => (sameRect(prev, image) ? prev : image));
     setOverlayNonce((n) => n + 1);
   }, []);
-  const overlayState = useMemo(
-    () => ({ rect: overlayRect, nonce: overlayNonce }),
-    [overlayRect, overlayNonce],
-  );
 
   // Crossfade the canvas whenever the hover preview turns on, off, or switches
   // to another preset, so the look eases in/out instead of snapping.
@@ -220,6 +217,39 @@ export function DevelopCanvas({
   const inv = applyInsetToInverse(invRaw, lensCropScale);
   const forward = applyInsetToForward(forwardRaw, lensCropScale);
   const viewCrop = transformedViewCrop(forwardRaw);
+
+  // Mapping helpers handed to develop-canvas-overlay extensions, so interactive
+  // marks anchored to the image stay correct through zoom/pan/crop/straighten —
+  // the same source-UV <-> screen mapping the built-in mask/heal overlay uses.
+  const overlayState = useMemo(() => {
+    const ir = overlayImageRect;
+    if (!ir) {
+      return {
+        rect: overlayRect, imageRect: null, nonce: overlayNonce,
+        toScreen: null, toImage: null, radiusToScreen: null, radiusToImage: null,
+      };
+    }
+    return {
+      rect: overlayRect,
+      imageRect: ir,
+      nonce: overlayNonce,
+      toScreen: (u: number, v: number) => {
+        const t = mat3Apply(forwardRaw, u, v);
+        const ox = (t.x - crop.x) / crop.width;
+        const oy = (t.y - crop.y) / crop.height;
+        return { x: ir.x + ox * ir.w, y: ir.y + oy * ir.h };
+      },
+      toImage: (px: number, py: number) => {
+        const ox = (px - ir.x) / ir.w;
+        const oy = (py - ir.y) / ir.h;
+        return mat3Apply(invRaw, crop.x + ox * crop.width, crop.y + oy * crop.height);
+      },
+      radiusToScreen: (r: number) => (r / crop.height) * ir.h,
+      radiusToImage: (px: number) => (px / ir.h) * crop.height,
+    };
+    // forwardRaw/invRaw derive from straighten/transform/imageAspect (in deps).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayRect, overlayImageRect, overlayNonce, crop, straighten, transform, imageAspect]);
 
   // Throttle crop writes to one per frame so a drag doesn't re-render the panels
   // on every pointer event.

@@ -56,9 +56,14 @@ interface ViewportImageProps {
   fadeToken?: number;
   // Reports where the image pixels are actually shown on screen, in frame-local
   // coords, whenever the fit/zoom/pan layout changes. Lets a sibling overlay
-  // (e.g. a before/after split) align to the displayed image. In fit mode this
-  // is the letterboxed image rect; in ROI-zoom mode the window fills the frame.
-  onLayout?: (rect: { x: number; y: number; w: number; h: number }) => void;
+  // (e.g. a before/after split) align to the displayed image. `visible` is where
+  // the displayed pixels sit (the window fills the frame in ROI-zoom mode);
+  // `image` is where the FULL image sits (extends past the frame when zoomed),
+  // which interactive image-anchored overlays map against.
+  onLayout?: (
+    visible: { x: number; y: number; w: number; h: number },
+    image: { x: number; y: number; w: number; h: number },
+  ) => void;
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
@@ -192,8 +197,12 @@ export function ViewportImage({
   useEffect(() => {
     if (!onLayout) return;
     if (!hasImage) return;
-    if (roiMode) onLayout({ x: 0, y: 0, w: frame.w, h: frame.h });
-    else onLayout({ x: effOffset.x, y: effOffset.y, w: imgW * effScale, h: imgH * effScale });
+    // Where the FULL image sits at the current pan/zoom (the same rect handed to
+    // the overlay render-prop); image-anchored overlays map against this.
+    const image = { x: effOffset.x, y: effOffset.y, w: imgW * effScale, h: imgH * effScale };
+    // Where the displayed pixels sit: the window fills the frame in ROI-zoom mode.
+    const visible = roiMode ? { x: 0, y: 0, w: frame.w, h: frame.h } : image;
+    onLayout(visible, image);
   }, [onLayout, hasImage, roiMode, effOffset.x, effOffset.y, effScale, imgW, imgH, frame.w, frame.h]);
 
   // Recenter on external zoom changes (status-bar buttons). Cursor-anchored

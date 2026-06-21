@@ -16,19 +16,44 @@ export interface OverlayRect {
   h: number;
 }
 
+export interface OverlayPoint {
+  x: number;
+  y: number;
+}
+
 export interface DevelopOverlayState {
-  /** Where the image pixels are shown on screen, in Develop-canvas-local
-   *  coords. Null until the first frame lays out. */
+  /** Where the displayed image pixels sit on screen, in Develop-canvas-local
+   *  coords. In a zoomed (ROI) view this is the visible window. Use it to align
+   *  a captured "before" frame. Null until the first frame lays out. */
   rect: OverlayRect | null;
+  /** Where the FULL image sits in the same coords (extends past the frame when
+   *  zoomed) — the frame for the mapping helpers below. Null until first layout. */
+  imageRect: OverlayRect | null;
   /** Bumped whenever the view geometry changes (zoom, pan, fit, resize, photo
    *  switch). An overlay watches this to re-grab a `captureFrame` aligned to the
    *  new view. */
   nonce: number;
+  /** Source-UV (0..1 of the original image) -> screen point, in Develop-canvas
+   *  coords. Accounts for zoom, pan, crop, and straighten/perspective — the same
+   *  mapping the built-in mask/heal overlays use, so interactive marks anchored
+   *  to the image stay correct at any zoom. Null until first layout. */
+  toScreen: ((u: number, v: number) => OverlayPoint) | null;
+  /** Screen point (Develop-canvas coords) -> source-UV. Inverse of toScreen. */
+  toImage: ((x: number, y: number) => OverlayPoint) | null;
+  /** A source-UV radius (fraction of image height) -> on-screen pixels. */
+  radiusToScreen: ((r: number) => number) | null;
+  /** On-screen pixels -> source-UV radius (fraction of image height). */
+  radiusToImage: ((px: number) => number) | null;
 }
 
 const DevelopOverlayContext = createContext<DevelopOverlayState>({
   rect: null,
+  imageRect: null,
   nonce: 0,
+  toScreen: null,
+  toImage: null,
+  radiusToScreen: null,
+  radiusToImage: null,
 });
 
 export const DevelopOverlayProvider = DevelopOverlayContext.Provider;
