@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Pluggable catalog persistence. Safelight is project-based: opening a folder
 // installs a ProjectStorage backed by that folder's .safelight/ directory.
 // With no project open, the catalog is empty and writes are no-ops.

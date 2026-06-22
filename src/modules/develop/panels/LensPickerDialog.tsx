@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 import { useState, useMemo, useRef, useEffect } from "react";
 import { loadLensDb, getCachedLensDb } from "@/lens-profiles/loader";
 import type { LensfunLens } from "@/lens-profiles/types";

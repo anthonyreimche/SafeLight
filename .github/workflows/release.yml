@@ -6,6 +6,7 @@ name: Release
 #   Windows : NSIS .exe (x64)
 #   macOS   : .dmg (x64 + arm64)   — unsigned/ad-hoc
 #   Linux   : .AppImage (x64) + .deb (x64) + .pacman (Arch) + .flatpak + .rpm
+#   NixOS   : flake package, attached as a portable .nar.gz closure export
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -100,3 +101,47 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: false
           files: ${{ matrix.artifacts }}
+
+  # NixOS: build the flake package and attach a portable closure export.
+  # Install on NixOS with:
+  #   gunzip -c safelight-<version>-nixos-x86_64.nar.gz | nix-store --import
+  # then run the printed store path's /bin/safelight (or `nix run` from the tag).
+  nix-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify tag matches package.json version
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(jq -r .version package.json)
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Error: Git tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Version verified: $PKG_VERSION"
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build Nix package
+        run: nix build .#safelight --print-build-logs
+
+      - name: Export Nix closure
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          nix-store --export $(nix-store -qR ./result) \
+            | gzip > "safelight-${VERSION}-nixos-x86_64.nar.gz"
+
+      - name: Upload Nix closure to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Safelight ${{ github.ref_name }}
+          draft: false
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: safelight-*-nixos-x86_64.nar.gz

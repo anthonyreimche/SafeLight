@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Photo record construction + background RAW pre-decode. Photos enter the
 // catalog exclusively through the project scan (see src/project/), which calls
 // buildPhoto for each new file it finds.

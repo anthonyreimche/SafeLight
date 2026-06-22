@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // EditActionsPanel ("Edit"): undo / redo / reset only. All other develop
 // panels dock individually via their defaultDock registrations in builtin.tsx.
 

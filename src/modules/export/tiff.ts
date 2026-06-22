@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Minimal baseline TIFF writer for export. Browsers can't encode TIFF via
 // canvas.toBlob, and UTIF's encoder is 8-bit RGBA only — so this hand-rolls an
 // uncompressed, little-endian, top-down RGB TIFF at 8 or 16 bits per sample,

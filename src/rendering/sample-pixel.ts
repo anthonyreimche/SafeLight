@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Read a small averaged patch from the rendered develop canvas and return it in
 // linear light. Used by the white-balance eyedropper: the clicked point's colour
 // (post-render, display sRGB) is averaged over a few pixels to reject noise, then

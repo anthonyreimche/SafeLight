@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Tests for the baseline TIFF writer. Round-trips through UTIF (the same
 // decoder the app uses for reading TIFFs) to confirm the container is valid and
 // the RGB samples survive at both bit depths. Run with `npm test`.

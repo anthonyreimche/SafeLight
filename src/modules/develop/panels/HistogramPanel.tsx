@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Live histogram with draggable tonal zones. Registered as an extension panel,
 // so it renders both at the top of the Develop sidebar and as a floating
 // dockable window (View ▸ Histogram).

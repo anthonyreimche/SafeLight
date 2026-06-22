@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Auto white balance + auto tone. Each function computes ONE corrective step
 // from the live histogram of the rendered canvas and reports whether the image
 // has converged. The caller (use-auto-adjust) applies the step, lets the

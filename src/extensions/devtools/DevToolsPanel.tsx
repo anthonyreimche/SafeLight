@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Developer Tools panel — a tabbed in-app inspector. Registered by the
 // (disabled-by-default) "core.devtools" extension and opened from the View
 // menu. Tabs: Console, Issues, System, Storage, Native. Nothing here runs

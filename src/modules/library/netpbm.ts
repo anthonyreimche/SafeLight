@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Netpbm (PPM/PGM/PBM/PNM) decoder. These plain bitmap formats are decoded by
 // neither libraw nor the browser's createImageBitmap, so we parse them here and
 // hand back an ImageBitmap that flows through the normal 8-bit (JPEG-like) path.

@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Crop composition guide overlays. Each guide is computed in the crop box's
 // pixel space (w × h) so the SVG can draw it directly. Press "O" in crop mode
 // to cycle; the active guide also has a button in the Crop panel.

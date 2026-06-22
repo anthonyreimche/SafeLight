@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Export pipeline: render each photo through the same WebGL develop pipeline
 // used by the Develop view, then encode the canvas to an image Blob and trigger
 // a download. Because output goes through a canvas, the result carries no EXIF

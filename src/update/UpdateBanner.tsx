@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Non-intrusive update notification banner. Mounts once on startup (or when
 // the detached-window check runs), checks the GitHub releases API, and shows
 // a slim bar at the bottom of the viewport if a newer version is available.

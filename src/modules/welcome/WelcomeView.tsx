@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Startup welcome grid: recently opened project folders shown as cover cards.
 // Clicking a card opens it through the same path as "Open Folder" (no
 // re-import), which is why launch lands here instead of auto-reopening the last

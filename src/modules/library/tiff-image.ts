@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Ordinary (non-RAW) TIFF decoder. Chromium's createImageBitmap rejects TIFF
 // and libraw only handles sensor/CFA data, so plain RGB/CMYK/grayscale TIFFs —
 // scans, exports, multi-page — had no decode path at all. UTIF handles the TIFF

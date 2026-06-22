@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Minimal full-file TIFF reader for RAW containers (NEF, DNG, CR2, ARW are all
 // TIFF-based). Unlike the EXIF reader in src/catalog/exif.ts — which only scans
 // the first ~1 MiB for display tags — this walks the whole file and follows

@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Application-wide Preferences pop-up (Ctrl/Cmd+, or the ⚙ button in the top
 // bar). Left rail of sections, controls on the right. Everything writes to the
 // persisted settings store immediately — there is no OK/Apply; close when done.
@@ -1904,6 +1909,10 @@ function AboutSection() {
         <p className="mt-0.5 text-[11px] text-text-secondary">
           A fast RAW photo editor.
         </p>
+        <p className="mt-1.5 text-[11px] text-text-primary">
+          Founded and principally authored by{" "}
+          <span className="font-semibold">Anthony Reimche</span>.
+        </p>
       </div>
 
       <table className="w-full text-[11px]">
@@ -1931,7 +1940,10 @@ function AboutSection() {
       </Field>
 
       <p className="text-[10px] leading-relaxed text-text-muted">
-        © {new Date().getFullYear()} Anthony Reimche. GPL-3.0 licensed.
+        © {new Date().getFullYear()} Anthony Reimche. Licensed under the GNU
+        GPL v3 with an attribution-preservation term (§7b) — free to use,
+        modify and redistribute; the founding-author credit above must be kept.
+        See the LICENSE file for details.
       </p>
     </div>
   );

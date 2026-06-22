@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Security tests for the README URL resolver — the sanitization boundary that
 // keeps a hostile extension README from injecting dangerous link/image targets.
 // Run with `npm test`.

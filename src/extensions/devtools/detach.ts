@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Pops the Developer Tools panel out into its own OS window (e.g. on a second
 // monitor), mirroring the module-detach pattern in src/state/detach.ts: open an
 // app:// URL with a query flag; Electron's did-create-window handler turns it

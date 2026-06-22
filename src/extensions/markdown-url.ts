@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // URL safety for the README renderer. README content is UNTRUSTED, so this is
 // the security boundary: only http(s)/mailto and repo-relative targets survive;
 // javascript:, data:, vbscript: and any other scheme are dropped. Kept in a

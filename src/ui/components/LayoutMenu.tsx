@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Layout menu: switch the whole dock between registered layout presets
 // (built-in "Classic" plus any extension-provided arrangements) and "Custom",
 // the user's own saved per-module arrangement. Editing the dock while a

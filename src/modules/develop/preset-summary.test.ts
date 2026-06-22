@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Tests for the preset adjustment summary helpers.
 // Type-checked by `tsc --noEmit`; the assertions run under any alias-aware
 // runner (the module imports the `@/` path alias, so bare node cannot resolve it).

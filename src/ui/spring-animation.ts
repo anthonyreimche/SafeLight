@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Critically-damped spring for smooth pan momentum and zoom transitions.
 // Given an initial velocity, returns the position offset at time t that
 // decelerates to rest. Critically-damped = fastest settle without overshoot.

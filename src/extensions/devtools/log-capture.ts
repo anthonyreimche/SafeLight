@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Shared log capture for the Developer Tools extension. Patches the global
 // console plus window error / unhandledrejection handlers so the Console and
 // Issues tabs can replay them. Installed only while the extension is active and

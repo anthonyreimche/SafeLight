@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Generic Develop-canvas integration points exposed to extensions via
 // `api.develop`. Core stays blind to what extensions do with them: it only
 // provides where the displayed image sits (so an overlay can align to it), a

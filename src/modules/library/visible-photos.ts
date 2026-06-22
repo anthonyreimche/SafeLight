@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // The Library grid shows photos after applying the active filter and sort. The
 // same derivation drives keyboard navigation, so culling moves through exactly
 // what the eye sees — never a hidden photo.

@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Central contribution registry. Built-ins and external plugins register
 // through the same door, so a built-in panel can be replaced by a better
 // community version. Reactive (zustand) so UI updates as plugins load.

@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Output color-space management for export. The develop pipeline renders in
 // sRGB (sRGB primaries, sRGB transfer) — that's what the screen shows. For a
 // wider-gamut export the WebGL renderer converts the final pixels into the

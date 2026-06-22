@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Render-pipeline engine: extensions register display transforms (tone
 // mappers) through the registry; the active choice is persisted and shared
 // across windows like themes. The WebGLRenderer reads the resolved pipeline

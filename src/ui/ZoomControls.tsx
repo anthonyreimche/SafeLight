@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Zoom controls for the image viewports, rendered in the status bar (off the
 // image). `null` is fit-to-frame; numbers are scale factors of the buffer.
 const STOPS: { label: string; value: number }[] = [

@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Shared photo navigation used by the Library culling shortcuts (↑/↓/←/→) and
 // the Develop module (←/→ for prev / next). Both walk the same filtered+sorted
 // list the grid displays, so navigation never lands on a hidden photo and the
