@@ -13,6 +13,8 @@
 import { useEffect } from "react";
 import type { ExtensionManifest, ExtensionSearchResult } from "./types";
 import { useExtStoreUI, loadRepoMeta, loadReadme } from "./store-ui";
+import { useIsVerified, useBannedReason } from "./trust";
+import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { Markdown } from "./Markdown";
 import { openUrl } from "@/update/update-checker";
 import { isNewer } from "@/update/semver";
@@ -84,6 +86,8 @@ export function ExtensionDetail({
   onSettings,
 }: Props) {
   const { repo } = target;
+  const verified = useIsVerified(repo);
+  const banned = useBannedReason(repo);
   const meta = useExtStoreUI((s) => (repo ? s.meta[repo] : undefined));
   const readme = useExtStoreUI((s) => (repo ? s.readme[repo] : undefined));
   const update = useExtStoreUI((s) =>
@@ -155,6 +159,11 @@ export function ExtensionDetail({
                 v{target.manifest.version}
               </span>
             )}
+            {repo && banned ? (
+              <FlaggedBadge reason={banned} large />
+            ) : (
+              verified && <VerifiedBadge large />
+            )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-text-muted">
             {author && <span>by {author}</span>}
@@ -178,13 +187,27 @@ export function ExtensionDetail({
 
       {/* Action bar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-2">
-        {!target.installed && repo && (
+        {!target.installed && repo && banned && (
+          <span
+            title={banned}
+            className="rounded px-3 py-1 text-[11px] font-medium text-label-red"
+            style={{ background: "color-mix(in srgb, var(--color-label-red) 16%, transparent)" }}
+          >
+            Blocked — {banned}
+          </span>
+        )}
+        {!target.installed && repo && !banned && (
           <button
             disabled={busy !== null}
             onClick={() => onInstall(repo)}
+            title={
+              verified
+                ? "Reviewed and verified by Safelight"
+                : "Not reviewed by Safelight — runs with full access to your photos and metadata"
+            }
             className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
           >
-            {busy === repo ? "Installing…" : "Install"}
+            {busy === repo ? "Installing…" : verified ? "Install" : "Install (unverified)"}
           </button>
         )}
         {target.installed && hasUpdate && id && repo && (

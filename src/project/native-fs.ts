@@ -20,11 +20,16 @@
 // verifyPermission() treats them as readable (its "no permission API → assume
 // readable" branch) — exactly what we want for a path we already trust.
 
-type Bridge = NonNullable<NonNullable<Window["safelightNative"]>["fs"]>;
+import type { NativeFsBridge } from "@/extensions/types";
+import { privilegedFs } from "@/native/privileged";
 
-/** The native fs bridge, or null in the plain-browser build. */
+type Bridge = NativeFsBridge;
+
+/** The native fs bridge, or null in the plain-browser build. Privileged and
+ *  claimed at boot (src/native/privileged.ts) — not reachable via the page
+ *  global, so extension code can't read/write arbitrary absolute paths. */
 export function nativeFs(): Bridge | null {
-  return window.safelightNative?.fs ?? null;
+  return privilegedFs();
 }
 
 export function isNativeFS(): boolean {
@@ -39,6 +44,17 @@ function join(dir: string, name: string): string {
 
 function basename(p: string): string {
   return p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
+}
+
+// A directory-handle entry name must be a single path segment — the real File
+// System Access API rejects names containing a slash. Enforcing it here also
+// confines anyone holding a native handle (e.g. an extension that pulled the
+// project folder's directoryHandle out of the catalog store) to that folder:
+// "..", "a/b" and absolute paths can't walk out to arbitrary files on disk.
+function entryName(name: string): string {
+  if (!name || name === "." || name === ".." || /[/\\]/.test(name))
+    throw new TypeError(`Invalid file name: ${JSON.stringify(name)}`);
+  return name;
 }
 
 // Brand: lets the recent-projects store recognise a native handle and pull its
@@ -113,15 +129,15 @@ function makeDirHandle(fs: Bridge, p: string): FileSystemDirectoryHandle {
     async getFileHandle(name: string, _opts?: { create?: boolean }) {
       // Lazy: the file is read/written on demand. Missing-file reads reject (the
       // bridge throws ENOENT), which the readJSON/readBlob/cache callers catch.
-      return makeFileHandle(fs, join(p, name));
+      return makeFileHandle(fs, join(p, entryName(name)));
     },
     async getDirectoryHandle(name: string, opts?: { create?: boolean }) {
-      const child = join(p, name);
+      const child = join(p, entryName(name));
       if (opts?.create) await fs.mkdir(child);
       return makeDirHandle(fs, child);
     },
     async removeEntry(name: string, _opts?: { recursive?: boolean }) {
-      await fs.remove(join(p, name));
+      await fs.remove(join(p, entryName(name)));
     },
     async *values() {
       for (const e of await fs.list(p)) {

@@ -45,6 +45,7 @@ import {
 import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } from "./dock";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
 import { captureDevelopFrame, useDevelopOverlay } from "./develop-host";
+import { getPhotoData, putPhotoData } from "@/state/photo-blob-store";
 import {
   contributionToSpec,
   registerCursor,
@@ -137,6 +138,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
             : contributionToSpec(cursor),
           opts,
         ),
+      putPhotoData: (key, data) => putPhotoData(`${extensionId}.${key}`, data),
+      getPhotoData: (key) => getPhotoData(`${extensionId}.${key}`),
     },
   };
 }

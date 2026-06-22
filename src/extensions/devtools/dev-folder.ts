@@ -19,6 +19,7 @@ import { create } from "zustand";
 import type { ExtensionManifest, ExtensionModule } from "../types";
 import { makeScopedAPI } from "../host";
 import { unregisterExtension } from "../registry";
+import { privilegedFs } from "@/native/privileged";
 import {
   getExtSetting,
   onExtSettingChange,
@@ -93,8 +94,9 @@ function unloadAll(): void {
 /** Read + activate one extension folder. Throws on any failure (no manifest,
  *  bad JSON, missing bundle, no activate export). */
 async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
-  const native = window.safelightNative!;
-  const manifestBytes = await native.fs!.read(manifestPath);
+  const fs = privilegedFs();
+  if (!fs) throw new Error("Loading extensions from a folder requires the desktop app.");
+  const manifestBytes = await fs.read(manifestPath);
   const manifest = JSON.parse(
     new TextDecoder().decode(manifestBytes.data),
   ) as ExtensionManifest;
@@ -104,7 +106,7 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
   // Replace any prior live instance of this id (a previous dev load).
   if (loaded.has(manifest.id)) unload(manifest.id);
 
-  const bundle = await native.fs!.read(join(dir, manifest.main));
+  const bundle = await fs.read(join(dir, manifest.main));
   const blob = new Blob([bundle.data as BlobPart], { type: "text/javascript" });
   const url = URL.createObjectURL(blob);
   let mod: Partial<ExtensionModule>;
@@ -133,13 +135,13 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
 /** Unload everything, then re-read and load every extension in the dev folder. */
 export async function scanDevFolder(): Promise<void> {
   const folder = useDevFolder.getState().folder;
-  const native = window.safelightNative;
+  const fs = privilegedFs();
   unloadAll(); // always start from a clean slate
   if (!folder) {
     useDevFolder.setState({ items: [], scanning: false, error: null });
     return;
   }
-  if (!native?.fs) {
+  if (!fs) {
     useDevFolder.setState({
       items: [],
       scanning: false,
@@ -156,7 +158,7 @@ export async function scanDevFolder(): Promise<void> {
   // <userData>/plugins layout). Prefer the folder-is-an-extension reading: if a
   // root manifest exists, that's the developer's intent, so load just that one.
   const rootManifest = join(folder, "safelight.json");
-  if (await native.fs.exists(rootManifest).catch(() => false)) {
+  if (await fs.exists(rootManifest).catch(() => false)) {
     const name = folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
     let item: DevExtItem;
     try {
@@ -177,7 +179,7 @@ export async function scanDevFolder(): Promise<void> {
 
   let entries: { name: string; kind: "file" | "directory" }[];
   try {
-    entries = await native.fs.list(folder);
+    entries = await fs.list(folder);
   } catch (e) {
     useDevFolder.setState({
       scanning: false,
@@ -193,7 +195,7 @@ export async function scanDevFolder(): Promise<void> {
     const dir = join(folder, entry.name);
     const manifestPath = join(dir, "safelight.json");
     // A subfolder without a manifest just isn't an extension — skip it quietly.
-    if (!(await native.fs.exists(manifestPath).catch(() => false))) continue;
+    if (!(await fs.exists(manifestPath).catch(() => false))) continue;
     try {
       items.push(await loadOne(dir, manifestPath));
     } catch (e) {
@@ -212,8 +214,7 @@ export async function scanDevFolder(): Promise<void> {
 
 /** Reload a single dev extension from disk (e.g. after rebuilding it). */
 export async function reloadDevExtension(dir: string): Promise<void> {
-  const native = window.safelightNative;
-  if (!native?.fs) return;
+  if (!privilegedFs()) return;
   const items = [...useDevFolder.getState().items];
   const idx = items.findIndex((i) => i.dir === dir);
   const prev = idx >= 0 ? items[idx] : undefined;
@@ -244,9 +245,9 @@ export function setDevFolder(path: string | null): void {
 
 /** Open a native folder picker and adopt the chosen folder. */
 export async function pickDevFolder(): Promise<void> {
-  const native = window.safelightNative;
-  if (!native?.fs) return;
-  const path = await native.fs.pickDirectory();
+  const fs = privilegedFs();
+  if (!fs) return;
+  const path = await fs.pickDirectory();
   if (path) setDevFolder(path);
 }
 

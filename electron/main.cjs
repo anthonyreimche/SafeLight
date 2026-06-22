@@ -365,8 +365,138 @@ function parseRepoSpec(spec) {
   return { owner: m[1], repo: m[2], ref: ref || "HEAD" };
 }
 
+// ---------------------------------------------------------------------------
+// Extension trust registry: a separate GitHub repo holding two JSON lists —
+// verified.json (repos a human reviewed and vouches for) and banned.json (a
+// remote kill-switch for repos/owners that turn malicious). Fetched here in the
+// main process so the renderer CSP (connect-src 'self') never blocks it, and
+// cached with a TTL so a browse grid or a launch sweep doesn't re-fetch on every
+// call. Tolerant of failure: a network outage keeps the last-good list (never
+// un-bans on a hiccup), and a 404 reads as "file not present yet" → empty, so a
+// registry with only one file still works.
+// ---------------------------------------------------------------------------
+const TRUST_REGISTRY = "anthonyreimche/safelight-registry";
+const TRUST_TTL_MS = 6 * 60 * 60 * 1000;
+const EMPTY_TRUST = { verified: [], repos: [], owners: [], reason: {} };
+let trustCache = null; // { at, list }
+
+const lcTrim = (s) => String(s || "").trim().toLowerCase();
+const lcList = (a) => (Array.isArray(a) ? a.map(lcTrim).filter(Boolean) : []);
+
+async function fetchTrustJson(file) {
+  // Bounded so offline / captive-portal launches fail fast: loadExternalPlugins
+  // awaits this before activating installed extensions, and a hung socket would
+  // otherwise delay them for the OS connection timeout (tens of seconds). On
+  // timeout this throws → fetchTrustList keeps the last-good list, extensions
+  // load unblocked.
+  const res = await net.fetch(
+    `https://raw.githubusercontent.com/${TRUST_REGISTRY}/main/${file}`,
+    {
+      headers: { "User-Agent": "Safelight", Accept: "application/json" },
+      signal: AbortSignal.timeout(5000),
+    }
+  );
+  if (res.status === 404) return {}; // file not in the registry (yet) → empty
+  if (!res.ok) throw new Error(`trust list ${file}: ${res.status}`);
+  return res.json();
+}
+
+const trustCacheFile = () => path.join(app.getPath("userData"), "trust-cache.json");
+
+// Last-good list from disk, or null. Persisting it means every launch after the
+// first reads the lists locally — no network on the boot path — and bans still
+// apply offline / on a cold start (they survive restarts).
+function readTrustDisk() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(trustCacheFile(), "utf8"));
+    if (raw && typeof raw.at === "number" && raw.list)
+      return {
+        at: raw.at,
+        list: {
+          verified: lcList(raw.list.verified),
+          repos: lcList(raw.list.repos),
+          owners: lcList(raw.list.owners),
+          reason:
+            raw.list.reason && typeof raw.list.reason === "object" ? raw.list.reason : {},
+        },
+      };
+  } catch {}
+  return null;
+}
+
+function writeTrustDisk(cache) {
+  fs.promises.writeFile(trustCacheFile(), JSON.stringify(cache)).catch(() => {});
+}
+
+// Fetch both list files and normalise. Throws if either errors (network/5xx) so
+// the caller can keep the last-good copy.
+async function fetchTrustNetwork() {
+  const [verified, banned] = await Promise.all([
+    fetchTrustJson("verified.json"),
+    fetchTrustJson("banned.json"),
+  ]);
+  const reason = {};
+  if (banned && banned.reason && typeof banned.reason === "object")
+    for (const [k, v] of Object.entries(banned.reason)) reason[lcTrim(k)] = String(v);
+  return {
+    verified: lcList(verified && verified.verified),
+    repos: lcList(banned && banned.repos),
+    owners: lcList(banned && banned.owners),
+    reason,
+  };
+}
+
+let trustRefreshing = false;
+async function refreshTrust() {
+  if (trustRefreshing) return;
+  trustRefreshing = true;
+  try {
+    trustCache = { at: Date.now(), list: await fetchTrustNetwork() };
+    writeTrustDisk(trustCache);
+  } catch {
+    // keep last-good
+  } finally {
+    trustRefreshing = false;
+  }
+}
+
+// Never blocks the boot path on the network once any cache exists: the in-memory
+// cache is seeded from disk, a stale copy is returned immediately and refreshed in
+// the background, and only the very first run ever (no cache at all) awaits the
+// bounded network fetch. `force` (manual "check now") always awaits the network.
+async function fetchTrustList(force = false) {
+  if (!trustCache) trustCache = readTrustDisk();
+  if (!force && trustCache) {
+    if (Date.now() - trustCache.at >= TRUST_TTL_MS) void refreshTrust();
+    return trustCache.list;
+  }
+  try {
+    trustCache = { at: Date.now(), list: await fetchTrustNetwork() };
+    writeTrustDisk(trustCache);
+    return trustCache.list;
+  } catch {
+    return trustCache ? trustCache.list : EMPTY_TRUST;
+  }
+}
+
+// The ban reason when a repo ("owner/repo") or its whole owner is blocked, else
+// null. A specific repo reason wins over an owner-wide one.
+function bannedReason(list, owner, repo) {
+  const full = lcTrim(`${owner}/${repo}`);
+  const own = lcTrim(owner);
+  if (list.repos.includes(full) || list.owners.includes(own))
+    return list.reason[full] || list.reason[own] || "flagged as unsafe";
+  return null;
+}
+
 async function installPlugin(spec) {
   const { owner, repo, ref } = parseRepoSpec(spec);
+  // Remote kill-switch: refuse banned repos/owners before any download or write.
+  // The renderer enforces this too (nicer UX), but this is the authoritative
+  // gate — it holds even if the renderer bundle is tampered with.
+  const banned = bannedReason(await fetchTrustList(), owner, repo);
+  if (banned)
+    throw new Error(`"${owner}/${repo}" is blocked by Safelight — ${banned}.`);
   const tarUrl = `https://codeload.github.com/${owner}/${repo}/tar.gz/${encodeURIComponent(ref)}`;
   const res = await net.fetch(tarUrl);
   if (!res.ok) throw new Error(`GitHub download failed (${res.status})`);
@@ -665,6 +795,7 @@ function registerPluginIpc() {
   ipcMain.handle("plugins:latest-version", (_e, repo) =>
     fetchManifestVersion(String(repo))
   );
+  ipcMain.handle("plugins:trust-list", (_e, force) => fetchTrustList(!!force));
   ipcMain.handle("plugins:uninstall", (_e, id) => {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))
       throw new Error("Bad extension id");

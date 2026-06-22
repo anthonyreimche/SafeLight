@@ -297,8 +297,10 @@ interface StageTextureBinding {
  *  (the scene-linear working color); display-space phases operate on `c`. */
 function phaseGroup(
   phase: ProcessingPhase,
-): "noiseReduction" | "sceneLinear" | "effects" {
+): "srcUv" | "noiseReduction" | "sceneLinear" | "effects" {
   switch (phase) {
+    case "geometry":
+      return "srcUv";
     case "decode":
     case "noise-reduction":
       return "noiseReduction";
@@ -464,7 +466,7 @@ function buildStageInjection(
 
   const uniformDecls: string[] = [];
   const helperBlocks: string[] = [];
-  const groups = { noiseReduction: [] as string[], sceneLinear: [] as string[], effects: [] as string[] };
+  const groups = { srcUv: [] as string[], noiseReduction: [] as string[], sceneLinear: [] as string[], effects: [] as string[] };
   const bindings: ContributedBinding[] = [];
   const textureBindings: StageTextureBinding[] = [];
   const prepass: PrepassStage[] = [];
@@ -553,6 +555,7 @@ function buildStageInjection(
     injection: {
       uniforms: uniformDecls.join("\n"),
       helpers: helperBlocks.join("\n\n"),
+      srcUv: groups.srcUv.join("\n  "),
       noiseReduction: groups.noiseReduction.join("\n  "),
       sceneLinear: groups.sceneLinear.join("\n  "),
       effects: groups.effects.join("\n  "),

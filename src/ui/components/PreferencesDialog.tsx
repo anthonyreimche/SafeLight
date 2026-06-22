@@ -1619,6 +1619,7 @@ function ExtensionsSection() {
   const topic = useSettings((s) => s.extensionTopic);
   const checkExtensionUpdates = useSettings((s) => s.checkExtensionUpdates);
   const autoUpdateExtensions = useSettings((s) => s.autoUpdateExtensions);
+  const onlyVerifiedExtensions = useSettings((s) => s.onlyVerifiedExtensions);
   return (
     <div className="flex flex-col gap-4">
       <Field
@@ -1649,6 +1650,12 @@ function ExtensionsSection() {
         hint="Silently install extension updates in the background when found. Off by default — updates are flagged for you to apply manually."
         checked={autoUpdateExtensions}
         onChange={(v) => updateSettings({ autoUpdateExtensions: v })}
+      />
+      <ToggleField
+        label="Only verified extensions"
+        hint="Block installing any extension that isn't on Safelight's verified allowlist. Banned extensions are always blocked regardless of this setting."
+        checked={onlyVerifiedExtensions}
+        onChange={(v) => updateSettings({ onlyVerifiedExtensions: v })}
       />
       <Field label="Manage">
         <button
