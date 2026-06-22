@@ -20,6 +20,10 @@ interface VirtualGridProps<T> {
   getKey: (item: T) => string;
   /** Index to keep visible (keyboard navigation). Scrolls into view when it changes. */
   scrollToIndex?: number;
+  /** Notified whenever the computed column count changes (for row-wise nav). */
+  onColumnsChange?: (columns: number) => void;
+  /** Click on the scroll container (e.g. empty space between/around cells). */
+  onClick?: (e: React.MouseEvent) => void;
   className?: string;
 }
 
@@ -34,6 +38,8 @@ export function VirtualGrid<T>({
   renderCell,
   getKey,
   scrollToIndex,
+  onColumnsChange,
+  onClick,
   className,
 }: VirtualGridProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -67,6 +73,11 @@ export function VirtualGrid<T>({
 
   const isSingleColumn = columns === 1;
   const effectiveCellWidth = isSingleColumn ? containerWidth : cellWidth;
+
+  // Publish the column count so row-wise keyboard nav (↑/↓) knows the stride.
+  useEffect(() => {
+    onColumnsChange?.(columns);
+  }, [columns, onColumnsChange]);
 
   const totalRows = Math.ceil(items.length / columns);
   const rowHeight = cellHeight + gap;
@@ -126,6 +137,7 @@ export function VirtualGrid<T>({
       className={className}
       style={{ overflow: "auto", position: "relative" }}
       onScroll={handleScroll}
+      onClick={onClick}
     >
       <div style={{ height: totalHeight, position: "relative" }}>
         {cells}

@@ -1,4 +1,5 @@
 import { Panel } from "@/ui/components/Panel";
+import { Rating } from "@/ui/components/Rating";
 import { useCatalogStore } from "@/state/catalog-store";
 
 function formatSize(bytes: number): string {
@@ -57,6 +58,7 @@ export function MetadataPanel() {
   const photo = useCatalogStore((s) =>
     s.photos.find((p) => p.id === s.activePhotoId),
   );
+  const setRating = useCatalogStore((s) => s.setRating);
   if (!photo) {
     return (
       <Panel title="Metadata">
@@ -109,6 +111,14 @@ export function MetadataPanel() {
 
   return (
     <Panel title="Metadata">
+      <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
+        <span className="shrink-0 text-text-muted">Rating</span>
+        <Rating
+          value={photo.rating}
+          onChange={(r) => setRating(photo.id, r)}
+          size="md"
+        />
+      </div>
       <dl className="space-y-0.5">
         {visible.map(([k, v]) => (
           <div key={k} className="flex justify-between gap-2 text-[11px]">

@@ -51,6 +51,7 @@ export function DevelopView() {
       }
     >
       <div
+        data-canvas-surround
         className="flex flex-1 items-center justify-center overflow-hidden p-4"
         style={{
           // Neutral surround behind the image. Color assessment forces the ISO

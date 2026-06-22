@@ -3,7 +3,7 @@ import type { CatalogPhoto, ColorLabel, FlagStatus } from "@/catalog/types";
 import { catalogStorage } from "@/catalog/storage";
 import { rotateBlob, normalizeRotation } from "@/catalog/orient";
 import { useProjectStore } from "@/project/project-store";
-import { broadcast } from "./broadcast";
+import { broadcast, WINDOW_ID } from "./broadcast";
 import { emitMetadataChange, emitPhotoRemove } from "@/extensions/registry";
 
 interface CatalogState {
@@ -32,6 +32,9 @@ interface CatalogState {
    *  in the background. Revokes the old object URL. Persistence is the caller's
    *  job (the repair pass already wrote it via putPhoto). */
   updatePhoto: (photo: CatalogPhoto) => void;
+  /** Replace one photo's preview blob in place (revoking the old URL), e.g. after
+   *  another window edited it and we reloaded its <id>.jpg from disk. */
+  replaceThumbnail: (id: string, blob: Blob) => void;
   /** Replace the skeleton catalog with the post-scan list: attach live handles,
    *  add newly-found photos, drop vanished ones — while keeping any previews that
    *  already loaded during the skeleton phase. */
@@ -63,7 +66,9 @@ interface CatalogState {
   select: (id: string) => void;
   selectRange: (id: string, orderedIds?: string[]) => void;
   toggleSelect: (id: string) => void;
-  selectAll: () => void;
+  /** Select the given ids (the photos the grid currently shows), or — when
+   *  none are supplied — every photo in the catalog. */
+  selectAll: (ids?: string[]) => void;
   deselectAll: () => void;
   setActivePhoto: (id: string | null, options?: { broadcast?: boolean }) => void;
 }
@@ -171,7 +176,25 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
           return photo;
         }),
       }));
-      broadcast({ type: "catalog-change", payload: { action: "update", id: photo.id } });
+      // Stamp the origin so other windows reload this photo's preview from disk
+      // (see use-window-sync) while this window — which already holds the new
+      // blob — ignores its own echo.
+      broadcast({ type: "catalog-change", payload: { action: "update", id: photo.id, origin: WINDOW_ID } });
+    },
+
+    // Swap in a freshly-read preview blob for one photo, revoking the superseded
+    // object URL. Unlike mergeThumbnails (initial load — skips photos that already
+    // have a preview), this replaces an existing one. Used when another window
+    // edited a photo and we must reload its <id>.jpg from disk. No broadcast: this
+    // is a reaction to one, and re-broadcasting would loop.
+    replaceThumbnail(id, blob) {
+      set((s) => ({
+        photos: s.photos.map((p) => {
+          if (p.id !== id) return p;
+          if (p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
+          return { ...p, thumbnailBlob: blob, thumbnailUrl: URL.createObjectURL(blob) };
+        }),
+      }));
     },
 
     finalizeCatalog(photos) {
@@ -399,9 +422,9 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       }
     },
 
-    selectAll() {
+    selectAll(ids) {
       set((s) => ({
-        selectedIds: new Set(s.photos.map((p) => p.id)),
+        selectedIds: new Set(ids ?? s.photos.map((p) => p.id)),
       }));
     },
 

@@ -95,6 +95,134 @@ export function parseExifDate(s: string | undefined): number | undefined {
   return Number.isNaN(t) ? undefined : t;
 }
 
+// XMP photo metadata (star rating, colour label, keywords, title). Cameras and
+// editing apps write these into an XMP packet rather than EXIF tags — Nikon
+// stores the in-camera star rating here, which is what Windows Explorer shows.
+// We read the packet (TIFF/RAW tag 0x02bc, or a JPEG XMP APP1 segment) and pull
+// out the handful of fields the catalog tracks.
+export interface XmpData {
+  rating?: number; // 0..5 stars
+  colorLabel?: string; // raw label string, e.g. "Red"
+  keywords?: string[];
+  title?: string;
+}
+
+const XMP_TAG = 0x02bc; // TIFF IFD0 tag carrying the XMP packet
+const XMP_JPEG_SIG = "http://ns.adobe.com/xap/1.0/\0"; // JPEG XMP APP1 header
+
+export async function parseXmp(blob: Blob): Promise<XmpData> {
+  try {
+    const slice = blob.size > MAX_BYTES ? blob.slice(0, MAX_BYTES) : blob;
+    const view = new DataView(await slice.arrayBuffer());
+    const text = extractXmpText(view);
+    return text ? parseXmpText(text) : {};
+  } catch {
+    return {};
+  }
+}
+
+function extractXmpText(view: DataView): string | null {
+  if (view.byteLength < 4) return null;
+  const head = view.getUint16(0, false);
+  if (head === 0xffd8) return extractXmpFromJpeg(view);
+  if (head === 0x4949 || head === 0x4d4d) return extractXmpFromTiff(view);
+  return null;
+}
+
+function extractXmpFromTiff(view: DataView): string | null {
+  const le = view.getUint16(0, false) === 0x4949;
+  if (view.getUint16(2, le) !== 42) return null;
+  const r: Reader = { view, base: 0, le };
+  const ifd0 = readIFD(r, view.getUint32(4, le));
+  const e = ifd0.get(XMP_TAG);
+  if (!e) return null;
+  const start = dataOffset(r, e);
+  if (start < 0 || start >= view.byteLength) return null;
+  return decodeUtf8(view, start, Math.min(start + e.count, view.byteLength));
+}
+
+function extractXmpFromJpeg(view: DataView): string | null {
+  let off = 2;
+  while (off + 4 <= view.byteLength) {
+    if (view.getUint8(off) !== 0xff) break;
+    const marker = view.getUint8(off + 1);
+    if (marker === 0xda || marker === 0xd9) break; // SOS / EOI -> no more metadata
+    const len = view.getUint16(off + 2, false);
+    const segStart = off + 4;
+    if (marker === 0xe1 && matchAscii(view, segStart, XMP_JPEG_SIG)) {
+      const textStart = segStart + XMP_JPEG_SIG.length;
+      return decodeUtf8(view, textStart, Math.min(off + 2 + len, view.byteLength));
+    }
+    off += 2 + len;
+  }
+  return null;
+}
+
+function matchAscii(view: DataView, at: number, sig: string): boolean {
+  if (at + sig.length > view.byteLength) return false;
+  for (let i = 0; i < sig.length; i++) {
+    if (view.getUint8(at + i) !== sig.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+function decodeUtf8(view: DataView, start: number, end: number): string {
+  const bytes = new Uint8Array(view.buffer, view.byteOffset + start, end - start);
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+function parseXmpText(xmp: string): XmpData {
+  const out: XmpData = {};
+  const rating = xmpValue(xmp, "xmp:Rating");
+  if (rating !== undefined) {
+    const n = Math.round(Number(rating));
+    if (Number.isFinite(n) && n >= 0 && n <= 5) out.rating = n;
+  }
+  const label = xmpValue(xmp, "xmp:Label");
+  if (label) out.colorLabel = label;
+  const title = rdfBagItems(xmp, "dc:title")[0];
+  if (title) out.title = title;
+  const keywords = rdfBagItems(xmp, "dc:subject");
+  if (keywords.length) out.keywords = keywords;
+  return out;
+}
+
+// An XMP property is serialised either as an element (<xmp:Rating>1</xmp:Rating>)
+// or as an attribute on rdf:Description (xmp:Rating="1") — handle both forms. The
+// `(?:\s[^>]*)?>` opener requires the tag to end at a space or '>', so a name
+// that's a prefix of another (xmp:Rating vs xmp:RatingPercent) doesn't collide.
+function xmpValue(xmp: string, tag: string): string | undefined {
+  const el = new RegExp(`<${tag}(?:\\s[^>]*)?>([^<]*)</${tag}>`).exec(xmp);
+  if (el) return decodeEntities(el[1].trim());
+  const attr = new RegExp(`\\s${tag}="([^"]*)"`).exec(xmp);
+  if (attr) return decodeEntities(attr[1].trim());
+  return undefined;
+}
+
+// dc:subject (keywords) and dc:title are rdf:Bag / rdf:Alt containers of
+// rdf:li entries.
+function rdfBagItems(xmp: string, tag: string): string[] {
+  const block = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`).exec(xmp);
+  if (!block) return [];
+  const items: string[] = [];
+  const re = /<rdf:li(?:\s[^>]*)?>([\s\S]*?)<\/rdf:li>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(block[1]))) {
+    const v = decodeEntities(m[1].trim());
+    if (v) items.push(v);
+  }
+  return items;
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 function findTiffStart(view: DataView): number {
   if (view.byteLength < 4) return -1;
   const head = view.getUint16(0, false);

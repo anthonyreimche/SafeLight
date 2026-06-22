@@ -4,15 +4,17 @@ import { HSL_CHANNELS } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
 import { useDevelopStore } from "@/state/develop-store";
 import { useSettings } from "@/state/settings-store";
-import { fitCropToImage, maxCropForTransform, transformedViewCrop } from "@/rendering/crop-transform";
+import {
+  buildLensDistort,
+  fitCropToImage,
+  maxCropForTransform,
+  transformedViewCrop,
+} from "@/rendering/crop-transform";
 import {
   buildForwardTransform,
   buildInverseTransform,
-  applyInsetToInverse,
-  applyInsetToForward,
   mat3Apply,
 } from "@/rendering/transform";
-import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
 import { computeGuidedCorrection } from "@/rendering/upright";
 import { ViewportImage } from "@/ui/ViewportImage";
 import { Slot } from "@/extensions/Slot";
@@ -206,27 +208,17 @@ export function DevelopCanvas({
         ? photo.width / photo.height
         : 1;
 
-  // Compute the effective inset from lens distortion so the crop constraint
-  // treats the image as smaller (avoids sampling outside valid pixels).
-  let lensCropScale = 1;
-  if (lensCorrection.mode !== "off") {
-    const lp = resolvedLensProfile;
-    if (lensCorrection.mode === "profile" && lp?.distortion && lensCorrection.distortionEnabled) {
-      lensCropScale = computeAutoCropScale(
-        lp.distortion.model, lp.distortion.k, lensCorrection.distortion, imageAspect,
-      );
-    } else if (Math.abs(lensCorrection.distortion) > 0.001) {
-      lensCropScale = computeAutoCropScale("poly3", [0], lensCorrection.distortion, imageAspect);
-    }
-  }
+  // Lens distortion in CPU form so the crop constraint tests against the exact
+  // warped image the renderer draws (matching its non-linear, possibly concave
+  // boundary), rather than a uniform-inset approximation that let the crop be
+  // dragged into the black margins. null when no distortion is active.
+  const lensDistort = buildLensDistort(lensCorrection, resolvedLensProfile, imageAspect);
 
   // Inverse transform (transformed coord -> source UV) for crop constraints, the
   // forward transform (image quad) for the move clamp, and the view region
   // enclosing the warped image for the crop overlay.
   const invRaw = buildInverseTransform(straighten, transform, imageAspect);
   const forwardRaw = buildForwardTransform(straighten, transform, imageAspect);
-  const inv = applyInsetToInverse(invRaw, lensCropScale);
-  const forward = applyInsetToForward(forwardRaw, lensCropScale);
   const viewCrop = transformedViewCrop(forwardRaw);
 
   // Mapping helpers handed to develop-canvas-overlay extensions, so interactive
@@ -335,10 +327,11 @@ export function DevelopCanvas({
                 rect={rect}
                 crop={crop}
                 viewCrop={viewCrop}
-                inv={inv}
-                forward={forward}
+                inv={invRaw}
+                forward={forwardRaw}
+                distort={lensDistort}
                 straightenDeg={straighten}
-                aspect={cropAspect}
+                aspect={cropAspect === -1 ? imageAspect : cropAspect}
                 imageAspect={imageAspect}
                 constrain={constrainCrop}
                 guide={cropGuide}
@@ -355,10 +348,8 @@ export function DevelopCanvas({
                       "crop",
                       fitCropToImage(
                         crop,
-                        applyInsetToInverse(
-                          buildInverseTransform(deg, transform, imageAspect),
-                          lensCropScale,
-                        ),
+                        buildInverseTransform(deg, transform, imageAspect),
+                        lensDistort,
                       ),
                     );
                   }
@@ -386,11 +377,17 @@ export function DevelopCanvas({
                     };
                     setParam("transform", next);
                     if (constrainCrop) {
-                      const guidedInv = applyInsetToInverse(
-                        buildInverseTransform(result.straighten, next, imageAspect),
-                        lensCropScale,
+                      const guidedInv = buildInverseTransform(
+                        result.straighten, next, imageAspect,
                       );
-                      setParam("crop", maxCropForTransform(guidedInv, st.cropAspect));
+                      setParam(
+                        "crop",
+                        maxCropForTransform(
+                          guidedInv,
+                          st.cropAspect === -1 ? imageAspect : st.cropAspect,
+                          lensDistort,
+                        ),
+                      );
                     }
                     commitEdit("Guided Upright");
                   }}

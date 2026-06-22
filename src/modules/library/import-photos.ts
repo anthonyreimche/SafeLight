@@ -3,7 +3,7 @@
 // buildPhoto for each new file it finds.
 
 import type { CatalogPhoto } from "@/catalog/types";
-import { parseExif, parseExifDate } from "@/catalog/exif";
+import { parseExif, parseExifDate, parseXmp } from "@/catalog/exif";
 import { normalizeRotation, orientationToRotation } from "@/catalog/orient";
 import {
   extractRawPreview,
@@ -316,6 +316,23 @@ function mimeTypeFromName(name: string): string {
   return RAW_MIME[getExtension(name)] ?? "";
 }
 
+// XMP colour labels are free-text (Adobe/Nikon write capitalised colour names).
+// Map the ones SafeLight understands; anything else leaves the label unset.
+function mapColorLabel(
+  label: string | undefined,
+): CatalogPhoto["colorLabel"] | undefined {
+  switch (label?.toLowerCase()) {
+    case "red":
+    case "yellow":
+    case "green":
+    case "blue":
+    case "purple":
+      return label!.toLowerCase() as CatalogPhoto["colorLabel"];
+    default:
+      return undefined;
+  }
+}
+
 /** Human-readable reason the decode chain produced no preview, for the grid's
  *  warning tooltip. RAW failures surface libraw's last status (the chain ends at
  *  libraw); TIFF/other report the format generically. */
@@ -337,6 +354,13 @@ export async function buildPhoto(
   // EXIF first — it's independent of pixel decode, so even a file we can't
   // decode yet still gets correct date/orientation metadata.
   const exif = await parseExif(file);
+
+  // XMP carries the camera/editor-written star rating, colour label, keywords
+  // and title (Nikon stores the in-camera rating here, not in an EXIF tag — it's
+  // what Windows Explorer surfaces). These seed the catalog's editable fields; a
+  // SafeLight sidecar, if present, overrides them on import (see project-storage).
+  const xmp = await parseXmp(file);
+  if (!exif.imageDescription && xmp.title) exif.imageDescription = xmp.title;
 
   // For RAW files, extract the as-shot WB temperature from libraw's cam_mul
   // (lightweight metadata-only — no pixel decode). parseExif covers DNG files
@@ -361,10 +385,10 @@ export async function buildPhoto(
     fileHandle,
     fileSize: file.size,
     mimeType: file.type || mimeTypeFromName(file.name),
-    rating: 0,
-    colorLabel: "none" as const,
+    rating: xmp.rating ?? 0,
+    colorLabel: mapColorLabel(xmp.colorLabel) ?? ("none" as const),
     flag: "none" as const,
-    keywords: [],
+    keywords: xmp.keywords ?? [],
     dateCreated: parseExifDate(exif.dateTimeOriginal) ?? file.lastModified,
     dateImported: Date.now(),
     exif,

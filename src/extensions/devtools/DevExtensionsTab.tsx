@@ -35,9 +35,9 @@ export function DevExtensionsTab() {
     <div className="flex flex-col gap-3">
       <p className="text-text-muted">
         Load locally-built extensions straight from a folder on disk — no GitHub
-        install needed. Each subfolder is one extension (a safelight.json
-        manifest plus its built bundle). Also configurable in Preferences ▸
-        Developer Tools.
+        install needed. Point at a single extension's folder (a safelight.json
+        manifest plus its built bundle), or at a parent folder whose subfolders
+        are each one. Also configurable in Preferences ▸ Developer Tools.
       </p>
 
       <div className="flex items-center gap-1.5">
@@ -78,7 +78,7 @@ export function DevExtensionsTab() {
         <div className="text-text-muted">
           {scanning
             ? "Scanning…"
-            : "No extensions found. Each one is a subfolder with a safelight.json manifest and its built bundle."}
+            : "No extensions found. Point at an extension folder (a safelight.json manifest plus its built bundle), or at a parent folder whose immediate subfolders are each one. The manifest must be at the chosen folder's root or one level down — not nested deeper, and the bundle must be built."}
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">

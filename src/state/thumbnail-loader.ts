@@ -43,6 +43,24 @@ export function requestThumbnail(id: string): void {
   void pump();
 }
 
+/** Re-read one photo's preview from disk (via the installed loader, which reads
+ *  <id>.jpg) and replace its in-store thumbnail. Unlike requestThumbnail, this
+ *  refreshes a photo that already has a preview — used when another window edited
+ *  it. No-op if no project/loader is active. */
+export async function reloadThumbnail(id: string): Promise<void> {
+  if (!loader) return;
+  const myGen = gen;
+  let blob: Blob | null = null;
+  try {
+    blob = await loader(id);
+  } catch {
+    blob = null;
+  }
+  // Bail if the project was swapped out while reading, or the read found nothing.
+  if (!blob || gen !== myGen) return;
+  useCatalogStore.getState().replaceThumbnail(id, blob);
+}
+
 function scheduleFlush(): void {
   if (flushScheduled) return;
   flushScheduled = true;

@@ -67,7 +67,7 @@ interface DevelopState {
   // Crop tool UI state (not part of the edit, so not persisted to history).
   cropping: boolean;
   constrainCrop: boolean;
-  cropAspect: number; // 0 = free; else target width:height in pixels
+  cropAspect: number; // -1 = original (image's own aspect); 0 = free; else target width:height in pixels
   cropGuide: CropGuide; // active composition overlay
   cropGuideFlip: number; // 0-3: identity / mirror-x / mirror-y / 180°
   setCropping: (v: boolean) => void;
@@ -114,6 +114,10 @@ interface DevelopState {
   hoveredMaskId: string | null; // mask hovered in the panel list -> coverage overlay
   maskTab: "coverage" | "adjust"; // selected-mask editor tab (gates the overlay)
   brushPreview: boolean; // true while a brush size/feather slider is being dragged
+  // Sharpening preview shown while Alt/Ctrl-dragging a Detail-panel sharpening
+  // slider: 0 = off, 1 = masking, 2 = detail, 3 = luminance. Transient (not
+  // persisted, not broadcast) — like brushPreview.
+  sharpenViz: number;
   selectedSpotId: string | null;
   brushSize: number; // image-height fraction
   brushFeather: number; // 0..1
@@ -133,6 +137,7 @@ interface DevelopState {
   setHoveredMaskId: (id: string | null) => void;
   setMaskTab: (tab: "coverage" | "adjust") => void;
   setBrushPreview: (v: boolean) => void;
+  setSharpenViz: (mode: number) => void;
   selectSpot: (id: string | null) => void;
   setBrushSize: (v: number) => void;
   setBrushFeather: (v: number) => void;
@@ -259,7 +264,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
 
   cropping: false,
   constrainCrop: true,
-  cropAspect: 0,
+  cropAspect: -1,
   cropGuide: "thirds",
   cropGuideFlip: 0,
   setCropping: (cropping) => set({ cropping }),
@@ -311,6 +316,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   hoveredMaskId: null,
   maskTab: "coverage",
   brushPreview: false,
+  sharpenViz: 0,
   selectedSpotId: null,
   brushSize: 0.08,
   brushFeather: 0.5,
@@ -330,6 +336,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   setHoveredMaskId: (hoveredMaskId) => set({ hoveredMaskId }),
   setMaskTab: (maskTab) => set({ maskTab }),
   setBrushPreview: (brushPreview) => set({ brushPreview }),
+  setSharpenViz: (sharpenViz) => set({ sharpenViz }),
   selectSpot: (selectedSpotId) => set({ selectedSpotId }),
   setBrushSize: (brushSize) => set({ brushSize }),
   setBrushFeather: (brushFeather) => set({ brushFeather }),

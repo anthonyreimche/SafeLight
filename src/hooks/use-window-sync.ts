@@ -1,7 +1,8 @@
 import { useEffect } from "react";
-import { broadcast, onBroadcast } from "@/state/broadcast";
+import { broadcast, onBroadcast, WINDOW_ID } from "@/state/broadcast";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
+import { reloadThumbnail } from "@/state/thumbnail-loader";
 import { detachedModule } from "@/state/detach";
 
 // Keeps every window (main + detached) in sync: the active photo follows across
@@ -18,6 +19,17 @@ export function useWindowSync() {
         useCatalogStore
           .getState()
           .setActivePhoto(msg.payload.activePhotoId, { broadcast: false });
+      } else if (
+        msg.type === "catalog-change" &&
+        msg.payload.action === "update" &&
+        msg.payload.id &&
+        msg.payload.origin !== WINDOW_ID
+      ) {
+        // Another window edited a photo and wrote its new <id>.jpg. Reload that
+        // one preview from disk so this window's grid reflects the edit. Skipping
+        // our own echo (origin === WINDOW_ID) keeps the single-window path — which
+        // already applied the blob in-memory — from re-reading it from disk.
+        void reloadThumbnail(msg.payload.id);
       } else if (!dm && msg.type === "attach") {
         const ui = useUIStore.getState();
         ui.markAttached(msg.payload.module);

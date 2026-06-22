@@ -15,6 +15,10 @@ interface SliderProps {
   compact?: boolean; // narrow label + value, for tight columns (e.g. color wheels)
   onChange: (value: number) => void;
   onCommit?: () => void;
+  // Fired with `true` when a drag is held with Alt or Ctrl down (and `false`
+  // when that ends), for Lightroom-style "show me the effect" previews. The
+  // modifier state is tracked live, so toggling Alt/Ctrl mid-drag re-fires.
+  onModifierPreview?: (active: boolean) => void;
 }
 
 // Fine-control factor while Shift is held during a drag.
@@ -32,6 +36,7 @@ export function Slider({
   compact = false,
   onChange,
   onCommit,
+  onModifierPreview,
 }: SliderProps) {
   const iconSvg = useRegistry((s) =>
     icon ? s.sliderIcons[icon]?.svg : undefined,
@@ -47,6 +52,7 @@ export function Slider({
     startX: number;
     startValue: number;
     shift: boolean;
+    mod: boolean; // Alt/Ctrl held -> modifier preview active
   } | null>(null);
   const pendingRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -117,8 +123,10 @@ export function Slider({
     e.preventDefault(); // take over from native position-to-value mapping
     e.currentTarget.focus();
     e.currentTarget.setPointerCapture(e.pointerId);
-    dragRef.current = { startX: e.clientX, startValue: value, shift: e.shiftKey };
+    const mod = e.altKey || e.ctrlKey;
+    dragRef.current = { startX: e.clientX, startValue: value, shift: e.shiftKey, mod };
     setDragValue(value);
+    if (mod) onModifierPreview?.(true);
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLInputElement>) => {
@@ -132,6 +140,12 @@ export function Slider({
       d.startValue = dragValue ?? value;
       d.shift = e.shiftKey;
     }
+    // Toggling Alt/Ctrl mid-drag flips the effect preview on/off.
+    const mod = e.altKey || e.ctrlKey;
+    if (mod !== d.mod) {
+      d.mod = mod;
+      onModifierPreview?.(mod);
+    }
     const valuePerPx = ((max - min) / width) * (e.shiftKey ? FINE : 1);
     const next = snap(d.startValue + (e.clientX - d.startX) * valuePerPx);
     setDragValue(next);
@@ -140,9 +154,11 @@ export function Slider({
 
   const endDrag = () => {
     if (!dragRef.current) return;
+    const wasMod = dragRef.current.mod;
     dragRef.current = null;
     flushPending();
     setDragValue(null);
+    if (wasMod) onModifierPreview?.(false);
     onCommit?.();
   };
 

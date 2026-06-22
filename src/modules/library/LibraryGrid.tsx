@@ -23,6 +23,7 @@ export function LibraryGrid() {
   const removePhotos = useCatalogStore((s) => s.removePhotos);
   const setActivePhoto = useCatalogStore((s) => s.setActivePhoto);
   const setActiveModule = useUIStore((s) => s.setActiveModule);
+  const setGridColumns = useUIStore((s) => s.setGridColumns);
   const gridSize = useUIStore((s) => s.gridSize);
   const viewMode = useUIStore((s) => s.viewMode);
   const filter = useUIStore((s) => s.filter);
@@ -93,6 +94,17 @@ export function LibraryGrid() {
       setActiveModule("develop");
     },
     [setActivePhoto, setActiveModule],
+  );
+
+  // Clicking the grid's empty space (between or around the cells) — anything that
+  // isn't a photo cell — clears the selection. A click that lands on a thumbnail
+  // bubbles here too, but its data-photo-id ancestor exempts it.
+  const deselectAll = useCatalogStore((s) => s.deselectAll);
+  const handleBackgroundClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (!(e.target as HTMLElement).closest("[data-photo-id]")) deselectAll();
+    },
+    [deselectAll],
   );
 
   // Drag photos onto a Folders-panel folder to move them. Dragging a photo
@@ -235,6 +247,8 @@ export function LibraryGrid() {
           overscan={6}
           getKey={getKey}
           scrollToIndex={activeIndex >= 0 ? activeIndex : undefined}
+          onColumnsChange={setGridColumns}
+          onClick={handleBackgroundClick}
           className="flex-1"
           renderCell={(photo) => (
             <LibraryListRow
@@ -264,6 +278,8 @@ export function LibraryGrid() {
         overscan={3}
         getKey={getKey}
         scrollToIndex={activeIndex >= 0 ? activeIndex : undefined}
+        onColumnsChange={setGridColumns}
+        onClick={handleBackgroundClick}
         className="flex-1"
         renderCell={(photo) => (
           <Thumbnail

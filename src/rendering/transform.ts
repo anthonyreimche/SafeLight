@@ -123,26 +123,3 @@ export function buildForwardTransform(
   return mat3Mul(Ainv, mat3Mul(msq, A));
 }
 
-// Compose an inverse transform with an inward crop scale so that `inside()`
-// rejects points that would sample outside the usable area after lens
-// distortion. `scale` is the auto-crop zoom factor (>= 1); the effective
-// source region shrinks to [0.5 - 0.5/scale, 0.5 + 0.5/scale] per axis.
-export function applyInsetToInverse(inv: Mat3, scale: number): Mat3 {
-  if (scale <= 1.001) return inv;
-  // Post-multiply by: u' = 0.5 + (u - 0.5) * scale = u*scale + 0.5*(1-scale)
-  const off = 0.5 * (1 - scale);
-  const inset: Mat3 = [scale, 0, off, 0, scale, off, 0, 0, 1];
-  return mat3Mul(inset, inv);
-}
-
-// Inverse of the above for the forward transform: shrink the image quad inward
-// so the crop overlay and move clamp use the smaller valid region.
-export function applyInsetToForward(fwd: Mat3, scale: number): Mat3 {
-  if (scale <= 1.001) return fwd;
-  // Pre-multiply source coords: u' = 0.5 + (u - 0.5) / scale = u/scale + 0.5*(1-1/scale)
-  const invS = 1 / scale;
-  const off = 0.5 * (1 - invS);
-  const shrink: Mat3 = [invS, 0, off, 0, invS, off, 0, 0, 1];
-  return mat3Mul(fwd, shrink);
-}
-
