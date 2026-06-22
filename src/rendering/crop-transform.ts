@@ -1,7 +1,77 @@
-import type { CropRect } from "@/catalog/types";
+import type { CropRect, LensCorrectionParams } from "@/catalog/types";
+import type { ResolvedProfile } from "@/lens-profiles/types";
+import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
 import { mat3Apply, type Mat3, type Vec2 } from "./transform";
 
 export type { Vec2 } from "./transform";
+
+// Lens distortion correction expressed in CPU form, mirroring lensCorrectedUV in
+// shaders.ts so the crop constraint sees the SAME warped image the renderer draws
+// (uniform-inset approximations let the crop be dragged into the black margins a
+// curved distortion leaves behind). `model`: 1=poly3, 2=poly5, 3=ptlens, 0=none.
+export interface LensDistort {
+  model: number;
+  a: number;
+  b: number;
+  c: number;
+  manual: number; // additive manual-slider distortion (matches uLensDistortion)
+  autoCropScale: number; // >= 1; zoom that hides the corrected borders
+  aspect: number; // image width/height, for the aspect-correct radius
+}
+
+// Build the distortion descriptor exactly as the renderer configures its
+// uniforms (see renderer.ts setParams), or null when no distortion is in play.
+export function buildLensDistort(
+  lc: LensCorrectionParams,
+  profile: ResolvedProfile | null,
+  aspect: number,
+): LensDistort | null {
+  if (lc.mode === "off") return null;
+  const useProfile =
+    lc.mode === "profile" && !!profile?.distortion && lc.distortionEnabled;
+  let model = 0;
+  let a = 0;
+  let b = 0;
+  let c = 0;
+  let autoCropScale = 1;
+  if (useProfile && profile?.distortion) {
+    const d = profile.distortion;
+    model = d.model === "poly3" ? 1 : d.model === "poly5" ? 2 : 3;
+    a = d.k[0] ?? 0;
+    b = d.k.length > 1 ? d.k[1] : (d.k[0] ?? 0);
+    c = d.k[2] ?? 0;
+    // Auto-crop only applies to profile distortion and only when enabled — the
+    // renderer gates uLensAutoCropScale the same way.
+    if (lc.autoCrop) autoCropScale = computeAutoCropScale(d.model, d.k, lc.distortion, aspect);
+  }
+  const manual = lc.distortion; // additive in both profile and manual modes
+  if (model === 0 && Math.abs(manual) <= 0.001) return null;
+  return { model, a, b, c, manual, autoCropScale, aspect };
+}
+
+// Source UV -> sampled source UV after distortion correction. Black appears
+// wherever this lands outside [0,1]², so this is exactly the renderer's
+// validity test. Mirrors lensCorrectedUV (incl. lensRadius) in shaders.ts.
+function lensCorrectUV(u: Vec2, d: LensDistort): Vec2 {
+  const cx = u.x - 0.5;
+  const cy = u.y - 0.5;
+  const halfDiag = 0.5 * Math.sqrt(d.aspect * d.aspect + 1);
+  const r = Math.hypot(cx * d.aspect, cy) / halfDiag;
+  const r2 = r * r;
+  let scale = 1;
+  if (d.model === 1) scale = 1 - d.b + d.b * r2;
+  else if (d.model === 2) scale = 1 + d.b * r2 + d.a * r2 * r2;
+  else if (d.model === 3)
+    scale = d.a * r2 * r + d.b * r2 + d.c * r + (1 - d.a - d.b - d.c);
+  if (Math.abs(d.manual) > 0.001) scale += d.manual * 0.0003 * r2;
+  let x = 0.5 + cx * scale;
+  let y = 0.5 + cy * scale;
+  if (d.autoCropScale > 1.001) {
+    x = 0.5 + (x - 0.5) / d.autoCropScale;
+    y = 0.5 + (y - 0.5) / d.autoCropScale;
+  }
+  return { x, y };
+}
 
 // Map a point in the (cropped) transformed frame to source UV via the inverse
 // transform. Mirrors cropTransformUV in shaders.ts exactly.
@@ -60,22 +130,48 @@ export function transformedViewCrop(forward: Mat3, pad = 1.06): CropRect {
   return { x: cx - halfW, y: cy - halfH, width: 2 * halfW, height: 2 * halfH };
 }
 
-function inside(p: Vec2, inv: Mat3): boolean {
-  const u = mat3Apply(inv, p.x, p.y);
+function inside(p: Vec2, inv: Mat3, distort?: LensDistort | null): boolean {
+  let u = mat3Apply(inv, p.x, p.y);
+  if (distort) u = lensCorrectUV(u, distort);
   return u.x >= 0 && u.x <= 1 && u.y >= 0 && u.y <= 1;
 }
 
 // Whether the (axis-aligned, transformed-frame) crop lies fully within the
-// transformed image — i.e. no empty corners.
-export function cropFitsImage(crop: CropRect, inv: Mat3): boolean {
+// transformed image — i.e. no empty corners. With lens distortion the image
+// boundary curves (and can go concave), so corners alone don't bound the rect;
+// we also sample along each edge.
+export function cropFitsImage(
+  crop: CropRect,
+  inv: Mat3,
+  distort?: LensDistort | null,
+): boolean {
   const r = crop.x + crop.width;
   const b = crop.y + crop.height;
-  return (
-    inside({ x: crop.x, y: crop.y }, inv) &&
-    inside({ x: r, y: crop.y }, inv) &&
-    inside({ x: crop.x, y: b }, inv) &&
-    inside({ x: r, y: b }, inv)
-  );
+  if (
+    !inside({ x: crop.x, y: crop.y }, inv, distort) ||
+    !inside({ x: r, y: crop.y }, inv, distort) ||
+    !inside({ x: crop.x, y: b }, inv, distort) ||
+    !inside({ x: r, y: b }, inv, distort)
+  ) {
+    return false;
+  }
+  if (!distort) return true;
+  // Curved boundary: check interior points along each edge too.
+  const SEGS = 4;
+  for (let i = 1; i < SEGS; i++) {
+    const t = i / SEGS;
+    const x = crop.x + t * crop.width;
+    const y = crop.y + t * crop.height;
+    if (
+      !inside({ x, y: crop.y }, inv, distort) ||
+      !inside({ x, y: b }, inv, distort) ||
+      !inside({ x: crop.x, y }, inv, distort) ||
+      !inside({ x: r, y }, inv, distort)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 const MIN_CROP = 0.04; // smallest crop edge, normalized to the image
@@ -157,13 +253,14 @@ export function constrainCropToImage(
   forward: Mat3,
   aspect: number,
   ratioLocked: boolean,
+  distort?: LensDistort | null,
 ): CropRect {
-  if (cropFitsImage(target, inv)) return target;
+  if (cropFitsImage(target, inv, distort)) return target;
 
   const fits = (l: number, t: number, r: number, b: number) =>
     r - l >= MIN_CROP &&
     b - t >= MIN_CROP &&
-    cropFitsImage({ x: l, y: t, width: r - l, height: b - t }, inv);
+    cropFitsImage({ x: l, y: t, width: r - l, height: b - t }, inv, distort);
 
   const tx0 = target.x;
   const ty0 = target.y;
@@ -178,6 +275,27 @@ export function constrainCropToImage(
   // space — the exact nearest valid position, for rotation and perspective
   // alike. Handled before the locked branch so locked crops move the same way.
   if (mode === "move") {
+    // Lens distortion makes the boundary non-convex, so the half-plane
+    // projection below no longer holds. Slide from the (valid) start toward the
+    // desired position as far as the whole box stays inside.
+    if (distort) {
+      const dx = target.x - start.x;
+      const dy = target.y - start.y;
+      const at = (m: number): CropRect => ({
+        x: start.x + dx * m,
+        y: start.y + dy * m,
+        width: target.width,
+        height: target.height,
+      });
+      let lo = 0;
+      let hi = 1;
+      for (let i = 0; i < 24; i++) {
+        const m = (lo + hi) / 2;
+        if (cropFitsImage(at(m), inv, distort)) lo = m;
+        else hi = m;
+      }
+      return at(lo);
+    }
     const w = target.width;
     const h = target.height;
     const Q = [
@@ -218,11 +336,22 @@ export function constrainCropToImage(
   }
 
   if (ratioLocked) {
-    // Resize shrinks about the anchor (corner opposite the handle) so the locked
-    // ratio — including a just-flipped orientation — holds at the boundary.
-    const anchorX = mode.includes("e") ? target.x : target.x + target.width;
-    const anchorY = mode.includes("s") ? target.y : target.y + target.height;
-    return fitLockedCrop(target, anchorX, anchorY, inv);
+    // Resize shrinks about the anchor so the locked ratio — including a
+    // just-flipped orientation — holds at the boundary. For a corner that anchor
+    // is the opposite corner; for an edge it's the opposite edge's midpoint, so
+    // shrinking keeps the perpendicular axis centred (matching applyDrag).
+    let anchorX: number, anchorY: number;
+    if (mode === "e" || mode === "w") {
+      anchorX = mode === "e" ? target.x : target.x + target.width;
+      anchorY = target.y + target.height / 2;
+    } else if (mode === "n" || mode === "s") {
+      anchorX = target.x + target.width / 2;
+      anchorY = mode === "s" ? target.y : target.y + target.height;
+    } else {
+      anchorX = mode.includes("e") ? target.x : target.x + target.width;
+      anchorY = mode.includes("s") ? target.y : target.y + target.height;
+    }
+    return fitLockedCrop(target, anchorX, anchorY, inv, distort);
   }
 
   // Free resize: coordinate descent from the (valid) start crop toward the
@@ -248,8 +377,9 @@ export function fitLockedCrop(
   anchorX: number,
   anchorY: number,
   inv: Mat3,
+  distort?: LensDistort | null,
 ): CropRect {
-  if (cropFitsImage(target, inv)) return target;
+  if (cropFitsImage(target, inv, distort)) return target;
   const at = (m: number): CropRect => ({
     x: anchorX + (target.x - anchorX) * m,
     y: anchorY + (target.y - anchorY) * m,
@@ -260,7 +390,7 @@ export function fitLockedCrop(
   let hi = 1;
   for (let i = 0; i < 24; i++) {
     const m = (lo + hi) / 2;
-    if (cropFitsImage(at(m), inv)) lo = m;
+    if (cropFitsImage(at(m), inv, distort)) lo = m;
     else hi = m;
   }
   return at(lo);
@@ -268,8 +398,12 @@ export function fitLockedCrop(
 
 // Shrink the crop about its center to the largest size that still fits the
 // transformed image. Returns it unchanged when it already fits.
-export function fitCropToImage(crop: CropRect, inv: Mat3): CropRect {
-  if (cropFitsImage(crop, inv)) return crop;
+export function fitCropToImage(
+  crop: CropRect,
+  inv: Mat3,
+  distort?: LensDistort | null,
+): CropRect {
+  if (cropFitsImage(crop, inv, distort)) return crop;
   const cx = crop.x + crop.width / 2;
   const cy = crop.y + crop.height / 2;
   let lo = 0;
@@ -279,7 +413,7 @@ export function fitCropToImage(crop: CropRect, inv: Mat3): CropRect {
     const w = crop.width * m;
     const h = crop.height * m;
     const c2 = { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
-    if (cropFitsImage(c2, inv)) lo = m;
+    if (cropFitsImage(c2, inv, distort)) lo = m;
     else hi = m;
   }
   const w = crop.width * lo;
@@ -293,6 +427,7 @@ export function fitCropToImage(crop: CropRect, inv: Mat3): CropRect {
 export function maxCropForTransform(
   inv: Mat3,
   cropAspect: number,
+  distort?: LensDistort | null,
 ): CropRect {
   const full: CropRect = cropAspect > 0
     ? computeCropForAspect(cropAspect, 1)
@@ -300,5 +435,6 @@ export function maxCropForTransform(
   return fitCropToImage(
     { x: 0.5 - full.width / 2, y: 0.5 - full.height / 2, width: full.width, height: full.height },
     inv,
+    distort,
   );
 }

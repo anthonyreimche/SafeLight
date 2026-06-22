@@ -27,6 +27,11 @@ interface UIState {
   gridSize: number;
   setGridSize: (size: number) => void;
 
+  // Live column count of the grid, published by LibraryGrid's VirtualGrid so the
+  // ↑/↓ shortcuts can jump a whole row. 1 in list view (and before first layout).
+  gridColumns: number;
+  setGridColumns: (n: number) => void;
+
   // Modules currently popped out into their own windows (main-window view).
   detached: Set<AppModule>;
   markDetached: (module: AppModule) => void;
@@ -58,6 +63,9 @@ export const useUIStore = create<UIState>((set) => ({
 
   gridSize: getSettings().defaultGridSize,
   setGridSize: (size) => set({ gridSize: size }),
+
+  gridColumns: 1,
+  setGridColumns: (n) => set((s) => (s.gridColumns === n ? s : { gridColumns: n })),
 
   detached: new Set<AppModule>(),
   markDetached: (module) =>

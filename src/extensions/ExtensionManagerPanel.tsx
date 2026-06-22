@@ -724,7 +724,7 @@ function ExtensionCard({
           )}
         </div>
       </button>
-      <div className="flex items-center justify-between gap-2 px-2 pb-2">
+      <div className="mt-auto flex items-center justify-between gap-2 px-2 pb-2">
         {cat !== "Other" ? (
           <span className="rounded-full bg-surface-3 px-1.5 py-0.5 text-[9px] text-text-muted">
             {cat}

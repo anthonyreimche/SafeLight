@@ -16,8 +16,26 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { visiblePhotos } from "@/modules/library/visible-photos";
-import { getSettings } from "@/state/settings-store";
+import { getSettings, useSettings } from "@/state/settings-store";
 import { usePipelineStore } from "@/extensions/pipelines";
+
+// Resolve the colour actually painted behind the image (the canvas surround) to
+// linear-display RGB in 0..1, by reading the surround element's computed
+// background. Reading the DOM rather than re-deriving from settings keeps the
+// crop-mode margin matching every case at once — theme surface, the fixed
+// surround override, and color-assessment grey. Falls back to the legacy dark.
+function surroundRGB(): [number, number, number] {
+  if (typeof document !== "undefined") {
+    const el = document.querySelector("[data-canvas-surround]");
+    if (el) {
+      const m = getComputedStyle(el).backgroundColor.match(/[\d.]+/g);
+      if (m && m.length >= 3) {
+        return [Number(m[0]) / 255, Number(m[1]) / 255, Number(m[2]) / 255];
+      }
+    }
+  }
+  return [0.04, 0.04, 0.04];
+}
 
 interface RendererStatus {
   supported: boolean;
@@ -61,10 +79,16 @@ export function useDevelopRenderer(
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   const cropping = useDevelopStore((s) => s.cropping);
   const showClipping = useDevelopStore((s) => s.showClipping);
+  // Drives the crop-mode margin colour (canvas surround). Read reactively so the
+  // margin tracks the assessment toggle and the surround override/shade live.
+  const colorAssessment = useDevelopStore((s) => s.colorAssessment);
+  const canvasSurround = useSettings((s) => s.canvasSurround);
+  const canvasSurroundOverride = useSettings((s) => s.canvasSurroundOverride);
   const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
   const hoveredMaskId = useDevelopStore((s) => s.hoveredMaskId);
   const selectedMaskId = useDevelopStore((s) => s.selectedMaskId);
   const maskTab = useDevelopStore((s) => s.maskTab);
+  const sharpenViz = useDevelopStore((s) => s.sharpenViz);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
   const pipelineId = usePipelineStore((s) => s.activeId);
 
@@ -422,6 +446,16 @@ export function useDevelopRenderer(
     bridge.render(false);
   }, [showClipping]);
 
+  // Paint out-of-image margins (crop mode, out-of-frame straighten) in the canvas
+  // surround so the photo isn't framed in a black border. Re-reads the resolved
+  // surround whenever it can change; the DOM read happens after layout commits.
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge) return;
+    bridge.setOutsideColor(surroundRGB());
+    bridge.render(false);
+  }, [colorAssessment, canvasSurround, canvasSurroundOverride]);
+
   // Coverage overlay: shown when a mask row is hovered, or when the selected
   // mask is open on the Coverage tab. Always red; the strength fades in/out.
   const vizAnim = useRef({ idx: -1, cur: 0, target: 0, raf: null as number | null });
@@ -447,6 +481,16 @@ export function useDevelopRenderer(
       if (a.raf != null) { cancelAnimationFrame(a.raf); a.raf = null; }
     };
   }, [hoveredMaskId, selectedMaskId, maskTab, params.masks]);
+
+  // Sharpening preview: while Alt/Ctrl-dragging a Detail-panel sharpening slider,
+  // the shader renders a grayscale visualization of that sub-signal. Push the mode
+  // straight through and re-render; releasing the key/drag sets it back to 0.
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge) return;
+    bridge.setSharpenViz(sharpenViz);
+    bridge.render(false);
+  }, [sharpenViz]);
 
   const setViewport = useCallback(
     (

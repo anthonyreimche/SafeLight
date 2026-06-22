@@ -3,7 +3,8 @@
 // rebindable in Preferences ▸ Shortcuts; the defaults match Lightroom:
 //
 //   1-5 rating   0 clear   P pick   X reject   U unflag
-//   6-9 color label        [ ] rotate          ← → prev / next
+//   6-9 color label        [ ] rotate
+//   ← → prev / next         ↑ ↓ up / down a grid row
 //
 // Rating/flag/label apply to the whole current selection (or the active photo
 // when nothing is multi-selected). Navigation walks the same filtered+sorted
@@ -18,8 +19,7 @@ import {
   matchAction,
   shortcutsSuspended,
 } from "@/state/keybindings-store";
-import { visiblePhotos } from "./visible-photos";
-import { gridFilterPredicates, librarySortCompare } from "@/extensions/registry";
+import { moveActivePhoto, visibleList } from "./photo-navigation";
 import { getSettings } from "@/state/settings-store";
 
 const LABELS: Record<string, ColorLabel> = {
@@ -46,16 +46,35 @@ export function useCullingShortcuts(): void {
       if (!(e.ctrlKey || e.metaKey || e.altKey) && isEditableTarget(e.target))
         return;
 
-      // ↑/↓ are fixed aliases of prev/next so grid navigation feels natural.
+      // Ctrl/Cmd+A selects every photo currently shown (active folder + filters),
+      // not the whole catalog. Skip when a text field is focused so its native
+      // select-all still works.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (e.key === "a" || e.key === "A")
+      ) {
+        if (isEditableTarget(e.target)) return;
+        e.preventDefault();
+        useCatalogStore.getState().selectAll(visibleList().map((p) => p.id));
+        return;
+      }
+
+      // ↑/↓ move a whole grid row (←/→ via photo.prev/next move one). The row
+      // stride is the grid's live column count; it's 1 in list view, so ↑/↓
+      // there walk one row at a time, exactly like ←/→.
+      const bare = !e.ctrlKey && !e.metaKey && !e.altKey;
+      if (bare && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        e.preventDefault();
+        const cols = Math.max(1, useUIStore.getState().gridColumns);
+        moveActivePhoto(e.key === "ArrowUp" ? -cols : cols);
+        return;
+      }
+
       const action =
         matchAction(e, ["Library"]) ??
-        (e.key === "ArrowUp" && !e.ctrlKey && !e.metaKey && !e.altKey
-          ? "photo.prev"
-          : e.key === "ArrowDown" && !e.ctrlKey && !e.metaKey && !e.altKey
-            ? "photo.next"
-            : e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey
-              ? "photo.remove"
-              : null);
+        (e.key === "Backspace" && bare ? "photo.remove" : null);
       if (!action) return;
 
       const catalog = useCatalogStore.getState();
@@ -121,29 +140,8 @@ export function useCullingShortcuts(): void {
       }
 
       if (action === "photo.prev" || action === "photo.next") {
-        const ui = useUIStore.getState();
-        const list = visiblePhotos(
-          catalog.photos,
-          ui.filter,
-          ui.sortField,
-          ui.sortDirection,
-          ui.activeFolder,
-          gridFilterPredicates(),
-          librarySortCompare(ui.sortField),
-        );
-        if (list.length === 0) return;
         e.preventDefault();
-        const back = action === "photo.prev";
-        const curIdx = catalog.activePhotoId
-          ? list.findIndex((p) => p.id === catalog.activePhotoId)
-          : -1;
-        let nextIdx: number;
-        if (curIdx === -1) {
-          nextIdx = back ? list.length - 1 : 0;
-        } else {
-          nextIdx = Math.max(0, Math.min(list.length - 1, curIdx + (back ? -1 : 1)));
-        }
-        catalog.select(list[nextIdx].id);
+        moveActivePhoto(action === "photo.prev" ? -1 : 1);
       }
     };
 

@@ -4,24 +4,13 @@ import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { DEFAULT_CROP, type CropRect } from "@/catalog/types";
-import { computeCropForAspect, fitCropToImage } from "@/rendering/crop-transform";
-import { buildInverseTransform, applyInsetToInverse } from "@/rendering/transform";
-import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
+import {
+  buildLensDistort,
+  computeCropForAspect,
+  fitCropToImage,
+} from "@/rendering/crop-transform";
+import { buildInverseTransform } from "@/rendering/transform";
 import { CROP_GUIDES } from "../crop-guides";
-
-function getLensCropScale(imageAspect: number): number {
-  const st = useDevelopStore.getState();
-  const lc = st.params.lensCorrection;
-  if (lc.mode === "off") return 1;
-  const lp = st.resolvedLensProfile;
-  if (lc.mode === "profile" && lp?.distortion && lc.distortionEnabled) {
-    return computeAutoCropScale(lp.distortion.model, lp.distortion.k, lc.distortion, imageAspect);
-  }
-  if (Math.abs(lc.distortion) > 0.001) {
-    return computeAutoCropScale("poly3", [0], lc.distortion, imageAspect);
-  }
-  return 1;
-}
 
 // ratio is width:height in pixels. 0 = Free (no lock); -1 = Original (locks to
 // the source image's own aspect, resolved per photo). Locked ratios can be
@@ -46,6 +35,8 @@ export function CropPanel() {
   const setCropGuide = useDevelopStore((s) => s.setCropGuide);
   const straighten = useDevelopStore((s) => s.params.straighten);
   const transform = useDevelopStore((s) => s.params.transform);
+  const lensCorrection = useDevelopStore((s) => s.params.lensCorrection);
+  const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
   const crop = useDevelopStore((s) => s.params.crop);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
@@ -75,9 +66,11 @@ export function CropPanel() {
       setCropAspect(0);
       return;
     }
-    // Original (-1) resolves to the source image's own aspect.
+    // Original (-1) resolves to the source image's own aspect. Keep the -1
+    // sentinel in state so "Original" stays selected across photos (and its
+    // ratio re-resolves per photo) rather than freezing this photo's aspect.
     const resolved = ratio === -1 ? imageAspect : ratio;
-    setCropAspect(resolved);
+    setCropAspect(ratio === -1 ? -1 : resolved);
     // computeCropForAspect sizes the crop for the unrotated image; if the photo
     // is straightened, shrink it (ratio-preserving) so it fits the rotated
     // image and the handles stay inside.
@@ -85,10 +78,8 @@ export function CropPanel() {
     if (constrainCrop) {
       next = fitCropToImage(
         next,
-        applyInsetToInverse(
-          buildInverseTransform(straighten, transform, imageAspect),
-          getLensCropScale(imageAspect),
-        ),
+        buildInverseTransform(straighten, transform, imageAspect),
+        buildLensDistort(lensCorrection, resolvedLensProfile, imageAspect),
       );
     }
     setParam("crop", next);
@@ -97,12 +88,12 @@ export function CropPanel() {
 
   const aspectActive = (ratio: number) => {
     if (ratio === 0) return cropAspect === 0;
-    const resolved = ratio === -1 ? imageAspect : ratio;
-    return cropAspect !== 0 && Math.abs(cropAspect - resolved) < 1e-4;
+    if (ratio === -1) return cropAspect === -1;
+    return cropAspect > 0 && Math.abs(cropAspect - ratio) < 1e-4;
   };
 
   const resetCrop = () => {
-    setCropAspect(0);
+    setCropAspect(-1);
     setParam("crop", { ...DEFAULT_CROP });
     setParam("straighten", 0);
     commitEdit("Crop reset");
@@ -189,10 +180,8 @@ export function CropPanel() {
                 "crop",
                 fitCropToImage(
                   baseCropRef.current,
-                  applyInsetToInverse(
-                    buildInverseTransform(s, transform, imageAspect),
-                    getLensCropScale(imageAspect),
-                  ),
+                  buildInverseTransform(s, transform, imageAspect),
+                  buildLensDistort(lensCorrection, resolvedLensProfile, imageAspect),
                 ),
               );
             }

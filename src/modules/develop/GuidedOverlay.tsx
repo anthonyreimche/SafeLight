@@ -2,6 +2,7 @@ import { useRef, useCallback } from "react";
 import type { CropRect, GuidedLine } from "@/catalog/types";
 import type { Mat3 } from "@/rendering/transform";
 import { mat3Apply } from "@/rendering/transform";
+import { resolveCursorCss } from "@/state/cursor-store";
 
 interface Rect {
   x: number;
@@ -188,7 +189,7 @@ export function GuidedOverlay({ rect, forward, inv, crop, lines, onChange, onCom
         width: "100%",
         height: "100%",
         pointerEvents: "all",
-        cursor: "crosshair",
+        cursor: resolveCursorCss("crosshair"),
       }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
@@ -219,7 +220,7 @@ export function GuidedOverlay({ rect, forward, inv, crop, lines, onChange, onCom
               fill={HANDLE_COLOR}
               stroke="rgba(0,0,0,0.4)"
               strokeWidth={1.5}
-              style={{ cursor: "grab", pointerEvents: "all" }}
+              style={{ cursor: resolveCursorCss("pan"), pointerEvents: "all" }}
             />
             <circle
               cx={p2.sx}
@@ -228,10 +229,10 @@ export function GuidedOverlay({ rect, forward, inv, crop, lines, onChange, onCom
               fill={HANDLE_COLOR}
               stroke="rgba(0,0,0,0.4)"
               strokeWidth={1.5}
-              style={{ cursor: "grab", pointerEvents: "all" }}
+              style={{ cursor: resolveCursorCss("pan"), pointerEvents: "all" }}
             />
             <g
-              style={{ cursor: "pointer" }}
+              style={{ cursor: resolveCursorCss("pointer") }}
               onClick={(e) => {
                 e.stopPropagation();
                 removeLine(i);

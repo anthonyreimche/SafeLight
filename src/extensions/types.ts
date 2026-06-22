@@ -564,6 +564,26 @@ export interface SlotContribution {
   order?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Cursors (generic — a shared cursor vocabulary + custom cursor images)
+// ---------------------------------------------------------------------------
+
+/** A named cursor an extension contributes. Supply either `css` (a native CSS
+ *  cursor value, e.g. "crosshair") OR `image` (inline `<svg…>` markup or an
+ *  image/data URL) with an optional hotspot. Reference it by `id` from
+ *  `api.develop.setCanvasCursor`. Note: image cursors cap at ~128×128 px and an
+ *  image URL is subject to the app CSP (inline SVG is encoded to a data URL and
+ *  always allowed). The `fallback` keyword is shown if the image can't load. */
+export interface CursorContribution {
+  /** Globally unique, e.g. "my-ext.measure". */
+  id: string;
+  css?: string;
+  image?: string;
+  hotspotX?: number;
+  hotspotY?: number;
+  fallback?: string;
+}
+
 export interface SafelightAPI {
   version: 1;
   extensionId: string;
@@ -619,6 +639,9 @@ export interface SafelightAPI {
   registerGridFilter(c: GridFilterContribution): void;
   /** Render a component into a named core UI slot (e.g. the Library toolbar). */
   registerSlot(c: SlotContribution): void;
+  /** Register a named cursor (a shared semantic token or a custom image) usable
+   *  via api.develop.setCanvasCursor. Re-registering the same id replaces it. */
+  registerCursor(c: CursorContribution): void;
   /** Add a sort order to the Library toolbar's sort dropdown. */
   registerLibrarySort(c: LibrarySortContribution): void;
   /** Persisted per-extension key/value settings. */
@@ -660,6 +683,17 @@ export interface SafelightAPI {
     captureFrame(
       params: import("@/catalog/types").DevelopParams,
     ): Promise<ImageBitmap>;
+    /** Drive the Develop-canvas cursor while a tool is active. Pass a registered
+     *  cursor id (built-in token or one from registerCursor), an inline spec, or
+     *  a raw CSS value; pass null to clear. Higher `priority` wins when several
+     *  tools request at once (default 10). Returns a release fn — call it (or
+     *  pass null) on tool deactivate; the request is also swept if the extension
+     *  unloads. The built-in zoom/pan/pick cursors take over during an active
+     *  drag or pick, so a passive tool cursor never fights a live gesture. */
+    setCanvasCursor(
+      cursor: string | CursorContribution | null,
+      opts?: { priority?: number },
+    ): () => void;
   };
 }
 

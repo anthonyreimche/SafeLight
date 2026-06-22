@@ -41,6 +41,11 @@ import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } fro
 import { applyTheme, initThemes, useThemeStore } from "./themes";
 import { captureDevelopFrame, useDevelopOverlay } from "./develop-host";
 import {
+  contributionToSpec,
+  registerCursor,
+  setCanvasCursor,
+} from "@/state/cursor-store";
+import {
   checkAllExtensionUpdates,
   initEnablement,
   loadBuiltins,
@@ -88,6 +93,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerPresetImporter: (c) => registerPresetImporter(extensionId, c),
     registerGridFilter: (c) => registerGridFilter(extensionId, c),
     registerSlot: (c) => registerSlot(extensionId, c),
+    registerCursor: (c) => registerCursor(extensionId, c),
     registerLibrarySort: (c) => registerLibrarySort(extensionId, c),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
@@ -115,7 +121,18 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     preferences: { open: openPreferences, close: closePreferences, toggle: togglePreferences },
     navigation: { goTo: (module) => useUIStore.getState().setActiveModule(module) },
     keybindings: { getBinding },
-    develop: { useDevelopOverlay, captureFrame: captureDevelopFrame },
+    develop: {
+      useDevelopOverlay,
+      captureFrame: captureDevelopFrame,
+      setCanvasCursor: (cursor, opts) =>
+        setCanvasCursor(
+          extensionId,
+          cursor == null || typeof cursor === "string"
+            ? cursor
+            : contributionToSpec(cursor),
+          opts,
+        ),
+    },
   };
 }
 

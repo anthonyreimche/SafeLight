@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from "react";
 import { isEditableTarget, shortcutsSuspended } from "@/state/keybindings-store";
+import { resolveCursorCss, useCanvasCursor } from "@/state/cursor-store";
 
 interface ViewportImageProps {
   canvasRef: RefObject<HTMLCanvasElement | null>;
@@ -105,6 +106,9 @@ export function ViewportImage({
   const [frame, setFrame] = useState({ w: 0, h: 0 });
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
+  // Whether the pointer is currently over the displayed image (vs. the surround),
+  // so the cursor can show zoom over the image and a plain pointer elsewhere.
+  const [hoverImage, setHoverImage] = useState(false);
   // True while a zoom-gesture key (Ctrl/⌘ or Space) is held. Used to make a
   // zoomable overlay click-through so the pointer reaches the pan/zoom layer.
   const [zoomGesture, setZoomGesture] = useState(false);
@@ -193,8 +197,8 @@ export function ViewportImage({
   const effOffset =
     staticFit || zoom == null ? centered(fitScale) : clampOffset(offset, zoom);
 
-  const stateRef = useRef({ effScale, effOffset });
-  stateRef.current = { effScale, effOffset };
+  const stateRef = useRef({ effScale, effOffset, imgW, imgH });
+  stateRef.current = { effScale, effOffset, imgW, imgH };
 
   // Emit the visible window (normalized image coords) + device-pixel output size
   // whenever the zoomed view moves, so the renderer can draw it crisply at 1:1.
@@ -280,6 +284,9 @@ export function ViewportImage({
       onPick(bx, by);
       return;
     }
+    // Only toggle zoom when the click lands on the displayed image — clicks on
+    // the letterbox/surround around a fitted image do nothing.
+    if (!pointOnImage(clientX, clientY)) return;
     zoomToggleAt(clientX - rect.left, clientY - rect.top);
   };
 
@@ -418,7 +425,19 @@ export function ViewportImage({
     };
   };
 
+  // Test whether a frame-local point falls on the displayed image rect.
+  const pointOnImage = (clientX: number, clientY: number) => {
+    const rect = frameRef.current?.getBoundingClientRect();
+    if (!rect) return false;
+    const fx = clientX - rect.left;
+    const fy = clientY - rect.top;
+    const { effScale: s, effOffset: o, imgW: iw, imgH: ih } = stateRef.current;
+    return fx >= o.x && fx <= o.x + iw * s && fy >= o.y && fy <= o.y + ih * s;
+  };
+
   const onPointerMove = (e: ReactPointerEvent) => {
+    setHoverImage(pointOnImage(e.clientX, e.clientY));
+
     // Drag picking mode
     if (pickDragRef.current.active && onPickDrag) {
       const rect = frameRef.current?.getBoundingClientRect();
@@ -464,15 +483,29 @@ export function ViewportImage({
     handleClick(e.clientX, e.clientY);
   };
 
-  const cursor = onPick || onPickDrag
-    ? "crosshair"
+  // The canvas's own cursor intent, as a semantic token (see cursor-store).
+  const baseToken = onPick || onPickDrag
+    ? hoverImage
+      ? "pick"
+      : "default"
     : staticFit
       ? "default"
       : dragging
-        ? "grabbing"
-        : zoom == null
-          ? "zoom-in"
-          : "zoom-out";
+        ? "panning"
+        : !hoverImage
+          ? "default"
+          : zoom == null
+            ? "zoom-in"
+            : "zoom-out";
+
+  // An extension tool can drive the canvas cursor, but a live built-in gesture
+  // (active pan/pick) or a locked crop view always keeps its own cursor so a
+  // passive tool cursor never fights a gesture in progress.
+  const extCursor = useCanvasCursor();
+  const baseOwns = dragging || staticFit || !!onPick || !!onPickDrag;
+  const cursor = baseOwns
+    ? resolveCursorCss(baseToken)
+    : extCursor ?? resolveCursorCss(baseToken);
 
   // In ROI mode the worker has already rendered the visible window, so the canvas
   // simply fills the frame 1:1 (no CSS scale). Otherwise the fit/zoom view scales
@@ -513,6 +546,7 @@ export function ViewportImage({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerLeave={() => setHoverImage(false)}
     >
       {showMat && (
         <div

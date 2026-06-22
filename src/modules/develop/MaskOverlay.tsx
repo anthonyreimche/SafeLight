@@ -13,6 +13,7 @@ import { mat3Apply, type Mat3 } from "@/rendering/transform";
 import { useDevelopStore } from "@/state/develop-store";
 import { findHealSource, healColorOffset } from "@/rendering/heal-source";
 import { sampleLinearRGB } from "@/rendering/sample-pixel";
+import { resolveCursorCss } from "@/state/cursor-store";
 
 interface Rect {
   x: number;
@@ -809,7 +810,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
   return (
     <div
       className="absolute inset-0"
-      style={{ cursor: "crosshair", touchAction: "none" }}
+      style={{ cursor: resolveCursorCss("crosshair"), touchAction: "none" }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

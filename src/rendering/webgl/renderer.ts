@@ -645,10 +645,15 @@ export class WebGLRenderer {
   private autoCropScale = 1;
   private asShotTemperature = 6500;
   private showClipping = 0;
+  // Display-space colour for out-of-image pixels (crop-mode margins). Defaults to
+  // the legacy neutral dark; the develop view sets it to the canvas surround.
+  private outsideColor: [number, number, number] = [0.04, 0.04, 0.04];
   // Coverage-visualization overlay: -1 = off, else the mask index to tint.
   private vizMask = -1;
   private vizColor: [number, number, number] = [0.9, 0.25, 0.25];
   private vizStrength = 0.5;
+  // Sharpening preview mode (Alt/Ctrl-drag): 0 = off, 1 = masking, 2 = detail, 3 = luma.
+  private sharpenViz = 0;
   private hasImage = false;
   private imageWidth = 0;
   private imageHeight = 0;
@@ -963,6 +968,7 @@ export class WebGLRenderer {
       "uOutMatrix",
       "uCrop",
       "uInvTransform",
+      "uOutsideColor",
       "uViewport",
       "uLinear",
       "uIsFallbackPreview",
@@ -972,6 +978,7 @@ export class WebGLRenderer {
       "uVizMask",
       "uVizColor",
       "uVizStrength",
+      "uSharpenViz",
       "uExposure",
       "uContrast",
       "uHighlights",
@@ -1168,6 +1175,11 @@ export class WebGLRenderer {
     // cached develop preview) rather than a camera-rendered image. Such a source
     // still needs the default base tone curve, same as the live float decode.
     baseCurveForBitmap = false,
+    // Opt-in (thumb renderer only): cap an oversized srgb16 source to maxEdge.
+    // The fast norm16 path uploads srgb16 at full resolution; for thumbnails that
+    // wastes GPU memory, so route oversized srgb16 through the capping float path
+    // instead. The main renderer leaves this off to keep full-res zoom detail.
+    capSrgb16 = false,
   ) {
     const gl = this.gl;
     this.maxEdge = maxEdge;
@@ -1188,7 +1200,10 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     let mipsBuilt = false;
     let uploaded = false;
-    if ("kind" in image && image.kind === "srgb16" && this.haveNorm16) {
+    const srgb16Oversized =
+      "kind" in image && image.kind === "srgb16" &&
+      Math.max(image.width, image.height) > maxEdge;
+    if ("kind" in image && image.kind === "srgb16" && this.haveNorm16 && !(capSrgb16 && srgb16Oversized)) {
       // Cached develop preview, GPU path — upload the 16-bit sRGB data straight to a
       // normalized RGBA16 texture and let the shader's srgbToLinear (uLinear == false)
       // do the decode while sampling. No per-sample CPU math, and the texture is half
@@ -1334,12 +1349,14 @@ export class WebGLRenderer {
     // source is re-bound afterwards — used to prefetch neighbours without
     // disturbing the displayed image.
     bind = true,
+    // Cap oversized srgb16 to maxEdge (thumb renderer only — see setImage).
+    capSrgb16 = false,
   ) {
     const prevKey = this.currentSourceKey;
     // Drop any stale entry for this key (e.g. re-decode after an edit changed the
     // pixels) so we don't leak its texture.
     this.dropSource(key);
-    this.setImage(image, maxEdge, isFallbackPreview, baseCurveForBitmap);
+    this.setImage(image, maxEdge, isFallbackPreview, baseCurveForBitmap, capSrgb16);
     // setImage built into this.imageTexture and marked it owned; hand it to the cache.
     const entry: SourceEntry = {
       tex: this.imageTexture,
@@ -1533,11 +1550,22 @@ export class WebGLRenderer {
     this.showClipping = mode & 3;
   }
 
+  // Colour (display-space, 0..1) painted into out-of-image margins, so crop mode
+  // frames the photo in the canvas surround instead of a black border.
+  setOutsideColor(rgb: [number, number, number]) {
+    this.outsideColor = rgb;
+  }
+
   // Drive the coverage overlay. index < 0 disables it; strength animates the fade.
   setMaskViz(index: number, color: [number, number, number], strength: number) {
     this.vizMask = index;
     this.vizColor = color;
     this.vizStrength = strength;
+  }
+
+  // Sharpening preview mode: 0 = off, 1 = masking, 2 = detail, 3 = luma.
+  setSharpenViz(mode: number) {
+    this.sharpenViz = mode;
   }
 
   setLensProfile(profile: import("@/lens-profiles/types").ResolvedProfile | null) {
@@ -1713,9 +1741,11 @@ export class WebGLRenderer {
       this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
     );
     gl.uniform1i(u.uShowClipping, this.showClipping);
+    gl.uniform3f(u.uOutsideColor, this.outsideColor[0], this.outsideColor[1], this.outsideColor[2]);
     gl.uniform1i(u.uVizMask, this.vizMask);
     gl.uniform3f(u.uVizColor, this.vizColor[0], this.vizColor[1], this.vizColor[2]);
     gl.uniform1f(u.uVizStrength, this.vizStrength);
+    gl.uniform1i(u.uSharpenViz, this.sharpenViz);
     gl.uniform1f(u.uExposure, p.exposure);
     gl.uniform1f(u.uContrast, p.contrast);
     gl.uniform1f(u.uHighlights, p.highlights);
@@ -2181,6 +2211,7 @@ export class WebGLRenderer {
 
     gl.uniform1i(this.uniforms.uShowClipping, 0);
     gl.uniform1i(this.uniforms.uVizMask, -1);
+    gl.uniform1i(this.uniforms.uSharpenViz, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
     gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -2297,6 +2328,7 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     gl.uniform1i(u.uShowClipping, 0);
     gl.uniform1i(u.uVizMask, -1);
+    gl.uniform1i(u.uSharpenViz, 0);
     gl.viewport(0, 0, w, h);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     const data = new Uint8Array(w * h * 4);

@@ -29,6 +29,7 @@ import {
   unregisterStageParams,
 } from "./param-registry";
 import { unregisterExtensionActions } from "@/state/keybindings-store";
+import { clearExtensionCursors } from "@/state/cursor-store";
 
 export interface RegisteredPanel extends PanelContribution {
   extensionId: string;
@@ -421,6 +422,7 @@ export function unregisterExtension(extensionId: string): void {
     librarySorts: drop(s.librarySorts),
   }));
   unregisterExtensionActions(extensionId);
+  clearExtensionCursors(extensionId);
 }
 
 export function panelsForSlot(

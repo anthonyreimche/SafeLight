@@ -17,6 +17,7 @@ import {
   matchExtensionAction,
   shortcutsSuspended,
 } from "@/state/keybindings-store";
+import { moveActivePhoto } from "@/modules/library/photo-navigation";
 import { togglePreferences } from "@/ui/components/PreferencesDialog";
 import { toggleExtensions } from "@/ui/components/ExtensionsDialog";
 import { popEscapeHandler } from "@/ui/escape-stack";
@@ -58,6 +59,9 @@ export function useKeyboardShortcuts() {
         } else if (d.activeTool !== "none") {
           e.preventDefault();
           d.setActiveTool("none");
+          // Leaving the Heal tool also drops the selected spot, mirroring the
+          // panel's "Done" button (which deselects so the list collapses).
+          d.selectSpot(null);
         } else if (d.selectedMaskId || d.selectedComponentId) {
           // Tool already exited but a mask is still selected: a second Esc clears
           // the selection, collapsing the mask editor and coverage overlay.
@@ -83,6 +87,22 @@ export function useKeyboardShortcuts() {
       // handler; Develop only has this global one). Bare brackets bind solely to
       // rotate, so there's no conflict with the Shift+[ ] feather shortcuts.
       if (inDevelop) {
+        // ←/→ step to the prev/next photo (same order the grid shows), so you
+        // can cull through a shoot without leaving Develop. A focused slider
+        // owns its own arrow keys, so leave range inputs alone.
+        if (
+          (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.altKey &&
+          !e.shiftKey &&
+          !(e.target instanceof HTMLInputElement && e.target.type === "range")
+        ) {
+          e.preventDefault();
+          moveActivePhoto(e.key === "ArrowLeft" ? -1 : 1);
+          return;
+        }
+
         const rot = matchAction(e, ["Library"]);
         if (rot === "photo.rotateCCW" || rot === "photo.rotateCW") {
           const cat = useCatalogStore.getState();

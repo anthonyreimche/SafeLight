@@ -94,6 +94,18 @@ export class RenderBridge {
         }
         break;
       }
+      case "thumbnailError": {
+        // Reject the pending request (resolver(null) -> renderThumbnailAsync
+        // rejects) so the caller stops awaiting and can retry on the next edit,
+        // then surface the underlying cause for diagnosis.
+        const resolver = this.thumbResolvers.get(msg.requestId);
+        if (resolver) {
+          this.thumbResolvers.delete(msg.requestId);
+          resolver(null);
+        }
+        this.onError?.(`thumbnail render failed: ${msg.message}`);
+        break;
+      }
       case "sourceBound": {
         const resolver = this.sourceBoundResolvers.get(msg.reqId);
         if (resolver) {
@@ -356,10 +368,21 @@ export class RenderBridge {
     this.post({ cmd: "setShowClipping", mode });
   }
 
+  // Colour (display-space, 0..1) for out-of-image crop-mode margins, so the
+  // develop view frames the photo in the canvas surround rather than black.
+  setOutsideColor(rgb: [number, number, number]) {
+    this.post({ cmd: "setOutsideColor", rgb });
+  }
+
   // Coverage overlay: tint the given mask index (or -1 = off) in `color` at
   // `strength` (animated fade).
   setMaskViz(index: number, color: [number, number, number], strength: number) {
     this.post({ cmd: "setMaskViz", index, color, strength });
+  }
+
+  // Sharpening preview (Alt/Ctrl-drag): 0 = off, 1 = masking, 2 = detail, 3 = luma.
+  setSharpenViz(mode: number) {
+    this.post({ cmd: "setSharpenViz", mode });
   }
 
   computeHistogram(wantExtended?: boolean) {

@@ -47,7 +47,9 @@ export type WorkerRequest =
       quality?: number;
     }
   | { cmd: "setShowClipping"; mode: number }
+  | { cmd: "setOutsideColor"; rgb: [number, number, number] }
   | { cmd: "setMaskViz"; index: number; color: [number, number, number]; strength: number }
+  | { cmd: "setSharpenViz"; mode: number }
   | { cmd: "computeHistogram"; wantExtended?: boolean }
   | { cmd: "setStages"; stages: ProcessingStageContribution[] }
   | { cmd: "setPipeline"; pipeline: ResolvedPipeline }
@@ -87,6 +89,11 @@ export type WorkerResponse =
   | { type: "histogram"; histogram: HistogramData }
   | { type: "thumbnail"; requestId: string; blob: Blob }
   | { type: "thumbnailMiss"; requestId: string; key: string }
+  // A thumbnail render failed (threw, or convertToBlob rejected). Carries the
+  // requestId so the bridge can settle THAT pending promise — without this a
+  // failure falls through to the generic "error" response, which isn't tied to a
+  // request, so renderThumbnailAsync hangs forever and wedges the caller.
+  | { type: "thumbnailError"; requestId: string; message: string }
   | { type: "sourceBound"; reqId: number; hit: boolean }
   | { type: "captured"; reqId: number; bitmap: ImageBitmap }
   | { type: "hasSource"; reqId: number; has: boolean }
@@ -241,23 +248,28 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       }
 
       case "renderThumbnail": {
-        const tr = ensureThumbRenderer();
-        const img = msg.image;
-        if (img.kind === "bitmap") {
-          tr.setImage(img.bitmap, msg.maxEdge);
-        } else {
-          tr.setImage(img, msg.maxEdge);
+        try {
+          const tr = ensureThumbRenderer();
+          const img = msg.image;
+          if (img.kind === "bitmap") {
+            tr.setImage(img.bitmap, msg.maxEdge);
+          } else {
+            tr.setImage(img, msg.maxEdge);
+          }
+          tr.setAsShotTemperature(msg.asShotTemperature);
+          tr.setParams(msg.params);
+          tr.render();
+          if (!thumbCanvas) throw new Error("thumb canvas unavailable");
+          const quality = msg.quality ?? 0.8;
+          // Always settle the request — including the convertToBlob rejection path
+          // (no catch here previously) — so the caller's promise never hangs.
+          thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
+            (blob) => respond({ type: "thumbnail", requestId: msg.requestId, blob }),
+            (err) => respondThumbError(msg.requestId, err),
+          );
+        } catch (err) {
+          respondThumbError(msg.requestId, err);
         }
-        tr.setAsShotTemperature(msg.asShotTemperature);
-        tr.setParams(msg.params);
-        tr.render();
-        if (!thumbCanvas) break;
-        const quality = msg.quality ?? 0.8;
-        thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
-          (blob) => {
-            respond({ type: "thumbnail", requestId: msg.requestId, blob });
-          },
-        );
         break;
       }
 
@@ -266,8 +278,18 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         break;
       }
 
+      case "setOutsideColor": {
+        if (renderer) renderer.setOutsideColor(msg.rgb);
+        break;
+      }
+
       case "setMaskViz": {
         if (renderer) renderer.setMaskViz(msg.index, msg.color, msg.strength);
+        break;
+      }
+
+      case "setSharpenViz": {
+        if (renderer) renderer.setSharpenViz(msg.mode);
         break;
       }
 
@@ -303,10 +325,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         if (!target) break;
         const img = msg.image;
         const bind = msg.bind ?? true;
+        // Cap oversized srgb16 to maxEdge for the thumb renderer so it doesn't hold
+        // a full-res source; the main renderer keeps full resolution for zoom.
+        const capSrgb16 = msg.target === "thumb";
         if (img.kind === "bitmap") {
-          target.uploadSource(msg.key, img.bitmap, msg.maxEdge, msg.isFallbackPreview, msg.baseCurveForBitmap, bind);
+          target.uploadSource(msg.key, img.bitmap, msg.maxEdge, msg.isFallbackPreview, msg.baseCurveForBitmap, bind, capSrgb16);
         } else {
-          target.uploadSource(msg.key, img, msg.maxEdge, msg.isFallbackPreview, false, bind);
+          target.uploadSource(msg.key, img, msg.maxEdge, msg.isFallbackPreview, false, bind, capSrgb16);
         }
         break;
       }
@@ -330,21 +355,24 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       }
 
       case "renderThumbnailFromSource": {
-        const tr = ensureThumbRenderer();
-        if (!tr.bindSource(msg.key)) {
-          respond({ type: "thumbnailMiss", requestId: msg.requestId, key: msg.key });
-          break;
+        try {
+          const tr = ensureThumbRenderer();
+          if (!tr.bindSource(msg.key)) {
+            respond({ type: "thumbnailMiss", requestId: msg.requestId, key: msg.key });
+            break;
+          }
+          tr.setAsShotTemperature(msg.asShotTemperature);
+          tr.setParams(msg.params);
+          tr.render();
+          if (!thumbCanvas) throw new Error("thumb canvas unavailable");
+          const quality = msg.quality ?? 0.8;
+          thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
+            (blob) => respond({ type: "thumbnail", requestId: msg.requestId, blob }),
+            (err) => respondThumbError(msg.requestId, err),
+          );
+        } catch (err) {
+          respondThumbError(msg.requestId, err);
         }
-        tr.setAsShotTemperature(msg.asShotTemperature);
-        tr.setParams(msg.params);
-        tr.render();
-        if (!thumbCanvas) break;
-        const quality = msg.quality ?? 0.8;
-        thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
-          (blob) => {
-            respond({ type: "thumbnail", requestId: msg.requestId, blob });
-          },
-        );
         break;
       }
 
@@ -387,4 +415,14 @@ function respond(msg: WorkerResponse, transfer?: Transferable[]) {
   } else {
     workerScope.postMessage(msg);
   }
+}
+
+// Settle a thumbnail request that failed, so the caller's promise rejects (and
+// its in-flight bookkeeping clears) instead of hanging on a lost requestId.
+function respondThumbError(requestId: string, err: unknown) {
+  respond({
+    type: "thumbnailError",
+    requestId,
+    message: err instanceof Error ? err.message : String(err),
+  });
 }

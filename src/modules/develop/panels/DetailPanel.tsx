@@ -11,13 +11,16 @@ interface SliderDef {
   min: number;
   max: number;
   step: number;
+  // Alt/Ctrl-drag grayscale preview mode (see develop-store.sharpenViz):
+  // 1 = masking, 2 = detail, 3 = luminance. Omitted = no preview.
+  viz?: number;
 }
 
 const SHARPENING_SLIDERS: SliderDef[] = [
-  { key: "sharpening",     label: "Amount",  min: 0, max: 150, step: 1   },
-  { key: "sharpenRadius",  label: "Radius",  min: 1, max: 3,   step: 0.1 },
-  { key: "sharpenDetail",  label: "Detail",  min: 0, max: 100, step: 1   },
-  { key: "sharpenMasking", label: "Masking", min: 0, max: 100, step: 1   },
+  { key: "sharpening",     label: "Amount",  min: 0, max: 150, step: 1,   viz: 3 },
+  { key: "sharpenRadius",  label: "Radius",  min: 1, max: 3,   step: 0.1, viz: 3 },
+  { key: "sharpenDetail",  label: "Detail",  min: 0, max: 100, step: 1,   viz: 2 },
+  { key: "sharpenMasking", label: "Masking", min: 0, max: 100, step: 1,   viz: 1 },
 ];
 
 const LUM_NR_SLIDERS: SliderDef[] = [
@@ -44,6 +47,7 @@ function SliderGroup({
   const params = useDevelopStore((s) => s.params);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
+  const setSharpenViz = useDevelopStore((s) => s.setSharpenViz);
 
   return (
     <div>
@@ -63,6 +67,11 @@ function SliderGroup({
             step={s.step}
             onChange={(v) => setParam(s.key, v)}
             onCommit={() => commitEdit(title ? `${title} ${s.label}` : s.label)}
+            onModifierPreview={
+              s.viz
+                ? (active) => setSharpenViz(active ? s.viz! : 0)
+                : undefined
+            }
           />
         ))}
       </div>

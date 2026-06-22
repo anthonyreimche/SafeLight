@@ -144,6 +144,32 @@ export async function scanDevFolder(): Promise<void> {
   }
 
   useDevFolder.setState({ scanning: true, error: null });
+
+  // The chosen folder can itself be one extension (its own safelight.json at the
+  // root — the natural case when pointing at a single extension's repo), or a
+  // parent whose immediate subfolders are each an extension (mirroring the
+  // <userData>/plugins layout). Prefer the folder-is-an-extension reading: if a
+  // root manifest exists, that's the developer's intent, so load just that one.
+  const rootManifest = join(folder, "safelight.json");
+  if (await native.fs.exists(rootManifest).catch(() => false)) {
+    const name = folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
+    let item: DevExtItem;
+    try {
+      item = await loadOne(folder, rootManifest);
+    } catch (e) {
+      item = {
+        id: name,
+        name,
+        version: "",
+        dir: folder,
+        status: "error",
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+    useDevFolder.setState({ items: [item], scanning: false, error: null });
+    return;
+  }
+
   let entries: { name: string; kind: "file" | "directory" }[];
   try {
     entries = await native.fs.list(folder);

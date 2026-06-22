@@ -7,25 +7,10 @@ import {
   type TransformParams,
   type UprightMode,
 } from "@/catalog/types";
-import { maxCropForTransform } from "@/rendering/crop-transform";
-import { buildInverseTransform, applyInsetToInverse } from "@/rendering/transform";
-import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
+import { buildLensDistort, maxCropForTransform } from "@/rendering/crop-transform";
+import { buildInverseTransform } from "@/rendering/transform";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import { computeGuidedCorrection } from "@/rendering/upright";
-
-function getLensCropScale(imageAspect: number): number {
-  const st = useDevelopStore.getState();
-  const lc = st.params.lensCorrection;
-  if (lc.mode === "off") return 1;
-  const lp = st.resolvedLensProfile;
-  if (lc.mode === "profile" && lp?.distortion && lc.distortionEnabled) {
-    return computeAutoCropScale(lp.distortion.model, lp.distortion.k, lc.distortion, imageAspect);
-  }
-  if (Math.abs(lc.distortion) > 0.001) {
-    return computeAutoCropScale("poly3", [0], lc.distortion, imageAspect);
-  }
-  return 1;
-}
 
 const UPRIGHT_MODES: { mode: UprightMode; label: string }[] = [
   { mode: "off", label: "Off" },
@@ -57,11 +42,16 @@ export function TransformPanel() {
 
   const fitCrop = (nextStraighten: number, nextTransform: TransformParams) => {
     if (!constrainCrop) return;
-    const inv = applyInsetToInverse(
-      buildInverseTransform(nextStraighten, nextTransform, imageAspect),
-      getLensCropScale(imageAspect),
+    const st = useDevelopStore.getState();
+    const inv = buildInverseTransform(nextStraighten, nextTransform, imageAspect);
+    const distort = buildLensDistort(
+      st.params.lensCorrection, st.resolvedLensProfile, imageAspect,
     );
-    setParam("crop", maxCropForTransform(inv, cropAspect));
+    // -1 = Original: resolve to the image's own aspect.
+    setParam(
+      "crop",
+      maxCropForTransform(inv, cropAspect === -1 ? imageAspect : cropAspect, distort),
+    );
   };
 
   const onChange = (key: keyof TransformParams, v: number) => {

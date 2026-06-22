@@ -11,7 +11,9 @@ export type BroadcastMessage =
     }
   | {
       type: "catalog-change";
-      payload: { action: string; id?: string };
+      // `origin` is the WINDOW_ID of the window that made the change, so a window
+      // can ignore the local echo of its own broadcast (it already applied it).
+      payload: { action: string; id?: string; origin?: string };
     }
   | {
       // A module window was popped out / re-attached, so the main window can
@@ -21,6 +23,11 @@ export type BroadcastMessage =
     };
 
 const CHANNEL_NAME = "safelight-sync";
+
+// Unique per browser context (main window, each detached window). Stamped onto
+// broadcasts so a window can distinguish its own locally-echoed message from one
+// that arrived over the channel from another window.
+export const WINDOW_ID = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 
 let channel: BroadcastChannel | null = null;
 

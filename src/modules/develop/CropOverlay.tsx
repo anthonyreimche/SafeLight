@@ -1,8 +1,9 @@
 import { useRef, useState } from "react";
 import type { CropRect } from "@/catalog/types";
-import { constrainCropToImage } from "@/rendering/crop-transform";
+import { constrainCropToImage, type LensDistort } from "@/rendering/crop-transform";
 import type { Mat3 } from "@/rendering/transform";
 import { guideShapes, type CropGuide } from "./crop-guides";
+import { resolveCursorCss } from "@/state/cursor-store";
 
 interface Rect {
   x: number;
@@ -33,25 +34,26 @@ const clamp = (v: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, v));
 
 // CSS cursor matching the handle under the pointer, so resizing reads as
-// resizing rather than a bare crosshair.
+// resizing rather than a bare crosshair. Resolved through the shared cursor
+// vocabulary (see cursor-store) so the whole app stays consistent.
 const cursorFor = (h: Handle | null): string => {
   switch (h) {
     case "move":
-      return "move";
+      return resolveCursorCss("crop-move");
     case "nw":
     case "se":
-      return "nwse-resize";
+      return resolveCursorCss("crop-resize-nwse");
     case "ne":
     case "sw":
-      return "nesw-resize";
+      return resolveCursorCss("crop-resize-nesw");
     case "n":
     case "s":
-      return "ns-resize";
+      return resolveCursorCss("crop-resize-ns");
     case "e":
     case "w":
-      return "ew-resize";
+      return resolveCursorCss("crop-resize-ew");
     default:
-      return "crosshair";
+      return resolveCursorCss("crosshair");
   }
 };
 
@@ -61,6 +63,7 @@ interface CropOverlayProps {
   viewCrop: CropRect; // transformed-frame region the canvas shows
   inv: Mat3; // transformed coord -> source UV (for image-bounds constraints)
   forward: Mat3; // source UV -> transformed coord (image quad for move clamp)
+  distort: LensDistort | null; // lens distortion, so bounds match the warped image
   straightenDeg: number;
   aspect: number; // crop aspect lock, width:height in pixels (0 = free)
   imageAspect: number;
@@ -78,6 +81,7 @@ export function CropOverlay({
   viewCrop,
   inv,
   forward,
+  distort,
   straightenDeg,
   aspect,
   imageAspect,
@@ -142,7 +146,10 @@ export function CropOverlay({
     { id: "s", x: bx + bw / 2, y: by + bh },
     { id: "w", x: bx, y: by + bh / 2 },
   ];
-  const handles = normRatio > 0 ? cornerHandles : [...cornerHandles, ...edgeHandles];
+  // Always offer all eight handles, including under an aspect lock — the edge
+  // handles let you resize the locked rect from a side anchor (the opposite edge
+  // stays put, the perpendicular axis grows symmetrically), not just the corners.
+  const handles = [...cornerHandles, ...edgeHandles];
 
   const hitTest = (px: number, py: number): Handle | null => {
     for (const h of handles) {
@@ -187,8 +194,13 @@ export function CropOverlay({
     const dny = ((e.clientY - d.sy) / rect.h) * viewCrop.height;
 
     let next = applyDrag(d.mode, d.startCrop, dnx, dny, normRatio, normRatioFlip);
-    next = clampToBounds(next, viewCrop);
     if (constrain) {
+      // Constrain straight to the image. This keeps the result inside the image
+      // (and therefore inside the view), so the dragged handle rides the image
+      // edge and the crop stays as large as fits. We must NOT pre-clamp to the
+      // view first: clamping w/h independently breaks the aspect lock and shoves
+      // the anchor corner outside the image, which then collapses the crop to a
+      // sliver as the handle leaves the bounds.
       next = constrainCropToImage(
         d.startCrop,
         next,
@@ -197,7 +209,12 @@ export function CropOverlay({
         forward,
         imageAspect,
         normRatio > 0,
+        distort,
       );
+    } else {
+      // No image constraint: just keep the crop within the visible view so the
+      // handles stay reachable.
+      next = clampToBounds(next, viewCrop);
     }
     onChange(next);
   };
@@ -288,7 +305,7 @@ function applyDrag(
   if (mode === "move") {
     x += dnx;
     y += dny;
-  } else if (normRatio > 0) {
+  } else if (normRatio > 0 && mode.length === 2) {
     // Aspect-locked corner resize, anchored at the opposite corner. The lock
     // can take either orientation (e.g. 3:2 or 2:3); we pick whichever matches
     // the drag's shape, so dragging tall vs wide flips it automatically.
@@ -320,6 +337,33 @@ function applyDrag(
     }
     x = right ? anchorX : anchorX - w;
     y = bottom ? anchorY : anchorY - h;
+  } else if (normRatio > 0) {
+    // Aspect-locked edge resize: drive the one axis the handle owns, derive the
+    // other from the crop's current ratio, and grow it symmetrically about the
+    // centre of the unchanged axis (the opposite edge stays anchored). Keeps the
+    // lock's orientation rather than flipping it — that's the corners' job.
+    const r = c.width / c.height;
+    const cx = c.x + c.width / 2;
+    const cy = c.y + c.height / 2;
+    if (mode === "e" || mode === "w") {
+      w = Math.max(MIN, mode === "e" ? c.width + dnx : c.width - dnx);
+      h = w / r;
+      if (h < MIN) {
+        h = MIN;
+        w = h * r;
+      }
+      x = mode === "e" ? c.x : c.x + c.width - w;
+      y = cy - h / 2;
+    } else {
+      h = Math.max(MIN, mode === "s" ? c.height + dny : c.height - dny);
+      w = h * r;
+      if (w < MIN) {
+        w = MIN;
+        h = w / r;
+      }
+      y = mode === "s" ? c.y : c.y + c.height - h;
+      x = cx - w / 2;
+    }
   } else {
     if (mode.includes("e")) w += dnx;
     if (mode.includes("w")) {

@@ -31,6 +31,10 @@ uniform mat3 uOutMatrix;
 
 uniform vec4 uCrop;         // x, y, width, height (transformed image space, y-down)
 uniform mat3 uInvTransform; // transformed-image coord -> source UV (projective)
+// Display-space colour painted where the sampled source falls outside the image
+// (crop-mode margins, straighten/transform out-of-frame corners). Set to the
+// canvas surround so the margin reads as the back canvas, not a black frame.
+uniform vec3 uOutsideColor;
 // Viewport window into the displayed (cropped) image: x, y, width, height in
 // [0,1]. Default (0,0,1,1) renders the whole frame; a zoomed Develop view sets a
 // sub-rect so the output canvas (sized to the screen) samples that region of the
@@ -146,6 +150,12 @@ uniform vec4 uCompGeoB[MAX_COMPONENTS];   // rad:feather,angle,_,_ | col:satRang
 uniform int uVizMask;
 uniform vec3 uVizColor;
 uniform float uVizStrength; // overlay opacity (animated fade in/out)
+// Sharpening preview (Lightroom-style Alt/Ctrl-drag): when > 0 the whole frame
+// is replaced by a grayscale visualization of a sharpening sub-signal.
+//   1 = masking (white = sharpened, black = protected/flat)
+//   2 = detail (the high-frequency edge signal, on mid-grey)
+//   3 = luminance (B&W of the sharpened result, to judge halos)
+uniform int uSharpenViz;
 uniform vec4 uMaskAdj0[MAX_MASKS]; // exposure, contrast, highlights, shadows
 uniform vec4 uMaskAdj1[MAX_MASKS]; // saturation, temperature, tint, clarity
 uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, _, _, _
@@ -1087,7 +1097,7 @@ void main() {
   // Content rotated out of frame by straighten reads as neutral dark, so corners
   // stay clean instead of smearing the edge texel.
   if (srcUv.x < 0.0 || srcUv.x > 1.0 || srcUv.y < 0.0 || srcUv.y > 1.0) {
-    fragColor = vec4(0.04, 0.04, 0.04, 1.0);
+    fragColor = vec4(uOutsideColor, 1.0);
     return;
   }
   // Sample with chromatic aberration correction (CA splits R/B channels radially)
@@ -1411,8 +1421,11 @@ void main() {
 
   // Capture sharpening with radius, detail (halo control), and edge masking.
   // Runs after vibrance/saturation so sharpening halos are not re-saturated.
+  // sharpenViz carries the grayscale preview value when uSharpenViz is active;
+  // the block also runs at amount 0 in that case so the preview is always live.
+  float sharpenViz = 0.0;
   float sharpen = uSharpening / 100.0;
-  if (sharpen > 0.001) {
+  if (sharpen > 0.001 || uSharpenViz > 0) {
     float lod = mix(0.5, 1.5, (uSharpenRadius - 1.0) / 2.0);
     float blur = lumaLod(srcUv, lod);
     float detail = rawLuma - blur;
@@ -1425,7 +1438,10 @@ void main() {
       float threshold = (uSharpenMasking / 100.0) * 0.12;
       mask = smoothstep(threshold * 0.4, threshold, edgeMag);
     }
-    c += detail * sharpen * 1.6 * mask;
+    if (sharpen > 0.001) c += detail * sharpen * 1.6 * mask;
+    if (uSharpenViz == 1) sharpenViz = mask;                          // masking coverage
+    else if (uSharpenViz == 2) sharpenViz = clamp(0.5 + detail * 4.0, 0.0, 1.0); // edge signal
+    else if (uSharpenViz == 3) sharpenViz = luma(clamp(c, 0.0, 1.0)); // sharpened luminance
   }
   c = applyDefringe(c, uLensDefringe);
 
@@ -1451,7 +1467,10 @@ void main() {
   // Creative effects (contributed by processing stages)
   //__CONTRIBUTED_EFFECTS__
 
-  if (uRawHistogram) {
+  if (uSharpenViz > 0) {
+    // Alt/Ctrl-drag sharpening preview: replace the frame with the grayscale signal.
+    fragColor = vec4(vec3(sharpenViz), 1.0);
+  } else if (uRawHistogram) {
     fragColor = vec4(c, 1.0);
   } else if (uShowClipping > 0) {
     vec3 display = encodeOutput(clamp(c, 0.0, 1.0));
