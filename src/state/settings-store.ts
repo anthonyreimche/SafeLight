@@ -141,6 +141,9 @@ export interface AppSettings {
   checkExtensionUpdates: boolean;
   /** Silently install extension updates in the background when found. */
   autoUpdateExtensions: boolean;
+  /** Only allow installing extensions on the verified allowlist. Off by default;
+   *  a strict gate for cautious users / managed deployments. */
+  onlyVerifiedExtensions: boolean;
 
   // ── Updates ────────────────────────────────────────────────────────────
   /** Check GitHub for a newer release on startup and show a banner. */
@@ -185,6 +188,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   extensionTopic: "safelight-extension",
   checkExtensionUpdates: true,
   autoUpdateExtensions: false,
+  onlyVerifiedExtensions: false,
   checkForUpdates: true,
   updateChannel: "patch",
 };

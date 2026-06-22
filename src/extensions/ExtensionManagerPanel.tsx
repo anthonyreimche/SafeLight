@@ -45,6 +45,15 @@ import {
   useExtStoreUI,
   type StoreSort,
 } from "./store-ui";
+import {
+  loadTrustList,
+  isVerified,
+  bannedReason,
+  repoFromSpec,
+  useIsVerified,
+  useBannedReason,
+} from "./trust";
+import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
 import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
 
@@ -60,6 +69,7 @@ export function ExtensionManagerPanel() {
   const native = window.safelightNative;
   const topic = useSettings((s) => s.extensionTopic);
   const checkUpdates = useSettings((s) => s.checkExtensionUpdates);
+  const onlyVerified = useSettings((s) => s.onlyVerifiedExtensions);
   const disabledIds = useDisabledExtensions((s) => s.ids);
   // The Dev tab rides along with the Developer Tools extension: it only exists
   // while that extension is enabled, mirroring its top-bar bug button.
@@ -92,6 +102,10 @@ export function ExtensionManagerPanel() {
 
   // Always open to the list, not a stale detail page from a previous session.
   useEffect(() => back(), [back]);
+
+  // Pull the verified/banned lists so badges and install gating work even if the
+  // window is opened before the boot-time load sweep.
+  useEffect(() => void loadTrustList(), []);
 
   // If Developer Tools is disabled while the Dev tab is open, fall back.
   useEffect(() => {
@@ -156,6 +170,32 @@ export function ExtensionManagerPanel() {
   }, [query, topic, native, reloadNonce]);
 
   const install = async (installSpec: string, fromSearch?: ExtensionSearchResult) => {
+    const repo = fromSearch?.fullName.toLowerCase() ?? repoFromSpec(installSpec);
+    const verified = !!repo && isVerified(repo);
+    // Banned: hard stop. The main process refuses it too — this is the faster,
+    // clearer path so the user never watches a doomed download spin.
+    const banned = repo ? bannedReason(repo) : null;
+    if (banned) {
+      setMsg(`Blocked — this extension is flagged as unsafe: ${banned}.`);
+      return;
+    }
+    // Strict mode: only allowlisted extensions may be installed.
+    if (onlyVerified && !verified) {
+      setMsg(
+        "Blocked — “Only verified extensions” is on and this one isn't on the verified allowlist (Preferences ▸ Extensions).",
+      );
+      return;
+    }
+    // Unverified: it runs with full access to photos, metadata and edits, so make
+    // the user opt in explicitly. Verified extensions install without a prompt.
+    if (!verified) {
+      const ok = window.confirm(
+        `${repo ?? installSpec} hasn't been reviewed by Safelight.\n\n` +
+          "Installed extensions run with full access to your photos, metadata and " +
+          "edits. Only install extensions you trust.\n\nInstall anyway?",
+      );
+      if (!ok) return;
+    }
     setBusy(installSpec);
     setMsg(null);
     try {
@@ -641,6 +681,8 @@ function ExtensionCard({
 }) {
   const cat = categoryFor(result.topics);
   const short = result.fullName.split("/")[1] ?? result.fullName;
+  const verified = useIsVerified(result.fullName);
+  const banned = useBannedReason(result.fullName);
   const cardRef = useRef<HTMLDivElement>(null);
   const [imgLoaded, setImgLoaded] = useState(false);
   // Start on GitHub's auto card (instant, no round-trip), then resolve the repo's
@@ -715,9 +757,11 @@ function ExtensionCard({
         </div>
         <div className="p-2">
           <div className="flex items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate font-medium text-text-primary">
+            <span className="min-w-0 truncate font-medium text-text-primary">
               {short}
             </span>
+            {verified && <VerifiedBadge />}
+            <div className="flex-1" />
             {result.stars > 0 && (
               <span className="shrink-0 text-text-muted">★ {result.stars}</span>
             )}
@@ -737,13 +781,17 @@ function ExtensionCard({
         ) : (
           <span />
         )}
-        <button
-          disabled={disabled}
-          onClick={onInstall}
-          className="shrink-0 rounded bg-slider-fill px-2 py-0.5 font-medium text-white hover:opacity-80 disabled:opacity-40"
-        >
-          {installing ? "…" : "Install"}
-        </button>
+        {banned ? (
+          <FlaggedBadge reason={banned} />
+        ) : (
+          <button
+            disabled={disabled}
+            onClick={onInstall}
+            className="shrink-0 rounded bg-slider-fill px-2 py-0.5 font-medium text-white hover:opacity-80 disabled:opacity-40"
+          >
+            {installing ? "…" : "Install"}
+          </button>
+        )}
       </div>
     </div>
   );

@@ -1099,6 +1099,11 @@ void main() {
   if (uLensDistModel > 0 || abs(uLensDistortion) > 0.001) {
     srcUv = lensCorrectedUV(srcUv);
   }
+  // Contributed geometry stages (extension-owned): may displace the mutable
+  // srcUv so the whole pipeline below resamples the warped position. Runs
+  // before the bounds check, so content warped past the frame reads as the
+  // outside colour rather than smearing an edge texel.
+  //__CONTRIBUTED_GEOMETRY__
   // Content rotated out of frame by straighten reads as neutral dark, so corners
   // stay clean instead of smearing the edge texel.
   if (srcUv.x < 0.0 || srcUv.x > 1.0 || srcUv.y < 0.0 || srcUv.y > 1.0) {
@@ -1506,6 +1511,8 @@ export const DEFAULT_PIPELINE_GLSL = `vec3 pipelineToDisplay(vec3 lin) { return 
 export interface StageInjection {
   uniforms: string;
   helpers: string;
+  /** Geometry stages operating on the mutable `vec2 srcUv` (before sampling). */
+  srcUv: string;
   noiseReduction: string;
   sceneLinear: string;
   effects: string;
@@ -1524,6 +1531,7 @@ export function buildFragmentShader(
     .replace("//__PIPELINE_GLSL__", pipelineGlsl || DEFAULT_PIPELINE_GLSL)
     .replace("//__CONTRIBUTED_UNIFORMS__", stages?.uniforms ?? "")
     .replace("//__CONTRIBUTED_HELPERS__", stages?.helpers ?? "")
+    .replace("//__CONTRIBUTED_GEOMETRY__", stages?.srcUv ?? "")
     .replace("//__CONTRIBUTED_NOISE_REDUCTION__", stages?.noiseReduction ?? "")
     .replace("//__CONTRIBUTED_SCENE_LINEAR__", stages?.sceneLinear ?? "")
     .replace("//__CONTRIBUTED_EFFECTS__", stages?.effects ?? "");

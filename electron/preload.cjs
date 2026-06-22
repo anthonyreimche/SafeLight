@@ -3,6 +3,32 @@
 // API itself lives in the bundle as `window.safelight`).
 const { contextBridge, ipcRenderer } = require("electron");
 
+// Privileged surface — raw filesystem by absolute path, and running an update
+// installer (which fetches + executes a release asset). Extension code shares
+// the renderer realm, so anything left on window.safelightNative is reachable by
+// a malicious extension. These are handed out exactly once, at renderer boot, to
+// core code that captures them privately (src/native/privileged.ts); every later
+// claim returns null, so an extension (which loads after boot) can never reach
+// them. The gating lives here in the preload closure because contextBridge
+// freezes the exposed object — the renderer can't re-add or delete properties.
+let privilegedClaimed = false;
+const privileged = {
+  updates: {
+    install: (repo, tag) =>
+      ipcRenderer.invoke("updates:install", String(repo), String(tag)),
+  },
+  fs: {
+    read: (p) => ipcRenderer.invoke("fs:read", String(p)),
+    write: (p, data) => ipcRenderer.invoke("fs:write", String(p), data),
+    list: (p) => ipcRenderer.invoke("fs:list", String(p)),
+    mkdir: (p) => ipcRenderer.invoke("fs:mkdir", String(p)),
+    remove: (p) => ipcRenderer.invoke("fs:remove", String(p)),
+    move: (src, dest) => ipcRenderer.invoke("fs:move", String(src), String(dest)),
+    exists: (p) => ipcRenderer.invoke("fs:exists", String(p)),
+    pickDirectory: () => ipcRenderer.invoke("fs:pickDirectory"),
+  },
+};
+
 contextBridge.exposeInMainWorld("safelightNative", {
   platform: process.platform,
   versions: {
@@ -10,9 +36,11 @@ contextBridge.exposeInMainWorld("safelightNative", {
     chrome: process.versions.chrome,
   },
   appVersion: () => ipcRenderer.invoke("app:version"),
-  updates: {
-    install: (repo, tag) =>
-      ipcRenderer.invoke("updates:install", String(repo), String(tag)),
+  // One-shot handover of the privileged fs + update-installer surface (above).
+  claimPrivileged: () => {
+    if (privilegedClaimed) return null;
+    privilegedClaimed = true;
+    return privileged;
   },
   releases: {
     fetch: (repo) => ipcRenderer.invoke("releases:fetch", String(repo)),
@@ -32,6 +60,8 @@ contextBridge.exposeInMainWorld("safelightNative", {
     uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
     latestVersion: (repo) =>
       ipcRenderer.invoke("plugins:latest-version", String(repo)),
+    // Verified-allowlist + banned-kill-switch lists from the trust registry.
+    trustList: (force) => ipcRenderer.invoke("plugins:trust-list", !!force),
   },
   // Chrome DevTools control + main-process diagnostics for the opt-in
   // Developer Tools extension (src/extensions/devtools/).
@@ -45,18 +75,5 @@ contextBridge.exposeInMainWorld("safelightNative", {
   diagnostics: {
     gpuInfo: () => ipcRenderer.invoke("diagnostics:gpuInfo"),
     metrics: () => ipcRenderer.invoke("diagnostics:metrics"),
-  },
-  // Native file access by absolute path — backs the path-based handle adapters
-  // (src/project/native-fs.ts) so the project folder reconnects without an FSA
-  // permission gesture.
-  fs: {
-    read: (p) => ipcRenderer.invoke("fs:read", String(p)),
-    write: (p, data) => ipcRenderer.invoke("fs:write", String(p), data),
-    list: (p) => ipcRenderer.invoke("fs:list", String(p)),
-    mkdir: (p) => ipcRenderer.invoke("fs:mkdir", String(p)),
-    remove: (p) => ipcRenderer.invoke("fs:remove", String(p)),
-    move: (src, dest) => ipcRenderer.invoke("fs:move", String(src), String(dest)),
-    exists: (p) => ipcRenderer.invoke("fs:exists", String(p)),
-    pickDirectory: () => ipcRenderer.invoke("fs:pickDirectory"),
   },
 });

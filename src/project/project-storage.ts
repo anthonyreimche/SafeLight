@@ -87,6 +87,9 @@ export class ProjectStorage implements CatalogStorage {
 
   private sl: FileSystemDirectoryHandle;
   private previews: FileSystemDirectoryHandle;
+  /** Lazily-created .safelight/blobs/ dir for opaque per-photo binary payloads
+   *  (e.g. an extension's warp displacement field), kept out of catalog.json. */
+  private blobsDir: FileSystemDirectoryHandle | null = null;
 
   private constructor(
     sl: FileSystemDirectoryHandle,
@@ -304,6 +307,24 @@ export class ProjectStorage implements CatalogStorage {
     this.edits.delete(id);
     this.lastThumb.delete(id);
     await removeEntry(this.previews, `${id}.jpg`);
+    // Drop any opaque per-photo blobs (warp fields, etc.) for this photo.
+    if (this.blobsDir) {
+      const safeId = id.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const dir = this.blobsDir;
+      // keys() is a standard FileSystemDirectoryHandle async iterator; not in
+      // every TS lib target, so reach it through a narrow cast.
+      const keys = (dir as unknown as { keys?: () => AsyncIterable<string> }).keys;
+      if (keys) {
+        try {
+          for await (const name of keys.call(dir)) {
+            if (typeof name === "string" && name.startsWith(`${safeId}.`))
+              await removeEntry(dir, name);
+          }
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+    }
     this.scheduleSave();
   }
 
@@ -313,6 +334,47 @@ export class ProjectStorage implements CatalogStorage {
 
   async getAllEditStates(): Promise<EditState[]> {
     return [...this.edits.values()];
+  }
+
+  // ── opaque per-photo blobs ───────────────────────────────────────────────────
+  // Stored as individual files under .safelight/blobs/ so a multi-hundred-KB
+  // payload (e.g. a warp field) never enters the whole-file catalog.json rewrite.
+
+  private async blobs(): Promise<FileSystemDirectoryHandle> {
+    if (!this.blobsDir)
+      this.blobsDir = await this.sl.getDirectoryHandle("blobs", { create: true });
+    return this.blobsDir;
+  }
+
+  private blobName(photoId: string, key: string): string {
+    const safe = (s: string) => s.replace(/[^a-zA-Z0-9._-]/g, "_");
+    return `${safe(photoId)}.${safe(key)}.bin`;
+  }
+
+  async getPhotoBlob(photoId: string, key: string): Promise<Uint8Array | null> {
+    try {
+      const blob = await readBlob(await this.blobs(), this.blobName(photoId, key));
+      if (!blob) return null;
+      return new Uint8Array(await blob.arrayBuffer());
+    } catch {
+      return null;
+    }
+  }
+
+  async putPhotoBlob(
+    photoId: string,
+    key: string,
+    data: Uint8Array | null,
+  ): Promise<void> {
+    const dir = await this.blobs();
+    const name = this.blobName(photoId, key);
+    if (data == null) {
+      await removeEntry(dir, name);
+      return;
+    }
+    // Copy into a fresh ArrayBuffer-backed Blob so a view over a larger buffer
+    // (or a SharedArrayBuffer) is written as exactly its `data` bytes.
+    await writeBlob(dir, name, new Blob([data.slice()]));
   }
 
   async putEditState(editState: EditState): Promise<void> {

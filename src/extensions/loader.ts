@@ -24,6 +24,11 @@ import { isNewer } from "@/update/semver";
 import { repoFor } from "./sources";
 import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
 import { getSettings } from "@/state/settings-store";
+import {
+  loadTrustList,
+  bannedReasonForManifest,
+  flagBannedExtension,
+} from "./trust";
 
 const loaded = new Map<string, ExtensionModule>();
 
@@ -178,12 +183,30 @@ export async function loadExternalPlugins(): Promise<void> {
   } catch {
     return;
   }
-  for (const manifest of list) {
-    if (isExtensionDisabled(manifest.id)) continue;
-    try {
-      await loadPlugin(manifest);
-    } catch (e) {
-      console.error(`[extensions] failed to load ${manifest.id}:`, e);
+  // No installed extensions → no trust fetch, no work. (applySavedTheme still
+  // runs below in case a built-in's theme is the saved one.)
+  if (list.length > 0) {
+    // Resolve the trust lists before activating anything so the kill-switch can
+    // refuse an extension banned after it was installed. Cheap: served from the
+    // main process's disk/in-memory cache, with the network only off the boot
+    // path (see fetchTrustList in electron/main.cjs).
+    await loadTrustList();
+    for (const manifest of list) {
+      if (isExtensionDisabled(manifest.id)) continue;
+      // Remote kill-switch: a banned extension is never activated, even though
+      // its files are still on disk. We flag it (banner + console) rather than
+      // silently dropping it, so the user knows why it stopped working.
+      const banned = bannedReasonForManifest(manifest);
+      if (banned) {
+        flagBannedExtension({ id: manifest.id, name: manifest.name, reason: banned });
+        console.warn(`[extensions] blocked ${manifest.id}: ${banned}`);
+        continue;
+      }
+      try {
+        await loadPlugin(manifest);
+      } catch (e) {
+        console.error(`[extensions] failed to load ${manifest.id}:`, e);
+      }
     }
   }
   // The saved theme may belong to a plugin that just registered it.

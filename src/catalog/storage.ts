@@ -17,6 +17,13 @@ export interface CatalogStorage {
   getEditState(photoId: string): Promise<EditState | undefined>;
   getAllEditStates(): Promise<EditState[]>;
   putEditState(editState: EditState): Promise<void>;
+  /** Read an opaque per-photo binary blob (e.g. an extension's warp field),
+   *  or null if none was stored. `key` is the caller-namespaced blob key. */
+  getPhotoBlob?(photoId: string, key: string): Promise<Uint8Array | null>;
+  /** Store (or, with null, delete) an opaque per-photo binary blob. These live
+   *  outside catalog.json as individual sidecar files so large payloads don't
+   *  bloat the whole-file JSON rewrite on every save. */
+  putPhotoBlob?(photoId: string, key: string, data: Uint8Array | null): Promise<void>;
   /** Write any pending (debounced) changes immediately, e.g. on app quit. */
   flush?(): Promise<void>;
 }

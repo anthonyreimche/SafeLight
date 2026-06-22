@@ -8,6 +8,7 @@
 // user has dismissed a particular version so the banner doesn't reappear.
 
 import { parseSemver, isNewer } from "./semver";
+import { privilegedUpdates } from "@/native/privileged";
 
 const REPO = "anthonyreimche/SafeLight";
 const API_URL = `https://api.github.com/repos/${REPO}/releases?per_page=20`;
@@ -192,9 +193,9 @@ export async function fetchAllReleases(): Promise<ReleaseEntry[] | null> {
  * runs the installer, then quits. Throws if not in Electron or on error.
  */
 export async function installVersion(tag: string): Promise<void> {
-  const native = window.safelightNative;
-  if (!native?.updates) throw new Error("In-app install is only available in the desktop app.");
-  await native.updates.install(REPO, tag);
+  const updates = privilegedUpdates();
+  if (!updates) throw new Error("In-app install is only available in the desktop app.");
+  await updates.install(REPO, tag);
 }
 
 /**

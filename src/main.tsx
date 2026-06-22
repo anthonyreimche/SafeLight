@@ -6,8 +6,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { claimPrivileged } from "./native/privileged";
 import { initExtensionHost } from "./extensions/host";
 import "./index.css";
+
+// Capture the privileged native bridge (raw fs + update installer) for core
+// before any extension can load — see src/native/privileged.ts. Must precede
+// initExtensionHost(), which activates built-ins and external plugins.
+claimPrivileged();
 
 // Built-ins register and external plugins begin loading before first paint,
 // so sidebars/View menu populate without a flash of empty UI.

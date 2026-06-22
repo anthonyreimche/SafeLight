@@ -161,6 +161,17 @@ export interface ExtensionSearchResult {
   topics?: string[];
 }
 
+/** Curation lists from the trust registry repo, fetched + normalised (lowercased)
+ *  in the Electron main process. `verified` is the human-reviewed allowlist;
+ *  `repos`/`owners` are the banned kill-switch; `reason` maps a banned
+ *  "owner/repo" or "owner" to a short explanation shown to the user. */
+export interface TrustList {
+  verified: string[];
+  repos: string[];
+  owners: string[];
+  reason: Record<string, string>;
+}
+
 /** Normalised GitHub repo metadata for the Extensions store detail view.
  *  A subset of the GitHub repos API, shaped in the Electron main process. */
 export interface ExtensionRepoMeta {
@@ -348,8 +359,14 @@ export interface StageTextureData {
   version: number;
 }
 
-/** Fixed processing phases. Order is enforced by the shader compiler. */
+/** Fixed processing phases. Order is enforced by the shader compiler.
+ *  "geometry" runs first and is special: its GLSL operates on the mutable
+ *  source-UV `vec2 srcUv` (after crop/transform/lens, before the image is
+ *  sampled), so a stage can warp/displace the coordinate and have the entire
+ *  downstream pipeline — source sampling, white balance, exposure, NR, masks —
+ *  follow. Every other phase operates on a color (`lin` or `c`). */
 export type ProcessingPhase =
+  | "geometry"
   | "decode"
   | "noise-reduction"
   | "scene-linear"
@@ -360,6 +377,7 @@ export type ProcessingPhase =
 
 /** Ordered phase list for the shader compiler's sort. */
 export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
+  "geometry",
   "decode",
   "noise-reduction",
   "scene-linear",
@@ -699,12 +717,49 @@ export interface SafelightAPI {
       cursor: string | CursorContribution | null,
       opts?: { priority?: number },
     ): () => void;
+    /** Persist (or, with null, delete) an opaque binary blob for the currently
+     *  loaded Develop photo. The key is namespaced per extension. Stored as a
+     *  sidecar outside catalog.json so large payloads (e.g. a warp displacement
+     *  field) don't bloat the whole-file JSON rewrite. Core treats the bytes as
+     *  opaque — the extension owns the format and load/save timing. */
+    putPhotoData(key: string, data: Uint8Array | null): void;
+    /** Read the opaque blob previously stored for the current Develop photo
+     *  under `key`, or null if none exists (or no photo/project is open). */
+    getPhotoData(key: string): Promise<Uint8Array | null>;
   };
 }
 
 export interface ExtensionModule {
   activate(api: SafelightAPI): void;
   deactivate?(): void;
+}
+
+/** Raw filesystem access by absolute path. Privileged: handed to core exactly
+ *  once at boot via claimPrivileged() and never left on the page global, because
+ *  extension code shares the renderer realm and could otherwise read/write/delete
+ *  any file. Backs the path-based handle adapters (src/project/native-fs.ts). */
+export interface NativeFsBridge {
+  read(path: string): Promise<{ data: Uint8Array; mtimeMs: number; size: number }>;
+  write(path: string, data: Uint8Array): Promise<void>;
+  list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]>;
+  mkdir(path: string): Promise<void>;
+  remove(path: string): Promise<void>;
+  move(src: string, dest: string): Promise<void>;
+  exists(path: string): Promise<boolean>;
+  pickDirectory(): Promise<string | null>;
+}
+
+/** In-app updater. Privileged: install() fetches and runs a release installer
+ *  (arbitrary code execution), so it's claimed at boot rather than exposed. */
+export interface NativeUpdatesBridge {
+  /** Download and install the asset for `tag` from `repo`, then quit/relaunch. */
+  install(repo: string, tag: string): Promise<void>;
+}
+
+/** The one-shot privileged bundle returned by claimPrivileged(). */
+export interface PrivilegedBridge {
+  fs: NativeFsBridge;
+  updates: NativeUpdatesBridge;
 }
 
 declare global {
@@ -717,11 +772,6 @@ declare global {
       versions: { electron: string; chrome: string };
       /** Returns the live version string from package.json (bypasses the Vite build-time constant). */
       appVersion(): Promise<string>;
-      /** In-app updater — downloads and runs the platform asset, then quits. */
-      updates: {
-        /** Download and install the asset for `tag` from `repo`, then quit/relaunch. */
-        install(repo: string, tag: string): Promise<void>;
-      };
       /** GitHub Releases API proxy — runs in the main process to bypass the renderer CSP. */
       releases: {
         /** Fetch releases for `owner/repo`. Returns the raw GitHub API array. */
@@ -749,6 +799,10 @@ declare global {
          *  branch, or null. Lets the updater detect a pushed version bump
          *  without a GitHub Release. Optional: absent in older Electron builds. */
         latestVersion?(repo: string): Promise<string | null>;
+        /** Verified-allowlist + banned-kill-switch lists from the trust
+         *  registry, cached in the main process. Optional: absent in older
+         *  Electron builds (callers then treat everything as unverified). */
+        trustList?(force?: boolean): Promise<TrustList>;
       };
       /** Renderer-side control of the window's Chrome DevTools. Backs the
        *  Developer Tools extension's Native tab. */
@@ -774,17 +828,11 @@ declare global {
           }[]
         >;
       };
-      /** Native file access by absolute path (path-based handle adapters). */
-      fs?: {
-        read(path: string): Promise<{ data: Uint8Array; mtimeMs: number; size: number }>;
-        write(path: string, data: Uint8Array): Promise<void>;
-        list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]>;
-        mkdir(path: string): Promise<void>;
-        remove(path: string): Promise<void>;
-        move(src: string, dest: string): Promise<void>;
-        exists(path: string): Promise<boolean>;
-        pickDirectory(): Promise<string | null>;
-      };
+      /** One-shot handover of the privileged fs + update-installer surface.
+       *  Returns the bundle on the first call (core, at boot) and null after, so
+       *  extension code — which shares the renderer realm — can never acquire it.
+       *  Optional: absent in the plain-browser build and older Electron builds. */
+      claimPrivileged?(): PrivilegedBridge | null;
     };
   }
 }
