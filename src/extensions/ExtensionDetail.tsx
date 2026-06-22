@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Detail "store page" for one extension, shown inside the Extensions window when
 // a card or installed row is clicked. For a repo-backed extension it pulls the
 // GitHub README + metadata (stars, license, last-updated, issues/discussions

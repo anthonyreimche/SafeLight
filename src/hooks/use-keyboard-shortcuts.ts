@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Global shortcut handler. All combos come from the rebindable keybindings
 // store (Preferences ▸ Shortcuts). Library-scoped culling shortcuts live in
 // use-culling-shortcuts.ts, mounted only by LibraryView.

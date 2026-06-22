@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Folder management for the Folders panel: create / rename folders, and move
 // folders or photos between folders by dragging. Every op mutates the real
 // directory tree on disk, then updates the affected catalog records (relPath /

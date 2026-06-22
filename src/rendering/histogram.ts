@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Per-channel + luma histograms (256 bins each), sampled from a drawable source
 // at a small size — plenty of resolution for a histogram and cheap enough to
 // recompute live on every develop render.

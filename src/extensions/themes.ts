@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Theme engine: themes are just sets of CSS custom properties layered onto
 // :root, overriding the Tailwind v4 @theme defaults in index.css. The active
 // choice is shared across windows via the storage event.

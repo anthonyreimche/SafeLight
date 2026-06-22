@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Develop-preview cache: store decoded RAW files in IndexedDB so subsequent
 // Develop opens load fast instead of re-running libraw (~50ms vs 3-8s).
 //

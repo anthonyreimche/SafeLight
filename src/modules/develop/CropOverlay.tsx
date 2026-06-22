@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 import { useRef, useState } from "react";
 import type { CropRect } from "@/catalog/types";
 import { constrainCropToImage, type LensDistort } from "@/rendering/crop-transform";

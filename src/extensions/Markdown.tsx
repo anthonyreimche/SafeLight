@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Minimal, dependency-free Markdown renderer for extension READMEs fetched from
 // GitHub. The README is UNTRUSTED, so unlike marked+innerHTML this never emits
 // raw HTML: it parses a constrained Markdown subset into React elements, and

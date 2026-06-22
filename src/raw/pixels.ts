@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Pure pixel math for RAW development: sample unpacking, Bayer demosaic, and
 // the linear -> display color/gamma stage. No DOM or app imports, so each
 // function is unit-testable directly under Node's --experimental-strip-types.

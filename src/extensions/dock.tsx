@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Custom Lightroom-style dock. Side rails are single scrollable columns where
 // every docked panel renders at its natural height (height follows content and
 // width — panels never get their own scrollbar; the rail scrolls). Dragging a

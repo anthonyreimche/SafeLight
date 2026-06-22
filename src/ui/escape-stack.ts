@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // A LIFO stack of "Escape closes me" handlers for stacked modals. The most
 // recently opened modal is closed first. Dialogs register while mounted; the
 // global keyboard hook (use-keyboard-shortcuts) pops the top on Escape before

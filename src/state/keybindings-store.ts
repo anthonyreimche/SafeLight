@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Central, rebindable keyboard shortcuts. Every shortcut in the app is an
 // "action" with a default combo; user overrides persist in localStorage and
 // sync across windows (same pattern as settings-store). Handlers look up

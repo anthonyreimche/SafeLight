@@ -49,14 +49,37 @@ jobs:
           if (-not (Test-Path "electron/main.cjs")) { exit 1 }
           Write-Host "Build artifacts verified on ${{ matrix.os }}"
 
+  nix-build:
+    # NixOS support: build the flake package so it can't silently break.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build Nix package
+        run: nix build .#safelight --print-build-logs
+
+      - name: Verify Nix build output
+        run: |
+          test -x result/bin/safelight
+          echo "Nix package built on NixOS"
+
   build-safelight:
-    needs: build
+    needs: [build, nix-build]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: All builds passed
         run: |
           if [ "${{ needs.build.result }}" != "success" ]; then
-            echo "One or more builds failed"
+            echo "One or more platform builds failed"
+            exit 1
+          fi
+          if [ "${{ needs.nix-build.result }}" != "success" ]; then
+            echo "Nix build failed"
             exit 1
           fi

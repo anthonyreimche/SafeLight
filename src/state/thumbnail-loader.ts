@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // On-open grid-preview loader. The Electron fs bridge serializes reads over one
 // IPC channel, so reading every cached preview up front costs the same few
 // seconds no matter how it's batched. Instead the grid renders skeletons

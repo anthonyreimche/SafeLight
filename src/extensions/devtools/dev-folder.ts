@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Dev-folder extension loading. Lets a developer point Safelight at a local
 // folder of built extensions and load them live, without installing through
 // GitHub. Owned entirely by the Developer Tools extension: the configured path

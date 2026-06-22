@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Preferences ▸ Developer Tools section. Contributed by the Developer Tools
 // extension via api.registerSettings({ component }), so it only exists while the
 // extension is enabled and disappears the moment it's disabled. Lets the user

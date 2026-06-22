@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Adapter around the bundled `libraw-wasm` build. Decodes a RAW file to a
 // full-precision LINEAR float RGBA buffer (sensor data with real highlight
 // headroom), using camera white balance and linear gamma so our shader pipeline

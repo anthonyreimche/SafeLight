@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+//
 // SafeLight — Electron main process
 //
 // libraw-wasm decodes RAW files on shared memory in a Web Worker, which only
@@ -23,7 +28,12 @@ const fs = require("node:fs");
 const zlib = require("node:zlib");
 const { pathToFileURL } = require("node:url");
 
-const isDev = !app.isPackaged;
+// `app.isPackaged` is false when Electron runs an app from a plain directory
+// rather than an asar/bundled build — which is exactly how the Nix derivation
+// launches us (nixpkgs' own `electron` + our dist/ + electron/). The wrapper
+// sets SAFELIGHT_PACKAGED=1 so we still take the packaged code path (no
+// auto-DevTools) there. No effect on the electron-builder Win/Mac/Linux builds.
+const isDev = !app.isPackaged && process.env.SAFELIGHT_PACKAGED !== "1";
 const DIST = path.join(__dirname, "..", "dist");
 
 function appVersion() {

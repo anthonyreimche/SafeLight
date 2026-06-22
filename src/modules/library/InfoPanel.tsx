@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Library "Info" panel: histogram of the active photo (rendered through the
 // develop pipeline with its saved edits) plus the metadata readout. Docked
 // right of the grid by default.

@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Global application preferences. One persisted zustand store, shared across
 // windows via the storage event (same pattern as themes/layouts). Non-React
 // modules read it with getSettings(); React components subscribe with

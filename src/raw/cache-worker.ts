@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Dedicated worker for all cache I/O: gzip/gunzip, IndexedDB get/put, and
 // filesystem reads/writes. Keeps the main thread free of compression stalls
 // and IDB transaction blocking.

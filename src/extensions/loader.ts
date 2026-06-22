@@ -1,3 +1,8 @@
+// Safelight — founded and principally authored by Anthony Reimche.
+// Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
+// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// be preserved in derived versions.
+
 // Extension lifecycle: loads built-in (pre-installed) and external extensions,
 // and owns the enable/disable state. External plugins live in
 // <userData>/plugins/<id>/ on disk, are served by the Electron app:// protocol
