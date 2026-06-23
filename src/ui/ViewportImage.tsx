@@ -15,6 +15,7 @@ import {
 } from "react";
 import { isEditableTarget, shortcutsSuspended } from "@/state/keybindings-store";
 import { resolveCursorCss, useCanvasCursor } from "@/state/cursor-store";
+import { frameLocalPoint } from "@/ui/frame-point";
 
 interface ViewportImageProps {
   canvasRef: RefObject<HTMLCanvasElement | null>;
@@ -281,18 +282,20 @@ export function ViewportImage({
   const handleClick = (clientX: number, clientY: number) => {
     const rect = frameRef.current?.getBoundingClientRect();
     if (!rect) return;
+    // Frame-local LAYOUT px (undoes the <body> UI-scale zoom; see frame-point).
+    const { x: fx, y: fy } = frameLocalPoint(rect, clientX, clientY);
     if (onPick) {
       // Map the click into canvas buffer pixels (undo the CSS pan/scale).
       const { effScale: s, effOffset: o } = stateRef.current;
-      const bx = (clientX - rect.left - o.x) / s;
-      const by = (clientY - rect.top - o.y) / s;
+      const bx = (fx - o.x) / s;
+      const by = (fy - o.y) / s;
       onPick(bx, by);
       return;
     }
     // Only toggle zoom when the click lands on the displayed image — clicks on
     // the letterbox/surround around a fitted image do nothing.
     if (!pointOnImage(clientX, clientY)) return;
-    zoomToggleAt(clientX - rect.left, clientY - rect.top);
+    zoomToggleAt(fx, fy);
   };
 
   // Keep a fresh closure for the window key listener (mounted once) to call.
@@ -312,7 +315,7 @@ export function ViewportImage({
       const r = frameRef.current?.getBoundingClientRect();
       const p = lastPointer.current;
       if (!r || !p) return { x: null, y: null };
-      return { x: p.x - r.left, y: p.y - r.top };
+      return frameLocalPoint(r, p.x, p.y);
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (shortcutsSuspended() || isEditableTarget(e.target)) return;
@@ -408,8 +411,9 @@ export function ViewportImage({
       const rect = frameRef.current?.getBoundingClientRect();
       if (rect) {
         const { effScale: s, effOffset: o } = stateRef.current;
-        const bx = (e.clientX - rect.left - o.x) / s;
-        const by = (e.clientY - rect.top - o.y) / s;
+        const { x: fx, y: fy } = frameLocalPoint(rect, e.clientX, e.clientY);
+        const bx = (fx - o.x) / s;
+        const by = (fy - o.y) / s;
         pickDragRef.current.active = true;
         onPickDrag.onDown(bx, by);
         frameRef.current?.setPointerCapture(e.pointerId);
@@ -420,10 +424,15 @@ export function ViewportImage({
     // Mask/heal pointer events bubble up from the overlay; only hijack them for
     // pan/zoom while a gesture key is held (otherwise the tool owns the drag).
     if (staticFit || (overlayZoomable && !zoomGesture) || e.button !== 0) return;
+    const rect = frameRef.current?.getBoundingClientRect();
+    if (!rect) return;
     frameRef.current?.setPointerCapture(e.pointerId);
+    // Store the down point in frame-local LAYOUT px so pan deltas stay in the
+    // same space as the offset under any UI-scale zoom (see frame-point.ts).
+    const { x: fx, y: fy } = frameLocalPoint(rect, e.clientX, e.clientY);
     downRef.current = {
-      x: e.clientX,
-      y: e.clientY,
+      x: fx,
+      y: fy,
       ox: stateRef.current.effOffset.x,
       oy: stateRef.current.effOffset.y,
       moved: false,
@@ -434,8 +443,7 @@ export function ViewportImage({
   const pointOnImage = (clientX: number, clientY: number) => {
     const rect = frameRef.current?.getBoundingClientRect();
     if (!rect) return false;
-    const fx = clientX - rect.left;
-    const fy = clientY - rect.top;
+    const { x: fx, y: fy } = frameLocalPoint(rect, clientX, clientY);
     const { effScale: s, effOffset: o, imgW: iw, imgH: ih } = stateRef.current;
     return fx >= o.x && fx <= o.x + iw * s && fy >= o.y && fy <= o.y + ih * s;
   };
@@ -448,8 +456,9 @@ export function ViewportImage({
       const rect = frameRef.current?.getBoundingClientRect();
       if (rect) {
         const { effScale: s, effOffset: o } = stateRef.current;
-        const bx = (e.clientX - rect.left - o.x) / s;
-        const by = (e.clientY - rect.top - o.y) / s;
+        const { x: fx, y: fy } = frameLocalPoint(rect, e.clientX, e.clientY);
+        const bx = (fx - o.x) / s;
+        const by = (fy - o.y) / s;
         onPickDrag.onMove(bx, by);
       }
       return;
@@ -457,8 +466,14 @@ export function ViewportImage({
 
     const d = downRef.current;
     if (!d) return;
-    const dx = e.clientX - d.x;
-    const dy = e.clientY - d.y;
+    // d.x/d.y are frame-local LAYOUT px; convert the move the same way so the
+    // pan delta matches the offset space under any UI-scale zoom.
+    const rect = frameRef.current?.getBoundingClientRect();
+    const moveLocal = rect
+      ? frameLocalPoint(rect, e.clientX, e.clientY)
+      : { x: e.clientX, y: e.clientY };
+    const dx = moveLocal.x - d.x;
+    const dy = moveLocal.y - d.y;
     if (!d.moved && Math.abs(dx) + Math.abs(dy) > DRAG_THRESHOLD) {
       d.moved = true;
       if (zoom != null) setDragging(true);

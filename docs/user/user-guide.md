@@ -144,4 +144,4 @@ Develop and Library shortcuts only fire in their module, so the same key can ser
 ## Themes and Extensions
 
 - **Themes** — switch between Safelight Dark, Safelight Light, and any extension-provided theme from the View menu.
-- **Extensions** — every stock panel is itself a pre-installed extension that can be disabled and replaced by a community version. Install new ones from GitHub via **View ▸ Extensions** (or **Ctrl+Shift+X**). Safelight ships with example extensions (Advanced Library Sort, Image Comparison, XMP Tools). See the [Extensions guide](extensions.md).
+- **Extensions** — every stock panel is itself a pre-installed extension that can be disabled and replaced by a community version. Install new ones from GitHub via **View ▸ Extensions** (or **Ctrl+Shift+X**). Safelight ships with example extensions (Advanced Library Sort, Image Comparison, XMP Tools). See [Using Extensions](using-extensions.md).

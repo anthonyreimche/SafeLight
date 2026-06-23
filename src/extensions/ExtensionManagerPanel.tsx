@@ -99,12 +99,19 @@ export function ExtensionManagerPanel() {
   const [section, setSection] = useState<Section>(native ? "Browse" : "Installed");
   const searchSeq = useRef(0);
   const [reloadNonce, setReloadNonce] = useState(0);
+  // Tracks which reloadNonce the last search ran for, so an explicit reload
+  // force-bypasses the main-process search cache while keystrokes keep using it.
+  const lastSearchNonce = useRef(0);
 
   // Always open to the list, not a stale detail page from a previous session.
   useEffect(() => back(), [back]);
 
   // Pull the verified/banned lists so badges and install gating work even if the
-  // window is opened before the boot-time load sweep.
+  // window is opened before the boot-time load sweep. Non-forced: loadTrustList
+  // fetches once per session (in-memory loadedAt), and the main process serves
+  // that from its 6h disk cache, so opening the store costs no network when the
+  // registry is fresh. A registry edit still appears on the next launch (or via
+  // the panel's explicit refresh), without a round-trip on every open.
   useEffect(() => void loadTrustList(), []);
 
   // If Developer Tools is disabled while the Dev tab is open, fall back.
@@ -141,6 +148,7 @@ export function ExtensionManagerPanel() {
 
   const reload = () => {
     setMsg(null);
+    void loadTrustList(true); // explicit refresh = "show me the latest registry"
     setReloadNonce((n) => n + 1);
   };
 
@@ -148,10 +156,12 @@ export function ExtensionManagerPanel() {
   useEffect(() => {
     if (!native?.plugins.search) return;
     const seq = ++searchSeq.current;
+    const force = lastSearchNonce.current !== reloadNonce;
+    lastSearchNonce.current = reloadNonce;
     setSearching(true);
     const t = setTimeout(() => {
       native.plugins
-        .search(query.trim(), topic)
+        .search(query.trim(), topic, force)
         .then((r) => {
           if (searchSeq.current !== seq) return;
           setResults(r);
@@ -433,6 +443,7 @@ export function ExtensionManagerPanel() {
                       key={m.id}
                       name={m.name}
                       version={m.version}
+                      repo={repo}
                       description={`New version ${upd.latestTag} available`}
                       enabled={enabled(m.id)}
                       busy={busy !== null}
@@ -606,6 +617,7 @@ export function ExtensionManagerPanel() {
                               key={m.id}
                               name={m.name}
                               version={m.version}
+                              repo={repo}
                               description={m.description}
                               enabled={enabled(m.id)}
                               busy={busy !== null}
@@ -760,7 +772,7 @@ function ExtensionCard({
             <span className="min-w-0 truncate font-medium text-text-primary">
               {short}
             </span>
-            {verified && <VerifiedBadge />}
+            {verified && <VerifiedBadge iconOnly />}
             <div className="flex-1" />
             {result.stars > 0 && (
               <span className="shrink-0 text-text-muted">★ {result.stars}</span>
@@ -805,6 +817,7 @@ function ExtensionRow({
   name,
   version,
   description,
+  repo,
   enabled,
   locked,
   busy,
@@ -818,6 +831,8 @@ function ExtensionRow({
   name: string;
   version: string;
   description?: string;
+  /** Source "owner/repo" for the verified/flagged badge; null for built-ins. */
+  repo?: string | null;
   enabled: boolean;
   locked?: boolean;
   busy: boolean;
@@ -828,6 +843,8 @@ function ExtensionRow({
   onToggle: () => void;
   onUninstall?: () => void;
 }) {
+  const verified = useIsVerified(repo);
+  const banned = useBannedReason(repo);
   return (
     <div
       className={`flex items-start justify-between gap-2 rounded bg-surface-2 px-2 py-1.5 ${
@@ -835,13 +852,16 @@ function ExtensionRow({
       }`}
     >
       <button onClick={onOpen} className="min-w-0 flex-1 text-left">
-        <div className="truncate text-text-primary">
-          {name} <span className="text-text-muted">v{version}</span>
+        <div className="flex items-center gap-1.5">
+          <span className="min-w-0 truncate text-text-primary">
+            {name} <span className="text-text-muted">v{version}</span>
+          </span>
           {locked && (
-            <span className="ml-1.5 rounded bg-surface-3 px-1 py-px text-[9px] uppercase tracking-wider text-text-muted">
+            <span className="shrink-0 rounded bg-surface-3 px-1 py-px text-[9px] uppercase tracking-wider text-text-muted">
               Core
             </span>
           )}
+          {banned ? <FlaggedBadge reason={banned} /> : verified && <VerifiedBadge />}
         </div>
         {description && (
           <div className="truncate text-text-muted">{description}</div>

@@ -63,6 +63,10 @@ interface PresetsState {
     group?: string,
     paramBag?: Record<string, unknown>,
   ) => void;
+  /** Rename a preset, leaving its params/group/position untouched. */
+  rename: (id: string, name: string) => void;
+  /** Move a preset to another group (empty/undefined clears it to ungrouped). */
+  setGroup: (id: string, group?: string) => void;
   remove: (id: string) => void;
 }
 
@@ -98,6 +102,25 @@ export const usePresetsStore = create<PresetsState>((set) => ({
             }
           : p,
       );
+      saveToStorage(presets);
+      return { presets };
+    });
+  },
+
+  rename(id, name) {
+    set((s) => {
+      const trimmed = name.trim();
+      if (!trimmed) return s;
+      const presets = s.presets.map((p) => (p.id === id ? { ...p, name: trimmed } : p));
+      saveToStorage(presets);
+      return { presets };
+    });
+  },
+
+  setGroup(id, group) {
+    set((s) => {
+      const next = group?.trim() || undefined;
+      const presets = s.presets.map((p) => (p.id === id ? { ...p, group: next } : p));
       saveToStorage(presets);
       return { presets };
     });

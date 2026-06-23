@@ -46,8 +46,11 @@ export function TransformPanel() {
   const cropAspect = useDevelopStore((s) => s.cropAspect);
 
   const fitCrop = (nextStraighten: number, nextTransform: TransformParams) => {
-    if (!constrainCrop) return;
     const st = useDevelopStore.getState();
+    // Read the flag from the store, not the render closure: the constrain
+    // checkbox calls fitCrop in the same tick it flips the flag, before this
+    // component re-renders with the new value.
+    if (!st.constrainCrop) return;
     const inv = buildInverseTransform(nextStraighten, nextTransform, imageAspect);
     const distort = buildLensDistort(
       st.params.lensCorrection, st.resolvedLensProfile, imageAspect,
@@ -55,7 +58,7 @@ export function TransformPanel() {
     // -1 = Original: resolve to the image's own aspect.
     setParam(
       "crop",
-      maxCropForTransform(inv, cropAspect === -1 ? imageAspect : cropAspect, distort),
+      maxCropForTransform(inv, cropAspect === -1 ? imageAspect : cropAspect, imageAspect, distort),
     );
   };
 
@@ -171,7 +174,21 @@ export function TransformPanel() {
           <input
             type="checkbox"
             checked={constrainCrop}
-            onChange={(e) => setConstrainCrop(e.target.checked)}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setConstrainCrop(on);
+              if (on) {
+                // Re-enabling constrain must pull the crop back inside the
+                // image: while it was off the crop could be rotated/dragged into
+                // the black margins, leaving handles out of bounds. Without this
+                // refit the next drag feeds constrainCropToImage an invalid start
+                // crop, which collapses it to a sliver. fitCrop reads the flag
+                // from the store, which setConstrainCrop has just set true.
+                const st = useDevelopStore.getState();
+                fitCrop(st.params.straighten, st.params.transform);
+                commitEdit("Constrain crop");
+              }
+            }}
             className="accent-slider-fill"
           />
           Constrain crop

@@ -9,6 +9,7 @@ import { constrainCropToImage, type LensDistort } from "@/rendering/crop-transfo
 import type { Mat3 } from "@/rendering/transform";
 import { guideShapes, type CropGuide } from "./crop-guides";
 import { resolveCursorCss } from "@/state/cursor-store";
+import { frameLocalPoint } from "@/ui/frame-point";
 
 interface Rect {
   x: number;
@@ -109,13 +110,13 @@ export function CropOverlay({
   // Drives the hover cursor; also reflects the active handle while dragging.
   const [hoverHandle, setHoverHandle] = useState<Handle | null>(null);
 
-  // Pointer position in frame-local CSS px — the same space the handles are
-  // drawn in. We compute it from clientX/clientY rather than offsetX/offsetY
-  // because Chromium/Electron report offsetX/Y in the wrong scale under
-  // non-100% Windows display scaling, which made handle hit-testing miss.
+  // Pointer position in frame-local LAYOUT px — the same space the handles are
+  // drawn in. frameLocalPoint also undoes the <body> CSS zoom from the UI-scale
+  // setting, which otherwise scales clientX/getBoundingClientRect away from the
+  // layout-positioned handles (see frame-point.ts).
   const frameXY = (e: React.PointerEvent) => {
     const b = e.currentTarget.getBoundingClientRect();
-    return { x: e.clientX - b.left, y: e.clientY - b.top };
+    return frameLocalPoint(b, e.clientX, e.clientY);
   };
 
   const normRatio = aspect > 0 ? aspect / imageAspect : 0; // crop.w / crop.h
@@ -170,7 +171,9 @@ export function CropOverlay({
     e.currentTarget.setPointerCapture(e.pointerId);
 
     if (e.ctrlKey || e.metaKey) {
-      dragRef.current = { mode: "level", startCrop: crop, sx: e.clientX, sy: e.clientY };
+      // sx/sy are frame-local layout px (matching frameXY), so deltas computed
+      // against them stay in the handles' coordinate space under any UI zoom.
+      dragRef.current = { mode: "level", startCrop: crop, sx: px, sy: py };
       setHoverHandle("level");
       setLine({ x: px, y: py, dx: 0, dy: 0 });
       return;
@@ -178,7 +181,7 @@ export function CropOverlay({
     const mode = hitTest(px, py);
     if (!mode) return;
     setHoverHandle(mode);
-    dragRef.current = { mode, startCrop: crop, sx: e.clientX, sy: e.clientY };
+    dragRef.current = { mode, startCrop: crop, sx: px, sy: py };
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -190,13 +193,14 @@ export function CropOverlay({
       setHoverHandle(e.ctrlKey || e.metaKey ? "level" : hitTest(px, py));
       return;
     }
+    const { x: px, y: py } = frameXY(e);
     if (d.mode === "level") {
-      setLine((l) => (l ? { ...l, dx: e.clientX - d.sx, dy: e.clientY - d.sy } : l));
+      setLine((l) => (l ? { ...l, dx: px - d.sx, dy: py - d.sy } : l));
       return;
     }
-    // Screen delta -> straightened-frame delta.
-    const dnx = ((e.clientX - d.sx) / rect.w) * viewCrop.width;
-    const dny = ((e.clientY - d.sy) / rect.h) * viewCrop.height;
+    // Screen delta -> straightened-frame delta (both now in layout px).
+    const dnx = ((px - d.sx) / rect.w) * viewCrop.width;
+    const dny = ((py - d.sy) / rect.h) * viewCrop.height;
 
     let next = applyDrag(d.mode, d.startCrop, dnx, dny, normRatio, normRatioFlip);
     if (constrain) {
@@ -229,8 +233,9 @@ export function CropOverlay({
     dragRef.current = null;
     if (!d) return;
     if (d.mode === "level") {
-      const dx = e.clientX - d.sx;
-      const dy = e.clientY - d.sy;
+      const { x: px, y: py } = frameXY(e);
+      const dx = px - d.sx;
+      const dy = py - d.sy;
       setLine(null);
       if (Math.abs(dx) + Math.abs(dy) > 6) {
         // Residual tilt of the drawn line, reduced to the nearest axis. The

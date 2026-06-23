@@ -17,6 +17,7 @@ import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
 import { computeHistogram } from "@/rendering/histogram";
+import { setHealSourceImage } from "@/rendering/heal-source";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
@@ -189,6 +190,13 @@ export function useDevelopRenderer(
       console.error("[render-worker]", msg);
     });
 
+    // The worker owns the decoded source; mirror its downscaled heal-source buffer
+    // into this (main-thread) module instance so the overlay's findHealSource /
+    // healColorOffset can pick a real source instead of a blind offset.
+    bridge.setOnHealSource(({ data, width, height }) => {
+      setHealSourceImage(data, width, height);
+    });
+
     setSupported(true);
     return () => {
       if (histTimer) { clearTimeout(histTimer); histTimer = null; }
@@ -197,6 +205,7 @@ export function useDevelopRenderer(
       bridge.setOnFrame(null);
       bridge.setOnHistogram(null);
       bridge.setOnError(null);
+      bridge.setOnHealSource(null);
       bridgeRef.current = null;
       ctxRef.current = null;
     };

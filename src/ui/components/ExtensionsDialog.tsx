@@ -10,6 +10,7 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { ExtensionManagerPanel } from "@/extensions/ExtensionManagerPanel";
+import { ModalWindow } from "@/ui/components/ModalWindow";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 
 const useOpen = create<{ open: boolean }>(() => ({ open: false }));
@@ -28,28 +29,10 @@ export function ExtensionsDialog() {
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60"
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget) closeExtensions();
-      }}
-    >
-      <div className="flex h-[640px] max-h-[90vh] w-[960px] max-w-[94vw] flex-col overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl">
-        <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-surface-2 px-3">
-          <span className="text-[11px] font-semibold uppercase tracking-widest text-text-secondary">
-            Extensions
-          </span>
-          <button
-            onClick={closeExtensions}
-            className="rounded px-1.5 text-[14px] leading-none text-text-muted hover:text-text-primary"
-          >
-            ×
-          </button>
-        </div>
-        <div className="flex min-h-0 flex-1">
-          <ExtensionManagerPanel />
-        </div>
+    <ModalWindow title="Extensions" onClose={closeExtensions}>
+      <div className="flex min-h-0 flex-1">
+        <ExtensionManagerPanel />
       </div>
-    </div>
+    </ModalWindow>
   );
 }

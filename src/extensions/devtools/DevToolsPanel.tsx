@@ -18,6 +18,7 @@ import {
   type LogLevel,
 } from "./log-capture";
 import { detachDevtools, isDevtoolsWindow, reattachDevtools } from "./detach";
+import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
 
 type Tab = "Console" | "Issues" | "System" | "Storage" | "Native";
 const TABS: Tab[] = ["Console", "Issues", "System", "Storage", "Native"];
@@ -103,18 +104,23 @@ export function DevToolsPanel({ fill = false }: { fill?: boolean } = {}) {
 
 /** Full-window host rendered in the detached Developer Tools window. */
 export function DevToolsWindow() {
+  useTitleBarOverlay("--color-surface-2"); // this window's header is surface-2
   useEffect(() => {
     document.title = "SafeLight — Developer Tools";
   }, []);
   return (
     <div className="flex h-screen flex-col bg-surface-1 text-text-primary">
-      <div className="flex h-8 shrink-0 items-center justify-between border-b border-border bg-surface-2 px-3">
+      <div
+        className="flex h-[38px] shrink-0 items-center justify-between border-b border-border bg-surface-2 px-3"
+        style={dragBarStyle}
+      >
         <span className="text-[11px] uppercase tracking-widest text-text-secondary">
           Developer Tools
         </span>
         <button
           onClick={reattachDevtools}
           title="Close and re-dock in the main window"
+          style={noDragStyle}
           className="rounded px-2 py-0.5 text-[11px] text-text-muted hover:bg-surface-3 hover:text-text-primary"
         >
           ⧉ Re-dock

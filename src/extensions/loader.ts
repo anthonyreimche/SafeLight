@@ -174,6 +174,30 @@ async function loadPlugin(manifest: ExtensionManifest): Promise<void> {
   loaded.set(manifest.id, mod as ExtensionModule);
 }
 
+/** After a background trust refresh, retire any loaded external extension the
+ *  list now bans — the remote kill-switch taking effect on its own schedule.
+ *  Only touches banned extensions; everything else keeps running untouched. */
+async function enforceBansOnLoaded(): Promise<void> {
+  const native = window.safelightNative;
+  if (!native) return;
+  let list: ExtensionManifest[];
+  try {
+    list = await native.plugins.list();
+  } catch {
+    return;
+  }
+  for (const m of list) {
+    if (!loaded.has(m.id)) continue;
+    const banned = bannedReasonForManifest(m);
+    if (!banned) continue;
+    flagBannedExtension({ id: m.id, name: m.name, reason: banned });
+    console.warn(`[extensions] disabling now-banned ${m.id}: ${banned}`);
+    loaded.get(m.id)?.deactivate?.();
+    loaded.delete(m.id);
+    unregisterExtension(m.id);
+  }
+}
+
 export async function loadExternalPlugins(): Promise<void> {
   const native = window.safelightNative;
   if (!native) return; // plain-browser dev build
@@ -183,34 +207,31 @@ export async function loadExternalPlugins(): Promise<void> {
   } catch {
     return;
   }
-  // No installed extensions → no trust fetch, no work. (applySavedTheme still
-  // runs below in case a built-in's theme is the saved one.)
-  if (list.length > 0) {
-    // Resolve the trust lists before activating anything so the kill-switch can
-    // refuse an extension banned after it was installed. Cheap: served from the
-    // main process's disk/in-memory cache, with the network only off the boot
-    // path (see fetchTrustList in electron/main.cjs).
-    await loadTrustList();
-    for (const manifest of list) {
-      if (isExtensionDisabled(manifest.id)) continue;
-      // Remote kill-switch: a banned extension is never activated, even though
-      // its files are still on disk. We flag it (banner + console) rather than
-      // silently dropping it, so the user knows why it stopped working.
-      const banned = bannedReasonForManifest(manifest);
-      if (banned) {
-        flagBannedExtension({ id: manifest.id, name: manifest.name, reason: banned });
-        console.warn(`[extensions] blocked ${manifest.id}: ${banned}`);
-        continue;
-      }
-      try {
-        await loadPlugin(manifest);
-      } catch (e) {
-        console.error(`[extensions] failed to load ${manifest.id}:`, e);
-      }
+  for (const manifest of list) {
+    if (isExtensionDisabled(manifest.id)) continue;
+    // Kill-switch check against the cached trust list (seeded synchronously from
+    // localStorage) — no fetch to await, so themes and panels activate at once.
+    // A banned extension is never activated; we flag it (banner + console) rather
+    // than silently dropping it, so the user knows why it stopped working.
+    const banned = bannedReasonForManifest(manifest);
+    if (banned) {
+      flagBannedExtension({ id: manifest.id, name: manifest.name, reason: banned });
+      console.warn(`[extensions] blocked ${manifest.id}: ${banned}`);
+      continue;
+    }
+    try {
+      await loadPlugin(manifest);
+    } catch (e) {
+      console.error(`[extensions] failed to load ${manifest.id}:`, e);
     }
   }
   // The saved theme may belong to a plugin that just registered it.
   applySavedTheme();
+  // Refresh the trust list from the network in the background (force: bypass the
+  // cache TTL so registry edits — new bans, new verifications — show up on the
+  // next launch, not up to a TTL later), then retire anything it now bans. This
+  // is off the hot path: activation above already happened from the cached list.
+  if (list.length > 0) void loadTrustList(true).then(enforceBansOnLoaded);
 }
 
 export async function installFromGitHub(
@@ -251,7 +272,15 @@ export async function uninstallPlugin(id: string): Promise<void> {
 // the repo it was installed from. We require Releases (the same convention the
 // app's own updater uses) — a repo with no releases simply has "no update info".
 
-const UPDATE_CHECK_TTL = 6 * 60 * 60 * 1000; // re-check at most every 6h
+// How long a per-extension check is reused before we re-query GitHub. Kept short
+// so opening the store (or relaunching) surfaces a freshly-pushed version quickly;
+// the persisted cache still paints the last-known badge instantly while the
+// refresh runs, so a short TTL costs latency only on the network round-trip.
+const UPDATE_CHECK_TTL = 30 * 60 * 1000; // 30 min
+
+// Re-run the whole sweep on this cadence so a version bumped while the app is
+// left open is noticed without a restart. host.ts owns the interval.
+export const EXT_UPDATE_POLL_MS = 3 * 60 * 60 * 1000; // 3h
 
 /** The version in the repo's default-branch safelight.json, or null. This is the
  *  same field the installed manifest exposes, so a pushed version bump is an
@@ -311,10 +340,14 @@ export async function updateExtension(
   return manifest;
 }
 
-/** Background check on launch: refresh update info for every installed
- *  extension, and auto-update when the user has opted in. Throttled so we don't
- *  fire a burst of GitHub requests. Gated by the checkExtensionUpdates setting. */
-export async function checkAllExtensionUpdates(): Promise<void> {
+/** Refresh update info for every installed extension, and auto-update when the
+ *  user has opted in. Gated by the checkExtensionUpdates setting. Pass `force` to
+ *  bypass the per-extension TTL (used by the periodic poll so it always re-checks).
+ *
+ *  Checks run through a bounded worker pool rather than fixed batches: there's no
+ *  barrier between items, so one slow repo can't hold up the rest and the sweep
+ *  finishes in roughly a single round-trip instead of ceil(N / batch) waves. */
+export async function checkAllExtensionUpdates(force = false): Promise<void> {
   const native = window.safelightNative;
   if (!native?.plugins?.latestVersion) return;
   const settings = getSettings();
@@ -325,23 +358,25 @@ export async function checkAllExtensionUpdates(): Promise<void> {
   } catch {
     return;
   }
-  const CONCURRENCY = 3;
-  for (let i = 0; i < list.length; i += CONCURRENCY) {
-    const slice = list.slice(i, i + CONCURRENCY);
-    await Promise.all(
-      slice.map(async (m) => {
-        const info = await checkExtensionUpdate(m);
-        if (info?.hasUpdate && info.latestTag && settings.autoUpdateExtensions) {
-          const repo = repoFor(m);
-          if (repo) {
-            try {
-              await updateExtension(m.id, repo, info.latestTag);
-            } catch (e) {
-              console.error(`[extensions] auto-update failed for ${m.id}:`, e);
-            }
+  const CONCURRENCY = 8;
+  let next = 0;
+  const worker = async () => {
+    while (next < list.length) {
+      const m = list[next++];
+      const info = await checkExtensionUpdate(m, force);
+      if (info?.hasUpdate && info.latestTag && settings.autoUpdateExtensions) {
+        const repo = repoFor(m);
+        if (repo) {
+          try {
+            await updateExtension(m.id, repo, info.latestTag);
+          } catch (e) {
+            console.error(`[extensions] auto-update failed for ${m.id}:`, e);
           }
         }
-      }),
-    );
-  }
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, list.length) }, worker),
+  );
 }

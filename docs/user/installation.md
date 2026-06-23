@@ -204,7 +204,7 @@ Sources are rsynced to a native ext4 directory inside WSL (`~/.cache/safelight-l
 
 You can also build Linux packages from a Mac the same way as on Linux (`npx electron-builder --linux <target>`), provided the target's tooling (`rpmbuild`, etc.) is installed via Homebrew.
 
-> **Why a desktop app at all?** RAW decoding runs libraw-wasm on shared memory in a worker, which requires a cross-origin-isolated secure context. The Electron shell serves the app over a privileged `app://` scheme with COOP/COEP headers and pins Chromium to the fast GPU path (discrete GPU, D3D11 ANGLE, no software fallback). See [Architecture](architecture.md#electron-shell).
+> **Why a desktop app at all?** RAW decoding runs libraw-wasm on shared memory in a worker, which requires a cross-origin-isolated secure context. The Electron shell serves the app over a privileged `app://` scheme with COOP/COEP headers and pins Chromium to the fast GPU path (discrete GPU, D3D11 ANGLE, no software fallback). See [Architecture](../dev/architecture.md#electron-shell).
 
 ### Production web build
 

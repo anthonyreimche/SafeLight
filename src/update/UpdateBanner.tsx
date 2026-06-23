@@ -19,6 +19,9 @@ import {
 } from "./update-checker";
 
 
+// Re-check cadence while the app stays open. Matches the extension poll.
+const APP_UPDATE_POLL_MS = 3 * 60 * 60 * 1000; // 3h
+
 export function UpdateBanner() {
   const checkEnabled = useSettings((s) => s.checkForUpdates);
   const channel = useSettings((s) => s.updateChannel);
@@ -27,11 +30,17 @@ export function UpdateBanner() {
   useEffect(() => {
     if (!checkEnabled) return;
     let alive = true;
-    void checkForUpdate(__APP_VERSION__, channel).then((info) => {
-      if (alive) setUpdate(info);
-    });
+    const run = () =>
+      void checkForUpdate(__APP_VERSION__, channel).then((info) => {
+        if (alive) setUpdate(info);
+      });
+    run(); // immediately on mount…
+    // …then re-check periodically so a release published while the app is left
+    // open surfaces without a restart (the old behaviour only checked on launch).
+    const id = setInterval(run, APP_UPDATE_POLL_MS);
     return () => {
       alive = false;
+      clearInterval(id);
     };
   }, [checkEnabled, channel]);
 

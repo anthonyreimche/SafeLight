@@ -27,6 +27,8 @@ export function applyTheme(id: string): void {
   appliedKeys = Object.keys(theme.vars);
   for (const [k, v] of Object.entries(theme.vars)) root.setProperty(k, v);
   useThemeStore.setState({ activeId: id });
+  // The native window-controls overlay (Win/Linux) is recolored per-surface by
+  // useTitleBarOverlay (src/ui/window-chrome.ts), which re-runs on this id change.
   try {
     localStorage.setItem(THEME_KEY, id);
   } catch {}

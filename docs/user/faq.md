@@ -76,7 +76,7 @@ Every shortcut is rebindable in Preferences (Ctrl+,) ▸ Shortcuts. Single-lette
 
 ### What can extensions do?
 
-A lot — the core is a blind orchestrator that extensions fill in. They can add or replace panels (every stock panel can be disabled and swapped), add themes, layouts, slider icons, keyboard shortcuts, and UI slots; contribute display transforms (tone mappers) and lens profiles; own catalog side concerns via lifecycle hooks (e.g. XMP sidecars); add Library sorts, grid filters, and preset importers; and add export processors and filename templates. See [Extensions](extensions.md).
+A lot — the core is a blind orchestrator that extensions fill in. They can add or replace panels (every stock panel can be disabled and swapped), add themes, layouts, slider icons, keyboard shortcuts, and UI slots; contribute display transforms (tone mappers) and lens profiles; own catalog side concerns via lifecycle hooks (e.g. XMP sidecars); add Library sorts, grid filters, and preset importers; and add export processors and filename templates. See [Using Extensions](using-extensions.md).
 
 ### Are extensions safe?
 
@@ -104,4 +104,4 @@ Ensure you have write permission to the destination and that photos finished dec
 
 ### How can I request a feature or report a bug?
 
-Open a GitHub issue. Pull requests are welcome — see [Contributing](contributing.md).
+Open a GitHub issue. Pull requests are welcome — see [Contributing](../dev/contributing.md).

@@ -793,8 +793,13 @@ declare global {
         /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. */
         install(spec: string): Promise<ExtensionManifest>;
         uninstall(id: string): Promise<void>;
-        /** Search GitHub for official extensions (repos with `topic`). */
-        search(query: string, topic: string): Promise<ExtensionSearchResult[]>;
+        /** Search GitHub for official extensions (repos with `topic`). Results
+         *  are cached per (topic, query); pass `force` to bypass the cache. */
+        search(
+          query: string,
+          topic: string,
+          force?: boolean,
+        ): Promise<ExtensionSearchResult[]>;
         /** The `version` from the repo's root safelight.json on its default
          *  branch, or null. Lets the updater detect a pushed version bump
          *  without a GitHub Release. Optional: absent in older Electron builds. */
@@ -827,6 +832,11 @@ declare global {
             memoryMB: number;
           }[]
         >;
+      };
+      /** Recolor the native window-controls overlay (Windows/Linux) to follow
+       *  the active theme; no-op on macOS. */
+      titlebar?: {
+        setOverlay(color: string, symbolColor: string): Promise<void>;
       };
       /** One-shot handover of the privileged fs + update-installer surface.
        *  Returns the bundle on the first call (core, at boot) and null after, so

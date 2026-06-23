@@ -8,7 +8,7 @@ Thanks for your interest in contributing to Safelight! There are two main ways t
 2. `npm install`
 3. `npm run dev` — browser dev server (Chromium-based browser recommended), or
    `npm run electron:dev` — desktop window
-4. `npm run build` — type-check and production build; `npm run build:electron` — Windows installer. Distribution packages (Windows + Linux deb/rpm/pacman/AppImage/Flatpak) are built with the one-click scripts in `build-scripts/` (see [Installation](installation.md))
+4. `npm run build` — type-check and production build; `npm run build:electron` — Windows installer. Distribution packages (Windows + Linux deb/rpm/pacman/AppImage/Flatpak) are built with the one-click scripts in `build-scripts/` (see [Installation](../user/installation.md))
 
 Node.js 20.19+ or 22.12+ required (Vite 8 minimum; Node 22 LTS recommended). There is no test suite yet; changes are verified by building and exercising the app.
 
@@ -34,9 +34,9 @@ Two things to keep in mind: rendering runs in a **Web Worker on an `OffscreenCan
 
 ## Building Extensions Instead
 
-If your feature is a new panel, theme, or tool, consider shipping it as an extension rather than a core change — no fork required, and users can install it straight from your GitHub repo. See [Extensions](extensions.md) and the [API reference](api-documentation.md). Tag the repo with the `safelight-extension` topic so it appears in the in-app browser.
+If your feature is a new panel, theme, or tool, consider shipping it as an extension rather than a core change — no fork required, and users can install it straight from your GitHub repo. See [Building Extensions](extensions/README.md) and the [API reference](api/README.md). Tag the repo with the `safelight-extension` topic so it appears in the in-app browser.
 
-While developing, enable the built-in **Developer Tools** extension (disabled by default) and point it at a local folder of your built extensions to load them live with reload-on-rebuild — no GitHub reinstall per change. See [Developing & debugging](extensions.md#developing--debugging) for the full loop, the in-app console/REPL, and common load errors.
+While developing, enable the built-in **Developer Tools** extension (disabled by default) and point it at a local folder of your built extensions to load them live with reload-on-rebuild — no GitHub reinstall per change. See [Developing & debugging](extensions/debugging.md) for the full loop, the in-app console/REPL, and common load errors.
 
 ## Workflow
 

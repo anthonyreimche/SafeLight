@@ -19,6 +19,7 @@ import { useDevelopStore } from "@/state/develop-store";
 import { findHealSource, healColorOffset } from "@/rendering/heal-source";
 import { sampleLinearRGB } from "@/rendering/sample-pixel";
 import { resolveCursorCss } from "@/state/cursor-store";
+import { frameLocalPoint } from "@/ui/frame-point";
 
 interface Rect {
   x: number;
@@ -160,13 +161,13 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
   const [hovered, setHovered] = useState<HandleId | null>(null);
 
   // --- coordinate transforms -------------------------------------------------
-  // Pointer position in frame-local CSS px (the space `rect` is in). Derived
-  // from clientX/clientY because Chromium/Electron mis-scale offsetX/Y under
-  // non-100% Windows display scaling, which would drift brush dabs and the
-  // brush-circle cursor away from the pointer.
+  // Pointer position in frame-local LAYOUT px (the space `rect` is in).
+  // frameLocalPoint derives it from clientX/clientY and undoes the <body> CSS
+  // zoom from the UI-scale setting, which otherwise drifts brush dabs and the
+  // brush-circle cursor away from the pointer (see frame-point.ts).
   const frameXY = (e: React.PointerEvent) => {
     const b = e.currentTarget.getBoundingClientRect();
-    return { x: e.clientX - b.left, y: e.clientY - b.top };
+    return frameLocalPoint(b, e.clientX, e.clientY);
   };
   const toSource = (px: number, py: number) => {
     const ox = (px - rect.x) / rect.w;
@@ -417,10 +418,14 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
       const target = resolveTarget();
       let maskId: string;
       let compId: string;
-      // Reuse an existing brush component of the same mode when extending.
+      // Extend the *selected* brush component (same mode) so further strokes
+      // build on the brush you're working on. Picking "+ Brush" from the panel
+      // deselects first, so painting then starts a separate brush component —
+      // this is what lets a mask hold more than one brush.
       const mask = target === "new" ? null : masks.find((m) => m.id === target);
+      const sel = mask?.components.find((c) => c.id === st.selectedComponentId) ?? null;
       const existing =
-        mask?.components.find((c) => c.kind === "brush" && c.mode === mode) ?? null;
+        sel && sel.kind === "brush" && sel.mode === mode ? sel : null;
       if (existing && mask) {
         maskId = mask.id;
         compId = existing.id;

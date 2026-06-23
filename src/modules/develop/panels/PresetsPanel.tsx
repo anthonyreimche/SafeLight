@@ -14,6 +14,8 @@ import { summarizePreset } from "../preset-summary";
 import { PresetTooltip } from "./PresetTooltip";
 import { PresetOverwriteDialog } from "./PresetOverwriteDialog";
 import { PresetSaveDialog } from "./PresetSaveDialog";
+import { PresetRenameDialog } from "./PresetRenameDialog";
+import { PresetMoveDialog } from "./PresetMoveDialog";
 import { PresetDeleteDialog } from "./PresetDeleteDialog";
 import { ContextMenu } from "@/ui/components/ContextMenu";
 
@@ -28,6 +30,8 @@ export function PresetsPanel() {
   const [hovered, setHovered] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [saving, setSaving] = useState(false);
   const [updating, setUpdating] = useState<Preset | null>(null);
+  const [renaming, setRenaming] = useState<Preset | null>(null);
+  const [moving, setMoving] = useState<Preset | null>(null);
   const [menu, setMenu] = useState<{ preset: Preset; x: number; y: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Preset | null>(null);
   const [collision, setCollision] = useState<{ existingId: string; pending: PendingSave } | null>(null);
@@ -39,6 +43,8 @@ export function PresetsPanel() {
   const presets = usePresetsStore((s) => s.presets);
   const addPreset = usePresetsStore((s) => s.add);
   const updatePreset = usePresetsStore((s) => s.update);
+  const renamePreset = usePresetsStore((s) => s.rename);
+  const setPresetGroup = usePresetsStore((s) => s.setGroup);
   const removePreset = usePresetsStore((s) => s.remove);
   const importers = usePresetImporters();
 
@@ -214,10 +220,13 @@ export function PresetsPanel() {
           x={menu.x}
           y={menu.y}
           items={[
+            { label: "Rename…", onClick: () => setRenaming(menu.preset) },
+            { label: "Move to group…", onClick: () => setMoving(menu.preset) },
             {
               label: "Update with current settings",
               onClick: () => setUpdating(menu.preset),
             },
+            "separator",
             { label: "Delete", danger: true, onClick: () => setConfirmDelete(menu.preset) },
           ]}
           onClose={() => setMenu(null)}
@@ -253,6 +262,36 @@ export function PresetsPanel() {
             setUpdating(null);
           }}
           onCancel={() => setUpdating(null)}
+        />
+      )}
+
+      {renaming && (
+        <PresetRenameDialog
+          initialName={renaming.name}
+          validate={(name) =>
+            presets.some(
+              (p) => p.id !== renaming.id && p.name.toLowerCase() === name.toLowerCase(),
+            )
+              ? "A preset with this name already exists."
+              : null
+          }
+          onRename={(name) => {
+            renamePreset(renaming.id, name);
+            setRenaming(null);
+          }}
+          onCancel={() => setRenaming(null)}
+        />
+      )}
+
+      {moving && (
+        <PresetMoveDialog
+          initialGroup={moving.group}
+          groups={groups}
+          onMove={(group) => {
+            setPresetGroup(moving.id, group);
+            setMoving(null);
+          }}
+          onCancel={() => setMoving(null)}
         />
       )}
 

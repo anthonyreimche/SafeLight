@@ -446,36 +446,20 @@ async function fetchTrustNetwork() {
   };
 }
 
-let trustRefreshing = false;
-async function refreshTrust() {
-  if (trustRefreshing) return;
-  trustRefreshing = true;
-  try {
-    trustCache = { at: Date.now(), list: await fetchTrustNetwork() };
-    writeTrustDisk(trustCache);
-  } catch {
-    // keep last-good
-  } finally {
-    trustRefreshing = false;
-  }
-}
-
-// Never blocks the boot path on the network once any cache exists: the in-memory
-// cache is seeded from disk, a stale copy is returned immediately and refreshed in
-// the background, and only the very first run ever (no cache at all) awaits the
-// bounded network fetch. `force` (manual "check now") always awaits the network.
+// In-memory cache seeded from disk (last-good survives restarts and offline), with
+// a network refresh only when stale. The renderer never awaits this on its boot
+// path — it decides from its own localStorage mirror and refreshes in the
+// background — so the bounded network wait here is always off the critical path.
 async function fetchTrustList(force = false) {
   if (!trustCache) trustCache = readTrustDisk();
-  if (!force && trustCache) {
-    if (Date.now() - trustCache.at >= TRUST_TTL_MS) void refreshTrust();
+  if (!force && trustCache && Date.now() - trustCache.at < TRUST_TTL_MS)
     return trustCache.list;
-  }
   try {
     trustCache = { at: Date.now(), list: await fetchTrustNetwork() };
     writeTrustDisk(trustCache);
     return trustCache.list;
   } catch {
-    return trustCache ? trustCache.list : EMPTY_TRUST;
+    return trustCache ? trustCache.list : EMPTY_TRUST; // last-good (disk) or empty
   }
 }
 
@@ -533,32 +517,85 @@ async function installPlugin(spec) {
 // Discover official extensions on GitHub by topic (default
 // "safelight-extension"; configurable in Preferences ▸ Extensions). Runs in the
 // main process so the renderer's COOP/COEP isolation never gets in the way.
-async function searchExtensions(query, topic) {
+//
+// Results are cached (memory + disk) per (topic, query) with a short TTL. The
+// default browse grid (empty query) is the first thing the store fetches on every
+// open, so serving it from a warm cache makes re-opens instant and spares the
+// unauthenticated 60/hr GitHub Search budget. On rate-limit / network failure we
+// fall back to any cached payload (even if stale) rather than surfacing an error.
+const searchCache = new Map(); // `${topic}\n${query}` -> { at, items }
+const SEARCH_TTL_MS = 15 * 60 * 1000; // results turn over slowly; 15 min is plenty
+const searchCacheFile = () => path.join(app.getPath("userData"), "search-cache.json");
+let searchCacheLoaded = false;
+
+function loadSearchDisk() {
+  if (searchCacheLoaded) return;
+  searchCacheLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(searchCacheFile(), "utf8"));
+    if (raw && typeof raw === "object")
+      for (const [k, v] of Object.entries(raw))
+        if (v && typeof v.at === "number" && Array.isArray(v.items))
+          searchCache.set(k, { at: v.at, items: v.items });
+  } catch {}
+}
+
+let searchWriteTimer = null;
+function persistSearchDisk() {
+  if (searchWriteTimer) return;
+  searchWriteTimer = setTimeout(() => {
+    searchWriteTimer = null;
+    fs.promises
+      .writeFile(searchCacheFile(), JSON.stringify(Object.fromEntries(searchCache)))
+      .catch(() => {});
+  }, 1000);
+  if (searchWriteTimer.unref) searchWriteTimer.unref();
+}
+
+async function searchExtensions(query, topic, force = false) {
   const t = String(topic || "safelight-extension").trim();
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(t)) throw new Error("Bad extension topic");
   const q = [String(query || "").trim(), `topic:${t}`]
     .filter(Boolean)
     .join(" ");
-  const res = await net.fetch(
-    `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=25`,
-    {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "Safelight",
-      },
-    }
-  );
-  if (res.status === 403 || res.status === 429)
+  loadSearchDisk();
+  const key = `${t}\n${String(query || "").trim()}`;
+  const hit = searchCache.get(key);
+  if (!force && hit && Date.now() - hit.at < SEARCH_TTL_MS) return hit.items;
+  let res;
+  try {
+    res = await net.fetch(
+      `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=25`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "Safelight",
+        },
+      }
+    );
+  } catch (e) {
+    if (hit) return hit.items; // network hiccup — serve last-good rather than fail
+    throw e;
+  }
+  if (res.status === 403 || res.status === 429) {
+    if (hit) return hit.items; // rate-limited — stale results beat an error
     throw new Error("GitHub rate limit reached — try again in a minute.");
-  if (!res.ok) throw new Error(`GitHub search failed (${res.status})`);
+  }
+  if (!res.ok) {
+    if (hit) return hit.items;
+    throw new Error(`GitHub search failed (${res.status})`);
+  }
   const body = await res.json();
-  return (body.items || []).map((r) => ({
+  const items = (body.items || []).map((r) => ({
     fullName: r.full_name,
     description: r.description,
     stars: r.stargazers_count || 0,
     updatedAt: r.updated_at,
     topics: Array.isArray(r.topics) ? r.topics : [],
   }));
+  searchCache.set(key, { at: Date.now(), items });
+  persistSearchDisk();
+  return items;
 }
 
 async function fetchReleases(repo) {
@@ -623,12 +660,46 @@ function autoOgCard(repo) {
 // otherwise it's the auto-generated card above. There is no unauthenticated REST
 // field for this, so we read <meta property="og:image"> from the repo's HTML.
 // Cached in-process (TTL) — the URL only changes when the owner edits the
-// preview, and a browse grid asks for ~25 of these at once.
+// preview, and a browse grid asks for ~25 of these at once. The cache is also
+// mirrored to disk: without it, every cold launch re-scrapes ~25 github.com HTML
+// pages the first time Browse opens (most of which return the auto-card anyway),
+// which is the bulk of the store's open-time latency.
 const ogImageCache = new Map(); // repo(lowercase) -> { url, at }
 const OG_TTL_MS = 6 * 60 * 60 * 1000;
+const ogCacheFile = () => path.join(app.getPath("userData"), "og-cache.json");
+let ogCacheLoaded = false;
+
+// Seed the in-memory map from disk on first use (lazy: only the Extensions store
+// touches og:images, so don't pay this on every launch). Stale entries are kept —
+// fetchOgImage re-validates against OG_TTL_MS per lookup.
+function loadOgDisk() {
+  if (ogCacheLoaded) return;
+  ogCacheLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(ogCacheFile(), "utf8"));
+    if (raw && typeof raw === "object")
+      for (const [k, v] of Object.entries(raw))
+        if (v && typeof v.url === "string" && typeof v.at === "number")
+          ogImageCache.set(k, { url: v.url, at: v.at });
+  } catch {}
+}
+
+let ogWriteTimer = null;
+// Debounced so a 25-card browse-grid burst writes the file once, not 25 times.
+function persistOgDisk() {
+  if (ogWriteTimer) return;
+  ogWriteTimer = setTimeout(() => {
+    ogWriteTimer = null;
+    fs.promises
+      .writeFile(ogCacheFile(), JSON.stringify(Object.fromEntries(ogImageCache)))
+      .catch(() => {});
+  }, 1000);
+  if (ogWriteTimer.unref) ogWriteTimer.unref();
+}
 
 async function fetchOgImage(repo) {
   if (!validRepo(repo)) return autoOgCard(repo);
+  loadOgDisk();
   const key = repo.toLowerCase();
   const hit = ogImageCache.get(key);
   if (hit && Date.now() - hit.at < OG_TTL_MS) return hit.url;
@@ -662,6 +733,7 @@ async function fetchOgImage(repo) {
     // thumbnail must not break the browse grid.
   }
   ogImageCache.set(key, { url, at: Date.now() });
+  persistOgDisk();
   return url;
 }
 
@@ -778,6 +850,20 @@ async function installRelease(repo, tag) {
 
 function registerPluginIpc() {
   ipcMain.handle("app:version", () => appVersion());
+  // Recolor the native min/max/close overlay to follow the in-app theme
+  // (Windows/Linux only — macOS has no overlay, just traffic lights).
+  ipcMain.handle("window:setTitleBarOverlay", (e, color, symbolColor) => {
+    if (process.platform === "darwin") return;
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win) return;
+    try {
+      win.setTitleBarOverlay({
+        color: String(color),
+        symbolColor: String(symbolColor),
+        height: 36,
+      });
+    } catch {}
+  });
   ipcMain.handle("releases:fetch", (_e, repo) => fetchReleases(String(repo)));
   ipcMain.handle("github:repoMeta", (_e, repo) => fetchRepoMeta(String(repo)));
   ipcMain.handle("github:ogImage", (_e, repo) => fetchOgImage(String(repo)));
@@ -789,8 +875,8 @@ function registerPluginIpc() {
   );
   ipcMain.handle("plugins:list", () => listPlugins());
   ipcMain.handle("plugins:install", (_e, spec) => installPlugin(spec));
-  ipcMain.handle("plugins:search", (_e, query, topic) =>
-    searchExtensions(query, topic)
+  ipcMain.handle("plugins:search", (_e, query, topic, force) =>
+    searchExtensions(query, topic, force)
   );
   ipcMain.handle("plugins:latest-version", (_e, repo) =>
     fetchManifestVersion(String(repo))
@@ -919,6 +1005,27 @@ function registerDevtoolsIpc() {
   );
 }
 
+// The custom in-app top bars (TopBar, welcome, DevTools — all h-[38px]) double
+// as the window title bar via titleBarStyle:'hidden'. On Windows/Linux the
+// native min/max/close buttons are drawn as an overlay on the right (keeps
+// Windows snap-layout-on-hover); on macOS the traffic lights stay on the left as
+// Mac users expect — we only nudge them to vertically center within the bar.
+// The overlay is kept 2px shorter than the bar so the bar's bottom border line
+// stays visible beneath the buttons. Overlay colors are recolored per-surface at
+// runtime by useTitleBarOverlay (src/ui/window-chrome.ts); these are first-paint
+// defaults matching the neutral theme's surface-1.
+const titleBarOpts =
+  process.platform === "darwin"
+    ? { titleBarStyle: "hidden", trafficLightPosition: { x: 12, y: 12 } }
+    : {
+        titleBarStyle: "hidden",
+        titleBarOverlay: {
+          color: "#5e5e5e", // --color-surface-1
+          symbolColor: "#d0d0d0", // --color-text-secondary
+          height: 36, // 2px under the 38px bar so its bottom border shows
+        },
+      };
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1500,
@@ -928,6 +1035,7 @@ function createWindow() {
     backgroundColor: "#1a1a1a",
     show: false,
     autoHideMenuBar: true,
+    ...titleBarOpts,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -961,6 +1069,7 @@ function createWindow() {
           show: false,
           backgroundColor: "#1a1a1a",
           autoHideMenuBar: true,
+          ...titleBarOpts,
           webPreferences: {
             preload: path.join(__dirname, "preload.cjs"),
             contextIsolation: true,

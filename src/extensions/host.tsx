@@ -53,6 +53,7 @@ import {
 } from "@/state/cursor-store";
 import {
   checkAllExtensionUpdates,
+  EXT_UPDATE_POLL_MS,
   initEnablement,
   loadBuiltins,
   loadExternalPlugins,
@@ -161,5 +162,8 @@ export function initExtensionHost(): void {
   // Load external plugins, then quietly check them for updates (and auto-update
   // if the user opted in). The check is gated on a setting and rate-limited.
   void loadExternalPlugins().then(() => void checkAllExtensionUpdates());
+  // Re-discover periodically so a version bumped while the app is left open is
+  // noticed without a restart (force past the per-extension TTL).
+  setInterval(() => void checkAllExtensionUpdates(true), EXT_UPDATE_POLL_MS);
   void warmDecodePool();
 }

@@ -191,6 +191,7 @@ uniform bool uHaveDeveloped;     // true on the compositing pass (match in edite
 uniform bool uApplyRetouch;      // false while rendering the developed pass
 uniform sampler2D uHealFill;     // precomputed content-aware fill, source-UV space
 uniform bool uHaveHealFill;      // true when the fill texture is valid
+uniform bool uMembraneHeal;      // A/B toggle: gradient-domain membrane vs flat tint
 // Pass 1 of the heal/clone pipeline: output ONLY the retouched source (no tone
 // edits) into an offscreen copy. Pass 2 then develops from that copy, so every
 // blur/sharpen tap sees the spot already removed instead of the original
@@ -863,6 +864,39 @@ vec3 inpaintBrush(int ch, vec2 uv, float radius) {
   return wsum > 0.0 ? acc / wsum : devSample(uv);
 }
 
+// Closed-form gradient-domain (membrane) correction for a heal spot. Samples the
+// boundary mismatch (destination - source) just outside the disc and interpolates
+// it across the interior with inverse-distance (Shepard) weights — a smooth
+// low-frequency field that makes the copied source meet its surroundings
+// seamlessly even across a tone gradient. This is the per-pixel generalisation of
+// the single mean-colour offset carried in uSpotTint. Both terms sample uImage so
+// the correction stays in source space (it is added to the source patch, then the
+// whole patched image is developed downstream — matching the flat-tint path).
+vec3 membraneCorrection(vec2 dst, vec2 src, vec4 tc, float radius, vec2 uv) {
+  vec2 q = vec2((uv.x - dst.x) * uImageAspect, uv.y - dst.y); // pixel in aspect space
+  vec3 acc = vec3(0.0);
+  float wsum = 0.0;
+  const int N = 16;
+  for (int k = 0; k < N; k++) {
+    float a = (float(k) + 0.5) / float(N) * 6.2831853;
+    vec2 e = vec2(cos(a), sin(a)) * radius * 1.04;       // boundary point (aspect space)
+    vec2 dUv = clamp(dst + vec2(e.x / uImageAspect, e.y), 0.0, 1.0);
+    // Same inverse rotate+scale the patch fetch uses, so the source boundary point
+    // corresponds to the same place in the copied texture.
+    float rx = (tc.x * e.x + tc.y * e.y) * tc.z;
+    float ry = (-tc.y * e.x + tc.x * e.y) * tc.z;
+    vec2 sUv = clamp(src + vec2(rx / uImageAspect, ry), 0.0, 1.0);
+    // Explicit LOD: this runs in divergent control flow (inside the per-spot
+    // branch), where auto-LOD derivatives are undefined and sample wrong mips.
+    vec3 delta = textureLod(uImage, dUv, 0.0).rgb - textureLod(uImage, sUv, 0.0).rgb;
+    float dist = length(q - e) + 1e-3;
+    float w = 1.0 / (dist * dist);                        // mean-value-style weighting
+    acc += delta * w;
+    wsum += w;
+  }
+  return acc / max(wsum, 1e-4);
+}
+
 vec3 applyRetouch(vec2 uv, vec3 base) {
   vec3 c = base;
   for (int i = 0; i < MAX_SPOTS; i++) {
@@ -893,8 +927,13 @@ vec3 applyRetouch(vec2 uv, vec3 base) {
     float rx = (tc.x * dx + tc.y * dy) * tc.z;
     float ry = (-tc.y * dx + tc.x * dy) * tc.z;
     vec2 sUv = clamp(src + vec2(rx / uImageAspect, ry), 0.0, 1.0);
-    // Recolour toward the destination's surroundings so the seam disappears.
-    vec3 srcCol = clamp(texture(uImage, sUv).rgb + uSpotTint[i].rgb, 0.0, 1.0);
+    // Recolour toward the destination's surroundings so the seam disappears. Heal
+    // spots (b.w > 0.5) use the per-pixel gradient-domain membrane; clone spots —
+    // and the membrane A/B toggle when off — fall back to the flat mean offset.
+    vec3 corr = (uMembraneHeal && b.w > 0.5)
+      ? membraneCorrection(dst, src, tc, radius, uv)
+      : uSpotTint[i].rgb;
+    vec3 srcCol = clamp(textureLod(uImage, sUv, 0.0).rgb + corr, 0.0, 1.0);
     c = mix(c, srcCol, w);
   }
   // Brush-shaped retouch: painted coverage from the atlas, one source offset each.

@@ -55,8 +55,13 @@ contextBridge.exposeInMainWorld("safelightNative", {
   plugins: {
     list: () => ipcRenderer.invoke("plugins:list"),
     install: (spec) => ipcRenderer.invoke("plugins:install", String(spec)),
-    search: (query, topic) =>
-      ipcRenderer.invoke("plugins:search", String(query ?? ""), String(topic ?? "")),
+    search: (query, topic, force) =>
+      ipcRenderer.invoke(
+        "plugins:search",
+        String(query ?? ""),
+        String(topic ?? ""),
+        !!force,
+      ),
     uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
     latestVersion: (repo) =>
       ipcRenderer.invoke("plugins:latest-version", String(repo)),
@@ -75,5 +80,11 @@ contextBridge.exposeInMainWorld("safelightNative", {
   diagnostics: {
     gpuInfo: () => ipcRenderer.invoke("diagnostics:gpuInfo"),
     metrics: () => ipcRenderer.invoke("diagnostics:metrics"),
+  },
+  // Recolor the native window-controls overlay (Windows/Linux) to match the
+  // active theme; no-op on macOS.
+  titlebar: {
+    setOverlay: (color, symbolColor) =>
+      ipcRenderer.invoke("window:setTitleBarOverlay", String(color), String(symbolColor)),
   },
 });

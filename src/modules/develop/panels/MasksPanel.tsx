@@ -188,7 +188,10 @@ export function MasksPanel() {
       addRangeComponent(kind);
       commitEdit("Add Component");
     } else {
+      // Deselect first so the next stroke starts a fresh component instead of
+      // extending the selected one — this is how a mask gets multiple brushes.
       // Draw in "add" mode; the per-row mode chip flips it to subtract/intersect.
+      selectComponent(null);
       armTool(kind, "add");
     }
   };
