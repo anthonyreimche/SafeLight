@@ -595,8 +595,6 @@ export class WebGLRenderer {
   private maskSig = "";
   private maskChannelOf: Record<string, number> = {};
   private retouchTexture: WebGLTexture;
-  dbgPrepass = ""; // TEMP: surfaced to main thread to confirm code version + prepass state
-  private dbgPrepassState = ""; // TEMP: per-stage HIT/MISS/INACTIVE recorded in runPrepasses
   private retouchSig = "";
   private retouchChannelOf: Record<string, number> = {};
   // Offscreen "develop without retouch" target, sampled so heal matches tone in
@@ -2140,7 +2138,6 @@ export class WebGLRenderer {
       // detail; results are bound onto the main program for pass 2. The patched
       // source varies with retouch/heal geometry, so fold those into the cache key.
       this.runPrepasses(this.developedTex!, `e${this.sourceEpoch}|r${this.retouchSig}|c${circleSig}|h${this.healSig}`);
-      this.dbgPrepass = `prepass[${this.prepassStages.length}] sigLen=${circleSig.length} state=${this.dbgPrepassState}`;
       gl.useProgram(this.program);
       this.bindPrepassResults();
 
@@ -2528,7 +2525,6 @@ export class WebGLRenderer {
   // draw applies via bindPrepassResults().
   private runPrepasses(srcTex: WebGLTexture, srcSig: string) {
     this.prepassResults = [];
-    this.dbgPrepassState = "";
     if (this.prepassStages.length === 0) return;
     const gl = this.gl;
     const { w, h } = this.prepassDims();
@@ -2541,7 +2537,6 @@ export class WebGLRenderer {
       // Inactive (or no float targets): bind the raw source as the result. The
       // inline glsl blends with amount 0, so the value is never actually used.
       if (!haveTargets || !this.prepassActive(stage.stageId)) {
-        this.dbgPrepassState += `INACTIVE(${stage.stageId});`;
         this.prepassResults.push({ resultUniform: stage.resultUniform, tex: srcTex, unit: unit++ });
         continue;
       }
@@ -2551,11 +2546,9 @@ export class WebGLRenderer {
       const sig = this.prepassSig(stage, srcSig, w, h, baseCurve);
       const cached = this.stageResultTargets.get(stage.stageId);
       if (cached && cached.w === w && cached.h === h && this.prepassSigs.get(stage.stageId) === sig) {
-        this.dbgPrepassState += `HIT(${stage.stageId});`;
         this.prepassResults.push({ resultUniform: stage.resultUniform, tex: cached.tex, unit: unit++ });
         continue;
       }
-      this.dbgPrepassState += `MISS(${stage.stageId});`;
 
       let readTex: WebGLTexture = srcTex;
       let prevRaw = true;            // first read linearizes + base-curves the source

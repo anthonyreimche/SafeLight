@@ -650,15 +650,19 @@ function clampTint(n: unknown): number {
 
 function normalizeCrop(c: Partial<CropRect> | undefined): CropRect {
   if (!c) return { ...DEFAULT_CROP };
-  const clamp01 = (n: unknown, d: number) =>
-    typeof n === "number" && isFinite(n) ? Math.min(1, Math.max(0, n)) : d;
-  const x = clamp01(c.x, 0);
-  const y = clamp01(c.y, 0);
+  // The crop is stored in TRANSFORMED-frame coordinates: once a perspective /
+  // keystone (or scale / offset) transform is applied, the visible frame is no
+  // longer the unit square, so a valid crop legitimately extends outside [0,1]
+  // (and x/y can go negative). We therefore only reject non-finite garbage and
+  // keep the size positive — clamping back into the source [0,1] box here shifts
+  // a keystoned crop every time it's reloaded.
+  const finite = (n: unknown, d: number) =>
+    typeof n === "number" && isFinite(n) ? n : d;
   return {
-    x,
-    y,
-    width: Math.max(0.01, Math.min(clamp01(c.width, 1), 1 - x)),
-    height: Math.max(0.01, Math.min(clamp01(c.height, 1), 1 - y)),
+    x: finite(c.x, 0),
+    y: finite(c.y, 0),
+    width: Math.max(0.01, finite(c.width, 1)),
+    height: Math.max(0.01, finite(c.height, 1)),
   };
 }
 

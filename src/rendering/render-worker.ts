@@ -265,7 +265,6 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       case "render": {
         if (!renderer || !canvas) break;
         renderer.render();
-        if (renderer.dbgPrepass) { respond({ type: "error", message: renderer.dbgPrepass }); renderer.dbgPrepass = ""; }
         const bitmap = canvas.transferToImageBitmap();
         const resp: WorkerResponse = {
           type: "frame",
