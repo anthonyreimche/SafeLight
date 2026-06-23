@@ -2126,6 +2126,16 @@ export class WebGLRenderer {
       // build its mip chain so the develop's blur taps read the patched pixels.
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.developedFbo);
       gl.viewport(0, 0, this.devW, this.devH);
+      // Break a feedback loop: bindPrepassResults (end of the previous frame) may
+      // leave developedTex bound to a prepass-result sampler unit. Rendering INTO
+      // developedTex here while it's still bound as a sampler input on the active
+      // program is a GL feedback loop (undefined — drivers can drop the write,
+      // leaving the patched source stale, so heal edits never appear when a stage
+      // with an active prepass result is registered). Detach those units first.
+      for (let pu = 0; pu < MAX_PREPASS_STAGES; pu++) {
+        gl.activeTexture(gl.TEXTURE0 + PREPASS_UNIT_BASE + pu);
+        gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
+      }
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.imageTexture); // read the original source
       gl.uniform1i(u.uImage, 0);
