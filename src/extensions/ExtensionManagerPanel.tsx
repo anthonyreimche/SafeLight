@@ -99,15 +99,20 @@ export function ExtensionManagerPanel() {
   const [section, setSection] = useState<Section>(native ? "Browse" : "Installed");
   const searchSeq = useRef(0);
   const [reloadNonce, setReloadNonce] = useState(0);
+  // Tracks which reloadNonce the last search ran for, so an explicit reload
+  // force-bypasses the main-process search cache while keystrokes keep using it.
+  const lastSearchNonce = useRef(0);
 
   // Always open to the list, not a stale detail page from a previous session.
   useEffect(() => back(), [back]);
 
   // Pull the verified/banned lists so badges and install gating work even if the
-  // window is opened before the boot-time load sweep. Force a network refresh:
-  // opening the store is an explicit "show me the latest", and it lets a registry
-  // edit appear without restarting the app.
-  useEffect(() => void loadTrustList(true), []);
+  // window is opened before the boot-time load sweep. Non-forced: loadTrustList
+  // fetches once per session (in-memory loadedAt), and the main process serves
+  // that from its 6h disk cache, so opening the store costs no network when the
+  // registry is fresh. A registry edit still appears on the next launch (or via
+  // the panel's explicit refresh), without a round-trip on every open.
+  useEffect(() => void loadTrustList(), []);
 
   // If Developer Tools is disabled while the Dev tab is open, fall back.
   useEffect(() => {
@@ -143,6 +148,7 @@ export function ExtensionManagerPanel() {
 
   const reload = () => {
     setMsg(null);
+    void loadTrustList(true); // explicit refresh = "show me the latest registry"
     setReloadNonce((n) => n + 1);
   };
 
@@ -150,10 +156,12 @@ export function ExtensionManagerPanel() {
   useEffect(() => {
     if (!native?.plugins.search) return;
     const seq = ++searchSeq.current;
+    const force = lastSearchNonce.current !== reloadNonce;
+    lastSearchNonce.current = reloadNonce;
     setSearching(true);
     const t = setTimeout(() => {
       native.plugins
-        .search(query.trim(), topic)
+        .search(query.trim(), topic, force)
         .then((r) => {
           if (searchSeq.current !== seq) return;
           setResults(r);

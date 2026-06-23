@@ -21,6 +21,43 @@ export type Async<T> =
   | { status: "ready"; data: T }
   | { status: "error"; error: string };
 
+// localStorage mirror of the per-extension update checks. Without it the `updates`
+// map starts empty every launch, so the 6h TTL in checkExtensionUpdate can never
+// hit across restarts — the boot sweep and the panel both re-query GitHub for
+// every installed extension on each launch (and burn the unauthenticated 60/hr
+// budget). Seeding from disk makes those checks no-ops while fresh.
+const LS_UPDATES = "sl_ext_updates";
+
+function readLsUpdates(): Record<string, ExtUpdateInfo> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_UPDATES) ?? "null");
+    if (!raw || typeof raw !== "object") return {};
+    const out: Record<string, ExtUpdateInfo> = {};
+    for (const [id, v] of Object.entries(raw))
+      if (
+        v &&
+        typeof v === "object" &&
+        typeof (v as ExtUpdateInfo).checkedAt === "number"
+      ) {
+        const u = v as ExtUpdateInfo;
+        out[id] = {
+          latestTag: typeof u.latestTag === "string" ? u.latestTag : null,
+          hasUpdate: !!u.hasUpdate,
+          checkedAt: u.checkedAt,
+        };
+      }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeLsUpdates(updates: Record<string, ExtUpdateInfo>): void {
+  try {
+    localStorage.setItem(LS_UPDATES, JSON.stringify(updates));
+  } catch {}
+}
+
 /** Latest-version check for one installed extension. */
 export interface ExtUpdateInfo {
   /** Latest version from the repo's safelight.json on GitHub, or null if no
@@ -88,14 +125,18 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
   sort: "popular",
   meta: {},
   readme: {},
-  updates: {},
+  updates: readLsUpdates(), // synchronous seed — keeps the TTL alive across launches
 
   openDetail: (selected) => set({ selected, view: "detail" }),
   back: () => set({ view: "list", selected: null }),
   setCategory: (category) => set({ category }),
   setSort: (sort) => set({ sort }),
   setUpdate: (id, info) =>
-    set((s) => ({ updates: { ...s.updates, [id]: info } })),
+    set((s) => {
+      const updates = { ...s.updates, [id]: info };
+      writeLsUpdates(updates); // mirror so the next launch starts warm
+      return { updates };
+    }),
 }));
 
 /** Fetch and cache normalised repo metadata for "owner/repo". No-op without the

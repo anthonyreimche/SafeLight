@@ -272,7 +272,15 @@ export async function uninstallPlugin(id: string): Promise<void> {
 // the repo it was installed from. We require Releases (the same convention the
 // app's own updater uses) — a repo with no releases simply has "no update info".
 
-const UPDATE_CHECK_TTL = 6 * 60 * 60 * 1000; // re-check at most every 6h
+// How long a per-extension check is reused before we re-query GitHub. Kept short
+// so opening the store (or relaunching) surfaces a freshly-pushed version quickly;
+// the persisted cache still paints the last-known badge instantly while the
+// refresh runs, so a short TTL costs latency only on the network round-trip.
+const UPDATE_CHECK_TTL = 30 * 60 * 1000; // 30 min
+
+// Re-run the whole sweep on this cadence so a version bumped while the app is
+// left open is noticed without a restart. host.ts owns the interval.
+export const EXT_UPDATE_POLL_MS = 3 * 60 * 60 * 1000; // 3h
 
 /** The version in the repo's default-branch safelight.json, or null. This is the
  *  same field the installed manifest exposes, so a pushed version bump is an
@@ -332,10 +340,14 @@ export async function updateExtension(
   return manifest;
 }
 
-/** Background check on launch: refresh update info for every installed
- *  extension, and auto-update when the user has opted in. Throttled so we don't
- *  fire a burst of GitHub requests. Gated by the checkExtensionUpdates setting. */
-export async function checkAllExtensionUpdates(): Promise<void> {
+/** Refresh update info for every installed extension, and auto-update when the
+ *  user has opted in. Gated by the checkExtensionUpdates setting. Pass `force` to
+ *  bypass the per-extension TTL (used by the periodic poll so it always re-checks).
+ *
+ *  Checks run through a bounded worker pool rather than fixed batches: there's no
+ *  barrier between items, so one slow repo can't hold up the rest and the sweep
+ *  finishes in roughly a single round-trip instead of ceil(N / batch) waves. */
+export async function checkAllExtensionUpdates(force = false): Promise<void> {
   const native = window.safelightNative;
   if (!native?.plugins?.latestVersion) return;
   const settings = getSettings();
@@ -346,23 +358,25 @@ export async function checkAllExtensionUpdates(): Promise<void> {
   } catch {
     return;
   }
-  const CONCURRENCY = 3;
-  for (let i = 0; i < list.length; i += CONCURRENCY) {
-    const slice = list.slice(i, i + CONCURRENCY);
-    await Promise.all(
-      slice.map(async (m) => {
-        const info = await checkExtensionUpdate(m);
-        if (info?.hasUpdate && info.latestTag && settings.autoUpdateExtensions) {
-          const repo = repoFor(m);
-          if (repo) {
-            try {
-              await updateExtension(m.id, repo, info.latestTag);
-            } catch (e) {
-              console.error(`[extensions] auto-update failed for ${m.id}:`, e);
-            }
+  const CONCURRENCY = 8;
+  let next = 0;
+  const worker = async () => {
+    while (next < list.length) {
+      const m = list[next++];
+      const info = await checkExtensionUpdate(m, force);
+      if (info?.hasUpdate && info.latestTag && settings.autoUpdateExtensions) {
+        const repo = repoFor(m);
+        if (repo) {
+          try {
+            await updateExtension(m.id, repo, info.latestTag);
+          } catch (e) {
+            console.error(`[extensions] auto-update failed for ${m.id}:`, e);
           }
         }
-      }),
-    );
-  }
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, list.length) }, worker),
+  );
 }
