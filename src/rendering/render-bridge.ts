@@ -30,6 +30,7 @@ type HistogramCallback = (histogram: HistogramData) => void;
 type ThumbnailCallback = (result: ThumbnailResult) => void;
 type UprightCallback = (result: UprightResult) => void;
 type ErrorCallback = (message: string) => void;
+type HealSourceCallback = (src: { data: Uint8ClampedArray; width: number; height: number }) => void;
 
 export class RenderBridge {
   private worker: Worker;
@@ -40,6 +41,7 @@ export class RenderBridge {
   private onThumbnail: ThumbnailCallback | null = null;
   private onUpright: UprightCallback | null = null;
   private onError: ErrorCallback | null = null;
+  private onHealSource: HealSourceCallback | null = null;
   private disposed = false;
   // Resolves with the rendered blob, or null when the worker reports a cache miss
   // (the caller then decodes + uploads + retries).
@@ -142,6 +144,9 @@ export class RenderBridge {
         }
         this.onUpright?.(msg.result);
         break;
+      case "healSource":
+        this.onHealSource?.({ data: msg.data, width: msg.width, height: msg.height });
+        break;
       case "error":
         this.onError?.(msg.message);
         break;
@@ -172,6 +177,7 @@ export class RenderBridge {
   setOnThumbnail(cb: ThumbnailCallback | null) { this.onThumbnail = cb; }
   setOnUpright(cb: UprightCallback | null) { this.onUpright = cb; }
   setOnError(cb: ErrorCallback | null) { this.onError = cb; }
+  setOnHealSource(cb: HealSourceCallback | null) { this.onHealSource = cb; }
 
   // ------------------------------------------------------------------
   // Image data

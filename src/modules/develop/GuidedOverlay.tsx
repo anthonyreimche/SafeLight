@@ -8,6 +8,7 @@ import type { CropRect, GuidedLine } from "@/catalog/types";
 import type { Mat3 } from "@/rendering/transform";
 import { mat3Apply } from "@/rendering/transform";
 import { resolveCursorCss } from "@/state/cursor-store";
+import { frameLocalPoint } from "@/ui/frame-point";
 
 interface Rect {
   x: number;
@@ -62,14 +63,18 @@ export function GuidedOverlay({ rect, forward, inv, crop, lines, onChange, onCom
 
   const getLocalCoords = useCallback(
     (e: React.PointerEvent) => {
+      // frameLocalPoint maps into layout px, undoing the <body> UI-scale zoom
+      // that otherwise drifts the dragged endpoints (see frame-point.ts).
       const dr = dragRef.current;
       if (dr) {
-        return { sx: e.clientX - dr.svgRect.left, sy: e.clientY - dr.svgRect.top };
+        const p = frameLocalPoint(dr.svgRect, e.clientX, e.clientY);
+        return { sx: p.x, sy: p.y };
       }
       const svg = svgRef.current;
       if (!svg) return { sx: 0, sy: 0 };
       const r = svg.getBoundingClientRect();
-      return { sx: e.clientX - r.left, sy: e.clientY - r.top };
+      const p = frameLocalPoint(r, e.clientX, e.clientY);
+      return { sx: p.x, sy: p.y };
     },
     [],
   );
@@ -97,8 +102,7 @@ export function GuidedOverlay({ rect, forward, inv, crop, lines, onChange, onCom
       const svg = svgRef.current;
       if (!svg) return;
       const svgRect = svg.getBoundingClientRect();
-      const sx = e.clientX - svgRect.left;
-      const sy = e.clientY - svgRect.top;
+      const { x: sx, y: sy } = frameLocalPoint(svgRect, e.clientX, e.clientY);
       const hit = hitTest(sx, sy);
 
       if (hit) {

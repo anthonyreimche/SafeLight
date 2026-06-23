@@ -58,6 +58,35 @@ let importAbort: AbortController | null = null;
 // in-flight open whose generation no longer matches skips its finalization.
 let openGen = 0;
 
+// Per-project persistence of the selected library folder, so a folder filter
+// (and its non-recursive scope) survives an app restart — openProject runs on
+// every launch via openLast and would otherwise reset the view to All Photos.
+// Keyed by project so a different project never inherits a stale folder path.
+const FOLDER_KEY = "sl_active_folder_v1";
+let activeProjectKey = "";
+let lastPersistedFolder: string | null | undefined;
+
+function persistActiveFolder(folder: string | null): void {
+  if (!activeProjectKey) return;
+  try {
+    localStorage.setItem(
+      FOLDER_KEY,
+      JSON.stringify({ project: activeProjectKey, folder }),
+    );
+  } catch {}
+}
+
+function restoreActiveFolder(project: string): string | null {
+  try {
+    const raw = localStorage.getItem(FOLDER_KEY);
+    if (raw) {
+      const v = JSON.parse(raw) as { project?: string; folder?: string | null };
+      if (v && v.project === project) return v.folder ?? null;
+    }
+  } catch {}
+  return null;
+}
+
 interface ProjectState {
   root: FileSystemDirectoryHandle | null;
   name: string;
@@ -126,7 +155,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // Clear the old catalog immediately so the grid shows photos as they arrive
     // rather than showing the previous folder until the new one is fully loaded.
     useCatalogStore.getState().replaceCatalog([]);
-    useUIStore.getState().setActiveFolder(null);
+    // Restore the folder this project was last viewing (or null = All Photos for
+    // a first/different project). Seed lastPersistedFolder first so the change
+    // subscription below doesn't redundantly re-write what we just restored.
+    activeProjectKey = handle.name;
+    const restoredFolder = restoreActiveFolder(handle.name);
+    lastPersistedFolder = restoredFolder;
+    useUIStore.getState().setActiveFolder(restoredFolder);
     try {
       // Buffer streamed (newly-decoded) photos and flush once per frame, so a
       // large import appends in a few batches instead of one re-render per photo.
@@ -292,6 +327,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
     set({ root: null, name: "", tree: null, opening: false, importDone: 0, importTotal: 0 });
     useCatalogStore.getState().replaceCatalog([]);
+    activeProjectKey = ""; // stop persisting folder changes under the closed project
   },
 
   async refreshTree() {
@@ -301,3 +337,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set({ tree });
   },
 }));
+
+// Mirror folder-selection changes to localStorage (debounced by value) so the
+// choice persists across restarts. Registered once, after the store exists; the
+// value guard keeps unrelated UI-store updates (sort, filter, grid size) cheap.
+useUIStore.subscribe((s) => {
+  if (s.activeFolder !== lastPersistedFolder) {
+    lastPersistedFolder = s.activeFolder;
+    persistActiveFolder(s.activeFolder);
+  }
+});

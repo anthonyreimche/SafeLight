@@ -828,6 +828,11 @@ declare global {
           }[]
         >;
       };
+      /** Recolor the native window-controls overlay (Windows/Linux) to follow
+       *  the active theme; no-op on macOS. */
+      titlebar?: {
+        setOverlay(color: string, symbolColor: string): Promise<void>;
+      };
       /** One-shot handover of the privileged fs + update-installer surface.
        *  Returns the bundle on the first call (core, at boot) and null after, so
        *  extension code — which shares the renderer realm — can never acquire it.

@@ -15,6 +15,7 @@ import {
   removeRecentProject,
   type RecentProject,
 } from "@/project/recent";
+import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
 
 function timeAgo(ts: number): string {
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -41,6 +42,7 @@ interface Card extends RecentProject {
 }
 
 export function WelcomeView() {
+  useTitleBarOverlay("--color-surface-0"); // welcome view sits on surface-0
   const openProjectPicker = useProjectStore((s) => s.openProjectPicker);
   const openRecent = useProjectStore((s) => s.openRecent);
   const opening = useProjectStore((s) => s.opening);
@@ -72,7 +74,10 @@ export function WelcomeView() {
 
   return (
     <div className="flex h-full flex-col bg-surface-0 text-text-primary">
-      <header className="flex items-center justify-between px-8 py-6">
+      <header
+        className="flex h-[38px] shrink-0 items-center justify-between px-8"
+        style={dragBarStyle}
+      >
         <div className="flex items-baseline gap-3">
           <span className="text-sm font-semibold tracking-[0.3em] text-text-secondary">
             SAFELIGHT
@@ -82,6 +87,7 @@ export function WelcomeView() {
         <button
           onClick={() => void openProjectPicker()}
           disabled={opening}
+          style={noDragStyle}
           className="rounded bg-slider-fill px-4 py-1.5 text-xs font-medium text-white hover:bg-surface-4 disabled:opacity-60"
         >
           Open Folder…

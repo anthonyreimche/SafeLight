@@ -103,6 +103,9 @@ export type WorkerResponse =
   | { type: "captured"; reqId: number; bitmap: ImageBitmap }
   | { type: "hasSource"; reqId: number; has: boolean }
   | { type: "upright"; result: UprightResult }
+  // The downscaled 8-bit heal source, forwarded so the main thread's
+  // findHealSource/healColorOffset (in the develop overlay) has pixels to search.
+  | { type: "healSource"; data: Uint8ClampedArray; width: number; height: number }
   | { type: "error"; message: string };
 
 // ---------------------------------------------------------------------------
@@ -134,6 +137,15 @@ let lastParams: DevelopParams | null = null;
 // budget (full-res sources are large); the thumb renderer caches tiny sources, so
 // a quarter holds many. 0 until the first setCacheBudget message.
 let cacheBudgetBytes = 0;
+
+// Forward the develop renderer's downscaled heal source to the main thread so the
+// overlay's findHealSource/healColorOffset can search it (they run main-thread, in
+// a separate module instance where setHealSourceImage is never called otherwise).
+function postHealSource() {
+  if (!renderer) return;
+  const hs = renderer.healSourceData();
+  if (hs) respond({ type: "healSource", data: hs.data, width: hs.w, height: hs.h }, [hs.data.buffer]);
+}
 
 function ensureThumbRenderer(): WebGLRenderer {
   if (thumbRenderer) return thumbRenderer;
@@ -181,6 +193,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         } else {
           renderer.setImage(img, msg.maxEdge, msg.isFallbackPreview);
         }
+        postHealSource();
         break;
       }
 
@@ -188,6 +201,20 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         if (!renderer) break;
         lastParams = msg.params;
         renderer.setParams(msg.params);
+        // TEMP: report what the worker actually received, routed to the main
+        // console via the error channel (worker console is unreliable here).
+        if ((msg.params.retouch ?? []).length > 0) {
+          respond({
+            type: "error",
+            message:
+              "[worker setParams] retouch=" +
+              JSON.stringify(
+                msg.params.retouch.map(
+                  (s) => `${s.shape}${s.dabs ? `(${s.dabs.length})` : ""}`,
+                ),
+              ),
+          });
+        }
         break;
       }
 
@@ -238,6 +265,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       case "render": {
         if (!renderer || !canvas) break;
         renderer.render();
+        if (renderer.dbgPrepass) { respond({ type: "error", message: renderer.dbgPrepass }); renderer.dbgPrepass = ""; }
         const bitmap = canvas.transferToImageBitmap();
         const resp: WorkerResponse = {
           type: "frame",
@@ -322,6 +350,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       case "bindSource": {
         const hit = !!renderer && renderer.bindSource(msg.key);
         respond({ type: "sourceBound", reqId: msg.reqId, hit });
+        if (hit) postHealSource();
         break;
       }
 
@@ -338,6 +367,8 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         } else {
           target.uploadSource(msg.key, img, msg.maxEdge, msg.isFallbackPreview, false, bind, capSrgb16);
         }
+        // Only a bind into the main renderer changes the active heal source.
+        if (bind && msg.target === "main") postHealSource();
         break;
       }
 

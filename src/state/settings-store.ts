@@ -67,6 +67,10 @@ export interface AppSettings {
    *  viewport dimension (resolution-independent). Tunable so the band reads
    *  right on any display size. */
   assessBorderPct: number;
+  /** How much the app behind a window-style pop-up (Preferences, Extensions)
+   *  is dimmed: the backdrop's black opacity, 0 (no dimming) – 0.8. Default
+   *  0.6. Lower it to keep the photo visible while a window is open. */
+  windowDim: number;
 
   // ── Startup ────────────────────────────────────────────────────────────
   /** Reopen the most-recently-used project on launch instead of the welcome
@@ -159,6 +163,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   canvasSurroundOverride: true,
   canvasSurround: "#777777",
   assessBorderPct: 4.5,
+  windowDim: 0.6,
   restoreLastProject: false,
   defaultGridSize: 200,
   defaultSortField: "dateImported",

@@ -76,4 +76,10 @@ contextBridge.exposeInMainWorld("safelightNative", {
     gpuInfo: () => ipcRenderer.invoke("diagnostics:gpuInfo"),
     metrics: () => ipcRenderer.invoke("diagnostics:metrics"),
   },
+  // Recolor the native window-controls overlay (Windows/Linux) to match the
+  // active theme; no-op on macOS.
+  titlebar: {
+    setOverlay: (color, symbolColor) =>
+      ipcRenderer.invoke("window:setTitleBarOverlay", String(color), String(symbolColor)),
+  },
 });

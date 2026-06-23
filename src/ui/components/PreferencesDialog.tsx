@@ -25,6 +25,7 @@ import {
   type ActionCategory,
 } from "@/state/keybindings-store";
 import { useRegistry } from "@/extensions/registry";
+import { ModalWindow } from "@/ui/components/ModalWindow";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import {
   addUserLayout,
@@ -169,11 +170,12 @@ const CORE_SECTIONS: PrefSection[] = [
       "Interface scale",
       "Canvas surround",
       "Color assessment border",
+      "Background dimming",
       "Reduce motion",
       "Restore last project on launch",
       "Interface font",
     ),
-    keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border"],
+    keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal"],
     render: () => <InterfaceSection />,
   },
   {
@@ -439,65 +441,53 @@ export function PreferencesDialog() {
   const hasExtensions = visible.some((s) => s.group === "Extensions");
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60"
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget) closePreferences();
-      }}
-    >
-      <div className="flex h-[640px] max-h-[90vh] w-[960px] max-w-[94vw] flex-col overflow-hidden rounded-lg border border-border bg-surface-1 shadow-2xl">
-        <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border bg-surface-2 px-3">
-          <span className="text-[11px] font-semibold uppercase tracking-widest text-text-secondary">
-            Preferences
-          </span>
-          <div className="relative ml-auto flex items-center">
-            <svg
-              viewBox="0 0 16 16"
-              aria-hidden="true"
-              className="pointer-events-none absolute left-2 h-3 w-3 text-text-muted"
-            >
-              <circle
-                cx="7"
-                cy="7"
-                r="4.5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.4"
-              />
-              <line
-                x1="10.5"
-                y1="10.5"
-                x2="14"
-                y2="14"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
-              />
-            </svg>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search settings…"
-              spellCheck={false}
-              className="w-48 rounded bg-surface-1 py-0.5 pl-7 pr-6 text-[11px] text-text-primary outline-none transition-[width] placeholder:text-text-muted focus:w-64 focus:bg-surface-3"
-            />
-            {query && (
-              <button
-                onClick={() => setQuery("")}
-                title="Clear search"
-                className="absolute right-1 rounded px-1 text-[12px] leading-none text-text-muted hover:text-text-primary"
-              >
-                ×
-              </button>
-            )}
-          </div>
-          <button
-            onClick={closePreferences}
-            className="rounded px-1.5 text-[14px] leading-none text-text-muted hover:text-text-primary"
+    <ModalWindow
+      title="Preferences"
+      onClose={closePreferences}
+      titlebar={
+        <div className="relative flex items-center">
+          <svg
+            viewBox="0 0 16 16"
+            aria-hidden="true"
+            className="pointer-events-none absolute left-2 h-3 w-3 text-text-muted"
           >
-            ×
-          </button>
+            <circle
+              cx="7"
+              cy="7"
+              r="4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+            />
+            <line
+              x1="10.5"
+              y1="10.5"
+              x2="14"
+              y2="14"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
+          </svg>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search settings…"
+            spellCheck={false}
+            className="w-48 rounded bg-surface-1 py-0.5 pl-7 pr-6 text-[11px] text-text-primary outline-none transition-[width] placeholder:text-text-muted focus:w-64 focus:bg-surface-3"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery("")}
+              title="Clear search"
+              className="absolute right-1 rounded px-1 text-[12px] leading-none text-text-muted hover:text-text-primary"
+            >
+              ×
+            </button>
+          )}
         </div>
+      }
+    >
         <div className="flex min-h-0 flex-1">
           {q ? (
             // Search mode: a flat results list (setting → its section) replaces the
@@ -568,8 +558,7 @@ export function PreferencesDialog() {
             Changes apply immediately
           </span>
         </div>
-      </div>
-    </div>
+    </ModalWindow>
   );
 }
 
@@ -634,6 +623,7 @@ function InterfaceSection() {
   const activeTheme = useThemeStore((s) => s.activeId);
   const uiScale = useSettings((s) => s.uiScale);
   const assessBorderPct = useSettings((s) => s.assessBorderPct);
+  const windowDim = useSettings((s) => s.windowDim);
   const reduceMotion = useSettings((s) => s.reduceMotion);
   const restoreLastProject = useSettings((s) => s.restoreLastProject);
 
@@ -674,6 +664,24 @@ function InterfaceSection() {
         format={(v) => `${v}%`}
         onChange={(v) => updateSettings({ assessBorderPct: v })}
       />
+      <div>
+        <SliderField
+          label="Background dimming"
+          value={windowDim}
+          min={0}
+          max={0.8}
+          step={0.05}
+          format={(v) => `${Math.round(v * 100)}%`}
+          onChange={(v) => updateSettings({ windowDim: v })}
+        />
+        {useFieldVisible("Background dimming") && (
+          <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
+            How much the app dims behind the Preferences and Extensions windows.
+            0% leaves the photo fully visible; higher values darken it to focus
+            on the window.
+          </p>
+        )}
+      </div>
       <ToggleField
         label="Reduce motion"
         hint="Minimize animated UI affordances."

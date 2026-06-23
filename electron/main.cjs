@@ -446,36 +446,20 @@ async function fetchTrustNetwork() {
   };
 }
 
-let trustRefreshing = false;
-async function refreshTrust() {
-  if (trustRefreshing) return;
-  trustRefreshing = true;
-  try {
-    trustCache = { at: Date.now(), list: await fetchTrustNetwork() };
-    writeTrustDisk(trustCache);
-  } catch {
-    // keep last-good
-  } finally {
-    trustRefreshing = false;
-  }
-}
-
-// Never blocks the boot path on the network once any cache exists: the in-memory
-// cache is seeded from disk, a stale copy is returned immediately and refreshed in
-// the background, and only the very first run ever (no cache at all) awaits the
-// bounded network fetch. `force` (manual "check now") always awaits the network.
+// In-memory cache seeded from disk (last-good survives restarts and offline), with
+// a network refresh only when stale. The renderer never awaits this on its boot
+// path — it decides from its own localStorage mirror and refreshes in the
+// background — so the bounded network wait here is always off the critical path.
 async function fetchTrustList(force = false) {
   if (!trustCache) trustCache = readTrustDisk();
-  if (!force && trustCache) {
-    if (Date.now() - trustCache.at >= TRUST_TTL_MS) void refreshTrust();
+  if (!force && trustCache && Date.now() - trustCache.at < TRUST_TTL_MS)
     return trustCache.list;
-  }
   try {
     trustCache = { at: Date.now(), list: await fetchTrustNetwork() };
     writeTrustDisk(trustCache);
     return trustCache.list;
   } catch {
-    return trustCache ? trustCache.list : EMPTY_TRUST;
+    return trustCache ? trustCache.list : EMPTY_TRUST; // last-good (disk) or empty
   }
 }
 
@@ -778,6 +762,20 @@ async function installRelease(repo, tag) {
 
 function registerPluginIpc() {
   ipcMain.handle("app:version", () => appVersion());
+  // Recolor the native min/max/close overlay to follow the in-app theme
+  // (Windows/Linux only — macOS has no overlay, just traffic lights).
+  ipcMain.handle("window:setTitleBarOverlay", (e, color, symbolColor) => {
+    if (process.platform === "darwin") return;
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win) return;
+    try {
+      win.setTitleBarOverlay({
+        color: String(color),
+        symbolColor: String(symbolColor),
+        height: 36,
+      });
+    } catch {}
+  });
   ipcMain.handle("releases:fetch", (_e, repo) => fetchReleases(String(repo)));
   ipcMain.handle("github:repoMeta", (_e, repo) => fetchRepoMeta(String(repo)));
   ipcMain.handle("github:ogImage", (_e, repo) => fetchOgImage(String(repo)));
@@ -919,6 +917,27 @@ function registerDevtoolsIpc() {
   );
 }
 
+// The custom in-app top bars (TopBar, welcome, DevTools — all h-[38px]) double
+// as the window title bar via titleBarStyle:'hidden'. On Windows/Linux the
+// native min/max/close buttons are drawn as an overlay on the right (keeps
+// Windows snap-layout-on-hover); on macOS the traffic lights stay on the left as
+// Mac users expect — we only nudge them to vertically center within the bar.
+// The overlay is kept 2px shorter than the bar so the bar's bottom border line
+// stays visible beneath the buttons. Overlay colors are recolored per-surface at
+// runtime by useTitleBarOverlay (src/ui/window-chrome.ts); these are first-paint
+// defaults matching the neutral theme's surface-1.
+const titleBarOpts =
+  process.platform === "darwin"
+    ? { titleBarStyle: "hidden", trafficLightPosition: { x: 12, y: 12 } }
+    : {
+        titleBarStyle: "hidden",
+        titleBarOverlay: {
+          color: "#5e5e5e", // --color-surface-1
+          symbolColor: "#d0d0d0", // --color-text-secondary
+          height: 36, // 2px under the 38px bar so its bottom border shows
+        },
+      };
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1500,
@@ -928,6 +947,7 @@ function createWindow() {
     backgroundColor: "#1a1a1a",
     show: false,
     autoHideMenuBar: true,
+    ...titleBarOpts,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -961,6 +981,7 @@ function createWindow() {
           show: false,
           backgroundColor: "#1a1a1a",
           autoHideMenuBar: true,
+          ...titleBarOpts,
           webPreferences: {
             preload: path.join(__dirname, "preload.cjs"),
             contextIsolation: true,

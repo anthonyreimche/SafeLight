@@ -17,6 +17,32 @@ import { repoFor } from "./sources";
 
 const EMPTY: TrustList = { verified: [], repos: [], owners: [], reason: {} };
 
+// localStorage mirror of the lists (already lowercased by the main process). This
+// is what makes the boot ban-check synchronous: the store seeds from it, so
+// extensions and themes activate immediately from the cached answer with no fetch
+// to await. loadTrustList() refreshes it in the background, on its own schedule.
+const LS_KEY = "sl_trust_cache";
+
+function readLsTrust(): TrustList | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_KEY) ?? "null");
+    if (raw && typeof raw === "object" && Array.isArray(raw.verified))
+      return {
+        verified: raw.verified.map(String),
+        repos: Array.isArray(raw.repos) ? raw.repos.map(String) : [],
+        owners: Array.isArray(raw.owners) ? raw.owners.map(String) : [],
+        reason: raw.reason && typeof raw.reason === "object" ? raw.reason : {},
+      };
+  } catch {}
+  return null;
+}
+
+function writeLsTrust(list: TrustList): void {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(list));
+  } catch {}
+}
+
 /** An installed extension the kill-switch refused to load this session. */
 export interface FlaggedExtension {
   id: string;
@@ -33,7 +59,7 @@ interface TrustState {
 }
 
 export const useTrust = create<TrustState>(() => ({
-  list: EMPTY,
+  list: readLsTrust() ?? EMPTY, // synchronous seed — boot checks need no fetch
   loadedAt: 0,
   flagged: [],
 }));
@@ -66,6 +92,7 @@ export async function loadTrustList(force = false): Promise<void> {
     try {
       const list = await fn(force);
       useTrust.setState({ list, loadedAt: Date.now() });
+      writeLsTrust(list); // mirror for the next launch's synchronous boot check
     } catch {
       // Keep whatever we had; a registry hiccup must never block the store.
     } finally {

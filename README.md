@@ -66,9 +66,9 @@
 
 **Windows desktop (recommended):** download the latest `Safelight Setup` installer from the [releases page](../../releases), or build it yourself with `build-scripts\build-electron-windows-exe.bat`. The desktop app enables the fastest RAW decode path and full GPU acceleration.
 
-**Linux:** grab the package for your distro from the [releases page](../../releases) — `.deb` (Debian/Ubuntu), `.rpm` (Fedora/openSUSE), `.pacman` (Arch/Manjaro), Flatpak, or portable AppImage. See [Installation](docs/installation.md) for install commands and how to build them yourself from `build-scripts\`.
+**Linux:** grab the package for your distro from the [releases page](../../releases) — `.deb` (Debian/Ubuntu), `.rpm` (Fedora/openSUSE), `.pacman` (Arch/Manjaro), Flatpak, or portable AppImage. See [Installation](docs/user/installation.md) for install commands and how to build them yourself from `build-scripts\`.
 
-**macOS:** download the universal `.dmg` (Intel + Apple Silicon) from the [releases page](../../releases), or build it on a Mac with `build-scripts/build-macos-dmg.sh`. See [Installation](docs/installation.md#macos-dmg).
+**macOS:** download the universal `.dmg` (Intel + Apple Silicon) from the [releases page](../../releases), or build it on a Mac with `build-scripts/build-macos-dmg.sh`. See [Installation](docs/user/installation.md#macos-dmg).
 
 **From source:**
 
@@ -81,7 +81,7 @@ npm run electron:dev # desktop window
 npm run build:electron # Windows installer in release/
 ```
 
-See [docs/installation.md](docs/installation.md) for details.
+See [docs/user/installation.md](docs/user/installation.md) for details.
 
 ## Roadmap
 
@@ -141,19 +141,24 @@ Because everything in Safelight is an extension, planned work falls into two tra
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) — first project and first edit
-- [Installation](docs/installation.md) — desktop app and source builds
-- [User Guide](docs/user-guide.md) — complete feature documentation
-- [Extensions](docs/extensions.md) — install and build extensions
-- [Architecture](docs/architecture.md) — technical overview
-- [API Documentation](docs/api-documentation.md) — extension API reference
-- [FAQ](docs/faq.md) — common questions
-- [Contributing](docs/contributing.md) — development guidelines
-- [Changelog](docs/changelog.md) — release history
+Full docs are in [`docs/`](docs/README.md), split into two tracks:
+
+**📖 [User Guide](docs/user/README.md)** — using Safelight
+- [Getting Started](docs/user/getting-started.md) — first project and first edit
+- [Installation](docs/user/installation.md) — desktop app and source builds
+- [User Guide](docs/user/user-guide.md) — complete feature documentation
+- [Using Extensions](docs/user/using-extensions.md) — install and manage add-ons
+- [FAQ](docs/user/faq.md) · [Changelog](docs/user/changelog.md)
+
+**🛠 [Developer Docs](docs/dev/README.md)** — building for Safelight
+- [Architecture](docs/dev/architecture.md) — technical overview
+- [Building Extensions](docs/dev/extensions/README.md) — anatomy, contributions, debugging, publishing
+- [API Reference](docs/dev/api/README.md) — the extension API surface
+- [Contributing](docs/dev/contributing.md) — development guidelines
 
 ## Contributing
 
-Safelight is community-driven. Bug reports, code, extensions, documentation, and feedback are all welcome — see [docs/contributing.md](docs/contributing.md).
+Safelight is community-driven. Bug reports, code, extensions, documentation, and feedback are all welcome — see [docs/dev/contributing.md](docs/dev/contributing.md).
 
 ## License
 

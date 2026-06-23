@@ -167,7 +167,10 @@ function looksDegenerate(data: Float32Array, width: number, height: number): boo
 // The decode chain is decodeRawToBitmap (registered getLibRaw / in-house
 // uncompressed CFA) then the float decode (libraw-wasm, every compression) baked
 // to sRGB. `oriented` is true when the decoder already applied EXIF orientation,
-// so the caller must NOT rotate again. Non-RAW files decode directly.
+// so the caller must NOT rotate again. Camera embedded previews are decoded with
+// imageOrientation:"from-image" (the browser honours the preview's own EXIF tag)
+// and so come back oriented — baking orientationToRotation on top would double-
+// rotate previews a camera already stored upright. Non-RAW files decode directly.
 //
 // Returns null only when the pixels are genuinely undecodable.
 async function decodeImportBitmap(
@@ -189,7 +192,11 @@ async function decodeImportBitmap(
       const preview = await extractRawPreview(file);
       if (preview) {
         try {
-          const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
+          // "from-image": apply the preview JPEG's own EXIF orientation, so a
+          // preview the camera stored upright stays upright (don't bake again)
+          // and a sensor-native one with a tag is oriented for us. oriented:true
+          // tells buildPhoto/load-image not to rotate on top.
+          const bitmap = await createImageBitmap(preview, { imageOrientation: "from-image" });
           const longEdge = Math.max(bitmap.width, bitmap.height);
           // Use the embedded preview outright in "embedded" mode, when it's
           // already grid-sized, or for formats whose sensor render is unreliable
@@ -199,7 +206,7 @@ async function decodeImportBitmap(
             longEdge >= getSettings().thumbMaxEdge ||
             prefersEmbeddedPreview(file)
           ) {
-            return { bitmap, oriented: false };
+            return { bitmap, oriented: true };
           }
           embedded = bitmap; // too small for "auto" — render instead, keep as fallback
         } catch {
@@ -229,13 +236,14 @@ async function decodeImportBitmap(
     // "auto", or a fresh extract in "rendered") rather than drop the file. Skip
     // this for renderOnly formats (CRW) — their byte-scan preview is gray noise,
     // so a ⚠ "no preview" tile is more honest than a garbage thumbnail.
-    if (embedded) return { bitmap: embedded, oriented: false };
+    if (embedded) return { bitmap: embedded, oriented: true };
     if (effectiveSource === "rendered" && !renderOnly) {
       const preview = await extractRawPreview(file);
       if (preview) {
         try {
-          const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
-          return { bitmap, oriented: false };
+          // from-image: honour the preview's own orientation (see above).
+          const bitmap = await createImageBitmap(preview, { imageOrientation: "from-image" });
+          return { bitmap, oriented: true };
         } catch {
           /* genuinely undecodable */
         }

@@ -51,7 +51,7 @@ The core is intentionally **blind**: `App.tsx` routes between modules and render
 - **Registry** (`extensions/registry.ts`) — a Zustand store of all contributions, each tagged with its owning extension id so disabling or uninstalling sweeps everything it contributed. Emits lifecycle events (metadata change, edit commit, photo remove) that hook contributions subscribe to.
 - **Loader** (`extensions/loader.ts`) — loads built-ins, then external plugins from `<userData>/plugins/<id>/`; imports each ESM bundle and calls `activate(api)`; persists enablement in localStorage (synced across windows).
 
-Contribution points an extension can fill (see [API Documentation](api-documentation.md) for signatures): panels, themes, layouts, slider icons, **render pipelines** (display transforms), **GPU processing stages**, keyboard shortcuts, settings, export processors, filename templates, lens profiles, **catalog lifecycle hooks**, preset importers, **grid filters**, **library sorts**, and **UI slots** (named mount points in core chrome).
+Contribution points an extension can fill (see [API Reference](api/README.md) for signatures): panels, themes, layouts, slider icons, **render pipelines** (display transforms), **GPU processing stages**, keyboard shortcuts, settings, export processors, filename templates, lens profiles, **catalog lifecycle hooks**, preset importers, **grid filters**, **library sorts**, and **UI slots** (named mount points in core chrome).
 
 ## Projects and Persistence
 
@@ -95,10 +95,10 @@ The histogram is computed from the rendered output, optionally on every frame (`
 
 ### Display transforms vs. processing stages
 
-There are two GPU extension points, at different maturity:
+There are two GPU extension points:
 
-- **Render pipelines** (`registerPipeline`) are **live**. A pipeline supplies a GLSL `vec3 pipelineToDisplay(vec3 lin)` (scene-linear → display) that is compiled into the renderer's program. The built-in transform plus any extension transforms appear in **Preferences ▸ Rendering ▸ Display transform** and apply everywhere the pipeline renders (develop, loupe, thumbnails, export).
-- **Processing stages** (`registerProcessingStage`) are the **forward path**. The phase-ordered stage model and shader compiler (`rendering/webgl/shader-compiler.ts`) are in place so the monolithic shader can be decomposed into individually contributable GPU stages over time. The contribution type is part of the public API today; the built-in develop tools still run through the monolithic shader.
+- **Render pipelines** (`registerPipeline`) supply a GLSL `vec3 pipelineToDisplay(vec3 lin)` (scene-linear → display) that is compiled into the renderer's program. The built-in transform plus any extension transforms appear in **Preferences ▸ Rendering ▸ Display transform** and apply everywhere the pipeline renders (develop, loupe, thumbnails, export). This is the simplest way to ship a whole-image tone mapper.
+- **Processing stages** (`registerProcessingStage`) are phase-ordered GPU stages compiled into the develop shader by the stage compiler (`rendering/webgl/shader-compiler.ts`). The path is live: all phases compile in, stages take custom uniforms and bind textures/LUTs, support multi-pass ping-pong pre-passes, and include a special `geometry` phase that warps source coordinates before sampling. Reach for a stage when you need phase ordering, uniforms, multiple passes, or coordinate warping.
 
 ## State and Multi-Window
 

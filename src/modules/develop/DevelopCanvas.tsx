@@ -390,6 +390,7 @@ export function DevelopCanvas({
                         maxCropForTransform(
                           guidedInv,
                           st.cropAspect === -1 ? imageAspect : st.cropAspect,
+                          imageAspect,
                           lensDistort,
                         ),
                       );

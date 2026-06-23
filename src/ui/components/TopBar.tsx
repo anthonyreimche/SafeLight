@@ -22,6 +22,7 @@ import { openPreferences } from "./PreferencesDialog";
 import { openExtensions } from "./ExtensionsDialog";
 import { useDisabledExtensions } from "@/extensions/loader";
 import { detachDevtools } from "@/extensions/devtools/detach";
+import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
 
 const iconBtnCls =
   "rounded px-2 py-1 text-text-secondary transition-colors hover:text-text-primary";
@@ -99,6 +100,7 @@ const prefsButton = (
 );
 
 export function TopBar() {
+  useTitleBarOverlay("--color-surface-1"); // bar bg in both the app and detached branches
   const dm = detachedModule();
   const activeModule = useUIStore((s) => s.activeModule);
   const setActiveModule = useUIStore((s) => s.setActiveModule);
@@ -139,8 +141,11 @@ export function TopBar() {
   // Detached window: just the brand + the module name + a re-attach control.
   if (dm) {
     return (
-      <div className="flex h-9 items-center justify-between border-b border-border bg-surface-1 px-3">
-        <div className="flex items-center gap-3">
+      <div
+        className="flex h-[38px] items-center justify-between border-b border-border bg-surface-1 px-3"
+        style={dragBarStyle}
+      >
+        <div className="flex items-center gap-3" style={noDragStyle}>
           <span className="text-xs font-semibold tracking-widest text-text-secondary">
             SAFELIGHT
           </span>
@@ -148,7 +153,7 @@ export function TopBar() {
             {MODULE_LABELS[dm]}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" style={noDragStyle}>
           {reconnectButton}
           {prefsButton}
           <button
@@ -164,8 +169,11 @@ export function TopBar() {
   }
 
   return (
-    <div className="flex h-9 items-center justify-between border-b border-border bg-surface-1 px-3">
-      <div className="flex items-center gap-1">
+    <div
+      className="flex h-[38px] items-center justify-between border-b border-border bg-surface-1 px-3"
+      style={dragBarStyle}
+    >
+      <div className="flex items-center gap-1" style={noDragStyle}>
         <button
           onClick={closeProject}
           title="Return to welcome screen"
@@ -221,7 +229,9 @@ export function TopBar() {
           </button>
         )}
       </div>
-      <div className="flex items-center gap-2">{reconnectButton}</div>
+      <div className="flex items-center gap-2" style={noDragStyle}>
+        {reconnectButton}
+      </div>
     </div>
   );
 }

@@ -174,6 +174,30 @@ async function loadPlugin(manifest: ExtensionManifest): Promise<void> {
   loaded.set(manifest.id, mod as ExtensionModule);
 }
 
+/** After a background trust refresh, retire any loaded external extension the
+ *  list now bans — the remote kill-switch taking effect on its own schedule.
+ *  Only touches banned extensions; everything else keeps running untouched. */
+async function enforceBansOnLoaded(): Promise<void> {
+  const native = window.safelightNative;
+  if (!native) return;
+  let list: ExtensionManifest[];
+  try {
+    list = await native.plugins.list();
+  } catch {
+    return;
+  }
+  for (const m of list) {
+    if (!loaded.has(m.id)) continue;
+    const banned = bannedReasonForManifest(m);
+    if (!banned) continue;
+    flagBannedExtension({ id: m.id, name: m.name, reason: banned });
+    console.warn(`[extensions] disabling now-banned ${m.id}: ${banned}`);
+    loaded.get(m.id)?.deactivate?.();
+    loaded.delete(m.id);
+    unregisterExtension(m.id);
+  }
+}
+
 export async function loadExternalPlugins(): Promise<void> {
   const native = window.safelightNative;
   if (!native) return; // plain-browser dev build
@@ -183,34 +207,31 @@ export async function loadExternalPlugins(): Promise<void> {
   } catch {
     return;
   }
-  // No installed extensions → no trust fetch, no work. (applySavedTheme still
-  // runs below in case a built-in's theme is the saved one.)
-  if (list.length > 0) {
-    // Resolve the trust lists before activating anything so the kill-switch can
-    // refuse an extension banned after it was installed. Cheap: served from the
-    // main process's disk/in-memory cache, with the network only off the boot
-    // path (see fetchTrustList in electron/main.cjs).
-    await loadTrustList();
-    for (const manifest of list) {
-      if (isExtensionDisabled(manifest.id)) continue;
-      // Remote kill-switch: a banned extension is never activated, even though
-      // its files are still on disk. We flag it (banner + console) rather than
-      // silently dropping it, so the user knows why it stopped working.
-      const banned = bannedReasonForManifest(manifest);
-      if (banned) {
-        flagBannedExtension({ id: manifest.id, name: manifest.name, reason: banned });
-        console.warn(`[extensions] blocked ${manifest.id}: ${banned}`);
-        continue;
-      }
-      try {
-        await loadPlugin(manifest);
-      } catch (e) {
-        console.error(`[extensions] failed to load ${manifest.id}:`, e);
-      }
+  for (const manifest of list) {
+    if (isExtensionDisabled(manifest.id)) continue;
+    // Kill-switch check against the cached trust list (seeded synchronously from
+    // localStorage) — no fetch to await, so themes and panels activate at once.
+    // A banned extension is never activated; we flag it (banner + console) rather
+    // than silently dropping it, so the user knows why it stopped working.
+    const banned = bannedReasonForManifest(manifest);
+    if (banned) {
+      flagBannedExtension({ id: manifest.id, name: manifest.name, reason: banned });
+      console.warn(`[extensions] blocked ${manifest.id}: ${banned}`);
+      continue;
+    }
+    try {
+      await loadPlugin(manifest);
+    } catch (e) {
+      console.error(`[extensions] failed to load ${manifest.id}:`, e);
     }
   }
   // The saved theme may belong to a plugin that just registered it.
   applySavedTheme();
+  // Refresh the trust list from the network in the background (force: bypass the
+  // cache TTL so registry edits — new bans, new verifications — show up on the
+  // next launch, not up to a TTL later), then retire anything it now bans. This
+  // is off the hot path: activation above already happened from the cached list.
+  if (list.length > 0) void loadTrustList(true).then(enforceBansOnLoaded);
 }
 
 export async function installFromGitHub(

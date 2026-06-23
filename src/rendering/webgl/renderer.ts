@@ -108,6 +108,12 @@ const FILL_EDGE = 384;
 // (predictable, artifact-free). Flip to re-enable the PatchMatch synthesis path.
 let CONTENT_AWARE_HEAL = false;
 
+// Gradient-domain (membrane) heal: heal spots blend their copied texture into the
+// surroundings with a per-pixel low-frequency correction instead of one flat mean
+// offset, so the seam vanishes across tone gradients. Flip to false to A/B against
+// the old flat-tint path (clone is unaffected either way).
+const MEMBRANE_HEAL = true;
+
 // sRGB(16-bit code value) -> linear, built once. Fallback for the rare GPU
 // without EXT_texture_norm16, where the cached 16-bit preview can't be uploaded
 // as a normalized texture and must be linearised on the CPU. A 65536-entry LUT
@@ -589,6 +595,8 @@ export class WebGLRenderer {
   private maskSig = "";
   private maskChannelOf: Record<string, number> = {};
   private retouchTexture: WebGLTexture;
+  dbgPrepass = ""; // TEMP: surfaced to main thread to confirm code version + prepass state
+  private dbgPrepassState = ""; // TEMP: per-stage HIT/MISS/INACTIVE recorded in runPrepasses
   private retouchSig = "";
   private retouchChannelOf: Record<string, number> = {};
   // Offscreen "develop without retouch" target, sampled so heal matches tone in
@@ -1080,6 +1088,7 @@ export class WebGLRenderer {
       "uApplyRetouch",
       "uHealFill",
       "uHaveHealFill",
+      "uMembraneHeal",
       "uPatchPass",
     ];
     // Per-mask array uniforms (queried by indexed name).
@@ -1624,6 +1633,17 @@ export class WebGLRenderer {
     // here painted a black frame on every crop/straighten/transform change.
   }
 
+  // The 8-bit sRGB downscaled source used for heal source-picking. The heal
+  // source/colour search (findHealSource/healColorOffset) runs on the MAIN
+  // thread (in the overlay), so the worker forwards this buffer up after every
+  // source change; without it the main-thread search has no pixels and silently
+  // falls back to a blind offset (heal then copies near-identical neighbours and
+  // appears to do nothing). Returns a copy so the caller can transfer/clone it.
+  healSourceData(): { data: Uint8ClampedArray; w: number; h: number } | null {
+    if (!this.fillSrc || this.fillW === 0 || this.fillH === 0) return null;
+    return { data: new Uint8ClampedArray(this.fillSrc), w: this.fillW, h: this.fillH };
+  }
+
   setStages(stages: ProcessingStageContribution[]) {
     this.injectedStages = stages;
   }
@@ -2032,7 +2052,7 @@ export class WebGLRenderer {
         s.radius,
         s.feather / 100,
         s.opacity / 100,
-        0,
+        s.mode === "clone" ? 0 : 1, // heal flag: drives the membrane blend
       );
       const angle = s.angle ?? 0;
       const scale = s.scale ?? 1;
@@ -2082,6 +2102,7 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.healFillTex ?? this.imageTexture);
     gl.uniform1i(u.uHealFill, 5);
     gl.uniform1i(u.uHaveHealFill, this.haveHealFill ? 1 : 0);
+    gl.uniform1i(u.uMembraneHeal, MEMBRANE_HEAL ? 1 : 0);
     gl.uniform1i(u.uHaveDeveloped, 0);
 
     // Keep unit 4 (uDevelopedSrc) pointed at a valid texture.
@@ -2090,6 +2111,18 @@ export class WebGLRenderer {
     gl.uniform1i(u.uDevelopedSrc, 4);
 
     const hasRetouch = circles.length > 0 || brushSpots.length > 0;
+    // The patched source depends on every circle spot's geometry/source/recolour,
+    // not just the brush coverage captured by retouchSig. Without this, editing a
+    // circle heal doesn't bust the prepass cache (e.g. denoise), so the patched
+    // result stays stale until an app restart clears stageResultTargets.
+    const circleSig = circles
+      .map(
+        (s) =>
+          `${s.dstX.toFixed(4)},${s.dstY.toFixed(4)},${s.srcX.toFixed(4)},${s.srcY.toFixed(4)},` +
+          `${s.radius.toFixed(4)},${s.feather},${s.opacity},${(s.angle ?? 0).toFixed(3)},${(s.scale ?? 1).toFixed(3)},` +
+          `${(s.recolorR ?? 0).toFixed(3)},${(s.recolorG ?? 0).toFixed(3)},${(s.recolorB ?? 0).toFixed(3)},${s.mode}`,
+      )
+      .join(";");
     if (hasRetouch && this.prepareDevelopedTarget()) {
       // Pass 1 -> bake the retouch into an offscreen copy of the source, then
       // build its mip chain so the develop's blur taps read the patched pixels.
@@ -2106,7 +2139,8 @@ export class WebGLRenderer {
       // Prepasses (e.g. denoise) read the PATCHED source so heal happens before
       // detail; results are bound onto the main program for pass 2. The patched
       // source varies with retouch/heal geometry, so fold those into the cache key.
-      this.runPrepasses(this.developedTex!, `e${this.sourceEpoch}|r${this.retouchSig}|h${this.healSig}`);
+      this.runPrepasses(this.developedTex!, `e${this.sourceEpoch}|r${this.retouchSig}|c${circleSig}|h${this.healSig}`);
+      this.dbgPrepass = `prepass[${this.prepassStages.length}] sigLen=${circleSig.length} state=${this.dbgPrepassState}`;
       gl.useProgram(this.program);
       this.bindPrepassResults();
 
@@ -2494,6 +2528,7 @@ export class WebGLRenderer {
   // draw applies via bindPrepassResults().
   private runPrepasses(srcTex: WebGLTexture, srcSig: string) {
     this.prepassResults = [];
+    this.dbgPrepassState = "";
     if (this.prepassStages.length === 0) return;
     const gl = this.gl;
     const { w, h } = this.prepassDims();
@@ -2506,6 +2541,7 @@ export class WebGLRenderer {
       // Inactive (or no float targets): bind the raw source as the result. The
       // inline glsl blends with amount 0, so the value is never actually used.
       if (!haveTargets || !this.prepassActive(stage.stageId)) {
+        this.dbgPrepassState += `INACTIVE(${stage.stageId});`;
         this.prepassResults.push({ resultUniform: stage.resultUniform, tex: srcTex, unit: unit++ });
         continue;
       }
@@ -2515,9 +2551,11 @@ export class WebGLRenderer {
       const sig = this.prepassSig(stage, srcSig, w, h, baseCurve);
       const cached = this.stageResultTargets.get(stage.stageId);
       if (cached && cached.w === w && cached.h === h && this.prepassSigs.get(stage.stageId) === sig) {
+        this.dbgPrepassState += `HIT(${stage.stageId});`;
         this.prepassResults.push({ resultUniform: stage.resultUniform, tex: cached.tex, unit: unit++ });
         continue;
       }
+      this.dbgPrepassState += `MISS(${stage.stageId});`;
 
       let readTex: WebGLTexture = srcTex;
       let prevRaw = true;            // first read linearizes + base-curves the source

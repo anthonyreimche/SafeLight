@@ -49,10 +49,10 @@ Open the **Export** panel (View ▸ Export, docked in Library by default), selec
 - **Panels**: drag to dock, tab, float, or minimize any panel; toggle them from the **View** menu. Layouts persist per module.
 - **Layouts and themes**: switch named layouts from the **Layout** menu and themes from the **View** menu.
 - **Shortcuts**: rebind any key in **Preferences (Ctrl+,) ▸ Shortcuts**.
-- **Extensions**: install community panels, tools, and themes from GitHub via **View ▸ Extensions** (Ctrl+Shift+X) — see [Extensions](extensions.md).
+- **Extensions**: install community panels, tools, and themes from GitHub via **View ▸ Extensions** (Ctrl+Shift+X) — see [Using Extensions](using-extensions.md).
 
 ## Next Steps
 
 - [User Guide](user-guide.md) — every feature in detail
-- [Extensions](extensions.md) — installing and building extensions
-- [Architecture](architecture.md) and [API Documentation](api-documentation.md) — technical reference
+- [Using Extensions](using-extensions.md) — install and manage community add-ons
+- [Developer Docs](../dev/README.md) — architecture and the extension API reference
