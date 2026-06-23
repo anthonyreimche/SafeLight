@@ -90,7 +90,7 @@ The Presets panel saves the current edit as a named preset and applies presets t
 
 Open the **Export** panel (docked in Library by default, or via **View ▸ Export** from either module):
 
-- **Format** — JPEG, PNG, or WebP, with a quality slider for JPEG/WebP.
+- **Format** — JPEG, PNG, WebP, or TIFF, with a quality slider for JPEG/WebP and an 8- or 16-bit depth choice for TIFF (16-bit needs float render targets and falls back to 8-bit when unavailable).
 - **Color space** — sRGB, Display P3, Adobe RGB, or ProPhoto RGB; the matching ICC profile is embedded so other apps read the pixels correctly.
 - **Size** — limit the long edge or keep the original size, with optional output sharpening (amount and radius).
 - **Delivery** — multiple photos as a single ZIP, separate files, or into a chosen folder.

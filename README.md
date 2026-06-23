@@ -1,6 +1,6 @@
 # Safelight
 
-**Safelight 2.0** is a fast, free, open-source RAW photo editor for Windows, Linux, macOS, and the browser. It pairs professional, GPU-accelerated imaging tools with the customizability of a modern IDE: the core is a *blind orchestrator* and every panel, tool, and display transform is an extension that can be rearranged, replaced, or supplemented by the community.
+**Safelight** is a fast, free, open-source RAW photo editor for Windows, Linux, macOS, and the browser. It pairs professional, GPU-accelerated imaging tools with the customizability of a modern IDE: the core is a *blind orchestrator* and every panel, tool, and display transform is an extension that can be rearranged, replaced, or supplemented by the community.
 
 - **Non-destructive and project-based** — open a folder of photos and edit. Your originals are never touched; ratings, flags, and edit history live in a `.safelight/` directory inside the project folder, so a project is fully portable.
 - **Real RAW support** — full-resolution RAW decoding via libraw-wasm plus an in-house linear-float decoder for uncompressed CFA/DNG, covering NEF, CR2/CR3, ARW, DNG, ORF, RAF, RW2, and many more, with automatic fallback to the embedded preview.
@@ -45,7 +45,7 @@
 
 ### Export
 
-- Batch JPEG, PNG, and WebP export through the same GPU pipeline used for editing
+- Batch JPEG, PNG, WebP, and 8/16-bit TIFF export through the same GPU pipeline used for editing
 - Output color space — sRGB, Display P3, Adobe RGB, or ProPhoto RGB, with the matching ICC profile embedded so other apps read the pixels correctly
 - Quality, long-edge resizing, and output sharpening controls
 - Filename templates and post-encode export processors (e.g. watermarking) via extensions
@@ -95,13 +95,10 @@ Because everything in Safelight is an extension, planned work falls into two tra
 **Library and organization**
 - Virtual copies — multiple edit versions of one photo without duplicating the file
 - Collections and smart collections — virtual groupings independent of folder structure
-- Sync edits — apply the current photo's settings to all selected photos with per-panel granularity
 - Hierarchical keywording (flat keyword tagging already ships)
 - IPTC/XMP metadata editing — copyright, caption, creator, rights fields (XMP sidecar read/write already ships via the XMP Tools extension)
 
 **Export and output**
-- Multiple export recipes — run several format/size/destination presets in one pass
-- Watermarking — text or image overlays on export
 - Input color profile support — assign and convert ICC profiles on import (output-side ICC export already ships)
 
 **Platform**
@@ -110,11 +107,7 @@ Because everything in Safelight is an extension, planned work falls into two tra
 ### Planned as extensions
 
 **Develop**
-- Filmic / sigmoid tone mapping — film-like tone curve alternatives to the basic panel
-- Wavelet-based noise reduction — fine-scale luminance and color decomposition
-- Moiré reduction
 - Flat field and dark frame correction — subtract fixed-pattern sensor noise and lens illumination falloff
-- LUT import/export — 3D LUTs (.cube) and film simulations (HaldCLUT)
 - Focus mask overlay — highlight in-focus areas in the develop canvas
 
 **Library and organization**
@@ -125,7 +118,6 @@ Because everything in Safelight is an extension, planned work falls into two tra
 
 **Export and output**
 - Soft proofing — simulate paper or screen output using ICC profiles
-- Print module — multi-photo layout, contact sheet, color-managed printing
 - Web gallery / publish services — generate HTML galleries or push to Flickr, SmugMug, etc.
 
 **AI features** (ONNX.js models, downloaded on demand)

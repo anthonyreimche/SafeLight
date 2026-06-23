@@ -5,15 +5,49 @@ All notable changes to Safelight are documented in this file.
 ## [Unreleased]
 
 ### Planned
-- Red eye correction
 - B&W and HDR image support
 - HDR / focus stacking and photo merge
-- Batch editing / sync edits
 - AI masking via ONNX.js (Select Subject, Sky)
 - Lightroom catalog import (sql.js)
 - Mobile-responsive viewing
 - Camera profile / base tuning controls
 - Stage-by-stage migration of the develop shader to extension-contributed processing stages
+
+## [2.3.0] - 2026-06-23
+
+### Added
+- Geometry/warp tool extension APIs — a `geometry`-phase processing stage that warps source coordinates, plus per-photo opaque sidecar storage (`api.develop.putPhotoData` / `getPhotoData`) for large tool payloads such as warp displacement fields.
+- Extension trust registry — a GitHub-backed verified/banned list with a sealed privileged bridge so extensions can't reach raw filesystem or the update installer.
+
+### Changed
+- More usable Library grid selection.
+
+### Fixed
+- Heal tool and develop-canvas render fixes.
+
+## [2.2.0] - 2026-06-21
+
+### Added
+- **TIFF export** — 8-bit and 16-bit TIFF output through the same GPU pipeline as editing, with the selected color space's ICC profile embedded. 16-bit uses float render targets and falls back to 8-bit when unavailable.
+
+## [2.1.1] - 2026-06-21
+
+### Fixed
+- Assorted bug fixes.
+
+## [2.1.0] - 2026-06-21
+
+### Added
+- Expanded the extension API surface and filled in previously missing extension UI.
+- Network connectivity handling for the Extensions store, plus documentation updates.
+
+### Fixed
+- Extension updater fixes.
+
+## [2.0.1] - 2026-06-20
+
+### Fixed
+- Extension store thumbnails failing to display.
 
 ## [2.0.0] - 2026-06
 

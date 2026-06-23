@@ -42,7 +42,7 @@ Tips: hold **Shift** while dragging a slider for fine control, double-click to r
 
 ## Export
 
-Open the **Export** panel (View ▸ Export, docked in Library by default), select photos, choose JPEG/PNG/WebP, quality, an output color space, and an optional long-edge limit, then export — multiple photos can be bundled into a single ZIP.
+Open the **Export** panel (View ▸ Export, docked in Library by default), select photos, choose JPEG/PNG/WebP/TIFF, quality, an output color space, and an optional long-edge limit, then export — multiple photos can be bundled into a single ZIP.
 
 ## Make It Yours
 

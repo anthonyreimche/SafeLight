@@ -74,8 +74,8 @@ export interface ThemeContribution {
   vars: Record<string, string>;
 }
 
-/** A render pipeline (scene-linear → display transform), selectable in the
- *  Pixel Peeper panel. The GLSL must define
+/** A render pipeline (scene-linear → display transform), selectable in
+ *  Preferences ▸ Rendering ▸ Display transform. The GLSL must define
  *    vec3 pipelineToDisplay(vec3 lin)
  *  mapping scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to
  *  display-encoded output. Helpers available: luma(), srgbToLinear(),
