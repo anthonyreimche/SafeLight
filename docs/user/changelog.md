@@ -130,7 +130,7 @@ First stable release.
 - Project-based catalogs: open any folder; ratings, flags, and edit histories persist in `.safelight/` inside it (portable, originals untouched)
 - Catalog reconciliation against the disk on every open; last project remembered
 - Folder tree, grid/list views with adjustable thumbnails, sorting
-- Lightroom-style culling: ratings 1–5, color labels 6–9, pick/reject/unflag, rotate, filters by rating/flag/label
+- Full culling workflow: ratings 1–5, color labels 6–9, pick/reject/unflag, rotate, filters by rating/flag/label
 - EXIF metadata Info panel
 
 ### RAW

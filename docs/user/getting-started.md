@@ -21,7 +21,7 @@ Supported formats: JPEG, PNG, WebP, AVIF, TIFF, and RAW (NEF, CR2, CR3, ARW, DNG
 
 ## Cull and Organize
 
-In the Library grid (defaults match Lightroom; everything is rebindable in Preferences ▸ Shortcuts):
+In the Library grid (sensible defaults below; everything is rebindable in Preferences ▸ Shortcuts):
 
 - **1–5** rate, **0** clear rating
 - **6–9** color labels (red, yellow, green, blue)

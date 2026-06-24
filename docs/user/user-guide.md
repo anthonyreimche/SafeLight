@@ -1,6 +1,6 @@
 # User Guide
 
-This guide covers Safelight's two modules — **Library** and **Develop** — plus exporting, the dockable workspace, and customization. Defaults follow Lightroom conventions wherever one exists.
+This guide covers Safelight's two modules — **Library** and **Develop** — plus exporting, the dockable workspace, and customization. Defaults follow familiar, industry-standard conventions wherever one exists.
 
 ## Projects
 
@@ -13,6 +13,9 @@ Safelight stores everything inside the folder you edit:
 - The last project is reopened on launch when **Restore last project** is enabled. In the browser, click **Reconnect** in the top bar when permissions expire between sessions.
 
 ## Library Module
+
+<img width="3840" height="2067" alt="Library grid view" src="https://github.com/user-attachments/assets/4d9fc0f7-1af9-4040-8684-f927cc7fa757" />
+<img width="3840" height="2067" alt="Library with metadata and filters" src="https://github.com/user-attachments/assets/2066274e-aa17-43ce-b67e-46f7234c56aa" />
 
 ### Browsing
 
@@ -45,6 +48,10 @@ The Filters panel narrows the grid by minimum rating (with a comparison operator
 ## Develop Module
 
 Open a photo by double-clicking it in the Library (or press **D** for the Develop module). Editing is non-destructive; every change is recorded in the photo's history.
+
+<img width="3840" height="2067" alt="Develop module" src="https://github.com/user-attachments/assets/960afdee-95d0-498b-9988-6c9b63a285a6" />
+<img width="3840" height="2067" alt="Develop with masking" src="https://github.com/user-attachments/assets/ca9f9fbb-6fd7-463d-8e6c-42f47165806e" />
+<img width="3840" height="2067" alt="Develop detail and color tools" src="https://github.com/user-attachments/assets/fe9c8403-b46c-4f71-bf99-ed3c9b11104f" />
 
 ### Canvas and history
 
@@ -84,7 +91,7 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 
 ### Presets
 
-The Presets panel saves the current edit as a named preset and applies presets to other photos. Presets are Lightroom-style — they carry only the adjustments they set — in an open, human-readable JSON format (`safelight-preset`, version 1) that you can export and import. Hovering a preset previews it without touching history. Extensions can teach the importer to read other apps' preset files (e.g. Lightroom `.xmp` via the XMP Tools extension).
+The Presets panel saves the current edit as a named preset and applies presets to other photos. Presets are additive — they carry only the adjustments they set — in an open, human-readable JSON format (`safelight-preset`, version 1) that you can export and import. Hovering a preset previews it without touching history. Extensions can teach the importer to read other apps' preset files (e.g. Lightroom `.xmp` via the XMP Tools extension).
 
 ## Exporting
 
@@ -101,9 +108,13 @@ Exports render through the same worker WebGL pipeline as the Develop view, so ou
 
 ## Workspace
 
+<img width="3837" height="2065" alt="Dockable workspace" src="https://github.com/user-attachments/assets/811242de-0973-4378-bfb5-7add1433595e" />
+<img width="3840" height="2067" alt="Floating and tabbed panels" src="https://github.com/user-attachments/assets/b5808eae-aa0b-4f2a-b1f4-08fd5c45e62b" />
+<img width="3840" height="2067" alt="Multi-window layout" src="https://github.com/user-attachments/assets/4b4fb272-2835-4c1c-9933-20e5e4408dc8" />
+
 ### Docking
 
-Safelight uses Lightroom-style rails with Photoshop-style docking. Every panel can be dragged to either rail, tabbed with other panels, resized, minimized, or floated as its own window. The **View** menu toggles any registered panel; the **Layout** menu switches named layouts (the built-in **Classic** layout restores the default arrangement). Layouts persist per module.
+Safelight uses collapsible edge rails with Photoshop-style docking. Every panel can be dragged to either rail, tabbed with other panels, resized, minimized, or floated as its own window. The **View** menu toggles any registered panel; the **Layout** menu switches named layouts (the built-in **Classic** layout restores the default arrangement). Layouts persist per module.
 
 ### Multi-window
 
