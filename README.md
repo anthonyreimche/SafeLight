@@ -17,7 +17,9 @@ Safelight is that lamp: a small, steady core and nothing you didn't ask for. Eve
 - **Lean by choice.** Carry only the tools you actually use; everything else stays out until you want it. No clutter, no weight you didn't choose.
 - **Serious about images.** Real, full-resolution RAW and a 16-bit GPU pipeline under the hood. Free was never meant to mean basic.
 
-> **Your workspace. Your rules.**
+**Your workspace. Your rules.**
+
+<img width="3839" height="2058" alt="Safelight Customize Example" src="https://github.com/user-attachments/assets/ccb2e7da-af97-409f-aa1a-990698460916" />
 
 ## Why everything is an extension
 
@@ -28,14 +30,15 @@ Safelight turns that inside out. Nothing is load-bearing except the safelight it
 - **Unplug anything.** Never reach for the tone curve? The crop tool? Switch them off and they're *truly* gone: out of the render pipeline, the menus, the interface. Not hidden behind a setting. Unplugged. A leaner, faster room with only what you actually use in it.
 - **Pull tools off the shelf when you need them.** Some jobs come around once a season. Enable the tool for the afternoon, then set it back down. The extension store isn't a pile of features to wade through; it's a shelf you reach for.
 - **Make it your own.** Don't like a panel? Swap in a community one, or build your own. Panels, themes, layouts, display transforms, lens profiles, export processors: every one of them an install away, every one yours to rearrange.
+<img width="1671" height="1104" alt="Safelight Extension Panel" src="https://github.com/user-attachments/assets/bc988e3a-a52a-4735-ae73-7d7e04b71e79" />
 
 What you're left with isn't a smaller version of someone else's app. It's the darkroom you'd have built yourself — only the tools you want, exactly where you expect them.
 
 ## What's inside
 
 Two modules and an open workspace, with defaults that feel familiar from the first photo:
-
-<img width="3840" height="2067" alt="Safelight Develop module" src="https://github.com/user-attachments/assets/960afdee-95d0-498b-9988-6c9b63a285a6" />
+<img width="3839" height="2058" alt="Safelight Library module" src="https://github.com/user-attachments/assets/01ab6226-abd5-4933-8bee-c409e138e7ff" />
+<img width="3839" height="2058" alt="Safelight Develop module" src="https://github.com/user-attachments/assets/40bb333a-6c80-4b78-88a4-ad7ba90afa3f" />
 
 - **Library:** open a folder and edit. Non-destructive and project-based; your originals are never touched, and ratings, flags, keywords, and edit history live in a portable `.safelight/` folder. Fast, keyboard-driven culling, filtering, and sorting.
 - **Develop:** white balance, tone, curves, HSL, color grading, detail, lens corrections, geometry and Upright, local masking, heal/clone, and presets, all rendered through a WebGL2 pipeline running in a Web Worker.
