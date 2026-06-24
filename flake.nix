@@ -31,7 +31,7 @@
           # Hash of the fixed-output npm dependency fetch. Recompute whenever
           # package-lock.json changes — the build error prints the correct value,
           # or run:  nix run nixpkgs#prefetch-npm-deps -- package-lock.json
-          npmDepsHash = "sha256-Cp7SYeVhP2lX9BOzm+LA1OjQwmmlgK4dK2EenpLEESo=";
+          npmDepsHash = "sha256-QHUNQMR3JHy9A5PqZ2XiA7YmBkWk8ynavQMF3RBLh9o=";
 
           # nixpkgs supplies Electron, so skip the npm postinstall that would try
           # to download a (sandbox-blocked) prebuilt binary.

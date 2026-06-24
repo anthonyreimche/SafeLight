@@ -615,6 +615,11 @@ export class WebGLRenderer {
   private histTex: WebGLTexture | null = null;
   private histFboF: WebGLFramebuffer | null = null;
   private histTexF: WebGLTexture | null = null;
+  // Display-space float histogram target: same output as the 8-bit standard
+  // path, but read back as float so the 256 bins see continuous values instead
+  // of 256 quantized codes (avoids the comb/banding artifact after tonal stretch).
+  private histFboD: WebGLFramebuffer | null = null;
+  private histTexD: WebGLTexture | null = null;
   private haveColorBufferFloat = false;
   // When set, render()'s final composite pass draws into this framebuffer instead
   // of the default (8-bit canvas). Used by captureFloatFrame for 16-bit export.
@@ -2244,38 +2249,83 @@ export class WebGLRenderer {
     const gl = this.gl;
     const HIST_SIZE = 128;
 
-    // Standard histogram: re-render at 128x128 into an RGBA8 FBO, readPixels.
-    if (!this.histFbo) {
-      this.histTex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.histTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, HIST_SIZE, HIST_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      this.histFbo = gl.createFramebuffer();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.histTex, 0);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    }
-
-    gl.uniform1i(this.uniforms.uShowClipping, 0);
-    gl.uniform1i(this.uniforms.uVizMask, -1);
-    gl.uniform1i(this.uniforms.uSharpenViz, 0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
-    gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-    const px8 = new Uint8Array(HIST_SIZE * HIST_SIZE * 4);
-    gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, px8);
-
     const r = new Uint32Array(256);
     const g = new Uint32Array(256);
     const b = new Uint32Array(256);
     const luma = new Uint32Array(256);
-    for (let i = 0; i < px8.length; i += 4) {
-      const R = px8[i], G = px8[i + 1], B = px8[i + 2];
-      r[R]++; g[G]++; b[B]++;
-      luma[(0.2126 * R + 0.7152 * G + 0.0722 * B) | 0]++;
+
+    // Standard histogram: re-render the display output at 128x128 and read it
+    // back. We share GL state with the clipping/viz uniforms reset to off so the
+    // sampled frame is the plain developed image.
+    gl.uniform1i(this.uniforms.uShowClipping, 0);
+    gl.uniform1i(this.uniforms.uVizMask, -1);
+    gl.uniform1i(this.uniforms.uSharpenViz, 0);
+
+    if (this.haveColorBufferFloat) {
+      // Preferred path: render the display-encoded output into an RGBA16F FBO and
+      // read it back as float. The values are still display-space in [0,1] (same
+      // axis and color space as the 8-bit path, so the tonal zones line up), but
+      // continuous rather than quantized to 256 codes. This removes the comb /
+      // banding the 8-bit readback shows after any tonal stretch (curves,
+      // exposure, per-channel white-balance gains spread the 256 codes apart).
+      if (!this.histFboD) {
+        this.histTexD = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.histTexD);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, HIST_SIZE, HIST_SIZE, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        this.histFboD = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFboD);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.histTexD, 0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFboD);
+      gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      const pxD = new Float32Array(HIST_SIZE * HIST_SIZE * 4);
+      gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.FLOAT, pxD);
+
+      for (let i = 0; i < pxD.length; i += 4) {
+        // Display output is clamped to [0,1] in the shader; clamp defensively and
+        // scale to the 0..255 bin index used by the rest of the histogram code.
+        const R = Math.min(255, Math.max(0, pxD[i] * 255));
+        const G = Math.min(255, Math.max(0, pxD[i + 1] * 255));
+        const B = Math.min(255, Math.max(0, pxD[i + 2] * 255));
+        r[R | 0]++; g[G | 0]++; b[B | 0]++;
+        luma[(0.2126 * R + 0.7152 * G + 0.0722 * B) | 0]++;
+      }
+    } else {
+      // Fallback when float color buffers aren't renderable: RGBA8 readback.
+      // 256 source codes into 256 bins, so a tonal stretch will comb — but this
+      // only runs on GPUs without EXT_color_buffer_float.
+      if (!this.histFbo) {
+        this.histTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.histTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, HIST_SIZE, HIST_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        this.histFbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.histTex, 0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.histFbo);
+      gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      const px8 = new Uint8Array(HIST_SIZE * HIST_SIZE * 4);
+      gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, px8);
+
+      for (let i = 0; i < px8.length; i += 4) {
+        const R = px8[i], G = px8[i + 1], B = px8[i + 2];
+        r[R]++; g[G]++; b[B]++;
+        luma[(0.2126 * R + 0.7152 * G + 0.0722 * B) | 0]++;
+      }
     }
 
     const result: HistogramData = { r, g, b, luma };
