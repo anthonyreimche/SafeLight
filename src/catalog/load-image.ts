@@ -8,7 +8,13 @@ import { extractRawPreview, isRawFile } from "@/modules/library/raw-preview";
 import { decodeNetpbm, isNetpbmName } from "@/modules/library/netpbm";
 import { decodeTiff, isTiffName } from "@/modules/library/tiff-image";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
-import { normalizeRotation, orientationToRotation, rotateBitmap, rotateFloatRGBA } from "./orient";
+import {
+  normalizeRotation,
+  orientationToRotation,
+  previewUprightRotation,
+  rotateBitmap,
+  rotateFloatRGBA,
+} from "./orient";
 import { verifyPermission } from "./permissions";
 import { rawCacheKey, readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
 import { catalogStorage } from "./storage";
@@ -183,7 +189,12 @@ export async function loadPhotoImage(
         if (preview && opts?.onPreview) {
           try {
             const bm = await createImageBitmap(preview, { imageOrientation: "none" });
-            const upright = await rotateBitmap(bm, photo.rotation ?? 0);
+            // Embedded previews are usually sensor-native and carry no orientation
+            // tag — orient from the master EXIF, aspect-gated (see orient.ts).
+            const deg = previewUprightRotation(
+              bm.width, bm.height, photo.rotation ?? 0, photo.exif?.orientation,
+            );
+            const upright = await rotateBitmap(bm, deg);
             if (upright !== bm) bm.close();
             opts.onPreview({ kind: "bitmap", bitmap: upright });
           } catch { /* preview paint is best-effort */ }
@@ -234,7 +245,10 @@ export async function loadPhotoImage(
         // bitmap path handles edits the same way it does for any JPEG.
         if (preview) {
           const bitmap = await createImageBitmap(preview, { imageOrientation: "none" });
-          const upright = await rotateBitmap(bitmap, photo.rotation ?? 0);
+          const deg = previewUprightRotation(
+            bitmap.width, bitmap.height, photo.rotation ?? 0, photo.exif?.orientation,
+          );
+          const upright = await rotateBitmap(bitmap, deg);
           if (upright !== bitmap) bitmap.close();
           return { kind: "bitmap", bitmap: upright };
         }
@@ -263,6 +277,10 @@ export async function loadPhotoBitmap(
       const file = await photo.fileHandle.getFile();
       let raw: ImageBitmap | null = null;
       let decoderOriented = false;
+      // True when `raw` is an embedded camera preview (sensor-native, no own
+      // orientation tag): orient it from the master EXIF, aspect-gated, rather
+      // than blindly applying photo.rotation as if it were already correct.
+      let fromPreview = false;
 
       if (isRawFile(file)) {
         const result = await decodeRawToBitmap(file);
@@ -274,6 +292,7 @@ export async function loadPhotoBitmap(
           raw = preview
             ? await createImageBitmap(preview, { imageOrientation: "none" })
             : null;
+          fromPreview = raw !== null;
         }
       } else if (isNetpbmName(file.name)) {
         raw = await decodeNetpbm(file);
@@ -287,6 +306,10 @@ export async function loadPhotoBitmap(
         let rotateDeg = photo.rotation ?? 0;
         if (decoderOriented) {
           rotateDeg = normalizeRotation(rotateDeg - orientationToRotation(photo.exif?.orientation));
+        } else if (fromPreview) {
+          rotateDeg = previewUprightRotation(
+            raw.width, raw.height, rotateDeg, photo.exif?.orientation,
+          );
         }
         const upright = await rotateBitmap(raw, rotateDeg);
         if (upright !== raw) raw.close();

@@ -27,6 +27,31 @@ export function orientationToRotation(orientation: number | undefined): number {
   }
 }
 
+// How much to rotate a camera's EMBEDDED preview JPEG (decoded sensor-native,
+// imageOrientation:"none") to bring it upright. Embedded previews are usually
+// stored sensor-native — they carry NO orientation tag of their own, so the
+// master RAW's EXIF Orientation is the only source of truth — but some cameras
+// store the preview already uprighted. Disambiguate by aspect: a quarter-turn
+// EXIF orientation means the upright frame is portrait, so a still-landscape
+// preview is sensor-native (apply the rotation) while an already-portrait one was
+// pre-uprighted (apply nothing). `rotation` is the photo's canonical rotation
+// (EXIF + any manual turns); only the EXIF portion is aspect-gated, manual turns
+// always apply. (180°/no-turn orientations can't be told apart by aspect, so the
+// EXIF rotation is applied as-is — the same assumption the sensor-native path
+// makes.)
+export function previewUprightRotation(
+  previewW: number,
+  previewH: number,
+  rotation: number,
+  orientation: number | undefined,
+): number {
+  const exifRot = orientationToRotation(orientation);
+  const manual = normalizeRotation(rotation - exifRot);
+  const quarter = exifRot === 90 || exifRot === 270;
+  const alreadyUpright = quarter && previewH > previewW;
+  return normalizeRotation((alreadyUpright ? 0 : exifRot) + manual);
+}
+
 // Rotate a linear float RGBA buffer by a 90° step (for the high-bit-depth RAW
 // path, which has no ImageBitmap to draw through a canvas).
 export function rotateFloatRGBA(

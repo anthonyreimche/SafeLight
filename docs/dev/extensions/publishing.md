@@ -6,10 +6,11 @@ The Extensions store builds your detail page from your repo — you don't host a
 
 ## Thumbnail / icon
 
-The detail view picks the first available of: `manifest.icon` → the repo's **og:image** (GitHub social preview) → the owner's avatar. So you have two ways to set a deliberate thumbnail:
+**Browse grid:** each card shows your `manifest.icon` if you declare one, otherwise the owner's avatar. The icon is served straight from the jsDelivr CDN (so the grid paints instantly and isn't throttled) — declaring one is the only way to get a distinct thumbnail in the browse view.
 
-- Add `"icon": "icon.png"` to `safelight.json` (a path relative to the repo's default branch, or an absolute `https:` URL). Square, ~256×256 reads best at the 48×48 the store renders it.
-- Or upload a **custom social preview** under the repo's *Settings ▸ General ▸ Social preview* (1280×640). With no manifest icon, Safelight uses this; with none uploaded, GitHub's auto-generated card is used as a last resort. (The store's CSP allows remote `https:` images for exactly this.)
+- Add `"icon": "icon.png"` to `safelight.json` (a path relative to the repo's default branch, or an absolute `https:` URL). Square, ~256×256 reads best.
+
+**Detail view:** picks the first available of `manifest.icon` → the repo's **og:image** (GitHub social preview) → the owner's avatar. So in addition to the manifest icon, you can upload a **custom social preview** under the repo's *Settings ▸ General ▸ Social preview* (1280×640) for the detail header; with neither, the avatar is used. (The store's CSP allows remote `https:` images for exactly this.)
 
 ## README
 

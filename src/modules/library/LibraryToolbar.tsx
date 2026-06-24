@@ -44,7 +44,7 @@ export function LibraryToolbar() {
     if (ids.length === 0) return;
     if (getSettings().confirmRemovePhotos) {
       const ok = window.confirm(
-        `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted (they'll reappear on the next folder scan).`,
+        `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted, and won't be re-imported on the next folder scan.`,
       );
       if (!ok) return;
     }

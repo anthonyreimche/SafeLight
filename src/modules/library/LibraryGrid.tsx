@@ -4,17 +4,21 @@
 // be preserved in derived versions.
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { CatalogPhoto } from "@/catalog/types";
+import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { Thumbnail } from "@/ui/components/Thumbnail";
 import { VirtualGrid } from "@/ui/components/VirtualGrid";
 import { ContextMenu, type ContextMenuEntry } from "@/ui/components/ContextMenu";
 import { LibraryListRow } from "./LibraryListRow";
+import { CopySettingsDialog } from "./CopySettingsDialog";
 import { visiblePhotos } from "./visible-photos";
 import { useGridFilters, useLibrarySorts } from "@/extensions/registry";
 import { exportPhotoData } from "@/project/folder-ops";
 import { getSettings, useSettings } from "@/state/settings-store";
+import { loadSavedEdit } from "@/catalog/edit-params";
+import { pasteSettings } from "@/catalog/paste-settings";
+import { useDevelopClipboard } from "@/state/develop-clipboard";
 
 export function LibraryGrid() {
   const photos = useCatalogStore((s) => s.photos);
@@ -39,6 +43,8 @@ export function LibraryGrid() {
   // Subscribe so the grid re-derives when the subfolder preference toggles;
   // visiblePhotos reads the value itself (see inFolder).
   const showSubfolderPhotos = useSettings((s) => s.showSubfolderPhotos);
+  const clipboard = useDevelopClipboard((s) => s.clipboard);
+  const setClipboard = useDevelopClipboard((s) => s.copy);
   const gridFilters = useGridFilters();
   const librarySorts = useLibrarySorts();
   const customCompare = librarySorts.find((s) => s.id === sortField)?.compare;
@@ -173,6 +179,28 @@ export function LibraryGrid() {
     [removePhotos],
   );
 
+  // Copy/paste develop settings. Copy reads one photo's saved edit and opens the
+  // checklist dialog; paste merges the clipboard's chosen adjustments onto every
+  // targeted photo (see paste-settings).
+  const [copyDialog, setCopyDialog] = useState<{
+    params: DevelopParams;
+    paramBag: Record<string, unknown>;
+    sourceName: string;
+  } | null>(null);
+
+  const handleCopySettings = useCallback(async (id: string) => {
+    const photo = useCatalogStore.getState().photos.find((p) => p.id === id);
+    if (!photo) return;
+    const { params, paramBag } = await loadSavedEdit(id, photo.exif.colorTemperature);
+    setCopyDialog({ params, paramBag, sourceName: photo.filename });
+  }, []);
+
+  const handlePasteSettings = useCallback(async (ids: string[]) => {
+    const clip = useDevelopClipboard.getState().clipboard;
+    if (!clip) return;
+    await pasteSettings(ids, clip);
+  }, []);
+
   const menuItems = useMemo<ContextMenuEntry[]>(() => {
     if (!menu) return [];
     const { ids } = menu;
@@ -188,6 +216,19 @@ export function LibraryGrid() {
         },
       },
       "separator",
+      {
+        label: "Copy settings…",
+        disabled: n !== 1,
+        onClick: () => void handleCopySettings(ids[0]),
+      },
+      {
+        label: clipboard
+          ? `Paste settings${suffix}`
+          : "Paste settings (nothing copied)",
+        disabled: !clipboard,
+        onClick: () => void handlePasteSettings(ids),
+      },
+      "separator",
       { label: `Rotate clockwise${suffix}`, onClick: () => rotatePhotos(ids, 90) },
       {
         label: `Rotate counter-clockwise${suffix}`,
@@ -200,6 +241,9 @@ export function LibraryGrid() {
     ];
   }, [
     menu,
+    clipboard,
+    handleCopySettings,
+    handlePasteSettings,
     rotatePhotos,
     handleExportData,
     handleRemove,
@@ -233,13 +277,29 @@ export function LibraryGrid() {
     );
   }
 
-  const contextMenu = menu && (
-    <ContextMenu
-      x={menu.x}
-      y={menu.y}
-      items={menuItems}
-      onClose={() => setMenu(null)}
-    />
+  const overlays = (
+    <>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {copyDialog && (
+        <CopySettingsDialog
+          params={copyDialog.params}
+          paramBag={copyDialog.paramBag}
+          sourceName={copyDialog.sourceName}
+          onCopy={(clip) => {
+            setClipboard(clip);
+            setCopyDialog(null);
+          }}
+          onCancel={() => setCopyDialog(null)}
+        />
+      )}
+    </>
   );
 
   if (viewMode === "list") {
@@ -267,7 +327,7 @@ export function LibraryGrid() {
             />
           )}
         />
-        {contextMenu}
+        {overlays}
       </>
     );
   }
@@ -300,7 +360,7 @@ export function LibraryGrid() {
           />
         )}
       />
-      {contextMenu}
+      {overlays}
     </>
   );
 }

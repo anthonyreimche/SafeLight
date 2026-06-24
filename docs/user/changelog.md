@@ -13,6 +13,18 @@ All notable changes to Safelight are documented in this file.
 - Camera profile / base tuning controls
 - Stage-by-stage migration of the develop shader to extension-contributed processing stages
 
+## [2.3.1] - 2026-06-24
+
+### Added
+- **Copy/paste develop settings in the Library** — right-click a photo and choose **Copy settings…** to pick adjustments from the same checklist used for presets (including extension stages); **Paste settings** then merges the chosen adjustments onto every selected photo, undoably, without opening Develop.
+
+### Changed
+- **Faster Extensions store thumbnails** — browse cards now resolve their image in the main process (manifest icon → custom social preview → owner avatar), batched with per-fetch timeouts and pushed progressively, so a single slow repo no longer stalls the whole grid.
+
+### Fixed
+- **Removed photos stay removed** — a photo removed from the catalog is no longer re-imported on the next folder open. Its file is tombstoned (the original on disk is untouched); the tombstone clears automatically once the file leaves the folder.
+- **Embedded-preview orientation** — RAW thumbnails from cameras that store the embedded preview already upright no longer double-rotate; orientation is disambiguated against the master RAW's EXIF using the preview's aspect.
+
 ## [2.3.0] - 2026-06-23
 
 ### Added

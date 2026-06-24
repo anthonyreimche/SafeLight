@@ -159,6 +159,21 @@ export interface ExtensionSearchResult {
   updatedAt: string;
   /** GitHub repo topics — drive the store's category chips. */
   topics?: string[];
+  /** Owner avatar on the direct avatars CDN — the instant fallback thumbnail and
+   *  the card's first paint (no github.com/owner.png redirect). */
+  avatarUrl?: string | null;
+  /** Best store thumbnail resolved in the main process (manifest icon → custom
+   *  social preview → avatar). `custom` is false only for the avatar fallback, so
+   *  the card can letterbox it instead of filling the frame. Present when served
+   *  from a warm cache; the grid refreshes it via github.thumbnails on open. */
+  thumbnail?: ExtensionThumbnail | null;
+}
+
+/** A resolved browse-card thumbnail. `custom` distinguishes a purpose-made
+ *  icon/social-preview (fills the card) from the avatar fallback (letterboxed). */
+export interface ExtensionThumbnail {
+  url: string;
+  custom: boolean;
 }
 
 /** Curation lists from the trust registry repo, fetched + normalised (lowercased)
@@ -784,9 +799,25 @@ declare global {
         repoMeta(repo: string): Promise<ExtensionRepoMeta>;
         /** Raw README text for "owner/repo" at `ref`, or null if none exists. */
         readme(repo: string, ref?: string): Promise<string | null>;
-        /** The repo's real og:image URL — a custom social preview when the owner
-         *  uploaded one, else GitHub's auto-generated card. Never rejects. */
-        ogImage(repo: string): Promise<string>;
+        /** The extension's store icon resolved to a CDN URL — its manifest
+         *  `icon` (jsDelivr-served for relative paths, or an absolute https URL),
+         *  or null when no icon is declared. Cached per repo; never rejects. */
+        iconUrl(repo: string): Promise<string | null>;
+        /** Batch-resolve the best thumbnail for each browse card (manifest icon →
+         *  custom social preview → avatar), in parallel in the main process.
+         *  Returns a { "owner/repo": { url, custom } } map; never rejects. */
+        thumbnails(
+          items: { repo: string; avatar: string | null }[],
+          /** Bypass the icon/og caches (the store's ↻) so a just-changed icon or
+           *  social preview is re-resolved instead of served stale. */
+          force?: boolean,
+        ): Promise<Record<string, ExtensionThumbnail>>;
+        /** Subscribe to per-repo thumbnails pushed as each resolves (so the grid
+         *  upgrades cards progressively rather than all at once). Returns an
+         *  unsubscribe fn. */
+        onThumbnail(
+          cb: (payload: { repo: string; thumb: ExtensionThumbnail }) => void,
+        ): () => void;
       };
       plugins: {
         list(): Promise<ExtensionManifest[]>;

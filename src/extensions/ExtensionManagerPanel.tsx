@@ -18,7 +18,11 @@
 // manages built-ins only.
 
 import { useEffect, useRef, useState } from "react";
-import type { ExtensionManifest, ExtensionSearchResult } from "./types";
+import type {
+  ExtensionManifest,
+  ExtensionSearchResult,
+  ExtensionThumbnail,
+} from "./types";
 import {
   checkExtensionUpdate,
   installFromGitHub,
@@ -85,6 +89,11 @@ export function ExtensionManagerPanel() {
 
   const [list, setList] = useState<ExtensionManifest[]>([]);
   const [results, setResults] = useState<ExtensionSearchResult[] | null>(null);
+  // Best thumbnail per repo, resolved in one batched main-process call when the
+  // results change (manifest icon → custom social preview → avatar). Search
+  // results already carry a warm-cache thumbnail for instant first paint; this
+  // upgrades any that were resolved cold. Keyed by "owner/repo".
+  const [thumbs, setThumbs] = useState<Record<string, ExtensionThumbnail>>({});
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [spec, setSpec] = useState("");
@@ -102,6 +111,9 @@ export function ExtensionManagerPanel() {
   // Tracks which reloadNonce the last search ran for, so an explicit reload
   // force-bypasses the main-process search cache while keystrokes keep using it.
   const lastSearchNonce = useRef(0);
+  // Same idea for thumbnails: an explicit ↻ re-resolves icons/previews (bypassing
+  // the icon/og caches) so a recently changed thumbnail isn't served stale.
+  const lastThumbNonce = useRef(0);
 
   // Always open to the list, not a stale detail page from a previous session.
   useEffect(() => back(), [back]);
@@ -178,6 +190,36 @@ export function ExtensionManagerPanel() {
     }, query ? 350 : 0);
     return () => clearTimeout(t);
   }, [query, topic, native, reloadNonce]);
+
+  // Upgrade browse-card thumbnails via one batched main-process call (parallel,
+  // per-fetch timeouts) rather than a round-trip per card. Cards paint instantly
+  // from the avatar / warm-cache thumbnail carried in the search result; the main
+  // process then pushes each real icon/preview as it resolves (onThumbnail), so a
+  // slow repo never blocks the rest. The returned map is merged too, as a backstop
+  // for anything an event missed.
+  useEffect(() => {
+    const gh = native?.github;
+    if (!gh?.thumbnails || !results || results.length === 0) return;
+    // Force a fresh resolution only when an explicit ↻ advanced the nonce; a new
+    // results array from typing keeps using the caches.
+    const force = lastThumbNonce.current !== reloadNonce;
+    lastThumbNonce.current = reloadNonce;
+    let alive = true;
+    const merge = (map: Record<string, ExtensionThumbnail>) => {
+      if (alive && map) setThumbs((prev) => ({ ...prev, ...map }));
+    };
+    const off = gh.onThumbnail?.(({ repo, thumb }) => merge({ [repo]: thumb }));
+    gh.thumbnails(
+      results.map((r) => ({ repo: r.fullName, avatar: r.avatarUrl ?? null })),
+      force,
+    )
+      .then(merge)
+      .catch(() => {});
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, [results, native, reloadNonce]);
 
   const install = async (installSpec: string, fromSearch?: ExtensionSearchResult) => {
     const repo = fromSearch?.fullName.toLowerCase() ?? repoFromSpec(installSpec);
@@ -530,6 +572,7 @@ export function ExtensionManagerPanel() {
                       key={r.fullName}
                       index={i}
                       result={r}
+                      thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
                       installing={busy === r.fullName}
                       disabled={busy !== null}
                       onOpen={() => openDetail(r.fullName)}
@@ -679,6 +722,7 @@ export function ExtensionManagerPanel() {
 function ExtensionCard({
   index,
   result,
+  thumb,
   installing,
   disabled,
   onOpen,
@@ -686,6 +730,9 @@ function ExtensionCard({
 }: {
   index: number;
   result: ExtensionSearchResult;
+  /** Resolved thumbnail (icon / social preview / avatar). Null until the parent's
+   *  batched resolution lands — we then fall back to the owner avatar. */
+  thumb: ExtensionThumbnail | null;
   installing: boolean;
   disabled: boolean;
   onOpen: () => void;
@@ -696,29 +743,30 @@ function ExtensionCard({
   const verified = useIsVerified(result.fullName);
   const banned = useBannedReason(result.fullName);
   const cardRef = useRef<HTMLDivElement>(null);
-  const [imgLoaded, setImgLoaded] = useState(false);
-  // Start on GitHub's auto card (instant, no round-trip), then resolve the repo's
-  // real og:image. We only swap when it's an actual custom social preview (served
-  // off repository-images.githubusercontent.com); a repo with no preview resolves
-  // back to an opengraph.githubassets.com card identical to what we already show,
-  // so we skip the redundant reload.
-  const [thumb, setThumb] = useState(
-    `https://opengraph.githubassets.com/1/${result.fullName}`,
-  );
+  const owner = result.fullName.split("/")[0];
+  const avatar = result.avatarUrl ?? `https://github.com/${owner}.png?size=120`;
+  // Thumbnails are resolved once, batched, in the main process (manifest icon →
+  // custom social preview → avatar) and cached, so the per-card iconUrl waterfall
+  // that used to gate the grid is gone. Until that resolution lands we paint the
+  // avatar (or whatever warm-cache thumbnail the search result carried). `custom`
+  // is false only for the avatar fallback, so it sits contained/centred while a
+  // deliberate icon/preview (sized for the card) fills the frame.
+  const resolved: ExtensionThumbnail = thumb ?? { url: avatar, custom: false };
+
+  // The card paints the owner avatar instantly as an always-present base layer,
+  // then overlays the resolved custom icon/preview ONLY once it has actually
+  // loaded. This guarantees the card is never blank: a slow, hung, or failed
+  // preview simply leaves the avatar showing instead of a grey frame (the bug
+  // where re-opening the store showed empty cards, and the 17s "nothing then
+  // everything" on first open). `showCustom` is the resolved thumbnail being a
+  // real icon/preview (not the avatar fallback); it's cleared if that image
+  // errors, so we fall back to the avatar.
+  const [showCustom, setShowCustom] = useState(resolved.custom);
+  const [customLoaded, setCustomLoaded] = useState(false);
   useEffect(() => {
-    const gh = window.safelightNative?.github;
-    if (!gh?.ogImage) return;
-    let alive = true;
-    gh.ogImage(result.fullName)
-      .then((url) => {
-        if (alive && url && !url.startsWith("https://opengraph.githubassets.com/"))
-          setThumb(url);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [result.fullName]);
+    setShowCustom(resolved.custom);
+    setCustomLoaded(false);
+  }, [resolved.url, resolved.custom]);
 
   // Cascade the cards in instead of popping the whole grid at once: each card
   // fades/rises in, staggered by its position (capped so a full page of 25 still
@@ -751,21 +799,36 @@ function ExtensionCard({
       className="flex flex-col overflow-hidden rounded border border-border-subtle bg-surface-2"
     >
       <button onClick={onOpen} className="block text-left">
-        <div className="aspect-[2/1] w-full overflow-hidden bg-surface-3">
+        <div className="relative aspect-[2/1] w-full overflow-hidden bg-surface-3">
+          {/* Always-present base: the owner avatar, contained + padded. Paints
+              instantly so the card is never blank while a preview resolves. */}
           <img
-            src={thumb}
+            src={avatar}
             alt=""
-            loading="lazy"
-            className="h-full w-full object-cover"
-            // Fade each thumbnail up from the grey placeholder as it arrives,
-            // so they appear progressively rather than all snapping in at once.
-            style={{
-              opacity: imgLoaded ? 1 : 0,
-              transition: "opacity 200ms ease-out",
-            }}
-            onLoad={() => setImgLoaded(true)}
+            aria-hidden
+            referrerPolicy="no-referrer"
+            className="absolute inset-0 h-full w-full"
+            style={{ objectFit: "contain", padding: "0.75rem" }}
             onError={(e) => (e.currentTarget.style.visibility = "hidden")}
           />
+          {/* Upgrade overlay: a custom icon/social preview, faded in only once it
+              has actually loaded (so it never replaces the avatar with a blank
+              frame). On error we drop it and the avatar shows through. */}
+          {showCustom && (
+            <img
+              src={resolved.url}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="absolute inset-0 h-full w-full"
+              style={{
+                objectFit: "cover",
+                opacity: customLoaded ? 1 : 0,
+                transition: "opacity 200ms ease-out",
+              }}
+              onLoad={() => setCustomLoaded(true)}
+              onError={() => setShowCustom(false)}
+            />
+          )}
         </div>
         <div className="p-2">
           <div className="flex items-center gap-1.5">

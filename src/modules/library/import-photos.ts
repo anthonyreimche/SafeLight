@@ -9,7 +9,12 @@
 
 import type { CatalogPhoto } from "@/catalog/types";
 import { parseExif, parseExifDate, parseXmp } from "@/catalog/exif";
-import { normalizeRotation, orientationToRotation } from "@/catalog/orient";
+import {
+  normalizeRotation,
+  orientationToRotation,
+  previewUprightRotation,
+  rotateBitmap,
+} from "@/catalog/orient";
 import {
   extractRawPreview,
   getExtension,
@@ -166,17 +171,34 @@ function looksDegenerate(data: Float32Array, width: number, height: number): boo
 //
 // The decode chain is decodeRawToBitmap (registered getLibRaw / in-house
 // uncompressed CFA) then the float decode (libraw-wasm, every compression) baked
-// to sRGB. `oriented` is true when the decoder already applied EXIF orientation,
-// so the caller must NOT rotate again. Camera embedded previews are decoded with
-// imageOrientation:"from-image" (the browser honours the preview's own EXIF tag)
-// and so come back oriented — baking orientationToRotation on top would double-
-// rotate previews a camera already stored upright. Non-RAW files decode directly.
+// to sRGB. `oriented` is true when the returned pixels are already EXIF-upright,
+// so the caller must NOT rotate again. Camera embedded previews are oriented HERE
+// from the master RAW's EXIF Orientation (decoded imageOrientation:"none", then
+// rotated via previewUprightRotation) rather than trusting the preview's own EXIF
+// tag — many cameras embed a sensor-native preview with NO orientation tag, so
+// "from-image" would leave it sideways. Non-RAW files decode directly.
 //
 // Returns null only when the pixels are genuinely undecodable.
 async function decodeImportBitmap(
   file: File,
+  orientation: number | undefined,
   source: PreviewSource = getSettings().previewSource,
 ): Promise<{ bitmap: ImageBitmap; oriented: boolean; colorTemperature?: number } | null> {
+  // Decode an embedded camera preview and bring it upright using the master RAW's
+  // EXIF orientation (the preview's own tag is unreliable — often absent). Returns
+  // an already-upright bitmap, so callers treat it as oriented:true.
+  const orientPreview = async (preview: Blob): Promise<ImageBitmap> => {
+    const bm = await createImageBitmap(preview, { imageOrientation: "none" });
+    const deg = previewUprightRotation(
+      bm.width,
+      bm.height,
+      orientationToRotation(orientation),
+      orientation,
+    );
+    const upright = await rotateBitmap(bm, deg);
+    if (upright !== bm) bm.close();
+    return upright;
+  };
   if (isRawFile(file)) {
     // CRW & friends: the JPEG byte-scan can't find their real thumbnail and
     // returns a gray-noise false match, but libraw decodes them correctly — so
@@ -192,11 +214,10 @@ async function decodeImportBitmap(
       const preview = await extractRawPreview(file);
       if (preview) {
         try {
-          // "from-image": apply the preview JPEG's own EXIF orientation, so a
-          // preview the camera stored upright stays upright (don't bake again)
-          // and a sensor-native one with a tag is oriented for us. oriented:true
-          // tells buildPhoto/load-image not to rotate on top.
-          const bitmap = await createImageBitmap(preview, { imageOrientation: "from-image" });
+          // Orient from the master RAW EXIF (see orientPreview). The result is
+          // already upright, so oriented:true tells buildPhoto/load-image not to
+          // rotate on top.
+          const bitmap = await orientPreview(preview);
           const longEdge = Math.max(bitmap.width, bitmap.height);
           // Use the embedded preview outright in "embedded" mode, when it's
           // already grid-sized, or for formats whose sensor render is unreliable
@@ -241,8 +262,8 @@ async function decodeImportBitmap(
       const preview = await extractRawPreview(file);
       if (preview) {
         try {
-          // from-image: honour the preview's own orientation (see above).
-          const bitmap = await createImageBitmap(preview, { imageOrientation: "from-image" });
+          // Orient from the master RAW EXIF (see orientPreview).
+          const bitmap = await orientPreview(preview);
           return { bitmap, oriented: true };
         } catch {
           /* genuinely undecodable */
@@ -276,7 +297,7 @@ export async function buildPreviewBlob(photo: CatalogPhoto): Promise<Blob | null
   if (!photo.fileHandle) return null;
   try {
     const file = await photo.fileHandle.getFile();
-    const decoded = await decodeImportBitmap(file);
+    const decoded = await decodeImportBitmap(file, photo.exif.orientation);
     if (!decoded) return null;
     const { bitmap, oriented } = decoded;
     // Bake to the photo's canonical orientation (EXIF + manual). When the decode
@@ -407,7 +428,7 @@ export async function buildPhoto(
     exif,
   };
 
-  const decoded = await decodeImportBitmap(file).catch(() => null);
+  const decoded = await decodeImportBitmap(file, exif.orientation).catch(() => null);
   if (!decoded) {
     // Couldn't build a preview right now (e.g. a file briefly locked, or a format
     // libraw can't yet read). Record it anyway with width 0 as the "preview not
@@ -471,7 +492,7 @@ export async function repairMissingPreviews(
   for (const photo of todo) {
     try {
       const file = await photo.fileHandle!.getFile();
-      const decoded = await decodeImportBitmap(file);
+      const decoded = await decodeImportBitmap(file, photo.exif.orientation);
       if (!decoded) continue; // still can't — try again next open
 
       const { bitmap, oriented } = decoded;
@@ -528,7 +549,7 @@ export async function rebuildThumbnails(
   for (const photo of todo) {
     try {
       const file = await photo.fileHandle!.getFile();
-      const decoded = await decodeImportBitmap(file);
+      const decoded = await decodeImportBitmap(file, photo.exif.orientation);
       if (decoded) {
         const { bitmap, oriented } = decoded;
         // Preserve the photo's canonical rotation (EXIF + any manual rotation);

@@ -11,8 +11,10 @@
 //
 // Opening a project reconciles catalog.json against a fresh disk scan: new
 // files get decoded + thumbnailed, records whose file vanished are dropped,
-// and everything else keeps its ratings/edits. Saves are debounced whole-file
-// JSON writes (handles and blobs are never serialized).
+// and everything else keeps its ratings/edits. Files the user removed from the
+// catalog are tombstoned so they aren't re-imported while their original stays
+// on disk. Saves are debounced whole-file JSON writes (handles and blobs are
+// never serialized).
 
 import type { CatalogPhoto, EditState } from "@/catalog/types";
 import type { CatalogStorage } from "@/catalog/storage";
@@ -31,6 +33,9 @@ interface CatalogFile {
   version: 1;
   photos: StoredPhoto[];
   edits: EditState[];
+  /** relPaths the user removed from the catalog whose files remain on disk, so
+   *  the next scan skips them instead of re-importing (see deletePhoto). */
+  removed?: string[];
 }
 
 const SAVE_DELAY = 800;
@@ -81,6 +86,8 @@ export interface OpenedProject {
 export class ProjectStorage implements CatalogStorage {
   private photos = new Map<string, CatalogPhoto>();
   private edits = new Map<string, EditState>();
+  /** Tombstoned relPaths — files removed from the catalog but still on disk. */
+  private removed = new Set<string>();
   private lastThumb = new Map<string, Blob | null>();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private firstDirtyAt = 0;
@@ -127,6 +134,11 @@ export class ProjectStorage implements CatalogStorage {
     // (resumable) import keep develop edits; orphans are pruned after the walk.
     for (const e of saved?.edits ?? []) storage.edits.set(e.photoId, e);
 
+    // Load tombstones before the scan so removed-but-still-on-disk files are
+    // skipped rather than re-imported as new. Pruned after the walk once their
+    // file is truly gone.
+    for (const r of saved?.removed ?? []) storage.removed.add(r);
+
     const savedPhotos = saved?.photos ?? [];
     if (savedPhotos.length > 0 && onSkeletons) {
       const skeletons = savedPhotos.map(
@@ -145,9 +157,12 @@ export class ProjectStorage implements CatalogStorage {
     const scan = await scanProject(root);
     const byRel = new Map(savedPhotos.map((p) => [p.relPath, p] as const));
 
-    // New files (not in the saved catalog) are the ones that get decoded —
-    // the slow part of opening. Report progress against that count.
-    const newTotal = scan.files.reduce((n, f) => n + (byRel.has(f.path) ? 0 : 1), 0);
+    // New files (not in the saved catalog, not tombstoned) are the ones that get
+    // decoded — the slow part of opening. Report progress against that count.
+    const newTotal = scan.files.reduce(
+      (n, f) => n + (byRel.has(f.path) || storage.removed.has(f.path) ? 0 : 1),
+      0,
+    );
     let newDone = 0;
     onProgress?.(0, newTotal);
 
@@ -169,6 +184,9 @@ export class ProjectStorage implements CatalogStorage {
         storage.photos.set(photo.id, photo);
         return photo;
       }
+      // Tombstoned: the user removed this photo from the catalog while its file
+      // stayed on disk. Honor that removal instead of re-importing it as new.
+      if (storage.removed.has(f.path)) return null;
       // New file: decode, thumbnail, cache the preview on disk.
       if (signal?.aborted) {
         onProgress?.(++newDone, newTotal);
@@ -251,8 +269,20 @@ export class ProjectStorage implements CatalogStorage {
     for (const id of [...storage.edits.keys()])
       if (!storage.photos.has(id)) storage.edits.delete(id);
 
+    // Prune tombstones whose file has left the folder: once the original is gone
+    // the tombstone has nothing to suppress, and dropping it lets a later copy
+    // back into the folder import freshly.
+    const scanPaths = new Set(scan.files.map((f) => f.path));
+    let prunedTombstone = false;
+    for (const r of [...storage.removed])
+      if (!scanPaths.has(r)) {
+        storage.removed.delete(r);
+        prunedTombstone = true;
+      }
+
     const removedCount = byRel.size - (photos.length - newPhotos.length);
-    if (newPhotos.length > 0 || removedCount > 0) storage.scheduleSave();
+    if (newPhotos.length > 0 || removedCount > 0 || prunedTombstone)
+      storage.scheduleSave();
 
     return { storage, tree: scan.tree, photos, newPhotos, rawCacheDir };
   }
@@ -303,6 +333,10 @@ export class ProjectStorage implements CatalogStorage {
   }
 
   async deletePhoto(id: string): Promise<void> {
+    // Tombstone the file so the next folder scan doesn't re-import it as "new".
+    // Removal is from the catalog only — the original stays on disk.
+    const relPath = this.photos.get(id)?.relPath;
+    if (relPath) this.removed.add(relPath);
     this.photos.delete(id);
     this.edits.delete(id);
     this.lastThumb.delete(id);
@@ -413,6 +447,7 @@ export class ProjectStorage implements CatalogStorage {
         version: 1,
         photos: [...this.photos.values()].map(strip),
         edits: [...this.edits.values()],
+        removed: [...this.removed],
       };
       await writeJSON(this.sl, "catalog.json", data);
     } catch (e) {

@@ -50,7 +50,20 @@ contextBridge.exposeInMainWorld("safelightNative", {
     repoMeta: (repo) => ipcRenderer.invoke("github:repoMeta", String(repo)),
     readme: (repo, ref) =>
       ipcRenderer.invoke("github:readme", String(repo), String(ref ?? "HEAD")),
-    ogImage: (repo) => ipcRenderer.invoke("github:ogImage", String(repo)),
+    iconUrl: (repo) => ipcRenderer.invoke("github:iconUrl", String(repo)),
+    thumbnails: (items, force) =>
+      ipcRenderer.invoke(
+        "github:thumbnails",
+        Array.isArray(items) ? items : [],
+        !!force,
+      ),
+    // Per-repo thumbnails pushed by the main process as each resolves, so the
+    // grid upgrades cards progressively. Returns an unsubscribe fn.
+    onThumbnail: (cb) => {
+      const handler = (_e, payload) => cb(payload);
+      ipcRenderer.on("github:thumbnail", handler);
+      return () => ipcRenderer.removeListener("github:thumbnail", handler);
+    },
   },
   plugins: {
     list: () => ipcRenderer.invoke("plugins:list"),
