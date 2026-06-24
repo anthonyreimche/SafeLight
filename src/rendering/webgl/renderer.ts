@@ -782,6 +782,15 @@ export class WebGLRenderer {
     this.initCoverageTexture(this.retouchTexture);
   }
 
+  // Whether float color buffers are renderable (EXT_color_buffer_float). This one
+  // flag governs the entire pipeline's working precision: when false, every
+  // intermediate (ping-pong targets, histogram readback) is RGBA8, so even a
+  // 16-bit source is crushed to 8 bits at the first pass and any tonal stretch
+  // bands. Surfaced to the UI as a diagnostic.
+  get colorBufferFloat(): boolean {
+    return this.haveColorBufferFloat;
+  }
+
   // 1x1 transparent default so a coverage sampler is always valid even with no
   // brush items present.
   private initCoverageTexture(tex: WebGLTexture) {

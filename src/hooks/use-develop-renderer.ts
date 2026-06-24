@@ -16,7 +16,6 @@ import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
-import { computeHistogram } from "@/rendering/histogram";
 import { setHealSourceImage } from "@/rendering/heal-source";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
@@ -53,6 +52,9 @@ interface RendererStatus {
   sourceWidth: number;
   sourceHeight: number;
   source: string | null;
+  // Render-pipeline working precision: true = float (RGBA16F), false = RGBA8,
+  // null until the worker reports its caps. Diagnostic for tonal banding.
+  pipelineFloat: boolean | null;
   // Render only `roi` (a window into the displayed image, normalized [0,1]) at
   // outW×outH device pixels — crisp zoom from the resident full-res source. Pass
   // null to return to the whole-frame fit render.
@@ -77,6 +79,9 @@ export function useDevelopRenderer(
   // upright). Drives the image aspect — see `aspect` below.
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
   const [source, setSource] = useState<string | null>(null);
+  // Working precision of the render pipeline (EXT_color_buffer_float). When false,
+  // the whole pipeline is RGBA8 and any source bands after a tonal stretch.
+  const [pipelineFloat, setPipelineFloat] = useState<boolean | null>(null);
   // Effective params: a hover preview (e.g. from the Presets panel) overrides
   // the committed params for rendering only, without touching history.
   const params = useDevelopStore((s) => s.previewParams ?? s.params);
@@ -136,6 +141,7 @@ export function useDevelopRenderer(
 
     const bridge = getRenderBridge();
     bridgeRef.current = bridge;
+    void bridge.ready.then(() => setPipelineFloat(bridge.pipelineFloat ?? null));
 
     const setHistogramRef = useDevelopStore.getState().setHistogram;
     let histTimer: ReturnType<typeof setTimeout> | null = null;
@@ -147,12 +153,14 @@ export function useDevelopRenderer(
     const recomputeHistogram = () => {
       histTimer = null;
       lastHistTime = performance.now();
-      if (cv.width > 0 && cv.height > 0) {
-        const hist = computeHistogram(cv);
-        const prev = useDevelopStore.getState().histogram;
-        if (prev?.extended) hist.extended = prev.extended;
-        setHistogramRef(hist);
-      }
+      // Ask the worker to compute the histogram from the RGBA16F render pipeline
+      // and deliver it via setOnHistogram. The previous main-thread path read the
+      // 2D display canvas with getImageData, which is ALWAYS 8-bit — so 256 source
+      // codes mapped into 256 bins, and any tonal stretch (curve/exposure/WB)
+      // spread them apart into the comb/banding you see. The canvas is 8-bit no
+      // matter how high-bit the pipeline is, so it can never produce a clean
+      // histogram; only the in-worker float readback can.
+      bridgeRef.current?.computeHistogram(true);
     };
 
     bridge.setOnFrame((frame: FrameResult) => {
@@ -533,6 +541,7 @@ export function useDevelopRenderer(
     sourceWidth: sourceSize.width,
     sourceHeight: sourceSize.height,
     source,
+    pipelineFloat,
     setViewport,
   };
 }

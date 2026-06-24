@@ -36,6 +36,10 @@ export class RenderBridge {
   private worker: Worker;
   private readyResolve: (() => void) | null = null;
   readonly ready: Promise<void>;
+  // Whether the worker's WebGL2 context has renderable float color buffers. Set
+  // from the "ready" message; governs the pipeline's working precision (see
+  // WebGLRenderer.colorBufferFloat). Undefined until ready resolves.
+  pipelineFloat: boolean | undefined;
   private onFrame: FrameCallback | null = null;
   private onHistogram: HistogramCallback | null = null;
   private onThumbnail: ThumbnailCallback | null = null;
@@ -70,6 +74,7 @@ export class RenderBridge {
     const msg = e.data;
     switch (msg.type) {
       case "ready":
+        this.pipelineFloat = msg.pipelineFloat;
         this.readyResolve?.();
         this.readyResolve = null;
         break;

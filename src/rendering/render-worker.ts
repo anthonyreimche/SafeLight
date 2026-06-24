@@ -89,7 +89,7 @@ export type WorkerRequest =
   | { cmd: "dispose" };
 
 export type WorkerResponse =
-  | { type: "ready" }
+  | { type: "ready"; pipelineFloat: boolean }
   | { type: "frame"; bitmap: ImageBitmap; width: number; height: number; histogram?: HistogramData }
   | { type: "histogram"; histogram: HistogramData }
   | { type: "thumbnail"; requestId: string; blob: Blob }
@@ -176,7 +176,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           pipeline: BUILTIN_RESOLVED,
           stages: [],
         });
-        respond({ type: "ready" });
+        respond({ type: "ready", pipelineFloat: renderer.colorBufferFloat });
         break;
       }
 
