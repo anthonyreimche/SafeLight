@@ -8,7 +8,7 @@
 
 ## The mission
 
-In a darkroom, the safelight is the one lamp you work by — dim, red, faithful — the single fixture the room can't live without. Everything else (the enlarger, the trays, the timer) you set down wherever your hands want it.
+In a darkroom, the safelight is the one lamp you work by — dim, red, faithful — the single fixture the room can't live without. Everything else (the enlarger, the trays, the timer) you set down wherever you want it.
 
 Safelight is that lamp: a small, steady core and nothing you didn't ask for. Every tool, every panel, every transform, even the ones that ship built in, is a piece you can move, swap, switch off, or invent. Open it and it simply works: clean defaults, gorgeous edits from the very first slider. Then you start arranging the room, and it becomes unmistakably *yours*.
 
@@ -29,7 +29,7 @@ Safelight turns that inside out. Nothing is load-bearing except the safelight it
 - **Pull tools off the shelf when you need them.** Some jobs come around once a season. Enable the tool for the afternoon, then set it back down. The extension store isn't a pile of features to wade through; it's a shelf you reach for.
 - **Make it your own.** Don't like a panel? Swap in a community one, or build your own. Panels, themes, layouts, display transforms, lens profiles, export processors: every one of them an install away, every one yours to rearrange.
 
-What you're left with isn't a smaller version of someone else's app. It's the darkroom you'd have built yourself — only the tools you want, exactly where your hands expect them.
+What you're left with isn't a smaller version of someone else's app. It's the darkroom you'd have built yourself — only the tools you want, exactly where you expect them.
 
 ## What's inside
 
