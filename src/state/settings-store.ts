@@ -129,6 +129,10 @@ export interface AppSettings {
   /** Per-theme custom colour overrides (see ColorOverrides). Edited in
    *  Preferences ▸ Accessibility ▸ Custom colours; applied in accessibility.ts. */
   colorOverrides: ColorOverrides;
+  /** Draw the selection/focus highlight rings in the canvas editors (e.g. the
+   *  ring on the selected tone-curve point). On by default; turn off to hide
+   *  those visible editing highlights. */
+  editingHighlights: boolean;
 
   // ── Startup ────────────────────────────────────────────────────────────
   /** Reopen the most-recently-used project on launch instead of the welcome
@@ -232,6 +236,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   syncOSAccessibility: true,
   keyboardCanvasEditing: false,
   colorOverrides: {},
+  editingHighlights: true,
   restoreLastProject: false,
   defaultGridSize: 200,
   defaultSortField: "dateImported",

@@ -46,6 +46,7 @@ export function AccessibilitySettings() {
   const reduceTransparency = useSettings((s) => s.reduceTransparency);
   const colorVisionFilter = useSettings((s) => s.colorVisionFilter);
   const keyboardCanvasEditing = useSettings((s) => s.keyboardCanvasEditing);
+  const editingHighlights = useSettings((s) => s.editingHighlights);
   const reduceMotion = useSettings((s) => s.reduceMotion);
 
   return (
@@ -121,9 +122,15 @@ export function AccessibilitySettings() {
       </Field>
       <ToggleField
         label="Keyboard canvas editing"
-        hint="Edit direct-manipulation tools with the keyboard: focus a tool (tone curve, masks, the zoomed image) and use the arrow keys. The numeric fields beside each tool stay available regardless of this setting."
+        hint="Edit direct-manipulation tools with the keyboard: focus a tool (e.g. the tone curve) and use the arrow keys. Also shows the tone curve's numeric point editor (In/Out, prev/next, add/remove)."
         checked={keyboardCanvasEditing}
         onChange={(v) => updateSettings({ keyboardCanvasEditing: v })}
+      />
+      <ToggleField
+        label="Editing highlights"
+        hint="Draw the selection/focus ring on the active point in canvas editors (such as the tone curve). Turn off to hide these visible editing highlights."
+        checked={editingHighlights}
+        onChange={(v) => updateSettings({ editingHighlights: v })}
       />
       <ToggleField
         label="Reduce motion"

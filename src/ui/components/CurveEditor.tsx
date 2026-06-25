@@ -6,6 +6,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { makeCurveEvaluator } from "@/rendering/curve";
 import { useKeyboardCanvasEditing } from "@/state/accessibility";
+import { useSettings } from "@/state/settings-store";
 import type { CurvePoint, ToneCurveChannel, ToneCurves } from "@/catalog/types";
 
 const PAD = 8;
@@ -32,13 +33,13 @@ export interface CurveEditorProps {
 // Controlled RGB + per-channel curve editor. The global Tone Curve panel and
 // per-mask Curve sub-panels both render this; state lives with the caller.
 //
-// Two non-drag editing paths (WCAG 2.1.1 / 2.5.7): the In/Out number fields +
-// prev/next buttons below are ALWAYS available (single-click + keyboard, the
-// conformance baseline). The richer on-canvas keyboard layer — focus the graph,
-// then arrows nudge the selected point, Page Up/Down + Home/End change selection,
-// Enter adds, Delete removes — is opt-in via Accessibility ▸ Keyboard canvas
-// editing (useKeyboardCanvasEditing); when off, the graph stays pointer-only and
-// doesn't capture bare-key shortcuts. Edits are announced via a polite live region.
+// Keyboard / non-drag editing is opt-in via Accessibility ▸ Keyboard canvas
+// editing (useKeyboardCanvasEditing). When ON: the graph is focusable and owns
+// arrows (nudge the selected point), Page Up/Down + Home/End (selection), Enter
+// (add) and Delete (remove), and the In/Out number fields + prev/next buttons
+// below give a single-click non-drag path; edits are announced via a polite live
+// region. When OFF: the graph is the plain pointer-only editor (click to add,
+// drag to move, double-click to remove) and doesn't capture bare-key shortcuts.
 export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditorProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -53,6 +54,8 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   const helpId = useId();
   // Opt-in: gates only the on-canvas keyboard layer, not the number fields below.
   const kbd = useKeyboardCanvasEditing();
+  // Whether to draw the selection/focus ring on the active point.
+  const showHighlights = useSettings((s) => s.editingHighlights);
 
   const points = curves[channel];
   const color = CHANNELS.find((c) => c.key === channel)!.color;
@@ -87,8 +90,8 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
     canvas.height = size * dpr;
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(ctx, size, points, color, sel, focused);
-  }, [points, size, color, sel, focused]);
+    draw(ctx, size, points, color, sel, focused, showHighlights);
+  }, [points, size, color, sel, focused, showHighlights]);
 
   const update = (next: CurvePoint[]) => onChange(channel, next);
   const describe = (i: number, p: CurvePoint) =>
@@ -331,8 +334,10 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
         />
       </div>
 
-      {/* Selected-point editor: keyboard- and single-click-operable, so the curve
-          is fully usable without dragging on the canvas. */}
+      {/* Selected-point editor: the non-drag (single-click + keyboard) path.
+          Shown only with "Keyboard canvas editing" on — otherwise the curve is
+          the plain pointer-only graph. */}
+      {kbd && (
       <div className="mt-1.5 flex items-center gap-1 text-[10px] text-text-secondary">
         <button
           onClick={() => selectIndex(sel - 1)}
@@ -388,6 +393,7 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
           ×
         </button>
       </div>
+      )}
 
       {!compact && (
         <p className="mt-1 text-[10px] text-text-muted">
@@ -418,6 +424,7 @@ function draw(
   color: string,
   selected: number,
   focused: boolean,
+  showHighlight: boolean,
 ) {
   const plot = size - 2 * PAD;
   ctx.clearRect(0, 0, size, size);
@@ -462,7 +469,7 @@ function draw(
   for (let i = 0; i < points.length; i++) {
     const cx = PAD + points[i].x * plot;
     const cy = PAD + (1 - points[i].y) * plot;
-    if (i === selected) {
+    if (showHighlight && i === selected) {
       ctx.strokeStyle = focused ? "#ffffff" : "#9c9c9c";
       ctx.lineWidth = focused ? 2 : 1.5;
       ctx.beginPath();
