@@ -28,10 +28,15 @@
 
           src = ./.;
 
-          # Hash of the fixed-output npm dependency fetch. Recompute whenever
-          # package-lock.json changes — the build error prints the correct value,
-          # or run:  nix run nixpkgs#prefetch-npm-deps -- package-lock.json
-          npmDepsHash = "sha256-QHUNQMR3JHy9A5PqZ2XiA7YmBkWk8ynavQMF3RBLh9o=";
+          # Resolve npm deps straight from package-lock.json instead of a single
+          # hardcoded fixed-output hash. importNpmLock fetches each dependency
+          # using the per-package `integrity` already in the lockfile, so a
+          # version bump (which rewrites package-lock.json) never needs a manual
+          # `prefetch-npm-deps` / npmDepsHash update — it just tracks the lockfile.
+          npmDeps = pkgs.importNpmLock {
+            npmRoot = ./.;
+          };
+          npmConfigHook = pkgs.importNpmLock.npmConfigHook;
 
           # nixpkgs supplies Electron, so skip the npm postinstall that would try
           # to download a (sandbox-blocked) prebuilt binary.
