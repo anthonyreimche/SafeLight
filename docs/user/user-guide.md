@@ -130,8 +130,10 @@ Preferences is organized into sections: **Interface**, **Library**, **Rendering*
 - **Performance** — RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (4096/6144/8192 px); GPU source-cache budget; neighbor prefetch; 16-bit GPU textures; live histogram; opening zoom.
 - **Export** — default format, quality, long edge, color space, ZIP bundling, and saved export presets.
 - **Shortcuts** — rebind every action; single-letter shortcuts (G/D/F…) can be disabled, while Tab and Ctrl-combos always work.
-- **Extensions** — each installed extension's settings, the GitHub topic used to discover official extensions, and update preferences.
+- **Extensions** — each installed extension's settings, the GitHub topic used to discover official extensions, and update preferences. This includes the built-in **Accessibility** extension (below).
 - **Updates** — check for updates and choose the patch/minor channel.
+
+The built-in **Accessibility** extension (under **Extensions**) adds opt-in accommodations that layer on top of the active theme without changing it: match the OS's accessibility settings, **High contrast** (a maximal-contrast WCAG-AA palette), interface scale up to 200%, larger text and controls, Title-Case headings, a strong keyboard-focus indicator, reduced transparency and motion, **colour-vision simulation** (protanopia / deuteranopia / tritanopia), **keyboard canvas editing** (drive the tone curve and masks with the arrow keys plus a numeric editor), and per-colour overrides. Disable the extension entirely if you don't need any of it.
 
 ### Keyboard shortcuts (defaults)
 

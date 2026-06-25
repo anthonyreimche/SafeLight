@@ -13,6 +13,22 @@ All notable changes to Safelight are documented in this file.
 - Camera profile / base tuning controls
 - Stage-by-stage migration of the develop shader to extension-contributed processing stages
 
+## [2.4.0] - 2026-06-25
+
+### Added
+- **Accessibility tools** — a new built-in **Accessibility** extension (Preferences ▸ Extensions; disable it if you don't need it) layers opt-in accommodations *on top of* any theme without altering the theme itself:
+  - **Match system accessibility settings** — also honour the operating system's reduced-motion, increased-contrast and reduced-transparency preferences (Windows High Contrast mode is always respected). The options below add to these; they never switch a system preference back off.
+  - **High contrast** — override the active theme with a maximal-contrast WCAG-AA palette (the Dark and Neutral themes switch to a high-contrast dark palette, the Light theme to a high-contrast light one). Your default theme is untouched while this is off.
+  - **Interface scale** up to 200%, **Larger text** (enlarges the smallest labels and drops their all-caps styling), and **Larger controls** (≥24px hit targets).
+  - **Lowercase headings** (Title Case instead of UPPERCASE), **Strong focus indicator**, **Reduce transparency**, and **Reduce motion**.
+  - **Colour-vision simulation** — preview the whole window through protanopia / deuteranopia / tritanopia filters to check how the interface and your photo read to colour-blind viewers (turn off for colour-critical editing).
+  - **Keyboard canvas editing** — drive direct-manipulation tools with the keyboard: focus a tool such as the tone curve or a mask and use the arrow keys, with a numeric point/geometry editor. **Editing highlights** toggles the on-canvas selection/focus ring.
+  - **Colour overrides** — fine-tune individual interface colours on top of the active theme.
+
+### Fixed
+- **Accurate Develop histogram** — the live histogram is now computed in the render worker from the float (RGBA16F) render pipeline instead of being read back from the 8-bit display canvas, so it no longer shows comb/banding gaps after a tonal stretch (exposure, white balance, or curve adjustment).
+- **Black exports from some extensions** — exports now seed the export renderer with the active display pipeline and the live stage-texture set (film LUTs, spectral tables, …), so extension GPU processing stages (e.g. custom film simulations or denoise) bake into the output correctly instead of rendering pure black.
+
 ## [2.3.1] - 2026-06-24
 
 ### Added
