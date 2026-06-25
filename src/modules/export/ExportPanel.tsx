@@ -572,6 +572,7 @@ export function ExportPanel() {
                 value={presetName}
                 onChange={(e) => setPresetName(e.target.value)}
                 placeholder="Preset name"
+                aria-label="Export preset name"
                 autoFocus
                 className="w-24 rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary outline-none focus:ring-1 focus:ring-slider-fill"
                 onKeyDown={(e) => { if (e.key === "Escape") setSavingPreset(false); }}
@@ -594,9 +595,15 @@ export function ExportPanel() {
             </button>
           )}
         </div>
-        {status && (
-          <p className="mt-3 text-[11px] text-text-secondary">{status}</p>
-        )}
+        {/* Kept mounted (not conditional) so the live region announces the first
+            export result/error too, not just subsequent ones. */}
+        <p
+          role="status"
+          aria-live="polite"
+          className={`text-[11px] text-text-secondary ${status ? "mt-3" : ""}`}
+        >
+          {status}
+        </p>
       </div>
 
       <Panel title="Privacy" defaultOpen={false}>

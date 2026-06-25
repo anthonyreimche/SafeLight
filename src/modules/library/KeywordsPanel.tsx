@@ -55,6 +55,7 @@ export function KeywordsPanel() {
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         placeholder="Search keywords…"
+        aria-label="Search keywords"
         className="w-full rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary placeholder:text-text-muted outline-none focus:ring-1 focus:ring-accent"
       />
       <div className="max-h-64 space-y-0.5 overflow-y-auto">
@@ -85,8 +86,9 @@ export function KeywordsPanel() {
                 <button
                   onClick={() => toggleKeyword(k)}
                   className="ml-0.5 text-text-muted hover:text-text-primary"
+                  aria-label={`Remove ${k} from keyword filter`}
                 >
-                  ×
+                  <span aria-hidden="true">×</span>
                 </button>
               </span>
             ))}

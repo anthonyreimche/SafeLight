@@ -94,7 +94,7 @@ function BlocksIcon() {
 }
 
 const prefsButton = (
-  <button onClick={() => openPreferences()} title="Preferences (Ctrl+,)" className={iconBtnCls}>
+  <button onClick={() => openPreferences()} title="Preferences (Ctrl+,)" aria-label="Preferences" className={iconBtnCls}>
     <GearIcon />
   </button>
 );
@@ -170,6 +170,7 @@ export function TopBar() {
 
   return (
     <div
+      role="banner"
       className="flex h-[38px] items-center justify-between border-b border-border bg-surface-1 px-3"
       style={dragBarStyle}
     >
@@ -181,6 +182,7 @@ export function TopBar() {
         >
           SAFELIGHT
         </button>
+        <nav aria-label="Views" className="flex items-center gap-1">
         {MODULES.map((m) => {
           const isDetached = detached.has(m);
           const isActive = activeModule === m && !isDetached;
@@ -202,6 +204,7 @@ export function TopBar() {
               <button
                 onClick={() => (isDetached ? attachModule(m) : detachModule(m))}
                 title={isDetached ? "Re-attach to this window" : "Open in a new window"}
+                aria-label={`${MODULE_LABELS[m]}: ${isDetached ? "re-attach to this window" : "open in a new window"}`}
                 className="rounded-r py-1 pr-1.5 pl-0.5 text-[10px] text-text-muted hover:text-text-primary"
               >
                 {isDetached ? "⧈" : "⧉"}
@@ -209,20 +212,22 @@ export function TopBar() {
             </div>
           );
         })}
+        </nav>
         <div className="mx-1 h-4 w-px bg-border" />
         <ViewMenu />
         <LayoutMenu />
         <div className="mx-1 h-4 w-px bg-border" />
-        <button onClick={() => openPreferences()} title="Preferences (Ctrl+,)" className={iconBtnCls}>
+        <button onClick={() => openPreferences()} title="Preferences (Ctrl+,)" aria-label="Preferences" className={iconBtnCls}>
           <GearIcon />
         </button>
-        <button onClick={openExtensions} title="Extensions" className={iconBtnCls}>
+        <button onClick={openExtensions} title="Extensions" aria-label="Extensions" className={iconBtnCls}>
           <BlocksIcon />
         </button>
         {devtoolsEnabled && (
           <button
             onClick={detachDevtools}
             title="Open Developer Tools in a separate window"
+            aria-label="Developer Tools"
             className={iconBtnCls}
           >
             <BugIcon />

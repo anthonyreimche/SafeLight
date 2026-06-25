@@ -148,6 +148,9 @@ export interface SettingsContribution {
   /** Escape hatch: render this instead of the declarative `fields`. Receives no
    *  props — read/write values via api.settings inside the component. */
   component?: ComponentType;
+  /** Extra synonyms that match this section in the Preferences search (e.g. a
+   *  custom-component section whose controls aren't declarative `fields`). */
+  keywords?: string[];
 }
 
 /** A repo found by the official-extension search (GitHub topic). */

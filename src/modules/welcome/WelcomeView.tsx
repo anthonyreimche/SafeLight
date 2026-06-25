@@ -148,9 +148,10 @@ export function WelcomeView() {
                     void remove(c.id);
                   }}
                   title="Remove from recents"
+                  aria-label={`Remove ${c.name} from recents`}
                   className="absolute right-1.5 top-1.5 hidden h-6 w-6 items-center justify-center rounded bg-black/60 text-sm text-text-secondary hover:text-white group-hover:flex"
                 >
-                  ×
+                  <span aria-hidden="true">×</span>
                 </span>
               </button>
             ))}

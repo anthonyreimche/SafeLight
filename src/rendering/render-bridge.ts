@@ -473,6 +473,17 @@ export function setStageTexture(
   requestStageRender();
 }
 
+/** The current stage-texture bag (qualified key → data). Returned by reference;
+ *  callers must not mutate. Used by the export pipeline to seed its own renderer
+ *  with the same film LUTs / spectral tables the live renderer has, so stages
+ *  that depend on uploaded textures (e.g. Spektrafilm) don't render black. */
+export function getStageTextures(): Record<
+  string,
+  import("@/extensions/types").StageTextureData
+> {
+  return stageTextures;
+}
+
 function syncStages() {
   if (!singleton) return;
   const stages = useRegistry.getState().processingStages;

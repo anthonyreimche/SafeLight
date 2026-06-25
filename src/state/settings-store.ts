@@ -34,6 +34,19 @@ export const CANVAS_SURROUND_SHADES: { value: string; label: string }[] = [
  *  - "rendered": always decode the RAW sensor (slower, neutral/accurate). */
 export type PreviewSource = "auto" | "embedded" | "rendered";
 
+/** Per-theme custom UI colour overrides: theme id → (CSS custom property → hex).
+ *  Layered over the active theme (and over high contrast) by the accessibility
+ *  extension; absent keys fall back to the theme's own value. */
+export type ColorOverrides = Record<string, Record<string, string>>;
+
+/** Colour-vision simulation filter applied over the whole window so you can
+ *  check how the UI and your photo read to colour-blind viewers. "none" = off. */
+export type ColorVisionFilter =
+  | "none"
+  | "protanopia"
+  | "deuteranopia"
+  | "tritanopia";
+
 export interface ExportPreset {
   name: string;
   format: ExportFormatPref;
@@ -48,7 +61,9 @@ export interface ExportPreset {
 
 export interface AppSettings {
   // ── Interface ──────────────────────────────────────────────────────────
-  /** Whole-UI zoom (0.8–1.3). Applied as CSS zoom on <body>. */
+  /** Whole-UI zoom (0.8–2.0). Applied as CSS zoom on <body>. Doubles as the
+   *  "scale beyond 100%" accessibility control — the px-based typography scales
+   *  with it, so this is how text is enlarged. */
   uiScale: number;
   /** Reduce motion: disables spinners/animated affordances where practical. */
   reduceMotion: boolean;
@@ -71,6 +86,53 @@ export interface AppSettings {
    *  is dimmed: the backdrop's black opacity, 0 (no dimming) – 0.8. Default
    *  0.6. Lower it to keep the photo visible while a window is open. */
   windowDim: number;
+
+  // ── Accessibility ──────────────────────────────────────────────────────
+  // All off/neutral by default: the themes ship as designed, and a user who
+  // needs more enables these opt-in overrides. Applied in accessibility.ts.
+  /** Override the active theme's text/surface/accent vars with a maximal-
+   *  contrast palette (dark polarity for the Dark and Neutral themes, light for
+   *  the Light theme). Lets users who can't read the as-designed mid-grey chrome
+   *  force WCAG-AA contrast without changing the default look for everyone. */
+  highContrast: boolean;
+  /** Always-visible keyboard focus ring (a thick outline on :focus-visible),
+   *  for users who navigate by keyboard or need a stronger focus cue. */
+  strongFocus: boolean;
+  /** Colour-vision simulation applied to the whole window (see ColorVisionFilter).
+   *  A proofing/empathy aid — it filters the photo too, so turn it off for
+   *  colour-critical editing. */
+  colorVisionFilter: ColorVisionFilter;
+  /** Enlarge the smallest UI labels and drop their all-caps + wide-tracking
+   *  styling, which is hardest to read at size — the labels are otherwise 9–11px
+   *  and some are uppercase. */
+  largerText: boolean;
+  /** Grow interactive controls to a comfortable minimum hit target (WCAG 2.2
+   *  SC 2.5.8, ≥24px) for pointer/motor accessibility. */
+  largerControls: boolean;
+  /** Render the all-caps section headings in Title Case (capitalise the first
+   *  letter of each word) instead of UPPERCASE — easier to read for some users,
+   *  since all-caps slows word recognition. */
+  lowercaseHeadings: boolean;
+  /** Make the decorative translucent backgrounds opaque so edges and content
+   *  read clearly. */
+  reduceTransparency: boolean;
+  /** Also follow the OS's own accessibility preferences — reduced motion,
+   *  increased contrast, reduced transparency — on top of the toggles above. On
+   *  by default; the explicit toggles can only ADD to what the OS asks for (they
+   *  never switch an OS preference back off). Applied in accessibility.ts. */
+  syncOSAccessibility: boolean;
+  /** Opt-in on-canvas keyboard editing for direct-manipulation tools (tone-curve
+   *  points, mask handles, viewport pan/zoom). Off by default; the numeric
+   *  fallbacks (curve In/Out, mask geometry) are always available. Gated through
+   *  the accessibility extension — see useKeyboardCanvasEditing. */
+  keyboardCanvasEditing: boolean;
+  /** Per-theme custom colour overrides (see ColorOverrides). Edited in
+   *  Preferences ▸ Accessibility ▸ Custom colours; applied in accessibility.ts. */
+  colorOverrides: ColorOverrides;
+  /** Draw the selection/focus highlight rings in the canvas editors (e.g. the
+   *  ring on the selected tone-curve point). On by default; turn off to hide
+   *  those visible editing highlights. */
+  editingHighlights: boolean;
 
   // ── Startup ────────────────────────────────────────────────────────────
   /** Reopen the most-recently-used project on launch instead of the welcome
@@ -164,6 +226,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
   canvasSurround: "#777777",
   assessBorderPct: 4.5,
   windowDim: 0.6,
+  highContrast: false,
+  strongFocus: false,
+  colorVisionFilter: "none",
+  largerText: false,
+  largerControls: false,
+  lowercaseHeadings: false,
+  reduceTransparency: false,
+  syncOSAccessibility: true,
+  keyboardCanvasEditing: false,
+  colorOverrides: {},
+  editingHighlights: true,
   restoreLastProject: false,
   defaultGridSize: 200,
   defaultSortField: "dateImported",
@@ -216,8 +289,8 @@ function applySideEffects(s: AppSettings): void {
   // CSS zoom scales the whole px-based UI cleanly in Chromium.
   (document.body.style as CSSStyleDeclaration & { zoom: string }).zoom =
     s.uiScale === 1 ? "" : String(s.uiScale);
-  // index.css kills animations/transitions under this class.
-  document.documentElement.classList.toggle("sl-reduce-motion", s.reduceMotion);
+  // Reduce-motion lives in accessibility.ts now (it's OR-ed with the OS's
+  // prefers-reduced-motion), so it isn't applied here.
   // Body font-family reads var(--font-mono); an inline :root override wins.
   if (s.uiFont) {
     document.documentElement.style.setProperty("--font-mono", s.uiFont);

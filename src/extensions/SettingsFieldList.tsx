@@ -154,12 +154,16 @@ function FieldRow({
             {differs && <ResetButton onReset={reset} />}
           </span>
           <button
+            role="switch"
+            aria-checked={checked}
+            aria-label={field.label}
             onClick={() => set(!checked)}
             className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
               checked ? "bg-slider-fill" : "bg-surface-3"
             }`}
           >
             <span
+              aria-hidden="true"
               className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${
                 checked ? "left-3.5" : "left-0.5"
               }`}
@@ -241,6 +245,7 @@ function FieldRow({
         value={value}
         onChange={(e) => set(e.target.value)}
         placeholder={field.placeholder}
+        aria-label={field.label}
         spellCheck={false}
         className={`mt-1.5 ${inputCls}`}
       />
@@ -311,11 +316,14 @@ function GenericRow({
   if (typeof value === "boolean") {
     return (
       <button
+        role="switch"
+        aria-checked={value}
         onClick={() => set(!value)}
         className="flex w-full items-center justify-between gap-3 text-left"
       >
         <span className="text-[11px] text-text-primary">{key}</span>
         <span
+          aria-hidden="true"
           className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
             value ? "bg-slider-fill" : "bg-surface-3"
           }`}

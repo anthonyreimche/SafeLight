@@ -43,6 +43,7 @@ export function PresetRenameDialog({ initialName, validate, onRename, onCancel }
             type="text"
             value={name}
             placeholder="Preset name"
+            aria-label="Preset name"
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") submit();

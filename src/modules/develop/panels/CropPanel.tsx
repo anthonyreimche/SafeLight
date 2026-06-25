@@ -109,6 +109,7 @@ export function CropPanel() {
       <div className="space-y-2">
         <button
           onClick={() => setCropping(!cropping)}
+          aria-pressed={cropping}
           className={`w-full rounded px-2 py-1 text-[11px] font-medium ${
             cropping
               ? "bg-slider-fill text-white hover:bg-surface-4"

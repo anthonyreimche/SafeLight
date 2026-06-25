@@ -13,6 +13,8 @@ import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
+import { getStageTextures } from "@/rendering/render-bridge";
+import { resolveActivePipeline } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { applyOutputSharpening } from "./sharpen";
 import { encodeTiff } from "./tiff";
@@ -287,14 +289,22 @@ export async function exportPhotos(
   const canvas = document.createElement("canvas");
   let renderer: WebGLRenderer;
   try {
-    // Pass the registered processing stages so extension GPU stages (e.g.
-    // denoise) are baked into exported pixels, not just the live preview.
+    // Pass the registered processing stages AND the active pipeline so extension
+    // GPU stages (e.g. denoise, Spektrafilm) are baked into exported pixels with
+    // the same display transform the live preview uses — not just the default
+    // pipeline, which would (for stages like Spektrafilm) double-apply the base
+    // curve.
     renderer = new WebGLRenderer(canvas, {
       stages: Object.values(useRegistry.getState().processingStages),
+      pipeline: resolveActivePipeline(),
     });
   } catch {
     return { exported: 0, failed: photos.map((p) => p.filename) };
   }
+  // Seed the export renderer with the live stage-texture bag (film LUTs,
+  // spectral tables, …). Without this, stages that sample uploaded textures fall
+  // back to the renderer's 1×1 black dummy texture and export pure black.
+  renderer.setStageTextures(getStageTextures());
   // Wider-gamut export: the renderer converts pixels and renderOne embeds the
   // matching ICC. Persists across the batch (one render context).
   renderer.setOutputColorSpace(settings.colorSpace ?? "srgb");
