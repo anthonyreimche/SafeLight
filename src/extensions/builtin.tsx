@@ -40,6 +40,11 @@ import {
   teardownDevtoolsDetachSync,
 } from "./devtools/detach";
 import { initDevFolder, teardownDevFolder } from "./devtools/dev-folder";
+import {
+  activateAccessibility,
+  deactivateAccessibility,
+} from "@/state/accessibility";
+import { AccessibilitySettings } from "./accessibility/AccessibilitySettings";
 
 export interface BuiltinExtension {
   id: string;
@@ -270,6 +275,11 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
           "--color-border": "#3b3b3b",
           "--color-border-subtle": "#4a4a4a",
           "--color-text-primary": "#f4f4f4",
+          // Neutral keeps its as-designed mid-grey text: pushing text to AA on
+          // this middle-grey field means pushing it toward white, which fights
+          // the theme's purpose (an eye adapted to mid-grey for colour
+          // assessment). Users who need more contrast here enable the opt-in
+          // High-contrast override in Preferences → Accessibility.
           "--color-text-secondary": "#d0d0d0",
           "--color-text-muted": "#9c9c9c",
           // Dark achromatic accent so active controls/selection (white text on
@@ -292,8 +302,11 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
           "--color-border": "#333333",
           "--color-border-subtle": "#222222",
           "--color-text-primary": "#e0e0e0",
-          "--color-text-secondary": "#888888",
-          "--color-text-muted": "#555555",
+          // Raised for WCAG AA: #555555 muted was 2.3–2.7:1 on the dark
+          // surfaces; #848484 clears 4.5:1 on all three. Secondary nudged up so
+          // it stays clearly brighter than the new muted.
+          "--color-text-secondary": "#999999",
+          "--color-text-muted": "#848484",
           "--color-accent": "#6e6e6e",
           "--color-accent-hover": "#828282",
           "--color-slider-fill": "#5a5a5a",
@@ -313,7 +326,10 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
           "--color-border-subtle": "#d8d8d8",
           "--color-text-primary": "#1c1c1c",
           "--color-text-secondary": "#5a5a5a",
-          "--color-text-muted": "#979797",
+          // Darkened for WCAG AA: #979797 muted was 2.2–2.7:1 on the light
+          // surfaces; #636363 clears 4.5:1 on all three (still lighter than the
+          // #5a5a5a secondary, preserving the hierarchy).
+          "--color-text-muted": "#636363",
           "--color-accent": "#636363",
           "--color-accent-hover": "#525252",
           "--color-slider-fill": "#8a8a8a",
@@ -325,6 +341,44 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
       // they live in the central KEY_ACTIONS registry (conflict-checked,
       // Develop-scoped) rather than the extension-action path — see
       // keybindings-store.ts and use-keyboard-shortcuts.ts.
+    },
+  },
+
+  // ── Accessibility (enabled by default) ──
+  // Owns the whole opt-in accessibility stack so it can be turned off as one
+  // unit. The baseline semantic correctness (aria names/roles, dialog focus
+  // trap, landmarks, the always-on :focus-visible ring) stays in the core
+  // components/CSS and is unaffected by disabling this. activate/deactivate live
+  // in state/accessibility.ts; deactivate removes every DOM side-effect.
+  {
+    id: "core.accessibility",
+    name: "Accessibility",
+    version: V,
+    description:
+      "High-contrast and colour-vision overlays, larger text and controls, reduced motion and transparency, OS-preference sync, and opt-in keyboard editing for the canvas tools. Disable to remove all of these — the app stays screen-reader navigable either way.",
+    activate(api) {
+      activateAccessibility();
+      // Registered (not a core section) so it lives under Preferences ▸
+      // Extensions and vanishes when this extension is disabled. Custom
+      // component (reads/writes the core settings store); keywords keep it
+      // findable in the settings search.
+      api.registerSettings({
+        title: "Accessibility",
+        order: 0,
+        fields: [],
+        component: AccessibilitySettings,
+        keywords: [
+          "a11y", "wcag", "contrast", "vision", "colour blind", "color blind",
+          "colorblind", "protanopia", "deuteranopia", "tritanopia", "focus",
+          "zoom", "magnify", "scale", "legible", "readable", "text size",
+          "font size", "uppercase", "caps", "hit target", "transparency",
+          "opacity", "motion", "system", "os", "prefers", "forced colors",
+          "high contrast mode", "keyboard",
+        ],
+      });
+    },
+    deactivate() {
+      deactivateAccessibility();
     },
   },
 

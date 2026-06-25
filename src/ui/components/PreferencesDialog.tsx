@@ -139,8 +139,10 @@ interface SearchGroup {
 // live, editable controls rather than static text. Empty string = no filtering.
 const PrefSearchContext = createContext("");
 
-/** A field wrapper is visible when there's no active filter, or its text matches it. */
-function useFieldVisible(label: string, hint?: string): boolean {
+/** A field wrapper is visible when there's no active filter, or its text matches it.
+ *  Exported so extension-contributed settings sections (e.g. core.accessibility)
+ *  can reuse the same search-aware field primitives. */
+export function useFieldVisible(label: string, hint?: string): boolean {
   const q = useContext(PrefSearchContext);
   if (!q) return true;
   return (
@@ -171,13 +173,15 @@ const CORE_SECTIONS: PrefSection[] = [
       "Canvas surround",
       "Color assessment border",
       "Background dimming",
-      "Reduce motion",
       "Restore last project on launch",
       "Interface font",
     ),
     keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal"],
     render: () => <InterfaceSection />,
   },
+  // Accessibility lives in the `core.accessibility` built-in extension (so the
+  // whole opt-in stack can be disabled) — it registers its own settings section
+  // via api.registerSettings. See src/extensions/accessibility/.
   {
     id: "Library",
     label: "Library",
@@ -366,7 +370,7 @@ export function PreferencesDialog() {
               .join(" ")
               .toLowerCase(),
           })),
-          keywords: [],
+          keywords: c.keywords ?? [],
           render: (q: string) => {
             const Custom = c.component;
             return Custom ? (
@@ -473,6 +477,7 @@ export function PreferencesDialog() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search settings…"
+            aria-label="Search settings"
             spellCheck={false}
             className="w-48 rounded bg-surface-1 py-0.5 pl-7 pr-6 text-[11px] text-text-primary outline-none transition-[width] placeholder:text-text-muted focus:w-64 focus:bg-surface-3"
           />
@@ -624,7 +629,6 @@ function InterfaceSection() {
   const uiScale = useSettings((s) => s.uiScale);
   const assessBorderPct = useSettings((s) => s.assessBorderPct);
   const windowDim = useSettings((s) => s.windowDim);
-  const reduceMotion = useSettings((s) => s.reduceMotion);
   const restoreLastProject = useSettings((s) => s.restoreLastProject);
 
   return (
@@ -649,7 +653,7 @@ function InterfaceSection() {
         label="Interface scale"
         value={uiScale}
         min={0.8}
-        max={1.3}
+        max={2}
         step={0.05}
         format={(v) => `${Math.round(v * 100)}%`}
         onChange={(v) => updateSettings({ uiScale: v })}
@@ -683,12 +687,6 @@ function InterfaceSection() {
         )}
       </div>
       <ToggleField
-        label="Reduce motion"
-        hint="Minimize animated UI affordances."
-        checked={reduceMotion}
-        onChange={(v) => updateSettings({ reduceMotion: v })}
-      />
-      <ToggleField
         label="Restore last project on launch"
         hint="Reopen the most-recently-used project at startup instead of the welcome grid. Falls back to the grid if the folder can't be reopened."
         checked={restoreLastProject}
@@ -698,6 +696,9 @@ function InterfaceSection() {
     </div>
   );
 }
+
+// AccessibilitySection moved to src/extensions/accessibility/AccessibilitySettings.tsx
+// (the core.accessibility built-in extension registers it via api.registerSettings).
 
 // Panel-layout manager: a selectable list of layouts (Custom + the user's saved
 // layouts + read-only presets contributed by extensions). User layouts can be
@@ -773,6 +774,7 @@ function LayoutField() {
         }}
         onBlur={onCommit}
         placeholder="Layout name"
+        aria-label="Layout name"
         spellCheck={false}
         className="min-w-0 flex-1 rounded bg-surface-1 px-1.5 py-0.5 text-[11px] text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
       />
@@ -941,11 +943,14 @@ function CanvasSurroundField() {
   return (
     <div>
       <button
+        role="switch"
+        aria-checked={override}
         onClick={() => updateSettings({ canvasSurroundOverride: !override })}
         className="flex w-full items-center justify-between gap-3 text-left"
       >
         <span className="text-[11px] text-text-primary">Canvas surround</span>
         <span
+          aria-hidden="true"
           className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
             override ? "bg-slider-fill" : "bg-surface-3"
           }`}
@@ -973,15 +978,28 @@ function CanvasSurroundField() {
             key={shade.value}
             title={shade.label}
             aria-label={shade.label}
+            aria-pressed={surround === shade.value}
             disabled={!override}
             onClick={() => updateSettings({ canvasSurround: shade.value })}
-            className={`h-7 flex-1 rounded border transition-all ${
+            className={`relative h-7 flex-1 rounded border transition-all ${
               surround === shade.value
                 ? "border-slider-fill ring-1 ring-slider-fill"
                 : "border-border hover:border-text-muted"
             }`}
             style={{ background: shade.value }}
-          />
+          >
+            {surround === shade.value && (
+              // A checkmark, not just the ring/colour, marks the active swatch
+              // (WCAG 1.4.1). The dark halo keeps the white tick legible on
+              // every shade, light or dark.
+              <span
+                className="pointer-events-none absolute inset-0 flex items-center justify-center text-[11px] font-bold leading-none text-white"
+                style={{ textShadow: "0 0 2px #000, 0 0 2px #000" }}
+              >
+                ✓
+              </span>
+            )}
+          </button>
         ))}
       </div>
     </div>
@@ -1015,6 +1033,7 @@ function FontField() {
         value={uiFont}
         onChange={(e) => updateSettings({ uiFont: e.target.value })}
         placeholder='Custom, e.g. "IBM Plex Sans", sans-serif'
+        aria-label="Custom interface font family"
         spellCheck={false}
         className={`mt-1.5 ${inputCls}`}
       />
@@ -1975,7 +1994,7 @@ const inputCls =
 const btnCls =
   "rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary";
 
-function Field({
+export function Field({
   label,
   hint,
   children,
@@ -1998,7 +2017,7 @@ function Field({
   );
 }
 
-function ToggleField({
+export function ToggleField({
   label,
   hint,
   checked,
@@ -2013,11 +2032,14 @@ function ToggleField({
   return (
     <div>
       <button
+        role="switch"
+        aria-checked={checked}
         onClick={() => onChange(!checked)}
         className="flex w-full items-center justify-between gap-3 text-left"
       >
         <span className="text-[11px] text-text-primary">{label}</span>
         <span
+          aria-hidden="true"
           className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
             checked ? "bg-slider-fill" : "bg-surface-3"
           }`}
@@ -2038,7 +2060,7 @@ function ToggleField({
   );
 }
 
-function SliderField({
+export function SliderField({
   label,
   value,
   min,
@@ -2079,7 +2101,7 @@ function SliderField({
   );
 }
 
-function OptionRow<T extends string | number>({
+export function OptionRow<T extends string | number>({
   value,
   options,
   onChange,
@@ -2094,6 +2116,7 @@ function OptionRow<T extends string | number>({
         <button
           key={String(o.value)}
           onClick={() => onChange(o.value)}
+          aria-pressed={o.value === value}
           className={`rounded px-2 py-1 text-[11px] ${
             o.value === value
               ? "bg-slider-fill text-white"

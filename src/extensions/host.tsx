@@ -157,6 +157,9 @@ export function initExtensionHost(): void {
   initExtSettings();
   initEnablement();
   initThemes();
+  // Accessibility overlays are owned by the `core.accessibility` built-in
+  // extension (activated in loadBuiltins above when enabled); its theme
+  // subscription re-layers high-contrast after initThemes applies the theme.
   initPipelines();
   initDockLayouts();
   // Load external plugins, then quietly check them for updates (and auto-update

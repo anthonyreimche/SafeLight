@@ -722,14 +722,16 @@ function PanelHeader({ id }: { id: string }) {
       }
       className="flex h-7 shrink-0 cursor-grab select-none items-center gap-1.5 border-b border-border-subtle bg-surface-2 px-2"
     >
-      <span className="w-2 text-[9px] text-text-muted">
+      <span className="w-2 text-[9px] text-text-muted" aria-hidden="true">
         {collapsed ? "▸" : "▾"}
       </span>
       <span className="flex-1 truncate text-[11px] uppercase tracking-wider text-text-secondary">
         {title}
       </span>
       <button
+        type="button"
         title="Close panel"
+        aria-label={`Close ${title} panel`}
         onClick={() => commit(without(id))}
         className="rounded px-1 text-[12px] leading-none text-text-muted hover:text-text-primary"
       >

@@ -70,6 +70,127 @@ body,
   transition: none !important;
 }
 
+/* Always-on baseline keyboard focus indicator (WCAG 2.4.7). :focus-visible only
+   matches keyboard/programmatic focus, so pointer clicks don't get a ring. The
+   opt-in "Strong focus indicator" thickens this further (rule below). */
+:focus-visible {
+  outline: 1px solid var(--color-text-primary);
+  outline-offset: 1px;
+}
+/* The develop slider's real control is an opacity-0 <input type=range>, so an
+   outline on it can't show — ring the wrapper instead when it's keyboard-focused. */
+.sl-slider-wrap:has(input:focus-visible) {
+  outline: 1px solid var(--color-text-primary);
+  outline-offset: 2px;
+}
+html.sl-focus-ring .sl-slider-wrap:has(input:focus-visible) {
+  outline-width: 2px;
+}
+
+/* Windows High Contrast / forced-colors mode: the OS replaces our palette, so
+   get out of the way and just guarantee focus + structure stay visible using the
+   system colour keywords. Fuller forced-colors theming is a later pass. */
+@media (forced-colors: active) {
+  :focus-visible,
+  .sl-slider-wrap:has(input:focus-visible) {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+/* Preferences ▸ Accessibility ▸ Strong focus indicator. A thick, theme-aware
+   outline on anything focused via the keyboard. text-primary guarantees the
+   ring contrasts against every surface (and flips with high contrast). */
+html.sl-focus-ring :focus-visible {
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Preferences ▸ Accessibility ▸ Colour-vision simulation. Filters the whole app
+   (chrome + photo) so the user can see how their work reads to colour-blind
+   viewers. The filter defs live in a sibling <svg> (see accessibility.ts), so
+   targeting #root rather than <html> keeps the defs themselves unfiltered. */
+html[data-sl-cvd="protanopia"] #root {
+  filter: url(#sl-cvd-protanopia);
+}
+html[data-sl-cvd="deuteranopia"] #root {
+  filter: url(#sl-cvd-deuteranopia);
+}
+html[data-sl-cvd="tritanopia"] #root {
+  filter: url(#sl-cvd-tritanopia);
+}
+
+/* Preferences ▸ Accessibility ▸ Larger text. The UI's labels are small fixed-px
+   (down to 9–10px) and many are uppercase with wide tracking — the hardest case
+   to read at size (the report's Issue 4). This bumps the smallest sizes and
+   drops the all-caps + letter-spacing so enlarged labels read as words. Targets
+   Tailwind's generated size/transform classes directly. Opt-in: it can reflow
+   tight rows. */
+html.sl-larger-text .text-\[9px\] {
+  font-size: 11px !important;
+}
+html.sl-larger-text .text-\[10px\] {
+  font-size: 12px !important;
+}
+html.sl-larger-text .text-\[11px\] {
+  font-size: 13px !important;
+  line-height: 1.45 !important;
+}
+html.sl-larger-text .uppercase {
+  text-transform: none !important;
+}
+html.sl-larger-text .tracking-widest,
+html.sl-larger-text .tracking-wider {
+  letter-spacing: normal !important;
+}
+
+/* Preferences ▸ Accessibility ▸ Lowercase headings. Render the all-caps section
+   labels in Title Case (capitalise the first letter of each word) instead of
+   UPPERCASE — all-caps slows word recognition. The label text is authored
+   mixed-case and only displayed uppercase via .uppercase, so `capitalize` yields
+   proper Title Case. Placed after the larger-text rule so it wins when both are
+   enabled. */
+html.sl-title-headings .uppercase {
+  text-transform: capitalize !important;
+}
+
+/* Preferences ▸ Accessibility ▸ Larger controls. Grow interactive controls to a
+   ≥24px hit target (WCAG 2.2 SC 2.5.8) for pointer/motor accessibility. Opt-in
+   because larger targets can loosen dense toolbars. Range/checkbox/radio keep
+   their native sizing (the range track is grown separately). */
+html.sl-large-targets button,
+html.sl-large-targets [role="button"] {
+  min-height: 1.6rem;
+  min-width: 1.6rem;
+}
+html.sl-large-targets select,
+html.sl-large-targets textarea,
+html.sl-large-targets
+  input:not([type="range"]):not([type="checkbox"]):not([type="radio"]) {
+  min-height: 1.9rem;
+}
+html.sl-large-targets .sl-slider {
+  height: 10px;
+}
+
+/* Preferences ▸ Accessibility ▸ Reduce transparency. Make the decorative
+   translucent backgrounds opaque so edges and content read clearly. Targets the
+   specific tinted utilities the UI uses; selection tints (bg-accent/20, which
+   carry text) are intentionally left alone — they keep their own ring indicator
+   and forcing them solid could undercut text contrast. */
+html.sl-opaque .bg-surface-0\/30 {
+  background-color: var(--color-surface-0) !important;
+}
+html.sl-opaque .bg-accent\/40,
+html.sl-opaque .bg-accent\/70 {
+  background-color: var(--color-accent) !important;
+}
+html.sl-opaque .bg-slider-fill\/30,
+html.sl-opaque .bg-slider-fill\/40 {
+  background-color: var(--color-slider-fill) !important;
+}
+
 /* Grey, colorless range slider: rounded track + filled portion, no handle. */
 .sl-slider {
   -webkit-appearance: none;

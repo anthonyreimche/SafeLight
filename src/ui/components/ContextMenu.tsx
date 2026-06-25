@@ -61,6 +61,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     >
       <div
         ref={ref}
+        role="menu"
         className="absolute min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-1)] py-1 text-[11px] shadow-xl"
         style={{ left: pos.x, top: pos.y }}
         onMouseDown={(e) => e.stopPropagation()}
@@ -69,11 +70,13 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
           item === "separator" ? (
             <div
               key={`sep-${i}`}
+              role="separator"
               className="my-1 border-t border-[var(--color-border)]"
             />
           ) : (
             <button
               key={item.label}
+              role="menuitem"
               disabled={item.disabled}
               className={`block w-full px-3 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-40 ${
                 item.danger

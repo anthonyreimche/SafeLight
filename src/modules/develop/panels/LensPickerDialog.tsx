@@ -59,6 +59,7 @@ export function LensPickerDialog({ onSelect, onClose }: Props) {
             ref={inputRef}
             type="text"
             placeholder="Search lenses..."
+            aria-label="Search lenses"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="w-full px-2 py-1 text-[12px] bg-[var(--color-surface-2)] text-[var(--color-text)] rounded border border-[var(--color-border)] outline-none focus:border-[var(--color-accent)]"

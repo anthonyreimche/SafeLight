@@ -204,6 +204,11 @@ export const shortcutsSuspended = (): boolean => suspended;
  *  after dragging a slider it keeps focus, and Ctrl+Z should still undo. */
 export function isEditableTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
+  // Custom canvas editors (tone curve, mask handles, …) opt in via
+  // data-keyboard-capture so global bare-key shortcuts defer to them while
+  // focused — their own onKeyDown owns arrows/Enter/Delete/etc. Modifier combos
+  // (Ctrl+Z, …) still pass through, since callers only consult this for bare keys.
+  if (t.dataset.keyboardCapture != null) return true;
   if (t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement)
     return true;
   if (t instanceof HTMLInputElement) {

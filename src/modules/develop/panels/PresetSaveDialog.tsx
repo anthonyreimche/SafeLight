@@ -79,6 +79,7 @@ export function PresetSaveDialog({
             type="text"
             value={name}
             placeholder="Preset name"
+            aria-label="Preset name"
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submit()}
             className="w-full rounded bg-[var(--color-surface-2)] px-2 py-1 text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-text-tertiary)] focus:outline-none"
@@ -87,6 +88,7 @@ export function PresetSaveDialog({
             type="text"
             value={group}
             placeholder="Group (optional)"
+            aria-label="Preset group (optional)"
             list="preset-groups"
             onChange={(e) => setGroup(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submit()}
