@@ -465,6 +465,7 @@ export function MasksPanel() {
                       commitEdit("Delete Mask");
                     }}
                     title="Delete mask"
+                    aria-label="Delete mask"
                     className="rounded px-1 text-text-muted opacity-0 hover:text-label-red group-hover:opacity-100"
                   >
                     ×
@@ -541,6 +542,7 @@ export function MasksPanel() {
                             commitEdit("Delete Component");
                           }}
                           title="Delete component"
+                          aria-label="Delete component"
                           className="rounded px-1 text-text-muted hover:text-label-red"
                         >
                           ×
@@ -723,6 +725,41 @@ function ToolMenu({
   );
 }
 
+// A compact numeric geometry field (UV stored 0..1, edited as a percentage). This
+// is the always-on, non-drag/keyboard path for radial & linear masks (WCAG 2.1.1
+// / 2.5.7) — available regardless of the "Keyboard canvas editing" toggle, which
+// only governs the richer on-canvas arrow-key handle nudging.
+const uvToPct = (v: number) => Math.round(v * 100);
+function GeoField({
+  label,
+  title,
+  value,
+  onChange,
+  onCommit,
+}: {
+  label: string;
+  title: string;
+  value: number;
+  onChange: (v: number) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <label className="flex items-center gap-1 text-[10px] text-text-muted" title={title}>
+      <span className="select-none">{label}</span>
+      <input
+        type="number"
+        value={value}
+        aria-label={title}
+        onChange={(e) => {
+          if (e.target.value !== "") onChange(Number(e.target.value));
+        }}
+        onBlur={onCommit}
+        className="w-11 rounded bg-surface-2 px-1 text-right tabular-nums text-text-primary outline-none focus:bg-surface-3"
+      />
+    </label>
+  );
+}
+
 // Geometry / range controls for the selected component.
 function ComponentControls({ maskId, comp }: { maskId: string; comp: MaskComponent }) {
   const updateComponent = useDevelopStore((s) => s.updateComponent);
@@ -733,8 +770,21 @@ function ComponentControls({ maskId, comp }: { maskId: string; comp: MaskCompone
 
   if (comp.kind === "radial" && comp.radial) {
     const r = comp.radial;
+    const setR = (patch: Partial<typeof r>) =>
+      updateComponent(maskId, comp.id, { radial: { ...r, ...patch } });
+    const commitGeo = () => commitEdit("Mask Geometry");
     return (
-      <div className="rounded bg-surface-2/40 p-1.5">
+      <div className="space-y-1 rounded bg-surface-2/40 p-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-text-muted">
+          Geometry
+        </span>
+        <div className="flex flex-wrap gap-x-2 gap-y-1">
+          <GeoField label="X" title="Centre X (%)" value={uvToPct(r.cx)} onChange={(v) => setR({ cx: v / 100 })} onCommit={commitGeo} />
+          <GeoField label="Y" title="Centre Y (%)" value={uvToPct(r.cy)} onChange={(v) => setR({ cy: v / 100 })} onCommit={commitGeo} />
+          <GeoField label="W" title="Radius X (%)" value={uvToPct(r.rx)} onChange={(v) => setR({ rx: Math.max(0, v / 100) })} onCommit={commitGeo} />
+          <GeoField label="H" title="Radius Y (%)" value={uvToPct(r.ry)} onChange={(v) => setR({ ry: Math.max(0, v / 100) })} onCommit={commitGeo} />
+          <GeoField label="∠" title="Angle (degrees)" value={Math.round((r.angle * 180) / Math.PI)} onChange={(v) => setR({ angle: (v * Math.PI) / 180 })} onCommit={commitGeo} />
+        </div>
         <Slider
           label="Feather"
           value={Math.round(r.feather * 100)}
@@ -742,9 +792,29 @@ function ComponentControls({ maskId, comp }: { maskId: string; comp: MaskCompone
           max={100}
           step={1}
           defaultValue={50}
-          onChange={(v) => updateComponent(maskId, comp.id, { radial: { ...r, feather: v / 100 } })}
+          onChange={(v) => setR({ feather: v / 100 })}
           onCommit={() => commitEdit("Mask Feather")}
         />
+      </div>
+    );
+  }
+
+  if (comp.kind === "linear" && comp.linear) {
+    const g = comp.linear;
+    const setG = (patch: Partial<typeof g>) =>
+      updateComponent(maskId, comp.id, { linear: { ...g, ...patch } });
+    const commitGeo = () => commitEdit("Mask Geometry");
+    return (
+      <div className="space-y-1 rounded bg-surface-2/40 p-1.5">
+        <span className="text-[10px] uppercase tracking-wider text-text-muted">
+          Geometry
+        </span>
+        <div className="flex flex-wrap gap-x-2 gap-y-1">
+          <GeoField label="X1" title="Start X (%)" value={uvToPct(g.x0)} onChange={(v) => setG({ x0: v / 100 })} onCommit={commitGeo} />
+          <GeoField label="Y1" title="Start Y (%)" value={uvToPct(g.y0)} onChange={(v) => setG({ y0: v / 100 })} onCommit={commitGeo} />
+          <GeoField label="X2" title="End X (%)" value={uvToPct(g.x1)} onChange={(v) => setG({ x1: v / 100 })} onCommit={commitGeo} />
+          <GeoField label="Y2" title="End Y (%)" value={uvToPct(g.y1)} onChange={(v) => setG({ y1: v / 100 })} onCommit={commitGeo} />
+        </div>
       </div>
     );
   }

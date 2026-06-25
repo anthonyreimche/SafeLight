@@ -43,11 +43,12 @@ export function HSLMixer({ value, onChange, onCommit, selectedBand, onBandChange
 
   return (
     <>
-      <div className="mb-2 flex rounded bg-surface-2">
+      <div className="mb-2 flex rounded bg-surface-2" role="group" aria-label="HSL band">
         {BANDS.map((b) => (
           <button
             key={b.key}
             onClick={() => setBand(b.key)}
+            aria-pressed={band === b.key}
             className={`flex-1 py-1 text-[10px] uppercase tracking-wider ${
               band === b.key
                 ? "bg-surface-3 text-text-primary"

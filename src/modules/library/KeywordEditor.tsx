@@ -155,9 +155,9 @@ export function KeywordEditor() {
             <button
               onClick={() => handleRemove(k)}
               className="ml-0.5 text-text-muted hover:text-text-primary"
-              aria-label={`Remove ${k}`}
+              aria-label={`Remove keyword ${k}`}
             >
-              ×
+              <span aria-hidden="true">×</span>
             </button>
           </span>
         ))}
@@ -173,6 +173,7 @@ export function KeywordEditor() {
           onFocus={() => setShowSuggestions(true)}
           onKeyDown={handleKeyDown}
           placeholder="Add keyword…"
+          aria-label="Add keyword"
           className="w-full rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary placeholder:text-text-muted outline-none focus:ring-1 focus:ring-accent"
         />
         {showSuggestions && suggestions.length > 0 && (

@@ -315,8 +315,9 @@ function KeywordFilterField() {
               <button
                 onClick={() => removeKeywordFilter(k)}
                 className="ml-0.5 text-text-muted hover:text-text-primary"
+                aria-label={`Remove ${k} from keyword filter`}
               >
-                ×
+                <span aria-hidden="true">×</span>
               </button>
             </span>
           ))}
@@ -332,6 +333,7 @@ function KeywordFilterField() {
           onFocus={() => setShowSuggestions(true)}
           onKeyDown={handleKeyDown}
           placeholder="Filter by keyword…"
+          aria-label="Filter by keyword"
           className="w-full rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary placeholder:text-text-muted outline-none focus:ring-1 focus:ring-accent"
         />
         {showSuggestions && suggestions.length > 0 && (
@@ -492,6 +494,7 @@ function FolderRow({
           ref={inputRef}
           defaultValue={node.name}
           autoFocus
+          aria-label="Folder name"
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
             if (e.key === "Enter") e.currentTarget.blur();
@@ -527,12 +530,14 @@ function FolderRow({
                   e.stopPropagation();
                   ctx.setEditing(node.path);
                 }}
+                aria-label="Rename folder"
                 className="hidden w-4 text-text-muted hover:text-text-primary group-hover:block"
               >
                 ✎
               </button>
               <button
                 title="Delete folder"
+                aria-label="Delete folder"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleDelete();

@@ -75,7 +75,7 @@ export function LibraryToolbar() {
       )}
       <div className="flex items-center gap-2">
         <Slot name="library-toolbar" />
-        <span className="text-[10px] text-text-muted">
+        <span className="text-[10px] text-text-muted" role="status" aria-live="polite">
           {importing
             ? `Importing ${importDone}/${importTotal}…`
             : `${photos.length} photos${selectedIds.size > 0 ? ` · ${selectedIds.size} selected` : ""}`}
@@ -94,16 +94,18 @@ export function LibraryToolbar() {
             <button
               onClick={() => rotatePhotos([...selectedIds], -90)}
               title="Rotate 90° counter-clockwise ( [ )"
+              aria-label="Rotate 90° counter-clockwise"
               className="rounded bg-surface-3 px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary"
             >
-              {"⟲"}
+              <span aria-hidden="true">{"⟲"}</span>
             </button>
             <button
               onClick={() => rotatePhotos([...selectedIds], 90)}
               title="Rotate 90° clockwise ( ] )"
+              aria-label="Rotate 90° clockwise"
               className="rounded bg-surface-3 px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary"
             >
-              {"⟳"}
+              <span aria-hidden="true">{"⟳"}</span>
             </button>
             <button
               onClick={() => void handleExportData()}
@@ -127,6 +129,7 @@ export function LibraryToolbar() {
           <select
             value={sortField}
             onChange={(e) => setSort(e.target.value, sortDirection)}
+            aria-label="Sort photos by"
             className="rounded bg-surface-2 px-1.5 py-1 text-[11px] text-text-secondary outline-none hover:text-text-primary"
           >
             {SORT_OPTIONS.map((o) => (
@@ -150,14 +153,16 @@ export function LibraryToolbar() {
             }
             className="rounded bg-surface-2 px-1.5 py-1 text-[11px] text-text-secondary hover:text-text-primary"
             title={sortDirection === "asc" ? "Ascending" : "Descending"}
+            aria-label={`Sort direction: ${sortDirection === "asc" ? "ascending" : "descending"}`}
           >
-            {sortDirection === "asc" ? "↑" : "↓"}
+            <span aria-hidden="true">{sortDirection === "asc" ? "↑" : "↓"}</span>
           </button>
         </div>
 
-        <div className="flex rounded bg-surface-2">
+        <div className="flex rounded bg-surface-2" role="group" aria-label="View mode">
           <button
             onClick={() => setViewMode("grid")}
+            aria-pressed={viewMode === "grid"}
             className={`px-2 py-1 text-[11px] ${
               viewMode === "grid" ? "bg-surface-3 text-text-primary" : "text-text-muted"
             } rounded-l`}
@@ -166,6 +171,7 @@ export function LibraryToolbar() {
           </button>
           <button
             onClick={() => setViewMode("list")}
+            aria-pressed={viewMode === "list"}
             className={`px-2 py-1 text-[11px] ${
               viewMode === "list" ? "bg-surface-3 text-text-primary" : "text-text-muted"
             } rounded-r`}
@@ -177,6 +183,7 @@ export function LibraryToolbar() {
         <div className="w-24">
           <Slider
             label=""
+            ariaLabel="Thumbnail size"
             hideValue
             value={gridSize}
             min={100}

@@ -512,6 +512,7 @@ export function ExtensionManagerPanel() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search official extensions…"
+                  aria-label="Search official extensions"
                   spellCheck={false}
                   className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
                 />
@@ -545,6 +546,7 @@ export function ExtensionManagerPanel() {
                   <button
                     key={c}
                     onClick={() => useExtStoreUI.getState().setCategory(c)}
+                    aria-pressed={category === c}
                     className={`rounded-full px-2 py-0.5 text-[10px] ${
                       category === c
                         ? "bg-slider-fill text-white"
@@ -596,6 +598,7 @@ export function ExtensionManagerPanel() {
                         void install(spec.trim());
                     }}
                     placeholder="owner/repo, owner/repo#branch, or GitHub URL"
+                    aria-label="Install extension from GitHub (owner/repo, branch, or URL)"
                     spellCheck={false}
                     className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
                   />
@@ -633,6 +636,7 @@ export function ExtensionManagerPanel() {
                   value={installedQuery}
                   onChange={(e) => setInstalledQuery(e.target.value)}
                   placeholder="Filter installed extensions…"
+                  aria-label="Filter installed extensions"
                   spellCheck={false}
                   className="rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
                 />
@@ -953,6 +957,9 @@ function ExtensionRow({
         )}
         {!locked && (
           <button
+            role="switch"
+            aria-checked={enabled}
+            aria-label={`Enable ${name}`}
             disabled={busy}
             onClick={onToggle}
             title={enabled ? "Disable (keeps files and settings)" : "Enable"}
@@ -961,6 +968,7 @@ function ExtensionRow({
             }`}
           >
             <span
+              aria-hidden="true"
               className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${
                 enabled ? "left-3.5" : "left-0.5"
               }`}

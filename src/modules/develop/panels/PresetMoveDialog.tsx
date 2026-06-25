@@ -40,6 +40,7 @@ export function PresetMoveDialog({ initialGroup, groups, onMove, onCancel }: Pro
             type="text"
             value={group}
             placeholder="Group (leave empty for ungrouped)"
+            aria-label="Preset group"
             list="preset-move-groups"
             onChange={(e) => setGroup(e.target.value)}
             onKeyDown={(e) => {

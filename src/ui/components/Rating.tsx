@@ -13,17 +13,19 @@ export function Rating({ value, onChange, size = "sm" }: RatingProps) {
   const starSize = size === "sm" ? "text-xs" : "text-sm";
 
   return (
-    <div className="flex gap-0.5">
+    <div className="flex gap-0.5" role="group" aria-label={`Rating: ${value} of 5 stars`}>
       {[1, 2, 3, 4, 5].map((star) => (
         <button
           key={star}
           onClick={() => onChange?.(value === star ? 0 : star)}
+          aria-label={`${star} star${star === 1 ? "" : "s"}`}
+          aria-pressed={star <= value}
           className={`${starSize} ${
             star <= value ? "text-rating" : "text-text-muted"
           } ${onChange ? "cursor-pointer hover:text-rating" : "cursor-default"}`}
           disabled={!onChange}
         >
-          {star <= value ? "★" : "☆"}
+          <span aria-hidden="true">{star <= value ? "★" : "☆"}</span>
         </button>
       ))}
     </div>

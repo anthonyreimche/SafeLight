@@ -3,11 +3,14 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useRegistry } from "@/extensions/registry";
 
 interface SliderProps {
   label: string;
+  /** Accessible name when `label` is intentionally empty (e.g. compact colour-
+   *  wheel / grid-size sliders that show no visible label). */
+  ariaLabel?: string;
   /** Slider-icon contribution id (e.g. "core.exposure"); themes/extensions
    *  may register an SVG for it. Renders nothing if unregistered. */
   icon?: string;
@@ -31,6 +34,7 @@ const FINE = 0.2;
 
 export function Slider({
   label,
+  ariaLabel,
   icon,
   value,
   min = -100,
@@ -46,6 +50,7 @@ export function Slider({
   const iconSvg = useRegistry((s) =>
     icon ? s.sliderIcons[icon]?.svg : undefined,
   );
+  const sliderId = useId();
   // Raw text while the numeric field is focused, so intermediate states
   // ("", "-", "1.") don't fight the controlled value.
   const [editing, setEditing] = useState<string | null>(null);
@@ -177,12 +182,15 @@ export function Slider({
       )}
       {label !== "" && (
         <label
+          htmlFor={sliderId}
           className={`${compact ? "w-9" : "w-20"} shrink-0 ${compact ? "text-[10px]" : "text-[11px]"} text-text-secondary`}
         >
           {label}
         </label>
       )}
-      <div className="relative flex h-4 min-w-0 flex-1 select-none items-center">
+      {/* sl-slider-wrap shows a focus ring (index.css) when the range input —
+          which is opacity-0, so its own outline can't show — is keyboard-focused. */}
+      <div className="sl-slider-wrap relative flex h-4 min-w-0 flex-1 select-none items-center rounded">
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
           <div
             className="h-full rounded-full bg-slider-fill"
@@ -190,11 +198,13 @@ export function Slider({
           />
         </div>
         <input
+          id={sliderId}
           type="range"
           min={min}
           max={max}
           step={step}
           value={value}
+          aria-label={label || ariaLabel || undefined}
           onChange={(e) => onChange(Number(e.target.value))} // keyboard arrows
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -210,6 +220,7 @@ export function Slider({
         <input
           type="text"
           inputMode="decimal"
+          aria-label={`${label || ariaLabel || ""} value`.trim()}
           value={editing ?? display}
           onFocus={() => setEditing(String(value))}
           onChange={(e) => onText(e.target.value)}
