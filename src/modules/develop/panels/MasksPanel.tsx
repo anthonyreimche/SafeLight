@@ -9,6 +9,7 @@ import { Slider } from "@/ui/components/Slider";
 import { CurveEditor } from "@/ui/components/CurveEditor";
 import { HSLMixer } from "@/ui/components/HSLMixer";
 import { useDevelopStore } from "@/state/develop-store";
+import { useKeyboardCanvasEditing } from "@/state/accessibility";
 import type {
   Mask,
   MaskAdjustments,
@@ -767,6 +768,9 @@ function ComponentControls({ maskId, comp }: { maskId: string; comp: MaskCompone
   const maskColorPicking = useDevelopStore((s) => s.maskColorPicking);
   const setMaskColorPicking = useDevelopStore((s) => s.setMaskColorPicking);
   const setActiveTool = useDevelopStore((s) => s.setActiveTool);
+  // Numeric geometry fields are the keyboard/non-drag path — gated like the tone
+  // curve's number row, so they only show with "Keyboard canvas editing" on.
+  const kbd = useKeyboardCanvasEditing();
 
   if (comp.kind === "radial" && comp.radial) {
     const r = comp.radial;
@@ -775,16 +779,20 @@ function ComponentControls({ maskId, comp }: { maskId: string; comp: MaskCompone
     const commitGeo = () => commitEdit("Mask Geometry");
     return (
       <div className="space-y-1 rounded bg-surface-2/40 p-1.5">
-        <span className="text-[10px] uppercase tracking-wider text-text-muted">
-          Geometry
-        </span>
-        <div className="flex flex-wrap gap-x-2 gap-y-1">
-          <GeoField label="X" title="Centre X (%)" value={uvToPct(r.cx)} onChange={(v) => setR({ cx: v / 100 })} onCommit={commitGeo} />
-          <GeoField label="Y" title="Centre Y (%)" value={uvToPct(r.cy)} onChange={(v) => setR({ cy: v / 100 })} onCommit={commitGeo} />
-          <GeoField label="W" title="Radius X (%)" value={uvToPct(r.rx)} onChange={(v) => setR({ rx: Math.max(0, v / 100) })} onCommit={commitGeo} />
-          <GeoField label="H" title="Radius Y (%)" value={uvToPct(r.ry)} onChange={(v) => setR({ ry: Math.max(0, v / 100) })} onCommit={commitGeo} />
-          <GeoField label="∠" title="Angle (degrees)" value={Math.round((r.angle * 180) / Math.PI)} onChange={(v) => setR({ angle: (v * Math.PI) / 180 })} onCommit={commitGeo} />
-        </div>
+        {kbd && (
+          <>
+            <span className="text-[10px] uppercase tracking-wider text-text-muted">
+              Geometry
+            </span>
+            <div className="flex flex-wrap gap-x-2 gap-y-1">
+              <GeoField label="X" title="Centre X (%)" value={uvToPct(r.cx)} onChange={(v) => setR({ cx: v / 100 })} onCommit={commitGeo} />
+              <GeoField label="Y" title="Centre Y (%)" value={uvToPct(r.cy)} onChange={(v) => setR({ cy: v / 100 })} onCommit={commitGeo} />
+              <GeoField label="W" title="Radius X (%)" value={uvToPct(r.rx)} onChange={(v) => setR({ rx: Math.max(0, v / 100) })} onCommit={commitGeo} />
+              <GeoField label="H" title="Radius Y (%)" value={uvToPct(r.ry)} onChange={(v) => setR({ ry: Math.max(0, v / 100) })} onCommit={commitGeo} />
+              <GeoField label="∠" title="Angle (degrees)" value={Math.round((r.angle * 180) / Math.PI)} onChange={(v) => setR({ angle: (v * Math.PI) / 180 })} onCommit={commitGeo} />
+            </div>
+          </>
+        )}
         <Slider
           label="Feather"
           value={Math.round(r.feather * 100)}
@@ -800,6 +808,9 @@ function ComponentControls({ maskId, comp }: { maskId: string; comp: MaskCompone
   }
 
   if (comp.kind === "linear" && comp.linear) {
+    // Linear masks have only the numeric geometry here, so the whole section is
+    // the keyboard/non-drag path — hidden unless "Keyboard canvas editing" is on.
+    if (!kbd) return null;
     const g = comp.linear;
     const setG = (patch: Partial<typeof g>) =>
       updateComponent(maskId, comp.id, { linear: { ...g, ...patch } });
