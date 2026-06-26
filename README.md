@@ -85,8 +85,8 @@ Safelight is under active development. See [ROADMAP.md](ROADMAP.md) for what's p
 
 ## Contributing
 
-Safelight is community-driven. Bug reports, code, extensions, documentation, and feedback are all welcome. See [Contributing](docs/dev/contributing.md).
+Safelight is community-driven. Bug reports, code, extensions, documentation, and feedback are all welcome. See [Contributing](docs/dev/contributing.md). Code contributions require signing a [Contributor License Agreement](CLA/ICLA.md) — a bot prompts you automatically on your first pull request.
 
 ## License
 
-GPL v3. See [LICENSE](LICENSE).
+Safelight is **dual-licensed**: free under the [GNU GPL v3](LICENSE) (with a Section 7(b) attribution term, see [NOTICE](NOTICE)), or under a **commercial license** for proprietary/closed-source use. See [LICENSING.md](LICENSING.md) for details and how to obtain a commercial license.

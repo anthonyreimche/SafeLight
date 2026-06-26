@@ -1,0 +1,58 @@
+name: CLA Assistant
+
+# Requires every pull-request author to sign the Safelight Contributor License
+# Agreement before their PR can be merged. The CLA grants the Maintainer the
+# right to license contributions under both the GPL v3 and a commercial license,
+# which is what makes the project's dual-licensing model possible.
+#
+# How it works:
+#   - On a new PR (or when someone comments), the bot checks whether every
+#     commit author has signed. If not, it posts a comment asking them to sign.
+#   - The contributor signs by replying with the exact agreement sentence below.
+#   - Signatures are recorded in signatures/version1/cla.json on the
+#     "cla-signatures" branch (kept off main so it never triggers builds).
+#
+# One-time setup:
+#   1. Create a Personal Access Token (classic) with the "repo" scope, or a
+#      fine-grained token with Contents + Pull requests read/write on this repo.
+#   2. Add it as a repository secret named PERSONAL_ACCESS_TOKEN
+#      (Settings → Secrets and variables → Actions). This lets the bot write the
+#      signature file. The built-in GITHUB_TOKEN is used for PR comments/status.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    # Only run on the sign-comment or on actual pull-request events (not on
+    # comments left on plain issues).
+    if: (github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+    steps:
+      - name: CLA Assistant
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Token with write access used to store the signature file.
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        with:
+          path-to-signatures: 'signatures/version1/cla.json'
+          path-to-document: 'https://github.com/anthonyreimche/SafeLight/blob/main/CLA/ICLA.md'
+          branch: 'cla-signatures'
+
+          # The exact phrases contributors use to sign / re-trigger the check.
+          custom-notsigned-prcomment: 'Thank you for your contribution to Safelight! Before we can merge, please read our **[Contributor License Agreement](https://github.com/anthonyreimche/SafeLight/blob/main/CLA/ICLA.md)** and sign it by posting the following comment on this PR:'
+          custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
+          custom-allsigned-prcomment: 'All contributors have signed the CLA. ✍️ ✅'
+
+          # People/bots who never need to sign (the maintainer and automation).
+          allowlist: anthonyreimche,dependabot[bot],github-actions[bot],*[bot]

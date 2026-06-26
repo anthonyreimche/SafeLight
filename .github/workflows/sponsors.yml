@@ -1,0 +1,73 @@
+name: Update supporters
+
+# Regenerates SUPPORTERS.md from GitHub Sponsors data and commits any changes.
+# Each tier is filled into its own marker block in SUPPORTERS.md, filtered by the
+# sponsor's monthly amount so people land in the right section.
+#
+# One-time setup:
+#   1. Enable GitHub Sponsors for the account and create the tiers from SPONSORS.md.
+#   2. Create a classic Personal Access Token with the "read:user" and "read:org"
+#      scopes (the Sponsors GraphQL API needs these to list your sponsors).
+#   3. Add it as a repository secret named SPONSORS_PAT.
+#
+# Runs daily and on demand. Safe before any setup exists: with no sponsors it just
+# leaves the (empty) marker blocks unchanged and commits nothing.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # daily at 06:00 UTC
+  workflow_dispatch:       # allow manual runs from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Studio ($99+/mo)
+        uses: JamesIves/github-sponsors-readme-action@v1
+        with:
+          token: ${{ secrets.SPONSORS_PAT }}
+          file: 'SUPPORTERS.md'
+          marker: 'studio'
+          minimum: 9900
+          fallback: '_Be the first._'
+
+      - name: Darkroom ($29+/mo)
+        uses: JamesIves/github-sponsors-readme-action@v1
+        with:
+          token: ${{ secrets.SPONSORS_PAT }}
+          file: 'SUPPORTERS.md'
+          marker: 'darkroom'
+          minimum: 2900
+          maximum: 9899
+          fallback: '_Be the first._'
+
+      - name: Safelight ($9+/mo)
+        uses: JamesIves/github-sponsors-readme-action@v1
+        with:
+          token: ${{ secrets.SPONSORS_PAT }}
+          file: 'SUPPORTERS.md'
+          marker: 'safelight'
+          minimum: 900
+          maximum: 2899
+          fallback: '_Be the first._'
+
+      - name: Test Strip ($3+/mo)
+        uses: JamesIves/github-sponsors-readme-action@v1
+        with:
+          token: ${{ secrets.SPONSORS_PAT }}
+          file: 'SUPPORTERS.md'
+          marker: 'teststrip'
+          minimum: 100
+          maximum: 899
+          fallback: '_Be the first._'
+
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'docs: update supporters list'
+          file_pattern: 'SUPPORTERS.md'

@@ -2,6 +2,17 @@
 
 Thanks for your interest in contributing to Safelight! There are two main ways to contribute: improving the core app, and building extensions.
 
+## Contributor License Agreement (CLA)
+
+Safelight is [dual-licensed](../../LICENSING.md): GPL v3 for open-source use, and a commercial license for proprietary use. For that to remain possible, every code contribution must be covered by a Contributor License Agreement that grants the maintainer the right to license your contribution under both — **you keep ownership of your copyright.**
+
+You don't need to do anything in advance: when you open your first pull request, a bot will ask you to sign by posting a one-line comment. It's a one-time step.
+
+- [Individual CLA](../../CLA/ICLA.md) — for personal contributions
+- [Corporate CLA](../../CLA/CCLA.md) — if you're contributing on behalf of an employer
+
+This applies to core code and documentation contributed here. Extensions you publish in **your own** repository are your work under your own license — no CLA needed.
+
 ## Development Setup
 
 1. Fork and clone the repository
