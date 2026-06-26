@@ -3,18 +3,18 @@
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>Safelight — Build Your Own Darkroom</title>
+		<title>Safelight · Open-source RAW photo editor</title>
 		<meta
 			name="description"
-			content="Safelight is a fast, free, open-source RAW photo editor for Windows, Linux, and Mac. GPU-accelerated, non-destructive, privacy-first — a darkroom you arrange to taste, then make your own."
+			content="Safelight is a fast, free, open-source RAW photo editor for Windows, Linux, and Mac. A small core where every tool is an extension you can keep, move, or switch off completely."
 		/>
 		<meta
 			property="og:title"
-			content="Safelight — Build Your Own Darkroom"
+			content="Safelight · Open-source RAW photo editor"
 		/>
 		<meta
 			property="og:description"
-			content="A GPU-accelerated, non-destructive RAW editor where every panel and tool is an extension you can move, replace, or unplug. Free forever. Fully offline."
+			content="A non-destructive RAW editor where every panel and tool is an extension you can keep, move, replace, or switch off. Free forever. Fully offline."
 		/>
 		<meta property="og:type" content="website" />
 		<meta property="og:image" content="shots/og-cover.jpg" />
@@ -75,7 +75,7 @@
 			}
 
 			/* ---------- cinematic global overlays ---------- */
-			/* film grain — fixed, drifting, screen-wide */
+			/* film grain: fixed, drifting, screen-wide */
 			.grain {
 				position: fixed;
 				inset: -50%;
@@ -248,21 +248,18 @@
 				padding: 120px 20px 80px;
 				overflow: hidden;
 			}
-			/* photographic plate behind the hero — dimmed, slow drift */
+			/* photographic plate behind the hero: dimmed, slow drift */
 			.hero-plate {
 				position: absolute;
 				inset: -6% -3% 0;
 				z-index: 0;
-				background:
-					var(--plate-img, none) center/cover no-repeat,
-					radial-gradient(
-						ellipse at 50% 40%,
-						#15151a 0%,
-						#0a0a0c 60%,
-						var(--bg) 100%
-					);
-				opacity: 0.5;
-				filter: saturate(0.8) contrast(1.05);
+				background: radial-gradient(
+					ellipse at 50% 40%,
+					#15151a 0%,
+					#0a0a0c 60%,
+					var(--bg) 100%
+				);
+				opacity: 0.6;
 				animation: plate 26s ease-in-out infinite alternate;
 				will-change: transform;
 			}
@@ -684,12 +681,6 @@
 				color: var(--red);
 				margin-bottom: 26px;
 			}
-			.kicker::before,
-			.kicker::after {
-				content: "—";
-				color: var(--dim);
-				margin: 0 14px;
-			}
 			h1 {
 				font-size: clamp(2.8rem, 7.5vw, 5.6rem);
 				font-weight: 200;
@@ -813,491 +804,87 @@
 				}
 			}
 
-			/* ---------- stat strip ---------- */
-			.stats {
+			/* ---------- mission beats ---------- */
+			.beat {
 				position: relative;
 				z-index: 5;
-				border-top: 1px solid var(--line);
-				border-bottom: 1px solid var(--line);
-				background: var(--panel);
-			}
-			.stats .wrap {
-				display: grid;
-				grid-template-columns: repeat(4, 1fr);
-				gap: 1px;
-			}
-			.stat {
-				padding: 34px 10px;
-				text-align: center;
-			}
-			.stat + .stat {
-				border-left: 1px solid var(--line);
-			}
-			.stat b {
-				display: block;
-				font-size: 2rem;
-				font-weight: 200;
-				color: #fff;
-			}
-			.stat b i {
-				font-style: normal;
-				color: var(--red);
-			}
-			.stat span {
-				font-family: var(--mono);
-				font-size: 0.68rem;
-				letter-spacing: 0.22em;
-				text-transform: uppercase;
-				color: var(--dim);
-			}
-			@media (max-width: 700px) {
-				.stats .wrap {
-					grid-template-columns: repeat(2, 1fr);
-				}
-				.stat:nth-child(3) {
-					border-left: none;
-				}
-			}
-
-			/* ---------- sections ---------- */
-			section {
-				position: relative;
-				z-index: 5;
-				padding: 110px 0;
-			}
-			.sec-head {
-				text-align: center;
-				margin-bottom: 64px;
-			}
-			.sec-tag {
-				font-family: var(--mono);
-				font-size: 0.7rem;
-				letter-spacing: 0.3em;
-				text-transform: uppercase;
-				color: var(--red);
-				display: block;
-				margin-bottom: 14px;
-			}
-			.sec-head h2 {
-				font-size: 2.6rem;
-				font-weight: 200;
-				color: #fff;
-				letter-spacing: 0.04em;
-			}
-			.sec-head p {
-				color: var(--mut);
-				font-weight: 300;
-				max-width: 560px;
-				margin: 14px auto 0;
-			}
-
-			/* ---------- mission ---------- */
-			.mission {
-				position: relative;
-				text-align: center;
-				padding: 130px 0 120px;
-				overflow: hidden;
-				background: linear-gradient(
-					180deg,
-					var(--bg),
-					#0a0a0c 50%,
-					var(--bg)
-				);
-			}
-			.mission .bulb {
-				position: absolute;
-				left: 50%;
-				top: -120px;
-				width: 760px;
-				height: 480px;
-				transform: translateX(-50%);
-				background: radial-gradient(
-					ellipse at center,
-					rgba(220, 38, 38, 0.16),
-					transparent 62%
-				);
-				filter: blur(30px);
-				pointer-events: none;
-			}
-			.mission .wrap {
-				position: relative;
-				z-index: 1;
-			}
-			.mission .sec-tag {
-				margin-bottom: 26px;
-			}
-			.mission-lead {
-				font-size: clamp(1.7rem, 4vw, 3rem);
-				font-weight: 200;
-				line-height: 1.22;
-				letter-spacing: 0.01em;
-				color: #fff;
-				max-width: 920px;
-				margin: 0 auto 30px;
-			}
-			.mission-lead em {
-				font-style: normal;
-				color: var(--red);
-				font-weight: 300;
-			}
-			.mission-body {
-				font-size: 1.12rem;
-				font-weight: 300;
-				line-height: 1.85;
-				color: var(--mut);
-				max-width: 660px;
-				margin: 0 auto 56px;
-			}
-			.mission-body em {
-				font-style: normal;
-				color: var(--txt);
-				border-bottom: 1px solid var(--line-hot);
-			}
-			.mission-pillars {
-				display: grid;
-				grid-template-columns: repeat(3, 1fr);
-				gap: 1px;
-				max-width: 920px;
-				margin: 0 auto;
-				border: 1px solid var(--line);
-				border-radius: 4px;
-				overflow: hidden;
-				background: var(--line);
-			}
-			.mission-pillars .pillar {
-				background: var(--panel);
-				padding: 30px 26px;
-				text-align: left;
-			}
-			.mission-pillars .pillar b {
-				display: block;
-				font-weight: 400;
-				font-size: 1.05rem;
-				letter-spacing: 0.03em;
-				color: #fff;
-				margin-bottom: 10px;
-			}
-			.mission-pillars .pillar b::before {
-				content: "";
-				display: inline-block;
-				width: 7px;
-				height: 7px;
-				border-radius: 50%;
-				background: var(--red);
-				margin-right: 10px;
-				vertical-align: middle;
-				box-shadow: 0 0 8px var(--red-glow);
-			}
-			.mission-pillars .pillar span {
-				font-size: 0.9rem;
-				font-weight: 300;
-				line-height: 1.7;
-				color: var(--mut);
-			}
-			@media (max-width: 760px) {
-				.mission {
-					padding: 90px 0 84px;
-				}
-				.mission-pillars {
-					grid-template-columns: 1fr;
-				}
-			}
-
-			/* ---------- before / after reveal ---------- */
-			.reveal-sec {
-				padding: 0;
-				background: #000;
-			}
-			.ba {
-				position: relative;
-				width: 100%;
-				aspect-ratio: 3 / 2;
-				max-height: 86vh;
-				overflow: hidden;
-				background: #0a0a0c;
-				user-select: none;
-				touch-action: pan-y;
-				cursor: ew-resize;
-			}
-			.ba img {
-				position: absolute;
-				inset: 0;
-				width: 100%;
-				height: 100%;
-				object-fit: cover;
-				pointer-events: none;
-			}
-			.ba .after {
-				clip-path: inset(0 0 0 var(--pos, 50%));
-			}
-			.ba-tag {
-				position: absolute;
-				top: 24px;
-				font-family: var(--mono);
-				font-size: 0.66rem;
-				letter-spacing: 0.24em;
-				text-transform: uppercase;
-				color: #fff;
-				background: rgba(0, 0, 0, 0.55);
-				border: 1px solid var(--line);
-				padding: 6px 14px;
-				border-radius: 2px;
-				backdrop-filter: blur(6px);
-				z-index: 4;
-			}
-			.ba-tag.l {
-				left: 24px;
-			}
-			.ba-tag.r {
-				right: 24px;
-				color: var(--red);
-				border-color: var(--line-hot);
-			}
-			.ba-handle {
-				position: absolute;
-				top: 0;
-				bottom: 0;
-				left: var(--pos, 50%);
-				width: 2px;
-				background: var(--red);
-				box-shadow: 0 0 22px var(--red-glow);
-				transform: translateX(-1px);
-				z-index: 5;
-				pointer-events: none;
-			}
-			.ba-knob {
-				position: absolute;
-				top: 50%;
-				left: 50%;
-				width: 46px;
-				height: 46px;
-				transform: translate(-50%, -50%);
-				border-radius: 50%;
-				background: rgba(7, 7, 8, 0.7);
-				border: 1px solid var(--red);
-				backdrop-filter: blur(6px);
+				min-height: 100vh;
 				display: flex;
+				flex-direction: column;
 				align-items: center;
 				justify-content: center;
-				color: #fff;
-				font-size: 0.9rem;
-				box-shadow: 0 0 24px var(--red-glow);
-			}
-			.reveal-cap {
 				text-align: center;
-				font-family: var(--mono);
-				font-size: 0.72rem;
-				color: var(--dim);
-				letter-spacing: 0.16em;
-				padding: 22px 24px 0;
-				background: var(--bg);
+				padding: 16vh 24px;
+				overflow: hidden;
 			}
-
-			/* ---------- features ---------- */
-			.grid {
-				display: grid;
-				grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
-				gap: 22px;
-			}
-			.card {
-				position: relative;
-				background: var(--panel);
-				border: 1px solid var(--line);
-				border-radius: 4px;
-				padding: 32px;
-				transition:
-					border-color 0.3s,
-					transform 0.3s;
-			}
-			.card:hover {
-				border-color: var(--line-hot);
-				transform: translateY(-3px);
-			}
-			.card .num {
-				font-family: var(--mono);
-				font-size: 0.68rem;
-				color: var(--dim);
-				letter-spacing: 0.2em;
-				display: block;
-				margin-bottom: 16px;
-			}
-			.card h3 {
-				font-size: 1.25rem;
-				font-weight: 300;
-				color: #fff;
-				margin-bottom: 12px;
-				letter-spacing: 0.03em;
-			}
-			.card p {
-				font-size: 0.93rem;
-				font-weight: 300;
-				color: var(--mut);
-				line-height: 1.75;
-			}
-			.card::before {
+			/* dimmed screenshot backdrop */
+			.beat[style*="--shot"]::before {
 				content: "";
 				position: absolute;
-				top: -1px;
-				left: 24px;
-				width: 36px;
-				height: 1px;
-				background: var(--red);
-				opacity: 0;
-				transition: opacity 0.3s;
+				inset: 0;
+				z-index: 0;
+				background: var(--shot) center / cover no-repeat;
+				opacity: 0.16;
 			}
-			.card:hover::before {
-				opacity: 1;
-			}
-
-			/* ---------- cinematic full-bleed scenes ---------- */
-			.scenes {
-				background: #050506;
-			}
-			.scene {
-				position: relative;
-				min-height: 92vh;
-				display: flex;
-				align-items: center;
-				overflow: hidden;
-				border-top: 1px solid var(--line);
-			}
-			.scene-bg {
-				position: absolute;
-				inset: -12% 0;
-				background:
-					var(--shot, none) center/cover no-repeat,
-					#0c0c0e;
-				will-change: transform;
-			}
-			.scene-scrim {
+			.beat::after {
+				content: "";
 				position: absolute;
 				inset: 0;
-				background:
-					linear-gradient(
-						90deg,
-						rgba(5, 5, 6, 0.92) 0%,
-						rgba(5, 5, 6, 0.72) 38%,
-						rgba(5, 5, 6, 0.1) 70%,
-						transparent 100%
-					),
-					linear-gradient(
-						0deg,
-						rgba(5, 5, 6, 0.8),
-						transparent 30%,
-						transparent 70%,
-						rgba(5, 5, 6, 0.5)
-					);
+				z-index: 1;
+				pointer-events: none;
+				background: radial-gradient(
+					ellipse 72% 62% at 50% 50%,
+					rgba(6, 6, 8, 0.5),
+					rgba(6, 6, 8, 0.84) 100%
+				);
 			}
-			.scene.flip .scene-scrim {
-				background:
-					linear-gradient(
-						270deg,
-						rgba(5, 5, 6, 0.92) 0%,
-						rgba(5, 5, 6, 0.72) 38%,
-						rgba(5, 5, 6, 0.1) 70%,
-						transparent 100%
-					),
-					linear-gradient(
-						0deg,
-						rgba(5, 5, 6, 0.8),
-						transparent 30%,
-						transparent 70%,
-						rgba(5, 5, 6, 0.5)
-					);
-			}
-			.scene-copy {
+			.beat-in {
 				position: relative;
-				z-index: 3;
-				max-width: 1180px;
-				width: 100%;
-				margin: 0 auto;
-				padding: 0 48px;
+				z-index: 2;
+				max-width: 820px;
 			}
-			.scene.flip .scene-copy {
-				text-align: right;
-			}
-			.scene-copy .inner {
-				max-width: 460px;
-			}
-			.scene.flip .scene-copy .inner {
-				margin-left: auto;
-			}
-			.scene-no {
+			.beat-tag {
+				display: block;
 				font-family: var(--mono);
 				font-size: 0.72rem;
 				letter-spacing: 0.3em;
-				color: var(--red);
-				display: block;
-				margin-bottom: 18px;
-			}
-			.scene-copy h3 {
-				font-size: clamp(1.9rem, 3.6vw, 2.9rem);
-				font-weight: 200;
-				color: #fff;
-				line-height: 1.12;
-				letter-spacing: 0.02em;
-				margin-bottom: 20px;
-			}
-			.scene-copy p {
-				font-size: 1.02rem;
-				font-weight: 300;
-				color: var(--mut);
-				line-height: 1.8;
-				margin-bottom: 22px;
-			}
-			.scene-copy .keys {
-				display: flex;
-				gap: 10px;
-				flex-wrap: wrap;
-				font-family: var(--mono);
-				font-size: 0.66rem;
-				letter-spacing: 0.12em;
 				text-transform: uppercase;
-				color: var(--mut);
-			}
-			.scene.flip .scene-copy .keys {
-				justify-content: flex-end;
-			}
-			.scene-copy .keys b {
-				font-weight: 400;
-				border: 1px solid var(--line);
-				border-radius: 2px;
-				padding: 5px 11px;
-				background: rgba(14, 14, 16, 0.6);
-			}
-			.scene-copy .keys b::before {
-				content: "▸ ";
 				color: var(--red);
+				margin-bottom: 26px;
 			}
-			@media (max-width: 820px) {
-				.scene {
-					min-height: 78vh;
-				}
-				.scene-scrim,
-				.scene.flip .scene-scrim {
-					background: linear-gradient(
-						0deg,
-						rgba(5, 5, 6, 0.95) 0%,
-						rgba(5, 5, 6, 0.6) 45%,
-						rgba(5, 5, 6, 0.3) 100%
-					);
-				}
-				.scene-copy,
-				.scene.flip .scene-copy {
-					text-align: left;
-					padding: 0 26px;
-					align-self: flex-end;
-				}
-				.scene {
-					align-items: flex-end;
-					padding-bottom: 12vh;
-				}
-				.scene.flip .scene-copy .inner {
-					margin-left: 0;
-				}
-				.scene.flip .scene-copy .keys {
-					justify-content: flex-start;
-				}
+			.beat h2 {
+				font-size: clamp(1.9rem, 4vw, 3.1rem);
+				font-weight: 200;
+				line-height: 1.18;
+				letter-spacing: 0.01em;
+				color: #fff;
+				text-shadow: 0 2px 30px rgba(0, 0, 0, 0.55);
+			}
+			.beat h2 em {
+				font-style: normal;
+				color: var(--red);
+				font-weight: 300;
+			}
+			.beat p {
+				font-size: clamp(1.02rem, 1.5vw, 1.18rem);
+				font-weight: 300;
+				line-height: 1.75;
+				color: #c7c7cd;
+				max-width: 600px;
+				margin: 26px auto 0;
+			}
+			/* close */
+			.beat.close .btn-row {
+				margin: 42px 0 0;
+				justify-content: center;
+			}
+			.beat .close-meta {
+				font-family: var(--mono);
+				font-size: 0.62rem;
+				letter-spacing: 0.16em;
+				color: var(--dim);
+				text-transform: uppercase;
+				margin-top: 30px;
 			}
 
 			/* ---------- unplug mechanic ---------- */
@@ -1348,255 +935,6 @@
 			}
 			.unplug-note span {
 				color: var(--red);
-			}
-
-			/* ---------- download ---------- */
-			.dl-grid {
-				display: grid;
-				grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-				gap: 22px;
-			}
-			.dl {
-				background: var(--panel);
-				border: 1px solid var(--line);
-				border-radius: 4px;
-				padding: 36px;
-				display: flex;
-				flex-direction: column;
-				transition: border-color 0.3s;
-			}
-			.dl:hover {
-				border-color: var(--line-hot);
-			}
-			.dl.hot {
-				border-color: rgba(220, 38, 38, 0.55);
-				box-shadow: 0 0 40px rgba(220, 38, 38, 0.08);
-			}
-			.badge {
-				align-self: flex-start;
-				font-family: var(--mono);
-				font-size: 0.62rem;
-				letter-spacing: 0.2em;
-				text-transform: uppercase;
-				color: var(--red);
-				border: 1px solid var(--line-hot);
-				padding: 4px 10px;
-				border-radius: 2px;
-				margin-bottom: 18px;
-			}
-			.dl h3 {
-				font-size: 1.4rem;
-				font-weight: 300;
-				color: #fff;
-				margin-bottom: 8px;
-			}
-			.dl > p {
-				font-size: 0.9rem;
-				color: var(--mut);
-				font-weight: 300;
-				margin-bottom: 22px;
-			}
-			.dl ul {
-				list-style: none;
-				margin-bottom: 26px;
-				font-family: var(--mono);
-				font-size: 0.78rem;
-				color: var(--mut);
-			}
-			.dl ul li {
-				padding: 7px 0;
-				border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-			}
-			.dl ul li::before {
-				content: "▸";
-				color: var(--red);
-				margin-right: 10px;
-			}
-			.dl .btn {
-				margin-top: auto;
-				justify-content: center;
-			}
-			.term {
-				background: #0a0a0c;
-				border: 1px solid var(--line);
-				border-radius: 4px;
-				font-family: var(--mono);
-				font-size: 0.78rem;
-				line-height: 1.9;
-				padding: 18px 20px;
-				color: var(--mut);
-				margin-bottom: 26px;
-				overflow-x: auto;
-			}
-			.term .c {
-				color: #3f6e3f;
-			}
-			.term .p {
-				color: var(--red);
-				user-select: none;
-			}
-			.dl-src {
-				display: flex;
-				align-items: center;
-				gap: 30px;
-				flex-wrap: wrap;
-				margin-top: 22px;
-				background: var(--panel);
-				border: 1px solid var(--line);
-				border-radius: 4px;
-				padding: 20px 28px;
-			}
-			.dl-src h4 {
-				font-weight: 300;
-				color: #fff;
-				font-size: 1.05rem;
-				letter-spacing: 0.03em;
-			}
-			.dl-src p {
-				font-size: 0.8rem;
-				color: var(--dim);
-				font-weight: 300;
-				max-width: 300px;
-			}
-			.dl-src .term {
-				margin: 0;
-				flex: 1;
-				min-width: 300px;
-				padding: 12px 16px;
-			}
-			.link-mono {
-				font-family: var(--mono);
-				font-size: 0.72rem;
-				letter-spacing: 0.14em;
-				text-transform: uppercase;
-				color: var(--red);
-				white-space: nowrap;
-				transition: color 0.2s;
-			}
-			.link-mono:hover {
-				color: #fff;
-			}
-
-			/* ---------- docs ---------- */
-			.doc-grid {
-				display: grid;
-				grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-				gap: 14px;
-			}
-			.doc {
-				display: flex;
-				align-items: center;
-				gap: 14px;
-				background: var(--panel);
-				border: 1px solid var(--line);
-				border-radius: 4px;
-				padding: 20px 22px;
-				transition:
-					border-color 0.25s,
-					background 0.25s;
-			}
-			.doc:hover {
-				border-color: var(--line-hot);
-				background: #121214;
-			}
-			.doc i {
-				font-family: var(--mono);
-				font-style: normal;
-				font-size: 0.7rem;
-				color: var(--red);
-			}
-			.doc div b {
-				display: block;
-				font-weight: 300;
-				color: #fff;
-				font-size: 1rem;
-				letter-spacing: 0.03em;
-			}
-			.doc div span {
-				font-size: 0.78rem;
-				color: var(--dim);
-				font-weight: 300;
-			}
-
-			/* ---------- support ---------- */
-			.sup-grid {
-				display: grid;
-				grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-				gap: 22px;
-			}
-			.sup {
-				background: var(--panel);
-				border: 1px solid var(--line);
-				border-radius: 4px;
-				padding: 34px;
-				text-align: center;
-				transition:
-					border-color 0.3s,
-					transform 0.3s;
-			}
-			.sup:hover {
-				border-color: var(--line-hot);
-				transform: translateY(-3px);
-			}
-			.sup svg {
-				width: 30px;
-				height: 30px;
-				fill: none;
-				stroke: var(--red);
-				stroke-width: 1.4;
-				margin-bottom: 18px;
-			}
-			.sup h3 {
-				font-weight: 300;
-				color: #fff;
-				font-size: 1.2rem;
-				margin-bottom: 10px;
-				letter-spacing: 0.03em;
-			}
-			.sup p {
-				font-size: 0.88rem;
-				color: var(--mut);
-				font-weight: 300;
-				margin-bottom: 20px;
-			}
-			.sup a.link {
-				font-family: var(--mono);
-				font-size: 0.74rem;
-				letter-spacing: 0.14em;
-				text-transform: uppercase;
-				color: var(--red);
-				transition: color 0.2s;
-			}
-			.sup a.link:hover {
-				color: #fff;
-			}
-
-			/* ---------- closing tagline ---------- */
-			.closing {
-				text-align: center;
-				padding: 120px 24px;
-				background: radial-gradient(
-					ellipse 60% 80% at 50% 50%,
-					rgba(220, 38, 38, 0.08),
-					transparent 70%
-				);
-			}
-			.closing h2 {
-				font-size: clamp(2.2rem, 5vw, 3.6rem);
-				font-weight: 200;
-				color: #fff;
-				letter-spacing: 0.04em;
-				margin-bottom: 14px;
-			}
-			.closing h2 b {
-				color: var(--red);
-				font-weight: 300;
-			}
-			.closing p {
-				color: var(--mut);
-				font-weight: 300;
-				max-width: 520px;
-				margin: 0 auto 36px;
 			}
 
 			/* ---------- footer ---------- */
@@ -1744,21 +1082,13 @@
 					></a
 				>
 				<div class="nav-links">
-					<a href="#features">Features</a>
-					<a href="#scenes">Tour</a>
-					<a href="#download">Download</a>
-					<a href="#docs">Docs</a>
-					<a href="#support">Support</a>
 					<a
 						class="nav-cta"
-						href="https://github.com/anthonyreimche/SafeLight"
+						href="https://github.com/anthonyreimche/SafeLight/releases"
 						target="_blank"
-						>GitHub</a
+						>Download</a
 					>
 				</div>
-				<button class="nav-burger" id="burger" aria-label="Menu">
-					☰
-				</button>
 			</div>
 		</nav>
 
@@ -2055,13 +1385,11 @@
 			<div class="hero-vig"></div>
 			<div class="hero-glow"></div>
 			<div class="wrap">
-				<div class="kicker">Free · Open Source · RAW Photo Editor</div>
-				<h1>Build your own<br /><em>darkroom.</em></h1>
+				<div class="kicker">Free and open source RAW editor</div>
+				<h1>A RAW editor that keeps<br /><em>only the tools you use.</em></h1>
 				<p class="hero-sub">
-					Safelight is a GPU-accelerated RAW editor where every panel,
-					tool, and transform is an extension you can dock, float,
-					replace — or unplug entirely. Great out of the box with
-					familiar defaults. Then you make it yours.
+					Open it and start editing. Keep the tools you use, and switch
+					off the rest.
 				</p>
 				<div class="btn-row">
 					<a
@@ -2074,639 +1402,100 @@
 								d="M12 16l-6-6h4V3h4v7h4l-6 6zm-8 2h16v3H4v-3z"
 							/>
 						</svg>
-						Download v2.4
+						Download
 					</a>
-					<a class="btn btn-ghost" href="#scenes">Take the tour</a>
-				</div>
-				<div class="hero-meta">
-					<span>Windows</span><i>/</i><span>Linux</span><i>/</i
-					><span>Mac</span><i>·</i>GPL v3 licensed<i>·</i>v2.4.0
+					<a class="btn btn-ghost" href="#story">Read the story</a>
 				</div>
 			</div>
 			<div class="scroll-cue">Scroll</div>
 		</header>
 
-		<div class="stats">
-			<div class="wrap">
-				<div class="stat">
-					<b><i>$</i><span class="count" data-to="0">0</span></b
-					><span>Forever free</span>
-				</div>
-				<div class="stat">
-					<b><span class="count" data-to="30">0</span><i>+</i></b
-					><span>RAW formats</span>
-				</div>
-				<div class="stat">
-					<b
-						><i><span class="count" data-to="0">0</span></i></b
-					><span>Telemetry</span>
-				</div>
-				<div class="stat">
-					<b><span class="count" data-to="100">0</span><i>%</i></b
-					><span>GPU pipeline</span>
-				</div>
-			</div>
-		</div>
 
-		<!-- ===== mission ===== -->
-		<section class="mission" aria-label="Our mission">
-			<div class="bulb" aria-hidden="true"></div>
-			<div class="wrap">
-				<span class="sec-tag rv">// the idea</span>
-				<p class="mission-lead rv">
-					A darkroom needs exactly one fixture: the
-					<em>safelight</em>. Everything else, the photographer
-					arranges to taste.
-				</p>
-				<p class="mission-body rv">
-					Safelight is built the same way — a minimal, always-on core,
-					where every panel, tool, and transform is an extension you
-					can move, replace, or <em>unplug</em>. It works like a
-					complete editor on day one, with the defaults you already
-					know. Then you tear out what you don't use and build the
-					darkroom that fits the way <em>you</em> see.
-				</p>
-				<div class="mission-pillars rv">
-					<div class="pillar">
-						<b>Complete on day one</b>
-						<span
-							>Familiar, Lightroom-style defaults out of the
-							box.</span
-						>
-					</div>
-					<div class="pillar">
-						<b>Yours to rearrange</b>
-						<span
-							>Dock, float, theme, rebind, and replace any
-							part.</span
-						>
-					</div>
-					<div class="pillar">
-						<b>No tax for the unused</b>
-						<span
-							>Unplug a tool and it leaves the program
-							entirely.</span
-						>
-					</div>
-				</div>
-			</div>
-		</section>
-
-		<!-- ===== before / after reveal ===== -->
-		<section class="reveal-sec" aria-label="Before and after">
-			<div class="ba" id="ba">
-				<img
-					class="before"
-					id="ba-before"
-					src="shots/before.jpg"
-					alt="Unedited RAW capture"
-					loading="lazy"
-				/>
-				<img
-					class="after"
-					id="ba-after"
-					src="shots/after.jpg"
-					alt="Developed in Safelight"
-					loading="lazy"
-				/>
-				<span class="ba-tag l">RAW · As shot</span>
-				<span class="ba-tag r">Developed in Safelight</span>
-				<div class="ba-handle" id="ba-handle">
-					<div class="ba-knob">⇆</div>
-				</div>
-			</div>
-			<div class="reveal-cap">
-				DRAG TO COMPARE · LINEAR-FLOAT DECODE → FULL GPU DEVELOP
-			</div>
-		</section>
-
-		<section id="features">
-			<div class="wrap">
-				<div class="sec-head rv">
-					<span class="sec-tag">// features</span>
-					<h2>Built for serious editing</h2>
+		<main id="story">
+			<section
+				class="beat"
+				style="
+					--shot: url('shots/workspace.jpg');
+				"
+			>
+				<div class="beat-in rv">
+					<span class="beat-tag">The problem</span>
+					<h2>Most editors are built for everyone.</h2>
 					<p>
-						Everything you expect from a professional RAW workflow —
-						without the subscription, the cloud, or the lock-in.
+						So they arrive crowded. Hundreds of tools you will never
+						open, loaded by default, arranged the way someone else
+						decided you should work. Too much of your time goes to
+						working around the software instead of editing in it.
 					</p>
 				</div>
-				<div class="grid">
-					<div class="card rv">
-						<span class="num">01</span>
-						<h3>Non-Destructive &amp; Portable</h3>
-						<p>
-							Open a folder and edit. Originals are never touched
-							— ratings, flags, and full edit history live in a
-							<code>.safelight/</code> directory, so every project
-							is fully portable.
-						</p>
-					</div>
-					<div class="card rv">
-						<span class="num">02</span>
-						<h3>Real RAW Support</h3>
-						<p>
-							Full-resolution decoding via libraw-wasm plus an
-							in-house linear-float CFA/DNG decoder. NEF, CR2/CR3,
-							ARW, DNG, ORF, RAF, RW2 and many more.
-						</p>
-					</div>
-					<div class="card rv">
-						<span class="num">03</span>
-						<h3>GPU Shader Pipeline</h3>
-						<p>
-							Every adjustment renders through a WebGL2 shader
-							pipeline with optional 16-bit textures for
-							high-bit-depth editing — from tone curves to local
-							masks.
-						</p>
-					</div>
-					<div class="card rv">
-						<span class="num">04</span>
-						<h3>Privacy First</h3>
-						<p>
-							No telemetry, no cloud, no accounts, no data
-							collection. Exports carry no EXIF or location
-							metadata by design.
-						</p>
-					</div>
-					<div class="card rv">
-						<span class="num">05</span>
-						<h3>IDE-Like Workspace</h3>
-						<p>
-							Photoshop-style docking — drag, tab, float, or
-							minimize any panel. Named layouts, themes,
-							rebindable shortcuts, and detachable windows for
-							multi-monitor work.
-						</p>
-					</div>
-					<div class="card rv">
-						<span class="num">06</span>
-						<h3>Open Extension System</h3>
-						<p>
-							A blind-orchestrator core where every panel and tool
-							is an extension. Install from GitHub to add panels,
-							themes, layouts, display transforms, lens profiles,
-							export processors, and more — any stock panel can be
-							disabled and replaced.
-						</p>
-					</div>
-					<div class="card rv">
-						<span class="num">07</span>
-						<h3>Complete Develop Module</h3>
-						<p>
-							Tone curves per channel, HSL mixer, color grading
-							wheels, sharpening and noise reduction, lens
-							corrections, crop, transform and upright, masks with
-							radial / linear / brush / range components, heal and
-							clone.
-						</p>
-					</div>
-					<div class="card rv">
-						<span class="num">08</span>
-						<h3>Lightroom-Style Culling</h3>
-						<p>
-							Ratings, color labels, pick / reject flags with the
-							keyboard shortcuts you already know. Filters,
-							sorting, EXIF and histogram — with background RAW
-							pre-decode so Develop opens instantly.
-						</p>
-					</div>
-					<div class="card rv">
-						<span class="num">09</span>
-						<h3>Batch GPU Export</h3>
-						<p>
-							JPEG, PNG, WebP, and 8/16-bit TIFF through the same
-							pipeline used for editing, with quality and
-							long-edge controls. Export many photos as a ZIP or
-							separate files — metadata-free.
-						</p>
-					</div>
-				</div>
-			</div>
-		</section>
-
-		<!-- ===== cinematic full-bleed scenes ===== -->
-		<div id="scenes" class="scenes">
-			<section
-				class="scene rv-scene"
-				style="--shot: url(&quot;shots/library.jpg&quot;)"
-				data-fallback="https://github.com/user-attachments/assets/4d9fc0f7-1af9-4040-8684-f927cc7fa757"
-			>
-				<div class="scene-bg" aria-hidden="true"></div>
-				<div class="scene-scrim" aria-hidden="true"></div>
-				<div class="scene-copy">
-					<div class="inner">
-						<span class="scene-no">Scene 01 — Library</span>
-						<h3>Cull at the speed of thought.</h3>
-						<p>
-							Grid and loupe views, instant zoom, and a metadata
-							sidebar that keeps up. Background RAW pre-decode
-							means Develop opens the moment you press it.
-						</p>
-						<div class="keys">
-							<b>Rate 1–5</b><b>Pick / Reject</b
-							><b>Color labels</b>
-						</div>
-					</div>
-				</div>
 			</section>
 
 			<section
-				class="scene flip rv-scene"
-				style="--shot: url(&quot;shots/develop.jpg&quot;)"
-				data-fallback="https://github.com/user-attachments/assets/960afdee-95d0-498b-9988-6c9b63a285a6"
+				class="beat"
+				style="
+					--shot: url('shots/masks.jpg');
+				"
 			>
-				<div class="scene-bg" aria-hidden="true"></div>
-				<div class="scene-scrim" aria-hidden="true"></div>
-				<div class="scene-copy">
-					<div class="inner">
-						<span class="scene-no">Scene 02 — Develop</span>
-						<h3>Every slider is a shader.</h3>
-						<p>
-							Per-channel tone curves, an HSL mixer, color grading
-							wheels, and detail tools — all rendered live through
-							a 16-bit WebGL2 pipeline. No proxies, no waiting.
-						</p>
-						<div class="keys">
-							<b>Tone curves</b><b>HSL mixer</b
-							><b>Color wheels</b>
-						</div>
-					</div>
-				</div>
-			</section>
-
-			<section
-				class="scene rv-scene"
-				style="--shot: url(&quot;shots/masks.jpg&quot;)"
-				data-fallback="https://github.com/user-attachments/assets/fe9c8403-b46c-4f71-bf99-ed3c9b11104f"
-			>
-				<div class="scene-bg" aria-hidden="true"></div>
-				<div class="scene-scrim" aria-hidden="true"></div>
-				<div class="scene-copy">
-					<div class="inner">
-						<span class="scene-no"
-							>Scene 03 — Local Adjustments</span
-						>
-						<h3>Paint light exactly where it falls.</h3>
-						<p>
-							Radial, linear, brush, and range masks compose
-							together with heal and clone — every component
-							processed on the GPU, fully non-destructive.
-						</p>
-						<div class="keys">
-							<b>Radial / Linear</b><b>Brush / Range</b
-							><b>Heal</b>
-						</div>
-					</div>
-				</div>
-			</section>
-
-			<section
-				class="scene flip rv-scene"
-				style="--shot: url(&quot;shots/workspace.jpg&quot;)"
-				data-fallback="https://github.com/user-attachments/assets/811242de-0973-4378-bfb5-7add1433595e"
-			>
-				<div class="scene-bg" aria-hidden="true"></div>
-				<div class="scene-scrim" aria-hidden="true"></div>
-				<div class="scene-copy">
-					<div class="inner">
-						<span class="scene-no">Scene 04 — Workspace</span>
-						<h3>Arrange the room to fit you.</h3>
-						<p>
-							Dock, tab, float, or detach any panel across
-							monitors. Save named layouts, swap themes, rebind
-							every shortcut. The darkroom bends to your hands.
-						</p>
-						<div class="keys">
-							<b>Docking</b><b>Named layouts</b
-							><b>Multi-monitor</b>
-						</div>
-					</div>
-				</div>
-			</section>
-		</div>
-
-		<!-- ===== unplug mechanic ===== -->
-		<section class="unplug">
-			<div class="wrap">
-				<div class="sec-head rv">
-					<span class="sec-tag">// the unplug mechanic</span>
-					<h2>No tax for features you never touch.</h2>
+				<div class="beat-in rv">
+					<span class="beat-tag">The idea</span>
+					<h2>Safelight is built to come apart.</h2>
 					<p>
-						Disable a tool and it leaves the program entirely —
-						render pipeline, UI, menus, shortcuts. Not hidden. Gone.
-						Then reach into the extension store for only what you
-						need.
+						It starts as a small core and nothing you didn't ask for.
+						Every tool, every panel, every adjustment is a piece you
+						can move, replace, or switch off. Turn one off and it
+						leaves completely: out of the menus, out of the interface,
+						out of the render pipeline. Even the tools that come built
+						in.
 					</p>
 				</div>
-				<div class="unplug-vis rv" id="unplug">
-					<span class="chip">Tone Curve</span>
-					<span class="chip">HSL Mixer</span>
-					<span class="chip">Color Wheels</span>
-					<span class="chip">Noise Reduction</span>
-					<span class="chip">Lens Corrections</span>
-					<span class="chip">Masks</span>
-					<span class="chip">Heal &amp; Clone</span>
-					<span class="chip">Histogram</span>
-					<span class="chip">Crop &amp; Upright</span>
-				</div>
-				<p class="unplug-note rv">
-					Watch a few <span>unplug</span> — that's the render pipeline
-					getting lighter, not just the UI.
-				</p>
-			</div>
-		</section>
+			</section>
 
-		<section id="download">
-			<div class="wrap">
-				<div class="sec-head rv">
-					<span class="sec-tag">// download</span>
-					<h2>Get Safelight</h2>
+			<section
+				class="beat"
+				style="
+					--shot: url('shots/develop.jpg');
+				"
+			>
+				<div class="beat-in rv">
+					<span class="beat-tag">What's left</span>
+					<h2>The darkroom you would have built yourself.</h2>
 					<p>
-						Pick your platform. No account, no installer telemetry,
-						no strings.
+						Only the tools you want, where you expect them. It is free
+						and open source, it runs entirely on your machine, and the
+						copy you install today stays yours for good. Built by one
+						photographer, and open for anyone to extend.
 					</p>
 				</div>
-				<div class="dl-grid">
-					<div class="dl hot rv">
-						<span class="badge">Recommended</span>
-						<h3>Windows Desktop</h3>
-						<p>
-							Fastest RAW decode path and full GPU acceleration.
-						</p>
-						<ul>
-							<li>Safelight Setup installer (.exe)</li>
-							<li>Native file-system access</li>
-							<li>Multi-window, multi-monitor</li>
-						</ul>
+			</section>
+
+			<section
+				class="beat close"
+				style="
+					--shot: url('shots/library.jpg');
+				"
+			>
+				<div class="beat-in rv">
+					<h2>Make it yours.</h2>
+					<div class="btn-row">
 						<a
 							class="btn btn-primary"
 							href="https://github.com/anthonyreimche/SafeLight/releases"
 							target="_blank"
-							>Download for Windows</a
+							>Download Safelight</a
 						>
-					</div>
-					<div class="dl rv">
-						<span
-							class="badge"
-							style="color: var(--mut); border-color: var(--line)"
-							>All distros</span
-						>
-						<h3>Linux</h3>
-						<p>Native packages for every major distribution.</p>
-						<ul>
-							<li>.deb — Debian / Ubuntu</li>
-							<li>.rpm — Fedora / openSUSE</li>
-							<li>.pacman — Arch / Manjaro</li>
-							<li>Flatpak &amp; portable AppImage</li>
-						</ul>
 						<a
 							class="btn btn-ghost"
-							href="https://github.com/anthonyreimche/SafeLight/releases"
+							href="https://github.com/anthonyreimche/SafeLight"
 							target="_blank"
-							>Download for Linux</a
+							>View on GitHub</a
 						>
 					</div>
-					<div class="dl rv">
-						<span
-							class="badge"
-							style="color: var(--mut); border-color: var(--line)"
-							>Universal</span
-						>
-						<h3>macOS</h3>
-						<p>Universal build for Intel and Apple Silicon.</p>
-						<ul>
-							<li>.dmg disk image</li>
-							<li>Intel + Apple Silicon (arm64)</li>
-							<li>Multi-window, multi-monitor</li>
-						</ul>
-						<a
-							class="btn btn-ghost"
-							href="https://github.com/anthonyreimche/SafeLight/releases"
-							target="_blank"
-							>Download for macOS</a
-						>
-					</div>
-				</div>
-				<div class="dl-src rv">
-					<div>
-						<h4>Browser / from source</h4>
-						<p>
-							Runs in any Chromium-based browser. Note: extensions
-							require the desktop app.
-						</p>
-					</div>
-					<div class="term">
-						<span class="p">$</span> git clone
-						https://github.com/anthonyreimche/SafeLight.git<br />
-						<span class="p">$</span> cd SafeLight &amp;&amp; npm
-						install &amp;&amp; npm run dev
-					</div>
-					<a
-						class="link-mono"
-						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user/installation.md"
-						target="_blank"
-						>Install guide →</a
-					>
-				</div>
-			</div>
-		</section>
-
-		<section id="docs">
-			<div class="wrap">
-				<div class="sec-head rv">
-					<span class="sec-tag">// documentation</span>
-					<h2>Read the docs</h2>
-				</div>
-				<div class="doc-grid rv">
-					<a
-						class="doc"
-						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user/getting-started.md"
-						target="_blank"
-						><i>01</i>
-						<div>
-							<b>Getting Started</b
-							><span>First project, first edit</span>
-						</div></a
-					>
-					<a
-						class="doc"
-						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user/installation.md"
-						target="_blank"
-						><i>02</i>
-						<div>
-							<b>Installation</b
-							><span>Desktop app &amp; source builds</span>
-						</div></a
-					>
-					<a
-						class="doc"
-						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user/user-guide.md"
-						target="_blank"
-						><i>03</i>
-						<div>
-							<b>User Guide</b><span>Complete feature docs</span>
-						</div></a
-					>
-					<a
-						class="doc"
-						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/dev/extensions/README.md"
-						target="_blank"
-						><i>04</i>
-						<div>
-							<b>Extensions</b
-							><span>Install &amp; build extensions</span>
-						</div></a
-					>
-					<a
-						class="doc"
-						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/dev/architecture.md"
-						target="_blank"
-						><i>05</i>
-						<div>
-							<b>Architecture</b><span>Technical overview</span>
-						</div></a
-					>
-					<a
-						class="doc"
-						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/dev/api/README.md"
-						target="_blank"
-						><i>06</i>
-						<div>
-							<b>API Reference</b><span>Extension API</span>
-						</div></a
-					>
-					<a
-						class="doc"
-						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user/changelog.md"
-						target="_blank"
-						><i>07</i>
-						<div>
-							<b>Changelog</b><span>What's new in 2.4</span>
-						</div></a
-					>
-					<a
-						class="doc"
-						href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/dev/contributing.md"
-						target="_blank"
-						><i>08</i>
-						<div>
-							<b>Contributing</b><span>Help build Safelight</span>
-						</div></a
-					>
-				</div>
-			</div>
-		</section>
-
-		<section id="support">
-			<div class="wrap">
-				<div class="sec-head rv">
-					<span class="sec-tag">// support</span>
-					<h2>Questions? Answers.</h2>
-					<p>
-						Safelight is community-driven. Get help, report bugs, or
-						just ask.
+					<p class="close-meta">
+						Free · Open source · Windows, macOS and Linux
 					</p>
 				</div>
-				<div class="sup-grid">
-					<div class="sup rv">
-						<svg viewBox="0 0 24 24">
-							<circle cx="12" cy="12" r="9" />
-							<path
-								d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.33c-.7.27-.9.84-.9 1.67m0 3h.01"
-							/>
-						</svg>
-						<h3>Q&amp;A / Discussions</h3>
-						<p>
-							Ask anything, share workflows, and vote on ideas in
-							GitHub Discussions.
-						</p>
-						<a
-							class="link"
-							href="https://github.com/anthonyreimche/SafeLight/discussions"
-							target="_blank"
-							>Open Discussions →</a
-						>
-					</div>
-					<div class="sup rv">
-						<svg viewBox="0 0 24 24">
-							<path d="M12 3l9 16H3l9-16z" />
-							<path d="M12 10v4m0 3h.01" />
-						</svg>
-						<h3>Report an Issue</h3>
-						<p>
-							Found a bug or have a feature request? File an issue
-							and we'll take a look.
-						</p>
-						<a
-							class="link"
-							href="https://github.com/anthonyreimche/SafeLight/issues"
-							target="_blank"
-							>GitHub Issues →</a
-						>
-					</div>
-					<div class="sup rv">
-						<svg viewBox="0 0 24 24">
-							<path d="M4 5h16v12H8l-4 4V5z" />
-						</svg>
-						<h3>FAQ</h3>
-						<p>
-							Common questions about formats, performance,
-							privacy, and the roadmap.
-						</p>
-						<a
-							class="link"
-							href="https://github.com/anthonyreimche/SafeLight/blob/main/docs/user/faq.md"
-							target="_blank"
-							>Read the FAQ →</a
-						>
-					</div>
-					<div class="sup rv" style="border-color: var(--line-hot)">
-						<svg viewBox="0 0 24 24">
-							<path
-								d="M12 20s-7-4.6-9.2-9A5.2 5.2 0 0 1 12 6.6 5.2 5.2 0 0 1 21.2 11C19 15.4 12 20 12 20z"
-							/>
-						</svg>
-						<h3>Support Safelight</h3>
-						<p>
-							Safelight is free forever. If it saves you a
-							subscription, consider buying the developer a
-							coffee.
-						</p>
-						<a
-							class="link"
-							href="https://buymeacoffee.com/anthonyreimche"
-							target="_blank"
-							>Support →</a
-						>
-					</div>
-				</div>
-			</div>
-		</section>
-
-		<section class="closing">
-			<div class="wrap rv">
-				<h2>Your workspace, <b>your rules.</b></h2>
-				<p>
-					Start with a complete darkroom. Keep what you use, unplug
-					what you don't, and build the rest.
-				</p>
-				<div class="btn-row" style="margin-bottom: 0">
-					<a
-						class="btn btn-primary"
-						href="https://github.com/anthonyreimche/SafeLight/releases"
-						target="_blank"
-						>Download Safelight</a
-					>
-					<a
-						class="btn btn-ghost"
-						href="https://github.com/anthonyreimche/SafeLight"
-						target="_blank"
-						>View on GitHub</a
-					>
-				</div>
-			</div>
-		</section>
+			</section>
+		</main>
 
 		<footer>
 			<div class="f-brand">Safe<b>light</b></div>
@@ -2733,163 +1522,6 @@
 				nav.classList.toggle("solid", scrollY > 60);
 			addEventListener("scroll", onScrollNav, { passive: true });
 			onScrollNav();
-
-			// ---- mobile nav ----
-			const burger = document.getElementById("burger"),
-				links = document.querySelector(".nav-links");
-			burger.addEventListener("click", () =>
-				links.classList.toggle("open"),
-			);
-			links.addEventListener("click", (e) => {
-				if (e.target.tagName === "A") links.classList.remove("open");
-			});
-
-			// ---- hero plate: set image only if it exists ----
-			(function () {
-				const img = new Image();
-				img.onload = () =>
-					document
-						.getElementById("plate")
-						.style.setProperty(
-							"--plate-img",
-							"url('shots/hero-plate.jpg')",
-						);
-				img.src = "shots/hero-plate.jpg";
-			})();
-
-			// ---- scene backgrounds: fall back to GitHub assets if local shot missing ----
-			document.querySelectorAll(".scene").forEach((sc) => {
-				const fb = sc.dataset.fallback;
-				if (!fb) return;
-				const shot = getComputedStyle(sc)
-					.getPropertyValue("--shot")
-					.match(/url\(['"]?([^'")]+)['"]?\)/);
-				if (!shot) return;
-				const probe = new Image();
-				probe.onerror = () =>
-					sc.style.setProperty("--shot", `url('${fb}')`);
-				probe.src = shot[1];
-			});
-
-			// ---- before/after: fall back to two GitHub assets if local pair missing ----
-			(function () {
-				const fbBefore =
-						"https://github.com/user-attachments/assets/4d9fc0f7-1af9-4040-8684-f927cc7fa757",
-					fbAfter =
-						"https://github.com/user-attachments/assets/960afdee-95d0-498b-9988-6c9b63a285a6";
-				const b = document.getElementById("ba-before"),
-					a = document.getElementById("ba-after");
-				b.onerror = () => {
-					b.onerror = null;
-					b.src = fbBefore;
-				};
-				a.onerror = () => {
-					a.onerror = null;
-					a.src = fbAfter;
-				};
-			})();
-
-			// ---- before/after slider ----
-			(function () {
-				const ba = document.getElementById("ba");
-				let dragging = false;
-				const set = (clientX) => {
-					const r = ba.getBoundingClientRect();
-					let p = ((clientX - r.left) / r.width) * 100;
-					p = Math.max(0, Math.min(100, p));
-					ba.style.setProperty("--pos", p + "%");
-				};
-				ba.addEventListener("pointerdown", (e) => {
-					dragging = true;
-					ba.setPointerCapture(e.pointerId);
-					set(e.clientX);
-				});
-				ba.addEventListener("pointermove", (e) => {
-					if (dragging) set(e.clientX);
-				});
-				const stop = () => (dragging = false);
-				ba.addEventListener("pointerup", stop);
-				ba.addEventListener("pointercancel", stop);
-				ba.style.setProperty("--pos", "50%");
-			})();
-
-			// ---- count-up stats ----
-			(function () {
-				const io = new IntersectionObserver(
-					(es) =>
-						es.forEach((e) => {
-							if (!e.isIntersecting) return;
-							io.unobserve(e.target);
-							const el = e.target,
-								to = +el.dataset.to,
-								t0 = performance.now(),
-								dur = 1100;
-							const step = (t) => {
-								const k = Math.min(1, (t - t0) / dur),
-									e2 = 1 - Math.pow(1 - k, 3);
-								el.textContent = Math.round(to * e2);
-								if (k < 1) requestAnimationFrame(step);
-							};
-							requestAnimationFrame(step);
-						}),
-					{ threshold: 0.6 },
-				);
-				document
-					.querySelectorAll(".count")
-					.forEach((el) => io.observe(el));
-			})();
-
-			// ---- parallax on full-bleed scenes ----
-			(function () {
-				if (matchMedia("(prefers-reduced-motion: reduce)").matches)
-					return;
-				const bgs = [...document.querySelectorAll(".scene-bg")];
-				let ticking = false;
-				const update = () => {
-					const vh = innerHeight;
-					bgs.forEach((bg) => {
-						const r = bg.parentElement.getBoundingClientRect();
-						if (r.bottom < 0 || r.top > vh) return;
-						const prog = (r.top + r.height / 2 - vh / 2) / vh;
-						bg.style.transform = `translateY(${(-prog * 7).toFixed(2)}%)`;
-					});
-					ticking = false;
-				};
-				addEventListener(
-					"scroll",
-					() => {
-						if (!ticking) {
-							requestAnimationFrame(update);
-							ticking = true;
-						}
-					},
-					{ passive: true },
-				);
-				update();
-			})();
-
-			// ---- unplug demo: chips fade out one by one when in view ----
-			(function () {
-				const wrap = document.getElementById("unplug");
-				if (!wrap) return;
-				const chips = [...wrap.querySelectorAll(".chip")];
-				const targets = [3, 4, 6]; // indices that "unplug"
-				const io = new IntersectionObserver(
-					(es) =>
-						es.forEach((e) => {
-							if (!e.isIntersecting) return;
-							io.unobserve(e.target);
-							targets.forEach((idx, n) =>
-								setTimeout(
-									() => chips[idx]?.classList.add("gone"),
-									600 + n * 650,
-								),
-							);
-						}),
-					{ threshold: 0.5 },
-				);
-				io.observe(wrap);
-			})();
 
 			// ---- mobile: tighter hero panel layout ----
 			if (matchMedia("(max-width:860px)").matches) {
@@ -2998,9 +1630,7 @@
 					}),
 				{ threshold: 0.12 },
 			);
-			document
-				.querySelectorAll(".rv, .rv-scene")
-				.forEach((el) => io.observe(el));
+			document.querySelectorAll(".rv").forEach((el) => io.observe(el));
 		</script>
 	</body>
 </html>
