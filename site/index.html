@@ -8,7 +8,10 @@
 			name="description"
 			content="Safelight is a fast, free, open-source RAW photo editor for Windows, Linux, and Mac. GPU-accelerated, non-destructive, privacy-first — a darkroom you arrange to taste, then make your own."
 		/>
-		<meta property="og:title" content="Safelight — Build Your Own Darkroom" />
+		<meta
+			property="og:title"
+			content="Safelight — Build Your Own Darkroom"
+		/>
 		<meta
 			property="og:description"
 			content="A GPU-accelerated, non-destructive RAW editor where every panel and tool is an extension you can move, replace, or unplug. Free forever. Fully offline."
@@ -1161,14 +1164,16 @@
 			.scene-bg {
 				position: absolute;
 				inset: -12% 0;
-				background: var(--shot, none) center/cover no-repeat,
+				background:
+					var(--shot, none) center/cover no-repeat,
 					#0c0c0e;
 				will-change: transform;
 			}
 			.scene-scrim {
 				position: absolute;
 				inset: 0;
-				background: linear-gradient(
+				background:
+					linear-gradient(
 						90deg,
 						rgba(5, 5, 6, 0.92) 0%,
 						rgba(5, 5, 6, 0.72) 38%,
@@ -1184,7 +1189,8 @@
 					);
 			}
 			.scene.flip .scene-scrim {
-				background: linear-gradient(
+				background:
+					linear-gradient(
 						270deg,
 						rgba(5, 5, 6, 0.92) 0%,
 						rgba(5, 5, 6, 0.72) 38%,
@@ -1296,11 +1302,7 @@
 
 			/* ---------- unplug mechanic ---------- */
 			.unplug {
-				background: linear-gradient(
-					180deg,
-					#050506,
-					var(--bg) 60%
-				);
+				background: linear-gradient(180deg, #050506, var(--bg) 60%);
 				text-align: center;
 			}
 			.unplug-vis {
@@ -2054,9 +2056,7 @@
 			<div class="hero-glow"></div>
 			<div class="wrap">
 				<div class="kicker">Free · Open Source · RAW Photo Editor</div>
-				<h1>
-					Build your own<br /><em>darkroom.</em>
-				</h1>
+				<h1>Build your own<br /><em>darkroom.</em></h1>
 				<p class="hero-sub">
 					Safelight is a GPU-accelerated RAW editor where every panel,
 					tool, and transform is an extension you can dock, float,
@@ -2070,15 +2070,17 @@
 						target="_blank"
 					>
 						<svg viewBox="0 0 24 24">
-							<path d="M12 16l-6-6h4V3h4v7h4l-6 6zm-8 2h16v3H4v-3z" />
+							<path
+								d="M12 16l-6-6h4V3h4v7h4l-6 6zm-8 2h16v3H4v-3z"
+							/>
 						</svg>
-						Download v2.3
+						Download v2.4
 					</a>
 					<a class="btn btn-ghost" href="#scenes">Take the tour</a>
 				</div>
 				<div class="hero-meta">
 					<span>Windows</span><i>/</i><span>Linux</span><i>/</i
-					><span>Mac</span><i>·</i>GPL v3 licensed<i>·</i>v2.3.0
+					><span>Mac</span><i>·</i>GPL v3 licensed<i>·</i>v2.4.0
 				</div>
 			</div>
 			<div class="scroll-cue">Scroll</div>
@@ -2095,7 +2097,8 @@
 					><span>RAW formats</span>
 				</div>
 				<div class="stat">
-					<b><i><span class="count" data-to="0">0</span></i></b
+					<b
+						><i><span class="count" data-to="0">0</span></i></b
 					><span>Telemetry</span>
 				</div>
 				<div class="stat">
@@ -2126,15 +2129,24 @@
 				<div class="mission-pillars rv">
 					<div class="pillar">
 						<b>Complete on day one</b>
-						<span>Familiar, Lightroom-style defaults out of the box.</span>
+						<span
+							>Familiar, Lightroom-style defaults out of the
+							box.</span
+						>
 					</div>
 					<div class="pillar">
 						<b>Yours to rearrange</b>
-						<span>Dock, float, theme, rebind, and replace any part.</span>
+						<span
+							>Dock, float, theme, rebind, and replace any
+							part.</span
+						>
 					</div>
 					<div class="pillar">
 						<b>No tax for the unused</b>
-						<span>Unplug a tool and it leaves the program entirely.</span>
+						<span
+							>Unplug a tool and it leaves the program
+							entirely.</span
+						>
 					</div>
 				</div>
 			</div>
@@ -2183,10 +2195,10 @@
 						<span class="num">01</span>
 						<h3>Non-Destructive &amp; Portable</h3>
 						<p>
-							Open a folder and edit. Originals are never touched —
-							ratings, flags, and full edit history live in a
-							<code>.safelight/</code> directory, so every project is
-							fully portable.
+							Open a folder and edit. Originals are never touched
+							— ratings, flags, and full edit history live in a
+							<code>.safelight/</code> directory, so every project
+							is fully portable.
 						</p>
 					</div>
 					<div class="card rv">
@@ -2213,8 +2225,8 @@
 						<h3>Privacy First</h3>
 						<p>
 							No telemetry, no cloud, no accounts, no data
-							collection. Exports carry no EXIF or location metadata
-							by design.
+							collection. Exports carry no EXIF or location
+							metadata by design.
 						</p>
 					</div>
 					<div class="card rv">
@@ -2222,9 +2234,9 @@
 						<h3>IDE-Like Workspace</h3>
 						<p>
 							Photoshop-style docking — drag, tab, float, or
-							minimize any panel. Named layouts, themes, rebindable
-							shortcuts, and detachable windows for multi-monitor
-							work.
+							minimize any panel. Named layouts, themes,
+							rebindable shortcuts, and detachable windows for
+							multi-monitor work.
 						</p>
 					</div>
 					<div class="card rv">
@@ -2254,9 +2266,9 @@
 						<h3>Lightroom-Style Culling</h3>
 						<p>
 							Ratings, color labels, pick / reject flags with the
-							keyboard shortcuts you already know. Filters, sorting,
-							EXIF and histogram — with background RAW pre-decode so
-							Develop opens instantly.
+							keyboard shortcuts you already know. Filters,
+							sorting, EXIF and histogram — with background RAW
+							pre-decode so Develop opens instantly.
 						</p>
 					</div>
 					<div class="card rv">
@@ -2264,9 +2276,9 @@
 						<h3>Batch GPU Export</h3>
 						<p>
 							JPEG, PNG, WebP, and 8/16-bit TIFF through the same
-							pipeline used for editing, with quality and long-edge
-							controls. Export many photos as a ZIP or separate
-							files — metadata-free.
+							pipeline used for editing, with quality and
+							long-edge controls. Export many photos as a ZIP or
+							separate files — metadata-free.
 						</p>
 					</div>
 				</div>
@@ -2277,7 +2289,7 @@
 		<div id="scenes" class="scenes">
 			<section
 				class="scene rv-scene"
-				style="--shot: url('shots/library.jpg')"
+				style="--shot: url(&quot;shots/library.jpg&quot;)"
 				data-fallback="https://github.com/user-attachments/assets/4d9fc0f7-1af9-4040-8684-f927cc7fa757"
 			>
 				<div class="scene-bg" aria-hidden="true"></div>
@@ -2288,11 +2300,12 @@
 						<h3>Cull at the speed of thought.</h3>
 						<p>
 							Grid and loupe views, instant zoom, and a metadata
-							sidebar that keeps up. Background RAW pre-decode means
-							Develop opens the moment you press it.
+							sidebar that keeps up. Background RAW pre-decode
+							means Develop opens the moment you press it.
 						</p>
 						<div class="keys">
-							<b>Rate 1–5</b><b>Pick / Reject</b><b>Color labels</b>
+							<b>Rate 1–5</b><b>Pick / Reject</b
+							><b>Color labels</b>
 						</div>
 					</div>
 				</div>
@@ -2300,7 +2313,7 @@
 
 			<section
 				class="scene flip rv-scene"
-				style="--shot: url('shots/develop.jpg')"
+				style="--shot: url(&quot;shots/develop.jpg&quot;)"
 				data-fallback="https://github.com/user-attachments/assets/960afdee-95d0-498b-9988-6c9b63a285a6"
 			>
 				<div class="scene-bg" aria-hidden="true"></div>
@@ -2311,11 +2324,12 @@
 						<h3>Every slider is a shader.</h3>
 						<p>
 							Per-channel tone curves, an HSL mixer, color grading
-							wheels, and detail tools — all rendered live through a
-							16-bit WebGL2 pipeline. No proxies, no waiting.
+							wheels, and detail tools — all rendered live through
+							a 16-bit WebGL2 pipeline. No proxies, no waiting.
 						</p>
 						<div class="keys">
-							<b>Tone curves</b><b>HSL mixer</b><b>Color wheels</b>
+							<b>Tone curves</b><b>HSL mixer</b
+							><b>Color wheels</b>
 						</div>
 					</div>
 				</div>
@@ -2323,14 +2337,16 @@
 
 			<section
 				class="scene rv-scene"
-				style="--shot: url('shots/masks.jpg')"
+				style="--shot: url(&quot;shots/masks.jpg&quot;)"
 				data-fallback="https://github.com/user-attachments/assets/fe9c8403-b46c-4f71-bf99-ed3c9b11104f"
 			>
 				<div class="scene-bg" aria-hidden="true"></div>
 				<div class="scene-scrim" aria-hidden="true"></div>
 				<div class="scene-copy">
 					<div class="inner">
-						<span class="scene-no">Scene 03 — Local Adjustments</span>
+						<span class="scene-no"
+							>Scene 03 — Local Adjustments</span
+						>
 						<h3>Paint light exactly where it falls.</h3>
 						<p>
 							Radial, linear, brush, and range masks compose
@@ -2338,7 +2354,8 @@
 							processed on the GPU, fully non-destructive.
 						</p>
 						<div class="keys">
-							<b>Radial / Linear</b><b>Brush / Range</b><b>Heal</b>
+							<b>Radial / Linear</b><b>Brush / Range</b
+							><b>Heal</b>
 						</div>
 					</div>
 				</div>
@@ -2346,7 +2363,7 @@
 
 			<section
 				class="scene flip rv-scene"
-				style="--shot: url('shots/workspace.jpg')"
+				style="--shot: url(&quot;shots/workspace.jpg&quot;)"
 				data-fallback="https://github.com/user-attachments/assets/811242de-0973-4378-bfb5-7add1433595e"
 			>
 				<div class="scene-bg" aria-hidden="true"></div>
@@ -2356,12 +2373,13 @@
 						<span class="scene-no">Scene 04 — Workspace</span>
 						<h3>Arrange the room to fit you.</h3>
 						<p>
-							Dock, tab, float, or detach any panel across monitors.
-							Save named layouts, swap themes, rebind every
-							shortcut. The darkroom bends to your hands.
+							Dock, tab, float, or detach any panel across
+							monitors. Save named layouts, swap themes, rebind
+							every shortcut. The darkroom bends to your hands.
 						</p>
 						<div class="keys">
-							<b>Docking</b><b>Named layouts</b><b>Multi-monitor</b>
+							<b>Docking</b><b>Named layouts</b
+							><b>Multi-monitor</b>
 						</div>
 					</div>
 				</div>
@@ -2375,9 +2393,10 @@
 					<span class="sec-tag">// the unplug mechanic</span>
 					<h2>No tax for features you never touch.</h2>
 					<p>
-						Disable a tool and it leaves the program entirely — render
-						pipeline, UI, menus, shortcuts. Not hidden. Gone. Then
-						reach into the extension store for only what you need.
+						Disable a tool and it leaves the program entirely —
+						render pipeline, UI, menus, shortcuts. Not hidden. Gone.
+						Then reach into the extension store for only what you
+						need.
 					</p>
 				</div>
 				<div class="unplug-vis rv" id="unplug">
@@ -2404,15 +2423,17 @@
 					<span class="sec-tag">// download</span>
 					<h2>Get Safelight</h2>
 					<p>
-						Pick your platform. No account, no installer telemetry, no
-						strings.
+						Pick your platform. No account, no installer telemetry,
+						no strings.
 					</p>
 				</div>
 				<div class="dl-grid">
 					<div class="dl hot rv">
 						<span class="badge">Recommended</span>
 						<h3>Windows Desktop</h3>
-						<p>Fastest RAW decode path and full GPU acceleration.</p>
+						<p>
+							Fastest RAW decode path and full GPU acceleration.
+						</p>
 						<ul>
 							<li>Safelight Setup installer (.exe)</li>
 							<li>Native file-system access</li>
@@ -2478,8 +2499,8 @@
 					<div class="term">
 						<span class="p">$</span> git clone
 						https://github.com/anthonyreimche/SafeLight.git<br />
-						<span class="p">$</span> cd SafeLight &amp;&amp; npm install
-						&amp;&amp; npm run dev
+						<span class="p">$</span> cd SafeLight &amp;&amp; npm
+						install &amp;&amp; npm run dev
 					</div>
 					<a
 						class="link-mono"
@@ -2561,7 +2582,7 @@
 						target="_blank"
 						><i>07</i>
 						<div>
-							<b>Changelog</b><span>What's new in 2.3</span>
+							<b>Changelog</b><span>What's new in 2.4</span>
 						</div></a
 					>
 					<a
@@ -2630,8 +2651,8 @@
 						</svg>
 						<h3>FAQ</h3>
 						<p>
-							Common questions about formats, performance, privacy,
-							and the roadmap.
+							Common questions about formats, performance,
+							privacy, and the roadmap.
 						</p>
 						<a
 							class="link"
@@ -2649,7 +2670,8 @@
 						<h3>Support Safelight</h3>
 						<p>
 							Safelight is free forever. If it saves you a
-							subscription, consider buying the developer a coffee.
+							subscription, consider buying the developer a
+							coffee.
 						</p>
 						<a
 							class="link"
@@ -2666,8 +2688,8 @@
 			<div class="wrap rv">
 				<h2>Your workspace, <b>your rules.</b></h2>
 				<p>
-					Start with a complete darkroom. Keep what you use, unplug what
-					you don't, and build the rest.
+					Start with a complete darkroom. Keep what you use, unplug
+					what you don't, and build the rest.
 				</p>
 				<div class="btn-row" style="margin-bottom: 0">
 					<a
