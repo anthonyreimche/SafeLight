@@ -41,6 +41,8 @@ Download the package for your distro from the releases page:
 
 macOS builds are produced by the `build-macos-dmg.sh` script (see [below](#macos-dmg)) and may not be attached to every release. If no `.dmg` is published for your release, build one yourself on a Mac. Output is `Safelight-<version>.dmg` (Intel) and `Safelight-<version>-arm64.dmg` (Apple Silicon).
 
+> **Heads-up:** Safelight isn't notarized by Apple, so on first launch macOS may say the app is "damaged." It isn't — that's a quarantine warning for unsigned downloads. The [Troubleshooting → macOS](#macos) section has the one-line fix and the honest reason why.
+
 ---
 
 ## Requirements
@@ -143,7 +145,7 @@ export CSC_IDENTITY_AUTO_DISCOVERY=false   # skip signing for a local/unsigned b
 npx electron-builder --mac dmg --publish never
 ```
 
-**Signing (optional).** Without an Apple Developer certificate the `.dmg` is unsigned and Gatekeeper warns on first launch (right-click → **Open**, or see [Troubleshooting → macOS](#macos)). To sign, export your Developer ID certificate and set `CSC_LINK` (path to the `.p12`) and `CSC_KEY_PASSWORD` before running electron-builder, and omit `CSC_IDENTITY_AUTO_DISCOVERY=false`.
+**Signing (optional).** Without an Apple Developer certificate the `.dmg` is unsigned and Gatekeeper blocks it on first launch (see [Troubleshooting → macOS](#macos)). To sign, export your Developer ID certificate and set `CSC_LINK` (path to the `.p12`) and `CSC_KEY_PASSWORD` before running electron-builder, and omit `CSC_IDENTITY_AUTO_DISCOVERY=false`.
 
 ### Linux packages
 
@@ -254,13 +256,24 @@ Without them, Safelight still runs but falls back to embedded RAW previews. The 
 
 ### macOS
 
-**"Safelight is damaged and can't be opened" (Gatekeeper)** — the `.dmg` is unsigned unless you supplied a Developer ID certificate at build time. Run this once in Terminal after mounting the DMG:
+**"Safelight is damaged and can't be opened" (Gatekeeper)** — nothing is actually wrong with the download. Safelight isn't notarized by Apple, so when macOS sees the "downloaded from the internet" quarantine flag on the `.dmg`, it blocks the app and shows this misleading message. The fix takes about a minute and only needs doing once:
+
+1. Open the `.dmg` and drag **Safelight** into your **Applications** folder, then eject the disk image.
+2. Open **Terminal** (Spotlight: ⌘-Space, type `Terminal`) and run:
+
+   ```bash
+   xattr -cr /Applications/Safelight.app
+   ```
+
+3. Launch Safelight from Applications. It opens normally from then on.
+
+Run the command on the installed app in `/Applications`, not on the mounted DMG. On macOS Sequoia (15) and later the old right-click → **Open** shortcut no longer bypasses Gatekeeper for un-notarized apps, and the **System Settings ▸ Privacy & Security ▸ Open Anyway** button often doesn't appear for the "damaged" case, so the Terminal command is the dependable route. If the app still won't open afterward, refresh its local signature (harmless — this just re-seals the copy already on your disk):
 
 ```bash
-xattr -cr /Applications/Safelight.app
+xattr -cr /Applications/Safelight.app && codesign --force --deep --sign - /Applications/Safelight.app
 ```
 
-Then right-click the app → **Open** on first launch to bypass the Gatekeeper dialog. Subsequent launches work normally.
+**Why isn't the Mac app signed?** Honest answer: Safelight is free, open-source software I build for myself on Windows and share with anyone who wants it. Getting macOS to open it without this warning means joining the Apple Developer Program at $99/year and notarizing every release from a Mac, and I haven't taken on that recurring cost (or bought a Mac to run it on) to give an app away for free. Sorry for the friction. The one-time command above is safe and sticks for that copy of the app, and if Safelight ever draws enough sponsorship to cover it, a properly notarized Mac build is near the top of the list.
 
 **App is slow on Apple Silicon** — confirm Safelight is running natively (not under Rosetta 2): Activity Monitor → find Safelight → the Architecture column should say `Apple`. If it says `Intel`, reinstall from the `-arm64.dmg` build.
 

@@ -915,6 +915,46 @@
 				margin-top: 30px;
 			}
 
+			/* ---------- support / coffee ---------- */
+			.support {
+				text-align: center;
+				padding: 64px 24px 26px;
+			}
+			.support-in {
+				max-width: 600px;
+				margin: 0 auto;
+			}
+			.support h3 {
+				font-size: clamp(1.4rem, 3vw, 1.9rem);
+				font-weight: 200;
+				color: #fff;
+				letter-spacing: 0.02em;
+				margin-bottom: 14px;
+			}
+			.support p {
+				font-size: 1rem;
+				font-weight: 300;
+				color: var(--mut);
+				line-height: 1.75;
+				margin-bottom: 26px;
+			}
+			.btn-coffee {
+				border-color: #d8a93a;
+				color: #e8c065;
+				background: rgba(216, 169, 58, 0.06);
+			}
+			.btn-coffee:hover {
+				background: #d8a93a;
+				color: #1a1306;
+				transform: translateY(-2px);
+				box-shadow: 0 4px 30px rgba(216, 169, 58, 0.22);
+			}
+			.btn-coffee svg {
+				width: 17px;
+				height: 17px;
+				fill: currentColor;
+			}
+
 			/* ---------- unplug mechanic ---------- */
 			.unplug {
 				background: linear-gradient(180deg, #050506, var(--bg) 60%);
@@ -1518,6 +1558,34 @@
 				</div>
 			</section>
 		</main>
+
+		<section class="support">
+			<div class="support-in rv">
+				<h3>Enjoying it? That's already enough.</h3>
+				<p>
+					I build Safelight to fix what frustrates me about other
+					editors, so it's free and it's here to stay. If it solves the
+					same problems for you, a coffee is just a thank you, never the
+					price of admission. Use it free for as long as you like,
+					that's how I'd use it too.
+				</p>
+				<a
+					class="btn btn-coffee"
+					href="https://buymeacoffee.com/anthonyreimche"
+					target="_blank"
+					rel="noopener"
+				>
+					<svg viewBox="0 0 24 24" aria-hidden="true">
+						<path
+							d="M4 4h13v8a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V4z"
+						/>
+						<path d="M17 6h2.5a2.5 2.5 0 0 1 0 5H17z" />
+						<rect x="4" y="19" width="13" height="2" rx="1" />
+					</svg>
+					Buy me a coffee
+				</a>
+			</div>
+		</section>
 
 		<footer>
 			<div class="f-brand">Safe<b>light</b></div>
