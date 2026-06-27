@@ -46,9 +46,14 @@ function ThumbnailImpl({
       ? "border-2 border-text-secondary/60"
       : "border-2 border-transparent hover:border-surface-4";
 
-  const labelColor = photo.colorLabel !== "none" ? colorLabelClasses[photo.colorLabel] : null;
+  // Color label drives a solid bottom bar + a faint cell tint so a labelled photo
+  // reads at a glance while scanning, instead of a single 2px corner dot.
+  const labelBar = photo.colorLabel !== "none" ? colorLabelClasses[photo.colorLabel] : null;
+  const labelTint =
+    photo.colorLabel !== "none" ? colorLabelTints[photo.colorLabel] : "bg-surface-1";
 
-  // Rejected photos recede: dim only the image so flag/rating badges stay crisp.
+  // Rejected photos recede: dim only the image so they read as rejected while
+  // the flag/rating badges stay crisp. No desaturation — dimming, not B&W.
   const dimClass = photo.flag === "reject" ? "opacity-40" : "";
 
   // The grid shows the original compressed preview (generated at import) — no
@@ -92,7 +97,7 @@ function ThumbnailImpl({
     <div
       ref={cellRef}
       data-photo-id={photo.id}
-      className={`group relative cursor-pointer overflow-hidden rounded bg-surface-1 ${borderClass}`}
+      className={`group relative cursor-pointer overflow-hidden rounded ${labelTint} ${borderClass}`}
       style={{ width: size, height: size }}
       draggable={!!onDragStart}
       onDragStart={onDragStart ? (e) => onDragStart(photo.id, e) : undefined}
@@ -124,22 +129,34 @@ function ThumbnailImpl({
         <div className="h-full w-full animate-pulse bg-surface-2" />
       )}
 
-      {labelColor && (
-        <div className={`absolute top-1 left-1 h-2 w-2 rounded-full ${labelColor}`} />
+      {(photo.flag === "pick" || photo.flag === "reject") && (
+        <div
+          className={`absolute top-1 right-1 rounded bg-black/50 px-1 text-[10px] leading-tight ${
+            photo.flag === "pick" ? "text-flag-pick" : "text-label-red"
+          }`}
+        >
+          {"⚑"}
+        </div>
       )}
 
-      {photo.flag === "pick" && (
-        <div className="absolute top-1 right-1 text-[10px] text-flag-pick">{"⚑"}</div>
-      )}
-
-      {photo.flag === "reject" && (
-        <div className="absolute top-1 right-1 text-[10px] text-label-red">{"⚑"}</div>
+      {photo.keywords.length > 0 && (
+        <div
+          className="absolute top-1 left-1 flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight text-text-secondary transition-opacity group-hover:opacity-0"
+          title={photo.keywords.join(", ")}
+        >
+          <span>{"🏷"}</span>
+          {photo.keywords.length > 1 && <span>{photo.keywords.length}</span>}
+        </div>
       )}
 
       {photo.rating > 0 && (
         <div className="absolute bottom-1 left-1 rounded bg-black/50 px-1 text-[10px] leading-tight tracking-tight text-rating transition-opacity group-hover:opacity-0">
           {"★".repeat(photo.rating)}
         </div>
+      )}
+
+      {labelBar && (
+        <div className={`pointer-events-none absolute inset-x-0 bottom-0 h-[3px] ${labelBar}`} />
       )}
 
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
@@ -162,4 +179,14 @@ const colorLabelClasses: Record<string, string> = {
   green: "bg-label-green",
   blue: "bg-label-blue",
   purple: "bg-label-purple",
+};
+
+// Faint wash behind the (object-contain) thumbnail so the label colour reads in
+// the letterbox margins as well as on the bottom bar.
+const colorLabelTints: Record<string, string> = {
+  red: "bg-label-red/20",
+  yellow: "bg-label-yellow/20",
+  green: "bg-label-green/20",
+  blue: "bg-label-blue/20",
+  purple: "bg-label-purple/20",
 };

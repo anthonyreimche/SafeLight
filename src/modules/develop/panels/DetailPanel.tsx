@@ -8,7 +8,7 @@ import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
 import { useSlot } from "@/extensions/registry";
 import { Slot } from "@/extensions/Slot";
-import type { DevelopParams } from "@/catalog/types";
+import { DEFAULT_DEVELOP_PARAMS, type DevelopParams } from "@/catalog/types";
 
 interface SliderDef {
   key: keyof DevelopParams;
@@ -16,8 +16,9 @@ interface SliderDef {
   min: number;
   max: number;
   step: number;
-  // Alt/Ctrl-drag grayscale preview mode (see develop-store.sharpenViz):
-  // 1 = masking, 2 = detail, 3 = luminance. Omitted = no preview.
+  // Alt/Ctrl-drag preview mode (see develop-store.sharpenViz):
+  // 1 = masking, 2 = detail, 3 = luminance (grayscale), 4 = chroma (colour-noise
+  // reveal). Omitted = no preview.
   viz?: number;
 }
 
@@ -29,17 +30,17 @@ const SHARPENING_SLIDERS: SliderDef[] = [
 ];
 
 const LUM_NR_SLIDERS: SliderDef[] = [
-  { key: "luminanceNR",             label: "Luminance",  min: 0, max: 100, step: 1 },
-  { key: "luminanceNRDetail",       label: "Detail",     min: 0, max: 100, step: 1 },
-  { key: "luminanceNRContrast",     label: "Contrast",   min: 0, max: 100, step: 1 },
-  { key: "luminanceNRShadows",      label: "Shadows",    min: 0, max: 100, step: 1 },
-  { key: "luminanceNRHighlights",   label: "Highlights", min: 0, max: 100, step: 1 },
+  { key: "luminanceNR",             label: "Luminance",  min: 0, max: 100, step: 1, viz: 3 },
+  { key: "luminanceNRDetail",       label: "Detail",     min: 0, max: 100, step: 1, viz: 3 },
+  { key: "luminanceNRContrast",     label: "Contrast",   min: 0, max: 100, step: 1, viz: 3 },
+  { key: "luminanceNRShadows",      label: "Shadows",    min: 0, max: 100, step: 1, viz: 3 },
+  { key: "luminanceNRHighlights",   label: "Highlights", min: 0, max: 100, step: 1, viz: 3 },
 ];
 
 const COLOR_NR_SLIDERS: SliderDef[] = [
-  { key: "colorNR",           label: "Color",      min: 0, max: 100, step: 1 },
-  { key: "colorNRDetail",     label: "Detail",     min: 0, max: 100, step: 1 },
-  { key: "colorNRSmoothness", label: "Smoothness", min: 0, max: 100, step: 1 },
+  { key: "colorNR",           label: "Color",      min: 0, max: 100, step: 1, viz: 4 },
+  { key: "colorNRDetail",     label: "Detail",     min: 0, max: 100, step: 1, viz: 4 },
+  { key: "colorNRSmoothness", label: "Smoothness", min: 0, max: 100, step: 1, viz: 4 },
 ];
 
 function SliderGroup({
@@ -70,6 +71,7 @@ function SliderGroup({
             min={s.min}
             max={s.max}
             step={s.step}
+            defaultValue={DEFAULT_DEVELOP_PARAMS[s.key] as number}
             onChange={(v) => setParam(s.key, v)}
             onCommit={() => commitEdit(title ? `${title} ${s.label}` : s.label)}
             onModifierPreview={

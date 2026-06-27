@@ -182,6 +182,14 @@ const ISOLATION_HEADERS = {
 // installed extensions (/__plugins__/...). 'wasm-unsafe-eval' is required for
 // libraw-wasm; blob: workers/scripts cover Vite's worker bootstrap; inline
 // styles cover React style props + Tailwind.
+// Origins extensions may fetch (XHR/fetch). Extensions that talk to a backend —
+// e.g. the Web Tools gallery service — need this; without it they can't reach any
+// network and have to shell out to a helper process. Cloudflare Workers are
+// allowed by default; SAFELIGHT_GALLERY_ORIGINS (space-separated) adds custom
+// origins (e.g. a galleries.yourdomain.com Worker route). script-src stays 'self'
+// so this widens data egress to these hosts only, never code execution.
+const galleryOrigins = process.env.SAFELIGHT_GALLERY_ORIGINS || "https://*.workers.dev";
+
 const CSP = [
   "default-src 'self'",
   "script-src 'self' 'wasm-unsafe-eval' blob:",
@@ -189,11 +197,11 @@ const CSP = [
   "style-src 'self' 'unsafe-inline'",
   // https: lets the Extensions store show remote previews: repo thumbnails,
   // owner avatars, and images inside rendered extension READMEs (badges,
-  // screenshots). Images can't execute code, and script-src/connect-src stay
-  // locked to 'self', so this widens display only — no new code or data egress.
+  // screenshots), and gallery thumbnails from a backend. Images can't execute
+  // code, so this widens display only.
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' data: blob:",
+  `connect-src 'self' data: blob: ${galleryOrigins}`,
   "object-src 'none'",
   "base-uri 'self'",
   "frame-src 'none'",

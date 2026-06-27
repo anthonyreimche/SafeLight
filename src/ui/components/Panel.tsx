@@ -33,8 +33,9 @@ export function Panel({ title, defaultOpen = true, children }: PanelProps) {
   const dockTitle = useContext(DockPanelTitleCtx);
   const [open, setOpen] = useState(() => readPanelState(title, defaultOpen));
 
-  // Inside a dock panel of the same name, the tab already shows the title —
-  // drop the redundant collapsible header and render the content directly.
+  // Inside a dock panel of the same name, the tab already shows the title (and
+  // any header controls like the bypass eye live in the dock header) — drop the
+  // redundant collapsible header and render the content directly.
   if (dockTitle != null && dockTitle.toLowerCase() === title.toLowerCase()) {
     return <div className="px-3 py-3">{children}</div>;
   }
@@ -47,14 +48,16 @@ export function Panel({ title, defaultOpen = true, children }: PanelProps) {
 
   return (
     <div className="border-b border-border-subtle">
-      <button
-        onClick={toggle}
-        aria-expanded={open}
-        className="flex w-full items-center justify-between px-3 py-2 text-[11px] uppercase tracking-wider text-text-secondary hover:text-text-primary"
-      >
-        <span>{title}</span>
-        <span className="text-text-muted" aria-hidden="true">{open ? "▴" : "▾"}</span>
-      </button>
+      <div className="flex w-full items-center px-3 py-2 text-[11px] uppercase tracking-wider text-text-secondary">
+        <button
+          onClick={toggle}
+          aria-expanded={open}
+          className="flex flex-1 items-center justify-between hover:text-text-primary"
+        >
+          <span>{title}</span>
+          <span className="text-text-muted" aria-hidden="true">{open ? "▴" : "▾"}</span>
+        </button>
+      </div>
       {open && <div className="px-3 pb-3">{children}</div>}
     </div>
   );

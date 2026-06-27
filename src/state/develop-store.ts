@@ -82,6 +82,12 @@ interface DevelopState {
   cycleCropGuide: () => void;
   cycleCropGuideFlip: () => void;
 
+  // Per-panel bypass (view-only, per-window): keyed by panel title. When a
+  // panel is bypassed the renderer neutralizes its params (see applyPanelBypass)
+  // without touching the stored edit, so the user can see its before/after.
+  bypassedPanels: Record<string, boolean>;
+  togglePanelBypass: (title: string) => void;
+
   // Clipping overlay: bitmask (bit 0 = shadows, bit 1 = highlights).
   showClipping: 0 | 1 | 2 | 3;
   setShowClipping: (mode: 0 | 1 | 2 | 3) => void;
@@ -279,6 +285,19 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   cycleCropGuide: () => set((s) => ({ cropGuide: nextGuide(s.cropGuide) })),
   cycleCropGuideFlip: () =>
     set((s) => ({ cropGuideFlip: (s.cropGuideFlip + 1) % 4 })),
+
+  bypassedPanels: (() => {
+    try { return JSON.parse(localStorage.getItem("sl_panel_bypass") || "{}") as Record<string, boolean>; } catch { return {}; }
+  })(),
+  togglePanelBypass: (title) => {
+    set((s) => {
+      const next = { ...s.bypassedPanels };
+      if (next[title]) delete next[title];
+      else next[title] = true;
+      try { localStorage.setItem("sl_panel_bypass", JSON.stringify(next)); } catch {}
+      return { bypassedPanels: next };
+    });
+  },
 
   showClipping: (() => {
     try { const v = localStorage.getItem("sl_show_clipping"); return v === "1" ? 1 : v === "2" ? 2 : v === "3" ? 3 : 0; } catch { return 0; }

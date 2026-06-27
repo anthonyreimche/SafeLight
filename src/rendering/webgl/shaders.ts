@@ -161,6 +161,11 @@ uniform float uVizStrength; // overlay opacity (animated fade in/out)
 //   2 = detail (the high-frequency edge signal, on mid-grey)
 //   3 = luminance (B&W of the sharpened result, to judge halos)
 uniform int uSharpenViz;
+// True only when the built-in denoise prepass produced a valid (float, linear)
+// result this frame. Gates the denoise stage's inline swap of lin so it never
+// applies a raw/8-bit fallback texture (which would corrupt the image). Replaces
+// the old uLinear gate, which wrongly disabled denoise for non-float sources.
+uniform bool uDenoiseReady;
 uniform vec4 uMaskAdj0[MAX_MASKS]; // exposure, contrast, highlights, shadows
 uniform vec4 uMaskAdj1[MAX_MASKS]; // saturation, temperature, tint, clarity
 uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, _, _, _
@@ -1074,7 +1079,14 @@ vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, float sharp, float m, vec2 uv) {
   if (abs(clar) > 0.001 || abs(shp) > 0.001) {
     float base = luma(r);
     r += (base - lumaLod(uv, 4.0)) * clar * 1.2;
-    r += (base - lumaLod(uv, 1.5)) * shp * 1.2;
+    // Sharpness: blend the fine detail (LOD 1.5) toward a broader tap (LOD 2.5)
+    // the same way the global sharpen path does (shaders.ts ~1483). A raw fine
+    // unsharp overshoots at bright edges and pushes highlights; the broad blend
+    // tames that overshoot. Masks have no Detail slider, so use a fixed,
+    // fine-biased blend that keeps most of the sharpening while cutting overshoot.
+    float fine = base - lumaLod(uv, 1.5);
+    float broad = (base - lumaLod(uv, 2.5)) * 0.35;
+    r += mix(broad, fine, 0.65) * shp * 1.2;
   }
   r = clamp(r, 0.0, 1.0);
   return mix(c, r, m);
@@ -1433,13 +1445,39 @@ void main() {
     c = mix(vec3(dl), c, 1.0 + dehAmt * 0.4);
     c = clamp(c, 0.0, 1.0);
   }
-  // Clarity: broad local contrast (LOD 4-6), midtone-focused.
+  // Clarity: broad local contrast, midtone-focused. A plain broad mip blur
+  // averages ACROSS hard edges, so rawLuma - blur overshoots in a band as wide
+  // as the blur radius -- that band IS the halo, and masking/clamping it can only
+  // attenuate, never remove it. The fix is to make the broad reference EDGE-AWARE:
+  // a bilateral blur over 16 mip-blurred taps (two rings), each weighted by luma
+  // similarity to the centre so taps across an edge are dropped. The reference
+  // then tracks the local side of every boundary, rawLuma - base is ~0 at edges
+  // (no ring), and only within-region midtone texture is lifted. CLAR_EDGE is the
+  // edge stop: smaller = holds edges harder (less halo), larger = smoother.
   float midMask = 1.0 - pow(clamp(abs(luma(c) - 0.5) * 1.6, 0.0, 1.0), 3.0);
   if (abs(clarAmt) > 0.001) {
-    float blurL = lumaLod(srcUv, 4.0) * 0.20
-               + lumaLod(srcUv, 5.0) * 0.50
-               + lumaLod(srcUv, 6.0) * 0.30;
-    c += (rawLuma - blurL) * clarAmt * 1.5 * midMask;
+    // Edge-aware reference. Each broad tap is blended TOWARD the centre by its
+    // luma-similarity weight: a same-side tap contributes its value, a tap across
+    // an edge (incl. a mip tap that straddles one) contributes the centre value
+    // instead. So the reference equals the local side at every boundary -- no
+    // cross-edge averaging (no halo) and no pull from intermediate taps (no ghost
+    // outline). rawLuma - base is ~0 at edges and in flats, nonzero only for
+    // within-region midtone texture. CLAR_EDGE = edge stop (smaller = stricter).
+    const float CLAR_EDGE = 0.08;
+    float cen = rawLuma;
+    float base = cen;            // centre tap
+    for (int i = 0; i < 8; i++) {
+      float a = float(i) * 0.7853981634;   // i * 2*pi/8
+      vec2 dir = vec2(cos(a), sin(a));
+      float s1 = lumaLod(srcUv + dir * 0.016, 3.0);
+      float w1 = exp(-(s1 - cen) * (s1 - cen) / (2.0 * CLAR_EDGE * CLAR_EDGE));
+      base += mix(cen, s1, w1);
+      float s2 = lumaLod(srcUv + dir * 0.034, 4.0);
+      float w2 = exp(-(s2 - cen) * (s2 - cen) / (2.0 * CLAR_EDGE * CLAR_EDGE));
+      base += mix(cen, s2, w2);
+    }
+    base /= 17.0;               // centre + 16 taps
+    c += (cen - base) * clarAmt * 1.5 * midMask;
   }
   // Texture: edge-aware micro-detail (LOD 0.75) — fine surface detail like
   // skin pores and fabric weave, suppressed at strong edges to avoid halos.
@@ -1516,8 +1554,14 @@ void main() {
   // Creative effects (contributed by processing stages)
   //__CONTRIBUTED_EFFECTS__
 
-  if (uSharpenViz > 0) {
-    // Alt/Ctrl-drag sharpening preview: replace the frame with the grayscale signal.
+  if (uSharpenViz == 4) {
+    // Alt/Ctrl-drag Color-NR preview: flatten luminance and amplify chroma so
+    // colour speckle stands out against neutral grey (grayscale can't show it).
+    vec3 cc = clamp(c, 0.0, 1.0);
+    vec3 chroma = cc - vec3(luma(cc));
+    fragColor = vec4(clamp(vec3(0.5) + chroma * 4.0, 0.0, 1.0), 1.0);
+  } else if (uSharpenViz > 0) {
+    // Alt/Ctrl-drag sharpening / luminance-NR preview: grayscale signal.
     fragColor = vec4(vec3(sharpenViz), 1.0);
   } else if (uRawHistogram) {
     fragColor = vec4(c, 1.0);

@@ -168,6 +168,7 @@
 			}
 			.nav-links {
 				display: flex;
+				align-items: center;
 				gap: 28px;
 				margin-left: auto;
 				font-size: 0.82rem;
@@ -817,27 +818,6 @@
 				padding: 16vh 24px;
 				overflow: hidden;
 			}
-			/* dimmed screenshot backdrop */
-			.beat[style*="--shot"]::before {
-				content: "";
-				position: absolute;
-				inset: 0;
-				z-index: 0;
-				background: var(--shot) center / cover no-repeat;
-				opacity: 0.16;
-			}
-			.beat::after {
-				content: "";
-				position: absolute;
-				inset: 0;
-				z-index: 1;
-				pointer-events: none;
-				background: radial-gradient(
-					ellipse 72% 62% at 50% 50%,
-					rgba(6, 6, 8, 0.5),
-					rgba(6, 6, 8, 0.84) 100%
-				);
-			}
 			.beat-in {
 				position: relative;
 				z-index: 2;
@@ -858,7 +838,6 @@
 				line-height: 1.18;
 				letter-spacing: 0.01em;
 				color: #fff;
-				text-shadow: 0 2px 30px rgba(0, 0, 0, 0.55);
 			}
 			.beat h2 em {
 				font-style: normal;
@@ -872,6 +851,55 @@
 				color: #c7c7cd;
 				max-width: 600px;
 				margin: 26px auto 0;
+			}
+			/* split beats: text + framed screenshot side by side */
+			.beat.split {
+				flex-direction: row;
+				align-items: center;
+				justify-content: center;
+				gap: 5vw;
+				text-align: left;
+				max-width: 1240px;
+				margin: 0 auto;
+				flex-wrap: wrap;
+			}
+			.beat.split.flip {
+				flex-direction: row-reverse;
+			}
+			.beat.split .beat-in {
+				flex: 1 1 340px;
+				max-width: 440px;
+			}
+			.beat.split .beat-in p {
+				margin-left: 0;
+			}
+			.beat-shot {
+				flex: 1 1 540px;
+				max-width: 720px;
+			}
+			.beat-shot img {
+				display: block;
+				width: 100%;
+				height: auto;
+				border: 1px solid var(--line);
+				border-radius: 10px;
+				box-shadow:
+					0 40px 90px rgba(0, 0, 0, 0.6),
+					0 0 70px rgba(220, 38, 38, 0.05);
+			}
+			@media (max-width: 820px) {
+				.beat.split,
+				.beat.split.flip {
+					flex-direction: column;
+					text-align: center;
+					gap: 40px;
+				}
+				.beat.split .beat-in {
+					max-width: 560px;
+				}
+				.beat.split .beat-in p {
+					margin-left: auto;
+				}
 			}
 			/* close */
 			.beat.close .btn-row {
@@ -1082,6 +1110,7 @@
 					></a
 				>
 				<div class="nav-links">
+					<a href="extensions.html">Extensions</a>
 					<a
 						class="nav-cta"
 						href="https://github.com/anthonyreimche/SafeLight/releases"
@@ -1386,10 +1415,12 @@
 			<div class="hero-glow"></div>
 			<div class="wrap">
 				<div class="kicker">Free and open source RAW editor</div>
-				<h1>A RAW editor that keeps<br /><em>only the tools you use.</em></h1>
+				<h1>Whose workflow<br />are you <em>really</em> using?</h1>
 				<p class="hero-sub">
-					Open it and start editing. Keep the tools you use, and switch
-					off the rest.
+					Probably your editor's. In Safelight every tool is an
+					extension, even the built-in ones. Change them, swap them,
+					delete the ones you never touch, or write your own. Free and
+					open source.
 				</p>
 				<div class="btn-row">
 					<a
@@ -1404,7 +1435,6 @@
 						</svg>
 						Download
 					</a>
-					<a class="btn btn-ghost" href="#story">Read the story</a>
 				</div>
 			</div>
 			<div class="scroll-cue">Scroll</div>
@@ -1412,68 +1442,60 @@
 
 
 		<main id="story">
-			<section
-				class="beat"
-				style="
-					--shot: url('shots/workspace.jpg');
-				"
-			>
+			<section class="beat beat-lead">
 				<div class="beat-in rv">
 					<span class="beat-tag">The problem</span>
-					<h2>Most editors are built for everyone.</h2>
+					<h2>Built for everyone, all at once.</h2>
 					<p>
-						So they arrive crowded. Hundreds of tools you will never
-						open, loaded by default, arranged the way someone else
-						decided you should work. Too much of your time goes to
-						working around the software instead of editing in it.
+						Different photographers need different tools, so most
+						editors include them all. You end up carrying every feature
+						for every situation, whether it suits you or not. That is
+						bloat, and you work around it every day.
 					</p>
 				</div>
 			</section>
 
-			<section
-				class="beat"
-				style="
-					--shot: url('shots/masks.jpg');
-				"
-			>
+			<section class="beat split">
 				<div class="beat-in rv">
-					<span class="beat-tag">The idea</span>
-					<h2>Safelight is built to come apart.</h2>
+					<span class="beat-tag">How it works</span>
+					<h2>Everything is an extension, even the built-in tools.</h2>
 					<p>
-						It starts as a small core and nothing you didn't ask for.
-						Every tool, every panel, every adjustment is a piece you
-						can move, replace, or switch off. Turn one off and it
-						leaves completely: out of the menus, out of the interface,
-						out of the render pipeline. Even the tools that come built
-						in.
+						Change them, replace them, or remove the ones you never
+						use, and they're gone for good, out of the menus and the
+						render engine alike. Need something else? Install it, or
+						build it yourself.
 					</p>
+				</div>
+				<div class="beat-shot rv">
+					<img
+						src="shots/workspace.jpg"
+						alt="Safelight with a customized panel layout"
+						loading="lazy"
+					/>
 				</div>
 			</section>
 
-			<section
-				class="beat"
-				style="
-					--shot: url('shots/develop.jpg');
-				"
-			>
+			<section class="beat split flip">
 				<div class="beat-in rv">
-					<span class="beat-tag">What's left</span>
-					<h2>The darkroom you would have built yourself.</h2>
+					<span class="beat-tag">What you get</span>
+					<h2>Nothing between you and the photograph.</h2>
 					<p>
-						Only the tools you want, where you expect them. It is free
-						and open source, it runs entirely on your machine, and the
-						copy you install today stays yours for good. Built by one
-						photographer, and open for anyone to extend.
+						Free and open source, with nothing locked away. With only
+						the tools you reach for in front of you, the software gets
+						out of the way, and your craft is free to go as far as you
+						can take it.
 					</p>
+				</div>
+				<div class="beat-shot rv">
+					<img
+						src="shots/develop.jpg"
+						alt="The Safelight develop module"
+						loading="lazy"
+					/>
 				</div>
 			</section>
 
-			<section
-				class="beat close"
-				style="
-					--shot: url('shots/library.jpg');
-				"
-			>
+			<section class="beat close">
 				<div class="beat-in rv">
 					<h2>Make it yours.</h2>
 					<div class="btn-row">

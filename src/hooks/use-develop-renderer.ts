@@ -23,6 +23,8 @@ import { useUIStore } from "@/state/ui-store";
 import { visiblePhotos } from "@/modules/library/visible-photos";
 import { getSettings, useSettings } from "@/state/settings-store";
 import { usePipelineStore } from "@/extensions/pipelines";
+import { applyPanelBypass } from "@/modules/develop/panel-bypass";
+import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
 
 // Resolve the colour actually painted behind the image (the canvas surround) to
 // linear-display RGB in 0..1, by reading the surround element's computed
@@ -100,6 +102,7 @@ export function useDevelopRenderer(
   const selectedMaskId = useDevelopStore((s) => s.selectedMaskId);
   const maskTab = useDevelopStore((s) => s.maskTab);
   const sharpenViz = useDevelopStore((s) => s.sharpenViz);
+  const bypassedPanels = useDevelopStore((s) => s.bypassedPanels);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
   const pipelineId = usePipelineStore((s) => s.activeId);
 
@@ -117,15 +120,18 @@ export function useDevelopRenderer(
       : photo && photo.height > 0
         ? photo.width / photo.height
         : 1;
-  const forRender = (p: DevelopParams, crop: boolean): DevelopParams =>
-    crop
+  const forRender = (p: DevelopParams, crop: boolean): DevelopParams => {
+    // Neutralize any bypassed panels' params first (view-only, no history).
+    const bp = applyPanelBypass(p, bypassedPanels);
+    return crop
       ? {
-          ...p,
+          ...bp,
           crop: transformedViewCrop(
-            buildForwardTransform(p.straighten, p.transform, aspect),
+            buildForwardTransform(bp.straighten, bp.transform, aspect),
           ),
         }
-      : p;
+      : bp;
+  };
 
   // Set up the bridge + 2D display canvas. The worker owns the WebGL context;
   // this canvas just blits ImageBitmap frames from the worker.
@@ -259,7 +265,10 @@ export function useDevelopRenderer(
       }
       const st = useDevelopStore.getState();
       bridge.setLensProfile(st.resolvedLensProfile);
-      bridge.setContributedParams(st.paramBag);
+      bridge.setContributedParams({
+        ...st.paramBag,
+        ...denoiseBag(applyPanelBypass(st.params, st.bypassedPanels)),
+      });
       bridge.setParams(forRender(st.params, st.cropping));
       bridge.render(true);
     };
@@ -270,7 +279,10 @@ export function useDevelopRenderer(
       bridge.setAsShotTemperature(photo?.exif.colorTemperature ?? 6500);
       const st = useDevelopStore.getState();
       bridge.setLensProfile(st.resolvedLensProfile);
-      bridge.setContributedParams(st.paramBag);
+      bridge.setContributedParams({
+        ...st.paramBag,
+        ...denoiseBag(applyPanelBypass(st.params, st.bypassedPanels)),
+      });
       bridge.setParams(forRender(st.params, st.cropping));
       bridge.render(true);
     };
@@ -434,7 +446,10 @@ export function useDevelopRenderer(
     if (!bridge) return;
     bridge.setAsShotTemperature(asShotTemperature);
     bridge.setLensProfile(resolvedLensProfile);
-    bridge.setContributedParams(paramBag);
+    bridge.setContributedParams({
+      ...paramBag,
+      ...denoiseBag(applyPanelBypass(params, bypassedPanels)),
+    });
     bridge.setParams(forRender(params, cropping));
     if (rafIdRef.current == null) {
       rafIdRef.current = requestAnimationFrame(() => {
@@ -453,7 +468,7 @@ export function useDevelopRenderer(
         extTimerRef.current = null;
       }
     };
-  }, [params, paramBag, cropping, pipelineId, asShotTemperature, resolvedLensProfile, aspect]);
+  }, [params, paramBag, cropping, pipelineId, asShotTemperature, resolvedLensProfile, aspect, bypassedPanels]);
 
   // A new photo starts from metadata aspect until its buffer decodes, so a
   // failed/slow decode never leaves the previous photo's aspect in place.

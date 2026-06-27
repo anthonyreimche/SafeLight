@@ -39,6 +39,10 @@ export interface PanelContribution {
    *  panel's dock header offers "Reset to defaults". Should be a single
    *  undoable action. */
   onReset?: () => void;
+  /** A control rendered in the dock header to the left of the title (e.g. the
+   *  per-panel bypass eye). Must handle its own clicks; the header swallows
+   *  pointerdowns on buttons so it won't start a drag. */
+  headerAccessory?: ComponentType;
 }
 
 /** One dock column in a layout preset. Panels listed top→bottom. */

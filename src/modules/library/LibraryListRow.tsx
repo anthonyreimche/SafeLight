@@ -55,10 +55,16 @@ function LibraryListRowImpl({
       onClick={(e) => onClick(photo.id, e)}
       onDoubleClick={() => onDoubleClick(photo.id)}
       onContextMenu={onContextMenu ? (e) => onContextMenu(photo.id, e) : undefined}
-      className={`flex cursor-pointer items-center gap-3 border-b border-border-subtle px-3 py-1.5 ${rowClass} ${
-        photo.flag === "reject" ? "opacity-50" : ""
+      className={`relative flex cursor-pointer items-center gap-3 border-b border-border-subtle px-3 py-1.5 ${rowClass} ${
+        photo.flag === "reject" ? "opacity-40" : ""
       }`}
     >
+      {photo.colorLabel !== "none" && (
+        <span
+          className={`absolute inset-y-0 left-0 w-1 ${colorDot[photo.colorLabel] ?? ""}`}
+        />
+      )}
+
       {thumbUrl ? (
         <img
           src={thumbUrl}
@@ -74,17 +80,25 @@ function LibraryListRowImpl({
 
       <span className="flex-1 truncate text-xs">{photo.filename}</span>
 
-      {photo.colorLabel !== "none" && (
+      {photo.keywords.length > 0 && (
         <span
-          className={`h-2 w-2 shrink-0 rounded-full ${colorDot[photo.colorLabel] ?? ""}`}
-        />
+          className="shrink-0 text-[10px] text-text-muted"
+          title={photo.keywords.join(", ")}
+        >
+          {"🏷"}
+          {photo.keywords.length > 1 ? ` ${photo.keywords.length}` : ""}
+        </span>
       )}
 
       {photo.flag === "pick" && (
-        <span className="shrink-0 text-[10px] text-flag-pick">{"⚑"}</span>
+        <span className="shrink-0 rounded bg-black/40 px-1 text-[10px] text-flag-pick">
+          {"⚑"}
+        </span>
       )}
       {photo.flag === "reject" && (
-        <span className="shrink-0 text-[10px] text-label-red">{"⚑"}</span>
+        <span className="shrink-0 rounded bg-black/40 px-1 text-[10px] text-label-red">
+          {"⚑"}
+        </span>
       )}
 
       <span className="w-16 shrink-0 text-right text-[10px] text-rating">

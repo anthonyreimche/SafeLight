@@ -18,6 +18,7 @@ import type { HistogramData } from "../histogram";
 import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
 import { buildFragmentShader, VERTEX_SHADER, type StageInjection } from "./shaders";
+import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import {
   uniformPrefix,
   helperPrefix,
@@ -464,11 +465,21 @@ function buildStageInjection(
   prepass: PrepassStage[];
   hasNoiseReduction: boolean;
 } {
-  const stages = (
+  let stages = (
     injected ?? Object.values(useRegistry.getState().processingStages)
   )
     .slice()
     .sort(stageSort);
+
+  // The built-in denoiser bows out when a community extension owns the
+  // noise-reduction phase (an extension NR stage replaces it, not stacks).
+  if (
+    stages.some(
+      (s) => s.id !== "builtin.denoise" && !s.id.startsWith("core.") && s.phase === "noise-reduction",
+    )
+  ) {
+    stages = stages.filter((s) => s.id !== "builtin.denoise");
+  }
 
   const uniformDecls: string[] = [];
   const helperBlocks: string[] = [];
@@ -630,6 +641,13 @@ export class WebGLRenderer {
   // setContributedParams (the develop store's generic param bag).
   private contributedBindings: ContributedBinding[] = [];
   private contributedParams: Record<string, unknown> = {};
+  // Prepass stages whose program failed to compile/link this session — skipped
+  // thereafter so one bad stage can't throw out of render() and freeze the view.
+  private failedPrepass = new Set<string>();
+  // True when the built-in denoise prepass produced a real float result this
+  // frame (active, float targets, not failed). Drives uDenoiseReady so the
+  // inline swap of `lin` never applies a raw fallback texture.
+  private denoiseReady = false;
   // Extension stage textures: namespaced sampler bindings (rebuilt with the stage
   // set), the latest pixel data per qualified key, and the GPU textures we've
   // uploaded (cached by version so an unchanged stock isn't re-uploaded).
@@ -1007,6 +1025,7 @@ export class WebGLRenderer {
       "uVizColor",
       "uVizStrength",
       "uSharpenViz",
+      "uDenoiseReady",
       "uExposure",
       "uContrast",
       "uHighlights",
@@ -2594,6 +2613,7 @@ export class WebGLRenderer {
   // draw applies via bindPrepassResults().
   private runPrepasses(srcTex: WebGLTexture, srcSig: string) {
     this.prepassResults = [];
+    this.denoiseReady = false; // set true below only if the denoise prepass yields a real result
     if (this.prepassStages.length === 0) return;
     const gl = this.gl;
     const { w, h } = this.prepassDims();
@@ -2603,9 +2623,10 @@ export class WebGLRenderer {
     let unit = PREPASS_UNIT_BASE;
     for (const stage of this.prepassStages) {
       if (unit >= PREPASS_UNIT_BASE + MAX_PREPASS_STAGES) break;
-      // Inactive (or no float targets): bind the raw source as the result. The
-      // inline glsl blends with amount 0, so the value is never actually used.
-      if (!haveTargets || !this.prepassActive(stage.stageId)) {
+      // Inactive (no float targets, nothing to do, or a prior compile failure):
+      // bind the raw source as the result. The inline glsl blends with amount 0
+      // (or gates itself off), so the value is never actually used.
+      if (!haveTargets || !this.prepassActive(stage.stageId) || this.failedPrepass.has(stage.stageId)) {
         this.prepassResults.push({ resultUniform: stage.resultUniform, tex: srcTex, unit: unit++ });
         continue;
       }
@@ -2616,53 +2637,64 @@ export class WebGLRenderer {
       const cached = this.stageResultTargets.get(stage.stageId);
       if (cached && cached.w === w && cached.h === h && this.prepassSigs.get(stage.stageId) === sig) {
         this.prepassResults.push({ resultUniform: stage.resultUniform, tex: cached.tex, unit: unit++ });
+        if (stage.stageId === BUILTIN_DENOISE_ID) this.denoiseReady = true;
         continue;
       }
 
-      let readTex: WebGLTexture = srcTex;
-      let prevRaw = true;            // first read linearizes + base-curves the source
-      let writeIdx = 0;
-      let lastIdx = 0;
-      for (const pass of stage.passes) {
-        const key = `${this.stageSig}|${stage.stageId}|${pass.fragmentSource.length}`;
-        const prog = this.getPassProgram(key, pass.fragmentSource, pass.bindings);
-        for (let it = 0; it < pass.iterations; it++) {
-          gl.bindFramebuffer(gl.FRAMEBUFFER, this.ppFbo[writeIdx]);
-          gl.viewport(0, 0, w, h);
-          gl.useProgram(prog.program);
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, readTex);
-          gl.uniform1i(prog.locs.uPrevPass!, 0);
-          gl.uniform2f(prog.locs.uTexel!, 1 / w, 1 / h);
-          gl.uniform1i(prog.locs.uPassIndex!, it);
-          gl.uniform1i(prog.locs.uPassCount!, pass.iterations);
-          gl.uniform1i(prog.locs.uPrevRaw!, prevRaw ? 1 : 0);
-          gl.uniform1i(prog.locs.uSrcLinear!, this.linear ? 1 : 0);
-          gl.uniform1i(prog.locs.uIsFallbackPreview!, this.isFallbackPreview ? 1 : 0);
-          gl.uniform1i(prog.locs.uApplyBaseCurve!, baseCurve);
-          for (const b of pass.bindings) {
-            const loc = prog.locs[b.glslName];
-            if (loc == null) continue;
-            bindUniformByType(gl, loc, b.glslType, this.contributedParams[b.qualifiedKey] ?? b.default);
+      // A throwing pass (e.g. a shader that fails to compile) must not crash the
+      // whole render. Disable just this stage for the session and fall back to
+      // the raw source so the rest of the pipeline keeps working.
+      try {
+        let readTex: WebGLTexture = srcTex;
+        let prevRaw = true;            // first read linearizes + base-curves the source
+        let writeIdx = 0;
+        let lastIdx = 0;
+        for (const pass of stage.passes) {
+          const key = `${this.stageSig}|${stage.stageId}|${pass.fragmentSource.length}`;
+          const prog = this.getPassProgram(key, pass.fragmentSource, pass.bindings);
+          for (let it = 0; it < pass.iterations; it++) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, this.ppFbo[writeIdx]);
+            gl.viewport(0, 0, w, h);
+            gl.useProgram(prog.program);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, readTex);
+            gl.uniform1i(prog.locs.uPrevPass!, 0);
+            gl.uniform2f(prog.locs.uTexel!, 1 / w, 1 / h);
+            gl.uniform1i(prog.locs.uPassIndex!, it);
+            gl.uniform1i(prog.locs.uPassCount!, pass.iterations);
+            gl.uniform1i(prog.locs.uPrevRaw!, prevRaw ? 1 : 0);
+            gl.uniform1i(prog.locs.uSrcLinear!, this.linear ? 1 : 0);
+            gl.uniform1i(prog.locs.uIsFallbackPreview!, this.isFallbackPreview ? 1 : 0);
+            gl.uniform1i(prog.locs.uApplyBaseCurve!, baseCurve);
+            for (const b of pass.bindings) {
+              const loc = prog.locs[b.glslName];
+              if (loc == null) continue;
+              bindUniformByType(gl, loc, b.glslType, this.contributedParams[b.qualifiedKey] ?? b.default);
+            }
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            readTex = this.ppTex[writeIdx]!;
+            prevRaw = false;
+            lastIdx = writeIdx;
+            writeIdx = 1 - writeIdx;
           }
-          gl.drawArrays(gl.TRIANGLES, 0, 6);
-          readTex = this.ppTex[writeIdx]!;
-          prevRaw = false;
-          lastIdx = writeIdx;
-          writeIdx = 1 - writeIdx;
         }
-      }
 
-      // Copy the final ping-pong result into the stage's dedicated target so the
-      // next stage's ping-pong doesn't clobber it.
-      const target = this.ensureStageResult(stage.stageId, w, h);
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.ppFbo[lastIdx]);
-      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, target.fbo);
-      gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-      this.prepassSigs.set(stage.stageId, this.prepassSig(stage, srcSig, w, h, baseCurve));
-      this.prepassResults.push({ resultUniform: stage.resultUniform, tex: target.tex, unit: unit++ });
+        // Copy the final ping-pong result into the stage's dedicated target so the
+        // next stage's ping-pong doesn't clobber it.
+        const target = this.ensureStageResult(stage.stageId, w, h);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.ppFbo[lastIdx]);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, target.fbo);
+        gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+        this.prepassSigs.set(stage.stageId, this.prepassSig(stage, srcSig, w, h, baseCurve));
+        this.prepassResults.push({ resultUniform: stage.resultUniform, tex: target.tex, unit: unit++ });
+        if (stage.stageId === BUILTIN_DENOISE_ID) this.denoiseReady = true;
+      } catch (err) {
+        console.error(`[render] prepass stage '${stage.stageId}' failed; disabling it`, err);
+        this.failedPrepass.add(stage.stageId);
+        this.prepassResults.push({ resultUniform: stage.resultUniform, tex: srcTex, unit: unit++ });
+      }
     }
   }
 
@@ -2676,6 +2708,10 @@ export class WebGLRenderer {
       gl.bindTexture(gl.TEXTURE_2D, r.tex);
       gl.uniform1i(loc, r.unit);
     }
+    // Tell the main shader whether the built-in denoise result is real this frame
+    // (set during runPrepasses) so its inline only swaps `lin` when it's valid.
+    const okLoc = this.uniforms.uDenoiseReady;
+    if (okLoc != null) gl.uniform1i(okLoc, this.denoiseReady ? 1 : 0);
   }
 
   // Create / resize the offscreen develop target (capped source size). Returns

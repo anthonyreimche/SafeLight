@@ -707,6 +707,7 @@ function PanelHeader({ id }: { id: string }) {
   const containerRef = useContext(ContainerCtx);
   const title = useRegistry((s) => s.panels[id]?.title ?? id);
   const onReset = useRegistry((s) => s.panels[id]?.onReset);
+  const Accessory = useRegistry((s) => s.panels[id]?.headerAccessory);
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
@@ -725,6 +726,11 @@ function PanelHeader({ id }: { id: string }) {
       <span className="w-2 text-[9px] text-text-muted" aria-hidden="true">
         {collapsed ? "▸" : "▾"}
       </span>
+      {Accessory && (
+        <span className="flex items-center leading-none">
+          <Accessory />
+        </span>
+      )}
       <span className="flex-1 truncate text-[11px] uppercase tracking-wider text-text-secondary">
         {title}
       </span>

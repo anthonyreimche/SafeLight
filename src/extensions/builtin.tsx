@@ -12,6 +12,7 @@
 import type { ComponentType } from "react";
 import type { PanelDockDefault, ProcessingStageContribution, SafelightAPI } from "./types";
 import type { DevelopParams } from "@/catalog/types";
+import { DENOISE_STAGE } from "@/rendering/webgl/builtin-denoise";
 import { useDevelopStore } from "@/state/develop-store";
 import { HistogramPanel } from "@/modules/develop/panels/HistogramPanel";
 import { CropPanel } from "@/modules/develop/panels/CropPanel";
@@ -24,6 +25,7 @@ import { DetailPanel } from "@/modules/develop/panels/DetailPanel";
 import { LensCorrectionPanel } from "@/modules/develop/panels/LensCorrectionPanel";
 import { EffectsPanel } from "@/modules/develop/panels/EffectsPanel";
 import { HSLPanel } from "@/modules/develop/panels/HSLPanel";
+import { PANEL_BYPASS_KEYS, PanelBypassButton } from "@/modules/develop/panel-bypass";
 import { MasksPanel } from "@/modules/develop/panels/MasksPanel";
 import { RetouchPanel } from "@/modules/develop/panels/RetouchPanel";
 import { PresetsPanel } from "@/modules/develop/panels/PresetsPanel";
@@ -77,7 +79,19 @@ const panelExt = (
   name: title,
   version: V,
   description,
-  activate: (api) => api.registerPanel({ id, title, component, defaultDock, onReset }),
+  activate: (api) =>
+    api.registerPanel({
+      id,
+      title,
+      component,
+      defaultDock,
+      onReset,
+      // Panels with a bypass mapping get the eye toggle in their dock header
+      // (left of the title), wired by title — no per-panel boilerplate.
+      headerAccessory: PANEL_BYPASS_KEYS[title]
+        ? () => <PanelBypassButton title={title} />
+        : undefined,
+    }),
 });
 
 // Right-click "Reset to defaults" for a develop panel: reset just its own param
@@ -337,6 +351,10 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
       });
       api.registerProcessingStage(VIGNETTE_STAGE);
       api.registerProcessingStage(GRAIN_STAGE);
+      // Built-in multi-pass wavelet denoiser (noise-reduction phase). A community
+      // denoise extension that registers its own noise-reduction stage replaces
+      // this one — buildStageInjection drops builtin.denoise when another exists.
+      api.registerProcessingStage(DENOISE_STAGE);
       // Clipping / color-assessment / surround shortcuts are core actions, so
       // they live in the central KEY_ACTIONS registry (conflict-checked,
       // Develop-scoped) rather than the extension-action path — see

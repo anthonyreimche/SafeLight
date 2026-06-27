@@ -1,0 +1,884 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Extensions · Safelight</title>
+		<meta
+			name="description"
+			content="Every tool in Safelight is an extension. These ship built in, and each one can be turned off, replaced, or rebuilt. Only the Core is permanent."
+		/>
+		<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Oswald:wght@200;300;400;500&family=JetBrains+Mono:wght@300;400;500&display=swap"
+			rel="stylesheet"
+		/>
+		<style>
+			:root {
+				--red: #dc2626;
+				--red-dim: #b91c1c;
+				--red-glow: rgba(220, 38, 38, 0.35);
+				--bg: #070708;
+				--panel: #0e0e10;
+				--line: rgba(255, 255, 255, 0.08);
+				--line-hot: rgba(220, 38, 38, 0.45);
+				--txt: #e4e4e7;
+				--mut: #8a8a93;
+				--dim: #5a5a62;
+				--mono: "JetBrains Mono", Consolas, monospace;
+			}
+			* {
+				margin: 0;
+				padding: 0;
+				box-sizing: border-box;
+			}
+			html {
+				scroll-behavior: smooth;
+			}
+			body {
+				font-family: "Oswald", -apple-system, "Segoe UI", Roboto, sans-serif;
+				background: var(--bg);
+				color: var(--txt);
+				line-height: 1.6;
+				overflow-x: hidden;
+			}
+			a {
+				color: inherit;
+				text-decoration: none;
+			}
+			.wrap {
+				max-width: 1180px;
+				margin: 0 auto;
+				padding: 0 24px;
+			}
+			::selection {
+				background: var(--red);
+				color: #fff;
+			}
+
+			/* film grain + vignette, matching the home page */
+			.grain {
+				position: fixed;
+				inset: -50%;
+				z-index: 900;
+				pointer-events: none;
+				opacity: 0.05;
+				background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+				animation: grain 0.6s steps(4) infinite;
+				will-change: transform;
+			}
+			@keyframes grain {
+				0% { transform: translate(0, 0); }
+				25% { transform: translate(-3%, 2%); }
+				50% { transform: translate(2%, -3%); }
+				75% { transform: translate(-2%, -2%); }
+				100% { transform: translate(3%, 3%); }
+			}
+			.cine-vig {
+				position: fixed;
+				inset: 0;
+				z-index: 899;
+				pointer-events: none;
+				background: radial-gradient(
+					ellipse 100% 100% at 50% 50%,
+					transparent 58%,
+					rgba(0, 0, 0, 0.55) 100%
+				);
+			}
+			@media (prefers-reduced-motion: reduce) {
+				.grain { animation: none; }
+			}
+
+			/* nav */
+			nav {
+				position: fixed;
+				top: 0;
+				left: 0;
+				right: 0;
+				z-index: 100;
+				background: rgba(7, 7, 8, 0.82);
+				backdrop-filter: blur(14px);
+				border-bottom: 1px solid var(--line);
+			}
+			.nav-inner {
+				display: flex;
+				align-items: center;
+				gap: 28px;
+				height: 60px;
+				max-width: 1180px;
+				margin: 0 auto;
+				padding: 0 24px;
+			}
+			.brand {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				font-size: 1.25rem;
+				font-weight: 300;
+				letter-spacing: 0.08em;
+				color: #fff;
+			}
+			.brand img {
+				width: 26px;
+				height: 26px;
+			}
+			.brand b {
+				color: var(--red);
+				font-weight: 400;
+			}
+			.nav-links {
+				display: flex;
+				align-items: center;
+				gap: 22px;
+				margin-left: auto;
+				font-size: 0.82rem;
+				letter-spacing: 0.14em;
+				text-transform: uppercase;
+				font-weight: 300;
+			}
+			.nav-links a {
+				color: var(--mut);
+				transition: color 0.2s;
+			}
+			.nav-links a:hover {
+				color: #fff;
+			}
+			.nav-cta {
+				padding: 7px 18px;
+				border: 1px solid var(--red);
+				color: #fff !important;
+				border-radius: 3px;
+				transition: background 0.2s;
+			}
+			.nav-cta:hover {
+				background: var(--red);
+			}
+
+			/* intro */
+			.intro {
+				position: relative;
+				text-align: center;
+				padding: 150px 24px 70px;
+				overflow: hidden;
+			}
+			.intro-glow {
+				position: absolute;
+				left: 50%;
+				top: -200px;
+				width: 900px;
+				height: 460px;
+				transform: translateX(-50%);
+				background: radial-gradient(
+					ellipse at center,
+					var(--red-glow),
+					transparent 65%
+				);
+				filter: blur(40px);
+				opacity: 0.5;
+				pointer-events: none;
+			}
+			.intro .wrap {
+				position: relative;
+				z-index: 1;
+			}
+			.kicker {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.34em;
+				text-transform: uppercase;
+				color: var(--red);
+				margin-bottom: 22px;
+			}
+			.intro h1 {
+				font-size: clamp(2.4rem, 5.5vw, 3.8rem);
+				font-weight: 200;
+				line-height: 1.1;
+				letter-spacing: 0.01em;
+				color: #fff;
+				margin-bottom: 22px;
+			}
+			.intro h1 em {
+				font-style: normal;
+				color: var(--red);
+				font-weight: 300;
+			}
+			.intro p {
+				font-size: 1.08rem;
+				font-weight: 300;
+				color: var(--mut);
+				max-width: 620px;
+				margin: 0 auto;
+			}
+
+			/* category sections */
+			.cats {
+				padding: 30px 0 40px;
+			}
+			.cat {
+				padding: 40px 0;
+				border-top: 1px solid var(--line);
+			}
+			.cat:first-child {
+				border-top: none;
+			}
+			.cat-head {
+				display: flex;
+				align-items: baseline;
+				gap: 14px;
+				margin-bottom: 26px;
+			}
+			.cat-head h2 {
+				font-size: 1.7rem;
+				font-weight: 200;
+				color: #fff;
+				letter-spacing: 0.04em;
+			}
+			.cat-head .count {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				letter-spacing: 0.18em;
+				color: var(--dim);
+			}
+			.cat-head .blurb {
+				margin-left: auto;
+				font-size: 0.86rem;
+				font-weight: 300;
+				color: var(--mut);
+				max-width: 360px;
+				text-align: right;
+			}
+
+			/* group dividers (Built in / From the community) */
+			.group {
+				font-size: 0.78rem;
+				font-family: var(--mono);
+				letter-spacing: 0.3em;
+				text-transform: uppercase;
+				color: var(--red);
+				padding-top: 40px;
+				margin-bottom: 4px;
+			}
+			.group-sub {
+				font-size: 0.95rem;
+				font-weight: 300;
+				color: var(--mut);
+				margin-bottom: 8px;
+			}
+			.community-state {
+				font-family: var(--mono);
+				font-size: 0.8rem;
+				letter-spacing: 0.06em;
+				color: var(--dim);
+				padding: 34px 0 8px;
+			}
+			.community-state a {
+				color: var(--red);
+			}
+
+			.ext-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+				gap: 16px;
+			}
+			.ext {
+				position: relative;
+				background: var(--panel);
+				border: 1px solid var(--line);
+				border-radius: 5px;
+				padding: 22px 22px 24px;
+				transition:
+					border-color 0.25s,
+					transform 0.25s,
+					background 0.25s;
+			}
+			.ext:hover {
+				border-color: var(--line-hot);
+				transform: translateY(-2px);
+				background: #121214;
+			}
+			.ext::before {
+				content: "";
+				position: absolute;
+				top: -1px;
+				left: 22px;
+				width: 30px;
+				height: 1px;
+				background: var(--red);
+				opacity: 0;
+				transition: opacity 0.25s;
+			}
+			.ext:hover::before {
+				opacity: 1;
+			}
+			.ext-top {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				margin-bottom: 11px;
+			}
+			.ext h3 {
+				font-size: 1.12rem;
+				font-weight: 400;
+				color: #fff;
+				letter-spacing: 0.02em;
+			}
+			.ext .badge {
+				margin-left: auto;
+				font-family: var(--mono);
+				font-size: 0.56rem;
+				letter-spacing: 0.16em;
+				text-transform: uppercase;
+				color: var(--dim);
+				border: 1px solid var(--line);
+				border-radius: 2px;
+				padding: 3px 7px;
+				white-space: nowrap;
+			}
+			.ext .badge.on {
+				color: var(--red);
+				border-color: var(--line-hot);
+			}
+			.ext .by {
+				font-family: var(--mono);
+				font-size: 0.62rem;
+				letter-spacing: 0.08em;
+				color: var(--dim);
+				margin: -3px 0 10px;
+			}
+			.ext .by b {
+				color: var(--mut);
+				font-weight: 400;
+			}
+			.ext p {
+				font-size: 0.88rem;
+				font-weight: 300;
+				color: var(--mut);
+				line-height: 1.65;
+			}
+
+			/* store callout */
+			.store {
+				border-top: 1px solid var(--line);
+				background: linear-gradient(180deg, #0a0a0c, var(--bg));
+				padding: 80px 0 90px;
+				text-align: center;
+			}
+			.store h2 {
+				font-size: clamp(1.8rem, 4vw, 2.6rem);
+				font-weight: 200;
+				color: #fff;
+				letter-spacing: 0.03em;
+				margin-bottom: 16px;
+			}
+			.store p {
+				font-size: 1rem;
+				font-weight: 300;
+				color: var(--mut);
+				max-width: 600px;
+				margin: 0 auto 22px;
+			}
+			.store-cats {
+				display: flex;
+				justify-content: center;
+				flex-wrap: wrap;
+				gap: 9px;
+				margin-bottom: 34px;
+				font-family: var(--mono);
+				font-size: 0.68rem;
+				letter-spacing: 0.12em;
+				text-transform: uppercase;
+				color: var(--mut);
+			}
+			.store-cats span {
+				border: 1px solid var(--line);
+				border-radius: 2px;
+				padding: 6px 12px;
+			}
+			.btn {
+				display: inline-flex;
+				align-items: center;
+				gap: 10px;
+				padding: 14px 34px;
+				border-radius: 3px;
+				font-size: 0.98rem;
+				font-weight: 300;
+				letter-spacing: 0.08em;
+				text-transform: uppercase;
+				transition: all 0.25s;
+				border: 1px solid transparent;
+			}
+			.btn-primary {
+				background: var(--red);
+				color: #fff;
+				box-shadow: 0 0 28px var(--red-glow);
+			}
+			.btn-primary:hover {
+				background: var(--red-dim);
+				transform: translateY(-2px);
+				box-shadow: 0 4px 38px var(--red-glow);
+			}
+
+			/* footer */
+			footer {
+				border-top: 1px solid var(--line);
+				padding: 44px 0;
+				text-align: center;
+			}
+			footer .f-brand {
+				font-size: 1.1rem;
+				font-weight: 300;
+				letter-spacing: 0.1em;
+				color: #fff;
+				margin-bottom: 10px;
+			}
+			footer .f-brand b {
+				color: var(--red);
+				font-weight: 400;
+			}
+			footer p {
+				font-family: var(--mono);
+				font-size: 0.72rem;
+				color: var(--dim);
+				letter-spacing: 0.1em;
+			}
+			footer a {
+				color: var(--mut);
+				transition: color 0.2s;
+			}
+			footer a:hover {
+				color: var(--red);
+			}
+
+			/* reveal */
+			.rv {
+				opacity: 0;
+				transform: translateY(20px);
+				transition:
+					opacity 0.7s ease,
+					transform 0.7s ease;
+			}
+			.rv.in {
+				opacity: 1;
+				transform: none;
+			}
+			@media (prefers-reduced-motion: reduce) {
+				.rv {
+					opacity: 1 !important;
+					transform: none !important;
+				}
+			}
+
+			@media (max-width: 700px) {
+				.intro {
+					padding: 120px 18px 50px;
+				}
+				.cat-head {
+					flex-wrap: wrap;
+					gap: 8px;
+				}
+				.cat-head .blurb {
+					margin-left: 0;
+					text-align: left;
+					max-width: none;
+					flex-basis: 100%;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<div class="grain" aria-hidden="true"></div>
+		<div class="cine-vig" aria-hidden="true"></div>
+
+		<nav>
+			<div class="nav-inner">
+				<a class="brand" href="index.html"
+					><img src="favicon.svg" alt="" /><span>Safe<b>light</b></span></a
+				>
+				<div class="nav-links">
+					<a href="index.html">Home</a>
+					<a
+						class="nav-cta"
+						href="https://github.com/anthonyreimche/SafeLight/releases"
+						target="_blank"
+						>Download</a
+					>
+				</div>
+			</div>
+		</nav>
+
+		<header class="intro">
+			<div class="intro-glow" aria-hidden="true"></div>
+			<div class="wrap">
+				<div class="kicker">Extensions</div>
+				<h1>Everything here is <em>an extension.</em></h1>
+				<p>
+					Safelight ships with the tools below, and the community adds
+					more. Every one is an extension you can turn off, swap, or
+					build yourself. Only the Core stays put.
+				</p>
+			</div>
+		</header>
+
+		<main class="cats">
+			<div class="wrap">
+				<h2 class="group rv">Built in</h2>
+				<p class="group-sub rv">
+					Ships with every copy. Disable or replace any of it.
+				</p>
+
+				<!-- Develop -->
+				<section class="cat">
+					<div class="cat-head rv">
+						<h2>Develop</h2>
+						<span class="count">15 extensions</span>
+						<span class="blurb"
+							>The tonal, colour, detail and geometry tools, plus
+							local adjustments.</span
+						>
+					</div>
+					<div class="ext-grid">
+						<article class="ext rv">
+							<div class="ext-top"><h3>White Balance</h3></div>
+							<p>Temperature and tint.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Basic</h3></div>
+							<p>Exposure, contrast, highlights, shadows and presence.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Tone Curve</h3></div>
+							<p>Parametric and point tone curves, per channel.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>HSL</h3></div>
+							<p>Per-colour hue, saturation and luminance mixer.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Color Grading</h3></div>
+							<p>Shadow, midtone and highlight colour wheels.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Detail</h3></div>
+							<p>Sharpening and noise reduction.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Effects</h3></div>
+							<p>Vignette, grain and dehaze.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Lens Correction</h3></div>
+							<p>Distortion and vignette correction.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Transform</h3></div>
+							<p>Perspective, upright and geometry corrections.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Crop &amp; Straighten</h3></div>
+							<p>Crop, straighten and aspect ratios.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Masking</h3></div>
+							<p>Local adjustments with brush, linear and radial masks.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Heal</h3></div>
+							<p>Spot removal and healing.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Presets</h3></div>
+							<p>Save and apply develop presets.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Histogram</h3></div>
+							<p>Live RGB histogram of the rendered image.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Edit</h3></div>
+							<p>Undo, redo and reset for the current edit.</p>
+						</article>
+					</div>
+				</section>
+
+				<!-- Library -->
+				<section class="cat">
+					<div class="cat-head rv">
+						<h2>Library</h2>
+						<span class="count">4 extensions</span>
+						<span class="blurb"
+							>Organise, filter and inspect the photos in a
+							project.</span
+						>
+					</div>
+					<div class="ext-grid">
+						<article class="ext rv">
+							<div class="ext-top"><h3>Folders</h3></div>
+							<p>Project folder tree.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Filters</h3></div>
+							<p>Filter the grid by rating, flag and label.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Keywords</h3></div>
+							<p>Every keyword in the project, with counts. Click to filter.</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top"><h3>Info</h3></div>
+							<p>Metadata and EXIF for the selected photo.</p>
+						</article>
+					</div>
+				</section>
+
+				<!-- Export -->
+				<section class="cat">
+					<div class="cat-head rv">
+						<h2>Export</h2>
+						<span class="count">1 extension</span>
+						<span class="blurb"
+							>Render finished images through the same GPU
+							pipeline.</span
+						>
+					</div>
+					<div class="ext-grid">
+						<article class="ext rv">
+							<div class="ext-top"><h3>Export</h3></div>
+							<p>
+								Export with format, size and quality options.
+								JPEG, PNG, WebP and 8 or 16-bit TIFF.
+							</p>
+						</article>
+					</div>
+				</section>
+
+				<!-- System -->
+				<section class="cat">
+					<div class="cat-head rv">
+						<h2>System</h2>
+						<span class="count">3 extensions</span>
+						<span class="blurb"
+							>The pieces that make the rest possible. Core can't be
+							removed; the others can.</span
+						>
+					</div>
+					<div class="ext-grid">
+						<article class="ext rv">
+							<div class="ext-top">
+								<h3>Safelight Core</h3>
+								<span class="badge on">Always on</span>
+							</div>
+							<p>
+								The heart of the app: the extension manager, the
+								stock Neutral, Dark and Light themes, the Classic
+								layout, and the base render pipeline.
+							</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top">
+								<h3>Accessibility</h3>
+								<span class="badge">On by default</span>
+							</div>
+							<p>
+								High-contrast and colour-vision overlays, larger
+								text and controls, reduced motion, and opt-in
+								keyboard editing for the canvas tools.
+							</p>
+						</article>
+						<article class="ext rv">
+							<div class="ext-top">
+								<h3>Developer Tools</h3>
+								<span class="badge">Off by default</span>
+							</div>
+							<p>
+								In-app inspector: console, errors, system and
+								WebGL info, and storage tools.
+							</p>
+						</article>
+					</div>
+				</section>
+
+				<h2 class="group rv">From the community</h2>
+				<p class="group-sub rv">
+					Verified extensions, installed from the store inside
+					Safelight. Reach for one when a job needs it, then set it
+					back down.
+				</p>
+
+				<div id="community" class="community-state" aria-live="polite">
+					Loading the latest extensions…
+				</div>
+			</div>
+		</main>
+
+		<section class="store">
+			<div class="wrap rv">
+				<h2>Build one yourself.</h2>
+				<p>
+					Every extension here is a folder with a safelight.json
+					manifest. Publish yours to GitHub, tag it, and it appears in
+					the store. Open a pull request to earn the verified badge.
+				</p>
+				<a
+					class="btn btn-primary"
+					href="https://github.com/anthonyreimche/SafeLight/releases"
+					target="_blank"
+					>Download Safelight</a
+				>
+			</div>
+		</section>
+
+		<footer>
+			<div class="f-brand">Safe<b>light</b></div>
+			<p>
+				Free &amp; open source under the
+				<a
+					href="https://github.com/anthonyreimche/SafeLight/blob/main/LICENSE"
+					target="_blank"
+					>GPL v3 License</a
+				>
+				·
+				<a href="index.html">Home</a>
+			</p>
+		</footer>
+
+		<script>
+			const io = new IntersectionObserver(
+				(es) =>
+					es.forEach((e) => {
+						if (e.isIntersecting) {
+							e.target.classList.add("in");
+							io.unobserve(e.target);
+						}
+					}),
+				{ threshold: 0.1 },
+			);
+			const reveal = (root) =>
+				(root || document).querySelectorAll(".rv").forEach((el) => io.observe(el));
+			reveal();
+
+			// ---- Public extensions: fetched live from the verified registry ----
+			// Nothing is hard-coded — the list and every name, author, category
+			// and description come from the registry and each repo's safelight.json.
+			(function () {
+				const REGISTRY = "anthonyreimche/safelight-registry";
+				const ORDER = [
+					"Themes", "Develop", "Panels", "Library",
+					"Presets", "Color", "Pipelines", "Rendering", "Export", "Other",
+				];
+				const BLURB = {
+					Themes: "Recolour the whole interface.",
+					Develop: "More tools for the editing canvas.",
+					Panels: "Extra panels for your workspace.",
+					Library: "Organise and find your photos.",
+					Presets: "Bring your looks and metadata with you.",
+					Color: "Looks, LUTs and colour tools.",
+					Pipelines: "Alternative processing and display transforms.",
+					Rendering: "Alternative display transforms.",
+					Export: "Extra control over finished files.",
+					Other: "More from the community.",
+				};
+				const host = document.getElementById("community");
+				if (!host) return;
+
+				const esc = (s) =>
+					String(s == null ? "" : s)
+						.replace(/&/g, "&amp;")
+						.replace(/</g, "&lt;")
+						.replace(/>/g, "&gt;");
+				const cleanAuthor = (a) => {
+					const n = a && typeof a === "object" ? a.name || a.login || "" : a || "";
+					return String(n).replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim() || "Unknown";
+				};
+				const cleanDesc = (d) =>
+					String(d == null ? "" : d).replace(/\s*—\s*/g, ", ").replace(/\s+/g, " ").trim();
+				const isTheme = (m, r) =>
+					/^theme[-.]/i.test(m.id || "") || /theme/i.test(m.name || "") || /theme/i.test(r);
+				const categoryOf = (m, r) => {
+					const c = [].concat(m.categories || []).map((x) => String(x).trim()).filter(Boolean);
+					return c.length ? c[0] : isTheme(m, r) ? "Themes" : "Other";
+				};
+				const getJSON = async (urls) => {
+					for (const u of urls) {
+						try {
+							const res = await fetch(u, { cache: "no-cache" });
+							if (res.ok) return await res.json();
+						} catch (e) {}
+					}
+					return null;
+				};
+				const manifest = (repo) =>
+					getJSON([
+						"https://raw.githubusercontent.com/" + repo + "/HEAD/safelight.json",
+						"https://cdn.jsdelivr.net/gh/" + repo + "/safelight.json",
+					]);
+
+				const fail = (msg) => {
+					host.className = "community-state";
+					host.innerHTML =
+						esc(msg) +
+						' Browse them inside Safelight, or on <a href="https://github.com/' +
+						REGISTRY +
+						'" target="_blank" rel="noopener">GitHub</a>.';
+				};
+
+				(async function () {
+					const reg = await getJSON([
+						"https://raw.githubusercontent.com/" + REGISTRY + "/main/verified.json",
+						"https://cdn.jsdelivr.net/gh/" + REGISTRY + "@main/verified.json",
+					]);
+					const repos = reg && Array.isArray(reg.verified) ? reg.verified.filter(Boolean) : null;
+					if (!repos) return fail("Couldn't load the extension list right now.");
+
+					const items = (
+						await Promise.all(
+							repos.map(async (repo) => {
+								const m = await manifest(repo);
+								if (!m || !m.name) return null;
+								return {
+									repo,
+									name: m.name,
+									author: cleanAuthor(m.author),
+									description: cleanDesc(m.description),
+									category: categoryOf(m, repo),
+								};
+							}),
+						)
+					).filter(Boolean);
+					if (!items.length) return fail("Couldn't load the extension list right now.");
+
+					const present = [...new Set(items.map((x) => x.category))];
+					const cats = [
+						...ORDER.filter((c) => present.includes(c)),
+						...present.filter((c) => !ORDER.includes(c)).sort(),
+					];
+
+					let html = "";
+					for (const cat of cats) {
+						const group = items
+							.filter((x) => x.category === cat)
+							.sort((a, b) => a.name.localeCompare(b.name));
+						const n = group.length;
+						html += '<section class="cat"><div class="cat-head rv">';
+						html += "<h2>" + esc(cat) + "</h2>";
+						html += '<span class="count">' + n + " extension" + (n === 1 ? "" : "s") + "</span>";
+						if (BLURB[cat]) html += '<span class="blurb">' + esc(BLURB[cat]) + "</span>";
+						html += '</div><div class="ext-grid">';
+						for (const x of group) {
+							html += '<article class="ext rv"><div class="ext-top"><h3>' + esc(x.name) + "</h3></div>";
+							html += '<div class="by">by <b>' + esc(x.author) + "</b></div>";
+							if (x.description) html += "<p>" + esc(x.description) + "</p>";
+							html += "</article>";
+						}
+						html += "</div></section>";
+					}
+
+					host.className = "";
+					host.innerHTML = html;
+					reveal(host);
+				})().catch(() => fail("Couldn't load the extension list right now."));
+			})();
+		</script>
+	</body>
+</html>
