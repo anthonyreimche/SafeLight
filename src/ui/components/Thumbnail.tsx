@@ -54,7 +54,10 @@ function ThumbnailImpl({
 
   // Rejected photos recede: dim only the image so they read as rejected while
   // the flag/rating badges stay crisp. No desaturation — dimming, not B&W.
-  const dimClass = photo.flag === "reject" ? "opacity-40" : "";
+  // Folded into the inline opacity below: the load-in fade sets opacity inline,
+  // and an inline opacity overrides a Tailwind opacity-* class, so a class here
+  // would never take effect on the grid tile.
+  const isReject = photo.flag === "reject";
 
   // The grid shows the original compressed preview (generated at import) — no
   // per-edit re-render or decode. Cheap and space-light; quality is intentionally
@@ -109,8 +112,8 @@ function ThumbnailImpl({
         <img
           src={thumbUrl}
           alt={photo.filename}
-          className={`h-full w-full object-contain transition group-hover:brightness-50 ${dimClass}`}
-          style={{ opacity: loaded ? 1 : 0, transition: "opacity 150ms ease-in" }}
+          className="h-full w-full object-contain transition group-hover:brightness-50"
+          style={{ opacity: loaded ? (isReject ? 0.4 : 1) : 0, transition: "opacity 150ms ease-in" }}
           loading="lazy"
           onLoad={onLoad}
         />
