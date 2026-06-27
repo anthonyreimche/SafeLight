@@ -24,6 +24,10 @@ No. There is no telemetry, no cloud, no accounts. Photos and edits never leave y
 
 The desktop app. It guarantees the fast libraw RAW decode path (cross-origin isolation + SharedArrayBuffer) and forces the high-performance GPU. The browser version works in recent Chromium-based browsers (Chrome, Edge, Opera) and is mainly useful for development; Firefox and Safari lack the File System Access API Safelight relies on.
 
+### Why does macOS say Safelight is "damaged"?
+
+It isn't damaged. Safelight isn't notarized by Apple (that costs $99/year, which I haven't paid to give away free software I build on Windows), so macOS blocks the unsigned download with a misleading message. Drag the app into Applications and run `xattr -cr /Applications/Safelight.app` once in Terminal, and it opens normally from then on. The full steps, the fallback if it still won't open, and the candid explanation are in [Installation → Troubleshooting → macOS](installation.md#macos).
+
 ## Projects and Files
 
 ### Where is my catalog stored?
