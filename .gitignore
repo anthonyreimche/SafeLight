@@ -38,3 +38,10 @@ src/lens-profiles/vendor/
 # Local/test extensions — these live in their own repos and are not part of the
 # app. Install them at runtime via the Extensions window like any other.
 /extensions/
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example

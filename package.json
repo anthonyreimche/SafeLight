@@ -14,13 +14,15 @@
     "test": "vitest run",
     "build": "tsc && vite build",
     "build:app": "vite build",
-    "preview": "vite preview",
+    "preview": "npm run build && wrangler dev",
     "icon": "node electron/make-icon.cjs",
     "electron:dev": "vite build && electron .",
     "build:electron": "npm run build:app && npm run icon && electron-builder --win",
-    "build:linux": "npm run build:app && npm run icon && electron-builder --linux"
+    "build:linux": "npm run build:app && npm run icon && electron-builder --linux",
+    "deploy": "npm run build && wrangler deploy"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.42.3",
     "@tailwindcss/vite": "^4.3.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
@@ -38,6 +40,7 @@
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
     "vitest": "^4.1.9",
+    "wrangler": "^4.105.0",
     "zustand": "^5.0.14"
   },
   "overrides": {

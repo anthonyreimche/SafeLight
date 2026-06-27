@@ -5,6 +5,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+import { cloudflare } from "@cloudflare/vite-plugin";
+
 // Single source of truth for the app version: package.json (the same field
 // electron-builder uses to name the installer). Inlined into the bundle as the
 // __APP_VERSION__ global so the About panel never drifts from the build.
@@ -34,7 +36,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), cloudflare()],
   resolve: {
     alias: {
       "@": "/src",
