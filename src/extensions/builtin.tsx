@@ -22,10 +22,8 @@ import { BasicPanel } from "@/modules/develop/panels/BasicPanel";
 import { ToneCurvePanel } from "@/modules/develop/panels/ToneCurvePanel";
 import { ColorGradingPanel } from "@/modules/develop/panels/ColorGradingPanel";
 import { DetailPanel } from "@/modules/develop/panels/DetailPanel";
-import { LensCorrectionPanel } from "@/modules/develop/panels/LensCorrectionPanel";
 import { EffectsPanel } from "@/modules/develop/panels/EffectsPanel";
 import { HSLPanel } from "@/modules/develop/panels/HSLPanel";
-import { PANEL_BYPASS_KEYS, PanelBypassButton } from "@/modules/develop/panel-bypass";
 import { MasksPanel } from "@/modules/develop/panels/MasksPanel";
 import { RetouchPanel } from "@/modules/develop/panels/RetouchPanel";
 import { PresetsPanel } from "@/modules/develop/panels/PresetsPanel";
@@ -86,11 +84,9 @@ const panelExt = (
       component,
       defaultDock,
       onReset,
-      // Panels with a bypass mapping get the eye toggle in their dock header
-      // (left of the title), wired by title — no per-panel boilerplate.
-      headerAccessory: PANEL_BYPASS_KEYS[title]
-        ? () => <PanelBypassButton title={title} />
-        : undefined,
+      // The per-panel preview-off eye is no longer built in — it ships as the
+      // optional "panel-click-to-toggle" extension, which decorates every panel
+      // header via registerPanelHeaderAccessory.
     }),
 });
 
@@ -418,9 +414,73 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(6, 220), resetDevelop(["toneCurve"], "Reset Tone Curve")),
   panelExt("core.color-grading", "Color Grading", ColorGradingPanel, "Shadow / midtone / highlight color wheels.", right(7, 200), resetDevelop(["colorGrading"], "Reset Color Grading")),
   panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(8, 150), resetDevelop(["sharpening", "sharpenRadius", "sharpenDetail", "sharpenMasking", "luminanceNR", "luminanceNRDetail", "luminanceNRContrast", "luminanceNRShadows", "luminanceNRHighlights", "colorNR", "colorNRDetail", "colorNRSmoothness"], "Reset Detail")),
-  panelExt("core.lens-correction", "Lens Correction", LensCorrectionPanel, "Distortion and vignette correction.", right(9, 120), resetDevelop(["lensCorrection"], "Reset Lens Correction")),
   panelExt("core.effects", "Effects", EffectsPanel, "Vignette, grain and dehaze.", right(10, 150), resetDevelop(["vignette", "grain"], "Reset Effects")),
-  panelExt("core.hsl", "HSL", HSLPanel, "Per-color hue, saturation and luminance mixer.", right(11, 220), resetDevelop(["hsl"], "Reset HSL")),
+  // HSL is a full extension (not a bare panelExt) so it can contribute its own
+  // Preferences ▸ HSL section: layout default, coloured tracks, and the on-image
+  // target-tool sensitivity (read by the picker in DevelopCanvas).
+  {
+    id: "core.hsl",
+    name: "HSL",
+    version: V,
+    description: "Per-color hue, saturation and luminance mixer.",
+    activate(api) {
+      api.registerPanel({
+        id: "core.hsl",
+        title: "HSL",
+        component: HSLPanel,
+        defaultDock: right(11, 220),
+        onReset: resetDevelop(["hsl"], "Reset HSL"),
+      });
+      api.registerSettings({
+        title: "HSL",
+        order: 60,
+        keywords: ["hue", "saturation", "luminance", "color mixer", "target", "tat"],
+        fields: [
+          {
+            key: "defaultView",
+            label: "Default layout",
+            hint: "Tabs shows one band at a time; All stacks Hue, Saturation and Luminance.",
+            type: "select",
+            default: "tabs",
+            options: [
+              { value: "tabs", label: "Tabs (one band)" },
+              { value: "all", label: "All bands" },
+            ],
+          },
+          {
+            key: "hueRange",
+            label: "Colour range",
+            hint: "How wide each colour's selection reaches. Lower is more surgical (tighter bands); higher blends neighbouring colours. 100 is the default seamless tiling.",
+            type: "number",
+            default: 100,
+            min: 50,
+            max: 150,
+            step: 5,
+          },
+          {
+            key: "smoothness",
+            label: "Smoothness",
+            hint: "How soft the transition between colours is. Lower gives more defined band edges; higher feathers them. 100 matches the default.",
+            type: "number",
+            default: 100,
+            min: 0,
+            max: 100,
+            step: 5,
+          },
+          {
+            key: "pickerSensitivity",
+            label: "Target tool sensitivity",
+            hint: "How far an on-image drag moves the sliders (units per pixel).",
+            type: "number",
+            default: 0.5,
+            min: 0.1,
+            max: 1.5,
+            step: 0.05,
+          },
+        ],
+      });
+    },
+  },
 
   // ── Develop: left rail ──
   panelExt("core.masks", "Masking", MasksPanel, "Local adjustments with brush, linear and radial masks.", left(0, 240), () => {

@@ -165,20 +165,6 @@ export interface ColorGradingParams {
   highlightRange: number; // 0..100: how far highlight wheel extends downward
 }
 
-export interface LensCorrectionParams {
-  mode: "off" | "profile" | "manual";
-  profileId: string | null;
-  profileSource: "lensfun" | "extension" | null;
-  distortionEnabled: boolean;
-  caEnabled: boolean;
-  vignetteEnabled: boolean;
-  autoCrop: boolean;
-  distortion: number;          // -100..100 (neg=barrel fix, pos=pincushion fix)
-  chromaticAberration: number; // 0..100 lateral CA removal
-  defringe: number;            // 0..100 fringe suppression amount
-  vignetting: number;          // -100..100 lens vignetting correction
-}
-
 export interface VignetteParams {
   amount: number;      // -100..100 (neg=darken, pos=lighten edges)
   midpoint: number;    // 0..100 how far the effect reaches in
@@ -201,10 +187,15 @@ export interface MaskAdjustments {
   contrast: number;
   highlights: number;
   shadows: number;
+  whites: number;
+  blacks: number;
   saturation: number;
+  vibrance: number;
   temperature: number; // relative warm(+)/cool(-)
   tint: number;        // magenta(+)/green(-)
+  texture: number;
   clarity: number;
+  dehaze: number;
   sharpness: number;
 }
 
@@ -377,7 +368,6 @@ export interface DevelopParams {
   toneCurve: ToneCurves;
   hsl: HSLAdjustments;
   colorGrading: ColorGradingParams;
-  lensCorrection: LensCorrectionParams;
   vignette: VignetteParams;
   grain: GrainParams;
   masks: Mask[];
@@ -396,10 +386,15 @@ export function defaultMaskAdjustments(): MaskAdjustments {
     contrast: 0,
     highlights: 0,
     shadows: 0,
+    whites: 0,
+    blacks: 0,
     saturation: 0,
+    vibrance: 0,
     temperature: 0,
     tint: 0,
+    texture: 0,
     clarity: 0,
+    dehaze: 0,
     sharpness: 0,
   };
 }
@@ -518,20 +513,6 @@ export function defaultHSL(): HSLAdjustments {
   };
 }
 
-export const DEFAULT_LENS_CORRECTION: LensCorrectionParams = {
-  mode: "off",
-  profileId: null,
-  profileSource: null,
-  distortionEnabled: true,
-  caEnabled: true,
-  vignetteEnabled: true,
-  autoCrop: true,
-  distortion: 0,
-  chromaticAberration: 0,
-  defringe: 0,
-  vignetting: 0,
-};
-
 export const DEFAULT_VIGNETTE: VignetteParams = {
   amount: 0,
   midpoint: 50,
@@ -581,7 +562,6 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   toneCurve: defaultToneCurves(),
   hsl: defaultHSL(),
   colorGrading: defaultColorGrading(),
-  lensCorrection: { ...DEFAULT_LENS_CORRECTION },
   vignette: { ...DEFAULT_VIGNETTE },
   grain: { ...DEFAULT_GRAIN },
   masks: [],
@@ -714,38 +694,6 @@ function normalizeToneCurves(tc: unknown): ToneCurves {
   };
 }
 
-function normalizeLensCorrection(
-  lc: Partial<LensCorrectionParams> | undefined,
-): LensCorrectionParams {
-  const c100 = (v: unknown, d: number) =>
-    typeof v === "number" && isFinite(v) ? Math.min(100, Math.max(-100, v)) : d;
-  const c0100 = (v: unknown, d: number) =>
-    typeof v === "number" && isFinite(v) ? Math.min(100, Math.max(0, v)) : d;
-
-  const dist = c100(lc?.distortion, 0);
-  const ca = c0100(lc?.chromaticAberration, 0);
-  const defr = c0100(lc?.defringe, 0);
-  const vig = c100(lc?.vignetting, 0);
-
-  // Backward compat: old edits without a mode field that have nonzero sliders
-  // are treated as "manual" mode so they render identically.
-  const hasLegacyEdits = !lc?.mode && (dist !== 0 || ca !== 0 || defr !== 0 || vig !== 0);
-
-  return {
-    mode: lc?.mode ?? (hasLegacyEdits ? "manual" : "off"),
-    profileId: lc?.profileId ?? null,
-    profileSource: lc?.profileSource ?? null,
-    distortionEnabled: lc?.distortionEnabled ?? true,
-    caEnabled: lc?.caEnabled ?? true,
-    vignetteEnabled: lc?.vignetteEnabled ?? true,
-    autoCrop: lc?.autoCrop ?? true,
-    distortion: dist,
-    chromaticAberration: ca,
-    defringe: defr,
-    vignetting: vig,
-  };
-}
-
 function normalizeVignette(
   v: Partial<VignetteParams> | undefined,
 ): VignetteParams {
@@ -784,10 +732,15 @@ function normalizeMaskAdjustments(
     contrast: clampN(a?.contrast, -100, 100, 0),
     highlights: clampN(a?.highlights, -100, 100, 0),
     shadows: clampN(a?.shadows, -100, 100, 0),
+    whites: clampN(a?.whites, -100, 100, 0),
+    blacks: clampN(a?.blacks, -100, 100, 0),
     saturation: clampN(a?.saturation, -100, 100, 0),
+    vibrance: clampN(a?.vibrance, -100, 100, 0),
     temperature: clampN(a?.temperature, -100, 100, 0),
     tint: clampN(a?.tint, -100, 100, 0),
+    texture: clampN(a?.texture, -100, 100, 0),
     clarity: clampN(a?.clarity, -100, 100, 0),
+    dehaze: clampN(a?.dehaze, -100, 100, 0),
     sharpness: clampN(a?.sharpness, -100, 100, 0),
   };
 }
@@ -1012,7 +965,6 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
       luminance: { ...zeroHSLValues(), ...p?.hsl?.luminance },
     },
     colorGrading: normalizeColorGrading(p?.colorGrading),
-    lensCorrection: normalizeLensCorrection(p?.lensCorrection),
     vignette: normalizeVignette(p?.vignette),
     grain: normalizeGrain(p?.grain),
     masks: normalizeMasks(p?.masks),

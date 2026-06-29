@@ -25,6 +25,13 @@ import {
   updateSettings,
   type ExportPreset,
 } from "@/state/settings-store";
+import {
+  isNativeFS,
+  pickNativeDirectory,
+  nativeDirectoryHandle,
+  nativePathOf,
+  revealNativePath,
+} from "@/project/native-fs";
 
 const FORMATS: { value: ExportFormat; label: string }[] = [
   { value: "image/jpeg", label: "JPEG" },
@@ -153,6 +160,9 @@ export function ExportPanel() {
     null,
   );
   const [status, setStatus] = useState<string | null>(null);
+  // Absolute path of the most recent successful folder export, if it was a
+  // native (Electron) destination — drives the "Open Folder" reveal button.
+  const [exportedDir, setExportedDir] = useState<string | null>(null);
 
   // Output sharpening state.
   const [sharpenAmount, setSharpenAmount] = useState(0);
@@ -254,6 +264,18 @@ export function ExportPanel() {
   // ── Folder picker ───────────────────────────────────────────────────────
 
   const pickFolder = async () => {
+    // In Electron, pick via the native bridge so we get a real absolute path
+    // (the resulting handle still quacks like a FileSystemDirectoryHandle, and
+    // the path lets us reveal the folder after export). Plain browser falls back
+    // to the File System Access picker, where no OS path is available.
+    if (isNativeFS()) {
+      const p = await pickNativeDirectory();
+      if (p) {
+        setDestDir(nativeDirectoryHandle(p));
+        setDelivery("folder");
+      }
+      return;
+    }
     try {
       const dir = await window.showDirectoryPicker({ mode: "readwrite", id: "safelight-export" });
       setDestDir(dir);
@@ -267,16 +289,24 @@ export function ExportPanel() {
     if (busy || targets.length === 0) return;
     let dir = destDir;
     if (delivery === "folder" && !dir) {
-      try {
-        dir = await window.showDirectoryPicker({ mode: "readwrite", id: "safelight-export" });
+      if (isNativeFS()) {
+        const p = await pickNativeDirectory();
+        if (!p) return; // user cancelled
+        dir = nativeDirectoryHandle(p);
         setDestDir(dir);
-      } catch {
-        return; // user cancelled
+      } else {
+        try {
+          dir = await window.showDirectoryPicker({ mode: "readwrite", id: "safelight-export" });
+          setDestDir(dir);
+        } catch {
+          return; // user cancelled
+        }
       }
     }
 
     setBusy(true);
     setStatus(null);
+    setExportedDir(null);
     setProgress({ done: 0, total: targets.length });
 
     const settings: ExportSettings = {
@@ -304,6 +334,12 @@ export function ExportPanel() {
           ? `Exported ${result.exported} photo${result.exported === 1 ? "" : "s"}.`
           : `Exported ${result.exported}; ${result.failed.length} could not be decoded.`,
       );
+      // Offer "Open Folder" only when files actually landed in a native folder
+      // destination whose absolute path we can reveal (Electron, not browser).
+      if (delivery === "folder" && result.exported > 0) {
+        const revealPath = dir ? nativePathOf(dir) : null;
+        if (revealPath) setExportedDir(revealPath);
+      }
     } catch (e) {
       setStatus(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -604,6 +640,14 @@ export function ExportPanel() {
         >
           {status}
         </p>
+        {exportedDir && (
+          <button
+            onClick={() => void revealNativePath(exportedDir)}
+            className="mt-2 w-full rounded bg-surface-2 px-3 py-1.5 text-[11px] text-text-secondary hover:bg-surface-3 hover:text-text-primary"
+          >
+            Open Folder
+          </button>
+        )}
       </div>
 
       <Panel title="Privacy" defaultOpen={false}>

@@ -17,6 +17,7 @@ import type {
   LayoutContribution,
   LibrarySortContribution,
   PanelContribution,
+  PanelHeaderAccessoryContribution,
   PanelSlot,
   PipelineContribution,
   PresetImporterContribution,
@@ -27,11 +28,12 @@ import type {
   SliderIconContribution,
   ThemeContribution,
 } from "./types";
-import type { LensProfileContribution } from "@/lens-profiles/types";
 import {
+  getAllDescriptors,
   registerStageParams,
   unregisterExtensionParams,
   unregisterStageParams,
+  type ParamDescriptor,
 } from "./param-registry";
 import { unregisterExtensionActions } from "@/state/keybindings-store";
 import { clearExtensionCursors } from "@/state/cursor-store";
@@ -65,9 +67,6 @@ export interface RegisteredFilenameTemplate extends FilenameTemplateContribution
 export interface RegisteredProcessingStage extends ProcessingStageContribution {
   extensionId: string;
 }
-export interface RegisteredLensProfile extends LensProfileContribution {
-  extensionId: string;
-}
 export interface RegisteredCatalogHooks extends CatalogHooksContribution {
   extensionId: string;
 }
@@ -78,6 +77,10 @@ export interface RegisteredGridFilter extends GridFilterContribution {
   extensionId: string;
 }
 export interface RegisteredSlot extends SlotContribution {
+  extensionId: string;
+}
+export interface RegisteredPanelHeaderAccessory
+  extends PanelHeaderAccessoryContribution {
   extensionId: string;
 }
 export interface RegisteredLibrarySort extends LibrarySortContribution {
@@ -95,7 +98,6 @@ interface RegistryState {
   exportProcessors: Record<string, RegisteredExportProcessor>;
   filenameTemplates: Record<string, RegisteredFilenameTemplate>;
   processingStages: Record<string, RegisteredProcessingStage>;
-  lensProfiles: Record<string, RegisteredLensProfile>;
   /** Keyed by contribution id. */
   catalogHooks: Record<string, RegisteredCatalogHooks>;
   presetImporters: Record<string, RegisteredPresetImporter>;
@@ -103,6 +105,8 @@ interface RegistryState {
   gridFilters: Record<string, RegisteredGridFilter>;
   /** Keyed by contribution id. Components mounted into named core UI slots. */
   slots: Record<string, RegisteredSlot>;
+  /** Keyed by contribution id. Controls rendered in every panel's dock header. */
+  panelHeaderAccessories: Record<string, RegisteredPanelHeaderAccessory>;
   /** Keyed by contribution id. Extra Library sort orders. */
   librarySorts: Record<string, RegisteredLibrarySort>;
 }
@@ -117,11 +121,11 @@ export const useRegistry = create<RegistryState>(() => ({
   exportProcessors: {},
   filenameTemplates: {},
   processingStages: {},
-  lensProfiles: {},
   catalogHooks: {},
   presetImporters: {},
   gridFilters: {},
   slots: {},
+  panelHeaderAccessories: {},
   librarySorts: {},
 }));
 
@@ -231,15 +235,6 @@ export function unregisterProcessingStage(extensionId: string, id: string): void
   });
 }
 
-export function registerLensProfile(
-  extensionId: string,
-  c: LensProfileContribution,
-): void {
-  useRegistry.setState((s) => ({
-    lensProfiles: { ...s.lensProfiles, [c.id]: { ...c, extensionId } },
-  }));
-}
-
 export function registerCatalogHooks(
   extensionId: string,
   c: CatalogHooksContribution,
@@ -271,6 +266,40 @@ export function registerSlot(extensionId: string, c: SlotContribution): void {
   useRegistry.setState((s) => ({
     slots: { ...s.slots, [c.id]: { ...c, extensionId } },
   }));
+}
+
+export function unregisterSlot(extensionId: string, id: string): void {
+  useRegistry.setState((s) => {
+    const owner = s.slots[id];
+    // Only the owning extension may remove it.
+    if (!owner || owner.extensionId !== extensionId) return s;
+    const next = { ...s.slots };
+    delete next[id];
+    return { slots: next };
+  });
+}
+
+export function registerPanelHeaderAccessory(
+  extensionId: string,
+  c: PanelHeaderAccessoryContribution,
+): void {
+  useRegistry.setState((s) => ({
+    panelHeaderAccessories: {
+      ...s.panelHeaderAccessories,
+      [c.id]: { ...c, extensionId },
+    },
+  }));
+}
+
+/** Reactive, order-sorted list of controls to render in every panel header. */
+export function usePanelHeaderAccessories(): RegisteredPanelHeaderAccessory[] {
+  return useRegistry(
+    useShallow((s) =>
+      Object.values(s.panelHeaderAccessories).sort(
+        (a, b) => (a.order ?? 100) - (b.order ?? 100),
+      ),
+    ),
+  );
 }
 
 /** Reactive list of grid-filter predicates, for LibraryGrid. useShallow so the
@@ -397,6 +426,83 @@ export function usePresetImporters(): RegisteredPresetImporter[] {
   return useRegistry(useShallow((s) => Object.values(s.presetImporters)));
 }
 
+// ─── Preset-savable extension stages ────────────────────────────────────────
+// Core adjustments (exposure, crop, vignette …) live in DevelopParams and are
+// surfaced by the core preset fields, so only genuinely external extensions are
+// enumerated here — their params live in the generic paramBag and would
+// otherwise be invisible to (and silently bundled into) presets.
+
+/** One external processing stage's preset-savable metadata. */
+export interface PresetStageField {
+  stageId: string;
+  /** Stage display name, shown as the field label. */
+  label: string;
+  /** "global" looks are offered/pre-checked; "per-image" tools are hidden under
+   *  "Show all" and never pre-selected. */
+  scope: "global" | "per-image";
+  /** Qualified paramBag keys this stage owns (the keys a preset would carry). */
+  paramKeys: string[];
+  /** True when any owned key in `bag` differs from the stage's default. */
+  changed: boolean;
+}
+
+/** A built-in stage lives in the "core" / "core.*" extension namespace; its
+ *  adjustments are already represented by DevelopParams preset fields. */
+function isCoreExtension(extensionId: string): boolean {
+  return extensionId === "core" || extensionId.startsWith("core.");
+}
+
+function bagDiffersFromDefault(
+  value: unknown,
+  def: ParamDescriptor["default"],
+): boolean {
+  if (value === undefined) return false; // absent → still the default
+  return JSON.stringify(value) !== JSON.stringify(def);
+}
+
+/** Enumerate external processing stages that contribute preset-savable params,
+ *  each tagged with its scope and whether `bag` differs from the stage defaults.
+ *  Non-reactive snapshot — call it when opening the Save dialog. */
+export function collectPresetStages(
+  bag: Record<string, unknown>,
+): PresetStageField[] {
+  const stages = useRegistry.getState().processingStages;
+  const descsByStage = new Map<string, ParamDescriptor[]>();
+  for (const d of getAllDescriptors().values()) {
+    const arr = descsByStage.get(d.stageId);
+    if (arr) arr.push(d);
+    else descsByStage.set(d.stageId, [d]);
+  }
+
+  const out: PresetStageField[] = [];
+  for (const stage of Object.values(stages)) {
+    if (isCoreExtension(stage.extensionId)) continue;
+    const descs = descsByStage.get(stage.id);
+    if (!descs || descs.length === 0) continue; // no savable params
+    out.push({
+      stageId: stage.id,
+      label: stage.name,
+      scope: stage.presetScope ?? "global",
+      paramKeys: descs.map((d) => d.qualifiedKey),
+      changed: descs.some((d) => bagDiffersFromDefault(bag[d.qualifiedKey], d.default)),
+    });
+  }
+  out.sort((a, b) => a.label.localeCompare(b.label));
+  return out;
+}
+
+/** Display labels for the external stages whose params appear in a saved
+ *  preset's bag, for the preset tooltip. Best-effort: stages whose extension is
+ *  currently disabled resolve to nothing and are omitted. */
+export function describePresetBag(
+  bag: Record<string, unknown> | undefined,
+): string[] {
+  if (!bag || Object.keys(bag).length === 0) return [];
+  return collectPresetStages(bag)
+    .filter((s) => s.paramKeys.some((k) => k in bag))
+    .map((s) => s.label);
+}
+
 /** Remove every contribution an extension made (uninstall/deactivate). */
 export function unregisterExtension(extensionId: string): void {
   const drop = <T extends { extensionId: string }>(map: Record<string, T>) =>
@@ -419,11 +525,11 @@ export function unregisterExtension(extensionId: string): void {
     exportProcessors: drop(s.exportProcessors),
     filenameTemplates: drop(s.filenameTemplates),
     processingStages: drop(s.processingStages),
-    lensProfiles: drop(s.lensProfiles),
     catalogHooks: drop(s.catalogHooks),
     presetImporters: drop(s.presetImporters),
     gridFilters: drop(s.gridFilters),
     slots: drop(s.slots),
+    panelHeaderAccessories: drop(s.panelHeaderAccessories),
     librarySorts: drop(s.librarySorts),
   }));
   unregisterExtensionActions(extensionId);

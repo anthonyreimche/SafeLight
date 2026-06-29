@@ -462,6 +462,14 @@ export interface ProcessingStageContribution {
   /** Whether this stage participates in masked local adjustments. */
   mask?: { maskable: true; maskPhase: "linear" | "display" };
 
+  /** How this stage's params behave in presets. "global" (the default) is a
+   *  look that applies to any photo — e.g. a film sim or a curve — so it is
+   *  offered when saving a preset and pre-selected when changed. "per-image" is
+   *  tied to one photo's content — spatial tools like warp, heal or red-eye —
+   *  so it is excluded from presets by default and only surfaced under the Save
+   *  dialog's "Show all". Omit for ordinary global adjustments. */
+  presetScope?: "global" | "per-image";
+
   /** Stage IDs this one should run after (soft dependency — skipped if absent). */
   after?: string[];
 }
@@ -610,6 +618,40 @@ export interface SlotContribution {
 }
 
 // ---------------------------------------------------------------------------
+// Panel header accessories (a control on EVERY panel's dock header)
+// ---------------------------------------------------------------------------
+
+/** Identity of the panel a global header accessory is decorating. */
+export interface PanelHeaderContext {
+  panelId: string;
+  title: string;
+  /** Dock module the panel defaults into, if known. */
+  module?: "library" | "develop";
+  /** The extension that registered the panel ("host"/"core.*" for built-ins). */
+  extensionId: string;
+  /** True when the develop renderer can preview this panel's effect off — i.e.
+   *  it governs core adjustments or its extension owns a GPU stage. False for
+   *  panels with no image effect (Histogram, Edit, Presets), so a preview eye can
+   *  hide itself there. */
+  previewable: boolean;
+}
+
+/** A control rendered in EVERY panel's dock header (to the left of the title),
+ *  in addition to that panel's own headerAccessory. One component decorates all
+ *  panels — it receives each panel's identity via props and returns null to
+ *  render nothing for a given panel. Lets an extension add a uniform per-panel
+ *  affordance (e.g. a preview-off eye) without core knowing about it. Must
+ *  handle its own pointer events; the header ignores pointerdowns on buttons so
+ *  it won't start a panel drag. */
+export interface PanelHeaderAccessoryContribution {
+  /** Globally unique, e.g. "my-ext.eye". */
+  id: string;
+  component: ComponentType<PanelHeaderContext>;
+  /** Sort position among header accessories (lower = earlier). Default 100. */
+  order?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Cursors (generic — a shared cursor vocabulary + custom cursor images)
 // ---------------------------------------------------------------------------
 
@@ -669,9 +711,6 @@ export interface SafelightAPI {
   /** Contribute a filename template. Built-in variables are resolved by core;
    *  the template appears in the Export panel's filename template picker. */
   registerFilenameTemplate(c: FilenameTemplateContribution): void;
-  /** Register a lens profile that overrides or supplements the built-in Lensfun
-   *  database. Extensions with priority > 0 are checked before Lensfun. */
-  registerLensProfile(c: import("@/lens-profiles/types").LensProfileContribution): void;
   /** Subscribe to catalog lifecycle events (photo import / metadata change /
    *  edit commit / photo remove). Lets an extension own a side concern such as
    *  XMP sidecars without core depending on it. */
@@ -684,6 +723,13 @@ export interface SafelightAPI {
   registerGridFilter(c: GridFilterContribution): void;
   /** Render a component into a named core UI slot (e.g. the Library toolbar). */
   registerSlot(c: SlotContribution): void;
+  /** Remove a slot contribution this extension registered (by id). Lets a slot
+   *  come and go with feature state — e.g. dropping develop-detail controls when
+   *  a denoise method is "off" so the panel falls back to its built-in sliders. */
+  unregisterSlot(id: string): void;
+  /** Render a control in EVERY panel's dock header (e.g. a per-panel toggle).
+   *  The component receives each panel's identity; return null to skip a panel. */
+  registerPanelHeaderAccessory(c: PanelHeaderAccessoryContribution): void;
   /** Register a named cursor (a shared semantic token or a custom image) usable
    *  via api.develop.setCanvasCursor. Re-registering the same id replaces it. */
   registerCursor(c: CursorContribution): void;
@@ -699,6 +745,13 @@ export interface SafelightAPI {
   /** Reusable UI building blocks (Panel, Slider, Histogram, CurveEditor, Rating, Thumbnail). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   components: Record<string, ComponentType<any>>;
+  /** Shared, theme-styled UI primitives handed to extensions — Button, Select,
+   *  NumberInput, TextInput, TextArea, Toggle, SegmentedControl, Field, Section,
+   *  Card, Badge, ProgressBar, Row, Stack — plus `tokens` (canonical CSS-var
+   *  strings). Authored in core (where Tailwind is scanned) and rendered inside
+   *  the extension's own subtree, so they match the app. Prefer these over
+   *  hand-rolled inline-styled controls. */
+  ui: typeof import("./ui-kit").uiKit;
   /** Zustand hooks and the zustand `create` factory.
    *  useDevelopStore, useCatalogStore, useUIStore, useSettings,
    *  usePresetsStore, useKeybindings, useThemeStore, useLayoutStore,
@@ -716,6 +769,19 @@ export interface SafelightAPI {
   navigation: { goTo(module: "library" | "develop"): void };
   /** Read the current binding for any action id (built-in or extension). */
   keybindings: { getBinding(actionId: string): string };
+  /** Cursor vocabulary. `labels`: canonical human-facing names for the built-in
+   *  cursor tokens, keyed by token id (e.g. "pick", "zoom-in", "crop-move") — the
+   *  single source of truth for this wording, so a cursor-restyling extension
+   *  labels its controls to match the app. `resolve`: turn a token id (built-in or
+   *  one a cursor theme has overridden) into a concrete CSS `cursor` value — use it
+   *  to give an interactive overlay the SAME cursor the app uses (e.g.
+   *  `resolve("pick")` for an on-image colour picker) instead of hardcoding
+   *  "crosshair". An unknown token is returned as-is, so a raw CSS value passes
+   *  through. Non-reactive: read it at render. */
+  cursors: {
+    labels: Readonly<Record<string, string>>;
+    resolve(token: string): string;
+  };
   /** Develop-canvas integration for overlays (e.g. before/after comparison).
    *  `useDevelopOverlay` returns the displayed image rect + a change nonce
    *  (call from a "develop-canvas-overlay" component); `captureFrame` renders an
@@ -769,6 +835,9 @@ export interface NativeFsBridge {
   move(src: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   pickDirectory(): Promise<string | null>;
+  /** Reveal a path in the OS file manager — open a directory, or select a file
+   *  inside its parent folder. Resolves true on success. */
+  reveal(path: string): Promise<boolean>;
 }
 
 /** In-app updater. Privileged: install() fetches and runs a release installer

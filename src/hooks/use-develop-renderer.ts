@@ -23,8 +23,9 @@ import { useUIStore } from "@/state/ui-store";
 import { visiblePhotos } from "@/modules/library/visible-photos";
 import { getSettings, useSettings } from "@/state/settings-store";
 import { usePipelineStore } from "@/extensions/pipelines";
-import { applyPanelBypass } from "@/modules/develop/panel-bypass";
+import { applyPanelBypass, bypassParamBag } from "@/modules/develop/panel-bypass";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
+import { getExtSetting, useExtSettings } from "@/extensions/ext-settings";
 
 // Resolve the colour actually painted behind the image (the canvas surround) to
 // linear-display RGB in 0..1, by reading the surround element's computed
@@ -88,7 +89,9 @@ export function useDevelopRenderer(
   // the committed params for rendering only, without touching history.
   const params = useDevelopStore((s) => s.previewParams ?? s.params);
   // Generic param bag for extension-contributed processing stages (e.g. denoise).
-  const paramBag = useDevelopStore((s) => s.paramBag);
+  // A hover preview overrides it (paired with previewParams) so a preset's
+  // extension adjustments preview too, without touching the committed bag.
+  const paramBag = useDevelopStore((s) => s.previewParamBag ?? s.paramBag);
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   const cropping = useDevelopStore((s) => s.cropping);
   const showClipping = useDevelopStore((s) => s.showClipping);
@@ -97,14 +100,23 @@ export function useDevelopRenderer(
   const colorAssessment = useDevelopStore((s) => s.colorAssessment);
   const canvasSurround = useSettings((s) => s.canvasSurround);
   const canvasSurroundOverride = useSettings((s) => s.canvasSurroundOverride);
-  const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
   const hoveredMaskId = useDevelopStore((s) => s.hoveredMaskId);
   const selectedMaskId = useDevelopStore((s) => s.selectedMaskId);
   const maskTab = useDevelopStore((s) => s.maskTab);
+  // The brush tool being armed forces the coverage overlay on (see the viz
+  // effect): painting needs to see where the coverage lands even on the Adjust
+  // tab, where maskTab !== "coverage" would otherwise hide it.
+  const activeTool = useDevelopStore((s) => s.activeTool);
+  const maskToolType = useDevelopStore((s) => s.maskToolType);
   const sharpenViz = useDevelopStore((s) => s.sharpenViz);
   const bypassedPanels = useDevelopStore((s) => s.bypassedPanels);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
   const pipelineId = usePipelineStore((s) => s.activeId);
+  // Global HSL band shaping (Preferences ▸ HSL). Subscribe so the live view
+  // re-renders when the user drags the pref; 100 = the default 1.0 multiplier.
+  useExtSettings((s) => s["core.hsl"]);
+  const hslRangePref = getExtSetting("core.hsl", "hueRange", 100);
+  const hslSmoothPref = getExtSetting("core.hsl", "smoothness", 100);
 
   // Aspect of the image as actually decoded and shown on screen. We prefer the
   // real buffer dims (set from every image handed to the renderer) over
@@ -264,9 +276,8 @@ export function useDevelopRenderer(
         bridge.setImage(src, maxEdge, isFallback, cachedRaw);
       }
       const st = useDevelopStore.getState();
-      bridge.setLensProfile(st.resolvedLensProfile);
       bridge.setContributedParams({
-        ...st.paramBag,
+        ...bypassParamBag(st.paramBag, st.bypassedPanels),
         ...denoiseBag(applyPanelBypass(st.params, st.bypassedPanels)),
       });
       bridge.setParams(forRender(st.params, st.cropping));
@@ -278,9 +289,8 @@ export function useDevelopRenderer(
       if (cancelled) return;
       bridge.setAsShotTemperature(photo?.exif.colorTemperature ?? 6500);
       const st = useDevelopStore.getState();
-      bridge.setLensProfile(st.resolvedLensProfile);
       bridge.setContributedParams({
-        ...st.paramBag,
+        ...bypassParamBag(st.paramBag, st.bypassedPanels),
         ...denoiseBag(applyPanelBypass(st.params, st.bypassedPanels)),
       });
       bridge.setParams(forRender(st.params, st.cropping));
@@ -445,9 +455,9 @@ export function useDevelopRenderer(
     const bridge = bridgeRef.current;
     if (!bridge) return;
     bridge.setAsShotTemperature(asShotTemperature);
-    bridge.setLensProfile(resolvedLensProfile);
+    bridge.setHslStyle(hslRangePref / 100, hslSmoothPref / 100);
     bridge.setContributedParams({
-      ...paramBag,
+      ...bypassParamBag(paramBag, bypassedPanels),
       ...denoiseBag(applyPanelBypass(params, bypassedPanels)),
     });
     bridge.setParams(forRender(params, cropping));
@@ -468,7 +478,7 @@ export function useDevelopRenderer(
         extTimerRef.current = null;
       }
     };
-  }, [params, paramBag, cropping, pipelineId, asShotTemperature, resolvedLensProfile, aspect, bypassedPanels]);
+  }, [params, paramBag, cropping, pipelineId, asShotTemperature, aspect, bypassedPanels, hslRangePref, hslSmoothPref]);
 
   // A new photo starts from metadata aspect until its buffer decodes, so a
   // failed/slow decode never leaves the previous photo's aspect in place.
@@ -493,12 +503,17 @@ export function useDevelopRenderer(
     bridge.render(false);
   }, [colorAssessment, canvasSurround, canvasSurroundOverride]);
 
-  // Coverage overlay: shown when a mask row is hovered, or when the selected
-  // mask is open on the Coverage tab. Always red; the strength fades in/out.
+  // Coverage overlay: shown when a mask row is hovered, when the selected mask
+  // is open on the Coverage tab, or whenever the brush tool is armed on the
+  // selected mask (so a brush stroke always tints its coverage, including while
+  // the Adjust tab is open — otherwise refining a brush shows no feedback).
+  // Always red; the strength fades in/out.
   const vizAnim = useRef({ idx: -1, cur: 0, target: 0, raf: null as number | null });
   useEffect(() => {
+    const brushArmed = activeTool === "mask" && maskToolType === "brush";
     const vizId =
-      hoveredMaskId ?? (selectedMaskId && maskTab === "coverage" ? selectedMaskId : null);
+      hoveredMaskId ??
+      (selectedMaskId && (maskTab === "coverage" || brushArmed) ? selectedMaskId : null);
     const idx = vizId ? params.masks.findIndex((m) => m.id === vizId) : -1;
     const a = vizAnim.current;
     if (idx >= 0) a.idx = idx; // keep last index while fading out
@@ -517,7 +532,7 @@ export function useDevelopRenderer(
     return () => {
       if (a.raf != null) { cancelAnimationFrame(a.raf); a.raf = null; }
     };
-  }, [hoveredMaskId, selectedMaskId, maskTab, params.masks]);
+  }, [hoveredMaskId, selectedMaskId, maskTab, activeTool, maskToolType, params.masks]);
 
   // Sharpening preview: while Alt/Ctrl-dragging a Detail-panel sharpening slider,
   // the shader renders a grayscale visualization of that sub-signal. Push the mode

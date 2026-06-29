@@ -14,6 +14,7 @@ import { loadSavedEdit } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { getStageTextures } from "@/rendering/render-bridge";
+import { getExtSetting } from "@/extensions/ext-settings";
 import { resolveActivePipeline } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { applyOutputSharpening } from "./sharpen";
@@ -240,6 +241,11 @@ async function renderOne(
     // Cached develop preview is linear-encoded RAW; it needs the base tone curve.
     const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
     renderer.setAsShotTemperature(photo.exif.colorTemperature ?? 6500);
+    // Match Develop's HSL band shaping so exports look like the edited view.
+    renderer.setHslStyle(
+      getExtSetting("core.hsl", "hueRange", 100) / 100,
+      getExtSetting("core.hsl", "smoothness", 100) / 100,
+    );
     renderer.setImage(
       image.kind === "bitmap" ? image.bitmap : image,
       maxEdge,

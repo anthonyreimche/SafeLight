@@ -21,6 +21,10 @@ interface SliderProps {
   defaultValue?: number; // double-clicking the track resets to this
   hideValue?: boolean; // hide the editable numeric field
   compact?: boolean; // narrow label + value, for tight columns (e.g. color wheels)
+  // CSS background for the track (e.g. a hue/lightness gradient). When set, the
+  // filled bar is replaced by a thumb marker so the gradient stays visible —
+  // the Lightroom-style coloured HSL tracks. Plain sliders ignore this.
+  trackBackground?: string;
   onChange: (value: number) => void;
   onCommit?: () => void;
   // Fired with `true` when a drag is held with Alt or Ctrl down (and `false`
@@ -31,6 +35,21 @@ interface SliderProps {
 
 // Fine-control factor while Shift is held during a drag.
 const FINE = 0.2;
+
+// Keys that actually move a focused range input's value. onKeyUp commits only
+// after one of these, so global shortcuts that happen to release over a focused
+// slider — Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z — don't fire a spurious commitEdit
+// that re-snapshots the just-undone params and corrupts the history stack.
+const VALUE_KEYS = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
 
 export function Slider({
   label,
@@ -43,6 +62,7 @@ export function Slider({
   defaultValue = 0,
   hideValue = false,
   compact = false,
+  trackBackground,
   onChange,
   onCommit,
   onModifierPreview,
@@ -191,12 +211,27 @@ export function Slider({
       {/* sl-slider-wrap shows a focus ring (index.css) when the range input —
           which is opacity-0, so its own outline can't show — is keyboard-focused. */}
       <div className="sl-slider-wrap relative flex h-4 min-w-0 flex-1 select-none items-center rounded">
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
-          <div
-            className="h-full rounded-full bg-slider-fill"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
+        {trackBackground ? (
+          // Coloured track: the gradient IS the bar; a thumb marks the value so
+          // the whole hue/tone ramp stays readable (Lightroom-style HSL tracks).
+          <>
+            <div
+              className="h-1.5 w-full rounded-full ring-1 ring-inset ring-black/15"
+              style={{ background: trackBackground }}
+            />
+            <div
+              className="pointer-events-none absolute top-1/2 h-3.5 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow ring-1 ring-black/40"
+              style={{ left: `${pct}%` }}
+            />
+          </>
+        ) : (
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
+            <div
+              className="h-full rounded-full bg-slider-fill"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        )}
         <input
           id={sliderId}
           type="range"
@@ -210,7 +245,9 @@ export function Slider({
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
-          onKeyUp={onCommit}
+          onKeyUp={(e) => {
+            if (VALUE_KEYS.has(e.key)) onCommit?.();
+          }}
           onDoubleClick={reset}
           title="Drag to adjust · hold Shift for fine control · double-click to reset"
           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"

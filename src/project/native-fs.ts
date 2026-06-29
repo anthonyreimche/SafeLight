@@ -167,3 +167,11 @@ export async function pickNativeDirectory(): Promise<string | null> {
   if (!fs) return null;
   return fs.pickDirectory();
 }
+
+/** Reveal an absolute path in the OS file manager (open a directory, or select
+ *  a file in its parent folder). Returns false in the plain-browser build. */
+export async function revealNativePath(path: string): Promise<boolean> {
+  const fs = nativeFs();
+  if (!fs) return false;
+  return fs.reveal(path);
+}

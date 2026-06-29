@@ -33,14 +33,12 @@ import {
 
 export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
 import type { HistogramData } from "@/rendering/histogram";
-import type { ResolvedProfile } from "@/lens-profiles/types";
 import { catalogStorage } from "@/catalog/storage";
 import { broadcast } from "./broadcast";
 import { nextGuide, type CropGuide } from "@/modules/develop/crop-guides";
 import { emitEditCommit } from "@/extensions/registry";
 import { normalizeParamBag } from "@/extensions/param-registry";
 import { useCatalogStore } from "./catalog-store";
-import { resolveLensForPhoto } from "./lens-resolve";
 import { regenerateEditedThumbnail } from "./edited-thumbnail";
 
 interface DevelopState {
@@ -50,6 +48,12 @@ interface DevelopState {
    *  instead of `params` without touching history (used for preset hover
    *  preview). Cleared on mouse-out, on apply, and when switching photos. */
   previewParams: DevelopParams | null;
+  /** Render-only override for the extension param bag, paired with
+   *  `previewParams` for the preset hover preview. Holds the preset's
+   *  contributed params merged over the live bag, so a partial preset previews
+   *  its extension adjustments (e.g. a film sim) without dropping untouched
+   *  ones. Null when no preview is active; cleared whenever previewParams is. */
+  previewParamBag: Record<string, unknown> | null;
   /** Dynamic parameter bag keyed by qualified names (e.g. "core.exposure.exposure").
    *  During migration, kept in sync with `params` via a bidirectional bridge.
    *  Will become the sole representation once all stages are extracted. */
@@ -58,10 +62,6 @@ interface DevelopState {
   historyIndex: number;
   histogram: HistogramData | null;
   asShotTemperature: number;
-
-  // Resolved lens profile (ephemeral — recomputed per photo, not serialized).
-  resolvedLensProfile: ResolvedProfile | null;
-  detectedLensName: string | null;
 
   // Whether the guided-upright drawing overlay is open. Transient: guided can be
   // the selected upright mode without the line-drawing overlay capturing the
@@ -82,11 +82,18 @@ interface DevelopState {
   cycleCropGuide: () => void;
   cycleCropGuideFlip: () => void;
 
-  // Per-panel bypass (view-only, per-window): keyed by panel title. When a
-  // panel is bypassed the renderer neutralizes its params (see applyPanelBypass)
-  // without touching the stored edit, so the user can see its before/after.
+  // Per-panel preview-off (view-only, momentary): keyed by panel id. While a
+  // panel is bypassed the renderer neutralizes its contribution (see
+  // applyPanelBypass / bypassParamBag) without touching the stored edit, so the
+  // user can see the image without it. Deliberately NOT persisted — it only ever
+  // reflects a held button, so it must never survive a reload (and never reaches
+  // thumbnails/export, which would diverge from the saved edit). The eye UI lives
+  // in the optional "panel-click-to-toggle" extension; with no extension the map
+  // stays empty and nothing is bypassed.
   bypassedPanels: Record<string, boolean>;
-  togglePanelBypass: (title: string) => void;
+  /** Set a panel's preview-off state directly (used for press-and-hold). */
+  setPanelBypass: (panelId: string, on: boolean) => void;
+  togglePanelBypass: (panelId: string) => void;
 
   // Clipping overlay: bitmask (bit 0 = shadows, bit 1 = highlights).
   showClipping: 0 | 1 | 2 | 3;
@@ -180,8 +187,6 @@ interface DevelopState {
   updateSpot: (id: string, patch: Partial<RetouchSpot>) => void;
   removeSpot: (id: string) => void;
 
-  setResolvedLensProfile: (profile: ResolvedProfile | null, lensName: string | null) => void;
-
   setHistogram: (histogram: HistogramData | null) => void;
   loadEdit: (photoId: string, asShotTemperature?: number) => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
@@ -198,9 +203,13 @@ interface DevelopState {
     params: Partial<DevelopParams>,
     paramBag?: Record<string, unknown>,
   ) => Promise<void>;
-  /** Set (or clear with null) the render-only preview params. No history write,
-   *  no broadcast — purely local to the Develop canvas. */
-  setPreviewParams: (params: Partial<DevelopParams> | null) => void;
+  /** Set (or clear with null) the render-only preview params, optionally with a
+   *  preset's contributed param bag (previewed by merging over the live bag). No
+   *  history write, no broadcast — purely local to the Develop canvas. */
+  setPreviewParams: (
+    params: Partial<DevelopParams> | null,
+    paramBag?: Record<string, unknown> | null,
+  ) => void;
   commitEdit: (label: string) => Promise<void>;
   /** Reset just the given top-level param keys to their defaults (temperature
    *  falls back to the photo's as-shot WB), as one undoable edit. Backs the
@@ -262,12 +271,11 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   photoId: null,
   params: normalizeParams(undefined),
   previewParams: null,
+  previewParamBag: null,
   paramBag: {},
   history: [],
   historyIndex: -1,
   histogram: null,
-  resolvedLensProfile: null,
-  detectedLensName: null,
   asShotTemperature: 6500,
 
   guidedEditing: false,
@@ -286,15 +294,21 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   cycleCropGuideFlip: () =>
     set((s) => ({ cropGuideFlip: (s.cropGuideFlip + 1) % 4 })),
 
-  bypassedPanels: (() => {
-    try { return JSON.parse(localStorage.getItem("sl_panel_bypass") || "{}") as Record<string, boolean>; } catch { return {}; }
-  })(),
-  togglePanelBypass: (title) => {
+  bypassedPanels: {},
+  setPanelBypass: (panelId, on) => {
+    set((s) => {
+      if (!!s.bypassedPanels[panelId] === on) return s; // no-op, no re-render
+      const next = { ...s.bypassedPanels };
+      if (on) next[panelId] = true;
+      else delete next[panelId];
+      return { bypassedPanels: next };
+    });
+  },
+  togglePanelBypass: (panelId) => {
     set((s) => {
       const next = { ...s.bypassedPanels };
-      if (next[title]) delete next[title];
-      else next[title] = true;
-      try { localStorage.setItem("sl_panel_bypass", JSON.stringify(next)); } catch {}
+      if (next[panelId]) delete next[panelId];
+      else next[panelId] = true;
       return { bypassedPanels: next };
     });
   },
@@ -594,9 +608,6 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     pushEdit(get);
   },
 
-  setResolvedLensProfile: (profile, lensName) =>
-    set({ resolvedLensProfile: profile, detectedLensName: lensName }),
-
   setHistogram: (histogram) => set({ histogram }),
 
   async loadEdit(photoId: string, asShotTemperature?: number) {
@@ -625,10 +636,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         params: normalizeParams(stack[index].params),
         paramBag: normalizeParamBag(stack[index].paramBag),
         previewParams: null,
+        previewParamBag: null,
         history: stack,
         historyIndex: index,
-        resolvedLensProfile: null,
-        detectedLensName: null,
         guidedEditing: false,
       });
     } else {
@@ -641,6 +651,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         params: initial,
         paramBag: {},
         previewParams: null,
+        previewParamBag: null,
         history: [
           {
             timestamp: Date.now(),
@@ -650,14 +661,9 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
           },
         ],
         historyIndex: 0,
-        resolvedLensProfile: null,
-        detectedLensName: null,
         guidedEditing: false,
       });
     }
-
-    // Resolve lens profile from EXIF (async, non-blocking)
-    void resolveLensForPhoto(photoId);
   },
 
   setParam(key, value) {
@@ -722,6 +728,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   async applyPreset(params, paramBag) {
     set((s) => ({
       previewParams: null,
+      previewParamBag: null,
       params: normalizeParams(params),
       // Merge the preset's contributed params over the current bag (a partial
       // preset leaves untouched extension settings in place).
@@ -736,8 +743,17 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     await get().commitEdit("Preset");
   },
 
-  setPreviewParams(params) {
-    set({ previewParams: params ? normalizeParams(params) : null });
+  setPreviewParams(params, paramBag) {
+    set((s) => ({
+      previewParams: params ? normalizeParams(params) : null,
+      // Pair the bag with the param preview: merge the preset's contributed
+      // params over the live bag (so untouched extension settings stay), and
+      // clear it whenever the param preview clears.
+      previewParamBag:
+        params && paramBag
+          ? { ...s.paramBag, ...normalizeParamBag(paramBag) }
+          : null,
+    }));
   },
 
   async commitEdit(label: string) {

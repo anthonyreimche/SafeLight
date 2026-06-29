@@ -10,7 +10,6 @@ import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
 import { useDevelopStore } from "@/state/develop-store";
 import { useSettings } from "@/state/settings-store";
 import {
-  buildLensDistort,
   fitCropToImage,
   maxCropForTransform,
   transformedViewCrop,
@@ -23,6 +22,7 @@ import {
 import { computeGuidedCorrection } from "@/rendering/upright";
 import { ViewportImage } from "@/ui/ViewportImage";
 import { Slot } from "@/extensions/Slot";
+import { useCanvasGesture } from "@/state/canvas-gesture";
 import { DevelopOverlayProvider } from "@/extensions/develop-host";
 import type { OverlayRect } from "@/extensions/develop-host";
 import { CropOverlay } from "./CropOverlay";
@@ -30,15 +30,36 @@ import { GuidedOverlay } from "./GuidedOverlay";
 import { MaskOverlay } from "./MaskOverlay";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
 import { sampleLinearRGB } from "@/rendering/sample-pixel";
+import { getExtSetting } from "@/extensions/ext-settings";
 
 // HSL hue centers matching the shader
 const HSL_CENTERS = [0, 30, 60, 120, 180, 240, 280, 320];
 
-// Calculate weights for each HSL channel at a given hue (same formula as shader)
-function getHSLWeights(hueDeg: number): number[] {
-  return HSL_CENTERS.map((center) => {
-    const dist = Math.abs(((hueDeg - center + 540) % 360) - 180);
-    return Math.max(0, 1 - dist / 35);
+// Circular gaps from each center to its prev/next neighbour — must match the
+// shader's HSL_DPREV/HSL_DNEXT in applyHSL (shaders.ts).
+const HSL_DPREV = [40, 30, 30, 60, 60, 60, 40, 40];
+const HSL_DNEXT = [30, 30, 60, 60, 60, 40, 40, 40];
+
+// Per-band influence at a given hue — the SAME hat weights the shader's applyHSL
+// uses, including the Preferences ▸ HSL range/smoothness shaping (`range` scales
+// the band half-widths, `smooth` blends linear↔smoothstep). Keeping this in
+// lockstep with hslBandWeight (shaders.ts) is what makes the on-image target tool
+// honest: the sliders move exactly as much as the pixels under the cursor change.
+// range=1, smooth=1 reproduces the default partition-of-unity bands.
+function getHSLWeights(hueDeg: number, range: number, smoothness: number): number[] {
+  return HSL_CENTERS.map((center, i) => {
+    const d = (((hueDeg - center + 540) % 360) - 180); // signed -180..180
+    const dp = HSL_DPREV[i] * range;
+    const dn = HSL_DNEXT[i] * range;
+    let t: number;
+    if (d <= 0) {
+      if (d <= -dp) return 0;
+      t = (d + dp) / dp;
+    } else {
+      if (d >= dn) return 0;
+      t = 1 - d / dn;
+    }
+    return (1 - smoothness) * t + smoothness * (t * t * (3 - 2 * t));
   });
 }
 
@@ -104,8 +125,16 @@ export function DevelopCanvas({
   }, [previewParams]);
 
   const cropping = useDevelopStore((s) => s.cropping);
+  // While the Crop/Transform panel's preview-off eye is held, the renderer shows
+  // the un-cropped / un-transformed frame; hide the interactive overlay so its
+  // handles (read from the live, un-bypassed edit) don't float over it.
+  const cropBypassed = useDevelopStore((s) => !!s.bypassedPanels["core.crop"]);
+  const transformBypassed = useDevelopStore((s) => !!s.bypassedPanels["core.transform"]);
   const colorAssessment = useDevelopStore((s) => s.colorAssessment);
   const activeTool = useDevelopStore((s) => s.activeTool);
+  // While a pan/zoom gesture key is held, force the extension-overlay slot
+  // click-through (global passthrough — see canvas-gesture + ViewportImage).
+  const overlayPassthrough = useCanvasGesture((s) => s.zoomGesture);
   const crop = useDevelopStore((s) => s.params.crop);
   const straighten = useDevelopStore((s) => s.params.straighten);
   const transform = useDevelopStore((s) => s.params.transform);
@@ -116,8 +145,6 @@ export function DevelopCanvas({
   const uprightMode = useDevelopStore((s) => s.params.uprightMode);
   const guidedEditing = useDevelopStore((s) => s.guidedEditing);
   const guidedLines = useDevelopStore((s) => s.params.guidedLines);
-  const lensCorrection = useDevelopStore((s) => s.params.lensCorrection);
-  const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
   const wbPicking = useDevelopStore((s) => s.wbPicking);
@@ -156,7 +183,11 @@ export function DevelopCanvas({
 
     const [r, g, bVal] = rgb;
     const hueDeg = rgbToHue(r, g, bVal);
-    const weights = getHSLWeights(hueDeg);
+    const weights = getHSLWeights(
+      hueDeg,
+      getExtSetting("core.hsl", "hueRange", 100) / 100,
+      getExtSetting("core.hsl", "smoothness", 100) / 100,
+    );
 
     // Store initial slider values for all channels
     dragState.current = {
@@ -177,19 +208,19 @@ export function DevelopCanvas({
 
     const dy = by - dragState.current.startY;
 
-    // Drag up/down adjusts the selected band (sensitivity: 0.5 per pixel)
-    // Up = increase value
-    const delta = -dy * 0.5;
+    // Drag up/down adjusts the selected band. Sensitivity (units per pixel) is a
+    // user preference (Preferences ▸ HSL). Up = increase value.
+    const sensitivity = getExtSetting("core.hsl", "pickerSensitivity", 0.5);
+    const delta = -dy * sensitivity;
 
-    // Apply weighted adjustments to all channels based on selected band
+    // Spread the drag across channels by their normalized influence — the same
+    // weights the shader blends with, so the slider moves match the pixel change.
     dragState.current.weights.forEach((weight, i) => {
       if (weight < 0.01) return; // Skip channels with negligible influence
 
       const channel = HSL_CHANNELS[i];
-      const effectiveWeight = weight * weight; // Square for smoother falloff
-
       const initialValue = dragState.current!.initialValues[selectedHslBand === "hue" ? "hue" : selectedHslBand === "saturation" ? "sat" : "lum"][i];
-      const newValue = initialValue + delta * effectiveWeight;
+      const newValue = initialValue + delta * weight;
 
       setHslValue(selectedHslBand, channel, Math.max(-100, Math.min(100, newValue)));
     });
@@ -212,12 +243,6 @@ export function DevelopCanvas({
       : photo.height > 0
         ? photo.width / photo.height
         : 1;
-
-  // Lens distortion in CPU form so the crop constraint tests against the exact
-  // warped image the renderer draws (matching its non-linear, possibly concave
-  // boundary), rather than a uniform-inset approximation that let the crop be
-  // dragged into the black margins. null when no distortion is active.
-  const lensDistort = buildLensDistort(lensCorrection, resolvedLensProfile, imageAspect);
 
   // Inverse transform (transformed coord -> source UV) for crop constraints, the
   // forward transform (image quad) for the move clamp, and the view region
@@ -326,7 +351,7 @@ export function DevelopCanvas({
           : null
       }
       overlay={
-        cropping
+        cropping && !cropBypassed && !transformBypassed
           ? (rect) => (
               <CropOverlay
                 rect={rect}
@@ -334,7 +359,7 @@ export function DevelopCanvas({
                 viewCrop={viewCrop}
                 inv={invRaw}
                 forward={forwardRaw}
-                distort={lensDistort}
+                distort={null}
                 straightenDeg={straighten}
                 aspect={cropAspect === -1 ? imageAspect : cropAspect}
                 imageAspect={imageAspect}
@@ -354,7 +379,6 @@ export function DevelopCanvas({
                       fitCropToImage(
                         crop,
                         buildInverseTransform(deg, transform, imageAspect),
-                        lensDistort,
                       ),
                     );
                   }
@@ -362,7 +386,7 @@ export function DevelopCanvas({
                 }}
               />
             )
-          : uprightMode === "guided" && guidedEditing
+          : uprightMode === "guided" && guidedEditing && !transformBypassed
             ? (rect) => (
                 <GuidedOverlay
                   rect={rect}
@@ -391,7 +415,6 @@ export function DevelopCanvas({
                           guidedInv,
                           st.cropAspect === -1 ? imageAspect : st.cropAspect,
                           imageAspect,
-                          lensDistort,
                         ),
                       );
                     }
@@ -414,9 +437,18 @@ export function DevelopCanvas({
       }
     />
       {/* Extension overlay layer (e.g. before/after split). Click-through by
-          default; interactive children opt back in via pointerEvents. */}
+          default; interactive children opt back in via pointerEvents. While a
+          zoom-gesture key (Ctrl/⌘/Space) is held, the whole subtree is forced
+          click-through so pan/zoom underneath works under ANY extension overlay
+          — the global passthrough trait, so extensions don't each re-implement it. */}
       <DevelopOverlayProvider value={overlayState}>
-        <div className="pointer-events-none absolute inset-0">
+        <div
+          className={
+            overlayPassthrough
+              ? "canvas-overlay-passthrough absolute inset-0"
+              : "pointer-events-none absolute inset-0"
+          }
+        >
           <Slot name="develop-canvas-overlay" />
         </div>
       </DevelopOverlayProvider>

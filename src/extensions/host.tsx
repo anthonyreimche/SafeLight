@@ -17,14 +17,15 @@ import {
   registerGridFilter,
   registerLayout,
   registerLibrarySort,
-  registerLensProfile,
   registerPanel,
+  registerPanelHeaderAccessory,
   registerPipeline,
   registerPresetImporter,
   registerProcessingStage,
   unregisterProcessingStage,
   registerSettings,
   registerSlot,
+  unregisterSlot,
   registerSliderIcon,
   registerTheme,
 } from "./registry";
@@ -50,7 +51,10 @@ import {
   contributionToSpec,
   registerCursor,
   setCanvasCursor,
+  resolveCursorCss,
+  CURSOR_LABELS,
 } from "@/state/cursor-store";
+import { uiKit } from "./ui-kit";
 import {
   checkAllExtensionUpdates,
   EXT_UPDATE_POLL_MS,
@@ -95,11 +99,13 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerSettings: (c) => registerSettings(extensionId, c),
     registerExportProcessor: (c) => registerExportProcessor(extensionId, c),
     registerFilenameTemplate: (c) => registerFilenameTemplate(extensionId, c),
-    registerLensProfile: (c) => registerLensProfile(extensionId, c),
     registerCatalogHooks: (c) => registerCatalogHooks(extensionId, c),
     registerPresetImporter: (c) => registerPresetImporter(extensionId, c),
     registerGridFilter: (c) => registerGridFilter(extensionId, c),
     registerSlot: (c) => registerSlot(extensionId, c),
+    unregisterSlot: (id) => unregisterSlot(extensionId, id),
+    registerPanelHeaderAccessory: (c) =>
+      registerPanelHeaderAccessory(extensionId, c),
     registerCursor: (c) => registerCursor(extensionId, c),
     registerLibrarySort: (c) => registerLibrarySort(extensionId, c),
     settings: {
@@ -108,6 +114,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       onChange: (cb) => onExtSettingChange(extensionId, cb),
     },
     components: { Panel, Slider, Histogram, CurveEditor, Rating, Thumbnail },
+    ui: uiKit,
     stores: {
       useDevelopStore,
       useCatalogStore,
@@ -128,6 +135,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     preferences: { open: openPreferences, close: closePreferences, toggle: togglePreferences },
     navigation: { goTo: (module) => useUIStore.getState().setActiveModule(module) },
     keybindings: { getBinding },
+    cursors: { labels: CURSOR_LABELS, resolve: (token) => resolveCursorCss(token) },
     develop: {
       useDevelopOverlay,
       captureFrame: captureDevelopFrame,

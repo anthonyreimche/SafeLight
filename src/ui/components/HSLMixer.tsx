@@ -32,14 +32,81 @@ export interface HSLMixerProps {
   // Controlled band selection (for syncing with picker)
   selectedBand?: HSLBand;
   onBandChange?: (band: HSLBand) => void;
+  // "tabs": one band at a time (Hue|Sat|Lum). "all": every band stacked, the
+  // Lightroom "All" layout. Defaults to "tabs".
+  view?: "tabs" | "all";
+}
+
+// The 8 colour sliders for one band. Shared by the tabbed and "all" layouts.
+function BandSliders({
+  band,
+  value,
+  onChange,
+  onCommit,
+}: {
+  band: HSLBand;
+  value: HSLAdjustments;
+  onChange: HSLMixerProps["onChange"];
+  onCommit: HSLMixerProps["onCommit"];
+}) {
+  return (
+    <div className="space-y-0.5">
+      {HSL_CHANNELS.map((channel) => (
+        <div key={channel} className="flex items-center gap-1.5">
+          <span
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ background: HSL_CHANNEL_COLORS[channel] }}
+          />
+          <div className="flex-1">
+            <Slider
+              label=""
+              ariaLabel={`${channel} ${band}`}
+              value={value[band][channel]}
+              min={-100}
+              max={100}
+              onChange={(v) => onChange(band, channel, v)}
+              onCommit={() => onCommit(channel)}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 // Controlled 8-band hue/sat/lum mixer. Shared by the global HSL panel and
 // per-mask HSL sub-panels; state lives with the caller.
-export function HSLMixer({ value, onChange, onCommit, selectedBand, onBandChange }: HSLMixerProps) {
+export function HSLMixer({
+  value,
+  onChange,
+  onCommit,
+  selectedBand,
+  onBandChange,
+  view = "tabs",
+}: HSLMixerProps) {
   const [internalBand, setInternalBand] = useState<HSLBand>("hue");
   const band = selectedBand ?? internalBand;
   const setBand = onBandChange ?? setInternalBand;
+
+  if (view === "all") {
+    return (
+      <div className="space-y-3">
+        {BANDS.map((b) => (
+          <div key={b.key}>
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+              {b.key}
+            </div>
+            <BandSliders
+              band={b.key}
+              value={value}
+              onChange={onChange}
+              onCommit={onCommit}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <>
@@ -60,26 +127,12 @@ export function HSLMixer({ value, onChange, onCommit, selectedBand, onBandChange
         ))}
       </div>
 
-      <div className="space-y-0.5">
-        {HSL_CHANNELS.map((channel) => (
-          <div key={channel} className="flex items-center gap-1.5">
-            <span
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ background: HSL_CHANNEL_COLORS[channel] }}
-            />
-            <div className="flex-1">
-              <Slider
-                label=""
-                value={value[band][channel]}
-                min={-100}
-                max={100}
-                onChange={(v) => onChange(band, channel, v)}
-                onCommit={() => onCommit(channel)}
-              />
-            </div>
-          </div>
-        ))}
-      </div>
+      <BandSliders
+        band={band}
+        value={value}
+        onChange={onChange}
+        onCommit={onCommit}
+      />
     </>
   );
 }

@@ -81,7 +81,10 @@ const PANEL_DEFS: { id: MaskPanelId; label: string; sliders?: SliderDef[] }[] = 
       { key: "contrast", label: "Contrast" },
       { key: "highlights", label: "Highlights" },
       { key: "shadows", label: "Shadows" },
+      { key: "whites", label: "Whites" },
+      { key: "blacks", label: "Blacks" },
       { key: "saturation", label: "Saturation" },
+      { key: "vibrance", label: "Vibrance" },
     ],
   },
   {
@@ -98,7 +101,9 @@ const PANEL_DEFS: { id: MaskPanelId; label: string; sliders?: SliderDef[] }[] = 
     id: "detail",
     label: "Detail",
     sliders: [
+      { key: "texture", label: "Texture" },
       { key: "clarity", label: "Clarity" },
+      { key: "dehaze", label: "Dehaze" },
       { key: "sharpness", label: "Sharpness" },
     ],
   },

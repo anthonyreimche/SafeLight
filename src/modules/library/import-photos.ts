@@ -28,7 +28,7 @@ import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
 import { extractColorTemperature, lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
 import { decodePoolSize } from "@/raw/decode-pool";
 import { rotateFloatRGBA } from "@/catalog/orient";
-import { cachedKeys, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
+import { cachedKeys, deleteCachedPreview, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
 import { getSettings, type PreviewSource } from "@/state/settings-store";
 import { catalogStorage } from "@/catalog/storage";
 
@@ -582,6 +582,112 @@ export async function rebuildThumbnails(
     onProgress?.(++done, todo.length);
     await new Promise<void>((res) => setTimeout(res, 0));
   }
+}
+
+/**
+ * Re-import photos from disk: re-read each source file, refresh its EXIF and
+ * file metadata, regenerate the grid preview at the current Thumbnail quality,
+ * and invalidate the develop-preview cache so the next Develop open re-decodes
+ * the (possibly changed) pixels. User curation — rating, label, flag, keywords,
+ * manual rotation — and develop edits are preserved (they key off the stable
+ * photo id, not the file). Updates each record in place via `onReimported`,
+ * persists, and reports progress. Sequential; one failure doesn't stop the rest.
+ * Returns how many succeeded / failed.
+ */
+export async function reimportPhotos(
+  photos: CatalogPhoto[],
+  onProgress?: (done: number, total: number) => void,
+  onReimported?: (photo: CatalogPhoto) => void,
+): Promise<{ ok: number; failed: number }> {
+  const todo = photos.filter((p) => p.fileHandle);
+  let done = 0;
+  let ok = 0;
+  let failed = 0;
+  onProgress?.(0, todo.length);
+  for (const photo of todo) {
+    try {
+      const file = await photo.fileHandle!.getFile();
+
+      // Drop the stale develop-preview cache entry so the next Develop open
+      // re-decodes from the current file. The key folds in fileSize, so a
+      // changed file already misses — this also covers a same-size edit.
+      await deleteCachedPreview(
+        rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0),
+      );
+
+      // Refresh file-derived metadata. Re-parse EXIF (date / orientation /
+      // camera) and pull the as-shot WB temperature for RAW (metadata-only).
+      // Deliberately does NOT re-seed rating / label / keywords from XMP — those
+      // are the user's curation now, not the file's.
+      const exif = await parseExif(file);
+      if (!exif.imageDescription) {
+        const xmp = await parseXmp(file);
+        if (xmp.title) exif.imageDescription = xmp.title;
+      }
+      if (isRawFile(file) && !exif.colorTemperature) {
+        try {
+          const kelvin = await extractColorTemperature(await file.arrayBuffer());
+          if (kelvin) exif.colorTemperature = kelvin;
+        } catch { /* non-critical */ }
+      }
+
+      const meta: CatalogPhoto = {
+        ...photo,
+        fileSize: file.size,
+        mimeType: file.type || mimeTypeFromName(file.name) || photo.mimeType,
+        exif,
+        dateCreated: parseExifDate(exif.dateTimeOriginal) ?? file.lastModified,
+      };
+
+      const decoded = await decodeImportBitmap(file, exif.orientation).catch(() => null);
+      if (!decoded) {
+        // The file is readable but undecodable right now — keep the existing
+        // preview, just surface the reason. (A missing/locked file throws above
+        // and counts as a failure with nothing changed.)
+        const updated: CatalogPhoto = { ...meta, decodeError: decodeFailureReason(file) };
+        await catalogStorage().putPhoto(updated);
+        onReimported?.(updated);
+        failed++;
+        onProgress?.(++done, todo.length);
+        continue;
+      }
+
+      const { bitmap, oriented, colorTemperature } = decoded;
+      if (colorTemperature && !meta.exif.colorTemperature) {
+        meta.exif.colorTemperature = colorTemperature;
+      }
+      // Keep the photo's canonical rotation (EXIF + manual); bake only what this
+      // decode hasn't already applied — subtract the EXIF portion when pre-oriented.
+      const rotation = photo.rotation ?? orientationToRotation(exif.orientation);
+      const bakeRotation = oriented
+        ? normalizeRotation(rotation - orientationToRotation(exif.orientation))
+        : rotation;
+      const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
+      const swap = bakeRotation === 90 || bakeRotation === 270;
+      const width = swap ? bitmap.height : bitmap.width;
+      const height = swap ? bitmap.width : bitmap.height;
+      bitmap.close();
+
+      const updated: CatalogPhoto = {
+        ...meta,
+        thumbnailBlob: thumb,
+        thumbnailUrl: URL.createObjectURL(thumb),
+        width,
+        height,
+        rotation,
+        decodeError: undefined,
+      };
+      await catalogStorage().putPhoto(updated); // writes the preview + persists
+      onReimported?.(updated);
+      ok++;
+    } catch (e) {
+      console.warn(`[import] re-import failed: ${photo.filename}`, e);
+      failed++;
+    }
+    onProgress?.(++done, todo.length);
+    await new Promise<void>((res) => setTimeout(res, 0));
+  }
+  return { ok, failed };
 }
 
 /**

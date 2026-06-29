@@ -3,60 +3,30 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import type { CropRect, LensCorrectionParams } from "@/catalog/types";
-import type { ResolvedProfile } from "@/lens-profiles/types";
-import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
+import type { CropRect } from "@/catalog/types";
 import { mat3Apply, type Mat3, type Vec2 } from "./transform";
 
 export type { Vec2 } from "./transform";
 
-// Lens distortion correction expressed in CPU form, mirroring lensCorrectedUV in
-// shaders.ts so the crop constraint sees the SAME warped image the renderer draws
-// (uniform-inset approximations let the crop be dragged into the black margins a
-// curved distortion leaves behind). `model`: 1=poly3, 2=poly5, 3=ptlens, 0=none.
+// A radial (Lensfun-style) distortion descriptor in CPU form, so the crop
+// constraint can fit against a warped image boundary instead of a uniform inset.
+// Currently dormant: core no longer applies lens distortion (it moved to the Lens
+// Correction extension), so callers pass `null` and the crop sees the undistorted
+// image. Kept as generic geometry infrastructure for a future hook that lets an
+// extension inform the crop tool. `model`: 1=poly3, 2=poly5, 3=ptlens, 0=none.
 export interface LensDistort {
   model: number;
   a: number;
   b: number;
   c: number;
-  manual: number; // additive manual-slider distortion (matches uLensDistortion)
+  manual: number; // additive manual-slider distortion
   autoCropScale: number; // >= 1; zoom that hides the corrected borders
   aspect: number; // image width/height, for the aspect-correct radius
 }
 
-// Build the distortion descriptor exactly as the renderer configures its
-// uniforms (see renderer.ts setParams), or null when no distortion is in play.
-export function buildLensDistort(
-  lc: LensCorrectionParams,
-  profile: ResolvedProfile | null,
-  aspect: number,
-): LensDistort | null {
-  if (lc.mode === "off") return null;
-  const useProfile =
-    lc.mode === "profile" && !!profile?.distortion && lc.distortionEnabled;
-  let model = 0;
-  let a = 0;
-  let b = 0;
-  let c = 0;
-  let autoCropScale = 1;
-  if (useProfile && profile?.distortion) {
-    const d = profile.distortion;
-    model = d.model === "poly3" ? 1 : d.model === "poly5" ? 2 : 3;
-    a = d.k[0] ?? 0;
-    b = d.k.length > 1 ? d.k[1] : (d.k[0] ?? 0);
-    c = d.k[2] ?? 0;
-    // Auto-crop only applies to profile distortion and only when enabled — the
-    // renderer gates uLensAutoCropScale the same way.
-    if (lc.autoCrop) autoCropScale = computeAutoCropScale(d.model, d.k, lc.distortion, aspect);
-  }
-  const manual = lc.distortion; // additive in both profile and manual modes
-  if (model === 0 && Math.abs(manual) <= 0.001) return null;
-  return { model, a, b, c, manual, autoCropScale, aspect };
-}
-
 // Source UV -> sampled source UV after distortion correction. Black appears
-// wherever this lands outside [0,1]², so this is exactly the renderer's
-// validity test. Mirrors lensCorrectedUV (incl. lensRadius) in shaders.ts.
+// wherever this lands outside [0,1]², matching how a radial distortion warp
+// shifts the valid-image boundary.
 function lensCorrectUV(u: Vec2, d: LensDistort): Vec2 {
   const cx = u.x - 0.5;
   const cy = u.y - 0.5;
