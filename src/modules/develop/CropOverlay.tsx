@@ -6,7 +6,7 @@
 import { useRef, useState } from "react";
 import type { CropRect } from "@/catalog/types";
 import { constrainCropToImage, type LensDistort } from "@/rendering/crop-transform";
-import type { Mat3 } from "@/rendering/transform";
+import { mat3Apply, type Mat3 } from "@/rendering/transform";
 import { guideShapes, type CropGuide } from "./crop-guides";
 import { resolveCursorCss } from "@/state/cursor-store";
 import { frameLocalPoint } from "@/ui/frame-point";
@@ -140,6 +140,30 @@ export function CropOverlay({
   const bw = br.x - tl.x;
   const bh = br.y - tl.y;
 
+  // Dim only the cropped-out parts of the actual PHOTO. Its on-screen bounds are
+  // the forward-mapped image quad — NOT the displayed buffer rect (`rect`), which
+  // transformedViewCrop pads ~6% with a surround-coloured margin so the photo
+  // isn't framed in black. Dimming that margin is what drew a dark frame around
+  // the photo (and, in Assess, greyed the strip against the white mat); bounding
+  // the dim to the photo keeps the margin matching the surround. For a
+  // straightened photo this is the quad's axis-aligned bounding box.
+  const imgPts = [
+    mat3Apply(forward, 0, 0),
+    mat3Apply(forward, 1, 0),
+    mat3Apply(forward, 1, 1),
+    mat3Apply(forward, 0, 1),
+  ].map((t) => toScreen(t.x, t.y));
+  const imgL = Math.min(imgPts[0].x, imgPts[1].x, imgPts[2].x, imgPts[3].x);
+  const imgR = Math.max(imgPts[0].x, imgPts[1].x, imgPts[2].x, imgPts[3].x);
+  const imgT = Math.min(imgPts[0].y, imgPts[1].y, imgPts[2].y, imgPts[3].y);
+  const imgB = Math.max(imgPts[0].y, imgPts[1].y, imgPts[2].y, imgPts[3].y);
+  // Crop edges clamped to the photo so a free crop dragged past the edge can't
+  // spill the dim onto the surround margin.
+  const dimL = clamp(bx, imgL, imgR);
+  const dimR = clamp(bx + bw, imgL, imgR);
+  const dimT = clamp(by, imgT, imgB);
+  const dimB = clamp(by + bh, imgT, imgB);
+
   const cornerHandles: { id: Handle; x: number; y: number }[] = [
     { id: "nw", x: bx, y: by },
     { id: "ne", x: bx + bw, y: by },
@@ -262,10 +286,10 @@ export function CropOverlay({
       }}
     >
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute" style={{ left: 0, top: 0, right: 0, height: Math.max(0, by), background: DIM }} />
-        <div className="absolute" style={{ left: 0, top: by + bh, right: 0, bottom: 0, background: DIM }} />
-        <div className="absolute" style={{ left: 0, top: by, width: Math.max(0, bx), height: bh, background: DIM }} />
-        <div className="absolute" style={{ left: bx + bw, top: by, right: 0, height: bh, background: DIM }} />
+        <div className="absolute" style={{ left: imgL, top: imgT, width: Math.max(0, imgR - imgL), height: Math.max(0, dimT - imgT), background: DIM }} />
+        <div className="absolute" style={{ left: imgL, top: dimB, width: Math.max(0, imgR - imgL), height: Math.max(0, imgB - dimB), background: DIM }} />
+        <div className="absolute" style={{ left: imgL, top: dimT, width: Math.max(0, dimL - imgL), height: Math.max(0, dimB - dimT), background: DIM }} />
+        <div className="absolute" style={{ left: dimR, top: dimT, width: Math.max(0, imgR - dimR), height: Math.max(0, dimB - dimT), background: DIM }} />
       </div>
 
       <div

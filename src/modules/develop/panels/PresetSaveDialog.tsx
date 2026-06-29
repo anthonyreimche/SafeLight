@@ -5,11 +5,15 @@
 
 import { useMemo, useRef, useState, useEffect } from "react";
 import type { DevelopParams } from "@/catalog/types";
-import { presetFields, buildPartialParams } from "../preset-summary";
+import { collectPresetStages } from "@/extensions/registry";
+import { presetFields, buildPartialParams, buildPartialBag } from "../preset-summary";
 
 interface Props {
   /** Live params the preset is captured from. */
   params: DevelopParams;
+  /** Live extension-stage params, offered as savable fields alongside the core
+   *  adjustments. */
+  paramBag: Record<string, unknown>;
   /** Existing group names, offered as autocomplete. */
   groups: string[];
   initialName?: string;
@@ -20,15 +24,19 @@ interface Props {
     name: string;
     group: string;
     params: Partial<DevelopParams>;
+    paramBag: Record<string, unknown>;
   }) => void;
   onCancel: () => void;
 }
 
 /** Save Preset dialog: name + group + a checklist of which adjustments to keep,
- *  so a preset can carry as little as a single slider. Changed adjustments are
- *  pre-checked. Modeled on the app's modal pattern (see LensPickerDialog). */
+ *  so a preset can carry as little as a single slider. Changed global
+ *  adjustments are pre-checked; per-image edits (crop, retouch, spatial
+ *  extension tools) are offered only under "Show all". Modeled on the app's
+ *  modal pattern. */
 export function PresetSaveDialog({
   params,
+  paramBag,
   groups,
   initialName,
   initialGroup,
@@ -36,17 +44,27 @@ export function PresetSaveDialog({
   onSave,
   onCancel,
 }: Props) {
-  const fields = useMemo(() => presetFields(params), [params]);
+  const fields = useMemo(
+    () => presetFields(params, collectPresetStages(paramBag)),
+    [params, paramBag],
+  );
   const [name, setName] = useState(initialName ?? "");
   const [group, setGroup] = useState(initialGroup ?? "");
   const [showAll, setShowAll] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(fields.filter((f) => f.changed).map((f) => f.id)),
+    () =>
+      new Set(
+        fields.filter((f) => f.scope !== "per-image" && f.changed).map((f) => f.id),
+      ),
   );
   const nameRef = useRef<HTMLInputElement>(null);
   useEffect(() => nameRef.current?.focus(), []);
 
-  const visible = showAll ? fields : fields.filter((f) => f.changed);
+  // By default only changed global adjustments show; per-image edits appear
+  // (unchecked) under "Show all".
+  const visible = showAll
+    ? fields
+    : fields.filter((f) => f.scope !== "per-image" && f.changed);
   const toggle = (id: string) =>
     setSelected((s) => {
       const next = new Set(s);
@@ -62,6 +80,7 @@ export function PresetSaveDialog({
       name: name.trim(),
       group: group.trim(),
       params: buildPartialParams(params, fields, selected),
+      paramBag: buildPartialBag(paramBag, fields, selected),
     });
   };
 
@@ -130,6 +149,11 @@ export function PresetSaveDialog({
                   onChange={() => toggle(f.id)}
                 />
                 <span className="min-w-0 flex-1 truncate">{f.label}</span>
+                {f.extension && f.scope === "per-image" && (
+                  <span className="shrink-0 text-[10px] text-[var(--color-text-tertiary)]">
+                    per-image
+                  </span>
+                )}
                 {f.value && (
                   <span className="shrink-0 tabular-nums text-[var(--color-text-tertiary)]">
                     {f.value}

@@ -26,6 +26,7 @@ const privileged = {
     move: (src, dest) => ipcRenderer.invoke("fs:move", String(src), String(dest)),
     exists: (p) => ipcRenderer.invoke("fs:exists", String(p)),
     pickDirectory: () => ipcRenderer.invoke("fs:pickDirectory"),
+    reveal: (p) => ipcRenderer.invoke("fs:reveal", String(p)),
   },
 };
 

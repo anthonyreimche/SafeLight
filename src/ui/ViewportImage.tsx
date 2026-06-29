@@ -15,6 +15,7 @@ import {
 } from "react";
 import { isEditableTarget, shortcutsSuspended } from "@/state/keybindings-store";
 import { resolveCursorCss, useCanvasCursor } from "@/state/cursor-store";
+import { useCanvasGesture, setCanvasZoomGesture } from "@/state/canvas-gesture";
 import { frameLocalPoint } from "@/ui/frame-point";
 
 interface ViewportImageProps {
@@ -115,9 +116,12 @@ export function ViewportImage({
   // Whether the pointer is currently over the displayed image (vs. the surround),
   // so the cursor can show zoom over the image and a plain pointer elsewhere.
   const [hoverImage, setHoverImage] = useState(false);
-  // True while a zoom-gesture key (Ctrl/⌘ or Space) is held. Used to make a
-  // zoomable overlay click-through so the pointer reaches the pan/zoom layer.
-  const [zoomGesture, setZoomGesture] = useState(false);
+  // True while a zoom-gesture key (Ctrl/⌘ or Space) is held. Shared via a store
+  // so the extension-overlay slot can go click-through too — that's what makes
+  // Ctrl/Space pan & zoom work under ANY extension overlay (global passthrough).
+  // Used here to make the built-in overlay click-through and to let a gesture key
+  // hand a tool drag (e.g. the HSL picker) back to pan/zoom.
+  const zoomGesture = useCanvasGesture((s) => s.zoomGesture);
 
   // A new image starts at the initial zoom (fit by default), centered.
   useEffect(() => {
@@ -203,8 +207,25 @@ export function ViewportImage({
   const effOffset =
     staticFit || zoom == null ? centered(fitScale) : clampOffset(offset, zoom);
 
-  const stateRef = useRef({ effScale, effOffset, imgW, imgH });
-  stateRef.current = { effScale, effOffset, imgW, imgH };
+  const stateRef = useRef({ effScale, effOffset, imgW, imgH, roiMode, frameW: frame.w, frameH: frame.h, bufW: bufferWidth, bufH: bufferHeight });
+  stateRef.current = { effScale, effOffset, imgW, imgH, roiMode, frameW: frame.w, frameH: frame.h, bufW: bufferWidth, bufH: bufferHeight };
+
+  // Map a frame-local point to canvas-BUFFER pixels (what samplers index). The
+  // mapping differs by render mode: in ROI-zoom mode the live buffer holds only
+  // the visible window and fills the frame 1:1, so we scale by the frame; in
+  // fit / CSS-zoom mode the buffer is the whole image and we undo its pan/scale
+  // transform. Using the fit formula in ROI mode is the bug that made the colour
+  // picker sample the wrong pixel (or nothing) when zoomed in.
+  const frameToBuffer = (fx: number, fy: number) => {
+    const st = stateRef.current;
+    if (st.roiMode) {
+      return {
+        bx: st.frameW > 0 ? (fx / st.frameW) * st.bufW : fx,
+        by: st.frameH > 0 ? (fy / st.frameH) * st.bufH : fy,
+      };
+    }
+    return { bx: (fx - st.effOffset.x) / st.effScale, by: (fy - st.effOffset.y) / st.effScale };
+  };
 
   // Emit the visible window (normalized image coords) + device-pixel output size
   // whenever the zoomed view moves, so the renderer can draw it crisply at 1:1.
@@ -284,11 +305,9 @@ export function ViewportImage({
     if (!rect) return;
     // Frame-local LAYOUT px (undoes the <body> UI-scale zoom; see frame-point).
     const { x: fx, y: fy } = frameLocalPoint(rect, clientX, clientY);
-    if (onPick) {
-      // Map the click into canvas buffer pixels (undo the CSS pan/scale).
-      const { effScale: s, effOffset: o } = stateRef.current;
-      const bx = (fx - o.x) / s;
-      const by = (fy - o.y) / s;
+    // A held gesture key means "pan/zoom", not "sample" — fall through to zoom.
+    if (onPick && !zoomGesture) {
+      const { bx, by } = frameToBuffer(fx, fy);
       onPick(bx, by);
       return;
     }
@@ -325,13 +344,16 @@ export function ViewportImage({
           const { x, y } = frameLocal();
           zoomToggleRef.current(x, y);
         }
-        setZoomGesture(true);
-      } else if (overlayZoomable && (e.ctrlKey || e.metaKey)) {
-        setZoomGesture(true);
+        setCanvasZoomGesture(true);
+      } else if (e.ctrlKey || e.metaKey) {
+        // Ctrl/⌘ held: hand pan/zoom back from whatever tool or extension overlay
+        // is capturing the canvas. Applies everywhere (not just the built-in
+        // zoomable overlays) so every extension overlay gets passthrough for free.
+        setCanvasZoomGesture(true);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === "Space" || !(e.ctrlKey || e.metaKey)) setZoomGesture(false);
+      if (e.code === "Space" || !(e.ctrlKey || e.metaKey)) setCanvasZoomGesture(false);
     };
     const onMove = (e: MouseEvent) => {
       lastPointer.current = { x: e.clientX, y: e.clientY };
@@ -343,7 +365,7 @@ export function ViewportImage({
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("mousemove", onMove, true);
-      setZoomGesture(false);
+      setCanvasZoomGesture(false);
     };
   }, [staticFit, overlayZoomable]);
 
@@ -406,14 +428,14 @@ export function ViewportImage({
   const pickDragRef = useRef<{ active: boolean }>({ active: false });
 
   const onPointerDown = (e: ReactPointerEvent) => {
-    // Drag picking mode (HSL picker)
-    if (onPickDrag && !overlay && e.button === 0) {
+    // Drag picking mode (HSL picker). A held gesture key (Ctrl/⌘/Space) hands the
+    // drag back to pan/zoom, so the picker no longer locks you out of panning a
+    // zoomed image — it falls through to the pan path below.
+    if (onPickDrag && !overlay && e.button === 0 && !zoomGesture) {
       const rect = frameRef.current?.getBoundingClientRect();
       if (rect) {
-        const { effScale: s, effOffset: o } = stateRef.current;
         const { x: fx, y: fy } = frameLocalPoint(rect, e.clientX, e.clientY);
-        const bx = (fx - o.x) / s;
-        const by = (fy - o.y) / s;
+        const { bx, by } = frameToBuffer(fx, fy);
         pickDragRef.current.active = true;
         onPickDrag.onDown(bx, by);
         frameRef.current?.setPointerCapture(e.pointerId);
@@ -455,10 +477,8 @@ export function ViewportImage({
     if (pickDragRef.current.active && onPickDrag) {
       const rect = frameRef.current?.getBoundingClientRect();
       if (rect) {
-        const { effScale: s, effOffset: o } = stateRef.current;
         const { x: fx, y: fy } = frameLocalPoint(rect, e.clientX, e.clientY);
-        const bx = (fx - o.x) / s;
-        const by = (fy - o.y) / s;
+        const { bx, by } = frameToBuffer(fx, fy);
         onPickDrag.onMove(bx, by);
       }
       return;

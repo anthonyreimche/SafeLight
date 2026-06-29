@@ -13,7 +13,7 @@ interface Props {
 }
 
 /** Shown when saving a preset whose name already exists. Modeled on the app's
- *  modal pattern (see LensPickerDialog). */
+ *  modal pattern. */
 export function PresetOverwriteDialog({
   name,
   onOverwrite,

@@ -1178,6 +1178,21 @@ function registerFsIpc() {
     });
     return canceled || !filePaths[0] ? null : filePaths[0];
   });
+  // Reveal a path in the OS file manager: open a directory window, or select a
+  // file inside its parent folder. Backs Export's "Open Folder" action.
+  ipcMain.handle("fs:reveal", async (_e, p) => {
+    try {
+      const st = await fs.promises.stat(p);
+      if (st.isDirectory()) {
+        // openPath resolves to "" on success, or an error string otherwise.
+        return (await shell.openPath(p)) === "";
+      }
+      shell.showItemInFolder(p);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

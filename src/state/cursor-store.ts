@@ -65,12 +65,16 @@ interface CanvasCursorRequest {
 
 // Browser cursor images cap at ~128×128 (often 32×32 in practice); keep custom
 // art small. Hotspot is in the image's own pixel space.
-const EYEDROPPER_SVG =
+// A sampling reticle: an open crosshair through a ring (the ring nods to the
+// averaged WB patch, not a single pixel). The open centre never occludes the
+// target, and the hotspot is the obvious dead centre. Drawn twice — a white halo
+// under a dark core — so it stays legible over any photo.
+const SAMPLE_RING_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">' +
-  '<g fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">' +
-  '<path d="M3 21l5-5"/><path d="M8 16l9-9 3 3-9 9-4 1z"/></g>' +
-  '<g fill="none" stroke="#111" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
-  '<path d="M3 21l5-5"/><path d="M8 16l9-9 3 3-9 9-4 1z"/></g></svg>';
+  '<g fill="none" stroke-linecap="round" stroke-linejoin="round">' +
+  '<g stroke="#fff" stroke-width="3"><circle cx="12" cy="12" r="6"/><path d="M12 1V4"/><path d="M12 20V23"/><path d="M1 12H4"/><path d="M20 12H23"/></g>' +
+  '<g stroke="#111" stroke-width="1.4"><circle cx="12" cy="12" r="6"/><path d="M12 1V4"/><path d="M12 20V23"/><path d="M1 12H4"/><path d="M20 12H23"/></g>' +
+  '</g></svg>';
 
 /** Built-in semantic cursor tokens. Overlays and the canvas reference these by
  *  name; extensions may reuse them or register their own. */
@@ -90,8 +94,26 @@ export const BUILTIN_CURSORS: Record<string, CursorSpec> = {
   "crop-resize-nesw": { css: "nesw-resize" },
   "crop-resize-ns": { css: "ns-resize" },
   "crop-resize-ew": { css: "ew-resize" },
-  // Sampling eyedropper, hotspot at the tip (bottom-left), crosshair fallback.
-  pick: { image: EYEDROPPER_SVG, hotspotX: 3, hotspotY: 21, fallback: "crosshair" },
+  // Sampling reticle, hotspot at the centre of the crosshair, crosshair fallback.
+  pick: { image: SAMPLE_RING_SVG, hotspotX: 12, hotspotY: 12, fallback: "crosshair" },
+};
+
+/** Canonical human-facing names for the cursor tokens users interact with. This
+ *  is the single source of truth for the wording: core UI and any cursor-restyling
+ *  extension read these (exposed via api.cursors.labels) so a cursor is never
+ *  called one thing here and another thing in a plugin. Keyed by token id. */
+export const CURSOR_LABELS: Record<string, string> = {
+  pick: "Colour picker",
+  pan: "Pan",
+  panning: "Pan (dragging)",
+  "zoom-in": "Zoom in",
+  "zoom-out": "Zoom out",
+  crosshair: "Crosshair",
+  "crop-move": "Move",
+  "crop-resize-nwse": "Resize (↖↘)",
+  "crop-resize-nesw": "Resize (↗↙)",
+  "crop-resize-ns": "Resize (↕)",
+  "crop-resize-ew": "Resize (↔)",
 };
 
 interface CursorState {
@@ -168,14 +190,20 @@ export function registerCursor(extensionId: string, c: CursorContribution): void
 }
 
 /** Drop every cursor a given extension registered, and any active canvas-cursor
- *  request it owns. Called from registry.unregisterExtension. */
+ *  request it owns. Called from registry.unregisterExtension. An extension may
+ *  *override* a built-in token (e.g. a cursor-theme extension re-registering
+ *  "pick" or "pan"); when it unloads we restore the built-in default for that id
+ *  rather than deleting it, so core cursors keep resolving. Purely extension-owned
+ *  ids (e.g. "my-ext.measure") are dropped. */
 export function clearExtensionCursors(extensionId: string): void {
-  useCursorStore.setState((s) => ({
-    cursors: Object.fromEntries(
-      Object.entries(s.cursors).filter(([, v]) => v.extensionId !== extensionId),
-    ),
-    requests: s.requests.filter((r) => r.key !== extensionId),
-  }));
+  useCursorStore.setState((s) => {
+    const cursors: Record<string, RegisteredCursor> = {};
+    for (const [id, v] of Object.entries(s.cursors)) {
+      if (v.extensionId !== extensionId) cursors[id] = v;
+      else if (BUILTIN_CURSORS[id]) cursors[id] = { spec: BUILTIN_CURSORS[id] };
+    }
+    return { cursors, requests: s.requests.filter((r) => r.key !== extensionId) };
+  });
 }
 
 // ─── Canvas-cursor request stack ────────────────────────────────────────────

@@ -27,7 +27,6 @@ import {
   rewriteGlsl,
   simpleHash,
 } from "./shader-compiler";
-import { computeAutoCropScale } from "@/lens-profiles/auto-crop";
 import { useRegistry } from "@/extensions/registry";
 import {
   PROCESSING_PHASE_ORDER,
@@ -678,9 +677,12 @@ export class WebGLRenderer {
   // Bumped whenever the active source texture is swapped (setImage / bindSource).
   private sourceEpoch = 0;
   private params: DevelopParams | null = null;
-  private lensProfile: import("@/lens-profiles/types").ResolvedProfile | null = null;
-  private autoCropScale = 1;
   private asShotTemperature = 6500;
+  // HSL band shaping (Preferences ▸ HSL). Default 1/1 reproduces the original
+  // partition-of-unity smoothstep bands, so every render path (develop, export,
+  // thumbnails) is unchanged until the develop view pushes the user's pref.
+  private hslRange = 1;
+  private hslSmooth = 1;
   private showClipping = 0;
   // Display-space colour for out-of-image pixels (crop-mode margins). Defaults to
   // the legacy neutral dark; the develop view sets it to the canvas surround.
@@ -1057,6 +1059,8 @@ export class WebGLRenderer {
       "uHslHue",
       "uHslSat",
       "uHslLum",
+      "uHslRange",
+      "uHslSmooth",
       "uCGShadowHue",
       "uCGShadowSat",
       "uCGShadowLuma",
@@ -1071,27 +1075,6 @@ export class WebGLRenderer {
       "uCGGlobalLuma",
       "uCGShadowRange",
       "uCGHighlightRange",
-      // Lens corrections — manual sliders
-      "uLensDistortion",
-      "uLensCA",
-      "uLensDefringe",
-      "uLensVignetting",
-      // Lens corrections — profile-based
-      "uLensDistModel",
-      "uLensDistA",
-      "uLensDistB",
-      "uLensDistC",
-      "uLensTcaModel",
-      "uLensTcaKr",
-      "uLensTcaKb",
-      "uLensTcaBr",
-      "uLensTcaCr",
-      "uLensTcaBb",
-      "uLensTcaCb",
-      "uLensVigK1",
-      "uLensVigK2",
-      "uLensVigK3",
-      "uLensAutoCropScale",
       // Effects: vignette
       "uVignetteAmount",
       "uVignetteMidpoint",
@@ -1124,7 +1107,7 @@ export class WebGLRenderer {
     ];
     // Per-mask array uniforms (queried by indexed name).
     for (let i = 0; i < MAX_MASKS; i++) {
-      for (const base of ["uMaskInvert", "uMaskOpacity", "uMaskAdj0", "uMaskAdj1", "uMaskAdj2"]) {
+      for (const base of ["uMaskInvert", "uMaskOpacity", "uMaskAdj0", "uMaskAdj1", "uMaskAdj2", "uMaskAdj3"]) {
         const name = `${base}[${i}]`;
         u[name] = gl.getUniformLocation(program, name);
       }
@@ -1594,6 +1577,13 @@ export class WebGLRenderer {
     this.asShotTemperature = kelvin >= 2000 && kelvin <= 50000 ? kelvin : 6500;
   }
 
+  // Global HSL band shaping from Preferences ▸ HSL. range scales band half-widths
+  // (clamped 0.25..2), smooth blends linear↔smoothstep falloff (0..1).
+  setHslStyle(range: number, smooth: number) {
+    this.hslRange = Number.isFinite(range) ? Math.min(2, Math.max(0.25, range)) : 1;
+    this.hslSmooth = Number.isFinite(smooth) ? Math.min(1, Math.max(0, smooth)) : 1;
+  }
+
   setShowClipping(mode: number) {
     this.showClipping = mode & 3;
   }
@@ -1616,30 +1606,8 @@ export class WebGLRenderer {
     this.sharpenViz = mode;
   }
 
-  setLensProfile(profile: import("@/lens-profiles/types").ResolvedProfile | null) {
-    this.lensProfile = profile;
-    this.updateAutoCropScale();
-  }
-
-  private updateAutoCropScale() {
-    const lc = this.params?.lensCorrection;
-    const lp = this.lensProfile;
-    if (lc?.mode === "profile" && lp?.distortion && lc.distortionEnabled) {
-      const aspect = this.imageWidth && this.imageHeight
-        ? this.imageWidth / this.imageHeight : 1.5;
-      this.autoCropScale = computeAutoCropScale(
-        lp.distortion.model, lp.distortion.k, lc.distortion, aspect,
-      );
-    } else if (lc?.mode === "manual" && Math.abs(lc.distortion) > 0.001) {
-      this.autoCropScale = 1; // manual mode: no auto-crop (user controls distortion directly)
-    } else {
-      this.autoCropScale = 1;
-    }
-  }
-
   setParams(params: DevelopParams) {
     this.params = params;
-    this.updateAutoCropScale();
     this.updateMaskTexture(params.masks);
     this.updateMaskCurveTexture(params.masks);
     const visibleRetouch = params.retouch.filter((s) => s.visible !== false);
@@ -1832,6 +1800,8 @@ export class WebGLRenderer {
     gl.uniform1f(u.uTemperature, p.temperature);
     gl.uniform1f(u.uTint, p.tint);
     gl.uniform1f(u.uAsShotTemperature, this.asShotTemperature);
+    gl.uniform1f(u.uHslRange, this.hslRange);
+    gl.uniform1f(u.uHslSmooth, this.hslSmooth);
     gl.uniform1f(u.uClipThreshold, this.linear ? 0.98 : 0.0);
 
     const crop = p.crop ?? DEFAULT_CROP;
@@ -1873,74 +1843,6 @@ export class WebGLRenderer {
     gl.uniform1f(u.uCGGlobalLuma,     cg.global.luma);
     gl.uniform1f(u.uCGShadowRange,    cg.shadowRange / 100);
     gl.uniform1f(u.uCGHighlightRange, cg.highlightRange / 100);
-
-    const lc = p.lensCorrection;
-    const lp = this.lensProfile;
-    const useProfile = lc.mode === "profile" && lp;
-
-    // Manual sliders — in profile mode, distortion/CA/vignetting sliders are
-    // additive fine-tuning; in manual mode they are the sole source.
-    gl.uniform1f(u.uLensDistortion,   lc.mode !== "off" ? lc.distortion : 0);
-    gl.uniform1f(u.uLensCA,           lc.mode === "manual" ? lc.chromaticAberration : 0);
-    gl.uniform1f(u.uLensDefringe,     lc.mode !== "off" ? lc.defringe : 0);
-    gl.uniform1f(u.uLensVignetting,   lc.mode === "manual" ? lc.vignetting : 0);
-
-    // Profile-based uniforms
-    if (useProfile && lp.distortion && lc.distortionEnabled) {
-      const d = lp.distortion;
-      const modelInt = d.model === "poly3" ? 1 : d.model === "poly5" ? 2 : 3;
-      gl.uniform1i(u.uLensDistModel,  modelInt);
-      gl.uniform1f(u.uLensDistA,      d.k[0] ?? 0);
-      gl.uniform1f(u.uLensDistB,      d.k.length > 1 ? d.k[1] : d.k[0] ?? 0);
-      gl.uniform1f(u.uLensDistC,      d.k[2] ?? 0);
-    } else {
-      gl.uniform1i(u.uLensDistModel,  0);
-      gl.uniform1f(u.uLensDistA,      0);
-      gl.uniform1f(u.uLensDistB,      0);
-      gl.uniform1f(u.uLensDistC,      0);
-    }
-
-    if (useProfile && lp.tca && lc.caEnabled) {
-      const t = lp.tca;
-      gl.uniform1i(u.uLensTcaModel,   t.model === "linear" ? 1 : 2);
-      if (t.model === "linear") {
-        gl.uniform1f(u.uLensTcaKr,    t.k[0] ?? 1);
-        gl.uniform1f(u.uLensTcaKb,    t.k[1] ?? 1);
-        gl.uniform1f(u.uLensTcaBr,    0);
-        gl.uniform1f(u.uLensTcaCr,    0);
-        gl.uniform1f(u.uLensTcaBb,    0);
-        gl.uniform1f(u.uLensTcaCb,    0);
-      } else {
-        // poly3: [br, cr, vr, bb, cb, vb]
-        gl.uniform1f(u.uLensTcaBr,    t.k[0] ?? 0);
-        gl.uniform1f(u.uLensTcaCr,    t.k[1] ?? 0);
-        gl.uniform1f(u.uLensTcaKr,    t.k[2] ?? 1);
-        gl.uniform1f(u.uLensTcaBb,    t.k[3] ?? 0);
-        gl.uniform1f(u.uLensTcaCb,    t.k[4] ?? 0);
-        gl.uniform1f(u.uLensTcaKb,    t.k[5] ?? 1);
-      }
-    } else {
-      gl.uniform1i(u.uLensTcaModel,   0);
-      gl.uniform1f(u.uLensTcaKr,      1);
-      gl.uniform1f(u.uLensTcaKb,      1);
-      gl.uniform1f(u.uLensTcaBr,      0);
-      gl.uniform1f(u.uLensTcaCr,      0);
-      gl.uniform1f(u.uLensTcaBb,      0);
-      gl.uniform1f(u.uLensTcaCb,      0);
-    }
-
-    if (useProfile && lp.vignetting && lc.vignetteEnabled) {
-      gl.uniform1f(u.uLensVigK1,      lp.vignetting.k[0]);
-      gl.uniform1f(u.uLensVigK2,      lp.vignetting.k[1]);
-      gl.uniform1f(u.uLensVigK3,      lp.vignetting.k[2]);
-    } else {
-      gl.uniform1f(u.uLensVigK1,      0);
-      gl.uniform1f(u.uLensVigK2,      0);
-      gl.uniform1f(u.uLensVigK3,      0);
-    }
-
-    // Auto-crop scale
-    gl.uniform1f(u.uLensAutoCropScale, lc.autoCrop && lc.mode !== "off" ? (this.autoCropScale ?? 1) : 1);
 
     const vig = p.vignette;
     if (u.uVignetteAmount != null) {
@@ -2003,7 +1905,8 @@ export class WebGLRenderer {
       const a: MaskAdjustments = m.adj;
       gl.uniform4f(u[`uMaskAdj0[${i}]`], a.exposure, a.contrast, a.highlights, a.shadows);
       gl.uniform4f(u[`uMaskAdj1[${i}]`], a.saturation, a.temperature, a.tint, a.clarity);
-      gl.uniform4f(u[`uMaskAdj2[${i}]`], a.sharpness, 0, 0, 0);
+      gl.uniform4f(u[`uMaskAdj2[${i}]`], a.sharpness, a.whites, a.blacks, a.vibrance);
+      gl.uniform4f(u[`uMaskAdj3[${i}]`], a.texture, a.dehaze, 0, 0);
     });
 
     // Flatten components across masks into the flat shader list (cap at the

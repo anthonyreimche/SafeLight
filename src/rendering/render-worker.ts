@@ -4,7 +4,6 @@
 // be preserved in derived versions.
 
 import type { DevelopParams, UprightMode } from "@/catalog/types";
-import type { ResolvedProfile } from "@/lens-profiles/types";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { BUILTIN_RESOLVED } from "@/extensions/pipelines";
@@ -36,8 +35,8 @@ export type WorkerRequest =
   // current source + viewport without disturbing the live view. The live params
   // are restored afterwards. See render-bridge.capture().
   | { cmd: "capture"; reqId: number; params: DevelopParams }
-  | { cmd: "setLensProfile"; profile: ResolvedProfile | null }
   | { cmd: "setAsShotTemperature"; kelvin: number }
+  | { cmd: "setHslStyle"; range: number; smooth: number }
   | { cmd: "render"; wantHistogram?: boolean; wantExtended?: boolean }
   | {
       cmd: "renderThumbnail";
@@ -250,15 +249,15 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         break;
       }
 
-      case "setLensProfile": {
-        if (!renderer) break;
-        renderer.setLensProfile(msg.profile);
-        break;
-      }
-
       case "setAsShotTemperature": {
         if (!renderer) break;
         renderer.setAsShotTemperature(msg.kelvin);
+        break;
+      }
+
+      case "setHslStyle": {
+        if (!renderer) break;
+        renderer.setHslStyle(msg.range, msg.smooth);
         break;
       }
 

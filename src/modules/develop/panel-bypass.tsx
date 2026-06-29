@@ -4,101 +4,123 @@
 // be preserved in derived versions.
 
 import { DEFAULT_DEVELOP_PARAMS, type DevelopParams } from "@/catalog/types";
-import { useDevelopStore } from "@/state/develop-store";
+import { useRegistry } from "@/extensions/registry";
+import { getAllDescriptors } from "@/extensions/param-registry";
 
-// Per-panel bypass: which DevelopParams keys each adjustment panel governs.
-// Toggling a panel "off" renders with these keys reset to their factory
-// defaults — without mutating the stored edit — so the user can see the panel's
-// before/after. Nested params (vignette, grain, colorGrading, hsl, toneCurve,
-// lensCorrection) reset as whole sub-objects; array-valued params (masks,
-// retouch) reset to []. The renderer re-derives all of its uniforms/textures
-// from these each frame (e.g. an empty masks array yields uMaskCount = 0; an
-// "off" lensCorrection forces the lens uniforms and auto-crop scale to neutral),
-// so clearing them here is a complete, side-effect-free bypass with no shader or
-// renderer changes.
+// Per-panel preview-off ("bypass"): the develop renderer neutralizes a held
+// panel's contribution so the user can see the image without it. View-only and
+// momentary — it never touches the stored edit or history, so values survive.
 //
-// Crop & Straighten and Transform are intentionally excluded: the crop rect is
-// authored relative to the *transformed* frame, so neutralizing one without the
-// other reframes the image (and the interactive crop overlay reads the unbypassed
-// edit, so it would desync). Those are framing tools, not tonal adjustments.
-export const PANEL_BYPASS_KEYS: Record<string, (keyof DevelopParams)[]> = {
-  "White Balance": ["temperature", "tint"],
-  Basic: [
+// Two mechanisms cover every panel:
+//  • Core panels — keyed by panel id below. The listed DevelopParams keys are
+//    reset to their factory defaults. Nested params (vignette, grain, hsl, …)
+//    reset as whole sub-objects; arrays (masks, retouch) reset to []. The
+//    renderer re-derives all of its uniforms/textures from these each frame, so
+//    clearing them is a complete, side-effect-free bypass (no shader change).
+//  • Extension panels — not listed here. Their effect comes from GPU processing
+//    stage(s); `bypassParamBag` drops the owning extension's stage params from
+//    the contributed bag, so the renderer binds each uniform's declared default
+//    (renderer.ts: `?? b.default`) — the stage's neutral state. No worker change.
+//
+// Crop & Straighten and Transform ARE included (people want to see the framed
+// vs unframed image). Bypassing Crop shows the full frame; bypassing Transform
+// shows the original geometry — and also drops the crop, because the crop rect
+// is authored in the *transformed* frame and is meaningless without it, so
+// keeping it would reframe the image to garbage. The interactive crop / guided
+// overlays are hidden while their panel is held (see DevelopCanvas) so stale
+// handles never float over the neutralized image.
+export const PANEL_BYPASS_PARAM_KEYS: Record<string, (keyof DevelopParams)[]> = {
+  "core.white-balance": ["temperature", "tint"],
+  "core.basic": [
     "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
     "texture", "clarity", "dehaze", "vibrance", "saturation",
   ],
-  "Tone Curve": ["toneCurve"],
-  "Color Grading": ["colorGrading"],
-  Detail: [
+  "core.tone-curve": ["toneCurve"],
+  "core.color-grading": ["colorGrading"],
+  "core.detail": [
     "sharpening", "sharpenRadius", "sharpenDetail", "sharpenMasking",
     "luminanceNR", "luminanceNRDetail", "luminanceNRContrast",
     "luminanceNRShadows", "luminanceNRHighlights",
     "colorNR", "colorNRDetail", "colorNRSmoothness",
   ],
-  "Lens Correction": ["lensCorrection"],
-  Effects: ["vignette", "grain"],
-  HSL: ["hsl"],
-  Masking: ["masks"],
-  Heal: ["retouch"],
+  "core.effects": ["vignette", "grain"],
+  "core.hsl": ["hsl"],
+  "core.masks": ["masks"],
+  "core.retouch": ["retouch"],
+  "core.crop": ["crop", "straighten"],
+  "core.transform": ["transform", "straighten", "uprightMode", "guidedLines", "crop"],
 };
 
-// Return a copy of `params` with every bypassed panel's keys reset to factory
-// defaults. Returns the same object when nothing is bypassed (cheap no-op for
-// the common case).
+type RegistryState = ReturnType<typeof useRegistry.getState>;
+
+// Return a copy of `params` with every bypassed core panel's keys reset to
+// factory defaults. Returns the same object when nothing core is bypassed
+// (cheap no-op for the common case).
 export function applyPanelBypass(
   params: DevelopParams,
   bypassed: Record<string, boolean>,
 ): DevelopParams {
-  const titles = Object.keys(bypassed).filter(
-    (t) => bypassed[t] && PANEL_BYPASS_KEYS[t],
+  const ids = Object.keys(bypassed).filter(
+    (id) => bypassed[id] && PANEL_BYPASS_PARAM_KEYS[id],
   );
-  if (titles.length === 0) return params;
+  if (ids.length === 0) return params;
   const next = { ...params } as unknown as Record<string, unknown>;
   const defaults = DEFAULT_DEVELOP_PARAMS as unknown as Record<string, unknown>;
-  for (const t of titles) {
-    for (const k of PANEL_BYPASS_KEYS[t]) {
+  for (const id of ids) {
+    for (const k of PANEL_BYPASS_PARAM_KEYS[id]) {
       next[k] = structuredClone(defaults[k]);
     }
   }
   return next as unknown as DevelopParams;
 }
 
-// Eye toggle shown in an adjustment panel's header. Open eye = panel active;
-// slashed eye = bypassed (rendered as if neutral). View-only and per-window —
-// it never touches the saved edit or history, so slider values survive toggling.
-export function PanelBypassButton({ title }: { title: string }) {
-  const bypassed = useDevelopStore((s) => !!s.bypassedPanels[title]);
-  const toggle = useDevelopStore((s) => s.togglePanelBypass);
-  return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        toggle(title);
-      }}
-      aria-pressed={bypassed}
-      title={bypassed ? `${title} bypassed — click to enable` : `Bypass ${title}`}
-      className={
-        bypassed
-          ? "text-text-muted hover:text-text-secondary"
-          : "text-text-secondary hover:text-text-primary"
-      }
-    >
-      {bypassed ? (
-        // eye-off
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
-          <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
-          <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
-          <line x1="2" y1="2" x2="22" y2="22" />
-        </svg>
-      ) : (
-        // eye
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
-          <circle cx="12" cy="12" r="3" />
-        </svg>
-      )}
-    </button>
+// Return a copy of the contributed (extension stage) param bag with every
+// bypassed *extension* panel's stage params removed, so the renderer falls back
+// to each uniform's declared default. Bypassing any panel an extension owns
+// neutralizes all of that extension's stages — the contribution model has no
+// panel↔stage link, so the owning extension is the finest grain available.
+// Returns the same object when no extension panel is bypassed.
+export function bypassParamBag(
+  bag: Record<string, unknown>,
+  bypassed: Record<string, boolean>,
+  state: RegistryState = useRegistry.getState(),
+): Record<string, unknown> {
+  const ids = Object.keys(bypassed).filter(
+    (id) => bypassed[id] && !PANEL_BYPASS_PARAM_KEYS[id],
+  );
+  if (ids.length === 0) return bag;
+  const owners = new Set<string>();
+  for (const id of ids) {
+    const ext = state.panels[id]?.extensionId;
+    if (ext) owners.add(ext);
+  }
+  if (owners.size === 0) return bag;
+  const descriptors = getAllDescriptors();
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(bag)) {
+    const d = descriptors.get(k);
+    if (d && owners.has(d.extensionId)) {
+      changed = true; // drop -> renderer binds the uniform default (neutral)
+      continue;
+    }
+    next[k] = v;
+  }
+  return changed ? next : bag;
+}
+
+// Whether a panel has something the renderer can preview off: a core entry
+// above, or (for an extension panel) an owning extension that registers at
+// least one GPU processing stage. Panels with no previewable effect (Histogram,
+// Edit, Presets) return false so the eye is hidden there.
+export function panelIsPreviewable(
+  panelId: string,
+  state: RegistryState,
+): boolean {
+  if (PANEL_BYPASS_PARAM_KEYS[panelId]) return true;
+  const ext = state.panels[panelId]?.extensionId;
+  if (!ext) return false;
+  return Object.values(state.processingStages).some(
+    (st) => st.extensionId === ext,
   );
 }

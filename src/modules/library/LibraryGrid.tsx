@@ -12,9 +12,12 @@ import { VirtualGrid } from "@/ui/components/VirtualGrid";
 import { ContextMenu, type ContextMenuEntry } from "@/ui/components/ContextMenu";
 import { LibraryListRow } from "./LibraryListRow";
 import { CopySettingsDialog } from "./CopySettingsDialog";
+import { RenamePhotoDialog } from "./RenamePhotoDialog";
 import { visiblePhotos } from "./visible-photos";
 import { useGridFilters, useLibrarySorts } from "@/extensions/registry";
-import { exportPhotoData } from "@/project/folder-ops";
+import { exportPhotoData, renamePhoto, revealPhoto } from "@/project/folder-ops";
+import { isNativeFS } from "@/project/native-fs";
+import { reimportPhotos } from "@/modules/library/import-photos";
 import { getSettings, useSettings } from "@/state/settings-store";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { pasteSettings } from "@/catalog/paste-settings";
@@ -165,6 +168,42 @@ export function LibraryGrid() {
     );
   }, []);
 
+  // Rename the targeted photo's file on disk (in place, extension preserved).
+  // Only offered for a single photo; opens a small dialog, then renames.
+  const [renameTarget, setRenameTarget] = useState<{ id: string; filename: string } | null>(null);
+
+  const handleRename = useCallback(async (id: string, newBase: string) => {
+    setRenameTarget(null);
+    const res = await renamePhoto(id, newBase);
+    if (!res.ok) window.alert(res.reason);
+  }, []);
+
+  // Reveal the photo's file in the OS file manager. Single-photo only (native
+  // builds), mirroring the platform "show this file in its folder" action.
+  const handleReveal = useCallback(async (id: string) => {
+    const ok = await revealPhoto(id);
+    if (!ok) window.alert("Couldn't open the folder — the file may have moved or been deleted.");
+  }, []);
+
+  // Re-read the targeted photos from disk: rebuild their previews, refresh
+  // metadata, and invalidate the develop cache. Ratings/labels/edits are kept.
+  // Cells refresh live as each completes; only a failure raises an alert.
+  const handleReimport = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const targets = useCatalogStore.getState().photos.filter((p) => idSet.has(p.id));
+    const { ok, failed } = await reimportPhotos(
+      targets,
+      undefined,
+      (p) => useCatalogStore.getState().updatePhoto(p),
+    );
+    if (failed > 0) {
+      window.alert(
+        `Re-imported ${ok} photo${ok === 1 ? "" : "s"}. ${failed} couldn't be read or decoded from disk.`,
+      );
+    }
+  }, []);
+
   const handleRemove = useCallback(
     (ids: string[]) => {
       if (ids.length === 0) return;
@@ -215,6 +254,19 @@ export function LibraryGrid() {
           setActiveModule("develop");
         },
       },
+      {
+        label: "Rename…",
+        disabled: n !== 1,
+        onClick: () => {
+          const p = useCatalogStore.getState().photos.find((p) => p.id === ids[0]);
+          if (p) setRenameTarget({ id: p.id, filename: p.filename });
+        },
+      },
+      {
+        label: "Show in folder",
+        disabled: n !== 1 || !isNativeFS(),
+        onClick: () => void handleReveal(ids[0]),
+      },
       "separator",
       {
         label: "Copy settings…",
@@ -235,6 +287,7 @@ export function LibraryGrid() {
         onClick: () => rotatePhotos(ids, -90),
       },
       "separator",
+      { label: `Re-import${suffix}`, onClick: () => void handleReimport(ids) },
       { label: `Export data…${suffix}`, onClick: () => void handleExportData(ids) },
       "separator",
       { label: `Remove${suffix}`, danger: true, onClick: () => handleRemove(ids) },
@@ -245,6 +298,8 @@ export function LibraryGrid() {
     handleCopySettings,
     handlePasteSettings,
     rotatePhotos,
+    handleReveal,
+    handleReimport,
     handleExportData,
     handleRemove,
     setActivePhoto,
@@ -297,6 +352,13 @@ export function LibraryGrid() {
             setCopyDialog(null);
           }}
           onCancel={() => setCopyDialog(null)}
+        />
+      )}
+      {renameTarget && (
+        <RenamePhotoDialog
+          filename={renameTarget.filename}
+          onRename={(base) => void handleRename(renameTarget.id, base)}
+          onCancel={() => setRenameTarget(null)}
         />
       )}
     </>

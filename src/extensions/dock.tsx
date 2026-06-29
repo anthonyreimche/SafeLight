@@ -50,7 +50,8 @@ class PanelErrorBoundary extends Component<
   }
 }
 import { create } from "zustand";
-import { useRegistry } from "./registry";
+import { useRegistry, usePanelHeaderAccessories } from "./registry";
+import { panelIsPreviewable } from "@/modules/develop/panel-bypass";
 import type { AppModule } from "@/catalog/types";
 import type { ModuleLayoutDef } from "./types";
 import { detachedModule } from "@/state/detach";
@@ -708,6 +709,12 @@ function PanelHeader({ id }: { id: string }) {
   const title = useRegistry((s) => s.panels[id]?.title ?? id);
   const onReset = useRegistry((s) => s.panels[id]?.onReset);
   const Accessory = useRegistry((s) => s.panels[id]?.headerAccessory);
+  // Controls an extension contributes to EVERY panel header (e.g. a preview-off
+  // eye). Each gets the panel's identity so one component can decorate all.
+  const headerAccessories = usePanelHeaderAccessories();
+  const module = useRegistry((s) => s.panels[id]?.defaultDock?.module);
+  const extensionId = useRegistry((s) => s.panels[id]?.extensionId ?? "");
+  const previewable = useRegistry((s) => panelIsPreviewable(id, s));
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
@@ -731,6 +738,17 @@ function PanelHeader({ id }: { id: string }) {
           <Accessory />
         </span>
       )}
+      {headerAccessories.map(({ id: accId, component: A }) => (
+        <span key={accId} className="flex items-center leading-none">
+          <A
+            panelId={id}
+            title={title}
+            module={module}
+            extensionId={extensionId}
+            previewable={previewable}
+          />
+        </span>
+      ))}
       <span className="flex-1 truncate text-[11px] uppercase tracking-wider text-text-secondary">
         {title}
       </span>

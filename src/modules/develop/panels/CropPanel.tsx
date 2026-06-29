@@ -10,7 +10,6 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { DEFAULT_CROP, type CropRect } from "@/catalog/types";
 import {
-  buildLensDistort,
   computeCropForAspect,
   fitCropToImage,
 } from "@/rendering/crop-transform";
@@ -40,8 +39,6 @@ export function CropPanel() {
   const setCropGuide = useDevelopStore((s) => s.setCropGuide);
   const straighten = useDevelopStore((s) => s.params.straighten);
   const transform = useDevelopStore((s) => s.params.transform);
-  const lensCorrection = useDevelopStore((s) => s.params.lensCorrection);
-  const resolvedLensProfile = useDevelopStore((s) => s.resolvedLensProfile);
   const crop = useDevelopStore((s) => s.params.crop);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
@@ -84,7 +81,6 @@ export function CropPanel() {
       next = fitCropToImage(
         next,
         buildInverseTransform(straighten, transform, imageAspect),
-        buildLensDistort(lensCorrection, resolvedLensProfile, imageAspect),
       );
     }
     setParam("crop", next);
@@ -187,7 +183,6 @@ export function CropPanel() {
                 fitCropToImage(
                   baseCropRef.current,
                   buildInverseTransform(s, transform, imageAspect),
-                  buildLensDistort(lensCorrection, resolvedLensProfile, imageAspect),
                 ),
               );
             }

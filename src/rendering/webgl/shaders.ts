@@ -85,6 +85,12 @@ uniform float uClipThreshold;     // ~0.98, sensor white level for channel recon
 uniform float uHslHue[8];
 uniform float uHslSat[8];
 uniform float uHslLum[8];
+// HSL band shaping (Preferences ▸ HSL). uHslRange scales each band's half-width
+// (1 = the default partition-of-unity tiling); uHslSmooth blends the falloff
+// from linear (0 = defined band edges) to smoothstep (1 = current feathering).
+// Only the global applyHSL reads these; the per-mask mixer stays at 1.0/1.0.
+uniform float uHslRange;
+uniform float uHslSmooth;
 
 // Color grading wheels: per-range hue (degrees), saturation (0..100), luma (-100..100)
 uniform float uCGShadowHue;
@@ -102,27 +108,6 @@ uniform float uCGGlobalLuma;
 uniform float uCGShadowRange;    // 0..1
 uniform float uCGHighlightRange; // 0..1
 
-// Lens correction — manual sliders
-uniform float uLensDistortion;    // -100..100 (barrel/pincushion)
-uniform float uLensCA;            // 0..100 lateral chromatic aberration removal
-uniform float uLensDefringe;      // 0..100 purple/green fringe suppression
-uniform float uLensVignetting;    // -100..100 optical vignetting correction
-// Lens correction — profile-based (Lensfun models)
-uniform int   uLensDistModel;     // 0=none, 1=poly3, 2=poly5, 3=ptlens
-uniform float uLensDistA;
-uniform float uLensDistB;
-uniform float uLensDistC;
-uniform int   uLensTcaModel;      // 0=none, 1=linear, 2=poly3
-uniform float uLensTcaKr;
-uniform float uLensTcaKb;
-uniform float uLensTcaBr;
-uniform float uLensTcaCr;
-uniform float uLensTcaBb;
-uniform float uLensTcaCb;
-uniform float uLensVigK1;
-uniform float uLensVigK2;
-uniform float uLensVigK3;
-uniform float uLensAutoCropScale;
 
 //__CONTRIBUTED_UNIFORMS__
 
@@ -168,7 +153,8 @@ uniform int uSharpenViz;
 uniform bool uDenoiseReady;
 uniform vec4 uMaskAdj0[MAX_MASKS]; // exposure, contrast, highlights, shadows
 uniform vec4 uMaskAdj1[MAX_MASKS]; // saturation, temperature, tint, clarity
-uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, _, _, _
+uniform vec4 uMaskAdj2[MAX_MASKS]; // sharpness, whites, blacks, vibrance
+uniform vec4 uMaskAdj3[MAX_MASKS]; // texture, dehaze, _, _
 // Optional per-mask sub-panels: 8-band HSL (packed 6 vec4s per mask) and an RGB
 // tone-curve LUT atlas (256 x MAX_MASKS; row mi at v=(mi+0.5)/MAX_MASKS).
 uniform int uMaskHasHsl[MAX_MASKS];
@@ -546,26 +532,76 @@ vec3 hsl2rgb(vec3 hsl) {
   );
 }
 
+// Circular gap (deg) from each band center to its previous / next neighbour.
+// The centers are unevenly spaced, so the falloff width differs per side.
+const float HSL_DPREV[8] = float[8](40.0, 30.0, 30.0, 60.0, 60.0, 60.0, 40.0, 40.0);
+const float HSL_DNEXT[8] = float[8](30.0, 30.0, 60.0, 60.0, 60.0, 40.0, 40.0, 40.0);
+
+// Hat weight for one band: 1 at its own center, 0 at distance dPrev/dNext * range
+// to each side, with a tunable falloff in between. range scales the half-widths
+// (1 = partition-of-unity tiling: weights sum to 1 across adjacent bands, seamless,
+// and a pure band hue keeps full slider authority). smoothv blends the ramp from
+// linear (0 = defined edges) to smoothstep (1). range=1, smoothv=1 reproduces the
+// original smoothstep falloff exactly.
+float hslBandWeight(float hueDeg, float center, float dPrev, float dNext, float range, float smoothv) {
+  float d = mod(hueDeg - center + 540.0, 360.0) - 180.0; // signed -180..180
+  float dp = dPrev * range;
+  float dn = dNext * range;
+  float t;
+  if (d <= 0.0) {
+    if (d <= -dp) return 0.0;
+    t = (d + dp) / dp; // 0 at -dp, 1 at center
+  } else {
+    if (d >= dn) return 0.0;
+    t = 1.0 - d / dn; // 1 at center, 0 at +dn
+  }
+  return mix(t, t * t * (3.0 - 2.0 * t), smoothv);
+}
+
 vec3 applyHSL(vec3 c) {
   vec3 hsl = rgb2hsl(c);
+  // Protect near-neutral pixels: an achromatic pixel has no real hue (rgb2hsl
+  // reports 0 = red), so without this gate the Red sliders would tint/relight
+  // every grey. Fades the whole effect in over a low saturation threshold, so
+  // genuinely coloured pixels (even pale skies/skin) still respond fully.
+  float chromaW = smoothstep(0.0, 0.10, hsl.y);
+  if (chromaW < 1e-4) return c;
+
   float hueDeg = hsl.x * 360.0;
+
   float hueShift = 0.0;
-  float satMul = 0.0;
-  float lumAdd = 0.0;
-  
-  // Apply 8 fixed band adjustments with 45° falloff for full spectrum coverage
+  float satAdj = 0.0;
+  float lumAdj = 0.0;
   for (int i = 0; i < 8; i++) {
-    float dist = abs(mod(hueDeg - HSL_CENTERS[i] + 540.0, 360.0) - 180.0);
-    float w = max(0.0, 1.0 - dist / 45.0);
-    hueShift += uHslHue[i] * w;
-    satMul += uHslSat[i] * w;
-    lumAdd += uHslLum[i] * w;
+    float wi = hslBandWeight(hueDeg, HSL_CENTERS[i], HSL_DPREV[i], HSL_DNEXT[i], uHslRange, uHslSmooth);
+    hueShift += uHslHue[i] * wi;
+    satAdj   += uHslSat[i] * wi;
+    lumAdj   += uHslLum[i] * wi;
   }
-  
+  hueShift *= chromaW;
+  satAdj   *= chromaW;
+  lumAdj   *= chromaW;
+
+  // Hue: rotate in HSL (luminance-invariant), ±30° at full slider.
   hsl.x = fract(hsl.x + hueShift * (30.0 / 360.0));
-  hsl.y = clamp(hsl.y * (1.0 + satMul), 0.0, 1.0);
-  hsl.z = clamp(hsl.z + lumAdd * 0.4, 0.0, 1.0);
-  return hsl2rgb(hsl);
+  vec3 rgb = hsl2rgb(hsl);
+
+  // Saturation: perceptual. Scale chroma around the pixel's true luminance, so a
+  // cut collapses the colour to its actual grey (not HSL-L's mid-range grey) and
+  // a boost doesn't clip the bright channel into a different hue on the way up.
+  if (abs(satAdj) > 1e-4) {
+    float Lp = luma(rgb);
+    rgb = mix(vec3(Lp), rgb, clamp(1.0 + satAdj, 0.0, 2.0));
+  }
+
+  // Luminance: hue-preserving gain (ratio-scale). Darkening a blue sky or lifting
+  // reds keeps the hue and per-channel saturation intact, unlike an HSL-L add
+  // which greys and shifts the colour. Gentle factor so shadows don't blow out.
+  if (abs(lumAdj) > 1e-4) {
+    rgb *= 1.0 + lumAdj * 0.6;
+  }
+
+  return clamp(rgb, 0.0, 1.0);
 }
 
 // Blurred source luminance at a mip level — a cheap Gaussian-ish blur whose
@@ -672,130 +708,6 @@ vec2 cropTransformUV(vec2 o) {
   vec2 p = uCrop.xy + o * uCrop.zw;
   vec3 q = uInvTransform * vec3(p, 1.0);
   return q.xy / q.z;
-}
-
-// Lensfun normalises r so r=1 at the sensor half-diagonal.
-// Aspect-correct UV center offset into that space.
-float lensRadius(vec2 centered) {
-  vec2 phys = vec2(centered.x * uImageAspect, centered.y);
-  float halfDiag = 0.5 * sqrt(uImageAspect * uImageAspect + 1.0);
-  return length(phys) / halfDiag;
-}
-
-// Distortion correction: maps display UV to source UV.
-// Supports Lensfun profile models (poly3/poly5/ptlens) and manual slider.
-vec2 lensCorrectedUV(vec2 uv) {
-  vec2 centered = uv - 0.5;
-  float r = lensRadius(centered);
-  float r2 = r * r;
-
-  float scale = 1.0;
-
-  // Profile-based distortion model
-  if (uLensDistModel == 1) {
-    // POLY3: r_d = r * (1 - k1 + k1 * r^2)
-    scale = 1.0 - uLensDistB + uLensDistB * r2;
-  } else if (uLensDistModel == 2) {
-    // POLY5: r_d = r * (1 + k1 * r^2 + k2 * r^4)
-    scale = 1.0 + uLensDistB * r2 + uLensDistA * r2 * r2;
-  } else if (uLensDistModel == 3) {
-    // PTLENS: r_d = r * (a*r^3 + b*r^2 + c*r + 1-a-b-c)
-    scale = uLensDistA * r2 * r + uLensDistB * r2 + uLensDistC * r
-          + (1.0 - uLensDistA - uLensDistB - uLensDistC);
-  }
-
-  // Manual slider: additive single-coefficient barrel/pincushion
-  if (abs(uLensDistortion) > 0.001) {
-    scale += uLensDistortion * 0.0003 * r2;
-  }
-
-  vec2 result = 0.5 + centered * scale;
-
-  // Auto-crop: zoom in to hide edge artifacts
-  if (uLensAutoCropScale > 1.001) {
-    result = 0.5 + (result - 0.5) / uLensAutoCropScale;
-  }
-
-  return result;
-}
-
-// Lateral chromatic aberration correction: scale R and B channels separately.
-// Supports Lensfun TCA models (linear/poly3) and manual slider.
-vec3 sampleWithCA(vec2 uv) {
-  vec2 centered = uv - 0.5;
-  float r = lensRadius(centered);
-  float r2 = r * r;
-
-  float scaleR = 1.0;
-  float scaleB = 1.0;
-
-  if (uLensTcaModel == 1) {
-    // LINEAR: simple scale per channel
-    scaleR = uLensTcaKr;
-    scaleB = uLensTcaKb;
-  } else if (uLensTcaModel == 2) {
-    // POLY3: r_out = br*r^3 + cr*r^2 + vr*r (per channel)
-    scaleR = uLensTcaBr * r2 + uLensTcaCr * r + uLensTcaKr;
-    scaleB = uLensTcaBb * r2 + uLensTcaCb * r + uLensTcaKb;
-  }
-
-  // Manual CA slider: additive quadratic offset
-  if (uLensCA > 0.001) {
-    float ca = uLensCA / 100.0 * 0.008;
-    float offset = ca * r2 * 4.0;
-    scaleR += offset;
-    scaleB -= offset;
-  }
-
-  vec2 uvR = 0.5 + centered * scaleR;
-  vec2 uvB = 0.5 + centered * scaleB;
-  float rv = texture(uImage, clamp(uvR, 0.0, 1.0)).r;
-  float g  = texture(uImage, uv).g;
-  float bv = texture(uImage, clamp(uvB, 0.0, 1.0)).b;
-  return vec3(rv, g, bv);
-}
-
-// Defringe: detect and suppress purple/green fringing by desaturating
-// hue ranges that occur at high chroma at edges.
-vec3 applyDefringe(vec3 c, float amount) {
-  if (amount < 0.001) return c;
-  float l = luma(c);
-  float chroma = length(c - vec3(l));
-  float purpleish = max(0.0, c.b - c.r) + max(0.0, c.b - c.g);
-  float greenish  = max(0.0, c.g - c.r) + max(0.0, c.g - c.b);
-  float fringeMag = clamp((purpleish + greenish) * 4.0, 0.0, 1.0);
-  float suppress = clamp(amount / 100.0 * fringeMag * (chroma * 8.0), 0.0, 1.0);
-  return mix(c, vec3(l), suppress);
-}
-
-// Lens optical vignetting correction.
-// Profile: Lensfun polynomial (1 + k1*r^2 + k2*r^4 + k3*r^6).
-// Manual: cos^4-based slider for user tweaking.
-float lensVignetteFactor(vec2 uv) {
-  vec2 centered = uv - 0.5;
-  float r = lensRadius(centered);
-  float r2 = r * r;
-
-  float factor = 1.0;
-
-  // Profile polynomial
-  if (abs(uLensVigK1) > 0.0001 || abs(uLensVigK2) > 0.0001 || abs(uLensVigK3) > 0.0001) {
-    float r4 = r2 * r2;
-    float r6 = r4 * r2;
-    float vig = 1.0 + uLensVigK1 * r2 + uLensVigK2 * r4 + uLensVigK3 * r6;
-    factor = 1.0 / max(vig, 0.01);
-  }
-
-  // Manual slider: cos^4 approximation
-  if (abs(uLensVignetting) > 0.001) {
-    float falloff = pow(clamp(1.0 - r2 * 0.5, 0.0, 1.0), 2.0);
-    float manual = uLensVignetting > 0.0
-      ? 1.0 + (1.0 - falloff) * (uLensVignetting / 100.0)
-      : 1.0 - (1.0 - falloff) * (-uLensVignetting / 100.0);
-    factor *= manual;
-  }
-
-  return clamp(factor, 0.0, 4.0);
 }
 
 //__CONTRIBUTED_HELPERS__
@@ -1065,17 +977,54 @@ vec3 applyMaskLinear(vec3 c, vec4 a0, vec4 a1, float m, float refT) {
 // saturation, and the detail taps were tuned for the 0..1 display range and
 // stay here (matching LR, whose point curve and local contrast are
 // display-referred).
-vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, float sharp, float m, vec2 uv) {
+// a2 = (sharpness, whites, blacks, vibrance); a3 = (texture, dehaze, _, _).
+// Whites/Blacks/Vibrance/Texture/Dehaze reuse the global display-stage formulas
+// (shaders.ts main) so a masked slider matches its global counterpart exactly.
+vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, vec4 a2, vec4 a3, float m, vec2 uv) {
   vec3 r = c;
+  // Whites: gamma endpoint cubic-weighted toward white (global lines ~1306).
+  float wh = a2.y / 100.0;
+  if (abs(wh) > 0.001) {
+    float L = max(luma(r), 1e-4);
+    float wW = L * L * L;
+    float gamma = wh > 0.0 ? mix(1.0, 0.5, wh) : mix(1.0, 1.9, -wh);
+    r = clamp(r * (mix(L, pow(L, gamma), wW) / L), 0.0, 1.0);
+  }
+  // Blacks: gamma endpoint cubic-weighted toward black (global lines ~1318).
+  float bl = a2.z / 100.0;
+  if (abs(bl) > 0.001) {
+    float L = max(luma(r), 1e-4);
+    float bW = (1.0 - L) * (1.0 - L) * (1.0 - L);
+    float gamma = bl > 0.0 ? mix(1.0, 0.55, bl) : mix(1.0, 2.2, -bl);
+    r = clamp(r * (mix(L, pow(L, gamma), bW) / L), 0.0, 1.0);
+  }
   // Contrast S-curve.
   float k = (a0.y / 100.0) * 0.7;
   r = clamp(r + k * r * (1.0 - r) * (2.0 * r - 1.0), 0.0, 1.0);
   // Saturation.
   float Lr = luma(r);
   r = mix(vec3(Lr), r, 1.0 + a1.x / 100.0);
+  // Vibrance: low-saturation/skin-protected boost (shared global helper).
+  if (abs(a2.w) > 0.1) r = applyVibSat(r, a2.w, 0.0);
+  // Dehaze: dark-channel-prior contrast/saturation restore (global lines ~1341).
+  float deh = a3.y / 100.0;
+  if (abs(deh) > 0.001) {
+    vec3 localBlur = textureLod(uImage, uv, 4.0).rgb;
+    if (!uLinear) localBlur = srgbToLinear(localBlur);
+    localBlur = linearToSrgbU(localBlur);
+    float dc = min(min(localBlur.r, localBlur.g), localBlur.b);
+    vec3 globalBlur = textureLod(uImage, vec2(0.5, 0.5), 9.0).rgb;
+    if (!uLinear) globalBlur = srgbToLinear(globalBlur);
+    globalBlur = linearToSrgbU(globalBlur);
+    float A = clamp(max(max(globalBlur.r, globalBlur.g), globalBlur.b), 0.5, 0.98);
+    float t_est = clamp(1.0 - deh * 1.2 * dc / max(A, 0.5), 0.12, 1.0);
+    r = (r - vec3(A) * (1.0 - t_est)) / max(t_est, 0.12);
+    float dl = luma(r);
+    r = clamp(mix(vec3(dl), r, 1.0 + deh * 0.4), 0.0, 1.0);
+  }
   // Clarity (broad) and sharpness (fine) local contrast.
   float clar = a1.w / 100.0;
-  float shp = sharp / 100.0;
+  float shp = a2.x / 100.0; // sharpness
   if (abs(clar) > 0.001 || abs(shp) > 0.001) {
     float base = luma(r);
     r += (base - lumaLod(uv, 4.0)) * clar * 1.2;
@@ -1088,32 +1037,48 @@ vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, float sharp, float m, vec2 uv) {
     float broad = (base - lumaLod(uv, 2.5)) * 0.35;
     r += mix(broad, fine, 0.65) * shp * 1.2;
   }
+  // Texture: edge-aware micro-detail (LOD 0.75), suppressed at strong edges to
+  // avoid halos (global lines ~1396).
+  float texAmt = a3.x / 100.0;
+  if (abs(texAmt) > 0.001) {
+    float cen = luma(r);
+    float texDetail = clamp(cen - lumaLod(uv, 0.75), -0.08, 0.08);
+    float edgeStrength = abs(cen - lumaLod(uv, 2.5));
+    float edgeMask = 1.0 - smoothstep(0.02, 0.12, edgeStrength);
+    r += texDetail * texAmt * 2.5 * edgeMask;
+  }
   r = clamp(r, 0.0, 1.0);
   return mix(c, r, m);
 }
 
-// Per-mask 8-band HSL mixer — same weighting as the global applyHSL, but the
-// band values come from the per-mask data texture. Band weights are built into
-// two vec4s so the accumulation is three dot() pairs instead of dynamic
-// component indexing.
+// Per-mask 8-band HSL mixer — shares the global applyHSL color science
+// (partition-of-unity hat weights, neutral protection, hue-preserving luminance,
+// perceptual saturation), but the band values come from the per-mask data
+// texture, packed as two vec4s so the accumulation is three dot() pairs.
 vec3 maskHsl(vec3 c, int mi) {
   vec3 hsl = rgb2hsl(c);
+  // Protect near-neutral pixels (see applyHSL): grays report hue 0 = red.
+  float chromaW = smoothstep(0.0, 0.10, hsl.y);
+  if (chromaW < 1e-4) return c;
   float hueDeg = hsl.x * 360.0;
   vec4 wA, wB;
   for (int i = 0; i < 4; i++) {
-    float dA = abs(mod(hueDeg - HSL_CENTERS[i] + 540.0, 360.0) - 180.0);
-    float dB = abs(mod(hueDeg - HSL_CENTERS[i + 4] + 540.0, 360.0) - 180.0);
-    wA[i] = max(0.0, 1.0 - dA / 35.0);
-    wB[i] = max(0.0, 1.0 - dB / 35.0);
+    wA[i] = hslBandWeight(hueDeg, HSL_CENTERS[i],     HSL_DPREV[i],     HSL_DNEXT[i],     1.0, 1.0);
+    wB[i] = hslBandWeight(hueDeg, HSL_CENTERS[i + 4], HSL_DPREV[i + 4], HSL_DNEXT[i + 4], 1.0, 1.0);
   }
   int b = mi * 6;
-  float hueShift = dot(uMaskHsl[b], wA) + dot(uMaskHsl[b + 1], wB);
-  float satMul = dot(uMaskHsl[b + 2], wA) + dot(uMaskHsl[b + 3], wB);
-  float lumAdd = dot(uMaskHsl[b + 4], wA) + dot(uMaskHsl[b + 5], wB);
+  float hueShift = (dot(uMaskHsl[b],     wA) + dot(uMaskHsl[b + 1], wB)) * chromaW;
+  float satAdj   = (dot(uMaskHsl[b + 2], wA) + dot(uMaskHsl[b + 3], wB)) * chromaW;
+  float lumAdj   = (dot(uMaskHsl[b + 4], wA) + dot(uMaskHsl[b + 5], wB)) * chromaW;
+
   hsl.x = fract(hsl.x + hueShift * (30.0 / 360.0));
-  hsl.y = clamp(hsl.y * (1.0 + satMul), 0.0, 1.0);
-  hsl.z = clamp(hsl.z + lumAdd * 0.4, 0.0, 1.0);
-  return hsl2rgb(hsl);
+  vec3 rgb = hsl2rgb(hsl);
+  if (abs(satAdj) > 1e-4) {
+    float Lp = luma(rgb);
+    rgb = mix(vec3(Lp), rgb, clamp(1.0 + satAdj, 0.0, 2.0));
+  }
+  if (abs(lumAdj) > 1e-4) rgb *= 1.0 + lumAdj * 0.6;
+  return clamp(rgb, 0.0, 1.0);
 }
 
 // Per-mask RGB tone curve from the LUT atlas row, blended by coverage.
@@ -1145,11 +1110,9 @@ void main() {
   // pipeline (crop, geometry, lens, masks, retouch) stays anchored to the source.
   vec2 viewUv = uViewport.xy + vUv * uViewport.zw;
   vec2 srcUv = cropTransformUV(viewUv);
+  // Captured before contributed geometry stages warp srcUv, so radial
+  // corrections (e.g. an extension's vignette) measure from the sensor centre.
   vec2 sensorUv = srcUv;
-  // Lens distortion correction: remap srcUv before any sampling
-  if (uLensDistModel > 0 || abs(uLensDistortion) > 0.001) {
-    srcUv = lensCorrectedUV(srcUv);
-  }
   // Contributed geometry stages (extension-owned): may displace the mutable
   // srcUv so the whole pipeline below resamples the warped position. Runs
   // before the bounds check, so content warped past the frame reads as the
@@ -1161,12 +1124,9 @@ void main() {
     fragColor = vec4(uOutsideColor, 1.0);
     return;
   }
-  // Sample with chromatic aberration correction (CA splits R/B channels radially)
-  vec3 src = (uLensTcaModel > 0 || uLensCA > 0.001) ? sampleWithCA(srcUv) : texture(uImage, srcUv).rgb;
+  vec3 src = texture(uImage, srcUv).rgb;
   // Spot removal (heal / clone): patch the source before any tone edits.
   if (uApplyRetouch && (uSpotCount > 0 || uRetouchCount > 0)) src = applyRetouch(srcUv, src);
-  // Vignetting depends on where light hit the sensor, not the remapped source
-  src *= lensVignetteFactor(sensorUv);
   float rawLuma = srcLuma(src);
 
   float texAmt = uTexture / 100.0;
@@ -1530,8 +1490,6 @@ void main() {
     else if (uSharpenViz == 2) sharpenViz = clamp(0.5 + detail * 4.0, 0.0, 1.0); // edge signal
     else if (uSharpenViz == 3) sharpenViz = luma(clamp(c, 0.0, 1.0)); // sharpened luminance
   }
-  c = applyDefringe(c, uLensDefringe);
-
   // Fallback previews have limited dynamic range - clamp final output
   // since there's no true sensor headroom above 1.0
   if (uIsFallbackPreview) {
@@ -1544,7 +1502,7 @@ void main() {
     if (mi >= uMaskCount) break;
     float mcov = mcovs[mi];
     if (mcov <= 0.0) continue;
-    c = applyMaskDisplay(c, uMaskAdj0[mi], uMaskAdj1[mi], uMaskAdj2[mi].x, mcov, srcUv);
+    c = applyMaskDisplay(c, uMaskAdj0[mi], uMaskAdj1[mi], uMaskAdj2[mi], uMaskAdj3[mi], mcov, srcUv);
     if (uMaskHasHsl[mi] == 1)
       c = mix(c, maskHsl(clamp(c, 0.0, 1.0), mi), mcov);
     if (uMaskHasCurve[mi] == 1)

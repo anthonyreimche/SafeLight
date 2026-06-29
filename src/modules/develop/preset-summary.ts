@@ -127,9 +127,6 @@ export function summarizePreset(params: Partial<DevelopParams>): PresetDiff[] {
   if (params.grain && jsonDiffers(params.grain, DEFAULT_GRAIN)) {
     out.push({ label: "Grain", value: "set" });
   }
-  if (params.lensCorrection && params.lensCorrection.mode !== "off") {
-    out.push({ label: "Lens correction", value: params.lensCorrection.mode });
-  }
 
   return out;
 }
@@ -146,11 +143,35 @@ export interface PresetField {
   changed: boolean;
   /** Short current value, shown beside scalar fields. */
   value?: string;
+  /** Qualified paramBag keys copied when checked (extension-stage fields only;
+   *  core fields leave this unset and copy `keys` from DevelopParams instead). */
+  bagKeys?: string[];
+  /** "global" (default) is offered and pre-checked when changed; "per-image" is
+   *  hidden under "Show all" and never pre-selected — spatial edits (crop,
+   *  retouch, warp …) that don't transfer meaningfully to another photo. */
+  scope?: "global" | "per-image";
+  /** Set on extension-contributed stage fields (drives the "per-image" tag). */
+  extension?: boolean;
+}
+
+/** An external processing stage offered as a savable preset field. Shaped to
+ *  match `collectPresetStages` in the extensions registry, kept as a local type
+ *  so this module stays decoupled from the registry. */
+export interface PresetStageInfo {
+  stageId: string;
+  label: string;
+  scope: "global" | "per-image";
+  paramKeys: string[];
+  changed: boolean;
 }
 
 /** Enumerate the adjustments that can be saved from the given live params, in a
- *  stable, panel-like order. */
-export function presetFields(params: DevelopParams): PresetField[] {
+ *  stable, panel-like order. External extension stages (from the registry) are
+ *  appended after the core fields when provided. */
+export function presetFields(
+  params: DevelopParams,
+  extStages: PresetStageInfo[] = [],
+): PresetField[] {
   const fields: PresetField[] = [];
 
   for (const key of Object.keys(PARAM_LABELS) as ScalarKey[]) {
@@ -166,25 +187,38 @@ export function presetFields(params: DevelopParams): PresetField[] {
     });
   }
 
-  const complex: { id: string; label: string; keys: (keyof DevelopParams)[]; changed: boolean }[] = [
+  // Crop/transform and retouch are tied to one photo's framing and content, so
+  // they're "per-image": offered only under "Show all" and never pre-checked.
+  const complex: { id: string; label: string; keys: (keyof DevelopParams)[]; changed: boolean; scope?: "per-image" }[] = [
     { id: "toneCurve", label: "Tone curve", keys: ["toneCurve"], changed: !isDefaultToneCurves(params.toneCurve) },
     { id: "hsl", label: "HSL", keys: ["hsl"], changed: jsonDiffers(params.hsl, defaultHSL()) },
     { id: "colorGrading", label: "Color grading", keys: ["colorGrading"], changed: jsonDiffers(params.colorGrading, defaultColorGrading()) },
-    { id: "geometry", label: "Crop & transform", keys: ["crop", "straighten", "transform", "uprightMode", "guidedLines"], changed: jsonDiffers(params.crop, DEFAULT_CROP) || jsonDiffers(params.transform, DEFAULT_TRANSFORM) || differs(params.straighten, 0) },
+    { id: "geometry", label: "Crop & transform", keys: ["crop", "straighten", "transform", "uprightMode", "guidedLines"], changed: jsonDiffers(params.crop, DEFAULT_CROP) || jsonDiffers(params.transform, DEFAULT_TRANSFORM) || differs(params.straighten, 0), scope: "per-image" },
     { id: "vignette", label: "Vignette", keys: ["vignette"], changed: jsonDiffers(params.vignette, DEFAULT_VIGNETTE) },
     { id: "grain", label: "Grain", keys: ["grain"], changed: jsonDiffers(params.grain, DEFAULT_GRAIN) },
-    { id: "lensCorrection", label: "Lens correction", keys: ["lensCorrection"], changed: params.lensCorrection.mode !== "off" },
     { id: "masks", label: "Masks", keys: ["masks"], changed: params.masks.length > 0 },
-    { id: "retouch", label: "Retouch", keys: ["retouch"], changed: params.retouch.length > 0 },
+    { id: "retouch", label: "Retouch", keys: ["retouch"], changed: params.retouch.length > 0, scope: "per-image" },
   ];
   for (const c of complex) {
-    fields.push(c);
+    fields.push({ id: c.id, label: c.label, keys: c.keys, changed: c.changed, scope: c.scope });
+  }
+
+  for (const s of extStages) {
+    fields.push({
+      id: `ext:${s.stageId}`,
+      label: s.label,
+      keys: [],
+      changed: s.changed,
+      bagKeys: s.paramKeys,
+      scope: s.scope,
+      extension: true,
+    });
   }
 
   return fields;
 }
 
-/** Copy the keys of the selected fields out of the live params into a partial. */
+/** Copy the DevelopParams keys of the selected fields into a partial. */
 export function buildPartialParams(
   params: DevelopParams,
   fields: PresetField[],
@@ -197,6 +231,24 @@ export function buildPartialParams(
       // Index assignment across a heterogeneous key set; safe because we copy a
       // value straight from params under the same key.
       (out as Record<string, unknown>)[k] = structuredClone(params[k]);
+    }
+  }
+  return out;
+}
+
+/** Copy the extension-stage paramBag keys of the selected fields into a partial
+ *  bag, so a preset carries only the chosen extension adjustments (not the whole
+ *  live bag). */
+export function buildPartialBag(
+  bag: Record<string, unknown>,
+  fields: PresetField[],
+  selectedIds: Set<string>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const f of fields) {
+    if (!f.bagKeys || !selectedIds.has(f.id)) continue;
+    for (const k of f.bagKeys) {
+      if (k in bag) out[k] = structuredClone(bag[k]);
     }
   }
   return out;

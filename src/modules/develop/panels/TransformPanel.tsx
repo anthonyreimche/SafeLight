@@ -12,7 +12,7 @@ import {
   type TransformParams,
   type UprightMode,
 } from "@/catalog/types";
-import { buildLensDistort, maxCropForTransform } from "@/rendering/crop-transform";
+import { maxCropForTransform } from "@/rendering/crop-transform";
 import { buildInverseTransform } from "@/rendering/transform";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import { computeGuidedCorrection } from "@/rendering/upright";
@@ -52,13 +52,10 @@ export function TransformPanel() {
     // component re-renders with the new value.
     if (!st.constrainCrop) return;
     const inv = buildInverseTransform(nextStraighten, nextTransform, imageAspect);
-    const distort = buildLensDistort(
-      st.params.lensCorrection, st.resolvedLensProfile, imageAspect,
-    );
     // -1 = Original: resolve to the image's own aspect.
     setParam(
       "crop",
-      maxCropForTransform(inv, cropAspect === -1 ? imageAspect : cropAspect, imageAspect, distort),
+      maxCropForTransform(inv, cropAspect === -1 ? imageAspect : cropAspect, imageAspect),
     );
   };
 

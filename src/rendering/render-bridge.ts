@@ -319,12 +319,14 @@ export class RenderBridge {
     });
   }
 
-  setLensProfile(profile: import("@/lens-profiles/types").ResolvedProfile | null) {
-    this.post({ cmd: "setLensProfile", profile });
-  }
-
   setAsShotTemperature(kelvin: number) {
     this.post({ cmd: "setAsShotTemperature", kelvin });
+  }
+
+  /** Global HSL band shaping (Preferences ▸ HSL): range scales band widths,
+   *  smooth blends the falloff. Applies to the live develop renderer. */
+  setHslStyle(range: number, smooth: number) {
+    this.post({ cmd: "setHslStyle", range, smooth });
   }
 
   // ------------------------------------------------------------------

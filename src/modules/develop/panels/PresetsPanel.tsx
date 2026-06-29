@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { useDevelopStore } from "@/state/develop-store";
 import { usePresetsStore, nextAvailableName, type Preset } from "@/state/presets-store";
-import { usePresetImporters } from "@/extensions/registry";
+import { usePresetImporters, describePresetBag } from "@/extensions/registry";
 import { normalizeParams, type DevelopParams } from "@/catalog/types";
 import { exportPreset, pickPresetFile, parseSafelightPreset } from "../preset-io";
 import { summarizePreset } from "../preset-summary";
@@ -119,7 +119,7 @@ export function PresetsPanel() {
       className="group relative flex items-center justify-between rounded px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-2"
       onMouseEnter={(e) => {
         setHovered({ id: preset.id, anchor: e.currentTarget });
-        setPreviewParams(effective(preset.params));
+        setPreviewParams(effective(preset.params), preset.paramBag);
       }}
       onMouseLeave={() => {
         setHovered((h) => (h?.id === preset.id ? null : h));
@@ -152,7 +152,13 @@ export function PresetsPanel() {
       {hovered?.id === preset.id && (
         <PresetTooltip
           name={preset.name}
-          diffs={summarizePreset(preset.params)}
+          diffs={[
+            ...summarizePreset(preset.params),
+            ...describePresetBag(preset.paramBag).map((label) => ({
+              label,
+              value: "adjusted",
+            })),
+          ]}
           anchor={hovered.anchor}
         />
       )}
@@ -236,12 +242,12 @@ export function PresetsPanel() {
       {saving && (
         <PresetSaveDialog
           params={params}
+          paramBag={paramBag}
           groups={groups}
           onSave={(result) => {
             setSaving(false);
-            // Capture the live contributed-param bag (e.g. denoise) alongside
-            // the selected DevelopParams so the preset restores both.
-            commitSave({ ...result, paramBag });
+            // result already carries the selected extension-stage params.
+            commitSave(result);
           }}
           onCancel={() => setSaving(false)}
         />
@@ -253,12 +259,13 @@ export function PresetsPanel() {
       {updating && (
         <PresetSaveDialog
           params={params}
+          paramBag={paramBag}
           groups={groups}
           initialName={updating.name}
           initialGroup={updating.group}
           saveLabel="Update preset"
           onSave={(result) => {
-            updatePreset(updating.id, result.params, result.group, paramBag);
+            updatePreset(updating.id, result.params, result.group, result.paramBag);
             setUpdating(null);
           }}
           onCancel={() => setUpdating(null)}

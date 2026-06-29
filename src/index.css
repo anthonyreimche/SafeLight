@@ -225,3 +225,14 @@ html.sl-opaque .bg-slider-fill\/40 {
   border-radius: 9999px;
   background: var(--color-surface-3);
 }
+
+/* Global develop-canvas-overlay passthrough. While a pan/zoom gesture key
+   (Ctrl/⌘/Space) is held, ViewportImage flips the shared canvas-gesture flag and
+   DevelopCanvas swaps the extension-overlay slot wrapper to this class. The
+   descendant `*` with !important forces even interactive extension overlays
+   (which set pointer-events:auto inline) click-through, so the pointer reaches
+   the pan/zoom layer underneath. */
+.canvas-overlay-passthrough,
+.canvas-overlay-passthrough * {
+  pointer-events: none !important;
+}

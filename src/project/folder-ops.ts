@@ -13,7 +13,7 @@ import { useProjectStore } from "./project-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { catalogStorage } from "@/catalog/storage";
-import { nativeFs, nativePathOf } from "./native-fs";
+import { nativeFs, nativePathOf, revealNativePath } from "./native-fs";
 import { writeJSON } from "./fs";
 import type { CatalogPhoto } from "@/catalog/types";
 
@@ -50,6 +50,33 @@ function basename(p: string): string {
 
 function root(): FileSystemDirectoryHandle | null {
   return useProjectStore.getState().root;
+}
+
+/** Split a filename into [base, ext] where ext keeps its leading dot (or ""). A
+ *  leading-dot name (".hidden") is treated as all base, no extension. */
+function splitExt(name: string): [string, string] {
+  const i = name.lastIndexOf(".");
+  return i > 0 ? [name.slice(0, i), name.slice(i)] : [name, ""];
+}
+
+/** Does a project-relative path exist on disk? Works in both the native and FSA
+ *  builds (the latter probes the parent directory handle). */
+async function existsRel(
+  rootHandle: FileSystemDirectoryHandle,
+  rel: string,
+): Promise<boolean> {
+  const fs = nativeFs();
+  const rootPath = nativePathOf(rootHandle);
+  if (fs && rootPath) {
+    return fs.exists(`${rootPath.replace(/[/\\]+$/, "")}/${rel}`);
+  }
+  try {
+    const parent = await resolveDir(rootHandle, dirnameRel(rel));
+    await parent.getFileHandle(basename(rel));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Walk from the project root to a relative folder, optionally creating it. */
@@ -239,6 +266,78 @@ export async function movePhotos(ids: string[], destRel: string): Promise<void> 
   }
   await useCatalogStore.getState().relocatePhotos(updated);
   await useProjectStore.getState().refreshTree();
+}
+
+/** Reveal a photo's file in the OS file manager (selects it inside its folder).
+ *  Returns false in the plain-browser build or if the path can't be resolved. */
+export async function revealPhoto(id: string): Promise<boolean> {
+  const rootHandle = root();
+  const photo = useCatalogStore.getState().photos.find((p) => p.id === id);
+  if (!rootHandle || !photo) return false;
+  // Prefer the file handle's own absolute path; fall back to root + relPath.
+  let filePath = nativePathOf(photo.fileHandle);
+  if (!filePath) {
+    const rootPath = nativePathOf(rootHandle);
+    filePath = rootPath ? `${rootPath.replace(/[/\\]+$/, "")}/${photo.relPath}` : null;
+  }
+  if (!filePath) return false;
+  return revealNativePath(filePath);
+}
+
+export type RenamePhotoResult =
+  | { ok: true; filename: string }
+  | { ok: false; reason: string };
+
+/** Rename one photo's file on disk, in place (same folder), preserving its
+ *  extension. Carries the SafeLight sidecar (<file>.safelight.json) along if one
+ *  exists. Cached previews and develop edits are keyed by photo id, so they're
+ *  preserved untouched — only the catalog's filename/relPath/handle update. */
+export async function renamePhoto(
+  id: string,
+  newBaseName: string,
+): Promise<RenamePhotoResult> {
+  const rootHandle = root();
+  if (!rootHandle) return { ok: false, reason: "No project is open." };
+  const photo = useCatalogStore.getState().photos.find((p) => p.id === id);
+  if (!photo) return { ok: false, reason: "Photo not found." };
+
+  const [, ext] = splitExt(photo.filename);
+  // Collapse to a single path segment and drop trailing dots/spaces (Windows
+  // can't keep them); the original extension is always re-appended.
+  const cleanBase = newBaseName.trim().replace(/[/\\]/g, "").replace(/[. ]+$/, "");
+  if (!cleanBase) return { ok: false, reason: "Name can't be empty." };
+  const newFilename = cleanBase + ext;
+  if (newFilename === photo.filename) return { ok: true, filename: photo.filename };
+
+  const newRel = joinRel(photo.folder, newFilename);
+  if (await existsRel(rootHandle, newRel)) {
+    return { ok: false, reason: `“${newFilename}” already exists in this folder.` };
+  }
+
+  try {
+    await moveOnDisk(rootHandle, photo.relPath, newRel, "file");
+  } catch (e) {
+    console.error(`[folder-ops] rename ${photo.relPath} → ${newRel} failed:`, e);
+    return { ok: false, reason: "Couldn't rename the file on disk." };
+  }
+
+  // Best-effort: keep the sidecar paired with its image under the new name.
+  const oldSidecar = joinRel(photo.folder, `${photo.filename}${SIDECAR_SUFFIX}`);
+  const newSidecar = joinRel(photo.folder, `${newFilename}${SIDECAR_SUFFIX}`);
+  try {
+    if (await existsRel(rootHandle, oldSidecar)) {
+      await moveOnDisk(rootHandle, oldSidecar, newSidecar, "file");
+    }
+  } catch (e) {
+    console.warn(`[folder-ops] sidecar rename ${oldSidecar} skipped:`, e);
+  }
+
+  const dir = await resolveDir(rootHandle, photo.folder);
+  const fileHandle = await dir.getFileHandle(newFilename);
+  await useCatalogStore.getState().relocatePhotos([
+    { ...photo, filename: newFilename, relPath: newRel, fileHandle },
+  ]);
+  return { ok: true, filename: newFilename };
 }
 
 /** Delete a folder: drop its photos (and their previews/edits) from the catalog,

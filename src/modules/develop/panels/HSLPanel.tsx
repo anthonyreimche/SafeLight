@@ -6,7 +6,20 @@
 import { Panel } from "@/ui/components/Panel";
 import { HSLMixer } from "@/ui/components/HSLMixer";
 import { useDevelopStore } from "@/state/develop-store";
-import { useEffect } from "react";
+import { getExtSetting, useExtSettings } from "@/extensions/ext-settings";
+import { useEffect, useState } from "react";
+import type { HSLBand } from "@/catalog/types";
+
+const VIEWS: { key: "tabs" | "all"; label: string }[] = [
+  { key: "tabs", label: "Tabs" },
+  { key: "all", label: "All" },
+];
+
+const TARGET_BANDS: { key: HSLBand; label: string }[] = [
+  { key: "hue", label: "Hue" },
+  { key: "saturation", label: "Sat" },
+  { key: "luminance", label: "Lum" },
+];
 
 export function HSLPanel() {
   const hsl = useDevelopStore((s) => s.params.hsl);
@@ -16,6 +29,12 @@ export function HSLPanel() {
   const setHslPicking = useDevelopStore((s) => s.setHslPicking);
   const selectedBand = useDevelopStore((s) => s.selectedHslBand);
   const setSelectedBand = useDevelopStore((s) => s.setSelectedHslBand);
+
+  // Re-render when the HSL extension's preferences change (Preferences ▸ HSL).
+  useExtSettings((s) => s["core.hsl"]);
+  const [view, setView] = useState<"tabs" | "all">(() =>
+    getExtSetting<"tabs" | "all">("core.hsl", "defaultView", "tabs"),
+  );
 
   // Exit picking mode on Escape key
   useEffect(() => {
@@ -31,7 +50,7 @@ export function HSLPanel() {
 
   return (
     <Panel title="HSL">
-      <div className="mb-2 flex items-center">
+      <div className="mb-2 flex items-center justify-between gap-2">
         <button
           type="button"
           onClick={() => setHslPicking(!hslPicking)}
@@ -41,7 +60,7 @@ export function HSLPanel() {
               ? "border-accent bg-accent/30 text-text-primary"
               : "border-border-subtle text-text-secondary hover:border-border hover:text-text-primary"
           }`}
-          title={`Drag up/down on image to adjust ${selectedBand}`}
+          title={`Click-drag up/down on the image to adjust ${selectedBand}`}
         >
           <svg
             width="11"
@@ -58,9 +77,53 @@ export function HSLPanel() {
             <path d="M3 21v-3l9-9" />
             <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z" />
           </svg>
-          Picker
+          Target
         </button>
+
+        <div className="flex rounded bg-surface-2" role="group" aria-label="HSL view">
+          {VIEWS.map((v) => (
+            <button
+              key={v.key}
+              type="button"
+              onClick={() => setView(v.key)}
+              aria-pressed={view === v.key}
+              className={`px-2 py-0.5 text-[10px] uppercase tracking-wider ${
+                view === v.key
+                  ? "bg-surface-3 text-text-primary"
+                  : "text-text-muted hover:text-text-secondary"
+              } first:rounded-l last:rounded-r`}
+            >
+              {v.label}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* In the "All" view there are no band tabs, so when the target tool is
+          active surface a compact band selector so the drag has a clear target. */}
+      {view === "all" && hslPicking && (
+        <div
+          className="mb-2 flex rounded bg-surface-2"
+          role="group"
+          aria-label="Target band"
+        >
+          {TARGET_BANDS.map((b) => (
+            <button
+              key={b.key}
+              type="button"
+              onClick={() => setSelectedBand(b.key)}
+              aria-pressed={selectedBand === b.key}
+              className={`flex-1 py-1 text-[10px] uppercase tracking-wider ${
+                selectedBand === b.key
+                  ? "bg-surface-3 text-text-primary"
+                  : "text-text-muted hover:text-text-secondary"
+              } first:rounded-l last:rounded-r`}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <HSLMixer
         value={hsl}
@@ -68,6 +131,7 @@ export function HSLPanel() {
         onCommit={(channel) => commitEdit(`HSL ${channel}`)}
         selectedBand={selectedBand}
         onBandChange={setSelectedBand}
+        view={view}
       />
     </Panel>
   );
