@@ -16,6 +16,7 @@ import { useUIStore } from "@/state/ui-store";
 import { preDecodeRawsForCache, repairMissingPreviews } from "@/modules/library/import-photos";
 import { setRawCacheDir } from "@/raw/raw-cache";
 import { ProjectStorage } from "./project-storage";
+import { ReadOnlyProjectError } from "./working-dir";
 import {
   addRecentProject,
   getLastProject,
@@ -87,6 +88,31 @@ function restoreActiveFolder(project: string): string | null {
   return null;
 }
 
+/** Turn an open failure into a verbose, actionable message for the error banner.
+ *  The motivating case is a read-only source folder (a memory card) where the
+ *  old code only console.error'd and left an unexplained empty library. */
+function describeOpenError(e: unknown, folderName: string): string {
+  if (e instanceof ReadOnlyProjectError) {
+    if (e.redirectFailed) {
+      const reason = e.cause instanceof Error ? ` (${e.cause.message})` : "";
+      return (
+        `Couldn't open “${folderName}”. It's read-only, and Safelight also ` +
+        `couldn't write to its fallback catalog location${reason}. ` +
+        `Pick a writeable folder under Preferences ▸ Previews ▸ “Catalog ` +
+        `location for read-only folders”, then try again.`
+      );
+    }
+    return (
+      `Couldn't open “${folderName}”. This folder is read-only, so Safelight ` +
+      `can't create its .safelight working folder here. Use the desktop app ` +
+      `(which stores the catalog in a writeable location automatically), or ` +
+      `open a writeable copy of the folder.`
+    );
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  return `Couldn't open “${folderName}”: ${msg}`;
+}
+
 interface ProjectState {
   root: FileSystemDirectoryHandle | null;
   name: string;
@@ -95,6 +121,16 @@ interface ProjectState {
   /** New-file import progress for the loading bar. total=0 when not importing. */
   importDone: number;
   importTotal: number;
+
+  /** Blocking message shown when opening a folder failed (e.g. it's read-only
+   *  and no writeable catalog location could be established). null = no error. */
+  openError: string | null;
+  /** Non-blocking notice shown when a read-only folder's catalog was redirected
+   *  to a writeable location, so the user knows where their data lives. */
+  storageNotice: string | null;
+  /** Dismiss the current open error / storage notice banners. */
+  dismissOpenError: () => void;
+  dismissStorageNotice: () => void;
 
   /** Folder picker → open as project. Must run within a user gesture. */
   openProjectPicker: () => Promise<void>;
@@ -124,6 +160,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   opening: false,
   importDone: 0,
   importTotal: 0,
+  openError: null,
+  storageNotice: null,
+  dismissOpenError: () => set({ openError: null }),
+  dismissStorageNotice: () => set({ storageNotice: null }),
 
   async openProjectPicker() {
     // Electron: native folder picker → absolute path → path-backed handle, so
@@ -151,7 +191,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const gen = ++openGen;
     importAbort = new AbortController();
     const signal = importAbort.signal;
-    set({ opening: true, importDone: 0, importTotal: 0 });
+    set({ opening: true, importDone: 0, importTotal: 0, openError: null, storageNotice: null });
     // Clear the old catalog immediately so the grid shows photos as they arrive
     // rather than showing the previous folder until the new one is fully loaded.
     useCatalogStore.getState().replaceCatalog([]);
@@ -234,6 +274,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       setRawCacheDir(opened.rawCacheDir);
       setCatalogStorage(opened.storage);
       set({ root: handle, name: handle.name, tree: opened.tree });
+      // Read-only source folder: its catalog/previews/cache were redirected to a
+      // writeable location. Let the user know where their data actually lives.
+      if (opened.storageLocation === "external") {
+        set({
+          storageNotice:
+            `“${handle.name}” is read-only, so its Safelight catalog, previews and ` +
+            `cache are stored separately at ${opened.externalPath}. ` +
+            `Edits and ratings are saved there, not on the source.`,
+        });
+      }
       // Phase 2 — the scan finished: attach handles, add new, drop removed. If we
       // painted skeletons, reconcile (keeps already-loaded previews); otherwise
       // (first import / no cache) finalize and kick off loading normally.
@@ -272,6 +322,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       void preDecodeRawsForCache(opened.photos);
     } catch (e) {
       console.error("[project] open failed:", e);
+      if (gen === openGen) set({ openError: describeOpenError(e, handle.name) });
     } finally {
       if (gen === openGen) {
         importAbort = null;

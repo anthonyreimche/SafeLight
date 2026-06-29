@@ -5,6 +5,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { useRegistry } from "@/extensions/registry";
+import { useSettings } from "@/state/settings-store";
 
 interface SliderProps {
   label: string;
@@ -70,6 +71,9 @@ export function Slider({
   const iconSvg = useRegistry((s) =>
     icon ? s.sliderIcons[icon]?.svg : undefined,
   );
+  // Opt-in: a click snaps the value to the cursor instead of grabbing the
+  // current value (see onPointerDown). Off keeps the default relative drag.
+  const jumpToCursor = useSettings((s) => s.sliderJumpToCursor);
   const sliderId = useId();
   // Raw text while the numeric field is focused, so intermediate states
   // ("", "-", "1.") don't fight the controlled value.
@@ -154,8 +158,26 @@ export function Slider({
     e.currentTarget.focus();
     e.currentTarget.setPointerCapture(e.pointerId);
     const mod = e.altKey || e.ctrlKey;
-    dragRef.current = { startX: e.clientX, startValue: value, shift: e.shiftKey, mod };
-    setDragValue(value);
+    // Default drag anchors at the current value (movement alone changes it).
+    // Jump-to-cursor anchors at the value under the pointer so the click snaps
+    // there first. Either way onPointerMove drags relative to this anchor — and
+    // its slope equals the absolute clientX→value mapping, so a seeded anchor
+    // turns into correct absolute tracking with no other change. The fraction
+    // (clientX − left)/width is zoom-invariant: all three are visual-space, so
+    // the Interface-scale body-zoom factor cancels (unlike layout-space hits).
+    let startValue = value;
+    if (jumpToCursor) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      if (rect.width > 0) {
+        const frac = (e.clientX - rect.left) / rect.width;
+        startValue = snap(min + frac * (max - min));
+      }
+    }
+    dragRef.current = { startX: e.clientX, startValue, shift: e.shiftKey, mod };
+    setDragValue(startValue);
+    // A click that lands on a new value commits it even without a drag; endDrag
+    // flushes the queued change and fires onCommit on pointer-up.
+    if (startValue !== value) queueChange(startValue);
     if (mod) onModifierPreview?.(true);
   };
 
@@ -249,7 +271,7 @@ export function Slider({
             if (VALUE_KEYS.has(e.key)) onCommit?.();
           }}
           onDoubleClick={reset}
-          title="Drag to adjust · hold Shift for fine control · double-click to reset"
+          title={`${jumpToCursor ? "Click to set · drag" : "Drag"} to adjust · hold Shift for fine control · double-click to reset`}
           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
         />
       </div>

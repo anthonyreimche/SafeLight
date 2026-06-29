@@ -9,6 +9,7 @@ import { DevelopCanvas } from "./DevelopCanvas";
 import { Slot } from "@/extensions/Slot";
 import { ZoomControls } from "@/ui/ZoomControls";
 import { SurroundControl } from "@/ui/SurroundControl";
+import { DisplayTransformControl } from "@/ui/DisplayTransformControl";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 
@@ -48,6 +49,7 @@ export function DevelopView() {
             <div className="flex items-center gap-3">
               <Slot name="develop-toolbar" />
               <AssessmentToggle />
+              <DisplayTransformControl />
               <SurroundControl />
               <ZoomControls zoom={zoom} onChange={setZoom} />
             </div>

@@ -17,6 +17,7 @@ import { getStageTextures } from "@/rendering/render-bridge";
 import { getExtSetting } from "@/extensions/ext-settings";
 import { resolveActivePipeline } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
+import { getSettings } from "@/state/settings-store";
 import { applyOutputSharpening } from "./sharpen";
 import { encodeTiff } from "./tiff";
 import { ZipWriter } from "./zip";
@@ -283,6 +284,102 @@ async function renderOne(
   }
 }
 
+/** Create the WebGL renderer shared across a batch export/render. It bakes in
+ *  the same things the live preview uses — the registered processing stages, the
+ *  active pipeline, the live stage-texture bag (film LUTs, spectral tables, …)
+ *  and the output colour space — so rendered pixels match the develop view.
+ *  Returns null when a WebGL context can't be created.
+ *
+ *  - Stages + active pipeline: extension GPU stages (denoise, Spektrafilm) bake
+ *    in with the same display transform; the default pipeline alone would (for
+ *    stages like Spektrafilm) double-apply the base curve.
+ *  - Stage textures: without them, stages that sample uploaded textures fall
+ *    back to the renderer's 1×1 black dummy and render pure black.
+ *  - Output colour space: the renderer converts pixels and renderOne embeds the
+ *    matching ICC; set once, persists across the batch's single context. */
+function makeBatchRenderer(
+  settings: ExportSettings,
+): { renderer: WebGLRenderer; canvas: HTMLCanvasElement } | null {
+  const canvas = document.createElement("canvas");
+  let renderer: WebGLRenderer;
+  try {
+    renderer = new WebGLRenderer(canvas, {
+      stages: Object.values(useRegistry.getState().processingStages),
+      pipeline: resolveActivePipeline(),
+    });
+  } catch {
+    return null;
+  }
+  renderer.setStageTextures(getStageTextures());
+  renderer.setOutputColorSpace(settings.colorSpace ?? "srgb");
+  return { renderer, canvas };
+}
+
+/** The persisted default export settings (Preferences ▸ Export) as a ready-to-
+ *  use ExportSettings — quality normalised to 0..1. The Export panel seeds its
+ *  per-session controls from the same values; this is the stable fallback for
+ *  headless callers (e.g. a web-gallery extension via api.export). */
+export function getDefaultExportSettings(): ExportSettings {
+  const s = getSettings();
+  return {
+    format: s.exportFormat,
+    quality: s.exportQuality / 100,
+    longEdge: s.exportLongEdge,
+    bundle: false,
+    delivery: "files",
+    colorSpace: s.exportColorSpace,
+    tiffBitDepth: s.exportTiffBitDepth,
+  };
+}
+
+export interface RenderedPhoto {
+  photo: CatalogPhoto;
+  /** The rendered image, or null if the photo couldn't be decoded/rendered. */
+  blob: Blob | null;
+  /** Rendered pixel dimensions (0 when blob is null). */
+  width: number;
+  height: number;
+}
+
+/** Render photos through the develop pipeline to in-memory blobs, reusing one
+ *  WebGL context for the whole batch (same path as exportPhotos, minus the
+ *  download/zip delivery). For callers that need the pixels rather than a file —
+ *  e.g. publishing a full-resolution web gallery. A photo that can't be decoded
+ *  yields a null blob in its slot rather than failing the batch. */
+export async function renderPhotosToBlobs(
+  photos: CatalogPhoto[],
+  settings: ExportSettings,
+  onProgress?: (p: ExportProgress) => void,
+): Promise<RenderedPhoto[]> {
+  const made = makeBatchRenderer(settings);
+  if (!made)
+    return photos.map((photo) => ({ photo, blob: null, width: 0, height: 0 }));
+  const { renderer, canvas } = made;
+  const procSettings = settings.processorSettings ?? {};
+  const out: RenderedPhoto[] = [];
+  try {
+    for (let i = 0; i < photos.length; i++) {
+      const photo = photos[i];
+      let blob: Blob | null = null;
+      try {
+        blob = await renderOne(renderer, canvas, photo, settings, procSettings);
+      } catch {
+        blob = null;
+      }
+      out.push({
+        photo,
+        blob,
+        width: blob ? canvas.width : 0,
+        height: blob ? canvas.height : 0,
+      });
+      onProgress?.({ done: i + 1, total: photos.length, filename: photo.filename });
+    }
+  } finally {
+    renderer.dispose();
+  }
+  return out;
+}
+
 // Render each photo through the develop pipeline, then deliver the results. A
 // single WebGL context is reused across the batch so we don't exhaust the
 // browser's context limit; rendering is sequential.
@@ -292,28 +389,9 @@ export async function exportPhotos(
   onProgress?: (p: ExportProgress) => void,
   destDir?: FileSystemDirectoryHandle,
 ): Promise<ExportResult> {
-  const canvas = document.createElement("canvas");
-  let renderer: WebGLRenderer;
-  try {
-    // Pass the registered processing stages AND the active pipeline so extension
-    // GPU stages (e.g. denoise, Spektrafilm) are baked into exported pixels with
-    // the same display transform the live preview uses — not just the default
-    // pipeline, which would (for stages like Spektrafilm) double-apply the base
-    // curve.
-    renderer = new WebGLRenderer(canvas, {
-      stages: Object.values(useRegistry.getState().processingStages),
-      pipeline: resolveActivePipeline(),
-    });
-  } catch {
-    return { exported: 0, failed: photos.map((p) => p.filename) };
-  }
-  // Seed the export renderer with the live stage-texture bag (film LUTs,
-  // spectral tables, …). Without this, stages that sample uploaded textures fall
-  // back to the renderer's 1×1 black dummy texture and export pure black.
-  renderer.setStageTextures(getStageTextures());
-  // Wider-gamut export: the renderer converts pixels and renderOne embeds the
-  // matching ICC. Persists across the batch (one render context).
-  renderer.setOutputColorSpace(settings.colorSpace ?? "srgb");
+  const made = makeBatchRenderer(settings);
+  if (!made) return { exported: 0, failed: photos.map((p) => p.filename) };
+  const { renderer, canvas } = made;
 
   const delivery = settings.delivery ?? (settings.bundle ? "zip" : "files");
   const useZip = delivery === "zip" && photos.length > 1;

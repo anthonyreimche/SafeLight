@@ -22,6 +22,12 @@ const privileged = {
     write: (p, data) => ipcRenderer.invoke("fs:write", String(p), data),
     list: (p) => ipcRenderer.invoke("fs:list", String(p)),
     mkdir: (p) => ipcRenderer.invoke("fs:mkdir", String(p)),
+    externalCatalogDir: (p, base) =>
+      ipcRenderer.invoke(
+        "fs:externalCatalogDir",
+        String(p),
+        base ? String(base) : null,
+      ),
     remove: (p) => ipcRenderer.invoke("fs:remove", String(p)),
     move: (src, dest) => ipcRenderer.invoke("fs:move", String(src), String(dest)),
     exists: (p) => ipcRenderer.invoke("fs:exists", String(p)),

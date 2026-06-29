@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CANVAS_SURROUND_SHADES,
+  DEFAULT_CANVAS_SURROUND_INDEX,
   stepCanvasSurround,
   updateSettings,
   useSettings,
@@ -44,7 +45,7 @@ export function SurroundControl() {
   if (!enabled) return null;
 
   const found = CANVAS_SURROUND_SHADES.findIndex((s) => s.value === surround);
-  const idx = found === -1 ? CANVAS_SURROUND_SHADES.length - 2 : found; // → Middle grey
+  const idx = found === -1 ? DEFAULT_CANVAS_SURROUND_INDEX : found; // → Middle grey
   const cur = CANVAS_SURROUND_SHADES[idx];
 
   const btn =

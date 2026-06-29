@@ -35,28 +35,34 @@ let reqSeq = 0;
 // the pending params and re-runs once at the end — so rapid edits collapse to a
 // single trailing render that reflects the latest committed look.
 const inFlight = new Set<string>();
-const pending = new Map<string, { params: DevelopParams; asShotTemperature: number }>();
+const pending = new Map<
+  string,
+  { params: DevelopParams; asShotTemperature: number; paramBag?: Record<string, unknown> }
+>();
 
 /** Re-render and persist the grid thumbnail for a just-committed edit. The
- *  worker's thumb renderer already carries the live stages / pipeline / param
- *  bag for the active photo; `params` is the freshly committed look. Fire and
- *  forget — never blocks the commit. */
+ *  worker's thumb renderer carries the live stages / pipeline / param bag for the
+ *  ACTIVE photo, so a commit to a different photo (batch sync/reset/auto) must
+ *  pass that photo's own `paramBag` — otherwise the active photo's extension
+ *  stage params bleed into the rendered thumbnail. `params` is the freshly
+ *  committed look. Fire and forget — never blocks the commit. */
 export function regenerateEditedThumbnail(
   photoId: string,
   params: DevelopParams,
   asShotTemperature: number,
+  paramBag?: Record<string, unknown>,
 ): void {
   if (inFlight.has(photoId)) {
-    pending.set(photoId, { params, asShotTemperature });
+    pending.set(photoId, { params, asShotTemperature, paramBag });
     return;
   }
   inFlight.add(photoId);
-  void run(photoId, params, asShotTemperature).finally(() => {
+  void run(photoId, params, asShotTemperature, paramBag).finally(() => {
     inFlight.delete(photoId);
     const next = pending.get(photoId);
     if (next) {
       pending.delete(photoId);
-      regenerateEditedThumbnail(photoId, next.params, next.asShotTemperature);
+      regenerateEditedThumbnail(photoId, next.params, next.asShotTemperature, next.paramBag);
     }
   });
 }
@@ -65,6 +71,7 @@ async function run(
   photoId: string,
   params: DevelopParams,
   asShotTemperature: number,
+  paramBag?: Record<string, unknown>,
 ): Promise<void> {
   const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
   if (!photo) return;
@@ -78,7 +85,7 @@ async function run(
   // 1) Render from the viewport's scene-linear source if it's already resident in
   //    the thumb renderer (every commit after the first). Matches the viewport
   //    tone exactly (base curve applied via the cached source's render state).
-  let blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge);
+  let blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, paramBag);
 
   // 2) First commit for this photo: decode (warm cache while editing, so the RAW
   //    fast path returns the srgb16 preview in ~50ms — no libraw), upload a capped
@@ -100,7 +107,7 @@ async function run(
         // is camera-toned and needs none, matching what the viewport shows.
         false,
       );
-      blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge);
+      blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, paramBag);
     }
   }
 
@@ -116,6 +123,7 @@ async function run(
         asShotTemperature,
         maxEdge,
         quality: 0.8,
+        contributedParams: paramBag,
       });
     } catch {
       // A render failure must not lose the existing preview.
@@ -149,6 +157,7 @@ function renderFromSource(
   params: DevelopParams,
   asShotTemperature: number,
   maxEdge: number,
+  paramBag?: Record<string, unknown>,
 ): Promise<Blob | null> {
   return bridge.renderThumbnailFromSource({
     requestId: `edit-thumb-${key}-${++reqSeq}`,
@@ -157,5 +166,6 @@ function renderFromSource(
     asShotTemperature,
     maxEdge,
     quality: 0.8,
+    contributedParams: paramBag,
   });
 }

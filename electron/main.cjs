@@ -26,6 +26,7 @@ const {
 const path = require("node:path");
 const fs = require("node:fs");
 const zlib = require("node:zlib");
+const crypto = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 
 // `app.isPackaged` is false when Electron runs an app from a plain directory
@@ -1153,6 +1154,28 @@ function registerFsIpc() {
   });
   ipcMain.handle("fs:mkdir", async (_e, p) => {
     await fs.promises.mkdir(p, { recursive: true });
+  });
+  // Resolve a writeable working directory for a read-only project folder. When a
+  // photo folder can't be written to (e.g. a camera memory card mounted
+  // read-only), Safelight can't create its in-folder .safelight working dir, so
+  // the catalog/previews/RAW cache live here instead — under `baseOverride` if the
+  // user set a "Catalog location for read-only folders" in Preferences, otherwise
+  // under the app's userData. Keyed by a hash of the source path so every folder
+  // keeps its own stable catalog and two cards at different paths never collide.
+  // Creates the directory (so a write failure here surfaces, e.g. an unwriteable
+  // override) and returns its absolute path.
+  ipcMain.handle("fs:externalCatalogDir", async (_e, rootPath, baseOverride) => {
+    const src = path.resolve(String(rootPath));
+    const base =
+      baseOverride && String(baseOverride).trim()
+        ? path.resolve(String(baseOverride))
+        : path.join(app.getPath("userData"), "external-catalogs");
+    const tag = crypto.createHash("sha1").update(src).digest("hex").slice(0, 8);
+    const leaf =
+      path.basename(src).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40) || "folder";
+    const dir = path.join(base, `${leaf}-${tag}`, ".safelight");
+    await fs.promises.mkdir(dir, { recursive: true });
+    return dir;
   });
   ipcMain.handle("fs:remove", async (_e, p) => {
     await fs.promises.rm(p, { recursive: true, force: true });

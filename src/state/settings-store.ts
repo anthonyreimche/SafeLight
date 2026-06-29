@@ -16,16 +16,31 @@ import type { UpdateChannel } from "@/update/update-checker";
 
 export type ExportFormatPref = "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
 
-/** The five neutral-grey surround shades, dark → light, on darktable's own grey
- *  ladder and centred on #777777 — the ~18% middle grey both darktable and
- *  Ansel use for the darkroom canvas, the standard for color-critical viewing. */
+/** The surround shades, dark → light: pure black, darktable's own five-rung grey
+ *  ladder centred on #777777 (the ~18% middle grey both darktable and Ansel use
+ *  for the darkroom canvas, the standard for color-critical viewing), then pure
+ *  white. Black and white bracket the ladder for a darkroom-black or lightbox-
+ *  white surround; middle grey stays the default. */
 export const CANVAS_SURROUND_SHADES: { value: string; label: string }[] = [
+  { value: "#000000", label: "Black" },
   { value: "#3b3b3b", label: "Dark grey" },
   { value: "#525252", label: "Grey" },
   { value: "#686868", label: "Mid grey" },
   { value: "#777777", label: "Middle grey" },
   { value: "#8a8a8a", label: "Light grey" },
+  { value: "#ffffff", label: "White" },
 ];
+
+/** Factory-default surround: the ~18% middle grey used for color-critical
+ *  viewing, and the rung the −/+ stepper falls back to when the stored shade
+ *  isn't on the ladder. */
+export const DEFAULT_CANVAS_SURROUND = "#777777";
+
+/** Index of DEFAULT_CANVAS_SURROUND within CANVAS_SURROUND_SHADES. Derived so
+ *  it stays correct as rungs are added at either end of the ladder. */
+export const DEFAULT_CANVAS_SURROUND_INDEX = CANVAS_SURROUND_SHADES.findIndex(
+  (s) => s.value === DEFAULT_CANVAS_SURROUND,
+);
 
 /** How grid previews are built for RAW files on import:
  *  - "auto": use the embedded camera JPEG when it's already at least the
@@ -76,7 +91,8 @@ export interface AppSettings {
    *  theme's surface-0 instead. */
   canvasSurroundOverride: boolean;
   /** The fixed surround shade used when canvasSurroundOverride is on. One of
-   *  CANVAS_SURROUND_SHADES (a neutral grey hex). Defaults to middle grey. */
+   *  CANVAS_SURROUND_SHADES (black, white, or a neutral grey hex). Defaults to
+   *  middle grey. */
   canvasSurround: string;
   /** Width of the white color-assessment mat as a percentage of the smaller
    *  viewport dimension (resolution-independent). Tunable so the band reads
@@ -86,6 +102,10 @@ export interface AppSettings {
    *  is dimmed: the backdrop's black opacity, 0 (no dimming) – 0.8. Default
    *  0.6. Lower it to keep the photo visible while a window is open. */
   windowDim: number;
+  /** Clicking a slider jumps its value to the cursor position, then continues
+   *  as a drag from there. Off (the default) keeps the relative drag-to-adjust
+   *  model: a click grabs the current value and only movement changes it. */
+  sliderJumpToCursor: boolean;
 
   // ── Accessibility ──────────────────────────────────────────────────────
   // All off/neutral by default: the themes ship as designed, and a user who
@@ -157,6 +177,11 @@ export interface AppSettings {
   /** Persist grid previews to <project>/.safelight/previews. Off = memory-only,
    *  rebuilt on demand each open (keeps the project folder small). */
   persistPreviews: boolean;
+  /** Base directory for the catalog/previews/cache of read-only source folders
+   *  (e.g. a memory card), which can't host their own .safelight. "" = the app's
+   *  own data directory. An absolute path overrides it (e.g. a fast scratch SSD).
+   *  Each source folder gets its own subdirectory under this base. Native only. */
+  externalCatalogDir: string;
 
   // ── Develop cache ──────────────────────────────────────────────────────
   /** Cache decoded RAW develop previews (IndexedDB or <project>/.safelight/raw).
@@ -223,9 +248,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   reduceMotion: false,
   uiFont: "",
   canvasSurroundOverride: true,
-  canvasSurround: "#777777",
+  canvasSurround: DEFAULT_CANVAS_SURROUND,
   assessBorderPct: 4.5,
   windowDim: 0.6,
+  sliderJumpToCursor: false,
   highContrast: false,
   strongFocus: false,
   colorVisionFilter: "none",
@@ -246,6 +272,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   previewSource: "auto",
   thumbMaxEdge: 640,
   persistPreviews: true,
+  externalCatalogDir: "",
   rawCacheEnabled: true,
   rawCachePrefetch: true,
   rawCacheMaxEdge: 3072,
@@ -331,7 +358,7 @@ export function stepCanvasSurround(dir: -1 | 1): void {
     (s) => s.value === getSettings().canvasSurround,
   );
   // -1 (no stored shade) falls back to the middle-grey rung.
-  const idx = found === -1 ? CANVAS_SURROUND_SHADES.length - 2 : found;
+  const idx = found === -1 ? DEFAULT_CANVAS_SURROUND_INDEX : found;
   const next = Math.min(
     CANVAS_SURROUND_SHADES.length - 1,
     Math.max(0, idx + dir),

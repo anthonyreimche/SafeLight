@@ -13,6 +13,7 @@
 import { createContext, useContext } from "react";
 import type { DevelopParams } from "@/catalog/types";
 import { getRenderBridge } from "@/rendering/render-bridge";
+import { renderPhotoFrame } from "@/state/headless-frame";
 
 export interface OverlayRect {
   x: number;
@@ -75,4 +76,18 @@ export function useDevelopOverlay(): DevelopOverlayState {
  *  draw it into an overlay to show a "before" image. */
 export function captureDevelopFrame(params: DevelopParams): Promise<ImageBitmap> {
   return getRenderBridge().capture(params);
+}
+
+/** Render an arbitrary catalog photo by id through the full develop pipeline with
+ *  `params` (and that photo's own extension-stage `paramBag`) to an ImageBitmap,
+ *  off-screen. Unlike captureFrame this is NOT tied to the live Develop source,
+ *  so it measures the requested photo even when another (or none) is open —
+ *  e.g. batch Auto Tone / Auto WB over a Library selection. Null if it can't
+ *  render. */
+export function renderDevelopPhotoFrame(
+  photoId: string,
+  params: DevelopParams,
+  paramBag?: Record<string, unknown>,
+): Promise<ImageBitmap | null> {
+  return renderPhotoFrame(photoId, params, paramBag);
 }
