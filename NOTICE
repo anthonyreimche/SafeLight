@@ -17,3 +17,7 @@ alongside it, but you may not remove, hide, or alter it.
 
 See the LICENSE file for the full GNU GPL v3 text and the exact wording of
 the additional term.
+
+Safelight bundles third-party components that remain under their own licenses;
+their required notices are in THIRD-PARTY-NOTICES.md. Third-party product names
+and trademarks are the property of their respective owners; see TRADEMARKS.md.

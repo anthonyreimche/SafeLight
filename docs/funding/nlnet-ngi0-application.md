@@ -117,7 +117,7 @@ cost.
 
 ## Ecosystem & dissemination
 
-Safelight is GPLv3 with a contributor CLA and a public extension API and store
+Safelight is GPLv3 (inbound = outbound contributions) with a public extension API and store
 (GitHub-backed). Engagement plan: publish the extension SDK and templates so
 photographers and developers can build and share extensions (discoverable via the
 `safelight-extension` GitHub topic); write technical articles on the imaging/color

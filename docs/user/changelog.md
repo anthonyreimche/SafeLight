@@ -169,7 +169,7 @@ First stable release.
 ### Export
 - Batch JPEG/PNG/WebP export through the same GPU pipeline as editing
 - Quality and long-edge controls; single-ZIP or per-file delivery
-- Metadata-free output
+- Camera EXIF, GPS, and XMP stripped from output (wide-gamut exports embed a standard ICC color profile)
 
 ### Workspace & Customization
 - Dockview-based workspace: dock, tab, minimize, or float every panel; per-module persisted layouts; named layouts via the Layout menu

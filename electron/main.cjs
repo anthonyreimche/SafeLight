@@ -145,6 +145,12 @@ app.commandLine.appendSwitch(
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+// Privacy: Safelight ships no telemetry of its own. Belt-and-suspenders, turn off
+// Chromium's own background network services so no component-update or
+// domain-reliability traffic leaves the machine without an explicit user action.
+app.commandLine.appendSwitch("disable-domain-reliability");
+app.commandLine.appendSwitch("disable-component-update");
+app.commandLine.appendSwitch("disable-features", "Translate,MediaRouter,OptimizationHints");
 
 const MIME = {
   ".html": "text/html",
@@ -191,7 +197,7 @@ const ISOLATION_HEADERS = {
 // so this widens data egress to these hosts only, never code execution.
 const galleryOrigins = process.env.SAFELIGHT_GALLERY_ORIGINS || "https://*.workers.dev";
 
-const CSP = [
+const CSP_STATIC = [
   "default-src 'self'",
   "script-src 'self' 'wasm-unsafe-eval' blob:",
   "worker-src 'self' blob:",
@@ -202,11 +208,40 @@ const CSP = [
   // code, so this widens display only.
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  `connect-src 'self' data: blob: ${galleryOrigins}`,
   "object-src 'none'",
   "base-uri 'self'",
   "frame-src 'none'",
-].join("; ");
+];
+
+// connect-src is built from 'self' + the gallery origins + the HTTPS origins that
+// installed extensions DECLARE in their manifest's permissions.network. Only
+// declared (and therefore user-visible) origins widen the policy, so an extension
+// can't silently fetch an arbitrary host — anything not declared is blocked by the
+// CSP. The set is computed once from the installed extensions; a newly-installed
+// extension's origins take effect on the next launch (a natural consent point).
+// Accept only well-formed HTTPS origins (optionally a single leading-label
+// wildcard + optional port) so a malicious manifest can't inject 'unsafe-eval', a
+// data: source, or a bare * into the policy.
+const VALID_CONNECT_ORIGIN = /^https:\/\/(\*\.)?[a-z0-9.-]+(:\d+)?$/i;
+function extensionConnectHosts() {
+  const hosts = new Set();
+  for (const m of listPlugins()) {
+    const net =
+      m.permissions && Array.isArray(m.permissions.network) ? m.permissions.network : [];
+    for (const h of net) {
+      const v = String(h || "").trim();
+      if (VALID_CONNECT_ORIGIN.test(v)) hosts.add(v);
+    }
+  }
+  return [...hosts];
+}
+let cspCache = null;
+function buildCSP() {
+  if (cspCache) return cspCache;
+  const connect = ["'self'", "data:", "blob:", galleryOrigins, ...extensionConnectHosts()];
+  cspCache = [...CSP_STATIC, `connect-src ${connect.join(" ")}`].join("; ");
+  return cspCache;
+}
 
 // Must run before app `ready`. `standard` + `secure` gives the scheme a real
 // origin and a secure context (required for SharedArrayBuffer); the rest let it
@@ -273,7 +308,7 @@ function registerProtocol() {
     const headers = new Headers(res.headers);
     const type = MIME[path.extname(filePath).toLowerCase()];
     if (type) headers.set("Content-Type", type);
-    if (type === "text/html") headers.set("Content-Security-Policy", CSP);
+    if (type === "text/html") headers.set("Content-Security-Policy", buildCSP());
     for (const [k, v] of Object.entries(ISOLATION_HEADERS)) headers.set(k, v);
     return new Response(res.body, { status: 200, headers });
   });
@@ -386,11 +421,37 @@ function parseRepoSpec(spec) {
 // ---------------------------------------------------------------------------
 const TRUST_REGISTRY = "anthonyreimche/safelight-registry";
 const TRUST_TTL_MS = 6 * 60 * 60 * 1000;
-const EMPTY_TRUST = { verified: [], repos: [], owners: [], reason: {} };
+const EMPTY_TRUST = { verified: [], reviewed: {}, repos: [], owners: [], reason: {} };
 let trustCache = null; // { at, list }
 
 const lcTrim = (s) => String(s || "").trim().toLowerCase();
 const lcList = (a) => (Array.isArray(a) ? a.map(lcTrim).filter(Boolean) : []);
+
+// verified.json entries may be a bare "owner/repo" (legacy, unpinned) or an object
+// { repo, version, commit } that pins the reviewed point. Returns the flat repo
+// allowlist plus a per-repo map of what was reviewed, so a version pushed after
+// review can be detected as "stale-verified" (unreviewed code) downstream.
+function parseVerified(arr) {
+  const verified = [];
+  const reviewed = {};
+  if (!Array.isArray(arr)) return { verified, reviewed };
+  for (const e of arr) {
+    if (typeof e === "string") {
+      const r = lcTrim(e);
+      if (r) verified.push(r);
+    } else if (e && typeof e === "object" && e.repo) {
+      const r = lcTrim(e.repo);
+      if (!r) continue;
+      verified.push(r);
+      const rv = {};
+      if (e.version) rv.version = String(e.version).trim();
+      if (e.commit) rv.commit = lcTrim(e.commit);
+      if (rv.version || rv.commit) reviewed[r] = rv;
+    }
+  }
+  return { verified, reviewed };
+}
+const asReviewed = (o) => (o && typeof o === "object" ? o : {});
 
 async function fetchTrustJson(file) {
   // Bounded so offline / captive-portal launches fail fast: loadExternalPlugins
@@ -423,6 +484,7 @@ function readTrustDisk() {
         at: raw.at,
         list: {
           verified: lcList(raw.list.verified),
+          reviewed: asReviewed(raw.list.reviewed),
           repos: lcList(raw.list.repos),
           owners: lcList(raw.list.owners),
           reason:
@@ -447,8 +509,10 @@ async function fetchTrustNetwork() {
   const reason = {};
   if (banned && banned.reason && typeof banned.reason === "object")
     for (const [k, v] of Object.entries(banned.reason)) reason[lcTrim(k)] = String(v);
+  const { verified: vList, reviewed } = parseVerified(verified && verified.verified);
   return {
-    verified: lcList(verified && verified.verified),
+    verified: vList,
+    reviewed,
     repos: lcList(banned && banned.repos),
     owners: lcList(banned && banned.owners),
     reason,
@@ -1109,6 +1173,50 @@ function registerPluginIpc() {
   });
 }
 
+// Base directory for "separate" catalogs: the user's override if set, else a
+// stable folder under the app's userData. Shared by the resolve + list handlers
+// so they always agree on where catalogs live.
+function externalCatalogBase(baseOverride) {
+  return baseOverride && String(baseOverride).trim()
+    ? path.resolve(String(baseOverride))
+    : path.join(app.getPath("userData"), "external-catalogs");
+}
+
+// Where the per-source "spillover pointer" lives: a tiny file recording which
+// separate catalog a read-only source spilled into. Kept under the app-data
+// DEFAULT (never the user's chosen base) and keyed by a hash of the source path,
+// so a later writeable open finds the spillover to fold back regardless of which
+// "Separate catalog location" is configured at that time. One file per source →
+// no shared-index contention; writes are atomic (temp + rename).
+function spilloverPointerPath(rootPath) {
+  const src = path.resolve(String(rootPath));
+  const tag = crypto.createHash("sha1").update(src).digest("hex");
+  return path.join(app.getPath("userData"), "external-catalogs", ".pointers", `${tag}.json`);
+}
+
+// Recursive size of a directory in bytes. Best-effort: symlinks aren't followed
+// (lstat) so it can't loop, and any unreadable entry is skipped. Used on demand
+// by the Stored-catalogs manager, never on a hot path.
+async function dirSizeBytes(dir) {
+  let total = 0;
+  let entries;
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    try {
+      if (e.isDirectory()) total += await dirSizeBytes(p);
+      else if (e.isFile()) total += (await fs.promises.lstat(p)).size;
+    } catch {
+      /* skip unreadable entry */
+    }
+  }
+  return total;
+}
+
 // ---------------------------------------------------------------------------
 // Native file bridge. Lets the renderer read/write the open project folder by
 // absolute path instead of through File System Access handles. Paths don't
@@ -1155,27 +1263,129 @@ function registerFsIpc() {
   ipcMain.handle("fs:mkdir", async (_e, p) => {
     await fs.promises.mkdir(p, { recursive: true });
   });
-  // Resolve a writeable working directory for a read-only project folder. When a
-  // photo folder can't be written to (e.g. a camera memory card mounted
-  // read-only), Safelight can't create its in-folder .safelight working dir, so
-  // the catalog/previews/RAW cache live here instead — under `baseOverride` if the
-  // user set a "Catalog location for read-only folders" in Preferences, otherwise
-  // under the app's userData. Keyed by a hash of the source path so every folder
-  // keeps its own stable catalog and two cards at different paths never collide.
-  // Creates the directory (so a write failure here surfaces, e.g. an unwriteable
-  // override) and returns its absolute path.
-  ipcMain.handle("fs:externalCatalogDir", async (_e, rootPath, baseOverride) => {
+  // Resolve a "separate" .safelight working directory for a project folder — used
+  // when the source can't host its own (a read-only memory card) or when the user
+  // picked "Separate folder" in Preferences. The catalog/previews/RAW cache live
+  // here instead, under `baseOverride` if set, otherwise under the app's userData.
+  // Keyed by a hash of the source path so every folder keeps its own stable
+  // catalog and two folders at different paths never collide.
+  //   create === false → existence probe: returns the dir iff a catalog already
+  //     lives here (so a redirected source keeps its catalog instead of being
+  //     orphaned when it later becomes writeable), else null. Creates nothing.
+  //   create !== false → creates the directory (so a write failure surfaces, e.g.
+  //     an unwriteable override) and returns its absolute path. Idempotent: an
+  //     existing catalog is left untouched.
+  ipcMain.handle("fs:externalCatalogDir", async (_e, rootPath, baseOverride, create) => {
     const src = path.resolve(String(rootPath));
-    const base =
-      baseOverride && String(baseOverride).trim()
-        ? path.resolve(String(baseOverride))
-        : path.join(app.getPath("userData"), "external-catalogs");
+    const base = externalCatalogBase(baseOverride);
     const tag = crypto.createHash("sha1").update(src).digest("hex").slice(0, 8);
     const leaf =
       path.basename(src).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40) || "folder";
-    const dir = path.join(base, `${leaf}-${tag}`, ".safelight");
+    const parent = path.join(base, `${leaf}-${tag}`);
+    const dir = path.join(parent, ".safelight");
+    if (create === false) {
+      try {
+        await fs.promises.access(path.join(dir, "catalog.json"));
+        return dir;
+      } catch {
+        return null;
+      }
+    }
     await fs.promises.mkdir(dir, { recursive: true });
+    // Record the source path (once) so the "Stored catalogs" manager can show
+    // which folder an orphaned catalog belonged to — the tag is a one-way hash.
+    const meta = path.join(parent, "source.json");
+    try {
+      await fs.promises.access(meta);
+    } catch {
+      await fs.promises
+        .writeFile(meta, JSON.stringify({ source: src, createdAt: Date.now() }))
+        .catch(() => {});
+    }
     return dir;
+  });
+  // Enumerate the "separate" catalogs under `baseOverride` (or the app data dir)
+  // for the Preferences manager: each entry is a per-source folder the user can
+  // reveal or delete to reclaim disk. Best-effort — unreadable entries are skipped.
+  ipcMain.handle("fs:listExternalCatalogs", async (_e, baseOverride) => {
+    const base = externalCatalogBase(baseOverride);
+    let entries;
+    try {
+      entries = await fs.promises.readdir(base, { withFileTypes: true });
+    } catch {
+      return []; // base doesn't exist yet → nothing stored
+    }
+    const out = [];
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      // Only ever list folders Safelight itself created — a "<slug>-<8 hex>" leaf
+      // (see the keying above) that holds a .safelight working dir. Without this,
+      // a user who points the base at one of their own directories would see its
+      // unrelated subfolders listed as deletable "catalogs", and the delete button
+      // (fs:remove → rm -rf) would wipe them. The filter makes that impossible.
+      if (!/-[0-9a-f]{8}$/.test(e.name)) continue;
+      const dir = path.join(base, e.name);
+      try {
+        if (!(await fs.promises.stat(path.join(dir, ".safelight"))).isDirectory()) continue;
+      } catch {
+        continue; // no .safelight subdir → not one of ours
+      }
+      let sourcePath = null;
+      let createdAt = null;
+      try {
+        const meta = JSON.parse(
+          await fs.promises.readFile(path.join(dir, "source.json"), "utf8"),
+        );
+        sourcePath = typeof meta.source === "string" ? meta.source : null;
+        createdAt = typeof meta.createdAt === "number" ? meta.createdAt : null;
+      } catch {
+        /* pre-source.json catalog, or unreadable meta — leave nulls */
+      }
+      let mtimeMs = 0;
+      try {
+        mtimeMs = (await fs.promises.stat(dir)).mtimeMs;
+      } catch {
+        /* ignore */
+      }
+      const bytes = await dirSizeBytes(dir).catch(() => 0);
+      out.push({ path: dir, name: e.name, sourcePath, createdAt, bytes, mtimeMs });
+    }
+    return out;
+  });
+  // Record where a source's read-only spillover catalog lives (atomic write).
+  ipcMain.handle("fs:setSpilloverPointer", async (_e, rootPath, spilloverDir) => {
+    const p = spilloverPointerPath(rootPath);
+    await fs.promises.mkdir(path.dirname(p), { recursive: true });
+    const body = JSON.stringify({
+      source: path.resolve(String(rootPath)),
+      spillover: String(spilloverDir),
+    });
+    // Random suffix so two same-source writers in the same millisecond can't share
+    // a tmp path (the loser's rename would ENOENT); both write identical content.
+    const tmp = `${p}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+    await fs.promises.writeFile(tmp, body);
+    await fs.promises.rename(tmp, p);
+  });
+  // Look up a source's spillover dir, or null. Verifies the recorded source path
+  // matches so a (truncated-hash) collision can't return another source's catalog.
+  ipcMain.handle("fs:getSpilloverPointer", async (_e, rootPath) => {
+    try {
+      const meta = JSON.parse(
+        await fs.promises.readFile(spilloverPointerPath(rootPath), "utf8"),
+      );
+      if (
+        meta &&
+        meta.source === path.resolve(String(rootPath)) &&
+        typeof meta.spillover === "string"
+      )
+        return meta.spillover;
+    } catch {
+      /* no pointer */
+    }
+    return null;
+  });
+  ipcMain.handle("fs:clearSpilloverPointer", async (_e, rootPath) => {
+    await fs.promises.rm(spilloverPointerPath(rootPath), { force: true });
   });
   ipcMain.handle("fs:remove", async (_e, p) => {
     await fs.promises.rm(p, { recursive: true, force: true });

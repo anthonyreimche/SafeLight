@@ -13,7 +13,7 @@ In a darkroom, the safelight is the one lamp you work by — dim, red, faithful 
 Safelight is that lamp: a small, steady core and nothing you didn't ask for. Every tool, every panel, every transform, even the ones that ship built in, is a piece you can move, swap, switch off, or invent. Open it and it simply works: clean defaults, gorgeous edits from the very first slider. Then you start arranging the room, and it becomes unmistakably *yours*.
 
 - **Yours, forever.** Free and open source under the GPL. No subscription, no account, no expiry. The copy you install today is yours to keep, for good.
-- **Private by default.** Everything happens on your machine. No telemetry, no cloud, no one looking over your shoulder. Your photos never leave the room, and exports carry no hidden metadata unless you put it there.
+- **Private by default.** No accounts, no analytics, no behavioral telemetry. Your photos and edits stay on your machine; the core app never uploads them. It checks GitHub for app and extension updates on launch — turn that off and it goes fully offline — and optional extensions reach the network only where you point them. Exports strip your camera EXIF, GPS, and XMP. See [PRIVACY.md](PRIVACY.md).
 - **Lean by choice.** Carry only the tools you actually use; everything else stays out until you want it. No clutter, no weight you didn't choose.
 - **Serious about images.** Real, full-resolution RAW and a 16-bit GPU pipeline under the hood. Free was never meant to mean basic.
 
@@ -42,7 +42,7 @@ Two modules and an open workspace, with defaults that feel familiar from the fir
 
 - **Library:** open a folder and edit. Non-destructive and project-based; your originals are never touched, and ratings, flags, keywords, and edit history live in a portable `.safelight/` folder. Fast, keyboard-driven culling, filtering, and sorting.
 - **Develop:** white balance, tone, curves, HSL, color grading, detail, lens corrections, geometry and Upright, local masking, heal/clone, and presets, all rendered through a WebGL2 pipeline running in a Web Worker.
-- **Export:** batch JPEG, PNG, WebP, and 8/16-bit TIFF through the same pipeline, with proper output color spaces and embedded ICC profiles. Metadata-free by design.
+- **Export:** batch JPEG, PNG, WebP, and 8/16-bit TIFF through the same pipeline, with proper output color spaces and embedded ICC profiles. Your camera EXIF, GPS, and XMP are stripped by design.
 - **Workspace:** Photoshop-style docking (drag, tab, float, minimize any panel), named layouts, themes, rebindable shortcuts, and detachable modules for multi-monitor work.
 
 Real RAW support spans NEF, CR2/CR3, ARW, DNG, ORF, RAF, RW2 and many more, via libraw-wasm plus an in-house linear-float decoder, with automatic fallback to the embedded preview.
@@ -74,7 +74,7 @@ See [Installation](docs/user/installation.md) for platform notes and full build 
 Full docs live in [`docs/`](docs/README.md), split into two tracks:
 
 **📖 [User Guide](docs/user/README.md)** — using Safelight
-- [Getting Started](docs/user/getting-started.md) · [Installation](docs/user/installation.md) · [User Guide](docs/user/user-guide.md) · [Using Extensions](docs/user/using-extensions.md) · [FAQ](docs/user/faq.md) · [Changelog](docs/user/changelog.md)
+- [Getting Started](docs/user/getting-started.md) · [Installation](docs/user/installation.md) · [User Guide](docs/user/user-guide.md) · [Using Extensions](docs/user/using-extensions.md) · [Extension safety & terms](EXTENSIONS.md) · [FAQ](docs/user/faq.md) · [Changelog](docs/user/changelog.md)
 
 **🛠 [Developer Docs](docs/dev/README.md)** — building for Safelight
 - [Architecture](docs/dev/architecture.md) · [Building Extensions](docs/dev/extensions/README.md) · [API Reference](docs/dev/api/README.md) · [Contributing](docs/dev/contributing.md)
@@ -85,8 +85,8 @@ Safelight is under active development. See [ROADMAP.md](ROADMAP.md) for what's p
 
 ## Contributing
 
-Safelight is community-driven. Bug reports, code, extensions, documentation, and feedback are all welcome. See [Contributing](docs/dev/contributing.md). Code contributions require signing a [Contributor License Agreement](CLA/ICLA.md) — a bot prompts you automatically on your first pull request.
+Safelight is community-driven. Bug reports, code, extensions, documentation, and feedback are all welcome. See [Contributing](docs/dev/contributing.md). Contributions use the standard inbound = outbound model: you license your contribution under the project's GPL v3 and keep your copyright — there's no separate agreement to sign.
 
 ## License
 
-Safelight is **dual-licensed**: free under the [GNU GPL v3](LICENSE) (with a Section 7(b) attribution term, see [NOTICE](NOTICE)), or under a **commercial license** for proprietary/closed-source use. See [LICENSING.md](LICENSING.md) for details and how to obtain a commercial license.
+Safelight is free software under the [GNU GPL v3](LICENSE), with a Section 7(b) attribution-preservation term (see [NOTICE](NOTICE)). There is no paid, "pro", or proprietary edition. It bundles third-party components under their own licenses ([THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)), and third-party product names are trademarks of their respective owners ([TRADEMARKS](TRADEMARKS.md)). See [LICENSING.md](LICENSING.md) for the full picture.

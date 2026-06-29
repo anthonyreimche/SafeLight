@@ -231,7 +231,11 @@ export async function loadExternalPlugins(): Promise<void> {
   // cache TTL so registry edits — new bans, new verifications — show up on the
   // next launch, not up to a TTL later), then retire anything it now bans. This
   // is off the hot path: activation above already happened from the cached list.
-  if (list.length > 0) void loadTrustList(true).then(enforceBansOnLoaded);
+  // Respect the user's update-check preference: refreshing the trust list is a
+  // network call, so skip it when extension update checks are off. The cached
+  // list is still applied above, so known bans keep being enforced offline.
+  if (list.length > 0 && getSettings().checkExtensionUpdates)
+    void loadTrustList(true).then(enforceBansOnLoaded);
 }
 
 export async function installFromGitHub(

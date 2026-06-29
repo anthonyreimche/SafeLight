@@ -52,16 +52,37 @@ import {
 import {
   loadTrustList,
   isVerified,
+  reviewedFor,
   bannedReason,
   repoFromSpec,
   useIsVerified,
+  useVerificationStatus,
+  useReviewedFor,
   useBannedReason,
 } from "./trust";
+import { isNewer } from "@/update/semver";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
 import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
 
 type Section = "Updates" | "Browse" | "Installed" | "Dev";
+
+// One-time acknowledgment shown before the user's first extension install (verified
+// or not): extensions are third-party code Safelight neither controls nor guarantees.
+// Persisted in localStorage — it's a safety gate, not a tunable preference.
+const RISK_ACK_KEY = "sl_ext_risk_ack_v1";
+function hasAckedExtensionRisk(): boolean {
+  try {
+    return localStorage.getItem(RISK_ACK_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function setAckedExtensionRisk(): void {
+  try {
+    localStorage.setItem(RISK_ACK_KEY, "1");
+  } catch {}
+}
 
 const SORTS: { id: StoreSort; label: string }[] = [
   { id: "popular", label: "Popular" },
@@ -223,7 +244,6 @@ export function ExtensionManagerPanel() {
 
   const install = async (installSpec: string, fromSearch?: ExtensionSearchResult) => {
     const repo = fromSearch?.fullName.toLowerCase() ?? repoFromSpec(installSpec);
-    const verified = !!repo && isVerified(repo);
     // Banned: hard stop. The main process refuses it too — this is the faster,
     // clearer path so the user never watches a doomed download spin.
     const banned = repo ? bannedReason(repo) : null;
@@ -231,20 +251,60 @@ export function ExtensionManagerPanel() {
       setMsg(`Blocked — this extension is flagged as unsafe: ${banned}.`);
       return;
     }
-    // Strict mode: only allowlisted extensions may be installed.
-    if (onlyVerified && !verified) {
+    const verified = !!repo && isVerified(repo);
+    // A pinned "verified" entry only covers the version that was reviewed. If the
+    // repo has since moved to a newer version, the code we'd install is past the
+    // review point — drop the green-light and treat it as an unverified install.
+    const reviewedVersion =
+      verified && repo ? reviewedFor(repo)?.version ?? null : null;
+    let reviewedStale = false;
+    if (reviewedVersion && repo) {
+      try {
+        const latest = await window.safelightNative?.plugins?.latestVersion?.(repo);
+        if (latest && isNewer(reviewedVersion, latest)) reviewedStale = true;
+      } catch {
+        // Best-effort: don't block an install on a version-check network blip.
+      }
+    }
+    const trusted = verified && !reviewedStale;
+    // Strict mode: only reviewed extensions may be installed.
+    if (onlyVerified && !trusted) {
       setMsg(
-        "Blocked — “Only verified extensions” is on and this one isn't on the verified allowlist (Preferences ▸ Extensions).",
+        reviewedStale
+          ? `Blocked — “Only verified extensions” is on, and the current version is newer than the reviewed version${
+              reviewedVersion ? ` (${reviewedVersion})` : ""
+            }, so it isn't covered by verification.`
+          : "Blocked — “Only verified extensions” is on and this one isn't on the verified allowlist (Preferences ▸ Extensions).",
       );
       return;
     }
-    // Unverified: it runs with full access to photos, metadata and edits, so make
-    // the user opt in explicitly. Verified extensions install without a prompt.
-    if (!verified) {
+    // First install ever (verified or not): a one-time acknowledgment that
+    // extensions are third-party code Safelight neither controls nor guarantees,
+    // and that "verified" is a point-in-time review, not a safety warranty.
+    if (!hasAckedExtensionRisk()) {
       const ok = window.confirm(
-        `${repo ?? installSpec} hasn't been reviewed by Safelight.\n\n` +
-          "Installed extensions run with full access to your photos, metadata and " +
-          "edits. Only install extensions you trust.\n\nInstall anyway?",
+        "Safelight extensions are third-party software — not made, controlled, or " +
+          "guaranteed by Safelight. They install from GitHub and run with full access " +
+          "to your photos, metadata, edits and files.\n\n" +
+          "A “Verified” badge means a maintainer reviewed the code at a point in time. " +
+          "It is not a guarantee of safety, and later updates may not be reviewed.\n\n" +
+          "Install extensions at your own risk. Continue?",
+      );
+      if (!ok) return;
+      setAckedExtensionRisk();
+    }
+    // Unreviewed (never verified, or verified but past the reviewed version): it
+    // runs with full access, so make the user opt in explicitly. Code that matches
+    // a verified review installs without this prompt.
+    if (!trusted) {
+      const ok = window.confirm(
+        reviewedStale
+          ? `${repo ?? installSpec} is verified only up to version ${reviewedVersion}. ` +
+              "The current version is newer and has NOT been reviewed. It runs with full " +
+              "access to your photos, metadata and files.\n\nInstall the unreviewed version anyway?"
+          : `${repo ?? installSpec} hasn't been reviewed by Safelight.\n\n` +
+              "Installed extensions run with full access to your photos, metadata and " +
+              "edits. Only install extensions you trust.\n\nInstall anyway?",
       );
       if (!ok) return;
     }
@@ -254,7 +314,12 @@ export function ExtensionManagerPanel() {
       const manifest = await installFromGitHub(installSpec);
       if (fromSearch) rememberSource(manifest.id, fromSearch.fullName);
       else setSpec("");
-      setMsg(`Installed ${manifest.name}.`);
+      const net = manifest.permissions?.network;
+      setMsg(
+        net && net.length
+          ? `Installed ${manifest.name}. It requests network access to ${net.join(", ")} — restart Safelight to allow it.`
+          : `Installed ${manifest.name}.`,
+      );
       refresh();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -910,7 +975,8 @@ function ExtensionRow({
   onToggle: () => void;
   onUninstall?: () => void;
 }) {
-  const verified = useIsVerified(repo);
+  const vstatus = useVerificationStatus(repo, version);
+  const reviewed = useReviewedFor(repo);
   const banned = useBannedReason(repo);
   return (
     <div
@@ -928,7 +994,16 @@ function ExtensionRow({
               Core
             </span>
           )}
-          {banned ? <FlaggedBadge reason={banned} /> : verified && <VerifiedBadge />}
+          {banned ? (
+            <FlaggedBadge reason={banned} />
+          ) : (
+            vstatus !== "unverified" && (
+              <VerifiedBadge
+                reviewedVersion={reviewed?.version}
+                stale={vstatus === "stale"}
+              />
+            )
+          )}
         </div>
         {description && (
           <div className="truncate text-text-muted">{description}</div>

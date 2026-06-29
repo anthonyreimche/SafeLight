@@ -177,10 +177,17 @@ export interface AppSettings {
   /** Persist grid previews to <project>/.safelight/previews. Off = memory-only,
    *  rebuilt on demand each open (keeps the project folder small). */
   persistPreviews: boolean;
-  /** Base directory for the catalog/previews/cache of read-only source folders
-   *  (e.g. a memory card), which can't host their own .safelight. "" = the app's
-   *  own data directory. An absolute path overrides it (e.g. a fast scratch SSD).
-   *  Each source folder gets its own subdirectory under this base. Native only. */
+  /** Where a project's .safelight working dir (catalog/previews/cache) lives:
+   *  - "in-folder": beside the photos, in <project>/.safelight. A read-only
+   *    source (e.g. a memory card) that can't host one falls back to the separate
+   *    location automatically.
+   *  - "external": always under externalCatalogDir, regardless of writeability —
+   *    keeps photo folders clean and catalogs on fast storage. Native only. */
+  catalogLocation: "in-folder" | "external";
+  /** Base directory for "external" catalogs and for read-only source fallbacks,
+   *  which can't host their own .safelight. "" = the app's own data directory. An
+   *  absolute path overrides it (e.g. a fast scratch SSD). Each source folder gets
+   *  its own subdirectory, keyed by path so it's stable across opens. Native only. */
   externalCatalogDir: string;
 
   // ── Develop cache ──────────────────────────────────────────────────────
@@ -272,6 +279,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   previewSource: "auto",
   thumbMaxEdge: 640,
   persistPreviews: true,
+  catalogLocation: "in-folder",
   externalCatalogDir: "",
   rawCacheEnabled: true,
   rawCachePrefetch: true,

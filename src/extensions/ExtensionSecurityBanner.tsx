@@ -28,7 +28,7 @@ export function ExtensionSecurityBanner() {
     >
       <span className="font-medium text-label-red">⚠ Extension blocked</span>
       <span className="text-text-secondary">
-        “{first.name}” was disabled — {first.reason}.
+        “{first.name}” was disabled by the Safelight extension registry — {first.reason}.
         {more > 0 && ` (+${more} more)`}
       </span>
       <button

@@ -97,11 +97,14 @@ Finally, **tag the GitHub repo with the `safelight-extension` topic** so it appe
   "categories": ["Panels"],
   "keywords": ["histogram", "waveform"],
   "license": "MIT",
-  "minAppVersion": "2.0.0"
+  "minAppVersion": "2.0.0",
+  "permissions": { "network": ["https://api.example.com"], "reason": "Syncs presets to your account." }
 }
 ```
 
-Only `id`, `name`, `version`, and `main` are required; everything else (`description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `license`, `minAppVersion`) is optional and enriches the store detail view. `minAppVersion` is the **minimum supported Safelight version** — the oldest build the extension works on. Installs (and updates) on an older build are refused before any files are written, and the app reports the version it needs; the extension's detail page also flags the mismatch. Set it whenever you depend on an API or contribution point added in a specific release. Versions are compared as dotted `major.minor.patch` (a `v` prefix and missing parts are tolerated).
+Only `id`, `name`, `version`, and `main` are required; everything else (`description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `license`, `minAppVersion`, `permissions`) is optional and enriches the store detail view. `minAppVersion` is the **minimum supported Safelight version** — the oldest build the extension works on. Installs (and updates) on an older build are refused before any files are written, and the app reports the version it needs; the extension's detail page also flags the mismatch. Set it whenever you depend on an API or contribution point added in a specific release. Versions are compared as dotted `major.minor.patch` (a `v` prefix and missing parts are tolerated).
+
+**`permissions`** declares capabilities the extension needs, shown to the user on its store page. Only `network` is **enforced**: the listed HTTPS origins are added to the app's content-security policy, so the extension can reach **only** the hosts it declares — any other host is blocked. A new declaration takes effect on the next app launch (installing a network-using extension prompts the user to restart before it can connect). Because extensions run in-app, ambient access to the user's catalog and files is **not** confined by this field — it is a consent/disclosure layer, not a sandbox. See [Extensions — safety & terms](../../../EXTENSIONS.md).
 
 ### The entry bundle
 

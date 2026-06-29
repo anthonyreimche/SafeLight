@@ -17,6 +17,7 @@ import { preDecodeRawsForCache, repairMissingPreviews } from "@/modules/library/
 import { setRawCacheDir } from "@/raw/raw-cache";
 import { ProjectStorage } from "./project-storage";
 import { ReadOnlyProjectError } from "./working-dir";
+import { getSettings } from "@/state/settings-store";
 import {
   addRecentProject,
   getLastProject,
@@ -96,10 +97,9 @@ function describeOpenError(e: unknown, folderName: string): string {
     if (e.redirectFailed) {
       const reason = e.cause instanceof Error ? ` (${e.cause.message})` : "";
       return (
-        `Couldn't open “${folderName}”. It's read-only, and Safelight also ` +
-        `couldn't write to its fallback catalog location${reason}. ` +
-        `Pick a writeable folder under Preferences ▸ Previews ▸ “Catalog ` +
-        `location for read-only folders”, then try again.`
+        `Couldn't open “${folderName}”: Safelight couldn't write to the catalog ` +
+        `storage location${reason}. Choose a writeable folder under Preferences ▸ ` +
+        `Previews ▸ “Separate catalog location”, then try again.`
       );
     }
     return (
@@ -274,14 +274,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       setRawCacheDir(opened.rawCacheDir);
       setCatalogStorage(opened.storage);
       set({ root: handle, name: handle.name, tree: opened.tree });
-      // Read-only source folder: its catalog/previews/cache were redirected to a
-      // writeable location. Let the user know where their data actually lives.
-      if (opened.storageLocation === "external") {
+      // The catalog/previews/cache landed in a separate location (a read-only
+      // source can't host its own .safelight). Tell the user where their data
+      // lives. In explicit "external" mode this is expected, so stay quiet there.
+      if (
+        opened.storageLocation === "external" &&
+        getSettings().catalogLocation !== "external"
+      ) {
         set({
           storageNotice:
-            `“${handle.name}” is read-only, so its Safelight catalog, previews and ` +
-            `cache are stored separately at ${opened.externalPath}. ` +
-            `Edits and ratings are saved there, not on the source.`,
+            `“${handle.name}” can't store its Safelight catalog in the folder ` +
+            `itself, so its catalog, previews and cache are kept at ` +
+            `${opened.externalPath}. Edits and ratings are saved there.`,
+        });
+      } else if (opened.promotedFromExternal) {
+        // The folder is writeable again; edits made while it was read-only have
+        // been folded back into its in-folder catalog and the separate copy
+        // retired. The pre-merge catalog is kept as a one-time backup.
+        set({
+          storageNotice:
+            `Edits you made to “${handle.name}” while it was read-only have been ` +
+            `merged back into its catalog. The previous catalog was kept as ` +
+            `.safelight/catalog.bak.json in case you need it.`,
         });
       }
       // Phase 2 — the scan finished: attach handles, add new, drop removed. If we
