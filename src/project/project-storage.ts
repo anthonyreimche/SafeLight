@@ -9,6 +9,11 @@
 //   <project>/.safelight/previews/      <photoId>.jpg grid thumbnails
 //   <project>/.safelight/raw/           decoded-RAW develop cache
 //
+// …except when the project folder is read-only (e.g. a memory card): resolveWorkingDir
+// (see working-dir.ts) then redirects this whole .safelight tree to a writeable
+// location under the app data dir. Everything below derives from the one `sl`
+// handle, so it's agnostic to where that actually points.
+//
 // Opening a project reconciles catalog.json against a fresh disk scan: new
 // files get decoded + thumbnailed, records whose file vanished are dropped,
 // and everything else keeps its ratings/edits. Files the user removed from the
@@ -22,6 +27,7 @@ import { buildPhoto, buildPreviewBlob } from "@/modules/library/import-photos";
 import { getSettings } from "@/state/settings-store";
 import { mapLimit, readBlob, readJSON, removeEntry, writeBlob, writeJSON } from "./fs";
 import { scanProject, type FolderNode, type ScannedFile } from "./scan";
+import { resolveWorkingDir, type WorkingDirLocation } from "./working-dir";
 import { emitPhotoImport } from "@/extensions/registry";
 
 type StoredPhoto = Omit<
@@ -81,6 +87,11 @@ export interface OpenedProject {
   /** Photos discovered on this open (candidates for background pre-decode). */
   newPhotos: CatalogPhoto[];
   rawCacheDir: FileSystemDirectoryHandle;
+  /** Where the .safelight working dir ended up: in the project folder, or
+   *  redirected to a writeable app-data location because the folder is read-only. */
+  storageLocation: WorkingDirLocation;
+  /** Absolute path of the external working dir when redirected, else null. */
+  externalPath: string | null;
 }
 
 export class ProjectStorage implements CatalogStorage {
@@ -119,7 +130,11 @@ export class ProjectStorage implements CatalogStorage {
     onProgress?: (done: number, total: number) => void,
     signal?: AbortSignal,
   ): Promise<OpenedProject> {
-    const sl = await root.getDirectoryHandle(".safelight", { create: true });
+    // Resolve a writeable .safelight working dir. Normally <project>/.safelight,
+    // but redirected to the app data dir when the folder is read-only (e.g. a
+    // memory card). Throws ReadOnlyProjectError if no writeable dir is possible —
+    // caught by openProject, which shows a verbose message instead of failing mute.
+    const { sl, location: storageLocation, externalPath } = await resolveWorkingDir(root);
     const previews = await sl.getDirectoryHandle("previews", { create: true });
     const rawCacheDir = await sl.getDirectoryHandle("raw", { create: true });
     const storage = new ProjectStorage(sl, previews);
@@ -284,7 +299,15 @@ export class ProjectStorage implements CatalogStorage {
     if (newPhotos.length > 0 || removedCount > 0 || prunedTombstone)
       storage.scheduleSave();
 
-    return { storage, tree: scan.tree, photos, newPhotos, rawCacheDir };
+    return {
+      storage,
+      tree: scan.tree,
+      photos,
+      newPhotos,
+      rawCacheDir,
+      storageLocation,
+      externalPath,
+    };
   }
 
   // ── CatalogStorage ─────────────────────────────────────────────────────────

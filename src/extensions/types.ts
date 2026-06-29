@@ -794,6 +794,17 @@ export interface SafelightAPI {
     captureFrame(
       params: import("@/catalog/types").DevelopParams,
     ): Promise<ImageBitmap>;
+    /** Render an arbitrary catalog photo by id through the full develop pipeline
+     *  with `params` (and optionally that photo's extension-stage `paramBag`) to
+     *  an off-screen ImageBitmap, or null if it can't render. Unlike captureFrame
+     *  this is NOT tied to the live Develop source, so it measures the requested
+     *  photo even when another (or none) is open — e.g. batch Auto Tone / Auto WB
+     *  across a Library selection. Rendered small (for histogram measurement). */
+    renderPhotoFrame(
+      photoId: string,
+      params: import("@/catalog/types").DevelopParams,
+      paramBag?: Record<string, unknown>,
+    ): Promise<ImageBitmap | null>;
     /** Drive the Develop-canvas cursor while a tool is active. Pass a registered
      *  cursor id (built-in token or one from registerCursor), an inline spec, or
      *  a raw CSS value; pass null to clear. Higher `priority` wins when several
@@ -815,6 +826,30 @@ export interface SafelightAPI {
      *  under `key`, or null if none exists (or no photo/project is open). */
     getPhotoData(key: string): Promise<Uint8Array | null>;
   };
+  /** Headless export: render catalog photos through the full develop pipeline to
+   *  in-memory blobs, honoring the user's export settings. Unlike
+   *  develop.captureFrame (current photo, view-sized), this renders ANY photos at
+   *  export resolution — so an extension (e.g. a web-gallery publisher) can ship
+   *  full-resolution images instead of the low-res catalog preview. */
+  export: {
+    /** The persisted default export settings (Preferences ▸ Export): format,
+     *  quality (0..1), longEdge (null = original), colorSpace, tiffBitDepth. */
+    getDefaultSettings(): import("@/modules/export/export-image").ExportSettings;
+    /** Render each photo to a Blob, reusing one WebGL context for the batch.
+     *  `settings` is merged OVER the defaults, so pass only what you want to
+     *  override (e.g. { format: "image/jpeg", longEdge: 2048, quality: 0.85 }).
+     *  Returns one entry per input, in order; `blob` is null for a photo that
+     *  couldn't be decoded. */
+    renderPhotos(
+      photos: import("@/catalog/types").CatalogPhoto[],
+      settings?: Partial<
+        import("@/modules/export/export-image").ExportSettings
+      >,
+      onProgress?: (
+        p: import("@/modules/export/export-image").ExportProgress,
+      ) => void,
+    ): Promise<import("@/modules/export/export-image").RenderedPhoto[]>;
+  };
 }
 
 export interface ExtensionModule {
@@ -831,6 +866,11 @@ export interface NativeFsBridge {
   write(path: string, data: Uint8Array): Promise<void>;
   list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]>;
   mkdir(path: string): Promise<void>;
+  /** Resolve (creating it) a writeable .safelight working directory for a
+   *  read-only project folder, under `baseOverride` or the app's data dir.
+   *  Keyed by the source path so each folder keeps its own catalog. Absent on
+   *  older Electron builds — callers must feature-detect. */
+  externalCatalogDir?(rootPath: string, baseOverride?: string | null): Promise<string>;
   remove(path: string): Promise<void>;
   move(src: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;

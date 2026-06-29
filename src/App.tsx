@@ -21,6 +21,7 @@ import { LibraryView } from "@/modules/library/LibraryView";
 import { DevelopView } from "@/modules/develop/DevelopView";
 import { WelcomeView } from "@/modules/welcome/WelcomeView";
 import { UpdateBanner } from "@/update/UpdateBanner";
+import { StorageBanner } from "@/ui/components/StorageBanner";
 import { ExtensionSecurityBanner } from "@/extensions/ExtensionSecurityBanner";
 
 function renderModule(module: AppModule) {
@@ -105,6 +106,7 @@ export function App() {
         <PreferencesDialog />
         <ExtensionsDialog />
         <ExtensionSecurityBanner />
+        <StorageBanner />
         <UpdateBanner />
       </>
     );
@@ -115,6 +117,7 @@ export function App() {
       {renderModule(activeModule)}
       <PreferencesDialog />
       <ExtensionsDialog />
+      <StorageBanner />
       <UpdateBanner />
     </>
   );

@@ -52,6 +52,7 @@ import {
   usePipelineStore,
 } from "@/extensions/pipelines";
 import { clearRawCache } from "@/raw/raw-cache";
+import { isNativeFS, nativeFs } from "@/project/native-fs";
 import {
   preDecodeRawsForCache,
   rebuildThumbnails,
@@ -173,10 +174,11 @@ const CORE_SECTIONS: PrefSection[] = [
       "Canvas surround",
       "Color assessment border",
       "Background dimming",
+      "Sliders jump to cursor",
       "Restore last project on launch",
       "Interface font",
     ),
-    keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal"],
+    keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal", "slider", "jump", "cursor", "click", "drag"],
     render: () => <InterfaceSection />,
   },
   // Accessibility lives in the `core.accessibility` built-in extension (so the
@@ -206,8 +208,16 @@ const CORE_SECTIONS: PrefSection[] = [
       "Cache decoded RAW previews",
       "Cached preview resolution",
       "Cache storage",
+      "Catalog location for read-only folders",
     ),
-    keywords: ["Embedded JPEG", "Rebuild thumbnails", "Clear preview cache"],
+    keywords: [
+      "Embedded JPEG",
+      "Rebuild thumbnails",
+      "Clear preview cache",
+      "read-only",
+      "memory card",
+      "sd card",
+    ],
     render: () => <PreviewsSection />,
   },
   {
@@ -629,6 +639,7 @@ function InterfaceSection() {
   const uiScale = useSettings((s) => s.uiScale);
   const assessBorderPct = useSettings((s) => s.assessBorderPct);
   const windowDim = useSettings((s) => s.windowDim);
+  const sliderJumpToCursor = useSettings((s) => s.sliderJumpToCursor);
   const restoreLastProject = useSettings((s) => s.restoreLastProject);
 
   return (
@@ -686,6 +697,12 @@ function InterfaceSection() {
           </p>
         )}
       </div>
+      <ToggleField
+        label="Sliders jump to cursor"
+        hint="Clicking anywhere on a slider snaps its value to the cursor, then drags from there. Off keeps the default: a click grabs the current value and only dragging changes it. Hold Shift while dragging for fine control either way."
+        checked={sliderJumpToCursor}
+        onChange={(v) => updateSettings({ sliderJumpToCursor: v })}
+      />
       <ToggleField
         label="Restore last project on launch"
         hint="Reopen the most-recently-used project at startup instead of the welcome grid. Falls back to the grid if the folder can't be reopened."
@@ -963,10 +980,11 @@ function CanvasSurroundField() {
         </span>
       </button>
       <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
-        A fixed neutral grey behind the image in Develop, independent of the
-        theme. A middle grey keeps brightness, contrast and saturation
-        perception accurate while editing (as darktable and Ansel do). Off =
-        follow the active theme. Also adjustable from the Develop toolbar.
+        A fixed shade behind the image in Develop, independent of the theme.
+        A middle grey keeps brightness, contrast and saturation perception
+        accurate while editing (as darktable and Ansel do); black and white
+        bracket the range. Off = follow the active theme. Also adjustable from
+        the Develop toolbar.
       </p>
       <div
         className={`mt-2 flex gap-1.5 transition-opacity ${
@@ -1311,6 +1329,47 @@ function PreviewsSection() {
           <span className="ml-2 text-[10px] text-text-muted">Cleared.</span>
         )}
       </Field>
+
+      {isNativeFS() && (
+        <>
+          <div className="border-t border-border-subtle pt-3">
+            <div className={labelCls}>Read-only sources</div>
+          </div>
+          <Field
+            label="Catalog location for read-only folders"
+            hint="When a photo folder is read-only (e.g. a camera memory card), Safelight can't write its .safelight working data there — so the catalog, previews and cache are stored here instead. Each source folder gets its own subfolder. Default: the app's data directory."
+          >
+            <div className="flex items-center gap-1.5">
+              <span
+                className="min-w-0 flex-1 truncate rounded bg-surface-2 px-2 py-1 text-[11px] text-text-secondary"
+                title={s.externalCatalogDir || undefined}
+              >
+                {s.externalCatalogDir || "App data folder (default)"}
+              </span>
+              <button
+                onClick={() => {
+                  void nativeFs()
+                    ?.pickDirectory()
+                    .then((dir) => {
+                      if (dir) updateSettings({ externalCatalogDir: dir });
+                    });
+                }}
+                className={btnCls}
+              >
+                Choose folder…
+              </button>
+              {s.externalCatalogDir && (
+                <button
+                  onClick={() => updateSettings({ externalCatalogDir: "" })}
+                  className={btnCls}
+                >
+                  Use default
+                </button>
+              )}
+            </div>
+          </Field>
+        </>
+      )}
     </div>
   );
 }

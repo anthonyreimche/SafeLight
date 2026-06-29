@@ -45,7 +45,11 @@ import {
 } from "@/state/keybindings-store";
 import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } from "./dock";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
-import { captureDevelopFrame, useDevelopOverlay } from "./develop-host";
+import { captureDevelopFrame, renderDevelopPhotoFrame, useDevelopOverlay } from "./develop-host";
+import {
+  getDefaultExportSettings,
+  renderPhotosToBlobs,
+} from "@/modules/export/export-image";
 import { getPhotoData, putPhotoData } from "@/state/photo-blob-store";
 import {
   contributionToSpec,
@@ -139,6 +143,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     develop: {
       useDevelopOverlay,
       captureFrame: captureDevelopFrame,
+      renderPhotoFrame: renderDevelopPhotoFrame,
       setCanvasCursor: (cursor, opts) =>
         setCanvasCursor(
           extensionId,
@@ -149,6 +154,17 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
         ),
       putPhotoData: (key, data) => putPhotoData(`${extensionId}.${key}`, data),
       getPhotoData: (key) => getPhotoData(`${extensionId}.${key}`),
+    },
+    export: {
+      getDefaultSettings: () => getDefaultExportSettings(),
+      // Merge the caller's overrides over the persisted defaults, so a caller
+      // can pass just { format, longEdge, quality } and inherit the rest.
+      renderPhotos: (photos, settings, onProgress) =>
+        renderPhotosToBlobs(
+          photos,
+          { ...getDefaultExportSettings(), ...(settings ?? {}) },
+          onProgress,
+        ),
     },
   };
 }

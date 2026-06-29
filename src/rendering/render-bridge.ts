@@ -278,6 +278,10 @@ export class RenderBridge {
     asShotTemperature: number;
     maxEdge: number;
     quality?: number;
+    // Per-render extension-stage params; the thumb renderer applies these for
+    // this render only, so a photo other than the live develop one renders with
+    // its own stage params rather than the active photo's.
+    contributedParams?: Record<string, unknown>;
   }): Promise<Blob | null> {
     return new Promise<Blob | null>((resolve) => {
       this.thumbResolvers.set(opts.requestId, resolve);
@@ -347,6 +351,7 @@ export class RenderBridge {
     asShotTemperature: number;
     maxEdge: number;
     quality?: number;
+    contributedParams?: Record<string, unknown>;
   }) {
     const transfer: Transferable[] = [];
     if (opts.image.kind === "float") {
@@ -369,6 +374,7 @@ export class RenderBridge {
     asShotTemperature: number;
     maxEdge: number;
     quality?: number;
+    contributedParams?: Record<string, unknown>;
   }): Promise<Blob> {
     return new Promise<Blob>((resolve, reject) => {
       this.thumbResolvers.set(opts.requestId, (blob) =>
@@ -528,9 +534,17 @@ export function getRenderBridge(): RenderBridge {
       if (s.pipelines !== prevPipelines) {
         prevPipelines = s.pipelines;
         syncPipeline();
+        // A pipeline (display-transform) swap is silent like a stage swap:
+        // it updates renderer state but isn't param-driven, so force a redraw.
+        requestStageRender();
       }
     });
-    unsubPipeline = usePipelineStore.subscribe(() => syncPipeline());
+    unsubPipeline = usePipelineStore.subscribe(() => {
+      syncPipeline();
+      // Switching the active display transform must repaint, else the canvas
+      // keeps showing the previous transform until the next interaction.
+      requestStageRender();
+    });
   }
   return singleton;
 }

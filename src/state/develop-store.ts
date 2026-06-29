@@ -787,7 +787,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     // Re-render this one photo's grid thumbnail from its committed look (cheap,
     // in-memory, single photo — not the removed folder-wide pump). Fire and
     // forget so the commit stays snappy.
-    regenerateEditedThumbnail(photoId, params, asShotTemperature);
+    regenerateEditedThumbnail(photoId, params, asShotTemperature, paramBag);
 
     // Announce the committed state so the Library refreshes this photo's
     // histogram the moment it's edited — for any visible photo, in any window —

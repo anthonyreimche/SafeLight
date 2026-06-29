@@ -49,6 +49,11 @@ export type WorkerRequest =
       asShotTemperature: number;
       maxEdge: number;
       quality?: number;
+      // Per-render extension-stage params. When present, applied to the thumb
+      // renderer for THIS render only (then the global bag is restored), so a
+      // headless/batch render of a photo other than the live develop one uses its
+      // OWN stage params instead of the active photo's.
+      contributedParams?: Record<string, unknown>;
     }
   | { cmd: "setShowClipping"; mode: number }
   | { cmd: "setOutsideColor"; rgb: [number, number, number] }
@@ -84,6 +89,8 @@ export type WorkerRequest =
       asShotTemperature: number;
       maxEdge: number;
       quality?: number;
+      // See renderThumbnail.contributedParams.
+      contributedParams?: Record<string, unknown>;
     }
   | { cmd: "dispose" };
 
@@ -289,7 +296,12 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           }
           tr.setAsShotTemperature(msg.asShotTemperature);
           tr.setParams(msg.params);
+          // Per-render stage params for headless/batch renders; restore the
+          // global bag after so the live thumb state isn't left altered.
+          const hadBag = msg.contributedParams !== undefined;
+          if (hadBag) tr.setContributedParams(msg.contributedParams!);
           tr.render();
+          if (hadBag) tr.setContributedParams(latestParamBag);
           if (!thumbCanvas) throw new Error("thumb canvas unavailable");
           const quality = msg.quality ?? 0.8;
           // Always settle the request — including the convertToBlob rejection path
@@ -397,7 +409,11 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           }
           tr.setAsShotTemperature(msg.asShotTemperature);
           tr.setParams(msg.params);
+          // See the renderThumbnail handler: per-render stage params, restored.
+          const hadBag = msg.contributedParams !== undefined;
+          if (hadBag) tr.setContributedParams(msg.contributedParams!);
           tr.render();
+          if (hadBag) tr.setContributedParams(latestParamBag);
           if (!thumbCanvas) throw new Error("thumb canvas unavailable");
           const quality = msg.quality ?? 0.8;
           thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
