@@ -11,7 +11,9 @@ import type { DevelopParams } from "@/catalog/types";
 // prepass framework (ping-pong float framebuffers) in the noise-reduction phase
 // on scene-linear data, before exposure — so denoising isn't amplified.
 //
-// Algorithm (the same family Darktable/RawTherapee use, sized for real-time GL):
+// Algorithm — an independent GLSL implementation of standard, published
+// denoising methods, written from the math below and not ported from any other
+// application's source (sized for real-time GL):
 //   1. Anscombe variance-stabilizing transform (VST) on luminance. Sensor noise
 //      is signal-dependent (Poisson) — its magnitude grows with brightness — so
 //      a single threshold is otherwise wrong across the tonal range. The VST
@@ -23,6 +25,10 @@ import type { DevelopParams } from "@/catalog/types";
 //   3. Edge-aware a-trous wavelet smoothing: a B3-spline [1 4 6 4 1] kernel at
 //      doubling dilation (1,2,4,8,16) per iteration, with a bilateral
 //      (luminance-difference) edge-stop so flat areas smooth while edges hold.
+//
+// References (methods are public; only this implementation is Safelight's):
+// Anscombe (1948), the variance-stabilizing transform; Starck, Murtagh & Bijaoui,
+// the a-trous ("with holes") wavelet transform with the B3-spline kernel.
 //
 // The 8 Detail-panel sliders drive it via the param bag (see denoiseBag): the
 // inline stage GLSL gates on the existing uLuminanceNR/uColorNR uniforms and,

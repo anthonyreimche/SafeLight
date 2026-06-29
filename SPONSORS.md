@@ -28,7 +28,7 @@ eventually. Current sponsorware goals live on the
 | 🎞️ **Test Strip** | **$3 / mo** | Sponsor badge on your GitHub profile, your name in [SUPPORTERS.md](SUPPORTERS.md), and the warm feeling of keeping the lights on. |
 | 🔴 **Safelight** | **$9 / mo** | Everything above, **plus early access to sponsorware builds** before they're released, and a vote on roadmap priorities. |
 | 🌑 **Darkroom** | **$29 / mo** | Everything above, **plus your name/handle on the website supporters wall** and priority triage on issues you file. |
-| 🏛️ **Studio** | **$99 / mo** | For businesses and studios. Everything above, **plus your logo on the README and website**, and a direct line for questions. *(For shipping Safelight inside a closed-source product, see [commercial licensing](LICENSING.md) instead.)* |
+| 🏛️ **Studio** | **$99 / mo** | For businesses and studios. Everything above, **plus your logo on the README and website**, and a direct line for questions. |
 
 ## One-time support
 
@@ -48,13 +48,6 @@ Money is not the only currency. All of these genuinely move the project forward:
 - 🧩 **Build and share extensions** — tag your repo `safelight-extension`.
 - 📝 **Improve the docs**, write a tutorial, or make a video.
 - 🗣️ **Tell other photographers** Safelight exists.
-
-## Commercial use
-
-If you want to use Safelight in a way the GPL doesn't allow — for example,
-shipping it inside a closed-source product — that's a
-[commercial license](LICENSING.md), not a sponsorship. Reach out:
-**anthonyreimche@gmail.com**.
 
 ---
 

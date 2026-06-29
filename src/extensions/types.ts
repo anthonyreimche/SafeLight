@@ -189,6 +189,12 @@ export interface ExtensionThumbnail {
  *  "owner/repo" or "owner" to a short explanation shown to the user. */
 export interface TrustList {
   verified: string[];
+  /** For pinned verified entries, the reviewed point per "owner/repo": the
+   *  version (and/or commit) a maintainer actually reviewed. Absent for legacy
+   *  bare-string entries (verification not pinned to a version). A repo whose
+   *  current version is newer than the reviewed version is "stale-verified" — the
+   *  code in play is past the review, so the badge/install treat it as unreviewed. */
+  reviewed: Record<string, { version?: string; commit?: string }>;
   repos: string[];
   owners: string[];
   reason: Record<string, string>;
@@ -244,6 +250,24 @@ export interface ExtensionManifest {
   license?: string;
   /** Minimum SafeLight version required, e.g. "1.2.0". Blocks install below it. */
   minAppVersion?: string;
+  /** Capabilities the extension requests (shown to the user in the store). Only
+   *  `network` is *enforced* — declared HTTPS origins are added to the app's
+   *  content-security policy, and anything not declared by an installed extension
+   *  is blocked. Extensions otherwise run in-app with ambient access (your catalog,
+   *  files); that is NOT confined by this field, so install only extensions you
+   *  trust. See EXTENSIONS.md. */
+  permissions?: ExtensionPermissions;
+}
+
+/** Declared extension capabilities. See ExtensionManifest.permissions. */
+export interface ExtensionPermissions {
+  /** HTTPS origins the extension needs to reach, e.g. ["https://api.example.com"]
+   *  (a single leading-label wildcard like "https://*.example.com" is allowed).
+   *  Only declared origins pass the content-security policy; undeclared hosts are
+   *  blocked. A new declaration takes effect after the next app launch. */
+  network?: string[];
+  /** Optional human-readable rationale shown to the user beside the request. */
+  reason?: string;
 }
 
 /** One settings field used by an export processor's in-panel UI.
@@ -857,6 +881,23 @@ export interface ExtensionModule {
   deactivate?(): void;
 }
 
+/** One "separate" catalog folder, as listed by the Preferences manager. */
+export interface ExternalCatalogEntry {
+  /** The per-source folder on disk — the reveal / delete target. */
+  path: string;
+  /** Folder leaf, e.g. "DCIM-1a2b3c4d" (source-name slug + path hash). */
+  name: string;
+  /** The source folder this catalog was created for, or null if unrecorded
+   *  (catalogs created before source.json was written). */
+  sourcePath: string | null;
+  /** Creation time (ms since epoch), or null if unrecorded. */
+  createdAt: number | null;
+  /** Total size on disk in bytes (catalog + previews + RAW cache). */
+  bytes: number;
+  /** Last-modified time of the folder (ms since epoch), 0 if unknown. */
+  mtimeMs: number;
+}
+
 /** Raw filesystem access by absolute path. Privileged: handed to core exactly
  *  once at boot via claimPrivileged() and never left on the page global, because
  *  extension code shares the renderer realm and could otherwise read/write/delete
@@ -866,11 +907,29 @@ export interface NativeFsBridge {
   write(path: string, data: Uint8Array): Promise<void>;
   list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]>;
   mkdir(path: string): Promise<void>;
-  /** Resolve (creating it) a writeable .safelight working directory for a
-   *  read-only project folder, under `baseOverride` or the app's data dir.
-   *  Keyed by the source path so each folder keeps its own catalog. Absent on
+  /** Resolve a separate .safelight working directory for a project folder, under
+   *  `baseOverride` or the app's data dir, keyed by the source path so each folder
+   *  keeps its own catalog. With `create` (default true) the directory is created
+   *  and its path returned; with `create === false` it's an existence probe that
+   *  returns the path only if a catalog already lives there, else null. Absent on
    *  older Electron builds — callers must feature-detect. */
-  externalCatalogDir?(rootPath: string, baseOverride?: string | null): Promise<string>;
+  externalCatalogDir?(
+    rootPath: string,
+    baseOverride?: string | null,
+    create?: boolean,
+  ): Promise<string | null>;
+  /** List the "separate" catalogs stored under `baseOverride` (or the app data
+   *  dir) for the Preferences manager. Each entry's `path` is the per-source
+   *  folder to reveal or delete. Absent on older Electron builds — feature-detect. */
+  listExternalCatalogs?(baseOverride?: string | null): Promise<ExternalCatalogEntry[]>;
+  /** Spillover pointer: record / look up / clear which separate catalog a
+   *  read-only source spilled into. Stored under the app-data default (not the
+   *  configured base), so a later writeable open can fold the spillover back no
+   *  matter which "Separate catalog location" is set then. Absent on older
+   *  Electron builds — feature-detect. */
+  setSpilloverPointer?(rootPath: string, spilloverDir: string): Promise<void>;
+  getSpilloverPointer?(rootPath: string): Promise<string | null>;
+  clearSpilloverPointer?(rootPath: string): Promise<void>;
   remove(path: string): Promise<void>;
   move(src: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;

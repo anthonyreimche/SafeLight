@@ -14,11 +14,11 @@ Yes — completely free and open source (GPL v3). No subscriptions, no hidden co
 
 ### Does Safelight work offline?
 
-Yes, fully. The only network feature is the optional extension installer, which downloads from GitHub when you ask it to.
+Yes. The core app's only automatic network activity is checking GitHub for app and extension updates on launch (and refreshing the extension trust list). Turn off both update checks in Preferences and the app makes no network request unless you explicitly open the Extensions store or install an extension. See [Privacy](../../PRIVACY.md) for the full list.
 
 ### Does Safelight collect my data?
 
-No. There is no telemetry, no cloud, no accounts. Photos and edits never leave your computer, and exported images carry no EXIF or location metadata.
+There is no telemetry, no analytics, and no accounts. The core app never uploads your photos or edits — they stay on your computer. The update checks above contact GitHub, which (like any download) sees your IP address and the version being compared; you can disable them. Exported images have their camera EXIF, GPS, and XMP stripped. Note that optional extensions you install can make their own network requests — for example, the Web Tools extension uploads photos to a gallery service when you choose to publish. See [Privacy](../../PRIVACY.md).
 
 ### Desktop app or browser — which should I use?
 
@@ -84,7 +84,7 @@ A lot — the core is a blind orchestrator that extensions fill in. They can add
 
 ### Are extensions safe?
 
-Extensions are JavaScript running inside the app, installed from GitHub repos you choose. Install only extensions you trust, the same judgment you'd apply to IDE plugins.
+Treat them like any third-party software. Except for the small bundled set, extensions are independent third-party code installed from GitHub repos you choose, and they run with **full access to your photos, metadata, edits, and files**. Safelight consults a community trust registry — a **Verified** badge means a maintainer reviewed the code at a point in time (not a guarantee of safety, and later updates may not be re-reviewed), and a remote kill-switch disables extensions reported as malicious — but you should install only extensions you trust, the same judgment you'd apply to a browser extension or IDE plugin. You can require verified-only installs in Preferences ▸ Extensions. See [Extensions — safety & terms](../../EXTENSIONS.md).
 
 ## Technical
 

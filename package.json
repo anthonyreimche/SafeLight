@@ -46,7 +46,7 @@
   "build": {
     "appId": "com.safelight.app",
     "productName": "Safelight",
-    "copyright": "Copyright © Safelight",
+    "copyright": "Copyright © 2026 Anthony Reimche",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -56,6 +56,15 @@
       "electron/main.cjs",
       "electron/preload.cjs",
       "package.json"
+    ],
+    "extraResources": [
+      "LICENSE",
+      "NOTICE",
+      "THIRD-PARTY-NOTICES.md",
+      "LICENSING.md",
+      "PRIVACY.md",
+      "TRADEMARKS.md",
+      "EXTENSIONS.md"
     ],
     "asar": true,
     "compression": "normal",

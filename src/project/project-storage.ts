@@ -92,6 +92,9 @@ export interface OpenedProject {
   storageLocation: WorkingDirLocation;
   /** Absolute path of the external working dir when redirected, else null. */
   externalPath: string | null;
+  /** Set when read-only-session edits were just folded back into this in-folder
+   *  catalog — the separate catalog they came from. Else null. */
+  promotedFromExternal: string | null;
 }
 
 export class ProjectStorage implements CatalogStorage {
@@ -134,7 +137,12 @@ export class ProjectStorage implements CatalogStorage {
     // but redirected to the app data dir when the folder is read-only (e.g. a
     // memory card). Throws ReadOnlyProjectError if no writeable dir is possible —
     // caught by openProject, which shows a verbose message instead of failing mute.
-    const { sl, location: storageLocation, externalPath } = await resolveWorkingDir(root);
+    const {
+      sl,
+      location: storageLocation,
+      externalPath,
+      promotedFromExternal = null,
+    } = await resolveWorkingDir(root);
     const previews = await sl.getDirectoryHandle("previews", { create: true });
     const rawCacheDir = await sl.getDirectoryHandle("raw", { create: true });
     const storage = new ProjectStorage(sl, previews);
@@ -307,6 +315,7 @@ export class ProjectStorage implements CatalogStorage {
       rawCacheDir,
       storageLocation,
       externalPath,
+      promotedFromExternal,
     };
   }
 

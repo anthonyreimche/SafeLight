@@ -13,7 +13,7 @@
 import { useEffect } from "react";
 import type { ExtensionManifest, ExtensionSearchResult } from "./types";
 import { useExtStoreUI, loadRepoMeta, loadReadme } from "./store-ui";
-import { useIsVerified, useBannedReason } from "./trust";
+import { useVerificationStatus, useReviewedFor, useBannedReason } from "./trust";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { Markdown } from "./Markdown";
 import { openUrl } from "@/update/update-checker";
@@ -86,7 +86,11 @@ export function ExtensionDetail({
   onSettings,
 }: Props) {
   const { repo } = target;
-  const verified = useIsVerified(repo);
+  // Compare the installed version against the reviewed version: a verified repo
+  // whose installed code is newer than what was reviewed shows as "stale".
+  const vstatus = useVerificationStatus(repo, target.manifest?.version ?? null);
+  const reviewed = useReviewedFor(repo);
+  const verified = vstatus !== "unverified";
   const banned = useBannedReason(repo);
   const meta = useExtStoreUI((s) => (repo ? s.meta[repo] : undefined));
   const readme = useExtStoreUI((s) => (repo ? s.readme[repo] : undefined));
@@ -162,7 +166,13 @@ export function ExtensionDetail({
             {repo && banned ? (
               <FlaggedBadge reason={banned} large />
             ) : (
-              verified && <VerifiedBadge large />
+              verified && (
+                <VerifiedBadge
+                  large
+                  reviewedVersion={reviewed?.version}
+                  stale={vstatus === "stale"}
+                />
+              )
             )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-text-muted">
@@ -193,7 +203,7 @@ export function ExtensionDetail({
             className="rounded px-3 py-1 text-[11px] font-medium text-label-red"
             style={{ background: "color-mix(in srgb, var(--color-label-red) 16%, transparent)" }}
           >
-            Blocked — {banned}
+            Blocked by the Safelight registry — {banned}
           </span>
         )}
         {!target.installed && repo && !banned && (
@@ -201,13 +211,21 @@ export function ExtensionDetail({
             disabled={busy !== null}
             onClick={() => onInstall(repo)}
             title={
-              verified
-                ? "Reviewed and verified by Safelight"
-                : "Not reviewed by Safelight — runs with full access to your photos and metadata"
+              vstatus === "verified"
+                ? "A maintainer code-reviewed this at a point in time — not a guarantee of safety. Runs with full access to your photos, metadata and files."
+                : vstatus === "stale"
+                  ? "The verified review covered an earlier version; this version is newer and has not been reviewed. Runs with full access — install at your own risk."
+                  : "Not reviewed — third-party code that runs with full access to your photos, metadata and files. Install at your own risk."
             }
             className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
           >
-            {busy === repo ? "Installing…" : verified ? "Install" : "Install (unverified)"}
+            {busy === repo
+              ? "Installing…"
+              : vstatus === "verified"
+                ? "Install"
+                : vstatus === "stale"
+                  ? "Install (unreviewed update)"
+                  : "Install (unverified)"}
           </button>
         )}
         {target.installed && hasUpdate && id && repo && (
@@ -255,6 +273,31 @@ export function ExtensionDetail({
           </button>
         )}
       </div>
+
+      {target.manifest?.permissions &&
+        (target.manifest.permissions.network?.length ||
+          target.manifest.permissions.reason) && (
+          <div className="border-b border-border-subtle px-3 py-2 text-[11px]">
+            <div className="mb-0.5 font-medium text-text-secondary">Permissions</div>
+            {target.manifest.permissions.network?.length ? (
+              <div className="text-text-muted">
+                Network access (enforced):{" "}
+                <span className="text-text-primary">
+                  {target.manifest.permissions.network.join(", ")}
+                </span>
+              </div>
+            ) : null}
+            {target.manifest.permissions.reason && (
+              <div className="mt-0.5 text-text-muted">
+                {target.manifest.permissions.reason}
+              </div>
+            )}
+            <div className="mt-1 text-[10px] text-text-muted">
+              Like every extension, it also runs in-app with access to your photos
+              and files — only the network origins above are confined by Safelight.
+            </div>
+          </div>
+        )}
 
       {/* README / body */}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">

@@ -14,8 +14,9 @@
 import { create } from "zustand";
 import type { ExtensionManifest, TrustList } from "./types";
 import { repoFor } from "./sources";
+import { isNewer } from "@/update/semver";
 
-const EMPTY: TrustList = { verified: [], repos: [], owners: [], reason: {} };
+const EMPTY: TrustList = { verified: [], reviewed: {}, repos: [], owners: [], reason: {} };
 
 // localStorage mirror of the lists (already lowercased by the main process). This
 // is what makes the boot ban-check synchronous: the store seeds from it, so
@@ -29,6 +30,8 @@ function readLsTrust(): TrustList | null {
     if (raw && typeof raw === "object" && Array.isArray(raw.verified))
       return {
         verified: raw.verified.map(String),
+        reviewed:
+          raw.reviewed && typeof raw.reviewed === "object" ? raw.reviewed : {},
         repos: Array.isArray(raw.repos) ? raw.repos.map(String) : [],
         owners: Array.isArray(raw.owners) ? raw.owners.map(String) : [],
         reason: raw.reason && typeof raw.reason === "object" ? raw.reason : {},
@@ -126,6 +129,31 @@ export function isVerified(repo: string | null | undefined): boolean {
   return !!r && useTrust.getState().list.verified.includes(r);
 }
 
+/** The reviewed point (version/commit) for a pinned verified repo, else null.
+ *  Null for legacy bare-string entries (verified, but not pinned to a version). */
+export function reviewedFor(
+  repo: string | null | undefined,
+): { version?: string; commit?: string } | null {
+  const r = norm(repo);
+  return (r && useTrust.getState().list.reviewed[r]) || null;
+}
+
+export type VerificationStatus = "unverified" | "verified" | "stale";
+
+/** Verified state of a repo given the version actually in play (installed, or
+ *  about to be installed). "stale" = the repo is verified but `version` is newer
+ *  than the reviewed version, so the code is past the review point and must be
+ *  treated as unreviewed. Unpinned verified entries are always "verified". */
+export function verificationStatus(
+  repo: string | null | undefined,
+  version?: string | null,
+): VerificationStatus {
+  if (!isVerified(repo)) return "unverified";
+  const rv = reviewedFor(repo)?.version;
+  if (rv && version && isNewer(rv, version)) return "stale";
+  return "verified";
+}
+
 /** The ban reason when "owner/repo" — or its whole owner account — is on the
  *  kill-switch, else null. Checks the exact repo and the bare owner. */
 export function bannedReason(repo: string | null | undefined): string | null {
@@ -150,6 +178,30 @@ export function useIsVerified(repo: string | null | undefined): boolean {
   return useTrust((s) => {
     const r = norm(repo);
     return !!r && s.list.verified.includes(r);
+  });
+}
+
+/** Hook: the reviewed point (version/commit) for a pinned verified repo, else null. */
+export function useReviewedFor(
+  repo: string | null | undefined,
+): { version?: string; commit?: string } | null {
+  return useTrust((s) => {
+    const r = norm(repo);
+    return (r && s.list.reviewed[r]) || null;
+  });
+}
+
+/** Hook form of {@link verificationStatus}. */
+export function useVerificationStatus(
+  repo: string | null | undefined,
+  version?: string | null,
+): VerificationStatus {
+  return useTrust((s) => {
+    const r = norm(repo);
+    if (!r || !s.list.verified.includes(r)) return "unverified";
+    const rv = s.list.reviewed[r]?.version;
+    if (rv && version && isNewer(rv, version)) return "stale";
+    return "verified";
   });
 }
 
