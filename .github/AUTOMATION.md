@@ -7,7 +7,7 @@ Four workflows turn issues into a prioritized to-do list and turn tags into inst
 | Workflow | File | Trigger | Does |
 |---|---|---|---|
 | Sync Labels | `sync-labels.yml` | manual, or edit to `labels.json` | Creates/updates the label set |
-| Triage Issues | `triage.yml` | issue opened/edited/reopened | Adds type/area/priority labels, assigns a milestone |
+| Triage Issues | `triage.yml` | issue opened/edited/reopened | Adds type/area/priority labels (plus `extension` for `Extension:`-titled issues), assigns a milestone |
 | Project Board | `project.yml` | issue/PR opened/labeled | Adds it to your board, sets the Priority field |
 | Release | `release.yml` | push a `v*` tag | Builds Win/mac/Linux installers, attaches to a Release |
 
@@ -59,3 +59,6 @@ an Apple Developer ID plus `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_T
 
 Keyword lists live inline in `triage.yml` (`has(...)` calls). Add words to a bucket to change
 how titles/bodies are classified. Label names/colors live in `.github/labels.json`.
+
+Extension proposals are tagged `extension` automatically when the issue title starts with
+`Extension:` — that label is what the [Roadmap](../ROADMAP.md) filters on.

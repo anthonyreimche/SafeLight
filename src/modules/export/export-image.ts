@@ -9,6 +9,7 @@
 // or location metadata — fitting for a privacy-first tool.
 
 import type { CatalogPhoto } from "@/catalog/types";
+import { photoExportBase } from "@/catalog/copy-name";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
@@ -131,7 +132,7 @@ export function exportFilename(
   photo: CatalogPhoto,
   format: ExportFormat,
 ): string {
-  const base = photo.filename.replace(/\.[^./\\]+$/, "") || photo.filename;
+  const base = photoExportBase(photo);
   return `${base}.${EXTENSION[format]}`;
 }
 
@@ -142,7 +143,7 @@ export function resolveFilenameTemplate(
   photo: CatalogPhoto,
   format: ExportFormat,
 ): string {
-  const base = photo.filename.replace(/\.[^./\\]+$/, "") || photo.filename;
+  const base = photoExportBase(photo);
   const ext = EXTENSION[format];
   const exifDate = photo.exif.dateTimeOriginal ?? "";
   // EXIF dates are "YYYY:MM:DD HH:MM:SS" or ISO; grab the first 10 chars.

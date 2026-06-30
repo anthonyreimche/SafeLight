@@ -178,7 +178,12 @@ export class ProjectStorage implements CatalogStorage {
     }
 
     const scan = await scanProject(root);
-    const byRel = new Map(savedPhotos.map((p) => [p.relPath, p] as const));
+    // Match disk files to MASTER records only. Virtual copies share a master's
+    // relPath but own no disk file, so they must not shadow the master in this
+    // map — they're re-attached separately after the walk.
+    const byRel = new Map(
+      savedPhotos.filter((p) => !p.copyOf).map((p) => [p.relPath, p] as const),
+    );
 
     // New files (not in the saved catalog, not tombstoned) are the ones that get
     // decoded — the slow part of opening. Report progress against that count.
@@ -282,13 +287,56 @@ export class ProjectStorage implements CatalogStorage {
       }
     });
 
-    const photos = results.filter((p): p is CatalogPhoto => p !== null);
+    const masters = results.filter((p): p is CatalogPhoto => p !== null);
+
+    // Re-attach saved virtual copies: records that share a master's source file
+    // but own no disk file of their own. Each inherits its master's live handles
+    // + relPath, and is placed right after the master so it stays adjacent under
+    // import-order / date sorts. A copy whose master vanished from disk is
+    // dropped (its edit history is pruned just below). copyOf points at the root
+    // master, so copies-of-copies resolve here too.
+    const mastersById = new Map(masters.map((m) => [m.id, m] as const));
+    const copiesByMaster = new Map<string, CatalogPhoto[]>();
+    let savedCopyCount = 0;
+    let keptCopyCount = 0;
+    for (const sp of savedPhotos) {
+      if (!sp.copyOf) continue;
+      savedCopyCount++;
+      const master = mastersById.get(sp.copyOf);
+      if (!master) continue;
+      const copy: CatalogPhoto = {
+        ...sp,
+        // Mirror the master's real file identity (it may have been renamed); the
+        // copy's own distinction lives in copyName, not filename.
+        filename: master.filename,
+        relPath: master.relPath,
+        folder: master.folder,
+        directoryHandle: master.directoryHandle,
+        fileHandle: master.fileHandle,
+        thumbnailBlob: null,
+        thumbnailUrl: null,
+      };
+      const arr = copiesByMaster.get(master.id);
+      if (arr) arr.push(copy);
+      else copiesByMaster.set(master.id, [copy]);
+      keptCopyCount++;
+    }
+
+    // Final list: each disk master (in scan order) followed by its virtual copies.
+    const photos: CatalogPhoto[] = [];
+    for (const m of masters) {
+      photos.push(m);
+      const cs = copiesByMaster.get(m.id);
+      if (cs) photos.push(...cs);
+    }
+
     // Rebuild the photo map from the scan result so any skeletons seeded above
     // for files that have since vanished from disk are dropped.
     storage.photos.clear();
     for (const p of photos) storage.photos.set(p.id, p);
 
-    // Drop edit histories whose photo no longer exists on disk.
+    // Drop edit histories whose photo no longer exists (file gone, or a virtual
+    // copy whose master is gone). Surviving copies are in storage.photos, so kept.
     for (const id of [...storage.edits.keys()])
       if (!storage.photos.has(id)) storage.edits.delete(id);
 
@@ -303,8 +351,13 @@ export class ProjectStorage implements CatalogStorage {
         prunedTombstone = true;
       }
 
-    const removedCount = byRel.size - (photos.length - newPhotos.length);
-    if (newPhotos.length > 0 || removedCount > 0 || prunedTombstone)
+    const removedCount = byRel.size - (masters.length - newPhotos.length);
+    if (
+      newPhotos.length > 0 ||
+      removedCount > 0 ||
+      prunedTombstone ||
+      keptCopyCount !== savedCopyCount // a virtual copy was dropped — re-persist
+    )
       storage.scheduleSave();
 
     return {
@@ -366,9 +419,12 @@ export class ProjectStorage implements CatalogStorage {
 
   async deletePhoto(id: string): Promise<void> {
     // Tombstone the file so the next folder scan doesn't re-import it as "new".
-    // Removal is from the catalog only — the original stays on disk.
-    const relPath = this.photos.get(id)?.relPath;
-    if (relPath) this.removed.add(relPath);
+    // Removal is from the catalog only — the original stays on disk. A VIRTUAL
+    // COPY owns no file of its own (it shares its master's), so tombstoning its
+    // relPath would wrongly suppress the master's file — skip the tombstone for
+    // copies and just drop the record.
+    const photo = this.photos.get(id);
+    if (photo && !photo.copyOf && photo.relPath) this.removed.add(photo.relPath);
     this.photos.delete(id);
     this.edits.delete(id);
     this.lastThumb.delete(id);

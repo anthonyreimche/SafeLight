@@ -7,24 +7,7 @@ import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
 import type { VignetteParams, GrainParams } from "@/catalog/types";
-
-interface VigSlider { key: keyof VignetteParams; label: string; min: number; max: number; step: number }
-interface GrainSlider { key: keyof GrainParams; label: string; min: number; max: number; step: number }
-
-const VIG_SLIDERS: VigSlider[] = [
-  { key: "amount",     label: "Amount",     min: -100, max: 100, step: 1 },
-  { key: "midpoint",   label: "Midpoint",   min: 0,    max: 100, step: 1 },
-  { key: "roundness",  label: "Roundness",  min: -100, max: 100, step: 1 },
-  { key: "feather",    label: "Feather",    min: 0,    max: 100, step: 1 },
-  { key: "highlights", label: "Highlights", min: 0,    max: 100, step: 1 },
-];
-
-const GRAIN_SLIDERS: GrainSlider[] = [
-  { key: "amount",    label: "Amount",    min: 0,  max: 100, step: 1 },
-  { key: "size",      label: "Size",      min: 25, max: 100, step: 1 },
-  { key: "roughness", label: "Roughness", min: 0,  max: 100, step: 1 },
-  { key: "color",     label: "Color",     min: 0,  max: 100, step: 1 },
-];
+import { VIGNETTE_ADJUSTMENTS, GRAIN_ADJUSTMENTS } from "@/state/develop-adjustments";
 
 function SectionHeader({ title }: { title: string }) {
   return (
@@ -46,35 +29,41 @@ export function EffectsPanel() {
         <div>
           <SectionHeader title="Vignette" />
           <div className="space-y-0.5">
-            {VIG_SLIDERS.map((s) => (
-              <Slider
-                key={s.key}
-                label={s.label}
-                value={vignette[s.key]}
-                min={s.min}
-                max={s.max}
-                step={s.step}
-                onChange={(v) => setParam("vignette", { ...vignette, [s.key]: v })}
-                onCommit={() => commitEdit(`Vignette ${s.label}`)}
-              />
-            ))}
+            {VIGNETTE_ADJUSTMENTS.map((s) => {
+              const k = s.field as keyof VignetteParams;
+              return (
+                <Slider
+                  key={k}
+                  label={s.label}
+                  value={vignette[k]}
+                  min={s.min}
+                  max={s.max}
+                  step={s.step}
+                  onChange={(v) => setParam("vignette", { ...vignette, [k]: v })}
+                  onCommit={() => commitEdit(`Vignette ${s.label}`)}
+                />
+              );
+            })}
           </div>
         </div>
         <div>
           <SectionHeader title="Grain" />
           <div className="space-y-0.5">
-            {GRAIN_SLIDERS.map((s) => (
-              <Slider
-                key={s.key}
-                label={s.label}
-                value={grain[s.key]}
-                min={s.min}
-                max={s.max}
-                step={s.step}
-                onChange={(v) => setParam("grain", { ...grain, [s.key]: v })}
-                onCommit={() => commitEdit(`Grain ${s.label}`)}
-              />
-            ))}
+            {GRAIN_ADJUSTMENTS.map((s) => {
+              const k = s.field as keyof GrainParams;
+              return (
+                <Slider
+                  key={k}
+                  label={s.label}
+                  value={grain[k]}
+                  min={s.min}
+                  max={s.max}
+                  step={s.step}
+                  onChange={(v) => setParam("grain", { ...grain, [k]: v })}
+                  onCommit={() => commitEdit(`Grain ${s.label}`)}
+                />
+              );
+            })}
           </div>
         </div>
       </div>

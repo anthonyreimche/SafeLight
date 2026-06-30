@@ -62,6 +62,8 @@ uniform float uBlacks;
 uniform float uTexture;
 uniform float uClarity;
 uniform float uDehaze;
+uniform float uHighlightDetail; // -100..100 micro-contrast in the highlight band
+uniform float uShadowDetail;    // -100..100 micro-contrast in the shadow band
 uniform float uSharpening;
 uniform float uSharpenRadius;    // 1..3
 uniform float uSharpenDetail;    // 0..100
@@ -366,7 +368,7 @@ float blacksWeight(vec3 linRgb) {
 // at the end of the tone chain in display space (see main), so each stage's tonal
 // mapping (e.g. highlight recovery) stays clean and never overshoots into false color.
 const float HI_SAT  = 0.55; // saturation lift inside highlight recovery (offsets pull-down)
-const float HI_DETAIL = 1.5; // local contrast restored to recovered highlights (cloud detail)
+const float BAND_DETAIL = 1.5; // micro-contrast restored/added per tonal band (highlight & shadow detail)
 vec3 retargetLuma(vec3 c, float L, float newL) {
   return c * (newL / L);
 }
@@ -1451,15 +1453,27 @@ void main() {
     c += texDetail * texAmt * 2.5 * edgeMask;
   }
 
-  // Highlight detail restore: the Highlights recovery compresses the bright band and
-  // dulls cloud/texture micro-contrast. A luminance curve can't add it back without
-  // also darkening lit foliage (sky and foliage overlap in luma after a big push), so
-  // restore LOCAL contrast instead — only where the pixel ended up bright, scaled by
-  // recovery strength (-H). Clamped to limit edge overshoot (anti-halo).
-  if (H < -0.001) {
+  // Band-limited detail (highlight / shadow). Tonal recovery and lift compress a
+  // luminance band, which dulls its micro-contrast (cloud texture, shadow detail).
+  // A luminance curve can't add it back without also moving other tones that overlap
+  // in luma (sky vs lit foliage), so restore LOCAL contrast instead — confined to the
+  // band where the pixel ended up, clamped to limit edge overshoot (anti-halo).
+  //
+  // Each band's gain = an auto term (engaged by recovery/lift so a tone move never
+  // flattens texture on its own) + the user's Highlight/Shadow Detail slider
+  // (bidirectional: + crisper, - smoother). At the slider's default of 0 the highlight
+  // term is identical to the original recovery-coupled restore. The shadow auto term is
+  // gentler than the highlight one because the dark band is where sensor noise lives.
+  float bandDet = clamp(rawLuma - lumaLod(srcUv, 2.0), -0.15, 0.15);
+  float hiGain = (H < 0.0 ? -H : 0.0) + uHighlightDetail / 100.0;
+  if (abs(hiGain) > 0.001) {
     float hiZone = smoothstep(0.45, 0.78, luma(c));
-    float hiDet = clamp(rawLuma - lumaLod(srcUv, 2.0), -0.15, 0.15);
-    c += hiDet * (-H) * hiZone * HI_DETAIL;
+    c += bandDet * hiGain * hiZone * BAND_DETAIL;
+  }
+  float shGain = (S > 0.0 ? 0.5 * S : 0.0) + uShadowDetail / 100.0;
+  if (abs(shGain) > 0.001) {
+    float shZone = 1.0 - smoothstep(0.12, 0.45, luma(c));
+    c += bandDet * shGain * shZone * BAND_DETAIL;
   }
   c = clamp(c, 0.0, 1.0);
 

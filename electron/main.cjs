@@ -625,8 +625,130 @@ function persistSearchDisk() {
   if (searchWriteTimer.unref) searchWriteTimer.unref();
 }
 
-async function searchExtensions(query, topic, force = false) {
-  const t = String(topic || "safelight-extension").trim();
+// ── Prebuilt registry index ──────────────────────────────────────────────────
+// A static catalog of every published extension, regenerated server-side by a
+// GitHub Action in the registry repo (TRUST_REGISTRY) and committed as
+// registry.json. The store fetches this ONE CDN-cached file instead of running a
+// live GitHub Search + a per-card icon/og resolution on every machine: one
+// request, no API rate limit, the COMPLETE catalog (not the search endpoint's
+// first page of 25), and the thumbnails already resolved. This is how the store
+// loads the full list fast; searchExtensionsLive stays as the fallback.
+const DEFAULT_EXT_TOPIC = "safelight-extension";
+const REGISTRY_INDEX_TTL_MS = 60 * 60 * 1000; // catalog turns over slowly; 1h
+let registryIndexCache = null; // { at, items } | null
+const registryIndexFile = () =>
+  path.join(app.getPath("userData"), "registry-index.json");
+let registryIndexLoaded = false;
+
+function loadRegistryDisk() {
+  if (registryIndexLoaded) return;
+  registryIndexLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(registryIndexFile(), "utf8"));
+    if (raw && typeof raw.at === "number" && Array.isArray(raw.items))
+      registryIndexCache = { at: raw.at, items: raw.items };
+  } catch {}
+}
+
+let registryWriteTimer = null;
+function persistRegistryDisk() {
+  if (registryWriteTimer) return;
+  registryWriteTimer = setTimeout(() => {
+    registryWriteTimer = null;
+    fs.promises
+      .writeFile(registryIndexFile(), JSON.stringify(registryIndexCache))
+      .catch(() => {});
+  }, 1000);
+  if (registryWriteTimer.unref) registryWriteTimer.unref();
+}
+
+// Normalise one registry.json row into the ExtensionSearchResult shape the
+// renderer already consumes. Tolerant of partial/garbage rows (drops them) so a
+// single malformed entry can never break the whole grid. A row with no usable
+// thumbnail falls back to the owner avatar, matching the live path.
+function normalizeRegistryEntry(e) {
+  if (!e || typeof e.fullName !== "string" || !validRepo(e.fullName)) return null;
+  const thumb =
+    e.thumbnail && typeof e.thumbnail.url === "string"
+      ? { url: e.thumbnail.url, custom: !!e.thumbnail.custom }
+      : null;
+  const avatarUrl = typeof e.avatarUrl === "string" ? e.avatarUrl : null;
+  return {
+    fullName: e.fullName,
+    description: typeof e.description === "string" ? e.description : null,
+    stars: Number.isFinite(e.stars) ? e.stars : 0,
+    createdAt: typeof e.createdAt === "string" ? e.createdAt : null,
+    updatedAt: typeof e.updatedAt === "string" ? e.updatedAt : "",
+    topics: Array.isArray(e.topics)
+      ? e.topics.filter((t) => typeof t === "string")
+      : [],
+    avatarUrl,
+    thumbnail: thumb || { url: avatarFor(e.fullName, avatarUrl), custom: false },
+    source: "registry",
+  };
+}
+
+// Fetch + cache the registry index. Returns the extension array, or null only
+// when the index is genuinely unavailable (fetch failed / not published yet AND
+// nothing cached) so the caller can fall back to a live search. A fresh cache
+// short-circuits the network; a stale cache is still returned on any fetch
+// failure (last-good beats an error, same policy as searchExtensionsLive).
+async function fetchRegistryIndex(force = false) {
+  loadRegistryDisk();
+  if (
+    !force &&
+    registryIndexCache &&
+    Date.now() - registryIndexCache.at < REGISTRY_INDEX_TTL_MS
+  )
+    return registryIndexCache.items;
+  // jsDelivr serves the repo's default-branch HEAD off a CDN — no GitHub API rate
+  // limit, edge-cached. A forced refresh (the store's ↻) reads raw.githubusercontent
+  // instead, since jsDelivr edge-caches HEAD for hours and would otherwise hide a
+  // just-committed rebuild.
+  const url = force
+    ? `https://raw.githubusercontent.com/${TRUST_REGISTRY}/main/registry.json`
+    : `https://cdn.jsdelivr.net/gh/${TRUST_REGISTRY}/registry.json`;
+  try {
+    const res = await fetchWithTimeout(
+      url,
+      { headers: { "User-Agent": "Safelight", Accept: "application/json" } },
+      6000,
+    );
+    // 404 = index not published yet; any non-OK = serve last-good or signal
+    // "unavailable" (null) so searchExtensions falls back to a live search.
+    if (!res.ok) return registryIndexCache ? registryIndexCache.items : null;
+    const body = await res.json();
+    const rows = Array.isArray(body)
+      ? body
+      : body && Array.isArray(body.extensions)
+        ? body.extensions
+        : null;
+    if (!rows) return registryIndexCache ? registryIndexCache.items : null;
+    const items = rows.map(normalizeRegistryEntry).filter(Boolean);
+    registryIndexCache = { at: Date.now(), items };
+    persistRegistryDisk();
+    return items;
+  } catch {
+    return registryIndexCache ? registryIndexCache.items : null;
+  }
+}
+
+// Client-side query filter over the registry index — substring match on
+// "owner/repo", description and topics. Mirrors what `topic:… <query>` would do on
+// the Search API, but instantly and offline (the index is already the topic set).
+function filterRegistry(items, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return items;
+  return items.filter(
+    (it) =>
+      it.fullName.toLowerCase().includes(q) ||
+      (it.description && it.description.toLowerCase().includes(q)) ||
+      (it.topics || []).some((t) => String(t).toLowerCase().includes(q)),
+  );
+}
+
+async function searchExtensionsLive(query, topic, force = false) {
+  const t = String(topic || DEFAULT_EXT_TOPIC).trim();
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(t)) throw new Error("Bad extension topic");
   const q = [String(query || "").trim(), `topic:${t}`]
     .filter(Boolean)
@@ -645,7 +767,7 @@ async function searchExtensions(query, topic, force = false) {
   let res;
   try {
     res = await net.fetch(
-      `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=25`,
+      `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=100`,
       {
         headers: {
           Accept: "application/vnd.github+json",
@@ -677,15 +799,31 @@ async function searchExtensions(query, topic, force = false) {
       fullName,
       description: r.description,
       stars: r.stargazers_count || 0,
+      createdAt: r.created_at || null,
       updatedAt: r.updated_at,
       topics: Array.isArray(r.topics) ? r.topics : [],
       avatarUrl,
       thumbnail: cachedThumbnail(fullName, avatarUrl),
+      source: "live",
     };
   });
   searchCache.set(key, { at: Date.now(), items });
   persistSearchDisk();
   return items;
+}
+
+// Browse-grid entry point. For the default topic we serve the prebuilt registry
+// index (one CDN fetch, the whole catalog, thumbnails already baked); a custom
+// topic — or an index that isn't reachable / published yet — falls back to a live
+// GitHub Search. Keeping both paths means the store never regresses for users on a
+// custom topic and degrades gracefully if the registry repo is down.
+async function searchExtensions(query, topic, force = false) {
+  const t = String(topic || DEFAULT_EXT_TOPIC).trim();
+  if (t === DEFAULT_EXT_TOPIC) {
+    const index = await fetchRegistryIndex(force);
+    if (index) return filterRegistry(index, query);
+  }
+  return searchExtensionsLive(query, topic, force);
 }
 
 async function fetchReleases(repo) {
@@ -984,7 +1122,7 @@ async function resolveThumbnail(repo, avatarUrl, force = false) {
 // card progressively instead of waiting for the slowest one. Never rejects — a
 // repo that fails resolution simply falls back to its avatar.
 async function resolveThumbnails(items, onEach, force = false) {
-  const list = Array.isArray(items) ? items.slice(0, 50) : [];
+  const list = Array.isArray(items) ? items.slice(0, 100) : [];
   const out = {};
   await Promise.all(
     list.map(async (it) => {

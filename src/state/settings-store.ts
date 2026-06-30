@@ -106,6 +106,11 @@ export interface AppSettings {
    *  as a drag from there. Off (the default) keeps the relative drag-to-adjust
    *  model: a click grabs the current value and only movement changes it. */
   sliderJumpToCursor: boolean;
+  /** Show the per-band Highlight Detail / Shadow Detail sliders in the Develop
+   *  Basic panel. Off by default to keep the panel compact: tone recovery/lift
+   *  already preserves micro-contrast on its own, so these are opt-in controls
+   *  for users who want to tune (or reverse) that per band. */
+  basicDetailSliders: boolean;
 
   // ── Accessibility ──────────────────────────────────────────────────────
   // All off/neutral by default: the themes ship as designed, and a user who
@@ -259,6 +264,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   assessBorderPct: 4.5,
   windowDim: 0.6,
   sliderJumpToCursor: false,
+  basicDetailSliders: false,
   highContrast: false,
   strongFocus: false,
   colorVisionFilter: "none",

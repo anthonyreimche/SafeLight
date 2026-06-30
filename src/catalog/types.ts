@@ -29,6 +29,18 @@ export interface CatalogPhoto {
   /** Set when the last decode attempt failed (no thumbnail). Human-readable
    *  reason for the grid's warning tooltip; cleared once a preview is built. */
   decodeError?: string;
+  /** Set on a *virtual copy* — a second catalog record that shares another
+   *  photo's source file but keeps its own id, edits and metadata. Holds the id
+   *  of the master record (the one that owns the file on disk). A virtual copy
+   *  has no disk file of its own, so the project scan re-attaches the master's
+   *  live handles to it on open instead of dropping it (see project-storage).
+   *  Copies of copies still point at the root master. Undefined on a master. */
+  copyOf?: string;
+  /** A virtual copy's user-facing distinguisher (e.g. "copy", "copy 2", or a
+   *  name the user typed). `filename` still mirrors the master's real file; the
+   *  displayed/exported name folds them together as `base_<copyName>.ext` (see
+   *  catalog/copy-name.ts). Undefined on a master. */
+  copyName?: string;
 }
 
 export type ColorLabel = "none" | "red" | "yellow" | "green" | "blue" | "purple";
@@ -339,6 +351,8 @@ export interface DevelopParams {
   contrast: number;
   highlights: number;
   shadows: number;
+  highlightDetail: number;   // -100..100 micro-contrast in the highlight band (+ crisper, - smoother)
+  shadowDetail: number;      // -100..100 micro-contrast in the shadow band (+ crisper, - smoother)
   whites: number;
   blacks: number;
   texture: number;
@@ -533,6 +547,8 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   contrast: 0,
   highlights: 0,
   shadows: 0,
+  highlightDetail: 0,
+  shadowDetail: 0,
   whites: 0,
   blacks: 0,
   texture: 0,

@@ -5,6 +5,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
+import { photoDisplayName } from "@/catalog/copy-name";
 import { requestThumbnail } from "@/state/thumbnail-loader";
 import { Rating } from "./Rating";
 
@@ -59,6 +60,10 @@ function ThumbnailImpl({
   // would never take effect on the grid tile.
   const isReject = photo.flag === "reject";
 
+  // Virtual copies show "base_<copyName>.ext" so they read distinctly from the
+  // master they share a file with.
+  const displayName = photoDisplayName(photo);
+
   // The grid shows the original compressed preview (generated at import) — no
   // per-edit re-render or decode. Cheap and space-light; quality is intentionally
   // modest. Edits are seen in Develop/Loupe, not the grid.
@@ -111,7 +116,7 @@ function ThumbnailImpl({
       {thumbUrl ? (
         <img
           src={thumbUrl}
-          alt={photo.filename}
+          alt={displayName}
           className="h-full w-full object-contain transition group-hover:brightness-50"
           style={{ opacity: loaded ? (isReject ? 0.4 : 1) : 0, transition: "opacity 150ms ease-in" }}
           loading="lazy"
@@ -163,7 +168,7 @@ function ThumbnailImpl({
       )}
 
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
-        <p className="truncate text-[10px] text-text-primary">{photo.filename}</p>
+        <p className="truncate text-[10px] text-text-primary">{displayName}</p>
         <Rating
           value={photo.rating}
           onChange={onRatingChange ? (r) => onRatingChange(photo.id, r) : undefined}

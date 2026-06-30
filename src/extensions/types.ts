@@ -163,7 +163,16 @@ export interface ExtensionSearchResult {
   fullName: string;
   description: string | null;
   stars: number;
+  /** Repo creation time (ISO). Drives the store's "New" shelf. Present from the
+   *  prebuilt registry index; null on the live-search fallback for repos GitHub's
+   *  search payload didn't carry it for. */
+  createdAt?: string | null;
   updatedAt: string;
+  /** Where this result came from: the prebuilt registry index ("registry") or a
+   *  live GitHub search ("live"). The browse grid skips per-card thumbnail
+   *  re-resolution for "registry" results — their thumbnail is already baked by
+   *  the index build, so a runtime icon/og round-trip would add nothing. */
+  source?: "registry" | "live";
   /** GitHub repo topics — drive the store's category chips. */
   topics?: string[];
   /** Owner avatar on the direct avatars CDN — the instant fallback thumbnail and
@@ -614,6 +623,32 @@ export interface LibrarySortContribution {
 }
 
 // ---------------------------------------------------------------------------
+// Library grid context-menu items (generic — lets an extension add an action to
+// the right-click menu on a photo / multi-selection, e.g. "Create virtual copy")
+// ---------------------------------------------------------------------------
+
+/** An item appended to the Library grid's right-click context menu. Core groups
+ *  extension items below its built-in actions (Open, Rename, …) behind a
+ *  separator. `ids` are the targeted photos: the right-clicked photo, or the
+ *  whole current selection when the right-clicked photo is part of it (the same
+ *  targeting the built-in items use). */
+export interface GridMenuItemContribution {
+  /** Globally unique, e.g. "my-ext.virtual-copy". */
+  id: string;
+  /** Menu label. A function receives the targeted ids so the label can vary
+   *  (e.g. add a "(3)" count for a multi-selection). */
+  label: string | ((ids: string[]) => string);
+  /** Sort position among extension items (lower = earlier). Default 100. */
+  order?: number;
+  /** Render in the red "danger" color (e.g. a destructive action). */
+  danger?: boolean;
+  /** Return false to show the item greyed-out for the current target. */
+  enabled?: (ids: string[]) => boolean;
+  /** Invoked with the targeted photo ids when the item is chosen. */
+  onClick: (ids: string[]) => void;
+}
+
+// ---------------------------------------------------------------------------
 // UI slots (generic named mount points in core chrome)
 // ---------------------------------------------------------------------------
 
@@ -759,6 +794,10 @@ export interface SafelightAPI {
   registerCursor(c: CursorContribution): void;
   /** Add a sort order to the Library toolbar's sort dropdown. */
   registerLibrarySort(c: LibrarySortContribution): void;
+  /** Append an action to the Library grid's right-click context menu. Core
+   *  passes the targeted photo ids (the right-clicked photo, or the whole
+   *  selection if it's part of one). Re-registering the same id replaces it. */
+  registerGridMenuItem(c: GridMenuItemContribution): void;
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;
@@ -782,6 +821,16 @@ export interface SafelightAPI {
    *  usePipelineStore, create. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   stores: Record<string, any>;
+  /** Read-only metadata for the stage uniforms other installed extensions
+   *  contribute — qualified key ("<stageId>.<uniform>"), label, value range and
+   *  GLSL type. For tools that drive or inspect ANOTHER extension's sliders; the
+   *  values themselves live in the develop store's paramBag (read
+   *  `paramBag[qualifiedKey] ?? default`, write via `setDynParam`). Non-reactive:
+   *  the list only changes as extensions load/unload — read it when you need it. */
+  params: {
+    list(): import("./param-registry").ParamDescriptor[];
+    get(qualifiedKey: string): import("./param-registry").ParamDescriptor | undefined;
+  };
   dock: { togglePanel(id: string): void };
   themes: { apply(id: string): void };
   layouts: { apply(id: string): void };
@@ -791,8 +840,14 @@ export interface SafelightAPI {
   preferences: { open(sectionId?: string): void; close(): void; toggle(): void };
   /** Navigate between app modules. */
   navigation: { goTo(module: "library" | "develop"): void };
-  /** Read the current binding for any action id (built-in or extension). */
-  keybindings: { getBinding(actionId: string): string };
+  /** Read the current binding for any action id (built-in or extension), or
+   *  `list()` every built-in key action with its current combo (override
+   *  applied) + label + category — so a tool can check a remap against the LIVE
+   *  shortcuts instead of a hard-coded list. `combo` is "" when unbound. */
+  keybindings: {
+    getBinding(actionId: string): string;
+    list(): { id: string; label: string; category: string; combo: string }[];
+  };
   /** Cursor vocabulary. `labels`: canonical human-facing names for the built-in
    *  cursor tokens, keyed by token id (e.g. "pick", "zoom-in", "crop-move") — the
    *  single source of truth for this wording, so a cursor-restyling extension
@@ -849,6 +904,25 @@ export interface SafelightAPI {
     /** Read the opaque blob previously stored for the current Develop photo
      *  under `key`, or null if none exists (or no photo/project is open). */
     getPhotoData(key: string): Promise<Uint8Array | null>;
+    /** Core develop scalars that live INSIDE a structured param object (e.g.
+     *  "vignette.amount", "grain.size") — the ones a top-level setParam can't
+     *  reach without merging the owning object. `list()` gives each one's range
+     *  + current default + section `group`; `get`/`set` route to the right
+     *  setParam path so a tool can drive them generically (e.g. key+wheel
+     *  scrubbing). `set` is live (no history entry) — batch your own commitEdit. */
+    adjustments: {
+      list(): {
+        key: string;
+        label: string;
+        group: string;
+        min: number;
+        max: number;
+        step: number;
+        default: number;
+      }[];
+      get(key: string): number;
+      set(key: string, value: number): void;
+    };
   };
   /** Headless export: render catalog photos through the full develop pipeline to
    *  in-memory blobs, honoring the user's export settings. Unlike
@@ -873,6 +947,24 @@ export interface SafelightAPI {
         p: import("@/modules/export/export-image").ExportProgress,
       ) => void,
     ): Promise<import("@/modules/export/export-image").RenderedPhoto[]>;
+  };
+  /** Lower-level catalog persistence, for extensions that add records the core
+   *  scan didn't produce (e.g. virtual copies). `addPhotos` durably writes new
+   *  records and inserts them into the live grid (optionally right after a given
+   *  photo). `getEditState` / `putEditState` read and write a photo's saved
+   *  develop recipe (the undo stack) by id — so an extension can, for instance,
+   *  clone one photo's edits onto another. */
+  catalog: {
+    addPhotos(
+      photos: import("@/catalog/types").CatalogPhoto[],
+      opts?: { afterId?: string },
+    ): Promise<void>;
+    getEditState(
+      photoId: string,
+    ): Promise<import("@/catalog/types").EditState | null>;
+    putEditState(
+      editState: import("@/catalog/types").EditState,
+    ): Promise<void>;
   };
 }
 
@@ -999,8 +1091,10 @@ declare global {
         /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. */
         install(spec: string): Promise<ExtensionManifest>;
         uninstall(id: string): Promise<void>;
-        /** Search GitHub for official extensions (repos with `topic`). Results
-         *  are cached per (topic, query); pass `force` to bypass the cache. */
+        /** Browse official extensions. For the default topic this serves the
+         *  prebuilt registry index (one CDN fetch, whole catalog, baked
+         *  thumbnails); a custom topic — or an unreachable index — falls back to a
+         *  live GitHub Search. Cached; pass `force` to bypass the cache. */
         search(
           query: string,
           topic: string,

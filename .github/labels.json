@@ -6,6 +6,8 @@
   { "name": "type: docs", "color": "0075ca", "description": "Documentation only" },
   { "name": "type: build", "color": "5319e7", "description": "Build, packaging, installer, or CI" },
 
+  { "name": "extension", "color": "a371f7", "description": "A Safelight extension, proposed or in progress (title: Extension: …)" },
+
   { "name": "area: raw", "color": "1d76db", "description": "RAW decoding / libraw / demosaic" },
   { "name": "area: ui", "color": "c5def5", "description": "User interface, panels, layout, theme" },
   { "name": "area: electron", "color": "bfd4f2", "description": "Electron shell, windows, menus, FS" },

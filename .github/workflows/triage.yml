@@ -62,7 +62,11 @@ jobs:
             else if (has('minor', 'nice to have', 'someday', 'low priority', 'cosmetic', 'typo', 'eventually'))
               priority = 'priority: low';
 
+            // --- Extension proposals (title convention: "Extension: <name>") ---
+            const isExtension = /^\s*extension\s*:/i.test(issue.title || '');
+
             const desired = [...typeLabels, ...areaLabels, priority];
+            if (isExtension) desired.push('extension');
 
             // Remove any existing priority labels we are about to replace, keep others.
             const current = (issue.labels || []).map(l => (typeof l === 'string' ? l : l.name));
