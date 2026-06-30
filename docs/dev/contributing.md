@@ -53,19 +53,14 @@ While developing, enable the built-in **Developer Tools** extension (disabled by
 
 Commit message style: `feat: …`, `fix: …`, `docs: …`, `refactor: …`.
 
-## Areas Where Help Is Wanted
+## Where to Start
 
-- Red eye correction
-- B&W and HDR image support
-- HDR / focus stacking and photo merge
-- Batch editing / sync edits
-- AI masking via ONNX.js (Select Subject, Sky)
-- Lightroom catalog import (sql.js)
-- Mobile-responsive viewing
-- Camera profiles / base tuning
-- Migrating built-in develop tools to extension-contributed GPU processing stages
-- Extension templates and scaffolding
-- Tests
+Safelight is solo-maintained, so help is genuinely welcome. The highest-leverage places to jump in:
+
+- **Build an extension.** Almost all new functionality belongs in an extension rather than the core — panels, tools, themes, display transforms, export targets, metadata sidecars, and process-heavy features all ship this way. See [Building Extensions](extensions/README.md), and tag your repo with the `safelight-extension` topic so it shows up in the in-app store.
+- **Pick up an issue.** The live list of wanted work is the [issue tracker](../../issues) — auto-labelled and sorted by priority onto the project board. Planned extensions are the open issues labelled [`extension`](../../issues?q=is%3Aissue+is%3Aopen+label%3Aextension). That list is the source of truth, so nothing here goes stale.
+- **Propose an extension.** Open an issue titled `Extension: <name>` — triage auto-labels it `extension` and adds it to the board. See the [Roadmap](../../ROADMAP.md) for how planned work is tracked.
+- **Tests and tooling.** There's no automated test suite yet, and extension templates, scaffolding, and CI would all help future contributors.
 
 ## Questions
 

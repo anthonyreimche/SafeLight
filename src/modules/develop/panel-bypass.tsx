@@ -32,7 +32,8 @@ import { getAllDescriptors } from "@/extensions/param-registry";
 export const PANEL_BYPASS_PARAM_KEYS: Record<string, (keyof DevelopParams)[]> = {
   "core.white-balance": ["temperature", "tint"],
   "core.basic": [
-    "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+    "exposure", "contrast", "highlights", "highlightDetail", "shadows",
+    "shadowDetail", "whites", "blacks",
     "texture", "clarity", "dehaze", "vibrance", "saturation",
   ],
   "core.tone-curve": ["toneCurve"],

@@ -9,7 +9,12 @@ export interface ParamDescriptor {
   qualifiedKey: string;
   localKey: string;
   stageId: string;
+  /** Human-facing name of the owning stage (ProcessingStageContribution.name). */
+  stageName: string;
   extensionId: string;
+  /** Human-facing name of the owning extension (its manifest name), so tools that
+   *  list these can say WHERE a slider comes from instead of showing a raw id. */
+  extensionName: string;
   glslType: GlslType;
   default: number | number[] | boolean;
   range?: { min: number; max: number; step?: number };
@@ -18,8 +23,20 @@ export interface ParamDescriptor {
 
 const descriptors = new Map<string, ParamDescriptor>();
 
+// Display names for extensions, captured by the loader just before each
+// extension activates (built-ins from BUILTIN_EXTENSIONS, externals from their
+// manifest). Used to label a stage's params with the owning extension's name.
+const extensionNames = new Map<string, string>();
+export function setExtensionName(id: string, name: string): void {
+  extensionNames.set(id, name);
+}
+export function getExtensionName(id: string): string {
+  return extensionNames.get(id) ?? id;
+}
+
 export function registerStageParams(
   stageId: string,
+  stageName: string,
   extensionId: string,
   uniforms: UniformDeclaration[],
 ): void {
@@ -29,7 +46,9 @@ export function registerStageParams(
       qualifiedKey: qk,
       localKey: u.key,
       stageId,
+      stageName,
       extensionId,
+      extensionName: getExtensionName(extensionId),
       glslType: u.glslType,
       default: u.default,
       range: u.range,

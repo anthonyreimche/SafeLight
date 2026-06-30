@@ -26,6 +26,7 @@ import {
 } from "@/state/keybindings-store";
 import { useRegistry } from "@/extensions/registry";
 import { ModalWindow } from "@/ui/components/ModalWindow";
+import { Select } from "@/ui/components/Select";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import {
   addUserLayout,
@@ -176,10 +177,11 @@ const CORE_SECTIONS: PrefSection[] = [
       "Color assessment border",
       "Background dimming",
       "Sliders jump to cursor",
+      "Highlight & shadow detail sliders",
       "Restore last project on launch",
       "Interface font",
     ),
-    keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal", "slider", "jump", "cursor", "click", "drag"],
+    keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal", "slider", "jump", "cursor", "click", "drag", "tone", "detail", "highlight", "shadow", "basic", "micro-contrast", "clarity"],
     render: () => <InterfaceSection />,
   },
   // Accessibility lives in the `core.accessibility` built-in extension (so the
@@ -647,24 +649,21 @@ function InterfaceSection() {
   const assessBorderPct = useSettings((s) => s.assessBorderPct);
   const windowDim = useSettings((s) => s.windowDim);
   const sliderJumpToCursor = useSettings((s) => s.sliderJumpToCursor);
+  const basicDetailSliders = useSettings((s) => s.basicDetailSliders);
   const restoreLastProject = useSettings((s) => s.restoreLastProject);
 
   return (
     <div className="flex flex-col gap-4">
       <Field label="Theme" hint="Themes from extensions appear here too.">
-        <select
+        <Select
           value={activeTheme}
-          onChange={(e) => applyTheme(e.target.value)}
-          className={selectCls}
-        >
-          {Object.values(themes)
+          onChange={applyTheme}
+          ariaLabel="Theme"
+          className="w-full"
+          options={Object.values(themes)
             .sort((a, b) => a.name.localeCompare(b.name))
-            .map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-        </select>
+            .map((t) => ({ value: t.id, label: t.name }))}
+        />
       </Field>
       <LayoutField />
       <SliderField
@@ -709,6 +708,12 @@ function InterfaceSection() {
         hint="Clicking anywhere on a slider snaps its value to the cursor, then drags from there. Off keeps the default: a click grabs the current value and only dragging changes it. Hold Shift while dragging for fine control either way."
         checked={sliderJumpToCursor}
         onChange={(v) => updateSettings({ sliderJumpToCursor: v })}
+      />
+      <ToggleField
+        label="Highlight & shadow detail sliders"
+        hint="Add Highlight Detail and Shadow Detail sliders to the Develop Basic panel for per-band micro-contrast control. Off by default to keep the panel compact — highlight recovery and shadow lift already preserve detail on their own; turn this on to tune or reverse that per band."
+        checked={basicDetailSliders}
+        onChange={(v) => updateSettings({ basicDetailSliders: v })}
       />
       <ToggleField
         label="Restore last project on launch"
@@ -1084,31 +1089,25 @@ function LibrarySection() {
       />
       <Field label="Default sort">
         <div className="flex gap-1.5">
-          <select
+          <Select
             value={s.defaultSortField}
-            onChange={(e) =>
-              updateSettings({ defaultSortField: e.target.value as SortField })
-            }
-            className={selectCls}
-          >
-            {SORT_FIELDS.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-          <select
+            onChange={(v) => updateSettings({ defaultSortField: v as SortField })}
+            ariaLabel="Default sort field"
+            className="flex-1"
+            options={SORT_FIELDS.map((f) => ({ value: f.value, label: f.label }))}
+          />
+          <Select
             value={s.defaultSortDirection}
-            onChange={(e) =>
-              updateSettings({
-                defaultSortDirection: e.target.value as SortDirection,
-              })
+            onChange={(v) =>
+              updateSettings({ defaultSortDirection: v as SortDirection })
             }
-            className={selectCls}
-          >
-            <option value="desc">Descending</option>
-            <option value="asc">Ascending</option>
-          </select>
+            ariaLabel="Default sort direction"
+            className="flex-1"
+            options={[
+              { value: "desc", label: "Descending" },
+              { value: "asc", label: "Ascending" },
+            ]}
+          />
         </div>
       </Field>
       <ToggleField
@@ -1138,17 +1137,13 @@ function RenderingSection() {
         label="Display transform"
         hint="How scene-linear image data is tone-mapped for display. Applies everywhere the pipeline renders — develop, loupe, thumbnails and export — so output matches the screen. Transforms from extensions appear here too."
       >
-        <select
+        <Select
           value={active ? activeId : DEFAULT_PIPELINE}
-          onChange={(e) => applyPipeline(e.target.value)}
-          className={selectCls}
-        >
-          {Object.values(pipelines).map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
+          onChange={applyPipeline}
+          ariaLabel="Display transform"
+          className="w-full"
+          options={Object.values(pipelines).map((p) => ({ value: p.id, label: p.name }))}
+        />
       </Field>
       {active?.description && (
         <p className="text-[10px] leading-relaxed text-text-muted">
@@ -1663,21 +1658,15 @@ function ExportSection() {
         label="Color space"
         hint="Output profile. Pixels are converted and the matching ICC profile is embedded so other apps read the colors correctly. sRGB suits the web; Adobe RGB / ProPhoto keep a wider gamut for print."
       >
-        <select
+        <Select
           value={s.exportColorSpace}
-          onChange={(e) =>
-            updateSettings({
-              exportColorSpace: e.target.value as typeof s.exportColorSpace,
-            })
+          onChange={(v) =>
+            updateSettings({ exportColorSpace: v as typeof s.exportColorSpace })
           }
-          className={selectCls}
-        >
-          {COLOR_SPACES.map((c) => (
-            <option key={c.value} value={c.value}>
-              {c.label}
-            </option>
-          ))}
-        </select>
+          ariaLabel="Color space"
+          className="w-full"
+          options={COLOR_SPACES.map((c) => ({ value: c.value, label: c.label }))}
+        />
       </Field>
       <ToggleField
         label="Bundle multiple photos as ZIP"
@@ -2224,8 +2213,6 @@ function AboutSection() {
 
 const labelCls =
   "text-[10px] uppercase tracking-widest text-text-muted";
-const selectCls =
-  "rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary outline-none focus:bg-surface-3";
 const inputCls =
   "w-full rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3";
 const btnCls =

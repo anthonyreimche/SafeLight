@@ -300,6 +300,14 @@ export async function renamePhoto(
   if (!rootHandle) return { ok: false, reason: "No project is open." };
   const photo = useCatalogStore.getState().photos.find((p) => p.id === id);
   if (!photo) return { ok: false, reason: "Photo not found." };
+  // A virtual copy owns no file — renaming would hit the master's actual file.
+  // Its display name is changed via setCopyName instead (handled by the caller).
+  if (photo.copyOf) {
+    return {
+      ok: false,
+      reason: "A virtual copy shares its original's file; rename the original instead.",
+    };
+  }
 
   const [, ext] = splitExt(photo.filename);
   // Collapse to a single path segment and drop trailing dots/spaces (Windows
@@ -334,8 +342,21 @@ export async function renamePhoto(
 
   const dir = await resolveDir(rootHandle, photo.folder);
   const fileHandle = await dir.getFileHandle(newFilename);
+  // Virtual copies share this file — carry the new name/handle/relPath to them
+  // too so they don't go stale before the next project scan re-attaches them.
+  const copies = useCatalogStore
+    .getState()
+    .photos.filter((p) => p.copyOf === id);
   await useCatalogStore.getState().relocatePhotos([
     { ...photo, filename: newFilename, relPath: newRel, fileHandle },
+    ...copies.map((c) => ({
+      ...c,
+      filename: newFilename,
+      relPath: newRel,
+      folder: photo.folder,
+      fileHandle,
+      directoryHandle: photo.directoryHandle,
+    })),
   ]);
   return { ok: true, filename: newFilename };
 }

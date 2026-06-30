@@ -1037,6 +1037,8 @@ export class WebGLRenderer {
       "uTexture",
       "uClarity",
       "uDehaze",
+      "uHighlightDetail",
+      "uShadowDetail",
       "uSharpening",
       "uSharpenRadius",
       "uSharpenDetail",
@@ -1782,6 +1784,8 @@ export class WebGLRenderer {
     gl.uniform1f(u.uTexture, p.texture);
     gl.uniform1f(u.uClarity, p.clarity);
     gl.uniform1f(u.uDehaze, p.dehaze);
+    gl.uniform1f(u.uHighlightDetail, p.highlightDetail);
+    gl.uniform1f(u.uShadowDetail, p.shadowDetail);
     gl.uniform1f(u.uSharpening, p.sharpening);
     gl.uniform1f(u.uSharpenRadius, p.sharpenRadius);
     gl.uniform1f(u.uSharpenDetail, p.sharpenDetail);

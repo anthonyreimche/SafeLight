@@ -15,6 +15,7 @@ import {
   registerExportProcessor,
   registerFilenameTemplate,
   registerGridFilter,
+  registerGridMenuItem,
   registerLayout,
   registerLibrarySort,
   registerPanel,
@@ -40,6 +41,7 @@ import {
 import {
   getBinding,
   initKeybindings,
+  listBindings,
   registerExtensionAction,
   useKeybindings,
 } from "@/state/keybindings-store";
@@ -59,6 +61,12 @@ import {
   CURSOR_LABELS,
 } from "@/state/cursor-store";
 import { uiKit } from "./ui-kit";
+import { getAllDescriptors, getParamDescriptor } from "./param-registry";
+import {
+  listAdjustments,
+  getAdjustment,
+  setAdjustment,
+} from "@/state/develop-adjustments";
 import {
   checkAllExtensionUpdates,
   EXT_UPDATE_POLL_MS,
@@ -75,6 +83,7 @@ import { Rating } from "@/ui/components/Rating";
 import { Thumbnail } from "@/ui/components/Thumbnail";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
+import { catalogStorage } from "@/catalog/storage";
 import { useUIStore } from "@/state/ui-store";
 import { initSettings, useSettings } from "@/state/settings-store";
 import { usePresetsStore } from "@/state/presets-store";
@@ -112,6 +121,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       registerPanelHeaderAccessory(extensionId, c),
     registerCursor: (c) => registerCursor(extensionId, c),
     registerLibrarySort: (c) => registerLibrarySort(extensionId, c),
+    registerGridMenuItem: (c) => registerGridMenuItem(extensionId, c),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),
@@ -132,13 +142,17 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       /** For plugins that need their own state. */
       create,
     },
+    params: {
+      list: () => Array.from(getAllDescriptors().values()),
+      get: (qualifiedKey) => getParamDescriptor(qualifiedKey),
+    },
     dock: { togglePanel: toggleDockPanel },
     themes: { apply: applyTheme },
     layouts: { apply: applyDockLayout },
     pipelines: { apply: applyPipeline },
     preferences: { open: openPreferences, close: closePreferences, toggle: togglePreferences },
     navigation: { goTo: (module) => useUIStore.getState().setActiveModule(module) },
-    keybindings: { getBinding },
+    keybindings: { getBinding, list: () => listBindings() },
     cursors: { labels: CURSOR_LABELS, resolve: (token) => resolveCursorCss(token) },
     develop: {
       useDevelopOverlay,
@@ -154,6 +168,11 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
         ),
       putPhotoData: (key, data) => putPhotoData(`${extensionId}.${key}`, data),
       getPhotoData: (key) => getPhotoData(`${extensionId}.${key}`),
+      adjustments: {
+        list: () => listAdjustments(),
+        get: getAdjustment,
+        set: setAdjustment,
+      },
     },
     export: {
       getDefaultSettings: () => getDefaultExportSettings(),
@@ -165,6 +184,15 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
           { ...getDefaultExportSettings(), ...(settings ?? {}) },
           onProgress,
         ),
+    },
+    catalog: {
+      addPhotos: (photos, opts) =>
+        useCatalogStore.getState().addPhotos(photos, opts),
+      getEditState: (photoId) =>
+        catalogStorage()
+          .getEditState(photoId)
+          .then((e) => e ?? null),
+      putEditState: (editState) => catalogStorage().putEditState(editState),
     },
   };
 }
