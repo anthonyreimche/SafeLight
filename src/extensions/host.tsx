@@ -48,11 +48,13 @@ import {
 import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } from "./dock";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
 import { captureDevelopFrame, renderDevelopPhotoFrame, useDevelopOverlay } from "./develop-host";
+import { useMaskScope } from "@/modules/develop/mask-scope";
 import {
   getDefaultExportSettings,
   renderPhotosToBlobs,
 } from "@/modules/export/export-image";
 import { getPhotoData, putPhotoData } from "@/state/photo-blob-store";
+import { renamePhoto } from "@/project/folder-ops";
 import {
   contributionToSpec,
   registerCursor,
@@ -156,6 +158,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     cursors: { labels: CURSOR_LABELS, resolve: (token) => resolveCursorCss(token) },
     develop: {
       useDevelopOverlay,
+      useMaskScope,
       captureFrame: captureDevelopFrame,
       renderPhotoFrame: renderDevelopPhotoFrame,
       setCanvasCursor: (cursor, opts) =>
@@ -193,6 +196,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
           .getEditState(photoId)
           .then((e) => e ?? null),
       putEditState: (editState) => catalogStorage().putEditState(editState),
+      renamePhoto: (photoId, newBaseName) => renamePhoto(photoId, newBaseName),
     },
   };
 }

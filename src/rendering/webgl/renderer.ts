@@ -1615,7 +1615,20 @@ export class WebGLRenderer {
     const visibleRetouch = params.retouch.filter((s) => s.visible !== false);
     this.updateRetouchTexture(visibleRetouch);
     this.updateHealFill(visibleRetouch);
-    const lut = buildRGBCurveLUT(params.toneCurve);
+    this.uploadCurveLUT();
+    // NOTE: resize happens in render(), not here. Resizing the canvas clears
+    // it, and setParams runs a frame before the coalesced render — doing it
+    // here painted a black frame on every crop/straighten/transform change.
+  }
+
+  // Rebuild + upload the composed tone-curve LUT. The Adobe Color baseline is
+  // included only under transforms that don't bring their own look — a
+  // skipBaseCurve pipeline (AgX, ACES, …) owns the whole baseline rendering, so
+  // user curves compose on identity. Re-run on pipeline switches that flip
+  // skipBase (syncPipeline), not just on param changes.
+  private uploadCurveLUT() {
+    if (!this.params) return;
+    const lut = buildRGBCurveLUT(this.params.toneCurve, !this.pipelineSkipBase);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
     gl.texImage2D(
@@ -1629,9 +1642,6 @@ export class WebGLRenderer {
       gl.UNSIGNED_BYTE,
       lut,
     );
-    // NOTE: resize happens in render(), not here. Resizing the canvas clears
-    // it, and setParams runs a frame before the coalesced render — doing it
-    // here painted a black frame on every crop/straighten/transform change.
   }
 
   // The 8-bit sRGB downscaled source used for heal source-picking. The heal
@@ -1735,9 +1745,14 @@ export class WebGLRenderer {
     const e = this.entryFor(p, injection, sSig);
     this.program = e.program;
     this.uniforms = e.uniforms;
+    // The curve LUT bakes the Adobe Color baseline only for non-skipBase
+    // pipelines, so a switch that flips skipBase must rebuild it — the LUT is
+    // otherwise only refreshed by setParams.
+    const skipBaseChanged = e.skipBase !== this.pipelineSkipBase;
     this.pipelineSkipBase = e.skipBase;
     this.pipelineSig = p.sig;
     this.stageSig = sSig;
+    if (skipBaseChanged) this.uploadCurveLUT();
   }
 
   render() {

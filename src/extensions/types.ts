@@ -43,6 +43,30 @@ export interface PanelContribution {
    *  per-panel bypass eye). Must handle its own clicks; the header swallows
    *  pointerdowns on buttons so it won't start a drag. */
   headerAccessory?: ComponentType;
+  /** When present, this panel can be instantiated per mask: it appears in the
+   *  Masking panel's "+ Adjust" menu and each mask that adds it renders its own
+   *  instance of `mask.component`. */
+  mask?: MaskPanelContribution;
+}
+
+/** Per-mask instance of a panel: a compact variant rendered inside the Masking
+ *  panel's Adjust tab. The component reads and writes the mask it belongs to
+ *  through the mask scope (useMaskScope in core panels,
+ *  api.develop.useMaskScope for extensions) — never the global develop params.
+ *  Core adjustments (scope.adj / hsl / toneCurve) are applied by the GPU's
+ *  local-adjustment path today; extension params (scope.setParam) are persisted
+ *  per mask, but extension stages still apply globally — per-mask stage
+ *  application is a planned follow-up. */
+export interface MaskPanelContribution {
+  component: ComponentType;
+  /** Sort position among a mask's sub-panels (lower = higher up). Default 100. */
+  order?: number;
+  /** The mask values this sub-panel edits: MaskAdjustments keys ("exposure"),
+   *  the structured blocks ("hsl", "toneCurve"), or qualified extension param
+   *  keys ("my-ext.stage.amount"). Seeded with defaults when the sub-panel is
+   *  added to a mask, cleared when it's removed, and restored to defaults by
+   *  the mask's Reset action. */
+  owns: readonly string[];
 }
 
 /** One dock column in a layout preset. Panels listed top→bottom. */
@@ -89,10 +113,17 @@ export interface PipelineContribution {
   name: string;
   /** Shown under the picker when active. */
   description?: string;
-  /** Body defining pipelineToDisplay; omit to reuse the built-in transform. */
+  /** Body defining pipelineToDisplay; omit to reuse the built-in transform.
+   *  Return the display-encoded (sRGB) value: downstream display-space edits
+   *  operate on it, and the core converts it once at the end for the selected
+   *  output space (Display-P3 / Adobe RGB / ProPhoto) — transforms must NOT
+   *  bake in their own output-space handling. */
   glsl?: string;
-  /** Skip the default RAW base tone curve (set when the transform brings its
-   *  own contrast curve, e.g. AgX / ACES). */
+  /** The transform brings its own complete look (AgX, ACES, …): Safelight
+   *  drops BOTH halves of its default baseline — the RAW camera-matching
+   *  S-curve at the input (the transform sees true scene-linear data) and the
+   *  Adobe Color baseline in the tone-curve LUT (user curves compose on
+   *  identity). The transform is the profile. */
   skipBaseCurve?: boolean;
 }
 
@@ -734,8 +765,7 @@ export interface SafelightAPI {
   version: 1;
   extensionId: string;
   /** The app's React instance — plugins must use this, not their own copy. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  react: any;
+  react: typeof import("react");
   registerPanel(c: PanelContribution): void;
   registerTheme(c: ThemeContribution): void;
   registerLayout(c: LayoutContribution): void;
@@ -805,9 +835,16 @@ export interface SafelightAPI {
     /** Fires when any of this extension's settings change (any window). */
     onChange(cb: (key: string, value: unknown) => void): () => void;
   };
-  /** Reusable UI building blocks (Panel, Slider, Histogram, CurveEditor, Rating, Thumbnail). */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  components: Record<string, ComponentType<any>>;
+  /** Reusable UI building blocks. Typed to the real core components so plugins
+   *  get their actual props, not an opaque component bag. */
+  components: {
+    Panel: typeof import("@/ui/components/Panel").Panel;
+    Slider: typeof import("@/ui/components/Slider").Slider;
+    Histogram: typeof import("@/ui/components/Histogram").Histogram;
+    CurveEditor: typeof import("@/ui/components/CurveEditor").CurveEditor;
+    Rating: typeof import("@/ui/components/Rating").Rating;
+    Thumbnail: typeof import("@/ui/components/Thumbnail").Thumbnail;
+  };
   /** Shared, theme-styled UI primitives handed to extensions — Button, Select,
    *  NumberInput, TextInput, TextArea, Toggle, SegmentedControl, Field, Section,
    *  Card, Badge, ProgressBar, Row, Stack — plus `tokens` (canonical CSS-var
@@ -815,12 +852,21 @@ export interface SafelightAPI {
    *  the extension's own subtree, so they match the app. Prefer these over
    *  hand-rolled inline-styled controls. */
   ui: typeof import("./ui-kit").uiKit;
-  /** Zustand hooks and the zustand `create` factory.
-   *  useDevelopStore, useCatalogStore, useUIStore, useSettings,
-   *  usePresetsStore, useKeybindings, useThemeStore, useLayoutStore,
-   *  usePipelineStore, create. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  stores: Record<string, any>;
+  /** The app's Zustand store hooks and the zustand `create` factory, shared so
+   *  plugins read/write the app's stores rather than their own copies. Typed to
+   *  the real hooks, so plugins get each store's actual state shape. */
+  stores: {
+    useDevelopStore: typeof import("@/state/develop-store").useDevelopStore;
+    useCatalogStore: typeof import("@/state/catalog-store").useCatalogStore;
+    useUIStore: typeof import("@/state/ui-store").useUIStore;
+    useSettings: typeof import("@/state/settings-store").useSettings;
+    usePresetsStore: typeof import("@/state/presets-store").usePresetsStore;
+    useKeybindings: typeof import("@/state/keybindings-store").useKeybindings;
+    useThemeStore: typeof import("./themes").useThemeStore;
+    useLayoutStore: typeof import("./dock").useLayoutStore;
+    usePipelineStore: typeof import("./pipelines").usePipelineStore;
+    create: typeof import("zustand").create;
+  };
   /** Read-only metadata for the stage uniforms other installed extensions
    *  contribute — qualified key ("<stageId>.<uniform>"), label, value range and
    *  GLSL type. For tools that drive or inspect ANOTHER extension's sliders; the
@@ -870,6 +916,12 @@ export interface SafelightAPI {
       rect: { x: number; y: number; w: number; h: number } | null;
       nonce: number;
     };
+    /** The mask a sub-panel instance belongs to (valid only inside a
+     *  PanelContribution.mask component). Core local adjustments go through
+     *  adj/setAdj; extension params through getParam/setParam (persisted in the
+     *  mask's bag — not yet applied by extension stages). `commit` ends a
+     *  gesture as one undo step. */
+    useMaskScope(): import("@/modules/develop/mask-scope").MaskParamScope;
     captureFrame(
       params: import("@/catalog/types").DevelopParams,
     ): Promise<ImageBitmap>;
@@ -965,6 +1017,20 @@ export interface SafelightAPI {
     putEditState(
       editState: import("@/catalog/types").EditState,
     ): Promise<void>;
+    /** Rename one photo's file on disk, in place (same folder), preserving its
+     *  extension. This is core's own rename path: an atomic native rename (no
+     *  full-file copy), carrying the `<file>.safelight.json` sidecar and any
+     *  virtual copies along, then updating and persisting the catalog record —
+     *  so ratings, edits and cached previews (keyed by photo id) survive. Pass
+     *  the new name WITHOUT extension (core cleans it and re-appends the
+     *  original). Returns `{ ok: true, filename }` or `{ ok: false, reason }`;
+     *  it never throws for the ordinary failures (collision, missing photo,
+     *  virtual copy, disk error). Batch renames that shuffle a numbering range
+     *  should rename via a temporary pass first to dodge the collision guard. */
+    renamePhoto(
+      photoId: string,
+      newBaseName: string,
+    ): Promise<import("@/project/folder-ops").RenamePhotoResult>;
   };
 }
 

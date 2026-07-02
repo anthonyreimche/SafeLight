@@ -149,9 +149,23 @@ export function installKeyDiag(): void {
     true,
   );
 
-  // Each enable/disable: print the live listener count, so an accumulating leak
-  // shows up as a climbing number across toggles.
-  useDisabledExtensions.subscribe(() =>
-    console.warn(`[key-diag] after extension toggle: ${tracked.length} window key listener(s).`),
-  );
+  // Each enable/disable: the re-render/unmount that adds or STRANDS listeners
+  // runs after this store update commits, so sample on a later tick. If the
+  // count grew, a listener leaked — dump the inventory so the new one's stack
+  // names the file that stranded it.
+  let prevCount = tracked.length;
+  useDisabledExtensions.subscribe(() => {
+    setTimeout(() => {
+      const now = tracked.length;
+      if (now > prevCount) {
+        console.error(
+          `[key-diag] window key-listener count rose ${prevCount} → ${now} across a toggle — likely leak:`,
+        );
+        dumpListeners();
+      } else {
+        console.warn(`[key-diag] after toggle: ${now} window key listener(s) (was ${prevCount}).`);
+      }
+      prevCount = now;
+    }, 300);
+  });
 }

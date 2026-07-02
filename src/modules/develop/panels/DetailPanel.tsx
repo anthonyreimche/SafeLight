@@ -8,7 +8,9 @@ import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
 import { useSlot } from "@/extensions/registry";
 import { Slot } from "@/extensions/Slot";
-import { DEFAULT_DEVELOP_PARAMS, type DevelopParams } from "@/catalog/types";
+import { useMaskScope } from "@/modules/develop/mask-scope";
+import { DEFAULT_DEVELOP_PARAMS, type DevelopParams, type MaskAdjustments } from "@/catalog/types";
+import type { MaskPanelContribution } from "@/extensions/types";
 
 interface SliderDef {
   key: keyof DevelopParams;
@@ -109,3 +111,41 @@ export function DetailPanel() {
     </Panel>
   );
 }
+
+// Per-mask instance: the local detail taps the shader's mask stage supports
+// (texture/clarity/dehaze live here rather than Basic, matching where they run
+// in the display-space mask pass). No sharpening sub-controls or NR — noise
+// reduction is a whole-image prepass with no per-mask path.
+const MASK_SLIDERS: { key: keyof MaskAdjustments; label: string }[] = [
+  { key: "texture", label: "Texture" },
+  { key: "clarity", label: "Clarity" },
+  { key: "dehaze", label: "Dehaze" },
+  { key: "sharpness", label: "Sharpness" },
+];
+
+function DetailMaskPanel() {
+  const scope = useMaskScope();
+  return (
+    <div className="space-y-0.5">
+      {MASK_SLIDERS.map((s) => (
+        <Slider
+          key={s.key}
+          label={s.label}
+          value={scope.adj[s.key]}
+          min={-100}
+          max={100}
+          step={1}
+          defaultValue={0}
+          onChange={(v) => scope.setAdj({ [s.key]: v })}
+          onCommit={() => scope.commit(`Mask ${s.label}`)}
+        />
+      ))}
+    </div>
+  );
+}
+
+export const DETAIL_MASK_PANEL: MaskPanelContribution = {
+  component: DetailMaskPanel,
+  order: 50,
+  owns: MASK_SLIDERS.map((s) => s.key),
+};

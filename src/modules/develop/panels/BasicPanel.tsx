@@ -9,7 +9,9 @@ import { AutoButton } from "@/ui/components/AutoButton";
 import { useDevelopStore } from "@/state/develop-store";
 import { useSettings } from "@/state/settings-store";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
-import type { DevelopParams } from "@/catalog/types";
+import { useMaskScope } from "@/modules/develop/mask-scope";
+import type { DevelopParams, MaskAdjustments } from "@/catalog/types";
+import type { MaskPanelContribution } from "@/extensions/types";
 
 type NumericParamKey = {
   [K in keyof DevelopParams]: DevelopParams[K] extends number ? K : never;
@@ -77,3 +79,46 @@ export function BasicPanel() {
     </Panel>
   );
 }
+
+// Per-mask instance: the same tone controls as relative strengths on the
+// shader's local-adjustment scale (all -100..100, unlike global exposure's EV
+// units), minus the tone-recovery detail sub-sliders, which have no local
+// equivalent. Texture/clarity/dehaze apply locally through the Detail
+// sub-panel instead — see DetailPanel.
+const MASK_SLIDERS: { key: keyof MaskAdjustments; label: string }[] = [
+  { key: "exposure", label: "Exposure" },
+  { key: "contrast", label: "Contrast" },
+  { key: "highlights", label: "Highlights" },
+  { key: "shadows", label: "Shadows" },
+  { key: "whites", label: "Whites" },
+  { key: "blacks", label: "Blacks" },
+  { key: "saturation", label: "Saturation" },
+  { key: "vibrance", label: "Vibrance" },
+];
+
+function BasicMaskPanel() {
+  const scope = useMaskScope();
+  return (
+    <div className="space-y-0.5">
+      {MASK_SLIDERS.map((s) => (
+        <Slider
+          key={s.key}
+          label={s.label}
+          value={scope.adj[s.key]}
+          min={-100}
+          max={100}
+          step={1}
+          defaultValue={0}
+          onChange={(v) => scope.setAdj({ [s.key]: v })}
+          onCommit={() => scope.commit(`Mask ${s.label}`)}
+        />
+      ))}
+    </div>
+  );
+}
+
+export const BASIC_MASK_PANEL: MaskPanelContribution = {
+  component: BasicMaskPanel,
+  order: 10,
+  owns: MASK_SLIDERS.map((s) => s.key),
+};

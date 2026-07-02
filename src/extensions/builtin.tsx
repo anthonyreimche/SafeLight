@@ -10,20 +10,25 @@
 // be replaced by a community version.
 
 import type { ComponentType } from "react";
-import type { PanelDockDefault, ProcessingStageContribution, SafelightAPI } from "./types";
+import type {
+  MaskPanelContribution,
+  PanelDockDefault,
+  ProcessingStageContribution,
+  SafelightAPI,
+} from "./types";
 import type { DevelopParams } from "@/catalog/types";
 import { DENOISE_STAGE } from "@/rendering/webgl/builtin-denoise";
 import { useDevelopStore } from "@/state/develop-store";
 import { HistogramPanel } from "@/modules/develop/panels/HistogramPanel";
 import { CropPanel } from "@/modules/develop/panels/CropPanel";
 import { TransformPanel } from "@/modules/develop/panels/TransformPanel";
-import { WhiteBalancePanel } from "@/modules/develop/panels/WhiteBalancePanel";
-import { BasicPanel } from "@/modules/develop/panels/BasicPanel";
-import { ToneCurvePanel } from "@/modules/develop/panels/ToneCurvePanel";
+import { WhiteBalancePanel, WHITE_BALANCE_MASK_PANEL } from "@/modules/develop/panels/WhiteBalancePanel";
+import { BasicPanel, BASIC_MASK_PANEL } from "@/modules/develop/panels/BasicPanel";
+import { ToneCurvePanel, TONE_CURVE_MASK_PANEL } from "@/modules/develop/panels/ToneCurvePanel";
 import { ColorGradingPanel } from "@/modules/develop/panels/ColorGradingPanel";
-import { DetailPanel } from "@/modules/develop/panels/DetailPanel";
+import { DetailPanel, DETAIL_MASK_PANEL } from "@/modules/develop/panels/DetailPanel";
 import { EffectsPanel } from "@/modules/develop/panels/EffectsPanel";
-import { HSLPanel } from "@/modules/develop/panels/HSLPanel";
+import { HSLPanel, HSL_MASK_PANEL } from "@/modules/develop/panels/HSLPanel";
 import { MasksPanel } from "@/modules/develop/panels/MasksPanel";
 import { RetouchPanel } from "@/modules/develop/panels/RetouchPanel";
 import { PresetsPanel } from "@/modules/develop/panels/PresetsPanel";
@@ -64,7 +69,8 @@ export interface BuiltinExtension {
 const V = "1.0.0";
 
 /** One pre-installed extension that contributes a single panel. The extension
- *  id doubles as the panel id, so existing layouts keep working. */
+ *  id doubles as the panel id, so existing layouts keep working. `mask` is the
+ *  panel's per-mask variant, when it has one. */
 const panelExt = (
   id: string,
   title: string,
@@ -72,6 +78,7 @@ const panelExt = (
   description: string,
   defaultDock?: PanelDockDefault,
   onReset?: () => void,
+  mask?: MaskPanelContribution,
 ): BuiltinExtension => ({
   id,
   name: title,
@@ -84,6 +91,7 @@ const panelExt = (
       component,
       defaultDock,
       onReset,
+      mask,
       // The per-panel preview-off eye is no longer built in — it ships as the
       // optional "panel-click-to-toggle" extension, which decorates every panel
       // header via registerPanelHeaderAccessory.
@@ -409,11 +417,11 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     st.setCropAspect(0);
     void st.resetParams(["crop", "straighten"], "Reset Crop & Straighten");
   }),
-  panelExt("core.white-balance", "White Balance", WhiteBalancePanel, "Temperature and tint.", right(4, 120), resetDevelop(["temperature", "tint"], "Reset White Balance")),
-  panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(5, 220), resetDevelop(["exposure", "contrast", "highlights", "highlightDetail", "shadows", "shadowDetail", "whites", "blacks", "texture", "clarity", "dehaze", "vibrance", "saturation"], "Reset Basic")),
-  panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(6, 220), resetDevelop(["toneCurve"], "Reset Tone Curve")),
+  panelExt("core.white-balance", "White Balance", WhiteBalancePanel, "Temperature and tint.", right(4, 120), resetDevelop(["temperature", "tint"], "Reset White Balance"), WHITE_BALANCE_MASK_PANEL),
+  panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(5, 220), resetDevelop(["exposure", "contrast", "highlights", "highlightDetail", "shadows", "shadowDetail", "whites", "blacks", "texture", "clarity", "dehaze", "vibrance", "saturation"], "Reset Basic"), BASIC_MASK_PANEL),
+  panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(6, 220), resetDevelop(["toneCurve"], "Reset Tone Curve"), TONE_CURVE_MASK_PANEL),
   panelExt("core.color-grading", "Color Grading", ColorGradingPanel, "Shadow / midtone / highlight color wheels.", right(7, 200), resetDevelop(["colorGrading"], "Reset Color Grading")),
-  panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(8, 150), resetDevelop(["sharpening", "sharpenRadius", "sharpenDetail", "sharpenMasking", "luminanceNR", "luminanceNRDetail", "luminanceNRContrast", "luminanceNRShadows", "luminanceNRHighlights", "colorNR", "colorNRDetail", "colorNRSmoothness"], "Reset Detail")),
+  panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(8, 150), resetDevelop(["sharpening", "sharpenRadius", "sharpenDetail", "sharpenMasking", "luminanceNR", "luminanceNRDetail", "luminanceNRContrast", "luminanceNRShadows", "luminanceNRHighlights", "colorNR", "colorNRDetail", "colorNRSmoothness"], "Reset Detail"), DETAIL_MASK_PANEL),
   panelExt("core.effects", "Effects", EffectsPanel, "Vignette, grain and dehaze.", right(10, 150), resetDevelop(["vignette", "grain"], "Reset Effects")),
   // HSL is a full extension (not a bare panelExt) so it can contribute its own
   // Preferences ▸ HSL section: layout default, coloured tracks, and the on-image
@@ -430,6 +438,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
         component: HSLPanel,
         defaultDock: right(11, 220),
         onReset: resetDevelop(["hsl"], "Reset HSL"),
+        mask: HSL_MASK_PANEL,
       });
       api.registerSettings({
         title: "HSL",

@@ -85,7 +85,15 @@ export function Select({
   ariaLabel,
   title,
 }: SelectProps) {
-  const groupList: SelectGroup[] = groups ?? [{ items: options ?? [] }];
+  // Normalise once, defensively: a caller (often an extension's `select`
+  // settings field) can hand us a group with missing `items` or a nullish
+  // option. A single bad entry must never throw here — a crash during render
+  // tears down the subtree and can strand a global listener's effect cleanup,
+  // which is how dropdowns/inputs go dead until restart. So drop holes up front.
+  const groupList: SelectGroup[] = (groups ?? [{ items: options ?? [] }]).map((g) => ({
+    ...g,
+    items: (g?.items ?? []).filter((o): o is SelectOption => o != null),
+  }));
   const flat: SelectOption[] = groupList.flatMap((g) => g.items);
   const selectedIndex = flat.findIndex((o) => o.value === value);
   // Trigger label is qualified by its group heading (e.g. "Grain · Amount"), so a

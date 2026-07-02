@@ -6,6 +6,9 @@
 import { Panel } from "@/ui/components/Panel";
 import { CurveEditor } from "@/ui/components/CurveEditor";
 import { useDevelopStore } from "@/state/develop-store";
+import { useMaskScope } from "@/modules/develop/mask-scope";
+import { defaultToneCurves } from "@/catalog/types";
+import type { MaskPanelContribution } from "@/extensions/types";
 
 export function ToneCurvePanel() {
   return (
@@ -30,3 +33,25 @@ function GlobalCurveEditor() {
     />
   );
 }
+
+// Per-mask instance. The mask's curve starts from the already-developed color
+// (no Adobe base curve — see buildMaskCurveLUT); absent until first edit
+// because the block is seeded when the sub-panel is added.
+function ToneCurveMaskPanel() {
+  const scope = useMaskScope();
+  const curves = scope.toneCurve ?? defaultToneCurves();
+  return (
+    <CurveEditor
+      compact
+      curves={curves}
+      onChange={(channel, points) => scope.setToneCurve({ ...curves, [channel]: points })}
+      onCommit={() => scope.commit("Mask Tone Curve")}
+    />
+  );
+}
+
+export const TONE_CURVE_MASK_PANEL: MaskPanelContribution = {
+  component: ToneCurveMaskPanel,
+  order: 30,
+  owns: ["toneCurve"],
+};

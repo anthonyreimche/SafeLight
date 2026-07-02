@@ -701,17 +701,22 @@ async function fetchRegistryIndex(force = false) {
     Date.now() - registryIndexCache.at < REGISTRY_INDEX_TTL_MS
   )
     return registryIndexCache.items;
-  // jsDelivr serves the repo's default-branch HEAD off a CDN — no GitHub API rate
-  // limit, edge-cached. A forced refresh (the store's ↻) reads raw.githubusercontent
-  // instead, since jsDelivr edge-caches HEAD for hours and would otherwise hide a
-  // just-committed rebuild.
-  const url = force
-    ? `https://raw.githubusercontent.com/${TRUST_REGISTRY}/main/registry.json`
-    : `https://cdn.jsdelivr.net/gh/${TRUST_REGISTRY}/registry.json`;
+  // Always read GitHub's own raw CDN (Fastly, max-age=300), never jsDelivr: the
+  // un-versioned jsDelivr /gh/ URL serves the file with Cache-Control: max-age=
+  // 604800 (7 days), which Electron's net.fetch HTTP cache honours — so once our
+  // 1h TTL above lapses the "refetch" is served from Electron's local cache for up
+  // to a week and the store never sees a freshly-rebuilt registry. raw.github-
+  // usercontent isn't API-rate-limited (it's the file CDN, not api.github.com) —
+  // the same source the trust lists already use. `cache: "no-cache"` forces a
+  // (cheap, 304-able) revalidation so our 1h TTL is the single source of truth.
+  const url = `https://raw.githubusercontent.com/${TRUST_REGISTRY}/main/registry.json`;
   try {
     const res = await fetchWithTimeout(
       url,
-      { headers: { "User-Agent": "Safelight", Accept: "application/json" } },
+      {
+        headers: { "User-Agent": "Safelight", Accept: "application/json" },
+        cache: "no-cache",
+      },
       6000,
     );
     // 404 = index not published yet; any non-OK = serve last-good or signal

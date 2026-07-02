@@ -7,8 +7,11 @@ import { Panel } from "@/ui/components/Panel";
 import { HSLMixer } from "@/ui/components/HSLMixer";
 import { useDevelopStore } from "@/state/develop-store";
 import { getExtSetting, useExtSettings } from "@/extensions/ext-settings";
+import { useMaskScope } from "@/modules/develop/mask-scope";
 import { useEffect, useState } from "react";
+import { defaultHSL } from "@/catalog/types";
 import type { HSLBand } from "@/catalog/types";
+import type { MaskPanelContribution } from "@/extensions/types";
 
 const VIEWS: { key: "tabs" | "all"; label: string }[] = [
   { key: "tabs", label: "Tabs" },
@@ -136,3 +139,25 @@ export function HSLPanel() {
     </Panel>
   );
 }
+
+// Per-mask instance: the same 8-band mixer over the mask's own HSL block. The
+// on-image target tool stays global-only — it drives the global bands.
+function HSLMaskPanel() {
+  const scope = useMaskScope();
+  const hsl = scope.hsl ?? defaultHSL();
+  return (
+    <HSLMixer
+      value={hsl}
+      onChange={(band, channel, v) =>
+        scope.setHsl({ ...hsl, [band]: { ...hsl[band], [channel]: v } })
+      }
+      onCommit={(channel) => scope.commit(`Mask HSL ${channel}`)}
+    />
+  );
+}
+
+export const HSL_MASK_PANEL: MaskPanelContribution = {
+  component: HSLMaskPanel,
+  order: 40,
+  owns: ["hsl"],
+};
