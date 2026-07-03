@@ -1197,6 +1197,13 @@ export class WebGLRenderer {
     );
   }
 
+  /** Largest edge this GL context can hold in a single texture. Callers that
+   *  size full-resolution uploads (export at "Original") must stay under it —
+   *  an oversized texImage2D fails and the frame renders black. */
+  get maxTextureEdge(): number {
+    return this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) as number;
+  }
+
   setImage(
     image:
       | ImageBitmap

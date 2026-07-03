@@ -17,6 +17,7 @@ import {
 } from "./orient";
 import { verifyPermission } from "./permissions";
 import { rawCacheKey, readCachedPreview, writeCachedPreview } from "@/raw/raw-cache";
+import { getSettings } from "@/state/settings-store";
 import { catalogStorage } from "./storage";
 
 // Read an ImageBitmap into a linear Float32 RGBA image via a temporary WebGL2
@@ -152,6 +153,12 @@ export interface LoadImageOptions {
   // the soft 768px thumbnail for 5-10s while libraw runs. Only fires on the RAW
   // slow path (a cache hit is already fast and skips it).
   onPreview?: (image: DecodedImage) => void;
+  // Smallest long edge (px) the caller can accept from the cached develop
+  // preview. The cache is downsampled to the rawCacheMaxEdge preference, so an
+  // export at a larger size must skip it and re-run the full RAW decode
+  // (Infinity = always decode at the largest native size). Default 0: any
+  // cached preview qualifies.
+  minEdge?: number;
 }
 
 // Prefer a full-precision linear RAW decode (so exposure/highlight recovery work
@@ -170,9 +177,13 @@ export async function loadPhotoImage(
         // and the shader does sRGB->linear, so there's no per-sample CPU decode and
         // the texture is half the bytes of the old Float32 path. Still full precision
         // (no 8-bit posterising under a big exposure push).
+        //
+        // The cache is capped at the rawCacheMaxEdge preference; when the caller
+        // needs more pixels than it holds (export at "Original"/large sizes),
+        // fall through to the full decode below.
         const cacheKey = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
         const cached = await readCachedPreview(cacheKey);
-        if (cached) {
+        if (cached && Math.max(cached.width, cached.height) >= (opts?.minEdge ?? 0)) {
           return { kind: "srgb16", data: cached.data, width: cached.width, height: cached.height };
         }
 
@@ -226,13 +237,25 @@ export async function loadPhotoImage(
           // through to the JPEG-based float path below.
           const colorOk = !preview || await rawColorMatchesPreview(r, preview);
           if (colorOk) {
-            // Skip the cache when the decode was marginal (inferred dimensions).
-            if (!f.suspicious) {
+            // Write the cache when the photo has no entry yet, or upgrade one
+            // written under a smaller rawCacheMaxEdge than the current setting
+            // allows. Skip marginal decodes (inferred dimensions).
+            const cachedEdge = cached ? Math.max(cached.width, cached.height) : 0;
+            const bestEdge = Math.min(getSettings().rawCacheMaxEdge, Math.max(r.width, r.height));
+            if (!f.suspicious && cachedEdge < bestEdge) {
               writeCachedPreview(cacheKey, r.data, r.width, r.height);
             }
             return { kind: "float", data: r.data, width: r.width, height: r.height };
           }
           console.warn("[load] RAW color mismatch vs embedded JPEG — using JPEG fallback");
+        }
+
+        // The full decode failed or was rejected, but a cached preview exists
+        // (smaller than the caller asked for): prefer it over the embedded
+        // JPEG. It is the exact linear source Develop rendered the edit
+        // against, so colors stay consistent even if resolution falls short.
+        if (cached) {
+          return { kind: "srgb16", data: cached.data, width: cached.width, height: cached.height };
         }
 
         // libraw failed or produced bad colors: fall back to the embedded JPEG

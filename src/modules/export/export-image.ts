@@ -229,15 +229,49 @@ async function renderOne(
   settings: ExportSettings,
   processorSettings: ProcessorSettings,
 ): Promise<Blob | null> {
+  // The saved crop determines how many source pixels the requested long edge
+  // needs: exporting a half-width crop at 2048 px must render from a 4096 px
+  // source. Read the edit before decoding; when the as-shot temperature is
+  // still unknown (never-decoded photo) the decode backfills it and the edit
+  // is re-read below so default WB resolves correctly.
+  const knownTemp = photo.exif.colorTemperature;
+  let saved = await loadSavedEdit(photo.id, knownTemp);
+  const crop = saved.params.crop;
+  // Source aspect is unknown before decoding, so this estimate uses the
+  // smaller crop fraction — it can over-ask (costing a decode where the cache
+  // would have sufficed) but never under-asks. Exact math follows the decode.
+  const cropFracLow = Math.max(Math.min(crop.width, crop.height), 0.01);
+  const minEdge =
+    settings.longEdge == null ? Infinity : Math.ceil(settings.longEdge / cropFracLow);
+
   // Same decode as Develop/Loupe: full-res RAW float when available (gets the
   // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
-  const image = await loadPhotoImage(photo);
+  const image = await loadPhotoImage(photo, { minEdge });
   if (!image) return null;
   const bitmap = image.kind === "bitmap" ? image.bitmap : null;
   try {
     const w = image.kind === "bitmap" ? image.bitmap.width : image.width;
     const h = image.kind === "bitmap" ? image.bitmap.height : image.height;
-    const maxEdge = settings.longEdge ?? Math.max(w, h);
+    // Long-edge fraction the crop keeps of this source, exactly as the
+    // renderer's resize() computes it from the real decode dimensions.
+    const cropFrac = Math.max(
+      Math.max(w * crop.width, h * crop.height) / Math.max(w, h),
+      0.01,
+    );
+    const requestEdge = settings.longEdge ?? Math.max(w, h);
+    // Float sources are downsampled to maxEdge at upload, so a cropped export
+    // must inflate the cap to keep enough pixels inside the crop (bounded by
+    // the native size and the GPU's texture limit). Bitmap/srgb16 sources
+    // upload at native size — for them maxEdge is purely the output cap, and
+    // inflating it would overshoot the requested long edge.
+    const maxEdge =
+      image.kind === "float"
+        ? Math.min(
+            Math.ceil(requestEdge / cropFrac),
+            Math.max(w, h),
+            renderer.maxTextureEdge,
+          )
+        : requestEdge;
     const isFallback =
       image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
     // Cached develop preview is linear-encoded RAW; it needs the base tone curve.
@@ -254,7 +288,9 @@ async function renderOne(
       isFallback,
       cachedRaw,
     );
-    const saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
+    if (knownTemp == null) {
+      saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
+    }
     renderer.setContributedParams(saved.paramBag);
     renderer.setParams(saved.params);
     const colorSpace = settings.colorSpace ?? "srgb";

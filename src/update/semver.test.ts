@@ -26,6 +26,23 @@ describe("compareSemver", () => {
     expect(compareSemver("1.1.9", "1.2.0")).toBe(-1);
     expect(compareSemver("2.0.0", "1.9.9")).toBe(1);
   });
+
+  it("ranks a pre-release below its full release", () => {
+    expect(compareSemver("1.2.3-beta.1", "1.2.3")).toBe(-1);
+    expect(compareSemver("1.2.3", "v1.2.3-rc.2")).toBe(1);
+    expect(compareSemver("1.2.3-beta.1", "1.2.3-beta.1")).toBe(0);
+  });
+
+  it("orders pre-release identifiers per semver §11", () => {
+    expect(compareSemver("1.0.0-alpha", "1.0.0-alpha.1")).toBe(-1);
+    expect(compareSemver("1.0.0-alpha.1", "1.0.0-beta")).toBe(-1);
+    expect(compareSemver("1.0.0-beta.2", "1.0.0-beta.11")).toBe(-1);
+    expect(compareSemver("1.0.0-rc.1", "1.0.0-1")).toBe(1);
+  });
+
+  it("ignores build metadata after the pre-release suffix", () => {
+    expect(compareSemver("1.2.3-beta.1+build.5", "1.2.3-beta.1")).toBe(0);
+  });
 });
 
 describe("isNewer", () => {
@@ -34,5 +51,11 @@ describe("isNewer", () => {
     expect(isNewer("1.0.0", "1.0.0")).toBe(false);
     expect(isNewer("1.2.0", "1.1.0")).toBe(false);
     expect(isNewer("v1.0.0", "v1.0.1")).toBe(true);
+  });
+
+  it("sees the full release as newer than the pre-release build", () => {
+    expect(isNewer("2.6.0-beta.1", "v2.6.0")).toBe(true);
+    expect(isNewer("2.6.0", "v2.6.0-beta.1")).toBe(false);
+    expect(isNewer("2.6.0-beta.1", "v2.6.0-beta.2")).toBe(true);
   });
 });

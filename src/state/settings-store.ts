@@ -251,7 +251,8 @@ export interface AppSettings {
   // ── Updates ────────────────────────────────────────────────────────────
   /** Check GitHub for a newer release on startup and show a banner. */
   checkForUpdates: boolean;
-  /** Which releases trigger a notification: "patch" = all, "minor" = stable only. */
+  /** Which releases trigger a notification: "all" includes pre-releases,
+   *  "stable" only full releases. */
   updateChannel: UpdateChannel;
 }
 
@@ -309,7 +310,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoUpdateExtensions: false,
   onlyVerifiedExtensions: false,
   checkForUpdates: true,
-  updateChannel: "patch",
+  updateChannel: "stable",
 };
 
 const KEY = "sl_settings_v1";
@@ -317,7 +318,15 @@ const KEY = "sl_settings_v1";
 function load(): AppSettings {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const s: AppSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      // updateChannel used to be "minor" | "patch" (version-number granularity);
+      // neither expressed pre-release intent, so both fold into "stable".
+      if (s.updateChannel !== "all" && s.updateChannel !== "stable") {
+        s.updateChannel = "stable";
+      }
+      return s;
+    }
   } catch {}
   return { ...DEFAULT_SETTINGS };
 }

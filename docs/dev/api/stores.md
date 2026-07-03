@@ -43,7 +43,7 @@ Read imperatively with `getSettings()`; write with `updateSettings(patch)`. Keys
 | Export | `exportFormat` ("image/jpeg"), `exportQuality` (90), `exportLongEdge` (null), `exportBundle` (true), `exportColorSpace` ("srgb"), `exportPresets` ([]) |
 | Shortcuts | `singleKeyShortcuts` (true) |
 | Extensions | `extensionTopic` ("safelight-extension"), `checkExtensionUpdates` (true), `autoUpdateExtensions` (false) |
-| Updates | `checkForUpdates` (true), `updateChannel` ("patch") |
+| Updates | `checkForUpdates` (true), `updateChannel` ("stable"; "all" also notifies for pre-releases) |
 
 The other stores — `usePresetsStore`, `useKeybindings`, `useThemeStore`, `useLayoutStore`, `usePipelineStore` — back the presets list, rebindable actions, active theme, dock layouts, and active pipeline respectively; prefer the imperative wrappers (`api.themes.apply`, `api.layouts.apply`, `api.pipelines.apply`, `api.keybindings.getBinding`) over poking these directly.
 

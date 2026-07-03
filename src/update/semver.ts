@@ -6,8 +6,9 @@
 // Tiny semver helper shared by the app updater (update-checker.ts) and the
 // Extensions store (which compares an installed extension's version against the
 // latest GitHub release tag). Deliberately permissive: tags like "v1.2.3",
-// "1.2", or "1" all parse; a missing component reads as 0. Pre-release and
-// build suffixes after the patch number are ignored.
+// "1.2", or "1" all parse; a missing component reads as 0. Pre-release
+// suffixes follow semver precedence ("1.2.3-beta.2" < "1.2.3") so a user on a
+// pre-release build is notified when the matching full release lands.
 
 /** Parse a semver-ish tag like "v1.2.3" or "1.2.3" into [major, minor, patch]. */
 export function parseSemver(tag: string): [number, number, number] {
@@ -22,14 +23,50 @@ export function parseSemver(tag: string): [number, number, number] {
   ];
 }
 
-/** -1 if a < b, 0 if equal, 1 if a > b (by major, then minor, then patch). */
+/** The pre-release suffix ("beta.2" in "v1.2.3-beta.2+build"), or null.
+ *  The identifier class excludes "+" so any build-metadata suffix is dropped. */
+function parsePrerelease(tag: string): string | null {
+  const m = String(tag).match(/^v?[\d.]+-([0-9A-Za-z.-]+)/i);
+  return m ? m[1] : null;
+}
+
+/** Semver §11 pre-release precedence: numeric identifiers compare numerically
+ *  and rank below alphanumeric ones; more identifiers wins a shared prefix. */
+function comparePrerelease(a: string, b: string): -1 | 0 | 1 {
+  const xs = a.split(".");
+  const ys = b.split(".");
+  for (let i = 0; i < Math.max(xs.length, ys.length); i++) {
+    const x = xs[i];
+    const y = ys[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const xn = /^\d+$/.test(x);
+    const yn = /^\d+$/.test(y);
+    if (xn && yn) {
+      if (Number(x) !== Number(y)) return Number(x) > Number(y) ? 1 : -1;
+    } else if (xn !== yn) {
+      return yn ? 1 : -1;
+    } else if (x !== y) {
+      return x > y ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+/** -1 if a < b, 0 if equal, 1 if a > b (major/minor/patch, then pre-release:
+ *  a suffixed version precedes its full release). */
 export function compareSemver(a: string, b: string): -1 | 0 | 1 {
   const x = parseSemver(a);
   const y = parseSemver(b);
   for (let i = 0; i < 3; i++) {
     if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
   }
-  return 0;
+  const xp = parsePrerelease(a);
+  const yp = parsePrerelease(b);
+  if (xp === null && yp === null) return 0;
+  if (xp === null) return 1;
+  if (yp === null) return -1;
+  return comparePrerelease(xp, yp);
 }
 
 /** Returns true when `candidate` is strictly newer than `current`. */

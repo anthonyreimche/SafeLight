@@ -15,11 +15,11 @@ const API_URL = `https://api.github.com/repos/${REPO}/releases?per_page=20`;
 const DISMISS_KEY = "sl_update_dismissed_v1";
 
 /**
- * "minor" — notify only when the minor or major version bumps (vX.Y or
- *            vX.Y.0).  Patch releases (vX.Y.Z where Z > 0) are ignored.
- * "patch" — notify for every release including patch / bug-fix releases.
+ * "stable" — notify only for full releases (GitHub releases not marked
+ *            pre-release).
+ * "all"    — notify for every release, including pre-releases (betas).
  */
-export type UpdateChannel = "minor" | "patch";
+export type UpdateChannel = "stable" | "all";
 
 export interface UpdateInfo {
   version: string;
@@ -36,6 +36,7 @@ export interface ReleaseEntry {
   tag: string;
   releasesUrl: string;
   body: string;
+  prerelease: boolean;
 }
 
 /**
@@ -64,18 +65,15 @@ interface GHRelease {
   html_url: string;
   body: string | null;
   draft: boolean;
+  prerelease: boolean;
 }
 
 /**
  * Returns true when the release passes the channel filter.
- * "minor" only accepts releases whose patch component is 0 (vX.Y.0),
- * i.e. it ignores pure bug-fix increments.
- * "patch" accepts every non-prerelease, non-draft release.
+ * "stable" accepts only full releases; "all" also accepts pre-releases.
  */
-function matchesChannel(tag: string, channel: UpdateChannel): boolean {
-  if (channel === "patch") return true;
-  const [, , patch] = parseSemver(tag);
-  return patch === 0;
+function matchesChannel(release: GHRelease, channel: UpdateChannel): boolean {
+  return channel === "all" || !release.prerelease;
 }
 
 type FetchOutcome =
@@ -136,7 +134,7 @@ async function resolveCurrentVersion(): Promise<string> {
 
 /** Core check — returns a full `CheckResult` describing every step. */
 export async function checkForUpdateFull(
-  channel: UpdateChannel = "patch",
+  channel: UpdateChannel = "stable",
 ): Promise<CheckResult> {
   const [outcome, currentVersion] = await Promise.all([
     fetchReleases(),
@@ -150,7 +148,7 @@ export async function checkForUpdateFull(
   }
 
   const best = outcome.releases.find(
-    (r) => !r.draft && matchesChannel(r.tag_name, channel),
+    (r) => !r.draft && matchesChannel(r, channel),
   );
   if (!best) return { kind: "no-releases" };
 
@@ -184,6 +182,7 @@ export async function fetchAllReleases(): Promise<ReleaseEntry[] | null> {
       tag: r.tag_name,
       releasesUrl: r.html_url,
       body: r.body ?? "",
+      prerelease: r.prerelease,
     }));
 }
 
@@ -204,7 +203,7 @@ export async function installVersion(tag: string): Promise<void> {
  */
 export async function checkForUpdate(
   _ignored: string,
-  channel: UpdateChannel = "patch",
+  channel: UpdateChannel = "stable",
 ): Promise<UpdateInfo | null> {
   const result = await checkForUpdateFull(channel);
   if (result.kind !== "update-available") return null;
@@ -224,7 +223,7 @@ export function openUrl(url: string): void {
  */
 export async function checkForUpdateNow(
   _ignored: string,
-  channel: UpdateChannel = "patch",
+  channel: UpdateChannel = "stable",
 ): Promise<CheckResult> {
   return checkForUpdateFull(channel);
 }

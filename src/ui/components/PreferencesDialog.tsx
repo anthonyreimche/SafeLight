@@ -2039,13 +2039,13 @@ function UpdatesSection() {
 
       <Field
         label="Update channel"
-        hint="Stable only notifies on new minor/major releases (vX.Y). All releases includes patch/bug-fix releases (vX.Y.Z)."
+        hint="Stable only notifies on full releases. All releases also includes pre-releases (betas)."
       >
         <OptionRow<UpdateChannel>
           value={channel}
           options={[
-            { value: "patch", label: "All releases" },
-            { value: "minor", label: "Stable only" },
+            { value: "all", label: "All releases" },
+            { value: "stable", label: "Stable only" },
           ]}
           onChange={(v) => updateSettings({ updateChannel: v })}
         />
@@ -2095,6 +2095,11 @@ function UpdatesSection() {
                 <span className="font-medium text-text-primary tabular-nums">
                   v{r.version}
                 </span>
+                {r.prerelease && (
+                  <span className="shrink-0 rounded border border-border-subtle px-1.5 py-px text-[9px] uppercase tracking-wide text-text-muted">
+                    Pre-release
+                  </span>
+                )}
                 {r.body && (
                   <span className="flex-1 truncate text-text-muted" title={r.body}>
                     {r.body.split("\n")[0].replace(/^[#\s*-]+/, "").trim()}
