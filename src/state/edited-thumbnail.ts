@@ -57,14 +57,24 @@ export function regenerateEditedThumbnail(
     return;
   }
   inFlight.add(photoId);
-  void run(photoId, params, asShotTemperature, paramBag).finally(() => {
-    inFlight.delete(photoId);
-    const next = pending.get(photoId);
-    if (next) {
-      pending.delete(photoId);
-      regenerateEditedThumbnail(photoId, next.params, next.asShotTemperature, next.paramBag);
-    }
-  });
+  // Fire and forget means *contained*: a failed render (worker gone, disk write
+  // refused) must not escape as an unhandled rejection, and must still release
+  // the photo so the next commit regenerates.
+  void run(photoId, params, asShotTemperature, paramBag)
+    .catch(() => {})
+    .finally(() => {
+      inFlight.delete(photoId);
+      const next = pending.get(photoId);
+      if (next) {
+        pending.delete(photoId);
+        regenerateEditedThumbnail(
+          photoId,
+          next.params,
+          next.asShotTemperature,
+          next.paramBag,
+        );
+      }
+    });
 }
 
 async function run(

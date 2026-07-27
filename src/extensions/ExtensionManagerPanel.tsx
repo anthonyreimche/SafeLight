@@ -39,7 +39,6 @@ import { closeExtensions } from "@/ui/components/ExtensionsDialog";
 import {
   forgetSource,
   pruneSources,
-  readSources,
   rememberSource,
   repoFor,
 } from "./sources";
@@ -55,6 +54,7 @@ import {
   reviewedFor,
   bannedReason,
   repoFromSpec,
+  useTrust,
   useIsVerified,
   useVerificationStatus,
   useReviewedFor,
@@ -107,6 +107,9 @@ export function ExtensionManagerPanel() {
   const updates = useExtStoreUI((s) => s.updates);
   const openDetail = useExtStoreUI((s) => s.openDetail);
   const back = useExtStoreUI((s) => s.back);
+  // Subscribed (not getState) so the Featured shelf recomputes once the trust
+  // list arrives asynchronously — already lowercased by the main process.
+  const verified = useTrust((s) => s.list.verified);
 
   const [list, setList] = useState<ExtensionManifest[]>([]);
   const [results, setResults] = useState<ExtensionSearchResult[] | null>(null);
@@ -159,6 +162,7 @@ export function ExtensionManagerPanel() {
       .then((l) => {
         setList(l);
         pruneSources(l);
+        useExtStoreUI.getState().pruneUpdates(l.map((m) => m.id));
       })
       .catch(() => setList([]));
   };
@@ -312,8 +316,11 @@ export function ExtensionManagerPanel() {
     setMsg(null);
     try {
       const manifest = await installFromGitHub(installSpec);
-      if (fromSearch) rememberSource(manifest.id, fromSearch.fullName);
-      else setSpec("");
+      // Remember the source so update checks and installed-detection work for
+      // custom imports too, not just search installs. A #branch pin tracks that
+      // ref, not releases, so don't record it as a release-trackable source.
+      if (repo && !installSpec.includes("#")) rememberSource(manifest.id, repo);
+      if (!fromSearch) setSpec("");
       const net = manifest.permissions?.network;
       setMsg(
         net && net.length
@@ -365,11 +372,11 @@ export function ExtensionManagerPanel() {
     );
   };
 
-  const installedIds = new Set(list.map((m) => m.id));
+  // Repos already installed, resolved through repoFor so a manifest that
+  // self-declares `repository` counts even without a remembered source
+  // (repoFor returns it unnormalised, so lowercase here).
   const installedRepos = new Set(
-    Object.entries(readSources())
-      .filter(([id]) => installedIds.has(id))
-      .map(([, fullName]) => fullName),
+    list.map((m) => repoFor(m)?.toLowerCase()).filter((r): r is string => !!r),
   );
   const isInstalled = (r: ExtensionSearchResult) =>
     installedRepos.has(r.fullName.toLowerCase());
@@ -398,6 +405,40 @@ export function ExtensionManagerPanel() {
     return sorted;
   })();
 
+<<<<<<< Updated upstream
+=======
+  // Discrete "shelves" (App-Store style) for the unfiltered browse: a horizontal
+  // row each for Featured (verified), New, Popular and Recently updated. Only used
+  // with no search query and the "All" category — a narrowed browse falls back to
+  // the flat sorted grid above. ISO date strings sort lexically, so localeCompare
+  // gives a correct newest-first order. Empty rows (e.g. no verified extensions)
+  // are dropped so the user never sees a labelled blank shelf.
+  const shelfView = !query.trim() && category === "All";
+  const SHELF_LIMIT = 12;
+  const shelves = (() => {
+    if (!shelfView || !filtered || filtered.length === 0) return null;
+    const byStars = (a: ExtensionSearchResult, b: ExtensionSearchResult) =>
+      b.stars - a.stars;
+    const featured = filtered
+      .filter((r) => verified.includes(r.fullName.trim().toLowerCase()))
+      .sort(byStars)
+      .slice(0, SHELF_LIMIT);
+    const newest = [...filtered]
+      .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
+      .slice(0, SHELF_LIMIT);
+    const popular = [...filtered].sort(byStars).slice(0, SHELF_LIMIT);
+    const recent = [...filtered]
+      .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
+      .slice(0, SHELF_LIMIT);
+    return [
+      { id: "featured", title: "Featured", items: featured },
+      { id: "new", title: "New", items: newest },
+      { id: "popular", title: "Popular", items: popular },
+      { id: "updated", title: "Recently updated", items: recent },
+    ].filter((s) => s.items.length > 0);
+  })();
+
+>>>>>>> Stashed changes
   // ── Detail target resolution ───────────────────────────────────────────────
   // `selected` is "owner/repo" for repo-backed extensions, or an id for built-ins
   // and installed extensions without a known repo.
@@ -409,6 +450,7 @@ export function ExtensionManagerPanel() {
       const name = manifest?.name ?? sel.split("/")[1] ?? sel;
       return {
         repo: sel, // sel is the "owner/repo" we opened the detail with
+        id: manifest?.id,
         name,
         description: manifest?.description ?? search?.description ?? undefined,
         author: manifest?.author,
@@ -424,6 +466,7 @@ export function ExtensionManagerPanel() {
     if (builtin) {
       return {
         repo: null,
+        id: builtin.id,
         name: builtin.name,
         description: builtin.description,
         installed: true,
@@ -437,6 +480,7 @@ export function ExtensionManagerPanel() {
       const repo = repoFor(manifest);
       return {
         repo,
+        id: manifest.id,
         name: manifest.name,
         description: manifest.description,
         author: manifest.author,

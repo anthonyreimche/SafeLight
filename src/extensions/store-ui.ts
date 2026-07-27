@@ -116,6 +116,8 @@ interface ExtStoreUI {
   setCategory: (c: string) => void;
   setSort: (s: StoreSort) => void;
   setUpdate: (id: string, info: ExtUpdateInfo) => void;
+  clearUpdate: (id: string) => void;
+  pruneUpdates: (installedIds: string[]) => void;
 }
 
 export const useExtStoreUI = create<ExtStoreUI>((set) => ({
@@ -135,6 +137,26 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
     set((s) => {
       const updates = { ...s.updates, [id]: info };
       writeLsUpdates(updates); // mirror so the next launch starts warm
+      return { updates };
+    }),
+  // Drop one extension's cached check on uninstall, so a later reinstall can't
+  // surface a stale "update available" badge from the prior install.
+  clearUpdate: (id) =>
+    set((s) => {
+      if (!(id in s.updates)) return {};
+      const { [id]: _omit, ...updates } = s.updates;
+      writeLsUpdates(updates);
+      return { updates };
+    }),
+  // Forget cached checks for extensions that are no longer installed, so dead
+  // entries don't accumulate across uninstalls.
+  pruneUpdates: (installedIds) =>
+    set((s) => {
+      const ids = new Set(installedIds);
+      const kept = Object.entries(s.updates).filter(([id]) => ids.has(id));
+      if (kept.length === Object.keys(s.updates).length) return {};
+      const updates = Object.fromEntries(kept);
+      writeLsUpdates(updates);
       return { updates };
     }),
 }));

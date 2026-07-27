@@ -95,7 +95,7 @@ function makeFileHandle(fs: Bridge, p: string): FileSystemFileHandle {
       // fs.read returns a non-shared Uint8Array; cast past TS's generic
       // ArrayBufferLike (which can't prove it isn't a SharedArrayBuffer).
       return new File([data as BlobPart], basename(p), {
-        type: mimeFromName(p),
+        type: mimeFromName(basename(p)),
         lastModified: mtimeMs,
       });
     },

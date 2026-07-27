@@ -169,10 +169,12 @@ function ConsoleTab({
     });
   }, [entries, filter, levels, issuesOnly]);
 
+  // Key on the newest entry's identity, not the count: once the buffer hits
+  // its cap the length holds steady while ids keep rolling over.
   useEffect(() => {
     if (autoscroll && scrollRef.current)
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [shown.length, autoscroll]);
+  }, [shown.length, shown[shown.length - 1]?.id, autoscroll]);
 
   const toggleLevel = (l: LogLevel) =>
     setLevels((prev) => {
@@ -471,6 +473,7 @@ function StorageTab() {
   const [keys, setKeys] = useState<string[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     const all: string[] = [];
@@ -487,14 +490,16 @@ function StorageTab() {
   const select = (k: string) => {
     setSel(k);
     setDraft(localStorage.getItem(k) ?? "");
+    setSaveError(null);
   };
   const save = () => {
     if (sel == null) return;
     try {
       localStorage.setItem(sel, draft);
+      setSaveError(null);
       refresh();
-    } catch {
-      /* quota / serialization */
+    } catch (e) {
+      setSaveError(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
   const remove = (k: string) => {
@@ -561,7 +566,10 @@ function StorageTab() {
                 spellCheck={false}
                 className="min-h-0 flex-1 resize-none rounded bg-surface-2 p-2 font-mono text-[10px] text-text-primary outline-none focus:bg-surface-3"
               />
-              <div className="mt-1.5 flex justify-end gap-1.5">
+              <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                {saveError && (
+                  <span className="mr-auto text-red-400">{saveError}</span>
+                )}
                 <button
                   onClick={() => navigator.clipboard?.writeText(draft)}
                   className="rounded bg-surface-3 px-2 py-1 text-text-secondary hover:text-text-primary"
@@ -712,17 +720,25 @@ function clockTime(ms: number): string {
 
 const mb = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MB`;
 
-function readWebGLInfo(): {
+interface WebGLInfo {
   vendor: string;
   renderer: string;
   glsl: string;
   maxTexture: number;
-} | null {
+}
+
+// Cached: the values are fixed per session, and a probe context left alive
+// counts against the browser's ~16-context cap — enough refreshes would evict
+// the app's real render context.
+let webGLInfo: WebGLInfo | null | undefined;
+
+function readWebGLInfo(): WebGLInfo | null {
+  if (webGLInfo !== undefined) return webGLInfo;
   try {
     const canvas = document.createElement("canvas");
     const gl = (canvas.getContext("webgl2") ||
       canvas.getContext("webgl")) as WebGLRenderingContext | null;
-    if (!gl) return null;
+    if (!gl) return (webGLInfo = null);
     const dbg = gl.getExtension("WEBGL_debug_renderer_info");
     const vendor = dbg
       ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL))
@@ -730,13 +746,15 @@ function readWebGLInfo(): {
     const renderer = dbg
       ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
       : String(gl.getParameter(gl.RENDERER));
-    return {
+    webGLInfo = {
       vendor,
       renderer,
       glsl: String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION)),
       maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
     };
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return webGLInfo;
   } catch {
-    return null;
+    return (webGLInfo = null);
   }
 }

@@ -82,8 +82,17 @@ export function deleteExtensionSettings(id: string): void {
 /** Follow changes made in other windows. Call once at boot. */
 export function initExtSettings(): void {
   window.addEventListener("storage", (e) => {
-    if (!e.key?.startsWith(PREFIX) || e.newValue == null) return;
+    if (!e.key?.startsWith(PREFIX)) return;
     const id = e.key.slice(PREFIX.length);
+    // A removal (newValue == null) is another window deleting this extension's
+    // settings — drop the id so stale values don't linger here.
+    if (e.newValue == null) {
+      useExtSettings.setState((s) => {
+        const { [id]: _, ...rest } = s;
+        return rest;
+      }, true);
+      return;
+    }
     try {
       const prev = useExtSettings.getState()[id] ?? {};
       const next = JSON.parse(e.newValue) as Values;

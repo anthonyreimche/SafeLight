@@ -151,6 +151,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
   const selectedComponentId = useDevelopStore((s) => s.selectedComponentId);
   const selectedSpotId = useDevelopStore((s) => s.selectedSpotId);
   const brushErase = useDevelopStore((s) => s.brushErase);
+  const maskCompMode = useDevelopStore((s) => s.maskCompMode);
   const brushSize = useDevelopStore((s) => s.brushSize);
   const brushFeather = useDevelopStore((s) => s.brushFeather);
   const brushPreview = useDevelopStore((s) => s.brushPreview);
@@ -740,7 +741,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
       for (const d of s.dabs) { sx += d.x; sy += d.y; }
       cx = sx / s.dabs.length; cy = sy / s.dabs.length;
       let m = 0;
-      for (const d of s.dabs) m = Math.max(m, Math.hypot(d.x - cx, d.y - cy) + d.radius);
+      for (const d of s.dabs) m = Math.max(m, Math.hypot((d.x - cx) * imageAspect, d.y - cy) + d.radius);
       rad = m;
     }
     const patch: Partial<RetouchSpot> = {};
@@ -806,7 +807,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
   // Reactive so the cursor ring resizes the instant [ / ] change the size.
   const brushPx = radiusToScreen(brushSize);
   const spotPx = radiusToScreen(retouchSize);
-  const subErase = (cursor?.alt || brushErase) || store().maskCompMode === "subtract";
+  const subErase = (cursor?.alt || brushErase) || maskCompMode === "subtract";
   // Centre reference circle shown while a Size/Feather slider is dragged — for
   // the mask brush or the heal brush (shared behaviour).
   const showBrushRef =

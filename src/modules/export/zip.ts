@@ -20,6 +20,24 @@ interface ZipEntry {
   crc: number;
   size: number;
   offset: number; // byte offset of this entry's local header
+  utf8: boolean; // name has bytes >= 0x80; needs EFS flag (bit 11)
+}
+
+// ZIP32 caps: offsets/sizes are 32-bit, the entry count is 16-bit. This writer
+// has no ZIP64 record, so exceeding either would silently wrap and corrupt the
+// archive — callers must fall back to per-file delivery instead.
+const MAX_UINT32 = 0xffffffff;
+const MAX_UINT16 = 0xffff;
+
+// General-purpose flag bit 11 (EFS): filename/comment are UTF-8. Spec-honoring
+// extractors otherwise decode non-ASCII names as CP437 and produce mojibake.
+const FLAG_UTF8 = 0x0800;
+
+function hasHighByte(bytes: Uint8Array): boolean {
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] >= 0x80) return true;
+  }
+  return false;
 }
 
 const CRC_TABLE = (() => {
@@ -61,16 +79,28 @@ export class ZipWriter {
   private dt = dosDateTime(new Date());
   private encoder = new TextEncoder();
 
-  // Add one file. `data` is taken as-is (already-encoded image bytes).
+  // Add one file. `data` is taken as-is (already-encoded image bytes). Throws
+  // when the archive would exceed the ZIP32 limits — callers catch this and
+  // fall back to per-file delivery rather than emitting a truncated archive.
   add(name: string, data: Uint8Array<ArrayBuffer>): void {
     const nameBytes = this.encoder.encode(name);
+    if (data.length > MAX_UINT32) {
+      throw new RangeError("ZipWriter: file exceeds ZIP32 4 GiB limit");
+    }
+    if (this.offset + 30 + nameBytes.length + data.length > MAX_UINT32) {
+      throw new RangeError("ZipWriter: archive exceeds ZIP32 4 GiB limit");
+    }
+    if (this.entries.length >= MAX_UINT16) {
+      throw new RangeError("ZipWriter: archive exceeds ZIP32 65535 entry limit");
+    }
     const crc = crc32(data);
+    const utf8 = hasHighByte(nameBytes);
 
     const header = new Uint8Array(30 + nameBytes.length);
     const view = new DataView(header.buffer);
     view.setUint32(0, 0x04034b50, true); // local file header signature
     view.setUint16(4, 20, true); // version needed to extract (2.0)
-    view.setUint16(6, 0, true); // general purpose flags
+    view.setUint16(6, utf8 ? FLAG_UTF8 : 0, true); // general purpose flags
     view.setUint16(8, 0, true); // compression method: 0 = stored
     view.setUint16(10, this.dt.time, true);
     view.setUint16(12, this.dt.date, true);
@@ -81,7 +111,7 @@ export class ZipWriter {
     view.setUint16(28, 0, true); // extra field length
     header.set(nameBytes, 30);
 
-    this.entries.push({ nameBytes, crc, size: data.length, offset: this.offset });
+    this.entries.push({ nameBytes, crc, size: data.length, offset: this.offset, utf8 });
     this.chunks.push(header, data);
     this.offset += header.length + data.length;
   }
@@ -98,7 +128,7 @@ export class ZipWriter {
       v.setUint32(0, 0x02014b50, true); // central directory header signature
       v.setUint16(4, 20, true); // version made by
       v.setUint16(6, 20, true); // version needed to extract
-      v.setUint16(8, 0, true); // flags
+      v.setUint16(8, e.utf8 ? FLAG_UTF8 : 0, true); // flags
       v.setUint16(10, 0, true); // compression method: stored
       v.setUint16(12, this.dt.time, true);
       v.setUint16(14, this.dt.date, true);

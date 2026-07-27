@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { requestThumbnail } from "@/state/thumbnail-loader";
 import { Rating } from "./Rating";
@@ -62,11 +62,20 @@ function ThumbnailImpl({
   // The grid shows the original compressed preview (generated at import) — no
   // per-edit re-render or decode. Cheap and space-light; quality is intentionally
   // modest. Edits are seen in Develop/Loupe, not the grid.
-  const thumbUrl = useMemo(() => {
-    if (photo.thumbnailUrl) return photo.thumbnailUrl;
-    if (photo.thumbnailBlob) return URL.createObjectURL(photo.thumbnailBlob);
-    return null;
+  // photo.thumbnailUrl is owned and revoked by the catalog store, so it is used
+  // as-is. The thumbnailBlob fallback is created (and revoked) here: without the
+  // effect cleanup below, every virtualized remount would leak an object URL.
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (photo.thumbnailUrl || !photo.thumbnailBlob) {
+      setBlobUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(photo.thumbnailBlob);
+    setBlobUrl(url);
+    return () => URL.revokeObjectURL(url);
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
+  const thumbUrl = photo.thumbnailUrl ?? blobUrl;
   const [loaded, setLoaded] = useState(false);
   const prevUrl = useRef(thumbUrl);
   if (prevUrl.current !== thumbUrl) {

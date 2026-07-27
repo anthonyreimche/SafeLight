@@ -11,32 +11,18 @@
 // several manual clicks. Driving the actual pipeline this way sidesteps the
 // non-linear tone curve that a single analytic pass can't invert.
 
+import { NEUTRAL_TEMPERATURE_K } from "@/catalog/types";
 import type { DevelopParams } from "@/catalog/types";
 import type { HistogramData } from "./histogram";
-
-// --- sRGB <-> linear (matches the renderer's transfer functions) ------------
-function srgbToLinear(c: number): number {
-  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-}
-
-// Linear blackbody RGB (Tanner Helland fit) — the same model the WB shader uses
-// to derive Kelvin gains, ported to JS so Auto WB inverts it exactly.
-function blackbodyLinear(kelvin: number): [number, number, number] {
-  const t = Math.min(50000, Math.max(1000, kelvin)) / 100;
-  let r: number, g: number, b: number;
-  if (t <= 66) {
-    r = 255;
-    g = 99.4708025861 * Math.log(t) - 161.1195681661;
-  } else {
-    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
-    g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
-  }
-  if (t >= 66) b = 255;
-  else if (t <= 19) b = 0;
-  else b = 138.5177312231 * Math.log(t - 10) - 305.0447927307;
-  const clamp01 = (v: number) => Math.min(1, Math.max(0.0008, v / 255));
-  return [srgbToLinear(clamp01(r)), srgbToLinear(clamp01(g)), srgbToLinear(clamp01(b))];
-}
+import {
+  TEMPERATURE_MAX_K,
+  TEMPERATURE_MIN_K,
+  kelvinForGainRatio,
+  srgbToLinear,
+  tintForGreenGain,
+  tintGain,
+  whiteBalanceGain,
+} from "./blackbody";
 
 // Mean linear value of a 256-bin channel histogram (bins are display sRGB 0..255).
 function meanLinear(bins: Uint32Array): number {
@@ -51,8 +37,6 @@ function meanLinear(bins: Uint32Array): number {
   return count ? sum / count : 0;
 }
 
-const TEMP_MIN = 2000;
-const TEMP_MAX = 50000;
 const TINT_MIN = -150;
 const TINT_MAX = 150;
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -74,7 +58,7 @@ export interface WbStep {
  * way there (damped, to stay stable across iterations). `done` is true once the
  * three channel means agree to within ~1%.
  */
-export function autoWhiteBalanceStep(hist: HistogramData, params: DevelopParams, asShotTemperature = 6500): WbStep {
+export function autoWhiteBalanceStep(hist: HistogramData, params: DevelopParams, asShotTemperature = NEUTRAL_TEMPERATURE_K): WbStep {
   return whiteBalanceStepFromLinear(
     meanLinear(hist.r),
     meanLinear(hist.g),
@@ -96,7 +80,7 @@ export function whiteBalanceStepFromLinear(
   mG: number,
   mB: number,
   params: DevelopParams,
-  asShotTemperature = 6500,
+  asShotTemperature = NEUTRAL_TEMPERATURE_K,
 ): WbStep {
   if (mR <= 0 || mG <= 0 || mB <= 0) {
     return { temperature: params.temperature, tint: params.tint, done: true };
@@ -109,53 +93,31 @@ export function whiteBalanceStepFromLinear(
     return { temperature: params.temperature, tint: params.tint, done: true };
   }
 
-  const bbRef = blackbodyLinear(asShotTemperature);
-  const gainsFor = (kelvin: number, tint: number): [number, number, number] => {
-    const bb = blackbodyLinear(kelvin);
-    let gr = bbRef[0] / bb[0];
-    const gNorm = bbRef[1] / bb[1];
-    let gb = bbRef[2] / bb[2];
-    gr /= gNorm;
-    gb /= gNorm;
-    const gg = 1 - (tint / 150) * 0.6;
-    return [gr, gg, gb];
-  };
-
   // Pre-WB scene means (remove the gains the current temp/tint applied).
-  const cur = gainsFor(params.temperature, params.tint);
+  const cur = whiteBalanceGain(params.temperature, asShotTemperature);
   const sR = mR / cur[0];
-  const sG = mG / cur[1];
+  const sG = mG / (cur[1] * tintGain(params.tint));
   const sB = mB / cur[2];
 
   // Solve temp: want scene_r * gainR(k) == scene_b * gainB(k). gainR/gainB
-  // depends only on Kelvin, so search log-space for the balancing temperature.
-  const targetLogRB = Math.log(sB / sR);
-  let bestK = params.temperature;
-  let bestErr = Infinity;
-  const steps = 240;
-  for (let i = 0; i <= steps; i++) {
-    const k = TEMP_MIN * Math.pow(TEMP_MAX / TEMP_MIN, i / steps);
-    const bb = blackbodyLinear(k);
-    const err = Math.abs(Math.log((bbRef[0] / bb[0]) / (bbRef[2] / bb[2])) - targetLogRB);
-    if (err < bestErr) {
-      bestErr = err;
-      bestK = k;
-    }
-  }
-  const solvedTemp = clamp(bestK, TEMP_MIN, TEMP_MAX);
+  // depends only on Kelvin, so invert the blackbody curve for that ratio.
+  const solvedTemp = clamp(
+    kelvinForGainRatio(Math.log(sB / sR), asShotTemperature),
+    TEMPERATURE_MIN_K,
+    TEMPERATURE_MAX_K,
+  );
 
-  // Solve tint so green matches the balanced red: gainG = 1 - (tint/150)*0.6.
-  const ng = gainsFor(solvedTemp, 0);
-  const wantGainG = (sR * ng[0]) / sG;
-  const solvedTint = clamp((1 - wantGainG) * 250, TINT_MIN, TINT_MAX);
+  // Solve tint so green matches the balanced red.
+  const wantGainG = (sR * whiteBalanceGain(solvedTemp, asShotTemperature)[0]) / sG;
+  const solvedTint = clamp(tintForGreenGain(wantGainG), TINT_MIN, TINT_MAX);
 
   // Damp toward the solution (geometric for Kelvin, linear for tint) so the
   // residual tone-curve non-linearity converges instead of oscillating.
   const t = 0.85;
   const temperature = clamp(
     Math.exp(Math.log(params.temperature) * (1 - t) + Math.log(solvedTemp) * t),
-    TEMP_MIN,
-    TEMP_MAX,
+    TEMPERATURE_MIN_K,
+    TEMPERATURE_MAX_K,
   );
   const tint = clamp(params.tint * (1 - t) + solvedTint * t, TINT_MIN, TINT_MAX);
 

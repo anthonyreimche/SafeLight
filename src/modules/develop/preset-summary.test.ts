@@ -4,88 +4,87 @@
 // be preserved in derived versions.
 
 // Tests for the preset adjustment summary helpers.
-// Type-checked by `tsc --noEmit`; the assertions run under any alias-aware
-// runner (the module imports the `@/` path alias, so bare node cannot resolve it).
 
-import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
+import { describe, it, expect } from "vitest";
+import {
+  DEFAULT_DEVELOP_PARAMS,
+  defaultMaskAdjustments,
+  type Mask,
+} from "@/catalog/types";
 import {
   summarizePreset,
   presetFields,
   buildPartialParams,
 } from "./preset-summary.ts";
 
-let passed = 0;
-let failed = 0;
-function check(name: string, cond: boolean) {
-  if (cond) {
-    passed++;
-  } else {
-    failed++;
-    console.error(`  ✗ ${name}`);
-  }
-}
-function eq(name: string, a: unknown, b: unknown) {
-  check(`${name} (got ${JSON.stringify(a)}, want ${JSON.stringify(b)})`, JSON.stringify(a) === JSON.stringify(b));
-}
-function contains(name: string, list: unknown[], item: unknown) {
-  const want = JSON.stringify(item);
-  check(`${name} (contains ${want})`, list.some((x) => JSON.stringify(x) === want));
-}
+const mask = (id: string): Mask => ({
+  id,
+  name: "Mask",
+  visible: true,
+  invert: false,
+  opacity: 100,
+  adj: defaultMaskAdjustments(),
+  panels: [],
+  components: [],
+});
 
-// summarizePreset: returns nothing for default params.
-eq("default params → no diffs", summarizePreset({ ...DEFAULT_DEVELOP_PARAMS }), []);
+describe("summarizePreset", () => {
+  it("reports nothing for untouched params", () => {
+    expect(summarizePreset({ ...DEFAULT_DEVELOP_PARAMS })).toEqual([]);
+  });
 
-// summarizePreset: lists changed scalars with signed values.
-const scalarDiffs = summarizePreset({ contrast: 25, saturation: -100 });
-contains("contrast diff", scalarDiffs, { label: "Contrast", value: "+25" });
-contains("saturation diff", scalarDiffs, { label: "Saturation", value: "-100" });
+  it("lists changed scalars with signed values", () => {
+    const diffs = summarizePreset({ contrast: 25, saturation: -100 });
+    expect(diffs).toContainEqual({ label: "Contrast", value: "+25" });
+    expect(diffs).toContainEqual({ label: "Saturation", value: "-100" });
+  });
 
-// summarizePreset: partial-safe (missing complex keys do not throw).
-let threw = false;
-try {
-  summarizePreset({ exposure: 1 });
-} catch {
-  threw = true;
-}
-check("partial params do not throw", !threw);
-eq("partial exposure diff", summarizePreset({ exposure: 1 }), [
-  { label: "Exposure", value: "+1.00" },
-]);
+  it("does not throw on a partial preset missing the complex keys", () => {
+    expect(() => summarizePreset({ exposure: 1 })).not.toThrow();
+  });
 
-// summarizePreset: collapses a non-default complex field to one line.
-contains(
-  "masks collapse to count",
-  summarizePreset({ masks: [{ id: "m" }] as never }),
-  { label: "Masks", value: "1" },
-);
+  it("formats exposure in stops and lists only the keys carried", () => {
+    expect(summarizePreset({ exposure: 1 })).toEqual([
+      { label: "Exposure", value: "+1.00" },
+    ]);
+  });
 
-// presetFields: flags only changed adjustments.
-{
-  const params = { ...DEFAULT_DEVELOP_PARAMS, clarity: 15 };
-  const fields = presetFields(params);
-  check("clarity flagged changed", fields.find((f) => f.id === "clarity")?.changed === true);
-  check("exposure not flagged", fields.find((f) => f.id === "exposure")?.changed === false);
-}
+  it("collapses a non-default complex field to one line", () => {
+    expect(summarizePreset({ masks: [mask("m")] })).toContainEqual({
+      label: "Masks",
+      value: "1",
+    });
+  });
+});
 
-// buildPartialParams: copies only the selected fields' keys.
-{
-  const params = { ...DEFAULT_DEVELOP_PARAMS, clarity: 15, contrast: 30 };
-  const fields = presetFields(params);
-  const partial = buildPartialParams(params, fields, new Set(["clarity"]));
-  eq("partial copies only clarity", partial, { clarity: 15 });
-}
+describe("presetFields", () => {
+  it("flags only the adjustments that differ from the defaults", () => {
+    const fields = presetFields({ ...DEFAULT_DEVELOP_PARAMS, clarity: 15 });
+    expect(fields.find((f) => f.id === "clarity")?.changed).toBe(true);
+    expect(fields.find((f) => f.id === "exposure")?.changed).toBe(false);
+  });
 
-// presetFields: geometry field bundles crop/straighten/transform.
-{
-  const params = { ...DEFAULT_DEVELOP_PARAMS, straighten: 5 };
-  const fields = presetFields(params);
-  const geom = fields.find((f) => f.id === "geometry");
-  check("geometry flagged changed", geom?.changed === true);
-  const partial = buildPartialParams(params, fields, new Set(["geometry"]));
-  check("geometry copies straighten", partial.straighten === 5);
-  check("geometry copies crop", partial.crop !== undefined);
-  check("geometry copies transform", partial.transform !== undefined);
-}
+  it("flags the bundled geometry field when straighten alone moved", () => {
+    const fields = presetFields({ ...DEFAULT_DEVELOP_PARAMS, straighten: 5 });
+    expect(fields.find((f) => f.id === "geometry")?.changed).toBe(true);
+  });
+});
 
-console.log(`preset-summary: ${passed} passed, ${failed} failed`);
-if (failed) throw new Error(`${failed} preset-summary test(s) failed`);
+describe("buildPartialParams", () => {
+  it("copies only the selected fields' keys", () => {
+    const params = { ...DEFAULT_DEVELOP_PARAMS, clarity: 15, contrast: 30 };
+    const fields = presetFields(params);
+    expect(buildPartialParams(params, fields, new Set(["clarity"]))).toEqual({
+      clarity: 15,
+    });
+  });
+
+  it("copies the whole crop/straighten/transform bundle for geometry", () => {
+    const params = { ...DEFAULT_DEVELOP_PARAMS, straighten: 5 };
+    const fields = presetFields(params);
+    const partial = buildPartialParams(params, fields, new Set(["geometry"]));
+    expect(partial.straighten).toBe(5);
+    expect(partial.crop).toEqual(params.crop);
+    expect(partial.transform).toEqual(params.transform);
+  });
+});

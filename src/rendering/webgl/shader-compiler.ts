@@ -54,6 +54,28 @@ function stageOrder(
 // GLSL rewriting: prefix uniform and helper references in stage code
 // ---------------------------------------------------------------------------
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Prefix each `name` with `prefix` at identifier boundaries only. A raw substring
+// replace corrupts GLSL when one key is a substring of another identifier (e.g. a
+// key "amount" rewriting inside "amountScale", or one key being a prefix of a
+// second key). Anchoring with \b confines edits to whole identifiers, and
+// processing longest-first stops a short key from partially matching inside a
+// longer one before it is rewritten.
+export function replaceIdentifiers(
+  src: string,
+  names: readonly string[],
+  prefix: string,
+): string {
+  let out = src;
+  for (const name of [...names].sort((a, b) => b.length - a.length)) {
+    out = out.replace(new RegExp(`\\b${escapeRegExp(name)}\\b`, "g"), prefix + name);
+  }
+  return out;
+}
+
 export function rewriteGlsl(
   glsl: string,
   uniforms: UniformDeclaration[],
@@ -62,18 +84,15 @@ export function rewriteGlsl(
   helperNames: string[],
 ): string {
   let out = glsl;
-  for (const u of uniforms) {
-    out = out.replaceAll(u.key, uPrefix + u.key);
-  }
-  for (const name of helperNames) {
-    out = out.replaceAll(name, hPrefix + name);
-  }
+  out = replaceIdentifiers(out, uniforms.map((u) => u.key), uPrefix);
+  out = replaceIdentifiers(out, helperNames, hPrefix);
   return out;
 }
 
 export function extractHelperNames(helpers: string): string[] {
   const names: string[] = [];
-  const re = /\b(?:float|vec[234]|mat[34]|int|bool|void)\s+([a-zA-Z_]\w*)\s*\(/g;
+  const re =
+    /\b(?:float|vec[234]|mat[234]|int|uint|void|bool|[iub]vec[234])\s+([a-zA-Z_]\w*)\s*\(/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(helpers)) !== null) {
     names[names.length] = m[1];
@@ -188,15 +207,10 @@ export function compileShaderSource(
     const names = extractHelperNames(s.helpers);
     stageHelperNames.set(s.id, names);
     const hPfx = helperPrefix(s.id);
-    let rewritten = s.helpers;
-    for (const n of names) {
-      rewritten = rewritten.replaceAll(n, hPfx + n);
-    }
+    let rewritten = replaceIdentifiers(s.helpers, names, hPfx);
     // Also rewrite uniform references inside helpers
     const uPfx = uniformPrefix(s.id);
-    for (const u of s.uniforms) {
-      rewritten = rewritten.replaceAll(u.key, uPfx + u.key);
-    }
+    rewritten = replaceIdentifiers(rewritten, s.uniforms.map((u) => u.key), uPfx);
     helperBlocks.push(`// helpers: ${s.id}\n${rewritten}`);
   }
 
@@ -226,12 +240,10 @@ export function compileShaderSource(
     let block = `// -- ${s.id} (${s.phase}, priority ${s.priority ?? 100}) --\n{\n${body}\n}`;
 
     // Append inter-stage variable producer expressions
+    const uKeys = s.uniforms.map((u) => u.key);
     for (const v of s.produces ?? []) {
       if (v.producer) {
-        let expr = v.producer;
-        for (const u of s.uniforms) {
-          expr = expr.replaceAll(u.key, uPfx + u.key);
-        }
+        const expr = replaceIdentifiers(v.producer, uKeys, uPfx);
         block += `\nisv_${v.name} = ${expr};`;
       }
     }

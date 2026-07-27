@@ -88,18 +88,23 @@ export async function addRecentProject(
     openedAt: Date.now(),
     cover,
   };
+  let db: IDBDatabase | undefined;
   try {
-    const db = await openDB();
+    db = await openDB();
     await put(db, entry);
     // Trim the oldest beyond the cap.
     const all = (await getAll(db)).sort((a, b) => b.openedAt - a.openedAt);
-    for (const e of all.slice(MAX_RECENT)) await removeRecentProject(e.id);
-  } catch {}
+    for (const e of all.slice(MAX_RECENT)) await deleteEntry(db, e.id);
+  } catch {
+  } finally {
+    db?.close();
+  }
 }
 
 export async function listRecentProjects(): Promise<RecentProject[]> {
+  let db: IDBDatabase | undefined;
   try {
-    const db = await openDB();
+    db = await openDB();
     let all = await getAll(db);
     if (all.length === 0) {
       await migrateLegacy(db);
@@ -108,19 +113,29 @@ export async function listRecentProjects(): Promise<RecentProject[]> {
     return all.sort((a, b) => b.openedAt - a.openedAt);
   } catch {
     return [];
+  } finally {
+    db?.close();
   }
 }
 
+function deleteEntry(db: IDBDatabase, id: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export async function removeRecentProject(id: string): Promise<void> {
+  let db: IDBDatabase | undefined;
   try {
-    const db = await openDB();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).delete(id);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch {}
+    db = await openDB();
+    await deleteEntry(db, id);
+  } catch {
+  } finally {
+    db?.close();
+  }
 }
 
 /** Rebuild a usable directory handle for a recent entry, or null if neither a
@@ -142,9 +157,11 @@ export async function getLastProject(): Promise<FileSystemDirectoryHandle | null
 // previously-open folder still appears on first launch after the upgrade.
 async function migrateLegacy(db: IDBDatabase): Promise<void> {
   try {
-    // Electron: an absolute path in localStorage.
+    // Electron: an absolute path in localStorage. Consume it so removing every
+    // recent doesn't resurrect the old "last project" on the next load.
     const path = localStorage.getItem(LEGACY_LS_PATH);
     if (path) {
+      localStorage.removeItem(LEGACY_LS_PATH);
       await put(db, {
         id: path,
         name: path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || path,
@@ -170,6 +187,12 @@ async function migrateLegacy(db: IDBDatabase): Promise<void> {
       req.onerror = () => resolve(undefined);
     });
     if (legacy?.handle) {
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction(LEGACY_STORE, "readwrite");
+        tx.objectStore(LEGACY_STORE).delete("last");
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
       await put(db, {
         id: legacy.name,
         name: legacy.name,

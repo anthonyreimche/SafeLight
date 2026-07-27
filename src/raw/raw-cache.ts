@@ -6,8 +6,11 @@
 // Develop-preview cache: store decoded RAW files in IndexedDB so subsequent
 // Develop opens load fast instead of re-running libraw (~50ms vs 3-8s).
 //
-// Cache key = filename + fileSize + lastModified. Any change to the source file
-// automatically misses the cache without explicit invalidation.
+// Cache key = relPath + fileSize + baked rotation. Derived entirely from the
+// catalog record so the prefetch skip-check needs no getFile (which reads the
+// whole RAW off disk in Electron). A size-changing edit misses automatically; an
+// in-place edit that preserves byte size (e.g. EXIF/metadata rewrite) keeps the
+// stale entry until Reimport drops it (see reimportPhotos in import-photos.ts).
 //
 // Format: 16-bit sRGB-encoded RGBA, gzip-compressed. The previous cache stored an
 // 8-bit JPEG, which only has ~256 levels/channel — a +5 exposure push (×32) then

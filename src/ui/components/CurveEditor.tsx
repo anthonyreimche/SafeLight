@@ -8,6 +8,7 @@ import { makeCurveEvaluator } from "@/rendering/curve";
 import { useKeyboardCanvasEditing } from "@/state/accessibility";
 import { useSettings } from "@/state/settings-store";
 import type { CurvePoint, ToneCurveChannel, ToneCurves } from "@/catalog/types";
+import { channelHex } from "./channel-colors";
 
 const PAD = 8;
 const HIT_RADIUS = 11;
@@ -17,9 +18,9 @@ const COARSE = 0.05;
 
 const CHANNELS: { key: ToneCurveChannel; label: string; color: string }[] = [
   { key: "rgb", label: "RGB", color: "#c8c8c8" },
-  { key: "red", label: "R", color: "#e74c3c" },
-  { key: "green", label: "G", color: "#2ecc71" },
-  { key: "blue", label: "B", color: "#4aa3ff" },
+  { key: "red", label: "R", color: channelHex("red") },
+  { key: "green", label: "G", color: channelHex("green") },
+  { key: "blue", label: "B", color: channelHex("blue") },
 ];
 
 export interface CurveEditorProps {
@@ -48,6 +49,9 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   const [selected, setSelected] = useState(0);
   const [focused, setFocused] = useState(false);
   const [announce, setAnnounce] = useState("");
+  // Raw text while an In/Out field is focused, so intermediate states ("", "1")
+  // don't get snapped back to the rounded point value on every keystroke.
+  const [editing, setEditing] = useState<{ field: "in" | "out"; raw: string } | null>(null);
   const draggingRef = useRef<number | null>(null);
   // A run of arrow nudges commits once on key-up, not per repeat, to keep undo sane.
   const dirtyRef = useRef(false);
@@ -132,6 +136,7 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
     const { x: cx, y: cy } = localXY(e);
     e.currentTarget.setPointerCapture(e.pointerId);
 
@@ -152,18 +157,7 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
     const { x, y } = localXY(e);
     const d = toData(x, y);
     const next = points.map((p) => ({ ...p }));
-    const isFirst = idx === 0;
-    const isLast = idx === points.length - 1;
-
-    if (isFirst) {
-      next[idx] = { x: 0, y: d.y };
-    } else if (isLast) {
-      next[idx] = { x: 1, y: d.y };
-    } else {
-      const lo = next[idx - 1].x + 0.001;
-      const hi = next[idx + 1].x - 0.001;
-      next[idx] = { x: Math.min(Math.max(d.x, lo), hi), y: d.y };
-    }
+    next[idx] = { x: clampPointX(points, idx, d.x), y: d.y };
     update(next);
   };
 
@@ -187,16 +181,7 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   const moveSelected = (dx: number, dy: number) => {
     const i = sel;
     const next = points.map((p) => ({ ...p }));
-    if (i === 0) next[i] = { x: 0, y: clamp01(next[i].y + dy) };
-    else if (i === points.length - 1) next[i] = { x: 1, y: clamp01(next[i].y + dy) };
-    else {
-      const lo = next[i - 1].x + 0.001;
-      const hi = next[i + 1].x - 0.001;
-      next[i] = {
-        x: Math.min(Math.max(next[i].x + dx, lo), hi),
-        y: clamp01(next[i].y + dy),
-      };
-    }
+    next[i] = { x: clampPointX(points, i, next[i].x + dx), y: clamp01(next[i].y + dy) };
     update(next);
     dirtyRef.current = true;
     setAnnounce(describe(i, next[i]));
@@ -265,19 +250,19 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
 
   // ── Selected-point number fields (non-drag pointer path) ────────────────────
   const setInputPct = (raw: string) => {
+    setEditing({ field: "in", raw });
     if (isEndpoint || raw === "") return;
     const n = Number(raw);
     if (!Number.isFinite(n)) return;
     const i = sel;
-    const lo = points[i - 1].x + 0.001;
-    const hi = points[i + 1].x - 0.001;
-    const nx = Math.min(Math.max(n / 100, lo), hi);
+    const nx = clampPointX(points, i, n / 100);
     const next = points.map((p, j) => (j === i ? { ...p, x: nx } : p));
     update(next);
     onCommit();
     setAnnounce(describe(i, next[i]));
   };
   const setOutputPct = (raw: string) => {
+    setEditing({ field: "out", raw });
     if (raw === "") return;
     const n = Number(raw);
     if (!Number.isFinite(n)) return;
@@ -364,9 +349,11 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
           type="number"
           min={0}
           max={100}
-          value={Math.round(selPoint.x * 100)}
+          value={editing?.field === "in" ? editing.raw : Math.round(selPoint.x * 100)}
           disabled={isEndpoint}
+          onFocus={() => setEditing({ field: "in", raw: String(Math.round(selPoint.x * 100)) })}
           onChange={(e) => setInputPct(e.target.value)}
+          onBlur={() => { setEditing(null); onCommit(); }}
           aria-label="Selected point input level (%)"
           className={`${numCls} disabled:opacity-40`}
         />
@@ -376,8 +363,10 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
           type="number"
           min={0}
           max={100}
-          value={Math.round(selPoint.y * 100)}
+          value={editing?.field === "out" ? editing.raw : Math.round(selPoint.y * 100)}
+          onFocus={() => setEditing({ field: "out", raw: String(Math.round(selPoint.y * 100)) })}
           onChange={(e) => setOutputPct(e.target.value)}
+          onBlur={() => { setEditing(null); onCommit(); }}
           aria-label="Selected point output level (%)"
           className={numCls}
         />
@@ -485,4 +474,13 @@ function draw(
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+// Endpoints pin to 0/1; interior points stay between their neighbors.
+function clampPointX(points: CurvePoint[], i: number, x: number): number {
+  if (i === 0) return 0;
+  if (i === points.length - 1) return 1;
+  const lo = points[i - 1].x + 0.001;
+  const hi = points[i + 1].x - 0.001;
+  return Math.min(Math.max(x, lo), hi);
 }

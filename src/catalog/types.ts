@@ -528,6 +528,10 @@ export const DEFAULT_GRAIN: GrainParams = {
   color: 0,
 };
 
+// Neutral white-balance temperature in Kelvin: the develop default and the
+// fallback whenever a photo has no as-shot WB.
+export const NEUTRAL_TEMPERATURE_K = 6500;
+
 export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   exposure: 0,
   contrast: 0,
@@ -552,7 +556,7 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   colorNRSmoothness: 50,
   vibrance: 0,
   saturation: 0,
-  temperature: 6500, // Kelvin; 6500 = neutral
+  temperature: NEUTRAL_TEMPERATURE_K,
   tint: 0,
   straighten: 0,
   crop: { ...DEFAULT_CROP },
@@ -606,7 +610,6 @@ function normalizeGuidedLines(lines: unknown): GuidedLine[] {
     const c = (v: unknown) =>
       typeof v === "number" && isFinite(v) ? Math.min(2, Math.max(-1, v)) : 0;
     out.push({ x1: c(l.x1), y1: c(l.y1), x2: c(l.x2), y2: c(l.y2) });
-    if (out.length >= 4) break;
   }
   return out;
 }
@@ -619,7 +622,7 @@ function clampStraighten(n: number): number {
 // Temperature is Kelvin (2000-50000), 6500 neutral. Pre-Kelvin edits stored a
 // relative value near 0, so anything below 1000 is treated as "neutral".
 function normalizeTemp(n: unknown): number {
-  if (typeof n !== "number" || !isFinite(n) || n < 1000) return 6500;
+  if (typeof n !== "number" || !isFinite(n) || n < 1000) return NEUTRAL_TEMPERATURE_K;
   return Math.min(50000, Math.max(2000, n));
 }
 
@@ -674,9 +677,17 @@ function normalizeColorGrading(
 }
 
 function normalizeCurve(c: CurvePoint[] | undefined): CurvePoint[] {
-  return c && c.length >= 2
-    ? c.map((pt) => ({ x: pt.x, y: pt.y }))
-    : [...DEFAULT_TONE_CURVE];
+  if (!c || c.length < 2) return [...DEFAULT_TONE_CURVE];
+  const finite01 = (v: unknown): number | null =>
+    typeof v === "number" && isFinite(v) ? Math.min(1, Math.max(0, v)) : null;
+  const out: CurvePoint[] = [];
+  for (const pt of c) {
+    const x = finite01(pt?.x);
+    const y = finite01(pt?.y);
+    if (x === null || y === null) return [...DEFAULT_TONE_CURVE];
+    out.push({ x, y });
+  }
+  return out;
 }
 
 // Accepts the current object shape or a legacy single-curve array (treated as

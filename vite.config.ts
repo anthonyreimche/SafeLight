@@ -2,6 +2,7 @@
 import path from "path";
 import { readFileSync } from "fs";
 import { defineConfig } from "vite";
+import { configDefaults } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -48,11 +49,35 @@ export default defineConfig({
   },
   server: { headers: crossOriginIsolation },
   preview: { headers: crossOriginIsolation },
-  // Unit tests for the app live alongside source as `*.test.ts`. Scoped to src/
-  // so vitest never collects the extension packages' self-contained node tests
-  // (extensions/**, run via their own `npm test`).
+  // Tests live alongside source, scoped to src/ so vitest never collects the
+  // extension packages' self-contained node tests (extensions/**, run via their
+  // own `npm test`). Split by extension rather than by directory: `.test.ts` is
+  // pure logic and stays in node, `.test.tsx` renders components and needs a
+  // DOM. WebGL tests need a real GPU context, so they live in
+  // vitest.webgl.config.ts (`npm run test:webgl`) and are kept out of this run.
   test: {
-    include: ["src/**/*.test.ts"],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          include: ["src/**/*.test.ts"],
+          // `.webgl.test.ts` also matches the include glob, but those need a real
+          // GPU context and run from vitest.webgl.config.ts instead.
+          exclude: [...configDefaults.exclude, "src/**/*.webgl.test.ts"],
+          environment: "node",
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "dom",
+          include: ["src/**/*.test.tsx"],
+          environment: "jsdom",
+          setupFiles: ["src/test/setup-dom.ts"],
+        },
+      },
+    ],
   },
   build: {
     rollupOptions: {

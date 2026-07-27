@@ -307,6 +307,9 @@ export function ViewportImage({
     const { x: fx, y: fy } = frameLocalPoint(rect, clientX, clientY);
     // A held gesture key means "pan/zoom", not "sample" — fall through to zoom.
     if (onPick && !zoomGesture) {
+      // Only sample the image; a click on the letterbox/surround maps to
+      // out-of-image buffer coords, so ignore it.
+      if (!pointOnImage(clientX, clientY)) return;
       const { bx, by } = frameToBuffer(fx, fy);
       onPick(bx, by);
       return;
@@ -336,6 +339,11 @@ export function ViewportImage({
       if (!r || !p) return { x: null, y: null };
       return frameLocalPoint(r, p.x, p.y);
     };
+    // Gesture keys currently held. The gesture stays live until every one is
+    // released, so releasing an unrelated key mid-hold (e.g. a tool shortcut
+    // while Space is down) doesn't end the pan/zoom passthrough.
+    const held = new Set<string>();
+    const syncGesture = () => setCanvasZoomGesture(held.size > 0);
     const onKeyDown = (e: KeyboardEvent) => {
       if (shortcutsSuspended() || isEditableTarget(e.target)) return;
       if (e.code === "Space") {
@@ -344,16 +352,21 @@ export function ViewportImage({
           const { x, y } = frameLocal();
           zoomToggleRef.current(x, y);
         }
-        setCanvasZoomGesture(true);
+        held.add("Space");
+        syncGesture();
       } else if (e.ctrlKey || e.metaKey) {
         // Ctrl/⌘ held: hand pan/zoom back from whatever tool or extension overlay
         // is capturing the canvas. Applies everywhere (not just the built-in
         // zoomable overlays) so every extension overlay gets passthrough for free.
-        setCanvasZoomGesture(true);
+        held.add(e.metaKey ? "Meta" : "Control");
+        syncGesture();
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === "Space" || !(e.ctrlKey || e.metaKey)) setCanvasZoomGesture(false);
+      if (e.code === "Space") held.delete("Space");
+      if (!e.ctrlKey) held.delete("Control");
+      if (!e.metaKey) held.delete("Meta");
+      syncGesture();
     };
     const onMove = (e: MouseEvent) => {
       lastPointer.current = { x: e.clientX, y: e.clientY };
@@ -433,7 +446,9 @@ export function ViewportImage({
     // zoomed image — it falls through to the pan path below.
     if (onPickDrag && !overlay && e.button === 0 && !zoomGesture) {
       const rect = frameRef.current?.getBoundingClientRect();
-      if (rect) {
+      // Only start a pick on the image; a press on the surround maps to
+      // out-of-image buffer coords.
+      if (rect && pointOnImage(e.clientX, e.clientY)) {
         const { x: fx, y: fy } = frameLocalPoint(rect, e.clientX, e.clientY);
         const { bx, by } = frameToBuffer(fx, fy);
         pickDragRef.current.active = true;
@@ -523,6 +538,23 @@ export function ViewportImage({
     handleClick(e.clientX, e.clientY);
   };
 
+  // A pointercancel (touch interrupted, capture lost, OS gesture) leaves no
+  // up event, so clear all gesture state and hand the pick its up — otherwise
+  // a stuck downRef pans on hover and the picker never releases.
+  const onPointerCancel = () => {
+    if (pickDragRef.current.active) {
+      pickDragRef.current.active = false;
+      onPickDrag?.onUp();
+    }
+    downRef.current = null;
+    setDragging(false);
+    if (panRaf.current != null) {
+      cancelAnimationFrame(panRaf.current);
+      panRaf.current = null;
+      pendingOffset.current = null;
+    }
+  };
+
   // The canvas's own cursor intent, as a semantic token (see cursor-store).
   const baseToken = onPick || onPickDrag
     ? hoverImage
@@ -586,6 +618,7 @@ export function ViewportImage({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       onPointerLeave={() => setHoverImage(false)}
     >
       {showMat && (

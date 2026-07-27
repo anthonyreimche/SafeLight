@@ -28,6 +28,11 @@ import {
   defaultMaskAdjustments,
   DEFAULT_MASK_PANELS,
   DEFAULT_DEVELOP_PARAMS,
+<<<<<<< Updated upstream
+=======
+  NEUTRAL_TEMPERATURE_K,
+  assignDevelopParam,
+>>>>>>> Stashed changes
   normalizeParams,
 } from "@/catalog/types";
 
@@ -35,7 +40,14 @@ export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
 import type { HistogramData } from "@/rendering/histogram";
 import { catalogStorage } from "@/catalog/storage";
 import { broadcast } from "./broadcast";
+<<<<<<< Updated upstream
 import { nextGuide, type CropGuide } from "@/modules/develop/crop-guides";
+=======
+import { createCropSlice, type CropSlice } from "./develop-slices/crop-slice";
+import { createViewSlice, type ViewSlice } from "./develop-slices/view-slice";
+import { createMaskSlice, type MaskSlice } from "./develop-slices/mask-slice";
+import { pushEdit } from "./develop-slices/push-edit";
+>>>>>>> Stashed changes
 import { emitEditCommit } from "@/extensions/registry";
 import { normalizeParamBag } from "@/extensions/param-registry";
 import { useCatalogStore } from "./catalog-store";
@@ -62,6 +74,11 @@ interface DevelopState {
   historyIndex: number;
   histogram: HistogramData | null;
   asShotTemperature: number;
+  /** True dimensions of the decoded source last handed to the renderer (already
+   *  upright). Panels derive imageAspect from this, not photo.width/height, so
+   *  aspect-locked crops / Upright match the pixels on screen when a decode path
+   *  transposes stored metadata. {0,0} until the first frame decodes. */
+  sourceSize: { width: number; height: number };
 
   // Whether the guided-upright drawing overlay is open. Transient: guided can be
   // the selected upright mode without the line-drawing overlay capturing the
@@ -188,6 +205,7 @@ interface DevelopState {
   removeSpot: (id: string) => void;
 
   setHistogram: (histogram: HistogramData | null) => void;
+  setSourceSize: (width: number, height: number) => void;
   loadEdit: (photoId: string, asShotTemperature?: number) => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
     key: K,
@@ -199,8 +217,12 @@ interface DevelopState {
   setDynParams: (patch: Record<string, unknown>) => void;
   setToneCurve: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
   setHslValue: (band: HSLBand, channel: HSLChannel, value: number) => void;
+  /** Replace the live params wholesale (the caller merges a partial preset over
+   *  the current params first) and merge the preset's contributed bag over the
+   *  live one, committed as one undoable edit. Full params only — a partial
+   *  would silently reset every omitted core adjustment to its default. */
   applyPreset: (
-    params: Partial<DevelopParams>,
+    params: DevelopParams,
     paramBag?: Record<string, unknown>,
   ) => Promise<void>;
   /** Set (or clear with null) the render-only preview params, optionally with a
@@ -222,6 +244,7 @@ interface DevelopState {
   canRedo: () => boolean;
 }
 
+<<<<<<< Updated upstream
 // Shared id generator for masks / components created from the panel (range
 // masks have no canvas gesture, so they're built here rather than in the overlay).
 let idSeq = 0;
@@ -236,35 +259,55 @@ function pushEdit(get: () => DevelopState) {
     payload: { photoId: s.photoId, params: s.params },
   });
 }
+=======
+// Ephemeral mask/retouch tool state carries ids from params.masks / params.retouch;
+// switching photos must clear it or the new photo opens with a dangling selection
+// (or an armed tool) pointing at the previous photo's objects.
+const RESET_TOOL_SELECTION: Partial<DevelopState> = {
+  activeTool: "none",
+  selectedMaskId: null,
+  selectedComponentId: null,
+  selectedSpotId: null,
+  hoveredMaskId: null,
+};
+>>>>>>> Stashed changes
 
 // Step the history cursor (undo = -1, redo = +1), broadcast the restored
 // params, and persist the new cursor — without persisting, switching photos
 // (or another window) snapped the stack back to the last commit, which made
-// redo/undo positions silently vanish.
+// redo/undo positions silently vanish. Restoring a snapshot is a look change
+// like a commit, so it also refreshes the grid thumbnail and re-emits the
+// edit to extensions (else the Library thumbnail and any XMP sidecar stay at
+// the pre-undo look while the stored cursor points elsewhere).
 function moveHistory(
   get: () => DevelopState,
   set: (p: Partial<DevelopState>) => void,
   dir: -1 | 1,
 ): void {
-  const { photoId, history, historyIndex } = get();
+  const { photoId, history, historyIndex, asShotTemperature } = get();
   const newIndex = historyIndex + dir;
   if (newIndex < 0 || newIndex > history.length - 1) return;
-  set({
-    historyIndex: newIndex,
-    params: { ...history[newIndex].params },
-    paramBag: { ...(history[newIndex].paramBag ?? {}) },
-  });
-  broadcast({
-    type: "edit-update",
-    payload: { photoId, params: history[newIndex].params },
-  });
-  if (photoId) {
-    void catalogStorage().putEditState({
-      photoId,
-      stack: history,
-      currentIndex: newIndex,
-    });
-  }
+  const snapshot = history[newIndex];
+  // Normalize on the way out, not just at load: a stack read from disk carries
+  // snapshots written before newer params existed, and stepping into one must
+  // fill today's defaults rather than hand the renderer a half-shaped object.
+  const params = normalizeParams(snapshot.params);
+  const paramBag = normalizeParamBag(snapshot.paramBag);
+  set({ historyIndex: newIndex, params, paramBag });
+  broadcast({ type: "edit-update", payload: { photoId, params } });
+  if (!photoId) return;
+
+  const editState: EditState = {
+    photoId,
+    stack: history,
+    currentIndex: newIndex,
+  };
+  void catalogStorage().putEditState(editState);
+
+  const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
+  if (photo) void emitEditCommit({ photo, editState });
+
+  regenerateEditedThumbnail(photoId, params, asShotTemperature, paramBag);
 }
 
 export const useDevelopStore = create<DevelopState>((set, get) => ({
@@ -276,7 +319,8 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   history: [],
   historyIndex: -1,
   histogram: null,
-  asShotTemperature: 6500,
+  asShotTemperature: NEUTRAL_TEMPERATURE_K,
+  sourceSize: { width: 0, height: 0 },
 
   guidedEditing: false,
   setGuidedEditing: (guidedEditing) => set({ guidedEditing }),
@@ -610,14 +654,24 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
 
   setHistogram: (histogram) => set({ histogram }),
 
+  setSourceSize: (width, height) =>
+    set((s) =>
+      s.sourceSize.width === width && s.sourceSize.height === height
+        ? s
+        : { sourceSize: { width, height } },
+    ),
+
   async loadEdit(photoId: string, asShotTemperature?: number) {
-    const asShot = asShotTemperature ?? 6500;
+    const asShot = asShotTemperature ?? NEUTRAL_TEMPERATURE_K;
     const editState = await catalogStorage().getEditState(photoId);
     if (editState && editState.stack.length > 0) {
       // Older stacks lack the seeded "Original" snapshot — prepend one so the
       // first real edit is always undoable.
       let stack = editState.stack;
-      let index = editState.currentIndex;
+      // The stored cursor can fall outside its stack (a truncated write, a
+      // catalog edited by hand); clamp so the photo opens on its nearest real
+      // snapshot instead of throwing on an undefined one.
+      let index = Math.min(Math.max(editState.currentIndex, 0), stack.length - 1);
       if (stack[0].label !== "Original") {
         stack = [
           {
@@ -640,6 +694,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         history: stack,
         historyIndex: index,
         guidedEditing: false,
+        ...RESET_TOOL_SELECTION,
       });
     } else {
       // Seed history with the untouched state so undo can return to it.
@@ -662,6 +717,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         ],
         historyIndex: 0,
         guidedEditing: false,
+        ...RESET_TOOL_SELECTION,
       });
     }
   },
@@ -670,30 +726,21 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
     set((s) => ({
       params: { ...s.params, [key]: value },
     }));
-    broadcast({
-      type: "edit-update",
-      payload: { photoId: get().photoId, params: get().params },
-    });
+    pushEdit(get);
   },
 
   setDynParam(key, value) {
     set((s) => ({
       paramBag: { ...s.paramBag, [key]: value },
     }));
-    broadcast({
-      type: "edit-update",
-      payload: { photoId: get().photoId, params: get().params },
-    });
+    pushEdit(get);
   },
 
   setDynParams(patch) {
     set((s) => ({
       paramBag: { ...s.paramBag, ...patch },
     }));
-    broadcast({
-      type: "edit-update",
-      payload: { photoId: get().photoId, params: get().params },
-    });
+    pushEdit(get);
   },
 
   setToneCurve(channel, points) {
@@ -703,10 +750,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         toneCurve: { ...s.params.toneCurve, [channel]: points },
       },
     }));
-    broadcast({
-      type: "edit-update",
-      payload: { photoId: get().photoId, params: get().params },
-    });
+    pushEdit(get);
   },
 
   setHslValue(band, channel, value) {
@@ -719,10 +763,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         },
       },
     }));
-    broadcast({
-      type: "edit-update",
-      payload: { photoId: get().photoId, params: get().params },
-    });
+    pushEdit(get);
   },
 
   async applyPreset(params, paramBag) {
@@ -736,10 +777,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
         ? { ...s.paramBag, ...normalizeParamBag(paramBag) }
         : s.paramBag,
     }));
-    broadcast({
-      type: "edit-update",
-      payload: { photoId: get().photoId, params: get().params },
-    });
+    pushEdit(get);
     await get().commitEdit("Preset");
   },
 
@@ -804,7 +842,7 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
   },
 
   async resetParams(keys, label) {
-    const { photoId, asShotTemperature } = get();
+    const { asShotTemperature } = get();
     if (keys.length === 0) return;
     set((s) => {
       const next = { ...s.params } as unknown as Record<string, unknown>;
@@ -814,20 +852,14 @@ export const useDevelopStore = create<DevelopState>((set, get) => ({
       }
       return { params: next as unknown as DevelopParams };
     });
-    broadcast({
-      type: "edit-update",
-      payload: { photoId, params: get().params },
-    });
+    pushEdit(get);
     await get().commitEdit(label);
   },
 
   async reset() {
     const fresh = normalizeParams({ temperature: get().asShotTemperature });
     set({ params: fresh, paramBag: {} });
-    broadcast({
-      type: "edit-update",
-      payload: { photoId: get().photoId, params: fresh },
-    });
+    pushEdit(get);
     // Persist as an undoable history step so the reset survives navigation.
     await get().commitEdit("Reset");
   },

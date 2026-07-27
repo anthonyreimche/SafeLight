@@ -180,6 +180,8 @@ export function applyAccessibility(): void {
     s.highContrast || osWants("moreContrast"),
     s.colorOverrides?.[activeId] ?? {},
   );
+  // Manual OR OS: must match settings-store.applySideEffects, which writes the
+  // same class as an always-on fallback (both write absolutely — see note there).
   root.classList.toggle("sl-reduce-motion", s.reduceMotion || osWants("reduceMotion"));
   root.classList.toggle(
     "sl-opaque",

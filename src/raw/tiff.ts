@@ -199,7 +199,9 @@ export class TiffReader {
     const start = this.dataOffset(e);
     let s = "";
     for (let i = 0; i < e.count; i++) {
-      const c = this.view.getUint8(start + i);
+      const p = start + i;
+      if (p + 1 > this.view.byteLength) break;
+      const c = this.view.getUint8(p);
       if (c === 0) break;
       s += String.fromCharCode(c);
     }

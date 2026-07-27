@@ -90,12 +90,23 @@ export function contentAwareFill(
   const nny = new Int32Array(N);
   const rand = mulberry32(0x9e3779b1);
 
+  // Known (non-hole) pixels within the same [P, W-P)×[P, H-P) band the random
+  // tries sample from, used as the seed give-up fallback so a large/central hole
+  // never seeds the field with in-hole coordinates.
+  let bandKnown = -1;
+  for (let y = P; y < H - P && bandKnown < 0; y++) {
+    for (let x = P; x < W - P; x++) {
+      if (!hole[y * W + x]) { bandKnown = y * W + x; break; }
+    }
+  }
+
   const randomKnownCenter = (): [number, number] => {
     for (let t = 0; t < 48; t++) {
       const x = P + ((rand() * (W - 2 * P)) | 0);
       const y = P + ((rand() * (H - 2 * P)) | 0);
       if (!hole[y * W + x]) return [x, y];
     }
+    if (bandKnown >= 0) return [bandKnown % W, (bandKnown / W) | 0];
     return [Math.min(W - P - 1, Math.max(P, W >> 1)), Math.min(H - P - 1, Math.max(P, H >> 1))];
   };
   for (const i of holeIdx) {

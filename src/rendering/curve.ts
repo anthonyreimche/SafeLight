@@ -113,6 +113,7 @@ const ADOBE_COLOR_BASE: CurvePoint[] = [
 // curve into one 256×1 RGBA LUT. Order matches LR: profile baseline first, then
 // the user's master curve, then the channel's own curve, so
 // finalChannel[i] = channelCurve(rgbCurve(baseCurve(i))). The shader samples .r/.g/.b.
+<<<<<<< Updated upstream
 export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
   const baseProfile = buildCurveLUT(ADOBE_COLOR_BASE);
   const rgb = buildCurveLUT(curves.rgb);
@@ -126,6 +127,24 @@ export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
     out[i * 4] = red[base];
     out[i * 4 + 1] = green[base];
     out[i * 4 + 2] = blue[base];
+=======
+// includeBaseProfile=false composes user curves on identity instead — used when
+// the active display transform replaces the Adobe Color baseline (skipBaseCurve).
+export function buildRGBCurveLUT(curves: ToneCurves, includeBaseProfile = true): Uint8Array {
+  const baseEval = includeBaseProfile ? makeCurveEvaluator(ADOBE_COLOR_BASE) : null;
+  const rgbEval = makeCurveEvaluator(curves.rgb);
+  const redEval = makeCurveEvaluator(curves.red);
+  const greenEval = makeCurveEvaluator(curves.green);
+  const blueEval = makeCurveEvaluator(curves.blue);
+
+  const out = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255;
+    const base = rgbEval(baseEval ? baseEval(x) : x);
+    out[i * 4] = Math.round(redEval(base) * 255);
+    out[i * 4 + 1] = Math.round(greenEval(base) * 255);
+    out[i * 4 + 2] = Math.round(blueEval(base) * 255);
+>>>>>>> Stashed changes
     out[i * 4 + 3] = 255;
   }
   return out;
@@ -135,17 +154,17 @@ export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
 // Adobe Color baseline (that profile is global; mask curves start from the
 // already-developed display color). Layout matches buildRGBCurveLUT (256 RGBA).
 export function buildMaskCurveLUT(curves: ToneCurves, out?: Uint8Array, offset = 0): Uint8Array {
-  const rgb = buildCurveLUT(curves.rgb);
-  const red = buildCurveLUT(curves.red);
-  const green = buildCurveLUT(curves.green);
-  const blue = buildCurveLUT(curves.blue);
+  const rgbEval = makeCurveEvaluator(curves.rgb);
+  const redEval = makeCurveEvaluator(curves.red);
+  const greenEval = makeCurveEvaluator(curves.green);
+  const blueEval = makeCurveEvaluator(curves.blue);
   const buf = out ?? new Uint8Array(256 * 4);
   for (let i = 0; i < 256; i++) {
-    const base = rgb[i];
+    const base = rgbEval(i / 255);
     const o = offset + i * 4;
-    buf[o] = red[base];
-    buf[o + 1] = green[base];
-    buf[o + 2] = blue[base];
+    buf[o] = Math.round(redEval(base) * 255);
+    buf[o + 1] = Math.round(greenEval(base) * 255);
+    buf[o + 2] = Math.round(blueEval(base) * 255);
     buf[o + 3] = 255;
   }
   return buf;

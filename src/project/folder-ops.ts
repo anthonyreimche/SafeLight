@@ -59,6 +59,13 @@ function splitExt(name: string): [string, string] {
   return i > 0 ? [name.slice(0, i), name.slice(i)] : [name, ""];
 }
 
+/** Reduce a user-typed name to one filesystem entry name: a single path segment
+ *  (separators would silently create or move into nested folders) with no
+ *  trailing dots or spaces, which Windows can't keep. "" if nothing is left. */
+function cleanEntryName(raw: string): string {
+  return raw.trim().replace(/[/\\]/g, "").replace(/[. ]+$/, "");
+}
+
 /** Does a project-relative path exist on disk? Works in both the native and FSA
  *  builds (the latter probes the parent directory handle). */
 async function existsRel(
@@ -73,6 +80,26 @@ async function existsRel(
   try {
     const parent = await resolveDir(rootHandle, dirnameRel(rel));
     await parent.getFileHandle(basename(rel));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Does a project-relative *directory* exist on disk? (existsRel probes for a
+ *  file, so it can't see a folder in the FSA build.) */
+async function dirExistsRel(
+  rootHandle: FileSystemDirectoryHandle,
+  rel: string,
+): Promise<boolean> {
+  const fs = nativeFs();
+  const rootPath = nativePathOf(rootHandle);
+  if (fs && rootPath) {
+    return fs.exists(`${rootPath.replace(/[/\\]+$/, "")}/${rel}`);
+  }
+  try {
+    const parent = await resolveDir(rootHandle, dirnameRel(rel));
+    await parent.getDirectoryHandle(basename(rel));
     return true;
   } catch {
     return false;
@@ -142,8 +169,10 @@ async function copyDir(
   newName: string,
 ): Promise<void> {
   const destDir = await destParent.getDirectoryHandle(newName, { create: true });
+  // Copy hidden entries too: they're user data that must travel with the folder.
+  // (The project's .safelight working dir lives at the root, never inside a
+  // moved subfolder, so it can't be dragged through here.)
   for await (const entry of srcDir.values()) {
-    if (entry.name.startsWith(".")) continue;
     if (entry.kind === "directory") {
       await copyDir(entry as FileSystemDirectoryHandle, destDir, entry.name);
     } else {
@@ -198,8 +227,8 @@ export async function createFolder(
   name: string,
 ): Promise<string | null> {
   const rootHandle = root();
-  if (!rootHandle || !name.trim()) return null;
-  const clean = name.trim();
+  const clean = cleanEntryName(name);
+  if (!rootHandle || !clean) return null;
   const parent = await resolveDir(rootHandle, parentRel, true);
   await parent.getDirectoryHandle(clean, { create: true });
   await useProjectStore.getState().refreshTree();
@@ -216,9 +245,14 @@ export function uniqueFolderName(siblingNames: string[], base = "Untitled Folder
 /** Rename a folder in place (same parent). No-op for the root or empty names. */
 export async function renameFolder(rel: string, newName: string): Promise<void> {
   const rootHandle = root();
-  const clean = newName.trim();
+  const clean = cleanEntryName(newName);
   if (!rootHandle || !rel || !clean || clean === basename(rel)) return;
   const newRel = joinRel(dirnameRel(rel), clean);
+  // Bail on collision rather than merge into / overwrite an existing folder.
+  if (await dirExistsRel(rootHandle, newRel)) {
+    console.warn(`[folder-ops] rename ${rel} → ${newRel} skipped: name in use`);
+    return;
+  }
   await moveOnDisk(rootHandle, rel, newRel, "directory");
   await relocateSubtree(rootHandle, rel, newRel);
   await useProjectStore.getState().refreshTree();
@@ -232,37 +266,72 @@ export async function moveFolder(srcRel: string, destParentRel: string): Promise
   if (destParentRel === srcRel || destParentRel.startsWith(`${srcRel}/`)) return;
   if (dirnameRel(srcRel) === destParentRel) return;
   const newRel = joinRel(destParentRel, basename(srcRel));
+  // Bail on collision rather than merge into / overwrite an existing folder.
+  if (await dirExistsRel(rootHandle, newRel)) {
+    console.warn(`[folder-ops] move ${srcRel} → ${newRel} skipped: name in use`);
+    return;
+  }
   await resolveDir(rootHandle, destParentRel, true);
   await moveOnDisk(rootHandle, srcRel, newRel, "directory");
   await relocateSubtree(rootHandle, srcRel, newRel);
   await useProjectStore.getState().refreshTree();
 }
 
-/** Move photos (by id) into folder `destRel`. */
+/** Move photos (by id) into folder `destRel`. Virtual copies own no file, so a
+ *  copy is moved only when its master moves — carried along like renamePhoto — and
+ *  a copy dragged without its master is skipped (its file stays with the master). */
 export async function movePhotos(ids: string[], destRel: string): Promise<void> {
   const rootHandle = root();
   if (!rootHandle || ids.length === 0) return;
   const idSet = new Set(ids);
-  const photos = useCatalogStore.getState().photos.filter((p) => idSet.has(p.id));
+  const all = useCatalogStore.getState().photos;
+  const photos = all.filter((p) => idSet.has(p.id) && !p.copyOf);
   const destDir = await resolveDir(rootHandle, destRel, true);
 
   const updated: CatalogPhoto[] = [];
   for (const p of photos) {
     if (p.folder === destRel) continue; // already here
     const newRel = joinRel(destRel, p.filename);
+    // Bail on collision rather than overwrite: the move is a native rename,
+    // which silently replaces an existing destination file — that would destroy
+    // a different photo and leave two catalog records on one file.
+    if (await existsRel(rootHandle, newRel)) {
+      console.warn(`[folder-ops] move ${p.relPath} → ${newRel} skipped: name in use`);
+      continue;
+    }
     try {
       await moveOnDisk(rootHandle, p.relPath, newRel, "file");
-      const fileHandle = await destDir.getFileHandle(p.filename);
-      updated.push({
-        ...p,
-        folder: destRel,
-        relPath: newRel,
-        directoryHandle: destDir,
-        fileHandle,
-      });
     } catch (e) {
       console.error(`[folder-ops] move ${p.relPath} → ${newRel} failed:`, e);
+      continue;
     }
+
+    // Best-effort: keep the sidecar paired with its image in the new folder.
+    const oldSidecar = joinRel(p.folder, `${p.filename}${SIDECAR_SUFFIX}`);
+    const newSidecar = joinRel(destRel, `${p.filename}${SIDECAR_SUFFIX}`);
+    try {
+      if (await existsRel(rootHandle, oldSidecar)) {
+        await moveOnDisk(rootHandle, oldSidecar, newSidecar, "file");
+      }
+    } catch (e) {
+      console.warn(`[folder-ops] sidecar move ${oldSidecar} skipped:`, e);
+    }
+
+    const fileHandle = await destDir.getFileHandle(p.filename);
+    // Virtual copies share this file — carry the new folder/relPath/handles to
+    // them too so they don't go stale before the next scan re-attaches them.
+    updated.push(
+      { ...p, folder: destRel, relPath: newRel, directoryHandle: destDir, fileHandle },
+      ...all
+        .filter((c) => c.copyOf === p.id)
+        .map((c) => ({
+          ...c,
+          folder: destRel,
+          relPath: newRel,
+          directoryHandle: destDir,
+          fileHandle,
+        })),
+    );
   }
   await useCatalogStore.getState().relocatePhotos(updated);
   await useProjectStore.getState().refreshTree();
@@ -302,9 +371,8 @@ export async function renamePhoto(
   if (!photo) return { ok: false, reason: "Photo not found." };
 
   const [, ext] = splitExt(photo.filename);
-  // Collapse to a single path segment and drop trailing dots/spaces (Windows
-  // can't keep them); the original extension is always re-appended.
-  const cleanBase = newBaseName.trim().replace(/[/\\]/g, "").replace(/[. ]+$/, "");
+  // The original extension is always re-appended, so only the base is cleaned.
+  const cleanBase = cleanEntryName(newBaseName);
   if (!cleanBase) return { ok: false, reason: "Name can't be empty." };
   const newFilename = cleanBase + ext;
   if (newFilename === photo.filename) return { ok: true, filename: photo.filename };
@@ -375,6 +443,10 @@ export async function exportPhotoData(ids: string[]): Promise<number> {
   let written = 0;
   for (const p of photos) {
     if (!p.directoryHandle) continue;
+    // A virtual copy shares its master's file — its sidecar path collides with
+    // the master's, so exporting it would clobber the master's. Only the master
+    // owns the on-disk sidecar.
+    if (p.copyOf) continue;
     const edit = await storage.getEditState(p.id);
     const sidecar: PhotoSidecar = {
       safelightSidecar: 1,

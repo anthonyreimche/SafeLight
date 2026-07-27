@@ -12,6 +12,7 @@
 // the main thread or in a worker.
 
 import * as UTIF from "utif2";
+import { MAX_DECODE_PIXELS } from "./decode-limits";
 import { getExtension } from "./raw-preview";
 
 const TIFF_EXTENSIONS = new Set([".tif", ".tiff"]);
@@ -58,12 +59,13 @@ export async function decodeTiff(file: Blob): Promise<ImageBitmap | null> {
       }
     }
 
+    // Reject absurd dimensions from the IFD tags before decodeImage allocates.
+    if (best > MAX_DECODE_PIXELS) return null;
+
     UTIF.decodeImage(buffer, page);
     const width = page.width;
     const height = page.height;
     if (!width || !height) return null;
-    // Guard against absurd dimensions (corrupt header) blowing up memory.
-    if (width * height > 268_435_456) return null;
 
     // toRGBA8 normalises any bit-depth/photometric (incl. 16-bit, CMYK, YCbCr)
     // down to 8-bit RGBA, ready for ImageData.

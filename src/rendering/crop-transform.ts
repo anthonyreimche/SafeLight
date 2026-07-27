@@ -105,10 +105,17 @@ export function transformedViewCrop(forward: Mat3, pad = 1.06): CropRect {
   return { x: cx - halfW, y: cy - halfH, width: 2 * halfW, height: 2 * halfH };
 }
 
+// Boundary slack, shared by the fit test and the half-plane projection that
+// feeds it: the projection parks a corner exactly on an image edge, so a test
+// without this tolerance rejects the position it was just handed.
+const EDGE_EPS = 1e-7;
+
 function inside(p: Vec2, inv: Mat3, distort?: LensDistort | null): boolean {
   let u = mat3Apply(inv, p.x, p.y);
   if (distort) u = lensCorrectUV(u, distort);
-  return u.x >= 0 && u.x <= 1 && u.y >= 0 && u.y <= 1;
+  return (
+    u.x >= -EDGE_EPS && u.x <= 1 + EDGE_EPS && u.y >= -EDGE_EPS && u.y <= 1 + EDGE_EPS
+  );
 }
 
 // Whether the (axis-aligned, transformed-frame) crop lies fully within the
@@ -161,9 +168,8 @@ interface Plane {
 // that always contains the origin). Returns `p` if already inside; otherwise the
 // nearest boundary point (checking edge-line projections and vertices).
 function closestInHalfplanes(p: Vec2, planes: Plane[]): Vec2 {
-  const eps = 1e-7;
   const feasible = (q: Vec2) =>
-    planes.every((pl) => pl.nx * q.x + pl.ny * q.y <= pl.b + eps);
+    planes.every((pl) => pl.nx * q.x + pl.ny * q.y <= pl.b + EDGE_EPS);
   if (feasible(p)) return p;
 
   let best: Vec2 = { x: 0, y: 0 }; // t=0 (start position) is always valid

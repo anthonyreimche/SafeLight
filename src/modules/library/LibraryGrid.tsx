@@ -172,11 +172,46 @@ export function LibraryGrid() {
   // Only offered for a single photo; opens a small dialog, then renames.
   const [renameTarget, setRenameTarget] = useState<{ id: string; filename: string } | null>(null);
 
+<<<<<<< Updated upstream
   const handleRename = useCallback(async (id: string, newBase: string) => {
     setRenameTarget(null);
     const res = await renamePhoto(id, newBase);
     if (!res.ok) window.alert(res.reason);
   }, []);
+=======
+  // Names the rename dialog must refuse. A master competes with the other real
+  // files in its folder (virtual copies mirror a master's filename, so counting
+  // them would flag the master's own name); a copy competes with its siblings'
+  // distinguishers.
+  const takenRenameNames = useMemo(() => {
+    if (!renameTarget) return [];
+    const target = photos.find((p) => p.id === renameTarget.id);
+    if (!target) return [];
+    const siblings = photos.filter((p) => p.id !== target.id);
+    return renameTarget.isCopy
+      ? siblings
+          .filter((p) => p.copyOf === target.copyOf)
+          .map((p) => p.copyName ?? "")
+      : siblings
+          .filter((p) => !p.copyOf && p.folder === target.folder)
+          .map((p) => splitFilename(p.filename)[0]);
+  }, [photos, renameTarget]);
+
+  // A virtual copy shares its master's file, so "renaming" it edits the display
+  // distinguisher (copyName); a master renames the actual file on disk.
+  const handleRename = useCallback(
+    async (target: { id: string; isCopy: boolean }, value: string) => {
+      setRenameTarget(null);
+      if (target.isCopy) {
+        await useCatalogStore.getState().setCopyName(target.id, value);
+        return;
+      }
+      const res = await renamePhoto(target.id, value);
+      if (!res.ok) window.alert(res.reason);
+    },
+    [],
+  );
+>>>>>>> Stashed changes
 
   // Reveal the photo's file in the OS file manager. Single-photo only (native
   // builds), mirroring the platform "show this file in its folder" action.
@@ -354,6 +389,7 @@ export function LibraryGrid() {
           onCancel={() => setCopyDialog(null)}
         />
       )}
+<<<<<<< Updated upstream
       {renameTarget && (
         <RenamePhotoDialog
           filename={renameTarget.filename}
@@ -361,6 +397,35 @@ export function LibraryGrid() {
           onCancel={() => setRenameTarget(null)}
         />
       )}
+=======
+      {renameTarget &&
+        (renameTarget.isCopy ? (
+          <RenamePhotoDialog
+            title="Rename copy"
+            value={renameTarget.copyName}
+            prefix={`${splitFilename(renameTarget.filename)[0]}_`}
+            suffix={splitFilename(renameTarget.filename)[1]}
+            placeholder="copy"
+            takenNames={takenRenameNames}
+            onSubmit={(v) =>
+              void handleRename({ id: renameTarget.id, isCopy: true }, v)
+            }
+            onCancel={() => setRenameTarget(null)}
+          />
+        ) : (
+          <RenamePhotoDialog
+            title="Rename photo"
+            value={splitFilename(renameTarget.filename)[0]}
+            suffix={splitFilename(renameTarget.filename)[1]}
+            placeholder="File name"
+            takenNames={takenRenameNames}
+            onSubmit={(v) =>
+              void handleRename({ id: renameTarget.id, isCopy: false }, v)
+            }
+            onCancel={() => setRenameTarget(null)}
+          />
+        ))}
+>>>>>>> Stashed changes
     </>
   );
 

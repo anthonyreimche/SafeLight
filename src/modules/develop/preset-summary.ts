@@ -51,6 +51,8 @@ export const PARAM_LABELS: Partial<Record<ScalarKey, string>> = {
   luminanceNR: "Luminance NR",
   luminanceNRDetail: "Luminance NR detail",
   luminanceNRContrast: "Luminance NR contrast",
+  luminanceNRShadows: "Luminance NR shadows",
+  luminanceNRHighlights: "Luminance NR highlights",
   colorNR: "Color NR",
   colorNRDetail: "Color NR detail",
   colorNRSmoothness: "Color NR smoothness",
@@ -175,6 +177,9 @@ export function presetFields(
   const fields: PresetField[] = [];
 
   for (const key of Object.keys(PARAM_LABELS) as ScalarKey[]) {
+    // straighten is offered solely inside the per-image "Crop & transform" field;
+    // its label stays in PARAM_LABELS only for tooltip display of older presets.
+    if (key === "straighten") continue;
     const value = params[key];
     if (typeof value !== "number") continue;
     const changed = differs(value, DEFAULT_DEVELOP_PARAMS[key] as number);

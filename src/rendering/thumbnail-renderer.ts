@@ -23,6 +23,13 @@ function getHistCtx(): Ctx | null {
   if (histDead) return null;
   try {
     const canvas = document.createElement("canvas");
+    // A GPU reset kills the singleton's context; drop it so the next call
+    // rebuilds instead of rendering into a dead renderer (histDead stays a
+    // latch for genuine "WebGL2 unsupported", which won't recover on retry).
+    canvas.addEventListener("webglcontextlost", () => {
+      histCtx?.renderer.dispose();
+      histCtx = null;
+    });
     histCtx = { canvas, renderer: new WebGLRenderer(canvas) };
     return histCtx;
   } catch {

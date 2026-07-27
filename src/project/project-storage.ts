@@ -218,7 +218,10 @@ export class ProjectStorage implements CatalogStorage {
       try {
         const file = await f.handle.getFile();
         const built = await buildPhoto(file, f.parent, f.handle);
-        if (!built) return null;
+        if (!built) {
+          onProgress?.(++newDone, newTotal);
+          return null;
+        }
         let photo: CatalogPhoto = {
           ...built,
           relPath: f.path,
@@ -373,10 +376,20 @@ export class ProjectStorage implements CatalogStorage {
     this.edits.delete(id);
     this.lastThumb.delete(id);
     await removeEntry(this.previews, `${id}.jpg`);
-    // Drop any opaque per-photo blobs (warp fields, etc.) for this photo.
-    if (this.blobsDir) {
+    // Drop any opaque per-photo blobs (warp fields, etc.) for this photo. Open
+    // the dir WITHOUT creating it so blobs written in an earlier session are
+    // reached too, but projects that never used blobs don't get an empty dir.
+    let dir = this.blobsDir;
+    if (!dir) {
+      try {
+        dir = await this.sl.getDirectoryHandle("blobs");
+        this.blobsDir = dir;
+      } catch {
+        dir = null;
+      }
+    }
+    if (dir) {
       const safeId = id.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const dir = this.blobsDir;
       // keys() is a standard FileSystemDirectoryHandle async iterator; not in
       // every TS lib target, so reach it through a narrow cast.
       const keys = (dir as unknown as { keys?: () => AsyncIterable<string> }).keys;

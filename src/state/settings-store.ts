@@ -308,10 +308,34 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 const KEY = "sl_settings_v1";
 
+/** Layer a persisted payload over the defaults, or null if it isn't one. Shared
+ *  by the boot-time read and the cross-window storage event so a settings object
+ *  written by any build is validated and migrated exactly once, the same way. */
+function parseSettings(raw: string): AppSettings | null {
+  let stored: unknown;
+  try {
+    stored = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return null;
+  const s: AppSettings = { ...DEFAULT_SETTINGS, ...(stored as Partial<AppSettings>) };
+  // updateChannel used to be "minor" | "patch" (version-number granularity);
+  // neither expressed pre-release intent, so both fold into "stable".
+  if (s.updateChannel !== "all" && s.updateChannel !== "stable") {
+    s.updateChannel = "stable";
+  }
+  return s;
+}
+
 function load(): AppSettings {
   try {
     const raw = localStorage.getItem(KEY);
+<<<<<<< Updated upstream
     if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+=======
+    if (raw) return parseSettings(raw) ?? { ...DEFAULT_SETTINGS };
+>>>>>>> Stashed changes
   } catch {}
   return { ...DEFAULT_SETTINGS };
 }
@@ -324,8 +348,18 @@ function applySideEffects(s: AppSettings): void {
   // CSS zoom scales the whole px-based UI cleanly in Chromium.
   (document.body.style as CSSStyleDeclaration & { zoom: string }).zoom =
     s.uiScale === 1 ? "" : String(s.uiScale);
-  // Reduce-motion lives in accessibility.ts now (it's OR-ed with the OS's
-  // prefers-reduced-motion), so it isn't applied here.
+  // Reduce-motion holds even when the accessibility extension is disabled. Both
+  // this and the extension's applyAccessibility write the class absolutely, so
+  // both MUST resolve it to the same value — manual OR the OS signal — or the two
+  // uncoordinated writes race and clobber each other.
+  const osReduceMotion =
+    typeof window !== "undefined" && window.matchMedia
+      ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      : false;
+  document.documentElement.classList.toggle(
+    "sl-reduce-motion",
+    s.reduceMotion || osReduceMotion,
+  );
   // Body font-family reads var(--font-mono); an inline :root override wins.
   if (s.uiFont) {
     document.documentElement.style.setProperty("--font-mono", s.uiFont);
@@ -382,10 +416,9 @@ export function initSettings(): void {
   applySideEffects(useSettings.getState());
   window.addEventListener("storage", (e) => {
     if (e.key !== KEY || !e.newValue) return;
-    try {
-      const s = { ...DEFAULT_SETTINGS, ...JSON.parse(e.newValue) };
-      useSettings.setState(s);
-      applySideEffects(s);
-    } catch {}
+    const s = parseSettings(e.newValue);
+    if (!s) return;
+    useSettings.setState(s);
+    applySideEffects(s);
   });
 }

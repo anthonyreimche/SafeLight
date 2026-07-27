@@ -19,6 +19,7 @@ let gen = 0;
 const queue: string[] = [];
 const queued = new Set<string>();
 let running = false;
+let runningGen = -1;
 let pending: { id: string; blob: Blob }[] = [];
 let flushScheduled = false;
 
@@ -30,7 +31,6 @@ export function setThumbnailLoader(l: Loader | null): number {
   queue.length = 0;
   queued.clear();
   pending = [];
-  running = false;
   return ++gen;
 }
 
@@ -81,6 +81,7 @@ async function pump(): Promise<void> {
   if (running || !loader) return;
   running = true;
   const myGen = gen; // stop if a newer setThumbnailLoader swaps the project out
+  runningGen = myGen;
   try {
     while (gen === myGen && queue.length) {
       const id = queue.shift()!;
@@ -91,12 +92,19 @@ async function pump(): Promise<void> {
       } catch {
         blob = null;
       }
-      if (blob) {
+      // A newer open may have swapped the project during the read; its blob must
+      // not merge into the new catalog under this id.
+      if (blob && gen === myGen) {
         pending.push({ id, blob });
         scheduleFlush();
       }
     }
   } finally {
-    running = false;
+    // Only release if a newer pump hasn't already taken over. A newer open may
+    // have queued its own requests behind this stale pump; drain them.
+    if (runningGen === myGen) {
+      running = false;
+      if (queue.length) void pump();
+    }
   }
 }

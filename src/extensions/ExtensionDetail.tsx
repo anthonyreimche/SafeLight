@@ -10,9 +10,10 @@
 // free Markdown component. Built-in extensions have no repo, so they show a
 // local-only page (no README fetch, no install/uninstall).
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ExtensionManifest, ExtensionSearchResult } from "./types";
 import { useExtStoreUI, loadRepoMeta, loadReadme } from "./store-ui";
+import { resolveUrl } from "./markdown-url";
 import { useVerificationStatus, useReviewedFor, useBannedReason } from "./trust";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { Markdown } from "./Markdown";
@@ -24,6 +25,9 @@ import { isNewer } from "@/update/semver";
 export interface DetailTarget {
   /** "owner/repo" when the extension has a GitHub repo, else null. */
   repo: string | null;
+  /** Extension id (manifest id or built-in id). Absent only for a not-yet-
+   *  installed repo result. Gates the enable/disable + settings actions. */
+  id?: string;
   name: string;
   description?: string;
   author?: string;
@@ -109,12 +113,21 @@ export function ExtensionDetail({
     if (repo && branch) void loadReadme(repo, branch);
   }, [repo, branch]);
 
-  // Prefer manifest-declared assets, then GitHub-derived ones.
-  const icon =
-    target.manifest?.icon ??
-    (repoMeta ? repoMeta.ogImageUrl : undefined) ??
-    repoMeta?.ownerAvatarUrl ??
-    undefined;
+  // Prefer manifest-declared assets, then GitHub-derived ones. The manifest icon
+  // may be repo-relative (ExtensionManifest.icon), so resolve it like a README
+  // image instead of pointing an <img> at the app origin.
+  const manifestIcon = target.manifest?.icon;
+  const iconCandidates = [
+    manifestIcon ? resolveUrl(manifestIcon, "img", repo ?? undefined, branch) : null,
+    repoMeta?.ogImageUrl ?? null,
+    repoMeta?.ownerAvatarUrl ?? null,
+  ].filter((u): u is string => !!u);
+  // On a broken icon, fall through to the next candidate rather than blanking the
+  // tile. Reset when the candidate set changes (repo metadata loads in later).
+  const iconKey = iconCandidates.join("|");
+  const [iconIdx, setIconIdx] = useState(0);
+  useEffect(() => setIconIdx(0), [iconKey]);
+  const icon = iconCandidates[iconIdx];
   const stars = repoMeta?.stars ?? target.search?.stars ?? 0;
   const license = target.manifest?.license ?? repoMeta?.license ?? null;
   const author =
@@ -125,6 +138,10 @@ export function ExtensionDetail({
     repoMeta?.description ??
     "";
   const homepage = target.manifest?.homepage ?? repoMeta?.homepage ?? null;
+
+  // README/metadata come through the native github bridge; absent in the plain
+  // browser build and older Electron, where the fetches no-op (no perpetual spin).
+  const hasGithubBridge = !!window.safelightNative?.github;
 
   const id = target.manifest?.id;
   const hasUpdate = !!update?.hasUpdate && !!update.latestTag && !!repo;
@@ -141,10 +158,11 @@ export function ExtensionDetail({
         <div className="h-12 w-12 shrink-0 overflow-hidden rounded bg-surface-2">
           {icon && (
             <img
+              key={icon}
               src={icon}
               alt=""
               className="h-full w-full object-cover"
-              onError={(e) => (e.currentTarget.style.display = "none")}
+              onError={() => setIconIdx((i) => i + 1)}
             />
           )}
         </div>
@@ -237,18 +255,18 @@ export function ExtensionDetail({
             {busy === id ? "Updating…" : `Update to ${update!.latestTag}`}
           </button>
         )}
-        {target.installed && id && !target.locked && (
+        {target.installed && target.id && !target.locked && (
           <button
             disabled={busy !== null}
-            onClick={() => onToggle(id, !target.enabled)}
+            onClick={() => onToggle(target.id!, !target.enabled)}
             className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary disabled:opacity-40"
           >
             {target.enabled ? "Disable" : "Enable"}
           </button>
         )}
-        {target.installed && id && target.hasSettings && target.enabled && (
+        {target.installed && target.id && target.hasSettings && target.enabled && (
           <button
-            onClick={() => onSettings(id)}
+            onClick={() => onSettings(target.id!)}
             className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary"
           >
             Settings
@@ -306,6 +324,10 @@ export function ExtensionDetail({
             {target.locked
               ? "A built-in extension — part of SafeLight core."
               : "No repository linked for this extension."}
+          </div>
+        ) : !hasGithubBridge ? (
+          <div className="text-[11px] text-text-muted">
+            No repository details available in this build.
           </div>
         ) : meta?.status === "error" ? (
           <div className="text-[11px] text-text-muted">

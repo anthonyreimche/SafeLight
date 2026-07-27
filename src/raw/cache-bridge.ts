@@ -16,17 +16,29 @@ const pending = new Map<
 
 function getWorker(): Worker {
   if (!worker) {
-    worker = new Worker(new URL("./cache-worker.ts", import.meta.url), { type: "module" });
-    ready = new Promise<void>((resolve) => {
-      worker!.onmessage = (e: MessageEvent<CacheResponse>) => {
+    const w = new Worker(new URL("./cache-worker.ts", import.meta.url), { type: "module" });
+    worker = w;
+    ready = new Promise<void>((resolve, reject) => {
+      const fail = (err: Error) => {
+        for (const p of pending.values()) p.reject(err);
+        pending.clear();
+        if (worker === w) {
+          worker = null;
+          ready = null;
+        }
+        reject(err);
+      };
+      w.onmessage = (e: MessageEvent<CacheResponse>) => {
         const msg = e.data;
         if (msg.type === "ready") {
           resolve();
-          worker!.onmessage = handleMessage;
+          w.onmessage = handleMessage;
           return;
         }
         handleMessage(e);
       };
+      w.onerror = (e) => fail(new Error(e.message || "cache worker failed"));
+      w.onmessageerror = () => fail(new Error("cache worker message deserialisation failed"));
     });
   }
   return worker;
@@ -55,8 +67,13 @@ function send<T>(msg: CacheRequest, transfer?: Transferable[]): Promise<T> {
         if ("id" in msg) {
           pending.set(msg.id, { resolve: resolve as (v: unknown) => void, reject });
         }
-        if (transfer) w.postMessage(msg, transfer);
-        else w.postMessage(msg);
+        try {
+          if (transfer) w.postMessage(msg, transfer);
+          else w.postMessage(msg);
+        } catch (err) {
+          if ("id" in msg) pending.delete(msg.id);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
       }),
   );
 }

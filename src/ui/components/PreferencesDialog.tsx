@@ -192,6 +192,7 @@ const CORE_SECTIONS: PrefSection[] = [
     items: settings(
       "Default grid size",
       "Default sort",
+      "Show photos in subfolders",
       "Confirm before removing photos",
     ),
     keywords: [],
@@ -256,12 +257,13 @@ const CORE_SECTIONS: PrefSection[] = [
     group: "General",
     items: settings(
       "Default format",
+      "TIFF bit depth",
       "Default quality",
       "Default resolution",
       "Color space",
       "Bundle multiple photos as ZIP",
     ),
-    keywords: [],
+    keywords: ["tiff"],
     render: () => <ExportSection />,
   },
   {
@@ -284,6 +286,7 @@ const CORE_SECTIONS: PrefSection[] = [
       "Official extension topic",
       "Check extensions for updates",
       "Auto-update extensions",
+      "Only verified extensions",
     ),
     keywords: ["Manage", "plugins"],
     render: () => <ExtensionsSection />,
@@ -1287,7 +1290,7 @@ function PreviewsSection() {
       </Field>
       <Field
         label="Cached preview resolution"
-        hint="Long-edge cap of cached previews. Live edits always render full resolution."
+        hint="Long-edge cap of cached previews. Develop edits render from this cached preview; exports larger than the cap re-decode the full RAW."
       >
         <OptionRow
           value={s.rawCacheMaxEdge}
@@ -1426,7 +1429,10 @@ function StoredCatalogsField() {
   const [confirmPath, setConfirmPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const mountedRef = useRef(true);
-  useEffect(() => () => void (mountedRef.current = false), []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => void (mountedRef.current = false);
+  }, []);
 
   useEffect(() => {
     // Skip the (potentially gigabytes-wide) recursive disk walk unless the field
@@ -2043,7 +2049,7 @@ function UpdatesSection() {
     <div className="flex flex-col gap-4">
       <ToggleField
         label="Check for updates on startup"
-        hint="Silently checks the GitHub releases API once on launch and shows a banner if a newer version is available. No data is sent."
+        hint="Silently checks the GitHub releases API on launch and every few hours while the app is open, and shows a banner if a newer version is available. No data is sent."
         checked={checkForUpdates}
         onChange={(v) => updateSettings({ checkForUpdates: v })}
       />

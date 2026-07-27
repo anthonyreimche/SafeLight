@@ -307,6 +307,15 @@ export function DevelopCanvas({
       pendingCrop.current = null;
     }
   };
+  // Drop a queued write on unmount (photo/module switch mid-drag) so it can't
+  // land the previous photo's crop into the next photo's params after loadEdit.
+  useEffect(
+    () => () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      pendingCrop.current = null;
+    },
+    [],
+  );
 
   if (!supported) {
     return (

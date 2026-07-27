@@ -3,9 +3,16 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+// Characters no Windows/macOS/Linux filesystem accepts in a path segment, plus
+// control chars — the same name reaches the on-disk rename verbatim.
+const ILLEGAL_CHARS = /[/\\:*?"<>|\x00-\x1f]/;
+
+const NO_NAMES: readonly string[] = [];
 
 interface Props {
+<<<<<<< Updated upstream
   /** Current filename (with extension). The extension is preserved and shown as
    *  a static suffix; only the base name is editable. */
   filename: string;
@@ -20,11 +27,54 @@ export function RenamePhotoDialog({ filename, onRename, onCancel }: Props) {
   const dot = filename.lastIndexOf(".");
   const [base, ext] = dot > 0 ? [filename.slice(0, dot), filename.slice(dot)] : [filename, ""];
   const [name, setName] = useState(base);
+=======
+  /** Heading, e.g. "Rename photo" or "Rename copy". */
+  title: string;
+  /** Initial editable value. */
+  value: string;
+  /** Static, non-editable text shown before the field (e.g. a "base_" prefix
+   *  when editing a virtual copy's name). */
+  prefix?: string;
+  /** Static, non-editable text shown after the field (e.g. the ".NEF" extension,
+   *  which is locked so the decode path that keys off it can't be broken). */
+  suffix?: string;
+  placeholder?: string;
+  /** Names already spoken for beside this one — sibling filenames for a master,
+   *  sibling copy names for a virtual copy. Compared case-insensitively, since
+   *  Windows and macOS collide on case, so the clash surfaces here instead of
+   *  after a failed disk rename. */
+  takenNames?: readonly string[];
+  onSubmit: (value: string) => void;
+  onCancel: () => void;
+}
+
+/** Single-field modal for renaming a photo file or a virtual copy. The
+ *  surrounding `prefix`/`suffix` are shown but not editable. */
+export function RenamePhotoDialog({
+  title,
+  value: initial,
+  prefix,
+  suffix,
+  placeholder,
+  takenNames = NO_NAMES,
+  onSubmit,
+  onCancel,
+}: Props) {
+  const [name, setName] = useState(initial);
+>>>>>>> Stashed changes
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => inputRef.current?.select(), []);
 
+  const taken = useMemo(
+    () => new Set(takenNames.map((n) => n.trim().toLowerCase())),
+    [takenNames],
+  );
   const trimmed = name.trim();
-  const error = /[/\\]/.test(name) ? "Name can't contain / or \\." : null;
+  const error = ILLEGAL_CHARS.test(name)
+    ? 'Name can\'t contain / \\ : * ? " < > |.'
+    : trimmed !== "" && taken.has(trimmed.toLowerCase())
+      ? `“${trimmed}” is already taken.`
+      : null;
   const canSave = trimmed.length > 0 && !error;
   const submit = () => {
     if (canSave) onRename(trimmed);

@@ -413,8 +413,13 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(5, 220), resetDevelop(["exposure", "contrast", "highlights", "shadows", "whites", "blacks", "texture", "clarity", "dehaze", "vibrance", "saturation"], "Reset Basic")),
   panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(6, 220), resetDevelop(["toneCurve"], "Reset Tone Curve")),
   panelExt("core.color-grading", "Color Grading", ColorGradingPanel, "Shadow / midtone / highlight color wheels.", right(7, 200), resetDevelop(["colorGrading"], "Reset Color Grading")),
+<<<<<<< Updated upstream
   panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(8, 150), resetDevelop(["sharpening", "sharpenRadius", "sharpenDetail", "sharpenMasking", "luminanceNR", "luminanceNRDetail", "luminanceNRContrast", "luminanceNRShadows", "luminanceNRHighlights", "colorNR", "colorNRDetail", "colorNRSmoothness"], "Reset Detail")),
   panelExt("core.effects", "Effects", EffectsPanel, "Vignette, grain and dehaze.", right(10, 150), resetDevelop(["vignette", "grain"], "Reset Effects")),
+=======
+  panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(8, 150), resetDevelop(["sharpening", "sharpenRadius", "sharpenDetail", "sharpenMasking", "luminanceNR", "luminanceNRDetail", "luminanceNRContrast", "luminanceNRShadows", "luminanceNRHighlights", "colorNR", "colorNRDetail", "colorNRSmoothness"], "Reset Detail"), DETAIL_MASK_PANEL),
+  panelExt("core.effects", "Effects", EffectsPanel, "Vignette and grain.", right(10, 150), resetDevelop(["vignette", "grain"], "Reset Effects")),
+>>>>>>> Stashed changes
   // HSL is a full extension (not a bare panelExt) so it can contribute its own
   // Preferences ▸ HSL section: layout default, coloured tracks, and the on-image
   // target-tool sensitivity (read by the picker in DevelopCanvas).

@@ -59,6 +59,12 @@ export function ModalWindow({ title, onClose, titlebar, boxClassName, children }
     moveRef.current = null;
     (e.currentTarget as Element).releasePointerCapture(e.pointerId);
   };
+  // The browser has already dropped the capture by the time pointercancel
+  // fires, so only the drag state needs clearing — without this the window
+  // keeps following a button-less pointer until the next click.
+  const onTitleCancel = () => {
+    moveRef.current = null;
+  };
 
   // Backdrop dim is user-tunable (Interface › Background dimming). 0 leaves the
   // app fully visible behind the window; the backdrop still catches the
@@ -84,7 +90,7 @@ export function ModalWindow({ title, onClose, titlebar, boxClassName, children }
     if (!box) return;
     const items = Array.from(
       box.querySelectorAll<HTMLElement>(FOCUSABLE),
-    ).filter((el) => el.offsetParent !== null || el === box);
+    ).filter((el) => el.getClientRects().length > 0);
     if (items.length === 0) return;
     const first = items[0];
     const last = items[items.length - 1];
@@ -121,6 +127,7 @@ export function ModalWindow({ title, onClose, titlebar, boxClassName, children }
           onPointerDown={onTitleDown}
           onPointerMove={onTitleMove}
           onPointerUp={onTitleUp}
+          onPointerCancel={onTitleCancel}
         >
           <span
             id={titleId}

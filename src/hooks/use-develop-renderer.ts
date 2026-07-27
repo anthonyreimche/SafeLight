@@ -269,6 +269,9 @@ export function useDevelopRenderer(
             ? s
             : { width: image.width, height: image.height },
         );
+        // Publish for panels (Crop/Transform) that derive imageAspect from the
+        // store rather than this hook's return value.
+        useDevelopStore.getState().setSourceSize(image.width, image.height);
       }
       if (cacheKey) {
         bridge.uploadSource("main", cacheKey, src, maxEdge, isFallback, cachedRaw);
@@ -484,6 +487,7 @@ export function useDevelopRenderer(
   // failed/slow decode never leaves the previous photo's aspect in place.
   useEffect(() => {
     setSourceSize({ width: 0, height: 0 });
+    useDevelopStore.getState().setSourceSize(0, 0);
   }, [photo?.id]);
 
   useEffect(() => {

@@ -8,15 +8,29 @@ import { Slider } from "@/ui/components/Slider";
 import { AutoButton } from "@/ui/components/AutoButton";
 import { useDevelopStore } from "@/state/develop-store";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
+<<<<<<< Updated upstream
 import type { DevelopParams } from "@/catalog/types";
 
 type NumericParamKey = {
   [K in keyof DevelopParams]: DevelopParams[K] extends number ? K : never;
 }[keyof DevelopParams];
 
+=======
+import { useMaskScope } from "@/modules/develop/mask-scope";
+import type { MaskAdjustments } from "@/catalog/types";
+import type { MaskPanelContribution } from "@/extensions/types";
+import { TONAL_PARAM_RANGE, type TonalParamKey } from "./tonal-params";
+
+// Per-band detail sliders are opt-in (Preferences ▸ Interface) to keep the panel
+// compact. Tone recovery/lift preserves micro-contrast on its own regardless;
+// these only expose manual control over it.
+const DETAIL_KEYS = new Set<TonalParamKey>(["highlightDetail", "shadowDetail"]);
+
+>>>>>>> Stashed changes
 const basicSliders: {
-  key: NumericParamKey;
+  key: TonalParamKey;
   label: string;
+<<<<<<< Updated upstream
   min: number;
   max: number;
 }[] = [
@@ -31,6 +45,25 @@ const basicSliders: {
   { key: "dehaze", label: "Dehaze", min: -100, max: 100 },
   { key: "vibrance", label: "Vibrance", min: -100, max: 100 },
   { key: "saturation", label: "Saturation", min: -100, max: 100 },
+=======
+  // Slider-icon contribution id; defaults to `core.${key}`. The per-band detail
+  // sliders borrow their parent band's icon so they read as a sub-control.
+  icon?: string;
+}[] = [
+  { key: "exposure", label: "Exposure" },
+  { key: "contrast", label: "Contrast" },
+  { key: "highlights", label: "Highlights" },
+  { key: "highlightDetail", label: "Highlight Detail", icon: "core.highlights" },
+  { key: "shadows", label: "Shadows" },
+  { key: "shadowDetail", label: "Shadow Detail", icon: "core.shadows" },
+  { key: "whites", label: "Whites" },
+  { key: "blacks", label: "Blacks" },
+  { key: "texture", label: "Texture" },
+  { key: "clarity", label: "Clarity" },
+  { key: "dehaze", label: "Dehaze" },
+  { key: "vibrance", label: "Vibrance" },
+  { key: "saturation", label: "Saturation" },
+>>>>>>> Stashed changes
 ];
 
 export function BasicPanel() {
@@ -50,8 +83,8 @@ export function BasicPanel() {
             icon={`core.${s.key}`}
             label={s.label}
             value={params[s.key]}
-            min={s.min}
-            max={s.max}
+            min={TONAL_PARAM_RANGE[s.key].min}
+            max={TONAL_PARAM_RANGE[s.key].max}
             step={s.key === "exposure" ? 0.1 : 1}
             onChange={(v) => setParam(s.key, v)}
             onCommit={() => commitEdit(s.label)}

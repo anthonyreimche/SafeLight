@@ -24,17 +24,30 @@ export interface Preset {
 
 const STORAGE_KEY = "safelight-presets";
 
-function loadFromStorage(): Preset[] {
+/** A stored payload, or null if it isn't a preset list. Anything else — a stray
+ *  object, a truncated write — would otherwise reach the panel as a non-array and
+ *  take the whole Develop sidebar down on its first .map(). */
+function parsePresets(raw: string): Preset[] | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Preset[]) : [];
+    const stored: unknown = JSON.parse(raw);
+    return Array.isArray(stored) ? (stored as Preset[]) : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
+function loadFromStorage(): Preset[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return parsePresets(raw) ?? [];
+  } catch {}
+  return [];
+}
+
 function saveToStorage(presets: Preset[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
+  } catch {}
 }
 
 /** Return `base` if no preset uses it, else the first free "`base` N" suffix.
@@ -134,3 +147,12 @@ export const usePresetsStore = create<PresetsState>((set) => ({
     });
   },
 }));
+
+/** Follow preset changes made in other windows. Call once at boot. */
+export function initPresets(): void {
+  window.addEventListener("storage", (e) => {
+    if (e.key !== STORAGE_KEY || e.newValue == null) return;
+    const presets = parsePresets(e.newValue);
+    if (presets) usePresetsStore.setState({ presets });
+  });
+}

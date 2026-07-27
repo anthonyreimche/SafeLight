@@ -53,7 +53,7 @@ async function ensurePool(size: number = DEFAULT_SIZE): Promise<void> {
 }
 
 export function warmDecodePool(size: number = DEFAULT_SIZE): Promise<void> {
-  if (!warming) {
+  if (!warming || size > poolSize) {
     warming = ensurePool(size);
   }
   return warming;

@@ -5,7 +5,7 @@
 
 import type { DevelopParams, UprightMode } from "@/catalog/types";
 import type { UprightResult } from "./upright";
-import type { ProcessingStageContribution } from "@/extensions/types";
+import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { resolveActivePipeline, usePipelineStore } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
@@ -50,7 +50,7 @@ export class RenderBridge {
   // Resolves with the rendered blob, or null when the worker reports a cache miss
   // (the caller then decodes + uploads + retries).
   private thumbResolvers = new Map<string, (blob: Blob | null) => void>();
-  private uprightResolve: ((result: UprightResult) => void) | null = null;
+  private uprightResolvers = new Map<number, (result: UprightResult) => void>();
   private sourceBoundResolvers = new Map<number, (hit: boolean) => void>();
   private hasSourceResolvers = new Map<number, (has: boolean) => void>();
   private captureResolvers = new Map<number, (bitmap: ImageBitmap) => void>();
@@ -142,17 +142,32 @@ export class RenderBridge {
         }
         break;
       }
-      case "upright":
-        if (this.uprightResolve) {
-          this.uprightResolve(msg.result);
-          this.uprightResolve = null;
+      case "upright": {
+        const resolver = this.uprightResolvers.get(msg.reqId);
+        if (resolver) {
+          this.uprightResolvers.delete(msg.reqId);
+          resolver(msg.result);
         }
         this.onUpright?.(msg.result);
         break;
+      }
+      case "uprightError": {
+        // Settle the pending computeUpright with a zero (no-op) result so the
+        // awaiting caller unblocks instead of hanging, then surface the cause.
+        const resolver = this.uprightResolvers.get(msg.reqId);
+        if (resolver) {
+          this.uprightResolvers.delete(msg.reqId);
+          resolver({ straighten: 0, perspectiveV: 0, perspectiveH: 0 });
+        }
+        this.onError?.(`upright analysis failed: ${msg.message}`);
+        break;
+      }
       case "healSource":
         this.onHealSource?.({ data: msg.data, width: msg.width, height: msg.height });
         break;
       case "error":
+        // Not tied to a request, so per-request resolvers can't be settled from
+        // here; each request path posts its own settling response on failure.
         this.onError?.(msg.message);
         break;
     }
@@ -163,13 +178,16 @@ export class RenderBridge {
   // ------------------------------------------------------------------
 
   init(width: number, height: number) {
-    this.post({ cmd: "init", width, height });
+    // The worker's settings-store can't reach localStorage, so read the
+    // High-bit-depth preference here (main thread) and hand it across.
+    this.post({ cmd: "init", width, height, highBitDepth: getSettings().highBitDepth });
   }
 
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    this.post({ cmd: "dispose" });
+    // terminate() tears down the worker (and its GL context) synchronously; a
+    // "dispose" message would be preempted by it, so don't bother sending one.
     this.worker.terminate();
   }
 
@@ -307,7 +325,7 @@ export class RenderBridge {
   /** Pixel data (baked LUT atlases, etc.) for processing-stage textures, keyed
    *  by qualified key "{stageId}.{key}". Structured-cloned to the worker (not
    *  transferred) so the caller keeps its buffers and can re-push on a swap. */
-  setStageTextures(bag: Record<string, import("@/extensions/types").StageTextureData>) {
+  setStageTextures(bag: Record<string, StageTextureData>) {
     this.post({ cmd: "setStageTextures", bag });
   }
 
@@ -415,8 +433,9 @@ export class RenderBridge {
 
   computeUpright(mode: UprightMode): Promise<UprightResult> {
     return new Promise<UprightResult>((resolve) => {
-      this.uprightResolve = resolve;
-      this.post({ cmd: "analyzeUpright", mode });
+      const reqId = ++this.reqIdSeq;
+      this.uprightResolvers.set(reqId, resolve);
+      this.post({ cmd: "analyzeUpright", reqId, mode });
     });
   }
 
@@ -450,11 +469,12 @@ export class RenderBridge {
 let singleton: RenderBridge | null = null;
 let unsubStages: (() => void) | null = null;
 let unsubPipeline: (() => void) | null = null;
+let unsubSettings: (() => void) | null = null;
 
 // Stage textures live here (not in the per-photo param bag — they're bulk static
 // data tied to the stage, not the edit). Extensions push via api.setStageTexture;
 // the bag is replayed when the bridge (re)initialises.
-const stageTextures: Record<string, import("@/extensions/types").StageTextureData> = {};
+const stageTextures: Record<string, StageTextureData> = {};
 
 // Stage and stage-texture changes don't flow through the param-driven develop
 // render effect, so an extension swapping a stage or its textures (e.g. picking
@@ -473,7 +493,7 @@ function requestStageRender(): void {
  *  "{stageId}.{key}". Forwards the full bag to the worker. */
 export function setStageTexture(
   qualifiedKey: string,
-  tex: import("@/extensions/types").StageTextureData | null,
+  tex: StageTextureData | null,
 ): void {
   if (tex) stageTextures[qualifiedKey] = tex;
   else delete stageTextures[qualifiedKey];
@@ -485,10 +505,7 @@ export function setStageTexture(
  *  callers must not mutate. Used by the export pipeline to seed its own renderer
  *  with the same film LUTs / spectral tables the live renderer has, so stages
  *  that depend on uploaded textures (e.g. Spektrafilm) don't render black. */
-export function getStageTextures(): Record<
-  string,
-  import("@/extensions/types").StageTextureData
-> {
+export function getStageTextures(): Record<string, StageTextureData> {
   return stageTextures;
 }
 
@@ -516,7 +533,7 @@ export function getRenderBridge(): RenderBridge {
     // Push the GPU source-cache budget now and whenever the preference changes.
     singleton.setCacheBudget(getSettings().gpuSourceCacheBytes);
     let prevBudget = getSettings().gpuSourceCacheBytes;
-    useSettings.subscribe((s) => {
+    unsubSettings = useSettings.subscribe((s) => {
       if (s.gpuSourceCacheBytes !== prevBudget) {
         prevBudget = s.gpuSourceCacheBytes;
         singleton?.setCacheBudget(prevBudget);
@@ -554,6 +571,8 @@ export function disposeRenderBridge() {
   unsubStages = null;
   unsubPipeline?.();
   unsubPipeline = null;
+  unsubSettings?.();
+  unsubSettings = null;
   singleton?.dispose();
   singleton = null;
 }

@@ -7,7 +7,7 @@
 // against the latest tag on the GitHub releases API and stores whether the
 // user has dismissed a particular version so the banner doesn't reappear.
 
-import { parseSemver, isNewer } from "./semver";
+import { isSemver, isNewer, compareSemver } from "./semver";
 import { privilegedUpdates } from "@/native/privileged";
 
 const REPO = "anthonyreimche/SafeLight";
@@ -149,12 +149,24 @@ export async function checkForUpdateFull(
       : { kind: "network-error" };
   }
 
+<<<<<<< Updated upstream
   const best = outcome.releases.find(
     (r) => !r.draft && matchesChannel(r.tag_name, channel),
   );
+=======
+  // GitHub orders releases by publish date, not version, so a later-published
+  // pre-release of an older line must not shadow a newer release.
+  const best = outcome.releases
+    .filter((r) => !r.draft && matchesChannel(r, channel))
+    .reduce<GHRelease | null>(
+      (max, r) =>
+        max === null || compareSemver(r.tag_name, max.tag_name) > 0 ? r : max,
+      null,
+    );
+>>>>>>> Stashed changes
   if (!best) return { kind: "no-releases" };
 
-  if (!currentVersion || !parseSemver(currentVersion).some(Boolean)) {
+  if (!isSemver(currentVersion)) {
     return { kind: "current-version-unknown", rawVersion: currentVersion };
   }
 
@@ -203,8 +215,12 @@ export async function installVersion(tag: string): Promise<void> {
  * exists. Returns null for every other outcome (silently).
  */
 export async function checkForUpdate(
+<<<<<<< Updated upstream
   _ignored: string,
   channel: UpdateChannel = "patch",
+=======
+  channel: UpdateChannel = "stable",
+>>>>>>> Stashed changes
 ): Promise<UpdateInfo | null> {
   const result = await checkForUpdateFull(channel);
   if (result.kind !== "update-available") return null;

@@ -3,6 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import { MAX_RETOUCH_BRUSH } from "@/catalog/types";
+
 export const VERTEX_SHADER = `#version 300 es
 in vec2 aPos;
 in vec2 aUv;
@@ -140,11 +142,12 @@ uniform vec4 uCompGeoB[MAX_COMPONENTS];   // rad:feather,angle,_,_ | col:satRang
 uniform int uVizMask;
 uniform vec3 uVizColor;
 uniform float uVizStrength; // overlay opacity (animated fade in/out)
-// Sharpening preview (Lightroom-style Alt/Ctrl-drag): when > 0 the whole frame
-// is replaced by a grayscale visualization of a sharpening sub-signal.
+// Sharpening / noise-reduction preview (Lightroom-style Alt/Ctrl-drag): when > 0
+// the whole frame is replaced by a visualization of a sub-signal.
 //   1 = masking (white = sharpened, black = protected/flat)
 //   2 = detail (the high-frequency edge signal, on mid-grey)
 //   3 = luminance (B&W of the sharpened result, to judge halos)
+//   4 = color-NR chroma (luma flattened, chroma amplified over neutral grey)
 uniform int uSharpenViz;
 // True only when the built-in denoise prepass produced a valid (float, linear)
 // result this frame. Gates the denoise stage's inline swap of lin so it never
@@ -171,17 +174,14 @@ uniform vec4 uSpotC[MAX_SPOTS];    // cosA, sinA, 1/scale, _  (source rotate/sca
 uniform vec4 uSpotTint[MAX_SPOTS]; // recolour offset rgb (encoded 0..1), _
 
 // Brush-shaped retouch: painted coverage atlas + per-item source offset.
-#define MAX_RBRUSH 4
+#define MAX_RBRUSH ${MAX_RETOUCH_BRUSH}
 uniform sampler2D uRetouchTex;
 uniform int uRetouchCount;
 uniform int uRetouchCh[MAX_RBRUSH];     // channel 0..3 in uRetouchTex
 uniform vec4 uRetouchData[MAX_RBRUSH];  // offX, offY (UV), opacity(0..1), _reserved
-uniform float uRetouchRadius[MAX_RBRUSH]; // image-height units, for heal LOD
 uniform sampler2D uDevelopedSrc; // pass-1 developed image, source-UV space
 uniform bool uHaveDeveloped;     // true on the compositing pass (match in edited space)
 uniform bool uApplyRetouch;      // false while rendering the developed pass
-uniform sampler2D uHealFill;     // precomputed content-aware fill, source-UV space
-uniform bool uHaveHealFill;      // true when the fill texture is valid
 uniform bool uMembraneHeal;      // A/B toggle: gradient-domain membrane vs flat tint
 // Pass 1 of the heal/clone pipeline: output ONLY the retouched source (no tone
 // edits) into an offscreen copy. Pass 2 then develops from that copy, so every
@@ -229,16 +229,6 @@ vec3 encodeOutput(vec3 srgb) {
 // Pluggable display transform (Pixel Peeper): scene-linear HDR -> display-encoded.
 // Replaced via buildFragmentShader() when a non-default pipeline is active.
 //__PIPELINE_GLSL__
-
-// Per-channel highlight rolloff: values above the knee are folded smoothly into
-// [knee, 1] (a saturating shoulder), recovering blown highlights. With knee = 1
-// it's a plain clip (the default, no recovery); lowering the knee — driven by
-// negative Highlights/Whites — reaches further down for stronger recovery.
-float rollHi(float v, float knee) {
-  if (v <= knee) return min(v, 1.0);
-  float head = max(1.0 - knee, 1e-3);
-  return knee + head * (1.0 - exp(-(v - knee) / head));
-}
 
 // Approximate the (linear) RGB color of a blackbody at the given Kelvin
 // temperature (Tanner Helland's fit). Used to derive white-balance gains.
@@ -320,7 +310,7 @@ float applyExposure(float i_in, float E) {
 }
 
 // Highlights recovery (H < 0): saturating shoulder on LUMINANCE with a sliding
-// knee. knee = 1.0 at H=0 (no-op), slides to 0.30 at H=-1 (aggressive recovery).
+// knee. knee = 1.0 at H=0 (no-op), slides to 0.25 at H=-1 (aggressive recovery).
 // [knee, inf) is compressed into [knee, 1) — blown values resolve near white with
 // ordering/separation preserved (LR behaviour). Applied via luma-ratio so hue and
 // per-channel saturation are preserved (no per-channel graying/desaturation).
@@ -345,20 +335,6 @@ float shadowWeight(float t) {
 // t is the SCENE (pre-exposure) display luma (see shadowWeight).
 float highlightWeight(float t) {
   return exp(-3.5 * (1.0 - t));
-}
-
-// Exponential whites weight: w = exp(-λ·(1-t)²), t = display luma in [0,1]. Stronger
-// falloff than highlights, focused on the extreme bright end.
-float whitesWeight(vec3 linRgb) {
-  float t = clamp(luma(linearToSrgbU(max(linRgb, vec3(0.0)))), 0.0, 1.0);
-  return exp(-8.0 * (1.0 - t) * (1.0 - t));
-}
-
-// Exponential blacks weight: w = exp(-λ·t²), t = display luma in [0,1]. Stronger
-// falloff than shadows, focused on the extreme dark end.
-float blacksWeight(vec3 linRgb) {
-  float t = clamp(luma(linearToSrgbU(max(linRgb, vec3(0.0)))), 0.0, 1.0);
-  return exp(-8.0 * t * t);
 }
 
 // Ratio-scale a color from luma L to a target newL: hue and per-channel saturation
@@ -422,44 +398,6 @@ vec3 applyShadowsRGB(vec3 c, float S, float refT) {
   return c;
 }
 
-// Whites endpoint, display space. wh in [-100,100]; bidirectional.
-// + brightens the bright end, - pulls it down. Luminance-targeted and
-// ratio-scaled so it shifts tone WITHOUT changing hue/saturation.
-// refT is the SCENE (pre-exposure) display luma used to pick the band, so an
-// exposure push does not reclassify lifted midtones as whites.
-vec3 applyWhitesRGB(vec3 c, float wh, float refT) {
-  if (abs(wh) < 0.001) return c;
-  float amt = wh / 100.0;
-  float L = max(luma(c), 1e-4);
-  float t = refT;
-  float w = exp(-8.0 * (1.0 - t) * (1.0 - t)); // extreme highlights
-  float blend = abs(amt) * w;
-  if (blend < 1e-5) return c;
-  float gamma = amt > 0.0 ? mix(1.0, 0.5, amt) : mix(1.0, 1.9, -amt);
-  float newL = mix(L, pow(L, gamma), blend);
-  return retargetLuma(c, L, newL);
-}
-
-// Blacks endpoint, display space. bl in [-100,100]; bidirectional.
-// LIGHTROOM CONVENTION: + lifts/opens blacks (brighter dark end),
-// - crushes/deepens them. The old curve did the opposite (and ignored the
-// negative half) — that's the "Blacks is backwards" bug. Luminance-targeted
-// and ratio-scaled so it does not pump saturation.
-// refT is the SCENE (pre-exposure) display luma used to pick the band.
-vec3 applyBlacksRGB(vec3 c, float bl, float refT) {
-  if (abs(bl) < 0.001) return c;
-  float amt = bl / 100.0;
-  float L = max(luma(c), 1e-4);
-  float t = refT;
-  float w = exp(-8.0 * t * t); // extreme shadows
-  float blend = abs(amt) * w;
-  if (blend < 1e-5) return c;
-  // + -> gamma < 1 (lift), - -> gamma > 1 (crush)
-  float gamma = amt > 0.0 ? mix(1.0, 0.55, amt) : mix(1.0, 2.2, -amt);
-  float newL = mix(L, pow(L, gamma), blend);
-  return retargetLuma(c, L, newL);
-}
-
 vec3 applyToneCurve(vec3 c) {
   c = clamp(c, 0.0, 1.0);
   // Per-channel LUTs packed into RGBA (master curve already composed in).
@@ -488,25 +426,6 @@ vec3 rgb2hsl(vec3 c) {
     h /= 6.0;
   }
   return vec3(h, s, l);
-}
-
-// Convert RGB to YCbCr (BT.709) for better luminance/chroma separation
-vec3 rgb2YCbCr(vec3 c) {
-  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  float cb = (c.b - y) * 0.5 / (1.0 - 0.0722) + 0.5;
-  float cr = (c.r - y) * 0.5 / (1.0 - 0.2126) + 0.5;
-  return vec3(y, cb, cr);
-}
-
-// Convert YCbCr (BT.709) back to RGB
-vec3 yCbCr2rgb(vec3 ycbcr) {
-  float y = ycbcr.x;
-  float cb = ycbcr.y - 0.5;
-  float cr = ycbcr.z - 0.5;
-  float r = y + cr * (1.0 - 0.2126) * 2.0;
-  float b = y + cb * (1.0 - 0.0722) * 2.0;
-  float g = y - (cb * (1.0 - 0.0722) * 2.0 * 0.0722 / 0.7152 + cr * (1.0 - 0.2126) * 2.0 * 0.2126 / 0.7152);
-  return clamp(vec3(r, g, b), 0.0, 1.0);
 }
 
 float hue2rgb(float p, float q, float t) {
@@ -713,74 +632,6 @@ vec2 cropTransformUV(vec2 o) {
 //__CONTRIBUTED_HELPERS__
 
 // ---- Retouch: spot heal / clone -------------------------------------------
-// Heal keeps the source patch's fine detail but swaps its low-frequency content
-// for the destination's, so the patch melds into its surroundings (skin, sky).
-// The match is done at a blur scale that tracks the patch radius — a small spot
-// matches a small neighbourhood, a large one a large neighbourhood — instead of
-// an arbitrary fixed mip level, which is what makes the seam disappear. The
-// correction is per-pixel (sampled at the current uv), so a tone gradient under
-// the patch is followed rather than flattened.
-// Sample the *edited* image (pass-1 develop) when available, else the source.
-vec3 devSample(vec2 uv) {
-  return uHaveDeveloped ? texture(uDevelopedSrc, uv).rgb : texture(uImage, uv).rgb;
-}
-
-float retouchCovAt(int ch, vec2 uv) {
-  vec4 c = texture(uRetouchTex, uv);
-  return ch == 0 ? c.r : (ch == 1 ? c.g : (ch == 2 ? c.b : c.a));
-}
-
-
-// Content-aware heal: instead of copying a source patch, ERASE the interior and
-// reconstruct it from the ring of pixels surrounding the spot. Each interior
-// pixel is a distance-weighted blend of the boundary just outside the disc — a
-// cheap harmonic in-fill, so whatever was inside (blemish, branch, wire) is
-// replaced by a smooth continuation of its surroundings.
-vec3 inpaintCircle(vec2 ctr, float radius, vec2 uv) {
-  vec2 q = vec2((uv.x - ctr.x) * uImageAspect, uv.y - ctr.y);
-  vec3 acc = vec3(0.0);
-  float wsum = 0.0;
-  const int N = 16;
-  for (int k = 0; k < N; k++) {
-    float a = (float(k) + 0.5) / float(N) * 6.2831853;
-    vec2 e = vec2(cos(a), sin(a));                 // aspect-corrected direction
-    vec2 bpos = e * radius;                         // boundary point (aspect space)
-    vec2 buv = clamp(ctr + vec2(e.x / uImageAspect, e.y) * radius * 1.04, 0.0, 1.0);
-    float dist = length(q - bpos) + 1e-3;
-    float w = 1.0 / (dist * dist);                  // mean-value-style weighting
-    acc += devSample(buv) * w;
-    wsum += w;
-  }
-  return acc / max(wsum, 1e-4);
-}
-
-// Same idea for a painted (brush) region: march outward from the pixel in a fan
-// of directions until each ray leaves the painted coverage, then blend those
-// boundary colours weighted toward the nearest edge.
-vec3 inpaintBrush(int ch, vec2 uv, float radius) {
-  vec3 acc = vec3(0.0);
-  float wsum = 0.0;
-  float step = max(radius * 0.5, 0.003);
-  const int DIRS = 12;
-  for (int k = 0; k < DIRS; k++) {
-    float a = (float(k) + 0.5) / float(DIRS) * 6.2831853;
-    vec2 e = vec2(cos(a) / uImageAspect, sin(a));
-    vec2 p = uv;
-    float dist = 0.0;
-    bool found = false;
-    for (int s = 0; s < 20; s++) {
-      p += e * step;
-      dist += step;
-      if (retouchCovAt(ch, p) < 0.4) { found = true; break; }
-    }
-    if (!found) continue;
-    float w = 1.0 / (dist * dist);
-    acc += devSample(clamp(p, 0.0, 1.0)) * w;
-    wsum += w;
-  }
-  return wsum > 0.0 ? acc / wsum : devSample(uv);
-}
-
 // Closed-form gradient-domain (membrane) correction for a heal spot. Samples the
 // boundary mismatch (destination - source) just outside the disc and interpolates
 // it across the interior with inverse-distance (Shepard) weights — a smooth
@@ -931,19 +782,25 @@ float compCoverage(int i, vec2 uv, vec3 px, float pxL) {
     float chromaW = smoothstep(0.01, 0.05, tLen);
     m = mix(satM, hueM * satM, chromaW);
   } else {
-    // Brush: prebaked coverage from the atlas channel.
+    // Brush: prebaked coverage from the atlas channel. ch < 0 marks a brush with
+    // no atlas slot (beyond the 4 the RGBA atlas holds) — it contributes nothing
+    // rather than borrowing channel 0's coverage.
     vec4 cov = texture(uMaskTex, uv);
     int ch = uCompBrushCh[i];
-    m = ch == 0 ? cov.r : (ch == 1 ? cov.g : (ch == 2 ? cov.b : cov.a));
+    m = ch < 0 ? 0.0 : (ch == 0 ? cov.r : (ch == 1 ? cov.g : (ch == 2 ? cov.b : cov.a)));
   }
   if (uCompInvert[i] == 1) m = 1.0 - m;
   return clamp(m, 0.0, 1.0);
 }
 
 // Mask stage 1 — scene-referred linear, BEFORE the display conversion and
-// tone curve. The tonal + WB mask controls run here with full HDR headroom,
-// reusing the global sliders' machinery — so mask Highlights can un-clip a
-// blown sky exactly like the global slider, and mask WB is true channel gains.
+// tone curve. The tonal + WB mask controls run here with full HDR headroom, so
+// mask Highlights can un-clip a blown sky and mask WB is true channel gains.
+// Highlights/Shadows deliberately keep the LEGACY recovery curves
+// (applyHighlightsRGB / applyShadowsRGB, a sliding-knee shoulder); the GLOBAL
+// slider has since moved to the integrated filmic shoulder (see main). They are
+// NOT kept in lockstep on purpose — changing the mask math would silently alter
+// every existing mask edit, so the two recovery models are allowed to differ.
 vec3 applyMaskLinear(vec3 c, vec4 a0, vec4 a1, float m, float refT) {
   vec3 r = c;
   // Exposure in true stops (±2.5 EV at the slider ends), hue-preserving.

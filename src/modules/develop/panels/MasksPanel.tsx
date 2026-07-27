@@ -148,6 +148,9 @@ export function MasksPanel() {
   const setBrushPreview = useDevelopStore((s) => s.setBrushPreview);
 
   const masking = activeTool === "mask";
+  // addMask no-ops at the cap, so the "Create Mask" entry point is disabled
+  // there — otherwise a range mask would push an empty "New Mask" history entry.
+  const atMaskCap = masks.length >= MAX_MASKS;
   const selected = masks.find((m) => m.id === selectedMaskId) ?? null;
   const selectedComp =
     selected?.components.find((c) => c.id === selectedComponentId) ?? null;
@@ -278,7 +281,9 @@ export function MasksPanel() {
               setCreateOpen((v) => !v);
               setAddOpen(false);
             }}
-            className="flex w-full items-center justify-center gap-1 rounded bg-surface-2 px-2 py-1.5 text-[11px] text-text-secondary hover:text-text-primary"
+            disabled={atMaskCap}
+            title={atMaskCap ? `Mask limit reached (${MAX_MASKS})` : undefined}
+            className="flex w-full items-center justify-center gap-1 rounded bg-surface-2 px-2 py-1.5 text-[11px] text-text-secondary hover:text-text-primary disabled:cursor-default disabled:opacity-40"
           >
             + Create Mask ▾
           </button>

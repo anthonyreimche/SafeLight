@@ -261,8 +261,9 @@ export async function embedColorProfile(
   return blob;
 }
 
-// JPEG: insert ICC_PROFILE APP2 marker(s) right after SOI, chunked to ≤65519
-// payload bytes. Strip any pre-existing ICC APP2 the encoder may have written.
+// JPEG: insert ICC_PROFILE APP2 marker(s) after any leading APP0/APP1, chunked
+// to ≤65519 payload bytes. JFIF/EXIF require APP0/APP1 to immediately follow
+// SOI. Strip any pre-existing ICC APP2 the encoder may have written.
 function embedJpeg(src: Uint8Array, icc: Uint8Array): Uint8Array {
   if (src[0] !== 0xff || src[1] !== 0xd8) throw new Error("not jpeg");
   // Drop existing ICC_PROFILE APP2 segments.
@@ -301,7 +302,11 @@ function embedJpeg(src: Uint8Array, icc: Uint8Array): Uint8Array {
     segs.push(seg);
   }
 
-  return concat([src.subarray(0, 2), ...segs, ...kept, rest]);
+  let lead = 0;
+  while (lead < kept.length && (kept[lead][1] === 0xe0 || kept[lead][1] === 0xe1)) lead++;
+  const leading = kept.slice(0, lead);
+  const trailing = kept.slice(lead);
+  return concat([src.subarray(0, 2), ...leading, ...segs, ...trailing, rest]);
 }
 
 // PNG: insert an iCCP chunk before the first IDAT and drop any colour-intent
