@@ -20,6 +20,7 @@ const {
   shell,
   net,
   ipcMain,
+  screen,
   session,
   dialog,
 } = require("electron");
@@ -1633,12 +1634,113 @@ const titleBarOpts =
         },
       };
 
+// Window geometry survives a restart. Saved bounds are re-validated against the
+// displays connected *now*, not the ones that were there on the last quit: a
+// window closed on a since-unplugged monitor would otherwise reopen off-screen,
+// and a size taken from a larger display would overflow the work area — both
+// leave a frame the user cannot drag back.
+const DEFAULT_WINDOW = { width: 1500, height: 950 };
+const MIN_WINDOW = { width: 900, height: 600 };
+const GRAB_MARGIN = 60; // px of frame that must land on a work area to stay grabbable
+
+const windowStateFile = () =>
+  path.join(app.getPath("userData"), "window-state.json");
+
+function frameIsReachable(b) {
+  return screen.getAllDisplays().some(({ workArea: a }) => {
+    const overlapX = Math.min(b.x + b.width, a.x + a.width) - Math.max(b.x, a.x);
+    const titleBarOnScreen = b.y >= a.y && b.y < a.y + a.height - GRAB_MARGIN;
+    return overlapX >= GRAB_MARGIN && titleBarOnScreen;
+  });
+}
+
+// Call only after `ready` — the screen module does not exist before it.
+function readWindowState() {
+  let saved;
+  try {
+    saved = JSON.parse(fs.readFileSync(windowStateFile(), "utf8"));
+  } catch {
+    return { ...DEFAULT_WINDOW };
+  }
+  if (!saved || typeof saved !== "object") return { ...DEFAULT_WINDOW };
+
+  const num = (v) => (Number.isFinite(v) ? v : undefined);
+  const state = {
+    width: num(saved.width) ?? DEFAULT_WINDOW.width,
+    height: num(saved.height) ?? DEFAULT_WINDOW.height,
+    x: num(saved.x),
+    y: num(saved.y),
+    maximized: saved.maximized === true,
+    fullScreen: saved.fullScreen === true,
+  };
+
+  const positioned = state.x !== undefined && state.y !== undefined;
+  const { workArea } = positioned
+    ? screen.getDisplayMatching(state)
+    : screen.getPrimaryDisplay();
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  state.width = clamp(state.width, MIN_WINDOW.width, workArea.width);
+  state.height = clamp(state.height, MIN_WINDOW.height, workArea.height);
+
+  // Clearing x/y hands placement back to Electron, which centres on the primary.
+  if (positioned && !frameIsReachable(state)) {
+    state.x = undefined;
+    state.y = undefined;
+  }
+  return state;
+}
+
+function trackWindowState(win) {
+  let timer = null;
+  // getNormalBounds, not getBounds: maximising or entering full screen must not
+  // overwrite the restored-down geometry that has to come back on the next launch.
+  const write = () => {
+    const state = {
+      ...win.getNormalBounds(),
+      maximized: win.isMaximized(),
+      fullScreen: win.isFullScreen(),
+    };
+    try {
+      fs.writeFileSync(windowStateFile(), JSON.stringify(state));
+    } catch {}
+  };
+  // Drags fire resize/move continuously; coalesce to one write per gesture on an
+  // unref'd timer so a pending save never keeps the app alive.
+  const save = () => {
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      if (!win.isDestroyed()) write();
+    }, 500);
+    if (timer.unref) timer.unref();
+  };
+  const tracked = [
+    "resize",
+    "move",
+    "maximize",
+    "unmaximize",
+    "enter-full-screen",
+    "leave-full-screen",
+  ];
+  for (const event of tracked) win.on(event, save);
+  // A queued debounce will not survive teardown, so take the last snapshot
+  // synchronously while the window still exists.
+  win.on("close", () => {
+    clearTimeout(timer);
+    timer = null;
+    write();
+  });
+}
+
 function createWindow() {
+  const state = readWindowState();
   const win = new BrowserWindow({
-    width: 1500,
-    height: 950,
-    minWidth: 900,
-    minHeight: 600,
+    x: state.x,
+    y: state.y,
+    width: state.width,
+    height: state.height,
+    minWidth: MIN_WINDOW.width,
+    minHeight: MIN_WINDOW.height,
     backgroundColor: "#1a1a1a",
     show: false,
     autoHideMenuBar: true,
@@ -1656,7 +1758,16 @@ function createWindow() {
     },
   });
 
-  win.once("ready-to-show", () => win.show());
+  trackWindowState(win);
+
+  // Restore maximise/full screen here rather than via constructor options:
+  // acting on a still-hidden window makes some platforms surface it early,
+  // which is the black first frame `show: false` exists to avoid.
+  win.once("ready-to-show", () => {
+    if (state.fullScreen) win.setFullScreen(true);
+    else if (state.maximized) win.maximize();
+    win.show();
+  });
 
   // Detached windows (shortcuts, loupe, etc.): defer show until ready-to-show
   // to avoid black frames on macOS — same pattern as the main window.
