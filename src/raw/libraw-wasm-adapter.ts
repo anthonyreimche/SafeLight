@@ -13,6 +13,7 @@
 // caller falls back to the in-house decoder / embedded preview. It logs the
 // reason so a silent fallback can be diagnosed.
 
+import { kelvinFromWhiteBalanceGains } from "@/rendering/blackbody";
 import type { RawFloatImage } from "./decode";
 import { acquireInstance, releaseInstance } from "./decode-pool";
 
@@ -22,48 +23,18 @@ export let lastLibRawStatus = "not attempted";
 const num = (v: unknown): number =>
   typeof v === "number" && isFinite(v) ? v : 0;
 
-// Estimate Kelvin colour temperature from camera WB multipliers (R, G, B gains).
-// Searches log-Kelvin space for the blackbody whose R/B ratio best matches the
-// green-normalised gain ratio. Uses Tanner Helland's fit (same as the shader).
-function estimateKelvinFromMul(mulR: number, mulG: number, mulB: number): number {
-  const gR = mulR / mulG;
-  const gB = mulB / mulG;
-  const targetLogRB = Math.log(gR / gB);
-
-  let bestK = 6500;
-  let bestErr = Infinity;
-  const steps = 240;
-  for (let i = 0; i <= steps; i++) {
-    const logK = Math.log(2000) + (i / steps) * (Math.log(50000) - Math.log(2000));
-    const k = Math.exp(logK);
-    const bb = blackbodySrgb(k);
-    const ref = blackbodySrgb(6500);
-    const rGain = ref[0] / bb[0];
-    const bGain = ref[2] / bb[2];
-    const err = Math.abs(Math.log(rGain / bGain) - targetLogRB);
-    if (err < bestErr) { bestErr = err; bestK = k; }
-  }
-  return Math.round(bestK / 10) * 10;
-}
-
-// Tanner Helland's blackbody → sRGB approximation (matches the rendering shader).
-function blackbodySrgb(kelvin: number): [number, number, number] {
-  const t = Math.max(1000, Math.min(50000, kelvin)) / 100;
-  let r: number, g: number, b: number;
-  if (t <= 66) {
-    r = 255;
-    g = 99.4708025861 * Math.log(t) - 161.1195681661;
-    b = t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
-  } else {
-    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
-    g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
-    b = 255;
-  }
-  return [
-    Math.max(0, Math.min(255, r)),
-    Math.max(0, Math.min(255, g)),
-    Math.max(0, Math.min(255, b)),
-  ];
+// As-shot Kelvin from libraw's camera WB multipliers (imgdata.color.cam_mul[]).
+// This build of libraw-wasm exposes no camera colour matrix (color_data carries
+// cam_mul / pre_mul only, no cam_xyz or rgb_cam), so the multipliers can only be
+// matched against the blackbody curve — a ratio fit that ignores the camera's
+// primaries. DNGs take the exact colour-matrix route in catalog/exif.ts instead.
+function kelvinFromCamMul(colorData: unknown): number | undefined {
+  if (typeof colorData !== "object" || colorData === null) return undefined;
+  const camMul: unknown = (colorData as Record<string, unknown>).cam_mul;
+  if (!Array.isArray(camMul)) return undefined;
+  const [r, g, b] = camMul as unknown[];
+  if (typeof r !== "number" || typeof g !== "number" || typeof b !== "number") return undefined;
+  return kelvinFromWhiteBalanceGains(r, g, b);
 }
 
 // Lightweight metadata-only extraction: open the RAW, fetch color_data.cam_mul,
@@ -78,14 +49,11 @@ export async function extractColorTemperature(
   if (!raw) return undefined;
 
   try {
-    await raw.open(new Uint8Array(buffer), { useCameraWb: true });
+    // open() transfers the passed buffer to libraw's worker (detaching it), so
+    // hand it a copy — the caller keeps its ArrayBuffer for the fallback path.
+    await raw.open(new Uint8Array(buffer.slice(0)), { useCameraWb: true });
     const meta = await raw.metadata(true);
-    const colorData = meta.color_data as Record<string, unknown> | undefined;
-    const camMul = colorData?.cam_mul as number[] | undefined;
-    if (camMul && camMul.length >= 3 && camMul[0] > 0 && camMul[1] > 0 && camMul[2] > 0) {
-      return estimateKelvinFromMul(camMul[0], camMul[1], camMul[2]);
-    }
-    return undefined;
+    return kelvinFromCamMul(meta.color_data);
   } catch {
     return undefined;
   } finally {
@@ -129,7 +97,9 @@ export async function decodeRawFloatViaLibRaw(
   }
 
   try {
-    await raw.open(new Uint8Array(buffer), {
+    // open() transfers the passed buffer to libraw's worker (detaching it), so
+    // hand it a copy — the caller keeps its ArrayBuffer for the fallback path.
+    await raw.open(new Uint8Array(buffer.slice(0)), {
       outputBps: 16,
       useCameraWb: true,
       outputColor: 1,
@@ -206,8 +176,10 @@ export async function decodeRawFloatViaLibRaw(
         const totalPx = pixels.length / ch;
         const aspect = rawW / rawH;
         const w = Math.round(Math.sqrt(totalPx * aspect));
-        const h = Math.round(totalPx / w);
-        if (w > 2 && h > 2 && Math.abs(w * h - totalPx) <= w) {
+        // floor so w*h never exceeds the available pixels (an over-estimated h
+        // would make the copy loop read past the array, writing NaN rows).
+        const h = Math.floor(totalPx / w);
+        if (w > 2 && h > 2 && totalPx - w * h < w) {
           width = w; height = h; stride = ch; inferredDims = true;
           console.warn(`[libraw] inferred dims ${w}×${h} ch=${ch} from pixel count — cwidth/cheight missing`);
           break;
@@ -261,14 +233,7 @@ export async function decodeRawFloatViaLibRaw(
       }
     }
 
-    // Extract the camera white-balance multipliers from color_data (libraw's
-    // imgdata.color.cam_mul[]) and estimate the as-shot Kelvin temperature.
-    let colorTemperature: number | undefined;
-    const colorData = meta.color_data as Record<string, unknown> | undefined;
-    const camMul = colorData?.cam_mul as number[] | undefined;
-    if (camMul && camMul.length >= 3 && camMul[0] > 0 && camMul[1] > 0 && camMul[2] > 0) {
-      colorTemperature = estimateKelvinFromMul(camMul[0], camMul[1], camMul[2]);
-    }
+    const colorTemperature = kelvinFromCamMul(meta.color_data);
 
     lastLibRawStatus = `libraw ${pixels instanceof Uint16Array ? 16 : 8}-bit ${stride}ch ${width}×${height}`;
     console.log("[libraw] decoded", lastLibRawStatus);

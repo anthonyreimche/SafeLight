@@ -8,21 +8,21 @@
 // dockable window (View ▸ Histogram).
 
 import { useRef } from "react";
-import type { DevelopParams } from "@/catalog/types";
 import { Histogram, type HistogramZone } from "@/ui/components/Histogram";
 import { useDevelopStore } from "@/state/develop-store";
+import { TONAL_PARAM_RANGE, type TonalParamKey } from "./tonal-params";
 
-// Histogram zones map to the tonal params; dragging a zone adjusts it. ~300px
-// of horizontal drag spans the parameter's full range.
+// Each histogram zone is a tonal param of the same name; dragging a zone adjusts
+// it over ~300px of horizontal travel across its full range.
 const ZONE_PARAM: Record<
   HistogramZone,
-  { key: keyof DevelopParams; min: number; max: number }
+  { key: TonalParamKey; min: number; max: number }
 > = {
-  blacks: { key: "blacks", min: -100, max: 100 },
-  shadows: { key: "shadows", min: -100, max: 100 },
-  exposure: { key: "exposure", min: -5, max: 5 },
-  highlights: { key: "highlights", min: -100, max: 100 },
-  whites: { key: "whites", min: -100, max: 100 },
+  blacks: { key: "blacks", ...TONAL_PARAM_RANGE.blacks },
+  shadows: { key: "shadows", ...TONAL_PARAM_RANGE.shadows },
+  exposure: { key: "exposure", ...TONAL_PARAM_RANGE.exposure },
+  highlights: { key: "highlights", ...TONAL_PARAM_RANGE.highlights },
+  whites: { key: "whites", ...TONAL_PARAM_RANGE.whites },
 };
 const DRAG_REF_PX = 300;
 
@@ -36,7 +36,7 @@ export function HistogramPanel() {
   const setShowClipping = useDevelopStore((s) => s.setShowClipping);
 
   const dragRef = useRef<{
-    key: keyof DevelopParams;
+    key: TonalParamKey;
     min: number;
     max: number;
     startValue: number;
@@ -47,7 +47,7 @@ export function HistogramPanel() {
   const apply = () => {
     const d = dragRef.current;
     if (d && pendingRef.current != null) {
-      setParam(d.key, pendingRef.current as never);
+      setParam(d.key, pendingRef.current);
       pendingRef.current = null;
     }
   };
@@ -88,7 +88,7 @@ export function HistogramPanel() {
 
   const onReset = (zone: HistogramZone) => {
     const cfg = ZONE_PARAM[zone];
-    setParam(cfg.key, 0 as never);
+    setParam(cfg.key, 0);
     commitEdit("Histogram Reset");
   };
 

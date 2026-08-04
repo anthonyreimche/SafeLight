@@ -12,6 +12,7 @@ import { Slider } from "@/ui/components/Slider";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useRegistry } from "@/extensions/registry";
 import type { ExportProcessorField } from "@/extensions/types";
+import type { ColorSpaceId } from "@/rendering/color-space";
 import {
   exportPhotos,
   type DeliveryMode,
@@ -153,6 +154,9 @@ export function ExportPanel() {
   const [tiffBitDepth, setTiffBitDepth] = useState<8 | 16>(
     getSettings().exportTiffBitDepth,
   );
+  const [colorSpace, setColorSpace] = useState<ColorSpaceId>(
+    getSettings().exportColorSpace,
+  );
   const [delivery, setDelivery] = useState<DeliveryMode>("folder");
   const [destDir, setDestDir] = useState<FileSystemDirectoryHandle | null>(null);
   const [busy, setBusy] = useState(false);
@@ -235,6 +239,7 @@ export function ExportPanel() {
     setLongEdge(preset.longEdge);
     setSharpenAmount(preset.sharpenAmount);
     setSharpenRadius(preset.sharpenRadius);
+    setColorSpace(preset.colorSpace);
     if (preset.tiffBitDepth) setTiffBitDepth(preset.tiffBitDepth);
   };
 
@@ -246,7 +251,7 @@ export function ExportPanel() {
       format: format as ExportPreset["format"],
       quality,
       longEdge,
-      colorSpace: getSettings().exportColorSpace,
+      colorSpace,
       sharpenAmount,
       sharpenRadius,
       tiffBitDepth,
@@ -315,7 +320,7 @@ export function ExportPanel() {
       longEdge,
       bundle: delivery === "zip",
       delivery,
-      colorSpace: getSettings().exportColorSpace,
+      colorSpace,
       processorSettings,
       filenameTemplateId,
       sharpenAmount,
@@ -329,11 +334,17 @@ export function ExportPanel() {
         (p) => setProgress({ done: p.done, total: p.total }),
         dir ?? undefined,
       );
-      setStatus(
+      let msg =
         result.failed.length === 0
           ? `Exported ${result.exported} photo${result.exported === 1 ? "" : "s"}.`
-          : `Exported ${result.exported}; ${result.failed.length} could not be decoded.`,
-      );
+          : `Exported ${result.exported}; ${result.failed.length} could not be exported.`;
+      if (result.degradedTo8Bit > 0) {
+        msg += ` ${result.degradedTo8Bit} exported as 8-bit (device can't render 16-bit).`;
+      }
+      if (result.zipFellBack) {
+        msg += " ZIP exceeded 4 GiB; delivered as individual files.";
+      }
+      setStatus(msg);
       // Offer "Open Folder" only when files actually landed in a native folder
       // destination whose absolute path we can reveal (Electron, not browser).
       if (delivery === "folder" && result.exported > 0) {

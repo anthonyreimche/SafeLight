@@ -41,8 +41,8 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "develop.reset", label: "Reset all edits", category: "Develop", def: "Ctrl+Shift+R" },
   { id: "develop.toggleClipping", label: "Toggle clipping overlay", category: "Develop", def: "J" },
   { id: "develop.colorAssessment", label: "Toggle color assessment", category: "Develop", def: "Ctrl+B" },
-  { id: "develop.surroundDarker", label: "Surround darker", category: "Develop", def: "Ctrl+Shift+[" },
-  { id: "develop.surroundLighter", label: "Surround lighter", category: "Develop", def: "Ctrl+Shift+]" },
+  { id: "develop.surroundDarker", label: "Surround darker", category: "Develop", def: "Ctrl+Shift+[", altDef: "Ctrl+Shift+{" },
+  { id: "develop.surroundLighter", label: "Surround lighter", category: "Develop", def: "Ctrl+Shift+]", altDef: "Ctrl+Shift+}" },
   { id: "brush.smaller", label: "Shrink brush", category: "Develop", def: "[" },
   { id: "brush.larger", label: "Grow brush", category: "Develop", def: "]" },
   { id: "brush.featherDown", label: "Less brush feather", category: "Develop", def: "Shift+[", altDef: "Shift+{" },
@@ -74,7 +74,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "photo.rotateCW", label: "Rotate right", category: "Library", def: "Alt+]" },
   { id: "photo.flipH", label: "Flip horizontal", category: "Develop", def: "" },
   { id: "photo.flipV", label: "Flip vertical", category: "Develop", def: "" },
-  { id: "photo.remove", label: "Remove from catalog", category: "Library", def: "Delete" },
+  { id: "photo.remove", label: "Remove from catalog", category: "Library", def: "Delete", altDef: "Backspace" },
   { id: "keyword.focus", label: "Focus keyword input", category: "Library", def: "K" },
 ];
 
@@ -301,6 +301,13 @@ export function findConflicts(
       combo: overrides[a.id] ?? a.def,
       global: false,
     })),
+    // Built-in aliases are live only while unbound (see matchAction); scan them
+    // under their action's id so an alias collision surfaces too.
+    ...KEY_ACTIONS.flatMap((a) =>
+      a.altDef !== undefined && overrides[a.id] === undefined
+        ? [{ id: a.id, category: a.category, combo: a.altDef, global: false }]
+        : [],
+    ),
     ...Array.from(useExtensionActions.getState().actions.values()).map((e) => ({
       id: e.id,
       category: e.category,

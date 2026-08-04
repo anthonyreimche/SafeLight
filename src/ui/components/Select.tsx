@@ -117,6 +117,7 @@ export function Select({
   const menuRef = useRef<HTMLDivElement>(null);
   const typeahead = useRef<{ str: string; t: number }>({ str: "", t: 0 });
   const baseId = useId();
+  const listboxId = `${baseId}-listbox`;
 
   const place = useCallback(() => {
     const el = triggerRef.current;
@@ -210,6 +211,13 @@ export function Select({
         e.preventDefault();
         choose(flat[active]);
         break;
+      case "Escape":
+        // Also registered on the escape stack for the app's global handler, but
+        // a focused listbox must close on its own key too — the trigger is where
+        // the event lands, so don't make it depend on an ancestor being mounted.
+        e.preventDefault();
+        setOpen(false);
+        break;
       case "Tab":
         setOpen(false);
         break;
@@ -235,8 +243,15 @@ export function Select({
         ref={triggerRef}
         type="button"
         disabled={disabled}
+        // The select-only combobox pattern (ARIA 1.2): focus stays on the
+        // trigger and the active option is named by aria-activedescendant —
+        // which only resolves through aria-controls, since the listbox is
+        // portalled out of this subtree. `button` doesn't support
+        // aria-activedescendant at all, hence the explicit combobox role.
+        role="combobox"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
         aria-activedescendant={open && active >= 0 ? `${baseId}-opt-${active}` : undefined}
         aria-label={ariaLabel}
         title={title}
@@ -270,6 +285,7 @@ export function Select({
         createPortal(
           <div
             ref={menuRef}
+            id={listboxId}
             role="listbox"
             aria-label={ariaLabel}
             style={{

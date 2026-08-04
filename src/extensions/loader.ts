@@ -37,13 +37,17 @@ const loaded = new Map<string, ExtensionModule>();
 
 const DISABLED_KEY = "sl_ext_disabled";
 
-function loadDisabled(): string[] {
+function parseDisabled(raw: string | null): string[] {
   try {
-    const v = JSON.parse(localStorage.getItem(DISABLED_KEY) ?? "[]");
+    const v = JSON.parse(raw ?? "[]");
     return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
   } catch {
     return [];
   }
+}
+
+function loadDisabled(): string[] {
+  return parseDisabled(localStorage.getItem(DISABLED_KEY));
 }
 
 export const useDisabledExtensions = create<{ ids: string[] }>(() => ({
@@ -79,7 +83,14 @@ async function applyEnablement(id: string, enabled: boolean): Promise<void> {
     const native = window.safelightNative;
     if (!native) return;
     const manifest = (await native.plugins.list()).find((m) => m.id === id);
-    if (manifest) await loadPlugin(manifest);
+    if (!manifest) return;
+    const banned = bannedReasonForManifest(manifest);
+    if (banned) {
+      flagBannedExtension({ id: manifest.id, name: manifest.name, reason: banned });
+      console.warn(`[extensions] blocked ${manifest.id}: ${banned}`);
+      return;
+    }
+    await loadPlugin(manifest);
   }
   applySavedTheme(); // the saved theme may belong to the re-enabled extension
 }
@@ -99,12 +110,7 @@ export async function setExtensionEnabled(
 export function initEnablement(): void {
   window.addEventListener("storage", (e) => {
     if (e.key !== DISABLED_KEY || e.newValue == null) return;
-    let next: string[];
-    try {
-      next = JSON.parse(e.newValue);
-    } catch {
-      return;
-    }
+    const next = parseDisabled(e.newValue);
     const prev = useDisabledExtensions.getState().ids;
     useDisabledExtensions.setState({ ids: next });
     for (const id of next.filter((x) => !prev.includes(x)))
@@ -234,11 +240,10 @@ export async function loadExternalPlugins(): Promise<void> {
   // cache TTL so registry edits — new bans, new verifications — show up on the
   // next launch, not up to a TTL later), then retire anything it now bans. This
   // is off the hot path: activation above already happened from the cached list.
-  // Respect the user's update-check preference: refreshing the trust list is a
-  // network call, so skip it when extension update checks are off. The cached
-  // list is still applied above, so known bans keep being enforced offline.
-  if (list.length > 0 && getSettings().checkExtensionUpdates)
-    void loadTrustList(true).then(enforceBansOnLoaded);
+  // Deliberately not gated on checkExtensionUpdates: a kill-switch is not an
+  // update check, and the cache it corrects lives in localStorage, which the
+  // extensions themselves can write.
+  if (list.length > 0) void loadTrustList(true).then(enforceBansOnLoaded);
 }
 
 export async function installFromGitHub(
@@ -261,6 +266,13 @@ export async function installFromGitHub(
     unregisterExtension(manifest.id);
   }
   await loadPlugin(manifest); // live, no restart
+  // The freshly-installed version is current — clear any stale badge (e.g. from
+  // an uninstall/reinstall of a previously-outdated copy).
+  useExtStoreUI.getState().setUpdate(manifest.id, {
+    latestTag: manifest.version,
+    hasUpdate: false,
+    checkedAt: Date.now(),
+  });
   return manifest;
 }
 
@@ -270,6 +282,7 @@ export async function uninstallPlugin(id: string): Promise<void> {
   loaded.delete(id);
   unregisterExtension(id);
   deleteExtensionSettings(id); // forget its persisted settings too
+  useExtStoreUI.getState().clearUpdate(id); // and its cached update check
   persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
   await native?.plugins.uninstall(id); // deletes <userData>/plugins/<id>/
 }

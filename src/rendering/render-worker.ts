@@ -16,7 +16,7 @@ import { detectLines, computeUprightCorrection, type UprightResult } from "./upr
 // ---------------------------------------------------------------------------
 
 export type WorkerRequest =
-  | { cmd: "init"; width: number; height: number }
+  | { cmd: "init"; width: number; height: number; highBitDepth: boolean }
   | {
       cmd: "setImage";
       image:
@@ -62,7 +62,7 @@ export type WorkerRequest =
   | { cmd: "computeHistogram"; wantExtended?: boolean }
   | { cmd: "setStages"; stages: ProcessingStageContribution[] }
   | { cmd: "setPipeline"; pipeline: ResolvedPipeline }
-  | { cmd: "analyzeUpright"; mode: UprightMode }
+  | { cmd: "analyzeUpright"; reqId: number; mode: UprightMode }
   // ── GPU source cache ──
   | { cmd: "bindSource"; reqId: number; key: string }
   | {
@@ -108,7 +108,12 @@ export type WorkerResponse =
   | { type: "sourceBound"; reqId: number; hit: boolean }
   | { type: "captured"; reqId: number; bitmap: ImageBitmap }
   | { type: "hasSource"; reqId: number; has: boolean }
-  | { type: "upright"; result: UprightResult }
+  | { type: "upright"; reqId: number; result: UprightResult }
+  // An upright analysis threw. Carries the reqId so the bridge settles THAT
+  // pending computeUpright promise; without it a throw falls through to the
+  // generic "error" response, which isn't tied to a request, so the awaiting
+  // TransformPanel hangs forever.
+  | { type: "uprightError"; reqId: number; message: string }
   // The downscaled 8-bit heal source, forwarded so the main thread's
   // findHealSource/healColorOffset (in the develop overlay) has pixels to search.
   | { type: "healSource"; data: Uint8ClampedArray; width: number; height: number }
@@ -144,6 +149,11 @@ let lastParams: DevelopParams | null = null;
 // a quarter holds many. 0 until the first setCacheBudget message.
 let cacheBudgetBytes = 0;
 
+// Fraction of the develop cache budget granted to the thumb renderer (its sources
+// are downscaled, so a quarter holds many).
+const THUMB_CACHE_FRACTION = 0.25;
+const DEFAULT_THUMB_JPEG_QUALITY = 0.8;
+
 // Forward the develop renderer's downscaled heal source to the main thread so the
 // overlay's findHealSource/healColorOffset can search it (they run main-thread, in
 // a separate module instance where setHealSourceImage is never called otherwise).
@@ -161,10 +171,43 @@ function ensureThumbRenderer(): WebGLRenderer {
     pipeline: latestPipeline,
     stages: latestStages,
   });
-  if (cacheBudgetBytes > 0) thumbRenderer.setCacheBudget(cacheBudgetBytes / 4);
+  if (cacheBudgetBytes > 0) thumbRenderer.setCacheBudget(cacheBudgetBytes * THUMB_CACHE_FRACTION);
   thumbRenderer.setContributedParams(latestParamBag);
   thumbRenderer.setStageTextures(latestStageTextures);
   return thumbRenderer;
+}
+
+interface ThumbRenderRequest {
+  requestId: string;
+  params: DevelopParams;
+  asShotTemperature: number;
+  quality?: number;
+  contributedParams?: Record<string, unknown>;
+}
+
+// Shared tail for both thumbnail handlers (after their divergent setImage/bindSource
+// preamble): applies params + per-render stage bag, renders, restores the global
+// bag, and settles the request — including the convertToBlob rejection path — so the
+// caller's promise never hangs.
+function finishThumbRender(tr: WebGLRenderer, msg: ThumbRenderRequest) {
+  tr.setAsShotTemperature(msg.asShotTemperature);
+  tr.setParams(msg.params);
+  const hadBag = msg.contributedParams !== undefined;
+  if (hadBag) tr.setContributedParams(msg.contributedParams!);
+  // Restore the global bag even if render() throws, or a failed render leaves the
+  // thumb renderer holding this photo's stage params and every later thumbnail
+  // renders with the wrong photo's uniforms.
+  try {
+    tr.render();
+  } finally {
+    if (hadBag) tr.setContributedParams(latestParamBag);
+  }
+  if (!thumbCanvas) throw new Error("thumb canvas unavailable");
+  const quality = msg.quality ?? DEFAULT_THUMB_JPEG_QUALITY;
+  thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
+    (blob) => respond({ type: "thumbnail", requestId: msg.requestId, blob }),
+    (err) => respondThumbError(msg.requestId, err),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +221,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       case "init": {
         canvas = new OffscreenCanvas(msg.width, msg.height);
         renderer = new WebGLRenderer(canvas, {
-          highBitDepth: true,
+          // The worker can't read the preference itself (settings-store uses
+          // localStorage, unavailable off the main thread), so it arrives here.
+          highBitDepth: msg.highBitDepth,
           pipeline: BUILTIN_RESOLVED,
           stages: [],
         });
@@ -207,20 +252,6 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         if (!renderer) break;
         lastParams = msg.params;
         renderer.setParams(msg.params);
-        // TEMP: report what the worker actually received, routed to the main
-        // console via the error channel (worker console is unreliable here).
-        if ((msg.params.retouch ?? []).length > 0) {
-          respond({
-            type: "error",
-            message:
-              "[worker setParams] retouch=" +
-              JSON.stringify(
-                msg.params.retouch.map(
-                  (s) => `${s.shape}${s.dabs ? `(${s.dabs.length})` : ""}`,
-                ),
-              ),
-          });
-        }
         break;
       }
 
@@ -248,11 +279,20 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
           break;
         }
-        renderer.setParams(msg.params);
-        renderer.render();
-        const captured = canvas.transferToImageBitmap();
-        if (lastParams) renderer.setParams(lastParams);
-        respond({ type: "captured", reqId: msg.reqId, bitmap: captured }, [captured]);
+        // A throw here would otherwise fall to the generic "error" response, which
+        // carries no reqId, so the awaiting capture() would hang. Settle with the
+        // blank fallback instead.
+        try {
+          renderer.setParams(msg.params);
+          renderer.render();
+          const captured = canvas.transferToImageBitmap();
+          if (lastParams) renderer.setParams(lastParams);
+          respond({ type: "captured", reqId: msg.reqId, bitmap: captured }, [captured]);
+        } catch {
+          if (lastParams) renderer.setParams(lastParams);
+          const blank = new OffscreenCanvas(1, 1);
+          respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
+        }
         break;
       }
 
@@ -294,22 +334,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           } else {
             tr.setImage(img, msg.maxEdge);
           }
-          tr.setAsShotTemperature(msg.asShotTemperature);
-          tr.setParams(msg.params);
-          // Per-render stage params for headless/batch renders; restore the
-          // global bag after so the live thumb state isn't left altered.
-          const hadBag = msg.contributedParams !== undefined;
-          if (hadBag) tr.setContributedParams(msg.contributedParams!);
-          tr.render();
-          if (hadBag) tr.setContributedParams(latestParamBag);
-          if (!thumbCanvas) throw new Error("thumb canvas unavailable");
-          const quality = msg.quality ?? 0.8;
-          // Always settle the request — including the convertToBlob rejection path
-          // (no catch here previously) — so the caller's promise never hangs.
-          thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
-            (blob) => respond({ type: "thumbnail", requestId: msg.requestId, blob }),
-            (err) => respondThumbError(msg.requestId, err),
-          );
+          finishThumbRender(tr, msg);
         } catch (err) {
           respondThumbError(msg.requestId, err);
         }
@@ -391,7 +416,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       case "setCacheBudget": {
         cacheBudgetBytes = msg.bytes;
         renderer?.setCacheBudget(msg.bytes);
-        thumbRenderer?.setCacheBudget(msg.bytes / 4);
+        thumbRenderer?.setCacheBudget(msg.bytes * THUMB_CACHE_FRACTION);
         break;
       }
 
@@ -403,23 +428,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       case "renderThumbnailFromSource": {
         try {
           const tr = ensureThumbRenderer();
-          if (!tr.bindSource(msg.key)) {
+          // msg.maxEdge is the OUTPUT cap for this thumbnail — smaller than the
+          // resident source's own upload cap — so pass it as the bind override.
+          if (!tr.bindSource(msg.key, msg.maxEdge)) {
             respond({ type: "thumbnailMiss", requestId: msg.requestId, key: msg.key });
             break;
           }
-          tr.setAsShotTemperature(msg.asShotTemperature);
-          tr.setParams(msg.params);
-          // See the renderThumbnail handler: per-render stage params, restored.
-          const hadBag = msg.contributedParams !== undefined;
-          if (hadBag) tr.setContributedParams(msg.contributedParams!);
-          tr.render();
-          if (hadBag) tr.setContributedParams(latestParamBag);
-          if (!thumbCanvas) throw new Error("thumb canvas unavailable");
-          const quality = msg.quality ?? 0.8;
-          thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
-            (blob) => respond({ type: "thumbnail", requestId: msg.requestId, blob }),
-            (err) => respondThumbError(msg.requestId, err),
-          );
+          finishThumbRender(tr, msg);
         } catch (err) {
           respondThumbError(msg.requestId, err);
         }
@@ -427,12 +442,27 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       }
 
       case "analyzeUpright": {
-        if (!renderer) break;
-        const pixels = renderer.readDownscaledPixels(256);
-        if (!pixels) break;
-        const lines = detectLines(pixels.data, pixels.w, pixels.h);
-        const result = computeUprightCorrection(lines, msg.mode, pixels.w, pixels.h);
-        respond({ type: "upright", result });
+        // Always respond, even with no renderer or no readable pixels: the bridge's
+        // computeUpright promise has no timeout, so a silent break hangs the awaiting
+        // TransformPanel forever. A zero result is the correct no-op; a throw settles
+        // via uprightError (carrying the reqId) rather than the reqId-less generic
+        // "error" response, which wouldn't clear the pending promise.
+        try {
+          const pixels = renderer?.readDownscaledPixels(256);
+          if (!pixels) {
+            respond({ type: "upright", reqId: msg.reqId, result: { straighten: 0, perspectiveV: 0, perspectiveH: 0 } });
+            break;
+          }
+          const lines = detectLines(pixels.data, pixels.w, pixels.h);
+          const result = computeUprightCorrection(lines, msg.mode, pixels.w, pixels.h);
+          respond({ type: "upright", reqId: msg.reqId, result });
+        } catch (err) {
+          respond({
+            type: "uprightError",
+            reqId: msg.reqId,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
         break;
       }
 

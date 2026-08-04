@@ -31,6 +31,11 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      # Ahead of the build so a logic regression fails in seconds rather than
+      # after the full renderer + main bundle.
+      - name: Run tests
+        run: npm test
+
       - name: Build renderer + main
         run: npm run build
 
@@ -48,6 +53,28 @@ jobs:
           if (-not (Test-Path "dist/index.html")) { exit 1 }
           if (-not (Test-Path "electron/main.cjs")) { exit 1 }
           Write-Host "Build artifacts verified on ${{ matrix.os }}"
+
+  webgl-test:
+    # The renderer needs a real WebGL2 context, so these run in Playwright's
+    # Chromium rather than node. One platform is enough — this covers the
+    # shader/renderer contract, not OS-specific behaviour.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run WebGL tests
+        run: npm run test:webgl
 
   nix-build:
     # NixOS support: build the flake package so it can't silently break.
@@ -69,7 +96,7 @@ jobs:
           echo "Nix package built on NixOS"
 
   build-safelight:
-    needs: [build, nix-build]
+    needs: [build, webgl-test, nix-build]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -77,6 +104,10 @@ jobs:
         run: |
           if [ "${{ needs.build.result }}" != "success" ]; then
             echo "One or more platform builds failed"
+            exit 1
+          fi
+          if [ "${{ needs.webgl-test.result }}" != "success" ]; then
+            echo "WebGL tests failed"
             exit 1
           fi
           if [ "${{ needs.nix-build.result }}" != "success" ]; then

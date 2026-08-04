@@ -13,6 +13,7 @@ import { loadSavedEdit } from "@/catalog/edit-params";
 import { useCatalogStore } from "@/state/catalog-store";
 import { usePipelineStore } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
+import { getExtSetting } from "@/extensions/ext-settings";
 import { getSettings } from "@/state/settings-store";
 
 // Loupe zooms to 1:1, so decode at (up to) full sensor resolution like Develop
@@ -104,6 +105,11 @@ export function useLoupeRenderer(
         savedParamsRef.current = saved;
         savedParamBagRef.current = edit.paramBag;
         renderer.setAsShotTemperature(photo.exif.colorTemperature ?? 6500);
+        // Match Develop/export HSL band shaping so Loupe stays pixel-consistent.
+        renderer.setHslStyle(
+          getExtSetting("core.hsl", "hueRange", 100) / 100,
+          getExtSetting("core.hsl", "smoothness", 100) / 100,
+        );
         if (!hit && image) {
           // Same decode as Develop: full-res RAW float when available (gets the
           // base tone curve in the renderer), else the 8-bit bitmap. Keeps Loupe
@@ -131,7 +137,11 @@ export function useLoupeRenderer(
         syncSize();
         setLoading(false);
       },
-    );
+    ).catch((err) => {
+      if (cancelled) return;
+      console.error("Loupe decode failed:", err);
+      setLoading(false);
+    });
     return () => {
       cancelled = true;
     };

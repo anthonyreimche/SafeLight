@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { memo, useMemo } from "react";
+import { memo, useEffect, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
 
@@ -36,11 +36,20 @@ function LibraryListRowImpl({
   onContextMenu,
   onDragStart,
 }: LibraryListRowProps) {
-  const thumbUrl = useMemo(() => {
-    if (photo.thumbnailUrl) return photo.thumbnailUrl;
-    if (photo.thumbnailBlob) return URL.createObjectURL(photo.thumbnailBlob);
-    return null;
+  // photo.thumbnailUrl is owned and revoked by the catalog store, so it is used
+  // as-is. The thumbnailBlob fallback is created (and revoked) here: without the
+  // effect cleanup below, every virtualized remount would leak an object URL.
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (photo.thumbnailUrl || !photo.thumbnailBlob) {
+      setBlobUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(photo.thumbnailBlob);
+    setBlobUrl(url);
+    return () => URL.revokeObjectURL(url);
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
+  const thumbUrl = photo.thumbnailUrl ?? blobUrl;
 
   const rowClass = active
     ? "bg-surface-4 text-text-primary"

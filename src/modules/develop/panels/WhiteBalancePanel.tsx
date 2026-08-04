@@ -6,6 +6,7 @@
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { AutoButton } from "@/ui/components/AutoButton";
+import { PickerIcon } from "@/ui/components/PickerIcon";
 import { useDevelopStore } from "@/state/develop-store";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
 import { useMaskScope } from "@/modules/develop/mask-scope";
@@ -36,21 +37,7 @@ export function WhiteBalancePanel() {
               : "border-border-subtle text-text-secondary hover:border-border hover:text-text-primary"
           }`}
         >
-          <svg
-            width="11"
-            height="11"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="m2 22 1-1h3l9-9" />
-            <path d="M3 21v-3l9-9" />
-            <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z" />
-          </svg>
+          <PickerIcon />
           Picker
         </button>
         <AutoButton

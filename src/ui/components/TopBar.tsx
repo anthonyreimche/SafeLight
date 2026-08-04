@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useUIStore } from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useProjectStore } from "@/project/project-store";
@@ -114,10 +114,8 @@ export function TopBar() {
 
   // Browsers only allow re-requesting file permission inside a user gesture, so
   // we arm a one-time listener: the first click anywhere triggers the reconnect.
-  const armed = useRef(false);
   useEffect(() => {
-    if (!needsReconnect || armed.current) return;
-    armed.current = true;
+    if (!needsReconnect) return;
     const onGesture = () => void reconnectFiles();
     window.addEventListener("pointerdown", onGesture, { once: true });
     return () => window.removeEventListener("pointerdown", onGesture);
@@ -217,9 +215,7 @@ export function TopBar() {
         <ViewMenu />
         <LayoutMenu />
         <div className="mx-1 h-4 w-px bg-border" />
-        <button onClick={() => openPreferences()} title="Preferences (Ctrl+,)" aria-label="Preferences" className={iconBtnCls}>
-          <GearIcon />
-        </button>
+        {prefsButton}
         <button onClick={openExtensions} title="Extensions" aria-label="Extensions" className={iconBtnCls}>
           <BlocksIcon />
         </button>

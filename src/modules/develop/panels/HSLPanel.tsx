@@ -1,10 +1,11 @@
-// Safelight — founded and principally authored by Anthony Reimche.
+// Safelight â€” founded and principally authored by Anthony Reimche.
 // Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
-// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// attribution-preservation term (GPL v3 Â§7b) â€” see LICENSE. This notice must
 // be preserved in derived versions.
 
 import { Panel } from "@/ui/components/Panel";
 import { HSLMixer } from "@/ui/components/HSLMixer";
+import { PickerIcon } from "@/ui/components/PickerIcon";
 import { useDevelopStore } from "@/state/develop-store";
 import { getExtSetting, useExtSettings } from "@/extensions/ext-settings";
 import { useMaskScope } from "@/modules/develop/mask-scope";
@@ -33,7 +34,7 @@ export function HSLPanel() {
   const selectedBand = useDevelopStore((s) => s.selectedHslBand);
   const setSelectedBand = useDevelopStore((s) => s.setSelectedHslBand);
 
-  // Re-render when the HSL extension's preferences change (Preferences ▸ HSL).
+  // Re-render when the HSL extension's preferences change (Preferences â–¸ HSL).
   useExtSettings((s) => s["core.hsl"]);
   const [view, setView] = useState<"tabs" | "all">(() =>
     getExtSetting<"tabs" | "all">("core.hsl", "defaultView", "tabs"),
@@ -65,21 +66,7 @@ export function HSLPanel() {
           }`}
           title={`Click-drag up/down on the image to adjust ${selectedBand}`}
         >
-          <svg
-            width="11"
-            height="11"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="m2 22 1-1h3l9-9" />
-            <path d="M3 21v-3l9-9" />
-            <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z" />
-          </svg>
+          <PickerIcon />
           Target
         </button>
 
@@ -141,7 +128,7 @@ export function HSLPanel() {
 }
 
 // Per-mask instance: the same 8-band mixer over the mask's own HSL block. The
-// on-image target tool stays global-only — it drives the global bands.
+// on-image target tool stays global-only â€” it drives the global bands.
 function HSLMaskPanel() {
   const scope = useMaskScope();
   const hsl = scope.hsl ?? defaultHSL();

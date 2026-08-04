@@ -77,9 +77,9 @@ export function useCullingShortcuts(): void {
         return;
       }
 
-      const action =
-        matchAction(e, ["Library"]) ??
-        (e.key === "Backspace" && bare ? "photo.remove" : null);
+      // photo.remove carries altDef "Backspace", so matchAction resolves the
+      // bare-Backspace alias (respecting any rebind) without a local fallback.
+      const action = matchAction(e, ["Library"]);
       if (!action) return;
 
       const catalog = useCatalogStore.getState();

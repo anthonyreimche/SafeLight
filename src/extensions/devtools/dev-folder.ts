@@ -63,6 +63,9 @@ const blobUrls = new Map<string, string>();
 
 let started = false;
 let unsubscribe: (() => void) | null = null;
+// Bumped on every scan entry so a slow scan interrupted by a folder change (or
+// Clear) bails instead of racing the newer scan's unloadAll.
+let scanGen = 0;
 
 /** Join two path segments using the separator the base path already uses, so a
  *  Windows backslash path stays consistent. */
@@ -120,7 +123,13 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
     URL.revokeObjectURL(url);
     throw new Error("bundle has no activate(api) export");
   }
-  mod.activate(makeScopedAPI(manifest.id));
+  try {
+    mod.activate(makeScopedAPI(manifest.id));
+  } catch (e) {
+    unregisterExtension(manifest.id);
+    URL.revokeObjectURL(url);
+    throw e;
+  }
   loaded.set(manifest.id, mod as ExtensionModule);
   blobUrls.set(manifest.id, url);
   return {
@@ -134,6 +143,7 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
 
 /** Unload everything, then re-read and load every extension in the dev folder. */
 export async function scanDevFolder(): Promise<void> {
+  const gen = ++scanGen;
   const folder = useDevFolder.getState().folder;
   const fs = privilegedFs();
   unloadAll(); // always start from a clean slate
@@ -158,7 +168,9 @@ export async function scanDevFolder(): Promise<void> {
   // <userData>/plugins layout). Prefer the folder-is-an-extension reading: if a
   // root manifest exists, that's the developer's intent, so load just that one.
   const rootManifest = join(folder, "safelight.json");
-  if (await fs.exists(rootManifest).catch(() => false)) {
+  const hasRoot = await fs.exists(rootManifest).catch(() => false);
+  if (gen !== scanGen) return;
+  if (hasRoot) {
     const name = folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
     let item: DevExtItem;
     try {
@@ -173,6 +185,7 @@ export async function scanDevFolder(): Promise<void> {
         error: e instanceof Error ? e.message : String(e),
       };
     }
+    if (gen !== scanGen) return;
     useDevFolder.setState({ items: [item], scanning: false, error: null });
     return;
   }
@@ -181,6 +194,7 @@ export async function scanDevFolder(): Promise<void> {
   try {
     entries = await fs.list(folder);
   } catch (e) {
+    if (gen !== scanGen) return;
     useDevFolder.setState({
       scanning: false,
       items: [],
@@ -191,6 +205,7 @@ export async function scanDevFolder(): Promise<void> {
 
   const items: DevExtItem[] = [];
   for (const entry of entries) {
+    if (gen !== scanGen) return;
     if (entry.kind !== "directory") continue;
     const dir = join(folder, entry.name);
     const manifestPath = join(dir, "safelight.json");
@@ -209,6 +224,7 @@ export async function scanDevFolder(): Promise<void> {
       });
     }
   }
+  if (gen !== scanGen) return;
   useDevFolder.setState({ items, scanning: false, error: null });
 }
 

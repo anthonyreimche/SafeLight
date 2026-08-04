@@ -11,9 +11,9 @@
 // and `data:` links/images can't slip through. Any literal HTML in the source is
 // rendered as plain text.
 //
-// Supported: ATX headings, fenced & indented code, unordered/ordered lists,
-// blockquotes, horizontal rules, GFM pipe tables, paragraphs, and inline
-// **bold**, *italic*, `code`, [links](url), and ![images](url).
+// Supported: ATX headings, fenced code, unordered/ordered lists, blockquotes,
+// horizontal rules, GFM pipe tables, paragraphs, and inline **bold**, *italic*,
+// `code`, [links](url), and ![images](url).
 
 import { Fragment, type ReactNode } from "react";
 import { openUrl } from "@/update/update-checker";
@@ -33,7 +33,7 @@ interface Props {
 const INLINE = [
   { type: "code", re: /`([^`]+)`/y },
   { type: "image", re: /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/y },
-  { type: "link", re: /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/y },
+  { type: "link", re: /\[((?:!\[[^\]]*\]\([^)\s]+\)|[^\]])+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/y },
   { type: "bold", re: /\*\*([^*]+)\*\*|__([^_]+)__/y },
   { type: "italic", re: /\*([^*]+)\*|_([^_]+)_/y },
 ] as const;

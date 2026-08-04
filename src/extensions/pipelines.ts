@@ -51,15 +51,18 @@ export function resolveActivePipeline(): ResolvedPipeline {
   const reg = useRegistry.getState().pipelines;
   if (memoId === id && memoReg === reg) return memo;
   const c = reg[id];
-  memo =
-    !c || !c.glsl
-      ? BUILTIN_RESOLVED
-      : {
+  memo = !c
+    ? BUILTIN_RESOLVED
+    : c.glsl
+      ? {
           id,
           glsl: c.glsl,
           skipBaseCurve: c.skipBaseCurve ?? false,
           sig: `${id}\n${c.glsl}`,
-        };
+        }
+      : c.skipBaseCurve
+        ? { id, glsl: null, skipBaseCurve: true, sig: `${id}\n` }
+        : BUILTIN_RESOLVED;
   memoId = id;
   memoReg = reg;
   return memo;

@@ -1,6 +1,6 @@
-// Safelight — founded and principally authored by Anthony Reimche.
+// Safelight â€” founded and principally authored by Anthony Reimche.
 // Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
-// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// attribution-preservation term (GPL v3 Â§7b) â€” see LICENSE. This notice must
 // be preserved in derived versions.
 
 import { Panel } from "@/ui/components/Panel";
@@ -10,40 +10,37 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useSettings } from "@/state/settings-store";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
 import { useMaskScope } from "@/modules/develop/mask-scope";
-import type { DevelopParams, MaskAdjustments } from "@/catalog/types";
+import type { MaskAdjustments } from "@/catalog/types";
 import type { MaskPanelContribution } from "@/extensions/types";
+import { TONAL_PARAM_RANGE, type NumericParamKey } from "./tonal-params";
 
-type NumericParamKey = {
-  [K in keyof DevelopParams]: DevelopParams[K] extends number ? K : never;
-}[keyof DevelopParams];
-
-// Per-band detail sliders are opt-in (Preferences ▸ Interface) to keep the panel
+// Per-band detail sliders are opt-in (Preferences â–¸ Interface) to keep the panel
 // compact. Tone recovery/lift preserves micro-contrast on its own regardless;
 // these only expose manual control over it.
 const DETAIL_KEYS = new Set<NumericParamKey>(["highlightDetail", "shadowDetail"]);
 
+// Ranges come from TONAL_PARAM_RANGE — one source shared with the histogram's
+// draggable zones so the limits can't drift.
 const basicSliders: {
-  key: NumericParamKey;
+  key: keyof typeof TONAL_PARAM_RANGE & NumericParamKey;
   label: string;
-  min: number;
-  max: number;
   // Slider-icon contribution id; defaults to `core.${key}`. The per-band detail
   // sliders borrow their parent band's icon so they read as a sub-control.
   icon?: string;
 }[] = [
-  { key: "exposure", label: "Exposure", min: -5, max: 5 },
-  { key: "contrast", label: "Contrast", min: -100, max: 100 },
-  { key: "highlights", label: "Highlights", min: -100, max: 100 },
-  { key: "highlightDetail", label: "Highlight Detail", min: -100, max: 100, icon: "core.highlights" },
-  { key: "shadows", label: "Shadows", min: -100, max: 100 },
-  { key: "shadowDetail", label: "Shadow Detail", min: -100, max: 100, icon: "core.shadows" },
-  { key: "whites", label: "Whites", min: -100, max: 100 },
-  { key: "blacks", label: "Blacks", min: -100, max: 100 },
-  { key: "texture", label: "Texture", min: -100, max: 100 },
-  { key: "clarity", label: "Clarity", min: -100, max: 100 },
-  { key: "dehaze", label: "Dehaze", min: -100, max: 100 },
-  { key: "vibrance", label: "Vibrance", min: -100, max: 100 },
-  { key: "saturation", label: "Saturation", min: -100, max: 100 },
+  { key: "exposure", label: "Exposure" },
+  { key: "contrast", label: "Contrast" },
+  { key: "highlights", label: "Highlights" },
+  { key: "highlightDetail", label: "Highlight Detail", icon: "core.highlights" },
+  { key: "shadows", label: "Shadows" },
+  { key: "shadowDetail", label: "Shadow Detail", icon: "core.shadows" },
+  { key: "whites", label: "Whites" },
+  { key: "blacks", label: "Blacks" },
+  { key: "texture", label: "Texture" },
+  { key: "clarity", label: "Clarity" },
+  { key: "dehaze", label: "Dehaze" },
+  { key: "vibrance", label: "Vibrance" },
+  { key: "saturation", label: "Saturation" },
 ];
 
 export function BasicPanel() {
@@ -68,8 +65,8 @@ export function BasicPanel() {
             icon={s.icon ?? `core.${s.key}`}
             label={s.label}
             value={params[s.key]}
-            min={s.min}
-            max={s.max}
+            min={TONAL_PARAM_RANGE[s.key].min}
+            max={TONAL_PARAM_RANGE[s.key].max}
             step={s.key === "exposure" ? 0.1 : 1}
             onChange={(v) => setParam(s.key, v)}
             onCommit={() => commitEdit(s.label)}
@@ -84,7 +81,7 @@ export function BasicPanel() {
 // shader's local-adjustment scale (all -100..100, unlike global exposure's EV
 // units), minus the tone-recovery detail sub-sliders, which have no local
 // equivalent. Texture/clarity/dehaze apply locally through the Detail
-// sub-panel instead — see DetailPanel.
+// sub-panel instead â€” see DetailPanel.
 const MASK_SLIDERS: { key: keyof MaskAdjustments; label: string }[] = [
   { key: "exposure", label: "Exposure" },
   { key: "contrast", label: "Contrast" },

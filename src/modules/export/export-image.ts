@@ -65,6 +65,12 @@ export interface ExportProgress {
 export interface ExportResult {
   exported: number;
   failed: string[]; // filenames that could not be rendered
+  /** Count of photos whose 16-bit TIFF request fell back to 8-bit because the
+   *  device can't render to a float target. */
+  degradedTo8Bit: number;
+  /** True when a requested ZIP overflowed the ZIP32 limits and the batch was
+   *  delivered as individual files instead. */
+  zipFellBack?: boolean;
 }
 
 const EXTENSION: Record<ExportFormat, string> = {
@@ -222,13 +228,19 @@ export function downloadBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+interface RenderOneResult {
+  blob: Blob | null;
+  /** The 16-bit TIFF request fell back to 8-bit (device can't render float). */
+  degradedTo8Bit: boolean;
+}
+
 async function renderOne(
   renderer: WebGLRenderer,
   canvas: HTMLCanvasElement,
   photo: CatalogPhoto,
   settings: ExportSettings,
   processorSettings: ProcessorSettings,
-): Promise<Blob | null> {
+): Promise<RenderOneResult> {
   // The saved crop determines how many source pixels the requested long edge
   // needs: exporting a half-width crop at 2048 px must render from a 4096 px
   // source. Read the edit before decoding; when the as-shot temperature is
@@ -247,7 +259,7 @@ async function renderOne(
   // Same decode as Develop/Loupe: full-res RAW float when available (gets the
   // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
   const image = await loadPhotoImage(photo, { minEdge });
-  if (!image) return null;
+  if (!image) return { blob: null, degradedTo8Bit: false };
   const bitmap = image.kind === "bitmap" ? image.bitmap : null;
   try {
     const w = image.kind === "bitmap" ? image.bitmap.width : image.width;
@@ -298,11 +310,17 @@ async function renderOne(
     // 16-bit TIFF: read the develop pipeline's float output directly so the
     // extra precision survives. Falls through to the 8-bit path when the device
     // can't render to a float target.
+    let degradedTo8Bit = false;
     if (settings.format === "image/tiff" && (settings.tiffBitDepth ?? 8) === 16) {
       const cap = renderer.captureFloatFrame();
       if (cap) {
-        return runProcessors(encode16BitTiff(cap, colorSpace), photo, processorSettings);
+        const blob = await runProcessors(encode16BitTiff(cap, colorSpace), photo, processorSettings);
+        return { blob, degradedTo8Bit: false };
       }
+      degradedTo8Bit = true;
+      console.warn(
+        `[safelight] 16-bit TIFF requested but this device can't render to a float target; "${photo.filename}" exported as 8-bit.`,
+      );
     }
 
     renderer.render();
@@ -310,12 +328,14 @@ async function renderOne(
       ? applyOutputSharpening(canvas, settings.sharpenAmount!, settings.sharpenRadius ?? 1)
       : canvas;
     if (settings.format === "image/tiff") {
-      return runProcessors(encode8BitTiff(encodeCanvas, colorSpace), photo, processorSettings);
+      const blob = await runProcessors(encode8BitTiff(encodeCanvas, colorSpace), photo, processorSettings);
+      return { blob, degradedTo8Bit };
     }
-    const blob = await canvasToBlob(encodeCanvas, settings.format, settings.quality);
-    if (!blob) return null;
-    const profiled = await embedColorProfile(blob, colorSpace);
-    return runProcessors(profiled, photo, processorSettings);
+    const raw = await canvasToBlob(encodeCanvas, settings.format, settings.quality);
+    if (!raw) return { blob: null, degradedTo8Bit };
+    const profiled = await embedColorProfile(raw, colorSpace);
+    const blob = await runProcessors(profiled, photo, processorSettings);
+    return { blob, degradedTo8Bit };
   } finally {
     bitmap?.close();
   }
@@ -399,7 +419,7 @@ export async function renderPhotosToBlobs(
       const photo = photos[i];
       let blob: Blob | null = null;
       try {
-        blob = await renderOne(renderer, canvas, photo, settings, procSettings);
+        blob = (await renderOne(renderer, canvas, photo, settings, procSettings)).blob;
       } catch {
         blob = null;
       }
@@ -427,15 +447,23 @@ export async function exportPhotos(
   destDir?: FileSystemDirectoryHandle,
 ): Promise<ExportResult> {
   const made = makeBatchRenderer(settings);
-  if (!made) return { exported: 0, failed: photos.map((p) => p.filename) };
+  if (!made)
+    return { exported: 0, failed: photos.map((p) => p.filename), degradedTo8Bit: 0 };
   const { renderer, canvas } = made;
 
   const delivery = settings.delivery ?? (settings.bundle ? "zip" : "files");
   const useZip = delivery === "zip" && photos.length > 1;
-  const zip = useZip ? new ZipWriter() : null;
+  // Mutable so it can be dropped mid-batch when the archive overflows ZIP32 and
+  // we fall back to per-file delivery.
+  let zip = useZip ? new ZipWriter() : null;
+  // Blobs already handed to the ZIP, kept so an overflow can re-deliver them as
+  // individual downloads instead of shipping a corrupt partial archive.
+  const zipBuffered: { name: string; blob: Blob }[] = [];
+  let zipFellBack = false;
   const usedNames = new Set<string>();
   const failed: string[] = [];
   let exported = 0;
+  let degradedTo8Bit = 0;
 
   const procSettings = settings.processorSettings ?? {};
   // Resolve the active filename template once (if any) for the batch.
@@ -446,7 +474,14 @@ export async function exportPhotos(
   try {
     for (let i = 0; i < photos.length; i++) {
       const photo = photos[i];
-      const blob = await renderOne(renderer, canvas, photo, settings, procSettings);
+      let blob: Blob | null = null;
+      try {
+        const r = await renderOne(renderer, canvas, photo, settings, procSettings);
+        blob = r.blob;
+        if (r.degradedTo8Bit) degradedTo8Bit++;
+      } catch {
+        blob = null;
+      }
       if (blob) {
         const rawName = templateEntry
           ? resolveFilenameTemplate(templateEntry.template, photo, settings.format)
@@ -454,7 +489,19 @@ export async function exportPhotos(
         const name = uniqueName(rawName, usedNames);
         try {
           if (zip) {
-            zip.add(name, new Uint8Array(await blob.arrayBuffer()));
+            try {
+              zip.add(name, new Uint8Array(await blob.arrayBuffer()));
+              zipBuffered.push({ name, blob });
+            } catch (e) {
+              if (!(e instanceof RangeError)) throw e;
+              // Archive would exceed ZIP32 limits: deliver everything buffered so
+              // far — plus this file and the rest of the batch — as individual
+              // downloads rather than a truncated, unreadable ZIP.
+              zip = null;
+              zipFellBack = true;
+              for (const b of zipBuffered) downloadBlob(b.blob, b.name);
+              downloadBlob(blob, name);
+            }
           } else if (delivery === "folder" && destDir) {
             const fh = await destDir.getFileHandle(name, { create: true });
             const w = await fh.createWritable();
@@ -480,5 +527,5 @@ export async function exportPhotos(
     downloadBlob(zip.blob(), ARCHIVE_NAME);
   }
 
-  return { exported, failed };
+  return { exported, failed, degradedTo8Bit, zipFellBack };
 }

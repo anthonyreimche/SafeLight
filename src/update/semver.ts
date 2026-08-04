@@ -10,17 +10,26 @@
 // suffixes follow semver precedence ("1.2.3-beta.2" < "1.2.3") so a user on a
 // pre-release build is notified when the matching full release lands.
 
+const VERSION_RE = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
+
+const stripV = (tag: string): string => String(tag).replace(/^v/i, "");
+
 /** Parse a semver-ish tag like "v1.2.3" or "1.2.3" into [major, minor, patch]. */
 export function parseSemver(tag: string): [number, number, number] {
-  const m = String(tag)
-    .replace(/^v/i, "")
-    .match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  const m = stripV(tag).match(VERSION_RE);
   if (!m) return [0, 0, 0];
   return [
     parseInt(m[1], 10) || 0,
     m[2] ? parseInt(m[2], 10) || 0 : 0,
     m[3] ? parseInt(m[3], 10) || 0 : 0,
   ];
+}
+
+/** Whether `tag` carries a version at all. parseSemver falls back to [0, 0, 0]
+ *  for unreadable input, which a genuine "0.0.0" build is indistinguishable
+ *  from — callers that must tell the two apart ask here first. */
+export function isSemver(tag: string): boolean {
+  return VERSION_RE.test(stripV(tag));
 }
 
 /** The pre-release suffix ("beta.2" in "v1.2.3-beta.2+build"), or null.

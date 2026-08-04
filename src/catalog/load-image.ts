@@ -54,6 +54,10 @@ function bitmapToFloat(
 
   gl.deleteFramebuffer(fb);
   gl.deleteTexture(tex);
+  // Free the context immediately: browsers cap live WebGL contexts (~16), and a
+  // batch RAW prefetch calls this once per decode, so a leaked context per call
+  // would evict an older one — including a live canvas.
+  gl.getExtension("WEBGL_lose_context")?.loseContext();
 
   // Apply the inverse sRGB transfer function (IEC 61966-2-1) to linearise.
   const data = new Float32Array(width * height * 4);

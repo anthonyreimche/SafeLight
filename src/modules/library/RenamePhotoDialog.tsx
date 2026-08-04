@@ -3,7 +3,14 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+// Characters no Windows/macOS/Linux filesystem accepts in a path segment, plus
+// control chars — the same name reaches the on-disk rename verbatim.
+// eslint-disable-next-line no-control-regex
+const ILLEGAL_CHARS = /[/\\:*?"<>|\x00-\x1f]/;
+
+const NO_NAMES: readonly string[] = [];
 
 interface Props {
   /** Heading, e.g. "Rename photo" or "Rename copy". */
@@ -17,6 +24,11 @@ interface Props {
    *  which is locked so the decode path that keys off it can't be broken). */
   suffix?: string;
   placeholder?: string;
+  /** Names already spoken for beside this one — sibling filenames for a master,
+   *  sibling copy names for a virtual copy. Compared case-insensitively, since
+   *  Windows and macOS collide on case, so the clash surfaces here instead of
+   *  after a failed disk rename. */
+  takenNames?: readonly string[];
   onSubmit: (value: string) => void;
   onCancel: () => void;
 }
@@ -29,6 +41,7 @@ export function RenamePhotoDialog({
   prefix,
   suffix,
   placeholder,
+  takenNames = NO_NAMES,
   onSubmit,
   onCancel,
 }: Props) {
@@ -36,8 +49,16 @@ export function RenamePhotoDialog({
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => inputRef.current?.select(), []);
 
+  const taken = useMemo(
+    () => new Set(takenNames.map((n) => n.trim().toLowerCase())),
+    [takenNames],
+  );
   const trimmed = name.trim();
-  const error = /[/\\]/.test(name) ? "Name can't contain / or \\." : null;
+  const error = ILLEGAL_CHARS.test(name)
+    ? 'Name can\'t contain / \\ : * ? " < > |.'
+    : trimmed !== "" && taken.has(trimmed.toLowerCase())
+      ? `“${trimmed}” is already taken.`
+      : null;
   const canSave = trimmed.length > 0 && !error;
   const submit = () => {
     if (canSave) onSubmit(trimmed);

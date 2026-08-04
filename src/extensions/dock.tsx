@@ -22,6 +22,14 @@ import {
   type RefObject,
 } from "react";
 import { ContextMenu } from "@/ui/components/ContextMenu";
+import { create } from "zustand";
+import { useRegistry, usePanelHeaderAccessories } from "./registry";
+import { panelIsPreviewable } from "@/modules/develop/panel-bypass";
+import { frameLocalPoint } from "@/ui/frame-point";
+import { getSettings } from "@/state/settings-store";
+import type { AppModule } from "@/catalog/types";
+import type { ModuleLayoutDef } from "./types";
+import { detachedModule } from "@/state/detach";
 
 class PanelErrorBoundary extends Component<
   { id: string; children: ReactNode },
@@ -49,12 +57,6 @@ class PanelErrorBoundary extends Component<
     return this.props.children;
   }
 }
-import { create } from "zustand";
-import { useRegistry, usePanelHeaderAccessories } from "./registry";
-import { panelIsPreviewable } from "@/modules/develop/panel-bypass";
-import type { AppModule } from "@/catalog/types";
-import type { ModuleLayoutDef } from "./types";
-import { detachedModule } from "@/state/detach";
 
 // v4: dockview replaced by the custom rail dock; old grid layouts don't apply.
 const layoutKey = (module: AppModule) =>
@@ -122,24 +124,27 @@ const openList = (rails: RailState[], floating: Record<string, FloatState>) => [
   ...Object.keys(floating),
 ];
 
+function saveLayout(
+  s: Pick<DockState, "module" | "rails" | "floating" | "zOrder" | "collapsed">,
+) {
+  if (!s.module) return;
+  try {
+    localStorage.setItem(
+      layoutKey(s.module),
+      JSON.stringify({
+        rails: s.rails,
+        floating: s.floating,
+        zOrder: s.zOrder,
+        collapsed: s.collapsed,
+      }),
+    );
+  } catch {}
+}
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    const s = useDockStore.getState();
-    if (!s.module) return;
-    try {
-      localStorage.setItem(
-        layoutKey(s.module),
-        JSON.stringify({
-          rails: s.rails,
-          floating: s.floating,
-          zOrder: s.zOrder,
-          collapsed: s.collapsed,
-        }),
-      );
-    } catch {}
-  }, 300);
+  saveTimer = setTimeout(() => saveLayout(useDockStore.getState()), 300);
 }
 
 function commit(partial: Partial<DockState>) {
@@ -427,19 +432,7 @@ function initModule(module: AppModule) {
     clearTimeout(saveTimer);
     saveTimer = null;
     const prev = useDockStore.getState();
-    if (prev.module && prev.module !== module) {
-      try {
-        localStorage.setItem(
-          layoutKey(prev.module),
-          JSON.stringify({
-            rails: prev.rails,
-            floating: prev.floating,
-            zOrder: prev.zOrder,
-            collapsed: prev.collapsed,
-          }),
-        );
-      } catch {}
-    }
+    if (prev.module && prev.module !== module) saveLayout(prev);
   }
   loadModuleLayout(module);
 }
@@ -480,6 +473,7 @@ function toggleCollapsed(id: string) {
 function bringToFront(id: string) {
   const s = useDockStore.getState();
   if (!(id in s.floating)) return;
+  if (s.zOrder[s.zOrder.length - 1] === id) return;
   commit({ zOrder: [...s.zOrder.filter((p) => p !== id), id] });
 }
 
@@ -619,8 +613,13 @@ function startHeaderDrag(
   const startX = e.clientX;
   const startY = e.clientY;
   const header = e.currentTarget as HTMLElement;
-  const width = header.getBoundingClientRect().width;
-  const ox = startX - header.getBoundingClientRect().left;
+  // Header rect and the pointer grab offset are visual px under the <body>
+  // UI-scale zoom; the float width/position they seed are layout px (CSS
+  // width/left/top), so map both back through the zoom (see frame-point.ts).
+  const z = getSettings().uiScale || 1;
+  const hr = header.getBoundingClientRect();
+  const width = hr.width / z;
+  const ox = (startX - hr.left) / z;
   let active = false;
 
   const move = (ev: PointerEvent) => {
@@ -645,9 +644,10 @@ function startHeaderDrag(
     else if (t.kind === "newRail") dropToNewRail(id, t.side, t.index);
     else {
       const c = container.getBoundingClientRect();
+      const p = frameLocalPoint(c, ev.clientX, ev.clientY);
       const w = Math.min(Math.max(width, MIN_FLOAT), MAX_FLOAT);
-      const x = Math.min(Math.max(ev.clientX - ox - c.left, 0), c.width - w);
-      const y = Math.min(Math.max(ev.clientY - 12 - c.top, 0), c.height - 40);
+      const x = Math.min(Math.max(p.x - ox, 0), c.width / z - w);
+      const y = Math.min(Math.max(p.y - 12, 0), c.height / z - 40);
       dropToFloat(id, x, y, w);
     }
   };
@@ -666,8 +666,11 @@ function startResize(
   if (e.button !== 0) return;
   e.preventDefault();
   const startX = e.clientX;
+  // Pointer delta is visual px under the <body> UI-scale zoom; the width it
+  // drives is layout px, so map it back through the zoom to track 1:1.
+  const z = getSettings().uiScale || 1;
   const move = (ev: PointerEvent) => {
-    const w = start + sign * (ev.clientX - startX);
+    const w = start + (sign * (ev.clientX - startX)) / z;
     apply(Math.min(Math.max(w, min), max));
   };
   const up = () => {
@@ -850,23 +853,27 @@ function DragOverlay() {
   const target = useDockStore((s) => s.target);
   const title = useRegistry((s) => (drag ? (s.panels[drag.id]?.title ?? drag.id) : ""));
   if (!drag) return null;
+  // These coords are visual px (client coords / getBoundingClientRect from
+  // hitTest); the fixed elements are <body>-zoom descendants whose CSS left/top
+  // are layout px, so map back through the zoom (see frame-point.ts).
+  const z = getSettings().uiScale || 1;
   return (
     <>
       {target?.kind === "rail" && (
         <div
           className="pointer-events-none fixed z-50 h-0.5 bg-accent"
-          style={{ left: target.line.x, top: target.line.y - 1, width: target.line.w }}
+          style={{ left: target.line.x / z, top: target.line.y / z - 1, width: target.line.w / z }}
         />
       )}
       {target?.kind === "newRail" && (
         <div
           className="pointer-events-none fixed z-50 w-1 bg-accent/70"
-          style={{ left: target.x, top: target.top, height: target.height }}
+          style={{ left: target.x / z, top: target.top / z, height: target.height / z }}
         />
       )}
       <div
         className="pointer-events-none fixed z-50 rounded border border-accent bg-surface-2 px-3 py-1 text-[11px] uppercase tracking-wider text-text-primary opacity-90 shadow-xl"
-        style={{ left: drag.x + 10, top: drag.y + 10 }}
+        style={{ left: drag.x / z + 10, top: drag.y / z + 10 }}
       >
         {title}
       </div>

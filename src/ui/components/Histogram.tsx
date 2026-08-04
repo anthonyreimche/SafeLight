@@ -5,16 +5,19 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { HistogramData } from "@/rendering/histogram";
+import { channelHex, channelRgba } from "./channel-colors";
 
 type Mode = "luma" | "rgb" | "red" | "green" | "blue";
 
 const MODES: { key: Mode; label: string; active: string }[] = [
   { key: "luma", label: "Lum", active: "#d0d0d0" },
   { key: "rgb", label: "RGB", active: "#d0d0d0" },
-  { key: "red", label: "R", active: "#e74c3c" },
-  { key: "green", label: "G", active: "#2ecc71" },
-  { key: "blue", label: "B", active: "#4aa3ff" },
+  { key: "red", label: "R", active: channelHex("red") },
+  { key: "green", label: "G", active: channelHex("green") },
+  { key: "blue", label: "B", active: channelHex("blue") },
 ];
+
+const VALID_MODES = new Set<string>(MODES.map((m) => m.key));
 
 // Tonal zones across the histogram, left (dark) to right (light).
 export type HistogramZone =
@@ -28,7 +31,6 @@ type Phase = "start" | "move" | "end";
 
 
 const HIST_MODE_KEY = "sl_histogram_mode";
-const VALID_MODES = new Set<string>(["luma", "rgb", "red", "green", "blue"]);
 
 function readHistMode(): Mode {
   try {
@@ -138,6 +140,8 @@ export function Histogram({
         b: Float32Array.from(data.b),
         luma: Float32Array.from(data.luma),
       };
+    } else if (!data) {
+      displayRef.current = null;
     }
   }, [data]);
 
@@ -382,17 +386,17 @@ function drawHistogram(
         robustMax(data.g),
         robustMax(data.b),
       );
-      fillCurve(ctx, w, h, data.r, max, "rgba(231,76,60,0.7)", true);
-      fillCurve(ctx, w, h, data.g, max, "rgba(46,204,113,0.7)", true);
-      fillCurve(ctx, w, h, data.b, max, "rgba(74,163,255,0.7)", true);
+      fillCurve(ctx, w, h, data.r, max, channelRgba("red", 0.7), true);
+      fillCurve(ctx, w, h, data.g, max, channelRgba("green", 0.7), true);
+      fillCurve(ctx, w, h, data.b, max, channelRgba("blue", 0.7), true);
     } else if (mode === "luma") {
       fillCurve(ctx, w, h, data.luma, robustMax(data.luma), "rgba(208,208,208,0.85)", false);
     } else if (mode === "red") {
-      fillCurve(ctx, w, h, data.r, robustMax(data.r), "rgba(231,76,60,0.85)", false);
+      fillCurve(ctx, w, h, data.r, robustMax(data.r), channelRgba("red", 0.85), false);
     } else if (mode === "green") {
-      fillCurve(ctx, w, h, data.g, robustMax(data.g), "rgba(46,204,113,0.85)", false);
+      fillCurve(ctx, w, h, data.g, robustMax(data.g), channelRgba("green", 0.85), false);
     } else {
-      fillCurve(ctx, w, h, data.b, robustMax(data.b), "rgba(74,163,255,0.85)", false);
+      fillCurve(ctx, w, h, data.b, robustMax(data.b), channelRgba("blue", 0.85), false);
     }
   }
 

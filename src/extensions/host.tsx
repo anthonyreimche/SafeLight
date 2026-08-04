@@ -88,7 +88,7 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { catalogStorage } from "@/catalog/storage";
 import { useUIStore } from "@/state/ui-store";
 import { initSettings, useSettings } from "@/state/settings-store";
-import { usePresetsStore } from "@/state/presets-store";
+import { initPresets, usePresetsStore } from "@/state/presets-store";
 import {
   openPreferences,
   closePreferences,
@@ -210,6 +210,7 @@ export function initExtensionHost(): void {
   window.safelight = makeScopedAPI("host");
   initSettings();
   initKeybindings();
+  initPresets();
   initExtSettings();
   initEnablement();
   initThemes();

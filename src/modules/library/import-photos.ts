@@ -572,6 +572,7 @@ export async function rebuildThumbnails(
           width,
           height,
           rotation,
+          decodeError: undefined, // a preview built this time — clear the marker
         };
         await catalogStorage().putPhoto(updated); // writes the preview + persists
         onRebuilt?.(updated);
@@ -656,9 +657,14 @@ export async function reimportPhotos(
       if (colorTemperature && !meta.exif.colorTemperature) {
         meta.exif.colorTemperature = colorTemperature;
       }
-      // Keep the photo's canonical rotation (EXIF + manual); bake only what this
-      // decode hasn't already applied — subtract the EXIF portion when pre-oriented.
-      const rotation = photo.rotation ?? orientationToRotation(exif.orientation);
+      // Recompute the canonical rotation (EXIF + manual) against the FRESHLY
+      // parsed EXIF — the orientation tag may have changed on disk since import
+      // (the reason to re-import). Peel the manual turns off the OLD EXIF, then
+      // re-add the new EXIF portion. Bake only what this decode hasn't already
+      // applied — subtract the EXIF portion when pre-oriented.
+      const oldExifRot = orientationToRotation(photo.exif.orientation);
+      const manual = normalizeRotation((photo.rotation ?? oldExifRot) - oldExifRot);
+      const rotation = normalizeRotation(manual + orientationToRotation(exif.orientation));
       const bakeRotation = oriented
         ? normalizeRotation(rotation - orientationToRotation(exif.orientation))
         : rotation;

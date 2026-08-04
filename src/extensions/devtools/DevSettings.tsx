@@ -8,19 +8,10 @@
 // extension is enabled and disappears the moment it's disabled. Lets the user
 // point Safelight at a local folder of built extensions to load them live.
 
-import { useDevFolder, pickDevFolder, scanDevFolder, setDevFolder } from "./dev-folder";
-
-const btn =
-  "shrink-0 rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary disabled:opacity-40";
+import { DevFolderControls } from "./DevFolderControls";
 
 export function DevSettings() {
-  const folder = useDevFolder((s) => s.folder);
-  const items = useDevFolder((s) => s.items);
-  const scanning = useDevFolder((s) => s.scanning);
-  const error = useDevFolder((s) => s.error);
   const native = window.safelightNative;
-  const loadedCount = items.filter((i) => i.status === "loaded").length;
-  const errorCount = items.filter((i) => i.status === "error").length;
 
   return (
     <div className="flex flex-col gap-4">
@@ -30,10 +21,11 @@ export function DevSettings() {
         </div>
         <p className="mt-1.5 text-[10px] leading-relaxed text-text-muted">
           Point Safelight at a local folder of built extensions to load them
-          live, without installing through GitHub. Each immediate subfolder is
-          one extension — a <code>safelight.json</code> manifest plus its built
-          bundle, the same layout an installed extension uses. Loaded extensions
-          appear under Extensions ▸ Dev.
+          live, without installing through GitHub. Point at a single extension's
+          folder — a <code>safelight.json</code> manifest plus its built bundle,
+          the same layout an installed extension uses — or at a parent folder
+          whose immediate subfolders are each one. Loaded extensions appear
+          under Extensions ▸ Dev.
         </p>
       </div>
 
@@ -42,49 +34,7 @@ export function DevSettings() {
           Loading extensions from a folder requires the desktop app.
         </p>
       ) : (
-        <>
-          <div className="flex items-center gap-1.5">
-            <input
-              value={folder ?? ""}
-              readOnly
-              placeholder="No folder selected"
-              spellCheck={false}
-              title={folder ?? undefined}
-              className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary outline-none placeholder:text-text-muted"
-            />
-            <button onClick={() => void pickDevFolder()} className={btn}>
-              {folder ? "Change…" : "Choose folder…"}
-            </button>
-            {folder && (
-              <button
-                onClick={() => setDevFolder(null)}
-                title="Stop scanning this folder and unload its extensions"
-                className={btn}
-              >
-                Clear
-              </button>
-            )}
-          </div>
-
-          {folder && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => void scanDevFolder()}
-                disabled={scanning}
-                className={btn}
-              >
-                {scanning ? "Scanning…" : "Rescan"}
-              </button>
-              <span className="text-[10px] text-text-muted">
-                {scanning
-                  ? "Scanning…"
-                  : `${loadedCount} loaded${errorCount ? `, ${errorCount} failed` : ""}`}
-              </span>
-            </div>
-          )}
-
-          {error && <p className="text-[10px] text-red-400">{error}</p>}
-        </>
+        <DevFolderControls variant="settings" />
       )}
     </div>
   );

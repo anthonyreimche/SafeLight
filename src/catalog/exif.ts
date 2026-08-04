@@ -3,6 +3,11 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import {
+  TEMPERATURE_MAX_K,
+  TEMPERATURE_MIN_K,
+  kelvinFromWhiteBalanceGains,
+} from "@/rendering/blackbody";
 import type { ExifData } from "./types";
 
 // Lightweight, dependency-free EXIF reader. Handles JPEG (Exif APP1) and
@@ -54,7 +59,11 @@ const TAG = {
   LensMake: 0xa433,
   LensModel: 0xa434,
   LensSerial: 0xa435,
+  ColorMatrix1: 0xc621,
+  ColorMatrix2: 0xc622,
   AsShotNeutral: 0xc628,
+  CalibrationIlluminant1: 0xc65a,
+  CalibrationIlluminant2: 0xc65b,
 } as const;
 
 const GPS_TAG = {
@@ -372,8 +381,13 @@ function parseTiff(view: DataView, base: number): ExifData {
   if (asnEntry) {
     const asn = readRationals(r, asnEntry);
     if (asn.length >= 3 && asn[0] > 0 && asn[1] > 0 && asn[2] > 0) {
-      const kelvin = estimateKelvinFromNeutral(asn[0], asn[1], asn[2]);
-      if (kelvin >= 2000 && kelvin <= 50000) exif.colorTemperature = kelvin;
+      const neutral: Vec3 = [asn[0], asn[1], asn[2]];
+      const kelvin =
+        cctFromCameraNeutral(neutral, readCalibrations(r, ifd0)) ??
+        kelvinFromWhiteBalanceGains(1 / neutral[0], 1 / neutral[1], 1 / neutral[2]);
+      if (kelvin !== undefined && kelvin >= TEMPERATURE_MIN_K && kelvin <= TEMPERATURE_MAX_K) {
+        exif.colorTemperature = kelvin;
+      }
     }
   }
 
@@ -397,50 +411,148 @@ function readRationals(r: Reader, e: Entry): number[] {
   return out;
 }
 
-// Estimate Kelvin colour temperature from AsShotNeutral (per-channel neutral
-// values). The WB gain is 1/neutral; we look for the Kelvin whose blackbody
-// R/B ratio best matches the gain R/B ratio, using Tanner Helland's fit
-// (same as the rendering shader).
-function estimateKelvinFromNeutral(nR: number, nG: number, nB: number): number {
-  // WB gains — green-normalised
-  const gR = (1 / nR) / (1 / nG);
-  const gB = (1 / nB) / (1 / nG);
-  const targetLogRB = Math.log(gR / gB);
+// ---------------------------------------------------------------------------
+// DNG colour temperature
+//
+// AsShotNeutral is expressed in the camera's own raw space, so its channel
+// ratios say nothing about Kelvin until they are carried into XYZ through the
+// camera's colour matrix. The DNG colour-calibration tags carry that matrix —
+// up to two of them, each tied to a calibration illuminant — and the pair is
+// interpolated by temperature, which is the value we are solving for. Hence the
+// fixed point below: guess a chromaticity, build the matrix its temperature
+// selects, map the neutral through it, and repeat until the guess stops moving.
+// ---------------------------------------------------------------------------
 
-  let bestK = 6500;
-  let bestErr = Infinity;
-  const steps = 240;
-  for (let i = 0; i <= steps; i++) {
-    const logK = Math.log(2000) + (i / steps) * (Math.log(50000) - Math.log(2000));
-    const k = Math.exp(logK);
-    const bb = blackbodySrgb(k);
-    const ref = blackbodySrgb(6500);
-    const rGain = ref[0] / bb[0];
-    const bGain = ref[2] / bb[2];
-    const err = Math.abs(Math.log(rGain / bGain) - targetLogRB);
-    if (err < bestErr) { bestErr = err; bestK = k; }
-  }
-  return Math.round(bestK / 10) * 10;
+type Vec3 = readonly [number, number, number];
+// Row-major 3×3. The nine-element length is gated where the tag is read, which
+// is the only place a matrix enters this file.
+type Matrix3 = readonly number[];
+
+interface Calibration {
+  matrix: Matrix3; // XYZ (D50) -> camera raw
+  kelvin: number; // calibration illuminant, 0 when unrecognised
 }
 
-// Tanner Helland's blackbody → sRGB approximation (matches the shader).
-function blackbodySrgb(kelvin: number): [number, number, number] {
-  const t = Math.max(1000, Math.min(50000, kelvin)) / 100;
-  let r: number, g: number, b: number;
-  if (t <= 66) {
-    r = 255;
-    g = 99.4708025861 * Math.log(t) - 161.1195681661;
-    b = t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
-  } else {
-    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
-    g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
-    b = 255;
-  }
-  return [
-    Math.max(0, Math.min(255, r)),
-    Math.max(0, Math.min(255, g)),
-    Math.max(0, Math.min(255, b)),
+// EXIF LightSource codes -> Kelvin, following dng_sdk's
+// dng_camera_profile::IlluminantToTemperature. Fluorescent entries are the
+// midpoint of the range the standard gives them. Codes outside this table
+// (including 0 "unknown" and 255 "other") leave the matrix uninterpolatable.
+const ILLUMINANT_KELVIN: Record<number, number> = {
+  1: 5500, // Daylight
+  2: 4200, // Fluorescent
+  3: 2850, // Tungsten
+  4: 5500, // Flash
+  9: 5500, // Fine weather
+  10: 6500, // Cloudy weather
+  11: 7500, // Shade
+  12: 6400, // Daylight fluorescent
+  13: 5000, // Day white fluorescent
+  14: 4200, // Cool white fluorescent
+  15: 3450, // White fluorescent
+  17: 2850, // Standard light A
+  18: 5500, // Standard light B
+  19: 6500, // Standard light C
+  20: 5500, // D55
+  21: 6500, // D65
+  22: 7500, // D75
+  23: 5000, // D50
+  24: 3200, // ISO studio tungsten
+};
+
+// Seed for the fixed point — the DNG spec's own reference white.
+const D50_XY: readonly [number, number] = [0.3457, 0.3585];
+const CCT_PASSES = 30;
+const CCT_EPSILON = 1e-7;
+
+function readCalibrations(r: Reader, ifd0: Map<number, Entry>): Calibration[] {
+  const pairs: Array<[number, number]> = [
+    [TAG.ColorMatrix1, TAG.CalibrationIlluminant1],
+    [TAG.ColorMatrix2, TAG.CalibrationIlluminant2],
   ];
+  const out: Calibration[] = [];
+  for (const [matrixTag, illuminantTag] of pairs) {
+    const entry = ifd0.get(matrixTag);
+    if (!entry) continue;
+    const matrix = readRationals(r, entry);
+    // 9 values = a 3-colour camera. 4-colour bodies write 12 and their neutral
+    // has four channels, which this 3×3 path cannot represent.
+    if (matrix.length !== 9) continue;
+    out.push({ matrix, kelvin: ILLUMINANT_KELVIN[numTag(r, ifd0.get(illuminantTag)) ?? 0] ?? 0 });
+  }
+  return out;
+}
+
+// Correlated colour temperature of an xy chromaticity — McCamy's cubic
+// approximation, within a few Kelvin across the range cameras calibrate over.
+function cctFromXy(x: number, y: number): number {
+  const n = (x - 0.332) / (0.1858 - y);
+  return ((449 * n + 3525) * n + 6823.3) * n + 5520.33;
+}
+
+function invert3(m: Matrix3): Matrix3 | undefined {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const c0 = e * i - f * h;
+  const c1 = f * g - d * i;
+  const c2 = d * h - e * g;
+  const det = a * c0 + b * c1 + c * c2;
+  if (!isFinite(det) || Math.abs(det) < 1e-12) return undefined;
+  const s = 1 / det;
+  return [
+    c0 * s, (c * h - b * i) * s, (b * f - c * e) * s,
+    c1 * s, (a * i - c * g) * s, (c * d - a * f) * s,
+    c2 * s, (b * g - a * h) * s, (a * e - b * d) * s,
+  ];
+}
+
+function apply3(m: Matrix3, v: Vec3): Vec3 {
+  return [
+    m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+    m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+    m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
+  ];
+}
+
+// The XYZ->camera matrix for a given white point. Two calibrations are blended
+// in reciprocal-Kelvin space (the DNG spec's rule); anything else — one matrix,
+// an unrecognised illuminant, or two calibrations sharing a temperature — uses
+// the first matrix as written.
+function xyzToCamera(calibrations: readonly Calibration[], kelvin: number): Matrix3 {
+  if (calibrations.length < 2) return calibrations[0].matrix;
+  const [low, high] = [...calibrations].sort((a, b) => a.kelvin - b.kelvin);
+  if (!low.kelvin || !high.kelvin || low.kelvin === high.kelvin) return calibrations[0].matrix;
+  if (kelvin <= low.kelvin) return low.matrix;
+  if (kelvin >= high.kelvin) return high.matrix;
+  const w = (1 / kelvin - 1 / high.kelvin) / (1 / low.kelvin - 1 / high.kelvin);
+  return low.matrix.map((v, i) => w * v + (1 - w) * high.matrix[i]);
+}
+
+/**
+ * True correlated colour temperature of a camera-space neutral, or undefined
+ * when the DNG calibration tags are absent or unusable (singular matrix, a
+ * neutral that maps outside the visible cone). Rounded to the 10 K the
+ * temperature slider steps in.
+ */
+function cctFromCameraNeutral(
+  neutral: Vec3,
+  calibrations: readonly Calibration[],
+): number | undefined {
+  if (calibrations.length === 0) return undefined;
+  let [x, y] = D50_XY;
+  for (let pass = 0; pass < CCT_PASSES; pass++) {
+    const inverse = invert3(xyzToCamera(calibrations, cctFromXy(x, y)));
+    if (!inverse) return undefined;
+    const [X, Y, Z] = apply3(inverse, neutral);
+    const sum = X + Y + Z;
+    if (!(sum > 0) || !isFinite(sum)) return undefined;
+    const nextX = X / sum;
+    const nextY = Y / sum;
+    const settled = Math.abs(nextX - x) + Math.abs(nextY - y) < CCT_EPSILON;
+    x = nextX;
+    y = nextY;
+    if (settled) break;
+  }
+  const kelvin = cctFromXy(x, y);
+  return isFinite(kelvin) ? Math.round(kelvin / 10) * 10 : undefined;
 }
 
 function readIFD(r: Reader, ifdOffset: number): Map<number, Entry> {

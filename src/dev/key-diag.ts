@@ -36,12 +36,20 @@ function captureFlag(options?: boolean | AddEventListenerOptions): boolean {
 }
 
 /** Only run while Developer Tools (core.devtools) is enabled. Read straight from
- *  localStorage so there's no store dependency before init. */
+ *  localStorage so there's no store dependency before init. core.devtools ships
+ *  default-off and is seeded into the disabled list exactly once; until that
+ *  seeding has recorded it (fresh profile, or one predating seeding) its absence
+ *  from the disabled list means "not yet decided", not "enabled". */
 function diagActive(): boolean {
   try {
-    const raw = localStorage.getItem("sl_ext_disabled");
-    const ids: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(ids) ? !ids.includes("core.devtools") : true;
+    const seeded: unknown = JSON.parse(
+      localStorage.getItem("sl_ext_default_seeded") ?? "[]",
+    );
+    if (!Array.isArray(seeded) || !seeded.includes("core.devtools")) return false;
+    const disabled: unknown = JSON.parse(
+      localStorage.getItem("sl_ext_disabled") ?? "[]",
+    );
+    return Array.isArray(disabled) && !disabled.includes("core.devtools");
   } catch {
     return false;
   }

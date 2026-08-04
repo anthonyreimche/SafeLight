@@ -25,6 +25,7 @@ import {
   extractHelperNames,
   emitUniformDecl,
   rewriteGlsl,
+  replaceIdentifiers,
   simpleHash,
 } from "./shader-compiler";
 import { useRegistry } from "@/extensions/registry";
@@ -71,7 +72,6 @@ interface PipelineProgram {
   skipBase: boolean;
 }
 import { bakeCoverage, coverageSignature, type CoverageItem } from "./mask-coverage";
-import { contentAwareFill } from "../content-aware-fill";
 import { setHealSourceImage } from "../heal-source";
 import { getSettings } from "@/state/settings-store";
 
@@ -94,6 +94,10 @@ interface SourceEntry {
   applyBaseCurve: boolean;
   isFallbackPreview: boolean;
   fill: { data: Uint8ClampedArray; w: number; h: number } | null;
+  // The output-size cap this source was uploaded with. Restored on bind so a
+  // cache-hit render doesn't inherit a stale cap from the previously-active
+  // source (which sized the output wrong — the export-bug class).
+  maxEdge: number;
   bytes: number;
   lastUsed: number;
 }
@@ -103,10 +107,6 @@ interface SourceEntry {
 // the downscale so the source picker can match and continue them; the search
 // cost is independent of this, only the sampling fidelity changes.
 const FILL_EDGE = 384;
-
-// Experimental CPU content-aware heal fill. Off: heal copies the source verbatim
-// (predictable, artifact-free). Flip to re-enable the PatchMatch synthesis path.
-let CONTENT_AWARE_HEAL = false;
 
 // Gradient-domain (membrane) heal: heal spots blend their copied texture into the
 // surroundings with a per-pixel low-frequency correction instead of one flat mean
@@ -247,23 +247,35 @@ function downsampleDrawable(img: TexImageSource, W: number, H: number) {
   return { data: ctx.getImageData(0, 0, w, h).data, w, h };
 }
 
-// Rasterise a retouch disc (radius in image-height units) into the hole mask.
-function stampDisc(
-  hole: Uint8Array, W: number, H: number, aspect: number,
-  cx: number, cy: number, r: number,
-) {
-  const rax = r / aspect;
-  const x0 = Math.max(0, Math.floor((cx - rax) * W));
-  const x1 = Math.min(W - 1, Math.ceil((cx + rax) * W));
-  const y0 = Math.max(0, Math.floor((cy - r) * H));
-  const y1 = Math.min(H - 1, Math.ceil((cy + r) * H));
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const dx = (x / W - cx) * aspect;
-      const dy = y / H - cy;
-      if (dx * dx + dy * dy <= r * r) hole[y * W + x] = 1;
-    }
-  }
+// Downscale a drawable (ImageBitmap) so its long edge ≤ maxEdge before it is
+// uploaded as a texture. Returns the input unchanged when it already fits. An
+// oversized bitmap (a full-res camera JPEG on a small GPU) otherwise fails
+// texImage2D and renders black; capping matches the float path. The GPU draw is
+// a bilinear box-down (adequate for a display source, unlike the mip-tapped
+// float path). Falls back to the original drawable if a 2D context is
+// unavailable, so behaviour degrades to the previous (uncapped) upload.
+function capDrawableToEdge(
+  img: ImageBitmap,
+  W: number,
+  H: number,
+  maxEdge: number,
+): { source: TexImageSource; width: number; height: number } {
+  const scale = Math.min(1, maxEdge / Math.max(W, H));
+  if (scale >= 1) return { source: img, width: W, height: H };
+  const w = Math.max(1, Math.round(W * scale));
+  const h = Math.max(1, Math.round(H * scale));
+  const c: HTMLCanvasElement | OffscreenCanvas =
+    typeof document !== "undefined"
+      ? document.createElement("canvas")
+      : new OffscreenCanvas(w, h);
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d") as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
+  if (!ctx) return { source: img, width: W, height: H };
+  ctx.drawImage(img as CanvasImageSource, 0, 0, w, h);
+  return { source: c, width: w, height: h };
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +351,16 @@ function bindUniformByType(
     case "ivec4": { const v = value as number[]; gl.uniform4i(loc, v[0] | 0, v[1] | 0, v[2] | 0, v[3] | 0); break; }
     default: break;
   }
+}
+
+// Whether a param-bag value engages its stage's prepass: a non-zero number, a
+// true bool, or a vector with any non-zero component. (Number semantics are the
+// long-standing "non-zero = active"; bools/vectors are the added cases.)
+function paramIsActive(value: unknown): boolean {
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.some((x) => x !== 0);
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,9 +452,8 @@ function buildPassFragment(
   const helperNames = pass.helpers ? extractHelperNames(pass.helpers) : [];
   let helpers = "";
   if (pass.helpers) {
-    let h = pass.helpers;
-    for (const n of helperNames) h = h.replaceAll(n, hPfx + n);
-    for (const u of uniforms) h = h.replaceAll(u.key, uPfx + u.key);
+    let h = replaceIdentifiers(pass.helpers, helperNames, hPfx);
+    h = replaceIdentifiers(h, uniforms.map((u) => u.key), uPfx);
     helpers = h;
   }
   const body = rewriteGlsl(pass.glsl, uniforms, uPfx, hPfx, helperNames);
@@ -526,13 +547,17 @@ function buildStageInjection(
       sigParts.push(`${s.id}~tex:${t.key}`);
     }
 
+    // Uniform + texture keys share the stage's uniform prefix; rewrite them in one
+    // longest-first pass so a short key never partially matches inside a longer one.
+    const uKeys = [
+      ...s.uniforms.map((u) => u.key),
+      ...(s.textures ?? []).map((t) => t.key),
+    ];
     let helperNames: string[] = [];
     if (s.helpers) {
       helperNames = extractHelperNames(s.helpers);
-      let h = s.helpers;
-      for (const n of helperNames) h = h.replaceAll(n, hPfx + n);
-      for (const u of s.uniforms) h = h.replaceAll(u.key, uPfx + u.key);
-      for (const t of s.textures ?? []) h = h.replaceAll(t.key, uPfx + t.key);
+      let h = replaceIdentifiers(s.helpers, helperNames, hPfx);
+      h = replaceIdentifiers(h, uKeys, uPfx);
       helperBlocks.push(h);
     }
 
@@ -562,7 +587,7 @@ function buildStageInjection(
     }
 
     let inline = rewriteGlsl(s.glsl, s.uniforms, uPfx, hPfx, helperNames);
-    for (const t of s.textures ?? []) inline = inline.replaceAll(t.key, uPfx + t.key);
+    inline = replaceIdentifiers(inline, (s.textures ?? []).map((t) => t.key), uPfx);
     groups[group].push(`{\n${prelude}${inline}\n}`);
     sigParts.push(`${s.id}:${simpleHash(s.glsl)}`);
   }
@@ -613,9 +638,11 @@ export class WebGLRenderer {
   private developedFbo: WebGLFramebuffer | null = null;
   private devW = 0;
   private devH = 0;
-  // Content-aware heal fill, computed on the CPU from the (pre-edit) source.
-  private healFillTex: WebGLTexture | null = null;
-  private haveHealFill = false;
+  // Whether developedTex is currently allocated as RGBA16 (norm16) vs RGBA8, so a
+  // norm16-availability change forces a reallocation rather than a format mismatch.
+  private developedTexIsNorm16 = false;
+  // Downscaled 8-bit sRGB copy of the source, forwarded to the main thread so the
+  // heal-source picker (findHealSource/healColorOffset) has pixels to search.
   private healSig = "";
   private fillSrc: Uint8ClampedArray | null = null;
   private fillW = 0;
@@ -732,6 +759,10 @@ export class WebGLRenderer {
   private imageTextureOwned = true;
   private cacheBudgetBytes = DEFAULT_SOURCE_CACHE_BYTES;
   private useTick = 0;
+  // Bytes/px of the last setImage upload (8 for RGBA16/RGBA16F, 4 for RGBA8), so
+  // the cache byte estimate reflects the format actually uploaded instead of
+  // inferring it — an 8-bit bitmap on a norm16-capable GPU is still only 4 B/px.
+  private lastUploadBpp = 4;
   // Viewport window into the displayed image (null = whole frame). When set, the
   // output canvas is sized to roiOut and only the window is rendered at that
   // resolution (crisp zoom). See setViewport.
@@ -833,9 +864,9 @@ export class WebGLRenderer {
     items: CoverageItem[],
     prevSig: string,
   ): { sig: string; channelOf: Record<string, number> } {
-    const sig = coverageSignature(items);
-    if (sig === prevSig) return { sig, channelOf: tex === this.maskTexture ? this.maskChannelOf : this.retouchChannelOf };
     const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+    const sig = coverageSignature(items, aspect);
+    if (sig === prevSig) return { sig, channelOf: tex === this.maskTexture ? this.maskChannelOf : this.retouchChannelOf };
     const baked = bakeCoverage(items, aspect);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -876,59 +907,6 @@ export class WebGLRenderer {
     this.retouchChannelOf = r.channelOf;
   }
 
-  // Recompute the content-aware fill when a heal region's geometry changes.
-  // Guarded by a geometry signature; cleared entirely when nothing is healed.
-  private updateHealFill(retouch: RetouchSpot[]) {
-    if (!CONTENT_AWARE_HEAL) {
-      this.haveHealFill = false;
-      this.healSig = "";
-      return;
-    }
-    const heals = retouch;
-    if (heals.length === 0 || !this.fillSrc) {
-      this.haveHealFill = false;
-      this.healSig = "";
-      return;
-    }
-    const sig =
-      `${this.fillW}x${this.fillH}|` +
-      heals
-        .map((s) =>
-          s.shape === "brush" && s.dabs
-            ? "b" + s.dabs.map((d) => `${d.x.toFixed(3)},${d.y.toFixed(3)},${d.radius.toFixed(3)}`).join(";")
-            : `c${s.dstX.toFixed(3)},${s.dstY.toFixed(3)},${s.radius.toFixed(3)}`,
-        )
-        .join("|");
-    if (sig === this.healSig && this.haveHealFill) return;
-    this.healSig = sig;
-
-    const W = this.fillW, H = this.fillH;
-    const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
-    const hole = new Uint8Array(W * H);
-    let any = false;
-    for (const s of heals) {
-      if (s.shape === "brush" && s.dabs) {
-        for (const d of s.dabs) { stampDisc(hole, W, H, aspect, d.x, d.y, d.radius); any = true; }
-      } else {
-        stampDisc(hole, W, H, aspect, s.dstX, s.dstY, s.radius);
-        any = true;
-      }
-    }
-    if (!any) { this.haveHealFill = false; return; }
-
-    const filled = contentAwareFill(this.fillSrc, W, H, hole, { patch: 3, iters: 4 });
-    const gl = this.gl;
-    if (!this.healFillTex) this.healFillTex = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE5);
-    gl.bindTexture(gl.TEXTURE_2D, this.healFillTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, filled);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    this.haveHealFill = true;
-  }
-
   // Program + uniform locations for a pipeline + stage set, cached by combined
   // signature. A bad custom transform falls back to the built-in entry — cached
   // under the failing sig too, so it isn't recompiled (and re-logged) every frame.
@@ -951,7 +929,16 @@ export class WebGLRenderer {
   private createProgram(vsSrc: string, fsSrc: string): WebGLProgram {
     const gl = this.gl;
     const vs = this.compileShader(gl.VERTEX_SHADER, vsSrc);
-    const fs = this.compileShader(gl.FRAGMENT_SHADER, fsSrc);
+    let fs: WebGLShader;
+    try {
+      fs = this.compileShader(gl.FRAGMENT_SHADER, fsSrc);
+    } catch (err) {
+      // A contributed stage with bad GLSL fails here on every attempt (each
+      // pipeline switch, each dev-folder reload), so the already-compiled
+      // vertex shader must not be stranded on the way out.
+      gl.deleteShader(vs);
+      throw err;
+    }
     const program = gl.createProgram();
     gl.attachShader(program, vs);
     gl.attachShader(program, fs);
@@ -960,12 +947,15 @@ export class WebGLRenderer {
     gl.bindAttribLocation(program, ATTR_POS, "aPos");
     gl.bindAttribLocation(program, ATTR_UV, "aUv");
     gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      const log = gl.getProgramInfoLog(program);
-      throw new Error(`Program link failed: ${log}`);
-    }
+    // Attached shaders are freed with the program once flagged, so release them
+    // before the link check — otherwise a link failure strands both.
     gl.deleteShader(vs);
     gl.deleteShader(fs);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      const log = gl.getProgramInfoLog(program);
+      gl.deleteProgram(program);
+      throw new Error(`Program link failed: ${log}`);
+    }
     return program;
   }
 
@@ -1087,6 +1077,7 @@ export class WebGLRenderer {
       "uGrainAmount",
       "uGrainSize",
       "uGrainRoughness",
+      "uGrainColor",
       // Masks + retouch
       "uImageAspect",
       "uMaskCount",
@@ -1102,8 +1093,6 @@ export class WebGLRenderer {
       "uDevelopedSrc",
       "uHaveDeveloped",
       "uApplyRetouch",
-      "uHealFill",
-      "uHaveHealFill",
       "uMembraneHeal",
       "uPatchPass",
     ];
@@ -1133,7 +1122,6 @@ export class WebGLRenderer {
     for (let i = 0; i < MAX_RETOUCH_BRUSH; i++) {
       u[`uRetouchCh[${i}]`] = gl.getUniformLocation(program, `uRetouchCh[${i}]`);
       u[`uRetouchData[${i}]`] = gl.getUniformLocation(program, `uRetouchData[${i}]`);
-      u[`uRetouchRadius[${i}]`] = gl.getUniformLocation(program, `uRetouchRadius[${i}]`);
     }
     for (const name of names) {
       u[name] = gl.getUniformLocation(program, name);
@@ -1271,8 +1259,9 @@ export class WebGLRenderer {
       } else {
         mipsBuilt = true;
         uploaded = true;
-        // Heal / content-aware-fill source is 8-bit sRGB; the cached data is already
-        // sRGB, so the high byte of each 16-bit sample is the 8-bit value directly.
+        this.lastUploadBpp = 8; // RGBA16
+        // Heal source is 8-bit sRGB; the cached data is already sRGB, so the high
+        // byte of each 16-bit sample is the 8-bit value directly.
         const u8 = new Uint8Array(image.data.length);
         for (let i = 0; i < image.data.length; i++) u8[i] = image.data[i] >> 8;
         const ds = downsampleRGBA(u8, image.width, image.height);
@@ -1299,6 +1288,7 @@ export class WebGLRenderer {
       const fimg = capFloatToEdge(src0, fsrc.width, fsrc.height, maxEdge);
       this.imageWidth = fimg.width;
       this.imageHeight = fimg.height;
+      this.lastUploadBpp = 8; // RGBA16F
       // Texture now holds true linear scene values, so the shader must NOT sRGB-decode.
       this.linear = true;
       this.isFallbackPreview = fsrc.isFallbackPreview ?? isFallbackPreview;
@@ -1319,7 +1309,7 @@ export class WebGLRenderer {
       }
       mipsBuilt = true;
       {
-        // Heal / content-aware-fill source stays 8-bit sRGB (its own pipeline).
+        // Heal source stays 8-bit sRGB (its own pipeline).
         const u8 = new Uint8Array(f0.length);
         for (let i = 0; i < f0.length; i++) {
           const v = Math.max(0, f0[i]);
@@ -1331,9 +1321,14 @@ export class WebGLRenderer {
         setHealSourceImage(ds.data, ds.w, ds.h);
       }
     } else if (!("kind" in image)) {
-      // 8-bit sRGB bitmap path
-      this.imageWidth = image.width;
-      this.imageHeight = image.height;
+      // 8-bit sRGB bitmap path. Cap the upload to the develop edge (and never
+      // above the GL max texture size) so an oversized bitmap can't fail
+      // texImage2D into a black frame — the float path caps the same way.
+      const cap = Math.min(maxEdge, this.maxTextureEdge);
+      const capped = capDrawableToEdge(image, image.width, image.height, cap);
+      this.imageWidth = capped.width;
+      this.imageHeight = capped.height;
+      this.lastUploadBpp = 4; // RGBA8
       this.linear = false;
       this.isFallbackPreview = isFallbackPreview;
       // Camera-rendered bitmaps already carry a tone curve; the cached develop
@@ -1342,7 +1337,7 @@ export class WebGLRenderer {
       // Orientation is handled by the vertex shader (V flip). Do NOT use
       // UNPACK_FLIP_Y_WEBGL: it is unreliable for ImageBitmap sources.
       gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image,
+        gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, capped.source,
       );
       {
         const ds = downsampleDrawable(image, image.width, image.height);
@@ -1406,7 +1401,8 @@ export class WebGLRenderer {
       applyBaseCurve: this.applyBaseCurve,
       isFallbackPreview: this.isFallbackPreview,
       fill: this.fillSrc ? { data: this.fillSrc, w: this.fillW, h: this.fillH } : null,
-      bytes: this.estimateSourceBytes(this.imageWidth, this.imageHeight, this.linear),
+      maxEdge: this.maxEdge, // setImage just set this from `maxEdge`
+      bytes: this.estimateSourceBytes(this.imageWidth, this.imageHeight),
       lastUsed: ++this.useTick,
     };
     this.sourceCache.set(key, entry);
@@ -1421,8 +1417,10 @@ export class WebGLRenderer {
   }
 
   // Bind a resident source as the active image without re-decoding. Returns false
-  // if the key isn't cached (caller should decode + uploadSource).
-  bindSource(key: string): boolean {
+  // if the key isn't cached (caller should decode + uploadSource). `maxEdge`
+  // overrides the output-size cap for this bind (a thumb render caps the output
+  // smaller than the source it uploaded); omit it to restore the source's own cap.
+  bindSource(key: string, maxEdge?: number): boolean {
     const e = this.sourceCache.get(key);
     if (!e) return false;
     const gl = this.gl;
@@ -1434,11 +1432,12 @@ export class WebGLRenderer {
     this.sourceEpoch++;
     this.imageWidth = e.width;
     this.imageHeight = e.height;
+    this.maxEdge = maxEdge ?? e.maxEdge;
     this.linear = e.linear;
     this.applyBaseCurve = e.applyBaseCurve;
     this.isFallbackPreview = e.isFallbackPreview;
-    // Restore the heal/content-aware-fill source for this image and force a
-    // recompute on the next setParams (the global heal singleton is shared).
+    // Restore the heal source (the downscaled 8-bit copy) for this image; the
+    // heal-source picker singleton is shared across images, so re-point it here.
     if (e.fill) {
       this.fillSrc = e.fill.data;
       this.fillW = e.fill.w;
@@ -1448,7 +1447,6 @@ export class WebGLRenderer {
       this.fillSrc = null;
     }
     this.healSig = "";
-    this.haveHealFill = false;
     e.lastUsed = ++this.useTick;
     this.currentSourceKey = key;
     this.hasImage = true;
@@ -1471,11 +1469,10 @@ export class WebGLRenderer {
     this.sourceCache.delete(key);
   }
 
-  private estimateSourceBytes(w: number, h: number, linear: boolean): number {
-    // RGBA16F (float RAW) / RGBA16 (norm16) = 8 bytes/px; 8-bit bitmap = 4.
-    // ×4/3 accounts for the mip chain.
-    const bpp = linear || this.haveNorm16 ? 8 : 4;
-    return Math.round(w * h * bpp * (4 / 3));
+  private estimateSourceBytes(w: number, h: number): number {
+    // RGBA16F (float RAW) / RGBA16 (norm16) = 8 bytes/px; 8-bit bitmap = 4 — the
+    // format the upload actually took. ×4/3 accounts for the mip chain.
+    return Math.round(w * h * this.lastUploadBpp * (4 / 3));
   }
 
   private evictToBudget() {
@@ -1621,7 +1618,6 @@ export class WebGLRenderer {
     this.updateMaskCurveTexture(params.masks);
     const visibleRetouch = params.retouch.filter((s) => s.visible !== false);
     this.updateRetouchTexture(visibleRetouch);
-    this.updateHealFill(visibleRetouch);
     this.uploadCurveLUT();
     // NOTE: resize happens in render(), not here. Resizing the canvas clears
     // it, and setParams runs a frame before the coalesced render — doing it
@@ -1748,6 +1744,9 @@ export class WebGLRenderer {
       for (const e of this.passPrograms.values()) this.gl.deleteProgram(e.program);
       this.passPrograms.clear();
       this.prepassSigs.clear();
+      // A stage whose GLSL was fixed (extension update / dev-folder reload) gets a
+      // fresh compile attempt; without this it stays disabled for the session.
+      this.failedPrepass.clear();
     }
     const e = this.entryFor(p, injection, sSig);
     this.program = e.program;
@@ -1952,7 +1951,7 @@ export class WebGLRenderer {
         gl.uniform1i(u[`uCompMode[${ci}]`], mode);
         gl.uniform1i(u[`uCompType[${ci}]`], type);
         gl.uniform1i(u[`uCompInvert[${ci}]`], c.invert ? 1 : 0);
-        gl.uniform1i(u[`uCompBrushCh[${ci}]`], this.maskChannelOf[c.id] ?? 0);
+        gl.uniform1i(u[`uCompBrushCh[${ci}]`], this.maskChannelOf[c.id] ?? -1);
         if (c.kind === "linear" && c.linear) {
           gl.uniform4f(u[`uCompGeoA[${ci}]`], c.linear.x0, c.linear.y0, c.linear.x1, c.linear.y1);
           gl.uniform4f(u[`uCompGeoB[${ci}]`], 0, 0, 0, 0);
@@ -2050,18 +2049,8 @@ export class WebGLRenderer {
         s.opacity / 100,
         0,
       );
-      // Average dab radius drives the heal blur scale for this painted region.
-      const dabs = s.dabs!;
-      const avgR = dabs.reduce((sum, d) => sum + d.radius, 0) / dabs.length;
-      gl.uniform1f(u[`uRetouchRadius[${i}]`], avgR);
     });
 
-    // Content-aware heal fill (source-UV space); unused while disabled but kept
-    // bound so the sampler stays valid.
-    gl.activeTexture(gl.TEXTURE5);
-    gl.bindTexture(gl.TEXTURE_2D, this.healFillTex ?? this.imageTexture);
-    gl.uniform1i(u.uHealFill, 5);
-    gl.uniform1i(u.uHaveHealFill, this.haveHealFill ? 1 : 0);
     gl.uniform1i(u.uMembraneHeal, MEMBRANE_HEAL ? 1 : 0);
     gl.uniform1i(u.uHaveDeveloped, 0);
 
@@ -2205,6 +2194,12 @@ export class WebGLRenderer {
   computeHistogram(extended = false): HistogramData {
     const gl = this.gl;
     const HIST_SIZE = 128;
+    // Allocate the readback targets on the scratch unit, not unit 0. Creating
+    // one here binds it to the active unit, and unit 0 is uImage — so the first
+    // histogram of a session sampled its own render target (a GL feedback loop,
+    // INVALID_OPERATION) and read back an all-black frame. Sampling is driven by
+    // the sampler uniforms, so moving the active unit doesn't affect the draws.
+    gl.activeTexture(gl.TEXTURE7);
 
     const r = new Uint32Array(256);
     const g = new Uint32Array(256);
@@ -2339,9 +2334,10 @@ export class WebGLRenderer {
       };
     }
 
-    // Restore main canvas framebuffer and viewport.
+    // Restore main canvas framebuffer, viewport and active texture unit.
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    gl.activeTexture(gl.TEXTURE0);
     return result;
   }
 
@@ -2372,11 +2368,12 @@ export class WebGLRenderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
 
-    // Temporarily override transform and crop to identity so we detect lines
-    // in the raw image, not in an already-corrected view.
+    // Temporarily override transform, crop, and viewport to identity so we detect
+    // lines across the whole raw frame, not a corrected or zoom-windowed view.
     const u = this.uniforms;
     const IDENTITY_MAT3 = new Float32Array([1,0,0, 0,1,0, 0,0,1]);
     gl.uniform4f(u.uCrop, 0, 0, 1, 1);
+    gl.uniform4f(u.uViewport, 0, 0, 1, 1);
     gl.uniformMatrix3fv(u.uInvTransform, false, IDENTITY_MAT3);
 
     // Re-bind the source image on unit 0 so the shader samples it correctly
@@ -2404,7 +2401,9 @@ export class WebGLRenderer {
       }
     }
 
-    // Restore the real transform and crop uniforms
+    // Restore the real transform, crop, and viewport uniforms
+    const vp = this.roi;
+    gl.uniform4f(u.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
     if (this.params) {
       const crop = this.params.crop ?? DEFAULT_CROP;
       gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
@@ -2511,13 +2510,16 @@ export class WebGLRenderer {
     return e;
   }
 
-  // True when the param bag holds a non-zero value for any of this stage's keys,
-  // i.e. the stage actually does something this frame. Lets an untouched denoise
-  // stage cost nothing (its inline glsl early-outs on a zero amount anyway).
+  // True when the param bag holds a non-trivial value for any of this stage's
+  // keys, i.e. the stage actually does something this frame. Lets an untouched
+  // denoise stage cost nothing (its inline glsl early-outs anyway). Booleans and
+  // vectors count alongside numbers: a bool/vector-driven prepass used to be seen
+  // as inactive (only non-zero numbers qualified), so such stages never ran.
   private prepassActive(stageId: string): boolean {
     const prefix = stageId + ".";
     for (const [k, v] of Object.entries(this.contributedParams)) {
-      if (k.startsWith(prefix) && typeof v === "number" && v !== 0) return true;
+      if (!k.startsWith(prefix)) continue;
+      if (paramIsActive(v)) return true;
     }
     return false;
   }
@@ -2578,8 +2580,13 @@ export class WebGLRenderer {
         let prevRaw = true;            // first read linearizes + base-curves the source
         let writeIdx = 0;
         let lastIdx = 0;
+        let passIdx = 0;
         for (const pass of stage.passes) {
-          const key = `${this.stageSig}|${stage.stageId}|${pass.fragmentSource.length}`;
+          // Distinguish passes by index AND source hash: two passes of one stage
+          // with equal-length sources (separable H/V blur) share a length, so a
+          // length-only key collided and reused the first pass's program.
+          const key = `${this.stageSig}|${stage.stageId}|${passIdx}|${simpleHash(pass.fragmentSource)}`;
+          passIdx++;
           const prog = this.getPassProgram(key, pass.fragmentSource, pass.bindings);
           for (let it = 0; it < pass.iterations; it++) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, this.ppFbo[writeIdx]);
@@ -2656,24 +2663,45 @@ export class WebGLRenderer {
       this.developedTex = gl.createTexture();
       this.developedFbo = gl.createFramebuffer();
     }
-    if (this.devW !== w || this.devH !== h) {
-      gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.developedFbo);
-      gl.framebufferTexture2D(
-        gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.developedTex, 0,
-      );
-      const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    // An RGBA8 patched-source copy quantises a 16-bit/float linear source to 8 bits,
+    // so any heal spot bands smooth gradients. RGBA16 (norm16) is colour-renderable,
+    // filterable AND GPU-mipmappable (unlike RGBA16F), so it removes the banding
+    // while keeping the per-frame generateMipmap and the same linear/[0,1] semantics.
+    const useNorm16 = this.haveNorm16;
+    if (this.devW !== w || this.devH !== h || this.developedTexIsNorm16 !== useNorm16) {
+      // Try norm16 first; if the 16-bit target isn't framebuffer-complete on this
+      // device, fall back to RGBA8 (same behaviour as before) rather than fail.
+      const alloc = (norm16: boolean): boolean => {
+        gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
+        if (norm16) {
+          gl.texImage2D(gl.TEXTURE_2D, 0, this.norm16Format, w, h, 0, gl.RGBA, gl.UNSIGNED_SHORT, null);
+        } else {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        }
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.developedFbo);
+        gl.framebufferTexture2D(
+          gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.developedTex, 0,
+        );
+        const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        return complete;
+      };
+      let norm16 = useNorm16;
+      let ok = alloc(norm16);
+      if (!ok && norm16) {
+        norm16 = false;
+        ok = alloc(false);
+      }
       if (!ok) {
         this.devW = 0;
         this.devH = 0;
         return false;
       }
+      this.developedTexIsNorm16 = norm16;
       this.devW = w;
       this.devH = h;
     }
@@ -2691,9 +2719,11 @@ export class WebGLRenderer {
     gl.deleteTexture(this.maskCurveTexture);
     if (this.developedTex) gl.deleteTexture(this.developedTex);
     if (this.developedFbo) gl.deleteFramebuffer(this.developedFbo);
-    if (this.healFillTex) gl.deleteTexture(this.healFillTex);
     gl.deleteTexture(this.maskTexture);
     gl.deleteTexture(this.retouchTexture);
+    // Histogram readback targets (8-bit, float, display-float), all lazily created.
+    for (const t of [this.histTex, this.histTexF, this.histTexD]) if (t) gl.deleteTexture(t);
+    for (const f of [this.histFbo, this.histFboF, this.histFboD]) if (f) gl.deleteFramebuffer(f);
     if (this.vao) gl.deleteVertexArray(this.vao);
     if (this.quadBuf) gl.deleteBuffer(this.quadBuf);
     // Prepass framework: ping-pong targets, per-stage results, pass programs.

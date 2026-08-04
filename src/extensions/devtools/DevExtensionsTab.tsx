@@ -12,21 +12,15 @@
 import { useState } from "react";
 import {
   reloadDevExtension,
-  pickDevFolder,
-  scanDevFolder,
-  setDevFolder,
   useDevFolder,
   type DevExtItem,
 } from "./dev-folder";
-
-const btn =
-  "shrink-0 rounded bg-surface-3 px-2 py-1 text-text-secondary hover:bg-surface-4 hover:text-text-primary disabled:opacity-40";
+import { DevFolderControls } from "./DevFolderControls";
 
 export function DevExtensionsTab() {
   const folder = useDevFolder((s) => s.folder);
   const items = useDevFolder((s) => s.items);
   const scanning = useDevFolder((s) => s.scanning);
-  const error = useDevFolder((s) => s.error);
 
   if (!window.safelightNative) {
     return (
@@ -45,35 +39,7 @@ export function DevExtensionsTab() {
         are each one. Also configurable in Preferences ▸ Developer Tools.
       </p>
 
-      <div className="flex items-center gap-1.5">
-        <input
-          value={folder ?? ""}
-          readOnly
-          placeholder="No folder selected"
-          spellCheck={false}
-          title={folder ?? undefined}
-          className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted"
-        />
-        <button onClick={() => void pickDevFolder()} className={btn}>
-          {folder ? "Change…" : "Choose folder…"}
-        </button>
-        {folder && (
-          <button
-            onClick={() => void scanDevFolder()}
-            disabled={scanning}
-            className={btn}
-          >
-            {scanning ? "…" : "↻ Rescan"}
-          </button>
-        )}
-        {folder && (
-          <button onClick={() => setDevFolder(null)} className={btn}>
-            Clear
-          </button>
-        )}
-      </div>
-
-      {error && <div className="text-red-400">{error}</div>}
+      <DevFolderControls variant="tab" />
 
       {!folder ? (
         <div className="text-text-muted">

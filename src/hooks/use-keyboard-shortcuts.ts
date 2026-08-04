@@ -198,22 +198,18 @@ export function useKeyboardShortcuts() {
           break;
         case "panels.toggle":
           // Hide/show every dock panel; positions are restored exactly.
-          e.preventDefault();
           toggleDockVisibility();
           break;
         case "view.fullscreen":
           document.documentElement.requestFullscreen?.();
           break;
         case "develop.undo":
-          e.preventDefault();
           ds.undo();
           break;
         case "develop.redo":
-          e.preventDefault();
           ds.redo();
           break;
         case "develop.reset":
-          e.preventDefault();
           if (ds.photoId) void ds.reset();
           break;
         case "brush.smaller":

@@ -189,7 +189,12 @@ export function registerExportProcessor(
   c: ExportProcessorContribution,
 ): void {
   useRegistry.setState((s) => {
-    const order = Object.keys(s.exportProcessors).length;
+    const existing = Object.values(s.exportProcessors);
+    // Keep an id's slot on re-registration; new ids append past the current max
+    // so a prior removal can't leave a gap that re-mints a colliding index.
+    const nextOrder =
+      existing.reduce((m, p) => Math.max(m, p.order), -1) + 1;
+    const order = s.exportProcessors[c.id]?.order ?? nextOrder;
     return {
       exportProcessors: {
         ...s.exportProcessors,
@@ -231,11 +236,12 @@ export function registerProcessingStage(
 /** Remove a single processing stage (e.g. a denoise method set to "Off") without
  *  disabling the whole extension. The render bridge re-syncs + recompiles. */
 export function unregisterProcessingStage(extensionId: string, id: string): void {
+  // Only the owning extension may remove it — check before dropping the stage's
+  // param descriptors, or a stranger's call would strip params off a live stage.
+  const owner = useRegistry.getState().processingStages[id];
+  if (!owner || owner.extensionId !== extensionId) return;
   unregisterStageParams(id);
   useRegistry.setState((s) => {
-    const owner = s.processingStages[id];
-    // Only the owning extension may remove it.
-    if (!owner || owner.extensionId !== extensionId) return s;
     const next = { ...s.processingStages };
     delete next[id];
     return { processingStages: next };

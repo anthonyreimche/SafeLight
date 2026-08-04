@@ -183,6 +183,24 @@ export function LibraryGrid() {
     isCopy: boolean;
   } | null>(null);
 
+  // Names the rename dialog must refuse. A master competes with the other real
+  // files in its folder (virtual copies mirror a master's filename, so counting
+  // them would flag the master's own name); a copy competes with its siblings'
+  // distinguishers.
+  const takenRenameNames = useMemo(() => {
+    if (!renameTarget) return [];
+    const target = photos.find((p) => p.id === renameTarget.id);
+    if (!target) return [];
+    const siblings = photos.filter((p) => p.id !== target.id);
+    return renameTarget.isCopy
+      ? siblings
+          .filter((p) => p.copyOf === target.copyOf)
+          .map((p) => p.copyName ?? "")
+      : siblings
+          .filter((p) => !p.copyOf && p.folder === target.folder)
+          .map((p) => splitFilename(p.filename)[0]);
+  }, [photos, renameTarget]);
+
   // A virtual copy shares its master's file, so "renaming" it edits the display
   // distinguisher (copyName); a master renames the actual file on disk.
   const handleRename = useCallback(
@@ -403,6 +421,7 @@ export function LibraryGrid() {
             prefix={`${splitFilename(renameTarget.filename)[0]}_`}
             suffix={splitFilename(renameTarget.filename)[1]}
             placeholder="copy"
+            takenNames={takenRenameNames}
             onSubmit={(v) =>
               void handleRename({ id: renameTarget.id, isCopy: true }, v)
             }
@@ -414,6 +433,7 @@ export function LibraryGrid() {
             value={splitFilename(renameTarget.filename)[0]}
             suffix={splitFilename(renameTarget.filename)[1]}
             placeholder="File name"
+            takenNames={takenRenameNames}
             onSubmit={(v) =>
               void handleRename({ id: renameTarget.id, isCopy: false }, v)
             }

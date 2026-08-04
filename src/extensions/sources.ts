@@ -6,7 +6,9 @@
 // Remembers which GitHub repo ("owner/repo") each installed extension came from.
 // The Browse list uses it to tell which official results are already installed,
 // and the detail view + update checker use it to find an installed extension's
-// repo. A manifest's own `repository` field takes precedence when present.
+// repo. What we recorded at install time wins over the manifest's self-declared
+// `repository`, which only answers for extensions we never installed ourselves —
+// dev folders, branch pins, and imports that predate this record.
 
 import type { ExtensionManifest } from "./types";
 
@@ -49,10 +51,14 @@ export const pruneSources = (installed: ExtensionManifest[]): void => {
   }
 };
 
-/** The "owner/repo" for an installed extension: its manifest `repository` if
- *  declared, otherwise the remembered install source. Null when neither exists. */
+/** The "owner/repo" for an installed extension: the repo we installed it from,
+ *  falling back to the manifest's declared `repository`. Null when neither
+ *  exists. Not a trust lookup — the fallback is the extension's own word, so
+ *  ban checks go through bannedReasonForManifest instead. */
 export const repoFor = (manifest: ExtensionManifest): string | null => {
-  if (manifest.repository && /^[\w.-]+\/[\w.-]+$/.test(manifest.repository))
-    return manifest.repository;
-  return readSources()[manifest.id] ?? null;
+  const source = readSources()[manifest.id];
+  if (source) return source;
+  return manifest.repository && /^[\w.-]+\/[\w.-]+$/.test(manifest.repository)
+    ? manifest.repository
+    : null;
 };

@@ -4,10 +4,12 @@
 // be preserved in derived versions.
 
 import type { BrushDab } from "@/catalog/types";
+import { MAX_BRUSH_MASKS } from "@/catalog/types";
 
 // Freehand coverage (brush masks and brush-shaped retouch) is rasterised into
 // the four channels (R,G,B,A) of one RGBA texture, so the shader can read every
-// item's coverage with a single sample.
+// item's coverage with a single sample. MAX_BRUSH_MASKS is that channel count —
+// the same cap the retouch atlas uses (MAX_RETOUCH_BRUSH), both bounded by RGBA.
 
 const BAKE_SIZE = 768; // coverage resolution; soft shapes tolerate downscaling
 
@@ -22,9 +24,11 @@ export interface CoverageResult {
   channelOf: Record<string, number>; // item id -> channel 0..3
 }
 
-// Cheap signature: only geometry affects the texture.
-export function coverageSignature(items: CoverageItem[]): string {
-  return items
+// Cheap signature: the geometry AND the image aspect, since the bake divides dab
+// x-radii by aspect — an aspect change with unchanged dabs still restretches the
+// atlas, so it must invalidate the cached texture.
+export function coverageSignature(items: CoverageItem[], imageAspect: number): string {
+  const geo = items
     .map(
       (it) =>
         it.id +
@@ -37,6 +41,7 @@ export function coverageSignature(items: CoverageItem[]): string {
           .join("|"),
     )
     .join(";");
+  return `${imageAspect.toFixed(5)}|${geo}`;
 }
 
 // Bake up to four coverage items into an RGBA atlas. Returns null when empty.
@@ -53,7 +58,7 @@ export function bakeCoverage(
   items: CoverageItem[],
   imageAspect: number,
 ): CoverageResult | null {
-  const list = items.slice(0, 4);
+  const list = items.slice(0, MAX_BRUSH_MASKS);
   if (list.length === 0) return null;
 
   // The renderer runs in a Web Worker (no `document`), so fall back to an

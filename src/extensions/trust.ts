@@ -13,7 +13,7 @@
 
 import { create } from "zustand";
 import type { ExtensionManifest, TrustList } from "./types";
-import { repoFor } from "./sources";
+import { readSources } from "./sources";
 import { isNewer } from "@/update/semver";
 
 const EMPTY: TrustList = { verified: [], reviewed: {}, repos: [], owners: [], reason: {} };
@@ -108,6 +108,15 @@ export async function loadTrustList(force = false): Promise<void> {
 const norm = (repo: string | null | undefined): string =>
   (repo ?? "").trim().toLowerCase();
 
+// The main process lowercases the registry before it reaches us; folding the
+// stored side again here is depth — one entry that slips through uncased must
+// not quietly stop banning.
+const listHas = (entries: string[], repo: string): boolean =>
+  entries.some((e) => norm(e) === repo);
+
+const entryFor = <T>(map: Record<string, T>, key: string): T | undefined =>
+  map[key] ?? Object.entries(map).find(([k]) => norm(k) === key)?.[1];
+
 /** Extract the lowercased "owner/repo" from an install spec — "owner/repo",
  *  "owner/repo#branch", or a github.com URL — or null if it's unparseable.
  *  Mirrors the main process's parseRepoSpec for renderer-side trust lookups. */
@@ -123,10 +132,52 @@ export function repoFromSpec(spec: string): string | null {
 
 const ownerOf = (repo: string): string => repo.split("/")[0] ?? "";
 
+export type VerificationStatus = "unverified" | "verified" | "stale";
+
+// Pure list-taking cores — the plain functions read the current store state, the
+// hooks subscribe to it, both go through these so the logic can't drift.
+
+function isVerifiedIn(list: TrustList, repo: string | null | undefined): boolean {
+  const r = norm(repo);
+  return !!r && listHas(list.verified, r);
+}
+
+function reviewedForIn(
+  list: TrustList,
+  repo: string | null | undefined,
+): { version?: string; commit?: string } | null {
+  const r = norm(repo);
+  return (r && entryFor(list.reviewed, r)) || null;
+}
+
+function verificationStatusIn(
+  list: TrustList,
+  repo: string | null | undefined,
+  version?: string | null,
+): VerificationStatus {
+  if (!isVerifiedIn(list, repo)) return "unverified";
+  const rv = reviewedForIn(list, repo)?.version;
+  if (rv && version && isNewer(rv, version)) return "stale";
+  return "verified";
+}
+
+function bannedReasonIn(
+  list: TrustList,
+  repo: string | null | undefined,
+): string | null {
+  const r = norm(repo);
+  if (!r) return null;
+  const owner = ownerOf(r);
+  if (listHas(list.repos, r) || listHas(list.owners, owner))
+    return (
+      entryFor(list.reason, r) || entryFor(list.reason, owner) || "flagged as unsafe"
+    );
+  return null;
+}
+
 /** True when "owner/repo" is on the human-reviewed allowlist. */
 export function isVerified(repo: string | null | undefined): boolean {
-  const r = norm(repo);
-  return !!r && useTrust.getState().list.verified.includes(r);
+  return isVerifiedIn(useTrust.getState().list, repo);
 }
 
 /** The reviewed point (version/commit) for a pinned verified repo, else null.
@@ -134,11 +185,8 @@ export function isVerified(repo: string | null | undefined): boolean {
 export function reviewedFor(
   repo: string | null | undefined,
 ): { version?: string; commit?: string } | null {
-  const r = norm(repo);
-  return (r && useTrust.getState().list.reviewed[r]) || null;
+  return reviewedForIn(useTrust.getState().list, repo);
 }
-
-export type VerificationStatus = "unverified" | "verified" | "stale";
 
 /** Verified state of a repo given the version actually in play (installed, or
  *  about to be installed). "stale" = the repo is verified but `version` is newer
@@ -148,22 +196,13 @@ export function verificationStatus(
   repo: string | null | undefined,
   version?: string | null,
 ): VerificationStatus {
-  if (!isVerified(repo)) return "unverified";
-  const rv = reviewedFor(repo)?.version;
-  if (rv && version && isNewer(rv, version)) return "stale";
-  return "verified";
+  return verificationStatusIn(useTrust.getState().list, repo, version);
 }
 
 /** The ban reason when "owner/repo" — or its whole owner account — is on the
  *  kill-switch, else null. Checks the exact repo and the bare owner. */
 export function bannedReason(repo: string | null | undefined): string | null {
-  const r = norm(repo);
-  if (!r) return null;
-  const { repos, owners, reason } = useTrust.getState().list;
-  const owner = ownerOf(r);
-  if (repos.includes(r) || owners.includes(owner))
-    return reason[r] || reason[owner] || "flagged as unsafe";
-  return null;
+  return bannedReasonIn(useTrust.getState().list, repo);
 }
 
 /** Convenience boolean form of {@link bannedReason}. */
@@ -175,20 +214,14 @@ export function isBanned(repo: string | null | undefined): boolean {
 
 /** Hook: true when "owner/repo" is on the verified allowlist. */
 export function useIsVerified(repo: string | null | undefined): boolean {
-  return useTrust((s) => {
-    const r = norm(repo);
-    return !!r && s.list.verified.includes(r);
-  });
+  return useTrust((s) => isVerifiedIn(s.list, repo));
 }
 
 /** Hook: the reviewed point (version/commit) for a pinned verified repo, else null. */
 export function useReviewedFor(
   repo: string | null | undefined,
 ): { version?: string; commit?: string } | null {
-  return useTrust((s) => {
-    const r = norm(repo);
-    return (r && s.list.reviewed[r]) || null;
-  });
+  return useTrust((s) => reviewedForIn(s.list, repo));
 }
 
 /** Hook form of {@link verificationStatus}. */
@@ -196,28 +229,20 @@ export function useVerificationStatus(
   repo: string | null | undefined,
   version?: string | null,
 ): VerificationStatus {
-  return useTrust((s) => {
-    const r = norm(repo);
-    if (!r || !s.list.verified.includes(r)) return "unverified";
-    const rv = s.list.reviewed[r]?.version;
-    if (rv && version && isNewer(rv, version)) return "stale";
-    return "verified";
-  });
+  return useTrust((s) => verificationStatusIn(s.list, repo, version));
 }
 
 /** Hook: the ban reason for "owner/repo" (or its owner), else null. */
 export function useBannedReason(repo: string | null | undefined): string | null {
-  return useTrust((s) => {
-    const r = norm(repo);
-    if (!r) return null;
-    const owner = ownerOf(r);
-    if (s.list.repos.includes(r) || s.list.owners.includes(owner))
-      return s.list.reason[r] || s.list.reason[owner] || "flagged as unsafe";
-    return null;
-  });
+  return useTrust((s) => bannedReasonIn(s.list, repo));
 }
 
-/** The ban reason for an installed extension, resolved via its source repo. */
+/** The ban reason for an installed extension, resolved through the repo we
+ *  actually installed it from. `manifest.repository` ships inside the extension
+ *  being judged, so it is only ever consulted as a second opinion: it can add a
+ *  ban (an honest self-declaration, or an install we never recorded a source
+ *  for) but can never clear the one its install source earns. An extension with
+ *  neither reads as unbanned — there is nothing to check it against. */
 export function bannedReasonForManifest(m: ExtensionManifest): string | null {
-  return bannedReason(repoFor(m));
+  return bannedReason(readSources()[m.id]) ?? bannedReason(m.repository);
 }

@@ -261,12 +261,19 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+// True when `child` resolves inside `base` (not merely shares its name as a
+// path prefix — plugins2 must not pass containment for plugins).
+function contains(base, child) {
+  const rel = path.relative(base, child);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
 function resolveRequestPath(urlPath) {
   // Strip query/hash, decode, and join under DIST without escaping it.
   const clean = decodeURIComponent(urlPath.split("?")[0].split("#")[0]);
   const rel = path.normalize(clean).replace(/^(\.\.[/\\])+/, "");
   let filePath = path.join(DIST, rel);
-  if (!filePath.startsWith(DIST)) filePath = path.join(DIST, "index.html");
+  if (!contains(DIST, filePath)) filePath = path.join(DIST, "index.html");
   return filePath;
 }
 
@@ -282,7 +289,7 @@ function registerProtocol() {
         .normalize(decodeURIComponent(url.pathname.slice("/__plugins__/".length)))
         .replace(/^([/\\]|\.\.[/\\])+/, "");
       const filePath = path.join(pluginsDir(), rel);
-      if (!filePath.startsWith(pluginsDir()) || !fs.existsSync(filePath)) {
+      if (!contains(pluginsDir(), filePath) || !fs.existsSync(filePath)) {
         return new Response("Not found", { status: 404 });
       }
       const res = await net.fetch(pathToFileURL(filePath).toString());
@@ -560,10 +567,18 @@ async function installPlugin(spec) {
   if (!res.ok) throw new Error(`GitHub download failed (${res.status})`);
   const tar = zlib.gunzipSync(Buffer.from(await res.arrayBuffer()));
 
-  // Strip the "<repo>-<ref>/" top-level folder GitHub adds.
+  // Strip the "<repo>-<ref>/" top-level folder GitHub adds. Reject any entry
+  // whose name carries a backslash (a separator on Windows, so it escapes the
+  // "/"-only traversal filter) or a ".." segment once normalised — a
+  // Linux-authored repo may legally ship either.
   const files = untar(tar)
     .map((f) => ({ ...f, name: f.name.split("/").slice(1).join("/") }))
-    .filter((f) => f.name && !f.name.split("/").includes(".."));
+    .filter(
+      (f) =>
+        f.name &&
+        !f.name.includes("\\") &&
+        !path.normalize(f.name).split(/[/\\]/).includes("..")
+    );
 
   const manifestFile = files.find((f) => f.name === "safelight.json");
   if (!manifestFile) throw new Error("Repo has no safelight.json manifest");
@@ -577,11 +592,11 @@ async function installPlugin(spec) {
     throw new Error(`Entry bundle "${manifest.main}" not found in repo`);
 
   const target = path.join(pluginsDir(), manifest.id);
-  if (!target.startsWith(pluginsDir())) throw new Error("Bad extension id");
+  if (!contains(pluginsDir(), target)) throw new Error("Bad extension id");
   fs.rmSync(target, { recursive: true, force: true });
   for (const f of files) {
     const dest = path.join(target, f.name);
-    if (!dest.startsWith(target)) continue;
+    if (!contains(target, dest)) continue;
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, f.data);
   }

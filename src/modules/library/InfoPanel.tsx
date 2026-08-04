@@ -33,10 +33,22 @@ export function InfoPanel() {
 // Histogram of the active photo with its saved edits, so it matches Develop
 // rather than the raw, unedited thumbnail.
 function LibraryHistogram() {
-  const photo = useCatalogStore((s) =>
-    s.photos.find((p) => p.id === s.activePhotoId),
+  // Depend only on the fields the render actually consumes — the pixel source
+  // (thumbnail blob, keyed by its object URL; the fallback decode's rotation),
+  // as-shot WB, and file-access nonce — so metadata mutations that replace the
+  // photo object (rating, flag, colour label, keywords) don't retrigger a full
+  // develop-pipeline render. The live object is read inside the effect.
+  const photoId = useCatalogStore((s) => s.activePhotoId);
+  const thumbnailUrl = useCatalogStore(
+    (s) => s.photos.find((p) => p.id === s.activePhotoId)?.thumbnailUrl,
   );
-  const photoId = photo?.id;
+  const rotation = useCatalogStore(
+    (s) => s.photos.find((p) => p.id === s.activePhotoId)?.rotation,
+  );
+  const colorTemperature = useCatalogStore(
+    (s) => s.photos.find((p) => p.id === s.activePhotoId)?.exif.colorTemperature,
+  );
+  const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
   const [data, setData] = useState<HistogramData | null>(null);
   // Bumped when this photo's saved edits change (live from Develop, including a
   // detached window) so the histogram re-renders.
@@ -53,11 +65,18 @@ function LibraryHistogram() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!photo) {
+    if (!photoId) {
       setData(null);
       return;
     }
     (async () => {
+      const photo = useCatalogStore
+        .getState()
+        .photos.find((p) => p.id === photoId);
+      if (!photo) {
+        setData(null);
+        return;
+      }
       const params = await loadSavedParams(photo.id, photo.exif.colorTemperature);
       const hist = await renderPhotoHistogram(photo, params);
       if (!cancelled) setData(hist);
@@ -65,7 +84,7 @@ function LibraryHistogram() {
     return () => {
       cancelled = true;
     };
-  }, [photo, photoId, editNonce]);
+  }, [photoId, thumbnailUrl, rotation, colorTemperature, fileAccessNonce, editNonce]);
 
   return <Histogram data={data} />;
 }

@@ -44,9 +44,18 @@ export function CropPanel() {
   const commitEdit = useDevelopStore((s) => s.commitEdit);
   const activePhotoId = useCatalogStore((s) => s.activePhotoId);
   const photos = useCatalogStore((s) => s.photos);
+  const sourceSize = useDevelopStore((s) => s.sourceSize);
 
   const photo = photos.find((p) => p.id === activePhotoId);
-  const imageAspect = photo && photo.height > 0 ? photo.width / photo.height : 1;
+  // Prefer the decoded buffer's aspect over metadata: decode paths disagree on
+  // baking EXIF orientation, so photo.width/height can be transposed relative to
+  // the pixels on screen (mirrors DevelopCanvas / use-develop-renderer).
+  const imageAspect =
+    sourceSize.width > 0 && sourceSize.height > 0
+      ? sourceSize.width / sourceSize.height
+      : photo && photo.height > 0
+        ? photo.width / photo.height
+        : 1;
 
   // The crop as it was before a straighten drag began. Fitting against this
   // (rather than the live, shrinking crop) lets rotating back un-crop outward.

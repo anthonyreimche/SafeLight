@@ -166,6 +166,10 @@ function ColorWheel({ label, range, lightness, onChange, onCommit }: ColorWheelP
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     dragging.current = true;
+    // Second click of a double-click reset must not move (and commit) the value
+    // first — commitEdit has no no-change dedup, so the stray entry would sit
+    // between the pre-click state and the reset, hijacking the next undo.
+    if (e.detail > 1) return;
     const { rx, ry } = relPointer(e);
     const { vx, vy } = valueVec();
     anchor.current = { rx, ry, vx, vy, shift: e.shiftKey };
@@ -192,10 +196,11 @@ function ColorWheel({ label, range, lightness, onChange, onCommit }: ColorWheelP
     }
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!dragging.current) return;
     dragging.current = false;
     anchor.current = null;
+    if (e.detail > 1) return;
     onCommit(label);
   };
 
@@ -231,7 +236,10 @@ function ColorWheel({ label, range, lightness, onChange, onCommit }: ColorWheelP
           onChange={(e) => {
             setEditHue(e.target.value);
             const n = Number(e.target.value);
-            if (Number.isFinite(n)) onChange({ hue: ((n % 360) + 360) % 360 });
+            // Number("") === 0 passes isFinite; don't snap the wheel to 0 while
+            // the field is empty mid-edit — blur restores the current value.
+            if (e.target.value.trim() !== "" && Number.isFinite(n))
+              onChange({ hue: ((n % 360) + 360) % 360 });
           }}
           onBlur={() => { setEditHue(null); onCommit(label); }}
           className="w-7 rounded bg-transparent text-center text-text-secondary outline-none focus:bg-surface-2"
@@ -246,7 +254,8 @@ function ColorWheel({ label, range, lightness, onChange, onCommit }: ColorWheelP
           onChange={(e) => {
             setEditSat(e.target.value);
             const n = Number(e.target.value);
-            if (Number.isFinite(n)) onChange({ sat: Math.max(0, Math.min(100, n)) });
+            if (e.target.value.trim() !== "" && Number.isFinite(n))
+              onChange({ sat: Math.max(0, Math.min(100, n)) });
           }}
           onBlur={() => { setEditSat(null); onCommit(label); }}
           className="w-6 rounded bg-transparent text-center text-text-secondary outline-none focus:bg-surface-2"

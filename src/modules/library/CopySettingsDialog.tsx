@@ -36,10 +36,16 @@ export function CopySettingsDialog({
   const fields = useMemo(() => presetFields(params), [params]);
   const hasBag = Object.keys(paramBag).length > 0;
   const [showAll, setShowAll] = useState(false);
+  // Per-image fields (crop, retouch, spatial extension tools) describe one
+  // frame's geometry and content, and a paste fans the clipboard out over whole
+  // selections — pre-checking them would stamp the source's framing and heal
+  // spots onto every target. Listed when changed, never pre-selected.
   const [selected, setSelected] = useState<Set<string>>(
     () =>
       new Set([
-        ...fields.filter((f) => f.changed).map((f) => f.id),
+        ...fields
+          .filter((f) => f.scope !== "per-image" && f.changed)
+          .map((f) => f.id),
         ...(hasBag ? [BAG_FIELD] : []),
       ]),
   );
@@ -58,12 +64,11 @@ export function CopySettingsDialog({
   const submit = () => {
     if (!canCopy) return;
     const partial = buildPartialParams(params, fields, selected);
-    const scalarCount = selected.size - (includeBag ? 1 : 0);
     onCopy({
       params: partial,
       paramBag: includeBag ? structuredClone(paramBag) : {},
       sourceName,
-      fieldCount: scalarCount + (includeBag ? 1 : 0),
+      fieldCount: selected.size,
     });
   };
 

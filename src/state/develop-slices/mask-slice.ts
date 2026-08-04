@@ -32,8 +32,8 @@ import {
   DEFAULT_MASK_PANELS,
 } from "@/catalog/types";
 import { getParamDescriptor } from "@/extensions/param-registry";
-import { broadcast } from "../broadcast";
 import type { DevelopState } from "../develop-store";
+import { pushEdit } from "./push-edit";
 
 export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
 
@@ -41,16 +41,6 @@ export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
 // masks have no canvas gesture, so they're built here rather than in the overlay).
 let idSeq = 0;
 const genId = (p: string) => `${p}-${Date.now().toString(36)}-${idSeq++}`;
-
-// Broadcast the current params so the renderer re-renders live during a mask /
-// retouch gesture. History is written separately by commitEdit at gesture end.
-function pushEdit(get: () => DevelopState) {
-  const s = get();
-  broadcast({
-    type: "edit-update",
-    payload: { photoId: s.photoId, params: s.params },
-  });
-}
 
 // Classifier for MaskPanelContribution.owns entries. Qualified extension keys
 // always contain a dot ("stage.key"), so they can't collide with these.
@@ -202,15 +192,17 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
   setRetouchMode: (retouchMode) => set({ retouchMode }),
 
   addMask(mask) {
+    let added = false;
     set((s) => {
       if (s.params.masks.length >= MAX_MASKS) return s;
+      added = true;
       return {
         params: { ...s.params, masks: [...s.params.masks, mask] },
         selectedMaskId: mask.id,
         selectedComponentId: mask.components[mask.components.length - 1]?.id ?? null,
       };
     });
-    pushEdit(get);
+    if (added) pushEdit(get);
   },
 
   addComponent(maskId, comp) {
@@ -329,11 +321,20 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
     pushEdit(get);
   },
 
+  // undefined values delete their key so cleared blocks (e.g. hsl) don't persist
+  // as explicit-undefined properties through structured-clone, mirroring updateMaskBag.
   updateMask(id, patch) {
     set((s) => ({
       params: {
         ...s.params,
-        masks: s.params.masks.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+        masks: s.params.masks.map((m) => {
+          if (m.id !== id) return m;
+          const next = { ...m, ...patch } as unknown as Record<string, unknown>;
+          for (const [key, value] of Object.entries(patch)) {
+            if (value === undefined) delete next[key];
+          }
+          return next as unknown as Mask;
+        }),
       },
     }));
     pushEdit(get);
@@ -420,14 +421,16 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
   },
 
   addSpot(spot) {
+    let added = false;
     set((s) => {
       if (s.params.retouch.length >= MAX_RETOUCH) return s;
+      added = true;
       return {
         params: { ...s.params, retouch: [...s.params.retouch, spot] },
         selectedSpotId: spot.id,
       };
     });
-    pushEdit(get);
+    if (added) pushEdit(get);
   },
 
   updateSpot(id, patch) {

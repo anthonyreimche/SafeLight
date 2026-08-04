@@ -25,9 +25,24 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
+      # Skip cleanly (green, not failed) until GitHub Sponsors is set up and the
+      # SPONSORS_PAT secret exists. Every step below gates on this so the daily
+      # run stops erroring; it self-activates the moment the secret is added.
+      - name: Check for Sponsors token
+        id: preflight
+        run: |
+          if [ -n "${{ secrets.SPONSORS_PAT }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SPONSORS_PAT not set — skipping. See setup notes in sponsors.yml."
+          fi
+
       - uses: actions/checkout@v5
+        if: steps.preflight.outputs.ready == 'true'
 
       - name: Studio ($99+/mo)
+        if: steps.preflight.outputs.ready == 'true'
         uses: JamesIves/github-sponsors-readme-action@v1
         with:
           token: ${{ secrets.SPONSORS_PAT }}
@@ -37,6 +52,7 @@ jobs:
           fallback: '_Be the first._'
 
       - name: Darkroom ($29+/mo)
+        if: steps.preflight.outputs.ready == 'true'
         uses: JamesIves/github-sponsors-readme-action@v1
         with:
           token: ${{ secrets.SPONSORS_PAT }}
@@ -47,6 +63,7 @@ jobs:
           fallback: '_Be the first._'
 
       - name: Safelight ($9+/mo)
+        if: steps.preflight.outputs.ready == 'true'
         uses: JamesIves/github-sponsors-readme-action@v1
         with:
           token: ${{ secrets.SPONSORS_PAT }}
@@ -57,6 +74,7 @@ jobs:
           fallback: '_Be the first._'
 
       - name: Test Strip ($3+/mo)
+        if: steps.preflight.outputs.ready == 'true'
         uses: JamesIves/github-sponsors-readme-action@v1
         with:
           token: ${{ secrets.SPONSORS_PAT }}
@@ -67,6 +85,7 @@ jobs:
           fallback: '_Be the first._'
 
       - name: Commit changes
+        if: steps.preflight.outputs.ready == 'true'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: 'docs: update supporters list'

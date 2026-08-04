@@ -24,7 +24,7 @@ import {
   recentHandle,
   type RecentProject,
 } from "./recent";
-import { isNativeFS, nativeDirectoryHandle, pickNativeDirectory } from "./native-fs";
+import { isNativeFS, nativeDirectoryHandle, nativePathOf, pickNativeDirectory } from "./native-fs";
 import { scanProject, type FolderNode } from "./scan";
 import { visiblePhotos } from "@/modules/library/visible-photos";
 import {
@@ -198,8 +198,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // Restore the folder this project was last viewing (or null = All Photos for
     // a first/different project). Seed lastPersistedFolder first so the change
     // subscription below doesn't redundantly re-write what we just restored.
-    activeProjectKey = handle.name;
-    const restoredFolder = restoreActiveFolder(handle.name);
+    activeProjectKey = nativePathOf(handle) ?? handle.name;
+    const restoredFolder = restoreActiveFolder(activeProjectKey);
     lastPersistedFolder = restoredFolder;
     useUIStore.getState().setActiveFolder(restoredFolder);
     try {
@@ -268,8 +268,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         },
         signal,
       );
-      buf = []; // discard any stragglers if cancelled
-      if (gen !== openGen) return;
+      if (gen !== openGen) {
+        buf = []; // discard any stragglers if cancelled
+        return;
+      }
       flush(); // drain any photos buffered since the last frame
       setRawCacheDir(opened.rawCacheDir);
       setCatalogStorage(opened.storage);

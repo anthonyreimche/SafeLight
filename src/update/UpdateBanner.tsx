@@ -8,7 +8,7 @@
 // a slim bar at the bottom of the viewport if a newer version is available.
 // The user can dismiss it; it won't reappear for the same version.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSettings } from "@/state/settings-store";
 import {
   checkForUpdate,
@@ -26,13 +26,23 @@ export function UpdateBanner() {
   const checkEnabled = useSettings((s) => s.checkForUpdates);
   const channel = useSettings((s) => s.updateChannel);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  // Versions closed (not skipped) this session: suppressed by the poll but not
+  // persisted, so they surface again next launch.
+  const closedThisSession = useRef(new Set<string>());
 
   useEffect(() => {
-    if (!checkEnabled) return;
+    // Turning the preference off has to retire a banner that is already up —
+    // nothing else clears `update`, so it would otherwise outlive the setting.
+    if (!checkEnabled) {
+      setUpdate(null);
+      return;
+    }
     let alive = true;
     const run = () =>
-      void checkForUpdate(__APP_VERSION__, channel).then((info) => {
-        if (alive) setUpdate(info);
+      void checkForUpdate(channel).then((info) => {
+        if (!alive) return;
+        if (info && closedThisSession.current.has(info.version)) return;
+        setUpdate(info);
       });
     run(); // immediately on mount…
     // …then re-check periodically so a release published while the app is left
@@ -48,6 +58,7 @@ export function UpdateBanner() {
 
   const dismiss = (skip: boolean) => {
     if (skip) dismissVersion(update.version);
+    else closedThisSession.current.add(update.version);
     setUpdate(null);
   };
 

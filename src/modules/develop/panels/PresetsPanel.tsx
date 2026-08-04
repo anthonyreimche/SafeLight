@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { useDevelopStore } from "@/state/develop-store";
+import { useCatalogStore } from "@/state/catalog-store";
 import { usePresetsStore, nextAvailableName, type Preset } from "@/state/presets-store";
 import { usePresetImporters, describePresetBag } from "@/extensions/registry";
 import { normalizeParams, type DevelopParams } from "@/catalog/types";
@@ -38,6 +39,10 @@ export function PresetsPanel() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const params = useDevelopStore((s) => s.params);
   const paramBag = useDevelopStore((s) => s.paramBag);
+  const photoId = useDevelopStore((s) => s.photoId);
+  const photoName = useCatalogStore(
+    (s) => s.photos.find((p) => p.id === photoId)?.filename,
+  );
   const applyPreset = useDevelopStore((s) => s.applyPreset);
   const setPreviewParams = useDevelopStore((s) => s.setPreviewParams);
   const presets = usePresetsStore((s) => s.presets);
@@ -55,6 +60,10 @@ export function PresetsPanel() {
   // photo's current params (partial presets), so unselected settings are kept.
   const effective = (partial: Partial<DevelopParams>): DevelopParams =>
     normalizeParams({ ...params, ...partial });
+
+  // The toolbar Export writes the live edit; name it after the open photo (sans
+  // extension) so exports aren't all one collided file. No photo → generic name.
+  const liveExportName = photoName?.replace(/\.[^.]+$/, "") || "preset";
 
   const groups = useMemo(() => {
     const names = new Set<string>();
@@ -98,10 +107,16 @@ export function PresetsPanel() {
     if (!file) return;
 
     // SafeLight's own JSON first, then any registered importer by extension.
+    // Route through commitSave so a name clash offers Overwrite / Save-as-new.
     const native = await parseSafelightPreset(file);
     if (native) {
-      addPreset(native.name, native.params, native.group);
-      applyPreset(effective(native.params));
+      commitSave({
+        name: native.name,
+        group: native.group ?? "",
+        params: native.params,
+        paramBag: native.paramBag,
+      });
+      applyPreset(effective(native.params), native.paramBag);
       return;
     }
     const lower = file.name.toLowerCase();
@@ -109,7 +124,7 @@ export function PresetsPanel() {
     if (!importer) return;
     const result = await importer.parse(file);
     if (!result) return;
-    addPreset(result.name, result.params);
+    commitSave({ name: result.name, group: "", params: result.params });
     applyPreset(effective(result.params));
   };
 
@@ -181,7 +196,7 @@ export function PresetsPanel() {
           Import
         </button>
         <button
-          onClick={() => exportPreset("preset", params)}
+          onClick={() => exportPreset(liveExportName, params, undefined, paramBag)}
           className="flex-1 rounded bg-surface-2 px-2 py-1 text-[10px] text-text-secondary hover:bg-surface-3 hover:text-text-primary"
         >
           Export
@@ -232,6 +247,16 @@ export function PresetsPanel() {
               label: "Update with current settings",
               onClick: () => setUpdating(menu.preset),
             },
+            {
+              label: "Export…",
+              onClick: () =>
+                exportPreset(
+                  menu.preset.name,
+                  menu.preset.params,
+                  menu.preset.group,
+                  menu.preset.paramBag,
+                ),
+            },
             "separator",
             { label: "Delete", danger: true, onClick: () => setConfirmDelete(menu.preset) },
           ]}
@@ -266,6 +291,14 @@ export function PresetsPanel() {
           saveLabel="Update preset"
           onSave={(result) => {
             updatePreset(updating.id, result.params, result.group, result.paramBag);
+            // A rename in this dialog is honoured only when it doesn't collide
+            // with a different preset; renamePreset trims and ignores empties.
+            const collides = presets.some(
+              (p) =>
+                p.id !== updating.id &&
+                p.name.toLowerCase() === result.name.toLowerCase(),
+            );
+            if (!collides) renamePreset(updating.id, result.name);
             setUpdating(null);
           }}
           onCancel={() => setUpdating(null)}

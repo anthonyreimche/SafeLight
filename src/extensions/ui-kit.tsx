@@ -131,6 +131,7 @@ export function NumberInput({
       type="number"
       value={value}
       onChange={(e) => {
+        if (e.target.value === "") return;
         const n = Number(e.target.value);
         if (Number.isFinite(n)) onChange(n);
       }}

@@ -289,32 +289,9 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     },
 
     async removePhoto(id) {
-      // Removing a master takes its virtual copies with it; fall through to the
-      // batch path so each is torn down (and announced) properly.
-      const expanded = withVirtualCopies(get().photos, [id]);
-      if (expanded.length > 1) {
-        await get().removePhotos(expanded);
-        return;
-      }
-      const photo = get().photos.find((p) => p.id === id);
-      if (photo?.directoryHandle && photo?.fileHandle) {
-        await emitPhotoRemove({
-          photo,
-          dir: photo.directoryHandle,
-          fileName: photo.fileHandle.name,
-        });
-      }
-      await catalogStorage().deletePhoto(id);
-      set((s) => ({
-        photos: s.photos.filter((p) => p.id !== id),
-        selectedIds: (() => {
-          const next = new Set(s.selectedIds);
-          next.delete(id);
-          return next;
-        })(),
-        activePhotoId: s.activePhotoId === id ? null : s.activePhotoId,
-      }));
-      broadcast({ type: "catalog-change", payload: { action: "remove", id } });
+      // Removing a master takes its virtual copies with it. Always the batch
+      // path — one teardown sequence (hooks, storage, broadcast) to maintain.
+      await get().removePhotos(withVirtualCopies(get().photos, [id]));
     },
 
     async removePhotos(ids) {
@@ -336,6 +313,10 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       for (const id of ids) {
         await catalogStorage().deletePhoto(id);
       }
+      // Previews of removed photos would dangle for the life of the window.
+      for (const p of get().photos) {
+        if (idSet.has(p.id) && p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
+      }
       set((s) => {
         const selectedIds = new Set(s.selectedIds);
         for (const id of ids) selectedIds.delete(id);
@@ -348,7 +329,10 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
               : s.activePhotoId,
         };
       });
-      broadcast({ type: "catalog-change", payload: { action: "remove" } });
+      broadcast({
+        type: "catalog-change",
+        payload: { action: "remove", id: ids.length === 1 ? ids[0] : undefined },
+      });
     },
 
     async relocatePhotos(updated) {
@@ -402,6 +386,10 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
           }),
       );
 
+      await emitMetadataChange({
+        photos: [...updates.values()],
+        getEditState: (id) => catalogStorage().getEditState(id).then((e) => e ?? null),
+      });
       set((s) => ({ photos: s.photos.map((p) => updates.get(p.id) ?? p) }));
       broadcast({ type: "catalog-change", payload: { action: "rotate" } });
     },

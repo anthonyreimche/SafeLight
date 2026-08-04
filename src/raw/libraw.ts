@@ -34,13 +34,13 @@ declare global {
 
 let cached: LibRawModule | null | undefined;
 
-// Resolve the registered libraw module once. Returns null when none is present.
+// Resolve the registered libraw module. Absence is not memoized so a build that
+// registers globalThis.__safelightLibRaw after the first attempt is still found.
 export async function getLibRaw(): Promise<LibRawModule | null> {
-  if (cached !== undefined) return cached;
+  if (cached) return cached;
   const mod = globalThis.__safelightLibRaw;
-  cached =
-    mod && typeof mod.decode === "function" ? mod : null;
-  return cached;
+  cached = mod && typeof mod.decode === "function" ? mod : undefined;
+  return cached ?? null;
 }
 
 // Test/runtime hook so a build can be registered (or reset) explicitly.
