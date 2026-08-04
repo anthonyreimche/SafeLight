@@ -23,6 +23,7 @@ import {
   useExtSettings,
 } from "./ext-settings";
 import type { SettingsField } from "./types";
+import { Select } from "@/ui/components/Select";
 
 export const labelCls = "text-[10px] uppercase tracking-widest text-text-muted";
 export const inputCls =
@@ -216,17 +217,13 @@ function FieldRow({
           <span className={labelCls}>{label}</span>
           {differs && <ResetButton onReset={reset} />}
         </span>
-        <select
+        <Select
           value={value}
-          onChange={(e) => set(e.target.value)}
-          className={`mt-1.5 ${inputCls}`}
-        >
-          {field.options.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+          onChange={(v) => set(v)}
+          options={field.options}
+          ariaLabel={field.label}
+          className="mt-1.5 w-full"
+        />
         <Hint text={field.hint} query={query} />
       </Row>
     );

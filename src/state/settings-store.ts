@@ -106,6 +106,11 @@ export interface AppSettings {
    *  as a drag from there. Off (the default) keeps the relative drag-to-adjust
    *  model: a click grabs the current value and only movement changes it. */
   sliderJumpToCursor: boolean;
+  /** Show the per-band Highlight Detail / Shadow Detail sliders in the Develop
+   *  Basic panel. Off by default to keep the panel compact: tone recovery/lift
+   *  already preserves micro-contrast on its own, so these are opt-in controls
+   *  for users who want to tune (or reverse) that per band. */
+  basicDetailSliders: boolean;
 
   // ── Accessibility ──────────────────────────────────────────────────────
   // All off/neutral by default: the themes ship as designed, and a user who
@@ -246,7 +251,8 @@ export interface AppSettings {
   // ── Updates ────────────────────────────────────────────────────────────
   /** Check GitHub for a newer release on startup and show a banner. */
   checkForUpdates: boolean;
-  /** Which releases trigger a notification: "patch" = all, "minor" = stable only. */
+  /** Which releases trigger a notification: "all" includes pre-releases,
+   *  "stable" only full releases. */
   updateChannel: UpdateChannel;
 }
 
@@ -259,6 +265,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   assessBorderPct: 4.5,
   windowDim: 0.6,
   sliderJumpToCursor: false,
+  basicDetailSliders: false,
   highContrast: false,
   strongFocus: false,
   colorVisionFilter: "none",
@@ -303,7 +310,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoUpdateExtensions: false,
   onlyVerifiedExtensions: false,
   checkForUpdates: true,
-  updateChannel: "patch",
+  updateChannel: "stable",
 };
 
 const KEY = "sl_settings_v1";
@@ -331,11 +338,7 @@ function parseSettings(raw: string): AppSettings | null {
 function load(): AppSettings {
   try {
     const raw = localStorage.getItem(KEY);
-<<<<<<< Updated upstream
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
-=======
     if (raw) return parseSettings(raw) ?? { ...DEFAULT_SETTINGS };
->>>>>>> Stashed changes
   } catch {}
   return { ...DEFAULT_SETTINGS };
 }

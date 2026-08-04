@@ -9,6 +9,7 @@
 // or location metadata — fitting for a privacy-first tool.
 
 import type { CatalogPhoto } from "@/catalog/types";
+import { photoExportBase } from "@/catalog/copy-name";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
@@ -137,7 +138,7 @@ export function exportFilename(
   photo: CatalogPhoto,
   format: ExportFormat,
 ): string {
-  const base = photo.filename.replace(/\.[^./\\]+$/, "") || photo.filename;
+  const base = photoExportBase(photo);
   return `${base}.${EXTENSION[format]}`;
 }
 
@@ -148,7 +149,7 @@ export function resolveFilenameTemplate(
   photo: CatalogPhoto,
   format: ExportFormat,
 ): string {
-  const base = photo.filename.replace(/\.[^./\\]+$/, "") || photo.filename;
+  const base = photoExportBase(photo);
   const ext = EXTENSION[format];
   const exifDate = photo.exif.dateTimeOriginal ?? "";
   // EXIF dates are "YYYY:MM:DD HH:MM:SS" or ISO; grab the first 10 chars.
@@ -239,13 +240,6 @@ async function renderOne(
   photo: CatalogPhoto,
   settings: ExportSettings,
   processorSettings: ProcessorSettings,
-<<<<<<< Updated upstream
-): Promise<Blob | null> {
-  // Same decode as Develop/Loupe: full-res RAW float when available (gets the
-  // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
-  const image = await loadPhotoImage(photo);
-  if (!image) return null;
-=======
 ): Promise<RenderOneResult> {
   // The saved crop determines how many source pixels the requested long edge
   // needs: exporting a half-width crop at 2048 px must render from a 4096 px
@@ -266,12 +260,30 @@ async function renderOne(
   // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
   const image = await loadPhotoImage(photo, { minEdge });
   if (!image) return { blob: null, degradedTo8Bit: false };
->>>>>>> Stashed changes
   const bitmap = image.kind === "bitmap" ? image.bitmap : null;
   try {
     const w = image.kind === "bitmap" ? image.bitmap.width : image.width;
     const h = image.kind === "bitmap" ? image.bitmap.height : image.height;
-    const maxEdge = settings.longEdge ?? Math.max(w, h);
+    // Long-edge fraction the crop keeps of this source, exactly as the
+    // renderer's resize() computes it from the real decode dimensions.
+    const cropFrac = Math.max(
+      Math.max(w * crop.width, h * crop.height) / Math.max(w, h),
+      0.01,
+    );
+    const requestEdge = settings.longEdge ?? Math.max(w, h);
+    // Float sources are downsampled to maxEdge at upload, so a cropped export
+    // must inflate the cap to keep enough pixels inside the crop (bounded by
+    // the native size and the GPU's texture limit). Bitmap/srgb16 sources
+    // upload at native size — for them maxEdge is purely the output cap, and
+    // inflating it would overshoot the requested long edge.
+    const maxEdge =
+      image.kind === "float"
+        ? Math.min(
+            Math.ceil(requestEdge / cropFrac),
+            Math.max(w, h),
+            renderer.maxTextureEdge,
+          )
+        : requestEdge;
     const isFallback =
       image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
     // Cached develop preview is linear-encoded RAW; it needs the base tone curve.
@@ -288,7 +300,9 @@ async function renderOne(
       isFallback,
       cachedRaw,
     );
-    const saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
+    if (knownTemp == null) {
+      saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
+    }
     renderer.setContributedParams(saved.paramBag);
     renderer.setParams(saved.params);
     const colorSpace = settings.colorSpace ?? "srgb";

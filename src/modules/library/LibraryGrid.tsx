@@ -10,11 +10,16 @@ import { useUIStore } from "@/state/ui-store";
 import { Thumbnail } from "@/ui/components/Thumbnail";
 import { VirtualGrid } from "@/ui/components/VirtualGrid";
 import { ContextMenu, type ContextMenuEntry } from "@/ui/components/ContextMenu";
+import { splitFilename } from "@/catalog/copy-name";
 import { LibraryListRow } from "./LibraryListRow";
 import { CopySettingsDialog } from "./CopySettingsDialog";
 import { RenamePhotoDialog } from "./RenamePhotoDialog";
 import { visiblePhotos } from "./visible-photos";
-import { useGridFilters, useLibrarySorts } from "@/extensions/registry";
+import {
+  useGridFilters,
+  useGridMenuItems,
+  useLibrarySorts,
+} from "@/extensions/registry";
 import { exportPhotoData, renamePhoto, revealPhoto } from "@/project/folder-ops";
 import { isNativeFS } from "@/project/native-fs";
 import { reimportPhotos } from "@/modules/library/import-photos";
@@ -49,6 +54,7 @@ export function LibraryGrid() {
   const clipboard = useDevelopClipboard((s) => s.clipboard);
   const setClipboard = useDevelopClipboard((s) => s.copy);
   const gridFilters = useGridFilters();
+  const gridMenuItems = useGridMenuItems();
   const librarySorts = useLibrarySorts();
   const customCompare = librarySorts.find((s) => s.id === sortField)?.compare;
 
@@ -170,15 +176,13 @@ export function LibraryGrid() {
 
   // Rename the targeted photo's file on disk (in place, extension preserved).
   // Only offered for a single photo; opens a small dialog, then renames.
-  const [renameTarget, setRenameTarget] = useState<{ id: string; filename: string } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<{
+    id: string;
+    filename: string;
+    copyName: string;
+    isCopy: boolean;
+  } | null>(null);
 
-<<<<<<< Updated upstream
-  const handleRename = useCallback(async (id: string, newBase: string) => {
-    setRenameTarget(null);
-    const res = await renamePhoto(id, newBase);
-    if (!res.ok) window.alert(res.reason);
-  }, []);
-=======
   // Names the rename dialog must refuse. A master competes with the other real
   // files in its folder (virtual copies mirror a master's filename, so counting
   // them would flag the master's own name); a copy competes with its siblings'
@@ -211,7 +215,6 @@ export function LibraryGrid() {
     },
     [],
   );
->>>>>>> Stashed changes
 
   // Reveal the photo's file in the OS file manager. Single-photo only (native
   // builds), mirroring the platform "show this file in its folder" action.
@@ -294,7 +297,13 @@ export function LibraryGrid() {
         disabled: n !== 1,
         onClick: () => {
           const p = useCatalogStore.getState().photos.find((p) => p.id === ids[0]);
-          if (p) setRenameTarget({ id: p.id, filename: p.filename });
+          if (p)
+            setRenameTarget({
+              id: p.id,
+              filename: p.filename,
+              copyName: p.copyName ?? "copy",
+              isCopy: !!p.copyOf,
+            });
         },
       },
       {
@@ -326,10 +335,25 @@ export function LibraryGrid() {
       { label: `Export data…${suffix}`, onClick: () => void handleExportData(ids) },
       "separator",
       { label: `Remove${suffix}`, danger: true, onClick: () => handleRemove(ids) },
+      // Extension-contributed actions (e.g. "Create virtual copy"), grouped
+      // below the built-ins behind a separator.
+      ...(gridMenuItems.length > 0
+        ? [
+            "separator" as const,
+            ...gridMenuItems.map((item): ContextMenuEntry => ({
+              label:
+                typeof item.label === "function" ? item.label(ids) : item.label,
+              danger: item.danger,
+              disabled: item.enabled ? !item.enabled(ids) : false,
+              onClick: () => item.onClick(ids),
+            })),
+          ]
+        : []),
     ];
   }, [
     menu,
     clipboard,
+    gridMenuItems,
     handleCopySettings,
     handlePasteSettings,
     rotatePhotos,
@@ -389,15 +413,6 @@ export function LibraryGrid() {
           onCancel={() => setCopyDialog(null)}
         />
       )}
-<<<<<<< Updated upstream
-      {renameTarget && (
-        <RenamePhotoDialog
-          filename={renameTarget.filename}
-          onRename={(base) => void handleRename(renameTarget.id, base)}
-          onCancel={() => setRenameTarget(null)}
-        />
-      )}
-=======
       {renameTarget &&
         (renameTarget.isCopy ? (
           <RenamePhotoDialog
@@ -425,7 +440,6 @@ export function LibraryGrid() {
             onCancel={() => setRenameTarget(null)}
           />
         ))}
->>>>>>> Stashed changes
     </>
   );
 

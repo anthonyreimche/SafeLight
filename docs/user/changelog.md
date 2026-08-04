@@ -13,6 +13,65 @@ All notable changes to Safelight are documented in this file.
 - Camera profile / base tuning controls
 - Stage-by-stage migration of the develop shader to extension-contributed processing stages
 
+## [2.4.4] - 2026-06-29
+
+### Added
+- **Read-only sources (memory cards, immutable systems)** — Safelight can now open folders it can't write to, such as a mounted SD card or a read-only mount on systems like Fedora Silverblue. When the photo folder can't host its `.safelight` catalog, the catalog, previews, and cache are redirected to a writeable location automatically and a non-blocking banner shows where they went; when the folder later becomes writeable, edits made during the read-only session are folded back into the in-folder catalog.
+- **Catalog storage preferences** — Preferences ▸ Previews now lets you keep each project's `.safelight` catalog **in the photo folder** (default) or in a **separate folder** (to keep photo folders clean), choose where separate catalogs live, and browse and delete every catalog stored outside its photo folder to reclaim disk space.
+- **Sliders jump to cursor** — an optional toggle (Preferences ▸ Interface): click anywhere on a slider track to snap the value to that point and drag from there, instead of grabbing the current value.
+- **Display-transform quick switch** — a status-bar control next to Assess in Develop switches the active display transform when an extension provides one (for example a film-simulation or denoise look) without opening Preferences.
+- **Black and white surround endpoints** — the neutral canvas surround adds pure black and white beyond the five-shade grey ladder; middle grey stays the default and the colour-assessment standard.
+- **Extension network permissions** — extensions can declare the network origins they need in their manifest; the store shows them, and requests to undeclared origins are blocked.
+- **Full-resolution rendering for extensions** — extensions such as web-gallery publishers and batch / sync-edit tools can render any library photo through the full develop pipeline at export resolution, not just from low-resolution previews.
+
+### Changed
+- **Back to pure GPLv3** — the dual-licensing scheme and Contributor License Agreement introduced in 2.4.1 are removed. Safelight is free software under the GNU GPL v3 with the standard inbound = outbound model: you license your contribution under GPL v3 and keep your copyright, with no agreement to sign. Added `THIRD-PARTY-NOTICES.md`, `TRADEMARKS.md`, `PRIVACY.md`, `EXTENSIONS.md`, and a security policy, all linked from Preferences ▸ About.
+- **Clearer extension trust states** — install prompts and detail pages now distinguish *verified* (reviewed at a point in time), *stale* (verified, but the installed version is newer than the reviewed one, shown as an amber ✓*), and *unverified*, and spell out that verification is not a guarantee of safety — extensions run with full access to your photos, metadata, and files.
+
+### Fixed
+- Read-only source folders (mounted memory cards, immutable Linux systems) no longer fail silently when opened.
+
+## [2.4.3] - 2026-06-29
+
+### Added
+- **Rename and re-import in the Library** — rename a photo's file on disk from the grid context menu (the original extension is preserved), and **Re-import** selected photos to rebuild thumbnails and re-read EXIF/file metadata while keeping ratings, labels, keywords, and edits.
+- **Show in folder / Open folder** (desktop) — reveal a photo in the OS file manager from the Library, and jump straight to the export destination after a folder export.
+- **HSL "All" layout** — show every HSL band stacked at once (in addition to the one-band-at-a-time tabs), with a compact band selector while the on-image target picker is active.
+- **Coloured slider tracks** — sliders can draw a hue / lightness gradient behind the track (used by the HSL mixer).
+
+### Changed
+- **Lens correction is now an extension** — distortion, chromatic-aberration, defringe, and vignetting correction, along with the bundled Lensfun profile database, move out of the core app into a standalone Lens Correction extension, keeping the base app lean. Install it from its repository if you need it.
+- **More mask adjustments** — local-adjustment masks gain whites, blacks, vibrance, texture, and dehaze.
+- **Smarter preset saving** — the save dialog separates global adjustments (offered when changed) from per-image edits like crop and retouch (hidden under "Show all," since they don't transfer meaningfully to other photos), and presets can include extension-stage adjustments.
+- **Hold-to-preview on more panels** — the per-panel preview-off eye is now momentary (press and hold) and works on Crop & Straighten and Transform, hiding their on-canvas overlays while held.
+
+### Fixed
+- **Accurate crop dimming** — the crop overlay dims only the image area, not the canvas surround, so straightened photos no longer show a dark frame in colour-assessment (Assess) mode.
+- **Colour picker when zoomed** — eyedroppers sample the correct pixel when the canvas is zoomed or panned into a region.
+- **HSL target picker accuracy** — the on-image picker uses the same band weights as the shader, so dragging matches the result.
+- Keyboard input on a focused slider no longer creates spurious undo steps when a global shortcut (Ctrl+Z / Ctrl+Y) is released over it.
+
+## [2.4.2] - 2026-06-27
+
+### Fixed
+- **macOS "Safelight is damaged" guidance** — the app isn't notarized by Apple, so macOS can block the unsigned download with a misleading "damaged" message. Installation and the FAQ now document the one-time `xattr -cr /Applications/Safelight.app` fix (with a code-signing fallback for macOS Sequoia and later) and explain why an un-notarized build is shipped.
+
+## [2.4.1] - 2026-06-27
+
+### Added
+- **Rebuilt noise reduction** — the Detail panel's noise controls expand into separate luminance and colour sliders (amount and detail, plus contrast, shadow / highlight balance, and chroma smoothness) driven by a new multi-pass, edge-aware wavelet denoiser. It only runs when an amount is above zero, so there's no cost when unused, and Alt/Ctrl-drag previews the luminance and colour passes on the canvas.
+- **Per-panel preview-off** — each adjustment panel header gains an eye toggle that temporarily renders the photo as if that panel's adjustments weren't there, for a quick before/after of a single panel, without touching your edit history.
+- **Clearer Library labels** — grid thumbnails and list rows gain colour-label bars and a faint cell tint, keyword-count badges, and repositioned pick / reject flags for easier at-a-glance culling.
+- **Web-gallery publishing support** — the desktop app now lets extensions reach gallery backends (Cloudflare Workers and configurable origins), enabling the Web Tools extension to publish proofing galleries.
+
+### Changed
+- **Dual licensing and sponsorware funding** — Safelight gained a commercial license alongside GPL v3 and a Contributor License Agreement for core contributions, under a sponsorware funding model (the app stays free; features are funded through sponsorship). *(Reverted in 2.4.4 — see above.)*
+- **Refined Clarity and masked Sharpness** — Clarity uses an edge-aware blur to avoid halos on hard edges, and mask Sharpness blends fine and broad detail to tame overshoot at bright edges.
+
+### Fixed
+- A failed processing stage (including the new denoiser) is now disabled for the session instead of stalling the Develop view.
+- When a community extension provides its own noise reduction, the built-in denoiser steps aside instead of stacking with it.
+
 ## [2.4.0] - 2026-06-25
 
 ### Added

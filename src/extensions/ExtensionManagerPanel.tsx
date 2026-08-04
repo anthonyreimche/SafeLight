@@ -34,11 +34,13 @@ import {
 import { BUILTIN_EXTENSIONS } from "./builtin";
 import { useRegistry } from "./registry";
 import { useSettings } from "@/state/settings-store";
+import { Select } from "@/ui/components/Select";
 import { openPreferences } from "@/ui/components/PreferencesDialog";
 import { closeExtensions } from "@/ui/components/ExtensionsDialog";
 import {
   forgetSource,
   pruneSources,
+  readSources,
   rememberSource,
   repoFor,
 } from "./sources";
@@ -54,7 +56,6 @@ import {
   reviewedFor,
   bannedReason,
   repoFromSpec,
-  useTrust,
   useIsVerified,
   useVerificationStatus,
   useReviewedFor,
@@ -107,9 +108,6 @@ export function ExtensionManagerPanel() {
   const updates = useExtStoreUI((s) => s.updates);
   const openDetail = useExtStoreUI((s) => s.openDetail);
   const back = useExtStoreUI((s) => s.back);
-  // Subscribed (not getState) so the Featured shelf recomputes once the trust
-  // list arrives asynchronously — already lowercased by the main process.
-  const verified = useTrust((s) => s.list.verified);
 
   const [list, setList] = useState<ExtensionManifest[]>([]);
   const [results, setResults] = useState<ExtensionSearchResult[] | null>(null);
@@ -162,7 +160,6 @@ export function ExtensionManagerPanel() {
       .then((l) => {
         setList(l);
         pruneSources(l);
-        useExtStoreUI.getState().pruneUpdates(l.map((m) => m.id));
       })
       .catch(() => setList([]));
   };
@@ -225,6 +222,11 @@ export function ExtensionManagerPanel() {
   useEffect(() => {
     const gh = native?.github;
     if (!gh?.thumbnails || !results || results.length === 0) return;
+    // Registry-backed results already carry a thumbnail baked by the index build,
+    // so re-resolving them at runtime would add round-trips and nothing else —
+    // only the live-search fallback path needs icon/og resolution here.
+    const needs = results.filter((r) => r.source !== "registry");
+    if (needs.length === 0) return;
     // Force a fresh resolution only when an explicit ↻ advanced the nonce; a new
     // results array from typing keeps using the caches.
     const force = lastThumbNonce.current !== reloadNonce;
@@ -235,7 +237,7 @@ export function ExtensionManagerPanel() {
     };
     const off = gh.onThumbnail?.(({ repo, thumb }) => merge({ [repo]: thumb }));
     gh.thumbnails(
-      results.map((r) => ({ repo: r.fullName, avatar: r.avatarUrl ?? null })),
+      needs.map((r) => ({ repo: r.fullName, avatar: r.avatarUrl ?? null })),
       force,
     )
       .then(merge)
@@ -316,11 +318,8 @@ export function ExtensionManagerPanel() {
     setMsg(null);
     try {
       const manifest = await installFromGitHub(installSpec);
-      // Remember the source so update checks and installed-detection work for
-      // custom imports too, not just search installs. A #branch pin tracks that
-      // ref, not releases, so don't record it as a release-trackable source.
-      if (repo && !installSpec.includes("#")) rememberSource(manifest.id, repo);
-      if (!fromSearch) setSpec("");
+      if (fromSearch) rememberSource(manifest.id, fromSearch.fullName);
+      else setSpec("");
       const net = manifest.permissions?.network;
       setMsg(
         net && net.length
@@ -372,11 +371,11 @@ export function ExtensionManagerPanel() {
     );
   };
 
-  // Repos already installed, resolved through repoFor so a manifest that
-  // self-declares `repository` counts even without a remembered source
-  // (repoFor returns it unnormalised, so lowercase here).
+  const installedIds = new Set(list.map((m) => m.id));
   const installedRepos = new Set(
-    list.map((m) => repoFor(m)?.toLowerCase()).filter((r): r is string => !!r),
+    Object.entries(readSources())
+      .filter(([id]) => installedIds.has(id))
+      .map(([, fullName]) => fullName),
   );
   const isInstalled = (r: ExtensionSearchResult) =>
     installedRepos.has(r.fullName.toLowerCase());
@@ -390,13 +389,18 @@ export function ExtensionManagerPanel() {
     return !!upd?.hasUpdate && !!upd.latestTag && !!repoFor(m);
   });
 
-  // Browse shows only what isn't installed, filtered by category and sorted.
+  // Browse shows only what isn't installed, narrowed by the active category.
+  const notInstalled = results?.filter((r) => !isInstalled(r)) ?? null;
+  const filtered =
+    notInstalled && category !== "All"
+      ? notInstalled.filter((r) => categoryFor(r.topics) === category)
+      : notInstalled;
+
+  // Flat, sorted list — shown when a search query or a non-"All" category narrows
+  // the browse, where ranked shelves would be redundant.
   const browsable = (() => {
-    let rs = results?.filter((r) => !isInstalled(r)) ?? null;
-    if (!rs) return null;
-    if (category !== "All")
-      rs = rs.filter((r) => categoryFor(r.topics) === category);
-    const sorted = [...rs];
+    if (!filtered) return null;
+    const sorted = [...filtered];
     if (sort === "name")
       sorted.sort((a, b) => a.fullName.localeCompare(b.fullName));
     else if (sort === "updated")
@@ -405,8 +409,6 @@ export function ExtensionManagerPanel() {
     return sorted;
   })();
 
-<<<<<<< Updated upstream
-=======
   // Discrete "shelves" (App-Store style) for the unfiltered browse: a horizontal
   // row each for Featured (verified), New, Popular and Recently updated. Only used
   // with no search query and the "All" category — a narrowed browse falls back to
@@ -420,7 +422,7 @@ export function ExtensionManagerPanel() {
     const byStars = (a: ExtensionSearchResult, b: ExtensionSearchResult) =>
       b.stars - a.stars;
     const featured = filtered
-      .filter((r) => verified.includes(r.fullName.trim().toLowerCase()))
+      .filter((r) => isVerified(r.fullName))
       .sort(byStars)
       .slice(0, SHELF_LIMIT);
     const newest = [...filtered]
@@ -438,7 +440,6 @@ export function ExtensionManagerPanel() {
     ].filter((s) => s.items.length > 0);
   })();
 
->>>>>>> Stashed changes
   // ── Detail target resolution ───────────────────────────────────────────────
   // `selected` is "owner/repo" for repo-backed extensions, or an id for built-ins
   // and installed extensions without a known repo.
@@ -450,7 +451,6 @@ export function ExtensionManagerPanel() {
       const name = manifest?.name ?? sel.split("/")[1] ?? sel;
       return {
         repo: sel, // sel is the "owner/repo" we opened the detail with
-        id: manifest?.id,
         name,
         description: manifest?.description ?? search?.description ?? undefined,
         author: manifest?.author,
@@ -466,7 +466,6 @@ export function ExtensionManagerPanel() {
     if (builtin) {
       return {
         repo: null,
-        id: builtin.id,
         name: builtin.name,
         description: builtin.description,
         installed: true,
@@ -480,7 +479,6 @@ export function ExtensionManagerPanel() {
       const repo = repoFor(manifest);
       return {
         repo,
-        id: manifest.id,
         name: manifest.name,
         description: manifest.description,
         author: manifest.author,
@@ -625,20 +623,18 @@ export function ExtensionManagerPanel() {
                   spellCheck={false}
                   className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
                 />
-                <select
-                  value={sort}
-                  onChange={(e) =>
-                    useExtStoreUI.getState().setSort(e.target.value as StoreSort)
-                  }
-                  title="Sort"
-                  className="rounded bg-surface-2 px-1.5 py-1 text-text-secondary outline-none focus:bg-surface-3"
-                >
-                  {SORTS.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
+                {/* Sort only applies to the flat grid; the shelf view (no query,
+                    "All" category) is pre-ranked per shelf, so hide it there. */}
+                {!shelfView && (
+                  <Select
+                    value={sort}
+                    onChange={(v) =>
+                      useExtStoreUI.getState().setSort(v as StoreSort)
+                    }
+                    options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
+                    title="Sort"
+                  />
+                )}
                 <button
                   onClick={reload}
                   disabled={searching}
@@ -667,7 +663,8 @@ export function ExtensionManagerPanel() {
                 ))}
               </div>
 
-              {/* Result cards */}
+              {/* Result cards: ranked shelves for the unfiltered browse, a flat
+                  sorted grid once a search query or category narrows it. */}
               {searching && browsable === null ? (
                 <div className="text-text-muted">Searching…</div>
               ) : browsable && browsable.length === 0 ? (
@@ -675,6 +672,20 @@ export function ExtensionManagerPanel() {
                   No new extensions found
                   {query ? ` for “${query}”` : ""}
                   {category !== "All" ? ` in ${category}` : ""} (topic: {topic}).
+                </div>
+              ) : shelves ? (
+                <div className="flex flex-col gap-4">
+                  {shelves.map((sh) => (
+                    <Shelf
+                      key={sh.id}
+                      title={sh.title}
+                      items={sh.items}
+                      thumbs={thumbs}
+                      busy={busy}
+                      onOpen={openDetail}
+                      onInstall={install}
+                    />
+                  ))}
                 </div>
               ) : (
                 <div className="grid grid-cols-4 gap-2">
@@ -825,6 +836,47 @@ export function ExtensionManagerPanel() {
             );
           })()
         )}
+      </div>
+    </div>
+  );
+}
+
+// One App-Store-style "shelf": a labelled, horizontally-scrolling row of cards
+// (Featured / New / Popular / Recently updated). Each card keeps a fixed width so
+// the row scrolls sideways instead of wrapping. Reuses ExtensionCard, so install /
+// open / thumbnail behaviour matches the flat grid exactly.
+function Shelf({
+  title,
+  items,
+  thumbs,
+  busy,
+  onOpen,
+  onInstall,
+}: {
+  title: string;
+  items: ExtensionSearchResult[];
+  thumbs: Record<string, ExtensionThumbnail>;
+  busy: string | null;
+  onOpen: (repo: string) => void;
+  onInstall: (repo: string, r: ExtensionSearchResult) => void;
+}) {
+  return (
+    <div>
+      <SectionLabel>{title}</SectionLabel>
+      <div className="mt-1 flex gap-2 overflow-x-auto pb-1">
+        {items.map((r, i) => (
+          <div key={r.fullName} className="w-44 shrink-0">
+            <ExtensionCard
+              index={i}
+              result={r}
+              thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
+              installing={busy === r.fullName}
+              disabled={busy !== null}
+              onOpen={() => onOpen(r.fullName)}
+              onInstall={() => void onInstall(r.fullName, r)}
+            />
+          </div>
+        ))}
       </div>
     </div>
   );

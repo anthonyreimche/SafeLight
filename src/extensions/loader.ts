@@ -19,6 +19,7 @@ import { unregisterExtension } from "./registry";
 import { applySavedTheme } from "./themes";
 import { makeScopedAPI } from "./host";
 import { deleteExtensionSettings } from "./ext-settings";
+import { setExtensionName } from "./param-registry";
 import { BUILTIN_EXTENSIONS } from "./builtin";
 import { isNewer } from "@/update/semver";
 import { repoFor } from "./sources";
@@ -162,6 +163,7 @@ export function loadBuiltins(): void {
   seedDefaultDisabled(); // default-off built-ins start disabled on first launch
   for (const ext of BUILTIN_EXTENSIONS) {
     if (ext.locked || !isExtensionDisabled(ext.id)) {
+      setExtensionName(ext.id, ext.name);
       ext.activate(makeScopedAPI(ext.id));
     }
   }
@@ -176,6 +178,7 @@ async function loadPlugin(manifest: ExtensionManifest): Promise<void> {
   const mod = (await import(/* @vite-ignore */ url)) as Partial<ExtensionModule>;
   if (typeof mod.activate !== "function")
     throw new Error(`${manifest.id}: bundle has no activate(api) export`);
+  setExtensionName(manifest.id, manifest.name);
   mod.activate(makeScopedAPI(manifest.id));
   loaded.set(manifest.id, mod as ExtensionModule);
 }

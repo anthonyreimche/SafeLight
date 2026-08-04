@@ -14,6 +14,7 @@ import type {
   ExportProcessorContribution,
   FilenameTemplateContribution,
   GridFilterContribution,
+  GridMenuItemContribution,
   LayoutContribution,
   LibrarySortContribution,
   PanelContribution,
@@ -76,6 +77,9 @@ export interface RegisteredPresetImporter extends PresetImporterContribution {
 export interface RegisteredGridFilter extends GridFilterContribution {
   extensionId: string;
 }
+export interface RegisteredGridMenuItem extends GridMenuItemContribution {
+  extensionId: string;
+}
 export interface RegisteredSlot extends SlotContribution {
   extensionId: string;
 }
@@ -103,6 +107,8 @@ interface RegistryState {
   presetImporters: Record<string, RegisteredPresetImporter>;
   /** Keyed by contribution id. Extra predicates that narrow the Library grid. */
   gridFilters: Record<string, RegisteredGridFilter>;
+  /** Keyed by contribution id. Extra items appended to the grid's right-click menu. */
+  gridMenuItems: Record<string, RegisteredGridMenuItem>;
   /** Keyed by contribution id. Components mounted into named core UI slots. */
   slots: Record<string, RegisteredSlot>;
   /** Keyed by contribution id. Controls rendered in every panel's dock header. */
@@ -124,6 +130,7 @@ export const useRegistry = create<RegistryState>(() => ({
   catalogHooks: {},
   presetImporters: {},
   gridFilters: {},
+  gridMenuItems: {},
   slots: {},
   panelHeaderAccessories: {},
   librarySorts: {},
@@ -217,7 +224,7 @@ export function registerProcessingStage(
   // stage with a different uniform set (e.g. swapping denoise methods) fully
   // replaces its params instead of leaking the old ones.
   unregisterStageParams(c.id);
-  registerStageParams(c.id, extensionId, c.uniforms);
+  registerStageParams(c.id, c.name, extensionId, c.uniforms);
   useRegistry.setState((s) => ({
     processingStages: {
       ...s.processingStages,
@@ -266,6 +273,26 @@ export function registerGridFilter(
   useRegistry.setState((s) => ({
     gridFilters: { ...s.gridFilters, [c.id]: { ...c, extensionId } },
   }));
+}
+
+export function registerGridMenuItem(
+  extensionId: string,
+  c: GridMenuItemContribution,
+): void {
+  useRegistry.setState((s) => ({
+    gridMenuItems: { ...s.gridMenuItems, [c.id]: { ...c, extensionId } },
+  }));
+}
+
+/** Reactive, order-sorted list of extension items for the grid context menu. */
+export function useGridMenuItems(): RegisteredGridMenuItem[] {
+  return useRegistry(
+    useShallow((s) =>
+      Object.values(s.gridMenuItems).sort(
+        (a, b) => (a.order ?? 100) - (b.order ?? 100),
+      ),
+    ),
+  );
 }
 
 export function registerSlot(extensionId: string, c: SlotContribution): void {
@@ -534,6 +561,7 @@ export function unregisterExtension(extensionId: string): void {
     catalogHooks: drop(s.catalogHooks),
     presetImporters: drop(s.presetImporters),
     gridFilters: drop(s.gridFilters),
+    gridMenuItems: drop(s.gridMenuItems),
     slots: drop(s.slots),
     panelHeaderAccessories: drop(s.panelHeaderAccessories),
     librarySorts: drop(s.librarySorts),

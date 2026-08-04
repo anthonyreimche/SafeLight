@@ -43,6 +43,30 @@ export interface PanelContribution {
    *  per-panel bypass eye). Must handle its own clicks; the header swallows
    *  pointerdowns on buttons so it won't start a drag. */
   headerAccessory?: ComponentType;
+  /** When present, this panel can be instantiated per mask: it appears in the
+   *  Masking panel's "+ Adjust" menu and each mask that adds it renders its own
+   *  instance of `mask.component`. */
+  mask?: MaskPanelContribution;
+}
+
+/** Per-mask instance of a panel: a compact variant rendered inside the Masking
+ *  panel's Adjust tab. The component reads and writes the mask it belongs to
+ *  through the mask scope (useMaskScope in core panels,
+ *  api.develop.useMaskScope for extensions) — never the global develop params.
+ *  Core adjustments (scope.adj / hsl / toneCurve) are applied by the GPU's
+ *  local-adjustment path today; extension params (scope.setParam) are persisted
+ *  per mask, but extension stages still apply globally — per-mask stage
+ *  application is a planned follow-up. */
+export interface MaskPanelContribution {
+  component: ComponentType;
+  /** Sort position among a mask's sub-panels (lower = higher up). Default 100. */
+  order?: number;
+  /** The mask values this sub-panel edits: MaskAdjustments keys ("exposure"),
+   *  the structured blocks ("hsl", "toneCurve"), or qualified extension param
+   *  keys ("my-ext.stage.amount"). Seeded with defaults when the sub-panel is
+   *  added to a mask, cleared when it's removed, and restored to defaults by
+   *  the mask's Reset action. */
+  owns: readonly string[];
 }
 
 /** One dock column in a layout preset. Panels listed top→bottom. */
@@ -89,10 +113,17 @@ export interface PipelineContribution {
   name: string;
   /** Shown under the picker when active. */
   description?: string;
-  /** Body defining pipelineToDisplay; omit to reuse the built-in transform. */
+  /** Body defining pipelineToDisplay; omit to reuse the built-in transform.
+   *  Return the display-encoded (sRGB) value: downstream display-space edits
+   *  operate on it, and the core converts it once at the end for the selected
+   *  output space (Display-P3 / Adobe RGB / ProPhoto) — transforms must NOT
+   *  bake in their own output-space handling. */
   glsl?: string;
-  /** Skip the default RAW base tone curve (set when the transform brings its
-   *  own contrast curve, e.g. AgX / ACES). */
+  /** The transform brings its own complete look (AgX, ACES, …): Safelight
+   *  drops BOTH halves of its default baseline — the RAW camera-matching
+   *  S-curve at the input (the transform sees true scene-linear data) and the
+   *  Adobe Color baseline in the tone-curve LUT (user curves compose on
+   *  identity). The transform is the profile. */
   skipBaseCurve?: boolean;
 }
 
@@ -163,7 +194,16 @@ export interface ExtensionSearchResult {
   fullName: string;
   description: string | null;
   stars: number;
+  /** Repo creation time (ISO). Drives the store's "New" shelf. Present from the
+   *  prebuilt registry index; null on the live-search fallback for repos GitHub's
+   *  search payload didn't carry it for. */
+  createdAt?: string | null;
   updatedAt: string;
+  /** Where this result came from: the prebuilt registry index ("registry") or a
+   *  live GitHub search ("live"). The browse grid skips per-card thumbnail
+   *  re-resolution for "registry" results — their thumbnail is already baked by
+   *  the index build, so a runtime icon/og round-trip would add nothing. */
+  source?: "registry" | "live";
   /** GitHub repo topics — drive the store's category chips. */
   topics?: string[];
   /** Owner avatar on the direct avatars CDN — the instant fallback thumbnail and
@@ -614,6 +654,32 @@ export interface LibrarySortContribution {
 }
 
 // ---------------------------------------------------------------------------
+// Library grid context-menu items (generic — lets an extension add an action to
+// the right-click menu on a photo / multi-selection, e.g. "Create virtual copy")
+// ---------------------------------------------------------------------------
+
+/** An item appended to the Library grid's right-click context menu. Core groups
+ *  extension items below its built-in actions (Open, Rename, …) behind a
+ *  separator. `ids` are the targeted photos: the right-clicked photo, or the
+ *  whole current selection when the right-clicked photo is part of it (the same
+ *  targeting the built-in items use). */
+export interface GridMenuItemContribution {
+  /** Globally unique, e.g. "my-ext.virtual-copy". */
+  id: string;
+  /** Menu label. A function receives the targeted ids so the label can vary
+   *  (e.g. add a "(3)" count for a multi-selection). */
+  label: string | ((ids: string[]) => string);
+  /** Sort position among extension items (lower = earlier). Default 100. */
+  order?: number;
+  /** Render in the red "danger" color (e.g. a destructive action). */
+  danger?: boolean;
+  /** Return false to show the item greyed-out for the current target. */
+  enabled?: (ids: string[]) => boolean;
+  /** Invoked with the targeted photo ids when the item is chosen. */
+  onClick: (ids: string[]) => void;
+}
+
+// ---------------------------------------------------------------------------
 // UI slots (generic named mount points in core chrome)
 // ---------------------------------------------------------------------------
 
@@ -699,8 +765,7 @@ export interface SafelightAPI {
   version: 1;
   extensionId: string;
   /** The app's React instance — plugins must use this, not their own copy. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  react: any;
+  react: typeof import("react");
   registerPanel(c: PanelContribution): void;
   registerTheme(c: ThemeContribution): void;
   registerLayout(c: LayoutContribution): void;
@@ -759,6 +824,10 @@ export interface SafelightAPI {
   registerCursor(c: CursorContribution): void;
   /** Add a sort order to the Library toolbar's sort dropdown. */
   registerLibrarySort(c: LibrarySortContribution): void;
+  /** Append an action to the Library grid's right-click context menu. Core
+   *  passes the targeted photo ids (the right-clicked photo, or the whole
+   *  selection if it's part of one). Re-registering the same id replaces it. */
+  registerGridMenuItem(c: GridMenuItemContribution): void;
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;
@@ -766,9 +835,16 @@ export interface SafelightAPI {
     /** Fires when any of this extension's settings change (any window). */
     onChange(cb: (key: string, value: unknown) => void): () => void;
   };
-  /** Reusable UI building blocks (Panel, Slider, Histogram, CurveEditor, Rating, Thumbnail). */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  components: Record<string, ComponentType<any>>;
+  /** Reusable UI building blocks. Typed to the real core components so plugins
+   *  get their actual props, not an opaque component bag. */
+  components: {
+    Panel: typeof import("@/ui/components/Panel").Panel;
+    Slider: typeof import("@/ui/components/Slider").Slider;
+    Histogram: typeof import("@/ui/components/Histogram").Histogram;
+    CurveEditor: typeof import("@/ui/components/CurveEditor").CurveEditor;
+    Rating: typeof import("@/ui/components/Rating").Rating;
+    Thumbnail: typeof import("@/ui/components/Thumbnail").Thumbnail;
+  };
   /** Shared, theme-styled UI primitives handed to extensions — Button, Select,
    *  NumberInput, TextInput, TextArea, Toggle, SegmentedControl, Field, Section,
    *  Card, Badge, ProgressBar, Row, Stack — plus `tokens` (canonical CSS-var
@@ -776,12 +852,31 @@ export interface SafelightAPI {
    *  the extension's own subtree, so they match the app. Prefer these over
    *  hand-rolled inline-styled controls. */
   ui: typeof import("./ui-kit").uiKit;
-  /** Zustand hooks and the zustand `create` factory.
-   *  useDevelopStore, useCatalogStore, useUIStore, useSettings,
-   *  usePresetsStore, useKeybindings, useThemeStore, useLayoutStore,
-   *  usePipelineStore, create. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  stores: Record<string, any>;
+  /** The app's Zustand store hooks and the zustand `create` factory, shared so
+   *  plugins read/write the app's stores rather than their own copies. Typed to
+   *  the real hooks, so plugins get each store's actual state shape. */
+  stores: {
+    useDevelopStore: typeof import("@/state/develop-store").useDevelopStore;
+    useCatalogStore: typeof import("@/state/catalog-store").useCatalogStore;
+    useUIStore: typeof import("@/state/ui-store").useUIStore;
+    useSettings: typeof import("@/state/settings-store").useSettings;
+    usePresetsStore: typeof import("@/state/presets-store").usePresetsStore;
+    useKeybindings: typeof import("@/state/keybindings-store").useKeybindings;
+    useThemeStore: typeof import("./themes").useThemeStore;
+    useLayoutStore: typeof import("./dock").useLayoutStore;
+    usePipelineStore: typeof import("./pipelines").usePipelineStore;
+    create: typeof import("zustand").create;
+  };
+  /** Read-only metadata for the stage uniforms other installed extensions
+   *  contribute — qualified key ("<stageId>.<uniform>"), label, value range and
+   *  GLSL type. For tools that drive or inspect ANOTHER extension's sliders; the
+   *  values themselves live in the develop store's paramBag (read
+   *  `paramBag[qualifiedKey] ?? default`, write via `setDynParam`). Non-reactive:
+   *  the list only changes as extensions load/unload — read it when you need it. */
+  params: {
+    list(): import("./param-registry").ParamDescriptor[];
+    get(qualifiedKey: string): import("./param-registry").ParamDescriptor | undefined;
+  };
   dock: { togglePanel(id: string): void };
   themes: { apply(id: string): void };
   layouts: { apply(id: string): void };
@@ -791,8 +886,14 @@ export interface SafelightAPI {
   preferences: { open(sectionId?: string): void; close(): void; toggle(): void };
   /** Navigate between app modules. */
   navigation: { goTo(module: "library" | "develop"): void };
-  /** Read the current binding for any action id (built-in or extension). */
-  keybindings: { getBinding(actionId: string): string };
+  /** Read the current binding for any action id (built-in or extension), or
+   *  `list()` every built-in key action with its current combo (override
+   *  applied) + label + category — so a tool can check a remap against the LIVE
+   *  shortcuts instead of a hard-coded list. `combo` is "" when unbound. */
+  keybindings: {
+    getBinding(actionId: string): string;
+    list(): { id: string; label: string; category: string; combo: string }[];
+  };
   /** Cursor vocabulary. `labels`: canonical human-facing names for the built-in
    *  cursor tokens, keyed by token id (e.g. "pick", "zoom-in", "crop-move") — the
    *  single source of truth for this wording, so a cursor-restyling extension
@@ -815,6 +916,12 @@ export interface SafelightAPI {
       rect: { x: number; y: number; w: number; h: number } | null;
       nonce: number;
     };
+    /** The mask a sub-panel instance belongs to (valid only inside a
+     *  PanelContribution.mask component). Core local adjustments go through
+     *  adj/setAdj; extension params through getParam/setParam (persisted in the
+     *  mask's bag — not yet applied by extension stages). `commit` ends a
+     *  gesture as one undo step. */
+    useMaskScope(): import("@/modules/develop/mask-scope").MaskParamScope;
     captureFrame(
       params: import("@/catalog/types").DevelopParams,
     ): Promise<ImageBitmap>;
@@ -849,6 +956,25 @@ export interface SafelightAPI {
     /** Read the opaque blob previously stored for the current Develop photo
      *  under `key`, or null if none exists (or no photo/project is open). */
     getPhotoData(key: string): Promise<Uint8Array | null>;
+    /** Core develop scalars that live INSIDE a structured param object (e.g.
+     *  "vignette.amount", "grain.size") — the ones a top-level setParam can't
+     *  reach without merging the owning object. `list()` gives each one's range
+     *  + current default + section `group`; `get`/`set` route to the right
+     *  setParam path so a tool can drive them generically (e.g. key+wheel
+     *  scrubbing). `set` is live (no history entry) — batch your own commitEdit. */
+    adjustments: {
+      list(): {
+        key: string;
+        label: string;
+        group: string;
+        min: number;
+        max: number;
+        step: number;
+        default: number;
+      }[];
+      get(key: string): number;
+      set(key: string, value: number): void;
+    };
   };
   /** Headless export: render catalog photos through the full develop pipeline to
    *  in-memory blobs, honoring the user's export settings. Unlike
@@ -873,6 +999,38 @@ export interface SafelightAPI {
         p: import("@/modules/export/export-image").ExportProgress,
       ) => void,
     ): Promise<import("@/modules/export/export-image").RenderedPhoto[]>;
+  };
+  /** Lower-level catalog persistence, for extensions that add records the core
+   *  scan didn't produce (e.g. virtual copies). `addPhotos` durably writes new
+   *  records and inserts them into the live grid (optionally right after a given
+   *  photo). `getEditState` / `putEditState` read and write a photo's saved
+   *  develop recipe (the undo stack) by id — so an extension can, for instance,
+   *  clone one photo's edits onto another. */
+  catalog: {
+    addPhotos(
+      photos: import("@/catalog/types").CatalogPhoto[],
+      opts?: { afterId?: string },
+    ): Promise<void>;
+    getEditState(
+      photoId: string,
+    ): Promise<import("@/catalog/types").EditState | null>;
+    putEditState(
+      editState: import("@/catalog/types").EditState,
+    ): Promise<void>;
+    /** Rename one photo's file on disk, in place (same folder), preserving its
+     *  extension. This is core's own rename path: an atomic native rename (no
+     *  full-file copy), carrying the `<file>.safelight.json` sidecar and any
+     *  virtual copies along, then updating and persisting the catalog record —
+     *  so ratings, edits and cached previews (keyed by photo id) survive. Pass
+     *  the new name WITHOUT extension (core cleans it and re-appends the
+     *  original). Returns `{ ok: true, filename }` or `{ ok: false, reason }`;
+     *  it never throws for the ordinary failures (collision, missing photo,
+     *  virtual copy, disk error). Batch renames that shuffle a numbering range
+     *  should rename via a temporary pass first to dodge the collision guard. */
+    renamePhoto(
+      photoId: string,
+      newBaseName: string,
+    ): Promise<import("@/project/folder-ops").RenamePhotoResult>;
   };
 }
 
@@ -999,8 +1157,10 @@ declare global {
         /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. */
         install(spec: string): Promise<ExtensionManifest>;
         uninstall(id: string): Promise<void>;
-        /** Search GitHub for official extensions (repos with `topic`). Results
-         *  are cached per (topic, query); pass `force` to bypass the cache. */
+        /** Browse official extensions. For the default topic this serves the
+         *  prebuilt registry index (one CDN fetch, whole catalog, baked
+         *  thumbnails); a custom topic — or an unreachable index — falls back to a
+         *  live GitHub Search. Cached; pass `force` to bypass the cache. */
         search(
           query: string,
           topic: string,

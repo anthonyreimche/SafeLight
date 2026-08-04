@@ -103,11 +103,6 @@ export function useDevelopRenderer(
   const hoveredMaskId = useDevelopStore((s) => s.hoveredMaskId);
   const selectedMaskId = useDevelopStore((s) => s.selectedMaskId);
   const maskTab = useDevelopStore((s) => s.maskTab);
-  // The brush tool being armed forces the coverage overlay on (see the viz
-  // effect): painting needs to see where the coverage lands even on the Adjust
-  // tab, where maskTab !== "coverage" would otherwise hide it.
-  const activeTool = useDevelopStore((s) => s.activeTool);
-  const maskToolType = useDevelopStore((s) => s.maskToolType);
   const sharpenViz = useDevelopStore((s) => s.sharpenViz);
   const bypassedPanels = useDevelopStore((s) => s.bypassedPanels);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
@@ -507,17 +502,16 @@ export function useDevelopRenderer(
     bridge.render(false);
   }, [colorAssessment, canvasSurround, canvasSurroundOverride]);
 
-  // Coverage overlay: shown when a mask row is hovered, when the selected mask
-  // is open on the Coverage tab, or whenever the brush tool is armed on the
-  // selected mask (so a brush stroke always tints its coverage, including while
-  // the Adjust tab is open — otherwise refining a brush shows no feedback).
+  // Coverage overlay: shown when a mask row is hovered, or when the selected
+  // mask is open on the Coverage tab. The Adjust tab hides it — so adjustment
+  // sliders aren't dragged over a tinted preview, and (crucially) the worker
+  // isn't rendering the coverage pass on every frame while you adjust.
   // Always red; the strength fades in/out.
   const vizAnim = useRef({ idx: -1, cur: 0, target: 0, raf: null as number | null });
   useEffect(() => {
-    const brushArmed = activeTool === "mask" && maskToolType === "brush";
     const vizId =
       hoveredMaskId ??
-      (selectedMaskId && (maskTab === "coverage" || brushArmed) ? selectedMaskId : null);
+      (selectedMaskId && maskTab === "coverage" ? selectedMaskId : null);
     const idx = vizId ? params.masks.findIndex((m) => m.id === vizId) : -1;
     const a = vizAnim.current;
     if (idx >= 0) a.idx = idx; // keep last index while fading out
@@ -536,7 +530,7 @@ export function useDevelopRenderer(
     return () => {
       if (a.raf != null) { cancelAnimationFrame(a.raf); a.raf = null; }
     };
-  }, [hoveredMaskId, selectedMaskId, maskTab, activeTool, maskToolType, params.masks]);
+  }, [hoveredMaskId, selectedMaskId, maskTab, params.masks]);
 
   // Sharpening preview: while Alt/Ctrl-dragging a Detail-panel sharpening slider,
   // the shader renders a grayscale visualization of that sub-signal. Push the mode

@@ -1027,6 +1027,8 @@ export class WebGLRenderer {
       "uTexture",
       "uClarity",
       "uDehaze",
+      "uHighlightDetail",
+      "uShadowDetail",
       "uSharpening",
       "uSharpenRadius",
       "uSharpenDetail",
@@ -1181,6 +1183,13 @@ export class WebGLRenderer {
       gl.UNSIGNED_BYTE,
       identity,
     );
+  }
+
+  /** Largest edge this GL context can hold in a single texture. Callers that
+   *  size full-resolution uploads (export at "Original") must stay under it —
+   *  an oversized texImage2D fails and the frame renders black. */
+  get maxTextureEdge(): number {
+    return this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) as number;
   }
 
   setImage(
@@ -1609,10 +1618,6 @@ export class WebGLRenderer {
     this.updateMaskCurveTexture(params.masks);
     const visibleRetouch = params.retouch.filter((s) => s.visible !== false);
     this.updateRetouchTexture(visibleRetouch);
-<<<<<<< Updated upstream
-    this.updateHealFill(visibleRetouch);
-    const lut = buildRGBCurveLUT(params.toneCurve);
-=======
     this.uploadCurveLUT();
     // NOTE: resize happens in render(), not here. Resizing the canvas clears
     // it, and setParams runs a frame before the coalesced render — doing it
@@ -1627,7 +1632,6 @@ export class WebGLRenderer {
   private uploadCurveLUT() {
     if (!this.params) return;
     const lut = buildRGBCurveLUT(this.params.toneCurve, !this.pipelineSkipBase);
->>>>>>> Stashed changes
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
     gl.texImage2D(
@@ -1641,9 +1645,6 @@ export class WebGLRenderer {
       gl.UNSIGNED_BYTE,
       lut,
     );
-    // NOTE: resize happens in render(), not here. Resizing the canvas clears
-    // it, and setParams runs a frame before the coalesced render — doing it
-    // here painted a black frame on every crop/straighten/transform change.
   }
 
   // The 8-bit sRGB downscaled source used for heal source-picking. The heal
@@ -1750,9 +1751,14 @@ export class WebGLRenderer {
     const e = this.entryFor(p, injection, sSig);
     this.program = e.program;
     this.uniforms = e.uniforms;
+    // The curve LUT bakes the Adobe Color baseline only for non-skipBase
+    // pipelines, so a switch that flips skipBase must rebuild it — the LUT is
+    // otherwise only refreshed by setParams.
+    const skipBaseChanged = e.skipBase !== this.pipelineSkipBase;
     this.pipelineSkipBase = e.skipBase;
     this.pipelineSig = p.sig;
     this.stageSig = sSig;
+    if (skipBaseChanged) this.uploadCurveLUT();
   }
 
   render() {
@@ -1799,6 +1805,8 @@ export class WebGLRenderer {
     gl.uniform1f(u.uTexture, p.texture);
     gl.uniform1f(u.uClarity, p.clarity);
     gl.uniform1f(u.uDehaze, p.dehaze);
+    gl.uniform1f(u.uHighlightDetail, p.highlightDetail);
+    gl.uniform1f(u.uShadowDetail, p.shadowDetail);
     gl.uniform1f(u.uSharpening, p.sharpening);
     gl.uniform1f(u.uSharpenRadius, p.sharpenRadius);
     gl.uniform1f(u.uSharpenDetail, p.sharpenDetail);

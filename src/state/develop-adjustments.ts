@@ -84,9 +84,7 @@ export function setAdjustment(key: string, value: number): void {
   const a = byKey.get(key);
   if (!a) return;
   const st = useDevelopStore.getState();
-  if (a.parent === "vignette") {
-    st.setParam("vignette", { ...st.params.vignette, [a.field]: value });
-  } else {
-    st.setParam("grain", { ...st.params.grain, [a.field]: value });
-  }
+  const parent = (st.params as unknown as Record<string, Record<string, number>>)[a.parent] ?? {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  st.setParam(a.parent as any, { ...parent, [a.field]: value } as any);
 }

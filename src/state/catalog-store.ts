@@ -11,6 +11,20 @@ import { useProjectStore } from "@/project/project-store";
 import { broadcast, WINDOW_ID } from "./broadcast";
 import { emitMetadataChange, emitPhotoRemove } from "@/extensions/registry";
 
+/** Expand a removal set to also include virtual copies of any master in it — a
+ *  copy shares its master's file, so removing the master removes its copies too
+ *  (matching Lightroom/darktable). Removing a copy on its own only affects it. */
+function withVirtualCopies(
+  photos: CatalogPhoto[],
+  ids: string[],
+): string[] {
+  const set = new Set(ids);
+  for (const p of photos) {
+    if (p.copyOf && set.has(p.copyOf)) set.add(p.id);
+  }
+  return [...set];
+}
+
 interface CatalogState {
   photos: CatalogPhoto[];
   selectedIds: Set<string>;
@@ -26,6 +40,14 @@ interface CatalogState {
   replaceCatalog: (photos: CatalogPhoto[]) => void;
   /** Append photos during a progressive open (no URL revocation, no state reset). */
   appendPhotos: (photos: CatalogPhoto[]) => void;
+  /** Add new photo records to the catalog and DURABLY persist them (unlike
+   *  appendPhotos, which is open-time + in-memory only), optionally inserting
+   *  each right after a given photo. Used by extensions to add records the core
+   *  scan didn't produce — e.g. virtual copies. */
+  addPhotos: (
+    photos: CatalogPhoto[],
+    opts?: { afterId?: string },
+  ) => Promise<void>;
   /** Finalize a progressive open: set authoritative list without revoking URLs
    *  (photos are the same object references already shown during the open). */
   finalizeCatalog: (photos: CatalogPhoto[]) => void;
@@ -50,6 +72,9 @@ interface CatalogState {
   /** Persist already-built photo records whose location changed (moved on disk).
    *  Caller supplies updated relPath/folder/handles; thumbnails are unchanged. */
   relocatePhotos: (updated: CatalogPhoto[]) => Promise<void>;
+  /** Set a virtual copy's display name (the distinguisher folded into its
+   *  shown/exported name). Display-only — it never touches the file on disk. */
+  setCopyName: (id: string, copyName: string) => Promise<void>;
 
   setRating: (id: string, rating: number) => Promise<void>;
   setColorLabel: (id: string, label: ColorLabel) => Promise<void>;
@@ -153,6 +178,25 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       set((s) => ({ photos: [...s.photos, ...photos] }));
     },
 
+    async addPhotos(photos, opts) {
+      if (photos.length === 0) return;
+      // Persist first so the records survive a reload, then show them.
+      await catalogStorage().putPhotos(photos);
+      set((s) => {
+        const afterId = opts?.afterId;
+        if (afterId) {
+          const idx = s.photos.findIndex((p) => p.id === afterId);
+          if (idx >= 0) {
+            const next = s.photos.slice();
+            next.splice(idx + 1, 0, ...photos);
+            return { photos: next };
+          }
+        }
+        return { photos: [...s.photos, ...photos] };
+      });
+      broadcast({ type: "catalog-change", payload: { action: "add" } });
+    },
+
     mergeThumbnails(updates) {
       if (updates.length === 0) return;
       const byId = new Map(updates.map((u) => [u.id, u.blob] as const));
@@ -245,34 +289,15 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     },
 
     async removePhoto(id) {
-<<<<<<< Updated upstream
-      const photo = get().photos.find((p) => p.id === id);
-      if (photo?.directoryHandle && photo?.fileHandle) {
-        await emitPhotoRemove({
-          photo,
-          dir: photo.directoryHandle,
-          fileName: photo.fileHandle.name,
-        });
-      }
-      await catalogStorage().deletePhoto(id);
-      set((s) => ({
-        photos: s.photos.filter((p) => p.id !== id),
-        selectedIds: (() => {
-          const next = new Set(s.selectedIds);
-          next.delete(id);
-          return next;
-        })(),
-        activePhotoId: s.activePhotoId === id ? null : s.activePhotoId,
-      }));
-      broadcast({ type: "catalog-change", payload: { action: "remove", id } });
-=======
-      // Removing a master takes its virtual copies with it.
+      // Removing a master takes its virtual copies with it. Always the batch
+      // path — one teardown sequence (hooks, storage, broadcast) to maintain.
       await get().removePhotos(withVirtualCopies(get().photos, [id]));
->>>>>>> Stashed changes
     },
 
     async removePhotos(ids) {
       if (ids.length === 0) return;
+      // Removing a master also removes its virtual copies.
+      ids = withVirtualCopies(get().photos, ids);
       const idSet = new Set(ids);
       // Let extensions react to removal (e.g. delete XMP sidecars).
       for (const id of ids) {
@@ -316,6 +341,16 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       const byId = new Map(updated.map((p) => [p.id, p] as const));
       set((s) => ({ photos: s.photos.map((p) => byId.get(p.id) ?? p) }));
       broadcast({ type: "catalog-change", payload: { action: "update" } });
+    },
+
+    async setCopyName(id, copyName) {
+      const photo = get().photos.find((p) => p.id === id);
+      if (!photo) return;
+      const clean = copyName.trim();
+      const updated: CatalogPhoto = { ...photo, copyName: clean || undefined };
+      await catalogStorage().putPhotos([updated]);
+      set((s) => ({ photos: s.photos.map((p) => (p.id === id ? updated : p)) }));
+      broadcast({ type: "catalog-change", payload: { action: "update", id } });
     },
 
     async rotatePhotos(ids, deg) {

@@ -12,6 +12,7 @@ import { SurroundControl } from "@/ui/SurroundControl";
 import { DisplayTransformControl } from "@/ui/DisplayTransformControl";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
+import { photoDisplayName } from "@/catalog/copy-name";
 
 // The canvas is the module's "main" dock panel; Tools (masks/retouch/presets)
 // and the Edit stack are extension panels placed by the develop dock layout.
@@ -45,7 +46,7 @@ export function DevelopView() {
       statusBar={
         activePhoto && (
           <div className="flex w-full items-center justify-between">
-            <span>{activePhoto.filename}</span>
+            <span>{photoDisplayName(activePhoto)}</span>
             <div className="flex items-center gap-3">
               <Slot name="develop-toolbar" />
               <AssessmentToggle />

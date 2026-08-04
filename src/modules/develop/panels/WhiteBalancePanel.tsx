@@ -9,6 +9,8 @@ import { AutoButton } from "@/ui/components/AutoButton";
 import { PickerIcon } from "@/ui/components/PickerIcon";
 import { useDevelopStore } from "@/state/develop-store";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
+import { useMaskScope } from "@/modules/develop/mask-scope";
+import type { MaskPanelContribution } from "@/extensions/types";
 
 export function WhiteBalancePanel() {
   const params = useDevelopStore((s) => s.params);
@@ -68,3 +70,40 @@ export function WhiteBalancePanel() {
     </Panel>
   );
 }
+
+// Per-mask instance: relative warm/cool and magenta/green shifts (-100..100)
+// rather than the global panel's absolute Kelvin scale. The picker and Auto
+// act on the whole image, so neither appears here.
+function WhiteBalanceMaskPanel() {
+  const scope = useMaskScope();
+  return (
+    <div className="space-y-0.5">
+      <Slider
+        label="Temp"
+        value={scope.adj.temperature}
+        min={-100}
+        max={100}
+        step={1}
+        defaultValue={0}
+        onChange={(v) => scope.setAdj({ temperature: v })}
+        onCommit={() => scope.commit("Mask Temp")}
+      />
+      <Slider
+        label="Tint"
+        value={scope.adj.tint}
+        min={-100}
+        max={100}
+        step={1}
+        defaultValue={0}
+        onChange={(v) => scope.setAdj({ tint: v })}
+        onCommit={() => scope.commit("Mask Tint")}
+      />
+    </div>
+  );
+}
+
+export const WHITE_BALANCE_MASK_PANEL: MaskPanelContribution = {
+  component: WhiteBalanceMaskPanel,
+  order: 20,
+  owns: ["temperature", "tint"],
+};

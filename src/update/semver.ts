@@ -6,8 +6,9 @@
 // Tiny semver helper shared by the app updater (update-checker.ts) and the
 // Extensions store (which compares an installed extension's version against the
 // latest GitHub release tag). Deliberately permissive: tags like "v1.2.3",
-// "1.2", or "1" all parse; a missing component reads as 0. Pre-release and
-// build suffixes after the patch number are ignored.
+// "1.2", or "1" all parse; a missing component reads as 0. Pre-release
+// suffixes follow semver precedence ("1.2.3-beta.2" < "1.2.3") so a user on a
+// pre-release build is notified when the matching full release lands.
 
 const VERSION_RE = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
 
@@ -24,9 +25,6 @@ export function parseSemver(tag: string): [number, number, number] {
   ];
 }
 
-<<<<<<< Updated upstream
-/** -1 if a < b, 0 if equal, 1 if a > b (by major, then minor, then patch). */
-=======
 /** Whether `tag` carries a version at all. parseSemver falls back to [0, 0, 0]
  *  for unreadable input, which a genuine "0.0.0" build is indistinguishable
  *  from — callers that must tell the two apart ask here first. */
@@ -66,14 +64,18 @@ function comparePrerelease(a: string, b: string): -1 | 0 | 1 {
 
 /** -1 if a < b, 0 if equal, 1 if a > b (major/minor/patch, then pre-release:
  *  a suffixed version precedes its full release). */
->>>>>>> Stashed changes
 export function compareSemver(a: string, b: string): -1 | 0 | 1 {
   const x = parseSemver(a);
   const y = parseSemver(b);
   for (let i = 0; i < 3; i++) {
     if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
   }
-  return 0;
+  const xp = parsePrerelease(a);
+  const yp = parsePrerelease(b);
+  if (xp === null && yp === null) return 0;
+  if (xp === null) return 1;
+  if (yp === null) return -1;
+  return comparePrerelease(xp, yp);
 }
 
 /** Returns true when `candidate` is strictly newer than `current`. */

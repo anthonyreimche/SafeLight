@@ -1,20 +1,18 @@
-// Safelight — founded and principally authored by Anthony Reimche.
+// Safelight â€” founded and principally authored by Anthony Reimche.
 // Copyright (C) 2026 Anthony Reimche. Licensed under the GNU GPL v3 with an
-// attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
+// attribution-preservation term (GPL v3 Â§7b) â€” see LICENSE. This notice must
 // be preserved in derived versions.
 
 import { Panel } from "@/ui/components/Panel";
 import { HSLMixer } from "@/ui/components/HSLMixer";
 import { PickerIcon } from "@/ui/components/PickerIcon";
 import { useDevelopStore } from "@/state/develop-store";
-<<<<<<< Updated upstream
 import { getExtSetting, useExtSettings } from "@/extensions/ext-settings";
-=======
-import { getExtSetting } from "@/extensions/ext-settings";
 import { useMaskScope } from "@/modules/develop/mask-scope";
->>>>>>> Stashed changes
 import { useEffect, useState } from "react";
+import { defaultHSL } from "@/catalog/types";
 import type { HSLBand } from "@/catalog/types";
+import type { MaskPanelContribution } from "@/extensions/types";
 
 const VIEWS: { key: "tabs" | "all"; label: string }[] = [
   { key: "tabs", label: "Tabs" },
@@ -36,8 +34,8 @@ export function HSLPanel() {
   const selectedBand = useDevelopStore((s) => s.selectedHslBand);
   const setSelectedBand = useDevelopStore((s) => s.setSelectedHslBand);
 
-  // Mount-time default only (Preferences ▸ HSL ▸ Default layout); the toggle
-  // below overrides it for the session.
+  // Re-render when the HSL extension's preferences change (Preferences â–¸ HSL).
+  useExtSettings((s) => s["core.hsl"]);
   const [view, setView] = useState<"tabs" | "all">(() =>
     getExtSetting<"tabs" | "all">("core.hsl", "defaultView", "tabs"),
   );
@@ -128,3 +126,25 @@ export function HSLPanel() {
     </Panel>
   );
 }
+
+// Per-mask instance: the same 8-band mixer over the mask's own HSL block. The
+// on-image target tool stays global-only â€” it drives the global bands.
+function HSLMaskPanel() {
+  const scope = useMaskScope();
+  const hsl = scope.hsl ?? defaultHSL();
+  return (
+    <HSLMixer
+      value={hsl}
+      onChange={(band, channel, v) =>
+        scope.setHsl({ ...hsl, [band]: { ...hsl[band], [channel]: v } })
+      }
+      onCommit={(channel) => scope.commit(`Mask HSL ${channel}`)}
+    />
+  );
+}
+
+export const HSL_MASK_PANEL: MaskPanelContribution = {
+  component: HSLMaskPanel,
+  order: 40,
+  owns: ["hsl"],
+};

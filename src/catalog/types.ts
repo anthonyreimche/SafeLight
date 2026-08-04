@@ -29,6 +29,18 @@ export interface CatalogPhoto {
   /** Set when the last decode attempt failed (no thumbnail). Human-readable
    *  reason for the grid's warning tooltip; cleared once a preview is built. */
   decodeError?: string;
+  /** Set on a *virtual copy* — a second catalog record that shares another
+   *  photo's source file but keeps its own id, edits and metadata. Holds the id
+   *  of the master record (the one that owns the file on disk). A virtual copy
+   *  has no disk file of its own, so the project scan re-attaches the master's
+   *  live handles to it on open instead of dropping it (see project-storage).
+   *  Copies of copies still point at the root master. Undefined on a master. */
+  copyOf?: string;
+  /** A virtual copy's user-facing distinguisher (e.g. "copy", "copy 2", or a
+   *  name the user typed). `filename` still mirrors the master's real file; the
+   *  displayed/exported name folds them together as `base_<copyName>.ext` (see
+   *  catalog/copy-name.ts). Undefined on a master. */
+  copyName?: string;
 }
 
 export type ColorLabel = "none" | "red" | "yellow" | "green" | "blue" | "purple";
@@ -205,13 +217,22 @@ export interface MaskAdjustments {
 export type MaskType = "linear" | "radial" | "brush";
 
 // Adjustment sub-panels a mask can carry. Each mask opts into the panels it
-// needs (Lightroom-style): "basic" tone sliders, white balance, an 8-band HSL
-// mixer, a full RGB tone curve, and detail (clarity/sharpness).
-export type MaskPanelId = "basic" | "wb" | "hsl" | "curve" | "detail";
-export const MASK_PANEL_IDS: MaskPanelId[] = ["basic", "wb", "hsl", "curve", "detail"];
+// needs (Lightroom-style). Entries are registered panel ids ("core.basic", or
+// an extension's panel id) whose contribution declares a per-mask variant
+// (PanelContribution.mask). Unknown ids are preserved so a disabled
+// extension's sub-panels come back when it re-enables.
 // Masks saved before sub-panels existed showed every slider; keep that view.
-export const LEGACY_MASK_PANELS: MaskPanelId[] = ["basic", "wb", "detail"];
-export const DEFAULT_MASK_PANELS: MaskPanelId[] = ["basic"];
+export const LEGACY_MASK_PANELS: string[] = ["core.basic", "core.white-balance", "core.detail"];
+export const DEFAULT_MASK_PANELS: string[] = ["core.basic"];
+// Pre-registry saves stored sub-panels as short names; map them to the panel
+// ids the same controls register under today.
+const LEGACY_MASK_PANEL_IDS: Record<string, string> = {
+  basic: "core.basic",
+  wb: "core.white-balance",
+  hsl: "core.hsl",
+  curve: "core.tone-curve",
+  detail: "core.detail",
+};
 
 // One freehand brush dab, in source-UV space. radius is in image-height units.
 export interface BrushDab {
@@ -297,9 +318,14 @@ export interface Mask {
   invert: boolean; // invert the whole combined coverage
   opacity: number; // 0..100 overall strength
   adj: MaskAdjustments;
-  panels: MaskPanelId[]; // which adjustment sub-panels are active for this mask
-  hsl?: HSLAdjustments;  // present only while the "hsl" panel is added
-  toneCurve?: ToneCurves; // present only while the "curve" panel is added
+  panels: string[]; // active adjustment sub-panels (registered panel ids)
+  hsl?: HSLAdjustments;  // present only while the HSL sub-panel is added
+  toneCurve?: ToneCurves; // present only while the Tone Curve sub-panel is added
+  /** Mask-scoped extension params, keyed by qualified key ("{stageId}.{key}")
+   *  like DevelopParams.paramBag. Extension sub-panels store their values here;
+   *  the GPU does not read them yet (extension stages still apply globally).
+   *  Unknown keys are preserved, mirroring the global bag. */
+  bag?: Record<string, unknown>;
   components: MaskComponent[]; // at least one; combined in order
 }
 
@@ -339,6 +365,8 @@ export interface DevelopParams {
   contrast: number;
   highlights: number;
   shadows: number;
+  highlightDetail: number;   // -100..100 micro-contrast in the highlight band (+ crisper, - smoother)
+  shadowDetail: number;      // -100..100 micro-contrast in the shadow band (+ crisper, - smoother)
   whites: number;
   blacks: number;
   texture: number;
@@ -537,6 +565,8 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   contrast: 0,
   highlights: 0,
   shadows: 0,
+  highlightDetail: 0,
+  shadowDetail: 0,
   whites: 0,
   blacks: 0,
   texture: 0,
@@ -757,11 +787,13 @@ function normalizeMaskAdjustments(
 }
 
 // Missing => legacy mask saved before sub-panels existed: show all sliders.
-function normalizeMaskPanels(p: unknown): MaskPanelId[] {
+// Short pre-registry names map onto their registered panel ids; unrecognized
+// ids are kept (their extension may just be disabled), like normalizeParamBag.
+function normalizeMaskPanels(p: unknown): string[] {
   if (!Array.isArray(p)) return [...LEGACY_MASK_PANELS];
-  const seen = new Set<MaskPanelId>();
+  const seen = new Set<string>();
   for (const id of p)
-    if ((MASK_PANEL_IDS as string[]).includes(id)) seen.add(id as MaskPanelId);
+    if (typeof id === "string") seen.add(LEGACY_MASK_PANEL_IDS[id] ?? id);
   return [...seen];
 }
 
@@ -905,6 +937,12 @@ function normalizeMasks(masks: unknown): Mask[] {
       };
     }
     if (raw.toneCurve) m.toneCurve = normalizeToneCurves(raw.toneCurve);
+    // Extension params are preserved verbatim (validation happens at GPU bind
+    // time, and an absent extension's values must survive a round-trip).
+    if (raw.bag && typeof raw.bag === "object" && !Array.isArray(raw.bag)) {
+      const bag = { ...(raw.bag as Record<string, unknown>) };
+      if (Object.keys(bag).length > 0) m.bag = bag;
+    }
     out.push(m);
     if (out.length >= MAX_MASKS) break;
   }
@@ -953,6 +991,18 @@ function normalizeRetouch(spots: unknown): RetouchSpot[] {
     if (out.length >= MAX_RETOUCH) break;
   }
   return out;
+}
+
+// Assign one develop param, keeping the key and value types tied. Lets callers
+// reset/bypass params in a `(keyof DevelopParams)[]` loop without the
+// `as unknown as Record<string, unknown>` double-casts those loops used to need
+// — the generic K binds `value` to exactly `target[key]`'s type.
+export function assignDevelopParam<K extends keyof DevelopParams>(
+  target: DevelopParams,
+  key: K,
+  value: DevelopParams[K],
+): void {
+  target[key] = value;
 }
 
 // Merge a (possibly partial / legacy) params object with current defaults so

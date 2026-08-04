@@ -108,6 +108,27 @@ export function getBinding(actionId: string): string {
   return useKeybindings.getState().overrides[actionId] ?? DEFAULTS[actionId] ?? "";
 }
 
+export interface BindingInfo {
+  id: string;
+  label: string;
+  category: ActionCategory;
+  /** Current combo (override applied); "" when the action has no binding. */
+  combo: string;
+}
+
+/** Every built-in key action with its CURRENT combo, so tools can check against
+ *  live bindings instead of a hard-coded list (e.g. flag a remap that collides
+ *  with a real shortcut). Non-reactive — read it when you need it. */
+export function listBindings(): BindingInfo[] {
+  const { overrides } = useKeybindings.getState();
+  return KEY_ACTIONS.map((a) => ({
+    id: a.id,
+    label: a.label,
+    category: a.category,
+    combo: overrides[a.id] ?? a.def,
+  }));
+}
+
 export function setBinding(actionId: string, combo: string): void {
   const o = { ...useKeybindings.getState().overrides };
   if (combo === DEFAULTS[actionId]) delete o[actionId];

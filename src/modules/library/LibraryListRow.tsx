@@ -5,6 +5,7 @@
 
 import { memo, useEffect, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
+import { photoDisplayName } from "@/catalog/copy-name";
 
 const colorDot: Record<string, string> = {
   red: "bg-label-red",
@@ -77,7 +78,7 @@ function LibraryListRowImpl({
       {thumbUrl ? (
         <img
           src={thumbUrl}
-          alt={photo.filename}
+          alt={photoDisplayName(photo)}
           className="h-10 w-14 shrink-0 rounded object-contain"
           loading="lazy"
         />
@@ -87,7 +88,7 @@ function LibraryListRowImpl({
         </div>
       )}
 
-      <span className="flex-1 truncate text-xs">{photo.filename}</span>
+      <span className="flex-1 truncate text-xs">{photoDisplayName(photo)}</span>
 
       {photo.keywords.length > 0 && (
         <span

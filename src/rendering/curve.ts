@@ -99,8 +99,10 @@ export function buildCurveLUT(points: CurvePoint[]): Uint8Array {
 // reference shot. Points are display-space (x = input 0..1 -> y = output 0..1).
 // Tune to taste: lower the 0.13/0.5 y-values for deeper blacks / more contrast,
 // raise them toward the diagonal for a flatter look.
-// NOTE: applied to every image, RAW or not — a future profile system should gate
-// this to RAW / make it selectable.
+// NOTE: under the built-in transform this applies to every image, RAW or not —
+// a future profile system should gate it to RAW. A display transform that
+// brings its own look (a skipBaseCurve pipeline: AgX, ACES, …) excludes it
+// from the LUT entirely, so the transform fully owns the baseline rendering.
 const ADOBE_COLOR_BASE: CurvePoint[] = [
   { x: 0.0, y: 0.0 },
   { x: 0.13, y: 0.04 },
@@ -113,23 +115,10 @@ const ADOBE_COLOR_BASE: CurvePoint[] = [
 // curve into one 256×1 RGBA LUT. Order matches LR: profile baseline first, then
 // the user's master curve, then the channel's own curve, so
 // finalChannel[i] = channelCurve(rgbCurve(baseCurve(i))). The shader samples .r/.g/.b.
-<<<<<<< Updated upstream
-export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
-  const baseProfile = buildCurveLUT(ADOBE_COLOR_BASE);
-  const rgb = buildCurveLUT(curves.rgb);
-  const red = buildCurveLUT(curves.red);
-  const green = buildCurveLUT(curves.green);
-  const blue = buildCurveLUT(curves.blue);
-
-  const out = new Uint8Array(256 * 4);
-  for (let i = 0; i < 256; i++) {
-    const base = rgb[baseProfile[i]];
-    out[i * 4] = red[base];
-    out[i * 4 + 1] = green[base];
-    out[i * 4 + 2] = blue[base];
-=======
 // includeBaseProfile=false composes user curves on identity instead — used when
 // the active display transform replaces the Adobe Color baseline (skipBaseCurve).
+// Float evaluators compose continuously and quantize ONCE at the end — chaining
+// three 8-bit LUT lookups compounds rounding into visible posterization.
 export function buildRGBCurveLUT(curves: ToneCurves, includeBaseProfile = true): Uint8Array {
   const baseEval = includeBaseProfile ? makeCurveEvaluator(ADOBE_COLOR_BASE) : null;
   const rgbEval = makeCurveEvaluator(curves.rgb);
@@ -144,7 +133,6 @@ export function buildRGBCurveLUT(curves: ToneCurves, includeBaseProfile = true):
     out[i * 4] = Math.round(redEval(base) * 255);
     out[i * 4 + 1] = Math.round(greenEval(base) * 255);
     out[i * 4 + 2] = Math.round(blueEval(base) * 255);
->>>>>>> Stashed changes
     out[i * 4 + 3] = 255;
   }
   return out;

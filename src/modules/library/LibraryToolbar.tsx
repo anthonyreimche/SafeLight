@@ -9,6 +9,7 @@ import { useProjectStore } from "@/project/project-store";
 import { exportPhotoData } from "@/project/folder-ops";
 import type { SortField } from "@/catalog/types";
 import { Slider } from "@/ui/components/Slider";
+import { Select } from "@/ui/components/Select";
 import { Slot } from "@/extensions/Slot";
 import { useLibrarySorts } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
@@ -126,27 +127,17 @@ export function LibraryToolbar() {
 
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-1">
-          <select
+          <Select
             value={sortField}
-            onChange={(e) => setSort(e.target.value, sortDirection)}
-            aria-label="Sort photos by"
-            className="rounded bg-surface-2 px-1.5 py-1 text-[11px] text-text-secondary outline-none hover:text-text-primary"
-          >
-            {SORT_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-            {librarySorts.length > 0 && (
-              <optgroup label="Metadata">
-                {librarySorts.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </select>
+            onChange={(v) => setSort(v, sortDirection)}
+            ariaLabel="Sort photos by"
+            groups={[
+              { items: SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label })) },
+              ...(librarySorts.length > 0
+                ? [{ title: "Metadata", items: librarySorts.map((o) => ({ value: o.id, label: o.label })) }]
+                : []),
+            ]}
+          />
           <button
             onClick={() =>
               setSort(sortField, sortDirection === "asc" ? "desc" : "asc")

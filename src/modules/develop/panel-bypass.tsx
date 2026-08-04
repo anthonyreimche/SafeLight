@@ -3,7 +3,11 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { DEFAULT_DEVELOP_PARAMS, type DevelopParams } from "@/catalog/types";
+import {
+  DEFAULT_DEVELOP_PARAMS,
+  assignDevelopParam,
+  type DevelopParams,
+} from "@/catalog/types";
 import { useRegistry } from "@/extensions/registry";
 import { getAllDescriptors } from "@/extensions/param-registry";
 
@@ -32,7 +36,8 @@ import { getAllDescriptors } from "@/extensions/param-registry";
 export const PANEL_BYPASS_PARAM_KEYS: Record<string, (keyof DevelopParams)[]> = {
   "core.white-balance": ["temperature", "tint"],
   "core.basic": [
-    "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
+    "exposure", "contrast", "highlights", "highlightDetail", "shadows",
+    "shadowDetail", "whites", "blacks",
     "texture", "clarity", "dehaze", "vibrance", "saturation",
   ],
   "core.tone-curve": ["toneCurve"],
@@ -64,14 +69,13 @@ export function applyPanelBypass(
     (id) => bypassed[id] && PANEL_BYPASS_PARAM_KEYS[id],
   );
   if (ids.length === 0) return params;
-  const next = { ...params } as unknown as Record<string, unknown>;
-  const defaults = DEFAULT_DEVELOP_PARAMS as unknown as Record<string, unknown>;
+  const next = { ...params };
   for (const id of ids) {
     for (const k of PANEL_BYPASS_PARAM_KEYS[id]) {
-      next[k] = structuredClone(defaults[k]);
+      assignDevelopParam(next, k, structuredClone(DEFAULT_DEVELOP_PARAMS[k]));
     }
   }
-  return next as unknown as DevelopParams;
+  return next;
 }
 
 // Return a copy of the contributed (extension stage) param bag with every

@@ -8,7 +8,13 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { claimPrivileged } from "./native/privileged";
 import { initExtensionHost } from "./extensions/host";
+import { installKeyDiag } from "./dev/key-diag";
 import "./index.css";
+
+// TEMPORARY: watch for the intermittent "inputs/dropdowns stop accepting keys
+// after toggling extensions" bug. No-op unless Developer Tools is enabled. Must
+// run before any window key listener is registered so it can track them all.
+installKeyDiag();
 
 // Capture the privileged native bridge (raw fs + update installer) for core
 // before any extension can load — see src/native/privileged.ts. Must precede

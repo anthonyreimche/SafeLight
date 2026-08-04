@@ -34,6 +34,8 @@ export const PARAM_LABELS: Partial<Record<ScalarKey, string>> = {
   contrast: "Contrast",
   highlights: "Highlights",
   shadows: "Shadows",
+  highlightDetail: "Highlight detail",
+  shadowDetail: "Shadow detail",
   whites: "Whites",
   blacks: "Blacks",
   texture: "Texture",

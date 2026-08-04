@@ -20,6 +20,7 @@ const {
   shell,
   net,
   ipcMain,
+  screen,
   session,
   dialog,
 } = require("electron");
@@ -226,9 +227,9 @@ const VALID_CONNECT_ORIGIN = /^https:\/\/(\*\.)?[a-z0-9.-]+(:\d+)?$/i;
 function extensionConnectHosts() {
   const hosts = new Set();
   for (const m of listPlugins()) {
-    const declared =
+    const net =
       m.permissions && Array.isArray(m.permissions.network) ? m.permissions.network : [];
-    for (const h of declared) {
+    for (const h of net) {
       const v = String(h || "").trim();
       if (VALID_CONNECT_ORIGIN.test(v)) hosts.add(v);
     }
@@ -611,65 +612,35 @@ async function installPlugin(spec) {
 // open, so serving it from a warm cache makes re-opens instant and spares the
 // unauthenticated 60/hr GitHub Search budget. On rate-limit / network failure we
 // fall back to any cached payload (even if stale) rather than surfacing an error.
-// One store's-worth of the identical "mirror a Map to a JSON file" pattern used by
-// the search / og:image / icon caches. load(map) lazily seeds the map from disk
-// once (a corrupt file is swallowed and never retried); persist(map) debounces the
-// write so a browse-grid burst hits the disk once, on an unref'd timer so it never
-// keeps the app alive. validateEntry(v) returns the sanitised entry to store, or a
-// falsy value to drop the row — the only bespoke part per cache.
-function diskCache(fileName, validateEntry) {
-  const file = () => path.join(app.getPath("userData"), fileName);
-  let loaded = false;
-  let writeTimer = null;
-  return {
-    load(map) {
-      if (loaded) return;
-      loaded = true;
-      try {
-        const raw = JSON.parse(fs.readFileSync(file(), "utf8"));
-        if (raw && typeof raw === "object")
-          for (const [k, v] of Object.entries(raw)) {
-            const entry = validateEntry(v);
-            if (entry) map.set(k, entry);
-          }
-      } catch {}
-    },
-    persist(map) {
-      if (writeTimer) return;
-      writeTimer = setTimeout(() => {
-        writeTimer = null;
-        fs.promises
-          .writeFile(file(), JSON.stringify(Object.fromEntries(map)))
-          .catch(() => {});
-      }, 1000);
-      if (writeTimer.unref) writeTimer.unref();
-    },
-  };
-}
-
 const searchCache = new Map(); // `${topic}\n${query}` -> { at, items }
 const SEARCH_TTL_MS = 15 * 60 * 1000; // results turn over slowly; 15 min is plenty
-// Drop expired rows on load so the file (one row per distinct query ever run)
-// can't accumulate dead keys across sessions.
-const searchDisk = diskCache("search-cache.json", (v) =>
-  v &&
-  typeof v.at === "number" &&
-  Array.isArray(v.items) &&
-  Date.now() - v.at < SEARCH_TTL_MS
-    ? { at: v.at, items: v.items }
-    : null
-);
-const loadSearchDisk = () => searchDisk.load(searchCache);
-const persistSearchDisk = () => {
-  for (const [k, v] of searchCache)
-    if (Date.now() - v.at >= SEARCH_TTL_MS) searchCache.delete(k);
-  searchDisk.persist(searchCache);
-};
+const searchCacheFile = () => path.join(app.getPath("userData"), "search-cache.json");
+let searchCacheLoaded = false;
 
-<<<<<<< Updated upstream
-async function searchExtensions(query, topic, force = false) {
-  const t = String(topic || "safelight-extension").trim();
-=======
+function loadSearchDisk() {
+  if (searchCacheLoaded) return;
+  searchCacheLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(searchCacheFile(), "utf8"));
+    if (raw && typeof raw === "object")
+      for (const [k, v] of Object.entries(raw))
+        if (v && typeof v.at === "number" && Array.isArray(v.items))
+          searchCache.set(k, { at: v.at, items: v.items });
+  } catch {}
+}
+
+let searchWriteTimer = null;
+function persistSearchDisk() {
+  if (searchWriteTimer) return;
+  searchWriteTimer = setTimeout(() => {
+    searchWriteTimer = null;
+    fs.promises
+      .writeFile(searchCacheFile(), JSON.stringify(Object.fromEntries(searchCache)))
+      .catch(() => {});
+  }, 1000);
+  if (searchWriteTimer.unref) searchWriteTimer.unref();
+}
+
 // ── Prebuilt registry index ──────────────────────────────────────────────────
 // A static catalog of every published extension, regenerated server-side by a
 // GitHub Action in the registry repo (TRUST_REGISTRY) and committed as
@@ -775,10 +746,6 @@ async function fetchRegistryIndex(force = false) {
         : null;
     if (!rows) return registryIndexCache ? registryIndexCache.items : null;
     const items = rows.map(normalizeRegistryEntry).filter(Boolean);
-    // An empty catalog (unpublished, or every row dropped as malformed) is not a
-    // cacheable answer — caching it would blank the store for the full TTL. Treat
-    // it as unavailable so the caller falls back to a live search.
-    if (!items.length) return registryIndexCache ? registryIndexCache.items : null;
     registryIndexCache = { at: Date.now(), items };
     persistRegistryDisk();
     return items;
@@ -801,20 +768,8 @@ function filterRegistry(items, query) {
   );
 }
 
-// Re-resolve each item's thumbnail from the (now-warm) icon/og caches: a cached
-// search payload may pre-date a thumbnail that has since been resolved, so a warm
-// re-open (or a stale-cache fallback) paints real icons with no round-trips.
-// cachedThumbnail is a purely local lookup, so this stays offline-safe.
-function withFreshThumbs(items) {
-  return items.map((it) => ({
-    ...it,
-    thumbnail: cachedThumbnail(it.fullName, it.avatarUrl || null),
-  }));
-}
-
 async function searchExtensionsLive(query, topic, force = false) {
   const t = String(topic || DEFAULT_EXT_TOPIC).trim();
->>>>>>> Stashed changes
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(t)) throw new Error("Bad extension topic");
   const q = [String(query || "").trim(), `topic:${t}`]
     .filter(Boolean)
@@ -822,12 +777,18 @@ async function searchExtensionsLive(query, topic, force = false) {
   loadSearchDisk();
   const key = `${t}\n${String(query || "").trim()}`;
   const hit = searchCache.get(key);
+  // Re-resolve each item's thumbnail from the (now-warm) icon/og caches on the
+  // way out: a cached search payload may pre-date a thumbnail that has since been
+  // resolved, so a warm re-open paints real icons with no round-trips.
   if (!force && hit && Date.now() - hit.at < SEARCH_TTL_MS)
-    return withFreshThumbs(hit.items);
+    return hit.items.map((it) => ({
+      ...it,
+      thumbnail: cachedThumbnail(it.fullName, it.avatarUrl || null),
+    }));
   let res;
   try {
     res = await net.fetch(
-      `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=25`,
+      `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=100`,
       {
         headers: {
           Accept: "application/vnd.github+json",
@@ -836,15 +797,15 @@ async function searchExtensionsLive(query, topic, force = false) {
       }
     );
   } catch (e) {
-    if (hit) return withFreshThumbs(hit.items); // network hiccup — serve last-good rather than fail
+    if (hit) return hit.items; // network hiccup — serve last-good rather than fail
     throw e;
   }
   if (res.status === 403 || res.status === 429) {
-    if (hit) return withFreshThumbs(hit.items); // rate-limited — stale results beat an error
+    if (hit) return hit.items; // rate-limited — stale results beat an error
     throw new Error("GitHub rate limit reached — try again in a minute.");
   }
   if (!res.ok) {
-    if (hit) return withFreshThumbs(hit.items);
+    if (hit) return hit.items;
     throw new Error(`GitHub search failed (${res.status})`);
   }
   const body = await res.json();
@@ -859,10 +820,12 @@ async function searchExtensionsLive(query, topic, force = false) {
       fullName,
       description: r.description,
       stars: r.stargazers_count || 0,
+      createdAt: r.created_at || null,
       updatedAt: r.updated_at,
       topics: Array.isArray(r.topics) ? r.topics : [],
       avatarUrl,
       thumbnail: cachedThumbnail(fullName, avatarUrl),
+      source: "live",
     };
   });
   searchCache.set(key, { at: Date.now(), items });
@@ -870,8 +833,6 @@ async function searchExtensionsLive(query, topic, force = false) {
   return items;
 }
 
-<<<<<<< Updated upstream
-=======
 // Browse-grid entry point. For the default topic we serve the prebuilt registry
 // index (one CDN fetch, the whole catalog, thumbnails already baked); a custom
 // topic — or an index that isn't reachable / published yet — falls back to a live
@@ -881,14 +842,12 @@ async function searchExtensions(query, topic, force = false) {
   const t = String(topic || DEFAULT_EXT_TOPIC).trim();
   if (t === DEFAULT_EXT_TOPIC) {
     const index = await fetchRegistryIndex(force);
-    if (index && index.length) return filterRegistry(index, query);
+    if (index) return filterRegistry(index, query);
   }
   return searchExtensionsLive(query, topic, force);
 }
 
->>>>>>> Stashed changes
 async function fetchReleases(repo) {
-  if (!validRepo(repo)) throw new Error("Bad repository");
   // Called from the main process so net.fetch is not subject to the renderer
   // CSP (connect-src 'self') that would block https:// requests.
   const res = await net.fetch(
@@ -969,14 +928,36 @@ async function fetchWithTimeout(url, opts, ms) {
 // which is the bulk of the store's open-time latency.
 const ogImageCache = new Map(); // repo(lowercase) -> { url, at }
 const OG_TTL_MS = 6 * 60 * 60 * 1000;
-// Seeded lazily on first use (only the Extensions store touches og:images, so
-// don't pay this on every launch). Stale entries are kept — fetchOgImage
-// re-validates against OG_TTL_MS per lookup.
-const ogDisk = diskCache("og-cache.json", (v) =>
-  v && typeof v.url === "string" && typeof v.at === "number" ? { url: v.url, at: v.at } : null
-);
-const loadOgDisk = () => ogDisk.load(ogImageCache);
-const persistOgDisk = () => ogDisk.persist(ogImageCache);
+const ogCacheFile = () => path.join(app.getPath("userData"), "og-cache.json");
+let ogCacheLoaded = false;
+
+// Seed the in-memory map from disk on first use (lazy: only the Extensions store
+// touches og:images, so don't pay this on every launch). Stale entries are kept —
+// fetchOgImage re-validates against OG_TTL_MS per lookup.
+function loadOgDisk() {
+  if (ogCacheLoaded) return;
+  ogCacheLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(ogCacheFile(), "utf8"));
+    if (raw && typeof raw === "object")
+      for (const [k, v] of Object.entries(raw))
+        if (v && typeof v.url === "string" && typeof v.at === "number")
+          ogImageCache.set(k, { url: v.url, at: v.at });
+  } catch {}
+}
+
+let ogWriteTimer = null;
+// Debounced so a 25-card browse-grid burst writes the file once, not 25 times.
+function persistOgDisk() {
+  if (ogWriteTimer) return;
+  ogWriteTimer = setTimeout(() => {
+    ogWriteTimer = null;
+    fs.promises
+      .writeFile(ogCacheFile(), JSON.stringify(Object.fromEntries(ogImageCache)))
+      .catch(() => {});
+  }, 1000);
+  if (ogWriteTimer.unref) ogWriteTimer.unref();
+}
 
 async function fetchOgImage(repo, force = false) {
   if (!validRepo(repo)) return autoOgCard(repo);
@@ -1034,15 +1015,33 @@ async function fetchOgImage(repo, force = false) {
 // opengraph card render, which together were the bulk of the store's open latency.
 const iconUrlCache = new Map(); // repo(lowercase) -> { url|null, at }
 const ICON_TTL_MS = 6 * 60 * 60 * 1000;
-// url === null is a real, cacheable answer ("no declared icon"), so it survives
-// the round-trip through disk.
-const iconDisk = diskCache("icon-cache.json", (v) =>
-  v && typeof v.at === "number" && (v.url === null || typeof v.url === "string")
-    ? { url: v.url, at: v.at }
-    : null
-);
-const loadIconDisk = () => iconDisk.load(iconUrlCache);
-const persistIconDisk = () => iconDisk.persist(iconUrlCache);
+const iconCacheFile = () => path.join(app.getPath("userData"), "icon-cache.json");
+let iconCacheLoaded = false;
+
+function loadIconDisk() {
+  if (iconCacheLoaded) return;
+  iconCacheLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(iconCacheFile(), "utf8"));
+    if (raw && typeof raw === "object")
+      for (const [k, v] of Object.entries(raw))
+        if (v && typeof v.at === "number" && (v.url === null || typeof v.url === "string"))
+          iconUrlCache.set(k, { url: v.url, at: v.at });
+  } catch {}
+}
+
+let iconWriteTimer = null;
+// Debounced so a 25-card browse-grid burst writes the file once, not 25 times.
+function persistIconDisk() {
+  if (iconWriteTimer) return;
+  iconWriteTimer = setTimeout(() => {
+    iconWriteTimer = null;
+    fs.promises
+      .writeFile(iconCacheFile(), JSON.stringify(Object.fromEntries(iconUrlCache)))
+      .catch(() => {});
+  }, 1000);
+  if (iconWriteTimer.unref) iconWriteTimer.unref();
+}
 
 async function fetchIconUrl(repo, force = false) {
   if (!validRepo(repo)) return null;
@@ -1144,7 +1143,7 @@ async function resolveThumbnail(repo, avatarUrl, force = false) {
 // card progressively instead of waiting for the slowest one. Never rejects — a
 // repo that fails resolution simply falls back to its avatar.
 async function resolveThumbnails(items, onEach, force = false) {
-  const list = Array.isArray(items) ? items.slice(0, 50) : [];
+  const list = Array.isArray(items) ? items.slice(0, 100) : [];
   const out = {};
   await Promise.all(
     list.map(async (it) => {
@@ -1240,7 +1239,6 @@ function pickAsset(assets) {
 }
 
 async function installRelease(repo, tag) {
-  if (!validRepo(repo)) throw new Error("Bad repository");
   const { spawn } = require("node:child_process");
 
   // 1. Fetch the release assets list for the given tag.
@@ -1292,7 +1290,7 @@ function registerPluginIpc() {
       win.setTitleBarOverlay({
         color: String(color),
         symbolColor: String(symbolColor),
-        height: TITLEBAR_OVERLAY_HEIGHT,
+        height: 36,
       });
     } catch {}
   });
@@ -1639,7 +1637,6 @@ function registerDevtoolsIpc() {
 // stays visible beneath the buttons. Overlay colors are recolored per-surface at
 // runtime by useTitleBarOverlay (src/ui/window-chrome.ts); these are first-paint
 // defaults matching the neutral theme's surface-1.
-const TITLEBAR_OVERLAY_HEIGHT = 36; // 2px under the 38px bar so its bottom border shows
 const titleBarOpts =
   process.platform === "darwin"
     ? { titleBarStyle: "hidden", trafficLightPosition: { x: 12, y: 12 } }
@@ -1648,46 +1645,117 @@ const titleBarOpts =
         titleBarOverlay: {
           color: "#5e5e5e", // --color-surface-1
           symbolColor: "#d0d0d0", // --color-text-secondary
-          height: TITLEBAR_OVERLAY_HEIGHT,
+          height: 36, // 2px under the 38px bar so its bottom border shows
         },
       };
 
-// window.open policy for every webContents (main + detached module windows and
-// their children). Internal windows = detachable modules (window.open to an
-// app:// URL): allowed as native children with the same isolation settings so
-// the custom-protocol origin, preload and COOP/COEP carry over and
-// BroadcastChannel sync keeps working. Anything http(s) opens in the system
-// browser; everything else is denied.
-function windowOpenHandler({ url }) {
-  if (url.startsWith("app://")) {
-    return {
-      action: "allow",
-      overrideBrowserWindowOptions: {
-        show: false,
-        backgroundColor: "#1a1a1a",
-        autoHideMenuBar: true,
-        ...titleBarOpts,
-        webPreferences: {
-          preload: path.join(__dirname, "preload.cjs"),
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: true,
-          devTools: true,
-          backgroundThrottling: false,
-        },
-      },
-    };
+// Window geometry survives a restart. Saved bounds are re-validated against the
+// displays connected *now*, not the ones that were there on the last quit: a
+// window closed on a since-unplugged monitor would otherwise reopen off-screen,
+// and a size taken from a larger display would overflow the work area — both
+// leave a frame the user cannot drag back.
+const DEFAULT_WINDOW = { width: 1500, height: 950 };
+const MIN_WINDOW = { width: 900, height: 600 };
+const GRAB_MARGIN = 60; // px of frame that must land on a work area to stay grabbable
+
+const windowStateFile = () =>
+  path.join(app.getPath("userData"), "window-state.json");
+
+function frameIsReachable(b) {
+  return screen.getAllDisplays().some(({ workArea: a }) => {
+    const overlapX = Math.min(b.x + b.width, a.x + a.width) - Math.max(b.x, a.x);
+    const titleBarOnScreen = b.y >= a.y && b.y < a.y + a.height - GRAB_MARGIN;
+    return overlapX >= GRAB_MARGIN && titleBarOnScreen;
+  });
+}
+
+// Call only after `ready` — the screen module does not exist before it.
+function readWindowState() {
+  let saved;
+  try {
+    saved = JSON.parse(fs.readFileSync(windowStateFile(), "utf8"));
+  } catch {
+    return { ...DEFAULT_WINDOW };
   }
-  if (/^https?:\/\//.test(url)) shell.openExternal(url);
-  return { action: "deny" };
+  if (!saved || typeof saved !== "object") return { ...DEFAULT_WINDOW };
+
+  const num = (v) => (Number.isFinite(v) ? v : undefined);
+  const state = {
+    width: num(saved.width) ?? DEFAULT_WINDOW.width,
+    height: num(saved.height) ?? DEFAULT_WINDOW.height,
+    x: num(saved.x),
+    y: num(saved.y),
+    maximized: saved.maximized === true,
+    fullScreen: saved.fullScreen === true,
+  };
+
+  const positioned = state.x !== undefined && state.y !== undefined;
+  const { workArea } = positioned
+    ? screen.getDisplayMatching(state)
+    : screen.getPrimaryDisplay();
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  state.width = clamp(state.width, MIN_WINDOW.width, workArea.width);
+  state.height = clamp(state.height, MIN_WINDOW.height, workArea.height);
+
+  // Clearing x/y hands placement back to Electron, which centres on the primary.
+  if (positioned && !frameIsReachable(state)) {
+    state.x = undefined;
+    state.y = undefined;
+  }
+  return state;
+}
+
+function trackWindowState(win) {
+  let timer = null;
+  // getNormalBounds, not getBounds: maximising or entering full screen must not
+  // overwrite the restored-down geometry that has to come back on the next launch.
+  const write = () => {
+    const state = {
+      ...win.getNormalBounds(),
+      maximized: win.isMaximized(),
+      fullScreen: win.isFullScreen(),
+    };
+    try {
+      fs.writeFileSync(windowStateFile(), JSON.stringify(state));
+    } catch {}
+  };
+  // Drags fire resize/move continuously; coalesce to one write per gesture on an
+  // unref'd timer so a pending save never keeps the app alive.
+  const save = () => {
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      if (!win.isDestroyed()) write();
+    }, 500);
+    if (timer.unref) timer.unref();
+  };
+  const tracked = [
+    "resize",
+    "move",
+    "maximize",
+    "unmaximize",
+    "enter-full-screen",
+    "leave-full-screen",
+  ];
+  for (const event of tracked) win.on(event, save);
+  // A queued debounce will not survive teardown, so take the last snapshot
+  // synchronously while the window still exists.
+  win.on("close", () => {
+    clearTimeout(timer);
+    timer = null;
+    write();
+  });
 }
 
 function createWindow() {
+  const state = readWindowState();
   const win = new BrowserWindow({
-    width: 1500,
-    height: 950,
-    minWidth: 900,
-    minHeight: 600,
+    x: state.x,
+    y: state.y,
+    width: state.width,
+    height: state.height,
+    minWidth: MIN_WINDOW.width,
+    minHeight: MIN_WINDOW.height,
     backgroundColor: "#1a1a1a",
     show: false,
     autoHideMenuBar: true,
@@ -1705,12 +1773,50 @@ function createWindow() {
     },
   });
 
-  win.once("ready-to-show", () => win.show());
+  trackWindowState(win);
+
+  // Restore maximise/full screen here rather than via constructor options:
+  // acting on a still-hidden window makes some platforms surface it early,
+  // which is the black first frame `show: false` exists to avoid.
+  win.once("ready-to-show", () => {
+    if (state.fullScreen) win.setFullScreen(true);
+    else if (state.maximized) win.maximize();
+    win.show();
+  });
 
   // Detached windows (shortcuts, loupe, etc.): defer show until ready-to-show
   // to avoid black frames on macOS — same pattern as the main window.
   win.webContents.on("did-create-window", (childWin) => {
     childWin.once("ready-to-show", () => childWin.show());
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    // Internal windows = detachable modules (window.open to an app:// URL).
+    // Allow them as native child windows with the same isolation settings so
+    // the custom-protocol origin, preload, and COOP/COEP all carry over and
+    // BroadcastChannel sync keeps working.
+    if (url.startsWith("app://")) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          show: false,
+          backgroundColor: "#1a1a1a",
+          autoHideMenuBar: true,
+          ...titleBarOpts,
+          webPreferences: {
+            preload: path.join(__dirname, "preload.cjs"),
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            devTools: true,
+            backgroundThrottling: false,
+          },
+        },
+      };
+    }
+    // External links → system browser, never in-app.
+    if (/^https?:\/\//.test(url)) shell.openExternal(url);
+    return { action: "deny" };
   });
 
   win.loadURL("app://bundle/index.html");
@@ -1730,14 +1836,10 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  // Lock every webContents (main + detached module windows AND any children they
-  // spawn) to the bundled app: in-page navigation may only target app://, and
-  // window.open goes through windowOpenHandler. will-navigate covers in-page
-  // navigation only, not a new window's initial load, so the open handler must be
-  // installed here too or a child window inherits none. Stops extensions/markdown
-  // links from hijacking a window.
+  // Lock every webContents (main + detached module windows) to the bundled
+  // app: in-page navigation may only target app://, anything http(s) goes to
+  // the system browser. Stops extensions/markdown links from hijacking a window.
   app.on("web-contents-created", (_e, contents) => {
-    contents.setWindowOpenHandler(windowOpenHandler);
     contents.on("will-navigate", (event, url) => {
       if (!url.startsWith("app://")) {
         event.preventDefault();

@@ -6,25 +6,19 @@
 import { type MouseEvent as ReactMouseEvent, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
-import { CurveEditor } from "@/ui/components/CurveEditor";
-import { HSLMixer } from "@/ui/components/HSLMixer";
 import { useDevelopStore } from "@/state/develop-store";
 import { useKeyboardCanvasEditing } from "@/state/accessibility";
+import { useRegistry, type RegisteredPanel } from "@/extensions/registry";
+import type { MaskPanelContribution } from "@/extensions/types";
+import { MaskScopeProvider } from "@/modules/develop/mask-scope";
 import type {
   Mask,
-  MaskAdjustments,
   MaskComponent,
   MaskComponentKind,
   MaskComponentMode,
-  MaskPanelId,
   MaskType,
 } from "@/catalog/types";
-import {
-  MAX_MASKS,
-  defaultHSL,
-  defaultMaskAdjustments,
-  defaultToneCurves,
-} from "@/catalog/types";
+import { MAX_MASKS, defaultMaskAdjustments } from "@/catalog/types";
 
 // Tools that create a component by dragging on the canvas.
 const GEO_TOOLS: { type: MaskType; label: string }[] = [
@@ -70,44 +64,51 @@ const MODE_TITLE: Record<MaskComponentMode, string> = {
   intersect: "Intersect (confine) — click to cycle",
 };
 
-type SliderDef = { key: keyof MaskAdjustments; label: string };
+// A mask's adjustment UI is not defined here: any registered panel that
+// declares a per-mask variant (PanelContribution.mask) can be added to a mask,
+// and each mask renders its own instance of that panel bound to the mask via
+// MaskScopeProvider. Core Basic/WB/Curve/HSL/Detail register variants; so can
+// extensions.
+type MaskPanelDef = RegisteredPanel & { mask: MaskPanelContribution };
 
-const PANEL_DEFS: { id: MaskPanelId; label: string; sliders?: SliderDef[] }[] = [
-  {
-    id: "basic",
-    label: "Basic",
-    sliders: [
-      { key: "exposure", label: "Exposure" },
-      { key: "contrast", label: "Contrast" },
-      { key: "highlights", label: "Highlights" },
-      { key: "shadows", label: "Shadows" },
-      { key: "whites", label: "Whites" },
-      { key: "blacks", label: "Blacks" },
-      { key: "saturation", label: "Saturation" },
-      { key: "vibrance", label: "Vibrance" },
-    ],
-  },
-  {
-    id: "wb",
-    label: "White Balance",
-    sliders: [
-      { key: "temperature", label: "Temp" },
-      { key: "tint", label: "Tint" },
-    ],
-  },
-  { id: "curve", label: "Tone Curve" },
-  { id: "hsl", label: "HSL" },
-  {
-    id: "detail",
-    label: "Detail",
-    sliders: [
-      { key: "texture", label: "Texture" },
-      { key: "clarity", label: "Clarity" },
-      { key: "dehaze", label: "Dehaze" },
-      { key: "sharpness", label: "Sharpness" },
-    ],
-  },
-];
+function maskPanelDefs(panels: Record<string, RegisteredPanel>): MaskPanelDef[] {
+  return Object.values(panels)
+    .filter((p): p is MaskPanelDef => !!p.mask)
+    .sort(
+      (a, b) =>
+        (a.mask.order ?? 100) - (b.mask.order ?? 100) ||
+        a.title.localeCompare(b.title),
+    );
+}
+
+// One active sub-panel card: header (title + remove) around the contribution's
+// per-mask component, which talks to the mask through the surrounding scope.
+function MaskSubPanel({
+  def,
+  onRemove,
+}: {
+  def: MaskPanelDef;
+  onRemove: () => void;
+}) {
+  const Body = def.mask.component;
+  return (
+    <div className="rounded bg-surface-2/40 p-1.5">
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider text-text-muted">
+          {def.title}
+        </span>
+        <button
+          onClick={onRemove}
+          title={`Remove ${def.title} (resets its values)`}
+          className="rounded px-1 text-text-muted hover:text-label-red"
+        >
+          ×
+        </button>
+      </div>
+      <Body />
+    </div>
+  );
+}
 
 export function MasksPanel() {
   const activeTool = useDevelopStore((s) => s.activeTool);
@@ -133,6 +134,9 @@ export function MasksPanel() {
   const renameMask = useDevelopStore((s) => s.renameMask);
   const updateMask = useDevelopStore((s) => s.updateMask);
   const updateMaskAdj = useDevelopStore((s) => s.updateMaskAdj);
+  const seedMaskPanelValues = useDevelopStore((s) => s.seedMaskPanelValues);
+  const clearMaskPanelValues = useDevelopStore((s) => s.clearMaskPanelValues);
+  const registryPanels = useRegistry((s) => s.panels);
   const updateComponent = useDevelopStore((s) => s.updateComponent);
   const removeComponent = useDevelopStore((s) => s.removeComponent);
   const cycleComponentMode = useDevelopStore((s) => s.cycleComponentMode);
@@ -206,42 +210,42 @@ export function MasksPanel() {
   };
 
   // --- adjustment sub-panels (per mask) --------------------------------------
+  const panelDefs = maskPanelDefs(registryPanels);
+  const activeDefs = selected
+    ? panelDefs.filter((d) => selected.panels.includes(d.id))
+    : [];
+  // Ids with no registered per-mask variant (the owning extension is disabled
+  // or gone). Kept in the list — with values preserved — so they survive a
+  // round-trip; shown as removable placeholders.
+  const orphanedIds = selected
+    ? selected.panels.filter((id) => !registryPanels[id]?.mask)
+    : [];
+
   const resetAdj = () => {
     if (!selected) return;
+    // Blanket-reset the core adjustments (covers legacy stragglers whose
+    // sub-panel was removed), then re-seed each active sub-panel's defaults.
+    // Orphaned sub-panels keep their values: their owner isn't here to ask.
     updateMaskAdj(selected.id, defaultMaskAdjustments());
-    updateMask(selected.id, {
-      hsl: selected.panels.includes("hsl") ? defaultHSL() : undefined,
-      toneCurve: selected.panels.includes("curve") ? defaultToneCurves() : undefined,
-    });
+    for (const def of activeDefs) seedMaskPanelValues(selected.id, def.mask.owns);
     commitEdit("Mask Reset");
   };
-  const addPanel = (id: MaskPanelId) => {
+  const addPanel = (def: MaskPanelDef) => {
     if (!selected) return;
-    updateMask(selected.id, {
-      panels: [...selected.panels, id],
-      ...(id === "hsl" ? { hsl: defaultHSL() } : {}),
-      ...(id === "curve" ? { toneCurve: defaultToneCurves() } : {}),
-    });
+    seedMaskPanelValues(selected.id, def.mask.owns);
+    updateMask(selected.id, { panels: [...selected.panels, def.id] });
     commitEdit("Add Mask Panel");
   };
-  const removePanel = (id: MaskPanelId) => {
+  const removePanel = (id: string) => {
     if (!selected) return;
-    const def = PANEL_DEFS.find((d) => d.id === id);
-    if (def?.sliders) {
-      const zero: Partial<MaskAdjustments> = {};
-      for (const s of def.sliders) zero[s.key] = 0;
-      updateMaskAdj(selected.id, zero);
-    }
-    updateMask(selected.id, {
-      panels: selected.panels.filter((p) => p !== id),
-      ...(id === "hsl" ? { hsl: undefined } : {}),
-      ...(id === "curve" ? { toneCurve: undefined } : {}),
-    });
+    const def = registryPanels[id];
+    if (def?.mask) clearMaskPanelValues(selected.id, def.mask.owns);
+    updateMask(selected.id, { panels: selected.panels.filter((p) => p !== id) });
     commitEdit("Remove Mask Panel");
   };
 
   const availablePanels = selected
-    ? PANEL_DEFS.filter((d) => !selected.panels.includes(d.id))
+    ? panelDefs.filter((d) => !selected.panels.includes(d.id))
     : [];
 
   const editComp = (m: Mask, c: MaskComponent) => {
@@ -613,64 +617,31 @@ export function MasksPanel() {
                   onCommit={() => commitEdit("Mask Amount")}
                 />
 
-                {PANEL_DEFS.filter((d) => selected.panels.includes(d.id)).map((def) => (
-                  <div key={def.id} className="rounded bg-surface-2/40 p-1.5">
-                    <div className="mb-1 flex items-center justify-between">
-                      <span className="text-[10px] uppercase tracking-wider text-text-muted">
-                        {def.label}
-                      </span>
-                      <button
-                        onClick={() => removePanel(def.id)}
-                        title={`Remove ${def.label} (resets its values)`}
-                        className="rounded px-1 text-text-muted hover:text-label-red"
-                      >
-                        ×
-                      </button>
-                    </div>
-                    {def.sliders && (
-                      <div className="space-y-0.5">
-                        {def.sliders.map((s) => (
-                          <Slider
-                            key={s.key}
-                            label={s.label}
-                            value={selected.adj[s.key]}
-                            min={-100}
-                            max={100}
-                            step={1}
-                            defaultValue={0}
-                            onChange={(v) => updateMaskAdj(selected.id, { [s.key]: v })}
-                            onCommit={() => commitEdit(`Mask ${s.label}`)}
-                          />
-                        ))}
-                      </div>
-                    )}
-                    {def.id === "curve" && (
-                      <CurveEditor
-                        compact
-                        curves={selected.toneCurve ?? defaultToneCurves()}
-                        onChange={(channel, points) =>
-                          updateMask(selected.id, {
-                            toneCurve: {
-                              ...(selected.toneCurve ?? defaultToneCurves()),
-                              [channel]: points,
-                            },
-                          })
-                        }
-                        onCommit={() => commitEdit("Mask Tone Curve")}
-                      />
-                    )}
-                    {def.id === "hsl" && (
-                      <HSLMixer
-                        value={selected.hsl ?? defaultHSL()}
-                        onChange={(band, channel, v) => {
-                          const h = selected.hsl ?? defaultHSL();
-                          updateMask(selected.id, {
-                            hsl: { ...h, [band]: { ...h[band], [channel]: v } },
-                          });
-                        }}
-                        onCommit={(channel) => commitEdit(`Mask HSL ${channel}`)}
-                      />
-                    )}
+                <MaskScopeProvider maskId={selected.id}>
+                  {activeDefs.map((def) => (
+                    <MaskSubPanel
+                      key={def.id}
+                      def={def}
+                      onRemove={() => removePanel(def.id)}
+                    />
+                  ))}
+                </MaskScopeProvider>
+
+                {orphanedIds.map((id) => (
+                  <div
+                    key={id}
+                    className="flex items-center justify-between rounded bg-surface-2/40 p-1.5"
+                  >
+                    <span className="truncate text-[10px] text-text-muted">
+                      {id} <span className="opacity-70">(not installed)</span>
+                    </span>
+                    <button
+                      onClick={() => removePanel(id)}
+                      title={`Remove ${id}`}
+                      className="rounded px-1 text-text-muted hover:text-label-red"
+                    >
+                      ×
+                    </button>
                   </div>
                 ))}
 
@@ -680,10 +651,10 @@ export function MasksPanel() {
                     {availablePanels.map((d) => (
                       <button
                         key={d.id}
-                        onClick={() => addPanel(d.id)}
+                        onClick={() => addPanel(d)}
                         className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary"
                       >
-                        + {d.label}
+                        + {d.title}
                       </button>
                     ))}
                   </div>

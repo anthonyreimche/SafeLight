@@ -22,10 +22,10 @@ import type {
   CSSProperties,
   InputHTMLAttributes,
   ReactNode,
-  SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from "react";
 import { inputCls, labelCls } from "./SettingsFieldList";
+import { Select as CoreSelect, type SelectGroup, type SelectOption } from "@/ui/components/Select";
 
 // ── Buttons ──────────────────────────────────────────────────────────────────
 
@@ -74,28 +74,22 @@ export function Button({
 
 // ── Form controls ─────────────────────────────────────────────────────────────
 
-export interface SelectProps
-  extends Omit<SelectHTMLAttributes<HTMLSelectElement>, "onChange"> {
+export interface SelectProps {
   value: string;
   onChange: (value: string) => void;
-  options: { value: string; label: string }[];
+  /** Flat options, or `groups` for headed sections. */
+  options?: SelectOption[];
+  groups?: SelectGroup[];
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+  ariaLabel?: string;
+  title?: string;
 }
 
-export function Select({ value, onChange, options, className = "", ...rest }: SelectProps) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className={`${inputCls} cursor-pointer ${className}`}
-      {...rest}
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
-  );
+/** The app dropdown, full-width by default to match the old inline select. */
+export function Select({ className = "", ...props }: SelectProps) {
+  return <CoreSelect {...props} className={`w-full ${className}`} />;
 }
 
 export interface TextInputProps
