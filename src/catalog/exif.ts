@@ -34,10 +34,16 @@ const TAG = {
   Model: 0x0110,
   Orientation: 0x0112,
   Software: 0x0131,
+  DateTime: 0x0132,
   Artist: 0x013b,
   Copyright: 0x8298,
   ExifIFD: 0x8769,
   GPSIFD: 0x8825,
+  MakerNote: 0x927c,
+  PixelXDimension: 0xa002,
+  PixelYDimension: 0xa003,
+  InteropIFD: 0xa005,
+  MsPadding: 0xea1c,
   ExposureTime: 0x829a,
   FNumber: 0x829d,
   ExposureProgram: 0x8822,
@@ -107,6 +113,113 @@ export function parseExifDate(s: string | undefined): number | undefined {
   const [, y, mo, d, h, mi, se] = m;
   const t = new Date(+y, +mo - 1, +d, +h, +mi, +se).getTime();
   return Number.isNaN(t) ? undefined : t;
+}
+
+// ---------------------------------------------------------------------------
+// Raw-entry harvest for export
+//
+// parseExif above interprets tags for display; exports instead need the source
+// file's entries back intact so they can be re-serialized into the exported
+// image (see modules/export/exif-write). Only entries that survive relocation
+// are returned: IFD0 by whitelist (its remaining tags describe the source
+// raster — strips, tiles, sub-IFDs, thumbnails), the Exif IFD by blocklist
+// (MakerNotes and the Interop pointer embed source-file offsets; colour space
+// and pixel dimensions are rewritten by the export), the GPS IFD wholesale.
+// Value bytes are normalised to little-endian so the writer needs no
+// byte-order handling.
+// ---------------------------------------------------------------------------
+
+export interface RawExifEntry {
+  tag: number;
+  /** TIFF field type (1 BYTE, 2 ASCII, 3 SHORT, 4 LONG, 5 RATIONAL, …). */
+  type: number;
+  count: number;
+  /** Value bytes, little-endian regardless of the source file's byte order. */
+  value: Uint8Array;
+}
+
+export interface RawExifIfds {
+  ifd0: RawExifEntry[];
+  exif: RawExifEntry[];
+  gps: RawExifEntry[];
+}
+
+const IFD0_HARVEST = new Set<number>([
+  TAG.ImageDescription,
+  TAG.Make,
+  TAG.Model,
+  TAG.DateTime,
+  TAG.Artist,
+  TAG.Copyright,
+]);
+
+const EXIF_HARVEST_SKIP = new Set<number>([
+  TAG.MakerNote,
+  TAG.InteropIFD,
+  TAG.ColorSpace,
+  TAG.PixelXDimension,
+  TAG.PixelYDimension,
+  TAG.MsPadding,
+]);
+
+const HARVEST_MAX_VALUE = 8 << 10; // sanity cap; no relocatable tag is bigger
+
+export async function readExifEntries(blob: Blob): Promise<RawExifIfds | null> {
+  try {
+    const slice = blob.size > MAX_BYTES ? blob.slice(0, MAX_BYTES) : blob;
+    const view = new DataView(await slice.arrayBuffer());
+    const base = findTiffStart(view);
+    if (base < 0) return null;
+    const le = view.getUint16(base, false) === 0x4949;
+    if (view.getUint16(base + 2, le) !== 42) return null;
+    const r: Reader = { view, base, le };
+    const ifd0Map = readIFD(r, view.getUint32(base + 4, le));
+    const sub = (ptr: Entry | undefined): Map<number, Entry> => {
+      const off = numTag(r, ptr);
+      return off === undefined ? new Map() : readIFD(r, off);
+    };
+    const ifd0 = harvestEntries(r, ifd0Map, (tag) => IFD0_HARVEST.has(tag));
+    const exif = harvestEntries(r, sub(ifd0Map.get(TAG.ExifIFD)), (tag) => !EXIF_HARVEST_SKIP.has(tag));
+    const gps = harvestEntries(r, sub(ifd0Map.get(TAG.GPSIFD)), () => true);
+    return ifd0.length || exif.length || gps.length ? { ifd0, exif, gps } : null;
+  } catch {
+    return null;
+  }
+}
+
+function harvestEntries(
+  r: Reader,
+  entries: Map<number, Entry>,
+  keep: (tag: number) => boolean,
+): RawExifEntry[] {
+  const out: RawExifEntry[] = [];
+  for (const [tag, e] of entries) {
+    if (!keep(tag)) continue;
+    const value = valueBytesLE(r, e);
+    if (value) out.push({ tag, type: e.type, count: e.count, value });
+  }
+  return out;
+}
+
+function valueBytesLE(r: Reader, e: Entry): Uint8Array | null {
+  const unit = TYPE_SIZE[e.type];
+  if (!unit) return null;
+  const size = unit * e.count;
+  if (size === 0 || size > HARVEST_MAX_VALUE) return null;
+  const at = dataOffset(r, e);
+  if (at < 0 || at + size > r.view.byteLength) return null;
+  const out = new Uint8Array(size);
+  // Word width for byte swapping: SHORT is 2, the LONG-based types 4 (a
+  // RATIONAL is two LONG words). Byte-granular types copy verbatim.
+  const word = unit === 1 ? 1 : e.type === 3 ? 2 : 4;
+  if (word === 1 || r.le) {
+    for (let i = 0; i < size; i++) out[i] = r.view.getUint8(at + i);
+  } else {
+    for (let i = 0; i < size; i += word) {
+      for (let k = 0; k < word; k++) out[i + k] = r.view.getUint8(at + i + (word - 1 - k));
+    }
+  }
+  return out;
 }
 
 // XMP photo metadata (star rating, colour label, keywords, title). Cameras and

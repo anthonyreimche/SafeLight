@@ -230,6 +230,13 @@ export interface AppSettings {
   exportColorSpace: ColorSpaceId;
   /** Default bits per sample for TIFF export (8 or 16). */
   exportTiffBitDepth: 8 | 16;
+  /** Carry the source photo's EXIF (camera, lens, exposure) into exports.
+   *  Off by default — exports have always shipped clean, and quietly starting
+   *  to embed metadata would break that privacy promise. Opt-in only. */
+  exportIncludeMetadata: boolean;
+  /** Keep GPS location tags when metadata is included. A second opt-in:
+   *  position data is easy to leak and hard to recall. */
+  exportIncludeLocation: boolean;
   /** Saved export presets (format + quality + resolution + sharpening). */
   exportPresets: ExportPreset[];
 
@@ -303,6 +310,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exportBundle: true,
   exportColorSpace: "srgb",
   exportTiffBitDepth: 16,
+  exportIncludeMetadata: false,
+  exportIncludeLocation: false,
   exportPresets: [],
   singleKeyShortcuts: true,
   extensionTopic: "safelight-extension",
