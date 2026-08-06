@@ -5,13 +5,16 @@
 
 // Export pipeline: render each photo through the same WebGL develop pipeline
 // used by the Develop view, then encode the canvas to an image Blob and trigger
-// a download. Because output goes through a canvas, the result carries no EXIF
-// or location metadata — fitting for a privacy-first tool.
+// a download. A canvas render strips every metadata segment, so exports ship
+// clean by default — privacy-first. When the user opts in (Preferences ▸
+// Export, issue #93) the source file's EXIF is harvested and re-embedded; GPS
+// location tags need a second opt-in on top of that.
 
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoExportBase } from "@/catalog/copy-name";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { loadSavedEdit } from "@/catalog/edit-params";
+import { readExifEntries, type RawExifIfds } from "@/catalog/exif";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { getStageTextures } from "@/rendering/render-bridge";
@@ -19,6 +22,7 @@ import { getExtSetting } from "@/extensions/ext-settings";
 import { resolveActivePipeline } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
+import { buildExportIfds, embedExif, serializeExifTiff, type ExportIfds } from "./exif-write";
 import { applyOutputSharpening } from "./sharpen";
 import { encodeTiff } from "./tiff";
 import { ZipWriter } from "./zip";
@@ -52,6 +56,13 @@ export interface ExportSettings {
   /** Bits per sample for TIFF export. 16-bit needs float render targets and
    *  falls back to 8-bit when unavailable. Ignored for non-TIFF formats. */
   tiffBitDepth?: 8 | 16;
+  /** Carry the source photo's EXIF (camera, lens, exposure, capture date)
+   *  into the exported file. Off unless enabled — exports ship clean of
+   *  metadata by default. */
+  includeMetadata?: boolean;
+  /** Keep GPS location tags when metadata is included. Also off unless
+   *  enabled. */
+  includeLocation?: boolean;
 }
 
 const ARCHIVE_NAME = "safelight-export.zip";
@@ -99,6 +110,7 @@ function tiffIcc(colorSpace: ColorSpaceId): Uint8Array | undefined {
 function encode8BitTiff(
   source: HTMLCanvasElement,
   colorSpace: ColorSpaceId,
+  meta: ExportIfds | null,
 ): Blob {
   const c = document.createElement("canvas");
   c.width = source.width;
@@ -109,6 +121,7 @@ function encode8BitTiff(
   const bytes = encodeTiff(rgba, c.width, c.height, {
     bitDepth: 8,
     icc: tiffIcc(colorSpace),
+    meta: meta ?? undefined,
   });
   return new Blob([bytes as BlobPart], { type: "image/tiff" });
 }
@@ -119,6 +132,7 @@ function encode8BitTiff(
 function encode16BitTiff(
   cap: { data: Float32Array; width: number; height: number },
   colorSpace: ColorSpaceId,
+  meta: ExportIfds | null,
 ): Blob {
   const { data, width, height } = cap;
   const u16 = new Uint16Array(width * height * 4);
@@ -129,6 +143,7 @@ function encode16BitTiff(
   const bytes = encodeTiff(u16, width, height, {
     bitDepth: 16,
     icc: tiffIcc(colorSpace),
+    meta: meta ?? undefined,
   });
   return new Blob([bytes as BlobPart], { type: "image/tiff" });
 }
@@ -234,6 +249,17 @@ interface RenderOneResult {
   degradedTo8Bit: boolean;
 }
 
+// Source EXIF for re-embedding. A virtual copy shares its master's live file
+// handle; a photo without one (or an unreadable file) simply exports untagged.
+async function harvestPhotoExif(photo: CatalogPhoto): Promise<RawExifIfds | null> {
+  if (!photo.fileHandle) return null;
+  try {
+    return await readExifEntries(await photo.fileHandle.getFile());
+  } catch {
+    return null;
+  }
+}
+
 async function renderOne(
   renderer: WebGLRenderer,
   canvas: HTMLCanvasElement,
@@ -307,6 +333,18 @@ async function renderOne(
     renderer.setParams(saved.params);
     const colorSpace = settings.colorSpace ?? "srgb";
 
+    // Opt-in only: harvest the source file's EXIF once per photo — the canvas
+    // render below strips every metadata segment, so the export re-embeds it.
+    const sourceExif = settings.includeMetadata ? await harvestPhotoExif(photo) : null;
+    const exifFor = (exportW: number, exportH: number): ExportIfds | null =>
+      sourceExif &&
+      buildExportIfds(sourceExif, {
+        width: exportW,
+        height: exportH,
+        srgb: colorSpace === "srgb",
+        includeLocation: settings.includeLocation ?? false,
+      });
+
     // 16-bit TIFF: read the develop pipeline's float output directly so the
     // extra precision survives. Falls through to the 8-bit path when the device
     // can't render to a float target.
@@ -314,7 +352,8 @@ async function renderOne(
     if (settings.format === "image/tiff" && (settings.tiffBitDepth ?? 8) === 16) {
       const cap = renderer.captureFloatFrame();
       if (cap) {
-        const blob = await runProcessors(encode16BitTiff(cap, colorSpace), photo, processorSettings);
+        const tiff = encode16BitTiff(cap, colorSpace, exifFor(cap.width, cap.height));
+        const blob = await runProcessors(tiff, photo, processorSettings);
         return { blob, degradedTo8Bit: false };
       }
       degradedTo8Bit = true;
@@ -327,14 +366,17 @@ async function renderOne(
     const encodeCanvas = (settings.sharpenAmount ?? 0) > 0
       ? applyOutputSharpening(canvas, settings.sharpenAmount!, settings.sharpenRadius ?? 1)
       : canvas;
+    const exifIfds = exifFor(encodeCanvas.width, encodeCanvas.height);
     if (settings.format === "image/tiff") {
-      const blob = await runProcessors(encode8BitTiff(encodeCanvas, colorSpace), photo, processorSettings);
+      const tiff = encode8BitTiff(encodeCanvas, colorSpace, exifIfds);
+      const blob = await runProcessors(tiff, photo, processorSettings);
       return { blob, degradedTo8Bit };
     }
     const raw = await canvasToBlob(encodeCanvas, settings.format, settings.quality);
     if (!raw) return { blob: null, degradedTo8Bit };
     const profiled = await embedColorProfile(raw, colorSpace);
-    const blob = await runProcessors(profiled, photo, processorSettings);
+    const tagged = exifIfds ? await embedExif(profiled, serializeExifTiff(exifIfds)) : profiled;
+    const blob = await runProcessors(tagged, photo, processorSettings);
     return { blob, degradedTo8Bit };
   } finally {
     bitmap?.close();
@@ -386,6 +428,8 @@ export function getDefaultExportSettings(): ExportSettings {
     delivery: "files",
     colorSpace: s.exportColorSpace,
     tiffBitDepth: s.exportTiffBitDepth,
+    includeMetadata: s.exportIncludeMetadata,
+    includeLocation: s.exportIncludeLocation,
   };
 }
 

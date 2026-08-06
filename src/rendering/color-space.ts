@@ -252,7 +252,7 @@ export async function embedColorProfile(
       return new Blob([embedPng(bytes, icc) as BlobPart], { type: "image/png" });
     }
     if (blob.type === "image/webp") {
-      return new Blob([embedWebp(bytes, icc) as BlobPart], { type: "image/webp" });
+      return new Blob([addWebpChunk(bytes, "ICCP", icc) as BlobPart], { type: "image/webp" });
     }
   } catch {
     // If anything about the container is unexpected, ship the untagged file
@@ -351,61 +351,67 @@ function iccpChunk(icc: Uint8Array): Uint8Array {
   return chunk;
 }
 
-// WebP: wrap the simple VP8/VP8L stream in an extended (VP8X) container with an
-// ICCP chunk. Chrome's canvas WebP is the simple form; if it already has VP8X
-// we just splice ICCP in and set the flag.
-function embedWebp(src: Uint8Array, icc: Uint8Array): Uint8Array {
+// WebP metadata chunks live in an extended (VP8X) container with a feature
+// flag per chunk kind; the spec fixes the order as ICCP before the image data,
+// EXIF after it. Chrome's canvas WebP is the simple VP8/VP8L form and gets
+// wrapped; an existing VP8X (e.g. after an earlier chunk insert) is spliced.
+const WEBP_FLAG = { ICCP: 0x20, EXIF: 0x08 } as const;
+
+/** Add an ICCP or EXIF chunk to encoded WebP bytes, upgrading the container to
+ *  VP8X when needed. Shared by the colour-profile and export-EXIF embedders. */
+export function addWebpChunk(
+  src: Uint8Array,
+  fourcc: keyof typeof WEBP_FLAG,
+  data: Uint8Array,
+): Uint8Array {
   if (
     String.fromCharCode(src[0], src[1], src[2], src[3]) !== "RIFF" ||
     String.fromCharCode(src[8], src[9], src[10], src[11]) !== "WEBP"
   )
     throw new Error("not webp");
 
+  const chunk = riffChunk(fourcc, data);
+
   // Parse the first chunk after the 12-byte RIFF header.
-  const fourcc = String.fromCharCode(src[12], src[13], src[14], src[15]);
+  const first = String.fromCharCode(src[12], src[13], src[14], src[15]);
+  if (first === "VP8X") {
+    const vp8x = new Uint8Array(src.subarray(12, 30)); // VP8X chunk (8+10)
+    vp8x[8] |= WEBP_FLAG[fourcc];
+    const rest = src.subarray(30);
+    return assembleWebp(fourcc === "ICCP" ? [vp8x, chunk, rest] : [vp8x, rest, chunk]);
+  }
+
   let width = 0;
   let height = 0;
-  if (fourcc === "VP8 ") {
+  if (first === "VP8 ") {
     // Lossy: dimensions in the frame header after the 3-byte start code.
     const o = 20 + 3 + 3; // chunk header(8)+frametag(3)+startcode(3) → key frame
     width = (((src[o + 1] << 8) | src[o]) & 0x3fff);
     height = (((src[o + 3] << 8) | src[o + 2]) & 0x3fff);
-  } else if (fourcc === "VP8L") {
+  } else if (first === "VP8L") {
     const o = 21; // 12 RIFF + 8 chunk header + 1 signature byte
     const b0 = src[o], b1 = src[o + 1], b2 = src[o + 2], b3 = src[o + 3];
     width = ((b1 & 0x3f) << 8 | b0) + 1;
     height = ((b3 & 0x0f) << 10 | b2 << 2 | (b1 & 0xc0) >> 6) + 1;
-  } else if (fourcc === "VP8X") {
-    return webpInsertIccpIntoVp8x(src, icc);
   } else {
     throw new Error("unknown webp");
   }
 
-  const vp8xChunk = rebuildVp8x(width, height);
-  const iccp = riffChunk("ICCP", icc);
+  const vp8x = rebuildVp8x(width, height, WEBP_FLAG[fourcc]);
   const body = src.subarray(12); // existing image chunk(s)
-  return assembleWebp([vp8xChunk, iccp, body]);
+  return assembleWebp(fourcc === "ICCP" ? [vp8x, chunk, body] : [vp8x, body, chunk]);
 }
 
-function rebuildVp8x(width: number, height: number): Uint8Array {
+function rebuildVp8x(width: number, height: number, flags: number): Uint8Array {
   const c = new Uint8Array(18);
   const dv = new DataView(c.buffer);
   c[0] = 0x56; c[1] = 0x50; c[2] = 0x38; c[3] = 0x58; // 'VP8X'
   dv.setUint32(4, 10, true); // payload size
-  c[8] = 0x20; // ICC present
+  c[8] = flags;
   const w = width - 1, h = height - 1;
   c[12] = w & 0xff; c[13] = (w >> 8) & 0xff; c[14] = (w >> 16) & 0xff;
   c[15] = h & 0xff; c[16] = (h >> 8) & 0xff; c[17] = (h >> 16) & 0xff;
   return c;
-}
-
-function webpInsertIccpIntoVp8x(src: Uint8Array, icc: Uint8Array): Uint8Array {
-  const head = src.subarray(12, 30); // RIFF body start: VP8X chunk (8+10)
-  const vp8x = new Uint8Array(head);
-  vp8x[8] |= 0x20; // set ICC flag
-  const iccp = riffChunk("ICCP", icc);
-  const rest = src.subarray(30);
-  return assembleWebp([vp8x, iccp, rest]);
 }
 
 function riffChunk(fourcc: string, data: Uint8Array): Uint8Array {
@@ -430,9 +436,9 @@ function assembleWebp(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
-// ─── byte helpers ────────────────────────────────────────────────────────────
+// ─── byte helpers (shared with the export EXIF embedder) ─────────────────────
 
-function concat(parts: Uint8Array[]): Uint8Array {
+export function concat(parts: Uint8Array[]): Uint8Array {
   const len = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(len);
   let p = 0;
@@ -440,13 +446,13 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
-function readU32(b: Uint8Array, i: number): number {
+export function readU32(b: Uint8Array, i: number): number {
   return ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
 }
 
 // CRC-32 (PNG polynomial) for chunk integrity.
 let CRC_TABLE: Uint32Array | null = null;
-function crc32(buf: Uint8Array): number {
+export function crc32(buf: Uint8Array): number {
   if (!CRC_TABLE) {
     CRC_TABLE = new Uint32Array(256);
     for (let n = 0; n < 256; n++) {

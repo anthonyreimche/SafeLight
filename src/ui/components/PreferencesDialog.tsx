@@ -1675,6 +1675,20 @@ function ExportSection() {
         />
       </Field>
       <ToggleField
+        label="Include metadata"
+        hint="Copy the photo's EXIF (camera, lens, exposure, capture date) into exported files so other apps can read it."
+        checked={s.exportIncludeMetadata}
+        onChange={(v) => updateSettings({ exportIncludeMetadata: v })}
+      />
+      {s.exportIncludeMetadata && (
+        <ToggleField
+          label="Include location (GPS)"
+          hint="Keep GPS position tags in exports. Off strips location so shared photos don't reveal where they were taken."
+          checked={s.exportIncludeLocation}
+          onChange={(v) => updateSettings({ exportIncludeLocation: v })}
+        />
+      )}
+      <ToggleField
         label="Bundle multiple photos as ZIP"
         checked={s.exportBundle}
         onChange={(v) => updateSettings({ exportBundle: v })}

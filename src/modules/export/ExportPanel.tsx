@@ -157,6 +157,10 @@ export function ExportPanel() {
   const [colorSpace, setColorSpace] = useState<ColorSpaceId>(
     getSettings().exportColorSpace,
   );
+  // Metadata embedding is a Preferences-only opt-in (privacy promise: exports
+  // ship clean unless the user decides otherwise app-wide, not per export).
+  const includeMetadata = useSettings((s) => s.exportIncludeMetadata);
+  const includeLocation = useSettings((s) => s.exportIncludeLocation);
   const [delivery, setDelivery] = useState<DeliveryMode>("folder");
   const [destDir, setDestDir] = useState<FileSystemDirectoryHandle | null>(null);
   const [busy, setBusy] = useState(false);
@@ -326,6 +330,8 @@ export function ExportPanel() {
       sharpenAmount,
       sharpenRadius,
       tiffBitDepth,
+      includeMetadata,
+      includeLocation,
     };
     try {
       const result = await exportPhotos(
@@ -663,8 +669,12 @@ export function ExportPanel() {
 
       <Panel title="Privacy" defaultOpen={false}>
         <p className="text-[10px] leading-snug text-text-muted">
-          Exports are rendered locally and carry no EXIF or location metadata.
-          Nothing leaves your device.
+          {includeMetadata
+            ? includeLocation
+              ? "Camera, exposure and GPS location tags are copied into exported files, as set in Preferences > Export."
+              : "Camera and exposure tags are copied into exported files; GPS location is stripped. Configured in Preferences > Export."
+            : "Exports carry no EXIF or location metadata. Metadata can be enabled in Preferences > Export."}{" "}
+          Everything is rendered locally; nothing leaves your device.
         </p>
       </Panel>
     </div>
