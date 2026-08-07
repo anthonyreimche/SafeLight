@@ -28,6 +28,8 @@ import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
 import { extractColorTemperature, lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
 import { decodePoolSize } from "@/raw/decode-pool";
 import { rotateFloatRGBA } from "@/catalog/orient";
+import { createThumbnail, type ThumbTaskResult } from "./import-thumb-task";
+import { processThumb } from "./import-thumb-pool";
 import { cachedKeys, deleteCachedPreview, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
 import { getSettings, type PreviewSource } from "@/state/settings-store";
 import { catalogStorage } from "@/catalog/storage";
@@ -71,35 +73,6 @@ function isSupported(file: File): boolean {
 
 function generateId(): string {
   return crypto.randomUUID();
-}
-
-// Long edge of the stored thumbnail. The caller passes the user's "Thumbnail
-// quality" preference (thumbMaxEdge); the 768 fallback keeps thumbnails crisp at
-// the largest grid cell (400px square, which crops to cover — so the short edge
-// must comfortably exceed it) if no preference is supplied.
-async function createThumbnail(
-  bitmap: ImageBitmap,
-  rotation: number,
-  maxSize: number = 768,
-): Promise<Blob> {
-  // Upright dimensions (swapped for quarter turns), then bake the rotation in so
-  // the stored thumbnail is already correctly oriented.
-  const swap = rotation === 90 || rotation === 270;
-  const srcW = swap ? bitmap.height : bitmap.width;
-  const srcH = swap ? bitmap.width : bitmap.height;
-  const scale = Math.min(maxSize / srcW, maxSize / srcH, 1);
-  const w = Math.round(srcW * scale);
-  const h = Math.round(srcH * scale);
-
-  const canvas = new OffscreenCanvas(w, h);
-  const ctx = canvas.getContext("2d")!;
-  ctx.translate(w / 2, h / 2);
-  ctx.rotate((rotation * Math.PI) / 180);
-  const drawW = bitmap.width * scale;
-  const drawH = bitmap.height * scale;
-  ctx.drawImage(bitmap, -drawW / 2, -drawH / 2, drawW, drawH);
-
-  return canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 });
 }
 
 // Bake a linear Float32 RGBA buffer down to an 8-bit sRGB ImageBitmap. The
@@ -179,16 +152,41 @@ function looksDegenerate(data: Float32Array, width: number, height: number): boo
 // "from-image" would leave it sideways. Non-RAW files decode directly.
 //
 // Returns null only when the pixels are genuinely undecodable.
+interface DecodedImport {
+  bitmap: ImageBitmap;
+  oriented: boolean;
+  colorTemperature?: number;
+  /** True pixel size the bitmap stands for, in the bitmap's orientation — set
+   *  when the embedded preview was decoded downscaled to thumbnail size. */
+  sourceWidth?: number;
+  sourceHeight?: number;
+}
+
+/** Catalog width/height for a decode: the true frame size (not a downscaled
+ *  preview bitmap's), swapped when the bake is a quarter turn. */
+function uprightSize(
+  decoded: DecodedImport,
+  bakeRotation: number,
+): { width: number; height: number } {
+  const w = decoded.sourceWidth ?? decoded.bitmap.width;
+  const h = decoded.sourceHeight ?? decoded.bitmap.height;
+  const swap = bakeRotation === 90 || bakeRotation === 270;
+  return { width: swap ? h : w, height: swap ? w : h };
+}
+
 async function decodeImportBitmap(
   file: File,
   orientation: number | undefined,
   source: PreviewSource = getSettings().previewSource,
-): Promise<{ bitmap: ImageBitmap; oriented: boolean; colorTemperature?: number } | null> {
+): Promise<DecodedImport | null> {
   // Bring an embedded camera preview (already decoded sensor-native by
   // extractRawPreviewDecoded) upright using the master RAW's EXIF orientation —
   // the preview's own tag is unreliable, often absent. Returns an already-
-  // upright bitmap, so callers treat it as oriented:true.
-  const orientPreview = async (bm: ImageBitmap): Promise<ImageBitmap> => {
+  // upright bitmap plus the rotation applied, so the caller can swap the true
+  // frame size the same way.
+  const orientPreview = async (
+    bm: ImageBitmap,
+  ): Promise<{ bitmap: ImageBitmap; deg: number }> => {
     const deg = previewUprightRotation(
       bm.width,
       bm.height,
@@ -197,7 +195,7 @@ async function decodeImportBitmap(
     );
     const upright = await rotateBitmap(bm, deg);
     if (upright !== bm) bm.close();
-    return upright;
+    return { bitmap: upright, deg };
   };
   if (isRawFile(file)) {
     // CRW & friends: the JPEG byte-scan can't find their real thumbnail and
@@ -209,16 +207,26 @@ async function decodeImportBitmap(
     // Embedded camera JPEG: accepted outright in "embedded" mode, and in "auto"
     // when it's already big enough for the grid. Otherwise kept as a last-resort
     // fallback so a "rendered" decode that fails never drops the file.
-    let embedded: ImageBitmap | null = null;
+    let embedded: DecodedImport | null = null;
     if (effectiveSource !== "rendered") {
-      const preview = await extractRawPreviewDecoded(file);
+      const preview = await extractRawPreviewDecoded(file, {
+        targetLongEdge: getSettings().thumbMaxEdge,
+      });
       if (preview) {
         try {
           // Orient from the master RAW EXIF (see orientPreview). The result is
           // already upright, so oriented:true tells buildPhoto/load-image not to
-          // rotate on top.
-          const bitmap = await orientPreview(preview.bitmap);
-          const longEdge = Math.max(bitmap.width, bitmap.height);
+          // rotate on top. The bitmap may be decoded at thumbnail scale; the
+          // true frame size travels alongside it, swapped with the same turn.
+          const { bitmap, deg } = await orientPreview(preview.bitmap);
+          const swap = deg === 90 || deg === 270;
+          const candidate: DecodedImport = {
+            bitmap,
+            oriented: true,
+            sourceWidth: swap ? preview.height : preview.width,
+            sourceHeight: swap ? preview.width : preview.height,
+          };
+          const longEdge = Math.max(preview.width, preview.height);
           // Use the embedded preview outright in "embedded" mode, when it's
           // already grid-sized, or for formats whose sensor render is unreliable
           // (X3F/Foveon) — a small camera preview beats a broken libraw decode.
@@ -227,9 +235,9 @@ async function decodeImportBitmap(
             longEdge >= getSettings().thumbMaxEdge ||
             prefersEmbeddedPreview(file)
           ) {
-            return { bitmap, oriented: true };
+            return candidate;
           }
-          embedded = bitmap; // too small for "auto" — render instead, keep as fallback
+          embedded = candidate; // too small for "auto" — render instead, keep as fallback
         } catch {
           /* rotation failed — fall through to a full decode */
         }
@@ -238,7 +246,7 @@ async function decodeImportBitmap(
 
     const bitmapResult = await decodeRawToBitmap(file);
     if (bitmapResult) {
-      embedded?.close();
+      embedded?.bitmap.close();
       return { bitmap: bitmapResult.bitmap, oriented: bitmapResult.oriented };
     }
 
@@ -248,7 +256,7 @@ async function decodeImportBitmap(
     // camera preview, in which case that trustworthy preview wins.
     const f = await decodeRawToFloat(file);
     if (f && !(embedded && looksDegenerate(f.data, f.width, f.height))) {
-      embedded?.close();
+      embedded?.bitmap.close();
       const bm = await floatToBitmap(f.data, f.width, f.height);
       return { bitmap: bm, oriented: f.oriented ?? false, colorTemperature: f.colorTemperature };
     }
@@ -257,14 +265,22 @@ async function decodeImportBitmap(
     // "auto", or a fresh extract in "rendered") rather than drop the file. Skip
     // this for renderOnly formats (CRW) — their byte-scan preview is gray noise,
     // so a ⚠ "no preview" tile is more honest than a garbage thumbnail.
-    if (embedded) return { bitmap: embedded, oriented: true };
+    if (embedded) return embedded;
     if (effectiveSource === "rendered" && !renderOnly) {
-      const preview = await extractRawPreviewDecoded(file);
+      const preview = await extractRawPreviewDecoded(file, {
+        targetLongEdge: getSettings().thumbMaxEdge,
+      });
       if (preview) {
         try {
           // Orient from the master RAW EXIF (see orientPreview).
-          const bitmap = await orientPreview(preview.bitmap);
-          return { bitmap, oriented: true };
+          const { bitmap, deg } = await orientPreview(preview.bitmap);
+          const swap = deg === 90 || deg === 270;
+          return {
+            bitmap,
+            oriented: true,
+            sourceWidth: swap ? preview.height : preview.width,
+            sourceHeight: swap ? preview.width : preview.height,
+          };
         } catch {
           /* genuinely undecodable */
         }
@@ -376,6 +392,37 @@ function decodeFailureReason(file: File): string {
   return "no decoder could read this file";
 }
 
+// Fast path: hand the pixel stage (decode → orient → thumbnail encode) to the
+// import worker pool so files import in parallel across cores. Formats the
+// task doesn't cover answer null and take the inline decode chain instead — a
+// worker-level failure degrades the same way, never dropping a file.
+async function workerThumb(
+  file: File,
+  orientation: number | undefined,
+): Promise<Extract<ThumbTaskResult, { ok: true }> | null> {
+  if (isNetpbmName(file.name) || isTiffName(file.name)) return null;
+  const { previewSource, thumbMaxEdge } = getSettings();
+  if (
+    isRawFile(file) &&
+    (previewSource === "rendered" || distrustsEmbeddedPreview(file))
+  )
+    return null;
+  try {
+    const result = await processThumb({
+      buffer: await file.arrayBuffer(),
+      name: file.name,
+      type: file.type,
+      lastModified: file.lastModified,
+      orientation,
+      previewSource,
+      thumbMaxEdge,
+    });
+    return result.ok ? result : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Build a catalog record for a file: thumbnail, EXIF, orientation. The caller
  *  fills in relPath/folder (they're project-relative). */
 export async function buildPhoto(
@@ -396,16 +443,21 @@ export async function buildPhoto(
   const xmp = await parseXmp(file);
   if (!exif.imageDescription && xmp.title) exif.imageDescription = xmp.title;
 
-  // For RAW files, extract the as-shot WB temperature from libraw's cam_mul
-  // (lightweight metadata-only — no pixel decode). parseExif covers DNG files
-  // via AsShotNeutral; this covers all other RAW formats.
-  if (isRawFile(file) && !exif.colorTemperature) {
-    try {
-      const buf = await file.arrayBuffer();
-      const kelvin = await extractColorTemperature(buf);
-      if (kelvin) exif.colorTemperature = kelvin;
-    } catch { /* non-critical */ }
-  }
+  // The as-shot WB pass (libraw cam_mul — metadata-only; parseExif covers DNG
+  // via AsShotNeutral) and the pixel stage run concurrently: WB needs a libraw
+  // slot on the main side while the worker pool decodes/orients/encodes
+  // off-thread.
+  const wantTemp = isRawFile(file) && !exif.colorTemperature;
+  const [kelvin, pix] = await Promise.all([
+    wantTemp
+      ? file
+          .arrayBuffer()
+          .then(extractColorTemperature)
+          .catch(() => undefined)
+      : Promise.resolve(undefined),
+    workerThumb(file, exif.orientation),
+  ]);
+  if (kelvin && !exif.colorTemperature) exif.colorTemperature = kelvin;
 
   // Fields common to both outcomes. A supported file is ALWAYS recorded so it
   // imports exactly once and is never re-scanned as "new" on later opens — the
@@ -427,6 +479,17 @@ export async function buildPhoto(
     dateImported: Date.now(),
     exif,
   };
+
+  if (pix) {
+    return {
+      ...base,
+      thumbnailBlob: pix.thumb,
+      thumbnailUrl: URL.createObjectURL(pix.thumb),
+      width: pix.width,
+      height: pix.height,
+      rotation: orientationToRotation(exif.orientation),
+    };
+  }
 
   const decoded = await decodeImportBitmap(file, exif.orientation).catch(() => null);
   if (!decoded) {
@@ -457,9 +520,7 @@ export async function buildPhoto(
   const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
   const thumbUrl = URL.createObjectURL(thumb);
 
-  const swap = bakeRotation === 90 || bakeRotation === 270;
-  const width = swap ? bitmap.height : bitmap.width;
-  const height = swap ? bitmap.width : bitmap.height;
+  const { width, height } = uprightSize(decoded, bakeRotation);
 
   bitmap.close();
   return {
@@ -505,9 +566,7 @@ export async function repairMissingPreviews(
         ? normalizeRotation(rotation - orientationToRotation(photo.exif.orientation))
         : rotation;
       const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
-      const swap = bakeRotation === 90 || bakeRotation === 270;
-      const width = swap ? bitmap.height : bitmap.width;
-      const height = swap ? bitmap.width : bitmap.height;
+      const { width, height } = uprightSize(decoded, bakeRotation);
       bitmap.close();
 
       const updated: CatalogPhoto = {
@@ -560,9 +619,7 @@ export async function rebuildThumbnails(
           ? normalizeRotation(rotation - orientationToRotation(photo.exif.orientation))
           : rotation;
         const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
-        const swap = bakeRotation === 90 || bakeRotation === 270;
-        const width = swap ? bitmap.height : bitmap.width;
-        const height = swap ? bitmap.width : bitmap.height;
+        const { width, height } = uprightSize(decoded, bakeRotation);
         bitmap.close();
 
         const updated: CatalogPhoto = {
@@ -669,9 +726,7 @@ export async function reimportPhotos(
         ? normalizeRotation(rotation - orientationToRotation(exif.orientation))
         : rotation;
       const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
-      const swap = bakeRotation === 90 || bakeRotation === 270;
-      const width = swap ? bitmap.height : bitmap.width;
-      const height = swap ? bitmap.width : bitmap.height;
+      const { width, height } = uprightSize(decoded, bakeRotation);
       bitmap.close();
 
       const updated: CatalogPhoto = {

@@ -11,7 +11,7 @@ All notable changes to Safelight are documented in this file.
 
 ### Changed
 - **The Library remembers your view** — the sort order chosen in the toolbar (imported, captured, name, rating, direction — including extension-contributed sorts) and the thumbnail size now persist across restarts. Preferences ▸ Library ▸ Default sort now applies immediately; the Preferences defaults seed fresh profiles.
-- **Faster imports and folder opens** — embedded camera previews are decoded once instead of twice per RAW; the embedded-JPEG search hops between markers natively instead of walking every byte; sibling folders are listed concurrently; the per-file sidecar probe only runs for sidecars that exist; catalog progress saves re-serialize less often during a long import; and cached grid previews load three at a time when reopening a catalog.
+- **Faster imports and folder opens** — importing now runs its pixel work (decode, orient, thumbnail) in a pool of background workers sized to your CPU, so big imports use all cores and the app stays responsive. Embedded camera previews (and plain JPEGs) decode straight to thumbnail size instead of at full resolution, and are decoded once instead of twice per RAW; the embedded-JPEG search hops between markers natively instead of walking every byte; sibling folders are listed concurrently; the per-file sidecar probe only runs for sidecars that exist; catalog progress saves re-serialize less often during a long import; and cached grid previews load three at a time when reopening a catalog.
 
 ### Planned
 - B&W and HDR image support
