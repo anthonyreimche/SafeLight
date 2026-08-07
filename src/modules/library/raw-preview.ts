@@ -139,30 +139,46 @@ function collectJpegs(buf: Uint8Array): JpegRange[] {
   const n = buf.length;
   let i = 0;
 
+  // Hop between FF bytes with the native indexOf instead of walking every byte
+  // in JS — RAW files are tens of MB, and this scan dominated extraction time.
   while (i < n - 2) {
-    if (buf[i] === 0xff && buf[i + 1] === 0xd8 && buf[i + 2] === 0xff) {
-      const end = findJpegEnd(buf, i);
+    const ff = buf.indexOf(0xff, i);
+    if (ff === -1 || ff >= n - 2) break;
+    if (buf[ff + 1] === 0xd8 && buf[ff + 2] === 0xff) {
+      const end = findJpegEnd(buf, ff);
       if (end === -1) {
         // Truncated segment or a stray FF D8 FF match (common in CRW/CIFF and
         // other odd containers). Skip past it and keep scanning rather than
         // abandoning the rest of the file.
-        i += 3;
+        i = ff + 3;
         continue;
       }
-      found.push({ start: i, end });
+      found.push({ start: ff, end });
       i = end;
     } else {
-      i++;
+      i = ff + 1;
     }
   }
 
   return found.sort((a, b) => b.end - b.start - (a.end - a.start));
 }
 
-// Return the largest embedded JPEG that the browser can actually decode. The
-// largest segment is sometimes the lossless-compressed raw sensor data (SOF3),
-// which browsers can't decode — so we test candidates and fall back to the next.
-export async function extractRawPreview(file: File): Promise<Blob | null> {
+export interface DecodedRawPreview {
+  blob: Blob;
+  /** Decoded with imageOrientation:"none" (sensor-native pixels) — orientation
+   *  is the caller's job, from the master RAW's EXIF. */
+  bitmap: ImageBitmap;
+}
+
+// Return the largest embedded JPEG that the browser can actually decode, WITH
+// the bitmap that proved it. The largest segment is sometimes the lossless-
+// compressed raw sensor data (SOF3), which browsers can't decode — so we test
+// candidates and fall back to the next. Handing the winning bitmap out lets the
+// import path decode each preview exactly once instead of once to test and
+// again to use.
+export async function extractRawPreviewDecoded(
+  file: File,
+): Promise<DecodedRawPreview | null> {
   const arrayBuffer = await file.arrayBuffer();
   const candidates = collectJpegs(new Uint8Array(arrayBuffer));
 
@@ -171,13 +187,20 @@ export async function extractRawPreview(file: File): Promise<Blob | null> {
       type: "image/jpeg",
     });
     try {
-      const bitmap = await createImageBitmap(blob);
-      bitmap.close();
-      return blob;
+      const bitmap = await createImageBitmap(blob, { imageOrientation: "none" });
+      return { blob, bitmap };
     } catch {
       // Not a decodable baseline JPEG — try the next candidate.
     }
   }
 
   return null;
+}
+
+/** Blob-only variant for callers that decode later themselves (load-image). */
+export async function extractRawPreview(file: File): Promise<Blob | null> {
+  const decoded = await extractRawPreviewDecoded(file);
+  if (!decoded) return null;
+  decoded.bitmap.close();
+  return decoded.blob;
 }

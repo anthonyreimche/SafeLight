@@ -3,7 +3,12 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useUIStore } from "@/state/ui-store";
+import {
+  GRID_SIZE_MAX,
+  GRID_SIZE_MIN,
+  GRID_SIZE_STEP,
+  useUIStore,
+} from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useProjectStore } from "@/project/project-store";
 import { exportPhotoData } from "@/project/folder-ops";
@@ -177,9 +182,9 @@ export function LibraryToolbar() {
             ariaLabel="Thumbnail size"
             hideValue
             value={gridSize}
-            min={100}
-            max={400}
-            step={20}
+            min={GRID_SIZE_MIN}
+            max={GRID_SIZE_MAX}
+            step={GRID_SIZE_STEP}
             defaultValue={200}
             onChange={setGridSize}
           />

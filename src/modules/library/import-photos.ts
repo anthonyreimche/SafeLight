@@ -16,7 +16,7 @@ import {
   rotateBitmap,
 } from "@/catalog/orient";
 import {
-  extractRawPreview,
+  extractRawPreviewDecoded,
   getExtension,
   isRawFile,
   prefersEmbeddedPreview,
@@ -184,11 +184,11 @@ async function decodeImportBitmap(
   orientation: number | undefined,
   source: PreviewSource = getSettings().previewSource,
 ): Promise<{ bitmap: ImageBitmap; oriented: boolean; colorTemperature?: number } | null> {
-  // Decode an embedded camera preview and bring it upright using the master RAW's
-  // EXIF orientation (the preview's own tag is unreliable — often absent). Returns
-  // an already-upright bitmap, so callers treat it as oriented:true.
-  const orientPreview = async (preview: Blob): Promise<ImageBitmap> => {
-    const bm = await createImageBitmap(preview, { imageOrientation: "none" });
+  // Bring an embedded camera preview (already decoded sensor-native by
+  // extractRawPreviewDecoded) upright using the master RAW's EXIF orientation —
+  // the preview's own tag is unreliable, often absent. Returns an already-
+  // upright bitmap, so callers treat it as oriented:true.
+  const orientPreview = async (bm: ImageBitmap): Promise<ImageBitmap> => {
     const deg = previewUprightRotation(
       bm.width,
       bm.height,
@@ -211,13 +211,13 @@ async function decodeImportBitmap(
     // fallback so a "rendered" decode that fails never drops the file.
     let embedded: ImageBitmap | null = null;
     if (effectiveSource !== "rendered") {
-      const preview = await extractRawPreview(file);
+      const preview = await extractRawPreviewDecoded(file);
       if (preview) {
         try {
           // Orient from the master RAW EXIF (see orientPreview). The result is
           // already upright, so oriented:true tells buildPhoto/load-image not to
           // rotate on top.
-          const bitmap = await orientPreview(preview);
+          const bitmap = await orientPreview(preview.bitmap);
           const longEdge = Math.max(bitmap.width, bitmap.height);
           // Use the embedded preview outright in "embedded" mode, when it's
           // already grid-sized, or for formats whose sensor render is unreliable
@@ -231,7 +231,7 @@ async function decodeImportBitmap(
           }
           embedded = bitmap; // too small for "auto" — render instead, keep as fallback
         } catch {
-          /* preview wasn't decodable after all — fall through to a full decode */
+          /* rotation failed — fall through to a full decode */
         }
       }
     }
@@ -259,11 +259,11 @@ async function decodeImportBitmap(
     // so a ⚠ "no preview" tile is more honest than a garbage thumbnail.
     if (embedded) return { bitmap: embedded, oriented: true };
     if (effectiveSource === "rendered" && !renderOnly) {
-      const preview = await extractRawPreview(file);
+      const preview = await extractRawPreviewDecoded(file);
       if (preview) {
         try {
           // Orient from the master RAW EXIF (see orientPreview).
-          const bitmap = await orientPreview(preview);
+          const bitmap = await orientPreview(preview.bitmap);
           return { bitmap, oriented: true };
         } catch {
           /* genuinely undecodable */

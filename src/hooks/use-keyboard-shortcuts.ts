@@ -23,6 +23,7 @@ import {
   shortcutsSuspended,
 } from "@/state/keybindings-store";
 import { moveActivePhoto } from "@/modules/library/photo-navigation";
+import { useProjectStore } from "@/project/project-store";
 import { togglePreferences } from "@/ui/components/PreferencesDialog";
 import { toggleExtensions } from "@/ui/components/ExtensionsDialog";
 import { popEscapeHandler } from "@/ui/escape-stack";
@@ -190,6 +191,11 @@ export function useKeyboardShortcuts() {
         case "app.extensions":
           toggleExtensions();
           break;
+        case "app.openFolder": {
+          const ps = useProjectStore.getState();
+          if (!ps.opening) void ps.openProjectPicker();
+          break;
+        }
         case "module.library":
           setActiveModule("library");
           break;

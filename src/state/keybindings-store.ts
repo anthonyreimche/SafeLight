@@ -35,6 +35,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "view.fullscreen", label: "Fullscreen", category: "General", def: "F" },
   { id: "app.preferences", label: "Preferences", category: "General", def: "Ctrl+," },
   { id: "app.extensions", label: "Extensions", category: "General", def: "Ctrl+Shift+X" },
+  { id: "app.openFolder", label: "Open folder", category: "General", def: "Ctrl+O" },
   // ── Develop ──
   { id: "develop.undo", label: "Undo edit", category: "Develop", def: "Ctrl+Z" },
   { id: "develop.redo", label: "Redo edit", category: "Develop", def: "Ctrl+Shift+Z", altDef: "Ctrl+Y" },
@@ -75,7 +76,13 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "photo.flipH", label: "Flip horizontal", category: "Develop", def: "" },
   { id: "photo.flipV", label: "Flip vertical", category: "Develop", def: "" },
   { id: "photo.remove", label: "Remove from catalog", category: "Library", def: "Delete", altDef: "Backspace" },
+  // Ships unbound: deleting files from disk is opt-in even as a shortcut.
+  { id: "photo.deleteDisk", label: "Delete from disk", category: "Library", def: "" },
+  { id: "photo.rename", label: "Rename photo", category: "Library", def: "F2" },
+  { id: "photo.reveal", label: "Show in folder", category: "Library", def: "Ctrl+R" },
   { id: "keyword.focus", label: "Focus keyword input", category: "Library", def: "K" },
+  { id: "grid.smaller", label: "Smaller thumbnails", category: "Library", def: "-" },
+  { id: "grid.larger", label: "Larger thumbnails", category: "Library", def: "=", altDef: "+" },
 ];
 
 const DEFAULTS: Record<string, string> = Object.fromEntries(

@@ -45,6 +45,12 @@ vi.mock("@/catalog/exif", () => ({
 vi.mock("./raw-preview", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./raw-preview")>()),
   extractRawPreview: async () => h.embedded,
+  // Mirrors the real contract: an undecodable embedded JPEG (blobSize 0) means
+  // no candidate survives, so the extractor finds nothing.
+  extractRawPreviewDecoded: async () =>
+    h.embedded && h.blobSize.width !== 0
+      ? { blob: h.embedded, bitmap: bitmapOf(h.blobSize.width, h.blobSize.height) }
+      : null,
 }));
 
 vi.mock("./netpbm", () => ({

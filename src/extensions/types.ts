@@ -1089,6 +1089,9 @@ export interface NativeFsBridge {
   getSpilloverPointer?(rootPath: string): Promise<string | null>;
   clearSpilloverPointer?(rootPath: string): Promise<void>;
   remove(path: string): Promise<void>;
+  /** Move a path to the OS trash (Recycle Bin) instead of deleting it outright.
+   *  Absent on older Electron builds — callers must feature-detect. */
+  trash?(path: string): Promise<void>;
   move(src: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   pickDirectory(): Promise<string | null>;

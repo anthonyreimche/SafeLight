@@ -188,6 +188,20 @@ describe("matchAction", () => {
     expect(matchAction(key("y", { ctrl: true }), ["Develop"])).toBeNull();
   });
 
+  it("binds the app commands", () => {
+    expect(matchAction(key("o", { ctrl: true }), ["General"])).toBe("app.openFolder");
+    expect(matchAction(key("F2"), ["Library"])).toBe("photo.rename");
+    expect(matchAction(key("r", { ctrl: true }), ["Library"])).toBe("photo.reveal");
+  });
+
+  it("steps the thumbnail size from the Library scope", () => {
+    expect(matchAction(key("-"), ["Library"])).toBe("grid.smaller");
+    expect(matchAction(key("="), ["Library"])).toBe("grid.larger");
+    // Numpad plus arrives as a bare "+", covered by the built-in alias.
+    expect(matchAction(key("+"), ["Library"])).toBe("grid.larger");
+    expect(matchAction(key("-"), ["Develop"])).toBeNull();
+  });
+
   it("ignores a bare modifier and an unbound action", () => {
     expect(matchAction(key("Shift", { shift: true }), ["Develop"])).toBeNull();
     // photo.flipH/flipV ship unbound (combo ""), which no keypress can produce.

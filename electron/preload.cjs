@@ -38,6 +38,7 @@ const privileged = {
     clearSpilloverPointer: (rp) =>
       ipcRenderer.invoke("fs:clearSpilloverPointer", String(rp)),
     remove: (p) => ipcRenderer.invoke("fs:remove", String(p)),
+    trash: (p) => ipcRenderer.invoke("fs:trash", String(p)),
     move: (src, dest) => ipcRenderer.invoke("fs:move", String(src), String(dest)),
     exists: (p) => ipcRenderer.invoke("fs:exists", String(p)),
     pickDirectory: () => ipcRenderer.invoke("fs:pickDirectory"),

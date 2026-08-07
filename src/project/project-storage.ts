@@ -48,6 +48,10 @@ const SAVE_DELAY = 800;
 // Hard cap so a steady stream of writes (e.g. a long import) still flushes
 // periodically instead of the debounce sliding forever and persisting nothing.
 const MAX_SAVE_DELAY = 2500;
+// During the import walk the ceiling relaxes: every flush re-serializes the
+// whole catalog, so at 2.5s a long import spends ~O(n²) work re-writing records
+// it just wrote. 10s keeps progress durable while cutting that churn 4×.
+const BULK_SAVE_DELAY = 10_000;
 
 function strip(p: CatalogPhoto): StoredPhoto {
   const {
@@ -105,6 +109,8 @@ export class ProjectStorage implements CatalogStorage {
   private lastThumb = new Map<string, Blob | null>();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private firstDirtyAt = 0;
+  /** True while the open() walk imports new files — relaxes the save ceiling. */
+  private scanning = false;
 
   private sl: FileSystemDirectoryHandle;
   private previews: FileSystemDirectoryHandle;
@@ -195,6 +201,7 @@ export class ProjectStorage implements CatalogStorage {
     onProgress?.(0, newTotal);
 
     const newPhotos: CatalogPhoto[] = [];
+    storage.scanning = true;
     const results = await mapLimit(scan.files, 8, async (f: ScannedFile) => {
       const prev = byRel.get(f.path);
       if (prev) {
@@ -233,31 +240,35 @@ export class ProjectStorage implements CatalogStorage {
           folder: folderOf(f.path),
         };
         // Adopt a sidecar (ratings/labels + develop maps) that travelled with
-        // the file from another project, so the data follows the photo.
-        try {
-          const sc = await readJSON<PhotoSidecar>(
-            f.parent,
-            `${f.handle.name}${SIDECAR_SUFFIX}`,
-          );
-          if (sc && sc.safelightSidecar === 1) {
-            const info = sc.info ?? {};
-            if (typeof info.rating === "number") photo.rating = info.rating;
-            if (info.colorLabel) photo.colorLabel = info.colorLabel;
-            if (info.flag) photo.flag = info.flag;
-            if (Array.isArray(info.keywords)) photo.keywords = info.keywords;
-            if (sc.maps && Array.isArray(sc.maps.stack)) {
-              storage.edits.set(photo.id, {
-                photoId: photo.id,
-                stack: sc.maps.stack,
-                currentIndex:
-                  typeof sc.maps.currentIndex === "number"
-                    ? sc.maps.currentIndex
-                    : sc.maps.stack.length - 1,
-              });
+        // the file from another project, so the data follows the photo. The
+        // scan already listed every sidecar, so only probe ones that exist —
+        // an unconditional read here failed once per imported file.
+        if (scan.sidecars.has(`${f.path}${SIDECAR_SUFFIX}`)) {
+          try {
+            const sc = await readJSON<PhotoSidecar>(
+              f.parent,
+              `${f.handle.name}${SIDECAR_SUFFIX}`,
+            );
+            if (sc && sc.safelightSidecar === 1) {
+              const info = sc.info ?? {};
+              if (typeof info.rating === "number") photo.rating = info.rating;
+              if (info.colorLabel) photo.colorLabel = info.colorLabel;
+              if (info.flag) photo.flag = info.flag;
+              if (Array.isArray(info.keywords)) photo.keywords = info.keywords;
+              if (sc.maps && Array.isArray(sc.maps.stack)) {
+                storage.edits.set(photo.id, {
+                  photoId: photo.id,
+                  stack: sc.maps.stack,
+                  currentIndex:
+                    typeof sc.maps.currentIndex === "number"
+                      ? sc.maps.currentIndex
+                      : sc.maps.stack.length - 1,
+                });
+              }
             }
+          } catch {
+            /* invalid sidecar — ignore */
           }
-        } catch {
-          /* no/!invalid sidecar — ignore */
         }
 
         // Let extensions contribute metadata read from sidecars. Their values
@@ -290,6 +301,7 @@ export class ProjectStorage implements CatalogStorage {
       }
     });
 
+    storage.scanning = false;
     const masters = results.filter((p): p is CatalogPhoto => p !== null);
 
     // Re-attach saved virtual copies: records that share a master's source file
@@ -526,9 +538,10 @@ export class ProjectStorage implements CatalogStorage {
     const now = Date.now();
     if (!this.firstDirtyAt) this.firstDirtyAt = now;
     if (this.saveTimer) clearTimeout(this.saveTimer);
-    // Normal 800ms debounce, but never wait longer than MAX_SAVE_DELAY since the
+    // Normal 800ms debounce, but never wait longer than the ceiling since the
     // first un-saved change — so a continuous import durably persists progress.
-    const delay = Math.min(SAVE_DELAY, Math.max(0, MAX_SAVE_DELAY - (now - this.firstDirtyAt)));
+    const cap = this.scanning ? BULK_SAVE_DELAY : MAX_SAVE_DELAY;
+    const delay = Math.min(SAVE_DELAY, Math.max(0, cap - (now - this.firstDirtyAt)));
     this.saveTimer = setTimeout(() => void this.save(), delay);
   }
 
