@@ -26,7 +26,7 @@ Actions (selected): `loadEdit(photoId)`, `setParam(key, value)`, `setToneCurve`,
 
 ### useUIStore
 
-`activeModule` (`"library" | "develop"`), `viewMode`, `gridSize`, `sortField`/`sortDirection`, `filter`, `activeFolder`, `detached: Set`. Actions: `setActiveModule`, `setViewMode`, `setSort`, `setFilter`, `clearFilters`, `setActiveFolder`, `setGridSize`, `markDetached`/`markAttached`.
+`activeModule` (`"library" | "develop"`), `viewMode`, `gridSize`, `sortField`/`sortDirection`, `filter`, `activeFolder`, `detached: Set`. Actions: `setActiveModule`, `setViewMode`, `setSort`, `setFilter`, `clearFilters`, `setActiveFolder`, `setGridSize`, `stepGridSize`, `markDetached`/`markAttached`. `setSort` persists the choice (`sl_sort_v1`) and `setGridSize`/`stepGridSize` persist the thumbnail size (`sl_grid_size_v1`); both are restored on boot, with the settings-store defaults only seeding a fresh profile.
 
 ### useSettings
 

@@ -10,6 +10,7 @@
 //   1-5 rating   0 clear   P pick   X reject   U unflag
 //   6-9 color label        [ ] rotate
 //   ← → prev / next         ↑ ↓ up / down a grid row
+//   - = thumbnail size
 //
 // Rating/flag/label apply to the whole current selection (or the active photo
 // when nothing is multi-selected). Navigation walks the same filtered+sorted
@@ -24,7 +25,10 @@ import {
   matchAction,
   shortcutsSuspended,
 } from "@/state/keybindings-store";
+import { confirmAndDeleteFromDisk } from "./delete-from-disk";
 import { moveActivePhoto, visibleList } from "./photo-navigation";
+import { revealPhoto } from "@/project/folder-ops";
+import { isNativeFS } from "@/project/native-fs";
 import { getSettings } from "@/state/settings-store";
 
 const LABELS: Record<string, ColorLabel> = {
@@ -131,6 +135,13 @@ export function useCullingShortcuts(): void {
         return;
       }
 
+      if (action === "photo.deleteDisk") {
+        if (targetIds.length === 0) return;
+        e.preventDefault();
+        void confirmAndDeleteFromDisk(targetIds);
+        return;
+      }
+
       if (action === "photo.rotateCCW" || action === "photo.rotateCW") {
         if (targetIds.length === 0) return;
         e.preventDefault();
@@ -138,9 +149,32 @@ export function useCullingShortcuts(): void {
         return;
       }
 
+      if (action === "grid.smaller" || action === "grid.larger") {
+        e.preventDefault();
+        useUIStore.getState().stepGridSize(action === "grid.smaller" ? -1 : 1);
+        return;
+      }
+
       if (action === "keyword.focus") {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("sl-focus-keyword-input"));
+        return;
+      }
+
+      if (action === "photo.rename") {
+        const id = catalog.activePhotoId ?? targetIds[0];
+        if (!id) return;
+        e.preventDefault();
+        // LibraryGrid owns the rename dialog; hand it the photo to edit.
+        window.dispatchEvent(new CustomEvent("sl-rename-photo", { detail: { id } }));
+        return;
+      }
+
+      if (action === "photo.reveal") {
+        const id = catalog.activePhotoId ?? targetIds[0];
+        if (!id || !isNativeFS()) return;
+        e.preventDefault();
+        void revealPhoto(id);
         return;
       }
 

@@ -139,45 +139,132 @@ function collectJpegs(buf: Uint8Array): JpegRange[] {
   const n = buf.length;
   let i = 0;
 
+  // Hop between FF bytes with the native indexOf instead of walking every byte
+  // in JS — RAW files are tens of MB, and this scan dominated extraction time.
   while (i < n - 2) {
-    if (buf[i] === 0xff && buf[i + 1] === 0xd8 && buf[i + 2] === 0xff) {
-      const end = findJpegEnd(buf, i);
+    const ff = buf.indexOf(0xff, i);
+    if (ff === -1 || ff >= n - 2) break;
+    if (buf[ff + 1] === 0xd8 && buf[ff + 2] === 0xff) {
+      const end = findJpegEnd(buf, ff);
       if (end === -1) {
         // Truncated segment or a stray FF D8 FF match (common in CRW/CIFF and
         // other odd containers). Skip past it and keep scanning rather than
         // abandoning the rest of the file.
-        i += 3;
+        i = ff + 3;
         continue;
       }
-      found.push({ start: i, end });
+      found.push({ start: ff, end });
       i = end;
     } else {
-      i++;
+      i = ff + 1;
     }
   }
 
   return found.sort((a, b) => b.end - b.start - (a.end - a.start));
 }
 
-// Return the largest embedded JPEG that the browser can actually decode. The
-// largest segment is sometimes the lossless-compressed raw sensor data (SOF3),
-// which browsers can't decode — so we test candidates and fall back to the next.
-export async function extractRawPreview(file: File): Promise<Blob | null> {
+// SOF markers carry the frame size; C4/C8/CC are DHT/JPG/DAC, not frames.
+function isSofMarker(m: number): boolean {
+  return m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc;
+}
+
+/** Frame width/height from a JPEG's SOF header, without decoding. Walks the
+ *  segment chain from `start` (which must sit on the SOI); null when no SOF
+ *  precedes the scan data (malformed or truncated stream). */
+export function jpegDimensions(
+  buf: Uint8Array,
+  start: number,
+): { width: number; height: number } | null {
+  const n = buf.length;
+  let p = start + 2; // past SOI
+  while (p + 3 < n) {
+    if (buf[p] !== 0xff) return null;
+    const marker = buf[p + 1];
+    // SOS/EOI (or a stray nested SOI) before any SOF — no frame header to read.
+    if (marker === 0xda || marker === 0xd9 || marker === 0xd8) return null;
+    if (marker >= 0xd0 && marker <= 0xd7) {
+      p += 2; // RSTn carries no length
+      continue;
+    }
+    const len = (buf[p + 2] << 8) | buf[p + 3];
+    if (len < 2 || p + 2 + len > n) return null;
+    if (isSofMarker(marker)) {
+      if (len < 7) return null;
+      const height = (buf[p + 5] << 8) | buf[p + 6];
+      const width = (buf[p + 7] << 8) | buf[p + 8];
+      return width > 0 && height > 0 ? { width, height } : null;
+    }
+    p += 2 + len;
+  }
+  return null;
+}
+
+export interface DecodedRawPreview {
+  blob: Blob;
+  /** Decoded with imageOrientation:"none" (sensor-native pixels) — orientation
+   *  is the caller's job, from the master RAW's EXIF. May be decoded smaller
+   *  than width×height when a targetLongEdge was given. */
+  bitmap: ImageBitmap;
+  /** True frame size from the SOF header (bitmap size when no header parsed). */
+  width: number;
+  height: number;
+}
+
+// Return the largest embedded JPEG that the browser can actually decode, WITH
+// the bitmap that proved it. The largest segment is sometimes the lossless-
+// compressed raw sensor data (SOF3), which browsers can't decode — so we test
+// candidates and fall back to the next. Handing the winning bitmap out lets the
+// import path decode each preview exactly once instead of once to test and
+// again to use.
+export async function extractRawPreviewDecoded(
+  file: File,
+  opts?: { targetLongEdge?: number },
+): Promise<DecodedRawPreview | null> {
   const arrayBuffer = await file.arrayBuffer();
-  const candidates = collectJpegs(new Uint8Array(arrayBuffer));
+  const u8 = new Uint8Array(arrayBuffer);
+  const candidates = collectJpegs(u8);
 
   for (const { start, end } of candidates) {
     const blob = new Blob([arrayBuffer.slice(start, end)], {
       type: "image/jpeg",
     });
+    // Downscale during decode when the frame size is known and above the
+    // target — a 10 MP camera preview shrinks to grid size without ever
+    // materializing full-resolution pixels.
+    const dims = jpegDimensions(u8, start);
+    const target = opts?.targetLongEdge;
+    const long = dims ? Math.max(dims.width, dims.height) : 0;
+    const resize =
+      dims && target && long > target
+        ? {
+            resizeWidth: Math.round((dims.width * target) / long),
+            resizeHeight: Math.round((dims.height * target) / long),
+            resizeQuality: "medium" as const,
+          }
+        : undefined;
     try {
-      const bitmap = await createImageBitmap(blob);
-      bitmap.close();
-      return blob;
+      const bitmap = await createImageBitmap(blob, {
+        imageOrientation: "none",
+        ...resize,
+      });
+      return {
+        blob,
+        bitmap,
+        width: dims?.width ?? bitmap.width,
+        height: dims?.height ?? bitmap.height,
+      };
     } catch {
       // Not a decodable baseline JPEG — try the next candidate.
     }
   }
 
   return null;
+}
+
+/** Blob-only variant for callers that decode later themselves (load-image). */
+export async function extractRawPreview(file: File): Promise<Blob | null> {
+  const decoded = await extractRawPreviewDecoded(file);
+  if (!decoded) return null;
+  decoded.bitmap.close();
+  return decoded.blob;
 }

@@ -1549,6 +1549,12 @@ function registerFsIpc() {
   ipcMain.handle("fs:remove", async (_e, p) => {
     await fs.promises.rm(p, { recursive: true, force: true });
   });
+  // Recoverable delete: the OS trash (Recycle Bin) instead of rm. Rejects when
+  // the platform can't trash the path (e.g. some network mounts) — the renderer
+  // reports that per file rather than falling back to a hard delete.
+  ipcMain.handle("fs:trash", async (_e, p) => {
+    await shell.trashItem(path.normalize(p));
+  });
   // Move/rename a file or directory. Used by folder-ops for drag-to-reorganise
   // and folder rename; one rename handles a whole subtree atomically.
   ipcMain.handle("fs:move", async (_e, src, dest) => {

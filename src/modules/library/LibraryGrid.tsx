@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
@@ -21,6 +21,7 @@ import {
   useLibrarySorts,
 } from "@/extensions/registry";
 import { exportPhotoData, renamePhoto, revealPhoto } from "@/project/folder-ops";
+import { confirmAndDeleteFromDisk, diskTrashAvailable } from "./delete-from-disk";
 import { isNativeFS } from "@/project/native-fs";
 import { reimportPhotos } from "@/modules/library/import-photos";
 import { getSettings, useSettings } from "@/state/settings-store";
@@ -223,6 +224,24 @@ export function LibraryGrid() {
     if (!ok) window.alert("Couldn't open the folder — the file may have moved or been deleted.");
   }, []);
 
+  // The F2 shortcut (use-culling-shortcuts) asks for a rename by event, since
+  // this component owns the dialog state.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      const p = useCatalogStore.getState().photos.find((x) => x.id === id);
+      if (p)
+        setRenameTarget({
+          id: p.id,
+          filename: p.filename,
+          copyName: p.copyName ?? "copy",
+          isCopy: !!p.copyOf,
+        });
+    };
+    window.addEventListener("sl-rename-photo", handler);
+    return () => window.removeEventListener("sl-rename-photo", handler);
+  }, []);
+
   // Re-read the targeted photos from disk: rebuild their previews, refresh
   // metadata, and invalidate the develop cache. Ratings/labels/edits are kept.
   // Cells refresh live as each completes; only a failure raises an alert.
@@ -335,6 +354,17 @@ export function LibraryGrid() {
       { label: `Export data…${suffix}`, onClick: () => void handleExportData(ids) },
       "separator",
       { label: `Remove${suffix}`, danger: true, onClick: () => handleRemove(ids) },
+      // Files go to the OS trash, so this stays recoverable; unavailable in
+      // the plain-browser build, which has no path-level fs access.
+      ...(diskTrashAvailable()
+        ? [
+            {
+              label: `Delete from disk…${suffix}`,
+              danger: true,
+              onClick: () => void confirmAndDeleteFromDisk(ids),
+            } satisfies ContextMenuEntry,
+          ]
+        : []),
       // Extension-contributed actions (e.g. "Create virtual copy"), grouped
       // below the built-ins behind a separator.
       ...(gridMenuItems.length > 0

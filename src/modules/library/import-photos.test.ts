@@ -45,6 +45,24 @@ vi.mock("@/catalog/exif", () => ({
 vi.mock("./raw-preview", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./raw-preview")>()),
   extractRawPreview: async () => h.embedded,
+  // Mirrors the real contract: an undecodable embedded JPEG (blobSize 0) means
+  // no candidate survives; a targetLongEdge decodes the bitmap downscaled while
+  // width/height report the true frame size.
+  extractRawPreviewDecoded: async (
+    _f: File,
+    opts?: { targetLongEdge?: number },
+  ) => {
+    if (!h.embedded || h.blobSize.width === 0) return null;
+    const { width, height } = h.blobSize;
+    const long = Math.max(width, height);
+    const scale = opts?.targetLongEdge && long > opts.targetLongEdge ? opts.targetLongEdge / long : 1;
+    return {
+      blob: h.embedded,
+      bitmap: bitmapOf(Math.round(width * scale), Math.round(height * scale)),
+      width,
+      height,
+    };
+  },
 }));
 
 vi.mock("./netpbm", () => ({

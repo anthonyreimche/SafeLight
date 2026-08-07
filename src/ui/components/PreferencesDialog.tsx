@@ -1094,16 +1094,20 @@ function LibrarySection() {
         <div className="flex gap-1.5">
           <Select
             value={s.defaultSortField}
-            onChange={(v) => updateSettings({ defaultSortField: v as SortField })}
+            onChange={(v) => {
+              updateSettings({ defaultSortField: v as SortField });
+              useUIStore.getState().setSort(v, s.defaultSortDirection); // apply live
+            }}
             ariaLabel="Default sort field"
             className="flex-1"
             options={SORT_FIELDS.map((f) => ({ value: f.value, label: f.label }))}
           />
           <Select
             value={s.defaultSortDirection}
-            onChange={(v) =>
-              updateSettings({ defaultSortDirection: v as SortDirection })
-            }
+            onChange={(v) => {
+              updateSettings({ defaultSortDirection: v as SortDirection });
+              useUIStore.getState().setSort(s.defaultSortField, v as SortDirection); // apply live
+            }}
             ariaLabel="Default sort direction"
             className="flex-1"
             options={[
@@ -1121,7 +1125,7 @@ function LibrarySection() {
       />
       <ToggleField
         label="Confirm before removing photos"
-        hint="Ask for confirmation when removing photos from the catalog. The originals on disk are never deleted either way."
+        hint="Ask for confirmation when removing photos from the catalog. Remove never deletes the originals on disk; Delete from disk is a separate action that always asks."
         checked={s.confirmRemovePhotos}
         onChange={(v) => updateSettings({ confirmRemovePhotos: v })}
       />

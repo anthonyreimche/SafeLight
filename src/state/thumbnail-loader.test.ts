@@ -126,6 +126,42 @@ describe("requestThumbnail", () => {
     expect(calls).toEqual(["a", "b", "c"]);
   });
 
+  it("overlaps reads in a small window instead of strictly one at a time", async () => {
+    const g = gate();
+    const { calls, loader } = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(loader);
+    requestThumbnail("a");
+    requestThumbnail("b");
+    requestThumbnail("c");
+    requestThumbnail("d");
+    await settle();
+    expect(calls).toEqual(["a", "b", "c"]); // window of 3; d waits for a slot
+
+    g.open();
+    await settle();
+    expect(calls).toEqual(["a", "b", "c", "d"]);
+    flushFrames();
+    expect(mergedIds().sort()).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("dedupes an id that is already in flight", async () => {
+    const g = gate();
+    const { calls, loader } = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(loader);
+    requestThumbnail("a");
+    await settle();
+    requestThumbnail("a"); // still being read — must not read twice
+    g.open();
+    await settle();
+    expect(calls).toEqual(["a"]);
+  });
+
   it("drops requests made before a project installs a loader", async () => {
     requestThumbnail("a");
     const { calls, loader } = trackingLoader();
@@ -203,15 +239,19 @@ describe("project generation", () => {
       return blobFor(id);
     });
     setThumbnailLoader(stale.loader);
+    // a/b/c fill the read window; d is still queued when the project swaps.
     requestThumbnail("a");
-    await settle();
     requestThumbnail("b");
     requestThumbnail("c");
+    await settle();
+    requestThumbnail("d");
 
     setThumbnailLoader(trackingLoader().loader);
     g.open();
     await settle();
-    expect(stale.calls).toEqual(["a"]);
+    flushFrames();
+    expect(stale.calls).toEqual(["a", "b", "c"]); // d never reaches the stale loader
+    expect(catalog.mergeThumbnails).not.toHaveBeenCalled();
   });
 
   it("drains requests queued behind a stale read", async () => {

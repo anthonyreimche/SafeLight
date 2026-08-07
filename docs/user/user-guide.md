@@ -20,8 +20,8 @@ Safelight stores everything inside the folder you edit:
 ### Browsing
 
 - **Folders panel** — the project's folder tree; click a folder to scope the grid to it. Folders can be renamed, moved, created, and deleted in place.
-- **Grid / List views** — toggle in the toolbar; the grid thumbnail size is adjustable (also in Preferences).
-- **Sorting** — by date imported, date created, filename, or rating, ascending or descending. Extensions can add more sort orders (e.g. by camera or lens).
+- **Grid / List views** — toggle in the toolbar; the grid thumbnail size is adjustable with the slider or **- / =** (default in Preferences).
+- **Sorting** — by date imported, date created, filename, or rating, ascending or descending; your choice is remembered between sessions. Extensions can add more sort orders (e.g. by camera or lens).
 - **Metadata panel** — EXIF for the selected photo: camera, lens, focal length, aperture, shutter speed, ISO, capture date, and GPS if present.
 - **Keywords panel** — add and remove keyword tags on the selection, with suggestions from existing keywords.
 
@@ -38,6 +38,11 @@ Selection: click to select, **Shift+click** for a range, **Ctrl+click** to toggl
 | Rotate left / right | **Alt+[ / Alt+]** |
 | Focus keyword input | **K** |
 | Remove from catalog | **Delete** |
+| Smaller / larger thumbnails | **- / =** |
+| Rename photo | **F2** |
+| Show in folder | **Ctrl+R** |
+
+The grid context menu also offers **Delete from disk…**, which moves the selected files to the OS Recycle Bin / Trash and removes the photos from the catalog; it ships without a key but can be bound in Preferences ▸ Shortcuts.
 
 Navigation follows the filtered, sorted grid, so it never lands on a hidden photo. (Photos also carry a sixth **purple** color label, available from the Info panel even though it has no default key.)
 
@@ -140,6 +145,7 @@ The built-in **Accessibility** extension (under **Extensions**) adds opt-in acco
 | Action | Key | Scope |
 |---|---|---|
 | Go to Library / Develop | **G / D** | General |
+| Open folder | **Ctrl+O** | General |
 | Hide/show all panels | **Tab** | General |
 | Fullscreen | **F** | General |
 | Preferences | **Ctrl+,** | General |

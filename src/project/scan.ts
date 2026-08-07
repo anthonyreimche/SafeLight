@@ -9,6 +9,10 @@
 
 import { isSupportedName } from "@/modules/library/import-photos";
 
+// Same value as folder-ops' SIDECAR_SUFFIX; declared locally (like
+// project-storage's copy) to keep this leaf module out of that import cycle.
+const SIDECAR_SUFFIX = ".safelight.json";
+
 export interface FolderNode {
   name: string;
   /** Path relative to the project root; "" for the root itself. */
@@ -27,8 +31,12 @@ export interface ScannedFile {
 export async function scanProject(root: FileSystemDirectoryHandle): Promise<{
   files: ScannedFile[];
   tree: FolderNode;
+  /** Relative paths of `<image>.safelight.json` sidecars found in the walk, so
+   *  the open probes only sidecars that exist instead of issuing a guaranteed-
+   *  failing read per imported file. */
+  sidecars: Set<string>;
 }> {
-  const files: ScannedFile[] = [];
+  const sidecars = new Set<string>();
   const tree: FolderNode = { name: root.name, path: "", children: [], count: 0 };
   // Tally of files skipped because their extension isn't a supported image, so a
   // "folder has N but only M imported" gap is explainable instead of mysterious.
@@ -38,7 +46,12 @@ export async function scanProject(root: FileSystemDirectoryHandle): Promise<{
     dir: FileSystemDirectoryHandle,
     path: string,
     node: FolderNode,
-  ): Promise<void> {
+  ): Promise<ScannedFile[]> {
+    // Each directory listing is one fs:list IPC round-trip, so sibling subtrees
+    // walk concurrently to overlap that latency on deep trees. Slots keep the
+    // result in the exact depth-first order a sequential walk produced, so the
+    // import (and dateImported) order stays deterministic.
+    const slots: (ScannedFile | Promise<ScannedFile[]>)[] = [];
     for await (const entry of dir.values()) {
       if (entry.name.startsWith(".")) continue;
       const childPath = path ? `${path}/${entry.name}` : entry.name;
@@ -49,13 +62,15 @@ export async function scanProject(root: FileSystemDirectoryHandle): Promise<{
           children: [],
           count: 0,
         };
-        await walk(entry, childPath, child);
         // Show every real (non-dot) folder, including empty ones, so newly
         // created folders are visible and can be used as drop targets.
         node.children.push(child);
+        slots.push(walk(entry, childPath, child));
       } else if (isSupportedName(entry.name)) {
-        files.push({ path: childPath, handle: entry, parent: dir });
+        slots.push({ path: childPath, handle: entry, parent: dir });
         node.count++;
+      } else if (entry.name.endsWith(SIDECAR_SUFFIX)) {
+        sidecars.add(childPath);
       } else {
         const dot = entry.name.lastIndexOf(".");
         const ext = (dot === -1 ? "(none)" : entry.name.slice(dot)).toLowerCase();
@@ -63,9 +78,13 @@ export async function scanProject(root: FileSystemDirectoryHandle): Promise<{
       }
     }
     node.children.sort((a, b) => a.name.localeCompare(b.name));
+    const resolved = await Promise.all(
+      slots.map((s) => (s instanceof Promise ? s : Promise.resolve([s]))),
+    );
+    return resolved.flat();
   }
 
-  await walk(root, "", tree);
+  const files = await walk(root, "", tree);
   if (skipped.size > 0) {
     const total = [...skipped.values()].reduce((a, b) => a + b, 0);
     const breakdown = [...skipped.entries()]
@@ -74,5 +93,5 @@ export async function scanProject(root: FileSystemDirectoryHandle): Promise<{
       .join(", ");
     console.info(`[scan] ${files.length} images; skipped ${total} non-image file(s): ${breakdown}`);
   }
-  return { files, tree };
+  return { files, tree, sidecars };
 }

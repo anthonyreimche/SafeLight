@@ -11,7 +11,7 @@ Safelight is a fast, project-based RAW photo editor. This guide takes you from l
 
 Safelight is project-based: instead of importing photos into a central catalog, you open a folder.
 
-1. In the **Library** module, click **Open Folder** in the Folders panel.
+1. In the **Library** module, click **Open Folder** in the Folders panel (or press **Ctrl+O**).
 2. Pick any folder containing photos. Safelight scans it (including subfolders) and builds thumbnails.
 3. All catalog data — ratings, flags, labels, keywords, and edit history — is written to a hidden `.safelight/` directory inside that folder. Your project travels with the folder; originals are never modified.
 
@@ -27,6 +27,7 @@ In the Library grid (sensible defaults below; everything is rebindable in Prefer
 - **6–9** color labels (red, yellow, green, blue)
 - **P** pick, **X** reject, **U** unflag
 - **← →** previous/next photo, **Alt+[ ]** rotate, **K** focus keywords
+- **- =** smaller/larger thumbnails
 - Filter the grid by rating, flag, and label using the Filters panel
 
 ## Edit
