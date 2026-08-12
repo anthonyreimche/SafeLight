@@ -23,6 +23,7 @@ import {
   shortcutsSuspended,
 } from "@/state/keybindings-store";
 import { moveActivePhoto } from "@/modules/library/photo-navigation";
+import { cullingShortcutsMounted } from "@/modules/library/use-culling-shortcuts";
 import { useProjectStore } from "@/project/project-store";
 import { togglePreferences } from "@/ui/components/PreferencesDialog";
 import { toggleExtensions } from "@/ui/components/ExtensionsDialog";
@@ -93,10 +94,16 @@ export function useKeyboardShortcuts() {
       // handler; Develop only has this global one). Bare brackets bind solely to
       // rotate, so there's no conflict with the Shift+[ ] feather shortcuts.
       if (inDevelop) {
+        // Prev/next and rotate also belong to the culling handler, which a photo
+        // surface docked in Develop (a Filmstrip) mounts. While one is up it owns
+        // them — running both would step or rotate twice per press.
+        const culling = cullingShortcutsMounted();
+
         // ←/→ step to the prev/next photo (same order the grid shows), so you
         // can cull through a shoot without leaving Develop. A focused slider
         // owns its own arrow keys, so leave range inputs alone.
         if (
+          !culling &&
           (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
           !e.ctrlKey &&
           !e.metaKey &&
@@ -109,7 +116,7 @@ export function useKeyboardShortcuts() {
           return;
         }
 
-        const rot = matchAction(e, ["Library"]);
+        const rot = culling ? null : matchAction(e, ["Library"]);
         if (rot === "photo.rotateCCW" || rot === "photo.rotateCW") {
           const cat = useCatalogStore.getState();
           const ids =

@@ -5,7 +5,10 @@
 
 // Custom Lightroom-style dock. Side rails are single scrollable columns where
 // every docked panel renders at its natural height (height follows content and
-// width — panels never get their own scrollbar; the rail scrolls). Dragging a
+// width — panels never get their own scrollbar; the rail scrolls), except that
+// one `fill` panel per rail may stretch to the remaining height and scroll
+// itself. Bottom rails are full-width horizontal strips under the main view
+// whose panels sit side-by-side and always fill the rail height. Dragging a
 // panel header re-docks it at any position in any rail, drops it on an edge
 // strip to create a new rail, or anywhere else to float it as a window.
 // Layouts persist per module; Tab hides everything and restores it unchanged.
@@ -28,7 +31,8 @@ import { panelIsPreviewable } from "@/modules/develop/panel-bypass";
 import { frameLocalPoint } from "@/ui/frame-point";
 import { getSettings } from "@/state/settings-store";
 import type { AppModule } from "@/catalog/types";
-import type { ModuleLayoutDef } from "./types";
+import type { ModuleLayoutDef, PanelPlacement } from "./types";
+import type { RegisteredPanel } from "./registry";
 import { detachedModule } from "@/state/detach";
 
 class PanelErrorBoundary extends Component<
@@ -65,6 +69,9 @@ const layoutKey = (module: AppModule) =>
 const EDGE = 24; // px-wide drop strips that create a new rail
 const MIN_RAIL = 200;
 const MAX_RAIL = 440;
+const MIN_BOTTOM = 56;
+const MAX_BOTTOM = 320;
+const DEFAULT_BOTTOM = 112;
 const MIN_FLOAT = 220;
 const MAX_FLOAT = 480;
 const DRAG_THRESHOLD = 5;
@@ -75,10 +82,14 @@ const DRAG_THRESHOLD = 5;
 
 interface RailState {
   id: string;
-  side: "left" | "right";
+  side: "left" | "right" | "bottom";
+  /** Side rails: column width. Bottom rails size by `height` instead. */
   width: number;
-  /** Panel ids top→bottom. Left rails order outermost→innermost in the rails
-   *  array; right rails innermost→outermost (i.e. render order). */
+  /** Bottom rails: strip height. */
+  height?: number;
+  /** Panel ids top→bottom (side rails) or left→right (bottom rails). Left
+   *  rails order outermost→innermost in the rails array; right rails
+   *  innermost→outermost (i.e. render order); bottom rails top→bottom. */
   panels: string[];
 }
 interface FloatState {
@@ -102,9 +113,17 @@ interface DockState {
   target: DropTarget | null;
 }
 
+/** Drop indicator box in visual px (client coords). */
+interface DropLine {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 type DropTarget =
-  | { kind: "rail"; railId: string; index: number; line: { x: number; y: number; w: number } }
-  | { kind: "newRail"; side: "left" | "right"; index: number; x: number; top: number; height: number }
+  | { kind: "rail"; railId: string; index: number; line: DropLine }
+  | { kind: "newRail"; side: RailState["side"]; index: number; line: DropLine }
   | { kind: "float" };
 
 export const useDockStore = create<DockState>(() => ({
@@ -167,6 +186,18 @@ function without(id: string) {
   return { rails, floating, zOrder: s.zOrder.filter((p) => p !== id) };
 }
 
+/** Bottom rails are horizontal strips, so only panels that lay out that way
+ *  belong in one — a vertical column squeezed into a 112px band reads as
+ *  broken. Panels opt in with `allowBottomDock` (or by defaulting there). An
+ *  unregistered id gets the benefit of the doubt: its extension may still be
+ *  loading, and dropping it would evict a filmstrip from its own rail. */
+function allowsBottom(panel: RegisteredPanel | undefined): boolean {
+  if (!panel) return true;
+  return (
+    panel.allowBottomDock === true || panel.defaultDock?.direction === "bottom"
+  );
+}
+
 function seedDefaults(module: AppModule): RailState[] {
   const panels = Object.values(useRegistry.getState().panels)
     .filter((p) => p.defaultDock?.module === module)
@@ -174,13 +205,16 @@ function seedDefaults(module: AppModule): RailState[] {
       (a, b) => (a.defaultDock?.order ?? 100) - (b.defaultDock?.order ?? 100),
     );
   const rails: RailState[] = [];
-  for (const side of ["left", "right"] as const) {
+  for (const side of ["left", "right", "bottom"] as const) {
     const group = panels.filter((p) => p.defaultDock!.direction === side);
     if (group.length)
       rails.push({
         id: `${side}-default`,
         side,
         width: group[0].defaultDock!.width ?? 280,
+        ...(side === "bottom"
+          ? { height: group[0].defaultDock!.height ?? DEFAULT_BOTTOM }
+          : {}),
         panels: group.map((p) => p.id),
       });
   }
@@ -291,8 +325,24 @@ function railsFromDef(module: AppModule, def: ModuleLayoutDef): RailState[] {
     id: `${module}-${r.side}-${i}`,
     side: r.side,
     width: r.width ?? 280,
+    ...(r.side === "bottom" ? { height: r.height ?? DEFAULT_BOTTOM } : {}),
     panels: [...r.panels],
   }));
+}
+
+/** Drop panels that don't lay out horizontally from bottom rails, and any rail
+ *  left empty. A saved layout can carry them from a build where bottom docking
+ *  was open to everything; the panels aren't lost — reopening one from the View
+ *  menu re-docks it at its own default. */
+function pruneBottomRails(rails: RailState[]): RailState[] {
+  const registered = useRegistry.getState().panels;
+  return rails
+    .map((r) =>
+      r.side === "bottom"
+        ? { ...r, panels: r.panels.filter((id) => allowsBottom(registered[id])) }
+        : r,
+    )
+    .filter((r) => r.panels.length > 0);
 }
 
 /** Resolve dock state for `module` under the active layout, without applying it. */
@@ -328,7 +378,7 @@ function resolveModuleState(module: AppModule): {
       floating = def.floating ?? {};
     }
   }
-  rails ??= seedDefaults(module);
+  rails = pruneBottomRails(rails ?? seedDefaults(module));
   return { rails, floating, zOrder: zOrder ?? Object.keys(floating), collapsed };
 }
 
@@ -361,6 +411,7 @@ function moduleDefFromState(
     rails: rails.map((r) => ({
       side: r.side,
       width: r.width,
+      ...(r.height != null ? { height: r.height } : {}),
       panels: [...r.panels],
     })),
   };
@@ -447,6 +498,16 @@ export function toggleDockPanel(id: string): void {
     commit(without(id));
     return;
   }
+  // A closed panel with a default dock in the current module reopens there —
+  // appended to the first rail on its side, or in a fresh rail — instead of
+  // floating, so View-menu/shortcut toggles land panels where they belong.
+  const def = useRegistry.getState().panels[id]?.defaultDock;
+  if (def && def.module === s.module) {
+    const rail = s.rails.find((r) => r.side === def.direction);
+    if (rail) dropToRail(id, rail.id, rail.panels.length);
+    else dropToNewRail(id, def.direction, 0);
+    return;
+  }
   const n = Object.keys(s.floating).length;
   commit({
     floating: {
@@ -484,6 +545,13 @@ function setRailWidth(railId: string, width: number) {
   });
 }
 
+function setRailHeight(railId: string, height: number) {
+  const s = useDockStore.getState();
+  commit({
+    rails: s.rails.map((r) => (r.id === railId ? { ...r, height } : r)),
+  });
+}
+
 function setFloatWidth(id: string, width: number) {
   const s = useDockStore.getState();
   const f = s.floating[id];
@@ -512,17 +580,19 @@ function dropToRail(id: string, railId: string, index: number) {
   commit({ rails, floating, zOrder: s.zOrder.filter((p) => p !== id) });
 }
 
-function dropToNewRail(id: string, side: "left" | "right", index: number) {
+function dropToNewRail(id: string, side: RailState["side"], index: number) {
   const s = useDockStore.getState();
   const rails = s.rails
     .map((r) => ({ ...r, panels: r.panels.filter((p) => p !== id) }))
     .filter((r) => r.panels.length > 0);
   const floating = { ...s.floating };
   delete floating[id];
+  const def = useRegistry.getState().panels[id]?.defaultDock;
   const rail: RailState = {
     id: `rail-${Date.now().toString(36)}`,
     side,
-    width: useRegistry.getState().panels[id]?.defaultDock?.width ?? 280,
+    width: def?.width ?? 280,
+    ...(side === "bottom" ? { height: def?.height ?? DEFAULT_BOTTOM } : {}),
     panels: [id],
   };
   const same = rails.filter((r) => r.side === side);
@@ -556,35 +626,58 @@ function hitTest(container: HTMLElement, x: number, y: number, dragId: string): 
   const s = useDockStore.getState();
   const leftCount = s.rails.filter((r) => r.side === "left").length;
   const rightCount = s.rails.filter((r) => r.side === "right").length;
-  const strip = { top: c.top, height: c.height };
+  const bottomCount = s.rails.filter((r) => r.side === "bottom").length;
+  const vStrip = { y: c.top, w: 4, h: c.height };
+  // A panel that can't lay out horizontally is never offered a bottom target;
+  // dragging it over the strip floats it instead.
+  const canBottom = allowsBottom(useRegistry.getState().panels[dragId]);
 
   // Outermost edges of the whole dock area → new outermost rail.
   if (x < c.left + EDGE)
-    return { kind: "newRail", side: "left", index: 0, x: c.left + 2, ...strip };
+    return { kind: "newRail", side: "left", index: 0, line: { x: c.left + 2, ...vStrip } };
   if (x > c.right - EDGE)
-    return { kind: "newRail", side: "right", index: rightCount, x: c.right - 4, ...strip };
+    return { kind: "newRail", side: "right", index: rightCount, line: { x: c.right - 6, ...vStrip } };
+  if (canBottom && y > c.bottom - EDGE)
+    return {
+      kind: "newRail",
+      side: "bottom",
+      index: bottomCount,
+      line: { x: c.left, y: c.bottom - 6, w: c.width, h: 4 },
+    };
 
-  // Inside an existing rail → insertion point between panels.
+  // Inside an existing rail → insertion point between panels (stacked in side
+  // rails, side-by-side in bottom rails).
   for (const el of Array.from(container.querySelectorAll<HTMLElement>("[data-rail]"))) {
     const r = el.getBoundingClientRect();
     if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
     const railId = el.dataset.rail!;
+    const horizontal = s.rails.find((rr) => rr.id === railId)?.side === "bottom";
+    if (horizontal && !canBottom) continue;
     const items = Array.from(
       el.querySelectorAll<HTMLElement>("[data-dock-panel]"),
     ).filter((p) => p.dataset.dockPanel !== dragId);
     let index = items.length;
-    let lineY = items.length
-      ? items[items.length - 1].getBoundingClientRect().bottom
-      : r.top + 2;
+    const last = items.length ? items[items.length - 1].getBoundingClientRect() : null;
+    let at = horizontal ? (last?.right ?? r.left + 2) : (last?.bottom ?? r.top + 2);
     for (let i = 0; i < items.length; i++) {
       const pr = items[i].getBoundingClientRect();
-      if (y < pr.top + pr.height / 2) {
+      const before = horizontal
+        ? x < pr.left + pr.width / 2
+        : y < pr.top + pr.height / 2;
+      if (before) {
         index = i;
-        lineY = pr.top;
+        at = horizontal ? pr.left : pr.top;
         break;
       }
     }
-    return { kind: "rail", railId, index, line: { x: r.left, y: lineY, w: r.width } };
+    return {
+      kind: "rail",
+      railId,
+      index,
+      line: horizontal
+        ? { x: at, y: r.top, w: 2, h: r.height }
+        : { x: r.left, y: at, w: r.width, h: 2 },
+    };
   }
 
   // Strips just inside the main view's edges → new innermost rail.
@@ -592,9 +685,16 @@ function hitTest(container: HTMLElement, x: number, y: number, dragId: string): 
   if (main) {
     const m = main.getBoundingClientRect();
     if (x >= m.left && x < m.left + EDGE)
-      return { kind: "newRail", side: "left", index: leftCount, x: m.left, ...strip };
+      return { kind: "newRail", side: "left", index: leftCount, line: { x: m.left, ...vStrip } };
     if (x <= m.right && x > m.right - EDGE)
-      return { kind: "newRail", side: "right", index: 0, x: m.right - 2, ...strip };
+      return { kind: "newRail", side: "right", index: 0, line: { x: m.right - 2, ...vStrip } };
+    if (canBottom && y <= m.bottom && y > m.bottom - EDGE)
+      return {
+        kind: "newRail",
+        side: "bottom",
+        index: 0,
+        line: { x: m.left, y: m.bottom - 2, w: m.width, h: 4 },
+      };
   }
   return { kind: "float" };
 }
@@ -661,16 +761,18 @@ function startResize(
   min: number,
   max: number,
   sign: 1 | -1,
-  apply: (w: number) => void,
+  apply: (size: number) => void,
+  axis: "x" | "y" = "x",
 ) {
   if (e.button !== 0) return;
   e.preventDefault();
-  const startX = e.clientX;
-  // Pointer delta is visual px under the <body> UI-scale zoom; the width it
+  const startPos = axis === "x" ? e.clientX : e.clientY;
+  // Pointer delta is visual px under the <body> UI-scale zoom; the size it
   // drives is layout px, so map it back through the zoom to track 1:1.
   const z = getSettings().uiScale || 1;
   const move = (ev: PointerEvent) => {
-    const w = start + (sign * (ev.clientX - startX)) / z;
+    const pos = axis === "x" ? ev.clientX : ev.clientY;
+    const w = start + (sign * (pos - startPos)) / z;
     apply(Math.min(Math.max(w, min), max));
   };
   const up = () => {
@@ -690,6 +792,21 @@ function startResize(
 export const DockPanelTitleCtx = createContext<string | null>(null);
 
 const ContainerCtx = createContext<RefObject<HTMLDivElement | null> | null>(null);
+
+const PLACEMENTS: Record<PanelPlacement["side"], PanelPlacement> = {
+  left: { side: "left" },
+  right: { side: "right" },
+  bottom: { side: "bottom" },
+  float: { side: "float" },
+};
+const PlacementCtx = createContext<PanelPlacement>(PLACEMENTS.float);
+
+/** Where the hosting dock panel currently sits — lets a panel adapt its layout
+ *  to its rail (e.g. a strip renders horizontal in a bottom rail). "float"
+ *  covers floating windows and any render outside the dock. */
+export function useDockPlacement(): PanelPlacement {
+  return useContext(PlacementCtx);
+}
 
 function PanelBody({ id }: { id: string }) {
   const reg = useRegistry((s) => s.panels[id]);
@@ -719,6 +836,10 @@ function PanelHeader({ id }: { id: string }) {
   const extensionId = useRegistry((s) => s.panels[id]?.extensionId ?? "");
   const previewable = useRegistry((s) => panelIsPreviewable(id, s));
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
+  // The marker points the way the body will go: a column folds up to the right,
+  // a bottom strip folds down out of the canvas's way.
+  const { side } = useDockPlacement();
+  const marker = side === "bottom" ? (collapsed ? "▴" : "▾") : collapsed ? "▸" : "▾";
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <div
@@ -734,7 +855,7 @@ function PanelHeader({ id }: { id: string }) {
       className="flex h-7 shrink-0 cursor-grab select-none items-center gap-1.5 border-b border-border-subtle bg-surface-2 px-2"
     >
       <span className="w-2 text-[9px] text-text-muted" aria-hidden="true">
-        {collapsed ? "▸" : "▾"}
+        {marker}
       </span>
       {Accessory && (
         <span className="flex items-center leading-none">
@@ -776,45 +897,106 @@ function PanelHeader({ id }: { id: string }) {
   );
 }
 
-function DockedPanel({ id }: { id: string }) {
+/** `stretch` panels fill the remaining rail space and let the body scroll
+ *  itself (fill panels in side rails; every panel in a bottom rail). */
+function DockedPanel({ id, stretch = false }: { id: string; stretch?: boolean }) {
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
+  const body = (
+    <PanelErrorBoundary id={id}>
+      <PanelBody id={id} />
+    </PanelErrorBoundary>
+  );
   return (
-    <div data-dock-panel={id} className="shrink-0 border-b border-border">
+    <div
+      data-dock-panel={id}
+      className={`border-b border-border ${
+        stretch ? "flex min-h-0 min-w-0 flex-1 flex-col" : "shrink-0"
+      }`}
+    >
       <PanelHeader id={id} />
-      {!collapsed && (
-        <PanelErrorBoundary id={id}>
-          <PanelBody id={id} />
-        </PanelErrorBoundary>
-      )}
+      {!collapsed &&
+        (stretch ? <div className="min-h-0 flex-1 overflow-hidden">{body}</div> : body)}
     </div>
   );
 }
 
 function Rail({ rail }: { rail: RailState }) {
+  // At most one fill panel per rail stretches to the leftover height; while one
+  // is present (and expanded) the rail stops scrolling and the panel scrolls.
+  const fillId = useRegistry(
+    (s) => rail.panels.find((id) => s.panels[id]?.fill) ?? null,
+  );
+  const fillExpanded = useDockStore((s) => !!fillId && !s.collapsed[fillId]);
   return (
-    <div
-      data-rail={rail.id}
-      className={`relative h-full shrink-0 bg-surface-1 ${
-        rail.side === "left" ? "border-r" : "border-l"
-      } border-border`}
-      style={{ width: rail.width }}
-    >
-      <div className="h-full overflow-y-auto overflow-x-hidden">
-        {rail.panels.map((id) => (
-          <DockedPanel key={id} id={id} />
-        ))}
-      </div>
+    <PlacementCtx.Provider value={PLACEMENTS[rail.side]}>
       <div
-        onPointerDown={(e) =>
-          startResize(e, rail.width, MIN_RAIL, MAX_RAIL,
-            rail.side === "left" ? 1 : -1,
-            (w) => setRailWidth(rail.id, w))
-        }
-        className={`absolute top-0 z-10 h-full w-1 cursor-col-resize hover:bg-accent/40 ${
-          rail.side === "left" ? "-right-0.5" : "-left-0.5"
-        }`}
-      />
-    </div>
+        data-rail={rail.id}
+        className={`relative h-full shrink-0 bg-surface-1 ${
+          rail.side === "left" ? "border-r" : "border-l"
+        } border-border`}
+        style={{ width: rail.width }}
+      >
+        <div
+          className={
+            fillExpanded
+              ? "flex h-full flex-col overflow-hidden"
+              : "h-full overflow-y-auto overflow-x-hidden"
+          }
+        >
+          {rail.panels.map((id) => (
+            <DockedPanel key={id} id={id} stretch={fillExpanded && id === fillId} />
+          ))}
+        </div>
+        <div
+          onPointerDown={(e) =>
+            startResize(e, rail.width, MIN_RAIL, MAX_RAIL,
+              rail.side === "left" ? 1 : -1,
+              (w) => setRailWidth(rail.id, w))
+          }
+          className={`absolute top-0 z-10 h-full w-1 cursor-col-resize hover:bg-accent/40 ${
+            rail.side === "left" ? "-right-0.5" : "-left-0.5"
+          }`}
+        />
+      </div>
+    </PlacementCtx.Provider>
+  );
+}
+
+function BottomRail({ rail }: { rail: RailState }) {
+  // Collapsing a bottom panel folds the strip downward: with every panel in the
+  // rail collapsed it drops its fixed height and sizes to the headers alone, so
+  // the canvas takes back the band instead of looking at an empty strip. (One
+  // collapsed panel beside an expanded one just narrows to its own header.)
+  const allCollapsed = useDockStore((s) => rail.panels.every((id) => s.collapsed[id]));
+  return (
+    <PlacementCtx.Provider value={PLACEMENTS.bottom}>
+      <div
+        data-rail={rail.id}
+        className="relative w-full shrink-0 border-t border-border bg-surface-1"
+        style={allCollapsed ? undefined : { height: rail.height ?? DEFAULT_BOTTOM }}
+      >
+        <div
+          className={`flex overflow-hidden [&>*:not(:last-child)]:border-r ${
+            allCollapsed ? "" : "h-full"
+          }`}
+        >
+          {rail.panels.map((id) => (
+            <DockedPanel key={id} id={id} stretch />
+          ))}
+        </div>
+        {/* Nothing to resize while it's folded away; the stored height comes
+            back when a panel is expanded again. */}
+        {!allCollapsed && (
+          <div
+            onPointerDown={(e) =>
+              startResize(e, rail.height ?? DEFAULT_BOTTOM, MIN_BOTTOM, MAX_BOTTOM, -1,
+                (h) => setRailHeight(rail.id, h), "y")
+            }
+            className="absolute -top-0.5 left-0 z-10 h-1 w-full cursor-row-resize hover:bg-accent/40"
+          />
+        )}
+      </div>
+    </PlacementCtx.Provider>
   );
 }
 
@@ -859,16 +1041,17 @@ function DragOverlay() {
   const z = getSettings().uiScale || 1;
   return (
     <>
-      {target?.kind === "rail" && (
+      {target && target.kind !== "float" && (
         <div
-          className="pointer-events-none fixed z-50 h-0.5 bg-accent"
-          style={{ left: target.line.x / z, top: target.line.y / z - 1, width: target.line.w / z }}
-        />
-      )}
-      {target?.kind === "newRail" && (
-        <div
-          className="pointer-events-none fixed z-50 w-1 bg-accent/70"
-          style={{ left: target.x / z, top: target.top / z, height: target.height / z }}
+          className={`pointer-events-none fixed z-50 ${
+            target.kind === "rail" ? "bg-accent" : "bg-accent/70"
+          }`}
+          style={{
+            left: target.line.x / z,
+            top: target.line.y / z,
+            width: target.line.w / z,
+            height: target.line.h / z,
+          }}
         />
       )}
       <div
@@ -901,18 +1084,24 @@ export function DockHost({
   const show = ready && !hidden;
   const left = show ? rails.filter((r) => r.side === "left") : [];
   const right = show ? rails.filter((r) => r.side === "right") : [];
+  const bottom = show ? rails.filter((r) => r.side === "bottom") : [];
 
   return (
     <ContainerCtx.Provider value={containerRef}>
-      <div ref={containerRef} className="relative flex min-h-0 flex-1 overflow-hidden">
-        {left.map((r) => (
-          <Rail key={r.id} rail={r} />
-        ))}
-        <div data-dock-main className="flex h-full min-w-0 flex-1 flex-col">
-          {children}
+      <div ref={containerRef} className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {left.map((r) => (
+            <Rail key={r.id} rail={r} />
+          ))}
+          <div data-dock-main className="flex h-full min-w-0 flex-1 flex-col">
+            {children}
+          </div>
+          {right.map((r) => (
+            <Rail key={r.id} rail={r} />
+          ))}
         </div>
-        {right.map((r) => (
-          <Rail key={r.id} rail={r} />
+        {bottom.map((r) => (
+          <BottomRail key={r.id} rail={r} />
         ))}
         {show && floatIds.map((id) => <FloatingPanel key={id} id={id} />)}
         <DragOverlay />

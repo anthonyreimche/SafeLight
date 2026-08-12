@@ -2,7 +2,7 @@
 
 ← [API Reference](README.md)
 
-`api.components` is the stock component kit — pre-themed React components so extension UI matches the app exactly. They are built with the app's own React instance; render them through `api.react` (`React.createElement(api.components.Slider, props)`), never import React yourself. Six components are exposed: `Panel`, `Slider`, `Histogram`, `CurveEditor`, `Rating`, `Thumbnail`.
+`api.components` is the stock component kit — pre-themed React components so extension UI matches the app exactly. They are built with the app's own React instance; render them through `api.react` (`React.createElement(api.components.Slider, props)`), never import React yourself. Seven components are exposed: `Panel`, `Slider`, `Histogram`, `CurveEditor`, `Rating`, `Thumbnail`, `PhotoListRow`.
 
 > There is **no `Button` component** in the kit — buttons in Safelight are plain styled `<button>` elements. See [Building custom controls](#building-custom-controls-buttons-checkboxes-selects).
 
@@ -12,6 +12,8 @@
 - [`CurveEditor`](#curveeditor)
 - [`Rating`](#rating)
 - [`Thumbnail`](#thumbnail)
+- [`PhotoListRow`](#photolistrow)
+- [Photo surfaces: menu and shortcuts](#photo-surfaces-menu-and-shortcuts)
 - [Theming tokens](#theming-tokens)
 - [Building custom controls](#building-custom-controls-buttons-checkboxes-selects)
 
@@ -95,6 +97,41 @@ The Library grid cell: cached preview, selection/active border, color-label dot,
 | `onContextMenu` | `(id, e) => void` | Optional. |
 | `onRatingChange` | `(id, rating) => void` | Optional — enables the inline star control. |
 | `onDragStart` | `(id, e: React.DragEvent) => void` | Optional — makes the cell draggable. |
+
+## `PhotoListRow`
+
+The Library list-view row — the same cell in row form: preview, color-label edge, filename, keyword and flag badges, rating, dimensions and camera. `memo`-ized on its props with the same id-first callbacks as `Thumbnail`.
+
+| Prop | Type | Notes |
+|---|---|---|
+| `photo` | `CatalogPhoto` | The record to render. |
+| `selected` | `boolean` | Part of a multi-selection. |
+| `active` | `boolean` | The photo open in Develop/Loupe. |
+| `compact` | `boolean` | Optional — drop the dimension and camera columns, for a narrow container (a filmstrip rail). |
+| `onClick` | `(id, e: React.MouseEvent) => void` | — |
+| `onDoubleClick` | `(id) => void` | — |
+| `onContextMenu` | `(id, e) => void` | Optional. |
+| `onDragStart` | `(id, e: React.DragEvent) => void` | Optional — makes the row draggable. |
+
+Rows are 53px tall in the Library grid's list view; match that if you want your surface to line up with it.
+
+## Photo surfaces: menu and shortcuts
+
+A surface that lists photos (a filmstrip, an alternative browser) should not reimplement the grid's behavior — two APIs hand you core's own, so extension-contributed menu items and the user's rebound keys are included for free.
+
+```typescript
+// The Library right-click menu + its dialogs (rename, copy settings).
+const { onContextMenu, overlays } = api.catalog.usePhotoActions();
+// …wire onContextMenu to each cell, render {overlays} in the surface.
+
+// Ratings, flags, labels, rotate, remove/delete, rename, reveal, select-all,
+// prev/next — live while your component is mounted.
+api.catalog.useCullingShortcuts({ sizeSteps: false });
+```
+
+`onContextMenu` targets the whole selection when the clicked photo is part of one, else selects just it (the grid's rule). The menu carries the built-in actions plus every [`registerGridMenuItem`](contributions.md) contribution.
+
+`useCullingShortcuts` installs one shared, ref-counted listener, so several surfaces on screen at once still act once per press. Pass `sizeSteps: false` when your cells are sized by their container — `-`/`=` then stay with the Library grid. Develop's own bindings keep priority where they overlap: `Delete` belongs to a selected mask component while you're painting one, and prev/next and rotate move to this handler while any surface is mounted so they never fire twice.
 
 ## Theming tokens
 
