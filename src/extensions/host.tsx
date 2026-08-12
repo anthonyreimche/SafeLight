@@ -45,7 +45,17 @@ import {
   registerExtensionAction,
   useKeybindings,
 } from "@/state/keybindings-store";
-import { applyDockLayout, initDockLayouts, toggleDockPanel, useLayoutStore } from "./dock";
+import {
+  applyDockLayout,
+  initDockLayouts,
+  toggleDockPanel,
+  useDockPlacement,
+  useLayoutStore,
+} from "./dock";
+import { useVisiblePhotos } from "@/modules/library/photo-navigation";
+import { usePhotoActions } from "@/modules/library/photo-actions";
+import { useCullingShortcuts } from "@/modules/library/use-culling-shortcuts";
+import { LibraryListRow } from "@/modules/library/LibraryListRow";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
 import { captureDevelopFrame, renderDevelopPhotoFrame, useDevelopOverlay } from "./develop-host";
 import { useMaskScope } from "@/modules/develop/mask-scope";
@@ -129,7 +139,15 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       set: (key, value) => setExtSetting(extensionId, key, value),
       onChange: (cb) => onExtSettingChange(extensionId, cb),
     },
-    components: { Panel, Slider, Histogram, CurveEditor, Rating, Thumbnail },
+    components: {
+      Panel,
+      Slider,
+      Histogram,
+      CurveEditor,
+      Rating,
+      Thumbnail,
+      PhotoListRow: LibraryListRow,
+    },
     ui: uiKit,
     stores: {
       useDevelopStore,
@@ -148,7 +166,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       list: () => Array.from(getAllDescriptors().values()),
       get: (qualifiedKey) => getParamDescriptor(qualifiedKey),
     },
-    dock: { togglePanel: toggleDockPanel },
+    dock: { togglePanel: toggleDockPanel, usePanelPlacement: useDockPlacement },
     themes: { apply: applyTheme },
     layouts: { apply: applyDockLayout },
     pipelines: { apply: applyPipeline },
@@ -197,6 +215,9 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
           .then((e) => e ?? null),
       putEditState: (editState) => catalogStorage().putEditState(editState),
       renamePhoto: (photoId, newBaseName) => renamePhoto(photoId, newBaseName),
+      useVisiblePhotos,
+      usePhotoActions,
+      useCullingShortcuts,
     },
   };
 }

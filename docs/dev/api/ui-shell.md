@@ -29,13 +29,29 @@ interface PanelContribution {
   component: ComponentType;   // a React component built with api.react
   slot?: "develop-right" | "develop-left" | "none"; // composite stack slot (default "none")
   order?: number;             // sort within slot (default 100)
-  defaultDock?: {             // initial placement when the user has no saved layout
+  fill?: boolean;             // stretch to the remaining rail space; body sizes
+                              // to 100% and scrolls itself
+  allowBottomDock?: boolean;  // opt in to bottom rails (see below)
+  defaultDock?: {             // initial placement when the user has no saved layout,
+                              // and where View-menu / shortcut toggles reopen the panel
     module: "library" | "develop";
-    direction: "left" | "right";
-    order?: number; width?: number; height?: number;
+    direction: "left" | "right" | "bottom"; // "bottom" = full-width horizontal strip
+    order?: number;
+    width?: number;           // side-rail column width
+    height?: number;          // bottom-rail strip height
   };
   onReset?: () => void;       // adds "Reset to defaults" to the dock header; one undoable action
 }
+```
+
+Side rails render panels top-to-bottom at natural height; a **bottom** rail renders its panels side-by-side, each filling the strip's height, with the rail resized from its top edge. Collapsing folds a bottom rail downward — once every panel in it is collapsed the rail drops to its headers and gives the band back to the main view, restoring its height when one is expanded again.
+
+Bottom rails are **opt-in**. A panel is a vertical column unless it sets `allowBottomDock` (declaring `defaultDock.direction: "bottom"` implies it), and the dock offers a bottom drop target only for those — dragging any other panel over the strip floats it instead. This keeps a histogram or a curve editor out of a 112px band it was never laid out for. A saved layout carrying such a panel in a bottom rail is pruned on load; reopening it from the View menu re-docks it at its own default.
+
+A component that must adapt to its rail (e.g. a filmstrip that flips horizontal when docked at the bottom) reads its placement with the hook:
+
+```typescript
+const { side } = api.dock.usePanelPlacement(); // "left" | "right" | "bottom" | "float"
 ```
 
 To *replace* a stock panel, register your own and tell users to disable the built-in (e.g. "Histogram") in the Extensions panel.
@@ -70,7 +86,7 @@ A named dock arrangement selectable from the Layout menu.
 interface LayoutContribution {
   id: string; name: string; description?: string;
   modules?: Partial<Record<"library" | "develop", {
-    rails: { side: "left" | "right"; width?: number; panels: string[] }[];
+    rails: { side: "left" | "right" | "bottom"; width?: number; height?: number; panels: string[] }[];
     floating?: Record<string, { x: number; y: number; width: number }>;
   }>>;
 }

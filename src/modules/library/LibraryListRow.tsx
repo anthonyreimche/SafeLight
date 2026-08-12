@@ -19,6 +19,9 @@ interface LibraryListRowProps {
   photo: CatalogPhoto;
   selected: boolean;
   active: boolean;
+  /** Drop the dimension and camera columns, for rows in a narrow container
+   *  (a filmstrip rail) where the filename would otherwise be crushed. */
+  compact?: boolean;
   // Id-based callbacks so the parent passes one stable function to every row;
   // with memo() below, a selection re-renders only the rows that changed.
   onClick: (id: string, e: React.MouseEvent) => void;
@@ -31,6 +34,7 @@ function LibraryListRowImpl({
   photo,
   selected,
   active,
+  compact = false,
   onClick,
   onDoubleClick,
   onContextMenu,
@@ -111,17 +115,23 @@ function LibraryListRowImpl({
         </span>
       )}
 
-      <span className="w-16 shrink-0 text-right text-[10px] text-rating">
+      <span
+        className={`shrink-0 text-right text-[10px] text-rating ${compact ? "" : "w-16"}`}
+      >
         {photo.rating > 0 ? "★".repeat(photo.rating) : ""}
       </span>
 
-      <span className="w-24 shrink-0 text-right text-[10px] tabular-nums text-text-muted">
-        {photo.width}×{photo.height}
-      </span>
+      {!compact && (
+        <>
+          <span className="w-24 shrink-0 text-right text-[10px] tabular-nums text-text-muted">
+            {photo.width}×{photo.height}
+          </span>
 
-      <span className="hidden w-36 shrink-0 truncate text-right text-[10px] text-text-muted md:block">
-        {photo.exif.cameraModel ?? ""}
-      </span>
+          <span className="hidden w-36 shrink-0 truncate text-right text-[10px] text-text-muted md:block">
+            {photo.exif.cameraModel ?? ""}
+          </span>
+        </>
+      )}
     </div>
   );
 }

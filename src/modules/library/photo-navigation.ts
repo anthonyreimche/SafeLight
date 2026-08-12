@@ -8,10 +8,48 @@
 // list the grid displays, so navigation never lands on a hidden photo and the
 // two modules stay in sync.
 
+import { useMemo } from "react";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
+import { useSettings } from "@/state/settings-store";
 import { visiblePhotos } from "./visible-photos";
-import { gridFilterPredicates, librarySortCompare } from "@/extensions/registry";
+import {
+  gridFilterPredicates,
+  librarySortCompare,
+  useGridFilters,
+  useLibrarySorts,
+} from "@/extensions/registry";
+import type { CatalogPhoto } from "@/catalog/types";
+
+/** Reactive `visibleList`: the grid's display order as a hook, re-derived when
+ *  the catalog, filters, sort, folder or extension grid filters/sorts change.
+ *  Backs the Library grid and api.catalog.useVisiblePhotos. */
+export function useVisiblePhotos(): CatalogPhoto[] {
+  const photos = useCatalogStore((s) => s.photos);
+  const filter = useUIStore((s) => s.filter);
+  const sortField = useUIStore((s) => s.sortField);
+  const sortDirection = useUIStore((s) => s.sortDirection);
+  const activeFolder = useUIStore((s) => s.activeFolder);
+  // Subscribe so the list re-derives when the subfolder preference toggles;
+  // visiblePhotos reads the value itself (see inFolder).
+  const showSubfolderPhotos = useSettings((s) => s.showSubfolderPhotos);
+  const gridFilters = useGridFilters();
+  const librarySorts = useLibrarySorts();
+  const customCompare = librarySorts.find((s) => s.id === sortField)?.compare;
+  return useMemo(
+    () =>
+      visiblePhotos(
+        photos,
+        filter,
+        sortField,
+        sortDirection,
+        activeFolder,
+        gridFilters.map((g) => g.test),
+        customCompare,
+      ),
+    [photos, filter, sortField, sortDirection, activeFolder, showSubfolderPhotos, gridFilters, customCompare],
+  );
+}
 
 /** The photos the grid is currently showing, in display order. */
 export function visibleList() {

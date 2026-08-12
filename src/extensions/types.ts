@@ -14,14 +14,19 @@ import type { ComponentType } from "react";
 export type PanelSlot = "develop-right" | "develop-left" | "none";
 
 /** Default placement in a module's dock layout (used when the user has no
- *  saved layout for that module yet). */
+ *  saved layout for that module yet, and where View-menu/shortcut toggles
+ *  reopen the panel). */
 export interface PanelDockDefault {
   module: "library" | "develop";
-  direction: "left" | "right";
+  /** "left"/"right" are vertical columns beside the main view (sized by
+   *  `width`); "bottom" is a full-width horizontal strip under it (sized by
+   *  `height`). */
+  direction: "left" | "right" | "bottom";
   /** Stacking order within the direction (lower = closer to main). */
   order?: number;
+  /** Side-rail column width. */
   width?: number;
-  /** Initial group height when stacked below another panel in the column. */
+  /** Bottom-rail strip height. */
   height?: number;
 }
 
@@ -35,6 +40,17 @@ export interface PanelContribution {
   /** Sort position within the slot (lower = higher up). Default 100. */
   order?: number;
   defaultDock?: PanelDockDefault;
+  /** Stretch to the remaining rail height instead of rendering at natural
+   *  height; the panel body must size to 100% and manage its own scrolling.
+   *  One fill panel per side rail stretches (the rail stops scrolling while it
+   *  is expanded); bottom-rail panels always fill. */
+  fill?: boolean;
+  /** Opt in to bottom rails — the full-width horizontal strip under the main
+   *  view. Panels are vertical columns unless they say otherwise, so the dock
+   *  offers a bottom drop target only for panels that lay out horizontally;
+   *  everything else can only be docked left, right or floated. Implied by a
+   *  `defaultDock.direction` of "bottom". */
+  allowBottomDock?: boolean;
   /** Reset this panel's values to their defaults. When set, right-clicking the
    *  panel's dock header offers "Reset to defaults". Should be a single
    *  undoable action. */
@@ -69,12 +85,21 @@ export interface MaskPanelContribution {
   owns: readonly string[];
 }
 
-/** One dock column in a layout preset. Panels listed top→bottom. */
+/** One dock rail in a layout preset. Panels listed top→bottom (side rails)
+ *  or left→right (bottom rails). */
 export interface LayoutRail {
-  side: "left" | "right";
+  side: "left" | "right" | "bottom";
+  /** Side rails: column width. */
   width?: number;
+  /** Bottom rails: strip height. */
+  height?: number;
   /** Panel ids, e.g. "core.histogram". Unknown ids render a placeholder. */
   panels: string[];
+}
+
+/** Where a dock panel is currently hosted (see dock.usePanelPlacement). */
+export interface PanelPlacement {
+  side: "left" | "right" | "bottom" | "float";
 }
 
 export interface ModuleLayoutDef {
@@ -844,6 +869,9 @@ export interface SafelightAPI {
     CurveEditor: typeof import("@/ui/components/CurveEditor").CurveEditor;
     Rating: typeof import("@/ui/components/Rating").Rating;
     Thumbnail: typeof import("@/ui/components/Thumbnail").Thumbnail;
+    /** The Library's list-view row (thumbnail, name, flags, rating, dimensions,
+     *  camera). Pass `compact` in a narrow container to drop the last two. */
+    PhotoListRow: typeof import("@/modules/library/LibraryListRow").LibraryListRow;
   };
   /** Shared, theme-styled UI primitives handed to extensions — Button, Select,
    *  NumberInput, TextInput, TextArea, Toggle, SegmentedControl, Field, Section,
@@ -877,7 +905,13 @@ export interface SafelightAPI {
     list(): import("./param-registry").ParamDescriptor[];
     get(qualifiedKey: string): import("./param-registry").ParamDescriptor | undefined;
   };
-  dock: { togglePanel(id: string): void };
+  dock: {
+    togglePanel(id: string): void;
+    /** Where the calling panel component is docked right now ("float" when
+     *  floating or rendered outside the dock). React hook — call it from the
+     *  panel's component to adapt its layout to its rail. */
+    usePanelPlacement(): PanelPlacement;
+  };
   themes: { apply(id: string): void };
   layouts: { apply(id: string): void };
   pipelines: { apply(id: string): void };
@@ -1031,6 +1065,28 @@ export interface SafelightAPI {
       photoId: string,
       newBaseName: string,
     ): Promise<import("@/project/folder-ops").RenamePhotoResult>;
+    /** The photos the Library grid is currently showing, in display order —
+     *  active folder, filters, sort direction, extension grid filters and
+     *  extension sorts all applied. React hook; the same list core's ←/→
+     *  photo navigation walks, so a strip built on it always agrees with the
+     *  grid. */
+    useVisiblePhotos(): import("@/catalog/types").CatalogPhoto[];
+    /** The Library's photo right-click menu, for a surface that lists photos.
+     *  Wire `onContextMenu` to each cell and render `overlays` inside the
+     *  surface; the menu carries the built-in actions (open, rename, copy/paste
+     *  settings, rotate, re-import, export data, remove, delete from disk) and
+     *  every registerGridMenuItem contribution, with the grid's dialogs. React
+     *  hook. */
+    usePhotoActions(): import("@/modules/library/photo-actions").PhotoActions;
+    /** Mount the Library's culling shortcuts (ratings, flags, color labels,
+     *  rotate, remove/delete, rename, reveal, select-all, prev/next) for as
+     *  long as the calling component is mounted — so a photo surface docked in
+     *  Develop culls exactly like the grid. Combos stay rebindable in
+     *  Preferences ▸ Shortcuts, and Develop's own bindings keep priority where
+     *  they overlap (Delete belongs to a selected mask component). React hook. */
+    useCullingShortcuts(
+      options?: import("@/modules/library/use-culling-shortcuts").CullingShortcutOptions,
+    ): void;
   };
 }
 
