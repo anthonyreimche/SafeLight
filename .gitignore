@@ -30,7 +30,31 @@ build/safelight-cert.pfx
 *.njsproj
 *.sln
 *.sw?
+
+# AI assistant config, context and session artifacts — local working state, not
+# part of the app. (Note: art/icon.ai is Illustrator, deliberately not matched.)
 /.claude
+/.claude-trace
+/.codex
+/.cursor
+/.aider*
+/.continue
+/.gemini
+/.specstory
+/.windsurf
+/.mcp.json
+/.cursorrules
+/.windsurfrules
+/.aiderignore
+AGENTS.md
+CLAUDE.local.md
+CLAUDE.md
+GEMINI.md
+.github/copilot-instructions.md
+docs/superpowers/
+task_plan.md
+findings.md
+progress.md
 
 # Lensfun vendor database (5MB XML, regenerable — only ship the JSON)
 src/lens-profiles/vendor/
