@@ -17,6 +17,7 @@ import { DevToolsWindow } from "@/extensions/devtools/DevToolsPanel";
 import { AppShell } from "@/ui/components/AppShell";
 import { PreferencesDialog } from "@/ui/components/PreferencesDialog";
 import { ExtensionsDialog } from "@/ui/components/ExtensionsDialog";
+import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { LibraryView } from "@/modules/library/LibraryView";
 import { DevelopView } from "@/modules/develop/DevelopView";
 import { WelcomeView } from "@/modules/welcome/WelcomeView";
@@ -74,6 +75,7 @@ export function App() {
         {renderModule(dm)}
         <PreferencesDialog />
         <ExtensionsDialog />
+        <ConfirmDialogHost />
         <ExtensionSecurityBanner />
         <UpdateBanner />
       </>
@@ -92,6 +94,7 @@ export function App() {
         </AppShell>
         <PreferencesDialog />
         <ExtensionsDialog />
+        <ConfirmDialogHost />
         <ExtensionSecurityBanner />
         <UpdateBanner />
       </>
@@ -105,6 +108,7 @@ export function App() {
         <WelcomeView />
         <PreferencesDialog />
         <ExtensionsDialog />
+        <ConfirmDialogHost />
         <ExtensionSecurityBanner />
         <StorageBanner />
         <UpdateBanner />
@@ -117,6 +121,7 @@ export function App() {
       {renderModule(activeModule)}
       <PreferencesDialog />
       <ExtensionsDialog />
+      <ConfirmDialogHost />
       <StorageBanner />
       <UpdateBanner />
     </>

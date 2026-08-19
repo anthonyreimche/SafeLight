@@ -37,6 +37,7 @@ import { useSettings } from "@/state/settings-store";
 import { Select } from "@/ui/components/Select";
 import { openPreferences } from "@/ui/components/PreferencesDialog";
 import { closeExtensions } from "@/ui/components/ExtensionsDialog";
+import { confirmDialog } from "@/ui/components/ConfirmDialog";
 import {
   forgetSource,
   pruneSources,
@@ -288,14 +289,17 @@ export function ExtensionManagerPanel() {
     // extensions are third-party code Safelight neither controls nor guarantees,
     // and that "verified" is a point-in-time review, not a safety warranty.
     if (!hasAckedExtensionRisk()) {
-      const ok = window.confirm(
-        "Safelight extensions are third-party software — not made, controlled, or " +
+      const ok = await confirmDialog({
+        title: "Before installing extensions",
+        message:
+          "Safelight extensions are third-party software — not made, controlled, or " +
           "guaranteed by Safelight. They install from GitHub and run with full access " +
           "to your photos, metadata, edits and files.\n\n" +
           "A “Verified” badge means a maintainer reviewed the code at a point in time. " +
           "It is not a guarantee of safety, and later updates may not be reviewed.\n\n" +
-          "Install extensions at your own risk. Continue?",
-      );
+          "Install extensions at your own risk.",
+        confirmLabel: "Continue",
+      });
       if (!ok) return;
       setAckedExtensionRisk();
     }
@@ -303,15 +307,17 @@ export function ExtensionManagerPanel() {
     // runs with full access, so make the user opt in explicitly. Code that matches
     // a verified review installs without this prompt.
     if (!trusted) {
-      const ok = window.confirm(
-        reviewedStale
+      const ok = await confirmDialog({
+        title: "Unreviewed extension",
+        message: reviewedStale
           ? `${repo ?? installSpec} is verified only up to version ${reviewedVersion}. ` +
-              "The current version is newer and has NOT been reviewed. It runs with full " +
-              "access to your photos, metadata and files.\n\nInstall the unreviewed version anyway?"
+            "The current version is newer and has NOT been reviewed. It runs with full " +
+            "access to your photos, metadata and files."
           : `${repo ?? installSpec} hasn't been reviewed by Safelight.\n\n` +
-              "Installed extensions run with full access to your photos, metadata and " +
-              "edits. Only install extensions you trust.\n\nInstall anyway?",
-      );
+            "Installed extensions run with full access to your photos, metadata and " +
+            "edits. Only install extensions you trust.",
+        confirmLabel: "Install anyway",
+      });
       if (!ok) return;
     }
     setBusy(installSpec);
