@@ -13,9 +13,15 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { isEditableTarget, shortcutsSuspended } from "@/state/keybindings-store";
+import {
+  comboFromWheelEvent,
+  getBinding,
+  isEditableTarget,
+  shortcutsSuspended,
+} from "@/state/keybindings-store";
 import { resolveCursorCss, useCanvasCursor } from "@/state/cursor-store";
 import { useCanvasGesture, setCanvasZoomGesture } from "@/state/canvas-gesture";
+import { registerViewportZoomCommands } from "@/state/viewport-zoom-commands";
 import { frameLocalPoint } from "@/ui/frame-point";
 
 interface ViewportImageProps {
@@ -81,6 +87,15 @@ interface ViewportImageProps {
 }
 
 const DRAG_THRESHOLD = 4; // px of movement before a press counts as a pan
+
+// Wheel / keyboard zoom. The rebindable gesture is the viewport.wheelZoom
+// action (default: bare Wheel); Ctrl/⌘+Wheel stays fixed on top — it's how
+// Chromium encodes a trackpad pinch, and Ctrl/⌘ already means pan/zoom
+// passthrough, which keeps wheel zoom reachable under extension overlays.
+const WHEEL_ZOOM_ACTION = "viewport.wheelZoom";
+const ZOOM_STEP = 1.25; // per keyboard step and per classic wheel notch (100 px)
+const MAX_ZOOM = 2; // the status bar's 200% top stop
+const FIT_SNAP = 1.0001; // a zoom-out landing within this of fit snaps to fit
 
 // An interactive image viewport. The GL canvas keeps its buffer resolution; we
 // position and scale it with a CSS transform. The zoom level is owned by the
@@ -207,8 +222,8 @@ export function ViewportImage({
   const effOffset =
     staticFit || zoom == null ? centered(fitScale) : clampOffset(offset, zoom);
 
-  const stateRef = useRef({ effScale, effOffset, imgW, imgH, roiMode, frameW: frame.w, frameH: frame.h, bufW: bufferWidth, bufH: bufferHeight });
-  stateRef.current = { effScale, effOffset, imgW, imgH, roiMode, frameW: frame.w, frameH: frame.h, bufW: bufferWidth, bufH: bufferHeight };
+  const stateRef = useRef({ zoom, fitScale, effScale, effOffset, imgW, imgH, roiMode, frameW: frame.w, frameH: frame.h, bufW: bufferWidth, bufH: bufferHeight });
+  stateRef.current = { zoom, fitScale, effScale, effOffset, imgW, imgH, roiMode, frameW: frame.w, frameH: frame.h, bufW: bufferWidth, bufH: bufferHeight };
 
   // Map a frame-local point to canvas-BUFFER pixels (what samplers index). The
   // mapping differs by render mode: in ROI-zoom mode the live buffer holds only
@@ -320,25 +335,54 @@ export function ViewportImage({
     zoomToggleAt(fx, fy);
   };
 
+  // Absolute-scale zoom anchored at a frame-local point (null = centre). A
+  // zoom-out landing at/under the fit scale returns to fit rather than
+  // stranding a sub-fit scale.
+  const zoomTo = (target: number, cx: number | null, cy: number | null) => {
+    if (!hasImage) return;
+    const cur = zoom ?? fitScale;
+    const next = Math.min(target, MAX_ZOOM);
+    if (next <= cur && next <= fitScale * FIT_SNAP) {
+      if (zoom != null) onZoomChange(null);
+      return;
+    }
+    if (next === cur) return;
+    const ax = cx ?? frame.w / 2;
+    const ay = cy ?? frame.h / 2;
+    const { effScale: s, effOffset: o } = stateRef.current;
+    setOffset(
+      clampOffset(
+        { x: ax - ((ax - o.x) / s) * next, y: ay - ((ay - o.y) / s) * next },
+        next,
+      ),
+    );
+    skipRecenterRef.current = true;
+    onZoomChange(next);
+  };
+
   // Keep a fresh closure for the window key listener (mounted once) to call.
   const zoomToggleRef = useRef<(cx: number | null, cy: number | null) => void>(
     () => {},
   );
   zoomToggleRef.current = zoomToggleAt;
+  const zoomToRef = useRef(zoomTo);
+  zoomToRef.current = zoomTo;
+  const onZoomChangeRef = useRef(onZoomChange);
+  onZoomChangeRef.current = onZoomChange;
   // Last cursor position over the frame, so a keyboard zoom anchors there.
   const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  const frameLocal = () => {
+    const r = frameRef.current?.getBoundingClientRect();
+    const p = lastPointer.current;
+    if (!r || !p) return { x: null, y: null };
+    return frameLocalPoint(r, p.x, p.y);
+  };
 
   // Zoom-gesture keys. Space taps toggle zoom (also valid in the plain viewport);
   // in a zoomable overlay, holding Ctrl/⌘ or Space turns the overlay click-
   // through so the pointer drives zoom/pan instead of painting.
   useEffect(() => {
     if (staticFit) return;
-    const frameLocal = () => {
-      const r = frameRef.current?.getBoundingClientRect();
-      const p = lastPointer.current;
-      if (!r || !p) return { x: null, y: null };
-      return frameLocalPoint(r, p.x, p.y);
-    };
     // Gesture keys currently held. The gesture stays live until every one is
     // released, so releasing an unrelated key mid-hold (e.g. a tool shortcut
     // while Space is down) doesn't end the pan/zoom passthrough.
@@ -381,6 +425,75 @@ export function ViewportImage({
       setCanvasZoomGesture(false);
     };
   }, [staticFit, overlayZoomable]);
+
+  // Wheel zoom, cursor-anchored: the rebindable viewport.wheelZoom gesture
+  // plus fixed Ctrl/⌘+wheel (see WHEEL_ZOOM_ACTION). Native non-passive
+  // listener — React's onWheel is passive, and a handled wheel must
+  // preventDefault or Ctrl+wheel browser-zooms the page. Deltas coalesce to
+  // one zoom per frame, like panning. Speed-Edit-style scrub extensions
+  // capture wheel on window and stopPropagation while their key is held, so
+  // they keep priority without any coordination here.
+  useEffect(() => {
+    const el = frameRef.current;
+    if (!el || staticFit) return;
+    let raf: number | null = null;
+    let acc = 0;
+    let anchor: { x: number; y: number } | null = null;
+    const flush = () => {
+      raf = null;
+      const d = acc;
+      acc = 0;
+      if (d === 0) return;
+      const st = stateRef.current;
+      const cur = st.zoom ?? st.fitScale;
+      zoomToRef.current(
+        cur * Math.pow(ZOOM_STEP, -d / 100),
+        anchor?.x ?? null,
+        anchor?.y ?? null,
+      );
+    };
+    const onWheel = (e: WheelEvent) => {
+      const fixedGesture = e.ctrlKey || e.metaKey;
+      if (!fixedGesture && comboFromWheelEvent(e) !== getBinding(WHEEL_ZOOM_ACTION))
+        return;
+      e.preventDefault();
+      let d = e.deltaY;
+      if (e.deltaMode === 1) d *= 16; // lines → ~px
+      else if (e.deltaMode === 2) d *= 120; // pages → ~notches
+      acc += d;
+      anchor = frameLocalPoint(el.getBoundingClientRect(), e.clientX, e.clientY);
+      if (raf == null) raf = requestAnimationFrame(flush);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      if (raf != null) cancelAnimationFrame(raf);
+    };
+  }, [staticFit]);
+
+  // Publish keyboard zoom commands (the Ctrl+=/−/0/1 quartet, dispatched by
+  // use-keyboard-shortcuts) while this viewport is on screen and not locked
+  // to a static fit. Keyboard zooms anchor at the last cursor position.
+  useEffect(() => {
+    if (staticFit) return;
+    return registerViewportZoomCommands({
+      zoomStep: (dir) => {
+        const st = stateRef.current;
+        const cur = st.zoom ?? st.fitScale;
+        const { x, y } = frameLocal();
+        zoomToRef.current(cur * (dir > 0 ? ZOOM_STEP : 1 / ZOOM_STEP), x, y);
+      },
+      zoomFit: () => {
+        if (stateRef.current.zoom != null) onZoomChangeRef.current(null);
+      },
+      zoom100: () => {
+        const { x, y } = frameLocal();
+        zoomToRef.current(1, x, y);
+      },
+    });
+    // frameLocal reads only refs; a stale closure of it is equivalent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staticFit]);
 
   const downRef = useRef<{
     x: number;

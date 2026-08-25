@@ -20,6 +20,7 @@ import {
   type ExportSettings,
   type ProcessorSettings,
 } from "./export-image";
+import { ResolutionControl } from "./ResolutionControl";
 import {
   getSettings,
   useSettings,
@@ -44,13 +45,6 @@ const FORMATS: { value: ExportFormat; label: string }[] = [
 const TIFF_DEPTHS: { value: 8 | 16; label: string }[] = [
   { value: 8, label: "8-bit" },
   { value: 16, label: "16-bit" },
-];
-
-const RESOLUTIONS: { value: number | null; label: string }[] = [
-  { value: null, label: "Original" },
-  { value: 4096, label: "4096 px" },
-  { value: 2048, label: "2048 px" },
-  { value: 1024, label: "1024 px" },
 ];
 
 /** Renders one settings field for an export processor, styled to match the
@@ -447,19 +441,9 @@ export function ExportPanel() {
       )}
 
       <Panel title="Resolution">
-        <div className="grid grid-cols-2 gap-1">
-          {RESOLUTIONS.map((r) => (
-            <button
-              key={r.label}
-              onClick={() => setLongEdge(r.value)}
-              className={optionBtn(longEdge === r.value)}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
+        <ResolutionControl variant="panel" value={longEdge} onChange={setLongEdge} />
         <p className="mt-2 text-[10px] leading-snug text-text-muted">
-          Long edge. Original is limited by the largest decodable size.
+          Long edge. Output is capped at the largest decodable size.
         </p>
       </Panel>
 

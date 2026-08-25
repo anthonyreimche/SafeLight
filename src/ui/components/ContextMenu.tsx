@@ -5,6 +5,8 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { uiZoom } from "@/ui/frame-point";
+
 export interface ContextMenuItem {
   label: string;
   onClick: () => void;
@@ -29,14 +31,18 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
 
-  // Clamp into the viewport once we know the menu's measured size.
+  // Clamp into the viewport once we know the menu's measured size. x/y arrive
+  // as client (visual) px while CSS left/top position in layout px — under the
+  // <body> UI-scale zoom those spaces differ by uiZoom (see frame-point.ts),
+  // so both the point and the window extents must be divided into layout px.
+  // offsetWidth/offsetHeight already measure in layout px.
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const { width, height } = el.getBoundingClientRect();
+    const z = uiZoom();
     setPos({
-      x: Math.min(x, window.innerWidth - width - 4),
-      y: Math.min(y, window.innerHeight - height - 4),
+      x: Math.max(0, Math.min(x / z, window.innerWidth / z - el.offsetWidth - 4)),
+      y: Math.max(0, Math.min(y / z, window.innerHeight / z - el.offsetHeight - 4)),
     });
   }, [x, y]);
 

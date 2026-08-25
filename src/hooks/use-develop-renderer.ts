@@ -10,6 +10,7 @@ import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 // Coverage overlay: a single red tint, faded in/out for all masks.
 const VIZ_COLOR: [number, number, number] = [0.9, 0.25, 0.25];
 const VIZ_STRENGTH = 0.5;
+import { resolveVizMaskIndex } from "@/modules/develop/mask-viz";
 import { transformedViewCrop } from "@/rendering/crop-transform";
 import { buildForwardTransform } from "@/rendering/transform";
 import { getRenderBridge } from "@/rendering/render-bridge";
@@ -509,10 +510,7 @@ export function useDevelopRenderer(
   // Always red; the strength fades in/out.
   const vizAnim = useRef({ idx: -1, cur: 0, target: 0, raf: null as number | null });
   useEffect(() => {
-    const vizId =
-      hoveredMaskId ??
-      (selectedMaskId && maskTab === "coverage" ? selectedMaskId : null);
-    const idx = vizId ? params.masks.findIndex((m) => m.id === vizId) : -1;
+    const idx = resolveVizMaskIndex(params.masks, hoveredMaskId, selectedMaskId, maskTab);
     const a = vizAnim.current;
     if (idx >= 0) a.idx = idx; // keep last index while fading out
     a.target = idx >= 0 ? VIZ_STRENGTH : 0;

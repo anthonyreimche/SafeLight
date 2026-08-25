@@ -15,6 +15,7 @@ import { SettingsFieldList } from "@/extensions/SettingsFieldList";
 import {
   KEY_ACTIONS,
   comboFromEvent,
+  comboFromWheelEvent,
   findConflicts,
   resetAllBindings,
   resetBinding,
@@ -25,6 +26,7 @@ import {
   type ActionCategory,
 } from "@/state/keybindings-store";
 import { useRegistry } from "@/extensions/registry";
+import { ResolutionControl } from "@/modules/export/ResolutionControl";
 import { ModalWindow } from "@/ui/components/ModalWindow";
 import { Select } from "@/ui/components/Select";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
@@ -162,6 +164,7 @@ const VIEWPORT_FIXED: [string, string][] = [
   ["Space", "Toggle zoom (fit ↔ 100%)"],
   ["Ctrl/⌘ + Click", "Zoom in/out while masking or healing"],
   ["Ctrl/⌘ + Drag", "Pan while zoomed"],
+  ["Ctrl/⌘ + Wheel", "Zoom (also trackpad pinch)"],
 ];
 
 const CORE_SECTIONS: PrefSection[] = [
@@ -1651,17 +1654,10 @@ function ExportSection() {
         onChange={(v) => updateSettings({ exportQuality: v })}
       />
       <Field label="Default resolution">
-        <OptionRow
-          value={s.exportLongEdge ?? 0}
-          options={[
-            { value: 0, label: "Original" },
-            { value: 4096, label: "4096 px" },
-            { value: 2048, label: "2048 px" },
-            { value: 1024, label: "1024 px" },
-          ]}
-          onChange={(v) =>
-            updateSettings({ exportLongEdge: v === 0 ? null : (v as number) })
-          }
+        <ResolutionControl
+          variant="preferences"
+          value={s.exportLongEdge}
+          onChange={(v) => updateSettings({ exportLongEdge: v })}
         />
       </Field>
       <Field
@@ -1728,10 +1724,14 @@ function ShortcutsSection() {
   const [capturing, setCapturing] = useState<string | null>(null);
 
   // While capturing, the global handlers stand down (they also listen in the
-  // capture phase) and the next keydown is recorded. Esc cancels.
+  // capture phase) and the next keydown is recorded. Esc cancels. Wheel-kind
+  // actions record a wheel roll (with whatever modifiers are held) instead —
+  // keys other than Esc are ignored so they can't end up with a dead binding.
   useEffect(() => {
     if (!capturing) return;
     setShortcutsSuspended(true);
+    const wheelKind =
+      KEY_ACTIONS.find((a) => a.id === capturing)?.kind === "wheel";
     const h = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1739,15 +1739,25 @@ function ShortcutsSection() {
         setCapturing(null);
         return;
       }
+      if (wheelKind) return;
       const combo = comboFromEvent(e);
       if (!combo) return; // bare modifier — keep waiting
       setBinding(capturing, combo);
       setCapturing(null);
     };
+    const w = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setBinding(capturing, comboFromWheelEvent(e));
+      setCapturing(null);
+    };
     window.addEventListener("keydown", h, true);
+    if (wheelKind)
+      window.addEventListener("wheel", w, { capture: true, passive: false });
     return () => {
       setShortcutsSuspended(false);
       window.removeEventListener("keydown", h, true);
+      window.removeEventListener("wheel", w, true);
     };
   }, [capturing]);
 
@@ -1760,7 +1770,7 @@ function ShortcutsSection() {
   const matches = (label: string) => !filterQ || label.toLowerCase().includes(filterQ);
 
   // One editable binding row, shared by the built-in categories and extensions.
-  const bindingRow = (a: { id: string; label: string; def: string }) => {
+  const bindingRow = (a: { id: string; label: string; def: string; kind?: "wheel" }) => {
     const combo = overrides[a.id] ?? a.def;
     const overridden = a.id in overrides;
     const conflict = conflicts.has(a.id);
@@ -1779,7 +1789,11 @@ function ShortcutsSection() {
                   : "bg-surface-2 text-text-primary hover:bg-surface-3"
             }`}
           >
-            {capturing === a.id ? "Press keys…" : prettyCombo(combo)}
+            {capturing === a.id
+              ? a.kind === "wheel"
+                ? "Roll wheel…"
+                : "Press keys…"
+              : prettyCombo(combo)}
           </button>
         </td>
         <td className="w-6 py-1 text-right">

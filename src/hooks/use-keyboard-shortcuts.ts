@@ -24,6 +24,7 @@ import {
 } from "@/state/keybindings-store";
 import { moveActivePhoto } from "@/modules/library/photo-navigation";
 import { cullingShortcutsMounted } from "@/modules/library/use-culling-shortcuts";
+import { viewportZoomCommands } from "@/state/viewport-zoom-commands";
 import { useProjectStore } from "@/project/project-store";
 import { togglePreferences } from "@/ui/components/PreferencesDialog";
 import { toggleExtensions } from "@/ui/components/ExtensionsDialog";
@@ -185,6 +186,12 @@ export function useKeyboardShortcuts() {
         // nothing to step, so let the key through.
         "develop.surroundDarker": getSettings().canvasSurroundOverride,
         "develop.surroundLighter": getSettings().canvasSurroundOverride,
+        // The zoom quartet needs a mounted, unlocked viewport to act on; with
+        // none (crop mode, no image) the combos stay with the browser/OS.
+        "develop.zoomIn": !!viewportZoomCommands(),
+        "develop.zoomOut": !!viewportZoomCommands(),
+        "develop.zoomFit": !!viewportZoomCommands(),
+        "develop.zoom100": !!viewportZoomCommands(),
       };
       if (action in modeActive && !modeActive[action]) return;
 
@@ -224,6 +231,18 @@ export function useKeyboardShortcuts() {
           break;
         case "develop.reset":
           if (ds.photoId) void ds.reset();
+          break;
+        case "develop.zoomIn":
+          viewportZoomCommands()?.zoomStep(1);
+          break;
+        case "develop.zoomOut":
+          viewportZoomCommands()?.zoomStep(-1);
+          break;
+        case "develop.zoomFit":
+          viewportZoomCommands()?.zoomFit();
+          break;
+        case "develop.zoom100":
+          viewportZoomCommands()?.zoom100();
           break;
         case "brush.smaller":
         case "brush.larger": {

@@ -200,6 +200,9 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         params: { ...s.params, masks: [...s.params.masks, mask] },
         selectedMaskId: mask.id,
         selectedComponentId: mask.components[mask.components.length - 1]?.id ?? null,
+        // A new mask opens on Coverage so its overlay is visible while drawing;
+        // the tab is otherwise sticky (adding to an existing mask stays put).
+        maskTab: "coverage",
       };
     });
     if (added) pushEdit(get);
@@ -316,6 +319,11 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         selectedMaskId: maskGone ? null : s.selectedMaskId,
         selectedComponentId:
           s.selectedComponentId === compId ? null : s.selectedComponentId,
+        // A hover on the removed mask outlives its list row (deleting from the
+        // row means mouseleave never fires), and a stale id blocks the selected
+        // mask's coverage overlay — drop it here like the selection.
+        hoveredMaskId:
+          maskGone && s.hoveredMaskId === maskId ? null : s.hoveredMaskId,
       };
     });
     pushEdit(get);
@@ -416,6 +424,7 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
       selectedMaskId: s.selectedMaskId === id ? null : s.selectedMaskId,
       selectedComponentId:
         s.selectedMaskId === id ? null : s.selectedComponentId,
+      hoveredMaskId: s.hoveredMaskId === id ? null : s.hoveredMaskId,
     }));
     pushEdit(get);
   },
