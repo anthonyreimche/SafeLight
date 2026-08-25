@@ -25,6 +25,7 @@ import {
   type ActionCategory,
 } from "@/state/keybindings-store";
 import { useRegistry } from "@/extensions/registry";
+import { ResolutionControl } from "@/modules/export/ResolutionControl";
 import { ModalWindow } from "@/ui/components/ModalWindow";
 import { Select } from "@/ui/components/Select";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
@@ -1651,17 +1652,10 @@ function ExportSection() {
         onChange={(v) => updateSettings({ exportQuality: v })}
       />
       <Field label="Default resolution">
-        <OptionRow
-          value={s.exportLongEdge ?? 0}
-          options={[
-            { value: 0, label: "Original" },
-            { value: 4096, label: "4096 px" },
-            { value: 2048, label: "2048 px" },
-            { value: 1024, label: "1024 px" },
-          ]}
-          onChange={(v) =>
-            updateSettings({ exportLongEdge: v === 0 ? null : (v as number) })
-          }
+        <ResolutionControl
+          variant="preferences"
+          value={s.exportLongEdge}
+          onChange={(v) => updateSettings({ exportLongEdge: v })}
         />
       </Field>
       <Field

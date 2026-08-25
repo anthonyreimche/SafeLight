@@ -23,6 +23,13 @@ export function frameLocalPoint(
   clientX: number,
   clientY: number,
 ): { x: number; y: number } {
-  const z = getSettings().uiScale || 1;
+  const z = uiZoom();
   return { x: (clientX - rect.left) / z, y: (clientY - rect.top) / z };
+}
+
+/** The cumulative visual→layout zoom factor: <body> is the only zoomed
+ *  ancestor, so this is exactly the Interface-scale setting. Divide client-px
+ *  coordinates (and window.inner* extents) by it to get layout px. */
+export function uiZoom(): number {
+  return getSettings().uiScale || 1;
 }
