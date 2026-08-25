@@ -23,6 +23,9 @@ export interface KeyAction {
   def: string;
   /** Secondary built-in combo (active only while the action isn't rebound). */
   altDef?: string;
+  /** Bound to a wheel roll (combo key "Wheel") instead of a keypress; the
+   *  Shortcuts editor captures a wheel gesture for these rows. */
+  kind?: "wheel";
 }
 
 // Scopes: General actions are global; Develop/Library actions only fire in
@@ -36,10 +39,21 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "app.preferences", label: "Preferences", category: "General", def: "Ctrl+," },
   { id: "app.extensions", label: "Extensions", category: "General", def: "Ctrl+Shift+X" },
   { id: "app.openFolder", label: "Open folder", category: "General", def: "Ctrl+O" },
+  // The wheel-zoom gesture over the image viewports (Develop and loupe). Same
+  // combo grammar with "Wheel" as the key, so it can carry a modifier
+  // ("Alt+Wheel") or be cleared to disable wheel zoom entirely. Ctrl/⌘+Wheel
+  // stays a fixed gesture on top (trackpad pinch + overlay passthrough).
+  { id: "viewport.wheelZoom", label: "Zoom with scroll wheel", category: "General", def: "Wheel", kind: "wheel" },
   // ── Develop ──
   { id: "develop.undo", label: "Undo edit", category: "Develop", def: "Ctrl+Z" },
   { id: "develop.redo", label: "Redo edit", category: "Develop", def: "Ctrl+Shift+Z", altDef: "Ctrl+Y" },
   { id: "develop.reset", label: "Reset all edits", category: "Develop", def: "Ctrl+Shift+R" },
+  // Photoshop's zoom set. The quartet drives whichever viewport is registered
+  // in viewport-zoom-commands; with none mounted the combos fall through.
+  { id: "develop.zoomIn", label: "Zoom in", category: "Develop", def: "Ctrl+=", altDef: "Ctrl++" },
+  { id: "develop.zoomOut", label: "Zoom out", category: "Develop", def: "Ctrl+-" },
+  { id: "develop.zoomFit", label: "Zoom to fit", category: "Develop", def: "Ctrl+0" },
+  { id: "develop.zoom100", label: "Zoom to 100%", category: "Develop", def: "Ctrl+1" },
   { id: "develop.toggleClipping", label: "Toggle clipping overlay", category: "Develop", def: "J" },
   { id: "develop.colorAssessment", label: "Toggle color assessment", category: "Develop", def: "Ctrl+B" },
   { id: "develop.surroundDarker", label: "Surround darker", category: "Develop", def: "Ctrl+Shift+[", altDef: "Ctrl+Shift+{" },
@@ -263,6 +277,18 @@ export function comboFromEvent(e: KeyboardEvent): string | null {
   if (e.shiftKey) parts.push("Shift");
   if (e.altKey) parts.push("Alt");
   parts.push(k.length === 1 ? k.toUpperCase() : k);
+  return parts.join("+");
+}
+
+/** Normalized combo from a wheel event — the same grammar as comboFromEvent
+ *  with "Wheel" as the key, so wheel gestures store and conflict-check like
+ *  any other binding. */
+export function comboFromWheelEvent(e: WheelEvent): string {
+  const parts: string[] = [];
+  if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
+  if (e.shiftKey) parts.push("Shift");
+  if (e.altKey) parts.push("Alt");
+  parts.push("Wheel");
   return parts.join("+");
 }
 

@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   comboFromEvent,
+  comboFromWheelEvent,
   findConflicts,
   getBinding,
   initKeybindings,
@@ -92,6 +93,64 @@ describe("comboFromEvent", () => {
 
   it("folds Cmd into Ctrl so macOS bindings match the stored combos", () => {
     expect(comboFromEvent(key("z", { meta: true }))).toBe("Ctrl+Z");
+  });
+});
+
+// Only the four fields comboFromWheelEvent reads; a real WheelEvent needs a DOM.
+function wheel(mods: Mods = {}): WheelEvent {
+  return {
+    ctrlKey: !!mods.ctrl,
+    shiftKey: !!mods.shift,
+    altKey: !!mods.alt,
+    metaKey: !!mods.meta,
+  } as unknown as WheelEvent;
+}
+
+describe("comboFromWheelEvent", () => {
+  it("maps an unmodified roll to Wheel", () => {
+    expect(comboFromWheelEvent(wheel())).toBe("Wheel");
+  });
+
+  it("prefixes held modifiers in Ctrl+Shift+Alt order", () => {
+    expect(comboFromWheelEvent(wheel({ alt: true }))).toBe("Alt+Wheel");
+    expect(comboFromWheelEvent(wheel({ ctrl: true, shift: true }))).toBe(
+      "Ctrl+Shift+Wheel",
+    );
+  });
+
+  it("folds Cmd into Ctrl, matching comboFromEvent", () => {
+    expect(comboFromWheelEvent(wheel({ meta: true }))).toBe("Ctrl+Wheel");
+  });
+});
+
+describe("zoom actions", () => {
+  it("registers the wheel-zoom gesture with a bare-wheel default", () => {
+    const a = KEY_ACTIONS.find((x) => x.id === "viewport.wheelZoom");
+    expect(a).toMatchObject({ category: "General", def: "Wheel", kind: "wheel" });
+    expect(getBinding("viewport.wheelZoom")).toBe("Wheel");
+  });
+
+  it("registers the Photoshop zoom quartet in the Develop scope", () => {
+    const combo = (id: string) =>
+      KEY_ACTIONS.find((x) => x.id === id && x.category === "Develop")?.def;
+    expect(combo("develop.zoomIn")).toBe("Ctrl+=");
+    expect(combo("develop.zoomOut")).toBe("Ctrl+-");
+    expect(combo("develop.zoomFit")).toBe("Ctrl+0");
+    expect(combo("develop.zoom100")).toBe("Ctrl+1");
+  });
+
+  it("matches the quartet combos through the normal action matcher", () => {
+    expect(matchAction(key("=", { ctrl: true }), ["Develop"])).toBe("develop.zoomIn");
+    expect(matchAction(key("-", { ctrl: true }), ["Develop"])).toBe("develop.zoomOut");
+    expect(matchAction(key("0", { ctrl: true }), ["Develop"])).toBe("develop.zoomFit");
+    expect(matchAction(key("1", { ctrl: true }), ["Develop"])).toBe("develop.zoom100");
+  });
+
+  it("accepts a rebound wheel combo like any other override", () => {
+    setBinding("viewport.wheelZoom", "Alt+Wheel");
+    expect(getBinding("viewport.wheelZoom")).toBe("Alt+Wheel");
+    resetBinding("viewport.wheelZoom");
+    expect(getBinding("viewport.wheelZoom")).toBe("Wheel");
   });
 });
 

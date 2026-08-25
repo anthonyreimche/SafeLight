@@ -24,11 +24,13 @@ import { create } from "zustand";
 import { createMaskSlice } from "./mask-slice.ts";
 import {
   DEFAULT_DEVELOP_PARAMS,
+  DEFAULT_MASK_PANELS,
   defaultHSL,
   defaultLumRange,
+  defaultMaskAdjustments,
   defaultToneCurves,
 } from "@/catalog/types";
-import type { BrushDab, MaskComponent, RetouchSpot } from "@/catalog/types";
+import type { BrushDab, Mask, MaskComponent, RetouchSpot } from "@/catalog/types";
 import {
   registerStageParams,
   unregisterStageParams,
@@ -174,6 +176,38 @@ describe("mask mutations", () => {
     expect(store.getState().selectedMaskId).toBeNull();
   });
 
+  // The row's delete button removes the mask while the pointer is inside the
+  // row that set hoveredMaskId; the row unmounts and mouseleave never fires.
+  // The slice must drop the dead id or it shadows the selected mask's coverage
+  // overlay (hoveredMaskId ?? selected) until the next row hover.
+  it("removeMask clears a hover pointing at the removed mask", () => {
+    store.getState().addRangeComponent("lumRange");
+    const id = store.getState().params.masks[0].id;
+    store.getState().setHoveredMaskId(id);
+    store.getState().removeMask(id);
+    expect(store.getState().hoveredMaskId).toBeNull();
+  });
+
+  it("removeMask keeps a hover pointing at another mask", () => {
+    store.getState().addRangeComponent("lumRange");
+    const first = store.getState().params.masks[0].id;
+    store.getState().selectMask(null);
+    store.getState().addRangeComponent("lumRange");
+    const second = store.getState().params.masks[1].id;
+    store.getState().setHoveredMaskId(first);
+    store.getState().removeMask(second);
+    expect(store.getState().hoveredMaskId).toBe(first);
+  });
+
+  it("removeComponent dropping the whole mask clears a hover on it", () => {
+    store.getState().addRangeComponent("lumRange");
+    const mask = store.getState().params.masks[0];
+    store.getState().setHoveredMaskId(mask.id);
+    store.getState().removeComponent(mask.id, mask.components[0].id);
+    expect(store.getState().params.masks).toHaveLength(0);
+    expect(store.getState().hoveredMaskId).toBeNull();
+  });
+
   it("caps masks at MAX_MASKS (16)", () => {
     for (let i = 0; i < 20; i++) {
       store.getState().selectMask(null); // force a new mask each time
@@ -286,6 +320,63 @@ describe("retouch mutations", () => {
   it("caps retouch spots at MAX_RETOUCH (32)", () => {
     for (let i = 0; i < 40; i++) store.getState().addSpot(spot(`s${i}`));
     expect(store.getState().params.retouch).toHaveLength(32);
+  });
+});
+
+describe("maskTab on creation", () => {
+  const radialComp = (id: string): MaskComponent => ({
+    id,
+    kind: "radial",
+    mode: "add",
+    invert: false,
+    radial: { cx: 0.5, cy: 0.5, rx: 0.2, ry: 0.2, feather: 0.5, angle: 0 },
+  });
+  const mask = (id: string): Mask => ({
+    id,
+    name: "Radial",
+    visible: true,
+    invert: false,
+    opacity: 100,
+    adj: defaultMaskAdjustments(),
+    panels: [...DEFAULT_MASK_PANELS],
+    components: [radialComp(`${id}-c0`)],
+  });
+
+  it("addMask opens the new mask on the Coverage tab", () => {
+    store.getState().setMaskTab("adjust");
+    store.getState().addMask(mask("m1"));
+    expect(store.getState().maskTab).toBe("coverage");
+  });
+
+  it("addMask at the mask cap leaves the tab alone", () => {
+    for (let i = 0; i < 16; i++) store.getState().addMask(mask(`m${i}`));
+    store.getState().setMaskTab("adjust");
+    store.getState().addMask(mask("m-over"));
+    expect(store.getState().params.masks).toHaveLength(16);
+    expect(store.getState().maskTab).toBe("adjust");
+  });
+
+  it("addComponent keeps the Adjust tab (drawing into an existing mask)", () => {
+    store.getState().addMask(mask("m1"));
+    store.getState().setMaskTab("adjust");
+    store.getState().addComponent("m1", radialComp("c1"));
+    expect(store.getState().maskTab).toBe("adjust");
+  });
+
+  it("addBrushDab keeps the Adjust tab (painting the selected brush)", () => {
+    store.getState().addMask(mask("m1"));
+    store.getState().addComponent("m1", {
+      id: "b1",
+      kind: "brush",
+      mode: "add",
+      invert: false,
+      brush: { dabs: [], feather: 0.5 },
+    });
+    store.getState().setMaskTab("adjust");
+    store
+      .getState()
+      .addBrushDab("m1", "b1", { x: 0.5, y: 0.5, radius: 0.05, erase: false, feather: 0.5 });
+    expect(store.getState().maskTab).toBe("adjust");
   });
 });
 
