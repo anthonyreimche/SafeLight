@@ -46,7 +46,7 @@ interface PanelContribution {
 
 Side rails render panels top-to-bottom at natural height; a **bottom** rail renders its panels side-by-side, each filling the strip's height, with the rail resized from its top edge. Collapsing folds a bottom rail downward — once every panel in it is collapsed the rail drops to its headers and gives the band back to the main view, restoring its height when one is expanded again.
 
-Bottom rails are **opt-in**. A panel is a vertical column unless it sets `allowBottomDock` (declaring `defaultDock.direction: "bottom"` implies it), and the dock offers a bottom drop target only for those — dragging any other panel over the strip floats it instead. This keeps a histogram or a curve editor out of a 112px band it was never laid out for. A saved layout carrying such a panel in a bottom rail is pruned on load; reopening it from the View menu re-docks it at its own default.
+Bottom rails are **opt-in**. A panel is a vertical column unless it sets `allowBottomDock` (declaring `defaultDock.direction: "bottom"` implies it), and the dock offers a bottom drop target only for those — dragging any other panel over the strip floats it instead. This keeps a histogram or a curve editor out of a 112px band it was never laid out for. A saved layout carrying such a panel in a bottom rail is pruned on load; reopening it from the View menu floats it centered over the workspace (a `dock.togglePanel` call still re-docks it at its own default).
 
 A component that must adapt to its rail (e.g. a filmstrip that flips horizontal when docked at the bottom) reads its placement with the hook:
 
