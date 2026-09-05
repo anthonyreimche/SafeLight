@@ -62,6 +62,7 @@
     "files": [
       "dist/**/*",
       "electron/main.cjs",
+      "electron/crash-recovery.cjs",
       "electron/preload.cjs",
       "package.json"
     ],
