@@ -11,6 +11,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { popEscapeHandler } from "@/ui/escape-stack";
+import { updateSettings } from "@/state/settings-store";
 import { Select, type SelectGroup, type SelectOption, type SelectProps } from "./Select.tsx";
 
 const OPTIONS: SelectOption[] = [
@@ -313,6 +314,63 @@ describe("Select type-ahead", () => {
     clock.mockReturnValue(2_000);
     await user.keyboard("b");
     expect(activeLabel()).toBe("Banana");
+  });
+});
+
+describe("Select menu placement", () => {
+  // The menu is portalled to <body> and positioned from the trigger rect —
+  // client (visual) px — while its CSS left/top/bottom/width render in layout
+  // px under the <body> UI-scale zoom (see frame-point.ts). At scale ≠ 100%
+  // the spaces differ by uiScale (issue #105's bug class), drifting the menu
+  // right/down of its trigger. jsdom has no layout engine, so the trigger
+  // rect is stubbed; the jsdom viewport is 1024×768.
+  afterEach(() => updateSettings({ uiScale: 1 }));
+
+  async function openAt(rect: { left: number; top: number; right: number; bottom: number }) {
+    const user = userEvent.setup();
+    render(<Harness />);
+    trigger().getBoundingClientRect = () =>
+      ({
+        ...rect,
+        width: rect.right - rect.left,
+        height: rect.bottom - rect.top,
+        x: rect.left,
+        y: rect.top,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    await user.click(trigger());
+    return screen.getByRole("listbox");
+  }
+
+  it("drops below the trigger at the trigger's width", async () => {
+    const menu = await openAt({ left: 100, top: 100, right: 300, bottom: 124 });
+    expect([menu.style.left, menu.style.top, menu.style.width, menu.style.maxHeight]).toEqual([
+      "100px",
+      "128px",
+      "200px",
+      "280px",
+    ]);
+  });
+
+  it("opens upward near the viewport bottom", async () => {
+    const menu = await openAt({ left: 100, top: 700, right: 300, bottom: 724 });
+    expect([menu.style.bottom, menu.style.top]).toEqual(["72px", ""]);
+  });
+
+  it("maps the trigger rect into layout px under the UI-scale zoom", async () => {
+    updateSettings({ uiScale: 2 });
+    const menu = await openAt({ left: 100, top: 100, right: 300, bottom: 124 });
+    expect([menu.style.left, menu.style.top, menu.style.width]).toEqual([
+      "50px",
+      "66px",
+      "100px",
+    ]);
+  });
+
+  it("opens upward in layout px under the UI-scale zoom", async () => {
+    updateSettings({ uiScale: 2 });
+    const menu = await openAt({ left: 100, top: 700, right: 300, bottom: 724 });
+    expect([menu.style.bottom, menu.style.left]).toEqual(["38px", "50px"]);
   });
 });
 

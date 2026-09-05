@@ -5,6 +5,7 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { uiZoom } from "@/ui/frame-point";
 import type { PresetDiff } from "../preset-summary";
 
 interface Props {
@@ -29,19 +30,27 @@ export function PresetTooltip({ name, diffs, anchor }: Props) {
     if (!el) return;
 
     const place = () => {
+      // The anchor rect and window extents are visual px under the <body>
+      // UI-scale zoom, while the fixed portal's CSS left/top are layout px
+      // (see frame-point.ts) — divide all of them into layout px before
+      // comparing. offsetWidth/offsetHeight already measure in layout px.
+      const z = uiZoom();
       const a = anchor.getBoundingClientRect();
+      const vw = window.innerWidth / z;
+      const vh = window.innerHeight / z;
       const w = el.offsetWidth;
       const h = el.offsetHeight;
 
-      // Prefer the right side; flip left if it would overflow the viewport.
-      const fitsRight = a.right + GAP + w + MARGIN <= window.innerWidth;
-      const left = fitsRight ? a.right + GAP : a.left - GAP - w;
+      // Prefer the right side; flip left if it would overflow the viewport,
+      // never leaving the left edge (a row wide enough to fit neither side).
+      const fitsRight = a.right / z + GAP + w + MARGIN <= vw;
+      const left = Math.max(
+        MARGIN,
+        fitsRight ? a.right / z + GAP : a.left / z - GAP - w,
+      );
 
       // Align to the row's top, clamped within the viewport.
-      const top = Math.max(
-        MARGIN,
-        Math.min(a.top, window.innerHeight - h - MARGIN),
-      );
+      const top = Math.max(MARGIN, Math.min(a.top / z, vh - h - MARGIN));
       setPos({ top, left });
     };
 
@@ -57,6 +66,7 @@ export function PresetTooltip({ name, diffs, anchor }: Props) {
   return createPortal(
     <div
       ref={ref}
+      role="tooltip"
       className="pointer-events-none fixed z-[1000] w-48 rounded border border-[var(--color-border)] bg-[var(--color-surface-1)] p-2 text-[11px] shadow-xl"
       style={{
         top: pos?.top ?? 0,

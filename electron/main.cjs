@@ -29,6 +29,7 @@ const fs = require("node:fs");
 const zlib = require("node:zlib");
 const crypto = require("node:crypto");
 const { pathToFileURL } = require("node:url");
+const { isRuntimeGpuCrash, isRendererCrash, createRecoveryGate } = require("./crash-recovery.cjs");
 
 // `app.isPackaged` is false when Electron runs an app from a plain directory
 // rather than an asar/bundled build — which is exactly how the Nix derivation
@@ -61,8 +62,9 @@ if (process.platform === "linux") {
   //      then "vulkan"). The relaunch is invisible to the user.
   //   3. On the first launch that survives to app.ready, write the working
   //      backend to cache — subsequent cold starts skip the probe entirely.
-  //   4. A runtime GPU crash (window already visible) is left alone; the app
-  //      handles it without relaunching.
+  //   4. A runtime GPU crash (window already visible) is not the probe's
+  //      business — the mid-session crash-recovery handlers reload the
+  //      affected windows instead.
   // ---------------------------------------------------------------------------
   // Vulkan + ozone-platform=wayland is incompatible (Chromium warns and may
   // crash). When running under a native Wayland compositor, limit the probe
@@ -1851,6 +1853,38 @@ if (!app.requestSingleInstanceLock()) {
         event.preventDefault();
         if (/^https?:\/\//.test(url)) shell.openExternal(url);
       }
+    });
+  });
+
+  // ── Mid-session crash recovery ────────────────────────────────────────────
+  // Virtualized GL drivers (VirtualBox especially) can kill the GPU process
+  // under import load. Chromium respawns it, but the app's worker WebGL
+  // contexts and the composited surface stay dead — a black, still-draggable
+  // window. A reload rebuilds everything from the persisted catalog. Both
+  // gates are bounded so a persistently failing GPU degrades to the old
+  // restart-by-hand behaviour instead of a reload storm.
+  const gpuRecoveryGate = createRecoveryGate();
+  app.on("child-process-gone", (_e, details) => {
+    const windows = BrowserWindow.getAllWindows();
+    if (!isRuntimeGpuCrash(details, windows.length)) return;
+    const recover = gpuRecoveryGate.tryRecover();
+    console.error(
+      `[safelight] GPU process gone (${details.reason}); ` +
+        (recover ? `reloading ${windows.length} window(s)` : "recovery budget spent — restart the app"),
+    );
+    if (recover) for (const win of windows) win.webContents.reload();
+  });
+
+  const rendererRecoveryGate = createRecoveryGate();
+  app.on("web-contents-created", (_e, contents) => {
+    contents.on("render-process-gone", (_ev, details) => {
+      if (!isRendererCrash(details) || contents.isDestroyed()) return;
+      const recover = rendererRecoveryGate.tryRecover();
+      console.error(
+        `[safelight] renderer gone (${details.reason}); ` +
+          (recover ? "reloading" : "recovery budget spent — restart the app"),
+      );
+      if (recover) contents.reload();
     });
   });
 

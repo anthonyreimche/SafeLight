@@ -166,6 +166,89 @@ describe("serializeExifTiff", () => {
   });
 });
 
+describe("buildExportIfds — catalog-edited metadata", () => {
+  const EDITED = {
+    artist: "Robin Example",
+    copyright: "© 2026 Robin Example",
+    imageDescription: "Sunset over the pier",
+  };
+
+  const parsed = async (ifds: ExportIfds) =>
+    parseExif(blobOf(serializeExifTiff(ifds) as Uint8Array<ArrayBuffer>));
+
+  it("overrides the source file's descriptive tags with catalog-edited values", async () => {
+    const exif = await parsed(await exportIfds({ edited: EDITED }));
+    expect(exif.artist).toBe("Robin Example");
+    expect(exif.copyright).toBe("© 2026 Robin Example");
+    expect(exif.imageDescription).toBe("Sunset over the pier");
+    expect(exif.cameraMake).toBe("TestCam Industries"); // untouched harvest survives
+  });
+
+  it("keeps the source file's tags when edited fields are blank", async () => {
+    const exif = await parsed(await exportIfds({ edited: { artist: "", copyright: undefined } }));
+    expect(exif.artist).toBe("Ansel Adams");
+    expect(exif.copyright).toBe("(C) 2026");
+  });
+
+  it("replaces the source GPS coordinates with catalog-edited ones", async () => {
+    const exif = await parsed(
+      await exportIfds({ edited: { gpsLatitude: 49.5, gpsLongitude: -123.25 } }),
+    );
+    expect(exif.gpsLatitude).toBe(49.5);
+    expect(exif.gpsLongitude).toBe(-123.25);
+  });
+
+  it("encodes edited coordinates as D/M/S without visible precision loss", async () => {
+    const exif = await parsed(
+      await exportIfds({ edited: { gpsLatitude: 51.507222, gpsLongitude: -0.1275 } }),
+    );
+    expect(exif.gpsLatitude).toBe(51.507222);
+    expect(exif.gpsLongitude).toBe(-0.1275);
+  });
+
+  it("carries seconds rounding into the next unit instead of writing 60″", async () => {
+    const exif = await parsed(
+      await exportIfds({ edited: { gpsLatitude: 9.99999999, gpsLongitude: -0.99999999 } }),
+    );
+    expect(exif.gpsLatitude).toBe(10);
+    expect(exif.gpsLongitude).toBe(-1);
+  });
+
+  it("drops edited GPS along with the source's when location is not opted in", async () => {
+    const tiff = serializeExifTiff(
+      await exportIfds({
+        includeLocation: false,
+        edited: { gpsLatitude: 49.5, gpsLongitude: -123.25 },
+      }),
+    );
+    expect(leTagValue(tiff, ifd0At(tiff), 0x8825)).toBeUndefined();
+  });
+
+  it("ignores a lone coordinate rather than writing half a position", async () => {
+    const exif = await parsed(await exportIfds({ edited: { gpsLatitude: 49.5 } }));
+    expect(exif.gpsLatitude).toBe(37.808333); // the source IFD survives untouched
+    expect(exif.gpsLongitude).toBe(-122.266667);
+  });
+
+  it("builds a complete EXIF block from catalog metadata alone", async () => {
+    const exif = await parsed(
+      buildExportIfds(null, {
+        width: 800,
+        height: 600,
+        srgb: true,
+        includeLocation: true,
+        edited: { ...EDITED, gpsLatitude: 49.5, gpsLongitude: -123.25 },
+      }),
+    );
+    expect(exif.artist).toBe("Robin Example");
+    expect(exif.gpsLatitude).toBe(49.5);
+    expect(exif.gpsLongitude).toBe(-123.25);
+    expect(exif.cameraMake).toBeUndefined();
+    expect(exif.software).toBe(`Safelight ${__APP_VERSION__}`);
+    expect(exif.orientation).toBe(1);
+  });
+});
+
 describe("embedExif — JPEG", () => {
   const bareJpeg = () => jpeg([segment(APP0, jfifPayload), segment(SOS, latin1("scan"))]);
 
