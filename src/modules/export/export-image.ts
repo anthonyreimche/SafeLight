@@ -250,7 +250,8 @@ interface RenderOneResult {
 }
 
 // Source EXIF for re-embedding. A virtual copy shares its master's live file
-// handle; a photo without one (or an unreadable file) simply exports untagged.
+// handle; a photo without one (or an unreadable file) harvests nothing, and
+// the export carries catalog-held edits alone.
 async function harvestPhotoExif(photo: CatalogPhoto): Promise<RawExifIfds | null> {
   if (!photo.fileHandle) return null;
   try {
@@ -334,16 +335,20 @@ async function renderOne(
     const colorSpace = settings.colorSpace ?? "srgb";
 
     // Opt-in only: harvest the source file's EXIF once per photo — the canvas
-    // render below strips every metadata segment, so the export re-embeds it.
+    // render below strips every metadata segment, so the export re-embeds it,
+    // layered with catalog-held edits (RAW caption/copyright/GPS edits never
+    // reach the source bytes, so the harvest alone would drop them).
     const sourceExif = settings.includeMetadata ? await harvestPhotoExif(photo) : null;
     const exifFor = (exportW: number, exportH: number): ExportIfds | null =>
-      sourceExif &&
-      buildExportIfds(sourceExif, {
-        width: exportW,
-        height: exportH,
-        srgb: colorSpace === "srgb",
-        includeLocation: settings.includeLocation ?? false,
-      });
+      settings.includeMetadata
+        ? buildExportIfds(sourceExif, {
+            width: exportW,
+            height: exportH,
+            srgb: colorSpace === "srgb",
+            includeLocation: settings.includeLocation ?? false,
+            edited: photo.exif,
+          })
+        : null;
 
     // 16-bit TIFF: read the develop pipeline's float output directly so the
     // extra precision survives. Falls through to the 8-bit path when the device

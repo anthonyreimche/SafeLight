@@ -24,6 +24,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { pushEscapeHandler } from "@/ui/escape-stack";
+import { uiZoom } from "@/ui/frame-point";
 
 export interface SelectOption {
   value: string;
@@ -122,15 +123,20 @@ export function Select({
   const place = useCallback(() => {
     const el = triggerRef.current;
     if (!el) return;
+    // The trigger rect and window extents are visual px under the <body>
+    // UI-scale zoom, while the fixed menu's CSS left/top/bottom/width are
+    // layout px (see frame-point.ts) — divide everything into layout px so
+    // the menu stays glued to its trigger at any Interface scale.
+    const z = uiZoom();
     const r = el.getBoundingClientRect();
-    const below = window.innerHeight - r.bottom;
-    const above = r.top;
+    const below = (window.innerHeight - r.bottom) / z;
+    const above = r.top / z;
     const up = below < 220 && above > below;
     const maxH = Math.max(120, Math.min(280, (up ? above : below) - 12));
     setPos({
-      left: r.left,
-      edge: up ? window.innerHeight - r.top : r.bottom,
-      width: r.width,
+      left: r.left / z,
+      edge: (up ? window.innerHeight - r.top : r.bottom) / z,
+      width: r.width / z,
       maxH,
       up,
     });

@@ -5,25 +5,38 @@
 
 // EXIF writer for export. A canvas render strips every metadata segment, so the
 // export pipeline harvests the source file's entries (catalog/exif
-// readExifEntries) and this module serializes them back into the exported
-// container: a fresh little-endian TIFF block carried as a JPEG APP1 segment, a
-// PNG eXIf chunk or a WebP EXIF chunk. The TIFF encoder weaves the same entry
-// sets into its own IFD chain via serializeSubIfd. Orientation, pixel
-// dimensions, colour space and software are rewritten to describe the exported
-// image rather than the source; GPS entries are dropped unless the export opts
-// in.
+// readExifEntries), layers catalog-held user edits on top (RAW metadata edits
+// live in sidecars/catalog, never in the source bytes), and this module
+// serializes the result back into the exported container: a fresh
+// little-endian TIFF block carried as a JPEG APP1 segment, a PNG eXIf chunk or
+// a WebP EXIF chunk. The TIFF encoder weaves the same entry sets into its own
+// IFD chain via serializeSubIfd. Orientation, pixel dimensions, colour space
+// and software are rewritten to describe the exported image rather than the
+// source; GPS entries are dropped unless the export opts in.
 
 import type { RawExifEntry, RawExifIfds } from "@/catalog/exif";
+import type { ExifData } from "@/catalog/types";
 import { addWebpChunk, concat, crc32, readU32 } from "@/rendering/color-space";
 
 const TAG = {
+  ImageDescription: 0x010e,
   Orientation: 0x0112,
   Software: 0x0131,
+  Artist: 0x013b,
+  Copyright: 0x8298,
   ExifIFD: 0x8769,
   GPSIFD: 0x8825,
   ColorSpace: 0xa001,
   PixelXDimension: 0xa002,
   PixelYDimension: 0xa003,
+} as const;
+
+const GPS_TAG = {
+  VersionID: 0x0000,
+  LatitudeRef: 0x0001,
+  Latitude: 0x0002,
+  LongitudeRef: 0x0003,
+  Longitude: 0x0004,
 } as const;
 
 const SRGB = 1;
@@ -43,10 +56,24 @@ export interface ExportExifOptions {
   /** True tags the EXIF colour space sRGB; anything wider is Uncalibrated. */
   srgb: boolean;
   includeLocation: boolean;
+  /** Catalog-held user edits (EXIF Tools metadata editor and friends). RAW
+   *  edits never reach the source file's bytes, so set fields are appended
+   *  after the harvested entries and win the last-write dedup. GPS needs both
+   *  coordinates and still requires includeLocation. */
+  edited?: Pick<
+    ExifData,
+    "artist" | "copyright" | "imageDescription" | "gpsLatitude" | "gpsLongitude"
+  >;
 }
 
 export function asciiEntry(tag: number, text: string): RawExifEntry {
-  const value = new TextEncoder().encode(`${text}\0`);
+  // EXIF ASCII values are byte strings; Latin-1 matches asciiTag's decoding on
+  // re-import. Full Unicode belongs to XMP, not this tag type.
+  const value = new Uint8Array(text.length + 1);
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    value[i] = c <= 0xff ? c : 0x3f; // '?'
+  }
   return { tag, type: 2, count: value.length, value };
 }
 
@@ -62,22 +89,86 @@ export function longEntry(tag: number, v: number): RawExifEntry {
   return { tag, type: 4, count: 1, value };
 }
 
-/** Combine harvested source entries with the export-time overrides. The render
- *  bakes the upright orientation into the pixels, so the tag resets to 1. */
-export function buildExportIfds(source: RawExifIfds, opts: ExportExifOptions): ExportIfds {
+function byteEntry(tag: number, bytes: number[]): RawExifEntry {
+  return { tag, type: 1, count: bytes.length, value: Uint8Array.from(bytes) };
+}
+
+function rationalEntry(tag: number, pairs: [number, number][]): RawExifEntry {
+  const value = new Uint8Array(pairs.length * 8);
+  const dv = new DataView(value.buffer);
+  pairs.forEach(([num, den], i) => {
+    dv.setUint32(i * 8, num, true);
+    dv.setUint32(i * 8 + 4, den, true);
+  });
+  return { tag, type: 5, count: pairs.length, value };
+}
+
+// Unsigned D/M/S with 1/10000″ seconds — the three-rational form parseGpsCoord
+// (and every mainstream reader) requires. Rounding may tip 60″ over into the
+// next minute or degree.
+function dmsRationals(coord: number): [number, number][] {
+  const abs = Math.abs(coord);
+  let deg = Math.trunc(abs);
+  let min = Math.trunc((abs - deg) * 60);
+  let sec = Math.round(((abs - deg) * 60 - min) * 60 * 10000);
+  if (sec === 600000) {
+    sec = 0;
+    min += 1;
+  }
+  if (min === 60) {
+    min = 0;
+    deg += 1;
+  }
+  return [
+    [deg, 1],
+    [min, 1],
+    [sec, 10000],
+  ];
+}
+
+function editedIfd0Entries(edited: NonNullable<ExportExifOptions["edited"]>): RawExifEntry[] {
+  const out: RawExifEntry[] = [];
+  if (edited.imageDescription) out.push(asciiEntry(TAG.ImageDescription, edited.imageDescription));
+  if (edited.artist) out.push(asciiEntry(TAG.Artist, edited.artist));
+  if (edited.copyright) out.push(asciiEntry(TAG.Copyright, edited.copyright));
+  return out;
+}
+
+function editedGpsEntries(edited: NonNullable<ExportExifOptions["edited"]>): RawExifEntry[] {
+  const { gpsLatitude: lat, gpsLongitude: lon } = edited;
+  if (lat === undefined || lon === undefined || !Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return [];
+  }
+  return [
+    byteEntry(GPS_TAG.VersionID, [2, 3, 0, 0]),
+    asciiEntry(GPS_TAG.LatitudeRef, lat < 0 ? "S" : "N"),
+    rationalEntry(GPS_TAG.Latitude, dmsRationals(lat)),
+    asciiEntry(GPS_TAG.LongitudeRef, lon < 0 ? "W" : "E"),
+    rationalEntry(GPS_TAG.Longitude, dmsRationals(lon)),
+  ];
+}
+
+/** Combine harvested source entries with catalog edits and the export-time
+ *  overrides. Later entries win the per-tag dedup, so catalog edits override
+ *  the file's own tags. A null source (unreadable file, EXIF-less container)
+ *  still yields a valid block carrying the edits. The render bakes the upright
+ *  orientation into the pixels, so the tag resets to 1. */
+export function buildExportIfds(source: RawExifIfds | null, opts: ExportExifOptions): ExportIfds {
+  const edited = opts.edited ?? {};
   return {
     ifd0: [
-      ...source.ifd0,
+      ...(source?.ifd0 ?? []),
+      ...editedIfd0Entries(edited),
       shortEntry(TAG.Orientation, 1),
       asciiEntry(TAG.Software, `Safelight ${__APP_VERSION__}`),
     ],
     exif: [
-      ...source.exif,
+      ...(source?.exif ?? []),
       shortEntry(TAG.ColorSpace, opts.srgb ? SRGB : UNCALIBRATED),
       longEntry(TAG.PixelXDimension, opts.width),
       longEntry(TAG.PixelYDimension, opts.height),
     ],
-    gps: opts.includeLocation ? source.gps : [],
+    gps: opts.includeLocation ? [...(source?.gps ?? []), ...editedGpsEntries(edited)] : [],
   };
 }
 
