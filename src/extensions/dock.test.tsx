@@ -20,6 +20,7 @@ import {
   addUserLayout,
   applyDockLayout,
   toggleDockPanel,
+  toggleDockPanelFloating,
   useDockStore,
   useUserLayouts,
   CUSTOM_LAYOUT,
@@ -285,6 +286,99 @@ describe("collapsing a bottom rail", () => {
       "140px",
     );
     close();
+  });
+});
+
+describe("toggling a panel from the View menu", () => {
+  it("opens it floating centered instead of re-docking at its default", () => {
+    panel("ext.strip", {
+      allowBottomDock: true,
+      defaultDock: { module: "develop", direction: "bottom", height: 112 },
+    });
+    const { close } = boot();
+
+    act(() => toggleDockPanelFloating("ext.strip"));
+    expect(useDockStore.getState().open).toEqual([]);
+
+    act(() => toggleDockPanelFloating("ext.strip"));
+    expect(rails()).toEqual([]);
+    expect(useDockStore.getState().floating["ext.strip"]).toEqual({
+      x: 0,
+      y: 0,
+      width: 320,
+      centered: true,
+    });
+
+    act(() => toggleDockPanelFloating("ext.strip"));
+    expect(useDockStore.getState().open).toEqual([]);
+    close();
+  });
+
+  it("pins the window to the workspace center until it's dragged", () => {
+    panel("ext.notes");
+    const { close, view } = boot();
+
+    act(() => toggleDockPanelFloating("ext.notes"));
+    const win = view.container.querySelector<HTMLElement>(".shadow-2xl")!;
+    expect(win.style.left).toBe("calc(50% + 0px)");
+    expect(win.style.top).toBe("calc(50% + 0px)");
+    expect(win.style.transform).toBe("translate(-50%, -50%)");
+    close();
+  });
+
+  it("staggers a second centered window so the first stays visible", () => {
+    panel("ext.a");
+    panel("ext.b");
+    const { close } = boot();
+
+    act(() => toggleDockPanelFloating("ext.a"));
+    act(() => toggleDockPanelFloating("ext.b"));
+    expect(useDockStore.getState().floating["ext.b"]).toEqual({
+      x: 24,
+      y: 24,
+      width: 320,
+      centered: true,
+    });
+    close();
+  });
+
+  it("resizing a centered window keeps it centered", async () => {
+    panel("ext.notes");
+    const { close, view } = boot();
+
+    act(() => toggleDockPanelFloating("ext.notes"));
+    const handle = view.container.querySelector(".shadow-2xl .cursor-col-resize")!;
+    await userEvent.pointer([
+      { keys: "[MouseLeft>]", target: handle, coords: { clientX: 100, clientY: 0 } },
+      { target: handle, coords: { clientX: 160, clientY: 0 } },
+      { keys: "[/MouseLeft]", target: handle },
+    ]);
+    expect(useDockStore.getState().floating["ext.notes"]).toEqual({
+      x: 0,
+      y: 0,
+      width: 380,
+      centered: true,
+    });
+    close();
+  });
+
+  it("keeps a centered window centered across a restart", async () => {
+    panel("ext.notes");
+    let session = boot();
+
+    act(() => toggleDockPanelFloating("ext.notes"));
+    await flushSave();
+    session.close();
+
+    session = boot();
+    expect(useDockStore.getState().open).toEqual(["ext.notes"]);
+    expect(useDockStore.getState().floating["ext.notes"]).toEqual({
+      x: 0,
+      y: 0,
+      width: 320,
+      centered: true,
+    });
+    session.close();
   });
 });
 

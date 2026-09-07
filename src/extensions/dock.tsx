@@ -96,6 +96,9 @@ interface FloatState {
   x: number;
   y: number;
   width: number;
+  /** Pinned to the workspace center — x/y become offsets from it — until the
+   *  user drags the window somewhere concrete. */
+  centered?: boolean;
 }
 
 interface DockState {
@@ -333,7 +336,7 @@ function railsFromDef(module: AppModule, def: ModuleLayoutDef): RailState[] {
 /** Drop panels that don't lay out horizontally from bottom rails, and any rail
  *  left empty. A saved layout can carry them from a build where bottom docking
  *  was open to everything; the panels aren't lost — reopening one from the View
- *  menu re-docks it at its own default. */
+ *  menu brings it back as a floating window. */
 function pruneBottomRails(rails: RailState[]): RailState[] {
   const registered = useRegistry.getState().panels;
   return rails
@@ -500,7 +503,8 @@ export function toggleDockPanel(id: string): void {
   }
   // A closed panel with a default dock in the current module reopens there —
   // appended to the first rail on its side, or in a fresh rail — instead of
-  // floating, so View-menu/shortcut toggles land panels where they belong.
+  // floating, so extension togglePanel calls land panels where they belong.
+  // (The View menu opens panels centered instead: toggleDockPanelFloating.)
   const def = useRegistry.getState().panels[id]?.defaultDock;
   if (def && def.module === s.module) {
     const rail = s.rails.find((r) => r.side === def.direction);
@@ -513,6 +517,26 @@ export function toggleDockPanel(id: string): void {
     floating: {
       ...s.floating,
       [id]: { x: 60 + n * 24, y: 60 + n * 24, width: 320 },
+    },
+    zOrder: [...s.zOrder, id],
+  });
+}
+
+/** View-menu toggle. Closing matches toggleDockPanel, but opening always
+ *  floats the panel centered over the workspace — never into a rail, where it
+ *  could land scrolled out of sight. Consecutive opens stagger so each new
+ *  window leaves the previous one visible. */
+export function toggleDockPanelFloating(id: string): void {
+  const s = useDockStore.getState();
+  if (s.open.includes(id)) {
+    commit(without(id));
+    return;
+  }
+  const n = Object.values(s.floating).filter((f) => f.centered).length;
+  commit({
+    floating: {
+      ...s.floating,
+      [id]: { x: n * 24, y: n * 24, width: 320, centered: true },
     },
     zOrder: [...s.zOrder, id],
   });
@@ -1005,11 +1029,22 @@ function FloatingPanel({ id }: { id: string }) {
   const z = useDockStore((s) => s.zOrder.indexOf(id));
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
   if (!pos) return null;
+  // Centered windows track the workspace center by CSS, so they stay centered
+  // whatever the panel's natural height; the height cap keeps a tall panel's
+  // header reachable (the body scrolls) instead of centering it off both edges.
+  const placement = pos.centered
+    ? {
+        left: `calc(50% + ${pos.x}px)`,
+        top: `calc(50% + ${pos.y}px)`,
+        transform: "translate(-50%, -50%)",
+        maxHeight: "calc(100% - 16px)",
+      }
+    : { left: pos.x, top: pos.y };
   return (
     <div
       onPointerDown={() => bringToFront(id)}
       className="absolute flex flex-col overflow-hidden rounded border border-border bg-surface-1 shadow-2xl"
-      style={{ left: pos.x, top: pos.y, width: pos.width, zIndex: 30 + Math.max(z, 0) }}
+      style={{ ...placement, width: pos.width, zIndex: 30 + Math.max(z, 0) }}
     >
       <PanelHeader id={id} />
       {!collapsed && (

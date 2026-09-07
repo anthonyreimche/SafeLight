@@ -119,7 +119,7 @@ Exports render through the same worker WebGL pipeline as the Develop view, so ou
 
 ### Docking
 
-Safelight uses collapsible edge rails with Photoshop-style docking. Every panel can be dragged to either rail, tabbed with other panels, resized, minimized, or floated as its own window. The **View** menu toggles any registered panel; the **Layout** menu switches named layouts (the built-in **Classic** layout restores the default arrangement). Layouts persist per module.
+Safelight uses collapsible edge rails with Photoshop-style docking. Every panel can be dragged to either rail, tabbed with other panels, resized, minimized, or floated as its own window. The **View** menu toggles any registered panel — an opened panel appears as a floating window in the middle of the workspace, ready to drag into a rail; the **Layout** menu switches named layouts (the built-in **Classic** layout restores the default arrangement). Layouts persist per module.
 
 ### Multi-window
 

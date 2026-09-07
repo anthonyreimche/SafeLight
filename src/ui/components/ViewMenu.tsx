@@ -3,11 +3,12 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// View menu: toggle any registered panel as a floating/dockable window and
-// switch themes. Everything listed here comes from the extension registry.
+// View menu: toggle any registered panel and switch themes. Panels open as
+// floating windows centered over the workspace (drag one into a rail to dock
+// it). Everything listed here comes from the extension registry.
 
 import { useRegistry } from "@/extensions/registry";
-import { toggleDockPanel, useDockStore } from "@/extensions/dock";
+import { toggleDockPanelFloating, useDockStore } from "@/extensions/dock";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import { MenuItem, MenuLabel, TopBarMenu } from "./TopBarMenu";
 
@@ -33,7 +34,7 @@ export function ViewMenu() {
             <MenuItem
               key={p.id}
               checked={openPanels.includes(p.id)}
-              onClick={() => toggleDockPanel(p.id)}
+              onClick={() => toggleDockPanelFloating(p.id)}
             >
               {p.title}
             </MenuItem>
