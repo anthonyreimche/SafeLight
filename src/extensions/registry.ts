@@ -27,6 +27,7 @@ import type {
   SlotContribution,
   SlotName,
   SliderIconContribution,
+  StylesheetContribution,
   ThemeContribution,
 } from "./types";
 import {
@@ -90,6 +91,9 @@ export interface RegisteredPanelHeaderAccessory
 export interface RegisteredLibrarySort extends LibrarySortContribution {
   extensionId: string;
 }
+export interface RegisteredStylesheet extends StylesheetContribution {
+  extensionId: string;
+}
 
 interface RegistryState {
   panels: Record<string, RegisteredPanel>;
@@ -115,6 +119,9 @@ interface RegistryState {
   panelHeaderAccessories: Record<string, RegisteredPanelHeaderAccessory>;
   /** Keyed by contribution id. Extra Library sort orders. */
   librarySorts: Record<string, RegisteredLibrarySort>;
+  /** Keyed by contribution id, in registration order. CSS applied to every
+   *  window after the core styles (see stylesheets.ts). */
+  stylesheets: Record<string, RegisteredStylesheet>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -134,6 +141,7 @@ export const useRegistry = create<RegistryState>(() => ({
   slots: {},
   panelHeaderAccessories: {},
   librarySorts: {},
+  stylesheets: {},
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -309,6 +317,26 @@ export function unregisterSlot(extensionId: string, id: string): void {
     const next = { ...s.slots };
     delete next[id];
     return { slots: next };
+  });
+}
+
+export function registerStylesheet(
+  extensionId: string,
+  c: StylesheetContribution,
+): void {
+  useRegistry.setState((s) => ({
+    stylesheets: { ...s.stylesheets, [c.id]: { ...c, extensionId } },
+  }));
+}
+
+export function unregisterStylesheet(extensionId: string, id: string): void {
+  useRegistry.setState((s) => {
+    const owner = s.stylesheets[id];
+    // Only the owning extension may remove it.
+    if (!owner || owner.extensionId !== extensionId) return s;
+    const next = { ...s.stylesheets };
+    delete next[id];
+    return { stylesheets: next };
   });
 }
 
@@ -565,6 +593,7 @@ export function unregisterExtension(extensionId: string): void {
     slots: drop(s.slots),
     panelHeaderAccessories: drop(s.panelHeaderAccessories),
     librarySorts: drop(s.librarySorts),
+    stylesheets: drop(s.stylesheets),
   }));
   unregisterExtensionActions(extensionId);
   clearExtensionCursors(extensionId);

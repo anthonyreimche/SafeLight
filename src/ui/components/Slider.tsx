@@ -225,34 +225,44 @@ export function Slider({
       {label !== "" && (
         <label
           htmlFor={sliderId}
-          className={`${compact ? "w-9" : "w-20"} shrink-0 ${compact ? "text-[10px]" : "text-[11px]"} text-text-secondary`}
+          className={`sl-slider-label ${compact ? "w-9" : "w-20"} shrink-0 ${compact ? "text-[10px]" : "text-[11px]"} text-text-secondary`}
         >
           {label}
         </label>
       )}
       {/* sl-slider-wrap shows a focus ring (index.css) when the range input —
-          which is opacity-0, so its own outline can't show — is keyboard-focused. */}
+          which is opacity-0, so its own outline can't show — is keyboard-focused.
+          The sl-slider-* classes are styling hooks for input-styling extensions. */}
       <div className="sl-slider-wrap relative flex h-4 min-w-0 flex-1 select-none items-center rounded">
         {trackBackground ? (
-          // Coloured track: the gradient IS the bar; a thumb marks the value so
+          // Coloured track: the gradient IS the bar; a marker shows the value so
           // the whole hue/tone ramp stays readable (Lightroom-style HSL tracks).
           <>
             <div
-              className="h-1.5 w-full rounded-full ring-1 ring-inset ring-black/15"
+              className="sl-slider-track h-1.5 w-full rounded-full ring-1 ring-inset ring-black/15"
               style={{ background: trackBackground }}
             />
             <div
-              className="pointer-events-none absolute top-1/2 h-3.5 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow ring-1 ring-black/40"
+              className="sl-slider-marker pointer-events-none absolute top-1/2 h-3.5 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow ring-1 ring-black/40"
               style={{ left: `${pct}%` }}
             />
           </>
         ) : (
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
-            <div
-              className="h-full rounded-full bg-slider-fill"
-              style={{ width: `${pct}%` }}
+          <>
+            <div className="sl-slider-track h-1.5 w-full overflow-hidden rounded-full bg-surface-3">
+              <div
+                className="sl-slider-fill h-full rounded-full bg-slider-fill"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            {/* The knob exists only for extension stylesheets to show and shape;
+                index.css hides it, so the filled bar alone marks the value. */}
+            <span
+              aria-hidden="true"
+              className="sl-slider-thumb pointer-events-none absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
+              style={{ left: `${pct}%` }}
             />
-          </div>
+          </>
         )}
         <input
           id={sliderId}
@@ -287,7 +297,7 @@ export function Slider({
             setEditing(null);
             onCommit?.();
           }}
-          className={`${compact ? "w-8" : "w-12"} shrink-0 rounded bg-transparent px-1 text-right ${compact ? "text-[10px]" : "text-[11px]"} tabular-nums outline-none focus:bg-surface-2 ${
+          className={`sl-slider-value ${compact ? "w-8" : "w-12"} shrink-0 rounded bg-transparent px-1 text-right ${compact ? "text-[10px]" : "text-[11px]"} tabular-nums outline-none focus:bg-surface-2 ${
             outOfRange
               ? "text-label-red"
               : "text-text-secondary focus:text-text-primary"

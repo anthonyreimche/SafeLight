@@ -29,6 +29,7 @@ import { useRegistry } from "@/extensions/registry";
 import { ResolutionControl } from "@/modules/export/ResolutionControl";
 import { ModalWindow } from "@/ui/components/ModalWindow";
 import { Select } from "@/ui/components/Select";
+import { Switch } from "@/ui/components/Switch";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import {
   addUserLayout,
@@ -977,26 +978,13 @@ function CanvasSurroundField() {
     return null;
   return (
     <div>
-      <button
-        role="switch"
-        aria-checked={override}
-        onClick={() => updateSettings({ canvasSurroundOverride: !override })}
-        className="flex w-full items-center justify-between gap-3 text-left"
+      <Switch
+        checked={override}
+        onChange={(v) => updateSettings({ canvasSurroundOverride: v })}
+        className="w-full justify-between gap-3 text-left"
       >
         <span className="text-[11px] text-text-primary">Canvas surround</span>
-        <span
-          aria-hidden="true"
-          className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
-            override ? "bg-slider-fill" : "bg-surface-3"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${
-              override ? "left-3.5" : "left-0.5"
-            }`}
-          />
-        </span>
-      </button>
+      </Switch>
       <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
         A fixed shade behind the image in Develop, independent of the theme.
         A middle grey keeps brightness, contrast and saturation perception
@@ -2298,26 +2286,13 @@ export function ToggleField({
   if (!useFieldVisible(label, hint)) return null;
   return (
     <div>
-      <button
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className="flex w-full items-center justify-between gap-3 text-left"
+      <Switch
+        checked={checked}
+        onChange={onChange}
+        className="w-full justify-between gap-3 text-left"
       >
         <span className="text-[11px] text-text-primary">{label}</span>
-        <span
-          aria-hidden="true"
-          className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
-            checked ? "bg-slider-fill" : "bg-surface-3"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${
-              checked ? "left-3.5" : "left-0.5"
-            }`}
-          />
-        </span>
-      </button>
+      </Switch>
       {hint && (
         <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
           {hint}

@@ -15,6 +15,7 @@
 - [`PhotoListRow`](#photolistrow)
 - [Photo surfaces: menu and shortcuts](#photo-surfaces-menu-and-shortcuts)
 - [Theming tokens](#theming-tokens)
+- [Styling hooks](#styling-hooks)
 - [Building custom controls](#building-custom-controls-buttons-checkboxes-selects)
 
 ## `Panel`
@@ -157,6 +158,34 @@ Every theme (and an extension's [`ThemeContribution.vars`](contributions.md#them
 | `--font-mono` | App font stack |
 
 A `ThemeContribution` need only set the first 13 (`surface-0`–`slider-fill`); rating/flag/label tokens fall back to the app defaults if omitted. The defaults mirror the shipped **Safelight Neutral** theme (an achromatic bright mid-grey); see `src/extensions/builtin.tsx` for the stock Neutral / Dark / Light values to use as a starting point.
+
+## Styling hooks
+
+Themes recolour; **stylesheets** reshape. An extension that registers a [`StylesheetContribution`](contributions.md#stylesheetcontribution) can change the shape, size and focus behaviour of the core input controls through these selectors. They are the contract — core keeps them stable — whereas the Tailwind utility classes next to them are implementation detail and may change without notice. Extension sheets cascade after core CSS and beat utility classes without `!important` (see the contribution notes); inline styles still win.
+
+| Selector | What it is |
+|---|---|
+| `button`, `[role="button"]` | Every button — Safelight's buttons are plain styled `<button>` elements with no shared class, so use the element selector. Exclude `.sl-switch` (a switch is a button too) and `.sl-select` when you only mean push buttons. |
+| `.sl-segmented` | The container of `api.ui.SegmentedControl` (its options are `button`s inside). |
+| `.sl-select` | The dropdown trigger of the app `Select`. |
+| `.sl-switch`, `.sl-switch-track`, `.sl-switch-knob` | The toggle switch (`role="switch"` button), its pill track and its knob. `aria-checked="true"` marks the on state. |
+| `.sl-slider-wrap` | The Develop `Slider`'s track area (position: relative; 16 px tall). |
+| `.sl-slider-label`, `.sl-slider-value` | Its label and the editable numeric field (`:focus` for the typing state). |
+| `.sl-slider-track`, `.sl-slider-fill` | The track bar and the filled portion up to the value. |
+| `.sl-slider-thumb` | A knob positioned at the value (`left: <pct>%`, centred by transform). **Hidden by default** — set `display: block` plus a size and shape to show one. |
+| `.sl-slider-marker` | The value marker on gradient (HSL) tracks, which have no fill. Always visible. |
+| `.sl-slider` | Native `<input type="range">` sliders (Preferences, extension settings fields); style `::-webkit-slider-thumb` / `::-moz-range-thumb` for the knob. |
+| `input[type="checkbox"]`, `input[type="text"]`, `input[inputmode="decimal"]`, `input[type="number"]`, `textarea` | Native fields — attribute selectors, no extra class. |
+
+```css
+/* a round 12 px knob on every Develop slider */
+.sl-slider-thumb { display: block; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--color-text-primary); box-shadow: 0 1px 2px rgba(0, 0, 0, .4); }
+/* square corners on push buttons only */
+button:not(.sl-switch):not(.sl-select) { border-radius: 0; }
+```
+
+The shipped **Input Styling** extension is built entirely on these hooks and is the reference for a full preset.
 
 ## Building custom controls (buttons, checkboxes, selects)
 

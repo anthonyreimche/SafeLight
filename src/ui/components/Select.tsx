@@ -53,8 +53,9 @@ export interface SelectProps {
   title?: string;
 }
 
+// `sl-select` is a styling hook for input-styling extensions.
 const TRIGGER_CLS =
-  "inline-flex items-center justify-between gap-2 rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary outline-none cursor-pointer hover:bg-surface-3 focus-visible:ring-1 focus-visible:ring-slider-fill disabled:cursor-default disabled:opacity-45";
+  "sl-select inline-flex items-center justify-between gap-2 rounded bg-surface-2 px-2 py-1 text-[11px] text-text-primary outline-none cursor-pointer hover:bg-surface-3 focus-visible:ring-1 focus-visible:ring-slider-fill disabled:cursor-default disabled:opacity-45";
 
 function firstEnabled(list: SelectOption[]): number {
   for (let i = 0; i < list.length; i++) if (!list[i].disabled) return i;

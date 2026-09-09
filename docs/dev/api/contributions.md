@@ -6,7 +6,7 @@ Signatures for every `register*` contribution. `src/extensions/types.ts` is the 
 
 > The UI-mount contributions — **`PanelContribution`**, **`SlotContribution`**, and **`LayoutContribution`** — are documented in [UI Shell](ui-shell.md). **Theming** is covered in [UI Components](components.md#theming-tokens).
 
-**Jump to:** [Theme](#themecontribution) · [SliderIcon](#slidericoncontribution) · [Pipeline](#pipelinecontribution--display-transform) · [ProcessingStage](#processingstagecontribution--gpu-stage) · [KeyAction](#keyactioncontribution) · [Settings](#settingscontribution) · [ExportProcessor](#exportprocessorcontribution) · [FilenameTemplate](#filenametemplatecontribution) · [LensProfile](#lensprofilecontribution) · [CatalogHooks](#cataloghookscontribution) · [PresetImporter](#presetimportercontribution) · [GridFilter](#gridfiltercontribution) · [LibrarySort](#librarysortcontribution) · [Cursor](#cursorcontribution)
+**Jump to:** [Theme](#themecontribution) · [SliderIcon](#slidericoncontribution) · [Pipeline](#pipelinecontribution--display-transform) · [ProcessingStage](#processingstagecontribution--gpu-stage) · [KeyAction](#keyactioncontribution) · [Settings](#settingscontribution) · [ExportProcessor](#exportprocessorcontribution) · [FilenameTemplate](#filenametemplatecontribution) · [LensProfile](#lensprofilecontribution) · [CatalogHooks](#cataloghookscontribution) · [PresetImporter](#presetimportercontribution) · [GridFilter](#gridfiltercontribution) · [LibrarySort](#librarysortcontribution) · [Cursor](#cursorcontribution) · [Stylesheet](#stylesheetcontribution)
 
 ## `ThemeContribution`
 
@@ -201,3 +201,16 @@ interface CursorContribution {
 ```
 
 A named cursor for the Develop canvas. Supply **either** `css` or `image`. Reference it by `id` from [`api.develop.setCanvasCursor`](stores.md#apidevelop). Inline SVG is encoded to a data URL (always CSP-allowed); an `image` URL is subject to the app CSP. Re-registering the same id replaces it.
+
+## `StylesheetContribution`
+
+```typescript
+interface StylesheetContribution {
+  id: string;   // globally unique, e.g. "my-ext.controls"
+  css: string;  // plain CSS
+}
+```
+
+Plain CSS applied in **every** app window (detached module windows included) after the core styles. It is the way to restyle the core controls: target the [styling hooks](components.md#styling-hooks) (`.sl-slider-thumb`, `.sl-switch-track`, `.sl-select`, `button`, `input[type="checkbox"]`, …) rather than Tailwind class names, which are not a contract.
+
+Cascade: the sheet is a constructed stylesheet in `document.adoptedStyleSheets`, so it always sits after the document's own CSS, and its rules are unlayered while Tailwind's utilities live in `@layer utilities` — an extension rule therefore wins over any utility class at equal or lower specificity without `!important`. Inline `style` attributes still win. `@import` is refused (the sheet is left empty and a warning logged). Re-registering the same id replaces the CSS in place; `api.unregisterStylesheet(id)` removes one sheet, and disabling or uninstalling the extension removes them all.

@@ -96,6 +96,9 @@ export type WorkerRequest =
 
 export type WorkerResponse =
   | { type: "ready"; pipelineFloat: boolean }
+  // The develop renderer could not be created (no WebGL2 context). The bridge
+  // retries init on a schedule; see RenderBridge's availability.
+  | { type: "initError"; message: string }
   | { type: "frame"; bitmap: ImageBitmap; width: number; height: number; histogram?: HistogramData }
   | { type: "histogram"; histogram: HistogramData }
   | { type: "thumbnail"; requestId: string; blob: Blob }
@@ -219,14 +222,25 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   try {
     switch (msg.cmd) {
       case "init": {
-        canvas = new OffscreenCanvas(msg.width, msg.height);
-        renderer = new WebGLRenderer(canvas, {
-          // The worker can't read the preference itself (settings-store uses
-          // localStorage, unavailable off the main thread), so it arrives here.
-          highBitDepth: msg.highBitDepth,
-          pipeline: BUILTIN_RESOLVED,
-          stages: [],
-        });
+        // A context that can't be created — no WebGL2, or the page is inside
+        // Chromium's post-GPU-reset refusal of 3D contexts — gets its own
+        // response so the bridge can retry instead of waiting for `ready`
+        // forever.
+        try {
+          canvas = new OffscreenCanvas(msg.width, msg.height);
+          renderer = new WebGLRenderer(canvas, {
+            // The worker can't read the preference itself (settings-store uses
+            // localStorage, unavailable off the main thread), so it arrives here.
+            highBitDepth: msg.highBitDepth,
+            pipeline: BUILTIN_RESOLVED,
+            stages: [],
+          });
+        } catch (err) {
+          canvas = null;
+          renderer = null;
+          respond({ type: "initError", message: err instanceof Error ? err.message : String(err) });
+          break;
+        }
         respond({ type: "ready", pipelineFloat: renderer.colorBufferFloat });
         break;
       }

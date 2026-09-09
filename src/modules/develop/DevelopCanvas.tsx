@@ -90,7 +90,7 @@ export function DevelopCanvas({
   onZoomChange: (zoom: number | null) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { supported, loading, width, height, sourceWidth, sourceHeight, setViewport } = useDevelopRenderer(
+  const { supported, availability, loading, width, height, sourceWidth, sourceHeight, setViewport } = useDevelopRenderer(
     canvasRef,
     photo,
   );
@@ -334,6 +334,15 @@ export function DevelopCanvas({
 
   return (
     <div className="relative h-full w-full">
+    {availability !== "starting" && availability !== "ready" && (
+      <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+        <p className="rounded bg-surface-2 px-3 py-2 text-xs text-text-muted">
+          {availability === "failed"
+            ? "GPU renderer unavailable — restart Safelight"
+            : "GPU renderer unavailable — retrying…"}
+        </p>
+      </div>
+    )}
     <ViewportImage
       canvasRef={canvasRef}
       bufferWidth={width}

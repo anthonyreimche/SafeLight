@@ -30,6 +30,19 @@ type HistogramCallback = (histogram: HistogramData) => void;
 type ThumbnailCallback = (result: ThumbnailResult) => void;
 type UprightCallback = (result: UprightResult) => void;
 type ErrorCallback = (message: string) => void;
+/** Whether the worker's develop renderer exists: "starting" until the first
+ *  init settles, "retrying" while a failed init is being re-attempted,
+ *  "failed" once the retry budget is spent. */
+export type RendererAvailability = "starting" | "ready" | "retrying" | "failed";
+type AvailabilityCallback = (availability: RendererAvailability, detail?: string) => void;
+
+// Retry ladder for a worker whose WebGL2 context could not be created. After a
+// GPU reset Chromium refuses 3D contexts to the page for a while — up to two
+// minutes once resets repeat — and the crash-recovery reload lands inside that
+// window, so the first init after a recovery fails although the GPU is back.
+// About 2½ minutes of retries outlasts the block; a GPU that never comes back
+// ends in "failed" instead of a silent, permanently grey Develop view.
+const INIT_RETRY_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 30_000, 30_000, 30_000];
 type HealSourceCallback = (src: { data: Uint8ClampedArray; width: number; height: number }) => void;
 
 export class RenderBridge {
@@ -46,6 +59,11 @@ export class RenderBridge {
   private onUpright: UprightCallback | null = null;
   private onError: ErrorCallback | null = null;
   private onHealSource: HealSourceCallback | null = null;
+  private onAvailability: AvailabilityCallback | null = null;
+  availability: RendererAvailability = "starting";
+  private initArgs: { width: number; height: number } | null = null;
+  private initAttempt = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   // Resolves with the rendered blob, or null when the worker reports a cache miss
   // (the caller then decodes + uploads + retries).
@@ -75,9 +93,26 @@ export class RenderBridge {
     switch (msg.type) {
       case "ready":
         this.pipelineFloat = msg.pipelineFloat;
+        this.setAvailability("ready");
         this.readyResolve?.();
         this.readyResolve = null;
         break;
+      case "initError": {
+        const delay = this.initArgs ? INIT_RETRY_MS[this.initAttempt] : undefined;
+        if (delay === undefined) {
+          this.setAvailability("failed", msg.message);
+          this.onError?.(`renderer unavailable: ${msg.message}`);
+          break;
+        }
+        this.initAttempt++;
+        this.setAvailability("retrying", msg.message);
+        this.onError?.(`renderer init failed (${msg.message}); retrying in ${delay / 1000}s`);
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          this.postInit();
+        }, delay);
+        break;
+      }
       case "frame":
         this.onFrame?.({
           bitmap: msg.bitmap,
@@ -178,14 +213,30 @@ export class RenderBridge {
   // ------------------------------------------------------------------
 
   init(width: number, height: number) {
+    this.initArgs = { width, height };
+    this.initAttempt = 0;
+    this.postInit();
+  }
+
+  private postInit() {
+    if (!this.initArgs) return;
     // The worker's settings-store can't reach localStorage, so read the
     // High-bit-depth preference here (main thread) and hand it across.
-    this.post({ cmd: "init", width, height, highBitDepth: getSettings().highBitDepth });
+    this.post({ cmd: "init", ...this.initArgs, highBitDepth: getSettings().highBitDepth });
+  }
+
+  private setAvailability(availability: RendererAvailability, detail?: string) {
+    this.availability = availability;
+    this.onAvailability?.(availability, detail);
   }
 
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     // terminate() tears down the worker (and its GL context) synchronously; a
     // "dispose" message would be preempted by it, so don't bother sending one.
     this.worker.terminate();
@@ -201,6 +252,11 @@ export class RenderBridge {
   setOnUpright(cb: UprightCallback | null) { this.onUpright = cb; }
   setOnError(cb: ErrorCallback | null) { this.onError = cb; }
   setOnHealSource(cb: HealSourceCallback | null) { this.onHealSource = cb; }
+  /** Reports the current availability at once, then every change. */
+  setOnAvailability(cb: AvailabilityCallback | null) {
+    this.onAvailability = cb;
+    cb?.(this.availability);
+  }
 
   // ------------------------------------------------------------------
   // Image data

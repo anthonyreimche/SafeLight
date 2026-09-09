@@ -786,6 +786,19 @@ export interface CursorContribution {
   fallback?: string;
 }
 
+/** A stylesheet applied to every app window after the core styles, e.g. to
+ *  restyle the input controls through the documented `sl-*` styling hooks.
+ *  Extension rules are unlayered, so they win over Tailwind utility classes at
+ *  equal or lower specificity without `!important`; inline styles still win.
+ *  `@import` is refused (the sheet is left empty). Re-registering the same id
+ *  replaces the CSS; disabling the extension removes the sheet. */
+export interface StylesheetContribution {
+  /** Globally unique, e.g. "my-ext.controls". */
+  id: string;
+  /** Plain CSS. */
+  css: string;
+}
+
 export interface SafelightAPI {
   version: 1;
   extensionId: string;
@@ -853,6 +866,12 @@ export interface SafelightAPI {
    *  passes the targeted photo ids (the right-clicked photo, or the whole
    *  selection if it's part of one). Re-registering the same id replaces it. */
   registerGridMenuItem(c: GridMenuItemContribution): void;
+  /** Apply a stylesheet in every app window, after the core styles — the way
+   *  to restyle core controls (see the styling hooks in docs/dev/api/components.md).
+   *  Re-registering the same id replaces its CSS. */
+  registerStylesheet(c: StylesheetContribution): void;
+  /** Remove a stylesheet this extension registered (by id). */
+  unregisterStylesheet(id: string): void;
   /** Persisted per-extension key/value settings. */
   settings: {
     get<T>(key: string, fallback: T): T;

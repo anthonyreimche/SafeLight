@@ -87,6 +87,13 @@ html.sl-focus-ring .sl-slider-wrap:has(input:focus-visible) {
   outline-width: 2px;
 }
 
+/* Styling hook for input-style extensions: the Develop slider renders a knob
+   element at the value, hidden by default (the filled bar shows the value). An
+   extension stylesheet (api.registerStylesheet) turns it on and shapes it. */
+.sl-slider-thumb {
+  display: none;
+}
+
 /* Windows High Contrast / forced-colors mode: the OS replaces our palette, so
    get out of the way and just guarantee focus + structure stay visible using the
    system colour keywords. Fuller forced-colors theming is a later pass. */

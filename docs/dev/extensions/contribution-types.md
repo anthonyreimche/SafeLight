@@ -11,6 +11,7 @@ What an extension can register. Each is auto-tagged with the extension's id and 
 - **Slots** (`registerSlot`) — render into a named region of core chrome: `library-toolbar`, `library-subbar`, `develop-toolbar`, `develop-canvas-overlay`, or `develop-detail`.
 - **Cursors** (`registerCursor`) — a named canvas cursor (semantic token or custom image), driven via `api.develop.setCanvasCursor` while a tool is active.
 - **Themes** (`registerTheme`) — a named set of CSS custom properties applied to `:root`.
+- **Stylesheets** (`registerStylesheet`) — plain CSS applied in every window after the core styles, for restyling the input controls through the documented [styling hooks](../api/components.md#styling-hooks) (knob shapes, corners, checkboxes, focus effects).
 - **Layouts** (`registerLayout`) — a named dock arrangement for the Layout menu.
 - **Slider icons** (`registerSliderIcon`) — inline SVG beside a slider label.
 
