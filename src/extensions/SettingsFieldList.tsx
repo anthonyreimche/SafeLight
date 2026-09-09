@@ -24,6 +24,7 @@ import {
 } from "./ext-settings";
 import type { SettingsField } from "./types";
 import { Select } from "@/ui/components/Select";
+import { Switch } from "@/ui/components/Switch";
 
 export const labelCls = "text-[10px] uppercase tracking-widest text-text-muted";
 export const inputCls =
@@ -154,22 +155,12 @@ function FieldRow({
             {label}
             {differs && <ResetButton onReset={reset} />}
           </span>
-          <button
-            role="switch"
-            aria-checked={checked}
-            aria-label={field.label}
-            onClick={() => set(!checked)}
-            className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
-              checked ? "bg-slider-fill" : "bg-surface-3"
-            }`}
-          >
-            <span
-              aria-hidden="true"
-              className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${
-                checked ? "left-3.5" : "left-0.5"
-              }`}
-            />
-          </button>
+          <Switch
+            checked={checked}
+            ariaLabel={field.label}
+            onChange={set}
+            className="shrink-0"
+          />
         </div>
         <Hint text={field.hint} query={query} />
       </Row>
@@ -312,26 +303,13 @@ function GenericRow({
 
   if (typeof value === "boolean") {
     return (
-      <button
-        role="switch"
-        aria-checked={value}
-        onClick={() => set(!value)}
-        className="flex w-full items-center justify-between gap-3 text-left"
+      <Switch
+        checked={value}
+        onChange={set}
+        className="w-full justify-between gap-3 text-left"
       >
         <span className="text-[11px] text-text-primary">{key}</span>
-        <span
-          aria-hidden="true"
-          className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${
-            value ? "bg-slider-fill" : "bg-surface-3"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${
-              value ? "left-3.5" : "left-0.5"
-            }`}
-          />
-        </span>
-      </button>
+      </Switch>
     );
   }
 

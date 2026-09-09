@@ -26,6 +26,7 @@ import type {
 } from "react";
 import { inputCls, labelCls } from "./SettingsFieldList";
 import { Select as CoreSelect, type SelectGroup, type SelectOption } from "@/ui/components/Select";
+import { Switch } from "@/ui/components/Switch";
 
 // ── Buttons ──────────────────────────────────────────────────────────────────
 
@@ -173,24 +174,14 @@ export interface ToggleProps {
 
 export function Toggle({ checked, onChange, label, ariaLabel }: ToggleProps) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={ariaLabel ?? (typeof label === "string" ? label : undefined)}
-      onClick={() => onChange(!checked)}
-      className="inline-flex items-center gap-2"
+    <Switch
+      checked={checked}
+      onChange={onChange}
+      ariaLabel={ariaLabel ?? (typeof label === "string" ? label : undefined)}
+      className="gap-2"
     >
       {label != null && <span className="text-[11px] text-text-primary">{label}</span>}
-      <span
-        className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${checked ? "bg-slider-fill" : "bg-surface-3"}`}
-      >
-        <span
-          aria-hidden="true"
-          className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${checked ? "left-3.5" : "left-0.5"}`}
-        />
-      </span>
-    </button>
+    </Switch>
   );
 }
 
@@ -210,7 +201,7 @@ export interface SegmentedControlProps {
 export function SegmentedControl({ value, onChange, options, size = "md" }: SegmentedControlProps) {
   const pad = size === "sm" ? "px-2 py-1 text-[10px]" : "px-2.5 py-1.5 text-[11px]";
   return (
-    <div className="flex overflow-hidden rounded border border-border">
+    <div className="sl-segmented flex overflow-hidden rounded border border-border">
       {options.map((o, i) => (
         <button
           key={o.value}

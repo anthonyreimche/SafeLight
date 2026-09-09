@@ -35,6 +35,7 @@ import { BUILTIN_EXTENSIONS } from "./builtin";
 import { useRegistry } from "./registry";
 import { useSettings } from "@/state/settings-store";
 import { Select } from "@/ui/components/Select";
+import { Switch } from "@/ui/components/Switch";
 import { openPreferences } from "@/ui/components/PreferencesDialog";
 import { closeExtensions } from "@/ui/components/ExtensionsDialog";
 import { confirmDialog } from "@/ui/components/ConfirmDialog";
@@ -1133,24 +1134,13 @@ function ExtensionRow({
           </button>
         )}
         {!locked && (
-          <button
-            role="switch"
-            aria-checked={enabled}
-            aria-label={`Enable ${name}`}
+          <Switch
+            checked={enabled}
+            ariaLabel={`Enable ${name}`}
             disabled={busy}
-            onClick={onToggle}
+            onChange={onToggle}
             title={enabled ? "Disable (keeps files and settings)" : "Enable"}
-            className={`relative h-4 w-7 rounded-full transition-colors ${
-              enabled ? "bg-slider-fill" : "bg-surface-3"
-            }`}
-          >
-            <span
-              aria-hidden="true"
-              className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${
-                enabled ? "left-3.5" : "left-0.5"
-              }`}
-            />
-          </button>
+          />
         )}
         {onUninstall && (
           <button

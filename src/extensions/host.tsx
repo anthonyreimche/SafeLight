@@ -28,8 +28,11 @@ import {
   registerSlot,
   unregisterSlot,
   registerSliderIcon,
+  registerStylesheet,
+  unregisterStylesheet,
   registerTheme,
 } from "./registry";
+import { initStylesheets } from "./stylesheets";
 import { applyPipeline, initPipelines, usePipelineStore } from "./pipelines";
 import { setStageTexture } from "@/rendering/render-bridge";
 import {
@@ -134,6 +137,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerCursor: (c) => registerCursor(extensionId, c),
     registerLibrarySort: (c) => registerLibrarySort(extensionId, c),
     registerGridMenuItem: (c) => registerGridMenuItem(extensionId, c),
+    registerStylesheet: (c) => registerStylesheet(extensionId, c),
+    unregisterStylesheet: (id) => unregisterStylesheet(extensionId, id),
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),
@@ -235,6 +240,7 @@ export function initExtensionHost(): void {
   initExtSettings();
   initEnablement();
   initThemes();
+  initStylesheets();
   // Accessibility overlays are owned by the `core.accessibility` built-in
   // extension (activated in loadBuiltins above when enabled); its theme
   // subscription re-layers high-contrast after initThemes applies the theme.

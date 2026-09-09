@@ -14,6 +14,7 @@ import { resolveVizMaskIndex } from "@/modules/develop/mask-viz";
 import { transformedViewCrop } from "@/rendering/crop-transform";
 import { buildForwardTransform } from "@/rendering/transform";
 import { getRenderBridge } from "@/rendering/render-bridge";
+import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
@@ -48,6 +49,9 @@ function surroundRGB(): [number, number, number] {
 
 interface RendererStatus {
   supported: boolean;
+  /** Whether the worker's renderer exists (it can fail to create a WebGL2
+   *  context after a GPU reset; the bridge retries). */
+  availability: RendererAvailability;
   loading: boolean;
   width: number;
   height: number;
@@ -77,6 +81,7 @@ export function useDevelopRenderer(
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const rafIdRef = useRef<number | null>(null);
   const [supported, setSupported] = useState(true);
+  const [availability, setAvailability] = useState<RendererAvailability>("starting");
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
   // True dimensions of the decoded source last handed to the renderer (already
@@ -211,6 +216,7 @@ export function useDevelopRenderer(
     bridge.setOnError((msg) => {
       console.error("[render-worker]", msg);
     });
+    bridge.setOnAvailability(setAvailability);
 
     // The worker owns the decoded source; mirror its downscaled heal-source buffer
     // into this (main-thread) module instance so the overlay's findHealSource /
@@ -227,6 +233,7 @@ export function useDevelopRenderer(
       bridge.setOnFrame(null);
       bridge.setOnHistogram(null);
       bridge.setOnError(null);
+      bridge.setOnAvailability(null);
       bridge.setOnHealSource(null);
       bridgeRef.current = null;
       ctxRef.current = null;
@@ -561,6 +568,7 @@ export function useDevelopRenderer(
 
   return {
     supported,
+    availability,
     loading,
     width: size.width,
     height: size.height,

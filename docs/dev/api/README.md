@@ -41,6 +41,8 @@ interface SafelightAPI {
   registerLibrarySort(c: LibrarySortContribution): void;
   registerSlot(c: SlotContribution): void;
   registerCursor(c: CursorContribution): void;               // a named/custom canvas cursor
+  registerStylesheet(c: StylesheetContribution): void;       // CSS applied after core styles (see Styling hooks)
+  unregisterStylesheet(id: string): void;                    // remove one stylesheet you registered
 
   // ── Persisted per-extension settings ───────────────────────────────────
   settings: {
