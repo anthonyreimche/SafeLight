@@ -324,6 +324,12 @@ export interface ExtensionManifest {
   permissions?: ExtensionPermissions;
 }
 
+/** The update-relevant fields of a repo's current safelight.json. */
+export interface RemoteManifest {
+  version: string;
+  minAppVersion?: string;
+}
+
 /** Declared extension capabilities. See ExtensionManifest.permissions. */
 export interface ExtensionPermissions {
   /** HTTPS origins the extension needs to reach, e.g. ["https://api.example.com"]
@@ -447,6 +453,14 @@ export interface InterStageVariable {
 export interface TextureRequirement {
   /** Parameter bag key for the texture data. */
   key: string;
+  /** "lut" / "dynamic": pixel data supplied through api.setStageTexture (one
+   *  global bag, not per photo). "coverage": the photo's paramBag value at
+   *  "{stageId}.{key}" is a BrushDab[] (the shape core masks use, source-UV,
+   *  radius in image-height units); the renderer bakes it into brush coverage
+   *  per render, so it persists, undoes and exports like any edit, and the
+   *  stage's inline glsl / helpers read it as `float key(vec2 uv)` (0..1 at
+   *  source-UV; not available inside passes). Coverage shares the brush
+   *  atlas's four channels with the photo's own brush masks. */
   kind: "lut" | "coverage" | "dynamic";
   width?: number;
   height?: number;
@@ -1244,10 +1258,19 @@ declare global {
           topic: string,
           force?: boolean,
         ): Promise<ExtensionSearchResult[]>;
-        /** The `version` from the repo's root safelight.json on its default
-         *  branch, or null. Lets the updater detect a pushed version bump
-         *  without a GitHub Release. Optional: absent in older Electron builds. */
-        latestVersion?(repo: string): Promise<string | null>;
+        /** The `version` and `minAppVersion` from the repo's root safelight.json
+         *  on its default branch, or null. Lets the updater detect a pushed
+         *  version bump without a GitHub Release and tell whether this build
+         *  can run it. Optional: absent in older Electron builds. */
+        remoteManifest?(repo: string): Promise<RemoteManifest | null>;
+        /** Finish an install/update: "keep" drops the previous version that
+         *  install() kept aside; "rollback" puts it back and returns its
+         *  manifest (null when there was none — the install is then removed).
+         *  Optional: absent in older Electron builds. */
+        settleUpdate?(
+          id: string,
+          outcome: "keep" | "rollback",
+        ): Promise<ExtensionManifest | null>;
         /** Verified-allowlist + banned-kill-switch lists from the trust
          *  registry, cached in the main process. Optional: absent in older
          *  Electron builds (callers then treat everything as unverified). */

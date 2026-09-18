@@ -93,8 +93,12 @@ contextBridge.exposeInMainWorld("safelightNative", {
         !!force,
       ),
     uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
-    latestVersion: (repo) =>
-      ipcRenderer.invoke("plugins:latest-version", String(repo)),
+    remoteManifest: (repo) =>
+      ipcRenderer.invoke("plugins:remote-manifest", String(repo)),
+    // Finish an install/update: "keep" drops the previous copy, "rollback"
+    // restores it (and returns its manifest).
+    settleUpdate: (id, outcome) =>
+      ipcRenderer.invoke("plugins:settle-update", String(id), String(outcome)),
     // Verified-allowlist + banned-kill-switch lists from the trust registry.
     trustList: (force) => ipcRenderer.invoke("plugins:trust-list", !!force),
   },

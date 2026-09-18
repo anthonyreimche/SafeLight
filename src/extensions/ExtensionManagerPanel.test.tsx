@@ -17,6 +17,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { ExtensionManagerPanel } from "@/extensions/ExtensionManagerPanel";
+import { useExtStoreUI } from "@/extensions/store-ui";
 
 const RISK_ACK_KEY = "sl_ext_risk_ack_v1";
 
@@ -108,5 +109,38 @@ describe("ExtensionManagerPanel install trust prompts", () => {
 
     await waitFor(() => expect(installBridge).toHaveBeenCalledWith("acme/widget"));
     expect(confirmSpy).not.toHaveBeenCalled();
+  });
+});
+
+// The Updates tab must tell the user about a newer version this build can't run
+// without offering a doomed Update button or a badge they cannot clear.
+describe("ExtensionManagerPanel Updates tab", () => {
+  const installed = {
+    id: "acme.widget",
+    name: "Widget",
+    version: "1.0.0",
+    main: "index.js",
+    repository: "acme/widget",
+  };
+
+  beforeEach(() => {
+    useExtStoreUI.setState({ updates: {} });
+    vi.stubGlobal("safelightNative", {
+      plugins: {
+        list: async () => [installed],
+        install: installBridge,
+        remoteManifest: async () => ({ version: "2.1.0", minAppVersion: "99.0.0" }),
+      },
+    });
+  });
+
+  it("lists an update this build can't run without offering to install it", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Updates" }));
+
+    await screen.findByText(/Version 2\.1\.0 requires Safelight 99\.0\.0 or newer/);
+    expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Updates" }).textContent).toBe("Updates");
   });
 });

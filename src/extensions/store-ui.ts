@@ -40,9 +40,15 @@ function readLsUpdates(): Record<string, ExtUpdateInfo> {
         typeof (v as ExtUpdateInfo).checkedAt === "number"
       ) {
         const u = v as ExtUpdateInfo;
+        const failed =
+          u.failed && typeof u.failed === "object" && typeof u.failed.version === "string"
+            ? { version: u.failed.version, error: String(u.failed.error ?? "") }
+            : null;
         out[id] = {
           latestTag: typeof u.latestTag === "string" ? u.latestTag : null,
           hasUpdate: !!u.hasUpdate,
+          requiresApp: typeof u.requiresApp === "string" ? u.requiresApp : null,
+          failed,
           checkedAt: u.checkedAt,
         };
       }
@@ -65,8 +71,24 @@ export interface ExtUpdateInfo {
   latestTag: string | null;
   /** True when latestTag is strictly newer than the installed version. */
   hasUpdate: boolean;
+  /** The newer version's minAppVersion when it is above this build: the update
+   *  is shown but cannot be installed here. */
+  requiresApp: string | null;
+  /** The newer version that last failed to start on this build (and was rolled
+   *  back), with the error. Cleared once a different version is the latest. */
+  failed: { version: string; error: string } | null;
   /** Epoch ms of the check, so we can skip re-checking too often. */
   checkedAt: number;
+}
+
+/** One line about a pending update: what's new, or why it can't / didn't
+ *  install here. Shared by the Updates tab and the detail page. */
+export function updateNote(installedVersion: string, upd: ExtUpdateInfo): string {
+  if (upd.requiresApp)
+    return `Version ${upd.latestTag} requires Safelight ${upd.requiresApp} or newer — you have ${__APP_VERSION__}.`;
+  if (upd.failed)
+    return `Version ${upd.failed.version} didn't start on this build; ${installedVersion} was restored.`;
+  return `New version ${upd.latestTag} available`;
 }
 
 // ── Category mapping ─────────────────────────────────────────────────────────

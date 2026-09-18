@@ -14,6 +14,7 @@ import {
   categoryFor,
   loadReadme,
   loadRepoMeta,
+  updateNote,
   useExtStoreUI,
   type ExtUpdateInfo,
 } from "./store-ui.ts";
@@ -37,6 +38,8 @@ function memoryStorage(seed: Record<string, string> = {}) {
 const update = (over: Partial<ExtUpdateInfo> = {}): ExtUpdateInfo => ({
   latestTag: "2.0.0",
   hasUpdate: true,
+  requiresApp: null,
+  failed: null,
   checkedAt: 1_700_000_000_000,
   ...over,
 });
@@ -133,6 +136,24 @@ describe("categoryFor", () => {
     expect(categoryFor(["safelight-panel"], ["Wizardry"])).toBe("Panels");
     expect(categoryFor(undefined, ["Wizardry"])).toBe("Other");
     expect(categoryFor(["safelight-panel"], ["Wizardry", "Themes"])).toBe("Themes");
+  });
+});
+
+describe("updateNote", () => {
+  it("announces an installable update", () => {
+    expect(updateNote("1.0.0", update())).toBe("New version 2.0.0 available");
+  });
+
+  it("names the Safelight version a blocked update needs, and the one running", () => {
+    const note = updateNote("1.0.0", update({ requiresApp: "3.0.0" }));
+    expect(note).toContain("Version 2.0.0 requires Safelight 3.0.0 or newer");
+    expect(note).toMatch(/you have \d+\.\d+\.\d+\.$/);
+  });
+
+  it("says which version was restored after a failed start", () => {
+    expect(updateNote("1.0.0", update({ failed: { version: "2.0.0", error: "boom" } }))).toBe(
+      "Version 2.0.0 didn't start on this build; 1.0.0 was restored.",
+    );
   });
 });
 
@@ -256,8 +277,29 @@ describe("update-cache seed from the localStorage mirror", () => {
     expect(mod.useExtStoreUI.getState().updates["acme.tool"]).toEqual({
       latestTag: null,
       hasUpdate: true,
+      requiresApp: null,
+      failed: null,
       checkedAt: 1,
     });
+  });
+
+  it("restores the blocked and failed states, dropping a malformed failure", async () => {
+    const mod = await bootWith(
+      JSON.stringify({
+        blocked: { latestTag: "2.0.0", hasUpdate: true, requiresApp: "3.0.0", checkedAt: 1 },
+        failed: {
+          latestTag: "2.0.0",
+          hasUpdate: true,
+          failed: { version: "2.0.0", error: "boom" },
+          checkedAt: 1,
+        },
+        garbage: { latestTag: "2.0.0", hasUpdate: true, failed: "yes", checkedAt: 1 },
+      }),
+    );
+    const { updates } = mod.useExtStoreUI.getState();
+    expect(updates.blocked.requiresApp).toBe("3.0.0");
+    expect(updates.failed.failed).toEqual({ version: "2.0.0", error: "boom" });
+    expect(updates.garbage.failed).toBeNull();
   });
 });
 

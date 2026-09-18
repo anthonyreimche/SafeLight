@@ -9,8 +9,17 @@
 // path still executes, but the read-back value is the linear one the tone chain
 // produced, so "+1 EV doubles it" can be asserted without inverting a curve.
 
-import { describe, expect, it } from "vitest";
-import { DEFAULT_DEVELOP_PARAMS, DEFAULT_TRANSFORM } from "@/catalog/types";
+import { describe, expect, it, vi } from "vitest";
+import {
+  DEFAULT_DEVELOP_PARAMS,
+  DEFAULT_MASK_PANELS,
+  DEFAULT_TRANSFORM,
+  defaultMaskAdjustments,
+  type BrushDab,
+  type Mask,
+  type MaskComponent,
+} from "@/catalog/types";
+import type { ProcessingStageContribution } from "@/extensions/types";
 import { WebGLRenderer } from "./renderer";
 import {
   LINEAR_PROBE_PIPELINE,
@@ -23,6 +32,7 @@ import {
   glHarness,
   identityParams,
   pixelAt,
+  rendererBuildError,
   trackGlObjects,
   withRenderer,
 } from "./webgl.test-support";
@@ -379,5 +389,87 @@ describe("the shipping defaults", () => {
     for (let i = 1; i < rendered.length; i++) {
       expect(rendered[i]).toBeGreaterThan(rendered[i - 1]);
     }
+  });
+});
+
+describe("coverage-kind stage textures", () => {
+  const LOCAL_GAIN: ProcessingStageContribution = {
+    id: "acme.local",
+    name: "Local gain",
+    phase: "scene-linear",
+    glsl: "lin *= 1.0 + gain * cov(srcUv);",
+    uniforms: [{ key: "gain", glslType: "float", default: 0 }],
+    textures: [{ key: "cov", kind: "coverage" }],
+  };
+  // A hard-edged dab over the left 45 % of a square source: fully covered at
+  // x = 4/32, untouched at x = 28/32.
+  const LEFT: BrushDab = { x: 0.2, y: 0.5, radius: 0.28, erase: false, feather: 0 };
+  const SIZE = 32;
+
+  function localFrame(bag: Record<string, unknown>, masks: Mask[] = []): Frame {
+    return withRenderer({ stages: [LOCAL_GAIN], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+      renderer.setImage(flatSource(SIZE));
+      renderer.setParams(identityParams({ masks }));
+      renderer.setContributedParams(bag);
+      return capture(renderer);
+    });
+  }
+
+  it("confines the stage's effect to the painted dabs", () => {
+    const frame = localFrame({ "acme.local.gain": 1, "acme.local.cov": [LEFT] });
+    expect(pixelAt(frame, 4, 16)[1]).toBeCloseTo(FLAT_GREY * 2, 2);
+    expect(pixelAt(frame, 28, 16)[1]).toBeCloseTo(FLAT_GREY, 2);
+  });
+
+  it("reads an absent, empty or malformed value as unpainted", () => {
+    const bags: Record<string, unknown>[] = [
+      { "acme.local.gain": 1 },
+      { "acme.local.gain": 1, "acme.local.cov": [] },
+      { "acme.local.gain": 1, "acme.local.cov": [{ x: 0.2 }] },
+    ];
+    for (const bag of bags) {
+      expect(pixelAt(localFrame(bag), 4, 16)[1]).toBeCloseTo(FLAT_GREY, 2);
+    }
+  });
+
+  it("yields to the photo's own brushes when the atlas is full, and says so once", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const brush = (id: string): MaskComponent => ({
+        id,
+        kind: "brush",
+        mode: "add",
+        invert: false,
+        brush: {
+          dabs: [{ x: 0.8, y: 0.8, radius: 0.05, erase: false, feather: 0.5 }],
+          feather: 0.5,
+        },
+      });
+      const mask: Mask = {
+        id: "m1",
+        name: "Brushes",
+        visible: true,
+        invert: false,
+        opacity: 100,
+        adj: defaultMaskAdjustments(),
+        panels: [...DEFAULT_MASK_PANELS],
+        components: ["a", "b", "c", "d"].map(brush),
+      };
+      const frame = localFrame({ "acme.local.gain": 1, "acme.local.cov": [LEFT] }, [mask]);
+      expect(pixelAt(frame, 4, 16)[1]).toBeCloseTo(FLAT_GREY, 2);
+      const ours = warn.mock.calls.filter((call) => String(call[0]).includes("acme.local.cov"));
+      expect(ours).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("namespaces same-named coverage keys from two stages", () => {
+    const other: ProcessingStageContribution = {
+      ...LOCAL_GAIN,
+      id: "other.local",
+      glsl: "lin *= 1.0 - 0.5 * cov(srcUv);",
+    };
+    expect(rendererBuildError({ stages: [LOCAL_GAIN, other] })).toBeNull();
   });
 });
