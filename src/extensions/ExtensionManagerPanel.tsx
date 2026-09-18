@@ -49,6 +49,7 @@ import {
 import {
   CATEGORY_ORDER,
   categoryFor,
+  updateNote,
   useExtStoreUI,
   type StoreSort,
 } from "./store-ui";
@@ -268,7 +269,8 @@ export function ExtensionManagerPanel() {
     let reviewedStale = false;
     if (reviewedVersion && repo) {
       try {
-        const latest = await window.safelightNative?.plugins?.latestVersion?.(repo);
+        const latest = (await window.safelightNative?.plugins?.remoteManifest?.(repo))
+          ?.version;
         if (latest && isNewer(reviewedVersion, latest)) reviewedStale = true;
       } catch {
         // Best-effort: don't block an install on a version-check network blip.
@@ -357,12 +359,12 @@ export function ExtensionManagerPanel() {
     }
   };
 
-  const update = async (id: string, repo: string, tag: string) => {
+  const update = async (id: string, repo: string) => {
     setBusy(id);
     setMsg(null);
     try {
-      const manifest = await updateExtension(id, repo, tag);
-      setMsg(`Updated ${manifest.name} to ${tag}.`);
+      const manifest = await updateExtension(repo);
+      setMsg(`Updated ${manifest.name} to ${manifest.version}.`);
       refresh();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -388,13 +390,16 @@ export function ExtensionManagerPanel() {
     installedRepos.has(r.fullName.toLowerCase());
   const enabled = (id: string) => !disabledIds.includes(id);
 
-  // Installed extensions with a newer release available — drives the Updates tab
-  // and its sidebar badge. Needs a known repo to update from (built-ins / custom
-  // imports without a source can't be updated).
-  const updatable = list.filter((m) => {
+  // Installed extensions with a newer version — drives the Updates tab. Needs a
+  // known repo to update from (built-ins / custom imports without a source can't
+  // be updated). One this build can't run is listed so the user knows, but
+  // neither counted in the badge nor offered for install; auto-update skips it
+  // too (loader.ts).
+  const pending = list.filter((m) => {
     const upd = updates[m.id];
     return !!upd?.hasUpdate && !!upd.latestTag && !!repoFor(m);
   });
+  const installable = pending.filter((m) => !updates[m.id]?.requiresApp);
 
   // Browse shows only what isn't installed, narrowed by the active category.
   const notInstalled = results?.filter((r) => !isInstalled(r)) ?? null;
@@ -515,7 +520,7 @@ export function ExtensionManagerPanel() {
           target={target}
           busy={busy}
           onInstall={(s) => void install(s, target.search)}
-          onUpdate={(id, repo, tag) => void update(id, repo, tag)}
+          onUpdate={(id, repo) => void update(id, repo)}
           onUninstall={(id) => void remove(id)}
           onToggle={toggle}
           onSettings={openSettings}
@@ -549,9 +554,9 @@ export function ExtensionManagerPanel() {
             }`}
           >
             <span>{s}</span>
-            {s === "Updates" && updatable.length > 0 && (
+            {s === "Updates" && installable.length > 0 && (
               <span className="rounded-full bg-slider-fill px-1.5 text-[9px] font-medium leading-[14px] text-white">
-                {updatable.length}
+                {installable.length}
               </span>
             )}
           </button>
@@ -566,8 +571,8 @@ export function ExtensionManagerPanel() {
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between gap-2">
               <SectionLabel>
-                {updatable.length > 0
-                  ? `${updatable.length} update${updatable.length > 1 ? "s" : ""} available`
+                {installable.length > 0
+                  ? `${installable.length} update${installable.length > 1 ? "s" : ""} available`
                   : "Updates"}
               </SectionLabel>
               <button
@@ -583,7 +588,7 @@ export function ExtensionManagerPanel() {
               </button>
             </div>
 
-            {updatable.length === 0 ? (
+            {pending.length === 0 ? (
               <div className="text-text-muted">
                 All installed extensions are up to date. Updating downloads the
                 latest release and reinstalls the extension in place; your
@@ -591,7 +596,7 @@ export function ExtensionManagerPanel() {
               </div>
             ) : (
               <div className="flex flex-col gap-1.5">
-                {updatable.map((m) => {
+                {pending.map((m) => {
                   const upd = updates[m.id]!;
                   const repo = repoFor(m)!;
                   return (
@@ -600,12 +605,12 @@ export function ExtensionManagerPanel() {
                       name={m.name}
                       version={m.version}
                       repo={repo}
-                      description={`New version ${upd.latestTag} available`}
+                      description={updateNote(m.version, upd)}
                       enabled={enabled(m.id)}
                       busy={busy !== null}
                       hasSettings={!!extSettings[m.id]}
                       onOpen={() => openDetail(repo)}
-                      onUpdate={() => void update(m.id, repo, upd.latestTag!)}
+                      onUpdate={upd.requiresApp ? undefined : () => void update(m.id, repo)}
                       onSettings={() => openSettings(m.id)}
                       onToggle={() => toggle(m.id, !enabled(m.id))}
                       onUninstall={() => void remove(m.id)}
@@ -785,7 +790,7 @@ export function ExtensionManagerPanel() {
                           const upd = updates[m.id];
                           const repo = repoFor(m);
                           const canUpdate =
-                            !!upd?.hasUpdate && !!upd.latestTag && !!repo;
+                            !!upd?.hasUpdate && !!upd.latestTag && !!repo && !upd.requiresApp;
                           return (
                             <ExtensionRow
                               key={m.id}
@@ -799,7 +804,7 @@ export function ExtensionManagerPanel() {
                               onOpen={() => openDetail(repo ?? m.id)}
                               onUpdate={
                                 canUpdate
-                                  ? () => void update(m.id, repo!, upd!.latestTag!)
+                                  ? () => void update(m.id, repo!)
                                   : undefined
                               }
                               onSettings={() => openSettings(m.id)}

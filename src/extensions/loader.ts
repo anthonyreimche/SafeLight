@@ -14,7 +14,7 @@
 // Uninstalling (external only) deletes both.
 
 import { create } from "zustand";
-import type { ExtensionManifest, ExtensionModule } from "./types";
+import type { ExtensionManifest, ExtensionModule, RemoteManifest } from "./types";
 import { unregisterExtension } from "./registry";
 import { applySavedTheme } from "./themes";
 import { makeScopedAPI } from "./host";
@@ -24,6 +24,7 @@ import { BUILTIN_EXTENSIONS } from "./builtin";
 import { isNewer } from "@/update/semver";
 import { repoFor } from "./sources";
 import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
+import { importPluginModule } from "./plugin-module";
 import { getSettings } from "@/state/settings-store";
 import {
   loadTrustList,
@@ -175,12 +176,24 @@ async function loadPlugin(manifest: ExtensionManifest): Promise<void> {
   // without a per-version query an updated bundle keeps running the module that
   // was imported at launch. Bumping the manifest version now re-imports it.
   const url = `${location.origin}/__plugins__/${manifest.id}/${manifest.main}?v=${encodeURIComponent(manifest.version)}`;
-  const mod = (await import(/* @vite-ignore */ url)) as Partial<ExtensionModule>;
+  const mod = await importPluginModule(url);
   if (typeof mod.activate !== "function")
     throw new Error(`${manifest.id}: bundle has no activate(api) export`);
   setExtensionName(manifest.id, manifest.name);
-  mod.activate(makeScopedAPI(manifest.id));
+  try {
+    mod.activate(makeScopedAPI(manifest.id));
+  } catch (e) {
+    unregisterExtension(manifest.id); // whatever it registered before throwing
+    throw e;
+  }
   loaded.set(manifest.id, mod as ExtensionModule);
+}
+
+/** Stop a running external extension and sweep its contributions. */
+function teardown(id: string): void {
+  loaded.get(id)?.deactivate?.();
+  loaded.delete(id);
+  unregisterExtension(id);
 }
 
 /** After a background trust refresh, retire any loaded external extension the
@@ -201,9 +214,7 @@ async function enforceBansOnLoaded(): Promise<void> {
     if (!banned) continue;
     flagBannedExtension({ id: m.id, name: m.name, reason: banned });
     console.warn(`[extensions] disabling now-banned ${m.id}: ${banned}`);
-    loaded.get(m.id)?.deactivate?.();
-    loaded.delete(m.id);
-    unregisterExtension(m.id);
+    teardown(m.id);
   }
 }
 
@@ -246,41 +257,123 @@ export async function loadExternalPlugins(): Promise<void> {
   if (list.length > 0) void loadTrustList(true).then(enforceBansOnLoaded);
 }
 
-export async function installFromGitHub(
-  spec: string,
-): Promise<ExtensionManifest> {
+// ─── Install / update ───────────────────────────────────────────────────────
+// Both paths put the new files on disk first (the main process keeps the version
+// being replaced aside), then swap the live instance, then settle: "keep" drops
+// the previous copy, "rollback" restores it. Nothing in the renderer changes
+// until the download and validation have succeeded, so a failed update leaves
+// the running extension exactly as it was.
+
+const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+const settle = (
+  id: string,
+  outcome: "keep" | "rollback",
+): Promise<ExtensionManifest | null> =>
+  window.safelightNative?.plugins?.settleUpdate?.(id, outcome) ?? Promise.resolve(null);
+
+/** The record for an installed version with nothing newer known. */
+const upToDate = (version: string): ExtUpdateInfo => ({
+  latestTag: version,
+  hasUpdate: false,
+  requiresApp: null,
+  failed: null,
+  checkedAt: Date.now(),
+});
+
+/** Drop the previous copy after a successful swap. Failing to do so is not a
+ *  failed update: the next launch's sweep treats the leftover as unsettled and
+ *  puts the previous version back, and the update is offered again. */
+async function keepSettled(id: string): Promise<void> {
+  try {
+    await settle(id, "keep");
+  } catch (e) {
+    console.warn(`[extensions] could not settle the update of ${id}:`, e);
+  }
+}
+
+const inflight = new Map<string, Promise<ExtensionManifest>>();
+
+/** Download `spec` and put it live. `enable` clears the disabled flag first (a
+ *  fresh install always starts enabled); an update leaves the user's choice
+ *  alone, so a disabled extension gets the new files and stays off. One run per
+ *  repo at a time: a click racing the background poll joins the same run. */
+function installAndActivate(spec: string, enable: boolean): Promise<ExtensionManifest> {
+  const key = spec.trim().toLowerCase();
+  const running = inflight.get(key);
+  if (running) return running;
+  const run = performInstall(spec, enable).finally(() => inflight.delete(key));
+  inflight.set(key, run);
+  return run;
+}
+
+async function performInstall(spec: string, enable: boolean): Promise<ExtensionManifest> {
   const native = window.safelightNative;
   if (!native) throw new Error("Requires the desktop app.");
   const manifest = await native.plugins.install(spec);
-  // A fresh install always starts enabled.
-  persistDisabled(
-    useDisabledExtensions.getState().ids.filter((x) => x !== manifest.id),
-  );
-  // Updating over a live version: tear the old one down and drop it from the
-  // loaded set so loadPlugin re-imports the freshly-downloaded bundle (the
-  // versioned URL above makes that a real re-import, not a cache hit).
-  const prev = loaded.get(manifest.id);
-  if (prev) {
-    prev.deactivate?.();
-    loaded.delete(manifest.id);
-    unregisterExtension(manifest.id);
+  const { id } = manifest;
+  if (enable)
+    persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
+  const store = useExtStoreUI.getState();
+  if (isExtensionDisabled(id)) {
+    await keepSettled(id);
+    store.setUpdate(id, upToDate(manifest.version));
+    return manifest;
   }
-  await loadPlugin(manifest); // live, no restart
-  // The freshly-installed version is current — clear any stale badge (e.g. from
-  // an uninstall/reinstall of a previously-outdated copy).
-  useExtStoreUI.getState().setUpdate(manifest.id, {
-    latestTag: manifest.version,
-    hasUpdate: false,
-    checkedAt: Date.now(),
-  });
+  teardown(id);
+  try {
+    await loadPlugin(manifest);
+  } catch (e) {
+    let message = `${manifest.name} ${manifest.version} failed to start (${errorText(e)})`;
+    let restored: ExtensionManifest | null = null;
+    let removed = false;
+    try {
+      restored = await settle(id, "rollback");
+      removed = restored === null;
+    } catch (settleError) {
+      // The previous copy is still in the work area; the next launch puts it back.
+      message += `; rollback failed (${errorText(settleError)})`;
+    }
+    if (restored) {
+      try {
+        await loadPlugin(restored);
+        applySavedTheme();
+        message += `; ${restored.version} was restored`;
+      } catch (restoreError) {
+        message += `; restoring ${restored.version} also failed (${errorText(restoreError)})`;
+      }
+    }
+    if (removed) {
+      store.clearUpdate(id); // nothing is installed any more
+    } else {
+      store.setUpdate(id, {
+        latestTag: manifest.version,
+        hasUpdate: true,
+        requiresApp: null,
+        failed: { version: manifest.version, error: errorText(e) },
+        checkedAt: Date.now(),
+      });
+    }
+    throw new Error(message);
+  }
+  await keepSettled(id);
+  applySavedTheme(); // the saved theme may belong to the extension just loaded
+  store.setUpdate(id, upToDate(manifest.version));
   return manifest;
 }
 
+export const installFromGitHub = (spec: string): Promise<ExtensionManifest> =>
+  installAndActivate(spec, true);
+
+/** Reinstall an installed extension from its repo's HEAD, keeping its settings
+ *  and its enabled/disabled state. The install always pulls HEAD, whose latest
+ *  commit carries the detected version (bumps aren't git tags). */
+export const updateExtension = (fullName: string): Promise<ExtensionManifest> =>
+  installAndActivate(fullName, false);
+
 export async function uninstallPlugin(id: string): Promise<void> {
   const native = window.safelightNative;
-  loaded.get(id)?.deactivate?.();
-  loaded.delete(id);
-  unregisterExtension(id);
+  teardown(id);
   deleteExtensionSettings(id); // forget its persisted settings too
   useExtStoreUI.getState().clearUpdate(id); // and its cached update check
   persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
@@ -288,9 +381,11 @@ export async function uninstallPlugin(id: string): Promise<void> {
 }
 
 // ─── Updates ───────────────────────────────────────────────────────────────
-// An extension's latest version is the newest non-draft GitHub release tag of
-// the repo it was installed from. We require Releases (the same convention the
-// app's own updater uses) — a repo with no releases simply has "no update info".
+// An extension's latest version is the `version` in its repo's default-branch
+// safelight.json — the same field the installed manifest exposes — so a pushed
+// bump is an update; no GitHub Release required. The remote minAppVersion
+// travels with it: a release this build can't run is reported (requiresApp)
+// rather than offered.
 
 // How long a per-extension check is reused before we re-query GitHub. Kept short
 // so opening the store (or relaunching) surfaces a freshly-pushed version quickly;
@@ -302,13 +397,26 @@ const UPDATE_CHECK_TTL = 30 * 60 * 1000; // 30 min
 // left open is noticed without a restart. host.ts owns the interval.
 export const EXT_UPDATE_POLL_MS = 3 * 60 * 60 * 1000; // 3h
 
-/** The version in the repo's default-branch safelight.json, or null. This is the
- *  same field the installed manifest exposes, so a pushed version bump is an
- *  update — no GitHub Release required (install/browse already track HEAD). */
-async function latestRepoVersion(fullName: string): Promise<string | null> {
-  const native = window.safelightNative;
-  if (!native?.plugins?.latestVersion) return null;
-  return native.plugins.latestVersion(fullName);
+/** The update record for an installed version given what the repo publishes.
+ *  A failure recorded in `prior` is kept only while the same version is still
+ *  the latest, so a fixed release clears it on its own. */
+export function classifyUpdate(
+  installed: string,
+  remote: RemoteManifest | null,
+  appVersion: string,
+  prior: ExtUpdateInfo | undefined,
+  now: number,
+): ExtUpdateInfo {
+  const latestTag = remote?.version ?? null;
+  const hasUpdate = !!latestTag && isNewer(installed, latestTag);
+  const minApp = remote?.minAppVersion;
+  return {
+    latestTag,
+    hasUpdate,
+    requiresApp: hasUpdate && minApp && isNewer(appVersion, minApp) ? minApp : null,
+    failed: prior?.failed && prior.failed.version === latestTag ? prior.failed : null,
+    checkedAt: now,
+  };
 }
 
 /** Check one installed extension for a newer version and cache the result.
@@ -322,54 +430,40 @@ export async function checkExtensionUpdate(
   const cached = useExtStoreUI.getState().updates[manifest.id];
   if (!force && cached && Date.now() - cached.checkedAt < UPDATE_CHECK_TTL)
     return cached;
-  let latest: string | null = null;
+  const fetchRemote = window.safelightNative?.plugins?.remoteManifest;
+  if (!fetchRemote) return null;
+  let remote: RemoteManifest | null;
   try {
-    latest = await latestRepoVersion(repo);
+    remote = await fetchRemote(repo);
   } catch {
     return cached ?? null; // network hiccup — keep any prior result
   }
-  const info: ExtUpdateInfo = {
-    latestTag: latest,
-    hasUpdate: !!latest && isNewer(manifest.version, latest),
-    checkedAt: Date.now(),
-  };
+  const info = classifyUpdate(manifest.version, remote, __APP_VERSION__, cached, Date.now());
   useExtStoreUI.getState().setUpdate(manifest.id, info);
   return info;
 }
 
-/** Reinstall an extension from its repo's HEAD, preserving settings and enabled
- *  state. The install overwrites <userData>/plugins/<id>/ in place. The third
- *  arg (the detected latest version) is informational; the install always pulls
- *  HEAD, whose latest commit carries that version (bumps aren't git tags). */
-export async function updateExtension(
-  id: string,
-  fullName: string,
-  _version: string,
-): Promise<ExtensionManifest> {
-  // Tear down the running instance, then reinstall live. Settings are
-  // deliberately NOT deleted (unlike uninstall) so the update is seamless.
-  loaded.get(id)?.deactivate?.();
-  loaded.delete(id);
-  unregisterExtension(id);
-  const manifest = await installFromGitHub(fullName); // HEAD = latest version
-  useExtStoreUI.getState().setUpdate(id, {
-    latestTag: manifest.version,
-    hasUpdate: false,
-    checkedAt: Date.now(),
-  });
-  return manifest;
-}
+/** Auto-update maintains what the user is running: it skips a version this
+ *  build can't host, one that already failed to start here, and any extension
+ *  the user has turned off. */
+const autoInstallable = (m: ExtensionManifest, info: ExtUpdateInfo): boolean =>
+  info.hasUpdate &&
+  !!info.latestTag &&
+  !info.requiresApp &&
+  info.failed?.version !== info.latestTag &&
+  !isExtensionDisabled(m.id);
 
-/** Refresh update info for every installed extension, and auto-update when the
- *  user has opted in. Gated by the checkExtensionUpdates setting. Pass `force` to
- *  bypass the per-extension TTL (used by the periodic poll so it always re-checks).
+/** Refresh update info for every installed extension, and auto-update the ones
+ *  autoInstallable allows when the user has opted in. Gated by the
+ *  checkExtensionUpdates setting. Pass `force` to bypass the per-extension TTL
+ *  (used by the periodic poll so it always re-checks).
  *
  *  Checks run through a bounded worker pool rather than fixed batches: there's no
  *  barrier between items, so one slow repo can't hold up the rest and the sweep
  *  finishes in roughly a single round-trip instead of ceil(N / batch) waves. */
 export async function checkAllExtensionUpdates(force = false): Promise<void> {
   const native = window.safelightNative;
-  if (!native?.plugins?.latestVersion) return;
+  if (!native?.plugins?.remoteManifest) return;
   const settings = getSettings();
   if (!settings.checkExtensionUpdates) return;
   let list: ExtensionManifest[];
@@ -384,15 +478,13 @@ export async function checkAllExtensionUpdates(force = false): Promise<void> {
     while (next < list.length) {
       const m = list[next++];
       const info = await checkExtensionUpdate(m, force);
-      if (info?.hasUpdate && info.latestTag && settings.autoUpdateExtensions) {
-        const repo = repoFor(m);
-        if (repo) {
-          try {
-            await updateExtension(m.id, repo, info.latestTag);
-          } catch (e) {
-            console.error(`[extensions] auto-update failed for ${m.id}:`, e);
-          }
-        }
+      if (!settings.autoUpdateExtensions || !info || !autoInstallable(m, info)) continue;
+      const repo = repoFor(m);
+      if (!repo) continue;
+      try {
+        await updateExtension(repo);
+      } catch (e) {
+        console.error(`[extensions] auto-update failed for ${m.id}:`, e);
       }
     }
   };

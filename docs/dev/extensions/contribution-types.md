@@ -17,7 +17,7 @@ What an extension can register. Each is auto-tagged with the extension's id and 
 
 **Imaging**
 - **Render pipelines** (`registerPipeline`) — a display transform (tone mapper) selectable in **Preferences ▸ Rendering**; supply GLSL for `vec3 pipelineToDisplay(vec3 lin)`. The simplest way to ship a whole-image GPU effect.
-- **Processing stages** (`registerProcessingStage`) — a phase-ordered GPU stage compiled into the develop shader. Live: all phases, custom uniforms, multi-pass pre-passes, texture/LUT binding (`setStageTexture`), and a special `geometry` phase that warps source coordinates. Reach for it when you need phase ordering, uniforms, multiple passes, or coordinate warping.
+- **Processing stages** (`registerProcessingStage`) — a phase-ordered GPU stage compiled into the develop shader. Live: all phases, custom uniforms, multi-pass pre-passes, texture/LUT binding (`setStageTexture`), painted coverage textures (`kind: "coverage"` — a dab list in the photo's paramBag that the renderer bakes per render, for brush-confined effects), and a special `geometry` phase that warps source coordinates. Reach for it when you need phase ordering, uniforms, multiple passes, or coordinate warping.
 - **Lens profiles** (`registerLensProfile`) — distortion/TCA/vignetting coefficients that supplement or override the built-in Lensfun database.
 
 **Catalog & workflow**

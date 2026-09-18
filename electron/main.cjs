@@ -30,6 +30,12 @@ const zlib = require("node:zlib");
 const crypto = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 const { isRuntimeGpuCrash, isRendererCrash, createRecoveryGate } = require("./crash-recovery.cjs");
+const {
+  replacePlugin,
+  settlePlugin,
+  sweepPluginWork,
+  contains,
+} = require("./plugin-files.cjs");
 
 // `app.isPackaged` is false when Electron runs an app from a plain directory
 // rather than an asar/bundled build — which is exactly how the Nix derivation
@@ -263,13 +269,6 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-// True when `child` resolves inside `base` (not merely shares its name as a
-// path prefix — plugins2 must not pass containment for plugins).
-function contains(base, child) {
-  const rel = path.relative(base, child);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
 function resolveRequestPath(urlPath) {
   // Strip query/hash, decode, and join under DIST without escaping it.
   const clean = decodeURIComponent(urlPath.split("?")[0].split("#")[0]);
@@ -332,6 +331,9 @@ function registerProtocol() {
 // ---------------------------------------------------------------------------
 
 const pluginsDir = () => path.join(app.getPath("userData"), "plugins");
+// Work area for in-flight installs/updates (see plugin-files.cjs): beside
+// plugins/, never inside it.
+const pluginWorkDir = () => path.join(app.getPath("userData"), "plugins-update");
 
 function validManifest(m) {
   return (
@@ -593,15 +595,16 @@ async function installPlugin(spec) {
   if (!files.some((f) => f.name === manifest.main))
     throw new Error(`Entry bundle "${manifest.main}" not found in repo`);
 
-  const target = path.join(pluginsDir(), manifest.id);
-  if (!contains(pluginsDir(), target)) throw new Error("Bad extension id");
-  fs.rmSync(target, { recursive: true, force: true });
-  for (const f of files) {
-    const dest = path.join(target, f.name);
-    if (!contains(target, dest)) continue;
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, f.data);
-  }
+  if (!contains(pluginsDir(), path.join(pluginsDir(), manifest.id)))
+    throw new Error("Bad extension id");
+  // Atomic: the files land in a work folder first, and the current install is
+  // kept aside as prev until the renderer settles the update (plugin-files.cjs).
+  await replacePlugin({
+    pluginsDir: pluginsDir(),
+    workDir: pluginWorkDir(),
+    id: manifest.id,
+    files,
+  });
   return manifest;
 }
 
@@ -865,31 +868,41 @@ async function fetchReleases(repo) {
   return res.json();
 }
 
-// The `version` from the repo's root safelight.json on its default branch — the
-// same field the installed manifest exposes, so the extension updater can detect
-// a pushed version bump without requiring a GitHub Release. Null on any failure
-// (missing manifest, private repo, network) so the caller simply skips the check.
-async function fetchManifestVersion(repo) {
+// The `version` and `minAppVersion` from the repo's root safelight.json on its
+// default branch — enough for the updater to tell "newer" from "newer, but needs
+// a newer Safelight" without a GitHub Release. Null means the repo publishes no
+// usable manifest (404, unreadable JSON, no version): there is nothing to offer.
+// A network failure or any other API error (rate limit, outage) rejects instead,
+// so the renderer keeps its last record rather than forgetting a pending update
+// — or a version that already failed to start here.
+async function fetchRemoteManifest(repo) {
   if (!validRepo(repo)) return null;
+  const res = await net.fetch(
+    `https://api.github.com/repos/${repo}/contents/safelight.json`,
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "Safelight",
+      },
+    }
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
+  const data = await res.json();
+  if (!data || typeof data.content !== "string") return null;
+  let manifest;
   try {
-    const res = await net.fetch(
-      `https://api.github.com/repos/${repo}/contents/safelight.json`,
-      {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "User-Agent": "Safelight",
-        },
-      }
+    manifest = JSON.parse(
+      Buffer.from(data.content, data.encoding || "base64").toString("utf8")
     );
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data || typeof data.content !== "string") return null;
-    const json = Buffer.from(data.content, data.encoding || "base64").toString("utf8");
-    const manifest = JSON.parse(json);
-    return typeof manifest.version === "string" ? manifest.version : null;
   } catch {
     return null;
   }
+  if (typeof manifest.version !== "string") return null;
+  const remote = { version: manifest.version };
+  if (typeof manifest.minAppVersion === "string")
+    remote.minAppVersion = manifest.minAppVersion;
+  return remote;
 }
 
 // Validate an "owner/repo" string before interpolating it into a GitHub URL.
@@ -1281,6 +1294,9 @@ async function installRelease(repo, tag) {
 }
 
 function registerPluginIpc() {
+  // Nothing is in flight before the first window: a previous version still in
+  // the work area belongs to an update that was never settled, so it goes back.
+  sweepPluginWork({ pluginsDir: pluginsDir(), workDir: pluginWorkDir() });
   ipcMain.handle("app:version", () => appVersion());
   // Recolor the native min/max/close overlay to follow the in-app theme
   // (Windows/Linux only — macOS has no overlay, just traffic lights).
@@ -1320,9 +1336,23 @@ function registerPluginIpc() {
   ipcMain.handle("plugins:search", (_e, query, topic, force) =>
     searchExtensions(query, topic, force)
   );
-  ipcMain.handle("plugins:latest-version", (_e, repo) =>
-    fetchManifestVersion(String(repo))
+  ipcMain.handle("plugins:remote-manifest", (_e, repo) =>
+    fetchRemoteManifest(String(repo))
   );
+  ipcMain.handle("plugins:settle-update", async (_e, id, outcome) => {
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))
+      throw new Error("Bad extension id");
+    if (outcome !== "keep" && outcome !== "rollback")
+      throw new Error("Bad update outcome");
+    const restored = await settlePlugin({
+      pluginsDir: pluginsDir(),
+      workDir: pluginWorkDir(),
+      id: String(id),
+      outcome,
+    });
+    // A restored copy that no longer parses is one listPlugins would skip too.
+    return restored && validManifest(restored) ? restored : null;
+  });
   ipcMain.handle("plugins:trust-list", (_e, force) => fetchTrustList(!!force));
   ipcMain.handle("plugins:uninstall", (_e, id) => {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))

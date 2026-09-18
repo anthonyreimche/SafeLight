@@ -7,6 +7,7 @@ import type { DevelopParams, Mask, MaskAdjustments, RetouchSpot } from "@/catalo
 import {
   DEFAULT_CROP,
   HSL_CHANNELS,
+  MAX_BRUSH_MASKS,
   MAX_MASKS,
   MAX_MASK_COMPONENTS,
   MAX_RETOUCH,
@@ -36,7 +37,9 @@ import {
   type ProcessingStageContribution,
   type StagePass,
   type StageTextureData,
+  type TextureRequirement,
 } from "@/extensions/types";
+import { coverageItemsFromBag, paramIsActive } from "./stage-coverage";
 import {
   OUT_SPACE_CODE,
   outMatrixColumnMajor,
@@ -306,13 +309,28 @@ interface ContributedBinding {
   default: number | number[] | boolean;
 }
 
-/** A stage-declared texture (e.g. a LUT atlas), resolved to its namespaced
- *  sampler so render() can bind its uploaded data each frame. */
+/** A stage-declared texture, resolved to its namespaced GLSL identifier so
+ *  render() can bind it each frame: a sampler for "lut"/"dynamic" data uploaded
+ *  through setStageTexture, or the brush-atlas channel uniform for "coverage"
+ *  dabs painted into the param bag. */
 interface StageTextureBinding {
-  /** Qualified key "{stageId}.{key}" — also the stage-texture bag key. */
+  /** Qualified key "{stageId}.{key}" — also the stage-texture / param-bag key. */
   qualifiedKey: string;
-  /** Namespaced sampler identifier, e.g. "u_ab12_lut". */
+  /** Namespaced identifier, e.g. "u_ab12_lut" (sampler) or the "u_ab12_mask"
+   *  helper whose channel uniform is "u_ab12_mask_ch". */
   glslName: string;
+  kind: TextureRequirement["kind"];
+}
+
+/** The GLSL behind a coverage-kind key: the stage calls `key(uv)` and reads the
+ *  coverage painted for it out of the brush atlas channel bound per frame. */
+function coverageHelperGlsl(name: string): string {
+  return `float ${name}(vec2 uv) {
+  int ch = ${name}_ch;
+  if (ch < 0) return 0.0;
+  vec4 t = texture(uMaskTex, uv);
+  return ch == 0 ? t.r : ch == 1 ? t.g : ch == 2 ? t.b : t.a;
+}`;
 }
 
 /** Which injection group a phase maps to. Linear-space phases operate on `lin`
@@ -355,16 +373,6 @@ function bindUniformByType(
     case "ivec4": { const v = value as number[]; gl.uniform4i(loc, v[0] | 0, v[1] | 0, v[2] | 0, v[3] | 0); break; }
     default: break;
   }
-}
-
-// Whether a param-bag value engages its stage's prepass: a non-zero number, a
-// true bool, or a vector with any non-zero component. (Number semantics are the
-// long-standing "non-zero = active"; bools/vectors are the added cases.)
-function paramIsActive(value: unknown): boolean {
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "boolean") return value;
-  if (Array.isArray(value)) return value.some((x) => x !== 0);
-  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -540,15 +548,21 @@ function buildStageInjection(
         default: u.default,
       });
     }
-    // Stage textures (e.g. baked LUT atlases): emit one namespaced sampler per
-    // declared texture, exposed to the inline glsl / helpers under its `key`,
-    // and recorded so render() can bind the uploaded data. Part of the sig so a
-    // change in the texture set recompiles, but a data swap (same set) doesn't.
+    // Stage textures: LUT/dynamic kinds get a namespaced sampler bound from the
+    // uploaded data; coverage kinds ride the brush atlas (no texture unit) and
+    // are exposed to the inline glsl / helpers as a function under their `key`.
+    // Part of the sig so a change in the texture set recompiles, but a data
+    // swap or a new dab (same set) doesn't.
     for (const t of s.textures ?? []) {
       const glslName = uPfx + t.key;
-      uniformDecls.push(`uniform sampler2D ${glslName};`);
-      textureBindings.push({ qualifiedKey: `${s.id}.${t.key}`, glslName });
-      sigParts.push(`${s.id}~tex:${t.key}`);
+      if (t.kind === "coverage") {
+        uniformDecls.push(`uniform int ${glslName}_ch;`);
+        helperBlocks.push(coverageHelperGlsl(glslName));
+      } else {
+        uniformDecls.push(`uniform sampler2D ${glslName};`);
+      }
+      textureBindings.push({ qualifiedKey: `${s.id}.${t.key}`, glslName, kind: t.kind });
+      sigParts.push(`${s.id}~tex:${t.key}:${t.kind}`);
     }
 
     // Uniform + texture keys share the stage's uniform prefix; rewrite them in one
@@ -675,6 +689,7 @@ export class WebGLRenderer {
   // thereafter so one bad stage can't throw out of render() and freeze the view.
   private failedPrepass = new Set<string>();
   private warnedPrepassOverflow = new Set<string>();
+  private warnedCoverageOverflow = new Set<string>();
   // True when the built-in denoise prepass produced a real float result this
   // frame (active, float targets, not failed). Drives uDenoiseReady so the
   // inline swap of `lin` never applies a raw fallback texture.
@@ -889,18 +904,36 @@ export class WebGLRenderer {
     return { sig, channelOf: baked.channelOf };
   }
 
+  // Brush coverage comes from brush COMPONENTS across all masks plus the
+  // coverage-kind textures extension stages paint into the bag; the atlas packs
+  // up to four into RGBA, the photo's own brushes first. Keyed by component id
+  // or qualified texture key.
   private updateMaskTexture(masks: Mask[]) {
-    // Brush coverage now comes from brush COMPONENTS across all masks (the atlas
-    // packs up to four into RGBA). Keyed by component id.
     const items: CoverageItem[] = [];
     for (const m of masks) {
       for (const c of m.components) {
         if (c.kind === "brush" && c.brush) items.push({ id: c.id, dabs: c.brush.dabs });
       }
     }
+    const painted = coverageItemsFromBag(this.coverageKeys(), this.contributedParams);
+    items.push(...painted);
     const r = this.updateCoverageTexture(this.maskTexture, items, this.maskSig);
     this.maskSig = r.sig;
     this.maskChannelOf = r.channelOf;
+    for (const it of painted) {
+      if (it.id in r.channelOf || this.warnedCoverageOverflow.has(it.id)) continue;
+      this.warnedCoverageOverflow.add(it.id);
+      console.warn(
+        `[render] coverage texture '${it.id}' does not fit the ${MAX_BRUSH_MASKS}-channel ` +
+          `brush atlas and will read as unpainted.`,
+      );
+    }
+  }
+
+  private coverageKeys(): string[] {
+    return this.stageTextureBindings
+      .filter((b) => b.kind === "coverage")
+      .map((b) => b.qualifiedKey);
   }
 
   private updateRetouchTexture(retouch: RetouchSpot[]) {
@@ -1140,9 +1173,11 @@ export class WebGLRenderer {
     for (const ps of this.prepassStages) {
       u[ps.resultUniform] = gl.getUniformLocation(program, ps.resultUniform);
     }
-    // Extension stage-texture samplers (LUT atlases), keyed by qualified key.
+    // Extension stage-texture samplers / coverage channel uniforms, keyed by
+    // qualified key.
     for (const tb of this.stageTextureBindings) {
-      u[tb.qualifiedKey] = gl.getUniformLocation(program, tb.glslName);
+      const name = tb.kind === "coverage" ? `${tb.glslName}_ch` : tb.glslName;
+      u[tb.qualifiedKey] = gl.getUniformLocation(program, name);
     }
     return u;
   }
@@ -1774,6 +1809,10 @@ export class WebGLRenderer {
     const p = this.params;
     const u = this.uniforms;
 
+    // The atlas depends on the bag as well as the params (coverage-kind stage
+    // textures), and setParams runs before the bag arrives — fold it in here.
+    this.updateMaskTexture(p.masks);
+
     gl.useProgram(this.program);
 
     gl.activeTexture(gl.TEXTURE0);
@@ -1908,6 +1947,7 @@ export class WebGLRenderer {
     {
       let unit = STAGE_TEX_UNIT_BASE;
       for (const tb of this.stageTextureBindings) {
+        if (tb.kind === "coverage") continue;
         if (unit >= STAGE_TEX_UNIT_BASE + MAX_STAGE_TEXTURES) break;
         const loc = u[tb.qualifiedKey];
         if (loc == null) continue;
@@ -1924,6 +1964,11 @@ export class WebGLRenderer {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.maskTexture);
     gl.uniform1i(u.uMaskTex, 2);
+    for (const tb of this.stageTextureBindings) {
+      if (tb.kind !== "coverage") continue;
+      const loc = u[tb.qualifiedKey];
+      if (loc != null) gl.uniform1i(loc, this.maskChannelOf[tb.qualifiedKey] ?? -1);
+    }
 
     const masks = p.masks.slice(0, MAX_MASKS);
     gl.uniform1i(u.uMaskCount, masks.length);

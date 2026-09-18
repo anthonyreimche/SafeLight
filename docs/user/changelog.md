@@ -5,6 +5,7 @@ All notable changes to Safelight are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Painted coverage for extension stages** — a GPU processing stage can declare a `coverage` texture and read the brush dabs an extension paints into the photo's edit as `float key(vec2 uv)`. The coverage is baked per render, so a painted mask persists, undoes, and matches in Develop, thumbnails and export. This is what the new **Moiré Reduction** extension uses to confine its effect to a painted area.
 - **Delete from disk** — the Library grid's context menu can move selected photos' files to the OS Recycle Bin / Trash (recoverable — never a hard delete) and remove the photos from the catalog. A photo stays in the catalog if its file couldn't be trashed (e.g. a write-protected card), with the reason reported. Virtual copies are skipped, since a copy shares its master's file. The action is also available as a rebindable shortcut that ships unbound.
 - **Thumbnail size from the keyboard** — **- / =** shrink and grow the Library grid thumbnails one slider stop per press (rebindable, numpad **+** works too).
 - **More app shortcuts** — **Ctrl+O** opens a folder, **F2** renames the active photo, and **Ctrl+R** shows it in the OS file manager. All rebindable in Preferences ▸ Shortcuts.
@@ -13,6 +14,10 @@ All notable changes to Safelight are documented in this file.
 ### Changed
 - **The Library remembers your view** — the sort order chosen in the toolbar (imported, captured, name, rating, direction — including extension-contributed sorts) and the thumbnail size now persist across restarts. Preferences ▸ Library ▸ Default sort now applies immediately; the Preferences defaults seed fresh profiles.
 - **Faster imports and folder opens** — importing now runs its pixel work (decode, orient, thumbnail) in a pool of background workers sized to your CPU, so big imports use all cores and the app stays responsive. Embedded camera previews (and plain JPEGs) decode straight to thumbnail size instead of at full resolution, and are decoded once instead of twice per RAW; the embedded-JPEG search hops between markers natively instead of walking every byte; sibling folders are listed concurrently; the per-file sidecar probe only runs for sidecars that exist; catalog progress saves re-serialize less often during a long import; and cached grid previews load three at a time when reopening a catalog.
+- **Safer extension updates** — an update is downloaded and validated before the running version is touched, and one that fails to start is rolled back to the previous version (and remembered, so auto-update doesn't retry it). Updates that need a newer Safelight are listed with the version they need instead of an Update button, auto-update leaves disabled extensions alone, and an extension whose bundle fails to start on first install is removed again instead of lingering half-installed.
+
+### Fixed
+- A failed extension update (network error, or a release that needs a newer Safelight) no longer leaves the installed version disabled until restart, and updating a disabled extension no longer switches it back on. Extension files are now replaced atomically, so an interrupted install can't leave a half-written copy.
 
 ### Planned
 - B&W and HDR image support

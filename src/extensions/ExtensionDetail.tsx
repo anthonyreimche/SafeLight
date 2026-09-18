@@ -12,7 +12,7 @@
 
 import { useEffect, useState } from "react";
 import type { ExtensionManifest, ExtensionSearchResult } from "./types";
-import { useExtStoreUI, loadRepoMeta, loadReadme } from "./store-ui";
+import { useExtStoreUI, loadRepoMeta, loadReadme, updateNote } from "./store-ui";
 import { resolveUrl } from "./markdown-url";
 import { useVerificationStatus, useReviewedFor, useBannedReason } from "./trust";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
@@ -45,7 +45,7 @@ interface Props {
   target: DetailTarget;
   busy: string | null;
   onInstall: (spec: string) => void;
-  onUpdate: (id: string, repo: string, tag: string) => void;
+  onUpdate: (id: string, repo: string) => void;
   onUninstall: (id: string) => void;
   onToggle: (id: string, enable: boolean) => void;
   onSettings: (id: string) => void;
@@ -144,7 +144,14 @@ export function ExtensionDetail({
   const hasGithubBridge = !!window.safelightNative?.github;
 
   const id = target.manifest?.id;
-  const hasUpdate = !!update?.hasUpdate && !!update.latestTag && !!repo;
+  const installedVersion = target.manifest?.version ?? null;
+  // A newer version exists in the repo; it may still not be installable here.
+  const pendingUpdate =
+    update?.hasUpdate && update.latestTag && repo && installedVersion ? update : null;
+  const updateNoteText =
+    pendingUpdate && installedVersion && (pendingUpdate.requiresApp || pendingUpdate.failed)
+      ? updateNote(installedVersion, pendingUpdate)
+      : null;
 
   // The extension declares a newer SafeLight than this build — warn (the running
   // version comes from the Vite build-time constant).
@@ -246,14 +253,21 @@ export function ExtensionDetail({
                   : "Install (unverified)"}
           </button>
         )}
-        {target.installed && hasUpdate && id && repo && (
-          <button
-            disabled={busy !== null}
-            onClick={() => onUpdate(id, repo, update!.latestTag!)}
-            className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
-          >
-            {busy === id ? "Updating…" : `Update to ${update!.latestTag}`}
-          </button>
+        {target.installed && pendingUpdate && id && repo && (
+          <>
+            {updateNoteText && (
+              <span className="text-[11px] text-text-muted">{updateNoteText}</span>
+            )}
+            {!pendingUpdate.requiresApp && (
+              <button
+                disabled={busy !== null}
+                onClick={() => onUpdate(id, repo)}
+                className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+              >
+                {busy === id ? "Updating…" : `Update to ${pendingUpdate.latestTag}`}
+              </button>
+            )}
+          </>
         )}
         {target.installed && target.id && !target.locked && (
           <button
