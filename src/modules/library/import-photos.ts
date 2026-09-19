@@ -25,7 +25,11 @@ import {
 import { decodeNetpbm, isNetpbmName } from "./netpbm";
 import { decodeTiff, isTiffName } from "./tiff-image";
 import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
-import { extractColorTemperature, lastLibRawStatus } from "@/raw/libraw-wasm-adapter";
+import {
+  extractRawMetadata,
+  lastLibRawStatus,
+  type RawMetadata,
+} from "@/raw/libraw-wasm-adapter";
 import { decodePoolSize } from "@/raw/decode-pool";
 import { rotateFloatRGBA } from "@/catalog/orient";
 import { createThumbnail, type ThumbTaskResult } from "./import-thumb-task";
@@ -162,16 +166,52 @@ interface DecodedImport {
   sourceHeight?: number;
 }
 
+interface Size {
+  width: number;
+  height: number;
+}
+
+/** A size after a rotation: the sides trade places on a quarter turn. */
+function turned({ width, height }: Size, deg: number): Size {
+  return deg === 90 || deg === 270 ? { width: height, height: width } : { width, height };
+}
+
 /** Catalog width/height for a decode: the true frame size (not a downscaled
  *  preview bitmap's), swapped when the bake is a quarter turn. */
-function uprightSize(
+function uprightSize(decoded: DecodedImport, bakeRotation: number): Size {
+  return turned(
+    {
+      width: decoded.sourceWidth ?? decoded.bitmap.width,
+      height: decoded.sourceHeight ?? decoded.bitmap.height,
+    },
+    bakeRotation,
+  );
+}
+
+/** Frame size and as-shot WB of a RAW from a metadata-only libraw open —
+ *  undefined for any other file, and for a RAW libraw can't read. */
+async function readRawMetadata(file: File): Promise<RawMetadata | undefined> {
+  if (!isRawFile(file)) return undefined;
+  try {
+    return await extractRawMetadata(await file.arrayBuffer());
+  } catch {
+    return undefined;
+  }
+}
+
+/** Catalog width/height. A RAW records the frame libraw decodes, not the size
+ *  of whatever built its thumbnail: the camera's embedded JPEG can be smaller
+ *  (Fujifilm previews are) or cropped to another aspect. libraw reports that
+ *  frame already EXIF-upright, so only a manual turn is left to apply; anything
+ *  else records the decode's own source size, turned by what the bake still
+ *  applied. */
+function catalogSize(
+  frame: Size | undefined,
+  manualRotation: number,
   decoded: DecodedImport,
   bakeRotation: number,
-): { width: number; height: number } {
-  const w = decoded.sourceWidth ?? decoded.bitmap.width;
-  const h = decoded.sourceHeight ?? decoded.bitmap.height;
-  const swap = bakeRotation === 90 || bakeRotation === 270;
-  return { width: swap ? h : w, height: swap ? w : h };
+): Size {
+  return frame ? turned(frame, manualRotation) : uprightSize(decoded, bakeRotation);
 }
 
 async function decodeImportBitmap(
@@ -443,21 +483,17 @@ export async function buildPhoto(
   const xmp = await parseXmp(file);
   if (!exif.imageDescription && xmp.title) exif.imageDescription = xmp.title;
 
-  // The as-shot WB pass (libraw cam_mul — metadata-only; parseExif covers DNG
-  // via AsShotNeutral) and the pixel stage run concurrently: WB needs a libraw
-  // slot on the main side while the worker pool decodes/orients/encodes
-  // off-thread.
-  const wantTemp = isRawFile(file) && !exif.colorTemperature;
-  const [kelvin, pix] = await Promise.all([
-    wantTemp
-      ? file
-          .arrayBuffer()
-          .then(extractColorTemperature)
-          .catch(() => undefined)
-      : Promise.resolve(undefined),
+  // The metadata-only libraw pass (frame size, plus as-shot WB from cam_mul —
+  // parseExif already covers DNG via AsShotNeutral) and the pixel stage run
+  // concurrently: the pass needs a libraw slot on the main side while the
+  // worker pool decodes/orients/encodes off-thread.
+  const [rawMeta, pix] = await Promise.all([
+    readRawMetadata(file),
     workerThumb(file, exif.orientation),
   ]);
-  if (kelvin && !exif.colorTemperature) exif.colorTemperature = kelvin;
+  if (rawMeta?.colorTemperature && !exif.colorTemperature) {
+    exif.colorTemperature = rawMeta.colorTemperature;
+  }
 
   // Fields common to both outcomes. A supported file is ALWAYS recorded so it
   // imports exactly once and is never re-scanned as "new" on later opens — the
@@ -481,12 +517,14 @@ export async function buildPhoto(
   };
 
   if (pix) {
+    // The worker sized the record by what it thumbnailed — see catalogSize.
+    const { width, height } = rawMeta?.frame ?? pix;
     return {
       ...base,
       thumbnailBlob: pix.thumb,
       thumbnailUrl: URL.createObjectURL(pix.thumb),
-      width: pix.width,
-      height: pix.height,
+      width,
+      height,
       rotation: orientationToRotation(exif.orientation),
     };
   }
@@ -520,7 +558,8 @@ export async function buildPhoto(
   const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
   const thumbUrl = URL.createObjectURL(thumb);
 
-  const { width, height } = uprightSize(decoded, bakeRotation);
+  // Nothing manual has been applied at import.
+  const { width, height } = catalogSize(rawMeta?.frame, 0, decoded, bakeRotation);
 
   bitmap.close();
   return {
@@ -555,6 +594,7 @@ export async function repairMissingPreviews(
       const file = await photo.fileHandle!.getFile();
       const decoded = await decodeImportBitmap(file, photo.exif.orientation);
       if (!decoded) continue; // still can't — try again next open
+      const rawMeta = await readRawMetadata(file);
 
       const { bitmap, oriented } = decoded;
       // Keep the photo's canonical rotation (EXIF + manual). The thumbnail only
@@ -562,11 +602,10 @@ export async function repairMissingPreviews(
       // decoder pre-oriented the pixels, subtract the EXIF portion so only the
       // manual rotation is baked.
       const rotation = photo.rotation ?? orientationToRotation(photo.exif.orientation);
-      const bakeRotation = oriented
-        ? normalizeRotation(rotation - orientationToRotation(photo.exif.orientation))
-        : rotation;
+      const manual = normalizeRotation(rotation - orientationToRotation(photo.exif.orientation));
+      const bakeRotation = oriented ? manual : rotation;
       const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
-      const { width, height } = uprightSize(decoded, bakeRotation);
+      const { width, height } = catalogSize(rawMeta?.frame, manual, decoded, bakeRotation);
       bitmap.close();
 
       const updated: CatalogPhoto = {
@@ -610,16 +649,16 @@ export async function rebuildThumbnails(
       const file = await photo.fileHandle!.getFile();
       const decoded = await decodeImportBitmap(file, photo.exif.orientation);
       if (decoded) {
+        const rawMeta = await readRawMetadata(file);
         const { bitmap, oriented } = decoded;
         // Preserve the photo's canonical rotation (EXIF + any manual rotation);
         // a rebuild changes pixels, not orientation. Bake only what this decode
         // hasn't already applied — subtract the EXIF portion when pre-oriented.
         const rotation = photo.rotation ?? orientationToRotation(photo.exif.orientation);
-        const bakeRotation = oriented
-          ? normalizeRotation(rotation - orientationToRotation(photo.exif.orientation))
-          : rotation;
+        const manual = normalizeRotation(rotation - orientationToRotation(photo.exif.orientation));
+        const bakeRotation = oriented ? manual : rotation;
         const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
-        const { width, height } = uprightSize(decoded, bakeRotation);
+        const { width, height } = catalogSize(rawMeta?.frame, manual, decoded, bakeRotation);
         bitmap.close();
 
         const updated: CatalogPhoto = {
@@ -674,7 +713,7 @@ export async function reimportPhotos(
       );
 
       // Refresh file-derived metadata. Re-parse EXIF (date / orientation /
-      // camera) and pull the as-shot WB temperature for RAW (metadata-only).
+      // camera) and, for RAW, the frame size and as-shot WB (metadata-only).
       // Deliberately does NOT re-seed rating / label / keywords from XMP — those
       // are the user's curation now, not the file's.
       const exif = await parseExif(file);
@@ -682,11 +721,9 @@ export async function reimportPhotos(
         const xmp = await parseXmp(file);
         if (xmp.title) exif.imageDescription = xmp.title;
       }
-      if (isRawFile(file) && !exif.colorTemperature) {
-        try {
-          const kelvin = await extractColorTemperature(await file.arrayBuffer());
-          if (kelvin) exif.colorTemperature = kelvin;
-        } catch { /* non-critical */ }
+      const rawMeta = await readRawMetadata(file);
+      if (rawMeta?.colorTemperature && !exif.colorTemperature) {
+        exif.colorTemperature = rawMeta.colorTemperature;
       }
 
       const meta: CatalogPhoto = {
@@ -722,11 +759,9 @@ export async function reimportPhotos(
       const oldExifRot = orientationToRotation(photo.exif.orientation);
       const manual = normalizeRotation((photo.rotation ?? oldExifRot) - oldExifRot);
       const rotation = normalizeRotation(manual + orientationToRotation(exif.orientation));
-      const bakeRotation = oriented
-        ? normalizeRotation(rotation - orientationToRotation(exif.orientation))
-        : rotation;
+      const bakeRotation = oriented ? manual : rotation;
       const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
-      const { width, height } = uprightSize(decoded, bakeRotation);
+      const { width, height } = catalogSize(rawMeta?.frame, manual, decoded, bakeRotation);
       bitmap.close();
 
       const updated: CatalogPhoto = {
