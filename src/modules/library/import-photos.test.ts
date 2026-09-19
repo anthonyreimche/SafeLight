@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CatalogPhoto, ExifData } from "@/catalog/types";
+import type { RawMetadata } from "@/raw/libraw-wasm-adapter";
 
 interface XmpFields {
   rating?: number;
@@ -31,7 +32,10 @@ const h = vi.hoisted(() => ({
     oriented?: boolean;
     colorTemperature?: number;
   } | null,
-  colorTemperature: undefined as number | undefined,
+  /** What libraw's metadata-only open yields for a RAW; undefined = can't read it. */
+  rawMeta: undefined as RawMetadata | undefined,
+  /** How many times that metadata-only open ran. */
+  libRawReads: 0,
   /** Photos handed to catalogStorage().putPhoto. */
   saved: [] as CatalogPhoto[],
 }));
@@ -93,7 +97,10 @@ vi.mock("@/raw/decode", () => ({
 }));
 
 vi.mock("@/raw/libraw-wasm-adapter", () => ({
-  extractColorTemperature: async () => h.colorTemperature,
+  extractRawMetadata: async () => {
+    h.libRawReads++;
+    return h.rawMeta;
+  },
   lastLibRawStatus: "unsupported model",
 }));
 
@@ -122,6 +129,8 @@ import {
   buildPhoto,
   buildPreviewBlob,
   isSupportedName,
+  rebuildThumbnails,
+  reimportPhotos,
   repairMissingPreviews,
 } from "./import-photos";
 
@@ -230,7 +239,8 @@ beforeEach(() => {
   h.blobSize = { width: 4000, height: 3000 };
   h.rawBitmap = null;
   h.rawFloat = null;
-  h.colorTemperature = undefined;
+  h.rawMeta = undefined;
+  h.libRawReads = 0;
   h.saved = [];
   installCanvasStubs();
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -411,7 +421,7 @@ describe("buildPhoto", () => {
   });
 
   it("pulls the as-shot white balance from libraw for RAW files that lack it", async () => {
-    h.colorTemperature = 4800;
+    h.rawMeta = { colorTemperature: 4800 };
     h.rawBitmap = { width: 100, height: 100, oriented: false };
 
     const photo = (await buildPhoto(file("a.NEF"), null, null))!;
@@ -421,12 +431,64 @@ describe("buildPhoto", () => {
 
   it("keeps a white balance the file already declared", async () => {
     h.exif = { colorTemperature: 6100 };
-    h.colorTemperature = 4800;
+    h.rawMeta = { colorTemperature: 4800 };
     h.rawBitmap = { width: 100, height: 100, oriented: false };
 
     const photo = (await buildPhoto(file("a.dng"), null, null))!;
 
     expect(photo.exif.colorTemperature).toBe(6100);
+  });
+
+  it("records the frame libraw decodes, not the camera preview it thumbnails from", async () => {
+    // Fujifilm embeds a preview smaller than the sensor frame, and an in-camera
+    // aspect setting crops it further: fine for the grid, wrong as the size.
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 1920, height: 1280 };
+    h.rawMeta = { frame: { width: 6240, height: 4160 } };
+
+    const photo = (await buildPhoto(file("a.RAF"), null, null))!;
+
+    expect(photo).toMatchObject({ width: 6240, height: 4160 });
+    expect(await thumbText(photo)).toBe("jpeg:768x512"); // still the camera preview
+  });
+
+  it("keeps libraw's frame as reported for a portrait shot — it comes back upright", async () => {
+    h.exif = { orientation: 6 };
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 1920, height: 1280 }; // sensor-native preview, turned here
+    h.rawMeta = { frame: { width: 4160, height: 6240 } };
+
+    const photo = (await buildPhoto(file("a.RAF"), null, null))!;
+
+    expect(photo).toMatchObject({ width: 4160, height: 6240, rotation: 90 });
+    expect(await thumbText(photo)).toBe("jpeg:512x768");
+  });
+
+  it("sizes a DNG from libraw's frame even when its EXIF already gave the white balance", async () => {
+    h.exif = { colorTemperature: 6100 };
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 1024, height: 683 };
+    h.rawMeta = { frame: { width: 6000, height: 4000 }, colorTemperature: 4800 };
+
+    const photo = (await buildPhoto(file("a.dng"), null, null))!;
+
+    expect(photo).toMatchObject({ width: 6000, height: 4000 });
+    expect(photo.exif.colorTemperature).toBe(6100);
+  });
+
+  it("sizes a RAW libraw can't read from its preview, as before", async () => {
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 1920, height: 1280 };
+    h.rawMeta = undefined;
+
+    const photo = (await buildPhoto(file("a.RAF"), null, null))!;
+
+    expect(photo).toMatchObject({ width: 1920, height: 1280 });
+  });
+
+  it("never opens libraw for a file that isn't RAW", async () => {
+    await buildPhoto(file("a.jpg", "image/jpeg"), null, null);
+    expect(h.libRawReads).toBe(0);
   });
 
   it("carries the handles it was opened with onto the record", async () => {
@@ -521,5 +583,50 @@ describe("repairMissingPreviews", () => {
     await repairMissingPreviews([exploding, record("ok.jpg", { width: 0 })]);
 
     expect(h.saved.map((p) => p.id)).toEqual(["id:ok.jpg"]);
+  });
+
+  it("sizes a repaired RAW from libraw's frame, turned by its manual rotation", async () => {
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 1920, height: 1280 };
+    h.rawMeta = { frame: { width: 6240, height: 4160 } };
+    const broken = record("a.RAF", { width: 0, height: 0, rotation: 90, decodeError: "RAW decode failed" });
+    const repaired: CatalogPhoto[] = [];
+
+    await repairMissingPreviews([broken], (p) => repaired.push(p));
+
+    expect(repaired[0]).toMatchObject({ width: 4160, height: 6240, rotation: 90 });
+    expect(await thumbText(repaired[0])).toBe("jpeg:512x768");
+  });
+});
+
+describe("rebuildThumbnails", () => {
+  it("replaces a preview-sized record with libraw's frame", async () => {
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 1920, height: 1280 };
+    h.rawMeta = { frame: { width: 6240, height: 4160 } };
+    const stale = record("a.RAF", { width: 1920, height: 1280 });
+    const rebuilt: CatalogPhoto[] = [];
+
+    await rebuildThumbnails([stale], undefined, (p) => rebuilt.push(p));
+
+    expect(rebuilt[0]).toMatchObject({ width: 6240, height: 4160 });
+    expect(await thumbText(rebuilt[0])).toBe("jpeg:768x512");
+    expect(h.saved.map((p) => p.id)).toEqual(["id:a.RAF"]);
+  });
+});
+
+describe("reimportPhotos", () => {
+  it("refreshes a RAW's size and white balance from libraw", async () => {
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 1920, height: 1280 };
+    h.rawMeta = { frame: { width: 6240, height: 4160 }, colorTemperature: 4800 };
+    const stale = record("a.RAF", { width: 1920, height: 1280 });
+    const reimported: CatalogPhoto[] = [];
+
+    const result = await reimportPhotos([stale], undefined, (p) => reimported.push(p));
+
+    expect(result).toEqual({ ok: 1, failed: 0 });
+    expect(reimported[0]).toMatchObject({ width: 6240, height: 4160 });
+    expect(reimported[0].exif.colorTemperature).toBe(4800);
   });
 });

@@ -37,11 +37,27 @@ function kelvinFromCamMul(colorData: unknown): number | undefined {
   return kelvinFromWhiteBalanceGains(r, g, b);
 }
 
-// Lightweight metadata-only extraction: open the RAW, fetch color_data.cam_mul,
-// estimate Kelvin, and close — no pixel decode. Fast enough for import time.
-export async function extractColorTemperature(
+/** What a metadata-only libraw open yields — headers only, no pixel decode. */
+export interface RawMetadata {
+  /** As-shot Kelvin from the camera WB multipliers, when libraw exposes them. */
+  colorTemperature?: number;
+  /** The frame this RAW decodes to — imgdata.sizes.width/height, the visible
+   *  image without the masked sensor borders. libraw-wasm swaps the two for a
+   *  quarter-turn flip, so it arrives already EXIF-upright. */
+  frame?: { width: number; height: number };
+}
+
+function frameOf(meta: Record<string, unknown>): RawMetadata["frame"] {
+  const width = num(meta.width);
+  const height = num(meta.height);
+  return width > 0 && height > 0 ? { width, height } : undefined;
+}
+
+// Lightweight metadata-only extraction: open the RAW, read its frame size and
+// color_data.cam_mul, and close — no pixel decode. Fast enough for import time.
+export async function extractRawMetadata(
   buffer: ArrayBuffer,
-): Promise<number | undefined> {
+): Promise<RawMetadata | undefined> {
   if (typeof Worker === "undefined" || typeof SharedArrayBuffer === "undefined") return undefined;
   if (buffer.byteLength < 1024 * 1024) return undefined;
 
@@ -53,7 +69,7 @@ export async function extractColorTemperature(
     // hand it a copy — the caller keeps its ArrayBuffer for the fallback path.
     await raw.open(new Uint8Array(buffer.slice(0)), { useCameraWb: true });
     const meta = await raw.metadata(true);
-    return kelvinFromCamMul(meta.color_data);
+    return { colorTemperature: kelvinFromCamMul(meta.color_data), frame: frameOf(meta) };
   } catch {
     return undefined;
   } finally {
