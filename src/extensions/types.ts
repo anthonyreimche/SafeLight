@@ -145,10 +145,9 @@ export interface PipelineContribution {
    *  bake in their own output-space handling. */
   glsl?: string;
   /** The transform brings its own complete look (AgX, ACES, …): Safelight
-   *  drops BOTH halves of its default baseline — the RAW camera-matching
-   *  S-curve at the input (the transform sees true scene-linear data) and the
-   *  Adobe Color baseline in the tone-curve LUT (user curves compose on
-   *  identity). The transform is the profile. */
+   *  drops its default baseline tone (the camera-style lift applied to RAW
+   *  sources in linear light), so the transform sees true scene-linear data.
+   *  The transform is the profile. */
   skipBaseCurve?: boolean;
 }
 

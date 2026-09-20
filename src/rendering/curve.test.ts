@@ -158,8 +158,10 @@ describe("buildCurveLUT", () => {
 });
 
 describe("buildRGBCurveLUT", () => {
-  it("is a pure identity when the base profile is excluded", () => {
-    const lut = buildRGBCurveLUT(curves(), false);
+  // The baseline look lives in the shader (baselineTone), so the LUT carries
+  // only what the user drew: default curves must leave every level alone.
+  it("composes the default curves to the identity", () => {
+    const lut = buildRGBCurveLUT(curves());
     expect(lut).toHaveLength(256 * 4);
     for (let i = 0; i < 256; i++) {
       expect(lut[i * 4]).toBe(i);
@@ -167,24 +169,6 @@ describe("buildRGBCurveLUT", () => {
       expect(lut[i * 4 + 2]).toBe(i);
       expect(lut[i * 4 + 3]).toBe(255);
     }
-  });
-
-  it("bakes the Adobe Color baseline in by default", () => {
-    const lut = buildRGBCurveLUT(curves());
-    // The baseline is anchored at both ends and sits below the diagonal in
-    // between — that's what gives the render LR's deep blacks.
-    expect(lut[0]).toBe(0);
-    expect(lut[255 * 4]).toBe(255);
-    let belowDiagonal = 0;
-    for (let i = 1; i < 255; i++) {
-      expect(lut[i * 4]).toBeLessThanOrEqual(i);
-      expect(lut[i * 4]).toBeGreaterThanOrEqual(lut[(i - 1) * 4]);
-      if (lut[i * 4] < i) belowDiagonal++;
-    }
-    expect(belowDiagonal).toBeGreaterThan(200);
-    // Control point (0.5 → 0.42): mid-grey lands on 0.42 · 255 ≈ 107.
-    expect(lut[128 * 4]).toBeGreaterThanOrEqual(106);
-    expect(lut[128 * 4]).toBeLessThanOrEqual(108);
   });
 
   it("applies the master curve before the per-channel curve", () => {
@@ -201,7 +185,6 @@ describe("buildRGBCurveLUT", () => {
           { x: 1, y: 1 },
         ],
       }),
-      false,
     );
     expect(lut[0]).toBe(128); // 0.5 · 255, rounded
     expect(lut[255 * 4]).toBe(191); // 0.75 · 255
@@ -211,7 +194,7 @@ describe("buildRGBCurveLUT", () => {
 });
 
 describe("buildMaskCurveLUT", () => {
-  it("composes without the Adobe baseline", () => {
+  it("composes the default curves to the identity", () => {
     const lut = buildMaskCurveLUT(curves());
     for (let i = 0; i < 256; i++) {
       expect(lut[i * 4]).toBe(i);

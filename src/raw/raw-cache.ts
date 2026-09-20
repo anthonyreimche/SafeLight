@@ -36,12 +36,15 @@ import {
 
 // ─── Key helpers ─────────────────────────────────────────────────────────────
 
+// The version prefix is the decode contract: bump it whenever the float decode
+// changes (v5: libraw output linearised, white point restored, Fujifilm
+// exposure bias applied).
 export function rawCacheKey(
   relPath: string,
   fileSize: number,
   rotation = 0,
 ): string {
-  return `v3:${relPath}:${fileSize}:${rotation}`;
+  return `v5:${relPath}:${fileSize}:${rotation}`;
 }
 
 // ─── Project-folder cache ────────────────────────────────────────────────────

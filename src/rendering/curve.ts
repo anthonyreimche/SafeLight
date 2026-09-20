@@ -86,41 +86,14 @@ export function buildCurveLUT(points: CurvePoint[]): Uint8Array {
   return lut;
 }
 
-// Adobe Color baseline tone response (approximation).
-//
-// Lightroom's "Adobe Color" profile bakes a base tone curve into the render
-// *before* any slider or point-curve edit. SafeLight had no profile (flat
-// identity), which is why its render didn't match LR. The Adobe Color baseline
-// is a contrast curve that sits BELOW the diagonal: it anchors/crushes the
-// blacks and gently darkens the lower midtones, then rejoins at white — giving
-// the deep blacks and contrast LR shows (its histogram touches the left edge).
-//
-// These points match the hand-tuned curve verified against Lightroom for the
-// reference shot. Points are display-space (x = input 0..1 -> y = output 0..1).
-// Tune to taste: lower the 0.13/0.5 y-values for deeper blacks / more contrast,
-// raise them toward the diagonal for a flatter look.
-// NOTE: under the built-in transform this applies to every image, RAW or not —
-// a future profile system should gate it to RAW. A display transform that
-// brings its own look (a skipBaseCurve pipeline: AgX, ACES, …) excludes it
-// from the LUT entirely, so the transform fully owns the baseline rendering.
-const ADOBE_COLOR_BASE: CurvePoint[] = [
-  { x: 0.0, y: 0.0 },
-  { x: 0.13, y: 0.04 },
-  { x: 0.5, y: 0.42 },
-  { x: 0.75, y: 0.7 },
-  { x: 1.0, y: 1.0 },
-];
-
-// Compose the profile base curve with the master (RGB) curve and each per-channel
-// curve into one 256×1 RGBA LUT. Order matches LR: profile baseline first, then
-// the user's master curve, then the channel's own curve, so
-// finalChannel[i] = channelCurve(rgbCurve(baseCurve(i))). The shader samples .r/.g/.b.
-// includeBaseProfile=false composes user curves on identity instead — used when
-// the active display transform replaces the Adobe Color baseline (skipBaseCurve).
-// Float evaluators compose continuously and quantize ONCE at the end — chaining
-// three 8-bit LUT lookups compounds rounding into visible posterization.
-export function buildRGBCurveLUT(curves: ToneCurves, includeBaseProfile = true): Uint8Array {
-  const baseEval = includeBaseProfile ? makeCurveEvaluator(ADOBE_COLOR_BASE) : null;
+// Compose the master (RGB) curve with each per-channel curve into one 256×1
+// RGBA LUT. Order matches LR: the user's master curve, then the channel's own
+// curve, so finalChannel[i] = channelCurve(rgbCurve(i)). The shader samples
+// .r/.g/.b. The default baseline look is not in here — it is baselineTone in
+// the shader, applied in linear light and gated to RAW sources. Float
+// evaluators compose continuously and quantize ONCE at the end — chaining 8-bit
+// LUT lookups compounds rounding into visible posterization.
+export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
   const rgbEval = makeCurveEvaluator(curves.rgb);
   const redEval = makeCurveEvaluator(curves.red);
   const greenEval = makeCurveEvaluator(curves.green);
@@ -128,8 +101,7 @@ export function buildRGBCurveLUT(curves: ToneCurves, includeBaseProfile = true):
 
   const out = new Uint8Array(256 * 4);
   for (let i = 0; i < 256; i++) {
-    const x = i / 255;
-    const base = rgbEval(baseEval ? baseEval(x) : x);
+    const base = rgbEval(i / 255);
     out[i * 4] = Math.round(redEval(base) * 255);
     out[i * 4 + 1] = Math.round(greenEval(base) * 255);
     out[i * 4 + 2] = Math.round(blueEval(base) * 255);
@@ -138,9 +110,8 @@ export function buildRGBCurveLUT(curves: ToneCurves, includeBaseProfile = true):
   return out;
 }
 
-// Per-mask curve LUT: master + per-channel curves composed, but WITHOUT the
-// Adobe Color baseline (that profile is global; mask curves start from the
-// already-developed display color). Layout matches buildRGBCurveLUT (256 RGBA).
+// Per-mask curve LUT: master + per-channel curves composed, starting from the
+// already-developed display colour. Layout matches buildRGBCurveLUT (256 RGBA).
 export function buildMaskCurveLUT(curves: ToneCurves, out?: Uint8Array, offset = 0): Uint8Array {
   const rgbEval = makeCurveEvaluator(curves.rgb);
   const redEval = makeCurveEvaluator(curves.red);

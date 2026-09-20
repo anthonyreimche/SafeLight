@@ -5,8 +5,10 @@
 
 // Adapter around the bundled `libraw-wasm` build. Decodes a RAW file to a
 // full-precision LINEAR float RGBA buffer (sensor data with real highlight
-// headroom), using camera white balance and linear gamma so our shader pipeline
-// owns all the tonal/WB work. Runs in libraw's Web Worker off the main thread.
+// headroom) using camera white balance, so our shader pipeline owns all the
+// tonal/WB work. The wrapper's samples arrive Rec.709-encoded and scaled down
+// for its highlight mode; both are undone here. Runs in libraw's Web Worker
+// off the main thread.
 //
 // Requires the page to be cross-origin isolated (COOP/COEP) for libraw's shared
 // memory — see vite.config.ts. If anything is unavailable, returns null and the
@@ -37,10 +39,80 @@ function kelvinFromCamMul(colorData: unknown): number | undefined {
   return kelvinFromWhiteBalanceGains(r, g, b);
 }
 
+// The multipliers libraw's scale_colors() divides the frame by: the camera's
+// as-shot set when usable, otherwise its daylight set — dcraw's own rule under
+// use_camera_wb. A three-colour sensor reports its second green as 0.
+function scaleMultipliers(colorData: unknown): number[] | undefined {
+  if (typeof colorData !== "object" || colorData === null) return undefined;
+  const { cam_mul, pre_mul } = colorData as Record<string, unknown>;
+  const positive = (v: unknown): number[] =>
+    Array.isArray(v) ? v.filter((m): m is number => typeof m === "number" && m > 0) : [];
+  const usable = Array.isArray(cam_mul) && num(cam_mul[0]) > 0 && num(cam_mul[2]) > 0;
+  const mul = usable ? positive(cam_mul) : positive(pre_mul);
+  return mul.length >= 2 ? mul : undefined;
+}
+
+// Under any highlight mode but clip, scale_colors() normalises the multipliers
+// to their LARGEST so no channel can exceed 65535 — which parks the least-
+// amplified channel's sensor white at 65535 / max(mul): about a stop down, and
+// varying with white balance. Auto-bright used to hide that. Undo it here in
+// float, where the other channels keep their headroom above 1.0 — the same
+// contract toRGBAFloat's in-house path delivers.
+function highlightModeScale(colorData: unknown): number {
+  const mul = scaleMultipliers(colorData);
+  return mul ? Math.max(...mul) / Math.min(...mul) : 1;
+}
+
+// dcraw's gamma_curve() for its default transfer (power 0.45, toe slope 4.5:
+// Rec.709), inverted and tabulated per 16-bit code. libraw-wasm ignores the
+// `gamm` setting — probed 2026-09-20 against native LibRaw: every spelling,
+// and none, returned the same Rec.709-encoded samples — so this is the transfer
+// its output always carries, and asking it for linear would only invite a
+// double decode from a build that starts honouring the setting.
+function dcrawInverseTransfer(power: number, toeSlope: number): Float32Array {
+  let lo = 0;
+  let hi = 1;
+  let knee = 0;
+  for (let i = 0; i < 48; i++) {
+    knee = (lo + hi) / 2;
+    if ((Math.pow(knee / toeSlope, -power) - 1) / power - 1 / knee > -1) hi = knee;
+    else lo = knee;
+  }
+  const offset = knee * (1 / power - 1);
+  const table = new Float32Array(65536);
+  for (let code = 0; code < 65536; code++) {
+    const y = code / 65536;
+    table[code] = y < knee ? y / toeSlope : Math.pow((y + offset) / (1 + offset), 1 / power);
+  }
+  return table;
+}
+
+const LINEAR_OF_CODE = dcrawInverseTransfer(0.45, 4.5);
+
+// EV by which the sensor was exposed under the tagged ISO, or 0. Fujifilm's DR
+// modes buy highlight room that way and let the camera JPEG push it back; the
+// RAF records the amount as RawExposureBias (tag 0x9650: -0.72 at DR100, -1.72
+// at DR200, -2.72 at DR400), which libraw surfaces as ExpoMidPointShift and
+// folds into ExposureCalibrationShift without ever applying it. Bodies that
+// predate the tag still record which DR mode they developed.
+function rawExposureBias(meta: Record<string, unknown>): number {
+  const common = meta.metadata_common as Record<string, unknown> | undefined;
+  const fuji = meta.fuji as Record<string, unknown> | undefined;
+  const tagged = num(common?.ExposureCalibrationShift) || num(fuji?.ExpoMidPointShift);
+  if (tagged) return tagged;
+  // An unset DR tag arrives as the 65535 sentinel; only the two real modes count.
+  const developed = num(fuji?.DevelopmentDynamicRange);
+  const dr = developed === 200 || developed === 400 ? developed : num(fuji?.AutoDynamicRange);
+  return dr === 200 || dr === 400 ? -Math.log2(dr / 100) : 0;
+}
+
 /** What a metadata-only libraw open yields — headers only, no pixel decode. */
 export interface RawMetadata {
   /** As-shot Kelvin from the camera WB multipliers, when libraw exposes them. */
   colorTemperature?: number;
+  /** EV the sensor sat below the tagged ISO (Fujifilm DR modes); the float
+   *  decode compensates it, so this is informational. */
+  rawExposureBias?: number;
   /** The frame this RAW decodes to — imgdata.sizes.width/height, the visible
    *  image without the masked sensor borders. libraw-wasm swaps the two for a
    *  quarter-turn flip, so it arrives already EXIF-upright. */
@@ -69,7 +141,11 @@ export async function extractRawMetadata(
     // hand it a copy — the caller keeps its ArrayBuffer for the fallback path.
     await raw.open(new Uint8Array(buffer.slice(0)), { useCameraWb: true });
     const meta = await raw.metadata(true);
-    return { colorTemperature: kelvinFromCamMul(meta.color_data), frame: frameOf(meta) };
+    return {
+      colorTemperature: kelvinFromCamMul(meta.color_data),
+      frame: frameOf(meta),
+      rawExposureBias: rawExposureBias(meta) || undefined,
+    };
   } catch {
     return undefined;
   } finally {
@@ -119,17 +195,17 @@ export async function decodeRawFloatViaLibRaw(
       outputBps: 16,
       useCameraWb: true,
       outputColor: 1,
-      gamm: [1, 1],
+      // No `gamm`: the wrapper ignores it and always encodes Rec.709 (see
+      // LINEAR_OF_CODE), which is linearised below.
       // No content-driven auto-brighten: it scaled each image so ~1% of pixels
       // clipped to white, destroying exactly the data Highlights recovery needs
       // (and made baseline brightness vary per image). LR uses a fixed baseline.
-      // NOTE: images now decode slightly darker than before — that's the removed
-      // auto-gain, not a regression; compensate (if desired) via base curve.
       noAutoBright: true,
       userQual: 3,
       // Blend-reconstruct clipped highlights from the unclipped channels (dcraw
       // mode 2) instead of clipping to flat white — closest to LR's recovery of
       // near-blown detail. Modes 3+ (rebuild) can paint magenta; 2 is safe.
+      // Any mode but 0 also lowers the white point (see highlightModeScale).
       highlight: 2,
       noAutoScale: false,
     });
@@ -209,12 +285,16 @@ export async function decodeRawFloatViaLibRaw(
     }
 
     const n = width * height;
-    const inv = pixels instanceof Uint16Array ? 1 / 65535 : 1 / 255;
+    const scale = highlightModeScale(meta.color_data);
+    const bias = rawExposureBias(meta);
+    const gain = scale * 2 ** -bias;
+    // 8-bit codes index the 16-bit table at its matching level (255 -> 65535).
+    const step = pixels instanceof Uint16Array ? 1 : 257;
     const data = new Float32Array(n * 4);
     for (let i = 0, o = 0, s = 0; i < n; i++, o += 4, s += stride) {
-      const r = pixels[s] * inv;
-      const g = stride >= 3 ? pixels[s + 1] * inv : r;
-      const b = stride >= 3 ? pixels[s + 2] * inv : r;
+      const r = LINEAR_OF_CODE[pixels[s] * step] * gain;
+      const g = stride >= 3 ? LINEAR_OF_CODE[pixels[s + 1] * step] * gain : r;
+      const b = stride >= 3 ? LINEAR_OF_CODE[pixels[s + 2] * step] * gain : r;
       data[o] = r;
       data[o + 1] = g;
       data[o + 2] = b;
@@ -251,9 +331,19 @@ export async function decodeRawFloatViaLibRaw(
 
     const colorTemperature = kelvinFromCamMul(meta.color_data);
 
-    lastLibRawStatus = `libraw ${pixels instanceof Uint16Array ? 16 : 8}-bit ${stride}ch ${width}×${height}`;
+    lastLibRawStatus =
+      `libraw ${pixels instanceof Uint16Array ? 16 : 8}-bit ${stride}ch ${width}×${height}` +
+      ` ×${scale.toFixed(2)} white point` +
+      (bias ? `, ${(-bias).toFixed(2)} EV exposure bias` : "");
     console.log("[libraw] decoded", lastLibRawStatus);
-    return { data, width, height, suspicious: inferredDims, colorTemperature };
+    return {
+      data,
+      width,
+      height,
+      suspicious: inferredDims,
+      colorTemperature,
+      rawExposureBias: bias || undefined,
+    };
   } catch (e) {
     lastLibRawStatus = `decode error: ${e instanceof Error ? e.message : String(e)}`;
     console.warn("[libraw] decode failed", e);

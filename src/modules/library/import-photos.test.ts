@@ -429,6 +429,15 @@ describe("buildPhoto", () => {
     expect(photo.exif.colorTemperature).toBe(4800);
   });
 
+  it("records the exposure bias libraw reports for a Fujifilm DR-mode raw", async () => {
+    h.rawMeta = { rawExposureBias: -2.72 };
+    h.rawBitmap = { width: 100, height: 100, oriented: false };
+
+    const photo = (await buildPhoto(file("a.RAF"), null, null))!;
+
+    expect(photo.exif.rawExposureBias).toBe(-2.72);
+  });
+
   it("keeps a white balance the file already declared", async () => {
     h.exif = { colorTemperature: 6100 };
     h.rawMeta = { colorTemperature: 4800 };

@@ -19,6 +19,7 @@ import type { HistogramData } from "../histogram";
 import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
 import { buildFragmentShader, VERTEX_SHADER, type StageInjection } from "./shaders";
+import { BASELINE_TONE_GLSL } from "../baseline-tone";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import {
   uniformPrefix,
@@ -407,6 +408,7 @@ vec3 linearToSrgbU(vec3 c) {
   c = max(c, 0.0);
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
+${BASELINE_TONE_GLSL}
 uniform sampler2D uPrevPass;
 uniform vec2 uTexel;
 uniform int uPassIndex;
@@ -417,14 +419,7 @@ uniform bool uIsFallbackPreview;
 uniform bool uApplyBaseCurve;
 vec3 toLin(vec3 src) {
   vec3 lin = uSrcLinear ? src : (uIsFallbackPreview ? src : srgbToLinear(src));
-  if (uApplyBaseCurve) {
-    vec3 d  = linearToSrgbU(lin);
-    vec3 dc = clamp(d, 0.0, 1.0);
-    vec3 s  = dc * dc * (3.0 - 2.0 * dc);
-    vec3 cc = mix(dc, s, 0.55) + max(d - 1.0, 0.0);
-    lin = srgbToLinear(cc);
-  }
-  return lin;
+  return uApplyBaseCurve ? baselineTone(lin) : lin;
 }
 vec3 readPrev(vec2 uv) {
   vec3 s = texture(uPrevPass, uv).rgb;
@@ -1664,14 +1659,12 @@ export class WebGLRenderer {
     // here painted a black frame on every crop/straighten/transform change.
   }
 
-  // Rebuild + upload the composed tone-curve LUT. The Adobe Color baseline is
-  // included only under transforms that don't bring their own look — a
-  // skipBaseCurve pipeline (AgX, ACES, …) owns the whole baseline rendering, so
-  // user curves compose on identity. Re-run on pipeline switches that flip
-  // skipBase (syncPipeline), not just on param changes.
+  // Rebuild + upload the composed tone-curve LUT: the user's curves only. The
+  // baseline look is baselineTone in the shader, gated per source and pipeline
+  // by uApplyBaseCurve, so the LUT never depends on the active transform.
   private uploadCurveLUT() {
     if (!this.params) return;
-    const lut = buildRGBCurveLUT(this.params.toneCurve, !this.pipelineSkipBase);
+    const lut = buildRGBCurveLUT(this.params.toneCurve);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
     gl.texImage2D(
@@ -1791,14 +1784,9 @@ export class WebGLRenderer {
     const e = this.entryFor(p, injection, sSig);
     this.program = e.program;
     this.uniforms = e.uniforms;
-    // The curve LUT bakes the Adobe Color baseline only for non-skipBase
-    // pipelines, so a switch that flips skipBase must rebuild it — the LUT is
-    // otherwise only refreshed by setParams.
-    const skipBaseChanged = e.skipBase !== this.pipelineSkipBase;
     this.pipelineSkipBase = e.skipBase;
     this.pipelineSig = p.sig;
     this.stageSig = sSig;
-    if (skipBaseChanged) this.uploadCurveLUT();
   }
 
   render() {
