@@ -4,7 +4,11 @@
 // be preserved in derived versions.
 
 import type { CatalogPhoto } from "./types";
-import { extractRawPreview, isRawFile } from "@/modules/library/raw-preview";
+import {
+  extractRawPreview,
+  isRawFile,
+  sensorNativeImage,
+} from "@/modules/library/raw-preview";
 import { decodeNetpbm, isNetpbmName } from "@/modules/library/netpbm";
 import { decodeTiff, isTiffName } from "@/modules/library/tiff-image";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
@@ -293,9 +297,10 @@ export async function loadPhotoImage(
 // falls back to the embedded JPEG preview, then to the stored thumbnail when the
 // handle is gone or permission was not re-granted.
 //
-// We decode raw pixels (imageOrientation: "none") and apply the photo's baked
-// rotation ourselves, so orientation is consistent across JPEG and RAW. The
-// stored thumbnail is already upright, so it is used as-is.
+// We decode raw pixels — a JPEG with its Exif segment left out, since the
+// decoder would otherwise apply the tag itself (sensorNativeImage) — and apply
+// the photo's baked rotation ourselves, so orientation is consistent across JPEG
+// and RAW. The stored thumbnail is already upright, so it is used as-is.
 export async function loadPhotoBitmap(
   photo: CatalogPhoto,
 ): Promise<ImageBitmap | null> {
@@ -326,7 +331,9 @@ export async function loadPhotoBitmap(
       } else if (isTiffName(file.name)) {
         raw = await decodeTiff(file);
       } else {
-        raw = await createImageBitmap(file, { imageOrientation: "none" });
+        raw = await createImageBitmap(await sensorNativeImage(file), {
+          imageOrientation: "none",
+        });
       }
 
       if (raw) {

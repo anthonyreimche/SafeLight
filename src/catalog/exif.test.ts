@@ -10,7 +10,7 @@
 // Run with `npm test`.
 
 import { describe, it, expect } from "vitest";
-import { parseExif, parseExifDate, parseXmp } from "./exif";
+import { parseExif, parseExifDate, parseXmp, readExifEntries } from "./exif";
 import type { ExifData } from "./types";
 import {
   APP0,
@@ -797,5 +797,60 @@ describe("parseXmp", () => {
   it("returns nothing when the XMP value pointer lies outside the buffer", async () => {
     const bytes = buildTiff({ le: true, ifd0: [[T.Xmp, pointer(1, 128, 0x7000)]] });
     expect(await parseXmp(blobOf(bytes))).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fujifilm RAF container — a proprietary header whose EXIF and XMP live in the
+// embedded JPEG it points to (offset at byte 84, length at 88, big-endian)
+// ---------------------------------------------------------------------------
+
+const RAF_HEADER_BYTES = 148;
+
+/** A RAF: magic, camera strings and version, the embedded JPEG's offset and
+ *  length, then the JPEG itself. `claimedOffset` lets the header lie. */
+function raf(embeddedJpeg: Uint8Array, claimedOffset = RAF_HEADER_BYTES): Bytes {
+  const header = new Uint8Array(RAF_HEADER_BYTES);
+  header.set(latin1("FUJIFILMCCD-RAW 0201FF159502X-T5"));
+  const view = new DataView(header.buffer);
+  view.setUint32(84, claimedOffset, false);
+  view.setUint32(88, embeddedJpeg.length, false);
+  return concat([header, embeddedJpeg]);
+}
+
+describe("parseExif — Fujifilm RAF container", () => {
+  const tiff = buildTiff({
+    le: false,
+    ifd0: [[T.Orientation, short(6)], [T.Make, ascii("FUJIFILM")], [T.Model, ascii("X-T5")]],
+    exif: [[T.ISO, short(800)]],
+  });
+  const embedded = jpeg([segment(APP1, exifPayload(tiff))]);
+
+  it("reads the EXIF of the embedded JPEG the header points to", async () => {
+    const exif = await parseExif(blobOf(raf(embedded)));
+    expect(exif.orientation).toBe(6);
+    expect(exif.cameraMake).toBe("FUJIFILM");
+    expect(exif.cameraModel).toBe("X-T5");
+    expect(exif.iso).toBe(800);
+  });
+
+  it("harvests the export entries from that embedded JPEG", async () => {
+    const ifds = await readExifEntries(blobOf(raf(embedded)));
+    expect(ifds?.ifd0.map((e) => e.tag)).toContain(T.Make);
+  });
+
+  it("reads an XMP packet from that embedded JPEG", async () => {
+    const xmp = await parseXmp(blobOf(raf(xmpJpeg(`<xmp:Rating>4</xmp:Rating>`))));
+    expect(xmp.rating).toBe(4);
+  });
+
+  it("returns nothing when the header points outside the file or at bytes that are no JPEG", async () => {
+    expect(await parseExif(blobOf(raf(embedded, 100_000)))).toEqual({});
+    expect(await parseExif(blobOf(raf(embedded, 100)))).toEqual({});
+    expect(await parseXmp(blobOf(raf(embedded, 100)))).toEqual({});
+  });
+
+  it("returns nothing for a RAF cut off before the JPEG offset field", async () => {
+    expect(await parseExif(blobOf(latin1("FUJIFILMCCD-RAW 0201")))).toEqual({});
   });
 });

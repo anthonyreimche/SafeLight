@@ -139,4 +139,25 @@ describe("runThumbTask — plain images", () => {
     expect({ width: r.width, height: r.height }).toEqual({ width: 800, height: 600 });
     await expect(thumbTag(r.thumb)).resolves.toBe("jpeg:640x480");
   });
+
+  it("hands a JPEG to the decoder without its Exif segment", async () => {
+    const decoded: unknown[] = [];
+    vi.stubGlobal(
+      "createImageBitmap",
+      async (source: unknown, opts?: ImageBitmapOptions): Promise<ImageBitmap> => {
+        if (source instanceof FakeOffscreenCanvas) return bitmapOf(source.width, source.height);
+        decoded.push(source);
+        return bitmapOf(opts!.resizeWidth!, opts!.resizeHeight!);
+      },
+    );
+    // MINIMAL_JPEG with an Exif APP1 (signature only) spliced in behind the SOI.
+    const exifApp1 = bytes(0xff, 0xe1, 0x00, 0x08, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00);
+    const tagged = bytes(...MINIMAL_JPEG.subarray(0, 2), ...exifApp1, ...MINIMAL_JPEG.subarray(2));
+    const r = await runThumbTask(
+      input({ buffer: tagged.buffer, name: "b.jpg", type: "image/jpeg", orientation: 6 }),
+    );
+    expect(r.ok).toBe(true);
+    const bytesDecoded = new Uint8Array(await (decoded[0] as Blob).arrayBuffer());
+    expect(bytesDecoded).toEqual(MINIMAL_JPEG);
+  });
 });

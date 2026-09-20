@@ -10,9 +10,10 @@ import {
 } from "@/rendering/blackbody";
 import type { ExifData } from "./types";
 
-// Lightweight, dependency-free EXIF reader. Handles JPEG (Exif APP1) and
-// TIFF-based formats including RAW (NEF, DNG, CR2, ARW). We only read the tags
-// the app surfaces; everything else is ignored. All parsing stays client-side.
+// Lightweight, dependency-free EXIF reader. Handles JPEG (Exif APP1), TIFF-based
+// formats including RAW (NEF, DNG, CR2, ARW), and Fujifilm RAF, which keeps its
+// EXIF in the JPEG preview it embeds. We only read the tags the app surfaces;
+// everything else is ignored. All parsing stays client-side.
 
 const MAX_BYTES = 1 << 20; // 1 MiB — EXIF/MakerNotes sit near the file start.
 
@@ -249,11 +250,11 @@ export async function parseXmp(blob: Blob): Promise<XmpData> {
 }
 
 function extractXmpText(view: DataView): string | null {
-  if (view.byteLength < 4) return null;
-  const head = view.getUint16(0, false);
-  if (head === 0xffd8) return extractXmpFromJpeg(view);
-  if (head === 0x4949 || head === 0x4d4d) return extractXmpFromTiff(view);
-  return null;
+  const container = locateMetadata(view);
+  if (!container) return null;
+  if (container.kind === "tiff") return extractXmpFromTiff(view);
+  const xmp = findApp1(view, container.start, XMP_JPEG_SIG);
+  return xmp ? decodeUtf8(view, xmp.start, xmp.end) : null;
 }
 
 function extractXmpFromTiff(view: DataView): string | null {
@@ -266,23 +267,6 @@ function extractXmpFromTiff(view: DataView): string | null {
   const start = dataOffset(r, e);
   if (start < 0 || start >= view.byteLength) return null;
   return decodeUtf8(view, start, Math.min(start + e.count, view.byteLength));
-}
-
-function extractXmpFromJpeg(view: DataView): string | null {
-  let off = 2;
-  while (off + 4 <= view.byteLength) {
-    if (view.getUint8(off) !== 0xff) break;
-    const marker = view.getUint8(off + 1);
-    if (marker === 0xda || marker === 0xd9) break; // SOS / EOI -> no more metadata
-    const len = view.getUint16(off + 2, false);
-    const segStart = off + 4;
-    if (marker === 0xe1 && matchAscii(view, segStart, XMP_JPEG_SIG)) {
-      const textStart = segStart + XMP_JPEG_SIG.length;
-      return decodeUtf8(view, textStart, Math.min(off + 2 + len, view.byteLength));
-    }
-    off += 2 + len;
-  }
-  return null;
 }
 
 function matchAscii(view: DataView, at: number, sig: string): boolean {
@@ -350,36 +334,58 @@ function decodeEntities(s: string): string {
     .replace(/&amp;/g, "&");
 }
 
-function findTiffStart(view: DataView): number {
-  if (view.byteLength < 4) return -1;
+// Where a file keeps its EXIF and XMP: a TIFF header (TIFF-based RAW), or the
+// APP segments of a JPEG — the file itself, or the preview a Fujifilm RAF
+// embeds, which carries the RAF's whole EXIF block. The RAF header stores that
+// preview's offset at byte 84 and its length at 88, big-endian.
+interface MetadataContainer {
+  kind: "tiff" | "jpeg";
+  /** Offset of the TIFF header, or of the JPEG's SOI marker. */
+  start: number;
+}
+
+const RAF_MAGIC = "FUJIFILMCCD-RAW";
+const RAF_JPEG_OFFSET_AT = 84;
+const EXIF_JPEG_SIG = "Exif\0\0";
+
+function locateMetadata(view: DataView): MetadataContainer | null {
+  if (view.byteLength < 4) return null;
   const head = view.getUint16(0, false);
+  if (head === 0xffd8) return { kind: "jpeg", start: 0 };
+  if (head === 0x4949 || head === 0x4d4d) return { kind: "tiff", start: 0 };
+  if (!matchAscii(view, 0, RAF_MAGIC) || view.byteLength < RAF_JPEG_OFFSET_AT + 4) return null;
+  const jpeg = view.getUint32(RAF_JPEG_OFFSET_AT, false);
+  if (jpeg + 4 > view.byteLength || view.getUint16(jpeg, false) !== 0xffd8) return null;
+  return { kind: "jpeg", start: jpeg };
+}
 
-  // JPEG: walk APP segments looking for the Exif APP1.
-  if (head === 0xffd8) {
-    let off = 2;
-    while (off + 4 <= view.byteLength) {
-      if (view.getUint8(off) !== 0xff) break;
-      const marker = view.getUint8(off + 1);
-      if (marker === 0xda || marker === 0xd9) break; // SOS / EOI -> no more metadata
-      const len = view.getUint16(off + 2, false);
-      if (marker === 0xe1) {
-        const sig = off + 4;
-        if (
-          sig + 6 <= view.byteLength &&
-          view.getUint32(sig, false) === 0x45786966 && // "Exif"
-          view.getUint16(sig + 4, false) === 0x0000
-        ) {
-          return sig + 6; // TIFF header begins right after "Exif\0\0"
-        }
-      }
-      off += 2 + len;
+/** Payload bounds of the first APP1 segment opening with `signature`, walking
+ *  the JPEG's segments from its SOI at `soi` up to the scan data. */
+function findApp1(
+  view: DataView,
+  soi: number,
+  signature: string,
+): { start: number; end: number } | null {
+  let off = soi + 2;
+  while (off + 4 <= view.byteLength) {
+    if (view.getUint8(off) !== 0xff) break;
+    const marker = view.getUint8(off + 1);
+    if (marker === 0xda || marker === 0xd9) break; // SOS / EOI -> no more metadata
+    const len = view.getUint16(off + 2, false);
+    if (marker === 0xe1 && matchAscii(view, off + 4, signature)) {
+      return { start: off + 4 + signature.length, end: Math.min(off + 2 + len, view.byteLength) };
     }
-    return -1;
+    off += 2 + len;
   }
+  return null;
+}
 
-  // TIFF / TIFF-based RAW: header is at byte 0.
-  if (head === 0x4949 || head === 0x4d4d) return 0;
-  return -1;
+/** Offset of the TIFF header holding the file's EXIF, or -1. */
+function findTiffStart(view: DataView): number {
+  const container = locateMetadata(view);
+  if (!container) return -1;
+  if (container.kind === "tiff") return container.start;
+  return findApp1(view, container.start, EXIF_JPEG_SIG)?.start ?? -1;
 }
 
 function parseTiff(view: DataView, base: number): ExifData {

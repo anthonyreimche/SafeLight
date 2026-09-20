@@ -19,6 +19,7 @@ import {
   isRawFile,
   jpegDimensions,
   prefersEmbeddedPreview,
+  sensorNativeJpeg,
 } from "./raw-preview";
 import {
   orientationToRotation,
@@ -115,7 +116,9 @@ export async function runThumbTask(input: ThumbTaskInput): Promise<ThumbTaskResu
   }
 
   // Plain browser-decodable image. JPEG bytes get the same decode-at-thumbnail-
-  // scale shortcut via their SOF header; other formats decode at full size.
+  // scale shortcut via their SOF header, and shed their Exif segment so the
+  // decode is sensor-native (see sensorNativeJpeg); other formats decode at
+  // full size.
   const u8 = new Uint8Array(buffer);
   const isJpegBytes =
     u8.length > 3 && u8[0] === 0xff && u8[1] === 0xd8 && u8[2] === 0xff;
@@ -131,7 +134,10 @@ export async function runThumbTask(input: ThumbTaskInput): Promise<ThumbTaskResu
       : undefined;
   let bitmap: ImageBitmap;
   try {
-    bitmap = await createImageBitmap(file, { imageOrientation: "none", ...resize });
+    bitmap = await createImageBitmap(isJpegBytes ? sensorNativeJpeg(u8) : file, {
+      imageOrientation: "none",
+      ...resize,
+    });
   } catch {
     return { ok: false };
   }

@@ -62,9 +62,14 @@ export default defineConfig({
         test: {
           name: "unit",
           include: ["src/**/*.test.ts", "electron/**/*.test.ts"],
-          // `.webgl.test.ts` also matches the include glob, but those need a real
-          // GPU context and run from vitest.webgl.config.ts instead.
-          exclude: [...configDefaults.exclude, "src/**/*.webgl.test.ts"],
+          // `.webgl.test.ts` and `.browser.test.ts` also match the include glob,
+          // but those need a real GPU context / image decoder and run from
+          // vitest.webgl.config.ts instead.
+          exclude: [
+            ...configDefaults.exclude,
+            "src/**/*.webgl.test.ts",
+            "src/**/*.browser.test.ts",
+          ],
           environment: "node",
         },
       },

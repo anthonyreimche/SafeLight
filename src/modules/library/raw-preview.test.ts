@@ -8,6 +8,7 @@ import {
   extractRawPreviewDecoded,
   findJpegEnd,
   jpegDimensions,
+  sensorNativeJpeg,
 } from "./raw-preview";
 
 // Helper: assemble bytes from a flat list of numbers.
@@ -23,6 +24,24 @@ const MINIMAL_JPEG = bytes(
   0xff, 0xda, 0x00, 0x02, 0x11, 0x22,             // SOS + entropy
   0xff, 0xd9,                                     // EOI
 );
+
+// An Exif APP1 holding just its signature, and an APP1 that is XMP instead.
+const EXIF_APP1 = bytes(0xff, 0xe1, 0x00, 0x08, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00);
+const XMP_APP1 = bytes(0xff, 0xe1, 0x00, 0x06, 0x68, 0x74, 0x74, 0x70); // "http…"
+
+/** MINIMAL_JPEG with extra segments spliced in behind the SOI. */
+function withSegments(...segments: Uint8Array[]): Uint8Array<ArrayBuffer> {
+  const parts = [MINIMAL_JPEG.subarray(0, 2), ...segments, MINIMAL_JPEG.subarray(2)];
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+const bytesOf = async (blob: Blob) => new Uint8Array(await blob.arrayBuffer());
 
 describe("findJpegEnd", () => {
   it("returns the end of a minimal baseline JPEG", () => {
@@ -76,15 +95,40 @@ describe("jpegDimensions", () => {
   });
 });
 
+describe("sensorNativeJpeg", () => {
+  it("drops the Exif APP1 segment and keeps every other segment", async () => {
+    const stripped = sensorNativeJpeg(withSegments(EXIF_APP1, XMP_APP1));
+    expect(stripped.type).toBe("image/jpeg");
+    expect(await bytesOf(stripped)).toEqual(withSegments(XMP_APP1));
+  });
+
+  it("leaves a JPEG without an Exif segment as it is", async () => {
+    expect(await bytesOf(sensorNativeJpeg(MINIMAL_JPEG))).toEqual(MINIMAL_JPEG);
+  });
+
+  it("takes a JPEG embedded at an offset, within the range it is given", async () => {
+    const tagged = withSegments(EXIF_APP1);
+    const container = bytes(0x00, 0x01, 0x02, ...tagged, 0xff, 0xd8, 0xff);
+    expect(await bytesOf(sensorNativeJpeg(container, 3, 3 + tagged.length))).toEqual(
+      MINIMAL_JPEG,
+    );
+  });
+});
+
 describe("extractRawPreviewDecoded", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  function stubBitmapDecoder(): { opts: (ImageBitmapOptions | undefined)[] } {
+  function stubBitmapDecoder(): {
+    opts: (ImageBitmapOptions | undefined)[];
+    blobs: Blob[];
+  } {
     const seen: (ImageBitmapOptions | undefined)[] = [];
+    const blobs: Blob[] = [];
     vi.stubGlobal(
       "createImageBitmap",
-      async (_b: Blob, opts?: ImageBitmapOptions): Promise<ImageBitmap> => {
+      async (b: Blob, opts?: ImageBitmapOptions): Promise<ImageBitmap> => {
         seen.push(opts);
+        blobs.push(b);
         return {
           width: opts?.resizeWidth ?? 4000,
           height: opts?.resizeHeight ?? 3000,
@@ -92,8 +136,19 @@ describe("extractRawPreviewDecoded", () => {
         } as unknown as ImageBitmap;
       },
     );
-    return { opts: seen };
+    return { opts: seen, blobs };
   }
+
+  it("hands the decoder the preview without its Exif segment, sized from the SOF header", async () => {
+    const { opts, blobs } = stubBitmapDecoder();
+    const d = await extractRawPreviewDecoded(new File([withSegments(EXIF_APP1)], "a.RAF"), {
+      targetLongEdge: 640,
+    });
+    expect(await bytesOf(blobs[0])).toEqual(MINIMAL_JPEG);
+    expect(await bytesOf(d!.blob)).toEqual(MINIMAL_JPEG);
+    expect(opts[0]).toMatchObject({ resizeWidth: 640, resizeHeight: 480 });
+    expect(d).toMatchObject({ width: 4000, height: 3000 });
+  });
 
   it("decodes straight to the target size and reports the true frame size", async () => {
     const { opts } = stubBitmapDecoder();
