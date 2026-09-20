@@ -55,7 +55,9 @@ import {
 } from "./store-ui";
 import {
   loadTrustList,
+  useTrust,
   isVerified,
+  isVerifiedIn,
   reviewedFor,
   bannedReason,
   repoFromSpec,
@@ -401,12 +403,25 @@ export function ExtensionManagerPanel() {
   });
   const installable = pending.filter((m) => !updates[m.id]?.requiresApp);
 
+  // Verified lookups for the grid subscribe to the trust store: on a first
+  // launch the registry can land after the search results, and the filters
+  // below must follow it rather than keep a one-off answer.
+  const trust = useTrust((s) => s.list);
+  const allowlisted = (r: ExtensionSearchResult) =>
+    isVerifiedIn(trust, r.fullName);
+
   // Browse shows only what isn't installed, narrowed by the active category.
+  // With "Only verified extensions" on it also hides what the install gate would
+  // refuse, so the store only ever offers what can actually be installed.
   const notInstalled = results?.filter((r) => !isInstalled(r)) ?? null;
-  const filtered =
+  const inCategory =
     notInstalled && category !== "All"
       ? notInstalled.filter((r) => categoryFor(r.topics) === category)
       : notInstalled;
+  const filtered =
+    onlyVerified ? (inCategory?.filter(allowlisted) ?? null) : inCategory;
+  const hiddenUnverified =
+    inCategory && filtered ? inCategory.length - filtered.length : 0;
 
   // Flat, sorted list — shown when a search query or a non-"All" category narrows
   // the browse, where ranked shelves would be redundant.
@@ -433,10 +448,11 @@ export function ExtensionManagerPanel() {
     if (!shelfView || !filtered || filtered.length === 0) return null;
     const byStars = (a: ExtensionSearchResult, b: ExtensionSearchResult) =>
       b.stars - a.stars;
-    const featured = filtered
-      .filter((r) => isVerified(r.fullName))
-      .sort(byStars)
-      .slice(0, SHELF_LIMIT);
+    // Under "Only verified extensions" every row is verified, so Featured would
+    // only repeat Popular; leaving it empty drops it below.
+    const featured = onlyVerified
+      ? []
+      : filtered.filter(allowlisted).sort(byStars).slice(0, SHELF_LIMIT);
     const newest = [...filtered]
       .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
       .slice(0, SHELF_LIMIT);
@@ -713,6 +729,14 @@ export function ExtensionManagerPanel() {
                       onInstall={() => void install(r.fullName, r)}
                     />
                   ))}
+                </div>
+              )}
+
+              {hiddenUnverified > 0 && (
+                <div className="text-text-muted">
+                  {`${hiddenUnverified} unverified ${
+                    hiddenUnverified === 1 ? "extension" : "extensions"
+                  } hidden — “Only verified extensions” is on (Preferences ▸ Extensions).`}
                 </div>
               )}
 

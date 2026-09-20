@@ -137,7 +137,9 @@ export type VerificationStatus = "unverified" | "verified" | "stale";
 // Pure list-taking cores — the plain functions read the current store state, the
 // hooks subscribe to it, both go through these so the logic can't drift.
 
-function isVerifiedIn(list: TrustList, repo: string | null | undefined): boolean {
+/** List-taking form of {@link isVerified}, for filtering a collection in render
+ *  under a `useTrust` subscription (where a per-item hook can't run). */
+export function isVerifiedIn(list: TrustList, repo: string | null | undefined): boolean {
   const r = norm(repo);
   return !!r && listHas(list.verified, r);
 }

@@ -34,9 +34,9 @@ To help, Safelight consults a community
   malicious are refused at install and disabled at load, even if already installed. The
   ban list **cannot be guaranteed complete or current.**
 
-You can require verified-only installs in **Preferences ▸ Extensions ▸ Only verified
-extensions**. The registry is a best-effort safety aid, **provided as-is with no
-warranty**.
+You can restrict the store to verified extensions in **Preferences ▸ Extensions ▸ Only
+verified extensions**: unverified ones are hidden from Browse and refused at install. The
+registry is a best-effort safety aid, **provided as-is with no warranty**.
 
 ## Permissions
 

@@ -42,3 +42,10 @@ if (!Element.prototype.setPointerCapture) {
     return captured.get(this)?.has(pointerId) ?? false;
   };
 }
+
+// jsdom has no Web Animations API; the store's browse cards animate in on mount.
+if (!Element.prototype.animate) {
+  Element.prototype.animate = function animate(): Animation {
+    return { cancel(): void {} } as Animation;
+  };
+}
