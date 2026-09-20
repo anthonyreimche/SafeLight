@@ -18,6 +18,9 @@ import userEvent from "@testing-library/user-event";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { ExtensionManagerPanel } from "@/extensions/ExtensionManagerPanel";
 import { useExtStoreUI } from "@/extensions/store-ui";
+import { useTrust } from "@/extensions/trust";
+import type { ExtensionSearchResult, TrustList } from "@/extensions/types";
+import { useSettings } from "@/state/settings-store";
 
 const RISK_ACK_KEY = "sl_ext_risk_ack_v1";
 
@@ -142,5 +145,104 @@ describe("ExtensionManagerPanel Updates tab", () => {
     await screen.findByText(/Version 2\.1\.0 requires Safelight 99\.0\.0 or newer/);
     expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
     expect(screen.getByRole("button", { name: "Updates" }).textContent).toBe("Updates");
+  });
+});
+
+// "Only verified extensions" restricts the store to the allowlist: unverified
+// results are hidden from Browse (shelves and the flat grid alike), not merely
+// refused at install. On a first launch the trust list can land after the search
+// results, so the filter has to follow the trust store rather than read it once.
+describe("ExtensionManagerPanel verified-only browse", () => {
+  const result = (fullName: string): ExtensionSearchResult => ({
+    fullName,
+    description: null,
+    stars: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    source: "registry",
+  });
+  const results = [result("acme/reviewed-tool"), result("acme/random-tool")];
+  const allowlist = (verified: string[]): TrustList => ({
+    verified,
+    reviewed: {},
+    repos: [],
+    owners: [],
+    reason: {},
+  });
+
+  beforeEach(() => {
+    useExtStoreUI.setState({ category: "All" });
+    useTrust.setState({
+      list: allowlist(["acme/reviewed-tool"]),
+      loadedAt: 1,
+      flagged: [],
+    });
+    vi.stubGlobal("safelightNative", {
+      plugins: {
+        list: async () => [],
+        install: installBridge,
+        search: async () => results,
+      },
+    });
+  });
+
+  afterEach(() => {
+    useSettings.setState({ onlyVerifiedExtensions: false });
+    useTrust.setState({ list: allowlist([]), loadedAt: 0, flagged: [] });
+  });
+
+  it("shows every result while the setting is off", async () => {
+    mountStore();
+    await screen.findAllByText("random-tool");
+    screen.getAllByText("reviewed-tool");
+    expect(screen.queryByText(/unverified extension/)).toBeNull();
+  });
+
+  it("hides unverified results from the shelves", async () => {
+    useSettings.setState({ onlyVerifiedExtensions: true });
+    mountStore();
+    await screen.findAllByText("reviewed-tool");
+    expect(screen.queryByText("random-tool")).toBeNull();
+    // Every shelf is the verified set now, so Featured would only repeat Popular.
+    expect(screen.queryByText("Featured")).toBeNull();
+    screen.getByText("New");
+    screen.getByText("Popular");
+    screen.getByText("Recently updated");
+    screen.getByText(/1 unverified extension hidden/);
+  });
+
+  it("hides unverified results from the search grid", async () => {
+    useSettings.setState({ onlyVerifiedExtensions: true });
+    const user = userEvent.setup();
+    mountStore();
+    await user.type(screen.getByLabelText("Search official extensions"), "tool");
+    await screen.findByText("reviewed-tool");
+    expect(screen.queryByText("random-tool")).toBeNull();
+    screen.getByText(/1 unverified extension hidden/);
+  });
+
+  it("re-filters once the trust list lands after the results", async () => {
+    useSettings.setState({ onlyVerifiedExtensions: true });
+    useTrust.setState({ list: allowlist([]), loadedAt: 0, flagged: [] });
+    let deliver!: (list: TrustList) => void;
+    vi.stubGlobal("safelightNative", {
+      plugins: {
+        list: async () => [],
+        install: installBridge,
+        search: async () => results,
+        trustList: () =>
+          new Promise<TrustList>((resolve) => {
+            deliver = resolve;
+          }),
+      },
+    });
+    mountStore();
+    await screen.findByText(/2 unverified extensions hidden/);
+    expect(screen.queryByText("reviewed-tool")).toBeNull();
+
+    deliver(allowlist(["acme/reviewed-tool"]));
+    await screen.findAllByText("reviewed-tool");
+    expect(screen.queryByText("random-tool")).toBeNull();
+    screen.getByText(/1 unverified extension hidden/);
   });
 });
