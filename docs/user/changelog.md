@@ -18,6 +18,8 @@ All notable changes to Safelight are documented in this file.
 
 ### Fixed
 - A failed extension update (network error, or a release that needs a newer Safelight) no longer leaves the installed version disabled until restart, and updating a disabled extension no longer switches it back on. Extension files are now replaced atomically, so an interrupted install can't leave a half-written copy.
+- **Fujifilm RAF metadata** — RAF files now import with their EXIF (orientation, capture date, camera, lens, exposure) and XMP. A RAF keeps them inside the JPEG preview its header points to, which the metadata reader didn't follow, so every Fuji file arrived without them and its thumbnail could not be brought upright. Exports from RAF files now carry the EXIF too. RAF photos imported before this fix pick their metadata up on **Re-import**.
+- **Squashed or sideways thumbnails from JPEGs that carry an orientation tag** — the browser engine applies a JPEG's own EXIF Orientation on decode even when asked not to. An embedded preview with such a tag (Fujifilm's has one) came out upright and was then squashed into its sensor-native resize box and turned again, and a portrait JPEG imported through the fast path was turned twice. The tag is now left out of the bytes handed to the decoder, so every decode starts sensor-native and the file's own EXIF alone decides orientation, in the grid and in Develop. **Rebuild thumbnails** refreshes previews built before the fix.
 
 ### Planned
 - B&W and HDR image support

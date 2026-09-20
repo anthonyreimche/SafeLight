@@ -168,6 +168,34 @@ function isSofMarker(m: number): boolean {
   return m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc;
 }
 
+interface JpegSegment {
+  marker: number;
+  /** Offset of the segment's marker byte, and one past its last byte. */
+  start: number;
+  end: number;
+}
+
+/** The header segments of the JPEG whose SOI sits at `start`, up to the scan
+ *  data; ends early at anything malformed or truncated. */
+function* jpegSegments(buf: Uint8Array, start: number): Generator<JpegSegment> {
+  const n = buf.length;
+  let p = start + 2; // past SOI
+  while (p + 3 < n) {
+    if (buf[p] !== 0xff) return;
+    const marker = buf[p + 1];
+    // SOS/EOI (or a stray nested SOI): no more header segments.
+    if (marker === 0xda || marker === 0xd9 || marker === 0xd8) return;
+    if (marker >= 0xd0 && marker <= 0xd7) {
+      p += 2; // RSTn carries no length
+      continue;
+    }
+    const len = (buf[p + 2] << 8) | buf[p + 3];
+    if (len < 2 || p + 2 + len > n) return;
+    yield { marker, start: p, end: p + 2 + len };
+    p += 2 + len;
+  }
+}
+
 /** Frame width/height from a JPEG's SOF header, without decoding. Walks the
  *  segment chain from `start` (which must sit on the SOI); null when no SOF
  *  precedes the scan data (malformed or truncated stream). */
@@ -175,35 +203,61 @@ export function jpegDimensions(
   buf: Uint8Array,
   start: number,
 ): { width: number; height: number } | null {
-  const n = buf.length;
-  let p = start + 2; // past SOI
-  while (p + 3 < n) {
-    if (buf[p] !== 0xff) return null;
-    const marker = buf[p + 1];
-    // SOS/EOI (or a stray nested SOI) before any SOF — no frame header to read.
-    if (marker === 0xda || marker === 0xd9 || marker === 0xd8) return null;
-    if (marker >= 0xd0 && marker <= 0xd7) {
-      p += 2; // RSTn carries no length
-      continue;
-    }
-    const len = (buf[p + 2] << 8) | buf[p + 3];
-    if (len < 2 || p + 2 + len > n) return null;
-    if (isSofMarker(marker)) {
-      if (len < 7) return null;
-      const height = (buf[p + 5] << 8) | buf[p + 6];
-      const width = (buf[p + 7] << 8) | buf[p + 8];
-      return width > 0 && height > 0 ? { width, height } : null;
-    }
-    p += 2 + len;
+  for (const { marker, start: at, end } of jpegSegments(buf, start)) {
+    if (!isSofMarker(marker)) continue;
+    if (end - at < 9) return null; // length, precision, height, width
+    const height = (buf[at + 5] << 8) | buf[at + 6];
+    const width = (buf[at + 7] << 8) | buf[at + 8];
+    return width > 0 && height > 0 ? { width, height } : null;
   }
   return null;
 }
 
+const EXIF_SIGNATURE = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00]; // "Exif\0\0"
+
+function isExifSegment(buf: Uint8Array, { marker, start }: JpegSegment): boolean {
+  return marker === 0xe1 && EXIF_SIGNATURE.every((b, i) => buf[start + 4 + i] === b);
+}
+
+/** The JPEG at [start, end) of `buf` as a decodable blob with its Exif segment
+ *  left out. Chromium applies a JPEG's own EXIF Orientation on decode whatever
+ *  `imageOrientation` asks for — the spec renamed "none" to "from-image", and
+ *  the metadata-ignoring "none" sits behind a disabled Chromium feature flag —
+ *  so a decode is only sensor-native when the bytes carry no tag. Every JPEG
+ *  the import and Develop paths decode goes through here, which leaves the
+ *  master EXIF as the one source of orientation. */
+export function sensorNativeJpeg(
+  buf: Uint8Array<ArrayBuffer>,
+  start = 0,
+  end = buf.length,
+): Blob {
+  const parts: Uint8Array<ArrayBuffer>[] = [];
+  let kept = start;
+  for (const segment of jpegSegments(buf, start)) {
+    if (segment.end > end) break;
+    if (!isExifSegment(buf, segment)) continue;
+    parts.push(buf.subarray(kept, segment.start));
+    kept = segment.end;
+  }
+  parts.push(buf.subarray(kept, end));
+  return new Blob(parts, { type: "image/jpeg" });
+}
+
+/** `file` as the decoder should see it: a JPEG with its Exif segment left out
+ *  (see sensorNativeJpeg), any other image as it is. */
+export async function sensorNativeImage(file: File): Promise<Blob> {
+  const head = new Uint8Array(await file.slice(0, 3).arrayBuffer());
+  const isJpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+  return isJpeg ? sensorNativeJpeg(new Uint8Array(await file.arrayBuffer())) : file;
+}
+
 export interface DecodedRawPreview {
+  /** The preview's bytes with any Exif segment left out (sensorNativeJpeg), so
+   *  a later decode of it comes out sensor-native as well. */
   blob: Blob;
-  /** Decoded with imageOrientation:"none" (sensor-native pixels) — orientation
-   *  is the caller's job, from the master RAW's EXIF. May be decoded smaller
-   *  than width×height when a targetLongEdge was given. */
+  /** Decoded sensor-native — orientation is the caller's job, from the master
+   *  RAW's EXIF. May be decoded smaller than width×height when a targetLongEdge
+   *  was given. */
   bitmap: ImageBitmap;
   /** True frame size from the SOF header (bitmap size when no header parsed). */
   width: number;
@@ -220,14 +274,11 @@ export async function extractRawPreviewDecoded(
   file: File,
   opts?: { targetLongEdge?: number },
 ): Promise<DecodedRawPreview | null> {
-  const arrayBuffer = await file.arrayBuffer();
-  const u8 = new Uint8Array(arrayBuffer);
+  const u8 = new Uint8Array(await file.arrayBuffer());
   const candidates = collectJpegs(u8);
 
   for (const { start, end } of candidates) {
-    const blob = new Blob([arrayBuffer.slice(start, end)], {
-      type: "image/jpeg",
-    });
+    const blob = sensorNativeJpeg(u8, start, end);
     // Downscale during decode when the frame size is known and above the
     // target — a 10 MP camera preview shrinks to grid size without ever
     // materializing full-resolution pixels.

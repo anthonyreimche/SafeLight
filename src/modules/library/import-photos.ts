@@ -21,6 +21,7 @@ import {
   isRawFile,
   prefersEmbeddedPreview,
   distrustsEmbeddedPreview,
+  sensorNativeImage,
 } from "./raw-preview";
 import { decodeNetpbm, isNetpbmName } from "./netpbm";
 import { decodeTiff, isTiffName } from "./tiff-image";
@@ -150,10 +151,11 @@ function looksDegenerate(data: Float32Array, width: number, height: number): boo
 // uncompressed CFA) then the float decode (libraw-wasm, every compression) baked
 // to sRGB. `oriented` is true when the returned pixels are already EXIF-upright,
 // so the caller must NOT rotate again. Camera embedded previews are oriented HERE
-// from the master RAW's EXIF Orientation (decoded imageOrientation:"none", then
-// rotated via previewUprightRotation) rather than trusting the preview's own EXIF
-// tag — many cameras embed a sensor-native preview with NO orientation tag, so
-// "from-image" would leave it sideways. Non-RAW files decode directly.
+// from the master RAW's EXIF Orientation (decoded sensor-native, then rotated via
+// previewUprightRotation) rather than trusting the preview's own EXIF tag — many
+// cameras embed a sensor-native preview with NO orientation tag, so "from-image"
+// would leave it sideways. Non-RAW files decode directly, a JPEG with its Exif
+// segment left out (sensorNativeImage) so the decoder can't orient it first.
 //
 // Returns null only when the pixels are genuinely undecodable.
 interface DecodedImport {
@@ -339,7 +341,9 @@ async function decodeImportBitmap(
     return bitmap ? { bitmap, oriented: false } : null;
   }
   try {
-    const bitmap = await createImageBitmap(file, { imageOrientation: "none" });
+    const bitmap = await createImageBitmap(await sensorNativeImage(file), {
+      imageOrientation: "none",
+    });
     return { bitmap, oriented: false };
   } catch {
     return null;

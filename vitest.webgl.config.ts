@@ -28,7 +28,9 @@ export default defineConfig({
   optimizeDeps: { exclude: ["libraw-wasm"] },
   test: {
     name: "webgl",
-    include: ["src/**/*.webgl.test.ts"],
+    // `.browser.test.ts` specs need Chromium's real image decoder rather than a
+    // GL context, and ride along for the same reason: the engine Electron ships.
+    include: ["src/**/*.webgl.test.ts", "src/**/*.browser.test.ts"],
     browser: {
       enabled: true,
       headless: true,
