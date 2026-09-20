@@ -221,13 +221,15 @@ export async function loadPhotoImage(
 
         const f = await decodeRawToFloat(file);
         if (f) {
-          // Propagate the as-shot WB temperature from the decode to the photo's
-          // EXIF so the UI can display the camera's actual shooting temperature.
-          if (f.colorTemperature && !photo.exif.colorTemperature) {
-            photo.exif.colorTemperature = f.colorTemperature;
-            // Persist so the cached-preview fast path has it next time.
-            catalogStorage().putPhoto(photo);
-          }
+          // Propagate what the decode learned (as-shot WB, the exposure bias a
+          // Fujifilm DR mode left in the raw) to the photo's EXIF, and persist
+          // it so the cached-preview fast path has it next time.
+          const learnedTemperature = !!f.colorTemperature && !photo.exif.colorTemperature;
+          const learnedBias =
+            f.rawExposureBias !== undefined && photo.exif.rawExposureBias !== f.rawExposureBias;
+          if (learnedTemperature) photo.exif.colorTemperature = f.colorTemperature;
+          if (learnedBias) photo.exif.rawExposureBias = f.rawExposureBias;
+          if (learnedTemperature || learnedBias) catalogStorage().putPhoto(photo);
 
           // photo.rotation = EXIF orientation + manual user rotation (from import).
           // When the decoder already oriented the pixels, subtract the EXIF portion

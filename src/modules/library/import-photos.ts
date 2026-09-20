@@ -498,6 +498,7 @@ export async function buildPhoto(
   if (rawMeta?.colorTemperature && !exif.colorTemperature) {
     exif.colorTemperature = rawMeta.colorTemperature;
   }
+  if (rawMeta?.rawExposureBias !== undefined) exif.rawExposureBias = rawMeta.rawExposureBias;
 
   // Fields common to both outcomes. A supported file is ALWAYS recorded so it
   // imports exactly once and is never re-scanned as "new" on later opens — the
@@ -729,6 +730,7 @@ export async function reimportPhotos(
       if (rawMeta?.colorTemperature && !exif.colorTemperature) {
         exif.colorTemperature = rawMeta.colorTemperature;
       }
+      if (rawMeta?.rawExposureBias !== undefined) exif.rawExposureBias = rawMeta.rawExposureBias;
 
       const meta: CatalogPhoto = {
         ...photo,

@@ -75,6 +75,7 @@ export interface ExifData {
   dateTimeOriginal?: string;
   orientation?: number; // EXIF Orientation tag (1..8)
   colorTemperature?: number; // as-shot WB in Kelvin (from AsShotNeutral / libraw)
+  rawExposureBias?: number;  // EV the sensor sat below the tagged ISO (Fujifilm DR modes); the decode compensates it
   gpsLatitude?: number;  // decimal degrees (positive = N, negative = S)
   gpsLongitude?: number; // decimal degrees (positive = E, negative = W)
   gpsAltitude?: number;  // metres above sea level

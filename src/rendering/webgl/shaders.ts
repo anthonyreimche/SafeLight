@@ -5,6 +5,8 @@
 
 import { MAX_RETOUCH_BRUSH } from "@/catalog/types";
 
+import { BASELINE_TONE_GLSL } from "../baseline-tone";
+
 export const VERTEX_SHADER = `#version 300 es
 in vec2 aPos;
 in vec2 aUv;
@@ -50,8 +52,9 @@ uniform vec3 uOutsideColor;
 uniform vec4 uViewport;
 uniform bool uLinear;       // true: source texture is linear float (RAW); skip sRGB decode
 uniform bool uIsFallbackPreview; // true: source is pseudo-linear from 8-bit JPEG preview
-uniform bool uApplyBaseCurve; // true: full-res RAW float decode -- add the default camera
-                              // tone curve the already-rendered preview/export bitmaps carry
+uniform bool uApplyBaseCurve; // true: scene-linear RAW source -- apply the default baseline
+                              // (baselineTone); off for camera-rendered bitmaps and for
+                              // display transforms that own their own baseline
 uniform bool uRawHistogram;   // true: output linear unclamped values for extended histogram
 uniform int uShowClipping;    // bitmask: bit 0 = shadow clipping, bit 1 = highlight clipping
 
@@ -214,7 +217,7 @@ vec3 linearToSrgbU(vec3 c) {
   c = max(c, 0.0);
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
-
+${BASELINE_TONE_GLSL}
 // Convert the final sRGB-encoded display pixel into the selected output color
 // space: decode to linear sRGB primaries, rotate primaries with uOutMatrix, then
 // re-encode with the target transfer function (must match the ICC TRC built in
@@ -997,21 +1000,11 @@ void main() {
   // Fallback preview is already pseudo-linear (inverse gamma applied in JS).
   vec3 lin = uLinear ? src : (uIsFallbackPreview ? src : srgbToLinear(src));
 
-  // Default base tone curve. The full-res RAW float decode is scene-linear, so
-  // its default render is flat compared with the preview/export/loupe views,
-  // which inherit a camera-style contrast curve from their already-rendered
-  // bitmaps. Re-create that curve here so all views match. Applied in display
-  // space, then returned to linear so the downstream linear edits (WB, exposure,
-  // highlight recovery) are unchanged; HDR highlights above 1.0 pass through
-  // untouched so recovery still has headroom. Tune BASE_CONTRAST to taste.
-  if (uApplyBaseCurve) {
-    const float BASE_CONTRAST = 0.55; // 0 = flat (linear), 1 = full smoothstep S
-    vec3 d  = linearToSrgbU(lin);            // display-space; may exceed 1.0
-    vec3 dc = clamp(d, 0.0, 1.0);
-    vec3 s  = dc * dc * (3.0 - 2.0 * dc);    // smoothstep S-curve, pivot 0.5
-    vec3 c  = mix(dc, s, BASE_CONTRAST) + max(d - 1.0, 0.0);
-    lin = srgbToLinear(c);
-  }
+  // Default baseline for scene-linear sources (see baseline-tone.ts): the
+  // camera-style lift a RAW decode lacks and every already-rendered bitmap
+  // carries. Linear in, linear out, headroom above 1.0 untouched, so the
+  // downstream linear edits (WB, exposure, highlight recovery) are unchanged.
+  if (uApplyBaseCurve) lin = baselineTone(lin);
 
   // Contributed noise-reduction stages (extension-owned), on scene-linear lin,
   // before exposure so denoising isn't amplified -- same rationale as core NR.

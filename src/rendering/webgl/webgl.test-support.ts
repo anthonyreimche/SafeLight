@@ -181,8 +181,8 @@ export function identityParams(over: Partial<DevelopParams> = {}): DevelopParams
 }
 
 /** A display transform that hands the scene-linear working colour straight to
- *  the framebuffer and owns the baseline, so neither the RAW base curve nor the
- *  Adobe Color LUT is composed in. Everything between `lin` and the output is
+ *  the framebuffer and owns the baseline, so the RAW baseline tone is not
+ *  applied. Everything between `lin` and the output is
  *  then identity at default params, which makes a read-back pixel the linear
  *  value the tone chain produced — the only way to assert on linear-light
  *  behaviour (exposure in stops) without inverting a tone curve in the test. */

@@ -33,6 +33,7 @@ export interface RawFloatImage {
   suspicious?: boolean; // true when the decode passed sanity checks but was marginal
                         // — do not write to cache, let the next open re-decode
   colorTemperature?: number; // as-shot WB in Kelvin, derived from camera multipliers
+  rawExposureBias?: number;  // EV the sensor sat below the tagged ISO (Fujifilm DR modes), compensated in `data`
 }
 
 const DEFAULT_CFA: [number, number, number, number] = [0, 1, 1, 2]; // RGGB
