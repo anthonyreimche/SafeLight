@@ -238,8 +238,8 @@ const CORE_SECTIONS: PrefSection[] = [
     id: "Rendering",
     label: "Rendering",
     group: "General",
-    items: settings("Display transform"),
-    keywords: ["tone map", "pipeline"],
+    items: settings("Default display transform"),
+    keywords: ["tone map", "pipeline", "display transform"],
     render: () => <RenderingSection />,
   },
   {
@@ -1132,13 +1132,13 @@ function RenderingSection() {
   return (
     <div className="flex flex-col gap-4">
       <Field
-        label="Display transform"
-        hint="How scene-linear image data is tone-mapped for display. Applies everywhere the pipeline renders — develop, loupe, thumbnails and export — so output matches the screen. Transforms from extensions appear here too."
+        label="Default display transform"
+        hint="The tone mapper for photos without their own pick. Pick one per photo from the display transform menu in Develop's bottom bar; a photo's transform applies everywhere it renders — develop, loupe, thumbnails and export. Transforms from extensions appear here too."
       >
         <Select
           value={active ? activeId : DEFAULT_PIPELINE}
           onChange={applyPipeline}
-          ariaLabel="Display transform"
+          ariaLabel="Default display transform"
           className="w-full"
           options={Object.values(pipelines).map((p) => ({ value: p.id, label: p.name }))}
         />

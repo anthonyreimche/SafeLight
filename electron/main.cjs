@@ -36,6 +36,15 @@ const {
   sweepPluginWork,
   contains,
 } = require("./plugin-files.cjs");
+const {
+  validManifest,
+  listInstalledManifests,
+  listDevManifests,
+  declaredConnectHosts,
+  pendingConnectHosts,
+  readDevFolder,
+  writeDevFolder,
+} = require("./extension-origins.cjs");
 
 // `app.isPackaged` is false when Electron runs an app from a plain directory
 // rather than an asar/bundled build — which is exactly how the Nix derivation
@@ -223,26 +232,23 @@ const CSP_STATIC = [
 ];
 
 // connect-src is built from 'self' + the gallery origins + the HTTPS origins that
-// installed extensions DECLARE in their manifest's permissions.network. Only
-// declared (and therefore user-visible) origins widen the policy, so an extension
-// can't silently fetch an arbitrary host — anything not declared is blocked by the
-// CSP. The set is computed once from the installed extensions; a newly-installed
-// extension's origins take effect on the next launch (a natural consent point).
-// Accept only well-formed HTTPS origins (optionally a single leading-label
-// wildcard + optional port) so a malicious manifest can't inject 'unsafe-eval', a
-// data: source, or a bare * into the policy.
-const VALID_CONNECT_ORIGIN = /^https:\/\/(\*\.)?[a-z0-9.-]+(:\d+)?$/i;
+// extensions DECLARE in their manifest's permissions.network: the installed ones
+// under userData/plugins and, read the same way, those in the Developer Tools dev
+// folder (extension-origins.cjs). Only declared (and therefore user-visible)
+// origins widen the policy, so an extension can't silently fetch an arbitrary
+// host — anything not declared is blocked by the CSP. The set is computed once
+// per launch from the manifests on disk; a newly-installed extension's origins,
+// or a newly chosen dev folder's, take effect on the next launch (a natural
+// consent point). Malformed entries never reach the policy, so a manifest can't
+// inject 'unsafe-eval', a data: source, or a bare * into it.
+let launchHosts = null;
 function extensionConnectHosts() {
-  const hosts = new Set();
-  for (const m of listPlugins()) {
-    const net =
-      m.permissions && Array.isArray(m.permissions.network) ? m.permissions.network : [];
-    for (const h of net) {
-      const v = String(h || "").trim();
-      if (VALID_CONNECT_ORIGIN.test(v)) hosts.add(v);
-    }
-  }
-  return [...hosts];
+  if (!launchHosts)
+    launchHosts = declaredConnectHosts([
+      ...listPlugins(),
+      ...listDevManifests(readDevFolder(devFolderFile())),
+    ]);
+  return launchHosts;
 }
 let cspCache = null;
 function buildCSP() {
@@ -334,18 +340,9 @@ const pluginsDir = () => path.join(app.getPath("userData"), "plugins");
 // Work area for in-flight installs/updates (see plugin-files.cjs): beside
 // plugins/, never inside it.
 const pluginWorkDir = () => path.join(app.getPath("userData"), "plugins-update");
-
-function validManifest(m) {
-  return (
-    m &&
-    typeof m.id === "string" &&
-    /^[a-z0-9][a-z0-9._-]*$/i.test(m.id) &&
-    typeof m.name === "string" &&
-    typeof m.version === "string" &&
-    typeof m.main === "string" &&
-    !m.main.includes("..")
-  );
-}
+// The Developer Tools dev folder as the renderer last recorded it, so the next
+// launch reads its manifests for the CSP the way it reads the installed ones.
+const devFolderFile = () => path.join(app.getPath("userData"), "dev-folder.json");
 
 // True when this app build is older than the extension's declared minimum
 // supported version. Dotted versions only; a missing part reads as 0. Mirrors
@@ -368,19 +365,7 @@ function appOlderThan(minVersion) {
 }
 
 function listPlugins() {
-  const dir = pluginsDir();
-  if (!fs.existsSync(dir)) return [];
-  const out = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    try {
-      const m = JSON.parse(
-        fs.readFileSync(path.join(dir, entry.name, "safelight.json"), "utf8")
-      );
-      if (validManifest(m) && m.id === entry.name) out.push(m);
-    } catch {}
-  }
-  return out;
+  return listInstalledManifests(pluginsDir());
 }
 
 // Minimal POSIX/GNU tar reader: 512-byte headers, octal sizes, 'L' longnames.
@@ -1652,6 +1637,20 @@ function registerDevtoolsIpc() {
     if (!wc) return;
     if (hard) wc.reloadIgnoringCache();
     else wc.reload();
+  });
+  // Records the dev folder, so the next launch reads its manifests' declared
+  // network origins the way it reads installed extensions' (see
+  // extensionConnectHosts), and answers with the origins that folder declares
+  // which this launch's policy does not allow yet.
+  ipcMain.handle("devtools:sync-dev-folder", (_e, folder) => {
+    const f = typeof folder === "string" && folder.trim() ? folder : null;
+    writeDevFolder(devFolderFile(), f);
+    return {
+      pending: pendingConnectHosts(
+        declaredConnectHosts(listDevManifests(f)),
+        extensionConnectHosts()
+      ),
+    };
   });
 
   ipcMain.handle("diagnostics:gpuInfo", () => app.getGPUFeatureStatus());

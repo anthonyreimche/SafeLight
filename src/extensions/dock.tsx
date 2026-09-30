@@ -14,7 +14,6 @@
 // Layouts persist per module; Tab hides everything and restores it unchanged.
 
 import {
-  Component,
   createContext,
   useContext,
   useEffect,
@@ -25,8 +24,14 @@ import {
   type RefObject,
 } from "react";
 import { ContextMenu } from "@/ui/components/ContextMenu";
+import { ErrorBoundary } from "@/ui/components/ErrorBoundary";
 import { create } from "zustand";
-import { useRegistry, usePanelHeaderAccessories } from "./registry";
+import {
+  useRegistry,
+  usePanelHeaderAccessories,
+  moduleEntry,
+  moduleTabs,
+} from "./registry";
 import { panelIsPreviewable } from "@/modules/develop/panel-bypass";
 import { frameLocalPoint } from "@/ui/frame-point";
 import { getSettings } from "@/state/settings-store";
@@ -35,31 +40,12 @@ import type { ModuleLayoutDef, PanelPlacement } from "./types";
 import type { RegisteredPanel } from "./registry";
 import { detachedModule } from "@/state/detach";
 
-class PanelErrorBoundary extends Component<
-  { id: string; children: ReactNode },
-  { error: unknown }
-> {
-  constructor(props: { id: string; children: ReactNode }) {
-    super(props);
-    this.state = { error: null };
-  }
-  static getDerivedStateFromError(error: unknown) {
-    return { error };
-  }
-  render() {
-    if (this.state.error) {
-      const msg =
-        this.state.error instanceof Error
-          ? this.state.error.message
-          : String(this.state.error);
-      return (
-        <div className="p-3 text-[11px] text-red-400">
-          Panel "{this.props.id}" crashed: {msg}
-        </div>
-      );
-    }
-    return this.props.children;
-  }
+function PanelErrorBoundary({ id, children }: { id: string; children: ReactNode }) {
+  return (
+    <ErrorBoundary what={`Panel "${id}"`} className="p-3 text-[11px] text-red-400">
+      {children}
+    </ErrorBoundary>
+  );
 }
 
 // v4: dockview replaced by the custom rail dock; old grid layouts don't apply.
@@ -201,8 +187,27 @@ function allowsBottom(panel: RegisteredPanel | undefined): boolean {
   );
 }
 
-function seedDefaults(module: AppModule): RailState[] {
-  const panels = Object.values(useRegistry.getState().panels)
+/** The arrangement a module starts from when nothing saved or preset covers it:
+ *  its defaultLayout, else the panels whose defaultDock names it. Only
+ *  registered panels are seeded (a defaultLayout may name a core panel the user
+ *  has disabled), and a rail left empty is dropped. */
+function seedDefaults(module: AppModule): {
+  rails: RailState[];
+  floating: Record<string, FloatState>;
+} {
+  const registered = useRegistry.getState().panels;
+  const isRegistered = (id: string) => Object.hasOwn(registered, id);
+  const def = moduleEntry(useRegistry.getState().modules, module)?.defaultLayout;
+  if (def)
+    return {
+      rails: railsFromDef(module, def)
+        .map((r) => ({ ...r, panels: r.panels.filter(isRegistered) }))
+        .filter((r) => r.panels.length > 0),
+      floating: Object.fromEntries(
+        Object.entries(def.floating ?? {}).filter(([id]) => isRegistered(id)),
+      ),
+    };
+  const panels = Object.values(registered)
     .filter((p) => p.defaultDock?.module === module)
     .sort(
       (a, b) => (a.defaultDock?.order ?? 100) - (b.defaultDock?.order ?? 100),
@@ -221,7 +226,7 @@ function seedDefaults(module: AppModule): RailState[] {
         panels: group.map((p) => p.id),
       });
   }
-  return rails;
+  return { rails, floating: {} };
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +271,7 @@ function markLayoutCustom() {
 export interface UserLayout {
   id: string;
   name: string;
-  modules: Partial<Record<AppModule, ModuleLayoutDef>>;
+  modules: Partial<Record<string, ModuleLayoutDef>>;
 }
 
 const USER_LAYOUTS_KEY = "sl_user_layouts";
@@ -374,14 +379,19 @@ function resolveModuleState(module: AppModule): {
   } else {
     // A user layout wins over a registered preset if the id ever collides.
     const def =
-      useUserLayouts.getState().layouts[activeId]?.modules?.[module] ??
-      useRegistry.getState().layouts[activeId]?.modules?.[module];
+      moduleEntry(useUserLayouts.getState().layouts[activeId]?.modules, module) ??
+      moduleEntry(useRegistry.getState().layouts[activeId]?.modules, module);
     if (def) {
       rails = railsFromDef(module, def);
       floating = def.floating ?? {};
     }
   }
-  rails = pruneBottomRails(rails ?? seedDefaults(module));
+  if (!rails) {
+    const seed = seedDefaults(module);
+    rails = seed.rails;
+    floating = seed.floating;
+  }
+  rails = pruneBottomRails(rails);
   return { rails, floating, zOrder: zOrder ?? Object.keys(floating), collapsed };
 }
 
@@ -403,7 +413,8 @@ function loadModuleLayout(module: AppModule) {
 
 // ── User-layout capture + CRUD ──────────────────────────────────────────────
 
-const LAYOUT_MODULES: AppModule[] = ["library", "develop"];
+/** Every module a layout can describe: the built-ins plus registered ones. */
+const layoutModules = (): AppModule[] => moduleTabs().map((m) => m.id);
 
 /** Convert live rail/floating state into the serializable ModuleLayoutDef. */
 function moduleDefFromState(
@@ -424,10 +435,10 @@ function moduleDefFromState(
 
 /** Snapshot the current arrangement of every module. The active module is read
  *  live from the dock; the others are resolved from the active layout. */
-function captureCurrentLayout(): Partial<Record<AppModule, ModuleLayoutDef>> {
+function captureCurrentLayout(): Partial<Record<string, ModuleLayoutDef>> {
   const s = useDockStore.getState();
-  const out: Partial<Record<AppModule, ModuleLayoutDef>> = {};
-  for (const m of LAYOUT_MODULES) {
+  const out: Partial<Record<string, ModuleLayoutDef>> = {};
+  for (const m of layoutModules()) {
     const { rails, floating } = s.module === m ? s : resolveModuleState(m);
     out[m] = moduleDefFromState(rails, floating);
   }
@@ -450,13 +461,14 @@ export function addUserLayout(name?: string): string {
   return id;
 }
 
-/** Overwrite an existing user layout with the current arrangement. */
+/** Overwrite an existing user layout with the current arrangement. Entries for
+ *  modules not registered right now (their extension is off) are kept. */
 export function updateUserLayout(id: string): void {
   const existing = useUserLayouts.getState().layouts[id];
   if (!existing) return;
   persistUserLayouts({
     ...useUserLayouts.getState().layouts,
-    [id]: { ...existing, modules: captureCurrentLayout() },
+    [id]: { ...existing, modules: { ...existing.modules, ...captureCurrentLayout() } },
   });
   // The dock now matches the saved layout again, so re-select it (editing a
   // preset/layout flips the active id to Custom).

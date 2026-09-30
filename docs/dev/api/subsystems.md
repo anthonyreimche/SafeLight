@@ -33,13 +33,14 @@ The renderer runs in a Web Worker on an `OffscreenCanvas`; the main thread talks
 ```typescript
 class RenderBridge {
   setImage(image, maxEdge?, isFallbackPreview?): void;
-  setParams(params: DevelopParams): void;
+  setParams(params: DevelopParams): void;                // re-sends the live pipeline when displayTransform changes
   render(wantHistogram?, wantExtended?): void;
-  capture(params: DevelopParams): Promise<ImageBitmap>; // off-screen render for overlays
+  capture(params: DevelopParams): Promise<ImageBitmap>;   // off-screen render, pipeline resolved from params
   uploadSource(key, image, maxEdge?, bind?): void;       // budget-bounded GPU source cache
   bindSource(key): void;
   setCacheBudget(bytes): void;
-  setActivePipeline(pipeline): void;
+  setPipeline(pipeline): void;
+  syncPipeline(): void;                                   // re-sends the live photo's pipeline
   setLensProfile(profile): void;
   setAsShotTemperature(kelvin): void;
 }

@@ -21,10 +21,16 @@ import {
 } from "@/extensions/registry";
 import type { CatalogPhoto } from "@/catalog/types";
 
+export interface VisiblePhotosOptions {
+  /** Grid-filter contribution ids to leave out — for a surface that registers
+   *  a filter and must not narrow itself by it. */
+  without?: readonly string[];
+}
+
 /** Reactive `visibleList`: the grid's display order as a hook, re-derived when
  *  the catalog, filters, sort, folder or extension grid filters/sorts change.
  *  Backs the Library grid and api.catalog.useVisiblePhotos. */
-export function useVisiblePhotos(): CatalogPhoto[] {
+export function useVisiblePhotos(options?: VisiblePhotosOptions): CatalogPhoto[] {
   const photos = useCatalogStore((s) => s.photos);
   const filter = useUIStore((s) => s.filter);
   const sortField = useUIStore((s) => s.sortField);
@@ -36,6 +42,9 @@ export function useVisiblePhotos(): CatalogPhoto[] {
   const gridFilters = useGridFilters();
   const librarySorts = useLibrarySorts();
   const customCompare = librarySorts.find((s) => s.id === sortField)?.compare;
+  // Callers pass `without` as a literal; key the memo on its contents, not its identity.
+  const without = options?.without;
+  const withoutKey = without?.join("\0") ?? "";
   return useMemo(
     () =>
       visiblePhotos(
@@ -44,10 +53,11 @@ export function useVisiblePhotos(): CatalogPhoto[] {
         sortField,
         sortDirection,
         activeFolder,
-        gridFilters.map((g) => g.test),
+        gridFilters.filter((g) => !without?.includes(g.id)).map((g) => g.test),
         customCompare,
       ),
-    [photos, filter, sortField, sortDirection, activeFolder, showSubfolderPhotos, gridFilters, customCompare],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [photos, filter, sortField, sortDirection, activeFolder, showSubfolderPhotos, gridFilters, customCompare, withoutKey],
   );
 }
 

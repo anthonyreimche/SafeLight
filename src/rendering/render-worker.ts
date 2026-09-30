@@ -6,7 +6,7 @@
 import type { DevelopParams, UprightMode } from "@/catalog/types";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
-import { BUILTIN_RESOLVED } from "@/extensions/pipelines";
+import { BUILTIN_RESOLVED, withPipeline } from "@/extensions/pipelines";
 import { WebGLRenderer } from "./webgl/renderer";
 import type { HistogramData } from "./histogram";
 import { detectLines, computeUprightCorrection, type UprightResult } from "./upright";
@@ -33,8 +33,8 @@ export type WorkerRequest =
   // Render one frame with `params` to an ImageBitmap returned out-of-band (NOT
   // blitted to the display) so an extension can grab a "before" frame at the
   // current source + viewport without disturbing the live view. The live params
-  // are restored afterwards. See render-bridge.capture().
-  | { cmd: "capture"; reqId: number; params: DevelopParams }
+  // and pipeline are restored afterwards. See render-bridge.capture().
+  | { cmd: "capture"; reqId: number; params: DevelopParams; pipeline: ResolvedPipeline }
   | { cmd: "setAsShotTemperature"; kelvin: number }
   | { cmd: "setHslStyle"; range: number; smooth: number }
   | { cmd: "render"; wantHistogram?: boolean; wantExtended?: boolean }
@@ -54,6 +54,9 @@ export type WorkerRequest =
       // headless/batch render of a photo other than the live develop one uses its
       // OWN stage params instead of the active photo's.
       contributedParams?: Record<string, unknown>;
+      // The rendered photo's display transform, resolved on the main thread
+      // (the worker has no registry). Applied for THIS render only.
+      pipeline: ResolvedPipeline;
     }
   | { cmd: "setShowClipping"; mode: number }
   | { cmd: "setOutsideColor"; rgb: [number, number, number] }
@@ -91,6 +94,8 @@ export type WorkerRequest =
       quality?: number;
       // See renderThumbnail.contributedParams.
       contributedParams?: Record<string, unknown>;
+      // See renderThumbnail.pipeline.
+      pipeline: ResolvedPipeline;
     }
   | { cmd: "dispose" };
 
@@ -186,12 +191,13 @@ interface ThumbRenderRequest {
   asShotTemperature: number;
   quality?: number;
   contributedParams?: Record<string, unknown>;
+  pipeline: ResolvedPipeline;
 }
 
 // Shared tail for both thumbnail handlers (after their divergent setImage/bindSource
-// preamble): applies params + per-render stage bag, renders, restores the global
-// bag, and settles the request — including the convertToBlob rejection path — so the
-// caller's promise never hangs.
+// preamble): applies params + per-render stage bag and pipeline, renders, restores
+// the global bag and live pipeline, and settles the request — including the
+// convertToBlob rejection path — so the caller's promise never hangs.
 function finishThumbRender(tr: WebGLRenderer, msg: ThumbRenderRequest) {
   tr.setAsShotTemperature(msg.asShotTemperature);
   tr.setParams(msg.params);
@@ -201,7 +207,7 @@ function finishThumbRender(tr: WebGLRenderer, msg: ThumbRenderRequest) {
   // thumb renderer holding this photo's stage params and every later thumbnail
   // renders with the wrong photo's uniforms.
   try {
-    tr.render();
+    withPipeline(tr, msg.pipeline, latestPipeline, () => tr.render());
   } finally {
     if (hadBag) tr.setContributedParams(latestParamBag);
   }
@@ -232,8 +238,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
             // The worker can't read the preference itself (settings-store uses
             // localStorage, unavailable off the main thread), so it arrives here.
             highBitDepth: msg.highBitDepth,
-            pipeline: BUILTIN_RESOLVED,
-            stages: [],
+            // A retry (after an earlier initError) may land after setPipeline /
+            // setStages messages already updated the latest* state below —
+            // seed from them, the same as ensureThumbRenderer, so recovery
+            // doesn't silently fall back to the built-in pipeline with no
+            // extension stages.
+            pipeline: latestPipeline,
+            stages: latestStages,
           });
         } catch (err) {
           canvas = null;
@@ -241,6 +252,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           respond({ type: "initError", message: err instanceof Error ? err.message : String(err) });
           break;
         }
+        if (cacheBudgetBytes > 0) renderer.setCacheBudget(cacheBudgetBytes);
+        renderer.setContributedParams(latestParamBag);
+        renderer.setStageTextures(latestStageTextures);
         respond({ type: "ready", pipelineFloat: renderer.colorBufferFloat });
         break;
       }
@@ -284,26 +298,31 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       }
 
       case "capture": {
-        // Render `params` to a detached bitmap without touching the display
-        // canvas the main thread blits from. transferToImageBitmap() resets the
-        // offscreen, so the next live render() repaints it; restoring lastParams
-        // keeps the renderer's uniform state in sync with the live view.
+        // Render `params` with their photo's pipeline to a detached bitmap
+        // without touching the display canvas the main thread blits from.
+        // transferToImageBitmap() resets the offscreen, so the next live
+        // render() repaints it; restoring lastParams and the live pipeline keeps
+        // the renderer's state in sync with the live view.
         if (!renderer || !canvas) {
           const blank = new OffscreenCanvas(1, 1);
           respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
           break;
         }
+        const live = renderer;
+        const target = canvas;
         // A throw here would otherwise fall to the generic "error" response, which
         // carries no reqId, so the awaiting capture() would hang. Settle with the
         // blank fallback instead.
         try {
-          renderer.setParams(msg.params);
-          renderer.render();
-          const captured = canvas.transferToImageBitmap();
-          if (lastParams) renderer.setParams(lastParams);
+          const captured = withPipeline(live, msg.pipeline, latestPipeline, () => {
+            live.setParams(msg.params);
+            live.render();
+            return target.transferToImageBitmap();
+          });
+          if (lastParams) live.setParams(lastParams);
           respond({ type: "captured", reqId: msg.reqId, bitmap: captured }, [captured]);
         } catch {
-          if (lastParams) renderer.setParams(lastParams);
+          if (lastParams) live.setParams(lastParams);
           const blank = new OffscreenCanvas(1, 1);
           respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
         }

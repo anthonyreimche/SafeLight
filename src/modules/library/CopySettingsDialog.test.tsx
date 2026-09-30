@@ -177,3 +177,20 @@ describe("dismissing", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("display transform", () => {
+  it("pre-selects a photo's own pick and copies it", async () => {
+    const { user, copy, onCopy } = setup({ displayTransform: "rendering.agx" });
+    expect(box(/^Display transform/).checked).toBe(true);
+    await user.click(copy);
+    expect(copied(onCopy).params).toEqual({ displayTransform: "rendering.agx" });
+  });
+
+  it("copies 'follow the default' once ticked on a photo without a pick", async () => {
+    const { user, copy, onCopy } = setup({ exposure: 1.2 });
+    await user.click(screen.getByRole("checkbox", { name: "Show all" }));
+    await user.click(box(/^Display transform/));
+    await user.click(copy);
+    expect(copied(onCopy).params).toEqual({ exposure: 1.2, displayTransform: null });
+  });
+});

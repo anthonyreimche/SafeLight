@@ -6,17 +6,40 @@ Where extension UI mounts in the app shell. For the components you put *inside* 
 
 ## Modules
 
-Safelight has a fixed two-**module** shell — **Library** (browsing/culling) and **Develop** (editing). Extensions do *not* create new top-level modules; instead they extend the existing two through three mount mechanisms:
+Safelight ships two **modules** — **Library** (browsing/culling) and **Develop** (editing) — and an extension can register more (`registerModule`). A registered module gets a tab in the strip beside Library and Develop, its own pop-out window, its own dock layout, and its id becomes valid for `api.navigation.goTo`.
+
+```typescript
+interface ModuleContribution {
+  id: string;                 // tab key, ?detached= key, dock-layout key, goTo() value; e.g. "map"
+  label: string;              // tab label; also names the pop-out window
+  component: ComponentType;   // the main view, rendered inside the shell's main dock area;
+                              // it must fill its container
+  order?: number;             // tab position after the built-ins (default 100)
+  defaultLayout?: ModuleLayoutDef; // rails (and floating panels) seeded on first visit;
+                              // may name core panels ("core.folders", "core.filters", "core.info")
+  statusBar?: ComponentType;  // footer content
+}
+```
+
+A module id is lower-case letters, digits, `.`, `_` and `-`, starting with a letter or digit: it travels in the pop-out window's URL. `registerModule` refuses any other id with a console warning, as it refuses the built-in ids `"library"` and `"develop"`.
+
+A `defaultLayout` seeds only the panels that are registered, so a core panel the user has disabled is left out rather than shown as a placeholder. Without `defaultLayout`, the module's first-visit rails come from panels whose `defaultDock.module` is its id, as for the built-ins. A layout preset without an entry for the module resolves to these same defaults. A module's shortcut is its own: register one with `registerKeybinding` whose handler calls `navigation.goTo(id)`.
+
+The `component` is mounted only while the module is active in that window: every tab switch unmounts it, so keep anything that must survive a switch in a store or in settings rather than in component state. If the component or the status bar throws while rendering, the error is shown in its place and the top bar, tabs and Extensions button keep working, so the user can still switch modules or disable the extension.
+
+Extensions can also extend any module through three mount mechanisms:
 
 | Mechanism | Contribution | What it gives you | Where it lives |
 |---|---|---|---|
-| **Panel** | `registerPanel` | A dockable, tabbable, floatable window with your own React component | A dock rail in Library or Develop (placed via `defaultDock`) |
+| **Panel** | `registerPanel` | A dockable, tabbable, floatable window with your own React component | A dock rail in any module (placed via `defaultDock`) |
 | **Slot** | `registerSlot` | A component injected into a fixed region of core chrome | Named `SlotName` regions (toolbars, sub-bars, the canvas overlay) |
 | **Stack panel** | `registerPanel` with `slot` | A small panel hosted inside a composite stack | `"develop-right"` / `"develop-left"` |
 
-Switch the active module imperatively with `api.navigation.goTo("library" | "develop")`, and read it from `api.stores.useUIStore(s => s.activeModule)`. A panel's component is mounted whenever the panel is visible in its module; it is *not* told which module it is in — read `useUIStore` if you need to vary behavior.
+Switch the active module imperatively with `api.navigation.goTo(id)` (`ModuleId` = `"library" | "develop"` or a registered id), and read it from `api.stores.useUIStore(s => s.activeModule)`. A panel's component is mounted whenever the panel is visible in its module; it is *not* told which module it is in — read `useUIStore` if you need to vary behavior.
 
-> **Detached-window gotcha:** popped-out windows carry a `?detached=` URL param and report through `useUIStore`'s `detached` set. Gate any "only in the develop module" logic on both `activeModule` **and** the detached param, or it will misbehave in a popped-out window.
+`goTo` works from any window. In the main window it switches to the module, focuses the module's own window instead if it is popped out, and ignores (with a console warning) an id that is neither built-in nor registered. A popped-out window shows only its own module, so there `goTo` of that module does nothing, and any other id is carried out by the main window by those same rules, with the main window brought forward.
+
+> **Detached-window gotcha:** popped-out windows carry a `?detached=<module id>` URL param and report through `useUIStore`'s `detached` set. Gate any "only in the develop module" logic on both `activeModule` **and** the detached param, or it will misbehave in a popped-out window. A registered module's pop-out window shows a "waiting" placeholder until its extension has loaded there.
 
 ## Panels (`registerPanel`)
 
@@ -34,7 +57,7 @@ interface PanelContribution {
   allowBottomDock?: boolean;  // opt in to bottom rails (see below)
   defaultDock?: {             // initial placement when the user has no saved layout,
                               // and where View-menu / shortcut toggles reopen the panel
-    module: "library" | "develop";
+    module: ModuleId;          // "library" | "develop" | a registered module id
     direction: "left" | "right" | "bottom"; // "bottom" = full-width horizontal strip
     order?: number;
     width?: number;           // side-rail column width
@@ -85,11 +108,11 @@ A named dock arrangement selectable from the Layout menu.
 ```typescript
 interface LayoutContribution {
   id: string; name: string; description?: string;
-  modules?: Partial<Record<"library" | "develop", {
+  modules?: Partial<Record<string, {   // keyed by module id
     rails: { side: "left" | "right" | "bottom"; width?: number; height?: number; panels: string[] }[];
     floating?: Record<string, { x: number; y: number; width: number }>;
   }>>;
 }
 ```
 
-A layout with no `modules` resolves to the registry's `defaultDock` placements — that is what the built-in **Classic** layout does, so extension panels join it automatically.
+A layout with no `modules` resolves to the registry's `defaultDock` placements — that is what the built-in **Classic** layout does, so extension panels join it automatically. A registered module a layout has no entry for resolves to its `defaultLayout`, if it has one.

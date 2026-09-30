@@ -11,7 +11,8 @@ import { useProjectStore } from "@/project/project-store";
 import { getSettings } from "@/state/settings-store";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useWindowSync } from "@/hooks/use-window-sync";
-import { detachedModule, MODULE_LABELS } from "@/state/detach";
+import { detachedModule } from "@/state/detach";
+import { moduleLabel } from "@/extensions/registry";
 import { isDevtoolsWindow } from "@/extensions/devtools/detach";
 import { DevToolsWindow } from "@/extensions/devtools/DevToolsPanel";
 import { AppShell } from "@/ui/components/AppShell";
@@ -20,6 +21,7 @@ import { ExtensionsDialog } from "@/ui/components/ExtensionsDialog";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { LibraryView } from "@/modules/library/LibraryView";
 import { DevelopView } from "@/modules/develop/DevelopView";
+import { ModuleView } from "@/ui/components/ModuleView";
 import { WelcomeView } from "@/modules/welcome/WelcomeView";
 import { UpdateBanner } from "@/update/UpdateBanner";
 import { StorageBanner } from "@/ui/components/StorageBanner";
@@ -31,6 +33,8 @@ function renderModule(module: AppModule) {
       return <LibraryView />;
     case "develop":
       return <DevelopView />;
+    default:
+      return <ModuleView id={module} />;
   }
 }
 
@@ -88,7 +92,7 @@ export function App() {
         <AppShell module={activeModule}>
           <div className="flex flex-1 items-center justify-center text-center text-text-muted">
             <p className="text-sm">
-              {MODULE_LABELS[activeModule]} is open in a separate window.
+              {moduleLabel(activeModule)} is open in a separate window.
             </p>
           </div>
         </AppShell>

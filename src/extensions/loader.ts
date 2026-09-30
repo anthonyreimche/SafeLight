@@ -14,8 +14,14 @@
 // Uninstalling (external only) deletes both.
 
 import { create } from "zustand";
-import type { ExtensionManifest, ExtensionModule, RemoteManifest } from "./types";
-import { unregisterExtension } from "./registry";
+import type {
+  ExtensionManifest,
+  ExtensionModule,
+  ModuleId,
+  RemoteManifest,
+} from "./types";
+import { moduleEntry, unregisterExtension, useRegistry } from "./registry";
+import { useUIStore } from "@/state/ui-store";
 import { applySavedTheme } from "./themes";
 import { makeScopedAPI } from "./host";
 import { deleteExtensionSettings } from "./ext-settings";
@@ -53,6 +59,13 @@ function loadDisabled(): string[] {
 
 export const useDisabledExtensions = create<{ ids: string[] }>(() => ({
   ids: loadDisabled(),
+}));
+
+/** False until the first pass over installed plugins has finished (or was
+ *  skipped: no bridge). A detached window shows a "waiting" placeholder for a
+ *  registered module until then, and "unavailable" after. */
+export const useExternalPluginsSettled = create<{ settled: boolean }>(() => ({
+  settled: false,
 }));
 
 export const isExtensionDisabled = (id: string): boolean =>
@@ -219,6 +232,14 @@ async function enforceBansOnLoaded(): Promise<void> {
 }
 
 export async function loadExternalPlugins(): Promise<void> {
+  try {
+    await loadExternalPluginsOnce();
+  } finally {
+    useExternalPluginsSettled.setState({ settled: true });
+  }
+}
+
+async function loadExternalPluginsOnce(): Promise<void> {
   const native = window.safelightNative;
   if (!native) return; // plain-browser dev build
   let list: ExtensionManifest[] = [];
@@ -281,6 +302,27 @@ const upToDate = (version: string): ExtUpdateInfo => ({
   checkedAt: Date.now(),
 });
 
+/** The module the main window is showing, if `extensionId` contributed it. */
+function shownModuleOf(extensionId: string): ModuleId | null {
+  const active = useUIStore.getState().activeModule;
+  return moduleEntry(useRegistry.getState().modules, active)?.extensionId === extensionId
+    ? active
+    : null;
+}
+
+/** Tearing an extension down sends the main window from its module to Library
+ *  (ModuleView). Once a version of the extension has registered the module
+ *  again, go back to it, unless the user has moved on from Library since. */
+function returnToModule(module: ModuleId | null): void {
+  const ui = useUIStore.getState();
+  if (
+    module &&
+    ui.activeModule === "library" &&
+    moduleEntry(useRegistry.getState().modules, module)
+  )
+    ui.setActiveModule(module);
+}
+
 /** Drop the previous copy after a successful swap. Failing to do so is not a
  *  failed update: the next launch's sweep treats the leftover as unsettled and
  *  puts the previous version back, and the update is offered again. */
@@ -320,6 +362,7 @@ async function performInstall(spec: string, enable: boolean): Promise<ExtensionM
     store.setUpdate(id, upToDate(manifest.version));
     return manifest;
   }
+  const shown = shownModuleOf(id);
   teardown(id);
   try {
     await loadPlugin(manifest);
@@ -337,6 +380,7 @@ async function performInstall(spec: string, enable: boolean): Promise<ExtensionM
     if (restored) {
       try {
         await loadPlugin(restored);
+        returnToModule(shown);
         applySavedTheme();
         message += `; ${restored.version} was restored`;
       } catch (restoreError) {
@@ -356,6 +400,7 @@ async function performInstall(spec: string, enable: boolean): Promise<ExtensionM
     }
     throw new Error(message);
   }
+  returnToModule(shown);
   await keepSettled(id);
   applySavedTheme(); // the saved theme may belong to the extension just loaded
   store.setUpdate(id, upToDate(manifest.version));

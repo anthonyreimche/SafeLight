@@ -5,12 +5,13 @@
 
 // Tests for the preset adjustment summary helpers.
 
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import {
   DEFAULT_DEVELOP_PARAMS,
   defaultMaskAdjustments,
   type Mask,
 } from "@/catalog/types";
+import { registerPipeline, useRegistry } from "@/extensions/registry";
 import {
   summarizePreset,
   presetFields,
@@ -86,5 +87,51 @@ describe("buildPartialParams", () => {
     expect(partial.straighten).toBe(5);
     expect(partial.crop).toEqual(params.crop);
     expect(partial.transform).toEqual(params.transform);
+  });
+});
+
+describe("display transform", () => {
+  beforeEach(() => {
+    useRegistry.setState({ pipelines: {} });
+    registerPipeline("test", { id: "test.agx", name: "AgX" });
+  });
+
+  afterEach(() => useRegistry.setState({ pipelines: {} }));
+
+  it("names the transform a preset carries", () => {
+    expect(summarizePreset({ displayTransform: "test.agx" })).toContainEqual({
+      label: "Display transform",
+      value: "AgX",
+    });
+  });
+
+  it("shows the id when the transform isn't installed", () => {
+    expect(summarizePreset({ displayTransform: "gone.film" })).toContainEqual({
+      label: "Display transform",
+      value: "gone.film",
+    });
+  });
+
+  it("says nothing for a preset that follows the default", () => {
+    expect(summarizePreset({ displayTransform: null })).toEqual([]);
+  });
+
+  it("offers the group, changed only when the photo has its own pick", () => {
+    const own = presetFields({ ...DEFAULT_DEVELOP_PARAMS, displayTransform: "test.agx" });
+    expect(own.find((f) => f.id === "displayTransform")).toMatchObject({
+      label: "Display transform",
+      keys: ["displayTransform"],
+      changed: true,
+    });
+    const onDefault = presetFields({ ...DEFAULT_DEVELOP_PARAMS });
+    expect(onDefault.find((f) => f.id === "displayTransform")?.changed).toBe(false);
+  });
+
+  it("copies the pick into a preset when ticked", () => {
+    const params = { ...DEFAULT_DEVELOP_PARAMS, displayTransform: "test.agx" };
+    const fields = presetFields(params);
+    expect(buildPartialParams(params, fields, new Set(["displayTransform"]))).toEqual({
+      displayTransform: "test.agx",
+    });
   });
 });

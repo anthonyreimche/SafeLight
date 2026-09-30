@@ -7,8 +7,9 @@
 //
 // A preset stores only the keys it carries (a Partial<DevelopParams>):
 //   • summarizePreset() lists those keys for the tooltip.
-//   • presetFields() enumerates the selectable adjustments when saving, flagging
-//     which currently differ from the defaults (checked by default).
+//   • presetFields() enumerates the selectable adjustments (including the display
+//     transform) when saving, flagging which currently differ from the defaults
+//     (checked by default).
 //   • buildPartialParams() copies the chosen fields out of the live params.
 
 import {
@@ -22,6 +23,7 @@ import {
   isDefaultToneCurves,
   type DevelopParams,
 } from "@/catalog/types";
+import { useRegistry } from "@/extensions/registry";
 
 type ScalarKey = {
   [K in keyof DevelopParams]: DevelopParams[K] extends number ? K : never;
@@ -87,6 +89,12 @@ function jsonDiffers(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) !== JSON.stringify(b);
 }
 
+/** A display transform's name, or its id when the extension that registers
+ *  it isn't installed. */
+function transformName(id: string): string {
+  return useRegistry.getState().pipelines[id]?.name ?? id;
+}
+
 /** Build the list of adjustments present in `params`, for display. Only keys the
  *  preset actually carries are considered, and among those only the ones that
  *  differ from the defaults are shown (so the tooltip stays meaningful for both
@@ -104,6 +112,9 @@ export function summarizePreset(params: Partial<DevelopParams>): PresetDiff[] {
   }
 
   // Complex sub-structures → one summary line each
+  if (typeof params.displayTransform === "string") {
+    out.push({ label: "Display transform", value: transformName(params.displayTransform) });
+  }
   if (params.toneCurve && !isDefaultToneCurves(params.toneCurve)) {
     out.push({ label: "Tone curve", value: "edited" });
   }
@@ -197,6 +208,7 @@ export function presetFields(
   // Crop/transform and retouch are tied to one photo's framing and content, so
   // they're "per-image": offered only under "Show all" and never pre-checked.
   const complex: { id: string; label: string; keys: (keyof DevelopParams)[]; changed: boolean; scope?: "per-image" }[] = [
+    { id: "displayTransform", label: "Display transform", keys: ["displayTransform"], changed: params.displayTransform !== null },
     { id: "toneCurve", label: "Tone curve", keys: ["toneCurve"], changed: !isDefaultToneCurves(params.toneCurve) },
     { id: "hsl", label: "HSL", keys: ["hsl"], changed: jsonDiffers(params.hsl, defaultHSL()) },
     { id: "colorGrading", label: "Color grading", keys: ["colorGrading"], changed: jsonDiffers(params.colorGrading, defaultColorGrading()) },

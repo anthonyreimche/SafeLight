@@ -25,6 +25,12 @@ export type BroadcastMessage =
       // reflect it in the tab strip.
       type: "detach" | "attach";
       payload: { module: AppModule };
+    }
+  | {
+      // A pop-out's navigation.goTo for a module other than its own, carried
+      // out by the main window.
+      type: "navigate";
+      payload: { module: AppModule };
     };
 
 const CHANNEL_NAME = "safelight-sync";

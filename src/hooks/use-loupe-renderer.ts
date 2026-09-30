@@ -11,7 +11,7 @@ import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { useCatalogStore } from "@/state/catalog-store";
-import { usePipelineStore } from "@/extensions/pipelines";
+import { setPhotoParams, usePipelineStore } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { getExtSetting } from "@/extensions/ext-settings";
 import { getSettings } from "@/state/settings-store";
@@ -48,7 +48,8 @@ export function useLoupeRenderer(
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
-  // Pixel Peeper: re-render when the active pipeline changes.
+  // Pixel Peeper: re-render when the Preferences default changes (photos
+  // without their own display-transform pick follow it).
   const pipelineId = usePipelineStore((s) => s.activeId);
 
   // Mirror the canvas's current buffer size into state so zoom can scale it.
@@ -130,7 +131,8 @@ export function useLoupeRenderer(
           if (image.kind === "bitmap") image.bitmap.close();
         }
         renderer.setContributedParams(showBeforeRef.current ? {} : edit.paramBag);
-        renderer.setParams(
+        setPhotoParams(
+          renderer,
           showBeforeRef.current ? { ...DEFAULT_DEVELOP_PARAMS, temperature: asShotTemp } : saved,
         );
         renderer.render();
@@ -154,7 +156,8 @@ export function useLoupeRenderer(
     const renderer = rendererRef.current;
     if (!renderer) return;
     renderer.setContributedParams(showBefore ? {} : savedParamBagRef.current);
-    renderer.setParams(
+    setPhotoParams(
+      renderer,
       showBefore ? { ...DEFAULT_DEVELOP_PARAMS, temperature: asShotTemp } : savedParamsRef.current,
     );
     const id = requestAnimationFrame(() => {

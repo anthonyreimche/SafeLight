@@ -110,6 +110,11 @@ contextBridge.exposeInMainWorld("safelightNative", {
     toggle: () => ipcRenderer.invoke("devtools:toggle"),
     isOpen: () => ipcRenderer.invoke("devtools:isOpen"),
     reload: (hard) => ipcRenderer.invoke("devtools:reload", !!hard),
+    // Records the dev folder so the next launch reads its manifests' declared
+    // network origins like an installed extension's; resolves with the origins
+    // this launch's policy does not allow yet.
+    syncDevFolder: (folder) =>
+      ipcRenderer.invoke("devtools:sync-dev-folder", folder == null ? null : String(folder)),
   },
   diagnostics: {
     gpuInfo: () => ipcRenderer.invoke("diagnostics:gpuInfo"),

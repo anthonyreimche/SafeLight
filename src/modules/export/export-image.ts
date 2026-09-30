@@ -19,7 +19,7 @@ import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { getStageTextures } from "@/rendering/render-bridge";
 import { getExtSetting } from "@/extensions/ext-settings";
-import { resolveActivePipeline } from "@/extensions/pipelines";
+import { resolveDefaultPipeline, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
 import { buildExportIfds, embedExif, serializeExifTiff, type ExportIfds } from "./exif-write";
@@ -331,7 +331,7 @@ async function renderOne(
       saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
     }
     renderer.setContributedParams(saved.paramBag);
-    renderer.setParams(saved.params);
+    setPhotoParams(renderer, saved.params);
     const colorSpace = settings.colorSpace ?? "srgb";
 
     // Opt-in only: harvest the source file's EXIF once per photo — the canvas
@@ -390,13 +390,14 @@ async function renderOne(
 
 /** Create the WebGL renderer shared across a batch export/render. It bakes in
  *  the same things the live preview uses — the registered processing stages, the
- *  active pipeline, the live stage-texture bag (film LUTs, spectral tables, …)
+ *  pipeline, the live stage-texture bag (film LUTs, spectral tables, …)
  *  and the output colour space — so rendered pixels match the develop view.
  *  Returns null when a WebGL context can't be created.
  *
- *  - Stages + active pipeline: extension GPU stages (denoise, Spektrafilm) bake
- *    in with the same display transform; the default pipeline alone would (for
- *    stages like Spektrafilm) double-apply the base curve.
+ *  - Stages + pipeline: extension GPU stages (denoise, Spektrafilm) bake in,
+ *    and renderOne swaps in each photo's own display transform (the default
+ *    pipeline alone would, for stages like Spektrafilm, double-apply the base
+ *    curve).
  *  - Stage textures: without them, stages that sample uploaded textures fall
  *    back to the renderer's 1×1 black dummy and render pure black.
  *  - Output colour space: the renderer converts pixels and renderOne embeds the
@@ -409,7 +410,7 @@ function makeBatchRenderer(
   try {
     renderer = new WebGLRenderer(canvas, {
       stages: Object.values(useRegistry.getState().processingStages),
-      pipeline: resolveActivePipeline(),
+      pipeline: resolveDefaultPipeline(),
     });
   } catch {
     return null;

@@ -26,7 +26,7 @@ Actions (selected): `loadEdit(photoId)`, `setParam(key, value)`, `setToneCurve`,
 
 ### useUIStore
 
-`activeModule` (`"library" | "develop"`), `viewMode`, `gridSize`, `sortField`/`sortDirection`, `filter`, `activeFolder`, `detached: Set`. Actions: `setActiveModule`, `setViewMode`, `setSort`, `setFilter`, `clearFilters`, `setActiveFolder`, `setGridSize`, `stepGridSize`, `markDetached`/`markAttached`. `setSort` persists the choice (`sl_sort_v1`) and `setGridSize`/`stepGridSize` persist the thumbnail size (`sl_grid_size_v1`); both are restored on boot, with the settings-store defaults only seeding a fresh profile.
+`activeModule` (`ModuleId` = `"library" | "develop"` or a registered id), `viewMode`, `gridSize`, `sortField`/`sortDirection`, `filter`, `activeFolder`, `detached: Set`. Actions: `setActiveModule`, `setViewMode`, `setSort`, `setFilter`, `clearFilters`, `setActiveFolder`, `setGridSize`, `stepGridSize`, `markDetached`/`markAttached`. `setSort` persists the choice (`sl_sort_v1`) and `setGridSize`/`stepGridSize` persist the thumbnail size (`sl_grid_size_v1`); both are restored on boot, with the settings-store defaults only seeding a fresh profile.
 
 ### useSettings
 
@@ -45,7 +45,7 @@ Read imperatively with `getSettings()`; write with `updateSettings(patch)`. Keys
 | Extensions | `extensionTopic` ("safelight-extension"), `checkExtensionUpdates` (true), `autoUpdateExtensions` (false) |
 | Updates | `checkForUpdates` (true), `updateChannel` ("stable"; "all" also notifies for pre-releases) |
 
-The other stores — `usePresetsStore`, `useKeybindings`, `useThemeStore`, `useLayoutStore`, `usePipelineStore` — back the presets list, rebindable actions, active theme, dock layouts, and active pipeline respectively; prefer the imperative wrappers (`api.themes.apply`, `api.layouts.apply`, `api.pipelines.apply`, `api.keybindings.getBinding`) over poking these directly.
+The other stores — `usePresetsStore`, `useKeybindings`, `useThemeStore`, `useLayoutStore`, `usePipelineStore` — back the presets list, rebindable actions, active theme, dock layouts, and the default pipeline respectively (a photo's own pick is `params.displayTransform` in `useDevelopStore`; `api.pipelines.effectiveId` resolves it); prefer the imperative wrappers (`api.themes.apply`, `api.layouts.apply`, `api.pipelines.apply`, `api.keybindings.getBinding`) over poking these directly.
 
 ## Brushes, masks & retouch (interactive Develop tools)
 

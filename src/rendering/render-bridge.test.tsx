@@ -12,6 +12,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RenderBridge } from "./render-bridge";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
+import { normalizeParams } from "@/catalog/types";
+import { registerPipeline, useRegistry } from "@/extensions/registry";
+import { DEFAULT_PIPELINE, usePipelineStore } from "@/extensions/pipelines";
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -149,6 +152,82 @@ describe("RenderBridge init recovery", () => {
     const seen: string[] = [];
     bridge.setOnAvailability((availability) => seen.push(availability));
     expect(seen).toEqual(["retrying"]);
+    bridge.dispose();
+  });
+});
+
+describe("RenderBridge display transform", () => {
+  const AGX = { id: "test.agx", name: "AgX", glsl: "vec3 pipelineToDisplay(vec3 lin) { return lin; }" };
+
+  beforeEach(() => {
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+    useRegistry.setState({ pipelines: {} });
+    registerPipeline("core", { id: DEFAULT_PIPELINE, name: "Built-in" });
+    registerPipeline("test", AGX);
+    usePipelineStore.setState({ activeId: DEFAULT_PIPELINE });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useRegistry.setState({ pipelines: {} });
+    usePipelineStore.setState({ activeId: DEFAULT_PIPELINE });
+  });
+
+  const livePipelines = (worker: FakeWorker) =>
+    worker.posted.flatMap((m) => (m.cmd === "setPipeline" ? [m.pipeline.id] : []));
+
+  it("switches the live pipeline to the photo's pick, once per change", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setParams(normalizeParams({ displayTransform: AGX.id }));
+    bridge.setParams(normalizeParams({ displayTransform: AGX.id, exposure: 1 }));
+    expect(livePipelines(worker)).toEqual([AGX.id]);
+
+    bridge.setParams(normalizeParams({}));
+    expect(livePipelines(worker)).toEqual([AGX.id, DEFAULT_PIPELINE]);
+    bridge.dispose();
+  });
+
+  it("re-resolves a photo without a pick when the default changes", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setParams(normalizeParams({}));
+    usePipelineStore.setState({ activeId: AGX.id });
+    bridge.syncPipeline();
+    expect(livePipelines(worker)).toEqual([DEFAULT_PIPELINE, AGX.id]);
+    bridge.dispose();
+  });
+
+  it("captures and renders thumbnails with the pick of the params they carry", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    const agx = normalizeParams({ displayTransform: AGX.id });
+    void bridge.capture(agx);
+    void bridge.renderThumbnailFromSource({
+      requestId: "t1",
+      key: "k",
+      params: agx,
+      asShotTemperature: 5000,
+      maxEdge: 256,
+    });
+    bridge.renderThumbnail({
+      requestId: "t2",
+      image: { kind: "srgb16", data: new Uint16Array(4), width: 1, height: 1 },
+      params: normalizeParams({}),
+      asShotTemperature: 5000,
+      maxEdge: 256,
+    });
+    const sent = worker.posted.flatMap((m) =>
+      m.cmd === "capture" || m.cmd === "renderThumbnailFromSource" || m.cmd === "renderThumbnail"
+        ? [[m.cmd, m.pipeline.id]]
+        : [],
+    );
+    expect(sent).toEqual([
+      ["capture", AGX.id],
+      ["renderThumbnailFromSource", AGX.id],
+      ["renderThumbnail", DEFAULT_PIPELINE],
+    ]);
     bridge.dispose();
   });
 });

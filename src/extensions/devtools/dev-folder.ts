@@ -14,6 +14,12 @@
 // Unlike installed plugins (served from app://__plugins__/), a dev folder is an
 // arbitrary path, so we read the bundle bytes over the fs bridge and import them
 // from a blob: URL (allowed by the renderer CSP's `script-src ... blob:`).
+//
+// Network access works as it does for an installed extension: the main process
+// reads the folder's manifests at launch for their declared permissions.network
+// origins (electron/extension-origins.cjs), so the folder is recorded with it
+// (syncFolder) and a new declaration waits on a restart, which the Dev tab and
+// Preferences ▸ Developer Tools say.
 
 import { create } from "zustand";
 import type { ExtensionManifest, ExtensionModule } from "../types";
@@ -47,6 +53,9 @@ interface DevFolderState {
   scanning: boolean;
   /** Folder-level error (e.g. the folder couldn't be listed). */
   error: string | null;
+  /** Network origins the folder's manifests declare that the running app's
+   *  policy does not allow: they take effect at the next launch. */
+  pendingOrigins: string[];
 }
 
 export const useDevFolder = create<DevFolderState>(() => ({
@@ -54,6 +63,7 @@ export const useDevFolder = create<DevFolderState>(() => ({
   items: [],
   scanning: false,
   error: null,
+  pendingOrigins: [],
 }));
 
 // Live module instances + their blob URLs, keyed by extension id, so a rescan
@@ -92,6 +102,23 @@ function unload(id: string): void {
 
 function unloadAll(): void {
   for (const id of [...loaded.keys()]) unload(id);
+}
+
+/** Record the folder with the main process, which reads the manifests there at
+ *  the next launch for their declared network origins — the path an installed
+ *  extension's declaration takes — and learn which of those origins the
+ *  running launch's policy still lacks. */
+async function syncFolder(folder: string | null): Promise<void> {
+  const sync = window.safelightNative?.devtools?.syncDevFolder;
+  if (!sync) return;
+  try {
+    const { pending } = await sync(folder);
+    // A folder chosen meanwhile has its own sync in flight.
+    if (folder !== useDevFolder.getState().folder) return;
+    useDevFolder.setState({ pendingOrigins: pending });
+  } catch (e) {
+    console.warn("[dev-folder] could not record the folder for the network policy:", e);
+  }
 }
 
 /** Read + activate one extension folder. Throws on any failure (no manifest,
@@ -146,6 +173,7 @@ export async function scanDevFolder(): Promise<void> {
   const gen = ++scanGen;
   const folder = useDevFolder.getState().folder;
   const fs = privilegedFs();
+  void syncFolder(folder);
   unloadAll(); // always start from a clean slate
   if (!folder) {
     useDevFolder.setState({ items: [], scanning: false, error: null });
@@ -250,6 +278,8 @@ export async function reloadDevExtension(dir: string): Promise<void> {
   if (idx >= 0) items[idx] = next;
   else items.push(next);
   useDevFolder.setState({ items });
+  // A rebuilt manifest may declare a new origin.
+  void syncFolder(useDevFolder.getState().folder);
 }
 
 /** Set (or clear with null) the dev folder. Persisted to the Developer Tools
@@ -284,6 +314,7 @@ export function initDevFolder(): void {
     void scanDevFolder();
   });
   if (folder) void scanDevFolder();
+  else void syncFolder(null);
 }
 
 /** Unload every dev extension and stop watching. Called from deactivate() when
@@ -294,5 +325,7 @@ export function teardownDevFolder(): void {
   unsubscribe?.();
   unsubscribe = null;
   unloadAll();
-  useDevFolder.setState({ items: [], scanning: false, error: null });
+  useDevFolder.setState({ items: [], scanning: false, error: null, pendingOrigins: [] });
+  // The folder's declarations leave the policy with the extensions themselves.
+  void syncFolder(null);
 }

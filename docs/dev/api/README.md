@@ -25,6 +25,7 @@ interface SafelightAPI {
   registerPanel(c: PanelContribution): void;
   registerTheme(c: ThemeContribution): void;
   registerLayout(c: LayoutContribution): void;
+  registerModule(c: ModuleContribution): void;                // a top-level module beside Library/Develop
   registerSliderIcon(c: SliderIconContribution): void;
   registerPipeline(c: PipelineContribution): void;            // display transform
   registerProcessingStage(c: ProcessingStageContribution): void; // GPU stage
@@ -59,9 +60,12 @@ interface SafelightAPI {
   dock:        { togglePanel(id: string): void };
   themes:      { apply(id: string): void };
   layouts:     { apply(id: string): void };
-  pipelines:   { apply(id: string): void };
+  pipelines: {
+    apply(id: string): void;                                  // sets the Preferences default, followed by photos without their own pick
+    effectiveId(displayTransform: string | null): string;    // the transform a photo renders with: its pick, else the default, else the built-in
+  };
   preferences: { open(sectionId?: string): void; close(): void; toggle(): void };
-  navigation:  { goTo(module: "library" | "develop"): void };
+  navigation:  { goTo(module: ModuleId): void };              // "library" | "develop" | a registered module id
   keybindings: { getBinding(actionId: string): string };
 
   // ── Develop-canvas integration (for overlay & tool extensions) ─────────
@@ -86,9 +90,10 @@ All contributions are tagged with the calling extension's `extensionId` and swep
 |---|---|
 | `settings` | `get(key, fallback)` / `set(key, value)` / `onChange(cb)` — persisted per-extension (kept on disable, deleted on uninstall) |
 | `dock` | `togglePanel(id)` |
-| `themes` / `layouts` / `pipelines` | `apply(id)` |
+| `themes` / `layouts` | `apply(id)` |
+| `pipelines` | `apply(id)` — sets the Preferences default / `effectiveId(displayTransform)` — the transform a photo renders with |
 | `preferences` | `open(sectionId?)` / `close()` / `toggle()` — `sectionId` deep-links to a core section or an extension id |
-| `navigation` | `goTo("library" \| "develop")` |
+| `navigation` | `goTo(id)` (`ModuleId` = `"library" \| "develop"` or a registered id) |
 | `keybindings` | `getBinding(actionId)` — current combo for any action (built-in or extension) |
 
 In the desktop build, `window.safelightNative` exposes a locked-down native bridge (plugin host, updater, GitHub proxy, path-based filesystem, diagnostics) — feature-detect it, as it's absent in the browser. See [Subsystems → Electron bridge](subsystems.md#electron-bridge-windowsafelightnative).

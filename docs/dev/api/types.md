@@ -70,6 +70,8 @@ interface DevelopParams {
   // Local
   masks;               // Mask[], ≤ MAX_MASKS (8); ≤ MAX_MASK_COMPONENTS (16) components total
   retouch;             // RetouchSpot[], ≤ MAX_RETOUCH (16); ≤ MAX_RETOUCH_BRUSH (4) brush-shaped
+  // Rendering
+  displayTransform;    // display transform picked for this photo, or null to follow the Preferences default
 }
 ```
 

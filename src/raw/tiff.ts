@@ -27,6 +27,7 @@ export const TIFF_TAG = {
   CFARepeatPatternDim: 0x828d,
   CFAPattern: 0x828e,
   CFAPlaneColor: 0xc616,
+  LinearizationTable: 0xc618,
   BlackLevel: 0xc61a,
   WhiteLevel: 0xc61d,
   AsShotNeutral: 0xc628,

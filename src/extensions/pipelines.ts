@@ -4,18 +4,22 @@
 // be preserved in derived versions.
 
 // Render-pipeline engine: extensions register display transforms (tone
-// mappers) through the registry; the active choice is persisted and shared
-// across windows like themes. The WebGLRenderer reads the resolved pipeline
-// on every render and swaps to a cached program when it changes.
+// mappers) through the registry. Each photo picks one in its develop params
+// (`displayTransform`); a photo without a pick follows the default chosen in
+// Preferences, which is persisted and shared across windows like themes.
+// Renderers are handed the resolved pipeline of the photo they draw and swap
+// to a cached program when it changes.
 
 import { create } from "zustand";
-import { useRegistry } from "./registry";
+import type { DevelopParams } from "@/catalog/types";
+import { useRegistry, type RegisteredPipeline } from "./registry";
 
 const PIPELINE_KEY = "sl_pipeline";
-/** Resolution fallback when nothing (or a missing id) is selected: the stock
- *  Safelight transform baked into the fragment shader. */
+/** The stock Safelight transform baked into the fragment shader: the last
+ *  fallback when neither a photo's pick nor the default is registered. */
 export const DEFAULT_PIPELINE = "core.pipeline";
 
+/** The Preferences default, followed by photos without their own pick. */
 export const usePipelineStore = create<{ activeId: string }>(() => ({
   activeId: DEFAULT_PIPELINE,
 }));
@@ -37,37 +41,81 @@ export const BUILTIN_RESOLVED: ResolvedPipeline = {
   sig: "",
 };
 
-// resolveActivePipeline runs on every renderer frame; memoize on the two
-// store references so the steady-state cost is two getState calls and two
-// identity compares (no string building).
-let memo: ResolvedPipeline = BUILTIN_RESOLVED;
-let memoId = "";
-let memoReg: unknown = null;
-
-/** Active pipeline, falling back to the built-in transform when the selected
- *  id isn't registered (e.g. its extension was disabled). */
-export function resolveActivePipeline(): ResolvedPipeline {
-  const id = usePipelineStore.getState().activeId;
+/** The pipeline id a photo's `displayTransform` renders with: its own pick
+ *  while registered, else the Preferences default while registered, else the
+ *  built-in. */
+export function effectivePipelineId(displayTransform: string | null): string {
   const reg = useRegistry.getState().pipelines;
-  if (memoId === id && memoReg === reg) return memo;
-  const c = reg[id];
-  memo = !c
-    ? BUILTIN_RESOLVED
-    : c.glsl
-      ? {
-          id,
-          glsl: c.glsl,
-          skipBaseCurve: c.skipBaseCurve ?? false,
-          sig: `${id}\n${c.glsl}`,
-        }
-      : c.skipBaseCurve
-        ? { id, glsl: null, skipBaseCurve: true, sig: `${id}\n` }
-        : BUILTIN_RESOLVED;
-  memoId = id;
-  memoReg = reg;
-  return memo;
+  if (displayTransform && reg[displayTransform]) return displayTransform;
+  const fallback = usePipelineStore.getState().activeId;
+  return reg[fallback] ? fallback : DEFAULT_PIPELINE;
 }
 
+function build(id: string, c: RegisteredPipeline | undefined): ResolvedPipeline {
+  if (!c) return BUILTIN_RESOLVED;
+  if (c.glsl) {
+    return { id, glsl: c.glsl, skipBaseCurve: c.skipBaseCurve ?? false, sig: `${id}\n${c.glsl}` };
+  }
+  return c.skipBaseCurve ? { id, glsl: null, skipBaseCurve: true, sig: `${id}\n` } : BUILTIN_RESOLVED;
+}
+
+// Resolution runs per render request; cache per id so the steady state is a
+// map hit, and drop the cache whenever the registry's pipelines change.
+const resolved = new Map<string, ResolvedPipeline>();
+let resolvedFrom: unknown = null;
+
+/** The pipeline a photo with this `displayTransform` renders with. */
+export function resolvePipelineFor(displayTransform: string | null): ResolvedPipeline {
+  const reg = useRegistry.getState().pipelines;
+  if (resolvedFrom !== reg) {
+    resolved.clear();
+    resolvedFrom = reg;
+  }
+  const id = effectivePipelineId(displayTransform);
+  let p = resolved.get(id);
+  if (!p) {
+    p = build(id, reg[id]);
+    resolved.set(id, p);
+  }
+  return p;
+}
+
+/** The Preferences default's pipeline — what a photo without a pick uses. */
+export function resolveDefaultPipeline(): ResolvedPipeline {
+  return resolvePipelineFor(null);
+}
+
+/** The part of a renderer that takes one photo's look. */
+export interface PhotoRenderTarget {
+  setActivePipeline(pipeline: ResolvedPipeline): void;
+  setParams(params: DevelopParams): void;
+}
+
+/** Hand a renderer one photo's params together with the display transform
+ *  they pick, so no render path can draw a photo with another's transform. */
+export function setPhotoParams(target: PhotoRenderTarget, params: DevelopParams): void {
+  target.setActivePipeline(resolvePipelineFor(params.displayTransform));
+  target.setParams(params);
+}
+
+/** Run `render` with `pipeline` swapped in, then put `restore` back, even if
+ *  the render throws, so a one-off render never leaves the renderer on
+ *  another photo's transform. */
+export function withPipeline<T>(
+  target: Pick<PhotoRenderTarget, "setActivePipeline">,
+  pipeline: ResolvedPipeline,
+  restore: ResolvedPipeline,
+  render: () => T,
+): T {
+  target.setActivePipeline(pipeline);
+  try {
+    return render();
+  } finally {
+    target.setActivePipeline(restore);
+  }
+}
+
+/** Set the Preferences default (see usePipelineStore). */
 export function applyPipeline(id: string): void {
   usePipelineStore.setState({ activeId: id });
   try {
