@@ -31,6 +31,8 @@ Reinstalling from GitHub on every change is slow. Instead, point Safelight at a 
 
 The Dev tab shows each discovered extension's load status; a failed load shows the error inline. The configured path lives in the Developer Tools extension's own settings, so disabling that extension unloads every dev extension and forgets the path.
 
+Network access works the same way as for an installed extension: the origins a dev extension declares in `permissions.network` are read from the folder when Safelight starts and added to the app's content-security policy, so choosing a folder or adding a declaration needs one restart. Until then those requests are refused (a failed fetch, blank map tiles) while everything else runs; the Dev tab and Preferences ▸ Developer Tools list the origins waiting on the restart.
+
 ## Common load errors
 
 - **`safelight.json is missing 'id' or 'main'`** — both are required; check the manifest path and JSON validity.

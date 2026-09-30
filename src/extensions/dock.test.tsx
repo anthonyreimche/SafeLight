@@ -12,7 +12,7 @@
 // what these tests pin down is that whatever arrangement a drag produced comes
 // back unchanged.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
@@ -21,11 +21,18 @@ import {
   applyDockLayout,
   toggleDockPanel,
   toggleDockPanelFloating,
+  updateUserLayout,
   useDockStore,
   useUserLayouts,
   CUSTOM_LAYOUT,
 } from "./dock";
-import { registerPanel, useRegistry } from "./registry";
+import {
+  registerLayout,
+  registerModule,
+  registerPanel,
+  unregisterExtension,
+  useRegistry,
+} from "./registry";
 
 const LAYOUT_KEY = "sl_dock_layout_v4:develop";
 
@@ -42,7 +49,7 @@ function panel(id: string, extra: Parameters<typeof registerPanel>[1] | object =
 }
 
 /** Mount the dock for a module — the app's boot path into loadModuleLayout. */
-function boot(module: "library" | "develop" = "develop") {
+function boot(module: string = "develop") {
   const view = render(<DockHost module={module}>{null}</DockHost>);
   return { close: () => view.unmount(), view };
 }
@@ -73,7 +80,7 @@ function rails() {
 
 beforeEach(() => {
   localStorage.clear();
-  useRegistry.setState({ panels: {} });
+  useRegistry.setState({ panels: {}, modules: {}, layouts: {} });
   useUserLayouts.setState({ layouts: {} });
   useDockStore.setState({
     module: null,
@@ -399,5 +406,168 @@ describe("reopening a panel", () => {
       { id: expect.any(String), side: "bottom", width: 280, height: 112, panels: ["ext.strip"] },
     ]);
     close();
+  });
+});
+
+describe("a panel that throws while rendering", () => {
+  it("shows its crash in its own body while the rest of the dock renders", () => {
+    // React still logs an error a boundary caught.
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    panel("ext.bad", {
+      component: () => {
+        throw new Error("boom");
+      },
+      defaultDock: { module: "develop", direction: "left", order: 1 },
+    });
+    panel("ext.good", {
+      component: () => <p>still here</p>,
+      defaultDock: { module: "develop", direction: "left", order: 2 },
+    });
+    const { close, view } = boot();
+    expect(view.getByText('Panel "ext.bad" crashed: boom').className).toBe(
+      "p-3 text-[11px] text-red-400",
+    );
+    expect(view.getByText("still here")).toBeTruthy();
+    close();
+    error.mockRestore();
+  });
+});
+
+describe("registered modules", () => {
+  const mapLayout = {
+    rails: [
+      { side: "left" as const, width: 240, panels: ["core.folders"] },
+      { side: "right" as const, width: 280, panels: ["ext.track"] },
+      { side: "bottom" as const, height: 112, panels: ["ext.strip"] },
+    ],
+  };
+
+  function registerMap() {
+    panel("core.folders");
+    panel("ext.track");
+    panel("ext.strip", { allowBottomDock: true, fill: true });
+    registerModule("test-ext", {
+      id: "map",
+      label: "Map",
+      component: Empty,
+      defaultLayout: mapLayout,
+    });
+  }
+
+  it("seeds a registered module's rails from its defaultLayout", () => {
+    registerMap();
+    const { close } = boot("map");
+    expect(rails().map((r) => [r.side, r.panels])).toEqual([
+      ["left", ["core.folders"]],
+      ["right", ["ext.track"]],
+      ["bottom", ["ext.strip"]],
+    ]);
+    expect(rails().find((r) => r.side === "bottom")?.height).toBe(112);
+    close();
+  });
+
+  it("resolves a layout preset without an entry for the module to its defaultLayout", () => {
+    registerMap();
+    registerLayout("test-ext", {
+      id: "test.preset",
+      name: "Preset",
+      modules: { develop: { rails: [{ side: "left", panels: ["ext.track"] }] } },
+    });
+    applyDockLayout("test.preset");
+    const { close } = boot("map");
+    expect(rails().map((r) => [r.side, r.panels])).toEqual([
+      ["left", ["core.folders"]],
+      ["right", ["ext.track"]],
+      ["bottom", ["ext.strip"]],
+    ]);
+    close();
+  });
+
+  it("opens the panels a defaultLayout floats, as a layout preset does", () => {
+    panel("ext.track");
+    panel("ext.notes");
+    registerModule("test-ext", {
+      id: "map",
+      label: "Map",
+      component: Empty,
+      defaultLayout: {
+        rails: [{ side: "right", width: 280, panels: ["ext.track"] }],
+        floating: { "ext.notes": { x: 40, y: 60, width: 300 } },
+      },
+    });
+    const { close } = boot("map");
+    expect(useDockStore.getState().floating).toEqual({
+      "ext.notes": { x: 40, y: 60, width: 300 },
+    });
+    expect(useDockStore.getState().zOrder).toEqual(["ext.notes"]);
+    expect(useDockStore.getState().open).toEqual(["ext.track", "ext.notes"]);
+    close();
+  });
+
+  it("seeds only the defaultLayout panels that are registered", () => {
+    // core.folders, core.filters and core.info can each be disabled.
+    panel("ext.track");
+    registerModule("test-ext", {
+      id: "map",
+      label: "Map",
+      component: Empty,
+      defaultLayout: {
+        rails: [
+          { side: "left", width: 240, panels: ["core.folders", "core.filters"] },
+          { side: "right", width: 280, panels: ["core.info", "ext.track"] },
+        ],
+        floating: { "core.info": { x: 40, y: 60, width: 300 } },
+      },
+    });
+    const { close } = boot("map");
+    expect(rails().map((r) => [r.side, r.panels])).toEqual([["right", ["ext.track"]]]);
+    expect(useDockStore.getState().floating).toEqual({});
+    expect(useDockStore.getState().open).toEqual(["ext.track"]);
+    close();
+  });
+
+  it("falls back to defaultDock placements for a module without a defaultLayout", () => {
+    panel("ext.side", { defaultDock: { module: "map", direction: "right", width: 200 } });
+    registerModule("test-ext", { id: "map", label: "Map", component: Empty });
+    const { close } = boot("map");
+    expect(rails().map((r) => [r.side, r.panels])).toEqual([["right", ["ext.side"]]]);
+    close();
+  });
+
+  it("never takes a prototype key for a saved layout's module entry", () => {
+    addUserLayout("Mine");
+    const { close } = boot("constructor");
+    expect(rails()).toEqual([]);
+    close();
+  });
+
+  it("captures a registered module in a saved user layout", () => {
+    registerMap();
+    const { close } = boot("map");
+    const id = addUserLayout("Mine");
+    const captured = useUserLayouts.getState().layouts[id]?.modules?.map;
+    expect(captured?.rails.map((r) => r.panels)).toEqual([
+      ["core.folders"],
+      ["ext.track"],
+      ["ext.strip"],
+    ]);
+    close();
+  });
+
+  it("keeps a module's entry when a layout is updated while its extension is off", () => {
+    panel("ext.track");
+    registerModule("map-ext", {
+      id: "map",
+      label: "Map",
+      component: Empty,
+      defaultLayout: { rails: [{ side: "right", width: 280, panels: ["ext.track"] }] },
+    });
+    const id = addUserLayout("Mine");
+    const mapEntry = useUserLayouts.getState().layouts[id]?.modules?.map;
+    expect(mapEntry).toBeDefined();
+
+    unregisterExtension("map-ext");
+    updateUserLayout(id);
+    expect(useUserLayouts.getState().layouts[id]?.modules?.map).toEqual(mapEntry);
   });
 });

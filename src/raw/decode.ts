@@ -21,7 +21,13 @@ import {
   type Ifd,
   type RawIfdInfo,
 } from "./tiff";
-import { developRawPlane, developRawPlaneFloat, unpackSamples } from "./pixels";
+import {
+  developRawPlane,
+  developRawPlaneFloat,
+  linearizeSamples,
+  unpackSamples,
+  type DevelopOptions,
+} from "./pixels";
 import { getLibRaw } from "./libraw";
 import { decodeRawFloatViaLibRaw } from "./libraw-wasm-adapter";
 
@@ -62,25 +68,9 @@ export async function decodeRawToFloat(
     const reader = new TiffReader(buffer);
     const info = findRawIfd(reader);
     if (!info || info.compression !== COMPRESSION.None) return null;
-    const strips = readStrips(reader, info.ifd);
-    if (!strips) return null;
-    const samples = unpackPlane(
-      strips,
-      info.bitsPerSample,
-      info.width,
-      info.height,
-      reader.le,
-    );
-    if (samples.length < info.width * info.height) return null;
-    const { black, white } = readLevels(reader, info.ifd, info.bitsPerSample);
-    const data = developRawPlaneFloat(samples, {
-      width: info.width,
-      height: info.height,
-      black,
-      white,
-      cfa: readCFA(reader, info.ifd),
-      wb: readWhiteBalance(reader),
-    });
+    const plane = readSensorPlane(reader, info);
+    if (!plane) return null;
+    const data = developRawPlaneFloat(plane.samples, plane.options);
     return { data, width: info.width, height: info.height, oriented: false };
   } catch {
     return null;
@@ -131,23 +121,54 @@ async function developUncompressed(
   reader: TiffReader,
   info: RawIfdInfo,
 ): Promise<ImageBitmap | null> {
+  const plane = readSensorPlane(reader, info);
+  if (!plane) return null;
+  const rgba = developRawPlane(plane.samples, plane.options);
+  return rgbaToBitmap(rgba, info.width, info.height);
+}
+
+interface SensorPlane {
+  samples: Uint16Array;
+  options: DevelopOptions;
+}
+
+// The raw IFD's samples in linear sensor units, with the levels and colour
+// data that develop them. A DNG may store its samples through a
+// LinearizationTable — the stored code indexes the table, and BlackLevel and
+// WhiteLevel are given in the table's output units. The Leica M8 keeps 8-bit
+// codes for a 14-bit sensor this way; scaling the codes themselves against
+// WhiteLevel leaves every sample within 2% of black.
+function readSensorPlane(reader: TiffReader, info: RawIfdInfo): SensorPlane | null {
   const { ifd, width, height, bitsPerSample } = info;
   const strips = readStrips(reader, ifd);
   if (!strips) return null;
-
   const samples = unpackPlane(strips, bitsPerSample, width, height, reader.le);
   if (samples.length < width * height) return null;
 
-  const { black, white } = readLevels(reader, ifd, bitsPerSample);
-  const rgba = developRawPlane(samples, {
-    width,
-    height,
-    black,
-    white,
-    cfa: readCFA(reader, ifd),
-    wb: readWhiteBalance(reader),
-  });
-  return rgbaToBitmap(rgba, width, height);
+  const table = readLinearizationTable(reader, ifd);
+  if (table) linearizeSamples(samples, table);
+  // Without a WhiteLevel, white is the top of whatever space the samples are
+  // in: the table's last entry, else the full code range.
+  const defaultWhite = table ? table[table.length - 1] : (1 << bitsPerSample) - 1;
+  const { black, white } = readLevels(reader, ifd, defaultWhite);
+  return {
+    samples,
+    options: {
+      width,
+      height,
+      black,
+      white,
+      cfa: readCFA(reader, ifd),
+      wb: readWhiteBalance(reader),
+    },
+  };
+}
+
+function readLinearizationTable(reader: TiffReader, ifd: Ifd): number[] | undefined {
+  const e = ifd.get(TIFF_TAG.LinearizationTable);
+  if (!e) return undefined;
+  const table = reader.values(e);
+  return table.length ? table : undefined;
 }
 
 // Concatenate all strips of an IFD into one contiguous byte buffer.
@@ -212,7 +233,7 @@ function readCFA(
 function readLevels(
   reader: TiffReader,
   ifd: Ifd,
-  bits: number,
+  defaultWhite: number,
 ): { black: number; white: number } {
   let black = 0;
   const blackE = ifd.get(TIFF_TAG.BlackLevel);
@@ -223,7 +244,7 @@ function readLevels(
   let white = 0;
   const whiteE = ifd.get(TIFF_TAG.WhiteLevel);
   if (whiteE) white = reader.values(whiteE)[0] ?? 0;
-  if (!white) white = (1 << bits) - 1;
+  if (!white) white = defaultWhite;
   return { black, white };
 }
 

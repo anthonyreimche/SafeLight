@@ -48,7 +48,7 @@ import {
 } from "../color-space";
 import {
   BUILTIN_RESOLVED,
-  resolveActivePipeline,
+  resolveDefaultPipeline,
   type ResolvedPipeline,
 } from "@/extensions/pipelines";
 
@@ -821,7 +821,7 @@ export class WebGLRenderer {
 
     this.haveColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
 
-    const p = this.injectedPipeline ?? resolveActivePipeline();
+    const p = this.injectedPipeline ?? resolveDefaultPipeline();
     const { injection, sig: sSig, bindings, textureBindings, prepass, hasNoiseReduction } = buildStageInjection(
       this.injectedStages ?? undefined,
     );
@@ -1762,7 +1762,7 @@ export class WebGLRenderer {
   }
 
   private syncPipeline() {
-    const p = this.injectedPipeline ?? resolveActivePipeline();
+    const p = this.injectedPipeline ?? resolveDefaultPipeline();
     const { injection, sig: sSig, bindings, textureBindings, prepass, hasNoiseReduction } = buildStageInjection(
       this.injectedStages ?? undefined,
     );

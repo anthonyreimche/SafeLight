@@ -21,7 +21,7 @@ Safelight is a React + TypeScript application with a WebGL2 image pipeline, ship
 ```
 electron/             # Desktop shell: app:// scheme, COOP/COEP, GPU flags, plugin host
 src/
-├── App.tsx            # Module router (Library / Develop) + detached windows
+├── App.tsx            # Module router (Library, Develop, registered modules) + detached windows
 ├── main.tsx           # React bootstrap; boots the extension host before first render
 ├── catalog/           # Photo records, EXIF, DevelopParams, storage interface, limits
 ├── project/           # Project folders: scan, .safelight/ storage, recents
@@ -83,7 +83,7 @@ Decoded previews are cached (IndexedDB, or `<project>/.safelight/raw/` in a proj
 A single `WebGLRenderer` (`rendering/webgl/renderer.ts`) serves the Develop canvas, the loupe, thumbnail regeneration, and export. It does **not** run on the main thread:
 
 - **`render-worker.ts`** owns the `WebGLRenderer` on an `OffscreenCanvas` inside a Web Worker. It keeps a full-res develop renderer plus a low-res thumbnail renderer, the current `DevelopParams`, the active display pipeline, and an LRU GPU source cache.
-- **`render-bridge.ts`** is the main-thread handle (`RenderBridge`): `setImage`, `setParams`, `render`, `capture` (off-screen render of arbitrary params, used by overlay extensions), `uploadSource`/`bindSource` (GPU source cache), `setActivePipeline`, `setLensProfile`, `setAsShotTemperature`. The `useDevelopRenderer` hook drives it and blits the returned `ImageBitmap` to a 2D display canvas.
+- **`render-bridge.ts`** is the main-thread handle (`RenderBridge`): `setImage`, `setParams` (re-sends the live pipeline when `displayTransform` changes), `render`, `capture` (off-screen render of arbitrary params, used by overlay extensions; carries the pipeline resolved from its own params, like the thumbnail renders), `uploadSource`/`bindSource` (GPU source cache), `setPipeline`/`syncPipeline` (re-sends the live photo's pipeline), `setLensProfile`, `setAsShotTemperature`. The `useDevelopRenderer` hook drives it and blits the returned `ImageBitmap` to a 2D display canvas.
 
 What the renderer does per frame:
 
@@ -97,7 +97,7 @@ The histogram is computed from the rendered output, optionally on every frame (`
 
 There are two GPU extension points:
 
-- **Render pipelines** (`registerPipeline`) supply a GLSL `vec3 pipelineToDisplay(vec3 lin)` (scene-linear → display) that is compiled into the renderer's program. The built-in transform plus any extension transforms appear in **Preferences ▸ Rendering ▸ Display transform** and apply everywhere the pipeline renders (develop, loupe, thumbnails, export). This is the simplest way to ship a whole-image tone mapper.
+- **Render pipelines** (`registerPipeline`) supply a GLSL `vec3 pipelineToDisplay(vec3 lin)` (scene-linear → display) that is compiled into the renderer's program. Transforms are picked per photo from the display transform menu in Develop's bottom bar; **Preferences ▸ Rendering ▸ Default display transform** covers photos without a pick. A photo's transform applies everywhere it renders (develop, loupe, thumbnails, export). This is the simplest way to ship a whole-image tone mapper.
 - **Processing stages** (`registerProcessingStage`) are phase-ordered GPU stages compiled into the develop shader by the stage compiler (`rendering/webgl/shader-compiler.ts`). The path is live: all phases compile in, stages take custom uniforms and bind textures/LUTs, support multi-pass ping-pong pre-passes, and include a special `geometry` phase that warps source coordinates before sampling. Reach for a stage when you need phase ordering, uniforms, multiple passes, or coordinate warping.
 
 ## State and Multi-Window
@@ -111,7 +111,7 @@ Zustand stores back each domain (`state/`):
 - `keybindings-store` — rebindable actions with module scoping.
 - `presets-store` — saved develop presets.
 
-Library and Develop can detach into separate OS windows (`state/detach.ts`). Stores synchronize across windows via BroadcastChannel (`state/broadcast.ts`) for catalog/selection/edit updates, and via the localStorage `storage` event for settings, themes, layouts, keybindings, and extension settings.
+Any module (Library, Develop, or one an extension registered) can detach into its own OS window (`state/detach.ts`). Stores synchronize across windows via BroadcastChannel (`state/broadcast.ts`) for catalog/selection/edit updates, and via the localStorage `storage` event for settings, themes, layouts, keybindings, and extension settings.
 
 ## Electron Shell
 

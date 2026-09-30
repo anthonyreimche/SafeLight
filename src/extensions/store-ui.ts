@@ -96,6 +96,7 @@ export function updateNote(installedVersion: string, upd: ExtUpdateInfo): string
 
 const TOPIC_CATEGORY: Record<string, string> = {
   "safelight-panel": "Panels",
+  "safelight-module": "Modules",
   "safelight-export": "Export",
   "safelight-preset": "Presets",
   "safelight-color": "Color",
@@ -107,6 +108,7 @@ const TOPIC_CATEGORY: Record<string, string> = {
 export const CATEGORY_ORDER = [
   "All",
   "Panels",
+  "Modules",
   "Export",
   "Presets",
   "Color",

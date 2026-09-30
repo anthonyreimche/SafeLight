@@ -7,6 +7,7 @@ import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import type { DecodedImage } from "@/catalog/load-image";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { computeHistogram, type HistogramData } from "@/rendering/histogram";
+import { setPhotoParams } from "@/extensions/pipelines";
 import { WebGLRenderer } from "./webgl/renderer";
 
 // The histogram renderer still runs on the main thread — it's lightweight
@@ -83,7 +84,7 @@ export async function renderPhotoHistogram(
       isFallback,
       cachedRaw,
     );
-    ctx.renderer.setParams(params);
+    setPhotoParams(ctx.renderer, params);
     ctx.renderer.render();
     return computeHistogram(ctx.canvas);
   } finally {

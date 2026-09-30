@@ -7,7 +7,7 @@ import type { DevelopParams, UprightMode } from "@/catalog/types";
 import type { UprightResult } from "./upright";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
-import { resolveActivePipeline, usePipelineStore } from "@/extensions/pipelines";
+import { resolvePipelineFor, usePipelineStore } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import type { HistogramData } from "./histogram";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
@@ -73,6 +73,11 @@ export class RenderBridge {
   private hasSourceResolvers = new Map<number, (has: boolean) => void>();
   private captureResolvers = new Map<number, (bitmap: ImageBitmap) => void>();
   private reqIdSeq = 0;
+  // The live photo's display-transform pick, mirrored from the params the
+  // develop view sends, so the live pipeline follows the photo and can be
+  // re-resolved when the registry or the Preferences default changes.
+  private liveDisplayTransform: string | null = null;
+  private livePipelineSent = false;
 
   constructor() {
     this.worker = new Worker(
@@ -359,7 +364,11 @@ export class RenderBridge {
   }): Promise<Blob | null> {
     return new Promise<Blob | null>((resolve) => {
       this.thumbResolvers.set(opts.requestId, resolve);
-      this.post({ cmd: "renderThumbnailFromSource", ...opts });
+      this.post({
+        cmd: "renderThumbnailFromSource",
+        ...opts,
+        pipeline: resolvePipelineFor(opts.params.displayTransform),
+      });
     });
   }
 
@@ -368,6 +377,10 @@ export class RenderBridge {
   // ------------------------------------------------------------------
 
   setParams(params: DevelopParams) {
+    if (!this.livePipelineSent || params.displayTransform !== this.liveDisplayTransform) {
+      this.liveDisplayTransform = params.displayTransform;
+      this.syncPipeline();
+    }
     this.post({ cmd: "setParams", params });
   }
 
@@ -393,7 +406,7 @@ export class RenderBridge {
     return new Promise<ImageBitmap>((resolve) => {
       const reqId = ++this.reqIdSeq;
       this.captureResolvers.set(reqId, resolve);
-      this.post({ cmd: "capture", reqId, params });
+      this.post({ cmd: "capture", reqId, params, pipeline: resolvePipelineFor(params.displayTransform) });
     });
   }
 
@@ -435,7 +448,10 @@ export class RenderBridge {
     } else {
       transfer.push(opts.image.bitmap);
     }
-    this.post({ cmd: "renderThumbnail", ...opts }, transfer);
+    this.post(
+      { cmd: "renderThumbnail", ...opts, pipeline: resolvePipelineFor(opts.params.displayTransform) },
+      transfer,
+    );
   }
 
   renderThumbnailAsync(opts: {
@@ -507,6 +523,13 @@ export class RenderBridge {
     this.post({ cmd: "setPipeline", pipeline });
   }
 
+  /** Re-send the live pipeline: the live photo's pick resolved against the
+   *  current registry and Preferences default. */
+  syncPipeline() {
+    this.livePipelineSent = true;
+    this.setPipeline(resolvePipelineFor(this.liveDisplayTransform));
+  }
+
   // ------------------------------------------------------------------
   // Internal
   // ------------------------------------------------------------------
@@ -572,8 +595,7 @@ function syncStages() {
 }
 
 function syncPipeline() {
-  if (!singleton) return;
-  singleton.setPipeline(resolveActivePipeline());
+  singleton?.syncPipeline();
 }
 
 export function getRenderBridge(): RenderBridge {
@@ -614,8 +636,9 @@ export function getRenderBridge(): RenderBridge {
     });
     unsubPipeline = usePipelineStore.subscribe(() => {
       syncPipeline();
-      // Switching the active display transform must repaint, else the canvas
-      // keeps showing the previous transform until the next interaction.
+      // A new Preferences default changes what a photo without its own pick
+      // renders with; repaint, else the canvas keeps the previous transform
+      // until the next interaction.
       requestStageRender();
     });
   }

@@ -131,7 +131,7 @@ Preferences is organized into sections: **Interface**, **Library**, **Rendering*
 
 - **Interface** — UI scale (0.8–1.3), reduce motion, custom UI font.
 - **Library** — default grid size, sort field/direction, confirm-before-remove, thumbnail source and resolution (320/640/960 px), preview persistence.
-- **Rendering** — the **Display transform** (tone mapper); the built-in transform plus any extension-provided transforms appear here and apply everywhere the pipeline renders.
+- **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both.
 - **Performance** — RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (4096/6144/8192 px); GPU source-cache budget; neighbor prefetch; 16-bit GPU textures; live histogram; opening zoom.
 - **Export** — default format, quality, long edge, color space, ZIP bundling, and saved export presets.
 - **Shortcuts** — rebind every action; single-letter shortcuts (G/D/F…) can be disabled, while Tab and Ctrl-combos always work.

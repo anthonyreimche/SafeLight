@@ -8,6 +8,9 @@
 // receives a SafelightAPI scoped to their extension id.
 
 import type { ComponentType } from "react";
+import type { ModuleId } from "@/catalog/types";
+
+export type { ModuleId };
 
 /** Stack a panel renders in by default ("none" = only via the View menu).
  *  Stacks are composite panels (e.g. "Edit") that host many small panels. */
@@ -17,7 +20,7 @@ export type PanelSlot = "develop-right" | "develop-left" | "none";
  *  saved layout for that module yet, and where View-menu/shortcut toggles
  *  reopen the panel). */
 export interface PanelDockDefault {
-  module: "library" | "develop";
+  module: ModuleId;
   /** "left"/"right" are vertical columns beside the main view (sized by
    *  `width`); "bottom" is a full-width horizontal strip under it (sized by
    *  `height`). */
@@ -109,14 +112,46 @@ export interface ModuleLayoutDef {
 }
 
 /** A named dock arrangement selectable from the Layout menu. Modules omitted
- *  from `modules` fall back to the registry's defaultDock placements, so a
- *  layout with no `modules` at all means "the built-in defaults". */
+ *  from `modules` fall back to their defaults: a registered module's
+ *  `defaultLayout`, else the registry's defaultDock placements, so a layout
+ *  with no `modules` at all means "the built-in defaults". */
 export interface LayoutContribution {
   id: string;
   name: string;
   /** Shown as a tooltip in the Layout menu. */
   description?: string;
-  modules?: Partial<Record<"library" | "develop", ModuleLayoutDef>>;
+  /** Keyed by module id ("library", "develop", or a registered module). */
+  modules?: Partial<Record<string, ModuleLayoutDef>>;
+}
+
+/** A top-level module beside Library and Develop. Registering one adds its tab
+ *  to the strip, lets it pop out into its own window, gives it its own dock
+ *  layout, and makes its id valid for `navigation.goTo`. */
+export interface ModuleContribution {
+  /** The tab key, the `?detached=` key, the dock-layout key and the value
+   *  `navigation.goTo` accepts, e.g. "map". Lower-case letters, digits, ".",
+   *  "_" and "-", starting with a letter or digit; any other id is refused, as
+   *  are the built-in ids "library" and "develop". */
+  id: string;
+  /** Tab label, e.g. "Map"; also names its pop-out window. */
+  label: string;
+  /** The main view. Core renders it inside the app shell (top bar, dock rails,
+   *  optional status bar) in the main dock area; it must fill its container.
+   *  Mounted only while the module is active in that window, so every tab
+   *  switch unmounts it. A render error in it (or in `statusBar`) is shown in
+   *  its place; the rest of the window keeps working. */
+  component: ComponentType;
+  /** Tab position after Library and Develop (lower = further left). Default 100. */
+  order?: number;
+  /** Rails and floating panels to seed the first time the user opens the
+   *  module, and what a layout preset without an entry for it resolves to. May
+   *  name core panels ("core.folders", "core.filters", "core.info"); panels
+   *  not registered at the time (a core panel the user disabled) are left
+   *  out. Without it, panels whose `defaultDock.module` is this id are seeded,
+   *  as for the built-ins. */
+  defaultLayout?: ModuleLayoutDef;
+  /** Content for the shell's footer status bar. */
+  statusBar?: ComponentType;
 }
 
 export interface ThemeContribution {
@@ -127,8 +162,9 @@ export interface ThemeContribution {
   vars: Record<string, string>;
 }
 
-/** A render pipeline (scene-linear → display transform), selectable in
- *  Preferences ▸ Rendering ▸ Display transform. The GLSL must define
+/** A render pipeline (scene-linear → display transform). Users pick one per
+ *  photo from the display transform menu in Develop's bottom bar; Preferences
+ *  ▸ Rendering sets the default for photos without a pick. The GLSL must define
  *    vec3 pipelineToDisplay(vec3 lin)
  *  mapping scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to
  *  display-encoded output. Helpers available: luma(), srgbToLinear(),
@@ -316,10 +352,10 @@ export interface ExtensionManifest {
   minAppVersion?: string;
   /** Capabilities the extension requests (shown to the user in the store). Only
    *  `network` is *enforced* — declared HTTPS origins are added to the app's
-   *  content-security policy, and anything not declared by an installed extension
-   *  is blocked. Extensions otherwise run in-app with ambient access (your catalog,
-   *  files); that is NOT confined by this field, so install only extensions you
-   *  trust. See EXTENSIONS.md. */
+   *  content-security policy, and anything not declared by an installed or
+   *  dev-folder extension is blocked. Extensions otherwise run in-app with
+   *  ambient access (your catalog, files); that is NOT confined by this field,
+   *  so install only extensions you trust. See EXTENSIONS.md. */
   permissions?: ExtensionPermissions;
 }
 
@@ -754,7 +790,7 @@ export interface PanelHeaderContext {
   panelId: string;
   title: string;
   /** Dock module the panel defaults into, if known. */
-  module?: "library" | "develop";
+  module?: ModuleId;
   /** The extension that registered the panel ("host"/"core.*" for built-ins). */
   extensionId: string;
   /** True when the develop renderer can preview this panel's effect off — i.e.
@@ -820,6 +856,8 @@ export interface SafelightAPI {
   registerPanel(c: PanelContribution): void;
   registerTheme(c: ThemeContribution): void;
   registerLayout(c: LayoutContribution): void;
+  /** Register a top-level module (a tab beside Library and Develop). */
+  registerModule(c: ModuleContribution): void;
   registerSliderIcon(c: SliderIconContribution): void;
   /** Register a render pipeline (display transform / tone mapper). */
   registerPipeline(c: PipelineContribution): void;
@@ -946,12 +984,22 @@ export interface SafelightAPI {
   };
   themes: { apply(id: string): void };
   layouts: { apply(id: string): void };
-  pipelines: { apply(id: string): void };
+  /** Display transforms. `apply` sets the Preferences default, which photos
+   *  without their own pick follow; `effectiveId` is the transform a photo's
+   *  `displayTransform` renders with (its pick while installed, else the
+   *  default, else the built-in). */
+  pipelines: {
+    apply(id: string): void;
+    effectiveId(displayTransform: string | null): string;
+  };
   /** Open / close the Preferences dialog. `open` may take a section id (a core
    *  section's id or an extension id) to deep-link straight to that section. */
   preferences: { open(sectionId?: string): void; close(): void; toggle(): void };
-  /** Navigate between app modules. */
-  navigation: { goTo(module: "library" | "develop"): void };
+  /** Navigate between app modules: a built-in or a registered module id. The
+   *  main window switches to it, or focuses its window if it is popped out,
+   *  and ignores an unknown id. A popped-out window leaves its own module
+   *  where it is and has the main window go to any other. */
+  navigation: { goTo(module: ModuleId): void };
   /** Read the current binding for any action id (built-in or extension), or
    *  `list()` every built-in key action with its current combo (override
    *  applied) + label + category — so a tool can check a remap against the LIVE
@@ -1101,8 +1149,16 @@ export interface SafelightAPI {
      *  active folder, filters, sort direction, extension grid filters and
      *  extension sorts all applied. React hook; the same list core's ←/→
      *  photo navigation walks, so a strip built on it always agrees with the
-     *  grid. */
-    useVisiblePhotos(): import("@/catalog/types").CatalogPhoto[];
+     *  grid. `without` names grid-filter contribution ids to leave out, for a
+     *  surface that registers a filter and must not narrow itself by it. */
+    useVisiblePhotos(options?: {
+      without?: readonly string[];
+    }): import("@/catalog/types").CatalogPhoto[];
+    /** Queue a photo's grid preview through core's on-demand loader — the
+     *  call a grid cell makes as it scrolls into view. The blob lands on the
+     *  record's `thumbnailUrl`. For surfaces that draw thumbnails themselves
+     *  (a canvas, a map pin) and so have no <Thumbnail> cell to trigger it. */
+    requestThumbnail(photoId: string): void;
     /** The Library's photo right-click menu, for a surface that lists photos.
      *  Wire `onContextMenu` to each cell and render `overlays` inside the
      *  surface; the menu carries the built-in actions (open, rename, copy/paste
@@ -1284,6 +1340,12 @@ declare global {
         isOpen(): Promise<boolean>;
         /** Reload the renderer. `hard` ignores the HTTP cache. */
         reload(hard?: boolean): Promise<void>;
+        /** Record the Developer Tools dev folder with the main process, which
+         *  reads its manifests' `permissions.network` at the next launch the way
+         *  it reads installed extensions'. Resolves with the declared origins
+         *  the current launch's policy does not allow yet. Optional: absent in
+         *  older Electron builds. */
+        syncDevFolder?(folder: string | null): Promise<{ pending: string[] }>;
       };
       /** Main-process diagnostics for the Developer Tools System / Native tabs. */
       diagnostics?: {

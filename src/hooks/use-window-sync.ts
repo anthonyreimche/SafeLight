@@ -8,11 +8,13 @@ import { broadcast, onBroadcast, WINDOW_ID } from "@/state/broadcast";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { reloadThumbnail } from "@/state/thumbnail-loader";
-import { detachedModule } from "@/state/detach";
+import { detachedModule, goToModule } from "@/state/detach";
+import { hasModule } from "@/extensions/registry";
 
 // Keeps every window (main + detached) in sync: the active photo follows across
-// windows, and the main window reflects detach/attach of modules. A detached
-// window also announces its return when closed, so the module is reclaimed.
+// windows, and the main window reflects detach/attach of modules and carries out
+// a detached window's navigation. A detached window also announces its return
+// when closed, so the module is reclaimed.
 export function useWindowSync() {
   useEffect(() => {
     const dm = detachedModule();
@@ -38,7 +40,10 @@ export function useWindowSync() {
       } else if (!dm && msg.type === "attach") {
         const ui = useUIStore.getState();
         ui.markAttached(msg.payload.module);
-        ui.setActiveModule(msg.payload.module);
+        // A module this window can't show would only drop it into Library.
+        if (hasModule(msg.payload.module)) ui.setActiveModule(msg.payload.module);
+      } else if (!dm && msg.type === "navigate") {
+        goToModule(msg.payload.module);
       } else if (!dm && msg.type === "detach") {
         useUIStore.getState().markDetached(msg.payload.module);
       }

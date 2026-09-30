@@ -118,9 +118,14 @@ Rows are 53px tall in the Library grid's list view; match that if you want your 
 
 ## Photo surfaces: menu and shortcuts
 
-A surface that lists photos (a filmstrip, an alternative browser) should not reimplement the grid's behavior — two APIs hand you core's own, so extension-contributed menu items and the user's rebound keys are included for free.
+A surface that lists photos (a filmstrip, an alternative browser) should not reimplement the grid's behavior — three APIs hand you core's own, so extension-contributed menu items and the user's rebound keys are included for free.
 
 ```typescript
+// The photos the Library grid shows, in its order: folder, filters, sort and
+// extension grid filters applied. `without` leaves out named grid filters, for
+// a surface that registers a filter and must not narrow itself by it.
+const photos = api.catalog.useVisiblePhotos({ without: ["my-ext.in-view"] });
+
 // The Library right-click menu + its dialogs (rename, copy settings).
 const { onContextMenu, overlays } = api.catalog.usePhotoActions();
 // …wire onContextMenu to each cell, render {overlays} in the surface.
@@ -133,6 +138,8 @@ api.catalog.useCullingShortcuts({ sizeSteps: false });
 `onContextMenu` targets the whole selection when the clicked photo is part of one, else selects just it (the grid's rule). The menu carries the built-in actions plus every [`registerGridMenuItem`](contributions.md) contribution.
 
 `useCullingShortcuts` installs one shared, ref-counted listener, so several surfaces on screen at once still act once per press. Pass `sizeSteps: false` when your cells are sized by their container — `-`/`=` then stay with the Library grid. Develop's own bindings keep priority where they overlap: `Delete` belongs to a selected mask component while you're painting one, and prev/next and rotate move to this handler while any surface is mounted so they never fire twice.
+
+`api.catalog.requestThumbnail(photoId)` queues a photo's grid preview through core's on-demand loader, the same call a `Thumbnail` cell makes as it scrolls into view; the preview lands on the record's `thumbnailUrl`. A surface that draws previews itself (a canvas, a map pin) has no cell to trigger the load, so it calls this for each photo it is about to draw whose record has no `thumbnailUrl` yet, as the cell does. For a photo that already has one, the call still reads the preview from disk, and the result is discarded.
 
 ## Theming tokens
 

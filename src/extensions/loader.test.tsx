@@ -9,10 +9,14 @@
 // bundle import — an app:// URL jsdom cannot fetch — substituted.
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import type { ExtensionManifest, ExtensionModule, SafelightAPI } from "./types";
-import { useRegistry } from "./registry";
+import { registerModule, useRegistry } from "./registry";
 import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
 import { updateSettings } from "@/state/settings-store";
+import { useUIStore } from "@/state/ui-store";
+import { useProjectStore } from "@/project/project-store";
+import { App } from "@/App";
 import { importPluginModule } from "./plugin-module";
 import {
   checkAllExtensionUpdates,
@@ -22,6 +26,7 @@ import {
   uninstallPlugin,
   updateExtension,
   useDisabledExtensions,
+  useExternalPluginsSettled,
 } from "./loader";
 
 vi.mock("./plugin-module", () => ({ importPluginModule: vi.fn() }));
@@ -62,7 +67,9 @@ const ghost = () => GHOST in useRegistry.getState().stylesheets;
 
 const importer = vi.mocked(importPluginModule);
 /** Route each version's cache-busted bundle URL to a module. */
-const serve = (modules: Record<string, Partial<ExtensionModule>>) =>
+const serve = (
+  modules: Record<string, Partial<ExtensionModule> | Promise<Partial<ExtensionModule>>>,
+) =>
   importer.mockImplementation(async (url) => {
     const version = new URL(url).searchParams.get("v") ?? "";
     const mod = modules[version];
@@ -92,8 +99,9 @@ beforeEach(() => {
       remoteManifest,
     },
   });
-  useRegistry.setState({ stylesheets: {} });
+  useRegistry.setState({ stylesheets: {}, modules: {} });
   useDisabledExtensions.setState({ ids: [] });
+  useExternalPluginsSettled.setState({ settled: false });
   useExtStoreUI.setState({ updates: {} });
   updateSettings({ checkExtensionUpdates: true, autoUpdateExtensions: false });
   importer.mockReset();
@@ -277,6 +285,124 @@ describe("updateExtension", () => {
   });
 });
 
+describe("updating an extension whose module the main window shows", () => {
+  /** A bundle whose module view names the version running. */
+  const withModule = (version: string): ExtensionModule & { deactivate: Mock } => ({
+    activate: (api: SafelightAPI) => {
+      api.registerStylesheet({ id: SHEET, css: ".a{}" });
+      api.registerModule({
+        id: "widget",
+        label: "Widget",
+        component: () => <p>widget {version}</p>,
+      });
+    },
+    deactivate: vi.fn(),
+  });
+
+  /** Holds a bundle's import until `open()`: the stretch of a real update in
+   *  which the old version is down and the new one is still loading. */
+  const held = (mod: Partial<ExtensionModule>) => {
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => (open = resolve));
+    return { mod: opened.then(() => mod), open };
+  };
+
+  /** The main window has no other windows to sync with here. */
+  class SilentChannel {
+    postMessage(): void {}
+    addEventListener(): void {}
+    removeEventListener(): void {}
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("BroadcastChannel", SilentChannel);
+    useProjectStore.setState({
+      root: { name: "shoot" } as unknown as FileSystemDirectoryHandle,
+    });
+    useUIStore.setState({ activeModule: "widget", detached: new Set() });
+  });
+
+  // Unmount before the file's afterEach uninstalls the extension underneath.
+  afterEach(() => {
+    cleanup();
+    useProjectStore.setState({ root: null });
+  });
+
+  /** Start an update with the module on screen and stop once the old version
+   *  is down; the main window has then fallen back to Library. The update is
+   *  handed back wrapped: an async function returning it would wait for it. */
+  async function startUpdate(): Promise<{ update: Promise<ExtensionManifest> }> {
+    render(<App />);
+    expect(screen.getByText("widget 1.0.0")).toBeTruthy();
+    let update!: Promise<ExtensionManifest>;
+    await act(async () => {
+      update = updateExtension(REPO);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(useUIStore.getState().activeModule).toBe("library");
+    return { update };
+  }
+
+  it("shows the module again once the new version has registered it", async () => {
+    await bootWith(withModule("1.0.0"));
+    const next = held(withModule("2.0.0"));
+    serve({ "2.0.0": next.mod });
+    const { update } = await startUpdate();
+
+    await act(async () => {
+      next.open();
+      await update;
+    });
+    expect(useUIStore.getState().activeModule).toBe("widget");
+    expect(screen.getByText("widget 2.0.0")).toBeTruthy();
+  });
+
+  it("shows the module again when a failed update restores the previous version", async () => {
+    const v1 = withModule("1.0.0");
+    await bootWith(v1);
+    const next = held(broken());
+    serve({ "1.0.0": v1, "2.0.0": next.mod });
+    const { update } = await startUpdate();
+
+    await act(async () => {
+      next.open();
+      await expect(update).rejects.toThrow("1.0.0 was restored");
+    });
+    expect(useUIStore.getState().activeModule).toBe("widget");
+    expect(screen.getByText("widget 1.0.0")).toBeTruthy();
+  });
+
+  it("leaves the main window where the user went while the update loaded", async () => {
+    await bootWith(withModule("1.0.0"));
+    registerModule("other", { id: "notes", label: "Notes", component: () => <p>notes</p> });
+    const next = held(withModule("2.0.0"));
+    serve({ "2.0.0": next.mod });
+    const { update } = await startUpdate();
+
+    act(() => useUIStore.getState().setActiveModule("notes"));
+    await act(async () => {
+      next.open();
+      await update;
+    });
+    expect(useUIStore.getState().activeModule).toBe("notes");
+  });
+
+  it("stays on Library when a failed update leaves no version of the module", async () => {
+    await bootWith(withModule("1.0.0"));
+    const next = held(broken());
+    serve({ "2.0.0": next.mod });
+    settleUpdate.mockResolvedValueOnce(null);
+    const { update } = await startUpdate();
+
+    await act(async () => {
+      next.open();
+      await expect(update).rejects.toThrow("Widget 2.0.0 failed to start (boom)");
+    });
+    expect(useUIStore.getState().activeModule).toBe("library");
+    expect(screen.getByText("0 photos in catalog")).toBeTruthy();
+  });
+});
+
 describe("installFromGitHub", () => {
   it("sweeps a first install's contributions when its bundle fails to start", async () => {
     install.mockResolvedValueOnce(manifest("1.0.0"));
@@ -361,5 +487,26 @@ describe("checkAllExtensionUpdates with auto-update on", () => {
 
     expect(install).not.toHaveBeenCalled();
     expect(useExtStoreUI.getState().updates[ID]).toEqual(failed);
+  });
+});
+
+describe("useExternalPluginsSettled", () => {
+  it("flips once the installed plugins have been loaded", async () => {
+    serve({ "1.0.0": bundle() });
+    expect(useExternalPluginsSettled.getState().settled).toBe(false);
+    await loadExternalPlugins();
+    expect(useExternalPluginsSettled.getState().settled).toBe(true);
+  });
+
+  it("flips when there is no native bridge to load from", async () => {
+    vi.stubGlobal("safelightNative", undefined);
+    await loadExternalPlugins();
+    expect(useExternalPluginsSettled.getState().settled).toBe(true);
+  });
+
+  it("flips even when a bundle fails to load", async () => {
+    serve({ "1.0.0": broken() });
+    await loadExternalPlugins();
+    expect(useExternalPluginsSettled.getState().settled).toBe(true);
   });
 });

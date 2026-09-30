@@ -4,18 +4,11 @@
 // be preserved in derived versions.
 
 import { useEffect } from "react";
-import { useUIStore } from "@/state/ui-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useProjectStore } from "@/project/project-store";
-import {
-  MODULES,
-  MODULE_LABELS,
-  attachModule,
-  detachModule,
-  detachedModule,
-  focusDetached,
-  reattachSelf,
-} from "@/state/detach";
+import { detachedModule, reattachSelf } from "@/state/detach";
+import { moduleLabel } from "@/extensions/registry";
+import { ModuleTabs } from "./ModuleTabs";
 import { ViewMenu } from "./ViewMenu";
 import { LayoutMenu } from "./LayoutMenu";
 import { openPreferences } from "./PreferencesDialog";
@@ -102,9 +95,6 @@ const prefsButton = (
 export function TopBar() {
   useTitleBarOverlay("--color-surface-1"); // bar bg in both the app and detached branches
   const dm = detachedModule();
-  const activeModule = useUIStore((s) => s.activeModule);
-  const setActiveModule = useUIStore((s) => s.setActiveModule);
-  const detached = useUIStore((s) => s.detached);
   const closeProject = useProjectStore((s) => s.closeProject);
   const needsReconnect = useCatalogStore((s) => s.needsReconnect);
   const reconnecting = useCatalogStore((s) => s.reconnecting);
@@ -148,7 +138,7 @@ export function TopBar() {
             SAFELIGHT
           </span>
           <span className="text-[11px] uppercase tracking-wider text-text-primary">
-            {MODULE_LABELS[dm]}
+            {moduleLabel(dm)}
           </span>
         </div>
         <div className="flex items-center gap-2" style={noDragStyle}>
@@ -180,37 +170,7 @@ export function TopBar() {
         >
           SAFELIGHT
         </button>
-        <nav aria-label="Views" className="flex items-center gap-1">
-        {MODULES.map((m) => {
-          const isDetached = detached.has(m);
-          const isActive = activeModule === m && !isDetached;
-          return (
-            <div key={m} className="flex items-center rounded">
-              <button
-                onClick={() => (isDetached ? focusDetached(m) : setActiveModule(m))}
-                className={`rounded-l px-3 py-1 text-[11px] uppercase tracking-wider transition-colors ${
-                  isActive
-                    ? "bg-surface-3 text-text-primary"
-                    : isDetached
-                      ? "italic text-text-muted hover:text-text-secondary"
-                      : "text-text-secondary hover:text-text-primary"
-                }`}
-                title={isDetached ? "Open in its window" : undefined}
-              >
-                {MODULE_LABELS[m]}
-              </button>
-              <button
-                onClick={() => (isDetached ? attachModule(m) : detachModule(m))}
-                title={isDetached ? "Re-attach to this window" : "Open in a new window"}
-                aria-label={`${MODULE_LABELS[m]}: ${isDetached ? "re-attach to this window" : "open in a new window"}`}
-                className="rounded-r py-1 pr-1.5 pl-0.5 text-[10px] text-text-muted hover:text-text-primary"
-              >
-                {isDetached ? "⧈" : "⧉"}
-              </button>
-            </div>
-          );
-        })}
-        </nav>
+        <ModuleTabs />
         <div className="mx-1 h-4 w-px bg-border" />
         <ViewMenu />
         <LayoutMenu />

@@ -18,6 +18,7 @@ import {
   registerGridMenuItem,
   registerLayout,
   registerLibrarySort,
+  registerModule,
   registerPanel,
   registerPanelHeaderAccessory,
   registerPipeline,
@@ -33,7 +34,7 @@ import {
   registerTheme,
 } from "./registry";
 import { initStylesheets } from "./stylesheets";
-import { applyPipeline, initPipelines, usePipelineStore } from "./pipelines";
+import { applyPipeline, effectivePipelineId, initPipelines, usePipelineStore } from "./pipelines";
 import { setStageTexture } from "@/rendering/render-bridge";
 import {
   getExtSetting,
@@ -67,6 +68,7 @@ import {
   renderPhotosToBlobs,
 } from "@/modules/export/export-image";
 import { getPhotoData, putPhotoData } from "@/state/photo-blob-store";
+import { requestThumbnail } from "@/state/thumbnail-loader";
 import { renamePhoto } from "@/project/folder-ops";
 import {
   contributionToSpec,
@@ -100,6 +102,7 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { catalogStorage } from "@/catalog/storage";
 import { useUIStore } from "@/state/ui-store";
+import { goToModule } from "@/state/detach";
 import { initSettings, useSettings } from "@/state/settings-store";
 import { initPresets, usePresetsStore } from "@/state/presets-store";
 import {
@@ -118,6 +121,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerPanel: (c) => registerPanel(extensionId, c),
     registerTheme: (c) => registerTheme(extensionId, c),
     registerLayout: (c) => registerLayout(extensionId, c),
+    registerModule: (c) => registerModule(extensionId, c),
     registerSliderIcon: (c) => registerSliderIcon(extensionId, c),
     registerPipeline: (c) => registerPipeline(extensionId, c),
     registerProcessingStage: (c) => registerProcessingStage(extensionId, c),
@@ -174,9 +178,9 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     dock: { togglePanel: toggleDockPanel, usePanelPlacement: useDockPlacement },
     themes: { apply: applyTheme },
     layouts: { apply: applyDockLayout },
-    pipelines: { apply: applyPipeline },
+    pipelines: { apply: applyPipeline, effectiveId: effectivePipelineId },
     preferences: { open: openPreferences, close: closePreferences, toggle: togglePreferences },
-    navigation: { goTo: (module) => useUIStore.getState().setActiveModule(module) },
+    navigation: { goTo: goToModule },
     keybindings: { getBinding, list: () => listBindings() },
     cursors: { labels: CURSOR_LABELS, resolve: (token) => resolveCursorCss(token) },
     develop: {
@@ -223,6 +227,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       useVisiblePhotos,
       usePhotoActions,
       useCullingShortcuts,
+      requestThumbnail,
     },
   };
 }

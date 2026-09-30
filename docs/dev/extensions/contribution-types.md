@@ -7,6 +7,7 @@ What an extension can register. Each is auto-tagged with the extension's id and 
 ## What you can register
 
 **UI** (see [UI Shell](../api/ui-shell.md) and [UI Components](../api/components.md))
+- **Modules** (`registerModule`) — a top-level module beside Library and Develop: its own tab, pop-out window and dock layout. See [UI Shell](../api/ui-shell.md#modules).
 - **Panels** (`registerPanel`) — a React component placed via `defaultDock`; dockable, tabbable, floatable like any built-in.
 - **Slots** (`registerSlot`) — render into a named region of core chrome: `library-toolbar`, `library-subbar`, `develop-toolbar`, `develop-canvas-overlay`, or `develop-detail`.
 - **Cursors** (`registerCursor`) — a named canvas cursor (semantic token or custom image), driven via `api.develop.setCanvasCursor` while a tool is active.
@@ -16,7 +17,7 @@ What an extension can register. Each is auto-tagged with the extension's id and 
 - **Slider icons** (`registerSliderIcon`) — inline SVG beside a slider label.
 
 **Imaging**
-- **Render pipelines** (`registerPipeline`) — a display transform (tone mapper) selectable in **Preferences ▸ Rendering**; supply GLSL for `vec3 pipelineToDisplay(vec3 lin)`. The simplest way to ship a whole-image GPU effect.
+- **Render pipelines** (`registerPipeline`) — a display transform (tone mapper) picked per photo in Develop's bottom bar, with a default in **Preferences ▸ Rendering**; supply GLSL for `vec3 pipelineToDisplay(vec3 lin)`. The simplest way to ship a whole-image GPU effect.
 - **Processing stages** (`registerProcessingStage`) — a phase-ordered GPU stage compiled into the develop shader. Live: all phases, custom uniforms, multi-pass pre-passes, texture/LUT binding (`setStageTexture`), painted coverage textures (`kind: "coverage"` — a dab list in the photo's paramBag that the renderer bakes per render, for brush-confined effects), and a special `geometry` phase that warps source coordinates. Reach for it when you need phase ordering, uniforms, multiple passes, or coordinate warping.
 - **Lens profiles** (`registerLensProfile`) — distortion/TCA/vignetting coefficients that supplement or override the built-in Lensfun database.
 

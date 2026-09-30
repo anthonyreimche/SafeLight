@@ -257,3 +257,25 @@ describe("parseSafelightPreset: param sanitizing", () => {
     expect(arrayBag?.paramBag).toBeUndefined();
   });
 });
+
+describe("parseSafelightPreset: display transform", () => {
+  const carrying = (displayTransform: unknown): File =>
+    presetFile(
+      JSON.stringify({
+        format: "safelight-preset",
+        version: 1,
+        name: "Look",
+        params: { displayTransform },
+      }),
+    );
+
+  it("keeps a transform id", async () => {
+    const parsed = await parseSafelightPreset(carrying("rendering.agx"));
+    expect(parsed?.params.displayTransform).toBe("rendering.agx");
+  });
+
+  it("drops a value that is not a string", async () => {
+    const parsed = await parseSafelightPreset(carrying(7));
+    expect(parsed?.params).not.toHaveProperty("displayTransform");
+  });
+});

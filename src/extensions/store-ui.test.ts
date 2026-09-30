@@ -102,6 +102,7 @@ describe("categoryFor", () => {
     expect(categoryFor(["safelight-color"])).toBe("Color");
     expect(categoryFor(["safelight-theme"])).toBe("Themes");
     expect(categoryFor(["safelight-pipeline"])).toBe("Pipelines");
+    expect(categoryFor(["safelight-module"])).toBe("Modules");
   });
 
   it("only ever returns a category the chips can display", () => {
@@ -112,10 +113,15 @@ describe("categoryFor", () => {
       "safelight-color",
       "safelight-theme",
       "safelight-pipeline",
+      "safelight-module",
       "unmapped-topic",
     ];
     for (const t of topics)
       expect(CATEGORY_ORDER).toContain(categoryFor([t]));
+  });
+
+  it("keeps Modules beside Panels in the chip order", () => {
+    expect(CATEGORY_ORDER.indexOf("Modules")).toBe(CATEGORY_ORDER.indexOf("Panels") + 1);
   });
 
   it("falls back to Other for unmapped or missing topics", () => {

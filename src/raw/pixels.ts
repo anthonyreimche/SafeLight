@@ -50,6 +50,19 @@ export function unpackSamples(
   return out;
 }
 
+// Expand stored codes through a lookup table in place (a DNG LinearizationTable):
+// each sample becomes table[code]. Codes past the table's end take its last
+// entry, as dcraw and LibRaw do.
+export function linearizeSamples(raw: Uint16Array, table: ArrayLike<number>): Uint16Array {
+  const last = table.length - 1;
+  if (last < 0) return raw;
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw[i];
+    raw[i] = table[code < last ? code : last];
+  }
+  return raw;
+}
+
 // Subtract black level and scale so white maps to 1.0. Values above 1.0 are
 // preserved (not clamped) so the shader's channel reconstruction can detect
 // which CFA sites hit the sensor ceiling and recover color from unclipped neighbours.

@@ -53,6 +53,7 @@ const PARAM_KINDS: Record<keyof DevelopParams, "number" | "string" | "object"> =
   grain: "object",
   masks: "object",
   retouch: "object",
+  displayTransform: "string",
 };
 
 // Keep only known DevelopParams keys whose value matches the expected kind, so a

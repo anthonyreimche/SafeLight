@@ -9,6 +9,7 @@ import {
   demosaicBilinear,
   developRawPlane,
   developRawPlaneFloat,
+  linearizeSamples,
   normalizePlane,
   toRGBA8,
   toRGBAFloat,
@@ -64,6 +65,18 @@ describe("unpackSamples", () => {
   it("respects a view's offset into a larger buffer", () => {
     const strip = bytes(0xaa, 0xbb, 0x12, 0x34).subarray(2);
     expect(Array.from(unpackSamples(strip, 16, 1, false))).toEqual([0x1234]);
+  });
+});
+
+describe("linearizeSamples", () => {
+  it("maps each stored code through the table", () => {
+    const out = linearizeSamples(new Uint16Array([0, 1, 3]), [0, 700, 2100, 4200]);
+    expect(Array.from(out)).toEqual([0, 700, 4200]);
+  });
+
+  it("clamps codes past the table's end to its last entry", () => {
+    const out = linearizeSamples(new Uint16Array([4, 255]), [0, 700, 2100, 4200]);
+    expect(Array.from(out)).toEqual([4200, 4200]);
   });
 });
 

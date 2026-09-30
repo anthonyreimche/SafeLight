@@ -401,6 +401,10 @@ export interface DevelopParams {
   grain: GrainParams;
   masks: Mask[];
   retouch: RetouchSpot[];
+  /** Display transform (tone mapper) picked for this photo, by pipeline id,
+   *  or null to follow the Preferences default. Resolved by
+   *  resolvePipelineFor in extensions/pipelines.ts. */
+  displayTransform: string | null;
 }
 
 export const MAX_MASKS = 16;
@@ -601,6 +605,7 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   grain: { ...DEFAULT_GRAIN },
   masks: [],
   retouch: [],
+  displayTransform: null,
 };
 
 function normalizeTransform(
@@ -1006,6 +1011,10 @@ export function assignDevelopParam<K extends keyof DevelopParams>(
   target[key] = value;
 }
 
+function normalizeDisplayTransform(v: unknown): string | null {
+  return typeof v === "string" && v !== "" ? v : null;
+}
+
 // Merge a (possibly partial / legacy) params object with current defaults so
 // snapshots saved before a field existed still load cleanly.
 export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopParams {
@@ -1031,10 +1040,14 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
     grain: normalizeGrain(p?.grain),
     masks: normalizeMasks(p?.masks),
     retouch: normalizeRetouch(p?.retouch),
+    displayTransform: normalizeDisplayTransform(p?.displayTransform),
   };
 }
 
 export type SortField = 'dateImported' | 'dateCreated' | 'filename' | 'rating';
 export type SortDirection = 'asc' | 'desc';
 export type ViewMode = 'grid' | 'list';
-export type AppModule = 'library' | 'develop';
+/** A top-level module id: "library", "develop", or one an extension registered
+ *  through api.registerModule. */
+export type ModuleId = 'library' | 'develop' | (string & {});
+export type AppModule = ModuleId;

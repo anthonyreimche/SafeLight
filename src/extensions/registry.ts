@@ -17,6 +17,8 @@ import type {
   GridMenuItemContribution,
   LayoutContribution,
   LibrarySortContribution,
+  ModuleContribution,
+  ModuleId,
   PanelContribution,
   PanelHeaderAccessoryContribution,
   PanelSlot,
@@ -94,6 +96,9 @@ export interface RegisteredLibrarySort extends LibrarySortContribution {
 export interface RegisteredStylesheet extends StylesheetContribution {
   extensionId: string;
 }
+export interface RegisteredModule extends ModuleContribution {
+  extensionId: string;
+}
 
 interface RegistryState {
   panels: Record<string, RegisteredPanel>;
@@ -122,6 +127,8 @@ interface RegistryState {
   /** Keyed by contribution id, in registration order. CSS applied to every
    *  window after the core styles (see stylesheets.ts). */
   stylesheets: Record<string, RegisteredStylesheet>;
+  /** Keyed by module id. Top-level modules an extension contributed. */
+  modules: Record<string, RegisteredModule>;
 }
 
 export const useRegistry = create<RegistryState>(() => ({
@@ -142,6 +149,7 @@ export const useRegistry = create<RegistryState>(() => ({
   panelHeaderAccessories: {},
   librarySorts: {},
   stylesheets: {},
+  modules: {},
 }));
 
 export function registerPanel(extensionId: string, c: PanelContribution): void {
@@ -172,6 +180,89 @@ export function registerLayout(
   useRegistry.setState((s) => ({
     layouts: { ...s.layouts, [c.id]: { ...c, extensionId } },
   }));
+}
+
+/** A tab in the module strip: a built-in or a registered module. */
+export interface ModuleTab {
+  id: ModuleId;
+  label: string;
+}
+
+export const BUILTIN_MODULES: readonly ModuleTab[] = [
+  { id: "library", label: "Library" },
+  { id: "develop", label: "Develop" },
+];
+const BUILTIN_IDS = new Set<string>(BUILTIN_MODULES.map((m) => m.id));
+
+/** A module id: lower-case letters, digits, ".", "_" and "-", starting with a
+ *  letter or digit. The id travels in its pop-out window's `?detached=` URL and
+ *  names that window, so a detached window can always read back its module. */
+export const MODULE_ID = /^[a-z0-9][a-z0-9._-]*$/;
+
+/** The entry for module `id` in a record keyed by module id, only if the record
+ *  owns it: "constructor" is a valid id, and a plain lookup would find
+ *  Object.prototype's. */
+export function moduleEntry<T>(
+  record: Partial<Record<string, T>> | undefined,
+  id: string,
+): T | undefined {
+  return record && Object.hasOwn(record, id) ? record[id] : undefined;
+}
+
+export function registerModule(extensionId: string, c: ModuleContribution): void {
+  if (!MODULE_ID.test(c.id)) {
+    console.warn(
+      `[extensions] ${extensionId}: "${c.id}" is not a valid module id (lower-case letters, digits, ".", "_", "-", starting with a letter or digit); registerModule ignored`,
+    );
+    return;
+  }
+  if (BUILTIN_IDS.has(c.id)) {
+    console.warn(
+      `[extensions] ${extensionId}: "${c.id}" is a built-in module id; registerModule ignored`,
+    );
+    return;
+  }
+  useRegistry.setState((s) => ({
+    modules: { ...s.modules, [c.id]: { ...c, extensionId } },
+  }));
+}
+
+function sortedModules(modules: Record<string, RegisteredModule>): RegisteredModule[] {
+  return Object.values(modules).sort(
+    (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.label.localeCompare(b.label),
+  );
+}
+
+/** Tab order: the built-ins, then registered modules by order then label.
+ *  Non-reactive snapshot for code outside React. */
+export function moduleTabs(): ModuleTab[] {
+  return [...BUILTIN_MODULES, ...sortedModules(useRegistry.getState().modules)];
+}
+
+/** Reactive moduleTabs. Registered entries are the registry's own objects, so
+ *  the shallow compare holds across unrelated registry changes. */
+export function useModules(): ModuleTab[] {
+  return useRegistry(
+    useShallow((s) => [...BUILTIN_MODULES, ...sortedModules(s.modules)]),
+  );
+}
+
+/** Whether `id` is a built-in module or one registered in this window. */
+export function hasModule(id: ModuleId): boolean {
+  return (
+    BUILTIN_IDS.has(id) ||
+    moduleEntry(useRegistry.getState().modules, id) !== undefined
+  );
+}
+
+/** Display label for a module id. An unknown id (its extension isn't loaded in
+ *  this window) reads as itself. */
+export function moduleLabel(id: ModuleId): string {
+  return (
+    BUILTIN_MODULES.find((m) => m.id === id)?.label ??
+    moduleEntry(useRegistry.getState().modules, id)?.label ??
+    id
+  );
 }
 
 export function registerSettings(
@@ -594,6 +685,7 @@ export function unregisterExtension(extensionId: string): void {
     panelHeaderAccessories: drop(s.panelHeaderAccessories),
     librarySorts: drop(s.librarySorts),
     stylesheets: drop(s.stylesheets),
+    modules: drop(s.modules),
   }));
   unregisterExtensionActions(extensionId);
   clearExtensionCursors(extensionId);

@@ -4,7 +4,7 @@
 
 Signatures for every `register*` contribution. `src/extensions/types.ts` is the source of truth. All contributions are auto-tagged with the calling extension's id and swept when it is disabled or uninstalled.
 
-> The UI-mount contributions — **`PanelContribution`**, **`SlotContribution`**, and **`LayoutContribution`** — are documented in [UI Shell](ui-shell.md). **Theming** is covered in [UI Components](components.md#theming-tokens).
+> The UI-mount contributions — **`ModuleContribution`**, **`PanelContribution`**, **`SlotContribution`**, and **`LayoutContribution`** — are documented in [UI Shell](ui-shell.md). **Theming** is covered in [UI Components](components.md#theming-tokens).
 
 **Jump to:** [Theme](#themecontribution) · [SliderIcon](#slidericoncontribution) · [Pipeline](#pipelinecontribution--display-transform) · [ProcessingStage](#processingstagecontribution--gpu-stage) · [KeyAction](#keyactioncontribution) · [Settings](#settingscontribution) · [ExportProcessor](#exportprocessorcontribution) · [FilenameTemplate](#filenametemplatecontribution) · [LensProfile](#lensprofilecontribution) · [CatalogHooks](#cataloghookscontribution) · [PresetImporter](#presetimportercontribution) · [GridFilter](#gridfiltercontribution) · [LibrarySort](#librarysortcontribution) · [Cursor](#cursorcontribution) · [Stylesheet](#stylesheetcontribution)
 
@@ -38,7 +38,7 @@ interface PipelineContribution {
 }
 ```
 
-`glsl` maps scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to display-encoded output. Helpers available: `luma()`, `srgbToLinear()`, `linearToSrgb()`, `linearToSrgbU()`. Transforms appear in **Preferences ▸ Rendering ▸ Display transform** and apply everywhere the pipeline renders (develop, loupe, thumbnails, export). This is the simplest way to ship a whole-image tone mapper.
+`glsl` maps scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to display-encoded output. Helpers available: `luma()`, `srgbToLinear()`, `linearToSrgb()`, `linearToSrgbU()`. Transforms are picked per photo from the display transform menu in Develop's bottom bar; **Preferences ▸ Rendering ▸ Default display transform** covers photos without a pick. A photo's transform applies everywhere it renders (develop, loupe, thumbnails, export). This is the simplest way to ship a whole-image tone mapper.
 
 ## `ProcessingStageContribution` — GPU stage
 
