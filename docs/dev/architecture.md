@@ -26,7 +26,6 @@ src/
 ├── catalog/           # Photo records, EXIF, DevelopParams, storage interface, limits
 ├── project/           # Project folders: scan, .safelight/ storage, recents
 ├── raw/               # RAW decoding: libraw-wasm adapter, TIFF/CFA, cache
-├── lens-profiles/     # Lensfun-derived lens correction database + resolver
 ├── modules/
 │   ├── library/       # Grid/list, folders, filters, culling, import, keywords, metadata
 │   ├── develop/       # Canvas, overlays, and all tool panels
@@ -51,7 +50,7 @@ The core is intentionally **blind**: `App.tsx` routes between modules and render
 - **Registry** (`extensions/registry.ts`) — a Zustand store of all contributions, each tagged with its owning extension id so disabling or uninstalling sweeps everything it contributed. Emits lifecycle events (metadata change, edit commit, photo remove) that hook contributions subscribe to.
 - **Loader** (`extensions/loader.ts`) — loads built-ins, then external plugins from `<userData>/plugins/<id>/`; imports each ESM bundle and calls `activate(api)`; persists enablement in localStorage (synced across windows).
 
-Contribution points an extension can fill (see [API Reference](api/README.md) for signatures): panels, themes, layouts, slider icons, **render pipelines** (display transforms), **GPU processing stages**, keyboard shortcuts, settings, export processors, filename templates, lens profiles, **catalog lifecycle hooks**, preset importers, **grid filters**, **library sorts**, and **UI slots** (named mount points in core chrome).
+Contribution points an extension can fill (see [API Reference](api/README.md) for signatures): **modules**, panels (including per-mask panels), panel header accessories, themes, stylesheets, layouts, slider icons, cursors, **render pipelines** (display transforms), **GPU processing stages**, keyboard shortcuts, settings, export processors, filename templates, **catalog lifecycle hooks**, preset importers, **grid filters**, **library sorts**, grid menu items, and **UI slots** (named mount points in core chrome).
 
 ## Projects and Persistence
 
@@ -83,7 +82,7 @@ Decoded previews are cached (IndexedDB, or `<project>/.safelight/raw/` in a proj
 A single `WebGLRenderer` (`rendering/webgl/renderer.ts`) serves the Develop canvas, the loupe, thumbnail regeneration, and export. It does **not** run on the main thread:
 
 - **`render-worker.ts`** owns the `WebGLRenderer` on an `OffscreenCanvas` inside a Web Worker. It keeps a full-res develop renderer plus a low-res thumbnail renderer, the current `DevelopParams`, the active display pipeline, and an LRU GPU source cache.
-- **`render-bridge.ts`** is the main-thread handle (`RenderBridge`): `setImage`, `setParams` (re-sends the live pipeline when `displayTransform` changes), `render`, `capture` (off-screen render of arbitrary params, used by overlay extensions; carries the pipeline resolved from its own params, like the thumbnail renders), `uploadSource`/`bindSource` (GPU source cache), `setPipeline`/`syncPipeline` (re-sends the live photo's pipeline), `setLensProfile`, `setAsShotTemperature`. The `useDevelopRenderer` hook drives it and blits the returned `ImageBitmap` to a 2D display canvas.
+- **`render-bridge.ts`** is the main-thread handle (`RenderBridge`): `setImage`, `setParams` (re-sends the live pipeline when `displayTransform` changes), `render`, `capture` (off-screen render of arbitrary params, used by overlay extensions; carries the pipeline resolved from its own params, like the thumbnail renders), `uploadSource`/`bindSource` (GPU source cache), `setPipeline`/`syncPipeline` (re-sends the live photo's pipeline), `setStages`/`setContributedParams`/`setStageTextures` (extension GPU stages and their params), `setAsShotTemperature`. The `useDevelopRenderer` hook drives it and blits the returned `ImageBitmap` to a 2D display canvas.
 
 What the renderer does per frame:
 

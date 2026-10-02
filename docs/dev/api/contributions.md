@@ -4,9 +4,9 @@
 
 Signatures for every `register*` contribution. `src/extensions/types.ts` is the source of truth. All contributions are auto-tagged with the calling extension's id and swept when it is disabled or uninstalled.
 
-> The UI-mount contributions — **`ModuleContribution`**, **`PanelContribution`**, **`SlotContribution`**, and **`LayoutContribution`** — are documented in [UI Shell](ui-shell.md). **Theming** is covered in [UI Components](components.md#theming-tokens).
+> The UI-mount contributions — **`ModuleContribution`**, **`PanelContribution`** (including per-mask panels), **`PanelHeaderAccessoryContribution`**, **`SlotContribution`**, and **`LayoutContribution`** — are documented in [UI Shell](ui-shell.md). **Theming** is covered in [UI Components](components.md#theming-tokens).
 
-**Jump to:** [Theme](#themecontribution) · [SliderIcon](#slidericoncontribution) · [Pipeline](#pipelinecontribution--display-transform) · [ProcessingStage](#processingstagecontribution--gpu-stage) · [KeyAction](#keyactioncontribution) · [Settings](#settingscontribution) · [ExportProcessor](#exportprocessorcontribution) · [FilenameTemplate](#filenametemplatecontribution) · [LensProfile](#lensprofilecontribution) · [CatalogHooks](#cataloghookscontribution) · [PresetImporter](#presetimportercontribution) · [GridFilter](#gridfiltercontribution) · [LibrarySort](#librarysortcontribution) · [Cursor](#cursorcontribution) · [Stylesheet](#stylesheetcontribution)
+**Jump to:** [Theme](#themecontribution) · [SliderIcon](#slidericoncontribution) · [Pipeline](#pipelinecontribution--display-transform) · [ProcessingStage](#processingstagecontribution--gpu-stage) · [KeyAction](#keyactioncontribution) · [Settings](#settingscontribution) · [ExportProcessor](#exportprocessorcontribution) · [FilenameTemplate](#filenametemplatecontribution) · [CatalogHooks](#cataloghookscontribution) · [PresetImporter](#presetimportercontribution) · [GridFilter](#gridfiltercontribution) · [LibrarySort](#librarysortcontribution) · [GridMenuItem](#gridmenuitemcontribution) · [Cursor](#cursorcontribution) · [Stylesheet](#stylesheetcontribution)
 
 ## `ThemeContribution`
 
@@ -34,11 +34,11 @@ Keyed by the slider's `icon` id (e.g. `core.exposure`).
 interface PipelineContribution {
   id: string; name: string; description?: string;
   glsl?: string;          // body defining: vec3 pipelineToDisplay(vec3 lin)
-  skipBaseCurve?: boolean; // set when the transform brings its own contrast curve (AgX/ACES)
+  skipBaseCurve?: boolean; // the transform brings its own complete look (AgX, ACES, …)
 }
 ```
 
-`glsl` maps scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to display-encoded output. Helpers available: `luma()`, `srgbToLinear()`, `linearToSrgb()`, `linearToSrgbU()`. Transforms are picked per photo from the display transform menu in Develop's bottom bar; **Preferences ▸ Rendering ▸ Default display transform** covers photos without a pick. A photo's transform applies everywhere it renders (develop, loupe, thumbnails, export). This is the simplest way to ship a whole-image tone mapper.
+`glsl` maps scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to display-encoded output. Helpers available: `luma()`, `srgbToLinear()`, `linearToSrgb()`, `linearToSrgbU()`. Return the sRGB-encoded value and leave output spaces alone: the core converts once at the end for the selected output space (Display-P3, Adobe RGB, ProPhoto). With `skipBaseCurve`, Safelight drops the baseline tone it applies to RAW sources in linear light, so the transform sees true scene-linear data; the transform is the profile. Omit `glsl` to reuse the built-in transform. Transforms are picked per photo from the display transform menu in Develop's bottom bar; **Preferences ▸ Rendering ▸ Default display transform** covers photos without a pick. A photo's transform applies everywhere it renders (develop, loupe, thumbnails, export). This is the simplest way to ship a whole-image tone mapper.
 
 ## `ProcessingStageContribution` — GPU stage
 
@@ -59,6 +59,7 @@ interface ProcessingStageContribution {
   consumes?: string[];        // names of InterStageVariables this stage reads
   textures?: TextureRequirement[];
   mask?: { maskable: true; maskPhase: "linear" | "display" };
+  presetScope?: "global" | "per-image"; // how the stage's params behave in presets (default "global")
   after?: string[];           // soft dependencies on other stage ids
 }
 ```
@@ -68,9 +69,12 @@ The stage model and shader compiler (`src/rendering/webgl/shader-compiler.ts`) d
 - **`phase: "geometry"`** is special — it runs first and operates on the mutable source-UV `vec2 srcUv` (after crop/transform/lens, *before* the image is sampled), so a geometry stage can warp/displace the coordinate and have the entire downstream pipeline follow. Every other phase operates on a color (`lin` or `c`).
 - **`passes`** are full-screen pre-passes that ping-pong through framebuffers in source-UV space, enabling neighbourhood/iterative algorithms (à trous wavelets, NLM, separable blurs) a single inline fragment can't express. The final pass output is exposed to the stage's inline `glsl` as `vec3 stageResult`. See `StagePass` in `src/extensions/types.ts` for the per-pass contract (`uTexel`, `uPassIndex`, `uPassCount`, `readPrev(uv)`).
 - **`textures`** declare what the stage samples. `kind: "lut"` / `"dynamic"` textures take pixel data from `api.setStageTexture` (a single global bag — right for film LUTs, wrong for anything per photo). `kind: "coverage"` textures are painted: the photo's paramBag value at `"{stageId}.{key}"` is a `BrushDab[]` (source-UV, radius in image-height units — the same shape core brush masks use), baked into brush coverage per render and read by the inline `glsl`/`helpers` as `float key(vec2 uv)` (0..1 at source-UV; not available inside passes). Because the dabs are ordinary bag values they persist, undo, export and paste like any edit and never enter presets. Coverage shares the atlas's four channels with the photo's own brush masks; when they are all taken the key reads as unpainted and a warning is logged once.
+- **`presetScope`** decides how the stage's params travel in presets. `"global"` (the default) is a look that suits any photo, such as a film sim or a curve: it is offered when saving a preset and pre-selected once changed. `"per-image"` is tied to one photo's content, such as warp, heal or red-eye: it is left out of presets and only listed under the Save dialog's **Show all**.
 - Re-registering the same `id` replaces the stage (and its params); `unregisterProcessingStage(id)` removes one without disabling the whole extension. The shader recompiles on any such change.
 
-Reach for a stage (over `registerPipeline`) when you need phase ordering, uniforms, multiple passes, or coordinate warping.
+Reach for a stage (over `registerPipeline`) when you need phase ordering, uniforms, multiple passes, or coordinate warping. Lens correction is built this way: it moved out of core into the optional [Lens Correction](https://github.com/anthonyreimche/Lens-Correction) extension, which ships distortion as a `geometry` stage, chromatic aberration as a `decode` stage with a pre-pass, vignetting in `scene-linear`, and defringe in `effects`.
+
+> **`registerLensProfile` was removed.** Core no longer has a lens database, so there is nothing for a lens profile to plug into. Ship corrections as processing stages instead, as the Lens Correction extension does.
 
 ## `KeyActionContribution`
 
@@ -83,7 +87,7 @@ interface KeyActionContribution {
 }
 ```
 
-The action appears in **Preferences ▸ Shortcuts** and is rebindable like any built-in. Read the current binding with `api.keybindings.getBinding(actionId)`. See [Subsystems → Keybindings](subsystems.md#keybindings) for combo format.
+The action appears in **Preferences ▸ Shortcuts** and is rebindable like any built-in. Read the current binding with `api.keybindings.getBinding(actionId)` (`""` when unbound). `api.keybindings.list()` returns every built-in action as `{ id, label, category, combo }` with the user's overrides applied, so a tool that picks default combos can check them against the live shortcuts instead of a hard-coded list. See [Subsystems → Keybindings](subsystems.md#keybindings) for combo format.
 
 ## `SettingsContribution`
 
@@ -92,7 +96,8 @@ interface SettingsContribution {
   title?: string;             // section title (defaults to the extension name)
   fields: SettingsField[];    // auto-rendered, themed, searchable
   order?: number;
-  component?: ComponentType;  // escape hatch for fully custom UI
+  component?: ComponentType;  // escape hatch for fully custom UI (receives no props)
+  keywords?: string[];        // extra Preferences-search synonyms, e.g. for a custom component
 }
 
 type SettingsField =
@@ -125,18 +130,6 @@ interface FilenameTemplateContribution { id: string; label: string; template: st
 
 Built-in variables resolved from `CatalogPhoto`: `{filename}` (base name without extension), `{ext}`, `{year}`, `{month}`, `{day}`, `{rating}`, `{camera}`, `{lens}`. Unknown variables are left as `{name}`.
 
-## `LensProfileContribution`
-
-```typescript
-interface LensProfileContribution {
-  id: string; lensMake: string; lensModel: string;
-  priority?: number;          // > 0 checked before Lensfun; <= 0 is a fallback (default 0)
-  resolve(exif: ExifData): ResolvedProfile | null; // interpolated distortion / TCA / vignetting
-}
-```
-
-Supplements or overrides the built-in Lensfun-derived database in `src/lens-profiles/`. See that folder's `types.ts` for `ResolvedProfile`, `ResolvedDistortion` (`poly3`/`poly5`/`ptlens`), `ResolvedTca`, and `ResolvedVignetting`.
-
 ## `CatalogHooksContribution`
 
 ```typescript
@@ -164,7 +157,7 @@ interface PresetImporterContribution {
 }
 ```
 
-Teaches the Presets panel's Import picker to read preset files from other apps.
+Teaches the Presets panel's Import picker to read preset files from other apps. Return `null` (or empty `params`) when the file holds no settings you can map: the panel tells the user it found no develop settings instead of saving an empty preset. A throwing `parse` is logged and reported the same way. Params are on Safelight's own scales (exposure in EV, temperature in Kelvin, most sliders ±100), and the panel merges them over the photo's current edit.
 
 ## `GridFilterContribution`
 
@@ -189,6 +182,21 @@ interface LibrarySortContribution {
 
 Adds an entry to the Library toolbar's sort dropdown.
 
+## `GridMenuItemContribution`
+
+```typescript
+interface GridMenuItemContribution {
+  id: string;                                // globally unique, e.g. "my-ext.virtual-copy"
+  label: string | ((ids: string[]) => string); // a function can vary it, e.g. add "(3)"
+  order?: number;                            // among extension items (default 100)
+  danger?: boolean;                          // render in the red "danger" color
+  enabled?: (ids: string[]) => boolean;      // false = shown greyed out
+  onClick: (ids: string[]) => void;
+}
+```
+
+Appends an action to the Library grid's right-click menu, grouped below the built-in actions behind a separator. `ids` are the targeted photos: the right-clicked photo, or the whole selection when the right-clicked photo is part of it (the same targeting the built-in items use). Re-registering the same id replaces the item. The same menu appears on extension photo surfaces that use [`api.catalog.usePhotoActions`](components.md#photo-surfaces-menu-and-shortcuts).
+
 ## `CursorContribution`
 
 ```typescript
@@ -201,7 +209,16 @@ interface CursorContribution {
 }
 ```
 
-A named cursor for the Develop canvas. Supply **either** `css` or `image`. Reference it by `id` from [`api.develop.setCanvasCursor`](stores.md#apidevelop). Inline SVG is encoded to a data URL (always CSP-allowed); an `image` URL is subject to the app CSP. Re-registering the same id replaces it.
+A named cursor for the Develop canvas. Supply **either** `css` or `image`. Reference it by `id` from [`api.develop.setCanvasCursor`](stores.md#apidevelop). Inline SVG is encoded to a data URL (always CSP-allowed); an `image` URL is subject to the app CSP. Re-registering the same id replaces it. Registering a built-in token id (`"pick"`, `"pan"`, …) overrides that token app-wide, which is how a cursor theme works; the built-in comes back when the extension unloads.
+
+`api.cursors` exposes the shared cursor vocabulary:
+
+| Member | Notes |
+|---|---|
+| `labels` | Canonical human-facing names for the built-in cursor tokens, keyed by token id (`"pick"`, `"zoom-in"`, `"crop-move"`, …). Use them to label controls that restyle cursors so the wording matches the app. |
+| `resolve(token)` | The concrete CSS `cursor` value for a token right now, including any cursor-theme override. Use it to give an interactive overlay the same cursor the app uses (e.g. `resolve("pick")` for an on-image color picker) instead of hard-coding `"crosshair"`. An unknown token is returned as-is, so a raw CSS value passes through. |
+
+Both are non-reactive: read them at render.
 
 ## `StylesheetContribution`
 

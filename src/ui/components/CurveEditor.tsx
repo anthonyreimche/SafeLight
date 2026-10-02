@@ -251,7 +251,7 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   // ── Selected-point number fields (non-drag pointer path) ────────────────────
   const setInputPct = (raw: string) => {
     setEditing({ field: "in", raw });
-    if (isEndpoint || raw === "") return;
+    if (raw === "") return;
     const n = Number(raw);
     if (!Number.isFinite(n)) return;
     const i = sel;
@@ -350,12 +350,11 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
           min={0}
           max={100}
           value={editing?.field === "in" ? editing.raw : Math.round(selPoint.x * 100)}
-          disabled={isEndpoint}
           onFocus={() => setEditing({ field: "in", raw: String(Math.round(selPoint.x * 100)) })}
           onChange={(e) => setInputPct(e.target.value)}
           onBlur={() => { setEditing(null); onCommit(); }}
           aria-label="Selected point input level (%)"
-          className={`${numCls} disabled:opacity-40`}
+          className={numCls}
         />
         <label className="text-text-muted" htmlFor={`${helpId}-out`}>Out</label>
         <input
@@ -476,11 +475,10 @@ function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-// Endpoints pin to 0/1; interior points stay between their neighbors.
+// Points stay between their neighbors; an endpoint's outer bound is the plot
+// edge, so the black point can slide right and the white point left.
 function clampPointX(points: CurvePoint[], i: number, x: number): number {
-  if (i === 0) return 0;
-  if (i === points.length - 1) return 1;
-  const lo = points[i - 1].x + 0.001;
-  const hi = points[i + 1].x - 0.001;
+  const lo = i === 0 ? 0 : points[i - 1].x + 0.001;
+  const hi = i === points.length - 1 ? 1 : points[i + 1].x - 0.001;
   return Math.min(Math.max(x, lo), hi);
 }

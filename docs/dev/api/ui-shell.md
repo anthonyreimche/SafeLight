@@ -27,13 +27,15 @@ A `defaultLayout` seeds only the panels that are registered, so a core panel the
 
 The `component` is mounted only while the module is active in that window: every tab switch unmounts it, so keep anything that must survive a switch in a store or in settings rather than in component state. If the component or the status bar throws while rendering, the error is shown in its place and the top bar, tabs and Extensions button keep working, so the user can still switch modules or disable the extension.
 
-Extensions can also extend any module through three mount mechanisms:
+Extensions can also extend any module through these mount mechanisms:
 
 | Mechanism | Contribution | What it gives you | Where it lives |
 |---|---|---|---|
 | **Panel** | `registerPanel` | A dockable, tabbable, floatable window with your own React component | A dock rail in any module (placed via `defaultDock`) |
 | **Slot** | `registerSlot` | A component injected into a fixed region of core chrome | Named `SlotName` regions (toolbars, sub-bars, the canvas overlay) |
 | **Stack panel** | `registerPanel` with `slot` | A small panel hosted inside a composite stack | `"develop-right"` / `"develop-left"` |
+| **Per-mask panel** | `registerPanel` with `mask` | A compact variant of your panel, one instance per mask | The Masking panel's **+ Adjust** menu |
+| **Header accessory** | `registerPanelHeaderAccessory` | One control rendered on every panel's dock header | Left of each panel title |
 
 Switch the active module imperatively with `api.navigation.goTo(id)` (`ModuleId` = `"library" | "develop"` or a registered id), and read it from `api.stores.useUIStore(s => s.activeModule)`. A panel's component is mounted whenever the panel is visible in its module; it is *not* told which module it is in — read `useUIStore` if you need to vary behavior.
 
@@ -64,8 +66,16 @@ interface PanelContribution {
     height?: number;          // bottom-rail strip height
   };
   onReset?: () => void;       // adds "Reset to defaults" to the dock header; one undoable action
+  headerAccessory?: ComponentType; // a control left of this panel's title (e.g. a bypass eye)
+  mask?: {                    // makes the panel addable per mask (see Per-mask panels)
+    component: ComponentType;
+    order?: number;           // among a mask's sub-panels (default 100)
+    owns: readonly string[];  // the mask values this sub-panel edits
+  };
 }
 ```
+
+A `headerAccessory` must handle its own clicks. The header ignores pointerdowns on buttons, so clicking one won't start a panel drag.
 
 Side rails render panels top-to-bottom at natural height; a **bottom** rail renders its panels side-by-side, each filling the strip's height, with the rail resized from its top edge. Collapsing folds a bottom rail downward — once every panel in it is collapsed the rail drops to its headers and gives the band back to the main view, restoring its height when one is expanded again.
 
@@ -78,6 +88,53 @@ const { side } = api.dock.usePanelPlacement(); // "left" | "right" | "bottom" | 
 ```
 
 To *replace* a stock panel, register your own and tell users to disable the built-in (e.g. "Histogram") in the Extensions panel.
+
+### Per-mask panels (`PanelContribution.mask`)
+
+A panel that declares `mask` shows up in the Masking panel's **+ Adjust** menu, and each mask that adds it renders its own instance of `mask.component` in the mask's Adjust tab. The built-in Basic, White Balance, HSL, Tone Curve and Detail panels work this way.
+
+`owns` lists the mask values the sub-panel edits: `MaskAdjustments` keys (`"exposure"`, `"clarity"`, …), the structured blocks `"hsl"` and `"toneCurve"`, or qualified extension keys (`"my-ext.stage.amount"`). They are seeded with defaults when the sub-panel is added to a mask, cleared when it is removed, and restored to defaults by the mask's Reset action.
+
+The component reads and writes the mask it belongs to through `api.develop.useMaskScope()`, never the global develop params:
+
+```typescript
+interface MaskParamScope {
+  maskId: string;
+  adj: MaskAdjustments;                          // core local adjustments, -100..100, 0 = none
+  setAdj(patch: Partial<MaskAdjustments>): void;
+  hsl: HSLAdjustments | undefined;               // present only while the HSL sub-panel is added
+  setHsl(value: HSLAdjustments): void;
+  toneCurve: ToneCurves | undefined;             // present only while the Tone Curve sub-panel is added
+  setToneCurve(value: ToneCurves): void;
+  getParam(key: string): unknown;                // extension params; falls back to the registered default
+  setParam(key: string, value: unknown): void;
+  commit(label: string): void;                   // end the gesture as one undo step
+}
+```
+
+`useMaskScope` throws outside a mask sub-panel, so only call it from `mask.component`. Core adjustments (`adj`, `hsl`, `toneCurve`) are applied by the GPU's local-adjustment path. Extension params set with `setParam` are saved per mask (in `Mask.bag`), but extension stages still apply globally: per-mask stage application is planned, not built.
+
+## Panel header accessories (`registerPanelHeaderAccessory`)
+
+One control rendered on **every** panel's dock header, left of the title and beside that panel's own `headerAccessory`. It lets an extension add a uniform per-panel affordance (a preview-off eye, a pin) without core knowing about it.
+
+```typescript
+interface PanelHeaderAccessoryContribution {
+  id: string;                                  // globally unique, e.g. "my-ext.eye"
+  component: ComponentType<PanelHeaderContext>;
+  order?: number;                              // among header accessories (default 100)
+}
+
+interface PanelHeaderContext {
+  panelId: string;
+  title: string;
+  module?: ModuleId;     // the dock module the panel defaults into, if known
+  extensionId: string;   // who registered the panel ("host" / "core.*" for built-ins)
+  previewable: boolean;  // the renderer can preview this panel's effect off
+}
+```
+
+The component receives each panel's identity as props and returns `null` to render nothing for that panel. `previewable` is true when the panel governs core adjustments or its extension owns a GPU stage, and false for panels with no image effect (Histogram, Edit, Presets), so a preview eye can hide itself there. Handle your own pointer events, as for `headerAccessory`.
 
 ## Slots (`registerSlot`)
 
@@ -100,6 +157,8 @@ interface SlotContribution {
 | `develop-toolbar` | The Develop status bar, left of the zoom controls |
 | `develop-canvas-overlay` | A click-through layer over the Develop canvas — pair with [`api.develop`](stores.md#apidevelop) to build before/after overlays and canvas tools |
 | `develop-detail` | Inside the Detail panel's Noise Reduction area; **replaces** the built-in NR sliders when contributed (e.g. an alternative denoiser) |
+
+`api.unregisterSlot(id)` removes one slot contribution, so a slot can come and go with feature state. A denoiser, for example, drops its `develop-detail` controls when its method is set to "off", and the Detail panel falls back to the built-in sliders.
 
 ## Layouts (`registerLayout`)
 

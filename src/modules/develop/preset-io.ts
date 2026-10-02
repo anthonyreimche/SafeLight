@@ -4,6 +4,7 @@
 // be preserved in derived versions.
 
 import type { DevelopParams } from "@/catalog/types";
+import type { PresetImporterContribution } from "@/extensions/types";
 
 const PRESET_FORMAT = "safelight-preset";
 const PRESET_VERSION = 1;
@@ -130,16 +131,72 @@ export function pickPresetFile(accept: string): Promise<File | null> {
   });
 }
 
-// Parse a SafeLight preset JSON file. Returns name + group + the partial params
-// it carries, or null if the file isn't a SafeLight preset this build can read
-// (so the caller can try other importers). Params are kept partial; the caller
-// merges them over the photo's current edit when applying.
-export async function parseSafelightPreset(file: File): Promise<{
+export interface ImportedPreset {
   name: string;
   group?: string;
   params: Partial<DevelopParams>;
   paramBag?: Record<string, unknown>;
-} | null> {
+}
+
+export type PresetImportOutcome =
+  | { status: "imported"; preset: ImportedPreset }
+  /** No installed importer claims this file type. */
+  | { status: "no-importer"; extension: string }
+  /** An importer claimed the file but found no develop settings in it. */
+  | { status: "no-settings" }
+  /** A .json file that isn't a Safelight preset this build can read. */
+  | { status: "unreadable" };
+
+// Other apps' preset formats an extension can teach the importer. They stay
+// selectable in the picker with no importer installed, so choosing one explains
+// what's missing instead of the folder looking empty.
+const FOREIGN_PRESET_EXTENSIONS = [".xmp", ".lrtemplate"];
+
+export function presetPickerAccept(
+  importers: readonly PresetImporterContribution[],
+): string {
+  const extensions = new Set([
+    ".json",
+    ...FOREIGN_PRESET_EXTENSIONS,
+    ...importers.flatMap((i) => i.extensions),
+  ]);
+  return [...extensions].join(",");
+}
+
+// Safelight's own JSON first, then the importer claiming the file's extension.
+export async function importPresetFile(
+  file: File,
+  importers: readonly PresetImporterContribution[],
+): Promise<PresetImportOutcome> {
+  const native = await parseSafelightPreset(file);
+  if (native) return { status: "imported", preset: native };
+
+  const lower = file.name.toLowerCase();
+  const importer = importers.find((i) => i.extensions.some((e) => lower.endsWith(e)));
+  if (!importer) {
+    const extension = lower.match(/\.[^.]+$/)?.[0] ?? "";
+    return extension === ".json"
+      ? { status: "unreadable" }
+      : { status: "no-importer", extension };
+  }
+
+  try {
+    const result = await importer.parse(file);
+    if (!result || Object.keys(result.params).length === 0) {
+      return { status: "no-settings" };
+    }
+    return { status: "imported", preset: { name: result.name, params: result.params } };
+  } catch (e) {
+    console.warn(`[presets] importer "${importer.id}" failed on ${file.name}:`, e);
+    return { status: "no-settings" };
+  }
+}
+
+// Parse a SafeLight preset JSON file. Returns name + group + the partial params
+// it carries, or null if the file isn't a SafeLight preset this build can read
+// (so the caller can try other importers). Params are kept partial; the caller
+// merges them over the photo's current edit when applying.
+export async function parseSafelightPreset(file: File): Promise<ImportedPreset | null> {
   try {
     const parsed = JSON.parse(await file.text()) as Record<string, unknown>;
     if (parsed.format !== PRESET_FORMAT) return null;

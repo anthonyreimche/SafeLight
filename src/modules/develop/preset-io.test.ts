@@ -7,7 +7,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DevelopParams } from "@/catalog/types";
-import { exportPreset, parseSafelightPreset } from "./preset-io.ts";
+import type { PresetImporterContribution } from "@/extensions/types";
+import {
+  exportPreset,
+  importPresetFile,
+  parseSafelightPreset,
+  presetPickerAccept,
+} from "./preset-io.ts";
 
 interface AnchorStub {
   href: string;
@@ -277,5 +283,99 @@ describe("parseSafelightPreset: display transform", () => {
   it("drops a value that is not a string", async () => {
     const parsed = await parseSafelightPreset(carrying(7));
     expect(parsed?.params).not.toHaveProperty("displayTransform");
+  });
+});
+
+describe("importPresetFile", () => {
+  const xmpFile = (name = "Warm Matte.xmp"): File =>
+    new File(["<x:xmpmeta/>"], name, { type: "application/rdf+xml" });
+
+  const importer = (
+    parse: PresetImporterContribution["parse"],
+    extensions = [".xmp"],
+  ): PresetImporterContribution => ({
+    id: "test.importer",
+    label: "Test preset (.xmp)",
+    extensions,
+    parse,
+  });
+
+  it("reads a Safelight preset without consulting importers", async () => {
+    const parse = vi.fn(async () => null);
+    const outcome = await importPresetFile(
+      presetFile('{"format":"safelight-preset","name":"Look","params":{"exposure":1}}'),
+      [importer(parse, [".json"])],
+    );
+    expect(outcome).toEqual({
+      status: "imported",
+      preset: { name: "Look", params: { exposure: 1 } },
+    });
+    expect(parse).not.toHaveBeenCalled();
+  });
+
+  it("routes a file to the importer claiming its extension, ignoring case", async () => {
+    const outcome = await importPresetFile(xmpFile("WARM MATTE.XMP"), [
+      importer(async () => ({ name: "Warm Matte", params: { exposure: 0.35 } })),
+    ]);
+    expect(outcome).toEqual({
+      status: "imported",
+      preset: { name: "Warm Matte", params: { exposure: 0.35 } },
+    });
+  });
+
+  it("names the file type when no installed importer reads it", async () => {
+    expect(await importPresetFile(xmpFile(), [])).toEqual({
+      status: "no-importer",
+      extension: ".xmp",
+    });
+  });
+
+  it("reports no settings when the importer doesn't recognise the file", async () => {
+    const outcome = await importPresetFile(xmpFile(), [importer(async () => null)]);
+    expect(outcome).toEqual({ status: "no-settings" });
+  });
+
+  it("reports no settings rather than saving an empty preset", async () => {
+    const outcome = await importPresetFile(xmpFile(), [
+      importer(async () => ({ name: "Profile only", params: {} })),
+    ]);
+    expect(outcome).toEqual({ status: "no-settings" });
+  });
+
+  it("reports no settings when the importer throws", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const outcome = await importPresetFile(xmpFile(), [
+      importer(async () => {
+        throw new Error("malformed XML");
+      }),
+    ]);
+    expect(outcome).toEqual({ status: "no-settings" });
+  });
+
+  it("reports a .json file that isn't a readable Safelight preset", async () => {
+    expect(await importPresetFile(presetFile("{ not json"), [])).toEqual({
+      status: "unreadable",
+    });
+  });
+});
+
+describe("presetPickerAccept", () => {
+  const claiming = (...extensions: string[]): PresetImporterContribution => ({
+    id: "test.importer",
+    label: "Test",
+    extensions,
+    parse: async () => null,
+  });
+
+  // Other apps' preset files stay selectable with no importer installed, so
+  // picking one explains what's missing instead of the folder looking empty.
+  it("offers other apps' preset files with no importer installed", () => {
+    expect(presetPickerAccept([])).toBe(".json,.xmp,.lrtemplate");
+  });
+
+  it("adds each importer's extensions once", () => {
+    expect(presetPickerAccept([claiming(".xmp", ".dcp"), claiming(".dcp")])).toBe(
+      ".json,.xmp,.lrtemplate,.dcp",
+    );
   });
 });

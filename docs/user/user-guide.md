@@ -69,7 +69,7 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 
 - **White Balance** — temperature and tint, with an eyedropper that solves both from a neutral target you click.
 - **Basic** — exposure (±5 EV), contrast, highlights, shadows, whites, blacks, texture, clarity, dehaze, vibrance, saturation, plus Auto Tone.
-- **Tone Curve** — point curves for the RGB master and individual red, green, and blue channels. Click to add a point, drag to shape, double-click a point to remove/reset.
+- **Tone Curve** — point curves for the RGB master and individual red, green, and blue channels. Click to add a point, drag to shape, double-click a point to remove/reset. The end points move too: drag the black point right to clip shadows or the white point left to clip highlights, and up or down to lift or lower them.
 - **HSL** — hue, saturation, and luminance for 8 bands: red, orange, yellow, green, aqua, blue, purple, magenta. A picker lets you click the image to adjust the band under the cursor.
 - **Color Grading** — shadows / midtones / highlights / global color wheels with per-wheel luma and shadow/highlight range. Drag to set hue and saturation, Shift for precision; double-click resets hue and saturation only (not luma).
 
@@ -96,7 +96,7 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 
 ### Presets
 
-The Presets panel saves the current edit as a named preset and applies presets to other photos. Presets are additive — they carry only the adjustments they set — in an open, human-readable JSON format (`safelight-preset`, version 1) that you can export and import. Hovering a preset previews it without touching history. Extensions can teach the importer to read other apps' preset files (e.g. Lightroom `.xmp` via the XMP Tools extension).
+The Presets panel saves the current edit as a named preset and applies presets to other photos. Presets are additive — they carry only the adjustments they set — in an open, human-readable JSON format (`safelight-preset`, version 1) that you can export and import. Hovering a preset previews it without touching history. Extensions can teach the importer to read other apps' preset files (e.g. Lightroom `.xmp` via the XMP Tools extension). If you pick a file nothing installed can read, Import says why in the panel, and for another app's preset format it links to the store's **Presets** category.
 
 ## Exporting
 
@@ -163,4 +163,4 @@ Develop and Library shortcuts only fire in their module, so the same key can ser
 ## Themes and Extensions
 
 - **Themes** — switch between Safelight Dark, Safelight Light, and any extension-provided theme from the View menu.
-- **Extensions** — every stock panel is itself a pre-installed extension that can be disabled and replaced by a community version. Install new ones from GitHub via **View ▸ Extensions** (or **Ctrl+Shift+X**). Safelight ships with example extensions (Advanced Library Sort, Image Comparison, XMP Tools). See [Using Extensions](using-extensions.md).
+- **Extensions** — every stock panel is itself a pre-installed extension that can be disabled and replaced by a community version. Install new ones from GitHub via **View ▸ Extensions** (or **Ctrl+Shift+X**), such as Advanced Library Sort, Image Comparison, or XMP Tools. See [Using Extensions](using-extensions.md).

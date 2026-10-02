@@ -9,8 +9,15 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { usePresetsStore, nextAvailableName, type Preset } from "@/state/presets-store";
 import { usePresetImporters, describePresetBag } from "@/extensions/registry";
+import { useExtStoreUI } from "@/extensions/store-ui";
 import { normalizeParams, type DevelopParams } from "@/catalog/types";
-import { exportPreset, pickPresetFile, parseSafelightPreset } from "../preset-io";
+import {
+  exportPreset,
+  importPresetFile,
+  pickPresetFile,
+  presetPickerAccept,
+  type PresetImportOutcome,
+} from "../preset-io";
 import { summarizePreset } from "../preset-summary";
 import { PresetTooltip } from "./PresetTooltip";
 import { PresetOverwriteDialog } from "./PresetOverwriteDialog";
@@ -19,12 +26,44 @@ import { PresetRenameDialog } from "./PresetRenameDialog";
 import { PresetMoveDialog } from "./PresetMoveDialog";
 import { PresetDeleteDialog } from "./PresetDeleteDialog";
 import { ContextMenu } from "@/ui/components/ContextMenu";
+import { openExtensions } from "@/ui/components/ExtensionsDialog";
 
 interface PendingSave {
   name: string;
   group: string;
   params: Partial<DevelopParams>;
   paramBag?: Record<string, unknown>;
+}
+
+interface ImportNotice {
+  text: string;
+  /** Offer the Extensions store, where an importer for this file can be found. */
+  offerStore: boolean;
+}
+
+function importNoticeFor(
+  outcome: Exclude<PresetImportOutcome, { status: "imported" }>,
+  fileName: string,
+): ImportNotice {
+  switch (outcome.status) {
+    case "no-importer":
+      return {
+        text: outcome.extension
+          ? `No installed extension can import ${outcome.extension} presets.`
+          : `No installed extension can import “${fileName}”.`,
+        offerStore: true,
+      };
+    case "no-settings":
+      return {
+        text: `Couldn't find any develop settings in “${fileName}”.`,
+        offerStore: false,
+      };
+    case "unreadable":
+      return {
+        text: `“${fileName}” isn't a Safelight preset this version can read.`,
+        offerStore: false,
+      };
+  }
 }
 
 export function PresetsPanel() {
@@ -37,6 +76,7 @@ export function PresetsPanel() {
   const [confirmDelete, setConfirmDelete] = useState<Preset | null>(null);
   const [collision, setCollision] = useState<{ existingId: string; pending: PendingSave } | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
   const params = useDevelopStore((s) => s.params);
   const paramBag = useDevelopStore((s) => s.paramBag);
   const photoId = useDevelopStore((s) => s.photoId);
@@ -102,30 +142,30 @@ export function PresetsPanel() {
   };
 
   const handleImport = async () => {
-    const accept = [".json", ...importers.flatMap((i) => i.extensions)].join(",");
-    const file = await pickPresetFile(accept);
+    const file = await pickPresetFile(presetPickerAccept(importers));
     if (!file) return;
+    setImportNotice(null);
 
-    // SafeLight's own JSON first, then any registered importer by extension.
-    // Route through commitSave so a name clash offers Overwrite / Save-as-new.
-    const native = await parseSafelightPreset(file);
-    if (native) {
-      commitSave({
-        name: native.name,
-        group: native.group ?? "",
-        params: native.params,
-        paramBag: native.paramBag,
-      });
-      applyPreset(effective(native.params), native.paramBag);
+    const outcome = await importPresetFile(file, importers);
+    if (outcome.status !== "imported") {
+      setImportNotice(importNoticeFor(outcome, file.name));
       return;
     }
-    const lower = file.name.toLowerCase();
-    const importer = importers.find((i) => i.extensions.some((e) => lower.endsWith(e)));
-    if (!importer) return;
-    const result = await importer.parse(file);
-    if (!result) return;
-    commitSave({ name: result.name, group: "", params: result.params });
-    applyPreset(effective(result.params));
+    // Route through commitSave so a name clash offers Overwrite / Save-as-new.
+    const { preset } = outcome;
+    commitSave({
+      name: preset.name,
+      group: preset.group ?? "",
+      params: preset.params,
+      paramBag: preset.paramBag,
+    });
+    applyPreset(effective(preset.params), preset.paramBag);
+  };
+
+  const browseImporters = () => {
+    setImportNotice(null);
+    useExtStoreUI.getState().setCategory("Presets");
+    openExtensions();
   };
 
   const renderPreset = (preset: Preset) => (
@@ -201,6 +241,33 @@ export function PresetsPanel() {
         >
           Export
         </button>
+      </div>
+
+      {/* Kept mounted so the live region announces the first notice too. */}
+      <div role="status" aria-live="polite">
+        {importNotice && (
+          <div className="mb-2 flex items-start gap-1.5 rounded bg-surface-2 px-2 py-1.5 text-[10px] leading-snug text-text-secondary">
+            <div className="min-w-0 flex-1">
+              <p>{importNotice.text}</p>
+              {importNotice.offerStore && (
+                <button
+                  onClick={browseImporters}
+                  className="mt-1 text-slider-fill hover:underline"
+                >
+                  Browse importers
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => setImportNotice(null)}
+              title="Dismiss"
+              aria-label="Dismiss"
+              className="text-text-muted hover:text-text-primary"
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       {presets.length === 0 ? (
