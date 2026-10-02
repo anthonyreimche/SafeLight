@@ -2,9 +2,10 @@
 
 ← [API Reference](README.md)
 
-`api.components` is the stock component kit — pre-themed React components so extension UI matches the app exactly. They are built with the app's own React instance; render them through `api.react` (`React.createElement(api.components.Slider, props)`), never import React yourself. Seven components are exposed: `Panel`, `Slider`, `Histogram`, `CurveEditor`, `Rating`, `Thumbnail`, `PhotoListRow`.
+Two kits keep extension UI matching the app exactly. Both are built with the app's own React instance; render them through `api.react` (`React.createElement(api.components.Slider, props)`), never import React yourself.
 
-> There is **no `Button` component** in the kit — buttons in Safelight are plain styled `<button>` elements. See [Building custom controls](#building-custom-controls-buttons-checkboxes-selects).
+- **`api.components`** — the app's own composite components: `Panel`, `Slider`, `Histogram`, `CurveEditor`, `Rating`, `Thumbnail`, `PhotoListRow`.
+- **`api.ui`** — themed form and layout primitives: `Button`, `Select`, `TextInput`, `NumberInput`, `TextArea`, `Toggle`, `SegmentedControl`, `Field`, `Section`, `Card`, `Badge`, `ProgressBar`, `Stack`, `Row`, plus `tokens`. Prefer these over hand-rolled inline-styled controls.
 
 - [`Panel`](#panel)
 - [`Slider`](#slider)
@@ -14,9 +15,10 @@
 - [`Thumbnail`](#thumbnail)
 - [`PhotoListRow`](#photolistrow)
 - [Photo surfaces: menu and shortcuts](#photo-surfaces-menu-and-shortcuts)
+- [`api.ui` primitives](#apiui-primitives)
 - [Theming tokens](#theming-tokens)
 - [Styling hooks](#styling-hooks)
-- [Building custom controls](#building-custom-controls-buttons-checkboxes-selects)
+- [Building custom controls](#building-custom-controls)
 
 ## `Panel`
 
@@ -141,9 +143,48 @@ api.catalog.useCullingShortcuts({ sizeSteps: false });
 
 `api.catalog.requestThumbnail(photoId)` queues a photo's grid preview through core's on-demand loader, the same call a `Thumbnail` cell makes as it scrolls into view; the preview lands on the record's `thumbnailUrl`. A surface that draws previews itself (a canvas, a map pin) has no cell to trigger the load, so it calls this for each photo it is about to draw whose record has no `thumbnailUrl` yet, as the cell does. For a photo that already has one, the call still reads the preview from disk, and the result is discarded.
 
+## `api.ui` primitives
+
+Runtime-loaded extensions can't use Tailwind (only core is scanned), so these controls are authored in core and rendered inside your extension's subtree. They pick up the active theme and match the Preferences controls exactly. Controlled inputs take a `value` and an `onChange` that receives the new value directly (not an event).
+
+| Component | Props | Notes |
+|---|---|---|
+| `Button` | `variant?: "primary" \| "secondary" \| "ghost" \| "danger"`, `size?: "sm" \| "md"`, `active?`, `full?`, plus any `<button>` attribute | Defaults: `secondary`, `md`, `type="button"`. `active` renders the selected state (accent fill) whatever the variant; `full` stretches to the container width. |
+| `Select` | `value`, `onChange(value)`, `options?: { value, label }[]` or `groups?` (headed sections), `placeholder?`, `disabled?`, `ariaLabel?`, `title?`, `className?` | The app's one dropdown, full-width by default. |
+| `TextInput` | `value`, `onChange(value)`, plus any `<input>` attribute | Spellcheck off. |
+| `NumberInput` | `value: number`, `onChange(n)`, `width?` (CSS, default `"56px"`), plus any `<input>` attribute | Ignores empty and non-finite entries. For anything a user scrubs, prefer `api.components.Slider`. |
+| `TextArea` | `value`, `onChange(value)`, `mono?`, `rows?` (default 4) | `mono` switches to the monospace font, for code or SVG markup. |
+| `Toggle` | `checked`, `onChange(checked)`, `label?`, `ariaLabel?` | The app switch (`.sl-switch`), with an optional inline label before it. |
+| `SegmentedControl` | `value`, `onChange(value)`, `options: { value, label, title? }[]`, `size?` | A row of mutually exclusive buttons (`.sl-segmented`). |
+| `Field` | `label?`, `hint?`, `children` | Stacked label, control and hint, as in Preferences. |
+| `Section` | `title`, `right?`, `children` | An uppercase header (with an optional right-aligned control) over its children. |
+| `Card` | `children`, `className?` | A bordered, raised container. |
+| `Badge` | `children`, `color?` | A small pill; neutral unless `color` sets an explicit background. |
+| `ProgressBar` | `value` (0..1) | A thin accent bar. |
+| `Stack` / `Row` | `gap?` (px, default 8), `style?`; `Row` also takes `align?`, `justify?`, `wrap?` | Vertical / horizontal flex with a pixel gap. |
+
+`api.ui.tokens` holds the canonical theme variable strings (`tokens.surface2` is `"var(--color-surface-2)"`, `tokens.textMuted`, `tokens.accent`, `tokens.fontMono`, …) for the occasional inline style. Use them instead of typing `var(--color-…)` by hand, so a typo can't point at a variable that doesn't exist.
+
+```js
+const React = api.react;
+const { Button, Field, Select, Stack } = api.ui;
+
+function ExportOptions() {
+  const [size, setSize] = React.useState("2048");
+  return React.createElement(Stack, { gap: 8 },
+    React.createElement(Field, { label: "Long edge", hint: "Pixels on the longer side." },
+      React.createElement(Select, {
+        value: size,
+        onChange: setSize,
+        options: [{ value: "2048", label: "2048 px" }, { value: "4096", label: "4096 px" }],
+      })),
+    React.createElement(Button, { variant: "primary", full: true, onClick: run }, "Export"));
+}
+```
+
 ## Theming tokens
 
-Runtime-loaded bundles are **not scanned by Tailwind**, so arbitrary Tailwind utility classes won't have CSS generated. Build custom UI by reusing `api.components`, or with inline styles that reference the theme CSS variables below (which *are* always present and re-applied live when the user switches theme). Native form controls (`<input type="range/checkbox/radio">`, `<select>`, `<progress>`) inherit `accent-color: var(--color-slider-fill)` globally, so they already match the theme without extra styling.
+Runtime-loaded bundles are **not scanned by Tailwind**, so arbitrary Tailwind utility classes won't have CSS generated. Build custom UI by reusing `api.components` and `api.ui`, or with inline styles that reference the theme CSS variables below (`api.ui.tokens` has them as ready-made strings) (which *are* always present and re-applied live when the user switches theme). Native form controls (`<input type="range/checkbox/radio">`, `<select>`, `<progress>`) inherit `accent-color: var(--color-slider-fill)` globally, so they already match the theme without extra styling.
 
 Every theme (and an extension's [`ThemeContribution.vars`](contributions.md#themecontribution)) sets this complete surface. Use them as `var(--token)` in inline styles.
 
@@ -194,25 +235,25 @@ button:not(.sl-switch):not(.sl-select) { border-radius: 0; }
 
 The shipped **Input Styling** extension is built entirely on these hooks and is the reference for a full preset.
 
-## Building custom controls (buttons, checkboxes, selects)
+## Building custom controls
 
-There is no `Button` in `api.components` — Safelight's own buttons are styled `<button>` elements. The house style is a small, uppercase, low-chrome button that lights up on hover and uses the accent fill when active:
+Reach for [`api.ui`](#apiui-primitives) first: buttons, selects, toggles, text and number inputs are all there, already themed. For anything numeric, prefer `api.components.Slider` over a raw `<input type="range">` — it brings drag-scrub, fine control, reset, and history-commit semantics for free.
+
+For a control neither kit covers, lay it out with inline styles, color it from the tokens above, and let native `accent-color` theme your checkboxes, radios and range inputs automatically:
 
 ```js
-// idiomatic Safelight button, built off api.react
+const { tokens } = api.ui;
+
 React.createElement("button", {
+  type: "button",
   onClick,
   style: {
     padding: "4px 8px",
     fontSize: 11,
     borderRadius: 4,
-    color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-    background: active ? "var(--color-accent)" : "transparent",
-    border: "1px solid var(--color-border)",
+    color: active ? tokens.textPrimary : tokens.textSecondary,
+    background: active ? tokens.accent : "transparent",
+    border: `1px solid ${tokens.border}`,
   },
-  onMouseEnter: (e) => (e.currentTarget.style.background = "var(--color-accent-hover)"),
-  onMouseLeave: (e) => (e.currentTarget.style.background = active ? "var(--color-accent)" : "transparent"),
-}, "Reset");
+}, "Swatch");
 ```
-
-The same approach applies to any custom control: lay it out with inline styles, color it from the tokens above, and let native `accent-color` theme your checkboxes/radios/range inputs automatically. For anything numeric, prefer `api.components.Slider` over a raw `<input type="range">` — it brings drag-scrub, fine control, reset, and history-commit semantics for free.

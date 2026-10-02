@@ -29,7 +29,6 @@ Node.js 20.19+ or 22.12+ required (Vite 8 minimum; Node 22 LTS recommended). The
 - `src/catalog/` — photo records, EXIF, develop params, storage interface, limits
 - `src/project/` — project folders and `.safelight/` persistence
 - `src/raw/` — RAW decoding (libraw-wasm adapter, TIFF/CFA, cache)
-- `src/lens-profiles/` — Lensfun-derived lens correction database + resolver
 - `src/modules/` — library, develop (and its panels), export, loupe
 - `src/extensions/` — registry, host API, loader, docking, themes, pipelines, built-ins
 - `src/rendering/` — render worker + bridge, WebGL renderer, shaders, image math

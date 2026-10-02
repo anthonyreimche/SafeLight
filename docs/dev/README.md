@@ -16,11 +16,11 @@ The fastest way to extend Safelight — no fork required. Ship a panel, tool, th
 The complete `SafelightAPI` surface, split by topic.
 
 - [API Overview](api/README.md) — the `SafelightAPI` object and imperative controls
-- [UI Shell](api/ui-shell.md) — modules, panels, slots, layouts
-- [UI Components](api/components.md) — the component kit (Slider, Panel, …), theming tokens, building buttons
+- [UI Shell](api/ui-shell.md) — modules, panels, per-mask panels, header accessories, slots, layouts
+- [UI Components](api/components.md) — the component kit (Slider, Panel, …), the `api.ui` primitives (Button, Select, …), theming tokens, styling hooks
 - [Contribution Types](api/contributions.md) — signatures for every `register*` call
-- [State Stores & Tools](api/stores.md) — `api.stores`, the brush/mask/retouch model, `api.develop`
-- [Core Data Types](api/types.md) — `CatalogPhoto`, `DevelopParams`
+- [State Stores & Data APIs](api/stores.md) — `api.stores`, the brush/mask/retouch model, `api.develop`, `api.catalog`, `api.export`, `api.params`
+- [Core Data Types](api/types.md) — `CatalogPhoto`, `DevelopParams`, masks, `EditState`
 - [Subsystems](api/subsystems.md) — storage, rendering, RAW, presets, export, broadcast, keybindings, Electron bridge
 
 ## Working on the core

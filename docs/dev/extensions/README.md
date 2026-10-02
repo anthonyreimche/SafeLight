@@ -69,7 +69,7 @@ my-extension/
 Three build invariants, regardless of bundler:
 
 - **Emit one self-contained ESM file** with an `activate(api)` export (and optional `deactivate()`).
-- **Leave React external.** Safelight injects its own instance as `api.react`; a second copy breaks hooks. The example extensions build UI with `React.createElement` off `api.react` rather than JSX imports. The bundled examples use [rolldown](https://rolldown.rs/), but any bundler that can mark React external works:
+- **Leave React external.** Safelight injects its own instance as `api.react`; a second copy breaks hooks. The example extensions build UI with `React.createElement` off `api.react` rather than JSX imports. The example extensions use [rolldown](https://rolldown.rs/), but any bundler that can mark React external works:
 
   ```js
   // rolldown.config.mjs
@@ -139,14 +139,14 @@ export function activate(api) {
 export function deactivate() {/* tear down listeners / side effects */}
 ```
 
-The `api` object is a scoped [`SafelightAPI`](../api/README.md). Its UI building blocks (Slider, Panel, theming tokens, building buttons) are in [UI Components](../api/components.md); the full list of what you can register is in [Contribution Types](contribution-types.md).
+The `api` object is a scoped [`SafelightAPI`](../api/README.md). Its UI building blocks (`api.components` such as Slider and Panel, the `api.ui` primitives such as Button and Select, and theming tokens) are in [UI Components](../api/components.md); the full list of what you can register is in [Contribution Types](contribution-types.md).
 
-> **Styling note:** runtime-loaded bundles are not scanned by Tailwind, so arbitrary Tailwind utility classes won't have CSS generated for them. Use the theme CSS variables (`var(--color-surface-1)`, etc.) with inline styles, or reuse `api.components` (which are already themed). See [UI Components → Theming tokens](../api/components.md#theming-tokens).
+> **Styling note:** runtime-loaded bundles are not scanned by Tailwind, so arbitrary Tailwind utility classes won't have CSS generated for them. Reuse `api.ui` and `api.components` (which are already themed), or use the theme CSS variables (`api.ui.tokens`, or `var(--color-surface-1)` etc.) with inline styles. See [UI Components → Theming tokens](../api/components.md#theming-tokens).
 
 ## Tips
 
 - Namespace contribution ids with your extension id (`com.example.panel-name`); `core.*` is reserved for built-ins.
 - To *replace* a stock panel, register your own and tell users to disable the built-in (e.g. "Histogram") in the Extensions panel.
 - Keep bundles dependency-light. React, the [component kit](../api/components.md), and [state](../api/stores.md) come from the API.
-- Style with theme CSS variables and `api.components`, not ad-hoc Tailwind classes (they aren't compiled for runtime bundles).
+- Style with `api.ui`, `api.components` and theme CSS variables, not ad-hoc Tailwind classes (they aren't compiled for runtime bundles).
 - Tag the repo with the `safelight-extension` topic so it appears in the in-app store.

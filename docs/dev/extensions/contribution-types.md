@@ -8,8 +8,9 @@ What an extension can register. Each is auto-tagged with the extension's id and 
 
 **UI** (see [UI Shell](../api/ui-shell.md) and [UI Components](../api/components.md))
 - **Modules** (`registerModule`) — a top-level module beside Library and Develop: its own tab, pop-out window and dock layout. See [UI Shell](../api/ui-shell.md#modules).
-- **Panels** (`registerPanel`) — a React component placed via `defaultDock`; dockable, tabbable, floatable like any built-in.
-- **Slots** (`registerSlot`) — render into a named region of core chrome: `library-toolbar`, `library-subbar`, `develop-toolbar`, `develop-canvas-overlay`, or `develop-detail`.
+- **Panels** (`registerPanel`) — a React component placed via `defaultDock`; dockable, tabbable, floatable like any built-in. Declare `mask` to also offer a compact copy per mask in the Masking panel's **+ Adjust** menu ([per-mask panels](../api/ui-shell.md#per-mask-panels-panelcontributionmask)).
+- **Panel header accessories** (`registerPanelHeaderAccessory`) — one control rendered on every panel's dock header, such as a preview-off eye.
+- **Slots** (`registerSlot` / `unregisterSlot`) — render into a named region of core chrome: `library-toolbar`, `library-subbar`, `develop-toolbar`, `develop-canvas-overlay`, or `develop-detail`.
 - **Cursors** (`registerCursor`) — a named canvas cursor (semantic token or custom image), driven via `api.develop.setCanvasCursor` while a tool is active.
 - **Themes** (`registerTheme`) — a named set of CSS custom properties applied to `:root`.
 - **Stylesheets** (`registerStylesheet`) — plain CSS applied in every window after the core styles, for restyling the input controls through the documented [styling hooks](../api/components.md#styling-hooks) (knob shapes, corners, checkboxes, focus effects).
@@ -18,14 +19,16 @@ What an extension can register. Each is auto-tagged with the extension's id and 
 
 **Imaging**
 - **Render pipelines** (`registerPipeline`) — a display transform (tone mapper) picked per photo in Develop's bottom bar, with a default in **Preferences ▸ Rendering**; supply GLSL for `vec3 pipelineToDisplay(vec3 lin)`. The simplest way to ship a whole-image GPU effect.
-- **Processing stages** (`registerProcessingStage`) — a phase-ordered GPU stage compiled into the develop shader. Live: all phases, custom uniforms, multi-pass pre-passes, texture/LUT binding (`setStageTexture`), painted coverage textures (`kind: "coverage"` — a dab list in the photo's paramBag that the renderer bakes per render, for brush-confined effects), and a special `geometry` phase that warps source coordinates. Reach for it when you need phase ordering, uniforms, multiple passes, or coordinate warping.
-- **Lens profiles** (`registerLensProfile`) — distortion/TCA/vignetting coefficients that supplement or override the built-in Lensfun database.
+- **Processing stages** (`registerProcessingStage`) — a phase-ordered GPU stage compiled into the develop shader. Live: all phases, custom uniforms, multi-pass pre-passes, texture/LUT binding (`setStageTexture`), painted coverage textures (`kind: "coverage"` — a dab list in the photo's paramBag that the renderer bakes per render, for brush-confined effects), and a special `geometry` phase that warps source coordinates. Reach for it when you need phase ordering, uniforms, multiple passes, or coordinate warping. Lens correction is built this way, as the optional [Lens Correction](https://github.com/anthonyreimche/Lens-Correction) extension (the old `registerLensProfile` API was removed along with core's lens database).
 
 **Catalog & workflow**
 - **Catalog hooks** (`registerCatalogHooks`) — own a side concern (sidecars, metadata) by subscribing to import / metadata-change / edit-commit / photo-remove without core knowing.
 - **Grid filters** (`registerGridFilter`) — narrow the Library grid with a predicate (e.g. text/EXIF search).
 - **Library sorts** (`registerLibrarySort`) — add a sort order to the toolbar dropdown.
+- **Grid menu items** (`registerGridMenuItem`) — add an action to the Library right-click menu (e.g. "Create virtual copy").
 - **Preset importers** (`registerPresetImporter`) — teach the Presets panel to read other apps' preset files.
+
+Beyond `register*`, extensions can drive the app directly: render any photo headlessly (`api.export`, `api.develop.renderPhotoFrame`), add records and copy edit stacks (`api.catalog`), and inspect other extensions' sliders (`api.params`). See [State Stores & Data APIs](../api/stores.md).
 
 **Export**
 - **Export processors** (`registerExportProcessor`) — a post-encode step (watermark, border, …) with its own Export-panel settings.
@@ -83,7 +86,7 @@ export function activate(api) {
 
 ## Example: before/after overlay (canvas slot)
 
-The before/after pattern, as used by the bundled Image Comparison extension, combines three pieces: a keyboard shortcut, a `develop-canvas-overlay` slot, and the [`api.develop`](../api/stores.md#apidevelop) integration.
+The before/after pattern, as used by the Image Comparison extension, combines three pieces: a keyboard shortcut, a `develop-canvas-overlay` slot, and the [`api.develop`](../api/stores.md#apidevelop) integration.
 
 ```js
 export function activate(api) {

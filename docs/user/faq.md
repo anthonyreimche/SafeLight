@@ -58,15 +58,15 @@ Yes — masks built from radial, linear, brush, luminance-range, and color-range
 
 ### Can I use presets?
 
-Yes. Presets are an open, human-readable JSON format (`safelight-preset`) that you can save, apply, export, and import — easy to share or generate. The bundled XMP Tools extension also imports Lightroom `.xmp` presets.
+Yes. Presets are an open, human-readable JSON format (`safelight-preset`) that you can save, apply, export, and import — easy to share or generate. Lightroom `.xmp` presets import through an extension such as XMP Tools, installed from the Extensions store's **Presets** category; without one, Import tells you so and links there.
 
 ### Can I compare before/after?
 
-Yes — the bundled Image Comparison extension adds hold-to-preview and a draggable before/after split to the Develop canvas.
+Yes — the Image Comparison extension (from the Extensions store) adds hold-to-preview and a draggable before/after split to the Develop canvas.
 
 ### Can I import Lightroom catalogs?
 
-Full catalog import isn't built in yet (it's on the roadmap via sql.js), but the bundled XMP Tools extension reads/writes XMP sidecars and imports Lightroom presets.
+Full catalog import isn't built in yet (it's on the roadmap via sql.js), but the XMP Tools extension (from the Extensions store) reads/writes XMP sidecars and imports Lightroom presets.
 
 ### Does Safelight support batch editing or AI masking?
 

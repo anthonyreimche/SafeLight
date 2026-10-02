@@ -81,7 +81,7 @@ Full docs live in [`docs/`](docs/README.md), split into two tracks:
 
 ## Roadmap
 
-Safelight is under active development. See [ROADMAP.md](ROADMAP.md) for what's planned across the core app and as optional extensions.
+Safelight is under active development. The **[Safelight project board](https://github.com/users/anthonyreimche/projects/4)** is the live roadmap, tracking planned and in-progress work for the core app and for optional extensions. See [ROADMAP.md](ROADMAP.md) for how work gets on the board and how to propose or claim an extension.
 
 ## Contributing
 

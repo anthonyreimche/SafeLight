@@ -666,7 +666,8 @@ export interface PresetImporterContribution {
   /** File extensions handled, lowercase with leading dot, e.g. [".xmp"]. */
   extensions: string[];
   /** Parse a chosen file into a named set of develop params, or null if the
-   *  file isn't a recognizable preset of this kind. */
+   *  file isn't a recognizable preset of this kind. Null, empty params, or a
+   *  throw all make the panel report that no develop settings were found. */
   parse(file: File): Promise<{
     name: string;
     params: Partial<import("@/catalog/types").DevelopParams>;

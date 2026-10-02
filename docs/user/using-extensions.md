@@ -18,13 +18,13 @@ Built-in panels appear under **Built-in**; they can be disabled but not uninstal
 
 Extensions are JavaScript running inside the app, installed from GitHub repos you choose. Install only extensions you trust — the same judgment you'd apply to IDE plugins.
 
-## Bundled examples
+## Where to start
 
-Safelight ships three example extensions (in the repo's `extensions/` folder) that double as working references:
+Safelight installs no extensions for you; everything beyond the built-in panels comes from the store. A few to try first:
 
 - **Advanced Library Sort** — custom sort orders, a live search bar, and smart searches.
 - **Image Comparison** — before/after via hold-to-preview and a draggable split on the Develop canvas.
-- **XMP Tools** — XMP sidecar read/write and Lightroom preset import.
+- **XMP Tools** — XMP sidecar read/write and Lightroom preset import. Lightroom `.xmp` presets need an importer like this one; without one, the Presets panel's Import says so and links to the store's **Presets** category.
 
 ## Manual install
 

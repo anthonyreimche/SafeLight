@@ -31,17 +31,21 @@ Opening a project installs a `ProjectStorage` backed by `<project>/.safelight/` 
 The renderer runs in a Web Worker on an `OffscreenCanvas`; the main thread talks to it through `RenderBridge` (`render-bridge.ts`):
 
 ```typescript
-class RenderBridge {
-  setImage(image, maxEdge?, isFallbackPreview?): void;
+class RenderBridge {                                     // selected members
+  setImage(image, maxEdge?, isFallbackPreview?, baseCurveForBitmap?): void;
   setParams(params: DevelopParams): void;                // re-sends the live pipeline when displayTransform changes
+  setContributedParams(bag: Record<string, unknown>): void; // extension stage params (the param bag)
+  setStages(stages: ProcessingStageContribution[]): void;
+  setStageTextures(bag: Record<string, StageTextureData>): void;
   render(wantHistogram?, wantExtended?): void;
   capture(params: DevelopParams): Promise<ImageBitmap>;   // off-screen render, pipeline resolved from params
-  uploadSource(key, image, maxEdge?, bind?): void;       // budget-bounded GPU source cache
-  bindSource(key): void;
+  uploadSource(target, key, image, maxEdge?, isFallbackPreview?, baseCurveForBitmap?, bind?): void; // budget-bounded GPU source cache
+  bindSource(key): Promise<boolean>;                     // false on a cache miss: decode + uploadSource
+  hasSource(target, key): Promise<boolean>;
   setCacheBudget(bytes): void;
+  renderThumbnailFromSource(opts): Promise<Blob | null>; // per-render params + param bag
   setPipeline(pipeline): void;
   syncPipeline(): void;                                   // re-sends the live photo's pipeline
-  setLensProfile(profile): void;
   setAsShotTemperature(kelvin): void;
 }
 ```
@@ -61,10 +65,19 @@ Supporting utilities: `buildRGBCurveLUT(curves)`, histogram computation (`histog
 Presets are open JSON files:
 
 ```json
-{ "format": "safelight-preset", "version": 1, "name": "Punchy", "params": { /* Partial<DevelopParams> */ } }
+{
+  "format": "safelight-preset",
+  "version": 1,
+  "name": "Punchy",
+  "group": "Landscape",
+  "params": { /* Partial<DevelopParams> */ },
+  "paramBag": { /* extension stage params by qualified key; omitted when empty */ }
+}
 ```
 
-Presets are Lightroom-style — they carry only the adjustments they set. `exportPreset(name, params)` downloads one; importing normalizes params so older presets stay compatible. Extensions can teach the importer new file types via [`registerPresetImporter`](contributions.md#presetimportercontribution).
+Presets are Lightroom-style — they carry only the adjustments they set. `exportPreset(name, params, group?, paramBag?)` downloads one as `<name>.safelight.json`. On import, params are sanitized (unknown keys and wrong-typed values are dropped) and normalized so older presets stay compatible; a file with a newer `version` than the build reads is refused rather than applied with misread keys. Which extension params a preset saves is governed by each stage's [`presetScope`](contributions.md#processingstagecontribution--gpu-stage).
+
+The Import picker tries Safelight's own JSON first, then the [`registerPresetImporter`](contributions.md#presetimportercontribution) contribution that claims the file's extension. `.xmp` and `.lrtemplate` stay selectable even with no importer installed, so choosing one tells the user an importer extension is needed instead of the folder looking empty.
 
 ## Export
 
@@ -72,19 +85,23 @@ Presets are Lightroom-style — they carry only the adjustments they set. `expor
 
 ```typescript
 interface ExportSettings {
-  format: "image/jpeg" | "image/png" | "image/webp";
+  format: "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
   quality: number;              // 0..1 (JPEG/WebP)
   longEdge: number | null;      // null = original size
   delivery: "zip" | "files" | "folder";
+  bundle: boolean;              // deprecated; use delivery
   colorSpace?: ColorSpaceId;    // default "srgb"
-  sharpenAmount?: number;       // output sharpening
-  sharpenRadius?: number;
+  sharpenAmount?: number;       // output sharpening, 0..150 (0 = off)
+  sharpenRadius?: number;       // 0.3..3.0 px
+  tiffBitDepth?: 8 | 16;        // TIFF only; 16-bit falls back to 8 where float targets are unavailable
+  includeMetadata?: boolean;    // carry camera, lens, exposure and capture date (off by default)
+  includeLocation?: boolean;    // keep GPS when metadata is included (off by default)
   processorSettings?: Record<string, Record<string, unknown>>; // per-processor field values
   filenameTemplateId?: string;
 }
 ```
 
-Each photo renders through the worker renderer with its saved params, converts to the chosen output color space, applies output sharpening, encodes to a Blob, embeds the output ICC profile, then passes through every registered [export processor](contributions.md#exportprocessorcontribution) (in registration order) before being written or bundled. Output carries no EXIF metadata.
+Each photo renders through the worker renderer with its saved params, converts to the chosen output color space, applies output sharpening, encodes to a Blob, embeds the output ICC profile, then passes through every registered [export processor](contributions.md#exportprocessorcontribution) (in registration order) before being written or bundled. Exports carry no EXIF unless `includeMetadata` is set, and no GPS unless `includeLocation` is set as well. To render without writing files, use [`api.export.renderPhotos`](stores.md#apiexport).
 
 `resolveFilenameTemplate(template, photo, format)` substitutes the built-in variables from the `CatalogPhoto` record; unknown variables are left as-is.
 
@@ -110,4 +127,17 @@ Every shortcut is an action (`id`, `label`, `category: "General" | "Develop" | "
 
 ## Electron bridge (`window.safelightNative`)
 
-Present only in the desktop build (absent in the plain-browser dev build). Locked-down surface defined in `electron/preload.cjs` and typed in `src/extensions/types.ts`: `platform`, `versions`, `appVersion()`, `updates.install(repo, tag)`, `releases.fetch(repo)`, optional `github.repoMeta/readme`, `plugins.{list,install,uninstall,search}`, optional `devtools.*`, optional `diagnostics.{gpuInfo,metrics}`, and optional `fs.*` (path-based read/write/list/mkdir/remove/move/exists/pickDirectory). Extensions should feature-detect these before use.
+Present only in the desktop build (absent in the plain-browser dev build). Locked-down surface defined in `electron/preload.cjs` and typed in `src/extensions/types.ts`:
+
+| Member | What it does |
+|---|---|
+| `platform`, `versions`, `appVersion()` | Host OS, Electron/Chrome versions, and the live app version |
+| `releases.fetch(repo)` | GitHub Releases proxy (runs in the main process, outside the renderer CSP) |
+| `github.{repoMeta, readme, iconUrl, thumbnails, onThumbnail}` | Extensions-store metadata, README and thumbnail proxy (optional) |
+| `plugins.{list, install, uninstall, search}` | The plugin host; optional `remoteManifest`, `settleUpdate` and `trustList` on newer builds |
+| `devtools.{open, close, toggle, isOpen, reload, syncDevFolder}` | Chrome DevTools control for the Developer Tools extension (optional) |
+| `diagnostics.{gpuInfo, metrics}` | GPU feature status and per-process metrics (optional) |
+| `titlebar.setOverlay(color, symbolColor)` | Recolor the native window controls to match the theme (optional) |
+| `claimPrivileged()` | One-shot handover of the path-based filesystem (`fs`) and update installer (`updates`) |
+
+Raw filesystem access and the update installer are privileged: core calls `claimPrivileged()` once at boot and every later call returns `null`, so extension code, which shares the renderer, can never acquire them. Extensions work with files through the handles core hands them, such as `CatalogPhoto.fileHandle` and the `dir` passed to catalog hooks. Feature-detect the optional members before use; they are absent on older Electron builds.
