@@ -5,7 +5,7 @@ Safelight doesn't keep a separate "core" and "extensions" roadmap, because **eve
 So there's no hand-kept feature list here to drift out of date. The live roadmap is the issue tracker, kept current automatically:
 
 - **[Project board →](https://github.com/users/anthonyreimche/projects/4)** — every tracked issue and where it stands.
-- **[Planned and in-progress extensions →](https://github.com/anthonyreimche/SafeLight/issues?q=is%3Aissue+is%3Aopen+label%3Aextension)** — every open issue labelled `extension`.
+- **[Planned and in-progress extensions →]([https://github.com/anthonyreimche/SafeLight/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement](https://github.com/anthonyreimche/SafeLight/issues?q=is%3Aissue+is%3Aopen+label%3A%22type%3A+enhancement%22))** — every open issue labelled `extension`.
 - **[Everything else →](https://github.com/anthonyreimche/SafeLight/issues)** — bugs, enhancements, and orchestrator work, auto-sorted by priority into the `🚀 Next Release`, `📋 Backlog`, and `💤 Someday` milestones.
 
 ## Want something built — or want to build it yourself?
