@@ -7,11 +7,12 @@ import { describe, expect, it } from "vitest";
 import { rawCacheKey } from "./raw-cache";
 
 describe("rawCacheKey", () => {
-  // Cached previews bake the decode in, so the key carries the decode contract:
-  // entries written before the white-point fix must miss, not be served dark.
+  // Cached previews bake the decode and its encoding in, so the key carries
+  // both: entries written as clamped 16-bit sRGB must miss, not be served
+  // without their highlight headroom.
   it("versions the decode contract ahead of the file identity", () => {
     expect(rawCacheKey("2026/DSCF2946.RAF", 31_457_280, 90)).toBe(
-      "v5:2026/DSCF2946.RAF:31457280:90",
+      "v6:2026/DSCF2946.RAF:31457280:90",
     );
   });
 });

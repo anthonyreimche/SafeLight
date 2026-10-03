@@ -15,14 +15,17 @@ const h = vi.hoisted(() => ({
   openError: null as Error | null,
   /** Bytes handed to open(), in order. */
   opened: [] as Uint8Array[],
+  /** Settings handed to open(), in order. */
+  settings: [] as (Record<string, unknown> | undefined)[],
   acquired: 0,
   released: [] as unknown[],
 }));
 
 vi.mock("./decode-pool", () => {
   const instance = {
-    async open(bytes: Uint8Array) {
+    async open(bytes: Uint8Array, settings?: Record<string, unknown>) {
       h.opened.push(bytes);
+      h.settings.push(settings);
       if (h.openError) throw h.openError;
     },
     async metadata() {
@@ -64,11 +67,33 @@ function code(linear: number): number {
   return Math.min(65535, Math.round(y * 65536));
 }
 
+/** LibRaw's linear sRGB -> ACES AP0 (D65) matrix, LibRaw_constants::aces_rgb. */
+const ACES_FROM_SRGB = [
+  [0.43968015, 0.38295299, 0.17736686],
+  [0.08978964, 0.81343316, 0.09677734],
+  [0.01754827, 0.11156156, 0.87089017],
+];
+
+/** The frame libraw hands back when asked for ACES output of a scene whose
+ *  first pixel is `srgb` in linear sRGB: encoded, after the matrix. */
+function acesPixelFrame(srgb: readonly number[]): Uint16Array {
+  const px = new Uint16Array(2 * 2 * 3);
+  ACES_FROM_SRGB.forEach((row, i) => {
+    px[i] = code(row[0] * srgb[0] + row[1] * srgb[1] + row[2] * srgb[2]);
+  });
+  return px;
+}
+
+function firstPixel(image: { data: Float32Array } | null): number[] {
+  return image ? Array.from(image.data.subarray(0, 3)) : [];
+}
+
 beforeEach(() => {
   h.metadata = {};
   h.pixels = undefined;
   h.openError = null;
   h.opened = [];
+  h.settings = [];
   h.acquired = 0;
   h.released = [];
   // libraw runs in a Worker on shared memory; Node has the latter, not the former.
@@ -170,6 +195,62 @@ describe("decodeRawFloatViaLibRaw", () => {
     h.pixels = litPixelFrame(code(0.01));
 
     expect((await decodeRawFloatViaLibRaw(rawBytes()))?.data[1]).toBeCloseTo(0.01, 3);
+  });
+
+  // libraw clips its output to the gamut it is asked for. ACES encloses every
+  // visible colour, so the decode asks for it and converts to linear sRGB in
+  // float, where a colour outside sRGB keeps a channel below black.
+  it("asks libraw for ACES output", async () => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
+    h.pixels = litPixelFrame(code(0.18));
+
+    await decodeRawFloatViaLibRaw(rawBytes());
+
+    expect(h.settings[0]).toMatchObject({ outputColor: 6 });
+  });
+
+  it("converts libraw's ACES samples to linear sRGB, then restores the white point", async () => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [2, 1, 1.5, 1] } };
+    h.pixels = acesPixelFrame([0.15, 0.1, 0.05]);
+
+    const [r, g, b] = firstPixel(await decodeRawFloatViaLibRaw(rawBytes()));
+
+    expect(r).toBeCloseTo(0.3, 3);
+    expect(g).toBeCloseTo(0.2, 3);
+    expect(b).toBeCloseTo(0.1, 3);
+  });
+
+  it("keeps a colour outside the sRGB primaries as a channel below black", async () => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
+    h.pixels = acesPixelFrame([-0.05, 0.4, 0.5]);
+
+    const [r, g, b] = firstPixel(await decodeRawFloatViaLibRaw(rawBytes()));
+
+    expect(r).toBeLessThan(0);
+    expect(r).toBeCloseTo(-0.05, 3);
+    expect(g).toBeCloseTo(0.4, 3);
+    expect(b).toBeCloseTo(0.5, 3);
+  });
+
+  it("keeps a neutral pixel neutral through the conversion", async () => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
+    h.pixels = litPixelFrame(code(0.18));
+
+    const [r, g, b] = firstPixel(await decodeRawFloatViaLibRaw(rawBytes()));
+
+    expect(Math.abs(r / g - 1)).toBeLessThan(1e-6);
+    expect(Math.abs(b / g - 1)).toBeLessThan(1e-6);
+  });
+
+  it("leaves a single-channel frame grey, with no colour conversion", async () => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
+    h.pixels = new Uint16Array([code(0.3), 0, 0, 0]);
+
+    const [r, g, b] = firstPixel(await decodeRawFloatViaLibRaw(rawBytes()));
+
+    expect(r).toBeCloseTo(0.3, 3);
+    expect(g).toBe(r);
+    expect(b).toBe(r);
   });
 
   // libraw's blend highlight mode normalises the WB multipliers to the largest

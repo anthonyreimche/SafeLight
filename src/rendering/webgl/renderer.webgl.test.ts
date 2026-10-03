@@ -17,13 +17,18 @@ import {
   defaultMaskAdjustments,
   type BrushDab,
   type Mask,
+  type MaskAdjustments,
   type MaskComponent,
+  type RetouchSpot,
 } from "@/catalog/types";
+import { withPipeline, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { ProcessingStageContribution } from "@/extensions/types";
+import { encodeHalf } from "@/raw/half-float";
 import { WebGLRenderer } from "./renderer";
 import {
   LINEAR_PROBE_PIPELINE,
   PIXEL_TOLERANCE,
+  type FloatImage,
   type Frame,
   type GlObjectCounts,
   builtinStages,
@@ -50,6 +55,16 @@ const FLAT_GREY = 0.2;
 
 function flatSource(size = 16, value = FLAT_GREY) {
   return floatImage(size, size, () => [value, value, value]);
+}
+
+/** The develop-preview cache's copy of a float source, as half floats. */
+function cached(source: FloatImage) {
+  return {
+    kind: "float16" as const,
+    data: encodeHalf(source.data),
+    width: source.width,
+    height: source.height,
+  };
 }
 
 function capture(renderer: WebGLRenderer): Frame {
@@ -283,6 +298,92 @@ describe("pixel behaviour", () => {
     expect(b).toBeCloseTo(0.06, 2);
   });
 
+  // A yellow beyond the sRGB primaries, blown in red and green, decodes with
+  // its blue channel at or below black. Highlight reconstruction rebuilds a
+  // pixel with two clipped channels from the third; with no positive third
+  // channel to scale from it must leave the yellow alone, neither flipping it
+  // to blue nor zeroing it to black.
+  for (const blue of [0, -0.03125]) {
+    it(`leaves a clipped yellow with blue at ${blue} as decoded`, () => {
+      const frame = linearFrame((renderer) => {
+        renderer.setImage(floatImage(16, 16, () => [1.25, 1.25, blue]));
+        renderer.setParams(identityParams());
+      });
+      const [r, g, b] = pixelAt(frame, 8, 8);
+      expect(r).toBeGreaterThan(0.9);
+      expect(g).toBeCloseTo(r, 3);
+      expect(b).toBeLessThan(PIXEL_TOLERANCE);
+    });
+  }
+
+  // Neighbours below black can drag the half-resolution average that
+  // reconstruction takes its reference from down to zero or past it. At -4 EV
+  // every decoded pixel stays on the linear part of the tone chain, so a
+  // pixel rebuilt from that reference shows up as a bright speck or a hole.
+  const checker =
+    (even: number, odd: number) =>
+    (x: number, y: number): number =>
+      (x + y) % 2 === 0 ? even : odd;
+  const SIGNED_NEIGHBOURS: {
+    name: string;
+    texel: (x: number, y: number) => readonly [number, number, number];
+  }[] = [
+    {
+      name: "two clipped, blue +0.01 beside -0.03",
+      texel: (x, y) => [1.25, 1.25, checker(0.01, -0.03)(x, y)],
+    },
+    {
+      name: "two clipped, blue +0.01 beside -0.0096",
+      texel: (x, y) => [1.25, 1.25, checker(0.01, -0.0096)(x, y)],
+    },
+    {
+      name: "one clipped, green +0.1 beside -0.9",
+      texel: (x, y) => [1.25, checker(0.1, -0.9)(x, y), 0],
+    },
+  ];
+  for (const { name, texel } of SIGNED_NEIGHBOURS) {
+    it(`keeps clipped pixels near their decoded level (${name})`, () => {
+      const frame = linearFrame((renderer) => {
+        renderer.setImage(floatImage(16, 16, texel));
+        renderer.setParams(identityParams({ exposure: -4 }));
+      });
+      const clipped = 1.25 / 16;
+      for (let y = 0; y < 16; y++) {
+        for (let x = 0; x < 16; x++) {
+          const out = pixelAt(frame, x, y);
+          for (const channel of out) {
+            expect(Number.isFinite(channel)).toBe(true);
+            expect(channel).toBeLessThanOrEqual(2 * clipped);
+          }
+          expect(out[0]).toBeGreaterThan(0.5 * clipped);
+        }
+      }
+    });
+  }
+
+  // One pixel blown in red and green among unclipped neighbours with a 0.6 :
+  // 0.8 ratio. Reconstruction rebuilds the two clipped channels from the
+  // neighbourhood, so the pixel leaves its clipped 1 : 1 for a ratio near the
+  // neighbours'; the mip-1 reference still carries ~14 % of the pixel itself.
+  const LONE_CLIP = floatImage(16, 16, (x, y) =>
+    x === 8 && y === 8 ? [1.25, 1.25, 0.5] : [0.6, 0.8, 0.5],
+  );
+  const LONE_CLIP_SOURCES = [
+    ["float", LONE_CLIP],
+    ["float16", cached(LONE_CLIP)],
+  ] as const;
+  for (const [kind, source] of LONE_CLIP_SOURCES) {
+    it(`rebuilds a clipped pixel from its neighbours (${kind} source)`, () => {
+      const frame = linearFrame((renderer) => {
+        renderer.setImage(source);
+        renderer.setParams(identityParams());
+      });
+      const [r, g] = pixelAt(frame, 8, 8);
+      expect(r / g).toBeGreaterThan(0.75);
+      expect(r / g).toBeLessThan(0.85);
+    });
+  }
+
   it("maps a corner to the opposite corner under a 180 degree rotation", () => {
     // Flipping both axes is a 180 degree rotation; straighten only spans ±45.
     const gradient = floatImage(8, 8, (x, y) => [(x + 0.5) / 16, (y + 0.5) / 16, 0.1]);
@@ -336,6 +437,376 @@ describe("pixel behaviour", () => {
     });
     expect(pixelAt(frame, 0, 0)).toEqual([1, 0, 0]);
     expect(pixelAt(frame, 8, 8)[0]).toBeCloseTo(FLAT_GREY, 2);
+  });
+});
+
+// A display transform with its own highlight roll-off opts out of the core
+// shoulder. The probe halves the working colour so headroom up to 2.0 survives
+// the display clamp, and reads are doubled back into scene units; SHOULDERED
+// is the same transform keeping the core shoulder.
+describe("a display transform that skips the tone shoulder", () => {
+  const HALVING = "vec3 pipelineToDisplay(vec3 lin) { return lin * 0.5; }";
+  const SHOULDERED: ResolvedPipeline = {
+    id: "test.halving",
+    glsl: HALVING,
+    skipBaseCurve: true,
+    skipToneShoulder: false,
+    sig: "test.halving",
+  };
+  const SHOULDERLESS: ResolvedPipeline = {
+    ...SHOULDERED,
+    skipToneShoulder: true,
+    sig: "test.halving+shoulderless",
+  };
+  const TOLERANCE = 2 * PIXEL_TOLERANCE;
+
+  // Luminance 0.95, warm enough for the recovery's colourfulness step to act
+  // on, with every channel under the clip threshold reconstruction uses.
+  const BRIGHT: readonly [number, number, number] = [0.97, 0.95, 0.9];
+
+  const luma = ([r, g, b]: readonly number[]) =>
+    0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+  function sceneAt(renderer: WebGLRenderer): number[] {
+    return pixelAt(capture(renderer), 8, 8).map((v) => v * 2);
+  }
+
+  function scene(
+    pipeline: ResolvedPipeline,
+    highlights: number,
+    texel: readonly [number, number, number] = BRIGHT,
+  ): number[] {
+    return withRenderer({ stages: [], pipeline }, (renderer) => {
+      renderer.setImage(floatImage(16, 16, () => texel));
+      renderer.setParams(identityParams({ highlights }));
+      return sceneAt(renderer);
+    });
+  }
+
+  it("hands the transform luminance 0.95 uncompressed at Highlights 0", () => {
+    const out = scene(SHOULDERLESS, 0);
+    out.forEach((v, i) =>
+      expect(Math.abs(v - BRIGHT[i])).toBeLessThan(TOLERANCE),
+    );
+    expect(luma(scene(SHOULDERED, 0))).toBeLessThan(luma(BRIGHT) - 0.05);
+  });
+
+  it("recovers highlights exactly as the core does at Highlights -100", () => {
+    const out = scene(SHOULDERLESS, -100);
+    const core = scene(SHOULDERED, -100);
+    expect(luma(core)).toBeLessThan(luma(BRIGHT) - 0.2);
+    out.forEach((v, i) =>
+      expect(Math.abs(v - core[i])).toBeLessThan(TOLERANCE),
+    );
+  });
+
+  it("blends in the core shoulder in proportion at Highlights -50", () => {
+    const none = luma(scene(SHOULDERLESS, 0));
+    const full = luma(scene(SHOULDERLESS, -100));
+    const half = luma(scene(SHOULDERLESS, -50));
+    expect(half).toBeLessThan(none - TOLERANCE);
+    expect(half).toBeGreaterThan(full + TOLERANCE);
+    const coreHalf = luma(scene(SHOULDERED, -50));
+    expect(Math.abs(half - (none + coreHalf) / 2)).toBeLessThan(TOLERANCE);
+  });
+
+  it("leaves values above white untouched at positive Highlights", () => {
+    const hot: [number, number, number] = [1.6, 1.6, 1.6];
+    for (const highlights of [50, 100]) {
+      const out = luma(scene(SHOULDERLESS, highlights, hot));
+      expect(Math.abs(out - 1.6)).toBeLessThan(TOLERANCE);
+    }
+  });
+
+  it("lifts values below white as the core does at positive Highlights", () => {
+    const mid: [number, number, number] = [0.6, 0.6, 0.6];
+    const lifted = scene(SHOULDERLESS, 50, mid);
+    expect(luma(lifted)).toBeGreaterThan(0.6 + 0.01);
+    const coreLifted = luma(scene(SHOULDERED, 50, mid));
+    expect(Math.abs(luma(lifted) - coreLifted)).toBeLessThan(TOLERANCE);
+  });
+
+  it("follows the transform through a one-off render and back", () => {
+    withRenderer({ stages: [], pipeline: SHOULDERED }, (renderer) => {
+      renderer.setImage(floatImage(16, 16, () => BRIGHT));
+      renderer.setParams(identityParams());
+      const live = luma(sceneAt(renderer));
+      const oneOff = luma(
+        withPipeline(renderer, SHOULDERLESS, SHOULDERED, () => sceneAt(renderer)),
+      );
+      expect(live).toBeLessThan(luma(BRIGHT) - 0.05);
+      expect(Math.abs(oneOff - luma(BRIGHT))).toBeLessThan(TOLERANCE);
+      expect(Math.abs(luma(sceneAt(renderer)) - live)).toBeLessThan(TOLERANCE);
+    });
+  });
+
+  // Mask Highlights keeps its own recovery and lift curves but follows the
+  // global slider's rules. The mask covers the whole frame (no components,
+  // inverted), and its Exposure +80 lifts a 0.4 grey two stops to 1.6: 0.4
+  // sits under the core knee, so both transforms hand the mask's Highlights
+  // the same value above white.
+  describe("inside a mask", () => {
+    const GREY: [number, number, number] = [0.4, 0.4, 0.4];
+    const LIFTED = 1.6;
+
+    function masked(
+      pipeline: ResolvedPipeline,
+      adj: Partial<MaskAdjustments>,
+      texel: readonly [number, number, number] = GREY,
+    ): number {
+      const mask: Mask = {
+        id: "whole",
+        name: "Whole frame",
+        visible: true,
+        invert: true,
+        opacity: 100,
+        adj: { ...defaultMaskAdjustments(), exposure: 80, ...adj },
+        panels: [...DEFAULT_MASK_PANELS],
+        components: [],
+      };
+      return withRenderer({ stages: [], pipeline }, (renderer) => {
+        renderer.setImage(floatImage(16, 16, () => texel));
+        renderer.setParams(identityParams({ masks: [mask] }));
+        return luma(sceneAt(renderer));
+      });
+    }
+
+    it("keeps the headroom at a slight negative Highlights", () => {
+      const slight = { highlights: -1 };
+      expect(masked(SHOULDERLESS, slight)).toBeGreaterThan(LIFTED - 0.03);
+      // With the core shoulder, the mask curve still flattens it to white.
+      expect(Math.abs(masked(SHOULDERED, slight) - 1)).toBeLessThan(TOLERANCE);
+    });
+
+    it("recovers in proportion to the slider", () => {
+      const full = masked(SHOULDERED, { highlights: -100 });
+      const out = masked(SHOULDERLESS, { highlights: -100 });
+      expect(Math.abs(out - full)).toBeLessThan(TOLERANCE);
+      const coreHalf = masked(SHOULDERED, { highlights: -50 });
+      const half = masked(SHOULDERLESS, { highlights: -50 });
+      expect(Math.abs(half - (LIFTED + coreHalf) / 2)).toBeLessThan(TOLERANCE);
+    });
+
+    it("leaves values above white untouched at positive Highlights", () => {
+      for (const highlights of [50, 100]) {
+        const out = masked(SHOULDERLESS, { highlights });
+        expect(Math.abs(out - LIFTED)).toBeLessThan(TOLERANCE);
+      }
+    });
+
+    it("lifts values below white as the core does", () => {
+      const mid: [number, number, number] = [0.6, 0.6, 0.6];
+      const lift = { exposure: 0, highlights: 50 };
+      const lifted = masked(SHOULDERLESS, lift, mid);
+      expect(lifted).toBeGreaterThan(0.6 + 0.01);
+      const core = masked(SHOULDERED, lift, mid);
+      expect(Math.abs(lifted - core)).toBeLessThan(TOLERANCE);
+    });
+  });
+});
+
+// The develop-preview cache hands back what the fresh decode rendered from,
+// stored as half floats. Every value below is exact in binary16, so the cached
+// and fresh sources are the same pixels and their frames must match.
+describe("cached half-float sources", () => {
+  const HIGHLIGHTS = floatImage(16, 16, (x, y) =>
+    x < 8 ? [2.25, 1.5, 0.375] : y < 8 ? [1.5, 1.5, 1.5] : [0.25, 0.125, 0.0625],
+  );
+
+  function stockFrame(
+    source: FloatImage | ReturnType<typeof cached>,
+    exposure: number,
+  ): Frame {
+    return withRenderer(undefined, (renderer) => {
+      renderer.setImage(source);
+      renderer.setParams({ ...DEFAULT_DEVELOP_PARAMS, exposure });
+      return capture(renderer);
+    });
+  }
+
+  it("renders like the float source it was cached from", () => {
+    for (const exposure of [0, -1.5]) {
+      const fresh = stockFrame(HIGHLIGHTS, exposure);
+      const reopened = stockFrame(cached(HIGHLIGHTS), exposure);
+      expect([reopened.width, reopened.height]).toEqual([fresh.width, fresh.height]);
+      let worst = 0;
+      for (let i = 0; i < fresh.data.length; i++) {
+        worst = Math.max(worst, Math.abs(reopened.data[i] - fresh.data[i]));
+      }
+      expect(worst).toBeLessThan(1e-6);
+    }
+  });
+
+  it("keeps the headroom above 1.0 for Exposure to pull back", () => {
+    const frame = linearFrame((renderer) => {
+      renderer.setImage(cached(flatSource(16, 1.5)));
+      renderer.setParams(identityParams({ exposure: -1 }));
+    });
+    for (const channel of pixelAt(frame, 8, 8)) {
+      expect(channel).toBeCloseTo(0.75, 2);
+    }
+  });
+
+  // The zoom window never allocates more output pixels than the source holds
+  // inside it, so its size reads back the uploaded resolution.
+  function zoomedBuffer(configure: (renderer: WebGLRenderer) => void): number[] {
+    return withRenderer(undefined, (renderer) => {
+      configure(renderer);
+      renderer.setParams(identityParams());
+      renderer.setViewport({ x: 0, y: 0, w: 0.5, h: 0.5 }, 256, 256);
+      renderer.render();
+      return [renderer.bufferWidth, renderer.bufferHeight];
+    });
+  }
+
+  it("uploads at its stored size, past the output cap", () => {
+    const source = cached(flatSource(32));
+    expect(zoomedBuffer((r) => r.setImage(source, 8))).toEqual([16, 16]);
+    expect(zoomedBuffer((r) => r.uploadSource("k", source, 8))).toEqual([16, 16]);
+  });
+
+  it("caps to the output edge when the thumbnail renderer opts in", () => {
+    const source = cached(flatSource(32));
+    const capped = zoomedBuffer((r) =>
+      r.uploadSource("k", source, 8, false, false, true, true),
+    );
+    expect(capped).toEqual([4, 4]);
+  });
+});
+
+// Some drivers pass the constructor's 2x2 RGBA16 mipmap probe and then fail
+// generateMipmap on a full-size RGBA16 texture, leaving its mip chain unbuilt.
+// SwiftShader has no EXT_texture_norm16, so the fault stands one in on the
+// shared context: it reports the extension, backs each RGBA16 texture with
+// RGBA8 storage, mipmaps the 2x2 probe and refuses anything larger with
+// INVALID_OPERATION — the driver bug as the renderer sees it.
+const RGBA16_EXT = 0x805b;
+
+type MipmapCall = "probe" | "refused" | "built";
+
+interface MipmapFault {
+  /** Each generateMipmap call: the 2x2 probe, a refused full-size RGBA16
+   *  texture, or any other texture, mipmapped as normal. */
+  calls: MipmapCall[];
+  restore(): void;
+}
+
+function emulateRgba16MipmapBug(gl: WebGL2RenderingContext): MipmapFault {
+  const original = {
+    getExtension: gl.getExtension,
+    texImage2D: gl.texImage2D,
+    generateMipmap: gl.generateMipmap,
+    getError: gl.getError,
+  };
+  // RGBA16 textures, mapped to whether they are larger than the probe.
+  const rgba16 = new Map<WebGLTexture, boolean>();
+  const calls: MipmapCall[] = [];
+  let raised = false;
+  const bound = (): WebGLTexture | null =>
+    gl.getParameter(gl.TEXTURE_BINDING_2D);
+
+  gl.getExtension = (name: string) =>
+    name === "EXT_texture_norm16"
+      ? { RGBA16_EXT }
+      : Reflect.apply(original.getExtension, gl, [name]);
+  gl.texImage2D = (...args: unknown[]) => {
+    const tex = bound();
+    const [target, level, internalFormat, width, height, border] = args;
+    if (tex && level === 0) rgba16.delete(tex);
+    if (internalFormat !== RGBA16_EXT) {
+      Reflect.apply(original.texImage2D, gl, args);
+      return;
+    }
+    if (tex && level === 0) {
+      rgba16.set(tex, Number(width) > 2 || Number(height) > 2);
+    }
+    Reflect.apply(original.texImage2D, gl, [
+      target, level, gl.RGBA8, width, height, border,
+      gl.RGBA, gl.UNSIGNED_BYTE, null,
+    ]);
+  };
+  gl.generateMipmap = (target: number) => {
+    const tex = bound();
+    const fullSize = tex === null ? undefined : rgba16.get(tex);
+    if (fullSize) {
+      calls.push("refused");
+      raised = true;
+      return;
+    }
+    calls.push(fullSize === false ? "probe" : "built");
+    original.generateMipmap.call(gl, target);
+  };
+  gl.getError = () => {
+    if (!raised) return original.getError.call(gl);
+    raised = false;
+    return gl.INVALID_OPERATION;
+  };
+
+  return {
+    calls,
+    restore() {
+      Object.assign(gl, original);
+    },
+  };
+}
+
+// A retouched frame develops from a patched copy of the source whose mip chain
+// feeds the blur taps; an unbuilt chain samples as black.
+describe("a retouched frame on a driver that can't mipmap RGBA16", () => {
+  const SOURCE = floatImage(16, 16, (x, y) =>
+    [0.1 + x / 40, 0.2 + y / 80, 0.3],
+  );
+  const CLONE: RetouchSpot = {
+    id: "spot",
+    shape: "circle",
+    mode: "clone",
+    visible: true,
+    dstX: 0.5,
+    dstY: 0.5,
+    srcX: 0.25,
+    srcY: 0.25,
+    radius: 0.15,
+    feather: 0,
+    opacity: 100,
+  };
+
+  function retouched(renderer: WebGLRenderer): Frame {
+    renderer.setImage(SOURCE);
+    renderer.setParams(identityParams({ retouch: [CLONE] }));
+    return capture(renderer);
+  }
+
+  it("falls back to an 8-bit patched source within the same frame", () => {
+    const { gl } = glHarness();
+    const reference = withRenderer(
+      { stages: [], pipeline: LINEAR_PROBE_PIPELINE, highBitDepth: false },
+      retouched,
+    );
+
+    const fault = emulateRgba16MipmapBug(gl);
+    try {
+      withRenderer(
+        { stages: [], pipeline: LINEAR_PROBE_PIPELINE, highBitDepth: true },
+        (renderer) => {
+          const frame = retouched(renderer);
+          expect(pixelAt(frame, 8, 8)[1]).toBeGreaterThan(0.1);
+          let worst = 0;
+          for (let i = 0; i < frame.data.length; i++) {
+            const diff = Math.abs(frame.data[i] - reference.data[i]);
+            worst = Math.max(worst, diff);
+          }
+          expect(worst).toBeLessThan(1e-6);
+          expect(fault.calls).toEqual(["probe", "refused", "built"]);
+
+          // The renderer keeps the 8-bit target, so later frames don't retry
+          // the failing format.
+          capture(renderer);
+          expect(fault.calls).toEqual(["probe", "refused", "built", "built"]);
+        },
+      );
+    } finally {
+      fault.restore();
+    }
   });
 });
 

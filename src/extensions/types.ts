@@ -167,8 +167,11 @@ export interface ThemeContribution {
  *  ▸ Rendering sets the default for photos without a pick. The GLSL must define
  *    vec3 pipelineToDisplay(vec3 lin)
  *  mapping scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to
- *  display-encoded output. Helpers available: luma(), srgbToLinear(),
- *  linearToSrgb(), linearToSrgbU(). */
+ *  display-encoded output. A channel of `lin` can also be negative: colours
+ *  outside the sRGB primaries reach it that way from RAW sources, and colour
+ *  noise reduction can leave small excursions below zero on any source, so
+ *  guard a channel before taking its log, pow or sqrt. Helpers available:
+ *  luma(), srgbToLinear(), linearToSrgb(), linearToSrgbU(). */
 export interface PipelineContribution {
   id: string;
   name: string;
@@ -180,11 +183,23 @@ export interface PipelineContribution {
    *  output space (Display-P3 / Adobe RGB / ProPhoto) — transforms must NOT
    *  bake in their own output-space handling. */
   glsl?: string;
-  /** The transform brings its own complete look (AgX, ACES, …): Safelight
-   *  drops its default baseline tone (the camera-style lift applied to RAW
-   *  sources in linear light), so the transform sees true scene-linear data.
-   *  The transform is the profile. */
+  /** The transform brings its own look (AgX, ACES, …): Safelight drops its
+   *  default baseline tone (the camera-style lift applied to RAW sources in
+   *  linear light), so the transform is the profile. It drops the baseline
+   *  only: the core filmic shoulder still runs unless `skipToneShoulder` is
+   *  set. */
   skipBaseCurve?: boolean;
+  /** The transform brings its own highlight roll-off: the core filmic
+   *  shoulder (which compresses luminance above 0.85 at Highlights 0) is
+   *  bypassed, so the transform receives exposure-scaled scene-linear values
+   *  with their headroom. Highlights still works, globally and in masks: a
+   *  negative value blends in the core recovery in proportion to the slider;
+   *  a positive value lifts values up to white and leaves values above white
+   *  untouched. Independent of `skipBaseCurve`; set both for true scene-linear
+   *  input. Safelight builds from before this flag ignore it and keep the
+   *  shoulder, so set the manifest's `minAppVersion` if the transform relies
+   *  on it. */
+  skipToneShoulder?: boolean;
 }
 
 export interface SliderIconContribution {
@@ -524,7 +539,22 @@ export interface StageTextureData {
  *  source-UV `vec2 srcUv` (after crop/transform/lens, before the image is
  *  sampled), so a stage can warp/displace the coordinate and have the entire
  *  downstream pipeline — source sampling, white balance, exposure, NR, masks —
- *  follow. Every other phase operates on a color (`lin` or `c`). */
+ *  follow. Every other phase operates on a color (`lin` or `c`).
+ *
+ *  "decode" runs on the linear colour after the baseline tone (applied to RAW
+ *  sources unless the display transform skips it), at the same injection
+ *  point as "noise-reduction": before core NR. Stage prepasses read the source
+ *  through the same linearisation and baseline (`toLin`), so no extension hook
+ *  sees the decode before the baseline.
+ *
+ *  "scene-linear" and "tone-map" run on `lin` after the core linear edits.
+ *  Under a display transform that sets `skipToneShoulder` they also receive
+ *  the headroom above 1.0 that the core shoulder otherwise compresses.
+ *
+ *  Scene-linear `lin` can hold negative components: colours outside the sRGB
+ *  primaries arrive that way from RAW sources, and colour noise reduction can
+ *  leave small excursions below zero on any source. A stage that takes the
+ *  log, pow or sqrt of a channel must guard it. */
 export type ProcessingPhase =
   | "geometry"
   | "decode"
@@ -580,7 +610,8 @@ export interface ProcessingStageContribution {
   /** Order within the phase. Lower = runs first. Default 100. */
   priority?: number;
 
-  /** GLSL code fragment operating on `vec3 color` (read/write). */
+  /** GLSL code fragment operating, by phase, on `vec2 srcUv`, `vec3 lin` or
+   *  `vec3 c` (read/write; see ProcessingPhase). */
   glsl: string;
   /** Helper functions available to this stage's glsl (namespaced by compiler). */
   helpers?: string;

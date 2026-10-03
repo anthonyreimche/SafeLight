@@ -10,6 +10,13 @@
 // for its highlight mode; both are undone here. Runs in libraw's Web Worker
 // off the main thread.
 //
+// libraw clips its integer output to the gamut it renders into, which in sRGB
+// cuts away every colour outside the sRGB primaries (saturated flowers, LEDs,
+// deep cyans) and shifts its hue. So the decode asks for ACES instead, whose
+// AP0 primaries enclose every visible colour, and rotates to linear sRGB in
+// float, where those colours keep their negative channels. A camera matrix can
+// still produce colours outside AP0, and libraw clips those at 0.
+//
 // Requires the page to be cross-origin isolated (COOP/COEP) for libraw's shared
 // memory — see vite.config.ts. If anything is unavailable, returns null and the
 // caller falls back to the in-house decoder / embedded preview. It logs the
@@ -88,6 +95,28 @@ function dcrawInverseTransfer(power: number, toeSlope: number): Float32Array {
 }
 
 const LINEAR_OF_CODE = dcrawInverseTransfer(0.45, 4.5);
+
+// Row-major 3×3 inverse by cofactors.
+function invert3(m: readonly number[]): number[] {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const c0 = e * i - f * h;
+  const c1 = f * g - d * i;
+  const c2 = d * h - e * g;
+  const s = 1 / (a * c0 + b * c1 + c * c2);
+  return [
+    c0 * s, (c * h - b * i) * s, (b * f - c * e) * s,
+    c1 * s, (a * i - c * g) * s, (c * d - a * f) * s,
+    c2 * s, (b * g - a * h) * s, (a * e - b * d) * s,
+  ];
+}
+
+// Linear sRGB -> ACES AP0 (D65): aces_rgb, LibRaw 0.22 tables/colorconst.cpp.
+const ACES_FROM_SRGB = [
+  0.43968015, 0.38295299, 0.17736686,
+  0.08978964, 0.81343316, 0.09677734,
+  0.01754827, 0.11156156, 0.87089017,
+];
+const SRGB_FROM_ACES = invert3(ACES_FROM_SRGB);
 
 // EV by which the sensor was exposed under the tagged ISO, or 0. Fujifilm's DR
 // modes buy highlight room that way and let the camera JPEG push it back; the
@@ -194,7 +223,10 @@ export async function decodeRawFloatViaLibRaw(
     await raw.open(new Uint8Array(buffer.slice(0)), {
       outputBps: 16,
       useCameraWb: true,
-      outputColor: 1,
+      // ACES (LibRaw -o 6), not sRGB: libraw clips its output at 0, and the
+      // ACES primaries enclose every visible colour (see the header).
+      // SRGB_FROM_ACES rotates the samples to linear sRGB below.
+      outputColor: 6,
       // No `gamm`: the wrapper ignores it and always encodes Rec.709 (see
       // LINEAR_OF_CODE), which is linearised below.
       // No content-driven auto-brighten: it scaled each image so ~1% of pixels
@@ -290,14 +322,19 @@ export async function decodeRawFloatViaLibRaw(
     const gain = scale * 2 ** -bias;
     // 8-bit codes index the 16-bit table at its matching level (255 -> 65535).
     const step = pixels instanceof Uint16Array ? 1 : 257;
+    const [m0, m1, m2, m3, m4, m5, m6, m7, m8] = SRGB_FROM_ACES;
     const data = new Float32Array(n * 4);
     for (let i = 0, o = 0, s = 0; i < n; i++, o += 4, s += stride) {
-      const r = LINEAR_OF_CODE[pixels[s] * step] * gain;
-      const g = stride >= 3 ? LINEAR_OF_CODE[pixels[s + 1] * step] * gain : r;
-      const b = stride >= 3 ? LINEAR_OF_CODE[pixels[s + 2] * step] * gain : r;
-      data[o] = r;
-      data[o + 1] = g;
-      data[o + 2] = b;
+      const r = LINEAR_OF_CODE[pixels[s] * step];
+      if (stride >= 3) {
+        const g = LINEAR_OF_CODE[pixels[s + 1] * step];
+        const b = LINEAR_OF_CODE[pixels[s + 2] * step];
+        data[o] = (m0 * r + m1 * g + m2 * b) * gain;
+        data[o + 1] = (m3 * r + m4 * g + m5 * b) * gain;
+        data[o + 2] = (m6 * r + m7 * g + m8 * b) * gain;
+      } else {
+        data[o] = data[o + 1] = data[o + 2] = r * gain;
+      }
       data[o + 3] = 1;
     }
 

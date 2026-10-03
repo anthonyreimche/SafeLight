@@ -4,7 +4,12 @@
 // be preserved in derived versions.
 
 import { describe, it, expect } from "vitest";
-import { findHealSource, healColorOffset, setHealSourceImage } from "./heal-source";
+import {
+  findHealSource,
+  healColorOffset,
+  healImageFromLinear,
+  setHealSourceImage,
+} from "./heal-source";
 import type { HealSource } from "./heal-source";
 
 type RGB = [number, number, number];
@@ -205,5 +210,42 @@ describe("findHealSource", () => {
     expect(src.angle).toBe(0);
     expect(src.scale).toBe(1);
     expect(Math.abs(src.y - 0.5)).toBeLessThan(1e-9);
+  });
+});
+
+// The picker's search image, built from a scene-linear RAW source: averaged
+// down in linear light, then encoded to 8-bit sRGB.
+describe("healImageFromLinear", () => {
+  const rgba = (...px: number[][]) => new Float32Array(px.flat());
+
+  it("averages in linear light before encoding", () => {
+    // The mean of 0.2 and 0 is 0.1 linear, which encodes to 89.
+    const { data, w, h } = healImageFromLinear(
+      rgba([0.2, 0.2, 0.2, 1], [0, 0, 0, 1]),
+      2,
+      1,
+      1,
+    );
+    expect([w, h]).toEqual([1, 1]);
+    expect([...data]).toEqual([89, 89, 89, 255]);
+  });
+
+  it("encodes a source that already fits texel for texel", () => {
+    const { data } = healImageFromLinear(rgba([0.18, 1, 0.001, 1]), 1, 1, 384);
+    expect([...data]).toEqual([118, 255, 3, 255]);
+  });
+
+  it("clips headroom to white and negatives to black", () => {
+    const { data } = healImageFromLinear(rgba([1.85, -0.05, 12, 1]), 1, 1, 384);
+    expect([...data]).toEqual([255, 0, 255, 255]);
+  });
+
+  it("caps the long edge and keeps the RGBA8 layout", () => {
+    const src = new Float32Array(1000 * 500 * 4).fill(0.5);
+    const { data, w, h } = healImageFromLinear(src, 1000, 500, 384);
+    expect([w, h]).toEqual([384, 192]);
+    expect(data).toBeInstanceOf(Uint8ClampedArray);
+    expect(data).toHaveLength(384 * 192 * 4);
+    expect([...data.subarray(0, 4)]).toEqual([188, 188, 188, 255]);
   });
 });

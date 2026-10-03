@@ -270,20 +270,13 @@ export class RenderBridge {
   setImage(
     image:
       | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+      | { kind: "float16"; data: Uint16Array; width: number; height: number }
       | { kind: "bitmap"; bitmap: ImageBitmap },
     maxEdge?: number,
     isFallbackPreview?: boolean,
     baseCurveForBitmap?: boolean,
   ) {
-    const transfer: Transferable[] = [];
-    if (image.kind === "float") {
-      transfer.push(image.data.buffer);
-    } else if (image.kind === "srgb16") {
-      transfer.push(image.data.buffer);
-    } else {
-      transfer.push(image.bitmap);
-    }
+    const transfer = [image.kind === "bitmap" ? image.bitmap : image.data.buffer];
     this.post(
       { cmd: "setImage", image, maxEdge, isFallbackPreview, baseCurveForBitmap },
       transfer,
@@ -309,7 +302,7 @@ export class RenderBridge {
     key: string,
     image:
       | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+      | { kind: "float16"; data: Uint16Array; width: number; height: number }
       | { kind: "bitmap"; bitmap: ImageBitmap },
     maxEdge?: number,
     isFallbackPreview?: boolean,
@@ -317,10 +310,7 @@ export class RenderBridge {
     // false = upload into the cache without changing the active source (prefetch).
     bind = true,
   ) {
-    const transfer: Transferable[] = [];
-    if (image.kind === "float") transfer.push(image.data.buffer);
-    else if (image.kind === "srgb16") transfer.push(image.data.buffer);
-    else transfer.push(image.bitmap);
+    const transfer = [image.kind === "bitmap" ? image.bitmap : image.data.buffer];
     this.post(
       { cmd: "uploadSource", target, key, image, maxEdge, isFallbackPreview, baseCurveForBitmap, bind },
       transfer,
@@ -432,7 +422,7 @@ export class RenderBridge {
     requestId: string;
     image:
       | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+      | { kind: "float16"; data: Uint16Array; width: number; height: number }
       | { kind: "bitmap"; bitmap: ImageBitmap };
     params: DevelopParams;
     asShotTemperature: number;
@@ -440,14 +430,8 @@ export class RenderBridge {
     quality?: number;
     contributedParams?: Record<string, unknown>;
   }) {
-    const transfer: Transferable[] = [];
-    if (opts.image.kind === "float") {
-      transfer.push(opts.image.data.buffer);
-    } else if (opts.image.kind === "srgb16") {
-      transfer.push(opts.image.data.buffer);
-    } else {
-      transfer.push(opts.image.bitmap);
-    }
+    const { image } = opts;
+    const transfer = [image.kind === "bitmap" ? image.bitmap : image.data.buffer];
     this.post(
       { cmd: "renderThumbnail", ...opts, pipeline: resolvePipelineFor(opts.params.displayTransform) },
       transfer,
@@ -458,7 +442,7 @@ export class RenderBridge {
     requestId: string;
     image:
       | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+      | { kind: "float16"; data: Uint16Array; width: number; height: number }
       | { kind: "bitmap"; bitmap: ImageBitmap };
     params: DevelopParams;
     asShotTemperature: number;

@@ -12,17 +12,20 @@
 // in-place edit that preserves byte size (e.g. EXIF/metadata rewrite) keeps the
 // stale entry until Reimport drops it (see reimportPhotos in import-photos.ts).
 //
-// Format: 16-bit sRGB-encoded RGBA, gzip-compressed. The previous cache stored an
-// 8-bit JPEG, which only has ~256 levels/channel — a +5 exposure push (×32) then
-// stretched the bright sky into visible posterising bands (and JPEG's lossy chroma
-// made it rainbow). 16-bit gives 65536 levels so the push stays smooth; sRGB gamma
-// keeps shadow precision; gzip keeps the blob near a large JPEG's size. On load the
-// 16-bit sRGB data is uploaded straight to a normalized RGBA16 texture and decoded
-// to linear in the shader (no per-sample CPU math); see WebGLRenderer.setImage.
+// Format: scene-linear RGBA as IEEE 754 half floats, gzip-compressed. The first
+// cache stored an 8-bit JPEG, which only has ~256 levels/channel — a +5 exposure
+// push (×32) then stretched the bright sky into visible posterising bands (and
+// JPEG's lossy chroma made it rainbow). The next stored 16-bit sRGB: smooth
+// under a push, but clamped to [0, 1], so a reopened RAW lost the highlight
+// headroom and the camera matrix's small negatives its first open rendered
+// from. Half floats keep both at ~11 bits of relative precision in the same
+// 2 bytes/channel; gzip keeps the blob near a large JPEG's size. On load the
+// renderer decodes them and takes the same scene-linear float path as a fresh
+// decode; see WebGLRenderer.setImage.
 //
 // All heavy I/O (gzip/gunzip, IndexedDB transactions, filesystem reads/writes,
-// downsample + sRGB conversion for writes) runs in a dedicated cache worker so
-// the main thread is never blocked.
+// downsample + half-float encoding for writes) runs in a dedicated cache worker
+// so the main thread is never blocked.
 
 import { getSettings } from "@/state/settings-store";
 import {
@@ -36,15 +39,16 @@ import {
 
 // ─── Key helpers ─────────────────────────────────────────────────────────────
 
-// The version prefix is the decode contract: bump it whenever the float decode
-// changes (v5: libraw output linearised, white point restored, Fujifilm
+// The version prefix is the cache contract: bump it whenever the float decode
+// or the stored encoding changes (v6: half-float entries that keep headroom and
+// negatives; v5: libraw output linearised, white point restored, Fujifilm
 // exposure bias applied).
 export function rawCacheKey(
   relPath: string,
   fileSize: number,
   rotation = 0,
 ): string {
-  return `v5:${relPath}:${fileSize}:${rotation}`;
+  return `v6:${relPath}:${fileSize}:${rotation}`;
 }
 
 // ─── Project-folder cache ────────────────────────────────────────────────────

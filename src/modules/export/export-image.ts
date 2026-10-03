@@ -300,7 +300,7 @@ async function renderOne(
     const requestEdge = settings.longEdge ?? Math.max(w, h);
     // Float sources are downsampled to maxEdge at upload, so a cropped export
     // must inflate the cap to keep enough pixels inside the crop (bounded by
-    // the native size and the GPU's texture limit). Bitmap/srgb16 sources
+    // the native size and the GPU's texture limit). Bitmap/float16 sources
     // upload at native size — for them maxEdge is purely the output cap, and
     // inflating it would overshoot the requested long edge.
     const maxEdge =

@@ -98,7 +98,7 @@ async function run(
   let blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, paramBag);
 
   // 2) First commit for this photo: decode (warm cache while editing, so the RAW
-  //    fast path returns the srgb16 preview in ~50ms — no libraw), upload a capped
+  //    fast path returns the float16 preview in ~50ms — no libraw), upload a capped
   //    copy into the thumb renderer once, then render from it.
   if (!blob) {
     const decoded = await loadPhotoImage(photo);
@@ -113,7 +113,7 @@ async function run(
         image,
         THUMB_SOURCE_MAX_EDGE,
         decoded.kind === "float" ? decoded.isFallbackPreview : false,
-        // srgb16/float carry their own base-curve handling; a JPEG-fallback bitmap
+        // float16/float carry their own base-curve handling; a JPEG-fallback bitmap
         // is camera-toned and needs none, matching what the viewport shows.
         false,
       );

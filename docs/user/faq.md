@@ -100,6 +100,21 @@ When enabled (and supported by your GPU), cached RAW previews use 16-bit float t
 
 Use the desktop app (it forces the discrete GPU), lower the Develop render cap or thumbnail resolution in Preferences, disable the live histogram, and keep the RAW cache enabled.
 
+### Colors look oversaturated on Linux with a wide-gamut monitor
+
+Under a Wayland session, the engine behind the desktop app (Electron/Chromium) applies no display color management. It treats the monitor as sRGB and sends sRGB values to the panel unconverted, so on a wide-gamut monitor images look oversaturated: pure sRGB red is drawn as the monitor's own, far more saturated, red. This was confirmed on Fedora 44 with GNOME 50 (Electron 42). Chromium's `--force-color-profile` flag is ignored on Wayland, so it doesn't help. Windows and macOS are not affected, because Chromium reads the operating system's display profile there. There is no Safelight setting for this, and it changes only how the screen is drawn, not your files or exports.
+
+The workaround is to run Safelight under XWayland (the X11 compatibility layer), where Chromium does convert to the monitor's ICC profile:
+
+1. Store each monitor's ICC profile in the X11 root-window atoms: `_ICC_PROFILE` for the first monitor, then `_ICC_PROFILE_1`, `_ICC_PROFILE_2`, and so on for each further monitor, in XRandR output order. GNOME does not set these atoms for XWayland, so you need a small utility that writes each monitor's ICC profile into them.
+2. Launch Safelight with `--ozone-platform=x11`, which overrides the native Wayland platform the app otherwise selects on its own. For the AppImage:
+
+   ```bash
+   ./Safelight-<version>.AppImage --ozone-platform=x11
+   ```
+
+Chromium then converts all content to each monitor's primaries. It uses only the profile's primaries and assumes an sRGB tone curve, which suits hardware-calibrated panels. Your desktop still applies the profile's calibration curves (VCGT).
+
 ### Export fails or produces no file
 
 Ensure you have write permission to the destination and that photos finished decoding. When exporting many photos in the browser, prefer the ZIP option — separate files trigger one download prompt each.

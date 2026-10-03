@@ -314,6 +314,8 @@ sudo apt --fix-broken install
 sudo dnf install libXScrnSaver libappindicator-gtk3
 ```
 
+**Colors look oversaturated on a wide-gamut monitor (Wayland)** — under Wayland, Chromium applies no display color management, so sRGB values reach the panel unconverted. The cause and the XWayland workaround (`--ozone-platform=x11`) are in the [FAQ](faq.md#colors-look-oversaturated-on-linux-with-a-wide-gamut-monitor).
+
 ### RAW and image quality
 
 **RAW files look soft or load as small previews (browser)** — full-speed RAW decoding requires cross-origin isolation (`SharedArrayBuffer`), which the plain Vite dev server does not guarantee. Use the desktop app for full-resolution decoding. If you must use the browser, confirm the server sends `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.

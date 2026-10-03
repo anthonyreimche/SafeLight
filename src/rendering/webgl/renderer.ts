@@ -78,10 +78,12 @@ interface PipelineProgram {
   program: WebGLProgram;
   uniforms: Record<string, WebGLUniformLocation | null>;
   skipBase: boolean;
+  skipShoulder: boolean;
 }
 import { bakeCoverage, coverageSignature, type CoverageItem } from "./mask-coverage";
-import { setHealSourceImage } from "../heal-source";
+import { healImageFromLinear, setHealSourceImage } from "../heal-source";
 import { getSettings } from "@/state/settings-store";
+import { halfToFloat32 } from "@/raw/half-float";
 
 // Default cap on render resolution for interactive performance. Export passes
 // a larger value (or the image's own long edge) to render at full size.
@@ -121,61 +123,6 @@ const FILL_EDGE = 384;
 // offset, so the seam vanishes across tone gradients. Flip to false to A/B against
 // the old flat-tint path (clone is unaffected either way).
 const MEMBRANE_HEAL = true;
-
-// sRGB(16-bit code value) -> linear, built once. Fallback for the rare GPU
-// without EXT_texture_norm16, where the cached 16-bit preview can't be uploaded
-// as a normalized texture and must be linearised on the CPU. A 65536-entry LUT
-// turns the per-sample pow() into a table read.
-let SRGB16_TO_LINEAR: Float32Array | null = null;
-function srgb16ToLinearLut(): Float32Array {
-  if (SRGB16_TO_LINEAR) return SRGB16_TO_LINEAR;
-  const lut = new Float32Array(65536);
-  for (let i = 0; i < 65536; i++) {
-    const e = i / 65535;
-    lut[i] = e <= 0.04045 ? e / 12.92 : Math.pow((e + 0.055) / 1.055, 2.4);
-  }
-  SRGB16_TO_LINEAR = lut;
-  return lut;
-}
-
-// Expand a raw 16-bit sRGB RGBA buffer to a linear Float32 image (CPU fallback
-// path; the GPU normally does this decode while sampling the norm16 texture).
-// Return type matches the float-image member so it unifies with the live float
-// decode in setImage (isFallbackPreview stays absent — a cache is never a fallback).
-function srgb16ToFloatImage(
-  img: { data: Uint16Array; width: number; height: number },
-): { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean } {
-  const lut = srgb16ToLinearLut();
-  const src = img.data;
-  const out = new Float32Array(src.length);
-  for (let i = 0; i < src.length; i++) out[i] = lut[src[i]];
-  return { kind: "float", data: out, width: img.width, height: img.height };
-}
-
-function downsampleRGBA(src: Uint8ClampedArray | Uint8Array, W: number, H: number) {
-  const scale = Math.min(1, FILL_EDGE / Math.max(W, H));
-  const w = Math.max(1, Math.round(W * scale));
-  const h = Math.max(1, Math.round(H * scale));
-  const out = new Uint8ClampedArray(w * h * 4);
-  for (let y = 0; y < h; y++) {
-    const sy0 = Math.floor((y * H) / h);
-    const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * H) / h));
-    for (let x = 0; x < w; x++) {
-      const sx0 = Math.floor((x * W) / w);
-      const sx1 = Math.max(sx0 + 1, Math.floor(((x + 1) * W) / w));
-      let r = 0, g = 0, b = 0, n = 0;
-      for (let sy = sy0; sy < sy1; sy++) {
-        for (let sx = sx0; sx < sx1; sx++) {
-          const si = (sy * W + sx) * 4;
-          r += src[si]; g += src[si + 1]; b += src[si + 2]; n++;
-        }
-      }
-      const di = (y * w + x) * 4;
-      out[di] = r / n; out[di + 1] = g / n; out[di + 2] = b / n; out[di + 3] = 255;
-    }
-  }
-  return { data: out, w, h };
-}
 
 // Box-halve an RGBA Float32 image (linear space). Used to build a float mip chain
 // by hand: WebGL2 cannot generateMipmap on RGBA16F, but it can sample manually
@@ -651,9 +598,12 @@ export class WebGLRenderer {
   private developedFbo: WebGLFramebuffer | null = null;
   private devW = 0;
   private devH = 0;
-  // Whether developedTex is currently allocated as RGBA16 (norm16) vs RGBA8, so a
-  // norm16-availability change forces a reallocation rather than a format mismatch.
+  // Whether developedTex is currently allocated as RGBA16 (norm16) vs RGBA8 — the
+  // RGBA8 fallback when the norm16 target isn't framebuffer-complete or can't
+  // be mipmapped.
   private developedTexIsNorm16 = false;
+  // Whether the current RGBA16 allocation has mipmapped without a GL error.
+  private developedMipsVerified = false;
   // Downscaled 8-bit sRGB copy of the source, forwarded to the main thread so the
   // heal-source picker (findHealSource/healColorOffset) has pixels to search.
   private healSig = "";
@@ -745,9 +695,9 @@ export class WebGLRenderer {
   private linear = false;
   private isFallbackPreview = false;
   private applyBaseCurve = false;
-  // EXT_texture_norm16: lets the cached 16-bit sRGB preview upload as a normalized,
-  // filterable RGBA16 texture (decoded to linear in-shader). 0 / false when the
-  // GPU lacks it — then the cached preview falls back to the CPU-linearised float path.
+  // EXT_texture_norm16: lets the heal pass's developed target be a normalized,
+  // GPU-mipmappable RGBA16 texture instead of RGBA8. 0 / false when the GPU
+  // lacks it (or can't mipmap it) — the target then stays RGBA8.
   private haveNorm16 = false;
   private norm16Format = 0;
   // Active render pipeline + stage signatures: compared on every render to
@@ -755,6 +705,7 @@ export class WebGLRenderer {
   private pipelineSig = "";
   private stageSig = "";
   private pipelineSkipBase = false;
+  private pipelineSkipShoulder = false;
   private programCache = new Map<string, PipelineProgram>();
   private vao: WebGLVertexArrayObject | null = null;
   private quadBuf: WebGLBuffer | null = null;
@@ -774,9 +725,8 @@ export class WebGLRenderer {
   private imageTextureOwned = true;
   private cacheBudgetBytes = DEFAULT_SOURCE_CACHE_BYTES;
   private useTick = 0;
-  // Bytes/px of the last setImage upload (8 for RGBA16/RGBA16F, 4 for RGBA8), so
-  // the cache byte estimate reflects the format actually uploaded instead of
-  // inferring it — an 8-bit bitmap on a norm16-capable GPU is still only 4 B/px.
+  // Bytes/px of the last setImage upload (8 for RGBA16F, 4 for RGBA8), so the
+  // cache byte estimate reflects the format actually uploaded.
   private lastUploadBpp = 4;
   // Viewport window into the displayed image (null = whole frame). When set, the
   // output canvas is sized to roiOut and only the window is rendered at that
@@ -816,7 +766,7 @@ export class WebGLRenderer {
         this.norm16Format = fmt;
       }
       // else: norm16 extension exists but mipmap generation isn't supported on
-      // this driver — fall back silently to the RGBA16F float path.
+      // this driver — the developed target falls back silently to RGBA8.
     }
 
     this.haveColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
@@ -833,6 +783,7 @@ export class WebGLRenderer {
     this.program = entry.program;
     this.uniforms = entry.uniforms;
     this.pipelineSkipBase = entry.skipBase;
+    this.pipelineSkipShoulder = entry.skipShoulder;
     this.pipelineSig = p.sig;
     this.stageSig = sSig;
     this.setupQuad();
@@ -949,7 +900,12 @@ export class WebGLRenderer {
     if (e) return e;
     try {
       const program = this.createProgram(VERTEX_SHADER, buildFragmentShader(p.glsl, stageInj));
-      e = { program, uniforms: this.cacheUniformsFor(program), skipBase: p.skipBaseCurve };
+      e = {
+        program,
+        uniforms: this.cacheUniformsFor(program),
+        skipBase: p.skipBaseCurve,
+        skipShoulder: p.skipToneShoulder,
+      };
     } catch (err) {
       if (!p.glsl) throw err; // built-in must compile
       console.error(`[pipeline] "${p.id}" failed to compile; using built-in:`, err);
@@ -1044,6 +1000,7 @@ export class WebGLRenderer {
       "uLinear",
       "uIsFallbackPreview",
       "uApplyBaseCurve",
+      "uApplyToneShoulder",
       "uRawHistogram",
       "uShowClipping",
       "uVizMask",
@@ -1231,24 +1188,24 @@ export class WebGLRenderer {
     image:
       | ImageBitmap
       | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "srgb16"; data: Uint16Array; width: number; height: number },
+      | { kind: "float16"; data: Uint16Array; width: number; height: number },
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
     // True when an 8-bit bitmap is actually a linear-encoded RAW source (the
     // cached develop preview) rather than a camera-rendered image. Such a source
     // still needs the default base tone curve, same as the live float decode.
     baseCurveForBitmap = false,
-    // Opt-in (thumb renderer only): cap an oversized srgb16 source to maxEdge.
-    // The fast norm16 path uploads srgb16 at full resolution; for thumbnails that
-    // wastes GPU memory, so route oversized srgb16 through the capping float path
-    // instead. The main renderer leaves this off to keep full-res zoom detail.
-    capSrgb16 = false,
+    // Opt-in (thumb renderer only): cap a cached float16 source to maxEdge. It
+    // otherwise uploads at its stored size (already bounded by the cache's own
+    // edge preference) so the main renderer keeps full-res zoom detail; for
+    // thumbnails that wastes GPU memory.
+    capFloat16 = false,
   ) {
     const gl = this.gl;
     this.maxEdge = maxEdge;
 
     // The single imageTexture is reused across opens. The float path writes N
-    // RGBA16F mip levels by hand; a later norm16/8-bit load only rewrites level 0,
+    // RGBA16F mip levels by hand; a later 8-bit load only rewrites level 0,
     // so the leftover higher levels (wrong format/size) make the texture
     // mipmap-incomplete -> generateMipmap throws 0x0502 and the LINEAR_MIPMAP_LINEAR
     // sampler returns black on re-open. Recreate so every load starts level-clean.
@@ -1261,50 +1218,7 @@ export class WebGLRenderer {
     this.currentSourceKey = null;
     this.sourceEpoch++;
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
-    let mipsBuilt = false;
-    let uploaded = false;
-    const srgb16Oversized =
-      "kind" in image && image.kind === "srgb16" &&
-      Math.max(image.width, image.height) > maxEdge;
-    if ("kind" in image && image.kind === "srgb16" && this.haveNorm16 && !(capSrgb16 && srgb16Oversized)) {
-      // Cached develop preview, GPU path — upload the 16-bit sRGB data straight to a
-      // normalized RGBA16 texture and let the shader's srgbToLinear (uLinear == false)
-      // do the decode while sampling. No per-sample CPU math, and the texture is half
-      // the bytes / upload of the old Float32 (RGBA16F) route. Full 16-bit precision,
-      // so a big exposure push still doesn't posterise. RGBA16 is colour-renderable
-      // AND filterable, so unlike RGBA16F the GPU can build the mip chain itself.
-      this.imageWidth = image.width;
-      this.imageHeight = image.height;
-      this.linear = false;          // texture is sRGB-encoded; shader decodes it
-      this.isFallbackPreview = false;
-      this.applyBaseCurve = true;   // cached source is scene-linear RAW -> needs base curve
-      gl.texImage2D(
-        gl.TEXTURE_2D, 0, this.norm16Format, image.width, image.height, 0,
-        gl.RGBA, gl.UNSIGNED_SHORT, image.data,
-      );
-      while (gl.getError() !== gl.NO_ERROR) {} // clear prior errors
-      gl.generateMipmap(gl.TEXTURE_2D);
-      if (gl.getError() !== gl.NO_ERROR) {
-        // The 2x2 constructor probe passed, but this driver fails generateMipmap
-        // on the full-size RGBA16 texture (returns 0x0502). An incomplete mip
-        // chain samples as black, so abandon norm16 for the session and fall
-        // through to the CPU-linearised float path (manual mips, known-good).
-        while (gl.getError() !== gl.NO_ERROR) {}
-        this.haveNorm16 = false;
-      } else {
-        mipsBuilt = true;
-        uploaded = true;
-        this.lastUploadBpp = 8; // RGBA16
-        // Heal source is 8-bit sRGB; the cached data is already sRGB, so the high
-        // byte of each 16-bit sample is the 8-bit value directly.
-        const u8 = new Uint8Array(image.data.length);
-        for (let i = 0; i < image.data.length; i++) u8[i] = image.data[i] >> 8;
-        const ds = downsampleRGBA(u8, image.width, image.height);
-        this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
-        setHealSourceImage(ds.data, ds.w, ds.h);
-      }
-    }
-    if (!uploaded && "kind" in image) {
+    if ("kind" in image) {
       // Linear float (RAW) path — upload as RGBA16F so the develop pipeline keeps
       // ~10-bit precision AND real HDR headroom. The previous code quantised to 8-bit
       // sRGB (mipmaps need a filterable+renderable format), which meant a +5 exposure
@@ -1313,20 +1227,25 @@ export class WebGLRenderer {
       // 16-bit float removes that. WebGL2 can't generateMipmap on RGBA16F, so the mip
       // chain for the local-contrast taps is built by hand below.
       //
-      // A cached (srgb16) preview also lands here when the GPU lacks EXT_texture_norm16:
-      // it's linearised on the CPU (LUT) so it can ride the same scene-linear float path.
-      const fsrc = image.kind === "srgb16" ? srgb16ToFloatImage(image) : image;
+      // A cached develop preview (float16) holds the same scene-linear values as
+      // half floats, so it rides this path too and renders like the fresh decode.
+      const fromCache = image.kind === "float16";
+      const src0 = fromCache ? halfToFloat32(image.data) : image.data;
       // Bound the working texture to the develop cap. The live RAW decode is
       // full sensor resolution; uploading it whole (plus the hand-built mip
-      // chain and heal pass) is what exhausted memory on low-RAM machines.
-      const src0 = fsrc.data instanceof Float32Array ? fsrc.data : new Float32Array(fsrc.data);
-      const fimg = capFloatToEdge(src0, fsrc.width, fsrc.height, maxEdge);
+      // chain and heal pass) is what exhausted memory on low-RAM machines. The
+      // cached preview is already bounded by the cache's edge preference, so
+      // only the GL texture limit applies unless capFloat16 asks for maxEdge.
+      const cap = fromCache && !capFloat16 ? this.maxTextureEdge : maxEdge;
+      const fimg = capFloatToEdge(src0, image.width, image.height, cap);
       this.imageWidth = fimg.width;
       this.imageHeight = fimg.height;
       this.lastUploadBpp = 8; // RGBA16F
       // Texture now holds true linear scene values, so the shader must NOT sRGB-decode.
       this.linear = true;
-      this.isFallbackPreview = fsrc.isFallbackPreview ?? isFallbackPreview;
+      this.isFallbackPreview = fromCache
+        ? false
+        : (image.isFallbackPreview ?? isFallbackPreview);
       // Real full-res RAW decode (not the pseudo-linear JPEG fallback) renders
       // scene-linear and flat; add the default tone curve to match other views.
       this.applyBaseCurve = !this.isFallbackPreview;
@@ -1342,20 +1261,13 @@ export class WebGLRenderer {
         lvl++; cur = ds.data; lw = ds.w; lh = ds.h;
         gl.texImage2D(gl.TEXTURE_2D, lvl, gl.RGBA16F, lw, lh, 0, gl.RGBA, gl.FLOAT, cur);
       }
-      mipsBuilt = true;
       {
         // Heal source stays 8-bit sRGB (its own pipeline).
-        const u8 = new Uint8Array(f0.length);
-        for (let i = 0; i < f0.length; i++) {
-          const v = Math.max(0, f0[i]);
-          const enc = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-          u8[i] = Math.round(Math.min(255, enc * 255));
-        }
-        const ds = downsampleRGBA(u8, fimg.width, fimg.height);
+        const ds = healImageFromLinear(f0, fimg.width, fimg.height, FILL_EDGE);
         this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
         setHealSourceImage(ds.data, ds.w, ds.h);
       }
-    } else if (!("kind" in image)) {
+    } else {
       // 8-bit sRGB bitmap path. Cap the upload to the develop edge (and never
       // above the GL max texture size) so an oversized bitmap can't fail
       // texImage2D into a black frame — the float path caps the same way.
@@ -1379,12 +1291,10 @@ export class WebGLRenderer {
         this.fillSrc = ds.data; this.fillW = ds.w; this.fillH = ds.h; this.healSig = "";
         setHealSourceImage(ds.data, ds.w, ds.h);
       }
+      // Mip chain for the local-contrast blurs (Texture/Clarity/Dehaze); the
+      // float path supplies its own by hand.
+      gl.generateMipmap(gl.TEXTURE_2D);
     }
-    // Build the mip chain for local-contrast blurs (Texture/Clarity/Dehaze).
-    // The float (RGBA16F) path supplies its mips by hand, and the norm16 path
-    // already called generateMipmap; both set mipsBuilt, so only the 8-bit bitmap
-    // path needs it here.
-    if (!mipsBuilt) gl.generateMipmap(gl.TEXTURE_2D);
     this.hasImage = true;
     this.resize();
   }
@@ -1411,7 +1321,7 @@ export class WebGLRenderer {
     image:
       | ImageBitmap
       | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "srgb16"; data: Uint16Array; width: number; height: number },
+      | { kind: "float16"; data: Uint16Array; width: number; height: number },
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
     baseCurveForBitmap = false,
@@ -1419,14 +1329,14 @@ export class WebGLRenderer {
     // source is re-bound afterwards — used to prefetch neighbours without
     // disturbing the displayed image.
     bind = true,
-    // Cap oversized srgb16 to maxEdge (thumb renderer only — see setImage).
-    capSrgb16 = false,
+    // Cap a cached float16 source to maxEdge (thumb renderer only — see setImage).
+    capFloat16 = false,
   ) {
     const prevKey = this.currentSourceKey;
     // Drop any stale entry for this key (e.g. re-decode after an edit changed the
     // pixels) so we don't leak its texture.
     this.dropSource(key);
-    this.setImage(image, maxEdge, isFallbackPreview, baseCurveForBitmap, capSrgb16);
+    this.setImage(image, maxEdge, isFallbackPreview, baseCurveForBitmap, capFloat16);
     // setImage built into this.imageTexture and marked it owned; hand it to the cache.
     const entry: SourceEntry = {
       tex: this.imageTexture,
@@ -1505,7 +1415,7 @@ export class WebGLRenderer {
   }
 
   private estimateSourceBytes(w: number, h: number): number {
-    // RGBA16F (float RAW) / RGBA16 (norm16) = 8 bytes/px; 8-bit bitmap = 4 — the
+    // RGBA16F (float RAW, fresh or cached) = 8 bytes/px; 8-bit bitmap = 4 — the
     // format the upload actually took. ×4/3 accounts for the mip chain.
     return Math.round(w * h * this.lastUploadBpp * (4 / 3));
   }
@@ -1785,6 +1695,7 @@ export class WebGLRenderer {
     this.program = e.program;
     this.uniforms = e.uniforms;
     this.pipelineSkipBase = e.skipBase;
+    this.pipelineSkipShoulder = e.skipShoulder;
     this.pipelineSig = p.sig;
     this.stageSig = sSig;
   }
@@ -1816,12 +1727,13 @@ export class WebGLRenderer {
 
     gl.uniform1i(u.uLinear, this.linear ? 1 : 0);
     gl.uniform1i(u.uIsFallbackPreview, this.isFallbackPreview ? 1 : 0);
-    // A replacement pipeline that brings its own tone curve (AgX, ACES, …)
-    // suppresses the default RAW base curve so it sees true scene-linear input.
+    // A replacement pipeline that brings its own look (AgX, ACES, …) can drop
+    // the default RAW base curve and, separately, the core tone shoulder.
     gl.uniform1i(
       u.uApplyBaseCurve,
       this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
     );
+    gl.uniform1i(u.uApplyToneShoulder, this.pipelineSkipShoulder ? 0 : 1);
     gl.uniform1i(u.uShowClipping, this.showClipping);
     gl.uniform3f(u.uOutsideColor, this.outsideColor[0], this.outsideColor[1], this.outsideColor[2]);
     gl.uniform1i(u.uVizMask, this.vizMask);
@@ -2110,29 +2022,9 @@ export class WebGLRenderer {
           `${(s.recolorR ?? 0).toFixed(3)},${(s.recolorG ?? 0).toFixed(3)},${(s.recolorB ?? 0).toFixed(3)},${s.mode}`,
       )
       .join(";");
-    if (hasRetouch && this.prepareDevelopedTarget()) {
-      // Pass 1 -> bake the retouch into an offscreen copy of the source, then
-      // build its mip chain so the develop's blur taps read the patched pixels.
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.developedFbo);
-      gl.viewport(0, 0, this.devW, this.devH);
-      // Break a feedback loop: bindPrepassResults (end of the previous frame) may
-      // leave developedTex bound to a prepass-result sampler unit. Rendering INTO
-      // developedTex here while it's still bound as a sampler input on the active
-      // program is a GL feedback loop (undefined — drivers can drop the write,
-      // leaving the patched source stale, so heal edits never appear when a stage
-      // with an active prepass result is registered). Detach those units first.
-      for (const pu of PREPASS_UNITS) {
-        gl.activeTexture(gl.TEXTURE0 + pu);
-        gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
-      }
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.imageTexture); // read the original source
-      gl.uniform1i(u.uImage, 0);
-      gl.uniform1i(u.uPatchPass, 1);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-      gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
-      gl.generateMipmap(gl.TEXTURE_2D);
-
+    const patched =
+      hasRetouch && this.prepareDevelopedTarget() && this.bakePatchedSource();
+    if (patched) {
       // Prepasses (e.g. denoise) read the PATCHED source so heal happens before
       // detail; results are bound onto the main program for pass 2. The patched
       // source varies with retouch/heal geometry, so fold those into the cache key.
@@ -2731,6 +2623,50 @@ export class WebGLRenderer {
     if (okLoc != null) gl.uniform1i(okLoc, this.denoiseReady ? 1 : 0);
   }
 
+  // Pass 1 of a retouched frame: bake the retouch into the offscreen copy of the
+  // source, then build its mip chain so the develop's blur taps read the
+  // patched pixels. Returns false when no patched copy could be made, so the
+  // caller falls back to the in-shader retouch.
+  private bakePatchedSource(): boolean {
+    const gl = this.gl;
+    const u = this.uniforms;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.developedFbo);
+    gl.viewport(0, 0, this.devW, this.devH);
+    // Break a feedback loop: bindPrepassResults (end of the previous frame) may
+    // leave developedTex bound to a prepass-result sampler unit. Rendering INTO
+    // developedTex here while it's still bound as a sampler input on the active
+    // program is a GL feedback loop (undefined — drivers can drop the write,
+    // leaving the patched source stale, so heal edits never appear when a stage
+    // with an active prepass result is registered). Detach those units first.
+    for (const pu of PREPASS_UNITS) {
+      gl.activeTexture(gl.TEXTURE0 + pu);
+      gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.imageTexture); // read the original source
+    gl.uniform1i(u.uImage, 0);
+    gl.uniform1i(u.uPatchPass, 1);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
+    // getError stalls the pipeline, so it runs only for the first mipmap after
+    // each RGBA16 (re)allocation rather than on every retouched frame.
+    const verify = this.developedTexIsNorm16 && !this.developedMipsVerified;
+    if (verify) while (gl.getError() !== gl.NO_ERROR) {} // clear prior errors
+    gl.generateMipmap(gl.TEXTURE_2D);
+    if (!verify) return true;
+    if (gl.getError() === gl.NO_ERROR) {
+      this.developedMipsVerified = true;
+      return true;
+    }
+    // The 2x2 constructor probe passed, but this driver fails generateMipmap on
+    // the full-size RGBA16 target (0x0502). An incomplete mip chain samples as
+    // black, so abandon norm16 for this renderer and re-bake this frame's copy
+    // into an RGBA8 target.
+    while (gl.getError() !== gl.NO_ERROR) {}
+    this.haveNorm16 = false;
+    return this.prepareDevelopedTarget() && this.bakePatchedSource();
+  }
+
   // Create / resize the offscreen develop target (capped source size). Returns
   // false if the framebuffer can't be completed, so the caller falls back.
   private prepareDevelopedTarget(): boolean {
@@ -2783,6 +2719,7 @@ export class WebGLRenderer {
         return false;
       }
       this.developedTexIsNorm16 = norm16;
+      this.developedMipsVerified = false;
       this.devW = w;
       this.devH = h;
     }

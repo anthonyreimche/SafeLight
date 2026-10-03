@@ -11,8 +11,9 @@
 // built-in pipeline with no extension stages.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
-import type { ResolvedPipeline } from "@/extensions/pipelines";
+import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
 
 const { FakeRenderer } = vi.hoisted(() => {
@@ -25,6 +26,8 @@ const { FakeRenderer } = vi.hoisted(() => {
     cacheBudget: number | null = null;
     contributedParams: Record<string, unknown> | null = null;
     stageTextures: Record<string, unknown> | null = null;
+    /** capFloat16 of each setImage call. */
+    capFloat16: boolean[] = [];
 
     constructor(_canvas: unknown, opts: unknown) {
       if (FakeRenderer.throwOnConstruct) {
@@ -49,6 +52,22 @@ const { FakeRenderer } = vi.hoisted(() => {
     setActivePipeline(_pipeline: ResolvedPipeline) {}
 
     setStages(_stages: ProcessingStageContribution[]) {}
+
+    setImage(
+      _image: unknown,
+      _maxEdge?: number,
+      _isFallbackPreview?: boolean,
+      _baseCurveForBitmap?: boolean,
+      capFloat16 = false,
+    ) {
+      this.capFloat16.push(capFloat16);
+    }
+
+    setAsShotTemperature(_kelvin: number) {}
+
+    setParams(_params: unknown) {}
+
+    render() {}
   }
   return { FakeRenderer };
 });
@@ -62,6 +81,10 @@ class FakeOffscreenCanvas {
     this.width = width;
     this.height = height;
   }
+
+  convertToBlob(): Promise<Blob> {
+    return Promise.resolve(new Blob());
+  }
 }
 
 interface SelfStub {
@@ -69,32 +92,32 @@ interface SelfStub {
   postMessage: (msg: WorkerResponse) => void;
 }
 
+let posted: WorkerResponse[];
+let selfStub: SelfStub;
+
+beforeEach(async () => {
+  vi.resetModules();
+  FakeRenderer.instances = [];
+  FakeRenderer.throwOnConstruct = false;
+  posted = [];
+  selfStub = {
+    onmessage: null,
+    postMessage: (msg) => posted.push(msg),
+  };
+  vi.stubGlobal("self", selfStub);
+  vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
+  await import("./render-worker");
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function send(msg: WorkerRequest) {
+  selfStub.onmessage!({ data: msg } as MessageEvent<WorkerRequest>);
+}
+
 describe("render-worker init recovery", () => {
-  let posted: WorkerResponse[];
-  let selfStub: SelfStub;
-
-  beforeEach(async () => {
-    vi.resetModules();
-    FakeRenderer.instances = [];
-    FakeRenderer.throwOnConstruct = false;
-    posted = [];
-    selfStub = {
-      onmessage: null,
-      postMessage: (msg) => posted.push(msg),
-    };
-    vi.stubGlobal("self", selfStub);
-    vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
-    await import("./render-worker");
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  function send(msg: WorkerRequest) {
-    selfStub.onmessage!({ data: msg } as MessageEvent<WorkerRequest>);
-  }
-
   it("seeds a retried renderer from the latest pipeline, stages, bag, textures and cache budget", () => {
     // First init fails, as it would right after a GPU reset.
     FakeRenderer.throwOnConstruct = true;
@@ -107,6 +130,7 @@ describe("render-worker init recovery", () => {
       id: "ext.custom",
       glsl: "vec3 pipelineToDisplay(vec3 c) { return c; }",
       skipBaseCurve: false,
+      skipToneShoulder: false,
       sig: "ext.custom\nglsl",
     };
     const stages: ProcessingStageContribution[] = [
@@ -131,5 +155,30 @@ describe("render-worker init recovery", () => {
     expect(created.stageTextures).toEqual(textures);
     expect(created.cacheBudget).toBe(1_000_000);
     expect(posted.at(-1)).toMatchObject({ type: "ready" });
+  });
+});
+
+// A cached float16 source otherwise uploads at its stored size; the thumb
+// renderer only ever draws at the thumbnail edge, so it caps the upload there,
+// as a thumb-targeted uploadSource already does.
+describe("render-worker thumbnails", () => {
+  const CACHED = {
+    kind: "float16" as const,
+    data: new Uint16Array(4 * 4),
+    width: 2,
+    height: 2,
+  };
+
+  it("caps a cached float16 source sent with the render", () => {
+    send({
+      cmd: "renderThumbnail",
+      requestId: "t1",
+      image: CACHED,
+      params: DEFAULT_DEVELOP_PARAMS,
+      asShotTemperature: 5500,
+      maxEdge: 256,
+      pipeline: BUILTIN_RESOLVED,
+    });
+    expect(FakeRenderer.instances[0].capFloat16).toEqual([true]);
   });
 });

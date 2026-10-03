@@ -33,25 +33,37 @@ Keyed by the slider's `icon` id (e.g. `core.exposure`).
 ```typescript
 interface PipelineContribution {
   id: string; name: string; description?: string;
-  glsl?: string;          // body defining: vec3 pipelineToDisplay(vec3 lin)
-  skipBaseCurve?: boolean; // the transform brings its own complete look (AgX, ACES, …)
+  glsl?: string;              // body defining: vec3 pipelineToDisplay(vec3 lin)
+  skipBaseCurve?: boolean;    // drop the RAW baseline tone: the transform is the profile
+  skipToneShoulder?: boolean; // bypass the core filmic shoulder: the transform rolls off highlights
 }
 ```
 
-`glsl` maps scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to display-encoded output. Helpers available: `luma()`, `srgbToLinear()`, `linearToSrgb()`, `linearToSrgbU()`. Return the sRGB-encoded value and leave output spaces alone: the core converts once at the end for the selected output space (Display-P3, Adobe RGB, ProPhoto). With `skipBaseCurve`, Safelight drops the baseline tone it applies to RAW sources in linear light, so the transform sees true scene-linear data; the transform is the profile. Omit `glsl` to reuse the built-in transform. Transforms are picked per photo from the display transform menu in Develop's bottom bar; **Preferences ▸ Rendering ▸ Default display transform** covers photos without a pick. A photo's transform applies everywhere it renders (develop, loupe, thumbnails, export). This is the simplest way to ship a whole-image tone mapper.
+`glsl` maps scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to display-encoded output. A channel of `lin` can also be negative: colours outside the sRGB primaries reach the transform that way from RAW sources, and colour noise reduction can leave small excursions below zero on any source, so guard a channel before taking its `log`, `pow` or `sqrt`. Helpers available: `luma()`, `srgbToLinear()`, `linearToSrgb()`, `linearToSrgbU()`. Return the sRGB-encoded value and leave output spaces alone: the core converts once at the end for the selected output space (Display-P3, Adobe RGB, ProPhoto).
+
+Two independent flags decide what reaches the transform; set both for true scene-linear input:
+
+- **`skipBaseCurve`** — the transform brings its own look (AgX, ACES, …), so Safelight drops the baseline tone it applies to RAW sources in linear light and the transform is the profile. It drops the baseline only: the core filmic shoulder still runs unless `skipToneShoulder` is set.
+- **`skipToneShoulder`** — the transform brings its own highlight roll-off. The core's default filmic shoulder, which compresses luminance above 0.85 at Highlights 0, is bypassed, so the transform receives exposure-scaled scene-linear values with their headroom. Highlights still works, globally and in masks: a negative value blends in the core recovery in proportion to the slider, and a positive value lifts values up to white and leaves values above white untouched. The core clamps the transform's output to [0, 1], so a transform that skips the shoulder must bound its own output. Safelight builds from before this flag ignore it and keep the shoulder; set `minAppVersion` in the [manifest](../extensions/README.md#manifest) if the transform relies on it.
+
+Omit `glsl` to reuse the built-in transform; the flags still apply. Transforms are picked per photo from the display transform menu in Develop's bottom bar; **Preferences ▸ Rendering ▸ Default display transform** covers photos without a pick. A photo's transform applies everywhere it renders (develop, loupe, thumbnails, export). This is the simplest way to ship a whole-image tone mapper.
 
 ## `ProcessingStageContribution` — GPU stage
 
 ```typescript
 type ProcessingPhase =
-  | "geometry" | "decode" | "noise-reduction" | "scene-linear"
-  | "tone-map" | "display-adjust" | "effects" | "output-encode";
+  | "geometry"        // srcUv, before the image is sampled
+  | "decode"          // lin after the baseline tone, before core NR
+  | "noise-reduction" // lin, same point as decode (sorted after it)
+  | "scene-linear"    // lin after the core linear edits (exposure, tone shoulder, masks)
+  | "tone-map"        // lin, same point as scene-linear (sorted after it)
+  | "display-adjust" | "effects" | "output-encode"; // display-encoded c, after the core display edits
 
 interface ProcessingStageContribution {
   id: string; name: string;
   phase: ProcessingPhase;     // order enforced by the shader compiler
   priority?: number;          // within phase, lower runs first (default 100)
-  glsl: string;               // fragment operating on `vec3 color` (read/write)
+  glsl: string;               // fragment on srcUv, lin or c by phase (read/write)
   helpers?: string;           // helper functions (namespaced by the compiler)
   uniforms: UniformDeclaration[];
   passes?: StagePass[];       // pre-passes (ping-pong FBOs); result is `vec3 stageResult`
@@ -67,6 +79,9 @@ interface ProcessingStageContribution {
 The stage model and shader compiler (`src/rendering/webgl/shader-compiler.ts`) decompose the develop shader into individually contributable GPU stages, and the path is **live**: all phases compile in, stages take custom uniforms (via the param bag, qualified as `{stageId}.{key}`), bind textures/LUTs (`api.setStageTexture`), and persist per-photo.
 
 - **`phase: "geometry"`** is special — it runs first and operates on the mutable source-UV `vec2 srcUv` (after crop/transform/lens, *before* the image is sampled), so a geometry stage can warp/displace the coordinate and have the entire downstream pipeline follow. Every other phase operates on a color (`lin` or `c`).
+- **`phase: "decode"`** runs on the linear colour after the baseline tone (applied to RAW sources unless the display transform sets `skipBaseCurve`), at the same injection point as `noise-reduction`: before core NR. Stage prepasses read the source through the same linearisation and baseline (`toLin`), so no extension hook sees the decode before the baseline.
+- **`phase: "scene-linear"` / `"tone-map"`** run on `lin` after the core linear edits. Under a display transform that sets `skipToneShoulder` they also receive the headroom above 1.0 that the core shoulder otherwise compresses.
+- **Negative channels.** Scene-linear `lin` can hold negative components: colours outside the sRGB primaries arrive that way from RAW sources, and colour noise reduction can leave small excursions below zero on any source. A stage that takes the `log`, `pow` or `sqrt` of a channel must guard it.
 - **`passes`** are full-screen pre-passes that ping-pong through framebuffers in source-UV space, enabling neighbourhood/iterative algorithms (à trous wavelets, NLM, separable blurs) a single inline fragment can't express. The final pass output is exposed to the stage's inline `glsl` as `vec3 stageResult`. See `StagePass` in `src/extensions/types.ts` for the per-pass contract (`uTexel`, `uPassIndex`, `uPassCount`, `readPrev(uv)`).
 - **`textures`** declare what the stage samples. `kind: "lut"` / `"dynamic"` textures take pixel data from `api.setStageTexture` (a single global bag — right for film LUTs, wrong for anything per photo). `kind: "coverage"` textures are painted: the photo's paramBag value at `"{stageId}.{key}"` is a `BrushDab[]` (source-UV, radius in image-height units — the same shape core brush masks use), baked into brush coverage per render and read by the inline `glsl`/`helpers` as `float key(vec2 uv)` (0..1 at source-UV; not available inside passes). Because the dabs are ordinary bag values they persist, undo, export and paste like any edit and never enter presets. Coverage shares the atlas's four channels with the photo's own brush masks; when they are all taken the key reads as unpainted and a warning is logged once.
 - **`presetScope`** decides how the stage's params travel in presets. `"global"` (the default) is a look that suits any photo, such as a film sim or a curve: it is offered when saving a preset and pre-selected once changed. `"per-image"` is tied to one photo's content, such as warp, heal or red-eye: it is left out of presets and only listed under the Save dialog's **Show all**.

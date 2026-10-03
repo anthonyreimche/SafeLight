@@ -17,8 +17,11 @@
 // through unchanged so highlight recovery keeps the sensor's headroom.
 //
 // f(x) = x·((A·x + B)·x + C) / (((D·x + E)·x + F)·x + G), G = A + B + C − D − E − F
-// so f(1) = 1 exactly. The GLSL below must stay the componentwise twin of
-// baselineTone(); the GPU suite renders both and compares.
+// so f(1) = 1 exactly. Below black, where the decode leaves the channels of
+// colours outside the sRGB primaries, it continues as the line through 0 with
+// the curve's own slope there (C / G), so those colours keep their hue. The
+// GLSL below must stay the componentwise twin of baselineTone(); the GPU suite
+// renders both and compares.
 
 const A = 0.5323;
 const B = 1.2015;
@@ -30,7 +33,9 @@ const G = +(A + B + C - D - E - F).toFixed(4);
 
 export function baselineTone(x: number): number {
   const c = Math.min(Math.max(x, 0), 1);
-  return (c * ((A * c + B) * c + C)) / (((D * c + E) * c + F) * c + G) + Math.max(x - 1, 0);
+  return (c * ((A * c + B) * c + C)) / (((D * c + E) * c + F) * c + G)
+    + Math.max(x - 1, 0)
+    + (Math.min(x, 0) * C) / G;
 }
 
 const glsl = (v: number): string => `(${v.toFixed(4)})`;
@@ -40,6 +45,7 @@ vec3 baselineTone(vec3 x) {
   vec3 c = clamp(x, 0.0, 1.0);
   return c * ((${glsl(A)} * c + ${glsl(B)}) * c + ${glsl(C)})
        / (((${glsl(D)} * c + ${glsl(E)}) * c + ${glsl(F)}) * c + ${glsl(G)})
-       + max(x - 1.0, 0.0);
+       + max(x - 1.0, 0.0)
+       + min(x, 0.0) * ${glsl(C)} / ${glsl(G)};
 }
 `;

@@ -190,7 +190,19 @@ export const LINEAR_PROBE_PIPELINE: ResolvedPipeline = {
   id: "test.linear-probe",
   glsl: "vec3 pipelineToDisplay(vec3 lin) { return lin; }",
   skipBaseCurve: true,
+  skipToneShoulder: false,
   sig: "test.linear-probe",
+};
+
+/** A display transform that keeps the RAW baseline and hands the working
+ *  colour back negated, so a channel below black survives the display clamp
+ *  and reads back as a positive value. */
+export const NEGATING_PIPELINE: ResolvedPipeline = {
+  id: "test.negate",
+  glsl: "vec3 pipelineToDisplay(vec3 lin) { return -lin; }",
+  skipBaseCurve: false,
+  skipToneShoulder: false,
+  sig: "test.negate",
 };
 
 export interface Frame {

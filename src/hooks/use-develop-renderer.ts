@@ -255,7 +255,7 @@ export function useDevelopRenderer(
       image:
         | ImageBitmap
         | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | { kind: "srgb16"; data: Uint16Array; width: number; height: number },
+        | { kind: "float16"; data: Uint16Array; width: number; height: number },
       isFallback = false,
       cachedRaw = false,
       cacheKey?: string,
@@ -433,7 +433,7 @@ export function useDevelopRenderer(
             ? `Preview ${image.width}×${image.height}`
             : `RAW ${image.width}×${image.height} — ${lastLibRawStatus}`,
         );
-      } else if (image.kind === "srgb16") {
+      } else if (image.kind === "float16") {
         setSource(`Cached ${image.width}×${image.height}`);
       } else {
         const b = image.bitmap;

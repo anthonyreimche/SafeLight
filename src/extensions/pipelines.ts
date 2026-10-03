@@ -29,7 +29,9 @@ export interface ResolvedPipeline {
   /** GLSL defining pipelineToDisplay, or null for the built-in transform. */
   glsl: string | null;
   skipBaseCurve: boolean;
-  /** Change signature the renderer compares against its compiled programs. */
+  skipToneShoulder: boolean;
+  /** Change signature the renderer caches its compiled programs and their
+   *  flags by: it differs whenever the shader or either flag does. */
   sig: string;
 }
 
@@ -38,6 +40,7 @@ export const BUILTIN_RESOLVED: ResolvedPipeline = {
   id: DEFAULT_PIPELINE,
   glsl: null,
   skipBaseCurve: false,
+  skipToneShoulder: false,
   sig: "",
 };
 
@@ -52,11 +55,13 @@ export function effectivePipelineId(displayTransform: string | null): string {
 }
 
 function build(id: string, c: RegisteredPipeline | undefined): ResolvedPipeline {
-  if (!c) return BUILTIN_RESOLVED;
-  if (c.glsl) {
-    return { id, glsl: c.glsl, skipBaseCurve: c.skipBaseCurve ?? false, sig: `${id}\n${c.glsl}` };
-  }
-  return c.skipBaseCurve ? { id, glsl: null, skipBaseCurve: true, sig: `${id}\n` } : BUILTIN_RESOLVED;
+  const glsl = c?.glsl || null;
+  const skipBaseCurve = c?.skipBaseCurve ?? false;
+  const skipToneShoulder = c?.skipToneShoulder ?? false;
+  if (!glsl && !skipBaseCurve && !skipToneShoulder) return BUILTIN_RESOLVED;
+  const flags = `${skipBaseCurve ? "b" : "-"}${skipToneShoulder ? "s" : "-"}`;
+  const sig = `${id}\n${flags}\n${glsl ?? ""}`;
+  return { id, glsl, skipBaseCurve, skipToneShoulder, sig };
 }
 
 // Resolution runs per render request; cache per id so the steady state is a

@@ -25,6 +25,49 @@ export function setHealSourceImage(data: Uint8ClampedArray, w: number, h: number
   ih = h;
 }
 
+function srgb8(v: number): number {
+  const c = Math.max(0, v);
+  const enc = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+  return Math.round(Math.min(255, enc * 255));
+}
+
+// The search image for a scene-linear RGBA source: box-averaged to a long edge
+// of maxEdge in linear light, then encoded to 8-bit sRGB (headroom clips to
+// white, negatives to black). Encoding after the downscale keeps the per-sample
+// pow() to the small image, which matters on a main-thread renderer.
+export function healImageFromLinear(
+  src: Float32Array,
+  W: number,
+  H: number,
+  maxEdge: number,
+): { data: Uint8ClampedArray; w: number; h: number } {
+  const scale = Math.min(1, maxEdge / Math.max(W, H));
+  const w = Math.max(1, Math.round(W * scale));
+  const h = Math.max(1, Math.round(H * scale));
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const sy0 = Math.floor((y * H) / h);
+    const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * H) / h));
+    for (let x = 0; x < w; x++) {
+      const sx0 = Math.floor((x * W) / w);
+      const sx1 = Math.max(sx0 + 1, Math.floor(((x + 1) * W) / w));
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let sy = sy0; sy < sy1; sy++) {
+        for (let sx = sx0; sx < sx1; sx++) {
+          const si = (sy * W + sx) * 4;
+          r += src[si]; g += src[si + 1]; b += src[si + 2]; n++;
+        }
+      }
+      const di = (y * w + x) * 4;
+      out[di] = srgb8(r / n);
+      out[di + 1] = srgb8(g / n);
+      out[di + 2] = srgb8(b / n);
+      out[di + 3] = 255;
+    }
+  }
+  return { data: out, w, h };
+}
+
 // Bilinear sample in UV space, clamped to the frame. Returns 0..255 RGB. Bilinear
 // (not nearest) so rotation/scale matching is smooth rather than aliased.
 function sample(uvx: number, uvy: number): [number, number, number] {

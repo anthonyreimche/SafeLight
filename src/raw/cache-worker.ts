@@ -7,8 +7,10 @@
 // filesystem reads/writes. Keeps the main thread free of compression stalls
 // and IDB transaction blocking.
 
+import { encodeCachedPreview } from "./cache-encode";
+
 const DB_NAME = "safelight-raw-cache";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const STORE = "previews";
 
 // ---------------------------------------------------------------------------
@@ -90,46 +92,6 @@ async function gunzip(blob: Blob): Promise<ArrayBuffer> {
 }
 
 // ---------------------------------------------------------------------------
-// sRGB conversion + downsample (CPU-intensive, belongs in the worker)
-// ---------------------------------------------------------------------------
-
-function linearToSrgb(v: number): number {
-  v = v < 0 ? 0 : v > 1 ? 1 : v;
-  return v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-}
-
-function downsampleFloatRGBA(
-  data: Float32Array,
-  W: number,
-  H: number,
-  maxEdge: number,
-): { data: Float32Array; width: number; height: number } {
-  const scale = Math.min(1, maxEdge / Math.max(W, H));
-  if (scale >= 1) return { data, width: W, height: H };
-  const w = Math.max(1, Math.round(W * scale));
-  const h = Math.max(1, Math.round(H * scale));
-  const out = new Float32Array(w * h * 4);
-  for (let y = 0; y < h; y++) {
-    const sy0 = Math.floor((y * H) / h);
-    const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * H) / h));
-    for (let x = 0; x < w; x++) {
-      const sx0 = Math.floor((x * W) / w);
-      const sx1 = Math.max(sx0 + 1, Math.floor(((x + 1) * W) / w));
-      let r = 0, g = 0, b = 0, a = 0, n = 0;
-      for (let sy = sy0; sy < sy1; sy++) {
-        for (let sx = sx0; sx < sx1; sx++) {
-          const si = (sy * W + sx) * 4;
-          r += data[si]; g += data[si + 1]; b += data[si + 2]; a += data[si + 3]; n++;
-        }
-      }
-      const di = (y * w + x) * 4;
-      out[di] = r / n; out[di + 1] = g / n; out[di + 2] = b / n; out[di + 3] = a / n;
-    }
-  }
-  return { data: out, width: w, height: h };
-}
-
-// ---------------------------------------------------------------------------
 // File helpers
 // ---------------------------------------------------------------------------
 
@@ -191,17 +153,13 @@ async function handleWrite(
   height: number,
   maxEdge: number,
 ): Promise<void> {
-  const ds = downsampleFloatRGBA(data, width, height, maxEdge);
-  const u16 = new Uint16Array(ds.data.length);
-  for (let i = 0; i < ds.data.length; i++) {
-    u16[i] = Math.round(linearToSrgb(ds.data[i]) * 65535);
-  }
+  const enc = encodeCachedPreview(data, width, height, maxEdge);
   if (cacheDir) {
-    await writeToDir(key, u16, ds.width, ds.height);
+    await writeToDir(key, enc.data, enc.width, enc.height);
     return;
   }
-  const blob = await gzip(u16);
-  const entry: CacheEntry = { key, blob, width: ds.width, height: ds.height };
+  const blob = await gzip(enc.data);
+  const entry: CacheEntry = { key, blob, width: enc.width, height: enc.height };
   const db = await getDB();
   await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).put(entry));
 }

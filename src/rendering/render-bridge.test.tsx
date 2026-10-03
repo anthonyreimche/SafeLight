@@ -19,6 +19,7 @@ import { DEFAULT_PIPELINE, usePipelineStore } from "@/extensions/pipelines";
 class FakeWorker {
   static instances: FakeWorker[] = [];
   posted: WorkerRequest[] = [];
+  transfers: Transferable[][] = [];
   onmessage: ((e: MessageEvent<WorkerResponse>) => void) | null = null;
   onerror: ((e: ErrorEvent) => void) | null = null;
   terminated = false;
@@ -27,8 +28,9 @@ class FakeWorker {
     FakeWorker.instances.push(this);
   }
 
-  postMessage(msg: WorkerRequest) {
+  postMessage(msg: WorkerRequest, transfer: Transferable[] = []) {
     this.posted.push(msg);
+    this.transfers.push(transfer);
   }
 
   terminate() {
@@ -213,7 +215,7 @@ describe("RenderBridge display transform", () => {
     });
     bridge.renderThumbnail({
       requestId: "t2",
-      image: { kind: "srgb16", data: new Uint16Array(4), width: 1, height: 1 },
+      image: { kind: "float16", data: new Uint16Array(4), width: 1, height: 1 },
       params: normalizeParams({}),
       asShotTemperature: 5000,
       maxEdge: 256,
@@ -228,6 +230,51 @@ describe("RenderBridge display transform", () => {
       ["renderThumbnailFromSource", AGX.id],
       ["renderThumbnail", DEFAULT_PIPELINE],
     ]);
+    bridge.dispose();
+  });
+});
+
+describe("RenderBridge image hand-off", () => {
+  beforeEach(() => {
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const cachedPreview = () => ({
+    kind: "float16" as const,
+    data: new Uint16Array(4),
+    width: 1,
+    height: 1,
+  });
+
+  // A cached develop preview runs to tens of megabytes; it must move to the
+  // worker rather than be copied on every open.
+  it("transfers a cached float16 source's pixels to the worker", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    const transferOf = (cmd: WorkerRequest["cmd"]) =>
+      worker.transfers[worker.posted.findIndex((m) => m.cmd === cmd)];
+
+    const shown = cachedPreview();
+    const uploaded = cachedPreview();
+    const thumb = cachedPreview();
+    bridge.setImage(shown);
+    bridge.uploadSource("main", "k", uploaded);
+    bridge.renderThumbnail({
+      requestId: "t",
+      image: thumb,
+      params: normalizeParams({}),
+      asShotTemperature: 5000,
+      maxEdge: 256,
+    });
+
+    expect(transferOf("setImage")).toEqual([shown.data.buffer]);
+    expect(transferOf("uploadSource")).toEqual([uploaded.data.buffer]);
+    expect(transferOf("renderThumbnail")).toEqual([thumb.data.buffer]);
     bridge.dispose();
   });
 });

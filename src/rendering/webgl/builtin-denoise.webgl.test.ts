@@ -10,15 +10,22 @@
 // undenoised frame, which is what the smoothing assertions detect.
 
 import { describe, expect, it, vi } from "vitest";
-import type { DevelopParams } from "@/catalog/types";
+import { DEFAULT_DEVELOP_PARAMS, type DevelopParams } from "@/catalog/types";
+import type { ResolvedPipeline } from "@/extensions/pipelines";
 import type { ProcessingStageContribution } from "@/extensions/types";
+import { baselineTone } from "../baseline-tone";
 import { BUILTIN_DENOISE_ID, denoiseBag } from "./builtin-denoise";
 import {
   LINEAR_PROBE_PIPELINE,
+  NEGATING_PIPELINE,
+  PIXEL_TOLERANCE,
+  type FloatImage,
   type Frame,
   builtinStage,
+  builtinStages,
   floatImage,
   identityParams,
+  pixelAt,
   withRenderer,
 } from "./webgl.test-support";
 
@@ -140,6 +147,107 @@ describe("the denoise prepass", () => {
     const absent = renderWith([], params);
     for (let i = 0; i < registered.data.length; i++) {
       expect(registered.data[i]).toBe(absent.data[i]);
+    }
+  });
+});
+
+/** Render `image` through the shipped stages, fed the way Develop feeds them:
+ *  the typed NR sliders reach the denoiser through its param bag. */
+function renderShipped(
+  image: FloatImage,
+  params: DevelopParams,
+  pipeline: ResolvedPipeline,
+  stages: ProcessingStageContribution[] = builtinStages(),
+): Frame {
+  return withRenderer({ stages, pipeline }, (renderer) => {
+    renderer.setImage(image);
+    renderer.setParams(params);
+    renderer.setContributedParams(denoiseBag(params));
+    const frame = renderer.captureFloatFrame();
+    if (!frame) throw new Error("captureFloatFrame returned null");
+    return frame;
+  });
+}
+
+/** The denoiser as it shipped before it carried signed values: clamped at
+ *  black on the way into the prepass, on the way out and at the swap. */
+function clampedAtBlack(
+  stage: ProcessingStageContribution,
+): ProcessingStageContribution {
+  if (!stage.passes) throw new Error(`${stage.id} has no passes`);
+  const [forward, atrous, inverse] = stage.passes;
+  return {
+    ...stage,
+    glsl: stage.glsl.replace("lin = stageResult;", "lin = max(stageResult, 0.0);"),
+    passes: [
+      { ...forward, glsl: `c = max(c, 0.0);\n${forward.glsl}` },
+      atrous,
+      { ...inverse, glsl: `${inverse.glsl}\nc = max(c, 0.0);` },
+    ],
+  };
+}
+
+/** A colourful patch with independent noise in every channel, from a fixed
+ *  seed; no channel comes within 0.06 of black. */
+const NOISY_COLOUR = (() => {
+  let seed = 0x2f6b1d;
+  const noise = (): number => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return (seed / 2 ** 32 - 0.5) * 0.04;
+  };
+  return floatImage(SIZE, SIZE, () => [
+    0.35 + noise(),
+    0.18 + noise(),
+    0.08 + noise(),
+  ]);
+})();
+
+// Colours outside the sRGB primaries reach the denoiser as channels below
+// black. Colour NR is on by default, so clipping them there would undo the
+// decode keeping them.
+describe("the denoiser with channels below black", () => {
+  const OUT_OF_GAMUT = floatImage(SIZE, SIZE, () => [0.3, 0.2, -0.0625]);
+
+  it("keeps a negative channel through at the default Colour NR", () => {
+    const centre = (params: DevelopParams) =>
+      pixelAt(renderShipped(OUT_OF_GAMUT, params, NEGATING_PIPELINE), 16, 16);
+    const off = centre({ ...DEFAULT_DEVELOP_PARAMS, colorNR: 0 });
+    const on = centre(DEFAULT_DEVELOP_PARAMS);
+
+    expect(DEFAULT_DEVELOP_PARAMS.colorNR).toBeGreaterThan(0);
+    expect(off[2]).toBeGreaterThan(0.02);
+    for (const channel of on) expect(Number.isFinite(channel)).toBe(true);
+    expect(Math.abs(on[2] - off[2])).toBeLessThan(PIXEL_TOLERANCE);
+  });
+
+  it("hands a saturated cyan's negative red to the display transform", () => {
+    const cyan = floatImage(SIZE, SIZE, () => [-0.05, 0.4, 0.5]);
+    const frame = renderShipped(cyan, DEFAULT_DEVELOP_PARAMS, NEGATING_PIPELINE);
+    const [red] = pixelAt(frame, 16, 16);
+
+    expect(Math.abs(red + baselineTone(-0.05))).toBeLessThan(PIXEL_TOLERANCE);
+  });
+
+  it("denoises input above black exactly as the clamped stage did", () => {
+    const shipped = builtinStage(BUILTIN_DENOISE_ID);
+    const clamped = clampedAtBlack(shipped);
+    expect(clamped.glsl).toContain("max(stageResult, 0.0)");
+
+    for (const params of [
+      DEFAULT_DEVELOP_PARAMS,
+      identityParams({ luminanceNR: 60, colorNR: 80 }),
+    ]) {
+      const render = (p: DevelopParams, stage: ProcessingStageContribution) =>
+        renderShipped(NOISY_COLOUR, p, LINEAR_PROBE_PIPELINE, [stage]).data;
+      const now = render(params, shipped);
+      const before = render(params, clamped);
+      const undenoised = render({ ...params, luminanceNR: 0, colorNR: 0 }, shipped);
+      let moved = 0;
+      for (let i = 0; i < now.length; i++) {
+        expect(Math.abs(now[i] - before[i])).toBeLessThan(PIXEL_TOLERANCE);
+        moved = Math.max(moved, Math.abs(now[i] - undenoised[i]));
+      }
+      expect(moved).toBeGreaterThan(1e-3);
     }
   });
 });

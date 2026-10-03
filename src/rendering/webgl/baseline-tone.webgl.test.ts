@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { baselineTone } from "../baseline-tone";
 import {
   LINEAR_PROBE_PIPELINE,
+  NEGATING_PIPELINE,
   PIXEL_TOLERANCE,
   type Frame,
   floatImage,
@@ -43,6 +44,18 @@ describe("default baseline tone on the GPU", () => {
     it(`renders scene-linear ${value} where the TypeScript mirror lands it`, () => {
       const expected = toSrgb(baselineTone(value));
       for (const channel of centre(renderFlat(value))) {
+        expect(Math.abs(channel - expected)).toBeLessThan(PIXEL_TOLERANCE);
+      }
+    });
+  }
+
+  // Colours outside the sRGB primaries reach the baseline as negative channels.
+  // Values are exact in half float, the precision of the source texture.
+  for (const value of [-0.03125, -0.125, -0.25]) {
+    it(`carries scene-linear ${value} below black as the mirror does`, () => {
+      const expected = -baselineTone(value);
+      const frame = renderFlat(value, { stages: [], pipeline: NEGATING_PIPELINE });
+      for (const channel of centre(frame)) {
         expect(Math.abs(channel - expected)).toBeLessThan(PIXEL_TOLERANCE);
       }
     });

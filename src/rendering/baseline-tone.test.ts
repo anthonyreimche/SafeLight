@@ -59,4 +59,33 @@ describe("baselineTone", () => {
     expect(baselineTone(1.5)).toBeCloseTo(1.5, 12);
     expect(baselineTone(4)).toBeCloseTo(4, 12);
   });
+
+  it("keeps its shape from black to white", () => {
+    const pinned: [number, number][] = [
+      [0.001, 0.000589638435340779],
+      [0.01, 0.00766409281634631],
+      [0.05, 0.0669422663243996],
+      [0.18, 0.308539380864929],
+      [0.5, 0.640004193311668],
+      [0.9, 0.926848131761717],
+    ];
+    for (const [x, y] of pinned) expect(baselineTone(x)).toBeCloseTo(y, 12);
+  });
+
+  // A RAW decode carries colours outside the sRGB primaries as negative
+  // channels; clipping them to black here would shift those colours' hue.
+  it("carries channels below black through along its slope at black", () => {
+    const slopeAtBlack = baselineTone(1e-9) / 1e-9;
+    for (const x of [-1e-4, -0.01, -0.1, -0.5]) {
+      expect(baselineTone(x)).toBeCloseTo(x * slopeAtBlack, 7);
+    }
+  });
+
+  it("meets that continuation at black without a step or a kink", () => {
+    const h = 1e-8;
+    expect(baselineTone(-h)).toBeCloseTo(0, 6);
+    const below = (baselineTone(0) - baselineTone(-h)) / h;
+    const above = (baselineTone(h) - baselineTone(0)) / h;
+    expect(below).toBeCloseTo(above, 5);
+  });
 });

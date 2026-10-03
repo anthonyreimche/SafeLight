@@ -88,6 +88,36 @@ describe("resolvePipelineFor", () => {
     expect(resolveDefaultPipeline().id).toBe(FILMIC.id);
   });
 
+  it("keeps the core tone shoulder for the built-in and unflagged transforms", () => {
+    expect(BUILTIN_RESOLVED.skipToneShoulder).toBe(false);
+    expect(resolvePipelineFor(AGX.id).skipToneShoulder).toBe(false);
+  });
+
+  it("carries a tone-shoulder opt-out declared without a shader", () => {
+    registerPipeline("test", { id: "test.rolloff", name: "Roll-off", skipToneShoulder: true });
+    const p = resolvePipelineFor("test.rolloff");
+    expect(p).not.toBe(BUILTIN_RESOLVED);
+    expect(p).toMatchObject({
+      id: "test.rolloff",
+      glsl: null,
+      skipBaseCurve: false,
+      skipToneShoulder: true,
+    });
+  });
+
+  it("signs each flag combination of one transform apart", () => {
+    const sigs = new Set<string>();
+    for (const glsl of [undefined, AGX.glsl]) {
+      for (const skipBaseCurve of [false, true]) {
+        for (const skipToneShoulder of [false, true]) {
+          registerPipeline("test", { ...AGX, glsl, skipBaseCurve, skipToneShoulder });
+          sigs.add(resolvePipelineFor(AGX.id).sig);
+        }
+      }
+    }
+    expect(sigs.size).toBe(8);
+  });
+
   it("returns the same object until the registry changes", () => {
     const first = resolvePipelineFor(AGX.id);
     expect(resolvePipelineFor(AGX.id)).toBe(first);

@@ -55,6 +55,8 @@ uniform bool uIsFallbackPreview; // true: source is pseudo-linear from 8-bit JPE
 uniform bool uApplyBaseCurve; // true: scene-linear RAW source -- apply the default baseline
                               // (baselineTone); off for camera-rendered bitmaps and for
                               // display transforms that own their own baseline
+uniform bool uApplyToneShoulder; // true: the core filmic shoulder compresses highlights;
+                                 // off for display transforms with their own roll-off
 uniform bool uRawHistogram;   // true: output linear unclamped values for extended histogram
 uniform int uShowClipping;    // bitmask: bit 0 = shadow clipping, bit 1 = highlight clipping
 
@@ -272,6 +274,19 @@ vec3 applyWhiteBalance(vec3 c, float kelvin, float tint, float asShotK) {
 // the sensor ceiling (>= clipThreshold), their true values are unknown. Estimate
 // them from the ratio of unclipped channels in the local neighbourhood so the
 // recovered pixel has correct colour rather than a clipped-channel colour cast.
+//
+// The mip-1 sample weighs this pixel by 0.75^2 / 4 (about 0.14), so with
+// non-negative neighbours the local reference never falls below an eighth of
+// the pixel's own source value. That bound holds before the baseline tone:
+// own comes from lin, which has been through it, while localColor is the raw
+// mip-1 sample. Colours outside the sRGB primaries put channels below
+// black, and such neighbours can drag the reference to zero or past it; a
+// reference that low says nothing about this pixel, so the pixel is left as
+// decoded rather than rebuilt into a speck, a hole or the opposite hue.
+bool hasLocalReference(float own, float local) {
+  return own > 0.0 && local > max(1e-4, own * 0.125);
+}
+
 vec3 reconstructClipped(vec3 c, vec2 uv) {
   float clipT = uClipThreshold;
   if (clipT <= 0.0) return c;
@@ -281,20 +296,22 @@ vec3 reconstructClipped(vec3 c, vec2 uv) {
   int nClipped = int(rClip) + int(gClip) + int(bClip);
   if (nClipped == 0 || nClipped == 3) return c;
   vec3 localColor = textureLod(uImage, uv, 1.0).rgb;
-  float localL = max(luma(localColor), 1e-4);
   if (nClipped == 1) {
+    float L = luma(c);
+    float localL = luma(localColor);
+    if (!hasLocalReference(L, localL)) return c;
     if (rClip) {
-      c.r = luma(c) * (localColor.r / localL);
+      c.r = L * (localColor.r / localL);
     } else if (gClip) {
-      c.g = luma(c) * (localColor.g / localL);
+      c.g = L * (localColor.g / localL);
     } else {
-      c.b = luma(c) * (localColor.b / localL);
+      c.b = L * (localColor.b / localL);
     }
   } else {
     float unclipped = !rClip ? c.r : !gClip ? c.g : c.b;
     float localUnclipped = !rClip ? localColor.r : !gClip ? localColor.g : localColor.b;
-    float scale = unclipped / max(localUnclipped, 1e-4);
-    c = localColor * scale;
+    if (!hasLocalReference(unclipped, localUnclipped)) return c;
+    c = localColor * (unclipped / localUnclipped);
   }
   return c;
 }
@@ -371,6 +388,10 @@ vec3 applyHighlightsRGB(vec3 c, float H, float refT) {
       float compressed = 1.0 - exp(-excess * (1.5 + amt));
       newL = knee + range * compressed;
     }
+    // Without the core shoulder, values above white are the transform's
+    // headroom: blend the recovery in with the slider, as the global one does,
+    // instead of flattening them to white at the slightest pull.
+    if (!uApplyToneShoulder) newL = mix(L, newL, amt);
     c = retargetLuma(c, L, newL);
     // Hunt effect: restore colourfulness lost by pulling bright values down.
     float pulled = clamp(min(L, 1.0) - newL, 0.0, 1.0);
@@ -384,6 +405,9 @@ vec3 applyHighlightsRGB(vec3 c, float H, float refT) {
     float L = max(luma(c), 1e-4);
     float gamma = mix(1.0, 0.4, H);
     float newL = mix(L, pow(L, gamma), blend);
+    // The gamma lift darkens values above white; without the shoulder those
+    // are the transform's headroom, so the lift may only brighten.
+    if (!uApplyToneShoulder) newL = max(newL, L);
     c = retargetLuma(c, L, newL);
   }
   return c;
@@ -1091,8 +1115,9 @@ void main() {
 
   // Integrated tonal pipeline: exposure, highlights, and shadows are applied as
   // a single shoulder-based tone map instead of sequential independent operations.
-  // This prevents blow-out (exposure can't create unbounded values) and makes
-  // highlight recovery work correctly even at high exposure (+3..+5 EV).
+  // Where the shoulder applies, exposure can't create unbounded values (no
+  // blow-out); a display transform that skips it takes that headroom instead.
+  // Either way highlight recovery works even at high exposure (+3..+5 EV).
   float E = uExposure;
   float H = clamp(uHighlights / 100.0, -1.0, 1.0);
   float S = clamp(uShadows / 100.0, -1.0, 1.0);
@@ -1103,8 +1128,8 @@ void main() {
     float Lx = L * exp2(E);
 
     // Filmic shoulder: piecewise curve — linear below knee, smooth Reinhard
-    // compression above. Prevents blown values from reaching display space.
-    // Highlights slider controls the knee position:
+    // compression above, keeping blown values out of display space wherever
+    // it applies. Highlights slider controls the knee position:
     //   H < 0 (recover): lower knee → more of the range gets compressed
     //   H > 0 (brighten): raise knee → more headroom before compression
     float knee = 0.85;
@@ -1128,6 +1153,9 @@ void main() {
       float excess = Lx - knee;
       Lsc = knee + (1.0 - knee) * excess / (excess + rolloff);
     }
+    // A transform with its own roll-off keeps the headroom: only recovery
+    // (H < 0) blends the shoulder back in, in proportion to the slider.
+    if (!uApplyToneShoulder) Lsc = mix(Lx, Lsc, max(-H, 0.0));
 
     lin = retargetLuma(lin, L, Lsc);
 
@@ -1144,10 +1172,13 @@ void main() {
       float hw = smoothstep(0.3, 0.9, Lcur);
       float gamma = mix(1.0, 0.5, H);
       float newLcur = mix(Lcur, pow(Lcur, gamma), hw * H);
+      // The gamma lift darkens values above white; without the shoulder those
+      // are the transform's headroom, so the lift may only brighten.
+      if (!uApplyToneShoulder) newLcur = max(newLcur, Lcur);
       lin = retargetLuma(lin, Lcur, newLcur);
     }
 
-    // Shadows: gamma toe on the soft-clipped value (always in reasonable range)
+    // Shadows: gamma toe weighted toward the dark end, fading out in highlights
     if (abs(S) > 0.001) {
       float Lcur = max(luma(lin), 1e-4);
       float shW = exp(-3.0 * Lcur);
@@ -1195,9 +1226,10 @@ void main() {
   // core linear edits and just before the display transform.
   //__CONTRIBUTED_SCENE_LINEAR__
 
-  // Display conversion: the filmic shoulder guarantees bounded linear values,
-  // so clamping here is safe and prevents downstream display-space operations
-  // from ever seeing values > 1.0 (which broke contrast, dehaze, etc.).
+  // Display conversion: where the filmic shoulder applies it bounds the linear
+  // values, so clamping here is safe and keeps downstream display-space
+  // operations from ever seeing values > 1.0 (which broke contrast, dehaze,
+  // etc.). A transform that skips the shoulder must bound its own output.
   vec3 disp = clamp(pipelineToDisplay(lin), 0.0, 1.0);
   vec3 c = disp;
 

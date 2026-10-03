@@ -78,11 +78,14 @@ export async function renderPhotoHistogram(
     const isFallback = image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
     const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
     ctx.renderer.setAsShotTemperature(asShotTemp);
+    // A cached RAW (float16) is capped to the histogram edge like a thumbnail:
+    // this renderer runs on the main thread, and a 256 px render needs no more.
     ctx.renderer.setImage(
       image.kind === "bitmap" ? image.bitmap : image,
       maxEdge,
       isFallback,
       cachedRaw,
+      true,
     );
     setPhotoParams(ctx.renderer, params);
     ctx.renderer.render();

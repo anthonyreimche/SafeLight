@@ -79,11 +79,11 @@ function bitmapToFloat(
 }
 
 // A decoded image for the renderer: a linear float buffer (full sensor precision,
-// HDR-capable), a raw 16-bit sRGB buffer (cached develop preview — decoded to
-// linear on the GPU), or an 8-bit sRGB bitmap (preview/JPEG fallback).
+// HDR-capable), the cached develop preview (the same linear scene RGBA as
+// binary16 bit patterns), or an 8-bit sRGB bitmap (preview/JPEG fallback).
 export type DecodedImage =
   | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-  | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+  | { kind: "float16"; data: Uint16Array; width: number; height: number }
   | { kind: "bitmap"; bitmap: ImageBitmap; cached?: boolean };
 
 // Compare the decoded RAW float image's channel balance against the embedded
@@ -179,12 +179,11 @@ export async function loadPhotoImage(
     try {
       const file = await photo.fileHandle.getFile();
       if (isRawFile(file)) {
-        // Fast path: return the cached develop preview (16-bit sRGB, gzip) from a
-        // previous full decode. Skips libraw entirely — ~50ms vs 3-8s. Handed over
-        // as raw 16-bit sRGB: the renderer uploads it to a normalized RGBA16 texture
-        // and the shader does sRGB->linear, so there's no per-sample CPU decode and
-        // the texture is half the bytes of the old Float32 path. Still full precision
-        // (no 8-bit posterising under a big exposure push).
+        // Fast path: return the cached develop preview (half floats, gzip) from a
+        // previous full decode. Skips libraw entirely — ~50ms vs 3-8s. It holds
+        // the same scene-linear values the full decode produced, headroom and
+        // negatives included, so the renderer takes the same float path and the
+        // photo renders as it did on first open.
         //
         // The cache is capped at the rawCacheMaxEdge preference; when the caller
         // needs more pixels than it holds (export at "Original"/large sizes),
@@ -192,7 +191,7 @@ export async function loadPhotoImage(
         const cacheKey = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
         const cached = await readCachedPreview(cacheKey);
         if (cached && Math.max(cached.width, cached.height) >= (opts?.minEdge ?? 0)) {
-          return { kind: "srgb16", data: cached.data, width: cached.width, height: cached.height };
+          return { kind: "float16", data: cached.data, width: cached.width, height: cached.height };
         }
 
         // Slow path: full libraw decode. Write result to cache asynchronously
@@ -265,7 +264,7 @@ export async function loadPhotoImage(
         // JPEG. It is the exact linear source Develop rendered the edit
         // against, so colors stay consistent even if resolution falls short.
         if (cached) {
-          return { kind: "srgb16", data: cached.data, width: cached.width, height: cached.height };
+          return { kind: "float16", data: cached.data, width: cached.width, height: cached.height };
         }
 
         // libraw failed or produced bad colors: fall back to the embedded JPEG

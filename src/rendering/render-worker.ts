@@ -21,7 +21,7 @@ export type WorkerRequest =
       cmd: "setImage";
       image:
         | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+        | { kind: "float16"; data: Uint16Array; width: number; height: number }
         | { kind: "bitmap"; bitmap: ImageBitmap };
       maxEdge?: number;
       isFallbackPreview?: boolean;
@@ -43,7 +43,7 @@ export type WorkerRequest =
       requestId: string;
       image:
         | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+        | { kind: "float16"; data: Uint16Array; width: number; height: number }
         | { kind: "bitmap"; bitmap: ImageBitmap };
       params: DevelopParams;
       asShotTemperature: number;
@@ -74,7 +74,7 @@ export type WorkerRequest =
       key: string;
       image:
         | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | { kind: "srgb16"; data: Uint16Array; width: number; height: number }
+        | { kind: "float16"; data: Uint16Array; width: number; height: number }
         | { kind: "bitmap"; bitmap: ImageBitmap };
       maxEdge?: number;
       isFallbackPreview?: boolean;
@@ -365,7 +365,8 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           if (img.kind === "bitmap") {
             tr.setImage(img.bitmap, msg.maxEdge);
           } else {
-            tr.setImage(img, msg.maxEdge);
+            // Cap a cached float16 source, as uploadSource("thumb") does.
+            tr.setImage(img, msg.maxEdge, false, false, true);
           }
           finishThumbRender(tr, msg);
         } catch (err) {
@@ -427,13 +428,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         if (!target) break;
         const img = msg.image;
         const bind = msg.bind ?? true;
-        // Cap oversized srgb16 to maxEdge for the thumb renderer so it doesn't hold
-        // a full-res source; the main renderer keeps full resolution for zoom.
-        const capSrgb16 = msg.target === "thumb";
+        // Cap a cached float16 source to maxEdge for the thumb renderer so it doesn't
+        // hold a full-res source; the main renderer keeps full resolution for zoom.
+        const capFloat16 = msg.target === "thumb";
         if (img.kind === "bitmap") {
-          target.uploadSource(msg.key, img.bitmap, msg.maxEdge, msg.isFallbackPreview, msg.baseCurveForBitmap, bind, capSrgb16);
+          target.uploadSource(msg.key, img.bitmap, msg.maxEdge, msg.isFallbackPreview, msg.baseCurveForBitmap, bind, capFloat16);
         } else {
-          target.uploadSource(msg.key, img, msg.maxEdge, msg.isFallbackPreview, false, bind, capSrgb16);
+          target.uploadSource(msg.key, img, msg.maxEdge, msg.isFallbackPreview, false, bind, capFloat16);
         }
         // Only a bind into the main renderer changes the active heal source.
         if (bind && msg.target === "main") postHealSource();

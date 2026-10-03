@@ -50,6 +50,7 @@ const REPLACEMENT_PIPELINE: ResolvedPipeline = {
   return linearToSrgbU(x / (x + 0.155) * 1.019);
 }`,
   skipBaseCurve: true,
+  skipToneShoulder: true,
   sig: "test.filmic",
 };
 
