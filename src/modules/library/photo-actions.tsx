@@ -25,6 +25,7 @@ import { reimportPhotos } from "./import-photos";
 import { getSettings } from "@/state/settings-store";
 import { loadSavedEdit } from "@/catalog/edit-params";
 import { pasteSettings } from "@/catalog/paste-settings";
+import { updateProcessing } from "@/catalog/update-processing";
 import { useDevelopClipboard } from "@/state/develop-clipboard";
 
 export interface PhotoActions {
@@ -248,6 +249,11 @@ export function usePhotoActions(): PhotoActions {
           : "Paste settings (nothing copied)",
         disabled: !clipboard,
         onClick: () => void handlePasteSettings(ids),
+      },
+      {
+        label: `Update processing${suffix}`,
+        disabled: n === 0,
+        onClick: () => void updateProcessing(ids),
       },
       "separator",
       { label: `Rotate clockwise${suffix}`, onClick: () => rotatePhotos(ids, 90) },

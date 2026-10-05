@@ -33,10 +33,12 @@ const num = (v: unknown): number =>
   typeof v === "number" && isFinite(v) ? v : 0;
 
 // As-shot Kelvin from libraw's camera WB multipliers (imgdata.color.cam_mul[]).
-// This build of libraw-wasm exposes no camera colour matrix (color_data carries
-// cam_mul / pre_mul only, no cam_xyz or rgb_cam), so the multipliers can only be
-// matched against the blackbody curve — a ratio fit that ignores the camera's
-// primaries. DNGs take the exact colour-matrix route in catalog/exif.ts instead.
+// This build of libraw-wasm exposes none of libraw's camera colour matrices
+// (color_data carries the black and maximum levels, cam_mul / pre_mul and a few
+// model and ID fields, but no cam_xyz, rgb_cam, cmatrix or ccm), so the
+// multipliers can only be matched against the blackbody curve — a ratio fit that
+// ignores the camera's primaries. DNGs take the exact colour-matrix route in
+// catalog/exif.ts instead.
 function kelvinFromCamMul(colorData: unknown): number | undefined {
   if (typeof colorData !== "object" || colorData === null) return undefined;
   const camMul: unknown = (colorData as Record<string, unknown>).cam_mul;

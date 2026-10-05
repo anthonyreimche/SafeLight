@@ -158,7 +158,7 @@ export function TextArea({ value, onChange, mono = false, rows = 4, className = 
       onChange={(e) => onChange(e.target.value)}
       rows={rows}
       spellCheck={false}
-      className={`w-full resize-y rounded bg-surface-2 px-2 py-1.5 text-[11px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3 ${mono ? "font-mono" : ""} ${className}`}
+      className={`w-full resize-y rounded bg-surface-2 px-2 py-1.5 text-[11px] leading-relaxed text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3 ${mono ? "font-code" : ""} ${className}`}
       {...rest}
     />
   );
@@ -369,6 +369,7 @@ export const tokens = {
   sliderFill: "var(--color-slider-fill)",
   rating: "var(--color-rating)",
   fontMono: "var(--font-mono)",
+  fontCode: "var(--font-code)",
 } as const;
 
 /** The whole kit, as handed to extensions via api.ui. */

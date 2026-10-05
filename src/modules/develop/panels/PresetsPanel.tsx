@@ -10,7 +10,7 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { usePresetsStore, nextAvailableName, type Preset } from "@/state/presets-store";
 import { usePresetImporters, describePresetBag } from "@/extensions/registry";
 import { useExtStoreUI } from "@/extensions/store-ui";
-import { normalizeParams, type DevelopParams } from "@/catalog/types";
+import { normalizeParams, withoutProcessVersion, type DevelopParams } from "@/catalog/types";
 import {
   exportPreset,
   importPresetFile,
@@ -99,7 +99,7 @@ export function PresetsPanel() {
   // A preset carries only some adjustments; applying merges them over the
   // photo's current params (partial presets), so unselected settings are kept.
   const effective = (partial: Partial<DevelopParams>): DevelopParams =>
-    normalizeParams({ ...params, ...partial });
+    normalizeParams({ ...params, ...withoutProcessVersion(partial) });
 
   // The toolbar Export writes the live edit; name it after the open photo (sans
   // extension) so exports aren't all one collided file. No photo → generic name.

@@ -30,6 +30,8 @@ import { ResolutionControl } from "@/modules/export/ResolutionControl";
 import { ModalWindow } from "@/ui/components/ModalWindow";
 import { Select } from "@/ui/components/Select";
 import { Switch } from "@/ui/components/Switch";
+import { ScaleStepper } from "./ScaleStepper";
+import { CanvasSurroundSwatches } from "./CanvasSurroundSwatches";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import {
   addUserLayout,
@@ -43,13 +45,15 @@ import {
 } from "@/extensions/dock";
 import { openExtensions } from "./ExtensionsDialog";
 import {
-  CANVAS_SURROUND_SHADES,
   DEFAULT_SETTINGS,
   resetSettings,
   updateSettings,
   useSettings,
+  UI_FONT_PRESETS,
 } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
+import { detachedModule } from "@/state/detach";
+import { openSetup } from "@/modules/welcome/setup/setup-store";
 import {
   applyPipeline,
   DEFAULT_PIPELINE,
@@ -183,6 +187,7 @@ const CORE_SECTIONS: PrefSection[] = [
       "Sliders jump to cursor",
       "Highlight & shadow detail sliders",
       "Restore last project on launch",
+      "Welcome setup",
       "Interface font",
     ),
     keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal", "slider", "jump", "cursor", "click", "drag", "tone", "detail", "highlight", "shadow", "basic", "micro-contrast", "clarity"],
@@ -673,15 +678,13 @@ function InterfaceSection() {
         />
       </Field>
       <LayoutField />
-      <SliderField
-        label="Interface scale"
-        value={uiScale}
-        min={0.8}
-        max={2}
-        step={0.05}
-        format={(v) => `${Math.round(v * 100)}%`}
-        onChange={(v) => updateSettings({ uiScale: v })}
-      />
+      <Field label="Interface scale">
+        <ScaleStepper
+          value={uiScale}
+          onChange={(v) => updateSettings({ uiScale: v })}
+          label="Interface scale"
+        />
+      </Field>
       <CanvasSurroundField />
       <SliderField
         label="Color assessment border"
@@ -728,6 +731,23 @@ function InterfaceSection() {
         checked={restoreLastProject}
         onChange={(v) => updateSettings({ restoreLastProject: v })}
       />
+      {window.safelightNative && !detachedModule() && (
+        <Field
+          label="Welcome setup"
+          hint="Pick a look, workspace settings and starter kits again. Nothing installed is removed."
+        >
+          <button
+            type="button"
+            className={btnCls}
+            onClick={() => {
+              closePreferences();
+              openSetup("rerun");
+            }}
+          >
+            Run again
+          </button>
+        </Field>
+      )}
       <FontField />
     </div>
   );
@@ -992,57 +1012,20 @@ function CanvasSurroundField() {
         bracket the range. Off = follow the active theme. Also adjustable from
         the Develop toolbar.
       </p>
-      <div
-        className={`mt-2 flex gap-1.5 transition-opacity ${
-          override ? "" : "pointer-events-none opacity-40"
-        }`}
-      >
-        {CANVAS_SURROUND_SHADES.map((shade) => (
-          <button
-            key={shade.value}
-            title={shade.label}
-            aria-label={shade.label}
-            aria-pressed={surround === shade.value}
-            disabled={!override}
-            onClick={() => updateSettings({ canvasSurround: shade.value })}
-            className={`relative h-7 flex-1 rounded border transition-all ${
-              surround === shade.value
-                ? "border-slider-fill ring-1 ring-slider-fill"
-                : "border-border hover:border-text-muted"
-            }`}
-            style={{ background: shade.value }}
-          >
-            {surround === shade.value && (
-              // A checkmark, not just the ring/colour, marks the active swatch
-              // (WCAG 1.4.1). The dark halo keeps the white tick legible on
-              // every shade, light or dark.
-              <span
-                className="pointer-events-none absolute inset-0 flex items-center justify-center text-[11px] font-bold leading-none text-white"
-                style={{ textShadow: "0 0 2px #000, 0 0 2px #000" }}
-              >
-                ✓
-              </span>
-            )}
-          </button>
-        ))}
+      <div className="mt-2">
+        <CanvasSurroundSwatches
+          value={surround}
+          enabled={override}
+          onChange={(shade) => updateSettings({ canvasSurround: shade })}
+        />
       </div>
     </div>
   );
 }
 
-const FONT_PRESETS: { value: string; label: string }[] = [
-  { value: "", label: "Default (Mono)" },
-  {
-    value: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-    label: "System Sans",
-  },
-  { value: "Inter, system-ui, sans-serif", label: "Inter" },
-  { value: 'Georgia, "Times New Roman", serif', label: "Serif" },
-];
-
 function FontField() {
   const uiFont = useSettings((s) => s.uiFont);
-  const isPreset = FONT_PRESETS.some((p) => p.value === uiFont);
+  const isPreset = UI_FONT_PRESETS.some((p) => p.value === uiFont);
   return (
     <Field
       label="Interface font"
@@ -1050,7 +1033,7 @@ function FontField() {
     >
       <OptionRow
         value={isPreset ? uiFont : "custom"}
-        options={FONT_PRESETS}
+        options={UI_FONT_PRESETS}
         onChange={(v) => updateSettings({ uiFont: v as string })}
       />
       <input

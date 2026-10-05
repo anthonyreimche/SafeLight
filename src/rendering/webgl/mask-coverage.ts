@@ -44,6 +44,42 @@ export function coverageSignature(items: CoverageItem[], imageAspect: number): s
   return `${imageAspect.toFixed(5)}|${geo}`;
 }
 
+/** Remembers the inputs of the last coverage bake by identity, so a frame that
+ *  changed none of them skips re-signing every dab. The signature walks every
+ *  dab, which on a heavily brushed photo costs milliseconds per frame. */
+export class CoverageInputs {
+  private last: readonly unknown[] | null = null;
+
+  /** True, and remembers `inputs` at once, when any differs by identity from the
+   *  previous call's or the count changed. Work that can throw belongs in
+   *  `bakeIfChanged`, which forgets them again when it does. */
+  changed(inputs: readonly unknown[]): boolean {
+    const prev = this.last;
+    if (prev && prev.length === inputs.length && inputs.every((v, i) => Object.is(v, prev[i]))) {
+      return false;
+    }
+    this.last = [...inputs];
+    return true;
+  }
+
+  reset(): void {
+    this.last = null;
+  }
+
+  /** Runs `bake` when `changed(inputs)`. A bake that throws may have left its
+   *  texture half done, so nothing is remembered then: the next call bakes
+   *  again, whatever its inputs. */
+  bakeIfChanged(inputs: readonly unknown[], bake: () => void): void {
+    if (!this.changed(inputs)) return;
+    try {
+      bake();
+    } catch (err) {
+      this.reset();
+      throw err;
+    }
+  }
+}
+
 // Bake up to four coverage items into an RGBA atlas. Returns null when empty.
 //
 // Two controls shape each dab, mirroring a classic paint brush:

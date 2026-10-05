@@ -70,7 +70,7 @@ Everything is driven by the npm scripts in `package.json`; the `.bat`/`.sh` file
 | `npm run dev` | Vite dev server (browser) at `http://localhost:5173`. |
 | `npm run build` | Type-check (`tsc`) + Vite production build → `dist/`. |
 | `npm run preview` | Serve the production `dist/` locally. |
-| `npm run icon` | Generate `build/icon.ico` / `icon.png` from `public/favicon.svg`. |
+| `npm run icon` | Generate `build/icon.ico` / `icon.png` and the installer artwork from `public/favicon.svg` and `art/logo/`. |
 | `npm run electron:dev` | Build the renderer and open it in an Electron window. |
 | `npm run build:electron` | `build` + `icon` + `electron-builder --win` → Windows installer in `release/`. |
 | `npm run build:linux` | `build` + `icon` + `electron-builder --linux` → Linux package(s) in `release/`. |

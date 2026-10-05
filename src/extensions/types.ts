@@ -491,6 +491,8 @@ export interface UniformDeclaration {
   label?: string;
 }
 
+/** Reserved with ProcessingStageContribution.produces and `consumes`: not
+ *  implemented. */
 export interface InterStageVariable {
   /** Shared variable name, e.g. "refT". Emitted as `isv_{name}` in the shader. */
   name: string;
@@ -534,7 +536,8 @@ export interface StageTextureData {
   version: number;
 }
 
-/** Fixed processing phases. Order is enforced by the shader compiler.
+/** Fixed processing phases. The order is set in stage-order.ts, and
+ *  stage-injection.ts decides where each phase's GLSL goes.
  *  "geometry" runs first and is special: its GLSL operates on the mutable
  *  source-UV `vec2 srcUv` (after crop/transform/lens, before the image is
  *  sampled), so a stage can warp/displace the coordinate and have the entire
@@ -551,6 +554,10 @@ export interface StageTextureData {
  *  Under a display transform that sets `skipToneShoulder` they also receive
  *  the headroom above 1.0 that the core shoulder otherwise compresses.
  *
+ *  "display-adjust", "effects" and "output-encode" run on the display-encoded
+ *  `c`, in that order: after Sharpening and the masks' display adjustments,
+ *  before the core's own output encoding and its final clip to [0, 1].
+ *
  *  Scene-linear `lin` can hold negative components: colours outside the sRGB
  *  primaries arrive that way from RAW sources, and colour noise reduction can
  *  leave small excursions below zero on any source. A stage that takes the
@@ -565,7 +572,7 @@ export type ProcessingPhase =
   | "effects"
   | "output-encode";
 
-/** Ordered phase list for the shader compiler's sort. */
+/** Ordered phase list: the order stage-order.ts sorts stages by. */
 export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
   "geometry",
   "decode",
@@ -582,15 +589,19 @@ export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
  *  and neighbourhood algorithms (à trous wavelets, non-local means, separable
  *  blurs) that a single inline fragment can't express become possible.
  *
- *  Contract: the body mutates `vec3 c`, initialised to `readPrev(vUv)` — linear
- *  scene RGB sampled from the previous pass (or the source image for the first
- *  pass). Sample neighbours with `readPrev(uv)`. The final pass's output is
- *  exposed to the owning stage's inline `glsl` as `vec3 stageResult` (sampled at
- *  the current pixel). Engine-provided uniforms/helpers in every pass:
+ *  Contract: the body mutates `vec3 c`, initialised to `readPrev(vUv)` — the
+ *  previous pass's output, or on the first pass the stage's input: the decoded
+ *  source linearized for `reads: "source"`, the image as edited up to the stage
+ *  for `reads: "current"`, in the stage's declared `space` either way. With no
+ *  `space`, the source reads as linear Rec.709 and the current image as the
+ *  values the stage's inline `glsl` receives. Sample neighbours with
+ *  `readPrev(uv)`. The final pass's output is exposed to the owning stage's
+ *  inline `glsl` as `vec3 stageResult` (sampled at the current pixel).
+ *  Engine-provided uniforms/helpers in every pass:
  *    uniform vec2 uTexel;      // 1.0 / passResolution
  *    uniform int  uPassIndex;  // current iteration, 0 .. uPassCount-1
  *    uniform int  uPassCount;  // this pass's `iterations`
- *    vec3 readPrev(vec2 uv);   // linear RGB of the previous pass at uv
+ *    vec3 readPrev(vec2 uv);   // previous pass at uv; first pass: the stage's input
  *    float luma(vec3); vec3 srgbToLinear(vec3); vec3 linearToSrgb(vec3);
  *  Pass `uniforms` share the owning stage's qualified-key namespace, so the same
  *  param (e.g. "{id}.lumaAmount") can drive both the pass and the inline glsl. */
@@ -602,8 +613,24 @@ export interface StagePass {
   uniforms?: UniformDeclaration[];
 }
 
+/** The values a processing stage receives and hands back (see
+ *  ProcessingStageContribution.space). */
+export interface StageSpace {
+  /** "linear": proportional to light. "perceptual": the same values through
+   *  the sRGB curve extended both ways — sign kept, no ceiling — so math
+   *  written for display-encoded [0, 1] behaves the same there and still sees
+   *  what lies beyond it. The core converts in before the stage and back out
+   *  after it. */
+  encoding: "linear" | "perceptual";
+  /** Primaries of the values handed to the stage. Default "rec709", the core's
+   *  working primaries; "rec2020" is a lossless matrix view of the same data. */
+  primaries?: "rec709" | "rec2020";
+}
+
 export interface ProcessingStageContribution {
-  /** Globally unique, e.g. "core.exposure" or "film-sim.halation". */
+  /** Globally unique, e.g. "film-sim.halation". Ids under "core." and
+   *  "builtin.denoise" are Safelight's own: registering one from an extension is
+   *  refused. */
   id: string;
   name: string;
   phase: ProcessingPhase;
@@ -622,13 +649,19 @@ export interface ProcessingStageContribution {
    *  stage's inline `glsl` as `vec3 stageResult`. */
   passes?: StagePass[];
 
+  /** Reserved, not implemented: nothing in the render path reads it, and
+   *  registering a stage that sets it logs a warning. Meant for variables handed
+   *  from one stage to the next. */
   produces?: InterStageVariable[];
-  /** Names of InterStageVariables this stage reads. */
+  /** Reserved, not implemented, like `produces`. Meant for the names of the
+   *  InterStageVariables this stage reads. */
   consumes?: string[];
 
   textures?: TextureRequirement[];
 
-  /** Whether this stage participates in masked local adjustments. */
+  /** Reserved, not implemented: nothing in the render path reads it, and
+   *  registering a stage that sets it logs a warning. Meant for masked local
+   *  adjustments. */
   mask?: { maskable: true; maskPhase: "linear" | "display" };
 
   /** How this stage's params behave in presets. "global" (the default) is a
@@ -639,7 +672,33 @@ export interface ProcessingStageContribution {
    *  dialog's "Show all". Omit for ordinary global adjustments. */
   presetScope?: "global" | "per-image";
 
-  /** Stage IDs this one should run after (soft dependency — skipped if absent). */
+  /** Opt into full-information values. Omitted, a stage before the display
+   *  transform gets `lin` as linear Rec.709 (signed, unclamped) and one after
+   *  it gets `c` display-encoded and clamped to [0, 1], bar the offset
+   *  Sharpening adds after a version 1 photo's last clamp (a mask covering a
+   *  pixel in part mixes it through). Set, the stage gets its variable in this
+   *  encoding and these primaries. After the display transform that is `c` as
+   *  the core's display tools leave it: on a version 2 photo unclamped until a
+   *  tool in use that needs [0, 1] or an earlier stage without `space` clips it
+   *  (Vignette and Grain don't clip); on a version 1 photo with the
+   *  old core's clamps. Ignored on geometry stages, which run before the image
+   *  is sampled (registration warns). Details in docs/dev/api/contributions.md:
+   *  "Values a stage sees: space" and "Process versions". */
+  space?: StageSpace;
+
+  /** What the stage's passes read first. "source" (the default) is the decoded
+   *  image. "current" is the image as edited up to this stage, drawn into a
+   *  float texture before the passes run; effects and output-encode stages
+   *  read it as of the end of display-adjust. Ignored without `passes` and on
+   *  geometry stages. */
+  reads?: "source" | "current";
+
+  /** Ids of the stages this one runs after, even against priority: a soft
+   *  dependency inside the phase. An id that isn't registered, or sits in another
+   *  phase (a phase boundary always wins), is ignored. Stages that name each other
+   *  in a cycle lose the entries between them and nothing else, with a warning.
+   *  A value that isn't a list of ids is ignored, with a warning at registration.
+   *  Older builds ignore it. */
   after?: string[];
 }
 
@@ -1362,6 +1421,11 @@ declare global {
          *  registry, cached in the main process. Optional: absent in older
          *  Electron builds (callers then treat everything as unverified). */
         trustList?(force?: boolean): Promise<TrustList>;
+        /** The welcome setup's starter kits (kits.json in the trust registry),
+         *  cached in the main process; null when it was never fetched. Typed
+         *  unknown because it is remote data: parseKits validates it before
+         *  anything reads it. Optional: absent in older Electron builds. */
+        kits?(force?: boolean): Promise<unknown>;
       };
       /** Renderer-side control of the window's Chrome DevTools. Backs the
        *  Developer Tools extension's Native tab. */

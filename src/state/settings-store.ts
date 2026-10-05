@@ -82,7 +82,7 @@ export interface AppSettings {
   uiScale: number;
   /** Reduce motion: disables spinners/animated affordances where practical. */
   reduceMotion: boolean;
-  /** UI font: CSS font-family string. "" = the built-in mono stack. */
+  /** UI font: CSS font-family string. "" = the built-in stack (Afacad). */
   uiFont: string;
   /** Use a fixed neutral-grey shade behind the image in Develop (see
    *  canvasSurround), independent of the theme. On by default — a middle-grey
@@ -263,6 +263,47 @@ export interface AppSettings {
   updateChannel: UpdateChannel;
 }
 
+/** The font stack the interface used before Afacad; offered as a preset. */
+export const MONO_FONT_STACK =
+  '"JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace';
+
+/** The built-in interface font stack: index.css's --font-mono, which an empty
+ *  uiFont falls back to. Previews need it literally, because picking a font
+ *  overrides --font-mono inline. A test keeps the two in step. */
+export const DEFAULT_UI_FONT_STACK =
+  '"Afacad", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+
+/** Interface fonts offered by Preferences and the welcome setup. The empty
+ *  value is the built-in stack. */
+export const UI_FONT_PRESETS: { value: string; label: string }[] = [
+  { value: "", label: "Afacad (default)" },
+  { value: MONO_FONT_STACK, label: "JetBrains Mono" },
+  {
+    value: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+    label: "System Sans",
+  },
+  { value: "Inter, system-ui, sans-serif", label: "Inter" },
+  { value: 'Georgia, "Times New Roman", serif', label: "Serif" },
+];
+
+export const UI_SCALE_MIN = 0.8;
+export const UI_SCALE_MAX = 2;
+
+/** One 10% step of the interface scale, on the 10% grid: a value between
+ *  stops (105% from the old 5% slider) moves to the next stop in that
+ *  direction, and an out-of-range value steps back into range. */
+export function stepUiScale(value: number, direction: -1 | 1): number {
+  const tenths = value * 10;
+  const next =
+    direction > 0
+      ? Math.floor(tenths + 1e-6) + 1
+      : Math.ceil(tenths - 1e-6) - 1;
+  return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, next / 10));
+}
+
+export const canStepUiScale = (value: number, direction: -1 | 1): boolean =>
+  direction > 0 ? value < UI_SCALE_MAX - 1e-6 : value > UI_SCALE_MIN + 1e-6;
+
 export const DEFAULT_SETTINGS: AppSettings = {
   uiScale: 1,
   reduceMotion: false,
@@ -324,6 +365,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 const KEY = "sl_settings_v1";
 
+/** Written only by updateSettings, i.e. by a person's choice. */
+export const SETTINGS_STORAGE_KEY = KEY;
+
 /** Layer a persisted payload over the defaults, or null if it isn't one. Shared
  *  by the boot-time read and the cross-window storage event so a settings object
  *  written by any build is validated and migrated exactly once, the same way. */
@@ -341,6 +385,8 @@ function parseSettings(raw: string): AppSettings | null {
   if (s.updateChannel !== "all" && s.updateChannel !== "stable") {
     s.updateChannel = "stable";
   }
+  // JSON turns NaN and Infinity into null, which the stepper can't recover from.
+  if (!Number.isFinite(s.uiScale)) s.uiScale = DEFAULT_SETTINGS.uiScale;
   return s;
 }
 

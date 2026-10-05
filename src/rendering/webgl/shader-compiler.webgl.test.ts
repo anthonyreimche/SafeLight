@@ -135,6 +135,20 @@ describe("compileShaderSource", () => {
     ]);
   });
 
+  // The same sort the injection orders by, so the two can't disagree
+  // (stage-injection.test.tsx pins that, and stage-order.test.ts the sort).
+  it("places a stage after the stage it names, against its priority", () => {
+    const base: ProcessingStageContribution = { ...GLOW, id: "acme.base", priority: 90 };
+    const late: ProcessingStageContribution = {
+      ...GLOW,
+      id: "acme.late",
+      priority: 10,
+      after: ["acme.base"],
+    };
+    expect(compileShaderSource([late, base]).stageIds).toEqual(["acme.base", "acme.late"]);
+    expect(compiles([late, base])).toBeNull();
+  });
+
   it("compiles a produced inter-stage variable read by a later stage", () => {
     const producer: ProcessingStageContribution = {
       id: "acme.producer",

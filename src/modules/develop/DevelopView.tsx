@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/ui/components/AppShell";
 import { DevelopCanvas } from "./DevelopCanvas";
+import { ProcessingUpdateControl } from "./ProcessingUpdateControl";
 import { Slot } from "@/extensions/Slot";
 import { ZoomControls } from "@/ui/ZoomControls";
 import { SurroundControl } from "@/ui/SurroundControl";
@@ -50,6 +51,7 @@ export function DevelopView() {
             <div className="flex items-center gap-3">
               <Slot name="develop-toolbar" />
               <AssessmentToggle />
+              <ProcessingUpdateControl />
               <DisplayTransformControl />
               <SurroundControl />
               <ZoomControls zoom={zoom} onChange={setZoom} />

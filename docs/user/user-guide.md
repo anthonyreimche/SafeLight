@@ -62,6 +62,7 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 
 - **Zoom and pan** — loupe-style 1:1 inspection with the zoom controls or scroll/drag (smooth drag, no momentum). Opening zoom (fit or 100%) is configurable.
 - **Undo / redo / reset** — undo (**Ctrl+Z**), redo (**Ctrl+Shift+Z** or **Ctrl+Y**), reset all edits (**Ctrl+Shift+R**).
+- **Older edits.** Photos you edited in an earlier version of Safelight keep their look. **Update processing** in Develop's status bar (or in the Library right-click menu, for many photos at once) moves a photo to the new processing, which keeps bright, very saturated colors. Undo puts it back.
 - **Sliders** — hold **Shift** while dragging for fine adjustment (or widen the panel); double-click to reset.
 - **Clipping indicators** — toggle shadow/highlight clipping warnings on the canvas.
 
@@ -129,7 +130,7 @@ Library and Develop can each be detached into a separate OS window from the top 
 
 Preferences is organized into sections: **Interface**, **Library**, **Rendering**, **Performance**, **Export**, **Shortcuts**, **Extensions**, **Updates**, and **About**.
 
-- **Interface** — UI scale (0.8–1.3), reduce motion, custom UI font.
+- **Interface** — Interface scale (80–200%, − and + buttons), reduce motion, custom UI font.
 - **Library** — default grid size, sort field/direction, confirm-before-remove, thumbnail source and resolution (320/640/960 px), preview persistence.
 - **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both.
 - **Performance** — RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (4096/6144/8192 px); GPU source-cache budget; neighbor prefetch; 16-bit GPU textures; live histogram; opening zoom.

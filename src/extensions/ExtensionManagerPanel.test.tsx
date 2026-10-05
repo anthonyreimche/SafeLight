@@ -21,6 +21,7 @@ import { useExtStoreUI } from "@/extensions/store-ui";
 import { useTrust } from "@/extensions/trust";
 import type { ExtensionSearchResult, TrustList } from "@/extensions/types";
 import { useSettings } from "@/state/settings-store";
+import { resetSetupForTests, useSetupStore } from "@/modules/welcome/setup/setup-store";
 
 const RISK_ACK_KEY = "sl_ext_risk_ack_v1";
 
@@ -244,5 +245,16 @@ describe("ExtensionManagerPanel verified-only browse", () => {
     await screen.findAllByText("reviewed-tool");
     expect(screen.queryByText("random-tool")).toBeNull();
     screen.getByText(/1 unverified extension hidden/);
+  });
+});
+
+describe("ExtensionManagerPanel starter kits", () => {
+  it("opens the welcome setup on its Extensions step", async () => {
+    const user = userEvent.setup();
+    resetSetupForTests();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Starter kits" }));
+    const s = useSetupStore.getState();
+    expect([s.phase, s.mode, s.step]).toEqual(["open", "rerun", "extensions"]);
   });
 });

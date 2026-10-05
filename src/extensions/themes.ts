@@ -10,7 +10,9 @@
 import { create } from "zustand";
 import { useRegistry } from "./registry";
 
-const THEME_KEY = "sl_theme";
+/** Written only by applyTheme, i.e. by a person's choice. */
+export const THEME_STORAGE_KEY = "sl_theme";
+const THEME_KEY = THEME_STORAGE_KEY;
 export const DEFAULT_THEME = "core.neutral";
 
 export const useThemeStore = create<{ activeId: string }>(() => ({

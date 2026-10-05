@@ -39,6 +39,8 @@ import {
   unregisterStageParams,
   type ParamDescriptor,
 } from "./param-registry";
+import { CORE_EXTENSION_ID } from "./core-extension";
+import { checkStageContract } from "./stage-validation";
 import { unregisterExtensionActions } from "@/state/keybindings-store";
 import { clearExtensionCursors } from "@/state/cursor-store";
 
@@ -319,15 +321,25 @@ export function registerProcessingStage(
   extensionId: string,
   c: ProcessingStageContribution,
 ): void {
-  // Clear any prior descriptors for this id first, so re-registering the same
-  // stage with a different uniform set (e.g. swapping denoise methods) fully
-  // replaces its params instead of leaking the old ones.
-  unregisterStageParams(c.id);
-  registerStageParams(c.id, c.name, extensionId, c.uniforms);
+  const check = checkStageContract(c, extensionId);
+  if (check.error) {
+    console.error(`[extensions] ${extensionId}: ${check.error}; stage not registered`);
+    return;
+  }
+  if (check.readsIgnored) console.warn(`[extensions] ${extensionId}: ${check.readsIgnored}`);
+  for (const warning of check.warnings) {
+    console.warn(`[extensions] ${extensionId}: ${warning}`);
+  }
+  const stage: ProcessingStageContribution = check.readsIgnored ? { ...c, reads: "source" } : c;
+  // Clear any prior descriptors for this id, so re-registering the same stage
+  // with a different uniform set (e.g. swapping denoise methods) fully replaces
+  // its params instead of leaking the old ones.
+  unregisterStageParams(stage.id);
+  registerStageParams(stage.id, stage.name, extensionId, stage.uniforms);
   useRegistry.setState((s) => ({
     processingStages: {
       ...s.processingStages,
-      [c.id]: { ...c, extensionId },
+      [stage.id]: { ...stage, extensionId },
     },
   }));
 }
@@ -598,10 +610,11 @@ export interface PresetStageField {
   changed: boolean;
 }
 
-/** A built-in stage lives in the "core" / "core.*" extension namespace; its
- *  adjustments are already represented by DevelopParams preset fields. */
+/** A built-in stage lives in the core extension's namespace ("core" and
+ *  "core.*"); its adjustments are already represented by DevelopParams preset
+ *  fields. */
 function isCoreExtension(extensionId: string): boolean {
-  return extensionId === "core" || extensionId.startsWith("core.");
+  return extensionId === CORE_EXTENSION_ID || extensionId.startsWith(`${CORE_EXTENSION_ID}.`);
 }
 
 function bagDiffersFromDefault(

@@ -60,4 +60,23 @@ describe("Switch", () => {
     expect(sw.lastElementChild?.classList.contains("sl-switch-track")).toBe(true);
     expect(sw.title).toBe("Enable");
   });
+
+  it("points at a description when given one", () => {
+    render(
+      <>
+        <Switch checked={false} ariaLabel="Reduce motion" ariaDescribedBy="d" onChange={() => {}} />
+        <p id="d">Fewer animations.</p>
+      </>,
+    );
+    expect(
+      screen.getByRole("switch", { name: "Reduce motion" }).getAttribute("aria-describedby"),
+    ).toBe("d");
+  });
+
+  it("has no description by default", () => {
+    render(<Switch checked={false} ariaLabel="Reduce motion" onChange={() => {}} />);
+    expect(
+      screen.getByRole("switch", { name: "Reduce motion" }).getAttribute("aria-describedby"),
+    ).toBeNull();
+  });
 });

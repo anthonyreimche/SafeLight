@@ -14,31 +14,38 @@ import {
   MAX_RETOUCH_BRUSH,
   isDefaultHSL,
   isDefaultToneCurves,
+  isNeutralColorGrading,
+  maskHasDisplayAdjustments,
 } from "@/catalog/types";
 import type { HistogramData } from "../histogram";
 import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
-import { buildFragmentShader, VERTEX_SHADER, type StageInjection } from "./shaders";
-import { BASELINE_TONE_GLSL } from "../baseline-tone";
-import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import {
-  uniformPrefix,
-  helperPrefix,
-  extractHelperNames,
-  emitUniformDecl,
-  rewriteGlsl,
-  replaceIdentifiers,
-  simpleHash,
-} from "./shader-compiler";
+  buildFragmentShader,
+  shaderVariantFor,
+  variantKey,
+  V2_VARIANT,
+  VERTEX_SHADER,
+  type ShaderVariant,
+} from "./shaders";
+import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
+import { isBuiltInStage } from "./builtin-stage";
+import { simpleHash } from "./shader-compiler";
+import {
+  PASS_VERTEX_SHADER,
+  buildStageInjection,
+  type BuiltStageInjection,
+  type ContributedBinding,
+  type PrepassStage,
+  type StageSplit,
+  type StageTextureBinding,
+} from "./stage-injection";
+import { SplitTokens } from "./split-signature";
 import { useRegistry } from "@/extensions/registry";
 import {
-  PROCESSING_PHASE_ORDER,
   type GlslType,
-  type ProcessingPhase,
   type ProcessingStageContribution,
-  type StagePass,
   type StageTextureData,
-  type TextureRequirement,
 } from "@/extensions/types";
 import { coverageItemsFromBag, paramIsActive } from "./stage-coverage";
 import {
@@ -51,6 +58,15 @@ import {
   resolveDefaultPipeline,
   type ResolvedPipeline,
 } from "@/extensions/pipelines";
+import {
+  CoverageInputs,
+  bakeCoverage,
+  coverageSignature,
+  type CoverageItem,
+} from "./mask-coverage";
+import { healImageFromLinear, setHealSourceImage } from "../heal-source";
+import { getSettings } from "@/state/settings-store";
+import { halfToFloat32 } from "@/raw/half-float";
 
 // Fixed attribute locations (bound before link), so every pipeline variant of
 // the program shares the one VAO — swapping pipelines never rebuilds geometry.
@@ -72,18 +88,26 @@ const MAX_PREPASS_STAGES = PREPASS_UNITS.length;
 const STAGE_TEX_UNIT_BASE = 12;
 const MAX_STAGE_TEXTURES = 4;
 
-// One compiled develop program per pipeline signature: switching transforms
-// (or back) is an O(1) swap with no shader recompile or uniform re-query.
+// One compiled develop program per pipeline, stage set and process version:
+// switching transforms or photos (or back) is an O(1) swap with no shader
+// recompile or uniform re-query.
 interface PipelineProgram {
   program: WebGLProgram;
   uniforms: Record<string, WebGLUniformLocation | null>;
   skipBase: boolean;
   skipShoulder: boolean;
 }
-import { bakeCoverage, coverageSignature, type CoverageItem } from "./mask-coverage";
-import { healImageFromLinear, setHealSourceImage } from "../heal-source";
-import { getSettings } from "@/state/settings-store";
-import { halfToFloat32 } from "@/raw/half-float";
+
+// Where a develop draw lands: a framebuffer (null for the canvas) and its size.
+interface DrawTarget {
+  fbo: WebGLFramebuffer | null;
+  w: number;
+  h: number;
+}
+
+// Storage of the retouched frame's patched copy of the source. Only "float16"
+// keeps values outside [0, 1]; "norm16" (EXT_texture_norm16) and "rgba8" clip.
+type DevelopedFormat = "rgba8" | "norm16" | "float16";
 
 // Default cap on render resolution for interactive performance. Export passes
 // a larger value (or the image's own long edge) to render at full size.
@@ -125,10 +149,11 @@ const FILL_EDGE = 384;
 const MEMBRANE_HEAL = true;
 
 // Box-halve an RGBA Float32 image (linear space). Used to build a float mip chain
-// by hand: WebGL2 cannot generateMipmap on RGBA16F, but it can sample manually
-// supplied float mip levels with trilinear filtering, which the local-contrast
-// taps (Texture/Clarity/Dehaze/Sharpen) need. Working in 16-bit float keeps real
-// precision and HDR headroom so a big exposure push doesn't posterise into bands.
+// by hand: WebGL2 cannot generateMipmap on RGBA16F without float colour buffers,
+// but it can sample manually supplied float mip levels with trilinear filtering,
+// which the local-contrast taps (Texture/Clarity/Dehaze/Sharpen) need. Working in
+// 16-bit float keeps real precision and HDR headroom so a big exposure push
+// doesn't posterise into bands.
 function halveRGBAF(src: Float32Array, w: number, h: number) {
   const nw = Math.max(1, w >> 1);
   const nh = Math.max(1, h >> 1);
@@ -233,73 +258,6 @@ function capDrawableToEdge(
   return { source: c, width: w, height: h };
 }
 
-// ---------------------------------------------------------------------------
-// Stage injection: collect active processing stages from the registry and
-// build the GLSL strings that buildFragmentShader splices into the monolith.
-// ---------------------------------------------------------------------------
-
-const phaseIndex = new Map(PROCESSING_PHASE_ORDER.map((p, i) => [p, i]));
-
-function stageSort(a: ProcessingStageContribution, b: ProcessingStageContribution): number {
-  const pi = (phaseIndex.get(a.phase) ?? 99) - (phaseIndex.get(b.phase) ?? 99);
-  if (pi !== 0) return pi;
-  return (a.priority ?? 100) - (b.priority ?? 100);
-}
-
-/** A single extension-contributed uniform, resolved to its namespaced GLSL name
- *  so render() can bind its value generically from the contributed param bag. */
-interface ContributedBinding {
-  /** Qualified key "{stageId}.{key}" — the param-bag key and uniform-cache key. */
-  qualifiedKey: string;
-  /** Namespaced GLSL identifier, e.g. "u_ab12_lumaAmount". */
-  glslName: string;
-  glslType: GlslType;
-  default: number | number[] | boolean;
-}
-
-/** A stage-declared texture, resolved to its namespaced GLSL identifier so
- *  render() can bind it each frame: a sampler for "lut"/"dynamic" data uploaded
- *  through setStageTexture, or the brush-atlas channel uniform for "coverage"
- *  dabs painted into the param bag. */
-interface StageTextureBinding {
-  /** Qualified key "{stageId}.{key}" — also the stage-texture / param-bag key. */
-  qualifiedKey: string;
-  /** Namespaced identifier, e.g. "u_ab12_lut" (sampler) or the "u_ab12_mask"
-   *  helper whose channel uniform is "u_ab12_mask_ch". */
-  glslName: string;
-  kind: TextureRequirement["kind"];
-}
-
-/** The GLSL behind a coverage-kind key: the stage calls `key(uv)` and reads the
- *  coverage painted for it out of the brush atlas channel bound per frame. */
-function coverageHelperGlsl(name: string): string {
-  return `float ${name}(vec2 uv) {
-  int ch = ${name}_ch;
-  if (ch < 0) return 0.0;
-  vec4 t = texture(uMaskTex, uv);
-  return ch == 0 ? t.r : ch == 1 ? t.g : ch == 2 ? t.b : t.a;
-}`;
-}
-
-/** Which injection group a phase maps to. Linear-space phases operate on `lin`
- *  (the scene-linear working color); display-space phases operate on `c`. */
-function phaseGroup(
-  phase: ProcessingPhase,
-): "srcUv" | "noiseReduction" | "sceneLinear" | "effects" {
-  switch (phase) {
-    case "geometry":
-      return "srcUv";
-    case "decode":
-    case "noise-reduction":
-      return "noiseReduction";
-    case "scene-linear":
-    case "tone-map":
-      return "sceneLinear";
-    default: // display-adjust, effects, output-encode
-      return "effects";
-  }
-}
-
 /** Bind one value to a uniform by its declared GLSL type. mat3/mat4/sampler2D
  *  are not driven by the scalar param bag (samplers are bound by the prepass
  *  framework), so they're skipped here. */
@@ -323,250 +281,14 @@ function bindUniformByType(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Multi-pass prepass framework
-// ---------------------------------------------------------------------------
-
-// Passes render a plain fullscreen quad in SOURCE-UV space — no V flip — so that
-// stageResult sampled at srcUv in the main shader aligns with uImage[srcUv].
-const PASS_VERTEX_SHADER = `#version 300 es
-in vec2 aPos;
-in vec2 aUv;
-out vec2 vUv;
-void main() {
-  vUv = aUv;
-  gl_Position = vec4(aPos, 0.0, 1.0);
-}
-`;
-
-// Reproduce the main shader's pre-NR transform (linearize + RAW base curve) so a
-// prepass result lives in the same tonal space as `lin` at the NR marker — then
-// the stage's inline glsl can blend stageResult into lin without a tone shift.
-const PASS_SHARED_GLSL = `
-float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
-vec3 srgbToLinear(vec3 c) {
-  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
-}
-vec3 linearToSrgb(vec3 c) {
-  c = clamp(c, 0.0, 1.0);
-  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-}
-vec3 linearToSrgbU(vec3 c) {
-  c = max(c, 0.0);
-  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-}
-${BASELINE_TONE_GLSL}
-uniform sampler2D uPrevPass;
-uniform vec2 uTexel;
-uniform int uPassIndex;
-uniform int uPassCount;
-uniform bool uPrevRaw;            // true only for the first read of the source
-uniform bool uSrcLinear;
-uniform bool uIsFallbackPreview;
-uniform bool uApplyBaseCurve;
-vec3 toLin(vec3 src) {
-  vec3 lin = uSrcLinear ? src : (uIsFallbackPreview ? src : srgbToLinear(src));
-  return uApplyBaseCurve ? baselineTone(lin) : lin;
-}
-vec3 readPrev(vec2 uv) {
-  vec3 s = texture(uPrevPass, uv).rgb;
-  return uPrevRaw ? toLin(s) : s;
-}
-`;
-
-interface PrepassPass {
-  fragmentSource: string;
-  iterations: number;
-  bindings: ContributedBinding[];
-}
-
-interface PrepassStage {
-  stageId: string;
-  /** Sampler name the main shader reads stageResult from. */
-  resultUniform: string;
-  passes: PrepassPass[];
-}
-
-/** Build a complete fragment program for one StagePass, namespacing its uniforms
- *  + helpers under the owning stage's prefix so they share the stage's param keys. */
-function buildPassFragment(
-  stageId: string,
-  pass: StagePass,
-): { fragmentSource: string; bindings: ContributedBinding[] } {
-  const uPfx = uniformPrefix(stageId);
-  const hPfx = helperPrefix(stageId);
-  const uniforms = pass.uniforms ?? [];
-  const bindings: ContributedBinding[] = uniforms.map((u) => ({
-    qualifiedKey: `${stageId}.${u.key}`,
-    glslName: uPfx + u.key,
-    glslType: u.glslType,
-    default: u.default,
-  }));
-  const uniformDecls = uniforms.map((u) => emitUniformDecl(u, uPfx)).join("\n");
-  const helperNames = pass.helpers ? extractHelperNames(pass.helpers) : [];
-  let helpers = "";
-  if (pass.helpers) {
-    let h = replaceIdentifiers(pass.helpers, helperNames, hPfx);
-    h = replaceIdentifiers(h, uniforms.map((u) => u.key), uPfx);
-    helpers = h;
-  }
-  const body = rewriteGlsl(pass.glsl, uniforms, uPfx, hPfx, helperNames);
-  const fragmentSource = `#version 300 es
-precision highp float;
-in vec2 vUv;
-out vec4 fragColor;
-${uniformDecls}
-${PASS_SHARED_GLSL}
-${helpers}
-void main() {
-  vec3 c = readPrev(vUv);
-  {
-${body}
-  }
-  fragColor = vec4(c, 1.0);
-}
-`;
-  return { fragmentSource, bindings };
-}
-
-function buildStageInjection(
-  injected?: ProcessingStageContribution[],
-): {
-  injection: StageInjection;
-  sig: string;
-  bindings: ContributedBinding[];
-  textureBindings: StageTextureBinding[];
-  prepass: PrepassStage[];
-  hasNoiseReduction: boolean;
-} {
-  let stages = (
-    injected ?? Object.values(useRegistry.getState().processingStages)
-  )
-    .slice()
-    .sort(stageSort);
-
-  // The built-in denoiser bows out when a community extension owns the
-  // noise-reduction phase (an extension NR stage replaces it, not stacks).
-  if (
-    stages.some(
-      (s) => s.id !== "builtin.denoise" && !s.id.startsWith("core.") && s.phase === "noise-reduction",
-    )
-  ) {
-    stages = stages.filter((s) => s.id !== "builtin.denoise");
-  }
-
-  const uniformDecls: string[] = [];
-  const helperBlocks: string[] = [];
-  const groups = { srcUv: [] as string[], noiseReduction: [] as string[], sceneLinear: [] as string[], effects: [] as string[] };
-  const bindings: ContributedBinding[] = [];
-  const textureBindings: StageTextureBinding[] = [];
-  const prepass: PrepassStage[] = [];
-  const sigParts: string[] = [];
-  let hasNoiseReduction = false;
-
-  for (const s of stages) {
-    const group = phaseGroup(s.phase);
-    if (!s.id.startsWith("core.") && s.phase === "noise-reduction") hasNoiseReduction = true;
-    // Core stages (vignette/grain) keep raw uniform names: their values are
-    // bound by hand in render() from typed DevelopParams, not the param bag.
-    if (s.id.startsWith("core.")) {
-      for (const u of s.uniforms) uniformDecls.push(`uniform ${u.glslType} ${u.key};`);
-      if (s.helpers) helperBlocks.push(s.helpers);
-      groups[group].push(`{\n${s.glsl}\n}`);
-      sigParts.push(s.id);
-      continue;
-    }
-
-    // Extension stages: namespace uniforms + helpers so two extensions never
-    // collide, and record bindings so render() can drive them from the bag.
-    const uPfx = uniformPrefix(s.id);
-    const hPfx = helperPrefix(s.id);
-    for (const u of s.uniforms) {
-      uniformDecls.push(emitUniformDecl(u, uPfx));
-      bindings.push({
-        qualifiedKey: `${s.id}.${u.key}`,
-        glslName: uPfx + u.key,
-        glslType: u.glslType,
-        default: u.default,
-      });
-    }
-    // Stage textures: LUT/dynamic kinds get a namespaced sampler bound from the
-    // uploaded data; coverage kinds ride the brush atlas (no texture unit) and
-    // are exposed to the inline glsl / helpers as a function under their `key`.
-    // Part of the sig so a change in the texture set recompiles, but a data
-    // swap or a new dab (same set) doesn't.
-    for (const t of s.textures ?? []) {
-      const glslName = uPfx + t.key;
-      if (t.kind === "coverage") {
-        uniformDecls.push(`uniform int ${glslName}_ch;`);
-        helperBlocks.push(coverageHelperGlsl(glslName));
-      } else {
-        uniformDecls.push(`uniform sampler2D ${glslName};`);
-      }
-      textureBindings.push({ qualifiedKey: `${s.id}.${t.key}`, glslName, kind: t.kind });
-      sigParts.push(`${s.id}~tex:${t.key}:${t.kind}`);
-    }
-
-    // Uniform + texture keys share the stage's uniform prefix; rewrite them in one
-    // longest-first pass so a short key never partially matches inside a longer one.
-    const uKeys = [
-      ...s.uniforms.map((u) => u.key),
-      ...(s.textures ?? []).map((t) => t.key),
-    ];
-    let helperNames: string[] = [];
-    if (s.helpers) {
-      helperNames = extractHelperNames(s.helpers);
-      let h = replaceIdentifiers(s.helpers, helperNames, hPfx);
-      h = replaceIdentifiers(h, uKeys, uPfx);
-      helperBlocks.push(h);
-    }
-
-    // Prepass-bearing stages: expose the prepass result to the inline glsl as
-    // `vec3 stageResult` and compile a program per pass. Pass uniforms join the
-    // same namespace so one param key can drive both the pass and the inline glsl.
-    let prelude = "";
-    if (s.passes && s.passes.length > 0) {
-      const resultUniform = `${uPfx}stageResult`;
-      uniformDecls.push(`uniform sampler2D ${resultUniform};`);
-      prelude = `vec3 stageResult = texture(${resultUniform}, srcUv).rgb;\n`;
-      const passes: PrepassPass[] = s.passes.map((p) => {
-        const built = buildPassFragment(s.id, p);
-        for (const b of built.bindings) {
-          if (!bindings.some((x) => x.qualifiedKey === b.qualifiedKey)) bindings.push(b);
-        }
-        return {
-          fragmentSource: built.fragmentSource,
-          iterations: Math.max(1, p.iterations ?? 1),
-          bindings: built.bindings,
-        };
-      });
-      prepass.push({ stageId: s.id, resultUniform, passes });
-      sigParts.push(
-        `${s.id}#${s.passes.map((p) => simpleHash(p.glsl)).join(",")}`,
-      );
-    }
-
-    let inline = rewriteGlsl(s.glsl, s.uniforms, uPfx, hPfx, helperNames);
-    inline = replaceIdentifiers(inline, (s.textures ?? []).map((t) => t.key), uPfx);
-    groups[group].push(`{\n${prelude}${inline}\n}`);
-    sigParts.push(`${s.id}:${simpleHash(s.glsl)}`);
-  }
-
-  return {
-    injection: {
-      uniforms: uniformDecls.join("\n"),
-      helpers: helperBlocks.join("\n\n"),
-      srcUv: groups.srcUv.join("\n  "),
-      noiseReduction: groups.noiseReduction.join("\n  "),
-      sceneLinear: groups.sceneLinear.join("\n  "),
-      effects: groups.effects.join("\n  "),
-    },
-    sig: sigParts.join("|"),
-    bindings,
-    textureBindings,
-    prepass,
-    hasNoiseReduction,
-  };
+// A shown brush spot with strokes: the spots the retouch atlas bakes and
+// render() binds a channel for. Both lists must come from this one check,
+// since the channel is looked up by spot id and a spot only one side counts
+// would read another spot's coverage.
+function isVisibleBrushSpot(
+  s: RetouchSpot,
+): s is RetouchSpot & { dabs: NonNullable<RetouchSpot["dabs"]> } {
+  return s.visible !== false && s.shape === "brush" && !!s.dabs && s.dabs.length > 0;
 }
 
 export type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
@@ -580,7 +302,11 @@ export interface WebGLRendererOpts {
 export class WebGLRenderer {
   private canvas: RenderCanvas;
   private gl: WebGL2RenderingContext;
-  private program: WebGLProgram;
+  // The program syncPipeline() last selected, so null until the first frame.
+  // Nothing is built when the renderer is: which process version's program it
+  // needs depends on the photos it is handed. prepareProgram builds one ahead on
+  // request, into the program cache; it doesn't select it.
+  private program: WebGLProgram | null = null;
   private imageTexture: WebGLTexture;
   private curveTexture: WebGLTexture;
   // Per-mask tone-curve LUT atlas (256 x MAX_MASKS RGBA; one row per mask).
@@ -589,20 +315,23 @@ export class WebGLRenderer {
   private maskTexture: WebGLTexture;
   private maskSig = "";
   private maskChannelOf: Record<string, number> = {};
+  private maskInputs = new CoverageInputs();
   private retouchTexture: WebGLTexture;
   private retouchSig = "";
   private retouchChannelOf: Record<string, number> = {};
-  // Offscreen "develop without retouch" target, sampled so heal matches tone in
-  // edited space. Sized to the (capped) source; lazily created on first heal.
+  private retouchInputs = new CoverageInputs();
+  // The patched copy of the source: the retouch baked in, mipmapped, and sampled
+  // as uImage by a retouched frame's develop draws. Sized to the (capped) source;
+  // lazily created on first heal.
   private developedTex: WebGLTexture | null = null;
   private developedFbo: WebGLFramebuffer | null = null;
   private devW = 0;
   private devH = 0;
-  // Whether developedTex is currently allocated as RGBA16 (norm16) vs RGBA8 — the
-  // RGBA8 fallback when the norm16 target isn't framebuffer-complete or can't
-  // be mipmapped.
-  private developedTexIsNorm16 = false;
-  // Whether the current RGBA16 allocation has mipmapped without a GL error.
+  // The format developedTex is allocated in: the one the photo's process version
+  // wants, or a fallback when that target isn't framebuffer-complete or can't be
+  // mipmapped.
+  private developedFormat: DevelopedFormat = "rgba8";
+  // Whether the current norm16 or float16 allocation has mipmapped without a GL error.
   private developedMipsVerified = false;
   // Downscaled 8-bit sRGB copy of the source, forwarded to the main thread so the
   // heal-source picker (findHealSource/healColorOffset) has pixels to search.
@@ -635,6 +364,7 @@ export class WebGLRenderer {
   private failedPrepass = new Set<string>();
   private warnedPrepassOverflow = new Set<string>();
   private warnedCoverageOverflow = new Set<string>();
+  private warnedSplitFallback = new Set<string>();
   // True when the built-in denoise prepass produced a real float result this
   // frame (active, float targets, not failed). Drives uDenoiseReady so the
   // inline swap of `lin` never applies a raw fallback texture.
@@ -663,9 +393,14 @@ export class WebGLRenderer {
   private prepassResults: { resultUniform: string; tex: WebGLTexture; unit: number }[] = [];
   // Per-stage signature of the last prepass run; lets runPrepasses skip the
   // (expensive) passes and reuse the cached result when nothing it depends on
-  // (source, this stage's pass params, dims, linearization) changed — so editing
-  // unrelated controls (exposure, etc.) doesn't recompute denoise.
+  // (source, this stage's pass params, dims, linearization, and for a
+  // reads-current stage its split token) changed — so editing unrelated
+  // controls (exposure, etc.) doesn't recompute denoise.
   private prepassSigs = new Map<string, string>();
+  // Tokens for the split part of a reads-current stage's prepass signature.
+  private splitTokens = new SplitTokens();
+  // Cumulative draws, for diagnostics and the cost tests.
+  private draws = { split: 0, pass: 0 };
   // Bumped whenever the active source texture is swapped (setImage / bindSource).
   private sourceEpoch = 0;
   private params: DevelopParams | null = null;
@@ -700,17 +435,35 @@ export class WebGLRenderer {
   // lacks it (or can't mipmap it) — the target then stays RGBA8.
   private haveNorm16 = false;
   private norm16Format = 0;
-  // Active render pipeline + stage signatures: compared on every render to
-  // detect when recompilation is needed (pipeline change or stage enable/disable).
+  // Whether a version 2 photo's developed target can be RGBA16F: float colour
+  // buffers make it renderable, and so mipmappable, until this driver fails to
+  // mipmap a full-size one.
+  private haveFloat16Developed = false;
+  // Active render pipeline + stage signatures + process version: compared on
+  // every render to detect when another program is needed (pipeline change,
+  // stage enable/disable, or a photo on another process version).
   private pipelineSig = "";
   private stageSig = "";
+  private variant: ShaderVariant = V2_VARIANT;
   private pipelineSkipBase = false;
   private pipelineSkipShoulder = false;
   private programCache = new Map<string, PipelineProgram>();
+  // The error each failed build threw, by program cache key (see entryFor).
+  private failedBuilds = new Map<string, unknown>();
   private vao: WebGLVertexArrayObject | null = null;
   private quadBuf: WebGLBuffer | null = null;
   private injectedStages: ProcessingStageContribution[] | null = null;
   private injectedPipeline: ResolvedPipeline | null = null;
+  // syncPipeline runs every frame. Rebuilding the injection re-namespaces every
+  // stage's GLSL, so it happens only when the stage source changes: the registry
+  // replaces its processingStages object on every change, and setStages drops
+  // the memo, so an injected array edited in place is rebuilt too. Each process
+  // version keeps its own build, so photos alternating between versions reuse
+  // both.
+  private injectionMemo: {
+    source: readonly ProcessingStageContribution[] | Record<string, ProcessingStageContribution>;
+    built: Map<ShaderVariant, BuiltStageInjection>;
+  } | null = null;
 
   // ── GPU-resident source cache ──────────────────────────────────────────
   // Decoded sources kept resident keyed by sourceKey (photo id + decode variant)
@@ -770,22 +523,8 @@ export class WebGLRenderer {
     }
 
     this.haveColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
+    this.haveFloat16Developed = this.haveColorBufferFloat;
 
-    const p = this.injectedPipeline ?? resolveDefaultPipeline();
-    const { injection, sig: sSig, bindings, textureBindings, prepass, hasNoiseReduction } = buildStageInjection(
-      this.injectedStages ?? undefined,
-    );
-    this.contributedBindings = bindings;
-    this.stageTextureBindings = textureBindings;
-    this.prepassStages = prepass;
-    this.hasContribNR = hasNoiseReduction;
-    const entry = this.entryFor(p, injection, sSig);
-    this.program = entry.program;
-    this.uniforms = entry.uniforms;
-    this.pipelineSkipBase = entry.skipBase;
-    this.pipelineSkipShoulder = entry.skipShoulder;
-    this.pipelineSig = p.sig;
-    this.stageSig = sSig;
     this.setupQuad();
 
     this.imageTexture = this.createTexture();
@@ -806,6 +545,11 @@ export class WebGLRenderer {
   // bands. Surfaced to the UI as a diagnostic.
   get colorBufferFloat(): boolean {
     return this.haveColorBufferFloat;
+  }
+
+  /** Cumulative split and pass draws since construction. */
+  get renderDrawCounts(): { readonly split: number; readonly pass: number } {
+    return { ...this.draws };
   }
 
   // 1x1 transparent default so a coverage sampler is always valid even with no
@@ -853,27 +597,39 @@ export class WebGLRenderer {
   // Brush coverage comes from brush COMPONENTS across all masks plus the
   // coverage-kind textures extension stages paint into the bag; the atlas packs
   // up to four into RGBA, the photo's own brushes first. Keyed by component id
-  // or qualified texture key.
+  // or qualified texture key. Signing the dabs is skipped unless an input was
+  // replaced, so callers replace masks and bag values rather than editing them.
+  // A bake that throws is tried again by the next call, whatever changed.
   private updateMaskTexture(masks: Mask[]) {
-    const items: CoverageItem[] = [];
-    for (const m of masks) {
-      for (const c of m.components) {
-        if (c.kind === "brush" && c.brush) items.push({ id: c.id, dabs: c.brush.dabs });
+    const keys = this.coverageKeys();
+    const inputs = [
+      masks,
+      this.imageWidth,
+      this.imageHeight,
+      this.stageTextureBindings,
+      ...keys.map((k) => this.contributedParams[k]),
+    ];
+    this.maskInputs.bakeIfChanged(inputs, () => {
+      const items: CoverageItem[] = [];
+      for (const m of masks) {
+        for (const c of m.components) {
+          if (c.kind === "brush" && c.brush) items.push({ id: c.id, dabs: c.brush.dabs });
+        }
       }
-    }
-    const painted = coverageItemsFromBag(this.coverageKeys(), this.contributedParams);
-    items.push(...painted);
-    const r = this.updateCoverageTexture(this.maskTexture, items, this.maskSig);
-    this.maskSig = r.sig;
-    this.maskChannelOf = r.channelOf;
-    for (const it of painted) {
-      if (it.id in r.channelOf || this.warnedCoverageOverflow.has(it.id)) continue;
-      this.warnedCoverageOverflow.add(it.id);
-      console.warn(
-        `[render] coverage texture '${it.id}' does not fit the ${MAX_BRUSH_MASKS}-channel ` +
-          `brush atlas and will read as unpainted.`,
-      );
-    }
+      const painted = coverageItemsFromBag(keys, this.contributedParams);
+      items.push(...painted);
+      const r = this.updateCoverageTexture(this.maskTexture, items, this.maskSig);
+      this.maskSig = r.sig;
+      this.maskChannelOf = r.channelOf;
+      for (const it of painted) {
+        if (it.id in r.channelOf || this.warnedCoverageOverflow.has(it.id)) continue;
+        this.warnedCoverageOverflow.add(it.id);
+        console.warn(
+          `[render] coverage texture '${it.id}' does not fit the ${MAX_BRUSH_MASKS}-channel ` +
+            `brush atlas and will read as unpainted.`,
+        );
+      }
+    });
   }
 
   private coverageKeys(): string[] {
@@ -883,36 +639,63 @@ export class WebGLRenderer {
   }
 
   private updateRetouchTexture(retouch: RetouchSpot[]) {
-    const items: CoverageItem[] = retouch
-      .filter((s) => s.shape === "brush" && s.dabs && s.dabs.length > 0)
-      .map((s) => ({ id: s.id, dabs: s.dabs! }));
-    const r = this.updateCoverageTexture(this.retouchTexture, items, this.retouchSig);
-    this.retouchSig = r.sig;
-    this.retouchChannelOf = r.channelOf;
+    this.retouchInputs.bakeIfChanged([retouch, this.imageWidth, this.imageHeight], () => {
+      const items: CoverageItem[] = retouch
+        .filter(isVisibleBrushSpot)
+        .map((s) => ({ id: s.id, dabs: s.dabs }));
+      const r = this.updateCoverageTexture(this.retouchTexture, items, this.retouchSig);
+      this.retouchSig = r.sig;
+      this.retouchChannelOf = r.channelOf;
+    });
   }
 
-  // Program + uniform locations for a pipeline + stage set, cached by combined
-  // signature. A bad custom transform falls back to the built-in entry — cached
-  // under the failing sig too, so it isn't recompiled (and re-logged) every frame.
-  private entryFor(p: ResolvedPipeline, stageInj: StageInjection, sSig: string): PipelineProgram {
-    const cacheKey = `${p.sig}|${sSig}`;
-    let e = this.programCache.get(cacheKey);
-    if (e) return e;
+  // Program + uniform locations for a pipeline + stage set + process version,
+  // cached by combined signature. A bad custom transform falls back to the
+  // built-in entry — cached under the failing sig too, so it isn't recompiled
+  // (and re-logged) every frame. A build that throws is remembered under its key
+  // and rethrown as it was, without compiling again, until a signature or the
+  // version gives another key. The stage set comes in as an argument, not from the
+  // renderer's own state, so building an entry never touches what it is drawing with.
+  private entryFor(
+    p: ResolvedPipeline,
+    built: BuiltStageInjection,
+    variant: ShaderVariant,
+  ): PipelineProgram {
+    const cacheKey = `${p.sig}|${built.sig}|${variantKey(variant)}`;
+    const cached = this.programCache.get(cacheKey);
+    if (cached) return cached;
+    if (this.failedBuilds.has(cacheKey)) throw this.failedBuilds.get(cacheKey);
     try {
-      const program = this.createProgram(VERTEX_SHADER, buildFragmentShader(p.glsl, stageInj));
-      e = {
+      const entry = this.buildEntry(p, built, variant);
+      this.programCache.set(cacheKey, entry);
+      return entry;
+    } catch (err) {
+      this.failedBuilds.set(cacheKey, err);
+      throw err;
+    }
+  }
+
+  private buildEntry(
+    p: ResolvedPipeline,
+    built: BuiltStageInjection,
+    variant: ShaderVariant,
+  ): PipelineProgram {
+    try {
+      const program = this.createProgram(
+        VERTEX_SHADER,
+        buildFragmentShader(p.glsl, built.injection, variant),
+      );
+      return {
         program,
-        uniforms: this.cacheUniformsFor(program),
+        uniforms: this.cacheUniformsFor(program, built),
         skipBase: p.skipBaseCurve,
         skipShoulder: p.skipToneShoulder,
       };
     } catch (err) {
       if (!p.glsl) throw err; // built-in must compile
       console.error(`[pipeline] "${p.id}" failed to compile; using built-in:`, err);
-      e = this.entryFor(BUILTIN_RESOLVED, stageInj, sSig);
+      return this.entryFor(BUILTIN_RESOLVED, built, variant);
     }
-    this.programCache.set(cacheKey, e);
-    return e;
   }
 
   private createProgram(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -985,6 +768,7 @@ export class WebGLRenderer {
 
   private cacheUniformsFor(
     program: WebGLProgram,
+    built: BuiltStageInjection,
   ): Record<string, WebGLUniformLocation | null> {
     const gl = this.gl;
     const u: Record<string, WebGLUniformLocation | null> = {};
@@ -1057,6 +841,9 @@ export class WebGLRenderer {
       "uCGGlobalLuma",
       "uCGShadowRange",
       "uCGHighlightRange",
+      "uCurveActive",
+      "uHslActive",
+      "uColorGradingActive",
       // Effects: vignette
       "uVignetteAmount",
       "uVignetteMidpoint",
@@ -1076,6 +863,7 @@ export class WebGLRenderer {
       // Array bases set in one call via uniform*v.
       "uMaskHasHsl[0]",
       "uMaskHasCurve[0]",
+      "uMaskHasDisplay[0]",
       "uMaskHsl[0]",
       "uSpotCount",
       "uRetouchTex",
@@ -1085,6 +873,7 @@ export class WebGLRenderer {
       "uApplyRetouch",
       "uMembraneHeal",
       "uPatchPass",
+      "uSplitAt",
     ];
     // Per-mask array uniforms (queried by indexed name).
     for (let i = 0; i < MAX_MASKS; i++) {
@@ -1118,16 +907,16 @@ export class WebGLRenderer {
     }
     // Extension-contributed stage uniforms, keyed by qualified key so render()
     // can resolve location + value together from the param bag.
-    for (const b of this.contributedBindings) {
+    for (const b of built.bindings) {
       u[b.qualifiedKey] = gl.getUniformLocation(program, b.glslName);
     }
     // Prepass result samplers (one per passes-bearing stage).
-    for (const ps of this.prepassStages) {
+    for (const ps of built.prepass) {
       u[ps.resultUniform] = gl.getUniformLocation(program, ps.resultUniform);
     }
     // Extension stage-texture samplers / coverage channel uniforms, keyed by
     // qualified key.
-    for (const tb of this.stageTextureBindings) {
+    for (const tb of built.textureBindings) {
       const name = tb.kind === "coverage" ? `${tb.glslName}_ch` : tb.glslName;
       u[tb.qualifiedKey] = gl.getUniformLocation(program, name);
     }
@@ -1224,8 +1013,9 @@ export class WebGLRenderer {
       // sRGB (mipmaps need a filterable+renderable format), which meant a +5 exposure
       // (×32) stretched ~50 code values across the bright sky into visible bands, and
       // because R/G/B quantise independently their ratios stepped → rainbow posterising.
-      // 16-bit float removes that. WebGL2 can't generateMipmap on RGBA16F, so the mip
-      // chain for the local-contrast taps is built by hand below.
+      // 16-bit float removes that. WebGL2 can't generateMipmap on RGBA16F without
+      // float colour buffers, so the mip chain for the local-contrast taps is built
+      // by hand below.
       //
       // A cached develop preview (float16) holds the same scene-linear values as
       // half floats, so it rides this path too and renders like the fresh decode.
@@ -1561,8 +1351,7 @@ export class WebGLRenderer {
     this.params = params;
     this.updateMaskTexture(params.masks);
     this.updateMaskCurveTexture(params.masks);
-    const visibleRetouch = params.retouch.filter((s) => s.visible !== false);
-    this.updateRetouchTexture(visibleRetouch);
+    this.updateRetouchTexture(params.retouch);
     this.uploadCurveLUT();
     // NOTE: resize happens in render(), not here. Resizing the canvas clears
     // it, and setParams runs a frame before the coalesced render — doing it
@@ -1603,6 +1392,7 @@ export class WebGLRenderer {
 
   setStages(stages: ProcessingStageContribution[]) {
     this.injectedStages = stages;
+    this.injectionMemo = null;
   }
 
   /** Generic param bag driving extension-contributed stage uniforms, keyed by
@@ -1671,33 +1461,96 @@ export class WebGLRenderer {
     this.injectedPipeline = pipeline;
   }
 
+  /** Build the develop program for a process version under the pipeline and stages
+   *  the renderer holds now, so its first frame finds it built. Throws what a frame
+   *  would throw for a program that can't be built. It writes only to the renderer's
+   *  caches (programs, remembered failures, stage injections), never to the stage
+   *  set, pipeline or bindings it draws with. Whoever creates a renderer calls this
+   *  to fail there, ahead of any frame, rather than out of render(). */
+  prepareProgram(processVersion: number): void {
+    const variant = shaderVariantFor(processVersion);
+    const pipeline = this.injectedPipeline ?? resolveDefaultPipeline();
+    this.entryFor(pipeline, this.stageInjection(variant), variant);
+  }
+
+  /** Build the stock develop program for a process version: the built-in transform
+   *  with Safelight's own stages from the stage set the renderer holds (the core
+   *  ones and the built-in denoiser) and nothing an extension contributes. It fails
+   *  only where this machine can't run Safelight's own shader; stages or a transform
+   *  from an extension can fail without it. It writes only to the same caches as
+   *  prepareProgram. A caller whose prepareProgram threw uses it to tell the two
+   *  cases apart. */
+  prepareStockProgram(processVersion: number): void {
+    const variant = shaderVariantFor(processVersion);
+    const builtIn = this.currentStages().filter(isBuiltInStage);
+    this.entryFor(BUILTIN_RESOLVED, buildStageInjection(builtIn, variant), variant);
+  }
+
+  private currentStages(): readonly ProcessingStageContribution[] {
+    const source = this.injectedStages ?? useRegistry.getState().processingStages;
+    return Array.isArray(source) ? source : Object.values(source);
+  }
+
+  private stageInjection(variant: ShaderVariant): BuiltStageInjection {
+    const source = this.injectedStages ?? useRegistry.getState().processingStages;
+    let memo = this.injectionMemo;
+    if (memo?.source !== source) {
+      memo = { source, built: new Map() };
+      this.injectionMemo = memo;
+    }
+    let built = memo.built.get(variant);
+    if (!built) {
+      built = buildStageInjection(this.currentStages(), variant);
+      memo.built.set(variant, built);
+    }
+    return built;
+  }
+
   private syncPipeline() {
     const p = this.injectedPipeline ?? resolveDefaultPipeline();
-    const { injection, sig: sSig, bindings, textureBindings, prepass, hasNoiseReduction } = buildStageInjection(
-      this.injectedStages ?? undefined,
-    );
-    if (p.sig === this.pipelineSig && sSig === this.stageSig) return;
-    this.contributedBindings = bindings;
-    this.stageTextureBindings = textureBindings;
-    this.prepassStages = prepass;
-    this.hasContribNR = hasNoiseReduction;
+    const variant = this.params ? shaderVariantFor(this.params.processVersion) : this.variant;
+    const built = this.stageInjection(variant);
+    const unchanged =
+      p.sig === this.pipelineSig && built.sig === this.stageSig && variant === this.variant;
+    // The stock transform and an empty stage set both sign as "", and the variant
+    // starts at version 2, so a fresh renderer can already match its first frame:
+    // equal signatures only mean "built" once a program exists.
+    if (this.program && unchanged) return;
+    // The renderer changes only once the program is in hand: a build that throws
+    // leaves it on the stage set it was drawing with, so switching back to that set
+    // finds its own bindings, not the failed set's.
+    const e = this.entryFor(p, built, variant);
     // Pass programs are keyed by stageSig; a stage-set change invalidates them
-    // and the prepass result cache.
-    if (sSig !== this.stageSig) {
-      for (const e of this.passPrograms.values()) this.gl.deleteProgram(e.program);
+    // and the prepass result cache. No process version changes stageSig, so a
+    // photo on the other version keeps both.
+    if (built.sig !== this.stageSig) {
+      for (const pass of this.passPrograms.values()) this.gl.deleteProgram(pass.program);
       this.passPrograms.clear();
       this.prepassSigs.clear();
+      this.splitTokens.clear();
       // A stage whose GLSL was fixed (extension update / dev-folder reload) gets a
       // fresh compile attempt; without this it stays disabled for the session.
       this.failedPrepass.clear();
     }
-    const e = this.entryFor(p, injection, sSig);
+    this.contributedBindings = built.bindings;
+    this.stageTextureBindings = built.textureBindings;
+    this.prepassStages = built.prepass;
+    this.hasContribNR = built.hasNoiseReduction;
     this.program = e.program;
     this.uniforms = e.uniforms;
     this.pipelineSkipBase = e.skipBase;
     this.pipelineSkipShoulder = e.skipShoulder;
     this.pipelineSig = p.sig;
-    this.stageSig = sSig;
+    this.stageSig = built.sig;
+    this.variant = variant;
+  }
+
+  // The program syncPipeline() last selected. Every draw path syncs first, so a
+  // null here is a bug; drawing without a program only raises a GL error and
+  // leaves the frame blank, which is why this throws instead.
+  private developProgram(): WebGLProgram {
+    if (!this.program) throw new Error("WebGLRenderer: drew before syncPipeline() built a program");
+    return this.program;
   }
 
   render() {
@@ -1708,11 +1561,13 @@ export class WebGLRenderer {
     const p = this.params;
     const u = this.uniforms;
 
-    // The atlas depends on the bag as well as the params (coverage-kind stage
-    // textures), and setParams runs before the bag arrives — fold it in here.
+    // The atlases depend on the source's aspect, and the mask atlas on the bag
+    // (coverage-kind stage textures) as well as the params. setParams can run
+    // before either arrives — fold them in here.
     this.updateMaskTexture(p.masks);
+    this.updateRetouchTexture(p.retouch);
 
-    gl.useProgram(this.program);
+    gl.useProgram(this.developProgram());
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
@@ -1740,6 +1595,9 @@ export class WebGLRenderer {
     gl.uniform3f(u.uVizColor, this.vizColor[0], this.vizColor[1], this.vizColor[2]);
     gl.uniform1f(u.uVizStrength, this.vizStrength);
     gl.uniform1i(u.uSharpenViz, this.sharpenViz);
+    // GLSL zero-initialises uniforms, and 0 is a valid split index: every
+    // draw but a split's must run with -1.
+    gl.uniform1i(u.uSplitAt, -1);
     gl.uniform1f(u.uExposure, p.exposure);
     gl.uniform1f(u.uContrast, p.contrast);
     gl.uniform1f(u.uHighlights, p.highlights);
@@ -1812,6 +1670,11 @@ export class WebGLRenderer {
     gl.uniform1f(u.uCGGlobalLuma,     cg.global.luma);
     gl.uniform1f(u.uCGShadowRange,    cg.shadowRange / 100);
     gl.uniform1f(u.uCGHighlightRange, cg.highlightRange / 100);
+    // Version 2 skips these tools at identity. Version 1 programs have no
+    // such uniforms, and GL ignores a null location.
+    gl.uniform1i(u.uCurveActive, isDefaultToneCurves(p.toneCurve) ? 0 : 1);
+    gl.uniform1i(u.uHslActive, isDefaultHSL(p.hsl) ? 0 : 1);
+    gl.uniform1i(u.uColorGradingActive, isNeutralColorGrading(cg) ? 0 : 1);
 
     const vig = p.vignette;
     if (u.uVignetteAmount != null) {
@@ -1929,8 +1792,10 @@ export class WebGLRenderer {
     // selects the atlas row.
     const hasHsl = new Int32Array(MAX_MASKS);
     const hasCurve = new Int32Array(MAX_MASKS);
+    const hasDisplay = new Int32Array(MAX_MASKS);
     const hslData = new Float32Array(MAX_MASKS * 24);
     masks.forEach((m, i) => {
+      if (maskHasDisplayAdjustments(m.adj)) hasDisplay[i] = 1;
       if (m.toneCurve && !isDefaultToneCurves(m.toneCurve)) hasCurve[i] = 1;
       if (m.hsl && !isDefaultHSL(m.hsl)) {
         hasHsl[i] = 1;
@@ -1944,6 +1809,7 @@ export class WebGLRenderer {
     });
     gl.uniform1iv(u["uMaskHasHsl[0]"], hasHsl);
     gl.uniform1iv(u["uMaskHasCurve[0]"], hasCurve);
+    gl.uniform1iv(u["uMaskHasDisplay[0]"], hasDisplay);
     gl.uniform4fv(u["uMaskHsl[0]"], hslData);
     gl.activeTexture(gl.TEXTURE6);
     gl.bindTexture(gl.TEXTURE_2D, this.maskCurveTexture);
@@ -1986,9 +1852,7 @@ export class WebGLRenderer {
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.retouchTexture);
     gl.uniform1i(u.uRetouchTex, 3);
-    const brushSpots = visibleSpots
-      .filter((s) => s.shape === "brush" && s.dabs && s.dabs.length > 0)
-      .slice(0, MAX_RETOUCH_BRUSH);
+    const brushSpots = p.retouch.filter(isVisibleBrushSpot).slice(0, MAX_RETOUCH_BRUSH);
     gl.uniform1i(u.uRetouchCount, brushSpots.length);
     brushSpots.forEach((s, i) => {
       gl.uniform1i(u[`uRetouchCh[${i}]`], this.retouchChannelOf[s.id] ?? 0);
@@ -2027,42 +1891,55 @@ export class WebGLRenderer {
     if (patched) {
       // Prepasses (e.g. denoise) read the PATCHED source so heal happens before
       // detail; results are bound onto the main program for pass 2. The patched
-      // source varies with retouch/heal geometry, so fold those into the cache key.
-      this.runPrepasses(this.developedTex!, `e${this.sourceEpoch}|r${this.retouchSig}|c${circleSig}|h${this.healSig}`);
-      gl.useProgram(this.program);
-      this.bindPrepassResults();
-
+      // source varies with retouch/heal geometry, so fold those into the cache key,
+      // and with the process version and the copy's format, which decide what it
+      // clips: a photo on the other version must not reuse this one's result.
+      this.runPrepasses(
+        this.developedTex!,
+        `e${this.sourceEpoch}|r${this.retouchSig}|c${circleSig}|h${this.healSig}` +
+          `|${variantKey(this.variant)}:${this.developedFormat}`,
+        false,
+        p,
+      );
       // Pass 2 -> develop from the patched copy (now the spot is already gone,
       // so texture/clarity/sharpening can't invert it). Retouch off this pass.
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.outputFbo);
-      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
-      gl.uniform1i(u.uImage, 0);
-      gl.uniform1i(u.uPatchPass, 0);
-      gl.uniform1i(u.uApplyRetouch, 0);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      this.drawDevelop(this.developedTex!, false, this.outputTarget());
     } else {
       // No retouch (or no offscreen target): single pass. The in-shader retouch
       // is the fallback when the framebuffer can't be created.
-      this.runPrepasses(this.imageTexture, `e${this.sourceEpoch}`);
-      gl.useProgram(this.program);
-      this.bindPrepassResults();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.outputFbo);
-      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
-      gl.uniform1i(u.uImage, 0);
-      gl.uniform1i(u.uPatchPass, 0);
-      gl.uniform1i(u.uApplyRetouch, hasRetouch ? 1 : 0);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      this.runPrepasses(this.imageTexture, `e${this.sourceEpoch}`, hasRetouch, p);
+      this.drawDevelop(this.imageTexture, hasRetouch, this.outputTarget());
     }
   }
 
+  private outputTarget(): DrawTarget {
+    return { fbo: this.outputFbo, w: this.canvas.width, h: this.canvas.height };
+  }
+
+  // One develop draw of the main program over `srcTex` into `target`, with
+  // the prepass results produced so far this frame. The main draws and the
+  // split draws all go through here, so a per-draw uniform added later can't
+  // reach one and miss another.
+  private drawDevelop(srcTex: WebGLTexture, applyRetouch: boolean, target: DrawTarget): void {
+    const gl = this.gl;
+    const u = this.uniforms;
+    gl.useProgram(this.developProgram());
+    this.bindPrepassResults();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    gl.viewport(0, 0, target.w, target.h);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, srcTex);
+    gl.uniform1i(u.uImage, 0);
+    gl.uniform1i(u.uPatchPass, 0);
+    gl.uniform1i(u.uApplyRetouch, applyRetouch ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
   // Render the current frame into an RGBA16F framebuffer and read back the
-  // float pixels — top-down, RGBA, display-encoded in [0,1] (HDR highlights may
-  // exceed 1; the caller clamps). Drives the same render() path as the canvas,
-  // so all develop/extension stages are baked in. Returns null when float render
+  // float pixels — top-down, RGBA, display-encoded in [0,1]: the output encode
+  // clamps, so no value exceeds 1 or falls below 0, however much headroom the
+  // frame had. Drives the same render() path as the canvas, so all
+  // develop/extension stages are baked in. Returns null when float render
   // targets aren't available, so the caller falls back to the 8-bit path.
   captureFloatFrame(): { data: Float32Array; width: number; height: number } | null {
     if (!this.hasImage || !this.params || !this.haveColorBufferFloat) return null;
@@ -2124,17 +2001,20 @@ export class WebGLRenderer {
   computeHistogram(extended = false): HistogramData {
     const gl = this.gl;
     const HIST_SIZE = 128;
+    const r = new Uint32Array(256);
+    const g = new Uint32Array(256);
+    const b = new Uint32Array(256);
+    const luma = new Uint32Array(256);
+    // It redraws what the last render() left bound, so before one there is no
+    // frame to measure: the draw would raise a GL error and read back black.
+    if (!this.program) return { r, g, b, luma };
+
     // Allocate the readback targets on the scratch unit, not unit 0. Creating
     // one here binds it to the active unit, and unit 0 is uImage — so the first
     // histogram of a session sampled its own render target (a GL feedback loop,
     // INVALID_OPERATION) and read back an all-black frame. Sampling is driven by
     // the sampler uniforms, so moving the active unit doesn't affect the draws.
     gl.activeTexture(gl.TEXTURE7);
-
-    const r = new Uint32Array(256);
-    const g = new Uint32Array(256);
-    const b = new Uint32Array(256);
-    const luma = new Uint32Array(256);
 
     // Standard histogram: re-render the display output at 128x128 and read it
     // back. We share GL state with the clipping/viz uniforms reset to off so the
@@ -2272,7 +2152,8 @@ export class WebGLRenderer {
   }
 
   readDownscaledPixels(size: number): { data: Uint8Array; w: number; h: number } | null {
-    if (!this.imageWidth || !this.imageHeight) return null;
+    // Like computeHistogram, it draws with what the last render() left bound.
+    if (!this.program || !this.imageWidth || !this.imageHeight) return null;
     const gl = this.gl;
 
     // Maintain aspect ratio instead of forcing a square
@@ -2470,9 +2351,16 @@ export class WebGLRenderer {
 
   // Run every prepass stage against `srcTex` (the develop source — patched when
   // retouch is active). `srcSig` identifies the source contents for caching.
-  // Leaves results in per-stage targets and records the unit bindings the main
-  // draw applies via bindPrepassResults().
-  private runPrepasses(srcTex: WebGLTexture, srcSig: string) {
+  // `applyRetouch`: whether a split draw must apply the retouch itself, as the
+  // main draw does when there is no patched source. `params` are the frame's,
+  // read for a split draw's cache key. Leaves results in per-stage targets and
+  // records the unit bindings the main draw applies via bindPrepassResults().
+  private runPrepasses(
+    srcTex: WebGLTexture,
+    srcSig: string,
+    applyRetouch: boolean,
+    params: DevelopParams,
+  ) {
     this.prepassResults = [];
     this.denoiseReady = false; // set true below only if the denoise prepass yields a real result
     if (this.prepassStages.length === 0) return;
@@ -2514,7 +2402,11 @@ export class WebGLRenderer {
 
       // Cache hit: nothing the prepass depends on changed — reuse the result and
       // skip the passes entirely.
-      const sig = this.prepassSig(stage, srcSig, w, h, baseCurve);
+      const split = stage.split && this.splitDrawable(stage.stageId) ? stage.split : null;
+      const stageSrcSig = split
+        ? `${srcSig}|split:${this.splitToken(stage.stageId, split, params)}`
+        : srcSig;
+      const sig = this.prepassSig(stage, stageSrcSig, w, h, baseCurve);
       const cached = this.stageResultTargets.get(stage.stageId);
       if (cached && cached.w === w && cached.h === h && this.prepassSigs.get(stage.stageId) === sig) {
         this.prepassResults.push({ resultUniform: stage.resultUniform, tex: cached.tex, unit });
@@ -2530,6 +2422,12 @@ export class WebGLRenderer {
         let prevRaw = true;            // first read linearizes + base-curves the source
         let writeIdx = 0;
         let lastIdx = 0;
+        if (split) {
+          this.drawSplit(split.index, srcTex, applyRetouch, w, h);
+          readTex = this.ppTex[0]!;
+          prevRaw = false;
+          writeIdx = 1;
+        }
         let passIdx = 0;
         for (const pass of stage.passes) {
           // Distinguish passes by index AND source hash: two passes of one stage
@@ -2558,6 +2456,7 @@ export class WebGLRenderer {
               bindUniformByType(gl, loc, b.glslType, this.contributedParams[b.qualifiedKey] ?? b.default);
             }
             gl.drawArrays(gl.TRIANGLES, 0, 6);
+            this.draws.pass++;
             readTex = this.ppTex[writeIdx]!;
             prevRaw = false;
             lastIdx = writeIdx;
@@ -2573,7 +2472,7 @@ export class WebGLRenderer {
         gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
         gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
         gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-        this.prepassSigs.set(stage.stageId, this.prepassSig(stage, srcSig, w, h, baseCurve));
+        this.prepassSigs.set(stage.stageId, sig);
         this.prepassResults.push({ resultUniform: stage.resultUniform, tex: target.tex, unit });
         if (stage.stageId === BUILTIN_DENOISE_ID) this.denoiseReady = true;
       } catch (err) {
@@ -2623,6 +2522,60 @@ export class WebGLRenderer {
     if (okLoc != null) gl.uniform1i(okLoc, this.denoiseReady ? 1 : 0);
   }
 
+  // A split stores signed, unbounded values; an RGBA8 target would clip
+  // exactly what reading the current image is for.
+  private splitDrawable(stageId: string): boolean {
+    if (this.haveColorBufferFloat) return true;
+    if (!this.warnedSplitFallback.has(stageId)) {
+      this.warnedSplitFallback.add(stageId);
+      console.warn(
+        `[render] stage '${stageId}' reads the current image, but this GPU has no float ` +
+          `render targets; it reads the source instead.`,
+      );
+    }
+    return false;
+  }
+
+  // Texture versions are read every frame: the export renderer shares the
+  // main thread's stage-texture record, which is updated in place.
+  private splitToken(stageId: string, split: StageSplit, params: DevelopParams): number {
+    const textureVersions: Record<string, number> = {};
+    for (const [qk, data] of Object.entries(this.stageTextures)) textureVersions[qk] = data.version;
+    return this.splitTokens.token(stageId, split, {
+      params,
+      bag: this.contributedParams,
+      textureVersions,
+      context: [
+        this.pipelineSig,
+        variantKey(this.variant),
+        this.hslRange,
+        this.hslSmooth,
+        this.asShotTemperature,
+        this.hasContribNR,
+      ].join("|"),
+    });
+  }
+
+  // Draw the develop program up to one stage's input into ppTex[0], in source
+  // texels at prepass size, for that stage's first pass to read. Only results
+  // already produced this frame are bound, and ppTex[0] is never bound as a
+  // sampler: unit 0 holds the source when the draw runs. uSplitAt is set on
+  // the main program around this one draw, so no other draw sees it.
+  private drawSplit(
+    index: number,
+    srcTex: WebGLTexture,
+    applyRetouch: boolean,
+    w: number,
+    h: number,
+  ): void {
+    const gl = this.gl;
+    gl.useProgram(this.developProgram());
+    gl.uniform1i(this.uniforms.uSplitAt, index);
+    this.drawDevelop(srcTex, applyRetouch, { fbo: this.ppFbo[0], w, h });
+    gl.uniform1i(this.uniforms.uSplitAt, -1);
+    this.draws.split++;
+  }
+
   // Pass 1 of a retouched frame: bake the retouch into the offscreen copy of the
   // source, then build its mip chain so the develop's blur taps read the
   // patched pixels. Returns false when no patched copy could be made, so the
@@ -2649,8 +2602,8 @@ export class WebGLRenderer {
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
     // getError stalls the pipeline, so it runs only for the first mipmap after
-    // each RGBA16 (re)allocation rather than on every retouched frame.
-    const verify = this.developedTexIsNorm16 && !this.developedMipsVerified;
+    // each 16-bit (re)allocation rather than on every retouched frame.
+    const verify = this.developedFormat !== "rgba8" && !this.developedMipsVerified;
     if (verify) while (gl.getError() !== gl.NO_ERROR) {} // clear prior errors
     gl.generateMipmap(gl.TEXTURE_2D);
     if (!verify) return true;
@@ -2658,12 +2611,14 @@ export class WebGLRenderer {
       this.developedMipsVerified = true;
       return true;
     }
-    // The 2x2 constructor probe passed, but this driver fails generateMipmap on
-    // the full-size RGBA16 target (0x0502). An incomplete mip chain samples as
-    // black, so abandon norm16 for this renderer and re-bake this frame's copy
-    // into an RGBA8 target.
+    // The 2x2 constructor probe passed (norm16), or float colour buffers made
+    // RGBA16F renderable, but this driver fails generateMipmap on the full-size
+    // target (0x0502). An incomplete mip chain samples as black, so abandon that
+    // format for this renderer and re-bake this frame's copy into the next one
+    // down.
     while (gl.getError() !== gl.NO_ERROR) {}
-    this.haveNorm16 = false;
+    if (this.developedFormat === "float16") this.haveFloat16Developed = false;
+    else this.haveNorm16 = false;
     return this.prepareDevelopedTarget() && this.bakePatchedSource();
   }
 
@@ -2682,15 +2637,28 @@ export class WebGLRenderer {
     }
     // An RGBA8 patched-source copy quantises a 16-bit/float linear source to 8 bits,
     // so any heal spot bands smooth gradients. RGBA16 (norm16) is colour-renderable,
-    // filterable AND GPU-mipmappable (unlike RGBA16F), so it removes the banding
-    // while keeping the per-frame generateMipmap and the same linear/[0,1] semantics.
-    const useNorm16 = this.haveNorm16;
-    if (this.devW !== w || this.devH !== h || this.developedTexIsNorm16 !== useNorm16) {
-      // Try norm16 first; if the 16-bit target isn't framebuffer-complete on this
-      // device, fall back to RGBA8 (same behaviour as before) rather than fail.
-      const alloc = (norm16: boolean): boolean => {
+    // filterable AND GPU-mipmappable, so it removes the banding while keeping the
+    // per-frame generateMipmap and the same linear/[0,1] semantics. RGBA16F is all
+    // three once float colour buffers are renderable, and it also keeps the headroom
+    // and the channels below black: the copy a version 2 photo develops from.
+    // Version 1 photos keep the clipped copy their edits were made with.
+    const wanted: DevelopedFormat =
+      this.variant.fullInfo && this.haveFloat16Developed ? "float16"
+      : this.haveNorm16 ? "norm16"
+      : "rgba8";
+    if (this.devW !== w || this.devH !== h || this.developedFormat !== wanted) {
+      // Try the wanted format first; if its target isn't framebuffer-complete on
+      // this device, step down to norm16, then RGBA8, rather than fail.
+      const alloc = (format: DevelopedFormat): boolean => {
+        // On the scratch unit, and let go of afterwards: the unit active here can
+        // be one a sampler reads (render() leaves 4 active), and a unit holding the
+        // copy while the patch pass draws into it is a feedback loop for any
+        // sampler that reads that unit.
+        gl.activeTexture(gl.TEXTURE7);
         gl.bindTexture(gl.TEXTURE_2D, this.developedTex);
-        if (norm16) {
+        if (format === "float16") {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        } else if (format === "norm16") {
           gl.texImage2D(gl.TEXTURE_2D, 0, this.norm16Format, w, h, 0, gl.RGBA, gl.UNSIGNED_SHORT, null);
         } else {
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -2705,20 +2673,25 @@ export class WebGLRenderer {
         );
         const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindTexture(gl.TEXTURE_2D, null);
         return complete;
       };
-      let norm16 = useNorm16;
-      let ok = alloc(norm16);
-      if (!ok && norm16) {
-        norm16 = false;
-        ok = alloc(false);
+      const formats: DevelopedFormat[] = [wanted];
+      if (wanted === "float16" && this.haveNorm16) formats.push("norm16");
+      if (wanted !== "rgba8") formats.push("rgba8");
+      let format: DevelopedFormat | null = null;
+      for (const candidate of formats) {
+        if (alloc(candidate)) {
+          format = candidate;
+          break;
+        }
       }
-      if (!ok) {
+      if (!format) {
         this.devW = 0;
         this.devH = 0;
         return false;
       }
-      this.developedTexIsNorm16 = norm16;
+      this.developedFormat = format;
       this.developedMipsVerified = false;
       this.devW = w;
       this.devH = h;
@@ -2759,7 +2732,8 @@ export class WebGLRenderer {
     for (const e of this.passPrograms.values()) gl.deleteProgram(e.program);
     this.passPrograms.clear();
     // Fallback entries can share a program under several sigs — dedupe.
-    const programs = new Set<WebGLProgram>([this.program]);
+    // The active program is always one of the cache's entries, so the cache covers it.
+    const programs = new Set<WebGLProgram>();
     for (const e of this.programCache.values()) programs.add(e.program);
     for (const prog of programs) gl.deleteProgram(prog);
   }

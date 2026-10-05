@@ -3,9 +3,14 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { MAX_RETOUCH_BRUSH } from "@/catalog/types";
+import {
+  CURRENT_PROCESS_VERSION,
+  MAX_RETOUCH_BRUSH,
+  normalizeProcessVersion,
+} from "@/catalog/types";
 
 import { BASELINE_TONE_GLSL } from "../baseline-tone";
+import { STAGE_SPACE_GLSL } from "../stage-space";
 
 export const VERTEX_SHADER = `#version 300 es
 in vec2 aPos;
@@ -21,10 +26,44 @@ void main() {
 }
 `;
 
-// Single-pass develop shader. Most
-// are per-pixel point operations; clarity is a midtone-contrast approximation
-// (a true local-contrast version needs a blur pass, planned for a later phase).
-export const FRAGMENT_SHADER = `#version 300 es
+/** What a photo's process version changes in the develop shader. */
+export interface ShaderVariant {
+  /** Version 2 and later: nothing clips between the display transform and the
+   *  output encode unless a tool that needs [0, 1] is in use (the fallback
+   *  preview's clamp clips too), and the built-in transform keeps colours
+   *  outside sRGB as signed values. The core Vignette and Grain lose their
+   *  closing clamp (CORE_DISPLAY_CLAMP in stage-injection.ts). */
+  readonly fullInfo: boolean;
+}
+export const V1_VARIANT: ShaderVariant = { fullInfo: false };
+export const V2_VARIANT: ShaderVariant = { fullInfo: true };
+
+/** The program a stored process version renders with. Anything that isn't a
+ *  valid version predates them and renders as version 1; a version newer
+ *  than this build renders as the newest it knows. */
+export function shaderVariantFor(processVersion: unknown): ShaderVariant {
+  const v = Math.min(normalizeProcessVersion(processVersion), CURRENT_PROCESS_VERSION);
+  return v >= 2 ? V2_VARIANT : V1_VARIANT;
+}
+
+export function variantKey(v: ShaderVariant): string {
+  return v.fullInfo ? "pv2" : "pv1";
+}
+
+// Single-pass develop shader, assembled per process version. Most stages are
+// per-pixel point operations; clarity is a midtone-contrast approximation.
+// `splits`: the program has reads-current exits (StageInjection.splitCount).
+function fragmentShaderSource(v: ShaderVariant, splits = false): string {
+  // Version 2 GLSL is "" under version 1, which keeps the version 1 program
+  // token-for-token the frozen shader (v1-identity.test.tsx).
+  const v2 = (glsl: string): string => (v.fullInfo ? glsl : "");
+  const pick = (v1Glsl: string, v2Glsl: string): string => (v.fullInfo ? v2Glsl : v1Glsl);
+  // Likewise "" without splits, so such a program's text is unchanged.
+  const split = (glsl: string): string => (splits ? glsl : "");
+  // Opens the block of a tool whose math needs [0, 1]: nothing upstream has
+  // clipped its input on version 2.
+  const clampInput = v2("\n    c = clamp(c, 0.0, 1.0);");
+  return `#version 300 es
 precision highp float;
 
 in vec2 vUv;
@@ -171,6 +210,12 @@ uniform int uMaskHasHsl[MAX_MASKS];
 uniform vec4 uMaskHsl[MAX_MASKS * 6];
 uniform int uMaskHasCurve[MAX_MASKS];
 uniform sampler2D uMaskCurves;
+${v2(`// Process version 2 skips tools at identity, so they never clip what
+// passes through them.
+uniform bool uCurveActive;
+uniform bool uHslActive;
+uniform bool uColorGradingActive;
+uniform int uMaskHasDisplay[MAX_MASKS];`)}
 
 // Retouch (spot removal): heal discs.
 #define MAX_SPOTS 32
@@ -730,7 +775,13 @@ vec3 applyRetouch(vec2 uv, vec3 base) {
     vec3 corr = (uMembraneHeal && b.w > 0.5)
       ? membraneCorrection(dst, src, tc, radius, uv)
       : uSpotTint[i].rgb;
-    vec3 srcCol = clamp(textureLod(uImage, sUv, 0.0).rgb + corr, 0.0, 1.0);
+    vec3 srcCol = ${pick(
+      "clamp(textureLod(uImage, sUv, 0.0).rgb + corr, 0.0, 1.0);",
+      `textureLod(uImage, sUv, 0.0).rgb + corr;
+    // A display-encoded source holds nothing outside [0, 1], and its decode
+    // (srgbToLinear) is undefined below -0.055, which the correction can reach.
+    if (!uLinear) srcCol = clamp(srcCol, 0.0, 1.0);`,
+    )}
     c = mix(c, srcCol, w);
   }
   // Brush-shaped retouch: painted coverage from the atlas, one source offset each.
@@ -838,7 +889,7 @@ vec3 applyMaskLinear(vec3 c, vec4 a0, vec4 a1, float m, float refT) {
     float L = max(luma(r), 1e-4);
     r = retargetLuma(r, L, applyExposure(L, ev));
   }
-  // Highlights / shadows: the global recovery/lift functions, scene-anchored.
+  // Highlights / shadows: the legacy recovery/lift functions, anchored to the scene tone (refT).
   float H = clamp(a0.z / 100.0, -1.0, 1.0);
   if (abs(H) > 0.001) r = applyHighlightsRGB(r, H, refT);
   float S = clamp(a0.w / 100.0, -1.0, 1.0);
@@ -866,7 +917,12 @@ vec3 applyMaskLinear(vec3 c, vec4 a0, vec4 a1, float m, float refT) {
 // a2 = (sharpness, whites, blacks, vibrance); a3 = (texture, dehaze, _, _).
 // Whites/Blacks/Vibrance/Texture/Dehaze reuse the global display-stage formulas
 // (shaders.ts main) so a masked slider matches its global counterpart exactly.
-vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, vec4 a2, vec4 a3, float m, vec2 uv) {
+// The detail taps (clarity, sharpness, texture) measure the pixel against blurs
+// of the source's luma, so the pixel's own value has to be the source's luma too.
+// Version 2 gets it from main as rawLuma, the centre the global tools use. Version
+// 1 took the luma of the edited colour, a different encoding (0.59 against 0.42 on
+// a RAW mid-grey), so it read every flat area as detail.
+vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, vec4 a2, vec4 a3, float m, vec2 uv${v2(", float rawLuma")}) {
   vec3 r = c;
   // Whites: gamma endpoint cubic-weighted toward white (global lines ~1306).
   float wh = a2.y / 100.0;
@@ -912,7 +968,7 @@ vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, vec4 a2, vec4 a3, float m, vec2 
   float clar = a1.w / 100.0;
   float shp = a2.x / 100.0; // sharpness
   if (abs(clar) > 0.001 || abs(shp) > 0.001) {
-    float base = luma(r);
+    float base = ${pick("luma(r)", "rawLuma")};
     r += (base - lumaLod(uv, 4.0)) * clar * 1.2;
     // Sharpness: blend the fine detail (LOD 1.5) toward a broader tap (LOD 2.5)
     // the same way the global sharpen path does (shaders.ts ~1483). A raw fine
@@ -927,7 +983,7 @@ vec3 applyMaskDisplay(vec3 c, vec4 a0, vec4 a1, vec4 a2, vec4 a3, float m, vec2 
   // avoid halos (global lines ~1396).
   float texAmt = a3.x / 100.0;
   if (abs(texAmt) > 0.001) {
-    float cen = luma(r);
+    float cen = ${pick("luma(r)", "rawLuma")};
     float texDetail = clamp(cen - lumaLod(uv, 0.75), -0.08, 0.08);
     float edgeStrength = abs(cen - lumaLod(uv, 2.5));
     float edgeMask = 1.0 - smoothstep(0.02, 0.12, edgeStrength);
@@ -995,7 +1051,10 @@ void main() {
   // Apply the viewport window before the crop/transform map so the whole
   // pipeline (crop, geometry, lens, masks, retouch) stays anchored to the source.
   vec2 viewUv = uViewport.xy + vUv * uViewport.zw;
-  vec2 srcUv = cropTransformUV(viewUv);
+  vec2 srcUv = cropTransformUV(viewUv);${split(`
+  // A split draw renders one stage's input in source texels (the patch
+  // pass's convention), so the stage's passes line up with uImage.
+  if (uSplitAt >= 0) srcUv = vec2(vUv.x, 1.0 - vUv.y);`)}
   // Captured before contributed geometry stages warp srcUv, so radial
   // corrections (e.g. an extension's vignette) measure from the sensor centre.
   vec2 sensorUv = srcUv;
@@ -1003,7 +1062,7 @@ void main() {
   // srcUv so the whole pipeline below resamples the warped position. Runs
   // before the bounds check, so content warped past the frame reads as the
   // outside colour rather than smearing an edge texel.
-  //__CONTRIBUTED_GEOMETRY__
+  ${split("if (uSplitAt < 0) {\n  ")}//__CONTRIBUTED_GEOMETRY__${split("\n  }")}
   // Content rotated out of frame by straighten reads as neutral dark, so corners
   // stay clean instead of smearing the edge texel.
   if (srcUv.x < 0.0 || srcUv.x > 1.0 || srcUv.y < 0.0 || srcUv.y > 1.0) {
@@ -1026,8 +1085,10 @@ void main() {
 
   // Default baseline for scene-linear sources (see baseline-tone.ts): the
   // camera-style lift a RAW decode lacks and every already-rendered bitmap
-  // carries. Linear in, linear out, headroom above 1.0 untouched, so the
-  // downstream linear edits (WB, exposure, highlight recovery) are unchanged.
+  // carries. Scene-linear in and out, but a nonlinear per-channel curve (about
+  // +0.75 EV at mid grey, with 1.0 staying 1.0): values above 1.0 pass through
+  // unchanged and values below 0 continue along the curve's slope, so the
+  // downstream linear edits (WB, exposure, highlight recovery) still see the headroom.
   if (uApplyBaseCurve) lin = baselineTone(lin);
 
   // Contributed noise-reduction stages (extension-owned), on scene-linear lin,
@@ -1108,9 +1169,11 @@ void main() {
 
   lin = applyWhiteBalance(lin, uTemperature, uTint, uAsShotTemperature);
 
-  // Scene tonal zone, captured BEFORE exposure. Highlights/Shadows classify pixels
-  // by where they sat in the original scene, so a global exposure push (e.g. +5) does
-  // not reclassify lifted midtones as highlights and let Highlights -100 drag them to grey.
+  // Scene tonal zone, captured BEFORE exposure. Only the masks' Highlights/Shadows
+  // use it (applyMaskLinear): they classify pixels by where they sat in the original
+  // scene, so a global exposure push (e.g. +5) does not reclassify lifted midtones as
+  // highlights and let a mask's Highlights -100 drag them to grey. The global
+  // Highlights/Shadows below act on the current luma and do not read it.
   float refT = clamp(luma(linearToSrgbU(max(lin, vec3(0.0)))), 0.0, 1.0);
 
   // Integrated tonal pipeline: exposure, highlights, and shadows are applied as
@@ -1230,12 +1293,14 @@ void main() {
   // values, so clamping here is safe and keeps downstream display-space
   // operations from ever seeing values > 1.0 (which broke contrast, dehaze,
   // etc.). A transform that skips the shoulder must bound its own output.
-  vec3 disp = clamp(pipelineToDisplay(lin), 0.0, 1.0);
+  // Version 2 doesn't clamp here: each tool below whose math needs [0, 1]
+  // clamps its own input, and only while it's in use.
+  vec3 disp = ${pick("clamp(pipelineToDisplay(lin), 0.0, 1.0)", "pipelineToDisplay(lin)")};
   vec3 c = disp;
 
   // Whites (display space): endpoint control for the bright end.
   // Gamma-based adjustment weighted by cubic peaking at white.
-  if (abs(uWhites) > 0.001) {
+  if (abs(uWhites) > 0.001) {${clampInput}
     float wAmt = uWhites / 100.0;
     float L = max(luma(c), 1e-4);
     float wW = L * L * L;
@@ -1247,7 +1312,7 @@ void main() {
 
   // Blacks (display space): endpoint control for the dark end.
   // Gamma-based adjustment weighted by cubic peaking at black.
-  if (abs(uBlacks) > 0.001) {
+  if (abs(uBlacks) > 0.001) {${clampInput}
     float bAmt = uBlacks / 100.0;
     float L = max(luma(c), 1e-4);
     float bW = (1.0 - L) * (1.0 - L) * (1.0 - L);
@@ -1259,18 +1324,18 @@ void main() {
 
   // Contrast: luminance-based S-curve (always safe: display values in [0,1]).
   float ck = (uContrast / 100.0) * 0.8;
-  if (abs(ck) > 0.001) {
+  if (abs(ck) > 0.001) {${clampInput}
     float L = luma(c);
     float Lnew = clamp(L + ck * L * (1.0 - L) * (2.0 * L - 1.0), 0.0, 1.0);
     c = c * (Lnew / max(L, 1e-4));
     c = clamp(c, 0.0, 1.0);
   }
 
-  c = applyToneCurve(c);
-  c = applyHSL(c);
+  ${pick("c = applyToneCurve(c);", "if (uCurveActive) c = applyToneCurve(c);")}
+  ${pick("c = applyHSL(c);", "if (uHslActive) c = applyHSL(clamp(c, 0.0, 1.0));")}
 
   // Dehaze: dark channel prior with global atmospheric light estimate.
-  if (abs(dehAmt) > 0.001) {
+  if (abs(dehAmt) > 0.001) {${clampInput}
     // Local dark channel from a medium blur
     vec3 localBlur = textureLod(uImage, srcUv, 4.0).rgb;
     if (!uLinear) localBlur = srgbToLinear(localBlur);
@@ -1357,10 +1422,17 @@ void main() {
     float shZone = 1.0 - smoothstep(0.12, 0.45, luma(c));
     c += bandDet * shGain * shZone * BAND_DETAIL;
   }
-  c = clamp(c, 0.0, 1.0);
+  ${pick("c = clamp(c, 0.0, 1.0);", "")}
 
-  c = applyVibSat(c, uVibrance, uSaturation);
-  c = applyColorGrading(c);
+  ${pick(
+    "c = applyVibSat(c, uVibrance, uSaturation);",
+    `if (abs(uVibrance) >= 0.1 || abs(uSaturation) > 0.1)
+    c = applyVibSat(c, uVibrance, uSaturation);`,
+  )}
+  ${pick(
+    "c = applyColorGrading(c);",
+    "if (uColorGradingActive) c = applyColorGrading(clamp(c, 0.0, 1.0));",
+  )}
 
   // Capture sharpening with radius, detail (halo control), and edge masking.
   // Runs after vibrance/saturation so sharpening halos are not re-saturated.
@@ -1398,7 +1470,12 @@ void main() {
     if (mi >= uMaskCount) break;
     float mcov = mcovs[mi];
     if (mcov <= 0.0) continue;
-    c = applyMaskDisplay(c, uMaskAdj0[mi], uMaskAdj1[mi], uMaskAdj2[mi], uMaskAdj3[mi], mcov, srcUv);
+    ${pick(
+      "c = applyMaskDisplay(c, uMaskAdj0[mi], uMaskAdj1[mi], uMaskAdj2[mi], uMaskAdj3[mi], mcov, srcUv);",
+      `if (uMaskHasDisplay[mi] == 1)
+      c = mix(c, applyMaskDisplay(clamp(c, 0.0, 1.0), uMaskAdj0[mi], uMaskAdj1[mi],
+                                  uMaskAdj2[mi], uMaskAdj3[mi], 1.0, srcUv, rawLuma), mcov);`,
+    )}
     if (uMaskHasHsl[mi] == 1)
       c = mix(c, maskHsl(clamp(c, 0.0, 1.0), mi), mcov);
     if (uMaskHasCurve[mi] == 1)
@@ -1434,10 +1511,18 @@ void main() {
   }
 }
 `;
+}
+
+export const FRAGMENT_SHADER = fragmentShaderSource(V1_VARIANT);
 
 // The stock Safelight transform: plain unclamped sRGB encode, preserving HDR
 // headroom for the downstream highlight stages.
 export const DEFAULT_PIPELINE_GLSL = `vec3 pipelineToDisplay(vec3 lin) { return linearToSrgbU(lin); }`;
+
+/** Version 2's stock transform: the same encode, with colours outside the
+ *  sRGB primaries kept as signed values instead of floored at black. */
+export const V2_DEFAULT_PIPELINE_GLSL =
+  `vec3 pipelineToDisplay(vec3 lin) { return slEncodePerceptual(lin); }`;
 
 /** Stage contributions passed to buildFragmentShader for hybrid injection.
  *  GLSL is grouped by the processing phase it targets. `noiseReduction` and
@@ -1453,23 +1538,37 @@ export interface StageInjection {
   noiseReduction: string;
   sceneLinear: string;
   effects: string;
+  /** True when a stage converts into a declared space, so the space helpers
+   *  must be compiled in. */
+  needsSpaceHelpers?: boolean;
+  /** How many reads-current exits are compiled in. 0 leaves the program text
+   *  untouched. */
+  splitCount?: number;
 }
 
 /** Splice pipeline GLSL and contributed processing stages into the develop
  *  shader. Pass null/undefined pipeline for the built-in transform. The
  *  stages parameter injects GLSL from registered ProcessingStageContributions
  *  at the appropriate markers; omit it (or pass empty strings) when no stages
- *  are registered. */
+ *  are registered. variant: the photo's process version (shaderVariantFor);
+ *  defaults to version 1. */
 export function buildFragmentShader(
   pipelineGlsl?: string | null,
   stages?: StageInjection,
+  variant: ShaderVariant = V1_VARIANT,
 ): string {
-  return FRAGMENT_SHADER
-    .replace("//__PIPELINE_GLSL__", pipelineGlsl || DEFAULT_PIPELINE_GLSL)
-    .replace("//__CONTRIBUTED_UNIFORMS__", stages?.uniforms ?? "")
-    .replace("//__CONTRIBUTED_HELPERS__", stages?.helpers ?? "")
-    .replace("//__CONTRIBUTED_GEOMETRY__", stages?.srcUv ?? "")
-    .replace("//__CONTRIBUTED_NOISE_REDUCTION__", stages?.noiseReduction ?? "")
-    .replace("//__CONTRIBUTED_SCENE_LINEAR__", stages?.sceneLinear ?? "")
-    .replace("//__CONTRIBUTED_EFFECTS__", stages?.effects ?? "");
+  const pipeline =
+    pipelineGlsl || (variant.fullInfo ? V2_DEFAULT_PIPELINE_GLSL : DEFAULT_PIPELINE_GLSL);
+  const spaceHelpers =
+    variant.fullInfo || stages?.needsSpaceHelpers ? `${STAGE_SPACE_GLSL}\n` : "";
+  // Replacer functions: a replacement string would read $&, $$, $' and $` in
+  // contributed GLSL (comments included) as patterns.
+  return fragmentShaderSource(variant, (stages?.splitCount ?? 0) > 0)
+    .replace("//__PIPELINE_GLSL__", () => spaceHelpers + pipeline)
+    .replace("//__CONTRIBUTED_UNIFORMS__", () => stages?.uniforms ?? "")
+    .replace("//__CONTRIBUTED_HELPERS__", () => stages?.helpers ?? "")
+    .replace("//__CONTRIBUTED_GEOMETRY__", () => stages?.srcUv ?? "")
+    .replace("//__CONTRIBUTED_NOISE_REDUCTION__", () => stages?.noiseReduction ?? "")
+    .replace("//__CONTRIBUTED_SCENE_LINEAR__", () => stages?.sceneLinear ?? "")
+    .replace("//__CONTRIBUTED_EFFECTS__", () => stages?.effects ?? "");
 }

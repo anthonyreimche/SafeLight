@@ -24,6 +24,19 @@ export const dragBarStyle: AppRegionStyle = {
 
 export const noDragStyle: AppRegionStyle = { WebkitAppRegion: "no-drag" };
 
+function applyOverlay(bgVar: string): void {
+  const cs = getComputedStyle(document.documentElement);
+  const bg = cs.getPropertyValue(bgVar).trim();
+  const fg = cs.getPropertyValue("--color-text-secondary").trim();
+  if (bg && fg) void window.safelightNative?.titlebar?.setOverlay(bg, fg);
+}
+
+// Every mounted bar in mount order; the last one owns the overlay. A layer
+// over a bar (the welcome setup over the app) hands it back when it unmounts.
+// A commit runs every cleanup before any setup, so a theme change refills the
+// stack in tree order and the later sibling ends on top again.
+const overlayStack: { bgVar: string }[] = [];
+
 /**
  * Recolor the native window-controls overlay (Windows/Linux) so the min/max/close
  * buttons sit on the same background as *this* surface's header. Each top bar
@@ -36,9 +49,14 @@ export function useTitleBarOverlay(bgVar: string): void {
   // once applyTheme has written the new CSS vars onto :root.
   const activeId = useThemeStore((s) => s.activeId);
   useEffect(() => {
-    const cs = getComputedStyle(document.documentElement);
-    const bg = cs.getPropertyValue(bgVar).trim();
-    const fg = cs.getPropertyValue("--color-text-secondary").trim();
-    if (bg && fg) void window.safelightNative?.titlebar?.setOverlay(bg, fg);
+    // Its own object, so two bars on the same var stay separate entries.
+    const entry = { bgVar };
+    overlayStack.push(entry);
+    applyOverlay(bgVar);
+    return () => {
+      overlayStack.splice(overlayStack.indexOf(entry), 1);
+      const top = overlayStack.at(-1);
+      if (top) applyOverlay(top.bgVar);
+    };
   }, [bgVar, activeId]);
 }

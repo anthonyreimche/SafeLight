@@ -6,7 +6,7 @@
 // Every develop program the app can assemble, compiled and linked against a
 // real driver. A GLSL error in any of these surfaces only at runtime, on a
 // user's machine, as a black or frozen view — so this file enumerates the
-// pipeline × contributed-stage matrix rather than sampling it.
+// pipeline × contributed-stage × process-version matrix rather than sampling it.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -18,8 +18,12 @@ import {
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import {
   DEFAULT_PIPELINE_GLSL,
+  V1_VARIANT,
+  V2_DEFAULT_PIPELINE_GLSL,
+  V2_VARIANT,
   VERTEX_SHADER,
   buildFragmentShader,
+  type ShaderVariant,
   type StageInjection,
 } from "./shaders";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
@@ -162,19 +166,14 @@ function expectCompiles(fragmentSource: string): void {
   releaseProgram(gl, build);
 }
 
+/** Each process version assembles its own program, around its own stock
+ *  transform. */
+const VERSIONS: { name: string; variant: ShaderVariant; stock: string }[] = [
+  { name: "version 1", variant: V1_VARIANT, stock: DEFAULT_PIPELINE_GLSL },
+  { name: "version 2", variant: V2_VARIANT, stock: V2_DEFAULT_PIPELINE_GLSL },
+];
+
 describe("develop fragment shader assembly", () => {
-  it("compiles the built-in pipeline with no contributed stages", () => {
-    expectCompiles(buildFragmentShader());
-  });
-
-  it("compiles the stock transform spliced in explicitly", () => {
-    expectCompiles(buildFragmentShader(DEFAULT_PIPELINE_GLSL, EMPTY_INJECTION));
-  });
-
-  it("compiles a replacement display transform", () => {
-    expectCompiles(buildFragmentShader(REPLACEMENT_PIPELINE.glsl, EMPTY_INJECTION));
-  });
-
   // Each marker is spliced into a different scope, so a block that is valid at
   // one is not necessarily valid at another.
   const MARKERS: { marker: keyof StageInjection; glsl: string }[] = [
@@ -185,9 +184,28 @@ describe("develop fragment shader assembly", () => {
     { marker: "sceneLinear", glsl: "{ lin *= 1.0 + refT * 0.0; }" },
     { marker: "effects", glsl: "{ c = clamp(c + vUv.xyx * 0.0, 0.0, 1.0); }" },
   ];
-  for (const { marker, glsl } of MARKERS) {
-    it(`compiles a block spliced at the ${marker} marker`, () => {
-      expectCompiles(buildFragmentShader(null, { ...EMPTY_INJECTION, [marker]: glsl }));
+
+  for (const { name, variant, stock } of VERSIONS) {
+    describe(name, () => {
+      it("compiles the built-in pipeline with no contributed stages", () => {
+        expectCompiles(buildFragmentShader(null, undefined, variant));
+      });
+
+      it("compiles the stock transform spliced in explicitly", () => {
+        expectCompiles(buildFragmentShader(stock, EMPTY_INJECTION, variant));
+      });
+
+      it("compiles a replacement display transform", () => {
+        expectCompiles(buildFragmentShader(REPLACEMENT_PIPELINE.glsl, EMPTY_INJECTION, variant));
+      });
+
+      for (const { marker, glsl } of MARKERS) {
+        it(`compiles a block spliced at the ${marker} marker`, () => {
+          expectCompiles(
+            buildFragmentShader(null, { ...EMPTY_INJECTION, [marker]: glsl }, variant),
+          );
+        });
+      }
     });
   }
 });

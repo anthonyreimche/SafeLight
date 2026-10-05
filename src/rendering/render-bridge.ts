@@ -78,6 +78,11 @@ export class RenderBridge {
   // re-resolved when the registry or the Preferences default changes.
   private liveDisplayTransform: string | null = null;
   private livePipelineSent = false;
+  // The params object last handed to the worker. A fresh renderer has seen none.
+  private lastPostedParams: DevelopParams | null = null;
+  // The param bag last handed to the worker, whole or by patches. A fresh renderer has
+  // seen none.
+  private lastPostedBag: Record<string, unknown> | null = null;
 
   constructor() {
     this.worker = new Worker(
@@ -225,6 +230,13 @@ export class RenderBridge {
 
   private postInit() {
     if (!this.initArgs) return;
+    this.lastPostedParams = null;
+    this.lastPostedBag = null;
+    // The worker builds its first develop program while it handles init, from the
+    // stages and pipeline it holds by then, so the current ones go first: on a
+    // retry too, since either may have changed while the last init was failing.
+    this.syncStages();
+    this.syncPipeline();
     // The worker's settings-store can't reach localStorage, so read the
     // High-bit-depth preference here (main thread) and hand it across.
     this.post({ cmd: "init", ...this.initArgs, highBitDepth: getSettings().highBitDepth });
@@ -366,19 +378,41 @@ export class RenderBridge {
   // Parameters
   // ------------------------------------------------------------------
 
+  /** The live photo's params. Posting structured-clones every brush dab, so the
+   *  object already posted is not posted again: callers replace `params` on each
+   *  change and never mutate one in place. */
   setParams(params: DevelopParams) {
     if (!this.livePipelineSent || params.displayTransform !== this.liveDisplayTransform) {
       this.liveDisplayTransform = params.displayTransform;
       this.syncPipeline();
     }
+    if (params === this.lastPostedParams) return;
+    this.lastPostedParams = params;
     this.post({ cmd: "setParams", params });
   }
 
   /** Generic param bag for extension-contributed processing-stage uniforms,
    *  keyed by qualified key "{stageId}.{key}". Pushed to both the develop and
-   *  thumbnail renderers in the worker. */
+   *  thumbnail renderers in the worker. Posting clones every value, brush dabs
+   *  included, into objects the renderer then bakes coverage from again, and the
+   *  Develop view offers a bag on every change, so only the difference from the last
+   *  bag posted goes: the entries that are new or not the same value, and the keys
+   *  dropped. The first bag, and the first after an init, goes whole. Callers replace
+   *  the bag and the values in it on change and never mutate them. */
   setContributedParams(bag: Record<string, unknown>) {
-    this.post({ cmd: "setContributedParams", bag });
+    const last = this.lastPostedBag;
+    if (!last) {
+      this.post({ cmd: "setContributedParams", bag });
+    } else {
+      const set: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(bag)) {
+        if (!Object.hasOwn(last, key) || !Object.is(last[key], value)) set[key] = value;
+      }
+      const remove = Object.keys(last).filter((key) => !Object.hasOwn(bag, key));
+      if (remove.length === 0 && Object.keys(set).length === 0) return;
+      this.post({ cmd: "patchContributedParams", set, remove });
+    }
+    this.lastPostedBag = bag;
   }
 
   /** Pixel data (baked LUT atlases, etc.) for processing-stage textures, keyed
@@ -503,6 +537,11 @@ export class RenderBridge {
     this.post({ cmd: "setStages", stages });
   }
 
+  /** Re-send the processing stages the registry holds now. */
+  syncStages() {
+    this.setStages(Object.values(useRegistry.getState().processingStages));
+  }
+
   setPipeline(pipeline: ResolvedPipeline) {
     this.post({ cmd: "setPipeline", pipeline });
   }
@@ -573,9 +612,7 @@ export function getStageTextures(): Record<string, StageTextureData> {
 }
 
 function syncStages() {
-  if (!singleton) return;
-  const stages = useRegistry.getState().processingStages;
-  singleton.setStages(Object.values(stages));
+  singleton?.syncStages();
 }
 
 function syncPipeline() {
@@ -585,10 +622,9 @@ function syncPipeline() {
 export function getRenderBridge(): RenderBridge {
   if (!singleton) {
     singleton = new RenderBridge();
+    // init posts the current stages and pipeline ahead of itself.
     singleton.init(2560, 2560);
 
-    syncStages();
-    syncPipeline();
     // Replay any stage textures registered before the bridge existed.
     if (Object.keys(stageTextures).length > 0) singleton.setStageTextures(stageTextures);
 

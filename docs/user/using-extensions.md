@@ -20,11 +20,15 @@ Extensions are JavaScript running inside the app, installed from GitHub repos yo
 
 ## Where to start
 
-Safelight installs no extensions for you; everything beyond the built-in panels comes from the store. A few to try first:
+Safelight installs nothing without asking: you pick extensions here or in the welcome setup's starter kits. A few to try first:
 
 - **Advanced Library Sort** — custom sort orders, a live search bar, and smart searches.
 - **Image Comparison** — before/after via hold-to-preview and a draggable split on the Develop canvas.
 - **XMP Tools** — XMP sidecar read/write and Lightroom preset import. Lightroom `.xmp` presets need an importer like this one; without one, the Presets panel's Import says so and links to the store's **Presets** category.
+
+## Starter kits
+
+Starter kits are groups of verified extensions by shooting style, curated in the Safelight extension registry. Open **Starter kits** in the Extensions store (or run the welcome setup again) to install a kit. Kits only list extensions on the verified list, and setup only installs the version that was reviewed: if an extension has moved past its review, or Safelight can't confirm its current version right now, setup skips it and you can install it from the store yourself. Setup never removes anything; uninstall extensions from the store's **Installed** tab.
 
 ## Manual install
 

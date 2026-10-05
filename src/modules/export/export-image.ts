@@ -19,7 +19,7 @@ import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { getStageTextures } from "@/rendering/render-bridge";
 import { getExtSetting } from "@/extensions/ext-settings";
-import { resolveDefaultPipeline, setPhotoParams } from "@/extensions/pipelines";
+import { resolveDefaultPipeline, resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
 import { buildExportIfds, embedExif, serializeExifTiff, type ExportIfds } from "./exif-write";
@@ -283,7 +283,7 @@ async function renderOne(
   const minEdge =
     settings.longEdge == null ? Infinity : Math.ceil(settings.longEdge / cropFracLow);
 
-  // Same decode as Develop/Loupe: full-res RAW float when available (gets the
+  // Same decode as Develop: full-res RAW float when available (gets the
   // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
   const image = await loadPhotoImage(photo, { minEdge });
   if (!image) return { blob: null, degradedTo8Bit: false };
@@ -401,18 +401,46 @@ async function renderOne(
  *  - Stage textures: without them, stages that sample uploaded textures fall
  *    back to the renderer's 1×1 black dummy and render pure black.
  *  - Output colour space: the renderer converts pixels and renderOne embeds the
- *    matching ICC; set once, persists across the batch's single context. */
-function makeBatchRenderer(
+ *    matching ICC; set once, persists across the batch's single context.
+ *  - First photo's program: a renderer builds its develop program on the first
+ *    frame, so it is built here, with that photo's process version and display
+ *    transform, ahead of any decode. A stock program the driver can't build fails
+ *    the whole batch up front, like a context that can't be created, instead of
+ *    decoding every photo only to fail each at its frame. Stages or a transform
+ *    that can't be built are logged, and the photos that use them fail one by one,
+ *    as they always did. A photo whose edit can't be read is left to fail on its
+ *    own when it is rendered. */
+async function makeBatchRenderer(
   settings: ExportSettings,
-): { renderer: WebGLRenderer; canvas: HTMLCanvasElement } | null {
+  first: CatalogPhoto | undefined,
+): Promise<{ renderer: WebGLRenderer; canvas: HTMLCanvasElement } | null> {
   const canvas = document.createElement("canvas");
-  let renderer: WebGLRenderer;
+  let renderer: WebGLRenderer | null = null;
   try {
     renderer = new WebGLRenderer(canvas, {
       stages: Object.values(useRegistry.getState().processingStages),
       pipeline: resolveDefaultPipeline(),
     });
-  } catch {
+    const saved = first
+      ? await loadSavedEdit(first.id, first.exif.colorTemperature).catch(() => null)
+      : null;
+    if (saved) {
+      const { displayTransform, processVersion } = saved.params;
+      renderer.setActivePipeline(resolvePipelineFor(displayTransform));
+      try {
+        renderer.prepareProgram(processVersion);
+      } catch (err) {
+        // Only a stock program that can't be built throws out of here.
+        renderer.prepareStockProgram(processVersion);
+        console.error(
+          "[export] stages or display transform can't be built; photos that use them will fail:",
+          err,
+        );
+      }
+    }
+  } catch (err) {
+    console.error("[export] the renderer is unavailable:", err);
+    renderer?.dispose();
     return null;
   }
   renderer.setStageTextures(getStageTextures());
@@ -458,7 +486,7 @@ export async function renderPhotosToBlobs(
   settings: ExportSettings,
   onProgress?: (p: ExportProgress) => void,
 ): Promise<RenderedPhoto[]> {
-  const made = makeBatchRenderer(settings);
+  const made = await makeBatchRenderer(settings, photos[0]);
   if (!made)
     return photos.map((photo) => ({ photo, blob: null, width: 0, height: 0 }));
   const { renderer, canvas } = made;
@@ -496,7 +524,7 @@ export async function exportPhotos(
   onProgress?: (p: ExportProgress) => void,
   destDir?: FileSystemDirectoryHandle,
 ): Promise<ExportResult> {
-  const made = makeBatchRenderer(settings);
+  const made = await makeBatchRenderer(settings, photos[0]);
   if (!made)
     return { exported: 0, failed: photos.map((p) => p.filename), degradedTo8Bit: 0 };
   const { renderer, canvas } = made;

@@ -38,6 +38,8 @@ import { Select } from "@/ui/components/Select";
 import { Switch } from "@/ui/components/Switch";
 import { openPreferences } from "@/ui/components/PreferencesDialog";
 import { closeExtensions } from "@/ui/components/ExtensionsDialog";
+import { openSetup } from "@/modules/welcome/setup/setup-store";
+import { detachedModule } from "@/state/detach";
 import { confirmDialog } from "@/ui/components/ConfirmDialog";
 import {
   forgetSource,
@@ -56,9 +58,7 @@ import {
 import {
   loadTrustList,
   useTrust,
-  isVerified,
   isVerifiedIn,
-  reviewedFor,
   bannedReason,
   repoFromSpec,
   useIsVerified,
@@ -66,29 +66,17 @@ import {
   useReviewedFor,
   useBannedReason,
 } from "./trust";
-import { isNewer } from "@/update/semver";
+import {
+  checkReview,
+  EXTENSION_RISK_NOTICE,
+  hasAckedExtensionRisk,
+  setAckedExtensionRisk,
+} from "./install-gate";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
 import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
 
 type Section = "Updates" | "Browse" | "Installed" | "Dev";
-
-// One-time acknowledgment shown before the user's first extension install (verified
-// or not): extensions are third-party code Safelight neither controls nor guarantees.
-// Persisted in localStorage — it's a safety gate, not a tunable preference.
-const RISK_ACK_KEY = "sl_ext_risk_ack_v1";
-function hasAckedExtensionRisk(): boolean {
-  try {
-    return localStorage.getItem(RISK_ACK_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-function setAckedExtensionRisk(): void {
-  try {
-    localStorage.setItem(RISK_ACK_KEY, "1");
-  } catch {}
-}
 
 const SORTS: { id: StoreSort; label: string }[] = [
   { id: "popular", label: "Popular" },
@@ -262,22 +250,14 @@ export function ExtensionManagerPanel() {
       setMsg(`Blocked — this extension is flagged as unsafe: ${banned}.`);
       return;
     }
-    const verified = !!repo && isVerified(repo);
     // A pinned "verified" entry only covers the version that was reviewed. If the
     // repo has since moved to a newer version, the code we'd install is past the
     // review point — drop the green-light and treat it as an unverified install.
-    const reviewedVersion =
-      verified && repo ? reviewedFor(repo)?.version ?? null : null;
-    let reviewedStale = false;
-    if (reviewedVersion && repo) {
-      try {
-        const latest = (await window.safelightNative?.plugins?.remoteManifest?.(repo))
-          ?.version;
-        if (latest && isNewer(reviewedVersion, latest)) reviewedStale = true;
-      } catch {
-        // Best-effort: don't block an install on a version-check network blip.
-      }
-    }
+    const {
+      verified,
+      reviewedVersion,
+      stale: reviewedStale,
+    } = await checkReview(repo);
     const trusted = verified && !reviewedStale;
     // Strict mode: only reviewed extensions may be installed.
     if (onlyVerified && !trusted) {
@@ -296,13 +276,7 @@ export function ExtensionManagerPanel() {
     if (!hasAckedExtensionRisk()) {
       const ok = await confirmDialog({
         title: "Before installing extensions",
-        message:
-          "Safelight extensions are third-party software — not made, controlled, or " +
-          "guaranteed by Safelight. They install from GitHub and run with full access " +
-          "to your photos, metadata, edits and files.\n\n" +
-          "A “Verified” badge means a maintainer reviewed the code at a point in time. " +
-          "It is not a guarantee of safety, and later updates may not be reviewed.\n\n" +
-          "Install extensions at your own risk.",
+        message: EXTENSION_RISK_NOTICE,
         confirmLabel: "Continue",
       });
       if (!ok) return;
@@ -662,6 +636,19 @@ export function ExtensionManagerPanel() {
                     options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
                     title="Sort"
                   />
+                )}
+                {!detachedModule() && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeExtensions();
+                      openSetup("rerun", "extensions");
+                    }}
+                    title="Pick starter kits in the welcome setup"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-text-secondary hover:text-text-primary"
+                  >
+                    Starter kits
+                  </button>
                 )}
                 <button
                   onClick={reload}

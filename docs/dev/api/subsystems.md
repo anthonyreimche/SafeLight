@@ -33,8 +33,8 @@ The renderer runs in a Web Worker on an `OffscreenCanvas`; the main thread talks
 ```typescript
 class RenderBridge {                                     // selected members
   setImage(image, maxEdge?, isFallbackPreview?, baseCurveForBitmap?): void;
-  setParams(params: DevelopParams): void;                // re-sends the live pipeline when displayTransform changes
-  setContributedParams(bag: Record<string, unknown>): void; // extension stage params (the param bag)
+  setParams(params: DevelopParams): void;                // posts each params object once (replace params, never mutate them); re-sends the live pipeline when displayTransform changes
+  setContributedParams(bag: Record<string, unknown>): void; // extension stage params (the param bag); posts only what differs from the last bag (replace the bag and its values, never mutate them)
   setStages(stages: ProcessingStageContribution[]): void;
   setStageTextures(bag: Record<string, StageTextureData>): void;
   render(wantHistogram?, wantExtended?): void;

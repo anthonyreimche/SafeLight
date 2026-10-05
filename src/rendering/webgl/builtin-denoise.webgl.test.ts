@@ -10,8 +10,13 @@
 // undenoised frame, which is what the smoothing assertions detect.
 
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_DEVELOP_PARAMS, type DevelopParams } from "@/catalog/types";
-import type { ResolvedPipeline } from "@/extensions/pipelines";
+import {
+  CURRENT_PROCESS_VERSION,
+  DEFAULT_DEVELOP_PARAMS,
+  LEGACY_PROCESS_VERSION,
+  type DevelopParams,
+} from "@/catalog/types";
+import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { ProcessingStageContribution } from "@/extensions/types";
 import { baselineTone } from "../baseline-tone";
 import { BUILTIN_DENOISE_ID, denoiseBag } from "./builtin-denoise";
@@ -27,6 +32,7 @@ import {
   identityParams,
   pixelAt,
   withRenderer,
+  worstDifference,
 } from "./webgl.test-support";
 
 const SIZE = 32;
@@ -248,6 +254,133 @@ describe("the denoiser with channels below black", () => {
         moved = Math.max(moved, Math.abs(now[i] - undenoised[i]));
       }
       expect(moved).toBeGreaterThan(1e-3);
+    }
+  });
+});
+
+/** A decode stage whose work is plain to see: it scales each channel of `lin`
+ *  by `tint`, handing the stages after it a changed `lin` the way a chromatic
+ *  aberration or moiré correction does. */
+const TINT_STAGE: ProcessingStageContribution = {
+  id: "test.tint",
+  name: "Decode tint",
+  phase: "decode",
+  glsl: "lin *= tint;",
+  uniforms: [{ key: "tint", glslType: "vec3", default: [1, 1, 1] }],
+};
+
+const WARM = [1.5, 1, 0.5];
+const GREY = floatImage(SIZE, SIZE, () => [BASE, BASE, BASE]);
+
+interface TintedOptions {
+  image?: FloatImage;
+  tint?: number[];
+  pipeline?: ResolvedPipeline;
+}
+
+/** One frame with the decode stage at `tint` and the denoiser fed as Develop
+ *  feeds it, and the split draws the frame took. */
+function renderTinted(
+  stages: ProcessingStageContribution[],
+  params: DevelopParams,
+  { image = GREY, tint = WARM, pipeline = LINEAR_PROBE_PIPELINE }: TintedOptions = {},
+): { frame: Frame; splits: number } {
+  return withRenderer({ stages, pipeline }, (renderer) => {
+    renderer.setImage(image);
+    renderer.setParams(params);
+    renderer.setContributedParams({ ...denoiseBag(params), [`${TINT_STAGE.id}.tint`]: tint });
+    const frame = renderer.captureFloatFrame();
+    if (!frame) throw new Error("captureFloatFrame returned null");
+    return { frame, splits: renderer.renderDrawCounts.split };
+  });
+}
+
+/** Colour NR at its shipping default of 25 unless `over` says otherwise. */
+const atVersion = (processVersion: number, over: Partial<DevelopParams> = {}): DevelopParams =>
+  identityParams({ processVersion, colorNR: 25, ...over });
+
+// While Luminance or Colour NR is above 0 the denoiser swaps `lin` for its own
+// result. On version 1 its passes make that result from the source, so whatever
+// a decode stage did to `lin` is lost. On version 2 they start from the image as
+// the decode stages left it.
+describe("the denoiser behind a decode stage", () => {
+  const denoiser = builtinStage(BUILTIN_DENOISE_ID);
+  const centre = (frame: Frame) => pixelAt(frame, SIZE / 2, SIZE / 2);
+
+  it("keeps the decode stage's change on version 2", () => {
+    const v2 = (colorNR: number) => atVersion(CURRENT_PROCESS_VERSION, { colorNR });
+    const decoded = renderTinted([TINT_STAGE, denoiser], v2(0));
+    const denoised = renderTinted([TINT_STAGE, denoiser], v2(25));
+    const want = centre(decoded.frame);
+    const got = centre(denoised.frame);
+    expect(want[0] - want[2]).toBeGreaterThan(0.1);
+    // A flat field gives the smoothing nothing to remove.
+    for (let i = 0; i < 3; i++) expect(got[i]).toBeCloseTo(want[i], 2);
+    expect(worstDifference(denoised.frame, decoded.frame)).toBeLessThan(PIXEL_TOLERANCE);
+  });
+
+  it("still loses the decode stage's change on version 1", () => {
+    const v1 = atVersion(LEGACY_PROCESS_VERSION);
+    const both = renderTinted([TINT_STAGE, denoiser], v1);
+    const alone = renderTinted([denoiser], v1);
+    const decoded = renderTinted([TINT_STAGE, denoiser], { ...v1, colorNR: 0 });
+    expect(both.splits).toBe(0);
+    expect(worstDifference(both.frame, alone.frame)).toBeLessThan(PIXEL_TOLERANCE);
+    expect(worstDifference(both.frame, decoded.frame)).toBeGreaterThan(0.05);
+  });
+
+  // The split holds `lin` after the linearisation and the baseline tone, so the
+  // first pass must take it as it is. The built-in transform keeps the baseline,
+  // which a second application would shift well past the tolerance.
+  it("hands the passes the values the source would, when the decode stage changes nothing", () => {
+    const params = atVersion(CURRENT_PROCESS_VERSION, { luminanceNR: 60 });
+    const opts = { image: NOISY_COLOUR, tint: [1, 1, 1], pipeline: BUILTIN_RESOLVED };
+    const throughSplit = renderTinted([TINT_STAGE, denoiser], params, opts);
+    const fromSource = renderTinted([denoiser], params, opts);
+    const undenoised = renderTinted([denoiser], { ...params, luminanceNR: 0, colorNR: 0 }, opts);
+    expect(throughSplit.splits).toBe(1);
+    expect(fromSource.splits).toBe(0);
+    // Denoising moves the frame by more than twice the tolerance, so a split path
+    // that stopped denoising could not pass the comparison below.
+    expect(worstDifference(fromSource.frame, undenoised.frame)).toBeGreaterThan(
+      2 * PIXEL_TOLERANCE,
+    );
+    expect(worstDifference(throughSplit.frame, fromSource.frame)).toBeLessThan(PIXEL_TOLERANCE);
+  });
+
+  // The split sits ahead of every core edit, so only the decode stages, the
+  // source, the retouch and the denoiser's own pass params redraw it.
+  it("draws its split once, and again only when the decode stage changes", () => {
+    const params = atVersion(CURRENT_PROCESS_VERSION);
+    const bag = (tint: number[]) => ({ ...denoiseBag(params), [`${TINT_STAGE.id}.tint`]: tint });
+    withRenderer({ stages: [TINT_STAGE, denoiser], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+      r.setImage(GREY);
+      r.setParams(params);
+      r.setContributedParams(bag(WARM));
+      r.render();
+      expect(r.renderDrawCounts).toEqual({ split: 1, pass: 7 });
+      r.setParams({ ...params, exposure: 1 });
+      r.setContributedParams(bag(WARM));
+      r.render();
+      expect(r.renderDrawCounts).toEqual({ split: 1, pass: 7 });
+      r.setContributedParams(bag([2, 1, 0.5]));
+      r.render();
+      expect(r.renderDrawCounts).toEqual({ split: 2, pass: 14 });
+    });
+  });
+
+  it("draws what it always has with no decode stage ahead of it", () => {
+    for (const processVersion of [LEGACY_PROCESS_VERSION, CURRENT_PROCESS_VERSION]) {
+      const params = atVersion(processVersion);
+      withRenderer({ stages: [denoiser], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+        r.setImage(GREY);
+        r.setParams(params);
+        r.setContributedParams(denoiseBag(params));
+        r.render();
+        r.setParams({ ...params, exposure: 1 });
+        r.render();
+        expect(r.renderDrawCounts).toEqual({ split: 0, pass: 7 });
+      });
     }
   });
 });

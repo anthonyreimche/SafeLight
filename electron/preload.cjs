@@ -101,6 +101,8 @@ contextBridge.exposeInMainWorld("safelightNative", {
       ipcRenderer.invoke("plugins:settle-update", String(id), String(outcome)),
     // Verified-allowlist + banned-kill-switch lists from the trust registry.
     trustList: (force) => ipcRenderer.invoke("plugins:trust-list", !!force),
+    // The welcome setup's starter kits (kits.json in the trust registry).
+    kits: (force) => ipcRenderer.invoke("plugins:kits", !!force),
   },
   // Chrome DevTools control + main-process diagnostics for the opt-in
   // Developer Tools extension (src/extensions/devtools/).

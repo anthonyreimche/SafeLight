@@ -3,18 +3,22 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import type { DevelopParams } from "@/catalog/types";
+import { withoutProcessVersion, type DevelopParams } from "@/catalog/types";
 import type { PresetImporterContribution } from "@/extensions/types";
 
 const PRESET_FORMAT = "safelight-preset";
 const PRESET_VERSION = 1;
+
+// Every develop param a preset can carry. processVersion is deliberately
+// absent: a preset never moves a photo between process versions.
+type PresetParamKey = Exclude<keyof DevelopParams, "processVersion">;
 
 // Runtime kind each DevelopParams key must match to survive import. Scalar keys
 // carry a raw number that normalizeParams spreads straight through, so a
 // mistyped value (e.g. a string) would otherwise reach the renderer as a NaN
 // uniform. Complex keys are re-validated field-by-field by normalizeParams; here
 // we only gate that the container is the right shape ("object" covers arrays).
-const PARAM_KINDS: Record<keyof DevelopParams, "number" | "string" | "object"> = {
+const PARAM_KINDS: Record<PresetParamKey, "number" | "string" | "object"> = {
   exposure: "number",
   contrast: "number",
   highlights: "number",
@@ -66,7 +70,7 @@ function sanitizeParams(raw: unknown): Partial<DevelopParams> {
   const keep = <K extends keyof DevelopParams>(key: K, value: DevelopParams[K]) => {
     out[key] = value;
   };
-  for (const key of Object.keys(PARAM_KINDS) as (keyof DevelopParams)[]) {
+  for (const key of Object.keys(PARAM_KINDS) as PresetParamKey[]) {
     const value = src[key];
     if (value === undefined) continue;
     const kind = PARAM_KINDS[key];
@@ -104,7 +108,7 @@ export function exportPreset(
     version: PRESET_VERSION,
     name,
     group: group?.trim() || undefined,
-    params,
+    params: withoutProcessVersion(params),
     ...(hasBag ? { paramBag } : {}),
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -182,10 +186,11 @@ export async function importPresetFile(
 
   try {
     const result = await importer.parse(file);
-    if (!result || Object.keys(result.params).length === 0) {
+    const params = withoutProcessVersion(result?.params ?? {});
+    if (!result || Object.keys(params).length === 0) {
       return { status: "no-settings" };
     }
-    return { status: "imported", preset: { name: result.name, params: result.params } };
+    return { status: "imported", preset: { name: result.name, params } };
   } catch (e) {
     console.warn(`[presets] importer "${importer.id}" failed on ${file.name}:`, e);
     return { status: "no-settings" };

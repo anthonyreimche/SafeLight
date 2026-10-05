@@ -163,7 +163,7 @@ Runtime-loaded extensions can't use Tailwind (only core is scanned), so these co
 | `ProgressBar` | `value` (0..1) | A thin accent bar. |
 | `Stack` / `Row` | `gap?` (px, default 8), `style?`; `Row` also takes `align?`, `justify?`, `wrap?` | Vertical / horizontal flex with a pixel gap. |
 
-`api.ui.tokens` holds the canonical theme variable strings (`tokens.surface2` is `"var(--color-surface-2)"`, `tokens.textMuted`, `tokens.accent`, `tokens.fontMono`, …) for the occasional inline style. Use them instead of typing `var(--color-…)` by hand, so a typo can't point at a variable that doesn't exist.
+`api.ui.tokens` holds the canonical theme variable strings (`tokens.surface2` is `"var(--color-surface-2)"`, `tokens.textMuted`, `tokens.accent`, `tokens.fontMono`, `tokens.fontCode`, …) for the occasional inline style. Use them instead of typing `var(--color-…)` by hand, so a typo can't point at a variable that doesn't exist.
 
 ```js
 const React = api.react;
@@ -203,7 +203,8 @@ Every theme (and an extension's [`ThemeContribution.vars`](contributions.md#them
 | `--color-rating` | Star rating gold |
 | `--color-flag-pick` / `--color-flag-reject` | Pick / reject flag colors |
 | `--color-label-red` / `-yellow` / `-green` / `-blue` / `-purple` | The five color labels |
-| `--font-mono` | App font stack |
+| `--font-mono` | Interface font stack (Afacad by default; the name is historical) |
+| `--font-code` | Monospace stack for code, logs and markup |
 
 A `ThemeContribution` need only set the first 13 (`surface-0`–`slider-fill`); rating/flag/label tokens fall back to the app defaults if omitted. The defaults mirror the shipped **Safelight Neutral** theme (an achromatic bright mid-grey); see `src/extensions/builtin.tsx` for the stock Neutral / Dark / Light values to use as a starting point.
 

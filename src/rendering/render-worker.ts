@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import type { DevelopParams, UprightMode } from "@/catalog/types";
+import { CURRENT_PROCESS_VERSION, type DevelopParams, type UprightMode } from "@/catalog/types";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { BUILTIN_RESOLVED, withPipeline } from "@/extensions/pipelines";
@@ -29,6 +29,10 @@ export type WorkerRequest =
     }
   | { cmd: "setParams"; params: DevelopParams }
   | { cmd: "setContributedParams"; bag: Record<string, unknown> }
+  // What differs from the bag the bridge last posted, whole or by patches: `set` holds
+  // the new and changed entries, `remove` the dropped keys (none of them in `set`).
+  // Values are untyped like the bag's: extensions define them at runtime.
+  | { cmd: "patchContributedParams"; set: Record<string, unknown>; remove: string[] }
   | { cmd: "setStageTextures"; bag: Record<string, StageTextureData> }
   // Render one frame with `params` to an ImageBitmap returned out-of-band (NOT
   // blitted to the display) so an extension can grab a "before" frame at the
@@ -150,7 +154,8 @@ let latestStageTextures: Record<string, StageTextureData> = {};
 // The last params pushed to the develop renderer. A `capture` swaps in override
 // params, renders, then restores these so a later display render (e.g. from a
 // viewport or clipping change that doesn't re-send params) isn't left showing
-// the captured frame's look.
+// the captured frame's look. Kept while the renderer is null too, so one made by
+// an init retry starts from it instead of waiting for a re-post that may not come.
 let lastParams: DevelopParams | null = null;
 // Mirrors the gpuSourceCacheBytes preference. The develop renderer gets the full
 // budget (full-res sources are large); the thumb renderer caches tiny sources, so
@@ -171,18 +176,91 @@ function postHealSource() {
   if (hs) respond({ type: "healSource", data: hs.data, width: hs.w, height: hs.h }, [hs.data.buffer]);
 }
 
-function ensureThumbRenderer(): WebGLRenderer {
+// The bag both renderers draw with. Kept, so a renderer created later starts from it.
+function applyParamBag(bag: Record<string, unknown>) {
+  latestParamBag = bag;
+  renderer?.setContributedParams(bag);
+  thumbRenderer?.setContributedParams(bag);
+}
+
+// Builds the program a new renderer's first frame needs. Stages or a display
+// transform that can't be built fail frames, not the renderer, and only until they
+// change: that is logged once and the renderer stays. A stock program (the built-in
+// transform with Safelight's own stages) that can't be built either means this
+// machine can't run Safelight's own shader, so that throws: init answers it with
+// initError for the bridge to retry and report, a thumbnail request with
+// thumbnailError.
+function warmUp(target: WebGLRenderer, processVersion: number): void {
+  try {
+    target.prepareProgram(processVersion);
+  } catch (err) {
+    target.prepareStockProgram(processVersion);
+    console.error(
+      "[render-worker] stages or display transform can't be built; frames fail until they change:",
+      err,
+    );
+  }
+}
+
+// Hands a new renderer what arrived while there was none, which the worker only held.
+// `ready` is the only word the bridge gets that init finished, and the bridge sends params
+// and the bag again after it but never stage textures. So each step is its own try: one
+// that throws is logged and must not skip `ready` or the steps after it, or a stage that
+// reads a LUT would draw black until some texture changed. The renderer stays.
+function seedRenderer(target: WebGLRenderer): void {
+  const attempt = (what: string, step: () => void) => {
+    try {
+      step();
+    } catch (err) {
+      console.error(
+        `[render-worker] the new renderer couldn't take the ${what} that arrived before it:`,
+        err,
+      );
+    }
+  };
+  attempt("cache budget", () => {
+    if (cacheBudgetBytes > 0) target.setCacheBudget(cacheBudgetBytes);
+  });
+  attempt("stage params", () => target.setContributedParams(latestParamBag));
+  attempt("stage textures", () => target.setStageTextures(latestStageTextures));
+  attempt("params", () => {
+    if (lastParams) target.setParams(lastParams);
+  });
+}
+
+// `first` is the request that creates the renderer. Its program is built here, with
+// that photo's version and display transform, so a renderer that can't build at all
+// fails the request and is not kept, instead of failing every frame after it. An
+// upload creates one with no photo to go by (`first` is absent): it builds the
+// current version under the pipeline and stages the worker holds.
+function ensureThumbRenderer(
+  first?: Pick<ThumbRenderRequest, "params" | "pipeline">,
+): WebGLRenderer {
   if (thumbRenderer) return thumbRenderer;
-  thumbCanvas = new OffscreenCanvas(512, 512);
-  thumbRenderer = new WebGLRenderer(thumbCanvas, {
+  const canvas = new OffscreenCanvas(512, 512);
+  const created = new WebGLRenderer(canvas, {
     highBitDepth: false,
     pipeline: latestPipeline,
     stages: latestStages,
   });
-  if (cacheBudgetBytes > 0) thumbRenderer.setCacheBudget(cacheBudgetBytes * THUMB_CACHE_FRACTION);
-  thumbRenderer.setContributedParams(latestParamBag);
-  thumbRenderer.setStageTextures(latestStageTextures);
-  return thumbRenderer;
+  try {
+    if (first) {
+      withPipeline(created, first.pipeline, latestPipeline, () =>
+        warmUp(created, first.params.processVersion),
+      );
+    } else {
+      warmUp(created, CURRENT_PROCESS_VERSION);
+    }
+  } catch (err) {
+    created.dispose();
+    throw err;
+  }
+  thumbCanvas = canvas;
+  thumbRenderer = created;
+  if (cacheBudgetBytes > 0) created.setCacheBudget(cacheBudgetBytes * THUMB_CACHE_FRACTION);
+  created.setContributedParams(latestParamBag);
+  created.setStageTextures(latestStageTextures);
+  return created;
 }
 
 interface ThumbRenderRequest {
@@ -231,10 +309,13 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         // A context that can't be created — no WebGL2, or the page is inside
         // Chromium's post-GPU-reset refusal of 3D contexts — gets its own
         // response so the bridge can retry instead of waiting for `ready`
-        // forever.
+        // forever. So does a stock develop program that can't be built: warmUp
+        // builds it here, not on the first frame, so it fails the init (retried
+        // and reported by the bridge) rather than every frame after it.
+        let created: WebGLRenderer | null = null;
         try {
           canvas = new OffscreenCanvas(msg.width, msg.height);
-          renderer = new WebGLRenderer(canvas, {
+          created = new WebGLRenderer(canvas, {
             // The worker can't read the preference itself (settings-store uses
             // localStorage, unavailable off the main thread), so it arrives here.
             highBitDepth: msg.highBitDepth,
@@ -246,15 +327,16 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
             pipeline: latestPipeline,
             stages: latestStages,
           });
+          warmUp(created, lastParams?.processVersion ?? CURRENT_PROCESS_VERSION);
+          renderer = created;
         } catch (err) {
+          created?.dispose();
           canvas = null;
           renderer = null;
           respond({ type: "initError", message: err instanceof Error ? err.message : String(err) });
           break;
         }
-        if (cacheBudgetBytes > 0) renderer.setCacheBudget(cacheBudgetBytes);
-        renderer.setContributedParams(latestParamBag);
-        renderer.setStageTextures(latestStageTextures);
+        seedRenderer(renderer);
         respond({ type: "ready", pipelineFloat: renderer.colorBufferFloat });
         break;
       }
@@ -277,16 +359,24 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       }
 
       case "setParams": {
-        if (!renderer) break;
         lastParams = msg.params;
+        if (!renderer) break;
         renderer.setParams(msg.params);
         break;
       }
 
       case "setContributedParams": {
-        latestParamBag = msg.bag;
-        renderer?.setContributedParams(msg.bag);
-        thumbRenderer?.setContributedParams(msg.bag);
+        applyParamBag(msg.bag);
+        break;
+      }
+
+      case "patchContributedParams": {
+        // A new object, so no renderer has the bag it holds edited under it. Entries the
+        // patch doesn't name stay the very objects the renderers already saw: the develop
+        // renderer bakes painted coverage again only when its dabs are not the same array.
+        const merged = { ...latestParamBag, ...msg.set };
+        for (const key of msg.remove) delete merged[key];
+        applyParamBag(merged);
         break;
       }
 
@@ -360,7 +450,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
       case "renderThumbnail": {
         try {
-          const tr = ensureThumbRenderer();
+          const tr = ensureThumbRenderer(msg);
           const img = msg.image;
           if (img.kind === "bitmap") {
             tr.setImage(img.bitmap, msg.maxEdge);
@@ -461,7 +551,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
       case "renderThumbnailFromSource": {
         try {
-          const tr = ensureThumbRenderer();
+          const tr = ensureThumbRenderer(msg);
           // msg.maxEdge is the OUTPUT cap for this thumbnail — smaller than the
           // resident source's own upload cap — so pass it as the bind override.
           if (!tr.bindSource(msg.key, msg.maxEdge)) {

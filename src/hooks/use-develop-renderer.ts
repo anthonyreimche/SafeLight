@@ -11,8 +11,6 @@ import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 const VIZ_COLOR: [number, number, number] = [0.9, 0.25, 0.25];
 const VIZ_STRENGTH = 0.5;
 import { resolveVizMaskIndex } from "@/modules/develop/mask-viz";
-import { transformedViewCrop } from "@/rendering/crop-transform";
-import { buildForwardTransform } from "@/rendering/transform";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
@@ -28,6 +26,7 @@ import { usePipelineStore } from "@/extensions/pipelines";
 import { applyPanelBypass, bypassParamBag } from "@/modules/develop/panel-bypass";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
 import { getExtSetting, useExtSettings } from "@/extensions/ext-settings";
+import { createRenderParams } from "./render-params";
 
 // Resolve the colour actually painted behind the image (the canvas surround) to
 // linear-display RGB in 0..1, by reading the surround element's computed
@@ -133,18 +132,12 @@ export function useDevelopRenderer(
       : photo && photo.height > 0
         ? photo.width / photo.height
         : 1;
-  const forRender = (p: DevelopParams, crop: boolean): DevelopParams => {
-    // Neutralize any bypassed panels' params first (view-only, no history).
-    const bp = applyPanelBypass(p, bypassedPanels);
-    return crop
-      ? {
-          ...bp,
-          crop: transformedViewCrop(
-            buildForwardTransform(bp.straighten, bp.transform, aspect),
-          ),
-        }
-      : bp;
-  };
+  // The three places below that hand the bridge params all ask through this one memo,
+  // so a run that changed none of its inputs gets back the object the bridge already
+  // posted, instead of a rebuilt copy it would clone to the worker again.
+  const [renderParams] = useState(createRenderParams);
+  const forRender = (p: DevelopParams, crop: boolean): DevelopParams =>
+    renderParams(p, crop, aspect, bypassedPanels);
 
   // Set up the bridge + 2D display canvas. The worker owns the WebGL context;
   // this canvas just blits ImageBitmap frames from the worker.

@@ -25,7 +25,7 @@ Actions (selected): `loadCatalog()`, `reconnectFiles()`, `replaceCatalog(photos)
 
 State: `photoId`, `params: DevelopParams`, `paramBag` (extension stage params by qualified key, see [`api.params`](#apiparams)), `previewParams` / `previewParamBag` (transient preset-hover preview), `history`/`historyIndex`, `histogram`, `asShotTemperature`, `sourceSize` (true dimensions of the decoded source; derive image aspect from this, not `photo.width/height`), crop UI (`cropping`, `constrainCrop`, `cropAspect`, `cropGuide`, `cropGuideFlip`), view state (`showClipping: 0|1|2|3`, `colorAssessment`, `bypassedPanels`, `selectedHslBand`), and tool state (`activeTool`, `wbPicking`, `hslPicking`, `maskColorPicking`, mask/component/brush/retouch fields).
 
-Actions (selected): `loadEdit(photoId, asShotTemperature?)`, `setParam(key, value)`, `setDynParam(qualifiedKey, value)` / `setDynParams(patch)`, `setToneCurve`, `setHslValue`, `applyPreset(params, paramBag?)`, `setPreviewParams(params, paramBag?)`, `commitEdit(label)`, `resetParams(keys, label)`, `undo`/`redo`/`reset`, `canUndo`/`canRedo`; masks (`addMask`, `updateMask`, `addComponent`, `addRangeComponent`, `addBrushDab`, `removeMask`); retouch (`addSpot`, `updateSpot`, `removeSpot`); `setShowClipping(mode)`, `setPanelBypass(panelId, on)`. `setParam` and `setDynParam` update live; `commitEdit(label)` snapshots into history and persists. `applyPreset` takes **full** params: merge a partial preset over the current params first, or every omitted adjustment resets to its default.
+Actions (selected): `loadEdit(photoId, asShotTemperature?)`, `setParam(key, value)`, `setDynParam(qualifiedKey, value)` / `setDynParams(patch)`, `setToneCurve`, `setHslValue`, `applyPreset(params, paramBag?)`, `setPreviewParams(params, paramBag?)`, `commitEdit(label)`, `resetParams(keys, label)`, `undo`/`redo`/`reset`, `updateProcessing()`, `canUndo`/`canRedo`; masks (`addMask`, `updateMask`, `addComponent`, `addRangeComponent`, `addBrushDab`, `removeMask`); retouch (`addSpot`, `updateSpot`, `removeSpot`); `setShowClipping(mode)`, `setPanelBypass(panelId, on)`. `setParam` and `setDynParam` update live; `commitEdit(label)` snapshots into history and persists. `applyPreset` takes **full** params: merge a partial preset over the current params first, or every omitted adjustment resets to its default. `updateProcessing()` raises the open photo from process version 1 to the current version as one undoable step ("Update processing") and keeps every other setting; it does nothing with no photo open or on a photo that is already current.
 
 ### useUIStore
 
@@ -129,6 +129,8 @@ interface ParamDescriptor {
 ```
 
 The values themselves live in the develop store's `paramBag`: read `paramBag[qualifiedKey] ?? descriptor.default`, write with `setDynParam(qualifiedKey, value)`. The list is non-reactive and only changes as extensions load and unload, so read it when you need it.
+
+The render worker is sent only the bag values whose identity changed, so `setDynParam` and `setDynParams` must be given a new array or object whenever an array or object value changes (a painted `BrushDab[]` included), never the one set before and edited in place. A value edited in place no longer reaches the renderer.
 
 ## `api.export`
 

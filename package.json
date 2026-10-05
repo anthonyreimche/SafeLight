@@ -1,7 +1,7 @@
 {
   "name": "safelight",
   "private": true,
-  "version": "2.6.0",
+  "version": "3.0.0",
   "description": "Safelight — a fast RAW photo editor.",
   "homepage": "https://github.com/anthonyreimche/SafeLight",
   "desktopName": "safelight",
@@ -65,6 +65,7 @@
       "electron/crash-recovery.cjs",
       "electron/extension-origins.cjs",
       "electron/plugin-files.cjs",
+      "electron/remote-json-cache.cjs",
       "electron/preload.cjs",
       "package.json"
     ],
@@ -205,7 +206,11 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Safelight"
+      "shortcutName": "Safelight",
+      "include": "build/installer.nsh",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "uninstallerSidebar": "build/installerSidebar.bmp",
+      "installerHeader": "build/installerHeader.bmp"
     }
   },
   "dependencies": {

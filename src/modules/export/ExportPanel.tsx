@@ -538,7 +538,7 @@ export function ExportPanel() {
           {filenameTemplateId !== undefined && (() => {
             const tpl = filenameTemplates.find((t) => t.id === filenameTemplateId);
             return tpl ? (
-              <p className="mt-2 font-mono text-[10px] leading-snug text-text-muted">
+              <p className="mt-2 font-code text-[10px] leading-snug text-text-muted">
                 {tpl.template}
               </p>
             ) : null;

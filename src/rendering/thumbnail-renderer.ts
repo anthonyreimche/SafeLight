@@ -18,25 +18,84 @@ interface Ctx {
 }
 let histCtx: Ctx | null = null;
 let histDead = false;
+// The last build failure reported. The renderer rethrows a remembered failure as the
+// same object, so one that every photo meets is logged once, not once per photo.
+let lastBuildError: unknown = null;
 
-function getHistCtx(): Ctx | null {
-  if (histCtx) return histCtx;
-  if (histDead) return null;
+// Drop a context that can no longer be used. Calls aren't serialized and a lost
+// context is dropped by its listener, so another call may have replaced it by now;
+// that replacement is not to be touched.
+function dropHistCtx(ctx: Ctx): void {
+  ctx.renderer.dispose();
+  if (histCtx === ctx) histCtx = null;
+}
+
+// The histogram is over for the session: no renderer can be created, or the driver
+// can't build the stock program, and neither recovers on retry. `ctx` is the context
+// that failed. If another has replaced it, its failure says nothing about the
+// replacement and nothing changes.
+function endHistogram(ctx: Ctx | null, err: unknown): void {
+  if (ctx && histCtx !== ctx) return;
+  console.error("[histogram] the renderer is unavailable:", err);
+  if (ctx) dropHistCtx(ctx);
+  histDead = true;
+}
+
+// A lost context fails every compile, the stock program's too. That says nothing
+// about the machine: its listener drops the context and the next call starts afresh.
+function contextLost(ctx: Ctx): boolean {
+  return ctx.canvas.getContext("webgl2")?.isContextLost() ?? false;
+}
+
+// Builds the develop program for a photo's process version, which a renderer would
+// otherwise build on the first frame it draws. False when it can't be. If even the
+// stock program can't, the histogram is over for the session. Otherwise only these
+// stages or this transform fail: this photo gets no histogram and a later one can,
+// the renderer rethrowing its remembered failure so a retry is cheap.
+function prepare(ctx: Ctx, processVersion: number): boolean {
   try {
-    const canvas = document.createElement("canvas");
-    // A GPU reset kills the singleton's context; drop it so the next call
-    // rebuilds instead of rendering into a dead renderer (histDead stays a
-    // latch for genuine "WebGL2 unsupported", which won't recover on retry).
-    canvas.addEventListener("webglcontextlost", () => {
-      histCtx?.renderer.dispose();
-      histCtx = null;
-    });
-    histCtx = { canvas, renderer: new WebGLRenderer(canvas) };
-    return histCtx;
-  } catch {
-    histDead = true;
-    return null;
+    ctx.renderer.prepareProgram(processVersion);
+    return true;
+  } catch (err) {
+    if (contextLost(ctx)) return false;
+    try {
+      ctx.renderer.prepareStockProgram(processVersion);
+    } catch (stockErr) {
+      endHistogram(ctx, stockErr);
+      return false;
+    }
+    if (err !== lastBuildError) {
+      lastBuildError = err;
+      console.error(
+        "[histogram] stages or display transform can't be built; no histogram until they change:",
+        err,
+      );
+    }
+    return false;
   }
+}
+
+function getHistCtx(processVersion: number): Ctx | null {
+  if (histDead) return null;
+  let ctx = histCtx;
+  if (!ctx) {
+    try {
+      const canvas = document.createElement("canvas");
+      const created: Ctx = { canvas, renderer: new WebGLRenderer(canvas) };
+      // A GPU reset kills the singleton's context; drop it so the next call
+      // rebuilds instead of rendering into a dead renderer (histDead stays a
+      // latch for what won't recover on retry: see endHistogram).
+      canvas.addEventListener("webglcontextlost", () => dropHistCtx(created));
+      histCtx = created;
+      ctx = created;
+    } catch (err) {
+      endHistogram(null, err);
+      return null;
+    }
+  }
+  // Building the program here, not on the first frame, fails a photo before it is
+  // decoded.
+  return prepare(ctx, processVersion) ? ctx : null;
 }
 
 const MAX_HIST_EDGE = 256;
@@ -57,7 +116,7 @@ export async function renderPhotoHistogram(
   params: DevelopParams,
   maxEdge: number = MAX_HIST_EDGE,
 ): Promise<HistogramData | null> {
-  const ctx = getHistCtx();
+  const ctx = getHistCtx(params.processVersion);
   if (!ctx) return null;
 
   let image: DecodedImage | null = null;
@@ -88,6 +147,11 @@ export async function renderPhotoHistogram(
       true,
     );
     setPhotoParams(ctx.renderer, params);
+    // The program for this photo's display transform and version, unless an earlier
+    // photo built it. Left to render(), a build failure would throw out of this async
+    // function; any other failure of the frame still does, and leaves the histogram
+    // for the next photo.
+    if (!prepare(ctx, params.processVersion)) return null;
     ctx.renderer.render();
     return computeHistogram(ctx.canvas);
   } finally {

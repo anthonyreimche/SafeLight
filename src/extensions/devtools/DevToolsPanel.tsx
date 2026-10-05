@@ -229,7 +229,7 @@ function ConsoleTab({
       </div>
 
       {/* Log list */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto font-mono">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto font-code">
         {shown.length === 0 ? (
           <div className="px-3 py-4 text-center text-text-muted">
             {issuesOnly ? "No warnings or errors." : "No console output yet."}
@@ -336,7 +336,7 @@ function Repl() {
         placeholder="Evaluate JavaScript…"
         spellCheck={false}
         autoComplete="off"
-        className="min-w-0 flex-1 bg-transparent font-mono text-text-primary outline-none placeholder:text-text-muted"
+        className="min-w-0 flex-1 bg-transparent font-code text-text-primary outline-none placeholder:text-text-muted"
       />
     </div>
   );
@@ -433,7 +433,7 @@ function SystemTab() {
           {rows.map((r) => (
             <tr key={r.label} className="border-b border-border-subtle/50 align-top">
               <td className="w-36 shrink-0 px-2 py-1 text-text-secondary">{r.label}</td>
-              <td className="px-2 py-1 font-mono text-text-primary">
+              <td className="px-2 py-1 font-code text-text-primary">
                 <span className="break-all">{r.value}</span>
               </td>
             </tr>
@@ -451,7 +451,7 @@ function SystemTab() {
                 <tr key={k} className="border-b border-border-subtle/50">
                   <td className="w-36 px-2 py-1 text-text-secondary">{k}</td>
                   <td
-                    className={`px-2 py-1 font-mono ${
+                    className={`px-2 py-1 font-code ${
                       /software|disabled|unavailable/i.test(v) ? "text-amber-400" : "text-emerald-400"
                     }`}
                   >
@@ -532,7 +532,7 @@ function StorageTab() {
               }`}
             >
               <span
-                className={`min-w-0 flex-1 cursor-pointer truncate font-mono ${
+                className={`min-w-0 flex-1 cursor-pointer truncate font-code ${
                   k.startsWith("sl_") ? "text-text-primary" : "text-text-muted"
                 }`}
                 title={k}
@@ -557,14 +557,14 @@ function StorageTab() {
             <div className="m-auto text-text-muted">Select a key to inspect.</div>
           ) : (
             <>
-              <div className="mb-1 truncate font-mono text-text-secondary" title={sel}>
+              <div className="mb-1 truncate font-code text-text-secondary" title={sel}>
                 {sel}
               </div>
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 spellCheck={false}
-                className="min-h-0 flex-1 resize-none rounded bg-surface-2 p-2 font-mono text-[10px] text-text-primary outline-none focus:bg-surface-3"
+                className="min-h-0 flex-1 resize-none rounded bg-surface-2 p-2 font-code text-[10px] text-text-primary outline-none focus:bg-surface-3"
               />
               <div className="mt-1.5 flex items-center justify-end gap-1.5">
                 {saveError && (
@@ -681,7 +681,7 @@ function NativeTab() {
         </button>
       </div>
       {metrics ? (
-        <table className="w-full font-mono">
+        <table className="w-full font-code">
           <thead>
             <tr className="text-text-muted">
               <th className="px-2 py-1 text-left font-normal">Process</th>

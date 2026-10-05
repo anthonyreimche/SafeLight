@@ -29,6 +29,21 @@ function mat3Mul(a: Mat3, b: Mat3): Mat3 {
   return m;
 }
 
+// Inverse of a row-major 3x3 (adjugate over determinant). Callers pass
+// well-conditioned matrices (colour primaries), so no singular check.
+export function mat3Invert(m: Mat3): Mat3 {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const c0 = e * i - f * h;
+  const c1 = f * g - d * i;
+  const c2 = d * h - e * g;
+  const s = 1 / (a * c0 + b * c1 + c * c2);
+  return [
+    c0 * s, (c * h - b * i) * s, (b * f - c * e) * s,
+    c1 * s, (a * i - c * g) * s, (c * d - a * f) * s,
+    c2 * s, (b * g - a * h) * s, (a * e - b * d) * s,
+  ];
+}
+
 // Apply a (possibly projective) 3x3 to a 2D point, dividing through by w.
 export function mat3Apply(m: Mat3, x: number, y: number): Vec2 {
   const px = m[0] * x + m[1] * y + m[2];

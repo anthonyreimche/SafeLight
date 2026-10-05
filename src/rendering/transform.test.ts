@@ -14,8 +14,10 @@ import {
   buildInverseTransform,
   mat3Apply,
   mat3ColumnMajor,
+  mat3Invert,
   type Mat3,
 } from "./transform";
+import { REC709_TO_REC2020 } from "./stage-space";
 import { DEFAULT_TRANSFORM } from "@/catalog/types";
 import type { TransformParams } from "@/catalog/types";
 
@@ -57,6 +59,48 @@ describe("mat3ColumnMajor", () => {
     const gl = mat3ColumnMajor(m);
     expect(gl).toBeInstanceOf(Float32Array);
     expect(Array.from(gl)).toEqual([1, 4, 7, 2, 5, 8, 3, 6, 9]);
+  });
+});
+
+describe("mat3Invert", () => {
+  it("inverts a diagonal matrix", () => {
+    const m: Mat3 = [2, 0, 0, 0, 3, 0, 0, 0, 4];
+    const inv = mat3Invert(m);
+    expect(inv[0]).toBeCloseTo(0.5, 12);
+    expect(inv[4]).toBeCloseTo(1 / 3, 12);
+    expect(inv[8]).toBeCloseTo(0.25, 12);
+    expect(inv[1]).toBeCloseTo(0, 12);
+    expect(inv[2]).toBeCloseTo(0, 12);
+  });
+
+  it("computes an inverse that gives identity when multiplied with the original", () => {
+    // A well-conditioned 2D rotation scaled by 1.5
+    const cos05 = Math.cos(0.5);
+    const sin05 = Math.sin(0.5);
+    const scale = 1.5;
+    const m: Mat3 = [
+      scale * cos05, scale * -sin05, 0,
+      scale * sin05, scale * cos05, 0,
+      0, 0, 1,
+    ];
+    const inv = mat3Invert(m);
+    for (let r = 0; r < 3; r++)
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let k = 0; k < 3; k++) sum += m[r * 3 + k] * inv[k * 3 + c];
+        expect(sum).toBeCloseTo(r === c ? 1 : 0, 12);
+      }
+  });
+
+  it("handles dense asymmetric matrices (all 9 entries non-zero)", () => {
+    const m = REC709_TO_REC2020;
+    const inv = mat3Invert(m);
+    for (let r = 0; r < 3; r++)
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let k = 0; k < 3; k++) sum += m[r * 3 + k] * inv[k * 3 + c];
+        expect(sum).toBeCloseTo(r === c ? 1 : 0, 12);
+      }
   });
 });
 

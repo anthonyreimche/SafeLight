@@ -80,12 +80,15 @@ interface DevelopParams {
   retouch;             // RetouchSpot[], ≤ MAX_RETOUCH (32); ≤ MAX_RETOUCH_BRUSH (4) brush-shaped
   // Rendering
   displayTransform;    // display transform picked for this photo, or null to follow the Preferences default
+  processVersion;      // rendering generation of this edit: 1 for edits saved before process versions, 2 for new ones
 }
 ```
 
+`processVersion` is the rendering generation an edit was made with. Edits saved before process versions existed carry none and read as version 1 (`LEGACY_PROCESS_VERSION`), so they render exactly as they always have; new edits get version 2 (`CURRENT_PROCESS_VERSION`). Presets, pasted settings and previews never change it. Reset all edits starts a photo over at the current version, and Update processing raises the version and keeps every other setting; resetting a single panel keeps it. Extensions read it and never write it. [Contribution Types → Process versions](contributions.md#process-versions) says what each version changes.
+
 Extension-contributed adjustments are not in `DevelopParams`: they live in a separate **param bag** keyed by qualified key (`"{stageId}.{key}"`), stored alongside the params in each history snapshot (see [EditState](#editstate)) and read through [`api.params`](stores.md#apiparams). Lens correction moved out of core into an [extension](contributions.md#processingstagecontribution--gpu-stage), so it has no field here either.
 
-`normalizeParams` upgrades older/partial params (e.g. from imported presets) so they stay compatible.
+`normalizeParams` upgrades older/partial params (e.g. from imported presets) so they stay compatible. The one field it doesn't fill from the defaults is `processVersion`: a missing one reads as version 1.
 
 ## Masks and retouch
 

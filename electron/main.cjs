@@ -45,6 +45,7 @@ const {
   readDevFolder,
   writeDevFolder,
 } = require("./extension-origins.cjs");
+const { createRemoteJsonCache } = require("./remote-json-cache.cjs");
 
 // `app.isPackaged` is false when Electron runs an app from a plain directory
 // rather than an asar/bundled build — which is exactly how the Nix derivation
@@ -758,6 +759,24 @@ function filterRegistry(items, query) {
   );
 }
 
+// The welcome setup's starter kits: curated groups of verified extensions,
+// published as kits.json beside registry.json so they change without an app
+// release. Same CDN and cache discipline as the registry index (raw, never
+// jsDelivr, `cache: "no-cache"` so the 1h TTL is the only clock).
+const kitsIndex = createRemoteJsonCache({
+  url: `https://raw.githubusercontent.com/${TRUST_REGISTRY}/main/kits.json`,
+  cacheFile: () => path.join(app.getPath("userData"), "kits-cache.json"),
+  ttlMs: 60 * 60 * 1000,
+  // The signal, unlike fetchWithTimeout's, stays armed while the cache reads
+  // the body.
+  fetchJson: (url) =>
+    net.fetch(url, {
+      headers: { "User-Agent": "Safelight", Accept: "application/json" },
+      cache: "no-cache",
+      signal: AbortSignal.timeout(6000),
+    }),
+});
+
 async function searchExtensionsLive(query, topic, force = false) {
   const t = String(topic || DEFAULT_EXT_TOPIC).trim();
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(t)) throw new Error("Bad extension topic");
@@ -869,6 +888,9 @@ async function fetchRemoteManifest(repo) {
         Accept: "application/vnd.github+json",
         "User-Agent": "Safelight",
       },
+      // The welcome setup's review check waits on this. A timeout rejects,
+      // like any network failure.
+      signal: AbortSignal.timeout(10000),
     }
   );
   if (res.status === 404) return null;
@@ -1339,6 +1361,7 @@ function registerPluginIpc() {
     return restored && validManifest(restored) ? restored : null;
   });
   ipcMain.handle("plugins:trust-list", (_e, force) => fetchTrustList(!!force));
+  ipcMain.handle("plugins:kits", (_e, force) => kitsIndex.get(!!force));
   ipcMain.handle("plugins:uninstall", (_e, id) => {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))
       throw new Error("Bad extension id");
