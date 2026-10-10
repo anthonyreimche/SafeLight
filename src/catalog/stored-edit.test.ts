@@ -6,6 +6,7 @@
 // Appending a snapshot to a stored edit without opening Develop: the baseline
 // comes from the stored cursor, a refusal writes nothing, and the photo that is
 // open in Develop is reloaded so its next commit can't overwrite the new step.
+// Many photos at once go to the catalog in one write.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,10 +17,22 @@ vi.mock("@/state/broadcast", () => ({
 }));
 vi.mock("@/state/edited-thumbnail", () => ({ regenerateEditedThumbnail: vi.fn() }));
 
-import { appendStoredSnapshot, type StoredLook } from "./stored-edit";
+import {
+  appendStoredSnapshot,
+  appendStoredSnapshots,
+  storedSnapshotTargets,
+  type StoredLook,
+  type StoredSnapshotTarget,
+} from "./stored-edit";
 import { installMemoryStorage, legacySnapshot, photo, snapshot } from "./stored-edit.fixtures";
-import { setCatalogStorage } from "./storage";
-import { LEGACY_PROCESS_VERSION, freshParams, type EditSnapshot, type EditState } from "./types";
+import { catalogStorage, setCatalogStorage } from "./storage";
+import {
+  LEGACY_PROCESS_VERSION,
+  NEUTRAL_TEMPERATURE_K,
+  freshParams,
+  type EditSnapshot,
+  type EditState,
+} from "./types";
 import { broadcast } from "@/state/broadcast";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
@@ -43,6 +56,10 @@ const brighter = (base: StoredLook): StoredLook => ({
   params: { ...base.params, exposure: 1 },
   paramBag: base.paramBag,
 });
+// Declines a photo that is already as bright as the step would make it.
+const brightenOnce = (base: StoredLook): StoredLook | null =>
+  base.params.exposure === 1 ? null : brighter(base);
+const original = (photoId: string) => edit([snapshot("Original", {})], 0, photoId);
 
 // zustand keeps the actions in state, so the pristine object doubles as the
 // reset baseline (nothing mutates it in place).
@@ -198,6 +215,35 @@ describe("appendStoredSnapshot — the photo open in Develop", () => {
     expect(stack[2].params.contrast).toBe(20);
   });
 
+  it("keeps the stored step when Develop commits while it is being saved", async () => {
+    const { written } = installMemoryStorage(edit([snapshot("Original", {})], 0));
+    await openInDevelop();
+    // The storage holds the edit at once and saves it after (as ProjectStorage does).
+    const storage = catalogStorage();
+    const store = storage.putEditStates.bind(storage);
+    let saved = (): void => {};
+    const saving = new Promise<void>((resolve) => (saved = resolve));
+    vi.spyOn(storage, "putEditStates").mockImplementationOnce(async (editStates) => {
+      await store(editStates);
+      await saving;
+    });
+
+    const appending = appendStoredSnapshot(PHOTO, 5200, "Test step", brighter);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    useDevelopStore.getState().setParam("contrast", 20);
+    await useDevelopStore.getState().commitEdit("Contrast");
+    saved();
+    await appending;
+
+    const { stack } = written[written.length - 1];
+    expect(labelsOf(stack)).toEqual(["Original", "Test step", "Contrast"]);
+    expect(labelsOf(useDevelopStore.getState().history)).toEqual([
+      "Original",
+      "Test step",
+      "Contrast",
+    ]);
+  });
+
   it("is reloaded with the as-shot temperature it was given", async () => {
     installMemoryStorage(edit([snapshot("Original", { temperature: 4300 })], 0));
     await openInDevelop();
@@ -227,5 +273,304 @@ describe("appendStoredSnapshot — the photo open in Develop", () => {
     await appendStoredSnapshot(PHOTO, 5200, "Test step", () => null);
 
     expect(useDevelopStore.getState().history).toBe(develop.history);
+  });
+});
+
+describe("appendStoredSnapshots", () => {
+  const IDS = ["a", "b", "c"];
+  const targetsOf = (...ids: string[]): StoredSnapshotTarget[] =>
+    ids.map((photoId) => ({ photoId, asShot: 5200 }));
+  const hookOnCommit = () => {
+    const onEditCommit = vi.fn(async (_ctx: EditCommitCtx) => {});
+    registerCatalogHooks("test-ext", { id: "test.hooks", onEditCommit });
+    return onEditCommit;
+  };
+
+  beforeEach(() => {
+    useCatalogStore.setState({ photos: IDS.map((id) => photo(id)) });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("stores every photo's new state with one putEditStates call", async () => {
+    const { batches, singles } = installMemoryStorage(
+      original("a"),
+      edit([snapshot("Original", {}), snapshot("Exposure", { exposure: 0.5 })], 1, "b"),
+    ); // "c" was never edited
+
+    const changed = await appendStoredSnapshots(targetsOf(...IDS), "Test step", brighter);
+
+    expect(changed).toBe(3);
+    expect(singles).toHaveLength(0);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].map((state) => state.photoId)).toEqual(IDS);
+    expect(batches[0].map((state) => labelsOf(state.stack))).toEqual([
+      ["Original", "Test step"],
+      ["Original", "Exposure", "Test step"],
+      ["Original", "Test step"],
+    ]);
+    expect(batches[0].map((state) => state.currentIndex)).toEqual([1, 2, 1]);
+  });
+
+  it("works each photo out from its own stored edit", async () => {
+    const { batches } = installMemoryStorage(
+      edit(
+        [
+          snapshot("First", { exposure: 0.25 }),
+          snapshot("Second", { exposure: 0.5 }),
+          snapshot("Third", { exposure: 0.75 }),
+        ],
+        1,
+        "a",
+      ),
+    );
+    const next = vi.fn(brighter);
+
+    await appendStoredSnapshots(
+      [
+        { photoId: "a", asShot: 5200 },
+        { photoId: "c", asShot: 4300 },
+      ],
+      "Test step",
+      next,
+    );
+
+    // "a" continues from the snapshot under its cursor and drops what lay past it.
+    expect(next.mock.calls[0][0].params.exposure).toBe(0.5);
+    expect(labelsOf(batches[0][0].stack)).toEqual(["First", "Second", "Test step"]);
+    // "c" was never edited, so it starts from its own as-shot temperature.
+    expect(next.mock.calls[1][0].params).toEqual(freshParams(4300));
+    expect(batches[0][1].stack[0].params).toEqual(freshParams(4300));
+    expect(labelsOf(batches[0][1].stack)).toEqual(["Original", "Test step"]);
+  });
+
+  it("leaves the photos next declines out of the batch and out of the announcements", async () => {
+    const { batches } = installMemoryStorage(
+      original("a"),
+      edit([snapshot("Exposure", { exposure: 1 })], 0, "b"),
+      original("c"),
+    );
+    const onEditCommit = hookOnCommit();
+
+    const changed = await appendStoredSnapshots(targetsOf(...IDS), "Test step", brightenOnce);
+
+    expect(changed).toBe(2);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].map((state) => state.photoId)).toEqual(["a", "c"]);
+    expect(onEditCommit.mock.calls.map(([ctx]) => ctx.photo.id)).toEqual(["a", "c"]);
+    expect(broadcast).toHaveBeenCalledTimes(2);
+  });
+
+  it("writes and announces nothing when next declines every photo", async () => {
+    const { batches, singles } = installMemoryStorage(original("a"));
+    const onEditCommit = hookOnCommit();
+
+    expect(await appendStoredSnapshots(targetsOf("a", "b"), "Test step", () => null)).toBe(0);
+
+    expect(batches).toHaveLength(0);
+    expect(singles).toHaveLength(0);
+    expect(onEditCommit).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("does nothing for no photos", async () => {
+    const { batches, singles } = installMemoryStorage();
+    const next = vi.fn(brighter);
+
+    expect(await appendStoredSnapshots([], "Test step", next)).toBe(0);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(batches).toHaveLength(0);
+    expect(singles).toHaveLength(0);
+  });
+
+  it("announces each stored photo once, after the whole batch is written", async () => {
+    const memory = installMemoryStorage(original("a"), original("b"));
+    const storedBeforeHook: number[] = [];
+    const onEditCommit = vi.fn(async (_ctx: EditCommitCtx) => {
+      storedBeforeHook.push(memory.written.length);
+    });
+    registerCatalogHooks("test-ext", { id: "test.hooks", onEditCommit });
+
+    await appendStoredSnapshots(targetsOf("a", "b"), "Test step", brighter);
+
+    expect(onEditCommit).toHaveBeenCalledTimes(2);
+    expect(storedBeforeHook).toEqual([2, 2]);
+    memory.batches[0].forEach((state, i) => {
+      const { photo: committed, editState } = onEditCommit.mock.calls[i][0];
+      expect(committed.id).toBe(state.photoId);
+      expect(editState).toEqual(state);
+      expect(broadcast).toHaveBeenCalledWith({
+        type: "edit-update",
+        payload: { photoId: state.photoId, params: state.stack[state.currentIndex].params },
+      });
+    });
+    expect(broadcast).toHaveBeenCalledTimes(2);
+  });
+
+  it("handles a photo listed twice once", async () => {
+    const { batches } = installMemoryStorage(original("a"));
+    const onEditCommit = hookOnCommit();
+
+    expect(await appendStoredSnapshots(targetsOf("a", "a"), "Test step", brighter)).toBe(1);
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(1);
+    expect(onEditCommit).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes and announces none of the photos when working one out fails", async () => {
+    const { written } = installMemoryStorage(original("a"), original("b"));
+    const onEditCommit = hookOnCommit();
+    let seen = 0;
+    const failsOnSecond = (base: StoredLook): StoredLook => {
+      if (++seen === 2) throw new Error("next failed");
+      return brighter(base);
+    };
+
+    await expect(
+      appendStoredSnapshots(targetsOf("a", "b"), "Test step", failsOnSecond),
+    ).rejects.toThrow("next failed");
+
+    expect(written).toHaveLength(0);
+    expect(onEditCommit).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("announces the other photos when announcing one throws, and logs it", async () => {
+    installMemoryStorage(original("a"), original("b"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failure = new Error("listener failed");
+    vi.mocked(broadcast).mockImplementationOnce(() => {
+      throw failure;
+    });
+    const onEditCommit = hookOnCommit();
+
+    expect(await appendStoredSnapshots(targetsOf("a", "b"), "Test step", brighter)).toBe(2);
+
+    expect(onEditCommit.mock.calls.map(([ctx]) => ctx.photo.id)).toEqual(["a", "b"]);
+    expect(broadcast).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.any(String), failure);
+  });
+
+  it("announces nothing when the write fails", async () => {
+    installMemoryStorage(original("a"));
+    vi.spyOn(catalogStorage(), "putEditStates").mockRejectedValue(new Error("disk full"));
+    const onEditCommit = hookOnCommit();
+
+    await expect(
+      appendStoredSnapshots(targetsOf("a"), "Test step", brighter),
+    ).rejects.toThrow("disk full");
+
+    expect(onEditCommit).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+});
+
+describe("appendStoredSnapshots — the photo open in Develop", () => {
+  const targets: StoredSnapshotTarget[] = [
+    { photoId: "a", asShot: 5200 },
+    { photoId: "b", asShot: 4300 },
+  ];
+  // Counts the reloads without replacing them.
+  const watchReloads = () => {
+    const loadEdit = vi.fn(useDevelopStore.getState().loadEdit);
+    useDevelopStore.setState({ loadEdit });
+    return loadEdit;
+  };
+
+  beforeEach(() => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+  });
+
+  it("is reloaded once, with the as-shot temperature it was given", async () => {
+    installMemoryStorage(original("a"), original("b"));
+    await useDevelopStore.getState().loadEdit("b", 4300);
+    const loadEdit = watchReloads();
+
+    await appendStoredSnapshots(targets, "Test step", brighter);
+
+    expect(loadEdit).toHaveBeenCalledTimes(1);
+    expect(loadEdit).toHaveBeenCalledWith("b", 4300);
+    const develop = useDevelopStore.getState();
+    expect(develop.photoId).toBe("b");
+    expect(labelsOf(develop.history)).toEqual(["Original", "Test step"]);
+    expect(develop.historyIndex).toBe(1);
+  });
+
+  it("holds its new step before any photo's hooks run", async () => {
+    installMemoryStorage(original("a"), original("b"));
+    await useDevelopStore.getState().loadEdit("b", 4300);
+    const historyInHook: string[][] = [];
+    registerCatalogHooks("test-ext", {
+      id: "test.hooks",
+      onEditCommit: async () => {
+        historyInHook.push(labelsOf(useDevelopStore.getState().history));
+      },
+    });
+
+    await appendStoredSnapshots(targets, "Test step", brighter);
+
+    // A hook is awaited, and a commit or undo meanwhile writes Develop's history back.
+    expect(historyInHook).toEqual([
+      ["Original", "Test step"],
+      ["Original", "Test step"],
+    ]);
+  });
+
+  it("keeps the step when Develop commits while the first photo's hooks run", async () => {
+    const { written } = installMemoryStorage(original("a"), original("b"));
+    await useDevelopStore.getState().loadEdit("b", 4300);
+    registerCatalogHooks("test-ext", {
+      id: "test.hooks",
+      onEditCommit: async ({ photo: committed }) => {
+        if (committed.id !== "a") return;
+        useDevelopStore.getState().setParam("contrast", 20);
+        await useDevelopStore.getState().commitEdit("Contrast");
+      },
+    });
+
+    await appendStoredSnapshots(targets, "Test step", brighter);
+
+    const { stack } = written[written.length - 1];
+    expect(labelsOf(stack)).toEqual(["Original", "Test step", "Contrast"]);
+    expect(stack[2].params.exposure).toBe(1);
+  });
+
+  it("is not reloaded when its photo is among those next declines", async () => {
+    installMemoryStorage(original("a"), edit([snapshot("Exposure", { exposure: 1 })], 0, "b"));
+    await useDevelopStore.getState().loadEdit("b", 4300);
+    const loadEdit = watchReloads();
+
+    await appendStoredSnapshots(targets, "Test step", brightenOnce);
+
+    expect(loadEdit).not.toHaveBeenCalled();
+  });
+
+  it("is not reloaded when another photo is open", async () => {
+    installMemoryStorage(original("a"), original("b"), original("c"));
+    useCatalogStore.setState({ photos: [photo("a"), photo("b"), photo("c")] });
+    await useDevelopStore.getState().loadEdit("c", 5200);
+    const loadEdit = watchReloads();
+
+    await appendStoredSnapshots(targets, "Test step", brighter);
+
+    expect(loadEdit).not.toHaveBeenCalled();
+    expect(useDevelopStore.getState().photoId).toBe("c");
+  });
+});
+
+describe("storedSnapshotTargets", () => {
+  it("lists the catalog photos among the ids, in order, with their as-shot temperature", () => {
+    useCatalogStore.setState({
+      photos: [photo("a"), { ...photo("b"), exif: { colorTemperature: 4300 } }],
+    });
+
+    expect(storedSnapshotTargets(["b", "gone", "a"])).toEqual([
+      { photoId: "b", asShot: 4300 },
+      { photoId: "a", asShot: NEUTRAL_TEMPERATURE_K },
+    ]);
   });
 });

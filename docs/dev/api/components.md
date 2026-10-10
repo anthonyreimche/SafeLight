@@ -93,7 +93,7 @@ The Library grid cell: cached preview, selection/active border, color-label dot,
 |---|---|---|
 | `photo` | `CatalogPhoto` | The record to render. |
 | `selected` | `boolean` | Part of a multi-selection (accent ring). |
-| `active` | `boolean` | The photo open in Develop/Loupe (brightest ring). |
+| `active` | `boolean` | The photo open in Develop (brightest ring). |
 | `size` | `number` | Cell size in px (square). |
 | `onClick` | `(id, e: React.MouseEvent) => void` | — |
 | `onDoubleClick` | `(id) => void` | Optional. |
@@ -109,7 +109,7 @@ The Library list-view row — the same cell in row form: preview, color-label ed
 |---|---|---|
 | `photo` | `CatalogPhoto` | The record to render. |
 | `selected` | `boolean` | Part of a multi-selection. |
-| `active` | `boolean` | The photo open in Develop/Loupe. |
+| `active` | `boolean` | The photo open in Develop. |
 | `compact` | `boolean` | Optional — drop the dimension and camera columns, for a narrow container (a filmstrip rail). |
 | `onClick` | `(id, e: React.MouseEvent) => void` | — |
 | `onDoubleClick` | `(id) => void` | — |

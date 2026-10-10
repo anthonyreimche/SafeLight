@@ -29,6 +29,17 @@ export interface CatalogPhoto {
   /** Set when the last decode attempt failed (no thumbnail). Human-readable
    *  reason for the grid's warning tooltip; cleared once a preview is built. */
   decodeError?: string;
+  /** The editFingerprint of the edit the stored preview was rendered with.
+   *  Undefined when the preview was built from the file, without any edit. The
+   *  edit can change without a new preview (Paste Settings, Update processing,
+   *  an extension), so Develop draws the preview first only while this matches
+   *  the edit it opens with. */
+  previewEdit?: string;
+  /** The rotation the stored preview was made at; undefined means `rotation`. They
+   *  can differ: a turn is stored before its preview, whose write can fail or be cut
+   *  short by a quit. A preview made at another rotation is never shown: one is
+   *  built from the file instead. */
+  previewRotation?: number;
   /** Set on a *virtual copy* — a second catalog record that shares another
    *  photo's source file but keeps its own id, edits and metadata. Holds the id
    *  of the master record (the one that owns the file on disk). A virtual copy
@@ -41,6 +52,37 @@ export interface CatalogPhoto {
    *  displayed/exported name folds them together as `base_<copyName>.ext` (see
    *  catalog/copy-name.ts). Undefined on a master. */
   copyName?: string;
+}
+
+/** A photo record as catalog.json stores it. The live file handles, the preview
+ *  blob and its object URL belong to the window holding the record. */
+export type StoredPhoto = Omit<
+  CatalogPhoto,
+  "directoryHandle" | "fileHandle" | "thumbnailBlob" | "thumbnailUrl"
+>;
+
+export function storedPhoto(photo: CatalogPhoto): StoredPhoto {
+  const {
+    directoryHandle: _d,
+    fileHandle: _f,
+    thumbnailBlob: _b,
+    thumbnailUrl: _u,
+    ...stored
+  } = photo;
+  return stored;
+}
+
+/** The record `stored`, which another window wrote, with this window's own
+ *  handles, preview blob and URL from `local`. A field the other window cleared
+ *  by leaving it out is cleared here too. */
+export function mergeStoredPhoto(local: CatalogPhoto, stored: StoredPhoto): CatalogPhoto {
+  return {
+    ...stored,
+    directoryHandle: local.directoryHandle,
+    fileHandle: local.fileHandle,
+    thumbnailBlob: local.thumbnailBlob,
+    thumbnailUrl: local.thumbnailUrl,
+  };
 }
 
 export type ColorLabel = "none" | "red" | "yellow" | "green" | "blue" | "purple";

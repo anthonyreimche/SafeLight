@@ -27,6 +27,7 @@ import {
 import { BUILTIN_RESOLVED, withPipeline, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { ProcessingStageContribution } from "@/extensions/types";
 import { encodeHalf } from "@/raw/half-float";
+import { toneHighlights } from "@/rendering/local-tone";
 import { BUILTIN_DENOISE_ID, denoiseBag } from "./builtin-denoise";
 import { WebGLRenderer } from "./renderer";
 import {
@@ -851,7 +852,7 @@ describe("a display transform that skips the tone shoulder", () => {
   ): number[] {
     return withRenderer({ stages: [], pipeline }, (renderer) => {
       renderer.setImage(floatImage(16, 16, () => texel));
-      renderer.setParams(identityParams({ highlights }));
+      renderer.setParams(identityParams({ highlights, processVersion: CURRENT_PROCESS_VERSION }));
       return sceneAt(renderer);
     });
   }
@@ -899,10 +900,25 @@ describe("a display transform that skips the tone shoulder", () => {
     expect(Math.abs(luma(lifted) - coreLifted)).toBeLessThan(TOLERANCE);
   });
 
+  it("keeps the core shoulder on photos edited before the current processing", () => {
+    // Old edits never change: installing a transform update that sets the
+    // flag must leave a version 1 photo exactly as it was.
+    const frame = (pipeline: ResolvedPipeline, processVersion: number) =>
+      withRenderer({ stages: [], pipeline }, (renderer) => {
+        renderer.setImage(floatImage(16, 16, () => BRIGHT));
+        renderer.setParams(identityParams({ processVersion }));
+        return capture(renderer);
+      });
+    const v1 = worstDifference(frame(SHOULDERLESS, LEGACY_PROCESS_VERSION), frame(SHOULDERED, LEGACY_PROCESS_VERSION));
+    const v2 = worstDifference(frame(SHOULDERLESS, CURRENT_PROCESS_VERSION), frame(SHOULDERED, CURRENT_PROCESS_VERSION));
+    expect(v1, `version 1 ${v1}`).toBe(0);
+    expect(v2, `version 2 ${v2}`).toBeGreaterThan(0.02);
+  });
+
   it("follows the transform through a one-off render and back", () => {
     withRenderer({ stages: [], pipeline: SHOULDERED }, (renderer) => {
       renderer.setImage(floatImage(16, 16, () => BRIGHT));
-      renderer.setParams(identityParams());
+      renderer.setParams(identityParams({ processVersion: CURRENT_PROCESS_VERSION }));
       const live = luma(sceneAt(renderer));
       const oneOff = luma(
         withPipeline(renderer, SHOULDERLESS, SHOULDERED, () => sceneAt(renderer)),
@@ -939,7 +955,7 @@ describe("a display transform that skips the tone shoulder", () => {
       };
       return withRenderer({ stages: [], pipeline }, (renderer) => {
         renderer.setImage(floatImage(16, 16, () => texel));
-        renderer.setParams(identityParams({ masks: [mask] }));
+        renderer.setParams(identityParams({ masks: [mask], processVersion: CURRENT_PROCESS_VERSION }));
         return luma(sceneAt(renderer));
       });
     }
@@ -1260,7 +1276,8 @@ describe("a heal spot on a frame with values outside [0, 1]", () => {
   it("clips the whole frame to [0, 1] on version 1, as it always has", () => {
     const frame = skyFrame(healed(V1));
     for (const [x, y] of [[8, 8], [24, 4]] as const) {
-      for (const channel of sceneAt(frame, x, y)) expect(channel).toBeCloseTo(1, 1);
+      // Version 1 keeps the core shoulder under a skip-shoulder transform, so the clipped 1.0 reads through it.
+      for (const channel of sceneAt(frame, x, y)) expect(channel).toBeCloseTo(toneHighlights(1, 0, 0, false), 1);
     }
     const [r, g, b] = sceneAt(frame, 8, 24);
     expect(r).toBeCloseTo(BELOW_BLACK[0], 1);
@@ -1551,6 +1568,105 @@ describe("a retouched frame on a driver that can't render to an RGBA16F copy", (
       target.restore();
       norm16.restore();
     }
+  });
+});
+
+// The High bit-depth setting picks the copy a version 1 photo's spots are healed into:
+// RGBA16 when it is on and the driver has EXT_texture_norm16, else RGBA8. A version 2
+// photo's copy is half-float whatever the setting says, because either of the others
+// would clip the whole frame to [0, 1]. SwiftShader has no EXT_texture_norm16, so the
+// setting would change nothing here without a stand-in. This one reports the extension,
+// backs each RGBA16 texture with RGBA8 storage (both hold [0, 1] only) and lists the
+// size of every RGBA16 copy the renderer allocates, the constructor's 2x2 probe left
+// out. Unlike emulateRgba16MipmapBug it mipmaps them, so a frame develops from one.
+function standInForNorm16(gl: WebGL2RenderingContext): { copies: string[]; restore(): void } {
+  const original = { getExtension: gl.getExtension, texImage2D: gl.texImage2D };
+  const copies: string[] = [];
+
+  gl.getExtension = (name: string) =>
+    name === "EXT_texture_norm16"
+      ? { RGBA16_EXT }
+      : Reflect.apply(original.getExtension, gl, [name]);
+  gl.texImage2D = (...args: unknown[]) => {
+    const [target, level, internalFormat, width, height, border] = args;
+    if (internalFormat !== RGBA16_EXT) {
+      Reflect.apply(original.texImage2D, gl, args);
+      return;
+    }
+    if (Number(width) > 2 || Number(height) > 2) copies.push(`${width}x${height}`);
+    Reflect.apply(original.texImage2D, gl, [
+      target, level, gl.RGBA8, width, height, border,
+      gl.RGBA, gl.UNSIGNED_BYTE, null,
+    ]);
+  };
+
+  return {
+    copies,
+    restore() {
+      Object.assign(gl, original);
+    },
+  };
+}
+
+describe("the High bit-depth setting on a retouched frame", () => {
+  /** One frame of the speckled sky with its speck healed, from a renderer on a driver
+   *  that has EXT_texture_norm16, and the size of each RGBA16 copy that renderer made. */
+  function healedSky(
+    version: Partial<DevelopParams>,
+    highBitDepth: boolean,
+  ): { frame: Frame; copies: string[] } {
+    const norm16 = standInForNorm16(glHarness().gl);
+    try {
+      const frame = withRenderer(
+        { stages: [], pipeline: WIDE_PROBE, highBitDepth },
+        (renderer) => {
+          renderer.setImage(SPECKLED_SKY);
+          renderer.setParams(healed(version));
+          return capture(renderer);
+        },
+      );
+      return { frame, copies: norm16.copies };
+    } finally {
+      norm16.restore();
+    }
+  }
+
+  /** The healed speck and the sky beside it still show the sky's 4.0, and the colour
+   *  below black keeps its blue. */
+  function expectFullRange(frame: Frame): void {
+    for (const [x, y] of [[8, 8], [24, 4]] as const) {
+      for (const channel of sceneAt(frame, x, y)) expect(channel).toBeCloseTo(SKY, 1);
+    }
+    expect(sceneAt(frame, 8, 24)[2]).toBeCloseTo(BELOW_BLACK[2], 1);
+  }
+
+  /** The same pixels held to [0, 1]: the sky is white and the blue below black is black. */
+  function expectClipped(frame: Frame): void {
+    for (const [x, y] of [[8, 8], [24, 4]] as const) {
+      // Version 1 keeps the core shoulder under a skip-shoulder transform, so the clipped 1.0 reads through it.
+      for (const channel of sceneAt(frame, x, y)) expect(channel).toBeCloseTo(toneHighlights(1, 0, 0, false), 1);
+    }
+    expect(sceneAt(frame, 8, 24)[2]).toBeCloseTo(0, 1);
+  }
+
+  for (const [state, highBitDepth] of [["off", false], ["on", true]] as const) {
+    it(`develops a version 2 photo from the half-float copy with the setting ${state}`, () => {
+      const { frame, copies } = healedSky(V2, highBitDepth);
+      expect(copies).toEqual([]);
+      expectFullRange(frame);
+    });
+  }
+
+  it("develops a version 1 photo from an 8-bit copy with the setting off", () => {
+    const { frame, copies } = healedSky(V1, false);
+    expect(copies).toEqual([]);
+    expectClipped(frame);
+  });
+
+  it("develops a version 1 photo from a 16-bit copy with the setting on", () => {
+    const { frame, copies } = healedSky(V1, true);
+    expect(copies).toEqual(["32x32"]);
+    expectClipped(frame);
   });
 });
 

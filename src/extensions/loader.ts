@@ -26,8 +26,9 @@ import { applySavedTheme } from "./themes";
 import { makeScopedAPI } from "./host";
 import { deleteExtensionSettings } from "./ext-settings";
 import { setExtensionName } from "./param-registry";
-import { BUILTIN_EXTENSIONS } from "./builtin";
-import { isNewer } from "@/update/semver";
+import { BUILTIN_EXTENSIONS, type BuiltinExtension } from "./builtin";
+import { isReservedExtensionId, reservedIdReason } from "./core-extension";
+import { isNewer, isPrerelease } from "@/update/semver";
 import { repoFor } from "./sources";
 import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
 import { importPluginModule } from "./plugin-module";
@@ -37,6 +38,13 @@ import {
   bannedReasonForManifest,
   flagBannedExtension,
 } from "./trust";
+import {
+  type ExtensionKind,
+  extensionKinds,
+  forgetExtension,
+  noteExtensionRunning,
+} from "./extension-kinds";
+import { keptVersion, setKept } from "./pins";
 
 const loaded = new Map<string, ExtensionModule>();
 
@@ -78,12 +86,24 @@ function persistDisabled(ids: string[]): void {
   } catch {}
 }
 
-/** Activate/deactivate in this window (state is already persisted). */
+// Built-ins running in this window. A built-in's activate() isn't safe to run
+// twice, so turning on one that is already running leaves it alone.
+const activeBuiltins = new Set<string>();
+
+function activateBuiltin(ext: BuiltinExtension): void {
+  ext.activate(makeScopedAPI(ext.id));
+  activeBuiltins.add(ext.id);
+  noteExtensionRunning(ext.id);
+}
+
+/** Activate/deactivate in this window (state is already persisted). An
+ *  extension already in the requested state is left as it is. */
 async function applyEnablement(id: string, enabled: boolean): Promise<void> {
   const builtin = BUILTIN_EXTENSIONS.find((b) => b.id === id);
   if (!enabled) {
     if (builtin) {
-      builtin.deactivate?.(); // tear down side effects (e.g. console patches)
+      // tear down side effects (e.g. console patches)
+      if (activeBuiltins.delete(id)) builtin.deactivate?.();
     } else {
       loaded.get(id)?.deactivate?.();
       loaded.delete(id);
@@ -92,7 +112,8 @@ async function applyEnablement(id: string, enabled: boolean): Promise<void> {
     return;
   }
   if (builtin) {
-    builtin.activate(makeScopedAPI(id));
+    if (activeBuiltins.has(id)) return;
+    activateBuiltin(builtin);
   } else {
     const native = window.safelightNative;
     if (!native) return;
@@ -109,6 +130,18 @@ async function applyEnablement(id: string, enabled: boolean): Promise<void> {
   applySavedTheme(); // the saved theme may belong to the re-enabled extension
 }
 
+// Changes run one at a time, in the order they were asked for. Starting an
+// external extension waits on its import, so a change overlapping one still in
+// flight could leave the extension running while it is recorded as off, or
+// start it twice.
+let enablementQueue: Promise<unknown> = Promise.resolve();
+
+function queueEnablement<T>(change: () => Promise<T>): Promise<T> {
+  const run = enablementQueue.then(() => change());
+  enablementQueue = run.catch(() => {});
+  return run;
+}
+
 export async function setExtensionEnabled(
   id: string,
   enabled: boolean,
@@ -117,7 +150,7 @@ export async function setExtensionEnabled(
   const ids = useDisabledExtensions.getState().ids.filter((x) => x !== id);
   if (!enabled) ids.push(id);
   persistDisabled(ids);
-  await applyEnablement(id, enabled);
+  await queueEnablement(() => applyEnablement(id, enabled));
 }
 
 /** Follow enable/disable made in other windows. Call once at boot. */
@@ -128,9 +161,87 @@ export function initEnablement(): void {
     const prev = useDisabledExtensions.getState().ids;
     useDisabledExtensions.setState({ ids: next });
     for (const id of next.filter((x) => !prev.includes(x)))
-      void applyEnablement(id, false);
+      void queueEnablement(() => applyEnablement(id, false));
     for (const id of prev.filter((x) => !next.includes(x)))
-      void applyEnablement(id, true);
+      void queueEnablement(() => applyEnablement(id, true));
+  });
+}
+
+// ─── Saved layouts ─────────────────────────────────────────────────────────
+// A saved layout remembers which extensions that only add interface (panels,
+// tools, themes) are on, so picking it can switch them off for room and memory.
+// It never switches the locked core, a built-in kept across layouts, or an
+// extension that renders into photos, nor one never seen running, which could
+// be either.
+
+/** Whether a saved layout may switch `id` on or off, given what each
+ *  extension has been seen doing. */
+function layoutSwitches(id: string, kinds: Record<string, ExtensionKind>): boolean {
+  const builtin = BUILTIN_EXTENSIONS.find((b) => b.id === id);
+  if (builtin?.locked || builtin?.keepAcrossLayouts) return false;
+  return Object.hasOwn(kinds, id) && kinds[id] === "interface";
+}
+
+/** On/off, as the user has them now, for every extension a layout switches. */
+export function captureLayoutExtensions(): Record<string, boolean> {
+  const kinds = extensionKinds();
+  const states: Record<string, boolean> = {};
+  for (const id of Object.keys(kinds))
+    if (layoutSwitches(id, kinds)) states[id] = !isExtensionDisabled(id);
+  return states;
+}
+
+/** The entries of `states` a layout may switch that differ from the user's. */
+function layoutChanges(states: Record<string, boolean>): [string, boolean][] {
+  const kinds = extensionKinds();
+  return Object.entries(states).filter(
+    (e): e is [string, boolean] =>
+      typeof e[1] === "boolean" &&
+      layoutSwitches(e[0], kinds) &&
+      e[1] !== !isExtensionDisabled(e[0]),
+  );
+}
+
+/** True when applying `states` would switch nothing. */
+export function layoutExtensionsMatch(states: Record<string, boolean>): boolean {
+  return layoutChanges(states).length === 0;
+}
+
+/** Switch extensions to the states a saved layout remembers, after any change
+ *  already under way, and resolve once they are running or stopped. One no
+ *  longer installed, or banned since, is left alone. The disabled list is
+ *  written once, so other windows follow the whole switch from one change; an
+ *  extension that fails to start is logged and the rest still switch. */
+export function applyLayoutExtensions(states: Record<string, boolean>): Promise<void> {
+  return queueEnablement(async () => {
+    const changes = layoutChanges(states);
+    if (changes.length === 0) return;
+    let installed: ExtensionManifest[] = [];
+    try {
+      installed = (await window.safelightNative?.plugins.list()) ?? [];
+    } catch {}
+    const switchable = changes.filter(([id]) => {
+      if (BUILTIN_EXTENSIONS.some((b) => b.id === id)) return true;
+      const m = installed.find((x) => x.id === id);
+      return !!m && !bannedReasonForManifest(m);
+    });
+    if (switchable.length === 0) return;
+    const on = switchable.filter(([, enabled]) => enabled).map(([id]) => id);
+    const off = switchable.filter(([, enabled]) => !enabled).map(([id]) => id);
+    persistDisabled([
+      ...useDisabledExtensions.getState().ids.filter((x) => !on.includes(x)),
+      ...off,
+    ]);
+    const turn = async (id: string, enabled: boolean) => {
+      try {
+        await applyEnablement(id, enabled);
+      } catch (e) {
+        console.error(`[extensions] the layout could not switch ${id}:`, e);
+      }
+    };
+    // Stop first, so what starts next has the memory the others gave back.
+    for (const id of off) await turn(id, false);
+    for (const id of on) await turn(id, true);
   });
 }
 
@@ -178,12 +289,16 @@ export function loadBuiltins(): void {
   for (const ext of BUILTIN_EXTENSIONS) {
     if (ext.locked || !isExtensionDisabled(ext.id)) {
       setExtensionName(ext.id, ext.name);
-      ext.activate(makeScopedAPI(ext.id));
+      activateBuiltin(ext);
     }
   }
 }
 
+/** Import and activate an installed extension. Every caller goes through here, so
+ *  the refusal of a reserved id (core-extension.ts) comes before the bundle is
+ *  even imported. */
 async function loadPlugin(manifest: ExtensionManifest): Promise<void> {
+  if (isReservedExtensionId(manifest.id)) throw new Error(reservedIdReason(manifest.id));
   if (loaded.has(manifest.id)) return;
   // Cache-bust by version: the renderer caches a dynamic import() by URL, so
   // without a per-version query an updated bundle keeps running the module that
@@ -200,10 +315,14 @@ async function loadPlugin(manifest: ExtensionManifest): Promise<void> {
     throw e;
   }
   loaded.set(manifest.id, mod as ExtensionModule);
+  noteExtensionRunning(manifest.id);
 }
 
-/** Stop a running external extension and sweep its contributions. */
+/** Stop a running external extension and sweep its contributions. A reserved id
+ *  is never one: it is Safelight's own, so sweeping it would take Safelight's
+ *  contributions with it. */
 function teardown(id: string): void {
+  if (isReservedExtensionId(id)) return;
   loaded.get(id)?.deactivate?.();
   loaded.delete(id);
   unregisterExtension(id);
@@ -233,7 +352,7 @@ async function enforceBansOnLoaded(): Promise<void> {
 
 export async function loadExternalPlugins(): Promise<void> {
   try {
-    await loadExternalPluginsOnce();
+    await queueEnablement(loadExternalPluginsOnce);
   } finally {
     useExternalPluginsSettled.setState({ settled: true });
   }
@@ -334,25 +453,45 @@ async function keepSettled(id: string): Promise<void> {
   }
 }
 
-const inflight = new Map<string, Promise<ExtensionManifest>>();
+/** The latest install requested for each repo, with the version it asked for. */
+const inflight = new Map<string, { version?: string; run: Promise<ExtensionManifest> }>();
 
 /** Download `spec` and put it live. `enable` clears the disabled flag first (a
  *  fresh install always starts enabled); an update leaves the user's choice
- *  alone, so a disabled extension gets the new files and stays off. One run per
- *  repo at a time: a click racing the background poll joins the same run. */
-function installAndActivate(spec: string, enable: boolean): Promise<ExtensionManifest> {
+ *  alone, so a disabled extension gets the new files and stays off. One install
+ *  per repo at a time, since they write the same folder: a request for the
+ *  version already in flight (or queued) joins it, and a different version waits
+ *  until the install ahead of it settles, success or failure. */
+function installAndActivate(
+  spec: string,
+  enable: boolean,
+  version?: string,
+): Promise<ExtensionManifest> {
   const key = spec.trim().toLowerCase();
-  const running = inflight.get(key);
-  if (running) return running;
-  const run = performInstall(spec, enable).finally(() => inflight.delete(key));
-  inflight.set(key, run);
+  const prior = inflight.get(key);
+  if (prior && prior.version === version) return prior.run;
+  const run = prior
+    ? prior.run.catch(() => undefined).then(() => performInstall(spec, enable, version))
+    : performInstall(spec, enable, version);
+  const entry = { version, run };
+  inflight.set(key, entry);
+  const forget = () => {
+    if (inflight.get(key) === entry) inflight.delete(key);
+  };
+  run.then(forget, forget);
   return run;
 }
 
-async function performInstall(spec: string, enable: boolean): Promise<ExtensionManifest> {
+async function performInstall(
+  spec: string,
+  enable: boolean,
+  version?: string,
+): Promise<ExtensionManifest> {
   const native = window.safelightNative;
   if (!native) throw new Error("Requires the desktop app.");
-  const manifest = await native.plugins.install(spec);
+  const manifest = await (version
+    ? native.plugins.install(spec, version)
+    : native.plugins.install(spec));
   const { id } = manifest;
   if (enable)
     persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
@@ -407,28 +546,39 @@ async function performInstall(spec: string, enable: boolean): Promise<ExtensionM
   return manifest;
 }
 
-export const installFromGitHub = (spec: string): Promise<ExtensionManifest> =>
-  installAndActivate(spec, true);
+/** Install `spec` from GitHub: its latest release (or its branch when it
+ *  publishes no releases), or the release `version` when given. */
+export const installFromGitHub = (spec: string, version?: string): Promise<ExtensionManifest> =>
+  installAndActivate(spec, true, version);
 
-/** Reinstall an installed extension from its repo's HEAD, keeping its settings
- *  and its enabled/disabled state. The install always pulls HEAD, whose latest
- *  commit carries the detected version (bumps aren't git tags). */
-export const updateExtension = (fullName: string): Promise<ExtensionManifest> =>
-  installAndActivate(fullName, false);
+/** Reinstall an installed extension at `version` (the one its update check
+ *  offered), keeping its settings and its enabled/disabled state. Updating
+ *  stops keeping an older version. */
+export async function updateExtension(
+  fullName: string,
+  version?: string,
+): Promise<ExtensionManifest> {
+  const manifest = await installAndActivate(fullName, false, version);
+  setKept(manifest.id, null);
+  return manifest;
+}
 
 export async function uninstallPlugin(id: string): Promise<void> {
   const native = window.safelightNative;
   teardown(id);
   deleteExtensionSettings(id); // forget its persisted settings too
   useExtStoreUI.getState().clearUpdate(id); // and its cached update check
+  setKept(id, null); // and any version it was kept at
+  forgetExtension(id); // and what it was seen doing, for saved layouts
   persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
   await native?.plugins.uninstall(id); // deletes <userData>/plugins/<id>/
 }
 
 // ─── Updates ───────────────────────────────────────────────────────────────
-// An extension's latest version is the `version` in its repo's default-branch
-// safelight.json — the same field the installed manifest exposes — so a pushed
-// bump is an update; no GitHub Release required. The remote minAppVersion
+// An extension's latest version is its newest GitHub release, or the `version`
+// in its default-branch safelight.json when it publishes no releases; the main
+// process reads both from the registry index when that lists the repo. Someone
+// on a pre-release is also offered newer pre-releases. The remote minAppVersion
 // travels with it: a release this build can't run is reported (requiresApp)
 // rather than offered.
 
@@ -479,7 +629,9 @@ export async function checkExtensionUpdate(
   if (!fetchRemote) return null;
   let remote: RemoteManifest | null;
   try {
-    remote = await fetchRemote(repo);
+    remote = await (isPrerelease(manifest.version)
+      ? fetchRemote(repo, { prerelease: true })
+      : fetchRemote(repo));
   } catch {
     return cached ?? null; // network hiccup — keep any prior result
   }
@@ -489,13 +641,14 @@ export async function checkExtensionUpdate(
 }
 
 /** Auto-update maintains what the user is running: it skips a version this
- *  build can't host, one that already failed to start here, and any extension
- *  the user has turned off. */
+ *  build can't host, one that already failed to start here, an extension kept
+ *  at an older version, and any extension the user has turned off. */
 const autoInstallable = (m: ExtensionManifest, info: ExtUpdateInfo): boolean =>
   info.hasUpdate &&
   !!info.latestTag &&
   !info.requiresApp &&
   info.failed?.version !== info.latestTag &&
+  !keptVersion(m.id) &&
   !isExtensionDisabled(m.id);
 
 /** Refresh update info for every installed extension, and auto-update the ones
@@ -527,7 +680,7 @@ export async function checkAllExtensionUpdates(force = false): Promise<void> {
       const repo = repoFor(m);
       if (!repo) continue;
       try {
-        await updateExtension(repo);
+        await updateExtension(repo, info.latestTag ?? undefined);
       } catch (e) {
         console.error(`[extensions] auto-update failed for ${m.id}:`, e);
       }

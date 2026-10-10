@@ -39,6 +39,11 @@ import type { AppModule } from "@/catalog/types";
 import type { ModuleLayoutDef, PanelPlacement } from "./types";
 import type { RegisteredPanel } from "./registry";
 import { detachedModule } from "@/state/detach";
+import {
+  applyLayoutExtensions,
+  captureLayoutExtensions,
+  layoutExtensionsMatch,
+} from "./loader";
 
 function PanelErrorBoundary({ id, children }: { id: string; children: ReactNode }) {
   return (
@@ -272,6 +277,10 @@ export interface UserLayout {
   id: string;
   name: string;
   modules: Partial<Record<string, ModuleLayoutDef>>;
+  /** On/off for the panel and tool extensions known when it was saved (see
+   *  captureLayoutExtensions). Absent from layouts saved before layouts
+   *  remembered extensions; applying one of those switches none. */
+  extensions?: Record<string, boolean>;
 }
 
 const USER_LAYOUTS_KEY = "sl_user_layouts";
@@ -306,8 +315,28 @@ function defaultLayoutName(layouts: Record<string, UserLayout>): string {
   }
 }
 
-/** Switch the active layout and rebuild the current module's dock. */
-export function applyDockLayout(id: string): void {
+// Counts applyDockLayout calls, so a layout still switching its extensions
+// doesn't replace one picked after it.
+let layoutRequests = 0;
+
+/** Switch the active layout and rebuild the current module's dock. A saved
+ *  layout that remembers extensions switches them first, so the panels they
+ *  bring are registered by the time the module's arrangement is resolved.
+ *  Resolves once the layout is showing; with nothing to switch, that happens
+ *  before this returns. */
+export function applyDockLayout(id: string): Promise<void> {
+  const request = ++layoutRequests;
+  const states = moduleEntry(useUserLayouts.getState().layouts, id)?.extensions;
+  if (!states || layoutExtensionsMatch(states)) {
+    showLayout(id);
+    return Promise.resolve();
+  }
+  return applyLayoutExtensions(states).then(() => {
+    if (request === layoutRequests) showLayout(id);
+  });
+}
+
+function showLayout(id: string): void {
   setActiveLayout(id);
   const m = useDockStore.getState().module;
   if (m) loadModuleLayout(m);
@@ -455,20 +484,26 @@ export function addUserLayout(name?: string): string {
       id,
       name: name?.trim() || defaultLayoutName(layouts),
       modules: captureCurrentLayout(),
+      extensions: captureLayoutExtensions(),
     },
   });
   setActiveLayout(id);
   return id;
 }
 
-/** Overwrite an existing user layout with the current arrangement. Entries for
- *  modules not registered right now (their extension is off) are kept. */
+/** Overwrite an existing user layout with the current arrangement and the
+ *  extensions on now. Entries for modules not registered right now (their
+ *  extension is off), and for extensions no longer known, are kept. */
 export function updateUserLayout(id: string): void {
   const existing = useUserLayouts.getState().layouts[id];
   if (!existing) return;
   persistUserLayouts({
     ...useUserLayouts.getState().layouts,
-    [id]: { ...existing, modules: { ...existing.modules, ...captureCurrentLayout() } },
+    [id]: {
+      ...existing,
+      modules: { ...existing.modules, ...captureCurrentLayout() },
+      extensions: { ...existing.extensions, ...captureLayoutExtensions() },
+    },
   });
   // The dock now matches the saved layout again, so re-select it (editing a
   // preset/layout flips the active id to Custom).

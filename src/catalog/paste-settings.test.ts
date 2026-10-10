@@ -4,7 +4,8 @@
 // be preserved in derived versions.
 
 // Paste settings onto Library photos: the pasted subset merges over each
-// photo's look, and a paste never moves a photo between process versions.
+// photo's look, a paste never moves a photo between process versions, and the
+// whole selection is stored in one catalog write.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pasteSettings } from "./paste-settings";
@@ -17,8 +18,13 @@ import {
   type DevelopParams,
   type EditState,
 } from "./types";
+import { broadcast } from "@/state/broadcast";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
+import { registerCatalogHooks, useRegistry } from "@/extensions/registry";
+import type { CatalogHooksContribution } from "@/extensions/types";
+
+type EditCommitCtx = Parameters<NonNullable<CatalogHooksContribution["onEditCommit"]>>[0];
 
 vi.mock("@/state/broadcast", () => ({
   broadcast: vi.fn(),
@@ -133,5 +139,78 @@ describe("pasteSettings — the photo open in Develop", () => {
     await pasteSettings([PHOTO], clip({ contrast: 10 }));
 
     expect(useDevelopStore.getState().history).toBe(history);
+  });
+});
+
+describe("pasteSettings — one catalog write for the selection", () => {
+  const IDS = ["a", "b", "c"];
+  const original = (photoId: string): EditState => ({
+    photoId,
+    currentIndex: 0,
+    stack: [{ timestamp: 0, label: "Original", params: freshParams() }],
+  });
+  // "b" was never edited.
+  const seed = () => installMemoryStorage(original("a"), original("c"));
+
+  beforeEach(() => {
+    useCatalogStore.setState({ photos: IDS.map((id) => photo(id)) });
+    vi.mocked(broadcast).mockClear();
+  });
+
+  afterEach(() => useRegistry.setState({ catalogHooks: {} }));
+
+  it("stores every photo with one putEditStates call and no putEditState call", async () => {
+    const { batches, singles } = seed();
+
+    expect(await pasteSettings([...IDS, "gone"], clip({ contrast: 10 }))).toBe(3);
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0].map((state) => state.photoId)).toEqual(IDS);
+    expect(singles).toHaveLength(0);
+    for (const { stack, currentIndex } of batches[0]) {
+      expect(stack[currentIndex].label).toBe("Paste Settings");
+      expect(stack[currentIndex].params.contrast).toBe(10);
+    }
+  });
+
+  it("runs the edit hooks and the broadcast once per photo", async () => {
+    seed();
+    const onEditCommit = vi.fn(async (_ctx: EditCommitCtx) => {});
+    registerCatalogHooks("test-ext", { id: "test.hooks", onEditCommit });
+
+    await pasteSettings(IDS, clip({ contrast: 10 }));
+
+    expect(onEditCommit.mock.calls.map(([ctx]) => ctx.photo.id)).toEqual(IDS);
+    expect(broadcast).toHaveBeenCalledTimes(3);
+    for (const photoId of IDS)
+      expect(broadcast).toHaveBeenCalledWith({
+        type: "edit-update",
+        payload: { photoId, params: expect.objectContaining({ contrast: 10 }) },
+      });
+  });
+
+  it("reloads the photo open in Develop once", async () => {
+    seed();
+    await useDevelopStore.getState().loadEdit("b");
+    const loadEdit = vi.fn(useDevelopStore.getState().loadEdit);
+    useDevelopStore.setState({ loadEdit });
+
+    await pasteSettings(IDS, clip({ contrast: 10 }));
+
+    expect(loadEdit).toHaveBeenCalledTimes(1);
+    expect(loadEdit.mock.calls[0][0]).toBe("b");
+    expect(useDevelopStore.getState().params.contrast).toBe(10);
+  });
+
+  it.each([
+    { selection: "empty", ids: [] },
+    { selection: "made of photos that aren't in the catalog", ids: ["gone", "missing"] },
+  ])("writes nothing when the selection is $selection", async ({ ids }) => {
+    const { batches, singles } = seed();
+
+    expect(await pasteSettings(ids, clip({ contrast: 10 }))).toBe(0);
+
+    expect(batches).toHaveLength(0);
+    expect(singles).toHaveLength(0);
   });
 });

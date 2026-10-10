@@ -7,18 +7,23 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { kelvinFromWhiteBalanceGains } from "@/rendering/blackbody";
 
 const h = vi.hoisted(() => ({
-  /** What the pooled libraw instance answers from metadata(). */
-  metadata: {} as Record<string, unknown>,
+  /** What the pooled libraw instance answers from metadata(); undefined is
+   *  how LibRaw's own C++ errors arrive. */
+  metadata: {} as Record<string, unknown> | undefined,
   /** What imageData() hands back: libraw's processed 16-bit frame. */
   pixels: undefined as Uint16Array | undefined,
-  /** Makes open() fail, the way an unsupported camera does. */
+  /** Makes open() reject, the way a crashed instance does. */
   openError: null as Error | null,
   /** Bytes handed to open(), in order. */
   opened: [] as Uint8Array[],
   /** Settings handed to open(), in order. */
   settings: [] as (Record<string, unknown> | undefined)[],
   acquired: 0,
+  /** Whether each pool request asked to wait as background work. */
+  background: [] as (boolean | undefined)[],
   released: [] as unknown[],
+  /** Instances handed back broken, for the pool to replace. */
+  discarded: [] as unknown[],
 }));
 
 vi.mock("./decode-pool", () => {
@@ -36,20 +41,32 @@ vi.mock("./decode-pool", () => {
     },
   };
   return {
-    acquireInstance: async () => {
+    acquireInstance: async (priority?: { background?: boolean }) => {
       h.acquired++;
+      h.background.push(priority?.background);
       return instance;
     },
     releaseInstance: (inst: unknown) => {
       h.released.push(inst);
     },
+    discardInstance: (inst: unknown) => {
+      h.discarded.push(inst);
+    },
   };
 });
 
 import { decodeRawFloatViaLibRaw, extractRawMetadata } from "./libraw-wasm-adapter";
+import type { DecodeFailure, RawFloatImage } from "./decode";
 
 const MIB = 1024 * 1024;
 const rawBytes = (size = 2 * MIB): ArrayBuffer => new ArrayBuffer(size);
+
+/** The decode of a 2 MiB file, failing the test when it gave no image. */
+async function decodedImage(): Promise<RawFloatImage> {
+  const result = await decodeRawFloatViaLibRaw(rawBytes());
+  if ("failure" in result) throw new Error(`no image: ${result.failure}`);
+  return result;
+}
 
 /** The smallest frame the adapter accepts: 2×2 three-channel 16-bit, with the
  *  first pixel lit to `level` in every channel and the rest black. */
@@ -84,8 +101,8 @@ function acesPixelFrame(srgb: readonly number[]): Uint16Array {
   return px;
 }
 
-function firstPixel(image: { data: Float32Array } | null): number[] {
-  return image ? Array.from(image.data.subarray(0, 3)) : [];
+function firstPixel(image: RawFloatImage | DecodeFailure): number[] {
+  return "failure" in image ? [] : Array.from(image.data.subarray(0, 3));
 }
 
 beforeEach(() => {
@@ -95,7 +112,9 @@ beforeEach(() => {
   h.opened = [];
   h.settings = [];
   h.acquired = 0;
+  h.background = [];
   h.released = [];
+  h.discarded = [];
   // libraw runs in a Worker on shared memory; Node has the latter, not the former.
   vi.stubGlobal("Worker", class {});
 });
@@ -148,11 +167,23 @@ describe("extractRawMetadata", () => {
     expect((await extractRawMetadata(rawBytes()))?.rawExposureBias).toBe(-0.72);
   });
 
-  it("answers undefined for a file libraw can't open, and still frees its slot", async () => {
-    h.openError = new Error("LibRaw: open_buffer() failed with code -2");
+  // LibRaw's own errors resolve undefined (see vendor/libraw-wasm/PATCHES.md),
+  // so a call that rejects is a crash: a trap or an abort leaves the instance's
+  // module unusable, and its slot goes back to the pool as a fresh instance.
+  it("answers undefined when the instance crashes opening a file, and has it replaced", async () => {
+    h.openError = new Error("RuntimeError: unreachable");
+
+    await expect(extractRawMetadata(rawBytes())).resolves.toBeUndefined();
+    expect(h.discarded).toHaveLength(1);
+    expect(h.released).toEqual([]);
+  });
+
+  it("hands the instance back for reuse when LibRaw can't read the file's metadata", async () => {
+    h.metadata = undefined;
 
     await expect(extractRawMetadata(rawBytes())).resolves.toBeUndefined();
     expect(h.released).toHaveLength(1);
+    expect(h.discarded).toEqual([]);
   });
 
   it("frees the pooled instance after a successful read", async () => {
@@ -181,20 +212,52 @@ describe("extractRawMetadata", () => {
 });
 
 describe("decodeRawFloatViaLibRaw", () => {
+  // LibRaw answering a file with nothing is the file's fault, not the
+  // instance's: the instance is as good as before.
+  it("hands the instance back for reuse after a file it can't use", async () => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
+    h.pixels = undefined;
+
+    expect(await decodeRawFloatViaLibRaw(rawBytes())).toMatchObject({ failure: "unsupported" });
+    expect(h.released).toHaveLength(1);
+    expect(h.discarded).toEqual([]);
+  });
+
+  it("hands the instance back for reuse when LibRaw's metadata came back empty", async () => {
+    h.metadata = undefined;
+    h.pixels = undefined;
+
+    expect(await decodeRawFloatViaLibRaw(rawBytes())).toMatchObject({ failure: "unsupported" });
+    expect(h.released).toHaveLength(1);
+    expect(h.discarded).toEqual([]);
+  });
+
+  // The pool serves the photo being opened before background work, so the
+  // decode has to say which it is.
+  it("asks the pool for a background slot when the decode is background work", async () => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
+    h.pixels = litPixelFrame(code(0.18));
+
+    await decodeRawFloatViaLibRaw(rawBytes(), { background: true });
+    await decodeRawFloatViaLibRaw(rawBytes());
+
+    expect(h.background).toEqual([true, undefined]);
+  });
+
   // libraw-wasm ignores the gamma it is asked for and always hands back
   // Rec.709-encoded samples; the float image must be scene-linear.
   it("linearises the Rec.709 transfer libraw-wasm bakes into its samples", async () => {
     h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
     h.pixels = litPixelFrame(code(0.222));
 
-    expect((await decodeRawFloatViaLibRaw(rawBytes()))?.data[1]).toBeCloseTo(0.222, 3);
+    expect((await decodedImage()).data[1]).toBeCloseTo(0.222, 3);
   });
 
   it("linearises the toe of that transfer too", async () => {
     h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
     h.pixels = litPixelFrame(code(0.01));
 
-    expect((await decodeRawFloatViaLibRaw(rawBytes()))?.data[1]).toBeCloseTo(0.01, 3);
+    expect((await decodedImage()).data[1]).toBeCloseTo(0.01, 3);
   });
 
   // libraw clips its output to the gamut it is asked for. ACES encloses every
@@ -260,7 +323,7 @@ describe("decodeRawFloatViaLibRaw", () => {
     h.metadata = { width: 2, height: 2, color_data: { cam_mul: [2.1, 1, 1.6, 1] } };
     h.pixels = litPixelFrame(code(1 / 2.1));
 
-    const image = await decodeRawFloatViaLibRaw(rawBytes());
+    const image = await decodedImage();
 
     expect(image?.data[1]).toBeCloseTo(1, 2);
   });
@@ -269,7 +332,7 @@ describe("decodeRawFloatViaLibRaw", () => {
     h.metadata = { width: 2, height: 2, color_data: { cam_mul: [579, 302, 485, 0] } };
     h.pixels = litPixelFrame(code(302 / 579));
 
-    expect((await decodeRawFloatViaLibRaw(rawBytes()))?.data[1]).toBeCloseTo(1, 2);
+    expect((await decodedImage()).data[1]).toBeCloseTo(1, 2);
   });
 
   it("falls back to the daylight multipliers when the camera set is unusable", async () => {
@@ -280,7 +343,7 @@ describe("decodeRawFloatViaLibRaw", () => {
     };
     h.pixels = litPixelFrame(code(1 / 2.4));
 
-    expect((await decodeRawFloatViaLibRaw(rawBytes()))?.data[1]).toBeCloseTo(1, 2);
+    expect((await decodedImage()).data[1]).toBeCloseTo(1, 2);
   });
 
   // Fujifilm's DR modes expose the sensor below the tagged ISO and let the
@@ -296,7 +359,7 @@ describe("decodeRawFloatViaLibRaw", () => {
     };
     h.pixels = litPixelFrame(code(1 / 2 ** 2.72));
 
-    const image = await decodeRawFloatViaLibRaw(rawBytes());
+    const image = await decodedImage();
 
     expect(image?.data[1]).toBeCloseTo(1, 2);
     expect(image?.rawExposureBias).toBe(-2.72);
@@ -312,7 +375,7 @@ describe("decodeRawFloatViaLibRaw", () => {
     };
     h.pixels = litPixelFrame(code(0.5));
 
-    const image = await decodeRawFloatViaLibRaw(rawBytes());
+    const image = await decodedImage();
 
     expect(image?.data[1]).toBeCloseTo(1, 2);
     expect(image?.rawExposureBias).toBe(-1);
@@ -327,7 +390,7 @@ describe("decodeRawFloatViaLibRaw", () => {
     };
     h.pixels = litPixelFrame(code(1));
 
-    const image = await decodeRawFloatViaLibRaw(rawBytes());
+    const image = await decodedImage();
 
     expect(image?.data[1]).toBeCloseTo(1, 2);
     expect(image?.rawExposureBias).toBeUndefined();
@@ -342,7 +405,7 @@ describe("decodeRawFloatViaLibRaw", () => {
     };
     h.pixels = litPixelFrame(code(0.25));
 
-    const image = await decodeRawFloatViaLibRaw(rawBytes());
+    const image = await decodedImage();
 
     expect(image?.data[1]).toBeCloseTo(1, 2);
     expect(image?.rawExposureBias).toBe(-2);

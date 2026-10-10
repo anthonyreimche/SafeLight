@@ -18,13 +18,22 @@
 // stays, so frames fail until the stages or transform change, and then recover.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CURRENT_PROCESS_VERSION, DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
+import {
+  CURRENT_PROCESS_VERSION,
+  DEFAULT_DEVELOP_PARAMS,
+  defaultMaskAdjustments,
+  type DevelopParams,
+  type Mask,
+  type RetouchSpot,
+} from "@/catalog/types";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
 
 /** What the worker hands a renderer it has just made, from the state it holds. */
 type SeedingMethod = "setCacheBudget" | "setContributedParams" | "setStageTextures" | "setParams";
+/** Renderer methods a test can make throw. */
+type FailingMethod = SeedingMethod | "setImage" | "uploadSource" | "bindSource";
 
 const { FakeRenderer } = vi.hoisted(() => {
   class FakeRenderer {
@@ -36,8 +45,10 @@ const { FakeRenderer } = vi.hoisted(() => {
     static stockError: Error | null = null;
     /** Thrown by render, as a frame that can't build its program does. */
     static renderError: Error | null = null;
+    /** Thrown by computeHistogram, as a readback that fails does. */
+    static histogramError: Error | null = null;
     /** Thrown by the method of that name, as a renderer that can't take what it is handed does. */
-    static failing: Partial<Record<SeedingMethod, Error>> = {};
+    static failing: Partial<Record<FailingMethod, Error>> = {};
 
     opts: unknown;
     colorBufferFloat = true;
@@ -49,7 +60,7 @@ const { FakeRenderer } = vi.hoisted(() => {
     /** capFloat16 of each setImage call. */
     capFloat16: boolean[] = [];
     /** The argument of each setParams call. */
-    paramsSeen: unknown[] = [];
+    paramsSeen: DevelopParams[] = [];
     pipeline: ResolvedPipeline | null = null;
     /** Each prepareProgram call: its version, and the pipeline the renderer held. */
     prepared: { version: number; pipeline: ResolvedPipeline | null }[] = [];
@@ -79,7 +90,7 @@ const { FakeRenderer } = vi.hoisted(() => {
       this.disposed = true;
     }
 
-    private failIfAsked(method: SeedingMethod) {
+    private failIfAsked(method: FailingMethod) {
       const error = FakeRenderer.failing[method];
       if (error) throw error;
     }
@@ -106,30 +117,68 @@ const { FakeRenderer } = vi.hoisted(() => {
 
     setStages(_stages: ProcessingStageContribution[]) {}
 
+    /** The size of the source it draws from: the image last set, uploaded and bound, or bound. */
+    sourceWidth = 0;
+    sourceHeight = 0;
+
+    private holdSource(image: { width: number; height: number }) {
+      this.sourceWidth = image.width;
+      this.sourceHeight = image.height;
+    }
+
     setImage(
-      _image: unknown,
+      image: { width: number; height: number },
       _maxEdge?: number,
       _isFallbackPreview?: boolean,
       _baseCurveForBitmap?: boolean,
       capFloat16 = false,
     ) {
+      this.failIfAsked("setImage");
       this.capFloat16.push(capFloat16);
+      this.holdSource(image);
     }
 
     setAsShotTemperature(_kelvin: number) {}
 
-    bindSource(_key: string, _maxEdge?: number) {
-      return false;
+    /** Keys bindSource finds resident. */
+    static resident = new Set<string>();
+    /** The size of every resident source. */
+    static residentSize = { width: 0, height: 0 };
+
+    bindSource(key: string, _maxEdge?: number) {
+      this.failIfAsked("bindSource");
+      const hit = FakeRenderer.resident.has(key);
+      if (hit) this.holdSource(FakeRenderer.residentSize);
+      return hit;
+    }
+
+    healSourceData() {
+      return null;
+    }
+
+    computeHistogram(_extended?: boolean) {
+      if (FakeRenderer.histogramError) throw FakeRenderer.histogramError;
+      const bins = () => new Uint32Array(256);
+      return { r: bins(), g: bins(), b: bins(), luma: bins() };
     }
 
     /** The key of each uploadSource call. */
     uploads: string[] = [];
 
-    uploadSource(key: string, ..._rest: unknown[]) {
+    uploadSource(
+      key: string,
+      image: { width: number; height: number },
+      _maxEdge?: number,
+      _isFallbackPreview?: boolean,
+      _baseCurveForBitmap?: boolean,
+      bind = true,
+    ) {
+      this.failIfAsked("uploadSource");
       this.uploads.push(key);
+      if (bind) this.holdSource(image);
     }
 
-    setParams(params: unknown) {
+    setParams(params: DevelopParams) {
       this.failIfAsked("setParams");
       this.paramsSeen.push(params);
     }
@@ -156,9 +205,21 @@ class FakeOffscreenCanvas {
   }
 
   transferToImageBitmap(): ImageBitmap {
-    return { width: this.width, height: this.height, close() {} };
+    const bitmap = {
+      width: this.width,
+      height: this.height,
+      closed: false,
+      close() {
+        bitmap.closed = true;
+      },
+    };
+    handedOut.push(bitmap);
+    return bitmap;
   }
 }
+
+/** Every bitmap a canvas handed out, and whether it was closed. */
+let handedOut: { closed: boolean }[];
 
 interface SelfStub {
   onmessage: ((e: MessageEvent<WorkerRequest>) => void) | null;
@@ -175,7 +236,11 @@ beforeEach(async () => {
   FakeRenderer.prepareError = null;
   FakeRenderer.stockError = null;
   FakeRenderer.renderError = null;
+  FakeRenderer.histogramError = null;
   FakeRenderer.failing = {};
+  FakeRenderer.resident = new Set();
+  FakeRenderer.residentSize = { width: 0, height: 0 };
+  handedOut = [];
   posted = [];
   selfStub = {
     onmessage: null,
@@ -384,8 +449,8 @@ describe("render-worker init seeding", () => {
     expect(FakeRenderer.instances[0].disposed).toBe(false);
 
     FakeRenderer.failing = {};
-    send({ cmd: "render" });
-    expect(posted.at(-1)).toMatchObject({ type: "frame" });
+    send({ cmd: "render", seq: 1 });
+    expect(posted.at(-1)).toMatchObject({ type: "frame", seq: 1 });
   });
 
   it("logs nothing when seeding goes through", () => {
@@ -428,8 +493,8 @@ describe("render-worker develop program warm-up", () => {
     expect(logged).not.toHaveBeenCalled();
 
     // Nothing is left behind to take frames.
-    send({ cmd: "render" });
-    expect(posted.map((msg) => msg.type)).toEqual(["initError"]);
+    send({ cmd: "render", seq: 1 });
+    expect(posted.map((msg) => msg.type)).toEqual(["initError", "frameSkipped"]);
   });
 
   it("reports the stock program's own error when both programs fail", () => {
@@ -482,13 +547,17 @@ describe("render-worker develop program warm-up", () => {
       FakeRenderer.prepareError = new Error("stages");
       send(INIT);
       FakeRenderer.renderError = new Error("Shader compile failed: stages");
-      send({ cmd: "render" });
-      expect(posted.at(-1)).toEqual({ type: "error", message: "Shader compile failed: stages" });
+      send({ cmd: "render", seq: 1 });
+      expect(posted.at(-1)).toEqual({
+        type: "renderError",
+        seq: 1,
+        message: "Shader compile failed: stages",
+      });
 
       FakeRenderer.renderError = null;
       send({ cmd: "setStages", stages: [] });
-      send({ cmd: "render" });
-      expect(posted.at(-1)).toMatchObject({ type: "frame" });
+      send({ cmd: "render", seq: 2 });
+      expect(posted.at(-1)).toMatchObject({ type: "frame", seq: 2 });
     });
   });
 
@@ -539,13 +608,112 @@ describe("render-worker develop program warm-up", () => {
   });
 });
 
+// The bridge keeps one render in flight and sends the next only once that one is
+// answered, so each render is answered exactly once, by its seq, whatever becomes of
+// it: with its frame, with frameSkipped when there is nothing to draw it with or from,
+// or with renderError when drawing it throws. Never with the generic error, which
+// carries no seq and would leave the bridge waiting.
 describe("render-worker frames", () => {
-  it("answers a render that throws with a generic error and posts no frame", () => {
-    send({ cmd: "init", width: 64, height: 64, highBitDepth: false });
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+
+  it("answers a render with its frame, carrying its seq", () => {
+    send(INIT);
+    posted = [];
+    send({ cmd: "render", seq: 7 });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ type: "frame", seq: 7, bitmap: handedOut[0] });
+    expect(posted[0]).not.toHaveProperty("histogram");
+  });
+
+  it("carries the histogram the render asked for", () => {
+    send(INIT);
+    posted = [];
+    send({ cmd: "render", seq: 8, wantHistogram: true, wantExtended: true });
+    expect(posted).toEqual([
+      expect.objectContaining({ type: "frame", seq: 8, histogram: expect.any(Object) }),
+    ]);
+  });
+
+  it("answers frameSkipped to a render that arrives before init", () => {
+    send({ cmd: "render", seq: 1, wantHistogram: true });
+    expect(posted).toEqual([{ type: "frameSkipped", seq: 1 }]);
+  });
+
+  it("answers frameSkipped while init has failed", () => {
+    FakeRenderer.throwOnConstruct = true;
+    send(INIT);
+    posted = [];
+    send({ cmd: "render", seq: 2 });
+    expect(posted).toEqual([{ type: "frameSkipped", seq: 2 }]);
+  });
+
+  it("answers frameSkipped once the renderer is disposed", () => {
+    send(INIT);
+    send({ cmd: "dispose" });
+    posted = [];
+    send({ cmd: "render", seq: 3 });
+    expect(posted).toEqual([{ type: "frameSkipped", seq: 3 }]);
+  });
+
+  it("answers frameSkipped between photos, and the frame once the next source is set", () => {
+    send(INIT);
+    send({ cmd: "clearSource" });
+    posted = [];
+    send({ cmd: "render", seq: 4, wantHistogram: true });
+    expect(posted).toEqual([{ type: "frameSkipped", seq: 4 }]);
+
+    send({ cmd: "setImage", image: CACHED, maxEdge: 4096 });
+    posted = [];
+    send({ cmd: "render", seq: 5 });
+    expect(posted).toEqual([expect.objectContaining({ type: "frame", seq: 5 })]);
+  });
+
+  it("answers renderError to a render that throws, with no frame and no generic error", () => {
+    send(INIT);
+    posted = [];
     FakeRenderer.renderError = new Error("Shader compile failed: boom");
-    send({ cmd: "render" });
-    expect(posted.at(-1)).toEqual({ type: "error", message: "Shader compile failed: boom" });
-    expect(posted.some((msg) => msg.type === "frame")).toBe(false);
+    send({ cmd: "render", seq: 9 });
+    expect(posted).toEqual([
+      { type: "renderError", seq: 9, message: "Shader compile failed: boom" },
+    ]);
+  });
+
+  it("answers renderError when the histogram it asked for throws, and frees the frame", () => {
+    send(INIT);
+    posted = [];
+    FakeRenderer.histogramError = new Error("readPixels failed");
+    send({ cmd: "render", seq: 10, wantHistogram: true });
+    expect(posted).toEqual([{ type: "renderError", seq: 10, message: "readPixels failed" }]);
+    expect(handedOut).toHaveLength(1);
+    expect(handedOut[0].closed).toBe(true);
+  });
+
+  it("answers each render of a run once, by its seq, in order", () => {
+    send({ cmd: "render", seq: 1 });
+    send(INIT);
+    send({ cmd: "render", seq: 2 });
+    send({ cmd: "clearSource" });
+    send({ cmd: "render", seq: 3 });
+    FakeRenderer.resident.add("next");
+    send({ cmd: "bindSource", reqId: 1, key: "next" });
+    FakeRenderer.renderError = new Error("lost context");
+    send({ cmd: "render", seq: 4 });
+    FakeRenderer.renderError = null;
+    send({ cmd: "render", seq: 5 });
+
+    const answers = posted.flatMap((msg) =>
+      msg.type === "frame" || msg.type === "frameSkipped" || msg.type === "renderError"
+        ? [[msg.type, msg.seq]]
+        : [],
+    );
+    expect(answers).toEqual([
+      ["frameSkipped", 1],
+      ["frame", 2],
+      ["frameSkipped", 3],
+      ["renderError", 4],
+      ["frame", 5],
+    ]);
+    expect(posted.some((msg) => msg.type === "error")).toBe(false);
   });
 });
 
@@ -555,6 +723,202 @@ const CACHED = {
   width: 2,
   height: 2,
 };
+
+// Between photos the develop view shows the next photo's stored preview, drawn
+// on the main thread, until that photo's own source arrives. A frame or
+// histogram rendered meanwhile would show the previous photo, or the new one
+// edited twice, so the worker draws neither until a source is bound again.
+describe("render-worker between photos", () => {
+  const answers = () =>
+    posted.filter((msg) => msg.type === "frame" || msg.type === "histogram");
+
+  beforeEach(() => {
+    send({ cmd: "init", width: 64, height: 64, highBitDepth: false });
+    send({ cmd: "clearSource" });
+    posted = [];
+  });
+
+  it("posts no frame and no histogram until a source arrives", () => {
+    send({ cmd: "render", seq: 1, wantHistogram: true });
+    send({ cmd: "computeHistogram", wantExtended: true });
+    expect(answers()).toEqual([]);
+  });
+
+  it("answers again once the next photo's image is set", () => {
+    send({ cmd: "setImage", image: CACHED, maxEdge: 4096 });
+    send({ cmd: "render", seq: 2, wantHistogram: true });
+    send({ cmd: "computeHistogram" });
+    expect(answers().map((msg) => msg.type)).toEqual(["frame", "histogram"]);
+    expect(answers()[0]).toMatchObject({ histogram: { luma: expect.any(Uint32Array) } });
+  });
+
+  it("stays quiet when the next photo's image can't be set", () => {
+    FakeRenderer.failing.setImage = new Error("texImage2D failed");
+    send({ cmd: "setImage", image: CACHED, maxEdge: 4096 });
+    send({ cmd: "render", seq: 3, wantHistogram: true });
+    expect(answers()).toEqual([]);
+  });
+
+  it("answers again once its decoded source is uploaded and bound", () => {
+    send({ cmd: "uploadSource", target: "main", key: "next", image: CACHED });
+    send({ cmd: "render", seq: 4 });
+    expect(answers().map((msg) => msg.type)).toEqual(["frame"]);
+  });
+
+  it("stays quiet after uploads that don't bind the develop source", () => {
+    send({ cmd: "uploadSource", target: "main", key: "neighbour", image: CACHED, bind: false });
+    send({ cmd: "uploadSource", target: "thumb", key: "edited", image: CACHED });
+    send({ cmd: "render", seq: 5 });
+    expect(answers()).toEqual([]);
+  });
+
+  it("answers again once a resident source is bound, not after a miss", () => {
+    send({ cmd: "bindSource", reqId: 1, key: "evicted" });
+    send({ cmd: "render", seq: 6 });
+    expect(answers()).toEqual([]);
+
+    FakeRenderer.resident.add("next");
+    send({ cmd: "bindSource", reqId: 2, key: "next" });
+    send({ cmd: "render", seq: 7 });
+    expect(answers().map((msg) => msg.type)).toEqual(["frame"]);
+  });
+});
+
+// The develop renderer lets go of the source it held before it takes the next, so one it
+// can't take (an upload that throws) leaves it with no picture of the photo. The view is
+// told which source failed, and nothing is drawn until another source is taken.
+describe("render-worker a source it can't take", () => {
+  beforeEach(() => {
+    send({ cmd: "init", width: 64, height: 64, highBitDepth: false });
+    posted = [];
+  });
+
+  it.each<[string, WorkerRequest]>([
+    ["an image set", { cmd: "setImage", image: CACHED, maxEdge: 4096 }],
+    ["an upload that binds it", { cmd: "uploadSource", target: "main", key: "next", image: CACHED }],
+  ])("tells the view the number of the source that failed: %s", (_label, request) => {
+    const failed = new Error("texImage2D failed");
+    FakeRenderer.failing = { setImage: failed, uploadSource: failed };
+    send({ cmd: "clearSource" });
+    send(request);
+    expect(posted).toEqual([{ type: "sourceError", sourceGen: 1, message: "texImage2D failed" }]);
+  });
+
+  it("draws nothing after it, though a picture of the photo was drawn before", () => {
+    send({ cmd: "setImage", image: CACHED, maxEdge: 4096 });
+    FakeRenderer.failing.uploadSource = new Error("out of memory");
+    send({ cmd: "uploadSource", target: "main", key: "next", image: CACHED });
+    send({ cmd: "render", seq: 1, wantHistogram: true });
+    send({ cmd: "computeHistogram" });
+    expect(posted.map((msg) => msg.type)).toEqual(["sourceError", "frameSkipped"]);
+  });
+
+  it("draws again once the next source is taken", () => {
+    FakeRenderer.failing.setImage = new Error("texImage2D failed");
+    send({ cmd: "setImage", image: CACHED, maxEdge: 4096 });
+    FakeRenderer.failing = {};
+    send({ cmd: "uploadSource", target: "main", key: "next", image: CACHED });
+    send({ cmd: "render", seq: 2 });
+    expect(posted.at(-1)).toMatchObject({ type: "frame", seq: 2, sourceGen: 2 });
+  });
+
+  // The view waits for the answer before it loads the photo itself; loaded and uploaded
+  // again, it replaces the entry that couldn't be bound.
+  it("answers a bind that throws as a miss, and draws nothing until a source is taken", () => {
+    FakeRenderer.resident.add("next");
+    FakeRenderer.failing.bindSource = new Error("out of memory");
+    send({ cmd: "bindSource", reqId: 3, key: "next" });
+    send({ cmd: "render", seq: 8 });
+    expect(posted).toEqual([
+      { type: "sourceBound", reqId: 3, hit: false },
+      { type: "error", message: "out of memory" },
+      { type: "frameSkipped", seq: 8 },
+    ]);
+
+    FakeRenderer.failing = {};
+    send({ cmd: "uploadSource", target: "main", key: "next", image: CACHED });
+    send({ cmd: "render", seq: 9 });
+    expect(posted.at(-1)).toMatchObject({ type: "frame", seq: 9 });
+  });
+
+  it("reports an upload that doesn't bind the develop source as any other failure", () => {
+    FakeRenderer.failing.uploadSource = new Error("out of memory");
+    send({ cmd: "uploadSource", target: "main", key: "neighbour", image: CACHED, bind: false });
+    send({ cmd: "render", seq: 3 });
+    expect(posted.map((msg) => msg.type)).toEqual(["error", "frame"]);
+  });
+});
+
+// A frame says which source it was drawn from: the size the develop renderer holds it at,
+// and a number the worker moves on each time that renderer is handed another source. The
+// develop view sizes its crop from the one, and tells the camera preview from the final
+// image by the other. The bridge counts the sources it sends the same way.
+describe("render-worker frame source", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const image = (width: number, height: number) => ({
+    kind: "float16" as const,
+    data: new Uint16Array(width * height * 4),
+    width,
+    height,
+  });
+  let seq = 0;
+
+  /** The source the frame answering a render sent now was drawn from. */
+  function drawnFrom() {
+    send({ cmd: "render", seq: ++seq });
+    const answer = posted.at(-1);
+    if (answer?.type !== "frame") throw new Error(`render answered with ${answer?.type}`);
+    return { width: answer.sourceWidth, height: answer.sourceHeight, gen: answer.sourceGen };
+  }
+
+  it("carries the size of the image set, and that source's number", () => {
+    send(INIT);
+    send({ cmd: "setImage", image: image(30, 20), maxEdge: 4096 });
+    expect(drawnFrom()).toEqual({ width: 30, height: 20, gen: 1 });
+  });
+
+  it("moves the number on with each source bound, and only then", () => {
+    send(INIT);
+    expect(drawnFrom()).toEqual({ width: 0, height: 0, gen: 0 });
+
+    send({ cmd: "setImage", image: image(30, 20), maxEdge: 4096 });
+    expect(drawnFrom()).toEqual({ width: 30, height: 20, gen: 1 });
+    expect(drawnFrom()).toEqual({ width: 30, height: 20, gen: 1 });
+
+    send({ cmd: "uploadSource", target: "main", key: "a", image: image(60, 40) });
+    expect(drawnFrom()).toEqual({ width: 60, height: 40, gen: 2 });
+
+    send({ cmd: "uploadSource", target: "main", key: "b", image: image(90, 60), bind: false });
+    send({ cmd: "uploadSource", target: "thumb", key: "c", image: image(12, 8) });
+    send({ cmd: "bindSource", reqId: 1, key: "gone" });
+    expect(drawnFrom()).toEqual({ width: 60, height: 40, gen: 2 });
+
+    FakeRenderer.resident.add("b");
+    FakeRenderer.residentSize = { width: 90, height: 60 };
+    send({ cmd: "bindSource", reqId: 2, key: "b" });
+    expect(drawnFrom()).toEqual({ width: 90, height: 60, gen: 3 });
+  });
+
+  it("counts a source sent while there is no renderer, as the bridge does", () => {
+    FakeRenderer.throwOnConstruct = true;
+    send(INIT);
+    send({ cmd: "setImage", image: image(30, 20), maxEdge: 4096 });
+    send({ cmd: "uploadSource", target: "main", key: "a", image: image(60, 40) });
+    FakeRenderer.throwOnConstruct = false;
+    send(INIT);
+    expect(drawnFrom().gen).toBe(2);
+  });
+
+  it("counts a source whose upload throws", () => {
+    send(INIT);
+    FakeRenderer.failing.setImage = new Error("texImage2D failed");
+    send({ cmd: "setImage", image: image(30, 20), maxEdge: 4096 });
+    FakeRenderer.failing = {};
+    expect(posted.at(-1)).toMatchObject({ type: "sourceError", sourceGen: 1 });
+    send({ cmd: "setImage", image: image(60, 40), maxEdge: 4096 });
+    expect(drawnFrom().gen).toBe(2);
+  });
+});
 
 function thumbnail(over: Partial<Extract<WorkerRequest, { cmd: "renderThumbnail" }>> = {}) {
   const request: WorkerRequest = {
@@ -700,6 +1064,166 @@ describe("render-worker contributed params", () => {
       expect(FakeRenderer.instances[1].contributedParams).toBe(develop().contributedParams);
       expect(FakeRenderer.instances[1].contributedParams).toEqual({ "a.gain": 2 });
     });
+  });
+});
+
+// The bridge posts the params whole first, and first after every init, then only the
+// top-level fields that changed. A patch is merged into the params the worker holds as a
+// new object, and the fields it doesn't name stay the very objects the renderer drew
+// last: the renderer signs every brush dab of the masks and retouch again unless they
+// are the arrays it signed last.
+describe("render-worker params patches", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const mask = (id: string): Mask => ({
+    id,
+    name: id,
+    visible: true,
+    invert: false,
+    opacity: 100,
+    adj: defaultMaskAdjustments(),
+    panels: [],
+    components: [],
+  });
+  const spot = (id: string): RetouchSpot => ({
+    id,
+    shape: "circle",
+    mode: "heal",
+    visible: true,
+    dstX: 0.5,
+    dstY: 0.5,
+    srcX: 0.2,
+    srcY: 0.2,
+    radius: 0.05,
+    feather: 50,
+    opacity: 100,
+  });
+  const painted = (): DevelopParams => ({
+    ...DEFAULT_DEVELOP_PARAMS,
+    masks: [mask("m1")],
+    retouch: [spot("s1")],
+  });
+  const whole = (params: DevelopParams) => send({ cmd: "setParams", params });
+  const patch = (set: Partial<DevelopParams>, remove: string[] = []) =>
+    send({ cmd: "patchParams", set, remove });
+  const develop = () => FakeRenderer.instances[0];
+
+  it("keeps the masks and retouch the very arrays the renderer saw, patch after patch", () => {
+    send(INIT);
+    const base = painted();
+    whole(base);
+    patch({ exposure: 1 });
+    patch({ exposure: 2 });
+
+    const seen = develop().paramsSeen;
+    expect(seen).toHaveLength(3);
+    expect(seen[1].masks).toBe(seen[0].masks);
+    expect(seen[1].retouch).toBe(seen[0].retouch);
+    expect(seen[2].masks).toBe(seen[0].masks);
+    expect(seen[2].retouch).toBe(seen[0].retouch);
+    expect(seen[2]).toEqual({ ...base, exposure: 2 });
+  });
+
+  it("merges a patch into a new object, leaving the params it built on as they were", () => {
+    send(INIT);
+    const base = painted();
+    whole(base);
+    patch({ exposure: 1 });
+    const [first, merged] = develop().paramsSeen;
+    expect(merged).not.toBe(first);
+    expect(merged.exposure).toBe(1);
+    expect(base.exposure).toBe(DEFAULT_DEVELOP_PARAMS.exposure);
+  });
+
+  it("hands over a field the patch names as the value it carries", () => {
+    send(INIT);
+    const base = painted();
+    const masks = [mask("m1"), mask("m2")];
+    whole(base);
+    patch({ masks });
+    const [, merged] = develop().paramsSeen;
+    expect(merged.masks).toBe(masks);
+    expect(merged.retouch).toBe(base.retouch);
+  });
+
+  it("drops the keys a patch removes", () => {
+    send(INIT);
+    const fromOlderEdit = { ...painted(), lensProfile: "legacy" };
+    whole(fromOlderEdit);
+    patch({}, ["lensProfile"]);
+    const [, merged] = develop().paramsSeen;
+    expect(merged).not.toHaveProperty("lensProfile");
+    expect(merged).toEqual(painted());
+  });
+
+  it("holds exactly a whole post that arrives after patches, and patches it next", () => {
+    send(INIT);
+    whole(painted());
+    patch({ exposure: 1 });
+    const replacement = painted();
+    whole(replacement);
+    expect(develop().paramsSeen.at(-1)).toBe(replacement);
+
+    patch({ contrast: 5 });
+    const merged = develop().paramsSeen.at(-1);
+    expect(merged).toEqual({ ...replacement, contrast: 5 });
+    expect(merged?.masks).toBe(replacement.masks);
+  });
+
+  it("merges a patch that arrives while init is failing, for the retry's renderer", () => {
+    FakeRenderer.throwOnConstruct = true;
+    send(INIT);
+    const base = painted();
+    whole(base);
+    patch({ exposure: 1 });
+    FakeRenderer.throwOnConstruct = false;
+    send(INIT);
+
+    const seen = develop().paramsSeen;
+    expect(seen).toEqual([{ ...base, exposure: 1 }]);
+    expect(seen[0].masks).toBe(base.masks);
+  });
+
+  it("seeds a renderer made after the patches with the merged params", () => {
+    send(INIT);
+    whole(painted());
+    patch({ exposure: 1 });
+    send(INIT);
+    const [first, second] = FakeRenderer.instances;
+    expect(second.paramsSeen).toHaveLength(1);
+    expect(second.paramsSeen[0]).toBe(first.paramsSeen[1]);
+  });
+
+  it("restores the merged params after a capture, not the params the patch built on", () => {
+    send(INIT);
+    whole(painted());
+    patch({ exposure: 1 });
+    const before = { ...painted(), exposure: -1 };
+    send({ cmd: "capture", reqId: 1, params: before, pipeline: BUILTIN_RESOLVED });
+
+    const seen = develop().paramsSeen;
+    expect(seen).toHaveLength(4);
+    expect(seen[2]).toBe(before);
+    expect(seen[3]).toBe(seen[1]);
+    expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 1 });
+  });
+
+  it("answers a patch with nothing", () => {
+    send(INIT);
+    whole(painted());
+    const before = posted.length;
+    patch({ exposure: 1 });
+    expect(posted).toHaveLength(before);
+  });
+
+  it("reports a patch that comes before any params, and takes nothing from it", () => {
+    send(INIT);
+    posted = [];
+    patch({ exposure: 1 });
+    expect(posted).toEqual([{ type: "error", message: expect.stringContaining("patch") }]);
+    expect(develop().paramsSeen).toEqual([]);
+
+    send(INIT);
+    expect(FakeRenderer.instances[1].paramsSeen).toEqual([]);
   });
 });
 

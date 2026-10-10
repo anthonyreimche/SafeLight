@@ -28,11 +28,11 @@ export type { ToolMode } from "./develop-slices/mask-slice";
 import type { HistogramData } from "@/rendering/histogram";
 import { catalogStorage } from "@/catalog/storage";
 import { historyCursor } from "@/catalog/history-cursor";
+import { sameEdit } from "@/catalog/edit-equality";
 import { broadcast } from "./broadcast";
 import { createCropSlice, type CropSlice } from "./develop-slices/crop-slice";
 import { createViewSlice, type ViewSlice } from "./develop-slices/view-slice";
 import { createMaskSlice, type MaskSlice } from "./develop-slices/mask-slice";
-import { pushEdit } from "./develop-slices/push-edit";
 import { emitEditCommit } from "@/extensions/registry";
 import { normalizeParamBag } from "@/extensions/param-registry";
 import { useCatalogStore } from "./catalog-store";
@@ -59,10 +59,11 @@ export interface DevelopState extends CropSlice, ViewSlice, MaskSlice {
   historyIndex: number;
   histogram: HistogramData | null;
   asShotTemperature: number;
-  /** True dimensions of the decoded source last handed to the renderer (already
-   *  upright). Panels derive imageAspect from this, not photo.width/height, so
-   *  aspect-locked crops / Upright match the pixels on screen when a decode path
-   *  transposes stored metadata. {0,0} until the first frame decodes. */
+  /** Size of the source the last frame was drawn from, as the renderer holds it
+   *  (already upright, after the upload cap), published by every frame, the camera
+   *  preview's included. Panels derive imageAspect from this, not photo.width/height,
+   *  so aspect-locked crops / Upright match the pixels on screen when a decode path
+   *  transposes stored metadata. {0,0} until a frame of the photo is drawn. */
   sourceSize: { width: number; height: number };
 
   // Crop tool UI lives in CropSlice (develop-slices/crop-slice.ts); canvas-view
@@ -263,21 +264,18 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     set((s) => ({
       params: { ...s.params, [key]: value },
     }));
-    pushEdit(get);
   },
 
   setDynParam(key, value) {
     set((s) => ({
       paramBag: { ...s.paramBag, [key]: value },
     }));
-    pushEdit(get);
   },
 
   setDynParams(patch) {
     set((s) => ({
       paramBag: { ...s.paramBag, ...patch },
     }));
-    pushEdit(get);
   },
 
   setToneCurve(channel, points) {
@@ -287,7 +285,6 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
         toneCurve: { ...s.params.toneCurve, [channel]: points },
       },
     }));
-    pushEdit(get);
   },
 
   setHslValue(band, channel, value) {
@@ -300,7 +297,6 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
         },
       },
     }));
-    pushEdit(get);
   },
 
   async applyPreset(params, paramBag) {
@@ -314,7 +310,6 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
         ? { ...s.paramBag, ...normalizeParamBag(paramBag) }
         : s.paramBag,
     }));
-    pushEdit(get);
     await get().commitEdit("Preset");
   },
 
@@ -336,6 +331,23 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   async commitEdit(label: string) {
     const { photoId, params, paramBag, history, historyIndex, asShotTemperature } = get();
     if (!photoId) return;
+
+    // An unchanged edit costs no step and keeps the redo tail. The raw compare
+    // matches an entry this version wrote, stored or not; right after a commit
+    // it is cheap too, as the entry still shares nested objects with the live
+    // params. A stack written by an older build only matches once normalized.
+    const entry = history[historyIndex];
+    const current = { params, paramBag };
+    if (
+      entry &&
+      (sameEdit(current, { params: entry.params, paramBag: entry.paramBag ?? {} }) ||
+        sameEdit(current, {
+          params: normalizeParams(entry.params),
+          paramBag: normalizeParamBag(entry.paramBag),
+        }))
+    ) {
+      return;
+    }
 
     const snapshot: EditSnapshot = {
       timestamp: Date.now(),
@@ -396,14 +408,12 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
       }
       return { params: next };
     });
-    pushEdit(get);
     await get().commitEdit(label);
   },
 
   async reset() {
     const fresh = freshParams(get().asShotTemperature);
     set({ params: fresh, paramBag: {} });
-    pushEdit(get);
     // Persist as an undoable history step so the reset survives navigation.
     await get().commitEdit("Reset");
   },
@@ -412,7 +422,6 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     const { photoId, params } = get();
     if (!photoId || !usesOlderProcessing(params)) return;
     set({ params: { ...params, processVersion: CURRENT_PROCESS_VERSION } });
-    pushEdit(get);
     await get().commitEdit(UPDATE_PROCESSING_LABEL);
   },
 

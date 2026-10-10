@@ -27,6 +27,7 @@ vi.mock("./native-fs", () => ({
 }));
 
 import { resolveWorkingDir, ReadOnlyProjectError } from "./working-dir";
+import { CatalogTooNewError, CatalogUnreadableError } from "./catalog-errors";
 
 // A .safelight handle that accepts the write-probe and the catalog-exists check.
 function writeableSl() {
@@ -79,6 +80,8 @@ function nativeBridge(opts: {
   inFolderCatalog?: boolean;
   files?: Record<string, string>;
   pointers?: Record<string, string>;
+  /** Files another program holds: reading them fails with EBUSY. */
+  busy?: string[];
   ext: (p: string, base: string | null, create: boolean) => Promise<string | null>;
 }) {
   let clock = 1;
@@ -93,6 +96,7 @@ function nativeBridge(opts: {
   const bridge = {
     exists: vi.fn(async (p: string) => files.has(p)),
     read: vi.fn(async (p: string) => {
+      if (opts.busy?.includes(p)) throw new Error(`EBUSY: resource busy or locked, open '${p}'`);
       const f = files.get(p);
       if (!f) throw new Error(`ENOENT: ${p}`);
       return { data: f.data, mtimeMs: f.mtimeMs, size: f.data.length };
@@ -124,6 +128,13 @@ function nativeBridge(opts: {
 }
 
 const EROFS = () => new Error("EROFS: read-only file system, mkdir '/card/.safelight'");
+
+/** What the copies a fold kept of the in-folder catalog it replaced hold. Named
+ *  apart from catalog.bak.json, which every session's first save rewrites. */
+function keptBeforeMerge(b: ReturnType<typeof nativeBridge>): (string | null)[] {
+  const name = /^\/card\/\.safelight\/catalog\.before-merge-\d{4}-\d\d-\d\dT[\d-]+Z\.json$/;
+  return [...b._files.keys()].filter((path) => name.test(path)).map((path) => b._text(path));
+}
 
 beforeEach(() => {
   h.settings.catalogLocation = "in-folder";
@@ -308,6 +319,39 @@ describe("resolveWorkingDir", () => {
     expect(b._pointers.get("/card")).toBe("/data/card-abc/.safelight");
   });
 
+  it("fails a read-only open rather than seed over a separate catalog it can't read", async () => {
+    // Read as missing, the separate catalog, the only copy of the read-only
+    // session's edits, was replaced by the older in-folder one.
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: { "/data/card-abc/.safelight/catalog.json": '{"v":"read-only-edits"}' },
+      busy: ["/data/card-abc/.safelight/catalog.json"],
+      ext: async (_p, _b, create) => (create ? "/data/card-abc/.safelight" : null),
+    });
+
+    await expect(resolveWorkingDir(rootReturning(readOnlySl(EROFS())))).rejects.toThrow(
+      CatalogUnreadableError,
+    );
+
+    expect(b._text("/data/card-abc/.safelight/catalog.json")).toBe('{"v":"read-only-edits"}');
+  });
+
+  it("fails a read-only open, not start empty, when the folder's catalog is busy", async () => {
+    // Read as missing, nothing was seeded or marked, so the session's edits would
+    // never fold back.
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      busy: ["/card/.safelight/catalog.json"],
+      ext: async (_p, _b, create) => (create ? "/data/card-abc/.safelight" : null),
+    });
+
+    await expect(resolveWorkingDir(rootReturning(readOnlySl(EROFS())))).rejects.toThrow(
+      CatalogUnreadableError,
+    );
+
+    expect(b._files.has("/data/card-abc/.safelight/catalog.json")).toBe(false);
+  });
+
   it("PROMOTE: a writeable open folds a seeded separate catalog back in-folder", async () => {
     // The card is writeable again; edits made while read-only (in the seeded
     // separate) must be merged back, with the prior in-folder catalog backed up.
@@ -325,9 +369,49 @@ describe("resolveWorkingDir", () => {
     expect(wd.location).toBe("in-folder");
     expect(wd.promotedFromExternal).toBe("/data/card-abc/.safelight");
     expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"read-only-edits"}');
-    expect(b._text("/card/.safelight/catalog.bak.json")).toBe('{"v":"in-folder"}');
+    expect(keptBeforeMerge(b)).toEqual(['{"v":"in-folder"}']);
+    expect(b._files.has("/card/.safelight/catalog.bak.json")).toBe(false); // the session backup's
     expect(b._files.has("/data/card-abc/.safelight/.seeded")).toBe(false); // consumed
     expect(b._files.has("/data/card-abc/.safelight/catalog.json")).toBe(false); // spillover retired
+  });
+
+  it("changes nothing, and stops the open, when a newer version saved the spillover", async () => {
+    const newer = '{"version":2,"photos":[],"edits":[]}';
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: {
+        "/data/card-abc/.safelight/catalog.json": newer,
+        "/data/card-abc/.safelight/.seeded": "/card",
+      },
+      ext: async () => "/data/card-abc/.safelight",
+    });
+
+    await expect(resolveWorkingDir(rootReturning(writeableSl()))).rejects.toBeInstanceOf(
+      CatalogTooNewError,
+    );
+
+    expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"in-folder"}');
+    expect(keptBeforeMerge(b)).toEqual([]);
+    expect(b._text("/data/card-abc/.safelight/catalog.json")).toBe(newer);
+    expect(b._files.has("/data/card-abc/.safelight/.seeded")).toBe(true);
+  });
+
+  it("keeps the folder's catalog, and the damaged spillover beside it, when the spillover is damaged", async () => {
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: {
+        "/data/card-abc/.safelight/catalog.json": '{"version":1,"photos":[{"id"',
+        "/data/card-abc/.safelight/.seeded": "/card",
+      },
+      ext: async () => "/data/card-abc/.safelight",
+    });
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.promotedFromExternal ?? null).toBeNull();
+    expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"in-folder"}');
+    expect(b._text("/data/card-abc/.safelight/catalog.json")).toBe('{"version":1,"photos":[{"id"');
+    expect(b._files.has("/data/card-abc/.safelight/.seeded")).toBe(false);
   });
 
   it("does NOT fold a STALE spillover over newer in-folder edits (leftover/stuck marker)", async () => {
@@ -348,7 +432,7 @@ describe("resolveWorkingDir", () => {
     expect(wd.location).toBe("in-folder");
     expect(wd.promotedFromExternal ?? null).toBeNull(); // no fold
     expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"newer-in-folder"}'); // untouched
-    expect(b._files.has("/card/.safelight/catalog.bak.json")).toBe(false); // no backup clobber
+    expect(keptBeforeMerge(b)).toEqual([]); // no backup clobber
     expect(b._files.has("/data/card-abc/.safelight/.seeded")).toBe(false); // spent marker consumed
   });
 
@@ -369,7 +453,7 @@ describe("resolveWorkingDir", () => {
 
     expect(wd.location).toBe("in-folder");
     expect(wd.promotedFromExternal ?? null).toBeNull(); // identical → no fold, no notice
-    expect(b._files.has("/card/.safelight/catalog.bak.json")).toBe(false); // no redundant backup
+    expect(keptBeforeMerge(b)).toEqual([]); // no redundant backup
     expect(b._files.has("/data/card-abc/.safelight/.seeded")).toBe(false); // marker consumed
   });
 
@@ -416,7 +500,8 @@ describe("resolveWorkingDir", () => {
     expect(wd.location).toBe("in-folder");
     expect(wd.promotedFromExternal).toBe("/baseX/card-abc/.safelight"); // found via pointer
     expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"ro-edits"}'); // merged back
-    expect(b._text("/card/.safelight/catalog.bak.json")).toBe('{"v":"in-folder"}');
+    expect(keptBeforeMerge(b)).toEqual(['{"v":"in-folder"}']);
+    expect(b._files.has("/card/.safelight/catalog.bak.json")).toBe(false); // the session backup's
     expect(b._files.has("/baseX/card-abc/.safelight/.seeded")).toBe(false); // spillover retired
     expect(b._pointers.has("/card")).toBe(false); // pointer cleared after fold
   });
@@ -452,7 +537,48 @@ describe("resolveWorkingDir", () => {
     expect(wd.location).toBe("in-folder");
     expect(wd.promotedFromExternal ?? null).toBeNull();
     expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"in-folder"}'); // untouched
-    expect(b._files.has("/card/.safelight/catalog.bak.json")).toBe(false); // no backup written
+    expect(keptBeforeMerge(b)).toEqual([]); // no backup written
+  });
+
+  it("fails the open rather than fold over an in-folder catalog it can't read", async () => {
+    // Read as missing, the in-folder catalog was replaced by the spillover with no backup.
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: {
+        "/data/card-abc/.safelight/catalog.json": '{"v":"read-only-edits"}',
+        "/data/card-abc/.safelight/.seeded": "/card",
+      },
+      busy: ["/card/.safelight/catalog.json"],
+      ext: async () => "/data/card-abc/.safelight",
+    });
+
+    await expect(resolveWorkingDir(rootReturning(writeableSl()))).rejects.toThrow(
+      CatalogUnreadableError,
+    );
+
+    expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"in-folder"}');
+    expect(keptBeforeMerge(b)).toEqual([]);
+    expect(b._files.has("/data/card-abc/.safelight/.seeded")).toBe(true); // still to fold
+  });
+
+  it("fails the open rather than retire a spillover it can't read", async () => {
+    // Read as missing, the spillover's marker was consumed and its edits never folded back.
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: {
+        "/data/card-abc/.safelight/catalog.json": '{"v":"read-only-edits"}',
+        "/data/card-abc/.safelight/.seeded": "/card",
+      },
+      busy: ["/data/card-abc/.safelight/catalog.json"],
+      ext: async () => "/data/card-abc/.safelight",
+    });
+
+    await expect(resolveWorkingDir(rootReturning(writeableSl()))).rejects.toThrow(
+      CatalogUnreadableError,
+    );
+
+    expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"in-folder"}');
+    expect(b._files.has("/data/card-abc/.safelight/.seeded")).toBe(true); // still to fold
   });
 
   it("rethrows a non-read-only failure unchanged (not classified as read-only)", async () => {

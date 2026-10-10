@@ -25,6 +25,12 @@ interface ThumbnailProps {
   onDragStart?: (id: string, e: React.DragEvent) => void;
 }
 
+// Object URLs whose <img> has fired `load`. The grid remounts on every module
+// switch, so a preview it already showed must not fade in a second time. Cells
+// on the thumbnailBlob fallback mint a new URL per mount and still fade.
+const loadedUrls = new Set<string>();
+const hasLoaded = (url: string | null): boolean => url !== null && loadedUrls.has(url);
+
 function ThumbnailImpl({
   photo,
   selected,
@@ -36,7 +42,7 @@ function ThumbnailImpl({
   onRatingChange,
   onDragStart,
 }: ThumbnailProps) {
-  // Active (the photo open in Develop/Loupe) gets the brightest ring; other
+  // Active (the photo open in Develop) gets the brightest ring; other
   // members of a multi-selection get a clearly visible accent ring too.
   // Light-grey selection border. Uses `border` (not `ring`) so it relies on the
   // same color tokens the rest of the UI does and isn't clipped by the cell's
@@ -66,7 +72,7 @@ function ThumbnailImpl({
 
   // The grid shows the original compressed preview (generated at import) — no
   // per-edit re-render or decode. Cheap and space-light; quality is intentionally
-  // modest. Edits are seen in Develop/Loupe, not the grid.
+  // modest. Edits are seen in Develop, not the grid.
   // photo.thumbnailUrl is owned and revoked by the catalog store, so it is used
   // as-is. The thumbnailBlob fallback is created (and revoked) here: without the
   // effect cleanup below, every virtualized remount would leak an object URL.
@@ -81,13 +87,16 @@ function ThumbnailImpl({
     return () => URL.revokeObjectURL(url);
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
   const thumbUrl = photo.thumbnailUrl ?? blobUrl;
-  const [loaded, setLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(() => hasLoaded(thumbUrl));
   const prevUrl = useRef(thumbUrl);
   if (prevUrl.current !== thumbUrl) {
     prevUrl.current = thumbUrl;
-    setLoaded(false);
+    setLoaded(hasLoaded(thumbUrl));
   }
-  const onLoad = useCallback(() => setLoaded(true), []);
+  const onLoad = useCallback(() => {
+    if (thumbUrl) loadedUrls.add(thumbUrl);
+    setLoaded(true);
+  }, [thumbUrl]);
 
   // Lazily pull the cached preview when this cell nears the viewport, so a freshly
   // opened folder loads on-screen thumbnails first instead of all of them up front.
@@ -100,7 +109,7 @@ function ThumbnailImpl({
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) {
-          requestThumbnail(photo.id);
+          requestThumbnail(photo.id, { visible: true });
           io.disconnect();
         }
       },
@@ -127,7 +136,7 @@ function ThumbnailImpl({
           src={thumbUrl}
           alt={displayName}
           className="h-full w-full object-contain transition group-hover:brightness-50"
-          style={{ opacity: loaded ? (isReject ? 0.4 : 1) : 0, transition: "opacity 150ms ease-in" }}
+          style={{ opacity: loaded ? (isReject ? 0.4 : 1) : 0, transition: "opacity 150ms ease-out" }}
           loading="lazy"
           onLoad={onLoad}
         />
@@ -136,7 +145,7 @@ function ThumbnailImpl({
         // pulsing skeleton that reads as "still loading".
         <div
           className="flex h-full w-full flex-col items-center justify-center gap-1 bg-surface-2 text-text-secondary"
-          title={`Couldn't decode ${photo.filename}: ${photo.decodeError}`}
+          title={`${photo.filename}: ${photo.decodeError}`}
         >
           <span className="text-lg leading-none">{"⚠"}</span>
           <span className="px-1 text-center text-[9px] leading-tight">no preview</span>

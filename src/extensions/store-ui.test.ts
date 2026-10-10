@@ -13,12 +13,13 @@ import {
   CATEGORY_ORDER,
   categoryFor,
   loadReadme,
+  loadReleases,
   loadRepoMeta,
   updateNote,
   useExtStoreUI,
   type ExtUpdateInfo,
 } from "./store-ui.ts";
-import type { ExtensionRepoMeta } from "./types.ts";
+import type { ExtensionRelease, ExtensionRepoMeta } from "./types.ts";
 
 const LS_UPDATES = "sl_ext_updates";
 
@@ -73,6 +74,15 @@ function stubGithub(github?: GithubBridge): void {
   vi.stubGlobal("window", { safelightNative: github ? { github } : {} });
 }
 
+/** Only the slice of the plugins bridge loadReleases reaches for. */
+interface PluginsBridge {
+  releases: (repo: string, force?: boolean) => Promise<ExtensionRelease[]>;
+}
+
+function stubPlugins(plugins?: Partial<PluginsBridge>): void {
+  vi.stubGlobal("window", { safelightNative: plugins ? { plugins } : {} });
+}
+
 let storage: ReturnType<typeof memoryStorage>;
 
 beforeEach(() => {
@@ -85,6 +95,7 @@ beforeEach(() => {
     sort: "popular",
     meta: {},
     readme: {},
+    releases: {},
     updates: {},
   });
 });
@@ -396,5 +407,123 @@ describe("loadReadme", () => {
     stubGithub();
     await loadReadme("acme/tool");
     expect(useExtStoreUI.getState().readme).toEqual({});
+  });
+});
+
+describe("loadReleases", () => {
+  const release = (version: string, prerelease = false): ExtensionRelease => ({
+    version,
+    tag: `v${version}`,
+    prerelease,
+    publishedAt: "",
+    notes: "",
+    htmlUrl: "",
+  });
+  const list = [release("1.3.0"), release("1.2.0")];
+
+  it("does nothing without the plugins bridge", async () => {
+    stubPlugins();
+    await loadReleases("acme/tool");
+    stubPlugins({});
+    await loadReleases("acme/tool");
+    expect(useExtStoreUI.getState().releases).toEqual({});
+  });
+
+  it("caches the bridge's releases under the repo name", async () => {
+    stubPlugins({ releases: () => Promise.resolve(list) });
+
+    await loadReleases("acme/tool");
+
+    expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({ status: "ready", data: list });
+  });
+
+  it("makes no second bridge call while loading or once ready", async () => {
+    const fetchReleases = vi.fn(() => Promise.resolve(list));
+    stubPlugins({ releases: fetchReleases });
+
+    const first = loadReleases("acme/tool");
+    expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({ status: "loading" });
+    await loadReleases("acme/tool");
+    await first;
+    await loadReleases("acme/tool");
+
+    expect(fetchReleases).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends in error with Electron's invoke wrapper stripped", async () => {
+    stubPlugins({
+      releases: () =>
+        Promise.reject(
+          new Error(
+            "Error invoking remote method 'plugins:releases': Error: v1.3.0: safelight.json says 1.2.0",
+          ),
+        ),
+    });
+
+    await loadReleases("acme/tool");
+
+    expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({
+      status: "error",
+      error: "v1.3.0: safelight.json says 1.2.0",
+    });
+  });
+
+  it("stringifies a non-Error rejection rather than losing it", async () => {
+    stubPlugins({ releases: () => Promise.reject("rate limited") });
+
+    await loadReleases("acme/tool");
+
+    expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({
+      status: "error",
+      error: "rate limited",
+    });
+  });
+
+  it("retries a non-forced call after an error", async () => {
+    const fetchReleases = vi
+      .fn<(repo: string, force?: boolean) => Promise<ExtensionRelease[]>>()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(list);
+    stubPlugins({ releases: fetchReleases });
+
+    await loadReleases("acme/tool");
+    expect(useExtStoreUI.getState().releases["acme/tool"]).toMatchObject({ status: "error" });
+
+    await loadReleases("acme/tool");
+
+    expect(fetchReleases).toHaveBeenCalledTimes(2);
+    expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({ status: "ready", data: list });
+  });
+
+  it("forces a fresh fetch and keeps the old data visible until it arrives", async () => {
+    const fresh = [release("1.4.0"), ...list];
+    let resolveFresh!: (data: ExtensionRelease[]) => void;
+    const fetchReleases = vi
+      .fn<(repo: string, force?: boolean) => Promise<ExtensionRelease[]>>()
+      .mockResolvedValueOnce(list)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFresh = resolve; }));
+    stubPlugins({ releases: fetchReleases });
+    await loadReleases("acme/tool");
+
+    const refresh = loadReleases("acme/tool", true);
+
+    expect(fetchReleases).toHaveBeenLastCalledWith("acme/tool", true);
+    expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({ status: "ready", data: list });
+    resolveFresh(fresh);
+    await refresh;
+    expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({ status: "ready", data: fresh });
+  });
+
+  it("keeps the old data when a forced refresh fails", async () => {
+    const fetchReleases = vi
+      .fn<(repo: string, force?: boolean) => Promise<ExtensionRelease[]>>()
+      .mockResolvedValueOnce(list)
+      .mockRejectedValueOnce(new Error("rate limited"));
+    stubPlugins({ releases: fetchReleases });
+    await loadReleases("acme/tool");
+
+    await loadReleases("acme/tool", true);
+
+    expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({ status: "ready", data: list });
   });
 });

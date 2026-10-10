@@ -294,6 +294,8 @@ function isVisibleBrushSpot(
 export type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
 
 export interface WebGLRendererOpts {
+  /** Lets a version 1 photo's heal/clone copy be RGBA16 (EXT_texture_norm16). A version 2
+   *  photo tries RGBA16F first whatever it says. Defaults to the Preferences value. */
   highBitDepth?: boolean;
   stages?: ProcessingStageContribution[];
   pipeline?: ResolvedPipeline;
@@ -424,7 +426,7 @@ export class WebGLRenderer {
   private imageWidth = 0;
   private imageHeight = 0;
   private maxEdge = MAX_EDGE;
-  // Output color space. Live develop/loupe/thumbnails stay sRGB (a no-op in the
+  // Output color space. Live develop/thumbnails stay sRGB (a no-op in the
   // shader); export sets a wider space so the encode + ICC match.
   private outSpace: ColorSpaceId = "srgb";
   private linear = false;
@@ -450,6 +452,9 @@ export class WebGLRenderer {
   private programCache = new Map<string, PipelineProgram>();
   // The error each failed build threw, by program cache key (see entryFor).
   private failedBuilds = new Map<string, unknown>();
+  // The ids of the stages each cached program or failure was built from, by
+  // program cache key, so a stage set that loses a stage can let go of them.
+  private programStages = new Map<string, ReadonlySet<string>>();
   private vao: WebGLVertexArrayObject | null = null;
   private quadBuf: WebGLBuffer | null = null;
   private injectedStages: ProcessingStageContribution[] | null = null;
@@ -655,18 +660,21 @@ export class WebGLRenderer {
   // (and re-logged) every frame. A build that throws is remembered under its key
   // and rethrown as it was, without compiling again, until a signature or the
   // version gives another key. The stage set comes in as an argument, not from the
-  // renderer's own state, so building an entry never touches what it is drawing with.
+  // renderer's own state, so building an entry never touches what it is drawing with;
+  // `stageIds` are the ids of the stages `built` was built from.
   private entryFor(
     p: ResolvedPipeline,
     built: BuiltStageInjection,
     variant: ShaderVariant,
+    stageIds: ReadonlySet<string>,
   ): PipelineProgram {
     const cacheKey = `${p.sig}|${built.sig}|${variantKey(variant)}`;
     const cached = this.programCache.get(cacheKey);
     if (cached) return cached;
     if (this.failedBuilds.has(cacheKey)) throw this.failedBuilds.get(cacheKey);
+    this.programStages.set(cacheKey, stageIds);
     try {
-      const entry = this.buildEntry(p, built, variant);
+      const entry = this.buildEntry(p, built, variant, stageIds);
       this.programCache.set(cacheKey, entry);
       return entry;
     } catch (err) {
@@ -679,6 +687,7 @@ export class WebGLRenderer {
     p: ResolvedPipeline,
     built: BuiltStageInjection,
     variant: ShaderVariant,
+    stageIds: ReadonlySet<string>,
   ): PipelineProgram {
     try {
       const program = this.createProgram(
@@ -694,8 +703,26 @@ export class WebGLRenderer {
     } catch (err) {
       if (!p.glsl) throw err; // built-in must compile
       console.error(`[pipeline] "${p.id}" failed to compile; using built-in:`, err);
-      return this.entryFor(BUILTIN_RESOLVED, built, variant);
+      return this.entryFor(BUILTIN_RESOLVED, built, variant, stageIds);
     }
+  }
+
+  // Delete the programs, and forget the failures, built from a stage that isn't
+  // in `current`: its extension was turned off, and should it come back its
+  // stage set compiles again like any new one.
+  private releaseProgramsWithout(current: ReadonlySet<string>): void {
+    const released = new Set<WebGLProgram>();
+    for (const [key, ids] of this.programStages) {
+      if ([...ids].every((id) => current.has(id))) continue;
+      const entry = this.programCache.get(key);
+      if (entry) released.add(entry.program);
+      this.programCache.delete(key);
+      this.failedBuilds.delete(key);
+      this.programStages.delete(key);
+    }
+    // A fallback entry shares the built-in entry's program under another key.
+    for (const e of this.programCache.values()) released.delete(e.program);
+    for (const program of released) this.gl.deleteProgram(program);
   }
 
   private createProgram(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -1231,7 +1258,7 @@ export class WebGLRenderer {
 
   // Render only `roi` (a window into the displayed image, normalized [0,1]) into
   // an output sized to outW×outH. Pass null to return to the whole-frame, crop-
-  // capped sizing. Used by a zoomed Develop/Loupe view to draw the visible region
+  // capped sizing. Used by a zoomed Develop view to draw the visible region
   // at screen resolution from the resident full-res source.
   setViewport(
     roi: { x: number; y: number; w: number; h: number } | null,
@@ -1309,6 +1336,9 @@ export class WebGLRenderer {
   // export uses this to convert pixels (and pairs it with an embedded ICC).
   get bufferWidth(): number { return this.canvas.width; }
   get bufferHeight(): number { return this.canvas.height; }
+  /** The size the active source is held at, after the upload cap; 0 before any. */
+  get sourceWidth(): number { return this.imageWidth; }
+  get sourceHeight(): number { return this.imageHeight; }
 
   setOutputColorSpace(space: ColorSpaceId) {
     this.outSpace = space;
@@ -1403,9 +1433,16 @@ export class WebGLRenderer {
   }
 
   /** Latest pixel data for extension stage textures, keyed by qualified key.
-   *  Uploaded lazily at draw time; an unchanged `version` is a no-op. */
+   *  Uploaded lazily at draw time; an unchanged `version` is a no-op. The bag
+   *  is whole, so a key it no longer holds was let go of (its extension was
+   *  turned off) and its GPU copy is deleted. */
   setStageTextures(bag: Record<string, StageTextureData>) {
     this.stageTextures = bag;
+    for (const [qk, uploaded] of this.uploadedStageTex) {
+      if (Object.hasOwn(bag, qk)) continue;
+      this.gl.deleteTexture(uploaded.tex);
+      this.uploadedStageTex.delete(qk);
+    }
   }
 
   /** A 1×1 opaque-black texture bound to any stage sampler that has no data yet,
@@ -1470,7 +1507,7 @@ export class WebGLRenderer {
   prepareProgram(processVersion: number): void {
     const variant = shaderVariantFor(processVersion);
     const pipeline = this.injectedPipeline ?? resolveDefaultPipeline();
-    this.entryFor(pipeline, this.stageInjection(variant), variant);
+    this.entryFor(pipeline, this.stageInjection(variant), variant, this.currentStageIds());
   }
 
   /** Build the stock develop program for a process version: the built-in transform
@@ -1483,12 +1520,21 @@ export class WebGLRenderer {
   prepareStockProgram(processVersion: number): void {
     const variant = shaderVariantFor(processVersion);
     const builtIn = this.currentStages().filter(isBuiltInStage);
-    this.entryFor(BUILTIN_RESOLVED, buildStageInjection(builtIn, variant), variant);
+    this.entryFor(
+      BUILTIN_RESOLVED,
+      buildStageInjection(builtIn, variant),
+      variant,
+      new Set(builtIn.map((s) => s.id)),
+    );
   }
 
   private currentStages(): readonly ProcessingStageContribution[] {
     const source = this.injectedStages ?? useRegistry.getState().processingStages;
     return Array.isArray(source) ? source : Object.values(source);
+  }
+
+  private currentStageIds(): ReadonlySet<string> {
+    return new Set(this.currentStages().map((s) => s.id));
   }
 
   private stageInjection(variant: ShaderVariant): BuiltStageInjection {
@@ -1519,7 +1565,8 @@ export class WebGLRenderer {
     // The renderer changes only once the program is in hand: a build that throws
     // leaves it on the stage set it was drawing with, so switching back to that set
     // finds its own bindings, not the failed set's.
-    const e = this.entryFor(p, built, variant);
+    const stageIds = this.currentStageIds();
+    const e = this.entryFor(p, built, variant, stageIds);
     // Pass programs are keyed by stageSig; a stage-set change invalidates them
     // and the prepass result cache. No process version changes stageSig, so a
     // photo on the other version keeps both.
@@ -1531,6 +1578,10 @@ export class WebGLRenderer {
       // A stage whose GLSL was fixed (extension update / dev-folder reload) gets a
       // fresh compile attempt; without this it stays disabled for the session.
       this.failedPrepass.clear();
+      // A stage that left the set (its extension was turned off) takes its
+      // programs and prepass targets with it.
+      this.releaseProgramsWithout(stageIds);
+      this.releasePrepassTargets(built.prepass);
     }
     this.contributedBindings = built.bindings;
     this.stageTextureBindings = built.textureBindings;
@@ -1588,7 +1639,9 @@ export class WebGLRenderer {
       u.uApplyBaseCurve,
       this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
     );
-    gl.uniform1i(u.uApplyToneShoulder, this.pipelineSkipShoulder ? 0 : 1);
+    // Only version 2 photos give up the shoulder: an older edit keeps its
+    // look when a transform starts setting skipToneShoulder.
+    gl.uniform1i(u.uApplyToneShoulder, this.pipelineSkipShoulder && this.variant.fullInfo ? 0 : 1);
     gl.uniform1i(u.uShowClipping, this.showClipping);
     gl.uniform3f(u.uOutsideColor, this.outsideColor[0], this.outsideColor[1], this.outsideColor[2]);
     gl.uniform1i(u.uVizMask, this.vizMask);
@@ -2022,6 +2075,9 @@ export class WebGLRenderer {
     gl.uniform1i(this.uniforms.uShowClipping, 0);
     gl.uniform1i(this.uniforms.uVizMask, -1);
     gl.uniform1i(this.uniforms.uSharpenViz, 0);
+    // A zoomed render leaves only the visible window bound; Auto Tone and Auto
+    // WB read this histogram, so it measures the whole picture.
+    gl.uniform4f(this.uniforms.uViewport, 0, 0, 1, 1);
 
     if (this.haveColorBufferFloat) {
       // Preferred path: render the display-encoded output into an RGBA16F FBO and
@@ -2144,9 +2200,11 @@ export class WebGLRenderer {
       };
     }
 
-    // Restore main canvas framebuffer, viewport and active texture unit.
+    // Restore main canvas framebuffer, viewport, zoom window and active texture unit.
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    const vp = this.roi;
+    gl.uniform4f(this.uniforms.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
     gl.activeTexture(gl.TEXTURE0);
     return result;
   }
@@ -2286,6 +2344,26 @@ export class WebGLRenderer {
     this.ppH = h;
     this.ppInternalFormat = internal;
     return true;
+  }
+
+  // Free the result target of every stage no longer in `prepass`, and the
+  // ping-pong pair once no prepass stage is left.
+  private releasePrepassTargets(prepass: readonly PrepassStage[]): void {
+    const gl = this.gl;
+    const kept = new Set(prepass.map((s) => s.stageId));
+    for (const [stageId, t] of this.stageResultTargets) {
+      if (kept.has(stageId)) continue;
+      gl.deleteTexture(t.tex);
+      gl.deleteFramebuffer(t.fbo);
+      this.stageResultTargets.delete(stageId);
+    }
+    if (prepass.length > 0) return;
+    for (const t of this.ppTex) gl.deleteTexture(t);
+    for (const f of this.ppFbo) gl.deleteFramebuffer(f);
+    this.ppTex = [null, null];
+    this.ppFbo = [null, null];
+    this.ppW = 0;
+    this.ppH = 0;
   }
 
   private ensureStageResult(stageId: string, w: number, h: number) {

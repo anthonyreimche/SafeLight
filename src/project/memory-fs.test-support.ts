@@ -77,6 +77,15 @@ export class MemoryFs implements NativeFsBridge {
 
   /** Paths handed to reveal(), in call order. */
   readonly revealed: string[] = [];
+  /** Every path write() reached, normalised, in call order. put() is test setup
+   *  and isn't logged. */
+  private readonly written: string[] = [];
+  /** While holdWrites() holds writes: how to land each held write, oldest first. */
+  private held: (() => void)[] | null = null;
+  /** write() calls per path that have started and not landed yet, and the most
+   *  there have been at once. */
+  private readonly inFlight = new Map<string, number>();
+  private readonly mostInFlight = new Map<string, number>();
   /** What pickDirectory() resolves to. */
   picked: string | null = null;
 
@@ -116,6 +125,34 @@ export class MemoryFs implements NativeFsBridge {
     return this.files.has(n) || this.dirs.has(n);
   }
 
+  /** How many times write() reached `path`, for asserting a save is one write. */
+  writeCount(path: string): number {
+    const n = norm(path);
+    return this.written.filter((w) => w === n).length;
+  }
+
+  /** Hold every write() from now on, so a test can start writes that would
+   *  overlap and choose when they land: landNext() lands the oldest held write,
+   *  landLatest() the newest, and landAll() lands the rest in the order they
+   *  started and stops holding. */
+  holdWrites(): { landNext: () => void; landLatest: () => void; landAll: () => void } {
+    this.held = [];
+    return {
+      landNext: () => this.held?.shift()?.(),
+      landLatest: () => this.held?.pop()?.(),
+      landAll: () => {
+        const held = this.held ?? [];
+        this.held = null;
+        for (const land of held) land();
+      },
+    };
+  }
+
+  /** The most write() calls to `path` that were in progress at the same time. */
+  mostConcurrentWrites(path: string): number {
+    return this.mostInFlight.get(norm(path)) ?? 0;
+  }
+
   /** Every file path under `prefix` (default: the whole store), sorted — for
    *  whole-tree assertions like "nothing was written into the project folder". */
   tree(prefix = ""): string[] {
@@ -145,8 +182,19 @@ export class MemoryFs implements NativeFsBridge {
   async write(path: string, data: Uint8Array): Promise<void> {
     this.guard("open", path);
     const n = norm(path);
-    this.mkdirp(parentOf(n)); // main.cjs fs:write creates the parent chain
-    this.files.set(n, { data: new Uint8Array(data), mtimeMs: this.clock++ });
+    this.written.push(n);
+    const copy = new Uint8Array(data);
+    const now = (this.inFlight.get(n) ?? 0) + 1;
+    this.inFlight.set(n, now);
+    this.mostInFlight.set(n, Math.max(now, this.mostInFlight.get(n) ?? 0));
+    try {
+      const held = this.held;
+      if (held) await new Promise<void>((land) => held.push(land));
+      this.mkdirp(parentOf(n)); // main.cjs fs:write creates the parent chain
+      this.files.set(n, { data: copy, mtimeMs: this.clock++ });
+    } finally {
+      this.inFlight.set(n, (this.inFlight.get(n) ?? 1) - 1);
+    }
   }
 
   async list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]> {

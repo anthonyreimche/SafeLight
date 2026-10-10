@@ -172,8 +172,12 @@ describe("saved layouts survive a restart", () => {
     session.close();
 
     // Switch away and back: the named layout rebuilds the same bottom rail.
-    act(() => applyDockLayout(CUSTOM_LAYOUT));
-    act(() => applyDockLayout(id));
+    act(() => {
+      void applyDockLayout(CUSTOM_LAYOUT);
+    });
+    act(() => {
+      void applyDockLayout(id);
+    });
     session = boot();
     expect(rails()).toEqual([
       { id: "develop-bottom-0", side: "bottom", width: 280, height: 144, panels: ["ext.strip"] },

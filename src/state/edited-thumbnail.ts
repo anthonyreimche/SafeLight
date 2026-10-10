@@ -19,12 +19,14 @@
 // zoom-independent). Falls back to the in-memory camera JPEG only if that source
 // can't be obtained. The folder-wide pass is not reintroduced.
 
-import type { DevelopParams } from "@/catalog/types";
+import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
+import { editFingerprint } from "@/catalog/edit-fingerprint";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { getSettings } from "@/state/settings-store";
 import { catalogStorage } from "@/catalog/storage";
 import { useCatalogStore } from "./catalog-store";
+import { isStoredPreview, standsForPhoto } from "./fallback-rules";
 
 // Cap for the thumb renderer's resident source — small enough to stay cheap, with
 // headroom above thumbMaxEdge (max 960) so a tight crop still resolves.
@@ -85,6 +87,8 @@ async function run(
 ): Promise<void> {
   const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
   if (!photo) return;
+  // The project this render belongs to: one opened meanwhile takes none of it.
+  const storage = catalogStorage();
 
   const bridge = getRenderBridge();
   await bridge.ready;
@@ -99,44 +103,49 @@ async function run(
 
   // 2) First commit for this photo: decode (warm cache while editing, so the RAW
   //    fast path returns the float16 preview in ~50ms — no libraw), upload a capped
-  //    copy into the thumb renderer once, then render from it.
+  //    copy into the thumb renderer once, then render from it. A preview the load
+  //    fell back on is rendered from once instead (standsForPhoto), and the stored
+  //    preview not at all (isStoredPreview): the grid keeps it as it is until the
+  //    photo's original can be read.
   if (!blob) {
-    const decoded = await loadPhotoImage(photo);
+    const decoded = await loadPhotoImage(photo, { background: true });
+    if (decoded?.kind === "bitmap" && isStoredPreview(decoded)) {
+      decoded.bitmap.close();
+      return;
+    }
     if (decoded) {
       const image =
         decoded.kind === "bitmap"
           ? { kind: "bitmap" as const, bitmap: decoded.bitmap }
           : decoded;
-      bridge.uploadSource(
-        "thumb",
-        key,
-        image,
-        THUMB_SOURCE_MAX_EDGE,
-        decoded.kind === "float" ? decoded.isFallbackPreview : false,
-        // float16/float carry their own base-curve handling; a JPEG-fallback bitmap
-        // is camera-toned and needs none, matching what the viewport shows.
-        false,
-      );
-      blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, paramBag);
+      if (standsForPhoto(decoded)) {
+        bridge.uploadSource(
+          "thumb",
+          key,
+          image,
+          THUMB_SOURCE_MAX_EDGE,
+          decoded.kind === "float" ? decoded.isFallbackPreview : false,
+          // float16/float carry their own base-curve handling; a JPEG-fallback bitmap
+          // is camera-toned and needs none, matching what the viewport shows.
+          false,
+        );
+        blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, paramBag);
+      } else {
+        blob = await renderOnce(bridge, image, params, asShotTemperature, maxEdge, paramBag);
+      }
     }
   }
 
   // 3) Last resort: the in-memory camera JPEG preview. Flatter than the viewport,
-  //    but better than leaving the grid stale if the source can't be obtained.
-  if (!blob && photo.thumbnailBlob) {
+  //    but better than leaving the grid stale if the source can't be obtained. One
+  //    that already shows an edit would get the edit twice.
+  if (!blob && photo.thumbnailBlob && photo.previewEdit === undefined) {
     try {
       const bitmap = await createImageBitmap(photo.thumbnailBlob);
-      blob = await bridge.renderThumbnailAsync({
-        requestId: `edit-thumb-${photoId}-${++reqSeq}`,
-        image: { kind: "bitmap", bitmap },
-        params,
-        asShotTemperature,
-        maxEdge,
-        quality: 0.8,
-        contributedParams: paramBag,
-      });
+      const image = { kind: "bitmap" as const, bitmap };
+      blob = await renderOnce(bridge, image, params, asShotTemperature, maxEdge, paramBag);
     } catch {
-      // A render failure must not lose the existing preview.
+      // A preview that can't be decoded must not lose the existing one.
     }
   }
 
@@ -144,18 +153,65 @@ async function run(
 
   // The photo may have been removed (or the project closed) while rendering.
   const current = useCatalogStore.getState().photos.find((p) => p.id === photoId);
-  if (!current) return;
+  if (!current || catalogStorage() !== storage) return;
+  // A preview rendered before the photo was turned shows it the old way round, so it
+  // is rendered again at the photo's rotation now. The same goes for a turn made
+  // while it was being stored: the turn's own write lands after it. A photo saved
+  // with no rotation is unturned.
+  const turned = (now: CatalogPhoto | undefined) =>
+    now !== undefined && (now.rotation ?? 0) !== (photo.rotation ?? 0);
+  if (turned(current)) return run(photoId, params, asShotTemperature, paramBag);
 
   const updated = {
     ...current,
     thumbnailBlob: blob,
     thumbnailUrl: URL.createObjectURL(blob),
+    previewEdit: editFingerprint(params, paramBag ?? {}),
   };
-  await catalogStorage().putPhoto(updated); // writes <id>.jpg + persists
-  // updatePhoto revokes the superseded object URL and broadcasts catalog-change,
-  // so the grid cell (this window) repaints. (Other windows don't yet reload on
-  // that broadcast — single-window only for now; see feedback-plain-grid-thumbnails.)
-  useCatalogStore.getState().updatePhoto(updated);
+  await storage.putPhoto(updated); // persists, and writes <id>.jpg when previews are stored
+  if (catalogStorage() !== storage) {
+    URL.revokeObjectURL(updated.thumbnailUrl);
+    return;
+  }
+  if (turned(useCatalogStore.getState().photos.find((p) => p.id === photoId))) {
+    URL.revokeObjectURL(updated.thumbnailUrl);
+    return run(photoId, params, asShotTemperature, paramBag);
+  }
+  // Only the preview and the edit it shows go onto the photo as the store holds it
+  // after the write. mergeRebuiltPhoto revokes the superseded object URL and
+  // broadcasts catalog-change: the grid cell here repaints, and every other window
+  // reloads the photo's preview (use-window-sync): the new <id>.jpg, or one built
+  // from the file where previews aren't stored.
+  const { thumbnailBlob, thumbnailUrl, previewEdit } = updated;
+  useCatalogStore
+    .getState()
+    .mergeRebuiltPhoto(photoId, { thumbnailBlob, thumbnailUrl, previewEdit });
+}
+
+// Render a thumbnail from `image` without keeping it in the thumb renderer's
+// cache. Resolves null on a render failure, so it never throws: the existing
+// preview stays.
+async function renderOnce(
+  bridge: ReturnType<typeof getRenderBridge>,
+  image: Parameters<ReturnType<typeof getRenderBridge>["renderThumbnailAsync"]>[0]["image"],
+  params: DevelopParams,
+  asShotTemperature: number,
+  maxEdge: number,
+  paramBag?: Record<string, unknown>,
+): Promise<Blob | null> {
+  try {
+    return await bridge.renderThumbnailAsync({
+      requestId: `edit-thumb-once-${++reqSeq}`,
+      image,
+      params,
+      asShotTemperature,
+      maxEdge,
+      quality: 0.8,
+      contributedParams: paramBag,
+    });
+  } catch {
+    return null;
+  }
 }
 
 // Render a thumbnail from a source resident in the thumb renderer's cache.

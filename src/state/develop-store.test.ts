@@ -32,15 +32,20 @@ import {
 import {
   CURRENT_PROCESS_VERSION,
   DEFAULT_DEVELOP_PARAMS,
+  DEFAULT_MASK_PANELS,
   LEGACY_PROCESS_VERSION,
   NEUTRAL_TEMPERATURE_K,
+  defaultMaskAdjustments,
   freshParams,
   normalizeParams,
 } from "@/catalog/types";
 import type {
+  BrushDab,
   DevelopParams,
   EditSnapshot,
   EditState,
+  Mask,
+  RetouchSpot,
 } from "@/catalog/types";
 import type { CatalogHooksContribution } from "@/extensions/types";
 
@@ -207,20 +212,106 @@ describe("loadEdit", () => {
   });
 });
 
+const brushMask = (): Mask => ({
+  id: "m1",
+  name: "Brush",
+  visible: true,
+  invert: false,
+  opacity: 100,
+  adj: defaultMaskAdjustments(),
+  panels: [...DEFAULT_MASK_PANELS],
+  components: [
+    {
+      id: "c1",
+      kind: "brush",
+      mode: "add",
+      invert: false,
+      brush: { dabs: [], feather: 0.5 },
+    },
+  ],
+});
+
+const dab = (x: number): BrushDab => ({
+  x,
+  y: 0.5,
+  radius: 0.05,
+  erase: false,
+  feather: 0.5,
+});
+
+const healSpot = (id: string): RetouchSpot => ({
+  id,
+  shape: "circle",
+  mode: "heal",
+  visible: true,
+  dstX: 0.5,
+  dstY: 0.5,
+  srcX: 0.4,
+  srcY: 0.4,
+  radius: 0.04,
+  feather: 50,
+  opacity: 100,
+});
+
 describe("live edits", () => {
   beforeEach(async () => {
     await s().loadEdit(PHOTO_ID, 5000);
     vi.mocked(broadcast).mockClear();
   });
 
-  it("broadcasts the live params without writing history", () => {
+  // Every tick used to post the whole params object (brush dabs included) to
+  // other windows, and the only reader re-loads the saved edit. Only commits,
+  // undo/redo and stored edits announce.
+  it("applies a slider tick without announcing it or writing history", () => {
     s().setParam("exposure", 1.5);
     expect(params().exposure).toBe(1.5);
     expect(s().history).toHaveLength(1);
-    expect(broadcast).toHaveBeenCalledWith({
-      type: "edit-update",
-      payload: { photoId: PHOTO_ID, params: params() },
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("stays silent through a whole slider drag", () => {
+    for (let i = 1; i <= 10; i++) s().setParam("exposure", i / 10);
+    expect(params().exposure).toBe(1);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("stays silent for extension parameters", () => {
+    s().setDynParam("ext.stage.amount", 40);
+    s().setDynParams({ "ext.stage.amount": 41, "ext.stage.size": 3 });
+    expect(s().paramBag).toEqual({ "ext.stage.amount": 41, "ext.stage.size": 3 });
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("stays silent through ten brush dabs", () => {
+    s().addMask(brushMask());
+    for (let i = 1; i <= 10; i++) s().addBrushDab("m1", "c1", dab(i / 20));
+    expect(params().masks[0].components[0].brush?.dabs).toHaveLength(10);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("stays silent for every mask and retouch mutation", () => {
+    s().addMask(brushMask());
+    s().addComponent("m1", {
+      id: "c2",
+      kind: "brush",
+      mode: "add",
+      invert: false,
+      brush: { dabs: [], feather: 0.5 },
     });
+    s().cycleComponentMode("m1", "c2");
+    s().updateComponent("m1", "c2", { invert: true });
+    s().updateMask("m1", { visible: false });
+    s().updateMaskAdj("m1", { exposure: 0.5 });
+    s().updateMaskBag("m1", { "ext.stage.amount": 5 });
+    s().renameMask("m1", "Sky");
+    s().removeComponent("m1", "c2");
+    s().addSpot(healSpot("s1"));
+    s().updateSpot("s1", { opacity: 80 });
+    s().removeSpot("s1");
+    s().removeMask("m1");
+    expect(params().masks).toEqual([]);
+    expect(params().retouch).toEqual([]);
+    expect(broadcast).not.toHaveBeenCalled();
   });
 
   it("coalesces a whole gesture into a single history entry", async () => {
@@ -230,7 +321,7 @@ describe("live edits", () => {
     expect(s().history[1].params.exposure).toBe(1.5);
   });
 
-  it("broadcasts nested tone-curve and HSL edits too", () => {
+  it("applies nested tone-curve and HSL edits without announcing them", () => {
     s().setToneCurve("red", [
       { x: 0, y: 0 },
       { x: 1, y: 0.8 },
@@ -239,8 +330,44 @@ describe("live edits", () => {
     s().setHslValue("saturation", "blue", -30);
     expect(params().hsl.saturation.blue).toBe(-30);
     expect(params().hsl.hue.blue).toBe(0);
-    expect(broadcast).toHaveBeenCalledTimes(2);
+    expect(broadcast).not.toHaveBeenCalled();
     expect(s().history).toHaveLength(1);
+  });
+
+  it("announces a whole gesture once, when it commits", async () => {
+    for (let i = 1; i <= 10; i++) s().setParam("exposure", i / 10);
+    expect(broadcast).not.toHaveBeenCalled();
+    await s().commitEdit("Exposure");
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith({
+      type: "edit-update",
+      payload: { photoId: PHOTO_ID, params: params() },
+    });
+  });
+
+  it("announces an undo once", async () => {
+    s().setParam("exposure", 1);
+    await s().commitEdit("Exposure");
+    vi.mocked(broadcast).mockClear();
+
+    s().undo();
+    expect(params().exposure).toBe(0);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith({
+      type: "edit-update",
+      payload: { photoId: PHOTO_ID, params: params() },
+    });
+  });
+
+  it("announces a redo once", async () => {
+    s().setParam("exposure", 1);
+    await s().commitEdit("Exposure");
+    s().undo();
+    vi.mocked(broadcast).mockClear();
+
+    s().redo();
+    expect(params().exposure).toBe(1);
+    expect(broadcast).toHaveBeenCalledTimes(1);
   });
 });
 

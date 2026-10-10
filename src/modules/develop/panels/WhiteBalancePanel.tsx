@@ -16,7 +16,7 @@ export function WhiteBalancePanel() {
   const params = useDevelopStore((s) => s.params);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
-  const histogram = useDevelopStore((s) => s.histogram);
+  const hasHistogram = useDevelopStore((s) => s.histogram != null);
   const wbPicking = useDevelopStore((s) => s.wbPicking);
   const setWbPicking = useDevelopStore((s) => s.setWbPicking);
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
@@ -28,7 +28,7 @@ export function WhiteBalancePanel() {
         <button
           type="button"
           onClick={() => setWbPicking(!wbPicking)}
-          disabled={!histogram}
+          disabled={!hasHistogram}
           title="White balance selector — click a neutral grey in the image"
           aria-pressed={wbPicking}
           className={`flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider disabled:cursor-default disabled:opacity-40 ${
@@ -42,7 +42,7 @@ export function WhiteBalancePanel() {
         </button>
         <AutoButton
           onClick={autoWhiteBalance}
-          disabled={!histogram}
+          disabled={!hasHistogram}
           title="Auto white balance (gray-world)"
         />
       </div>

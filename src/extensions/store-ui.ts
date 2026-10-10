@@ -11,7 +11,7 @@
 // before the dialog is ever opened, and avoids prop-drilling through the panel.
 
 import { create } from "zustand";
-import type { ExtensionRepoMeta } from "./types";
+import type { ExtensionRelease, ExtensionRepoMeta } from "./types";
 
 export type StoreSort = "popular" | "updated" | "name";
 
@@ -133,6 +133,8 @@ interface ExtStoreUI {
   sort: StoreSort;
   meta: Record<string, Async<ExtensionRepoMeta>>;
   readme: Record<string, Async<string | null>>;
+  /** Each repo's GitHub releases, for the version picker and release notes. */
+  releases: Record<string, Async<ExtensionRelease[]>>;
   updates: Record<string, ExtUpdateInfo>;
 
   openDetail: (selected: string) => void;
@@ -151,6 +153,7 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
   sort: "popular",
   meta: {},
   readme: {},
+  releases: {},
   updates: readLsUpdates(), // synchronous seed — keeps the TTL alive across launches
 
   openDetail: (selected) => set({ selected, view: "detail" }),
@@ -230,6 +233,42 @@ export async function loadReadme(fullName: string, branch?: string): Promise<voi
         ...s.readme,
         [fullName]: { status: "error", error: e instanceof Error ? e.message : String(e) },
       },
+    }));
+  }
+}
+
+/** An IPC rejection's own message, without Electron's "Error invoking remote
+ *  method '…': Error: " wrapper. */
+const ipcMessage = (e: unknown): string =>
+  (e instanceof Error ? e.message : String(e)).replace(
+    /^Error invoking remote method '[^']+': (?:Error: )?/,
+    "",
+  );
+
+/** Fetch and cache "owner/repo"'s releases ([] for a repo that publishes from
+ *  its branch). `force` asks GitHub again instead of the main process's cache.
+ *  No-op without the bridge. */
+export async function loadReleases(fullName: string, force = false): Promise<void> {
+  const releases = window.safelightNative?.plugins?.releases;
+  if (!releases) return;
+  const cur = useExtStoreUI.getState().releases[fullName];
+  if (!force && cur && cur.status !== "error") return;
+  // A forced refresh over a loaded list keeps that list on screen until the
+  // fresh one arrives, and keeps it if the refresh fails.
+  const keep = force && cur?.status === "ready";
+  if (!keep)
+    useExtStoreUI.setState((s) => ({
+      releases: { ...s.releases, [fullName]: { status: "loading" } },
+    }));
+  try {
+    const data = await releases(fullName, force);
+    useExtStoreUI.setState((s) => ({
+      releases: { ...s.releases, [fullName]: { status: "ready", data } },
+    }));
+  } catch (e) {
+    if (keep) return;
+    useExtStoreUI.setState((s) => ({
+      releases: { ...s.releases, [fullName]: { status: "error", error: ipcMessage(e) } },
     }));
   }
 }

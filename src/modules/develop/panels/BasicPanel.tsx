@@ -47,7 +47,7 @@ export function BasicPanel() {
   const params = useDevelopStore((s) => s.params);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
-  const histogram = useDevelopStore((s) => s.histogram);
+  const hasHistogram = useDevelopStore((s) => s.histogram != null);
   const showDetail = useSettings((s) => s.basicDetailSliders);
   const { autoTone } = useAutoAdjust();
 
@@ -57,7 +57,7 @@ export function BasicPanel() {
 
   return (
     <Panel title="Basic">
-      <AutoButton onClick={autoTone} disabled={!histogram} title="Auto tone" />
+      <AutoButton onClick={autoTone} disabled={!hasHistogram} title="Auto tone" />
       <div className="space-y-0.5">
         {sliders.map((s) => (
           <Slider

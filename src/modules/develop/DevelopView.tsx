@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AppShell } from "@/ui/components/AppShell";
 import { DevelopCanvas } from "./DevelopCanvas";
 import { ProcessingUpdateControl } from "./ProcessingUpdateControl";
@@ -13,6 +13,7 @@ import { SurroundControl } from "@/ui/SurroundControl";
 import { DisplayTransformControl } from "@/ui/DisplayTransformControl";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
+import { useActivePhoto } from "@/state/use-active-photo";
 import { photoDisplayName } from "@/catalog/copy-name";
 
 // The canvas is the module's "main" dock panel; Tools (masks/retouch/presets)
@@ -24,15 +25,10 @@ const ASSESSMENT_SURROUND = "#666666";
 
 export function DevelopView() {
   const activePhotoId = useCatalogStore((s) => s.activePhotoId);
-  const photos = useCatalogStore((s) => s.photos);
+  const activePhoto = useActivePhoto();
   const loadEdit = useDevelopStore((s) => s.loadEdit);
   const colorAssessment = useDevelopStore((s) => s.colorAssessment);
   const [zoom, setZoom] = useState<number | null>(null);
-
-  const activePhoto = useMemo(
-    () => photos.find((p) => p.id === activePhotoId),
-    [photos, activePhotoId],
-  );
 
   useEffect(() => {
     if (activePhotoId) {

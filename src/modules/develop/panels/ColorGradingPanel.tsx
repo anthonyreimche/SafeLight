@@ -167,7 +167,7 @@ function ColorWheel({ label, range, lightness, onChange, onCommit }: ColorWheelP
     e.currentTarget.setPointerCapture(e.pointerId);
     dragging.current = true;
     // Second click of a double-click reset must not move (and commit) the value
-    // first — commitEdit has no no-change dedup, so the stray entry would sit
+    // first: a pointer that drifted between the clicks would leave a real step
     // between the pre-click state and the reset, hijacking the next undo.
     if (e.detail > 1) return;
     const { rx, ry } = relPointer(e);

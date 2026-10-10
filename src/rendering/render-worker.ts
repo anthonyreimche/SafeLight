@@ -27,7 +27,16 @@ export type WorkerRequest =
       isFallbackPreview?: boolean;
       baseCurveForBitmap?: boolean;
     }
+  // The develop view moved to another photo. Until that photo's source is set,
+  // uploaded and bound, or bound from the cache, renders are answered frameSkipped
+  // and histograms not at all: the bound source still belongs to the previous photo.
+  | { cmd: "clearSource" }
   | { cmd: "setParams"; params: DevelopParams }
+  // What differs from the params the bridge last posted, whole or by patches: `set` holds
+  // the top-level fields that are new or not the same value, `remove` the keys dropped.
+  // Every DevelopParams field is required, so only keys a stored edit carries beyond them
+  // can be. Never sent before whole params, nor first after an init.
+  | { cmd: "patchParams"; set: Partial<DevelopParams>; remove: string[] }
   | { cmd: "setContributedParams"; bag: Record<string, unknown> }
   // What differs from the bag the bridge last posted, whole or by patches: `set` holds
   // the new and changed entries, `remove` the dropped keys (none of them in `set`).
@@ -41,7 +50,9 @@ export type WorkerRequest =
   | { cmd: "capture"; reqId: number; params: DevelopParams; pipeline: ResolvedPipeline }
   | { cmd: "setAsShotTemperature"; kelvin: number }
   | { cmd: "setHslStyle"; range: number; smooth: number }
-  | { cmd: "render"; wantHistogram?: boolean; wantExtended?: boolean }
+  // Answered exactly once, by `seq`: with a frame, frameSkipped or renderError. The
+  // bridge sends the next render only once this one is answered.
+  | { cmd: "render"; seq: number; wantHistogram?: boolean; wantExtended?: boolean }
   | {
       cmd: "renderThumbnail";
       requestId: string;
@@ -108,7 +119,28 @@ export type WorkerResponse =
   // The develop renderer could not be created (no WebGL2 context). The bridge
   // retries init on a schedule; see RenderBridge's availability.
   | { type: "initError"; message: string }
-  | { type: "frame"; bitmap: ImageBitmap; width: number; height: number; histogram?: HistogramData }
+  | {
+      type: "frame";
+      seq: number;
+      bitmap: ImageBitmap;
+      width: number;
+      height: number;
+      // The source it was drawn from: its size as the renderer holds it (after the upload
+      // cap, 0 before any), and its number, which moves on each time the develop renderer
+      // is handed a source (see sourceGen below).
+      sourceWidth: number;
+      sourceHeight: number;
+      sourceGen: number;
+      histogram?: HistogramData;
+    }
+  // Render `seq` had nothing to draw with or from: no renderer, or no source yet for
+  // the photo the develop view moved to.
+  | { type: "frameSkipped"; seq: number }
+  // Drawing render `seq`, or measuring the histogram it asked for, threw.
+  | { type: "renderError"; seq: number; message: string }
+  // The develop renderer couldn't take source `sourceGen` (see sourceGen below). It holds
+  // no picture of the photo then, so renders are answered frameSkipped until the next.
+  | { type: "sourceError"; sourceGen: number; message: string }
   | { type: "histogram"; histogram: HistogramData }
   | { type: "thumbnail"; requestId: string; blob: Blob }
   | { type: "thumbnailMiss"; requestId: string; key: string }
@@ -157,6 +189,14 @@ let latestStageTextures: Record<string, StageTextureData> = {};
 // the captured frame's look. Kept while the renderer is null too, so one made by
 // an init retry starts from it instead of waiting for a re-post that may not come.
 let lastParams: DevelopParams | null = null;
+// Set by clearSource, cleared once the develop renderer is handed the next
+// photo's source.
+let awaitingSource = false;
+// The number of the develop renderer's source, carried by every frame: moved on by each
+// setImage and each main uploadSource that binds, sent while there is a renderer or not,
+// and by each bindSource hit. RenderBridge.sourceGen counts the same messages, so the
+// two agree on which source a number names.
+let sourceGen = 0;
 // Mirrors the gpuSourceCacheBytes preference. The develop renderer gets the full
 // budget (full-res sources are large); the thumb renderer caches tiny sources, so
 // a quarter holds many. 0 until the first setCacheBudget message.
@@ -174,6 +214,17 @@ function postHealSource() {
   if (!renderer) return;
   const hs = renderer.healSourceData();
   if (hs) respond({ type: "healSource", data: hs.data, width: hs.w, height: hs.h }, [hs.data.buffer]);
+}
+
+// The develop renderer let go of the source it held before it failed to take this one, so
+// nothing is drawn until the next source, and the view is told which one failed.
+function sourceFailed(err: unknown) {
+  awaitingSource = true;
+  respond({
+    type: "sourceError",
+    sourceGen,
+    message: err instanceof Error ? err.message : String(err),
+  });
 }
 
 // The bag both renderers draw with. Kept, so a renderer created later starts from it.
@@ -341,19 +392,31 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         break;
       }
 
+      case "clearSource": {
+        awaitingSource = true;
+        break;
+      }
+
       case "setImage": {
+        sourceGen++;
         if (!renderer) break;
         const img = msg.image;
-        if (img.kind === "bitmap") {
-          renderer.setImage(
-            img.bitmap,
-            msg.maxEdge,
-            msg.isFallbackPreview,
-            msg.baseCurveForBitmap,
-          );
-        } else {
-          renderer.setImage(img, msg.maxEdge, msg.isFallbackPreview);
+        try {
+          if (img.kind === "bitmap") {
+            renderer.setImage(
+              img.bitmap,
+              msg.maxEdge,
+              msg.isFallbackPreview,
+              msg.baseCurveForBitmap,
+            );
+          } else {
+            renderer.setImage(img, msg.maxEdge, msg.isFallbackPreview);
+          }
+        } catch (err) {
+          sourceFailed(err);
+          break;
         }
+        awaitingSource = false;
         postHealSource();
         break;
       }
@@ -362,6 +425,19 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         lastParams = msg.params;
         if (!renderer) break;
         renderer.setParams(msg.params);
+        break;
+      }
+
+      case "patchParams": {
+        // A new object, so the renderer never has the params it holds edited under it.
+        // Fields the patch doesn't name stay the very objects the renderer drew last: it
+        // signs every dab of the masks and retouch again only when they are not the same
+        // arrays.
+        if (!lastParams) throw new Error("a params patch arrived before any params");
+        const merged: DevelopParams = { ...lastParams, ...msg.set };
+        for (const key of msg.remove) Reflect.deleteProperty(merged, key);
+        lastParams = merged;
+        renderer?.setParams(merged);
         break;
       }
 
@@ -432,19 +508,38 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       }
 
       case "render": {
-        if (!renderer || !canvas) break;
-        renderer.render();
-        const bitmap = canvas.transferToImageBitmap();
-        const resp: WorkerResponse = {
-          type: "frame",
-          bitmap,
-          width: renderer.bufferWidth,
-          height: renderer.bufferHeight,
-        };
-        if (msg.wantHistogram) {
-          resp.histogram = renderer.computeHistogram(!!msg.wantExtended);
+        // Every way out answers by `seq`: the generic "error" carries none, and the
+        // bridge sends no further render until this one is answered.
+        if (!renderer || !canvas || awaitingSource) {
+          respond({ type: "frameSkipped", seq: msg.seq });
+          break;
         }
-        respond(resp, [bitmap]);
+        let bitmap: ImageBitmap | null = null;
+        try {
+          renderer.render();
+          bitmap = canvas.transferToImageBitmap();
+          const resp: WorkerResponse = {
+            type: "frame",
+            seq: msg.seq,
+            bitmap,
+            width: renderer.bufferWidth,
+            height: renderer.bufferHeight,
+            sourceWidth: renderer.sourceWidth,
+            sourceHeight: renderer.sourceHeight,
+            sourceGen,
+          };
+          if (msg.wantHistogram) {
+            resp.histogram = renderer.computeHistogram(!!msg.wantExtended);
+          }
+          respond(resp, [bitmap]);
+        } catch (err) {
+          bitmap?.close();
+          respond({
+            type: "renderError",
+            seq: msg.seq,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
         break;
       }
 
@@ -486,7 +581,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       }
 
       case "computeHistogram": {
-        if (!renderer) break;
+        if (!renderer || awaitingSource) break;
         const histogram = renderer.computeHistogram(!!msg.wantExtended);
         respond({ type: "histogram", histogram });
         break;
@@ -507,27 +602,51 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       }
 
       case "bindSource": {
-        const hit = !!renderer && renderer.bindSource(msg.key);
+        let hit = false;
+        try {
+          hit = !!renderer && renderer.bindSource(msg.key);
+        } catch (err) {
+          // The view waits for this answer. A miss has it load and upload the photo
+          // itself, which replaces the entry; the renderer may have let go of the
+          // source it held, so nothing is drawn until then. Reported as an error too.
+          awaitingSource = true;
+          respond({ type: "sourceBound", reqId: msg.reqId, hit: false });
+          throw err;
+        }
+        if (hit) {
+          sourceGen++;
+          awaitingSource = false;
+        }
         respond({ type: "sourceBound", reqId: msg.reqId, hit });
         if (hit) postHealSource();
         break;
       }
 
       case "uploadSource": {
+        const bind = msg.bind ?? true;
+        if (bind && msg.target === "main") sourceGen++;
         const target = msg.target === "thumb" ? ensureThumbRenderer() : renderer;
         if (!target) break;
         const img = msg.image;
-        const bind = msg.bind ?? true;
         // Cap a cached float16 source to maxEdge for the thumb renderer so it doesn't
         // hold a full-res source; the main renderer keeps full resolution for zoom.
         const capFloat16 = msg.target === "thumb";
-        if (img.kind === "bitmap") {
-          target.uploadSource(msg.key, img.bitmap, msg.maxEdge, msg.isFallbackPreview, msg.baseCurveForBitmap, bind, capFloat16);
-        } else {
-          target.uploadSource(msg.key, img, msg.maxEdge, msg.isFallbackPreview, false, bind, capFloat16);
+        try {
+          if (img.kind === "bitmap") {
+            target.uploadSource(msg.key, img.bitmap, msg.maxEdge, msg.isFallbackPreview, msg.baseCurveForBitmap, bind, capFloat16);
+          } else {
+            target.uploadSource(msg.key, img, msg.maxEdge, msg.isFallbackPreview, false, bind, capFloat16);
+          }
+        } catch (err) {
+          if (!bind || msg.target !== "main") throw err;
+          sourceFailed(err);
+          break;
         }
         // Only a bind into the main renderer changes the active heal source.
-        if (bind && msg.target === "main") postHealSource();
+        if (bind && msg.target === "main") {
+          awaitingSource = false;
+          postHealSource();
+        }
         break;
       }
 

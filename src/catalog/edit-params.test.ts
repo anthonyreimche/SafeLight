@@ -33,6 +33,7 @@ function install(edit: EditState | undefined): void {
     getEditState: async (photoId) => (photoId === edit?.photoId ? edit : undefined),
     getAllEditStates: async () => (edit ? [edit] : []),
     putEditState: async () => {},
+    putEditStates: async () => {},
   };
   setCatalogStorage(storage);
 }

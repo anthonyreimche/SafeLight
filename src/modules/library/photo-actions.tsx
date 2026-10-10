@@ -20,7 +20,9 @@ import { RenamePhotoDialog } from "./RenamePhotoDialog";
 import { useGridMenuItems } from "@/extensions/registry";
 import { exportPhotoData, renamePhoto, revealPhoto } from "@/project/folder-ops";
 import { confirmAndDeleteFromDisk, diskTrashAvailable } from "./delete-from-disk";
+import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
 import { isNativeFS } from "@/project/native-fs";
+import { projectPassSignal } from "@/project/project-store";
 import { reimportPhotos } from "./import-photos";
 import { getSettings } from "@/state/settings-store";
 import { loadSavedEdit } from "@/catalog/edit-params";
@@ -75,9 +77,10 @@ export function usePhotoActions(): PhotoActions {
   const handleExportData = useCallback(async (ids: string[]) => {
     if (ids.length === 0) return;
     const n = await exportPhotoData(ids);
-    window.alert(
-      `Wrote ${n} sidecar file${n === 1 ? "" : "s"} (“<name>.safelight.json”) next to the selected photo${ids.length === 1 ? "" : "s"}. Move the photos with their sidecars and the next project to scan them will pick up the ratings, labels and edits.`,
-    );
+    await alertDialog({
+      title: "Export data",
+      message: `Wrote ${n} sidecar file${n === 1 ? "" : "s"} (“<name>.safelight.json”) next to the selected photo${ids.length === 1 ? "" : "s"}. Move the photos with their sidecars and the next project to scan them will pick up the ratings, labels and edits.`,
+    });
   }, []);
 
   // Rename the targeted photo's file on disk (in place, extension preserved).
@@ -117,7 +120,8 @@ export function usePhotoActions(): PhotoActions {
         return;
       }
       const res = await renamePhoto(target.id, value);
-      if (!res.ok) window.alert(res.reason);
+      if (!res.ok)
+        await alertDialog({ title: "Rename photo", message: res.reason });
     },
     [],
   );
@@ -155,7 +159,11 @@ export function usePhotoActions(): PhotoActions {
   // builds), mirroring the platform "show this file in its folder" action.
   const handleReveal = useCallback(async (id: string) => {
     const ok = await revealPhoto(id);
-    if (!ok) window.alert("Couldn't open the folder — the file may have moved or been deleted.");
+    if (!ok)
+      await alertDialog({
+        title: "Show in folder",
+        message: "Couldn't open the folder. The file may have moved or been deleted.",
+      });
   }, []);
 
   // Re-read the targeted photos from disk: rebuild their previews, refresh
@@ -168,22 +176,26 @@ export function usePhotoActions(): PhotoActions {
     const { ok, failed } = await reimportPhotos(
       targets,
       undefined,
-      (p) => useCatalogStore.getState().updatePhoto(p),
+      (p, change) => useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
+      projectPassSignal(),
     );
     if (failed > 0) {
-      window.alert(
-        `Re-imported ${ok} photo${ok === 1 ? "" : "s"}. ${failed} couldn't be read or decoded from disk.`,
-      );
+      await alertDialog({
+        title: "Re-import",
+        message: `Re-imported ${ok} photo${ok === 1 ? "" : "s"}. ${failed} couldn't be read or decoded from disk.`,
+      });
     }
   }, []);
 
   const handleRemove = useCallback(
-    (ids: string[]) => {
+    async (ids: string[]) => {
       if (ids.length === 0) return;
       if (getSettings().confirmRemovePhotos) {
-        const ok = window.confirm(
-          `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted (they'll reappear on the next folder scan).`,
-        );
+        const ok = await confirmDialog({
+          title: "Remove from catalog",
+          message: `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted (they'll reappear on the next folder scan).`,
+          confirmLabel: "Remove",
+        });
         if (!ok) return;
       }
       removePhotos(ids);
@@ -265,7 +277,7 @@ export function usePhotoActions(): PhotoActions {
       { label: `Re-import${suffix}`, onClick: () => void handleReimport(ids) },
       { label: `Export data…${suffix}`, onClick: () => void handleExportData(ids) },
       "separator",
-      { label: `Remove${suffix}`, danger: true, onClick: () => handleRemove(ids) },
+      { label: `Remove${suffix}`, danger: true, onClick: () => void handleRemove(ids) },
       // Files go to the OS trash, so this stays recoverable; unavailable in
       // the plain-browser build, which has no path-level fs access.
       ...(diskTrashAvailable()

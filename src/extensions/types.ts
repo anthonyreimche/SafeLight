@@ -341,6 +341,8 @@ export interface ExtensionRepoMeta {
  *  five (id/name/version/main) are optional and additive — older manifests load
  *  unchanged; the store simply shows richer detail when they're present. */
 export interface ExtensionManifest {
+  /** A letter or digit, then letters, digits, `.`, `_` and `-`. `core` and anything
+   *  under `core.`, in any case, belong to Safelight's built-ins and are refused. */
   id: string;
   name: string;
   version: string;
@@ -374,10 +376,22 @@ export interface ExtensionManifest {
   permissions?: ExtensionPermissions;
 }
 
-/** The update-relevant fields of a repo's current safelight.json. */
+/** The update-relevant fields of the safelight.json a repo currently publishes. */
 export interface RemoteManifest {
   version: string;
   minAppVersion?: string;
+}
+
+/** One GitHub release of an extension. Lists are newest version first. */
+export interface ExtensionRelease {
+  version: string;
+  tag: string;
+  prerelease: boolean;
+  /** ISO date, or "" when GitHub gave none. */
+  publishedAt: string;
+  /** Release notes as Markdown, capped at 20 KB. */
+  notes: string;
+  htmlUrl: string;
 }
 
 /** Declared extension capabilities. See ExtensionManifest.permissions. */
@@ -963,7 +977,10 @@ export interface SafelightAPI {
   /** Supply (or clear, with null) the pixel data for a processing stage's
    *  declared texture — e.g. a baked LUT atlas. Bound to the stage's sampler
    *  (named by the texture's `key`) on every frame; re-call with a bumped
-   *  `version` to swap the data without recompiling the shader. */
+   *  `version` to swap the data without recompiling the shader. Disabling,
+   *  updating or reloading the extension drops its stages' textures and frees
+   *  their GPU copies, so supply them from `activate`, not only from module
+   *  top-level code (a re-enabled extension's module is not re-run). */
   setStageTexture(
     stageId: string,
     key: string,
@@ -1210,7 +1227,9 @@ export interface SafelightAPI {
    *  records and inserts them into the live grid (optionally right after a given
    *  photo). `getEditState` / `putEditState` read and write a photo's saved
    *  develop recipe (the undo stack) by id — so an extension can, for instance,
-   *  clone one photo's edits onto another. */
+   *  clone one photo's edits onto another. Writing the photo open in Develop
+   *  reloads it there from the catalog, which also clears the active tool and the
+   *  mask and spot selection. */
   catalog: {
     addPhotos(
       photos: import("@/catalog/types").CatalogPhoto[],
@@ -1392,8 +1411,9 @@ declare global {
       };
       plugins: {
         list(): Promise<ExtensionManifest[]>;
-        /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. */
-        install(spec: string): Promise<ExtensionManifest>;
+        /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. With a
+         *  `version`, installs that GitHub release instead of the latest. */
+        install(spec: string, version?: string): Promise<ExtensionManifest>;
         uninstall(id: string): Promise<void>;
         /** Browse official extensions. For the default topic this serves the
          *  prebuilt registry index (one CDN fetch, whole catalog, baked
@@ -1404,11 +1424,22 @@ declare global {
           topic: string,
           force?: boolean,
         ): Promise<ExtensionSearchResult[]>;
-        /** The `version` and `minAppVersion` from the repo's root safelight.json
-         *  on its default branch, or null. Lets the updater detect a pushed
-         *  version bump without a GitHub Release and tell whether this build
-         *  can run it. Optional: absent in older Electron builds. */
-        remoteManifest?(repo: string): Promise<RemoteManifest | null>;
+        /** The newest version a repo publishes, with its minAppVersion, or
+         *  null: its newest GitHub release (a newer pre-release with
+         *  `prerelease`), or its default branch's safelight.json when it has no
+         *  releases. Read from the registry index when that lists the repo.
+         *  Optional: absent in older Electron builds. */
+        remoteManifest?(
+          repo: string,
+          opts?: { prerelease?: boolean },
+        ): Promise<RemoteManifest | null>;
+        /** The repo's releases, newest first; [] for a repo that publishes from
+         *  its branch. Rejects when GitHub can't be read. Optional: absent in
+         *  older Electron builds. */
+        releases?(repo: string, force?: boolean): Promise<ExtensionRelease[]>;
+        /** safelight.json at one release's tag, or null. Optional: absent in
+         *  older Electron builds. */
+        manifestAt?(repo: string, version: string): Promise<RemoteManifest | null>;
         /** Finish an install/update: "keep" drops the previous version that
          *  install() kept aside; "rollback" puts it back and returns its
          *  manifest (null when there was none — the install is then removed).

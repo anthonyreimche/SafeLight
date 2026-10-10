@@ -5,7 +5,8 @@
 
 // Update processing for a Library selection: a photo whose stored edit is on the
 // older processing gets one appended step that raises only the version, and a
-// photo that is already current or was never edited is left untouched.
+// photo that is already current or was never edited is left untouched. The whole
+// selection is stored in one catalog write.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -25,8 +26,13 @@ import {
   type EditSnapshot,
   type EditState,
 } from "./types";
+import { broadcast } from "@/state/broadcast";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
+import { registerCatalogHooks, useRegistry } from "@/extensions/registry";
+import type { CatalogHooksContribution } from "@/extensions/types";
+
+type EditCommitCtx = Parameters<NonNullable<CatalogHooksContribution["onEditCommit"]>>[0];
 
 const PHOTO = "photo-1";
 const BAG = { "ext.stage.amount": 40 };
@@ -157,5 +163,76 @@ describe("updateProcessing", () => {
     expect(labelsOf(develop.history)).toEqual(["Original", "Exposure", "Update processing"]);
     expect(develop.historyIndex).toBe(2);
     expect(develop.asShotTemperature).toBe(4300);
+  });
+});
+
+describe("updateProcessing — one catalog write for the selection", () => {
+  const IDS = ["a", "b", "c", "d"];
+  // "a" and "b" are on the older processing, "c" is current, and "d" was never edited.
+  const seed = () =>
+    installMemoryStorage(
+      edit([olderSnapshot("Exposure", 1)], 0, "a"),
+      edit([olderSnapshot("Exposure", 2)], 0, "b"),
+      edit([snapshot("Exposure", { exposure: 3 })], 0, "c"),
+    );
+
+  beforeEach(() => {
+    useCatalogStore.setState({ photos: IDS.map((id) => photo(id)) });
+    vi.mocked(broadcast).mockClear();
+  });
+
+  afterEach(() => useRegistry.setState({ catalogHooks: {} }));
+
+  it("stores the changed photos with one putEditStates call and no putEditState call", async () => {
+    const { batches, singles } = seed();
+
+    expect(await updateProcessing([...IDS, "gone"])).toBe(2);
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0].map((state) => state.photoId)).toEqual(["a", "b"]);
+    expect(singles).toHaveLength(0);
+  });
+
+  it("runs the edit hooks and the broadcast once per changed photo", async () => {
+    seed();
+    const onEditCommit = vi.fn(async (_ctx: EditCommitCtx) => {});
+    registerCatalogHooks("test-ext", { id: "test.hooks", onEditCommit });
+
+    await updateProcessing(IDS);
+
+    expect(onEditCommit.mock.calls.map(([ctx]) => ctx.photo.id)).toEqual(["a", "b"]);
+    expect(broadcast).toHaveBeenCalledTimes(2);
+    for (const photoId of ["a", "b"])
+      expect(broadcast).toHaveBeenCalledWith({
+        type: "edit-update",
+        payload: {
+          photoId,
+          params: expect.objectContaining({ processVersion: CURRENT_PROCESS_VERSION }),
+        },
+      });
+  });
+
+  it("reloads the photo open in Develop once", async () => {
+    seed();
+    await useDevelopStore.getState().loadEdit("b");
+    const loadEdit = vi.fn(useDevelopStore.getState().loadEdit);
+    useDevelopStore.setState({ loadEdit });
+
+    await updateProcessing(IDS);
+
+    expect(loadEdit).toHaveBeenCalledTimes(1);
+    expect(loadEdit.mock.calls[0][0]).toBe("b");
+    expect(useDevelopStore.getState().params.processVersion).toBe(CURRENT_PROCESS_VERSION);
+  });
+
+  it("writes nothing when no photo changes", async () => {
+    const { batches, singles } = installMemoryStorage(
+      edit([snapshot("Exposure", { exposure: 3 })], 0, "c"),
+    );
+
+    expect(await updateProcessing(["c", "d"])).toBe(0);
+
+    expect(batches).toHaveLength(0);
+    expect(singles).toHaveLength(0);
   });
 });

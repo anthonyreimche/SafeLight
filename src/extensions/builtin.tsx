@@ -62,6 +62,9 @@ export interface BuiltinExtension {
   locked?: boolean;
   /** Ships inactive — seeded into the disabled list on first launch. */
   disabledByDefault?: boolean;
+  /** Saved layouts never switch it on or off: whatever the user chose for it
+   *  stands, whichever layout is picked. */
+  keepAcrossLayouts?: boolean;
   activate(api: SafelightAPI): void;
   /** Tear down side effects when disabled (built-ins can't be uninstalled, but
    *  may patch globals — e.g. Developer Tools patches console). */
@@ -380,6 +383,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     id: "core.accessibility",
     name: "Accessibility",
     version: V,
+    keepAcrossLayouts: true,
     description:
       "High-contrast and colour-vision overlays, larger text and controls, reduced motion and transparency, OS-preference sync, and opt-in keyboard editing for the canvas tools. Disable to remove all of these — the app stays screen-reader navigable either way.",
     activate(api) {
@@ -538,6 +542,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     description:
       "In-app inspector: console, errors/warnings, system & WebGL info, localStorage editor and Electron DevTools controls. Disabled by default.",
     disabledByDefault: true,
+    keepAcrossLayouts: true,
     activate(api) {
       installLogCapture();
       initDevtoolsDetachSync(); // cross-window re-dock control

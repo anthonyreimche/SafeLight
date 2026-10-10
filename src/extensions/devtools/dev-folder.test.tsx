@@ -7,6 +7,8 @@
 // content-security policy the way an installed extension's do: the main
 // process reads the folder's manifests at launch, so the renderer must record
 // the folder with it and tell the developer which origins wait on a restart.
+// An extension under a reserved id ("core", "core.*") is refused before its
+// bundle is read.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -18,10 +20,13 @@ const TILES = "https://tiles.openfreemap.org";
 
 const sync = vi.fn<(folder: string | null) => Promise<{ pending: string[] }>>();
 // privileged.ts claims the bridge once per module instance, so the same fake
-// filesystem serves every test here; a scan of it finds no extensions.
+// filesystem serves every test here; unless a test says otherwise, a scan of it
+// finds no extensions.
 const fakeFs = {
-  exists: vi.fn(async () => false),
-  list: vi.fn(async () => []),
+  exists: vi.fn<(path: string) => Promise<boolean>>(async () => false),
+  list: vi.fn<(path: string) => Promise<{ name: string; kind: "file" | "directory" }[]>>(
+    async () => [],
+  ),
   read: vi.fn(),
   pickDirectory: vi.fn(),
 };
@@ -36,6 +41,9 @@ beforeEach(() => {
   localStorage.clear();
   sync.mockReset();
   sync.mockResolvedValue({ pending: [] });
+  fakeFs.exists.mockReset();
+  fakeFs.list.mockReset();
+  fakeFs.read.mockReset();
   stubNative({ syncDevFolder: sync });
   useDevFolder.setState({ folder: null, items: [], scanning: false, error: null, pendingOrigins: [] });
 });
@@ -87,6 +95,83 @@ describe("dev folder network origins", () => {
     initDevFolder();
     await vi.waitFor(() => expect(useDevFolder.getState().scanning).toBe(false));
     expect(useDevFolder.getState().pendingOrigins).toEqual([]);
+  });
+});
+
+describe("a dev folder extension's id", () => {
+  const reason = (id: string) => `${id}: extension ids under 'core' are reserved for Safelight`;
+  const manifestOf = (id: unknown) => ({ id, name: "Tools", version: "1.0.0", main: "index.js" });
+  const file = (value: unknown) => ({
+    data: new TextEncoder().encode(JSON.stringify(value)),
+    mtimeMs: 0,
+    size: 0,
+  });
+
+  /** The folder is one extension: its own safelight.json at the root. */
+  function holdOneExtension(id: unknown): void {
+    fakeFs.exists.mockImplementation(async (p) => p === `${FOLDER}\\safelight.json`);
+    fakeFs.read.mockImplementation(async () => file(manifestOf(id)));
+  }
+
+  /** The folder holds each subfolder as one extension, with the manifest id it maps to. */
+  function holdExtensions(idByDir: Record<string, string>): void {
+    const manifests = new Map(
+      Object.entries(idByDir).map(([dir, id]) => [`${FOLDER}\\${dir}\\safelight.json`, id]),
+    );
+    fakeFs.list.mockResolvedValue(
+      Object.keys(idByDir).map((name) => ({ name, kind: "directory" as const })),
+    );
+    fakeFs.exists.mockImplementation(async (p) => manifests.has(p));
+    fakeFs.read.mockImplementation(async (p) => file(manifestOf(manifests.get(p) ?? "")));
+  }
+
+  async function scan(): Promise<void> {
+    setDevFolder(FOLDER);
+    initDevFolder();
+    await vi.waitFor(() => expect(useDevFolder.getState().scanning).toBe(false));
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(["core.hsl", "core", "Core.Tools"])(
+    "under core is refused before its bundle is read, and the log says why (%s)",
+    async (id) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      holdOneExtension(id);
+
+      await scan();
+
+      expect(useDevFolder.getState().items).toMatchObject([
+        { status: "error", error: reason(id) },
+      ]);
+      expect(fakeFs.read).toHaveBeenCalledTimes(1); // the manifest, never index.js
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(reason(id)));
+    },
+  );
+
+  it("under core is refused in a parent folder, a lookalike id reaches its bundle", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    holdExtensions({ tools: "core.tools", lookalike: "corel" });
+
+    await scan();
+
+    const [tools] = useDevFolder.getState().items;
+    expect(tools).toMatchObject({ status: "error", error: reason("core.tools") });
+    expect(fakeFs.read).not.toHaveBeenCalledWith(`${FOLDER}\\tools\\index.js`);
+    expect(fakeFs.read).toHaveBeenCalledWith(`${FOLDER}\\lookalike\\index.js`);
+  });
+
+  // A manifest is untyped JSON: whatever is not text cannot be an id, and the
+  // rule that compares ids must never see it.
+  it.each([5, true, ["core"], {}])("that is not text counts as missing (%j)", async (id) => {
+    holdOneExtension(id);
+
+    await scan();
+
+    expect(useDevFolder.getState().items).toMatchObject([
+      { status: "error", error: "safelight.json is missing `id` or `main`" },
+    ]);
+    expect(fakeFs.read).toHaveBeenCalledTimes(1); // the manifest, never index.js
   });
 });
 

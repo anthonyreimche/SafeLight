@@ -6,8 +6,10 @@
 // The manifests the main process reads at launch for the renderer's
 // content-security policy (extension-origins.cjs): installed extensions and
 // the Developer Tools dev folder must be read the same way, and only
-// well-formed HTTPS origins may ever reach the policy. Runs against temp
-// folders; main.cjs only supplies the real paths.
+// well-formed HTTPS origins may ever reach the policy. An extension under a
+// reserved id ("core", "core.*") is no valid manifest at all: it is neither
+// installed, listed nor read for origins. Runs against temp folders; main.cjs
+// only supplies the real paths.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
@@ -15,12 +17,15 @@ import os from "node:os";
 import path from "node:path";
 import {
   declaredConnectHosts,
+  isReservedExtensionId,
   listDevManifests,
   listInstalledManifests,
   pendingConnectHosts,
   readDevFolder,
+  validManifest,
   writeDevFolder,
 } from "./extension-origins.cjs";
+import { isReservedExtensionId as isReservedInRenderer } from "../src/extensions/core-extension";
 
 let root: string;
 
@@ -46,6 +51,43 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+describe("validManifest", () => {
+  it.each(["core", "core.x", "CORE", "Core.Tools"])("refuses the reserved id %s", (id) => {
+    expect(validManifest(manifest(id))).toBe(false);
+  });
+
+  it.each(["corel", "coreutils", "my.core", "acme.core.x"])(
+    "accepts %s, which is not under core",
+    (id) => {
+      expect(validManifest(manifest(id))).toBe(true);
+    },
+  );
+});
+
+// Each runtime states the reserved-id rule once (here, and in the renderer's
+// core-extension.ts). The same id must come out the same in both, or one of them
+// lets through what the other refuses.
+describe("the reserved-id rule", () => {
+  it.each([
+    "core",
+    "core.x",
+    "CORE",
+    "Core.Tools",
+    "core.",
+    ".core",
+    "core-x",
+    "core_x",
+    "corel",
+    "coreutils",
+    "my.core",
+    "acme.core.x",
+    "cor",
+    "",
+  ])("is the same in the main process and the renderer for %j", (id) => {
+    expect(isReservedExtensionId(id)).toBe(isReservedInRenderer(id));
+  });
+});
+
 describe("listInstalledManifests", () => {
   it("reads each plugins/<id>/safelight.json whose id names its folder", () => {
     writeExt(path.join(root, "acme.a"), manifest("acme.a"));
@@ -59,6 +101,13 @@ describe("listInstalledManifests", () => {
     writeExt(path.join(root, "partial"), { id: "partial", name: "Partial" });
     fs.writeFileSync(path.join(root, "safelight.json"), JSON.stringify(manifest("loose")));
     expect(listInstalledManifests(root)).toEqual([]);
+  });
+
+  it("never lists an extension under a reserved id", () => {
+    writeExt(path.join(root, "core"), manifest("core"));
+    writeExt(path.join(root, "core.hsl"), manifest("core.hsl"));
+    writeExt(path.join(root, "acme.a"), manifest("acme.a"));
+    expect(ids(listInstalledManifests(root))).toEqual(["acme.a"]);
   });
 
   it("is empty when the folder does not exist", () => {
@@ -85,6 +134,14 @@ describe("listDevManifests", () => {
     writeExt(path.join(root, "partial"), { id: "partial", main: "index.js" });
     writeExt(path.join(root, "group", "deep"), manifest("deep"));
     expect(listDevManifests(root)).toEqual([]);
+  });
+
+  it("never lists an extension under a reserved id, as the folder itself or inside it", () => {
+    writeExt(path.join(root, "solo"), manifest("core.hsl"));
+    expect(listDevManifests(path.join(root, "solo"))).toEqual([]);
+    writeExt(path.join(root, "parent", "tools"), manifest("core"));
+    writeExt(path.join(root, "parent", "ok"), manifest("acme.ok"));
+    expect(ids(listDevManifests(path.join(root, "parent")))).toEqual(["acme.ok"]);
   });
 
   it("is empty for no folder or a missing one", () => {
@@ -125,6 +182,20 @@ describe("declaredConnectHosts", () => {
       "https://*.workers.dev",
       "https://localhost:8787",
     ]);
+  });
+
+  it("never come from an extension under a reserved id, installed or in the dev folder", () => {
+    writeExt(
+      path.join(root, "plugins", "core.tools"),
+      manifest("core.tools", network("https://a.example.com")),
+    );
+    writeExt(path.join(root, "dev", "tools"), manifest("Core", network("https://b.example.com")));
+    writeExt(path.join(root, "dev", "ok"), manifest("acme.ok", network("https://c.example.com")));
+    const hosts = declaredConnectHosts([
+      ...listInstalledManifests(path.join(root, "plugins")),
+      ...listDevManifests(path.join(root, "dev")),
+    ]);
+    expect(hosts).toEqual(["https://c.example.com"]);
   });
 
   it("ignores manifests without a network list", () => {

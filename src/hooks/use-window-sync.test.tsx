@@ -7,10 +7,13 @@
 // module back, and a pop-out can ask the main window to go to another module.
 // Messages arrive over a stand-in for the BroadcastChannel other windows post to.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { BroadcastMessage } from "@/state/broadcast";
 import { useUIStore } from "@/state/ui-store";
+import { useCatalogStore } from "@/state/catalog-store";
+import { setThumbnailLoader } from "@/state/thumbnail-loader";
+import { photo, installMemoryStorage } from "@/catalog/stored-edit.fixtures";
 import { registerModule, useRegistry } from "@/extensions/registry";
 import { useWindowSync } from "./use-window-sync";
 
@@ -79,5 +82,39 @@ describe("a pop-out navigating", () => {
     renderHook(() => useWindowSync());
     receive({ type: "navigate", payload: { module: "library" } });
     expect(useUIStore.getState().activeModule).toBe("develop");
+  });
+});
+
+describe("a photo's preview changing", () => {
+  const readPreview = vi.fn(async (_id: string): Promise<Blob | null> => null);
+
+  beforeEach(() => {
+    readPreview.mockClear();
+    setThumbnailLoader(readPreview);
+    installMemoryStorage();
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+  });
+
+  afterEach(() => {
+    setThumbnailLoader(null);
+  });
+
+  it("reloads that preview when another window rewrote it", () => {
+    renderHook(() => useWindowSync());
+    receive({ type: "catalog-change", payload: { action: "update", id: "a", origin: "other" } });
+    expect(readPreview).toHaveBeenCalledTimes(1);
+    expect(readPreview).toHaveBeenCalledWith("a");
+  });
+
+  it("doesn't reload when this window rates a photo", async () => {
+    renderHook(() => useWindowSync());
+    await useCatalogStore.getState().setRating("a", 4);
+    expect(readPreview).not.toHaveBeenCalled();
+  });
+
+  it("doesn't reload the previews this window turned itself", async () => {
+    renderHook(() => useWindowSync());
+    await useCatalogStore.getState().rotatePhotos(["a", "b"], 90);
+    expect(readPreview).not.toHaveBeenCalled();
   });
 });

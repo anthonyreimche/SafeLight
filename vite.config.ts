@@ -78,6 +78,9 @@ export default defineConfig({
         test: {
           name: "dom",
           include: ["src/**/*.test.tsx"],
+          // vmThreads: cheaper jsdom setup than the default pool. Each file runs
+          // in a vm context, so `instanceof` against Node built-ins crosses realms.
+          pool: "vmThreads",
           environment: "jsdom",
           setupFiles: ["src/test/setup-dom.ts"],
         },

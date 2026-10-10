@@ -50,12 +50,16 @@ export function useAutoAdjust() {
     ) => {
       if (running.current) return;
       running.current = true;
+      const { photoId } = useDevelopStore.getState();
       try {
         for (let i = 0; i < MAX_ITERS; i++) {
           if (!useDevelopStore.getState().histogram) break;
           const done = apply();
           if (done) break;
           await settle();
+          // Another photo opened mid-run; committing would add this run's step
+          // to that photo's history.
+          if (useDevelopStore.getState().photoId !== photoId) return;
         }
         await useDevelopStore.getState().commitEdit(label);
       } finally {

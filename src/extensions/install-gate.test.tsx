@@ -136,3 +136,27 @@ describe("checkReview", () => {
     expect(await checkReview(REPO)).toMatchObject({ stale: false, confirmed: false });
   });
 });
+
+describe("checkReview with a chosen version", () => {
+  beforeEach(() => {
+    useTrust.setState({
+      list: trust({ verified: [REPO], reviewed: { [REPO]: { version: "1.1.0" } } }),
+    });
+  });
+
+  it("judges a chosen version newer than the review as unreviewed, without a lookup", async () => {
+    expect(await checkReview(REPO, "1.2.0")).toEqual({
+      verified: true,
+      reviewedVersion: "1.1.0",
+      stale: true,
+      confirmed: true,
+    });
+    expect(remoteManifest).not.toHaveBeenCalled();
+  });
+
+  it("counts the reviewed version, or an older one, as reviewed", async () => {
+    expect((await checkReview(REPO, "1.1.0")).stale).toBe(false);
+    expect((await checkReview(REPO, "1.0.0")).stale).toBe(false);
+    expect(remoteManifest).not.toHaveBeenCalled();
+  });
+});

@@ -29,6 +29,7 @@ import {
   shortcutsSuspended,
 } from "@/state/keybindings-store";
 import { confirmAndDeleteFromDisk } from "./delete-from-disk";
+import { confirmDialog, isDialogOpen } from "@/ui/components/ConfirmDialog";
 import { moveActivePhoto, visibleList } from "./photo-navigation";
 import { revealPhoto } from "@/project/folder-ops";
 import { isNativeFS } from "@/project/native-fs";
@@ -74,8 +75,34 @@ function maskOwnsDelete(): boolean {
   return d.activeTool === "mask" && !!d.selectedMaskId && !!d.selectedComponentId;
 }
 
+let removeConfirmOpen = false;
+
+// The in-app confirm is async, so the keydown handler fires and forgets this.
+// The ids are the selection at keydown; only the store's removePhotos is read
+// after the user answers. At most one confirmation is pending: a second
+// request while it's open (a held or repeated key) is dropped, not queued.
+async function removeFromCatalog(ids: string[]): Promise<void> {
+  if (getSettings().confirmRemovePhotos) {
+    if (removeConfirmOpen) return;
+    removeConfirmOpen = true;
+    const n = ids.length;
+    const ok = await confirmDialog({
+      title: "Remove from catalog",
+      message: `Remove ${n} photo${n === 1 ? "" : "s"} from the catalog? The original file${n === 1 ? "" : "s"} on disk won't be deleted.`,
+      confirmLabel: "Remove",
+    }).finally(() => {
+      removeConfirmOpen = false;
+    });
+    if (!ok) return;
+  }
+  void useCatalogStore.getState().removePhotos(ids);
+}
+
 function handleCullingKey(e: KeyboardEvent): void {
   if (shortcutsSuspended()) return;
+  // A native confirm froze the window's key handlers; the in-app card doesn't,
+  // so every culling key (not only Delete) waits until it's answered.
+  if (isDialogOpen()) return;
 
   // Shortcuts take priority: only bare keys defer to true text-entry targets
   // (so typing works); modifier combos always fire, and a focused slider or
@@ -151,14 +178,7 @@ function handleCullingKey(e: KeyboardEvent): void {
   if (action === "photo.remove") {
     if (targetIds.length === 0 || maskOwnsDelete()) return;
     e.preventDefault();
-    const n = targetIds.length;
-    if (getSettings().confirmRemovePhotos) {
-      const ok = window.confirm(
-        `Remove ${n} photo${n === 1 ? "" : "s"} from the catalog? The original file${n === 1 ? "" : "s"} on disk won't be deleted.`,
-      );
-      if (!ok) return;
-    }
-    catalog.removePhotos(targetIds);
+    void removeFromCatalog(targetIds);
     return;
   }
 

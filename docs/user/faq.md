@@ -50,7 +50,7 @@ Browsers reset folder permissions between sessions. One click re-grants access t
 
 ### Does Safelight support RAW files?
 
-Yes. Safelight decodes RAW at full resolution via libraw-wasm, with an in-house decoder for uncompressed CFA/DNG, covering NEF, CR2, CR3, ARW, DNG, ORF, RAF, PEF, SRW, RW2, IIQ, 3FR, NRW, KDC, MOS, MRW, ERF, SR2, and X3F. If a file can't be decoded, Safelight falls back to the embedded JPEG preview so it always displays.
+Yes. Safelight decodes RAW at full resolution via libraw-wasm, with an in-house decoder for uncompressed CFA/DNG, covering NEF, CR2, CR3, ARW, DNG, ORF, RAF, PEF, SRW, RW2, IIQ, 3FR, NRW, KDC, MOS, MRW, ERF, SR2, and X3F. If a file can't be decoded, Safelight falls back to the embedded JPEG preview so it always displays, and Develop's corner says "Preview (Safelight can't open this RAW yet)". Once two launches have failed on a file, Safelight opens it on that preview straight away instead of trying again each time. After an update, **Re-import** the photo, or use **Preferences ▸ Previews ▸ Clear preview cache**, to try it again.
 
 ### Can I make local adjustments?
 
@@ -90,11 +90,15 @@ Treat them like any third-party software. Except for the small bundled set, exte
 
 ### How does multi-window support work?
 
-Library and Develop can detach into separate OS windows; state synchronizes via BroadcastChannel (catalog, selection, edits) and the storage event (settings, themes, layouts).
+Library and Develop can each open in a window of their own. The windows share ratings, labels, flags, keywords and edits for the photos they both show, and the photo you select in one is selected in the other. Settings, themes and layouts are shared too. Each window keeps the newest change to each part of a photo, so a rating made in one window and a flag set in the other both stay. A window you open picks up changes the others haven't saved yet.
+
+A few changes reach the other window only after you reopen the project in it. Photos added in one window, such as newly imported files or virtual copies, are not shown in the other until then. A photo you move or rename keeps its old place in the other window, so that window can't open or export it, and Delete from disk would look for it in the old place. Reopen the project in that window before you use such a photo. In the main window, use **Open Folder** and choose the same folder. In a pop-out window, close it and open it again from the top bar.
+
+If both windows import the same new file, removing it in one window can bring the file back after you reopen the project.
 
 ### What is "high bit depth" in Preferences?
 
-When enabled (and supported by your GPU), cached RAW previews use 16-bit float textures, preserving highlight/shadow precision through heavy edits.
+On photos that still use the older processing and have heal or clone spots, leaving it on keeps gradients smooth on graphics cards that support it, and turning it off uses less graphics memory. New edits always keep full detail when you heal or clone, whatever it is set to, and a change applies after you restart Safelight.
 
 ### Performance is slow — what can I try?
 
@@ -118,6 +122,8 @@ Chromium then converts all content to each monitor's primaries. It uses only the
 ### Export fails or produces no file
 
 Ensure you have write permission to the destination and that photos finished decoding. When exporting many photos in the browser, prefer the ZIP option — separate files trigger one download prompt each.
+
+The Export panel lists each photo it couldn't export with the reason, where it knows one. "The original isn't available." means the photo is edited, its original can't be reached (a drive unplugged, or access not granted in the browser), and all Safelight has of it is its stored preview. That preview already shows the edit, so Safelight doesn't export it in the original's place. Reconnect the original and export again.
 
 ## Contributing
 

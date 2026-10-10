@@ -22,6 +22,7 @@ import { getExtSetting } from "@/extensions/ext-settings";
 import { resolveDefaultPipeline, resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
+import { showsEdit } from "@/state/fallback-rules";
 import { buildExportIfds, embedExif, serializeExifTiff, type ExportIfds } from "./exif-write";
 import { applyOutputSharpening } from "./sharpen";
 import { encodeTiff } from "./tiff";
@@ -76,6 +77,8 @@ export interface ExportProgress {
 export interface ExportResult {
   exported: number;
   failed: string[]; // filenames that could not be rendered
+  /** Why some of them failed, worded for the user, where that is known. */
+  failures?: { filename: string; reason: string }[];
   /** Count of photos whose 16-bit TIFF request fell back to 8-bit because the
    *  device can't render to a float target. */
   degradedTo8Bit: number;
@@ -148,12 +151,24 @@ function encode16BitTiff(
   return new Blob([bytes as BlobPart], { type: "image/tiff" });
 }
 
+// Characters Windows forbids in a file name. The folder handle rejects them
+// on every platform, so one in an EXIF value would fail that photo's export.
+const UNSAFE_NAME_CHARS = /[\\/:*?"<>|\u0000-\u001f]+/g;
+
+/** A name any platform's file system accepts: forbidden characters become a
+ *  dash (a run becomes one), trailing dots and spaces go (Windows drops them
+ *  silently), and an empty result is "untitled". */
+export function safeFileName(name: string): string {
+  const safe = name.replace(UNSAFE_NAME_CHARS, "-").replace(/[. ]+$/, "");
+  return safe === "" ? "untitled" : safe;
+}
+
 // Output filename: original base name + the chosen format's extension.
 export function exportFilename(
   photo: CatalogPhoto,
   format: ExportFormat,
 ): string {
-  const base = photoExportBase(photo);
+  const base = safeFileName(photoExportBase(photo));
   return `${base}.${EXTENSION[format]}`;
 }
 
@@ -181,8 +196,11 @@ export function resolveFilenameTemplate(
     lens: photo.exif.lens ?? "",
   };
   const result = template.replace(/{(\w+)}/g, (_, key: string) => vars[key] ?? `{${key}}`);
-  // Ensure the resolved name always ends with the format extension.
-  return result.endsWith(`.${ext}`) ? result : `${result}.${ext}`;
+  // The name always ends with the format extension. Clean the base alone, so a
+  // trailing dot or an empty base never sits next to the extension.
+  const dotExt = `.${ext}`;
+  const stem = result.endsWith(dotExt) ? result.slice(0, -dotExt.length) : result;
+  return `${safeFileName(stem)}${dotExt}`;
 }
 
 /** Run each registered export processor in registration order, chaining the
@@ -214,19 +232,21 @@ async function runProcessors(
 
 // Ensure a filename is unique within a batch by appending " (2)", " (3)", …
 // before the extension. Prevents collisions inside a ZIP and silent overwrites
-// when several files are downloaded to the same folder.
-function uniqueName(name: string, used: Set<string>): string {
-  if (!used.has(name)) {
-    used.add(name);
+// when several files are downloaded to the same folder. Windows and macOS
+// treat names that differ only in case as one file, so `used` holds lower-cased
+// names and the returned name keeps its own casing.
+export function uniqueName(name: string, used: Set<string>): string {
+  if (!used.has(name.toLowerCase())) {
+    used.add(name.toLowerCase());
     return name;
   }
   const dot = name.lastIndexOf(".");
   const base = dot > 0 ? name.slice(0, dot) : name;
   const ext = dot > 0 ? name.slice(dot) : "";
   let n = 2;
-  while (used.has(`${base} (${n})${ext}`)) n++;
+  while (used.has(`${base} (${n})${ext}`.toLowerCase())) n++;
   const unique = `${base} (${n})${ext}`;
-  used.add(unique);
+  used.add(unique.toLowerCase());
   return unique;
 }
 
@@ -247,6 +267,8 @@ interface RenderOneResult {
   blob: Blob | null;
   /** The 16-bit TIFF request fell back to 8-bit (device can't render float). */
   degradedTo8Bit: boolean;
+  /** Why no blob was rendered, worded for the user, where that is known. */
+  failure?: string;
 }
 
 // Source EXIF for re-embedding. A virtual copy shares its master's live file
@@ -287,6 +309,15 @@ async function renderOne(
   // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
   const image = await loadPhotoImage(photo, { minEdge });
   if (!image) return { blob: null, degradedTo8Bit: false };
+  // The stored preview, rendered with the edit, stands in for an original out of
+  // reach: the edit rendered over it would apply twice.
+  if (image.kind === "bitmap" && showsEdit(image)) {
+    image.bitmap.close();
+    const failure = image.fallback?.offline
+      ? "The original isn't available."
+      : "The original can't be read.";
+    return { blob: null, degradedTo8Bit: false, failure };
+  }
   const bitmap = image.kind === "bitmap" ? image.bitmap : null;
   try {
     const w = image.kind === "bitmap" ? image.bitmap.width : image.width;
@@ -540,6 +571,7 @@ export async function exportPhotos(
   let zipFellBack = false;
   const usedNames = new Set<string>();
   const failed: string[] = [];
+  const failures: { filename: string; reason: string }[] = [];
   let exported = 0;
   let degradedTo8Bit = 0;
 
@@ -557,6 +589,7 @@ export async function exportPhotos(
         const r = await renderOne(renderer, canvas, photo, settings, procSettings);
         blob = r.blob;
         if (r.degradedTo8Bit) degradedTo8Bit++;
+        if (r.failure) failures.push({ filename: photo.filename, reason: r.failure });
       } catch {
         blob = null;
       }
@@ -605,5 +638,11 @@ export async function exportPhotos(
     downloadBlob(zip.blob(), ARCHIVE_NAME);
   }
 
-  return { exported, failed, degradedTo8Bit, zipFellBack };
+  return {
+    exported,
+    failed,
+    degradedTo8Bit,
+    zipFellBack,
+    ...(failures.length > 0 ? { failures } : {}),
+  };
 }

@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  collectPresetStages,
   moduleLabel,
   moduleTabs,
   registerModule,
@@ -260,6 +261,16 @@ describe("registerProcessingStage: Safelight's own stage ids", () => {
     expect(registered()[id]).toBeUndefined();
     expect(error).toHaveBeenCalledTimes(1);
     expect(error.mock.calls[0][0]).toMatch(new RegExp(`acme: stage "${id}".*not registered`));
+  });
+
+  it("leaves Safelight's own stages out of the preset fields, and lists an extension's", () => {
+    activateCore();
+    registerProcessingStage("acme", {
+      ...plain("acme.look"),
+      uniforms: [{ key: "amount", glslType: "float", default: 0 }],
+    });
+    expect(getParamDescriptor("core.vignette.uVignetteAmount")).toBeDefined();
+    expect(collectPresetStages({}).map((s) => s.stageId)).toEqual(["acme.look"]);
   });
 
   it("keeps the stage that holds the id, and its params, against another extension", () => {

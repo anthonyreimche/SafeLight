@@ -10,6 +10,7 @@ import {
 } from "@/catalog/types";
 
 import { BASELINE_TONE_GLSL } from "../baseline-tone";
+import { LOCAL_TONE_GLSL } from "../local-tone";
 import { STAGE_SPACE_GLSL } from "../stage-space";
 
 export const VERTEX_SHADER = `#version 300 es
@@ -49,6 +50,30 @@ export function shaderVariantFor(processVersion: unknown): ShaderVariant {
 export function variantKey(v: ShaderVariant): string {
   return v.fullInfo ? "pv2" : "pv1";
 }
+
+// Process version 2's tone block: version 1's curves (local-tone.ts) on the
+// pixel and, while Highlights or Shadows is moved, on the pixel's region too,
+// keeping the pixel's ratio to it and blended in with the slider.
+const V2_TONE_BLOCK = `  {
+    float L = max(luma(lin), 1e-4);
+    float Lx = L * exp2(E);
+    float L1 = slToneHighlights(Lx, E, H);
+    float L2 = slToneShadows(L1, S);
+    if (abs(H) > 0.001 || abs(S) > 0.001) {
+      // Floored after Exposure (as localToneBlend is): under the curves' own
+      // 1e-4 floor a region's Shadows gain would grow as Exposure goes down.
+      float Bx = max(slLocalToneBase(srcUv, L) * exp2(E), 1e-4);
+      float B1 = slToneHighlights(Bx, E, H);
+      L1 = mix(L1, Lx * B1 / Bx, abs(H));
+      L2 = mix(slToneShadows(L1, S), L1 * slToneShadows(B1, S) / B1, abs(S));
+    }
+    lin = retargetLuma(lin, L, L2);
+    // Hunt effect: restore colourfulness lost by pulling bright values down.
+    if (H < -0.001) {
+      float pulled = clamp(Lx - L1, 0.0, 1.0);
+      lin = mix(vec3(luma(lin)), lin, 1.0 + pulled * HI_SAT);
+    }
+  }`;
 
 // Single-pass develop shader, assembled per process version. Most stages are
 // per-pixel point operations; clarity is a midtone-contrast approximation.
@@ -413,6 +438,7 @@ const float BAND_DETAIL = 1.5; // micro-contrast restored/added per tonal band (
 vec3 retargetLuma(vec3 c, float L, float newL) {
   return c * (newL / L);
 }
+${v2(LOCAL_TONE_GLSL)}
 
 // Highlights applied to linear RGB. H in [-1, 1] (uHighlights / 100).
 // refT is the SCENE (pre-exposure) display luma used to pick the highlight band,
@@ -1184,7 +1210,7 @@ void main() {
   float E = uExposure;
   float H = clamp(uHighlights / 100.0, -1.0, 1.0);
   float S = clamp(uShadows / 100.0, -1.0, 1.0);
-  {
+  ${pick(`{
     float L = max(luma(lin), 1e-4);
 
     // Exposure: true linear gain (×2 per stop)
@@ -1249,7 +1275,7 @@ void main() {
       float newLcur = mix(Lcur, pow(Lcur, gamma), shW * abs(S));
       lin = retargetLuma(lin, Lcur, newLcur);
     }
-  }
+  }`, V2_TONE_BLOCK)}
 
   // Local adjustment masks, stage 1: tonal + WB controls in scene-referred
   // linear with HDR headroom intact (Lightroom-style — this is what lets a
@@ -1288,6 +1314,10 @@ void main() {
   // Contributed scene-linear stages (extension-owned), on lin after all the
   // core linear edits and just before the display transform.
   //__CONTRIBUTED_SCENE_LINEAR__
+${v2(`
+  // The core shoulder bounds luminance; this rolls the strongest channel off
+  // into white with it, so bright colours whiten instead of clipping.
+  if (uApplyToneShoulder) lin = slPathToWhite(lin);`)}
 
   // Display conversion: where the filmic shoulder applies it bounds the linear
   // values, so clamping here is safe and keeps downstream display-space
@@ -1411,13 +1441,15 @@ void main() {
   // (bidirectional: + crisper, - smoother). At the slider's default of 0 the highlight
   // term is identical to the original recovery-coupled restore. The shadow auto term is
   // gentler than the highlight one because the dark band is where sensor noise lives.
+  // Version 2's Highlights and Shadows keep texture themselves (local-tone.ts), so
+  // there each band's gain is its Detail slider alone.
   float bandDet = clamp(rawLuma - lumaLod(srcUv, 2.0), -0.15, 0.15);
-  float hiGain = (H < 0.0 ? -H : 0.0) + uHighlightDetail / 100.0;
+  float hiGain = ${pick("(H < 0.0 ? -H : 0.0) + ", "")}uHighlightDetail / 100.0;
   if (abs(hiGain) > 0.001) {
     float hiZone = smoothstep(0.45, 0.78, luma(c));
     c += bandDet * hiGain * hiZone * BAND_DETAIL;
   }
-  float shGain = (S > 0.0 ? 0.5 * S : 0.0) + uShadowDetail / 100.0;
+  float shGain = ${pick("(S > 0.0 ? 0.5 * S : 0.0) + ", "")}uShadowDetail / 100.0;
   if (abs(shGain) > 0.001) {
     float shZone = 1.0 - smoothstep(0.12, 0.45, luma(c));
     c += bandDet * shGain * shZone * BAND_DETAIL;

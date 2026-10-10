@@ -26,13 +26,17 @@ interface CatalogPhoto {
   dateCreated: number;
   dateImported: number;
   exif: ExifData;
-  decodeError?: string;      // why the last decode failed (grid warning tooltip); cleared once a preview builds
+  decodeError?: string;      // one plain sentence on why no preview could be built (grid warning tooltip); cleared once a preview builds
+  previewEdit?: string;      // fingerprint of the edit the stored preview shows; undefined for a preview built from the file
+  previewRotation?: number;  // rotation the stored preview was made at; undefined means `rotation`
   copyOf?: string;           // on a virtual copy: the id of the master record that owns the file
   copyName?: string;         // on a virtual copy: its distinguisher, e.g. "copy 2"
 }
 ```
 
 Handles, blobs, and URLs are runtime-only — stripped before the record is written to `catalog.json`.
+
+`previewEdit` and `previewRotation` describe the stored preview (`<id>.jpg`), not the photo. The edit can change without a new preview (Paste Settings, Update processing, an extension's `putEditState`), so Develop draws the stored preview first only while `previewEdit` matches the edit it opens with. A preview made at another rotation than the photo's is never shown: one is built from the file instead. Core sets both as it writes a preview. A record stored with a new `thumbnailBlob` should carry the `previewEdit` of the edit that blob shows, and none for a preview made without the edit.
 
 A **virtual copy** is a second record that shares another photo's source file but keeps its own id, edits and metadata. `filename` still mirrors the master's file; the displayed and exported name folds in `copyName` as `base_<copyName>.ext`. Copies of copies point at the root master. Create them with [`api.catalog.addPhotos`](stores.md#apicatalog).
 
@@ -134,4 +138,4 @@ interface EditSnapshot {
 }
 ```
 
-`commitEdit(label)` in the develop store pushes a snapshot. Read and write whole stacks with [`api.catalog.getEditState` / `putEditState`](stores.md#apicatalog), and observe commits with a [catalog hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.
+`commitEdit(label)` in the develop store records a history entry when the edit changed since the current entry; a commit that changes nothing adds no entry, keeps the redo steps, and fires no `onEditCommit`. Read and write whole stacks with [`api.catalog.getEditState` / `putEditState`](stores.md#apicatalog) (writing the stack of the photo open in Develop reloads it there), and observe commits with a [catalog hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.

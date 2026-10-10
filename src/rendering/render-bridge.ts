@@ -8,7 +8,7 @@ import type { UprightResult } from "./upright";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { resolvePipelineFor, usePipelineStore } from "@/extensions/pipelines";
-import { useRegistry } from "@/extensions/registry";
+import { onStagesReleased, useRegistry } from "@/extensions/registry";
 import type { HistogramData } from "./histogram";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
 import { getSettings, useSettings } from "@/state/settings-store";
@@ -17,6 +17,11 @@ export interface FrameResult {
   bitmap: ImageBitmap;
   width: number;
   height: number;
+  /** The size the renderer holds the source this frame was drawn from at. */
+  sourceWidth: number;
+  sourceHeight: number;
+  /** The number of that source; see RenderBridge.sourceGen. */
+  sourceGen: number;
   histogram?: HistogramData;
 }
 
@@ -30,6 +35,8 @@ type HistogramCallback = (histogram: HistogramData) => void;
 type ThumbnailCallback = (result: ThumbnailResult) => void;
 type UprightCallback = (result: UprightResult) => void;
 type ErrorCallback = (message: string) => void;
+/** The number (RenderBridge.sourceGen) of a develop source the worker couldn't take. */
+type SourceErrorCallback = (sourceGen: number) => void;
 /** Whether the worker's develop renderer exists: "starting" until the first
  *  init settles, "retrying" while a failed init is being re-attempted,
  *  "failed" once the retry budget is spent. */
@@ -43,7 +50,34 @@ type AvailabilityCallback = (availability: RendererAvailability, detail?: string
 // About 2½ minutes of retries outlasts the block; a GPU that never comes back
 // ends in "failed" instead of a silent, permanently grey Develop view.
 const INIT_RETRY_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 30_000, 30_000, 30_000];
+// A render the worker hasn't answered in this long is given up on, so a reply that
+// never comes can't hold the next render back for good. A worker drawing a heavy photo
+// says nothing until each render is done, as one that stopped does, so once one of its
+// last RENDER_TIMES_KEPT answers took longer, it gets SLOW_RENDER_ALLOWANCE times the
+// slowest of them instead.
+const RENDER_WATCHDOG_MS = 2_000;
+const RENDER_TIMES_KEPT = 8;
+const SLOW_RENDER_ALLOWANCE = 3;
+// While a render given up on may still be answered, the one sent after it isn't timed:
+// the worker may only be slow. One that says nothing at all for this long has stopped,
+// or lost both answers, and gets the newest request anyway.
+const RENDER_BACKSTOP_MS = 30_000;
 type HealSourceCallback = (src: { data: Uint8ClampedArray; width: number; height: number }) => void;
+/** What the render waiting in the mailbox asks for besides the frame. */
+interface WaitingRender {
+  wantHistogram: boolean;
+  wantExtended: boolean;
+}
+
+/** The top-level fields of `next` that `last` lacks or holds another value in, each the
+ *  very value `next` holds. */
+function changedFields<T extends object>(last: T, next: T): Partial<T> {
+  const set: Partial<T> = {};
+  for (const key in next) {
+    if (!Object.hasOwn(last, key) || !Object.is(last[key], next[key])) set[key] = next[key];
+  }
+  return set;
+}
 
 export class RenderBridge {
   private worker: Worker;
@@ -58,6 +92,7 @@ export class RenderBridge {
   private onThumbnail: ThumbnailCallback | null = null;
   private onUpright: UprightCallback | null = null;
   private onError: ErrorCallback | null = null;
+  private onSourceError: SourceErrorCallback | null = null;
   private onHealSource: HealSourceCallback | null = null;
   private onAvailability: AvailabilityCallback | null = null;
   availability: RendererAvailability = "starting";
@@ -78,11 +113,33 @@ export class RenderBridge {
   // re-resolved when the registry or the Preferences default changes.
   private liveDisplayTransform: string | null = null;
   private livePipelineSent = false;
-  // The params object last handed to the worker. A fresh renderer has seen none.
+  // The params last handed to the worker, whole or by patches. A fresh renderer has seen
+  // none.
   private lastPostedParams: DevelopParams | null = null;
   // The param bag last handed to the worker, whole or by patches. A fresh renderer has
   // seen none.
   private lastPostedBag: Record<string, unknown> | null = null;
+  // The render mailbox: the seq of the one render the worker is drawing, and the newest
+  // request made since, which goes when that one is answered. The worker draws renders
+  // in the order they come, so posting each request while it is slower than the display
+  // queues a backlog the view plays back after the user lets go.
+  private renderSeq = 0;
+  private renderInFlight: number | null = null;
+  // When the render in flight started to be timed: its post, or `ready` for one posted
+  // before it. null while it isn't timed.
+  private renderSince: number | null = null;
+  private renderWatchdog: ReturnType<typeof setTimeout> | null = null;
+  private renderWaiting: WaitingRender | null = null;
+  // The render last given up on while its answer may still come. The worker draws renders
+  // in order, so until it answers that one or the one sent after it, another render sent
+  // would only queue behind them.
+  private renderOverdue: { seq: number; since: number } | null = null;
+  // How long, in ms, the worker took over each of its last answers.
+  private renderTimes: number[] = [];
+  private renderBackstop: ReturnType<typeof setTimeout> | null = null;
+  // When the worker last said anything, or the backstop last sent a render.
+  private quietSince = 0;
+  private sourcesBound = 0;
 
   constructor() {
     this.worker = new Worker(
@@ -100,14 +157,17 @@ export class RenderBridge {
 
   private handleMessage = (e: MessageEvent<WorkerResponse>) => {
     const msg = e.data;
+    this.quietSince = performance.now();
     switch (msg.type) {
       case "ready":
         this.pipelineFloat = msg.pipelineFloat;
         this.setAvailability("ready");
+        this.armRenderWatchdog();
         this.readyResolve?.();
         this.readyResolve = null;
         break;
       case "initError": {
+        this.clearRenderMailbox();
         const delay = this.initArgs ? INIT_RETRY_MS[this.initAttempt] : undefined;
         if (delay === undefined) {
           this.setAvailability("failed", msg.message);
@@ -124,12 +184,35 @@ export class RenderBridge {
         break;
       }
       case "frame":
-        this.onFrame?.({
+        this.renderAnswered(msg.seq);
+        // No view listens (Develop closed, or between one photo's view and the
+        // next's): nothing will close the bitmap, which holds a decoded image.
+        if (!this.onFrame) {
+          msg.bitmap.close();
+          break;
+        }
+        // Drawn even when the mailbox no longer waits for it (given up on, or from
+        // before a re-init): it is still newer than what the view shows.
+        this.onFrame({
           bitmap: msg.bitmap,
           width: msg.width,
           height: msg.height,
+          sourceWidth: msg.sourceWidth,
+          sourceHeight: msg.sourceHeight,
+          sourceGen: msg.sourceGen,
           histogram: msg.histogram,
         });
+        break;
+      case "frameSkipped":
+        this.renderAnswered(msg.seq);
+        break;
+      case "renderError":
+        this.renderAnswered(msg.seq);
+        this.onError?.(`render failed: ${msg.message}`);
+        break;
+      case "sourceError":
+        this.onSourceError?.(msg.sourceGen);
+        this.onError?.(`source failed: ${msg.message}`);
         break;
       case "histogram":
         this.onHistogram?.(msg.histogram);
@@ -164,6 +247,7 @@ export class RenderBridge {
         break;
       }
       case "sourceBound": {
+        if (msg.hit) this.sourcesBound++;
         const resolver = this.sourceBoundResolvers.get(msg.reqId);
         if (resolver) {
           this.sourceBoundResolvers.delete(msg.reqId);
@@ -232,6 +316,7 @@ export class RenderBridge {
     if (!this.initArgs) return;
     this.lastPostedParams = null;
     this.lastPostedBag = null;
+    this.clearRenderMailbox();
     // The worker builds its first develop program while it handles init, from the
     // stages and pipeline it holds by then, so the current ones go first: on a
     // retry too, since either may have changed while the last init was failing.
@@ -254,6 +339,7 @@ export class RenderBridge {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
+    this.clearRenderMailbox();
     // terminate() tears down the worker (and its GL context) synchronously; a
     // "dispose" message would be preempted by it, so don't bother sending one.
     this.worker.terminate();
@@ -268,6 +354,7 @@ export class RenderBridge {
   setOnThumbnail(cb: ThumbnailCallback | null) { this.onThumbnail = cb; }
   setOnUpright(cb: UprightCallback | null) { this.onUpright = cb; }
   setOnError(cb: ErrorCallback | null) { this.onError = cb; }
+  setOnSourceError(cb: SourceErrorCallback | null) { this.onSourceError = cb; }
   setOnHealSource(cb: HealSourceCallback | null) { this.onHealSource = cb; }
   /** Reports the current availability at once, then every change. */
   setOnAvailability(cb: AvailabilityCallback | null) {
@@ -278,6 +365,20 @@ export class RenderBridge {
   // ------------------------------------------------------------------
   // Image data
   // ------------------------------------------------------------------
+
+  /** The develop view moved to another photo: the worker draws no frame and measures
+   *  no histogram until that photo's source is set or bound. */
+  clearSource() {
+    this.post({ cmd: "clearSource" });
+  }
+
+  /** The number the worker's frames carry for the develop source handed over last: it
+   *  counts each setImage and each main uploadSource that binds, once it is posted, and
+   *  each bindSource hit, as it is answered. So read it after awaiting bindSource, and bind
+   *  nothing else while one is unanswered: the worker counts that hit first. */
+  get sourceGen(): number {
+    return this.sourcesBound;
+  }
 
   setImage(
     image:
@@ -293,6 +394,7 @@ export class RenderBridge {
       { cmd: "setImage", image, maxEdge, isFallbackPreview, baseCurveForBitmap },
       transfer,
     );
+    this.sourcesBound++;
   }
 
   // ------------------------------------------------------------------
@@ -327,6 +429,7 @@ export class RenderBridge {
       { cmd: "uploadSource", target, key, image, maxEdge, isFallbackPreview, baseCurveForBitmap, bind },
       transfer,
     );
+    if (bind && target === "main") this.sourcesBound++;
   }
 
   /** Is a source already resident in the given renderer's cache? */
@@ -378,17 +481,28 @@ export class RenderBridge {
   // Parameters
   // ------------------------------------------------------------------
 
-  /** The live photo's params. Posting structured-clones every brush dab, so the
-   *  object already posted is not posted again: callers replace `params` on each
-   *  change and never mutate one in place. */
+  /** The live photo's params. Posting structured-clones every brush dab, and the
+   *  worker's renderer signs the masks and retouch again whenever they are not the
+   *  arrays it drew last, so only the difference from the params last posted goes: the
+   *  top-level fields that are new or not the same value, and the keys dropped. The
+   *  first params, and the first after an init, go whole. Callers replace `params`,
+   *  and each field in it, on change and never mutate one in place. */
   setParams(params: DevelopParams) {
     if (!this.livePipelineSent || params.displayTransform !== this.liveDisplayTransform) {
       this.liveDisplayTransform = params.displayTransform;
       this.syncPipeline();
     }
-    if (params === this.lastPostedParams) return;
+    const last = this.lastPostedParams;
+    if (params === last) return;
+    if (!last) {
+      this.post({ cmd: "setParams", params });
+    } else {
+      const set = changedFields(last, params);
+      const remove = Object.keys(last).filter((key) => !Object.hasOwn(params, key));
+      if (remove.length === 0 && Object.keys(set).length === 0) return;
+      this.post({ cmd: "patchParams", set, remove });
+    }
     this.lastPostedParams = params;
-    this.post({ cmd: "setParams", params });
   }
 
   /** Generic param bag for extension-contributed processing-stage uniforms,
@@ -404,10 +518,7 @@ export class RenderBridge {
     if (!last) {
       this.post({ cmd: "setContributedParams", bag });
     } else {
-      const set: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(bag)) {
-        if (!Object.hasOwn(last, key) || !Object.is(last[key], value)) set[key] = value;
-      }
+      const set = changedFields(last, bag);
       const remove = Object.keys(last).filter((key) => !Object.hasOwn(bag, key));
       if (remove.length === 0 && Object.keys(set).length === 0) return;
       this.post({ cmd: "patchContributedParams", set, remove });
@@ -448,8 +559,128 @@ export class RenderBridge {
   // Rendering
   // ------------------------------------------------------------------
 
-  render(wantHistogram?: boolean, wantExtended?: boolean) {
-    this.post({ cmd: "render", wantHistogram, wantExtended });
+  /** Draw a frame of the state the worker holds. While one is in flight only the
+   *  newest request waits, asking for every histogram the requests it replaced asked
+   *  for, and goes once the worker answers. Messages that set state still go at once,
+   *  so the worker has them before the render that waits. */
+  render(wantHistogram = false, wantExtended = false) {
+    if (this.disposed) return;
+    if (this.renderInFlight === null) {
+      this.postRender({ wantHistogram, wantExtended });
+      return;
+    }
+    const waiting = this.renderWaiting;
+    this.renderWaiting = {
+      wantHistogram: wantHistogram || (waiting?.wantHistogram ?? false),
+      wantExtended: wantExtended || (waiting?.wantExtended ?? false),
+    };
+  }
+
+  private postRender(request: WaitingRender) {
+    const seq = ++this.renderSeq;
+    this.renderInFlight = seq;
+    this.renderSince = null;
+    this.armRenderWatchdog();
+    this.post({ cmd: "render", seq, ...request });
+  }
+
+  // Until `ready` the worker is creating its renderer and building the first program,
+  // which can take longer than the watchdog allows, and draws nothing before that is
+  // done. A render sent meanwhile holds the slot untimed and is timed from `ready`. One
+  // sent while a render given up on may still be answered waits behind it in the worker,
+  // so it is timed from its post, but only once that answer has come.
+  private armRenderWatchdog() {
+    const seq = this.renderInFlight;
+    if (seq === null || this.renderWatchdog || this.availability !== "ready") return;
+    const now = performance.now();
+    const since = (this.renderSince ??= now);
+    if (this.renderOverdue) {
+      this.armRenderBackstop();
+      return;
+    }
+    const giveUpMs = this.renderGiveUpMs();
+    this.renderWatchdog = setTimeout(() => {
+      this.renderWatchdog = null;
+      console.warn(`[render-bridge] render ${seq} not answered in ${Math.round(giveUpMs)} ms`);
+      this.renderOverdue = { seq, since };
+      this.sendWaitingRender();
+    }, Math.max(0, since + giveUpMs - now));
+  }
+
+  // The render in flight, untimed behind one given up on, becomes the one given up on
+  // once the worker has said nothing for RENDER_BACKSTOP_MS, and the newest request goes.
+  private armRenderBackstop() {
+    if (this.renderBackstop) return;
+    const check = () => {
+      const quiet = performance.now() - this.quietSince;
+      if (quiet < RENDER_BACKSTOP_MS) {
+        this.renderBackstop = setTimeout(check, RENDER_BACKSTOP_MS - quiet);
+        return;
+      }
+      this.renderBackstop = null;
+      const seq = this.renderInFlight;
+      if (seq === null) return;
+      console.warn(`[render-bridge] no word from the worker in ${RENDER_BACKSTOP_MS} ms`);
+      this.quietSince = performance.now();
+      this.renderOverdue = { seq, since: this.renderSince ?? this.quietSince };
+      this.sendWaitingRender();
+    };
+    const due = this.quietSince + RENDER_BACKSTOP_MS - performance.now();
+    this.renderBackstop = setTimeout(check, Math.max(0, due));
+  }
+
+  private renderGiveUpMs(): number {
+    const slowest = Math.max(0, ...this.renderTimes);
+    return slowest > RENDER_WATCHDOG_MS ? SLOW_RENDER_ALLOWANCE * slowest : RENDER_WATCHDOG_MS;
+  }
+
+  private noteRenderTime(since: number) {
+    this.renderTimes.push(performance.now() - since);
+    if (this.renderTimes.length > RENDER_TIMES_KEPT) this.renderTimes.shift();
+  }
+
+  // A seq neither in flight nor overdue belongs to a render the mailbox cleared, so its
+  // answer frees nothing. The worker answers renders in order: the answer to the one in
+  // flight means the one given up on before it will never be answered.
+  private renderAnswered(seq: number) {
+    const overdue = this.renderOverdue;
+    if (overdue?.seq === seq) {
+      this.noteRenderTime(overdue.since);
+      this.renderOverdue = null;
+      this.clearRenderBackstop();
+      this.armRenderWatchdog();
+      return;
+    }
+    if (seq !== this.renderInFlight) return;
+    if (this.renderSince !== null) this.noteRenderTime(this.renderSince);
+    this.renderOverdue = null;
+    this.sendWaitingRender();
+  }
+
+  private sendWaitingRender() {
+    const next = this.renderWaiting;
+    this.clearRenderSlot();
+    if (next) this.postRender(next);
+  }
+
+  private clearRenderSlot() {
+    if (this.renderWatchdog) clearTimeout(this.renderWatchdog);
+    this.renderWatchdog = null;
+    this.clearRenderBackstop();
+    this.renderInFlight = null;
+    this.renderSince = null;
+    this.renderWaiting = null;
+  }
+
+  private clearRenderBackstop() {
+    if (this.renderBackstop) clearTimeout(this.renderBackstop);
+    this.renderBackstop = null;
+  }
+
+  // Seqs keep counting, so an answer to a render from before can't free a later one.
+  private clearRenderMailbox() {
+    this.clearRenderSlot();
+    this.renderOverdue = null;
   }
 
   renderThumbnail(opts: {
@@ -517,7 +748,18 @@ export class RenderBridge {
     this.post({ cmd: "setSharpenViz", mode });
   }
 
+  /** Measure the worker's last render. While a render waits in the mailbox the
+   *  measurement rides on it: sent on its own, the worker would measure the render in
+   *  flight, and the newer one waiting would go unmeasured. */
   computeHistogram(wantExtended?: boolean) {
+    const waiting = this.renderWaiting;
+    if (waiting) {
+      this.renderWaiting = {
+        wantHistogram: true,
+        wantExtended: waiting.wantExtended || !!wantExtended,
+      };
+      return;
+    }
     this.post({ cmd: "computeHistogram", wantExtended });
   }
 
@@ -602,6 +844,26 @@ export function setStageTexture(
   singleton?.setStageTextures(stageTextures);
   requestStageRender();
 }
+
+/** Drop the textures of the stages a swept extension owned, so turning it off
+ *  frees them here and, through the smaller bag, in the worker. A key belongs
+ *  to the longest stage id it extends: a stage whose id extends a dropped one
+ *  keeps its own. */
+function releaseStageTextures(stageIds: readonly string[]): void {
+  const released = new Set(stageIds);
+  const stages = [...stageIds, ...Object.keys(useRegistry.getState().processingStages)];
+  const ownerOf = (key: string): string => {
+    let owner = "";
+    for (const id of stages)
+      if (key.startsWith(`${id}.`) && id.length > owner.length) owner = id;
+    return owner;
+  };
+  const dropped = Object.keys(stageTextures).filter((key) => released.has(ownerOf(key)));
+  if (dropped.length === 0) return;
+  for (const key of dropped) delete stageTextures[key];
+  singleton?.setStageTextures(stageTextures);
+}
+onStagesReleased(releaseStageTextures);
 
 /** The current stage-texture bag (qualified key → data). Returned by reference;
  *  callers must not mutate. Used by the export pipeline to seed its own renderer

@@ -51,13 +51,19 @@ export interface ReviewCheck {
 /** Only pinned entries need the network: their repo's current version is
  *  compared with the reviewed one. A failed lookup leaves `confirmed` false:
  *  the store still installs (best-effort, as it always was), while the welcome
- *  setup, which installs unattended, skips. */
-export async function checkReview(repo: string | null): Promise<ReviewCheck> {
+ *  setup, which installs unattended, skips. With `targetVersion` (a version
+ *  chosen in the store) that version is judged directly, without a lookup. */
+export async function checkReview(
+  repo: string | null,
+  targetVersion?: string,
+): Promise<ReviewCheck> {
   const verified = !!repo && isVerified(repo);
   const reviewedVersion = verified ? (reviewedFor(repo)?.version ?? null) : null;
   let stale = false;
   let confirmed = true;
-  if (repo && reviewedVersion) {
+  if (repo && reviewedVersion && targetVersion) {
+    stale = isNewer(reviewedVersion, targetVersion);
+  } else if (repo && reviewedVersion) {
     try {
       const latest = (
         await window.safelightNative?.plugins?.remoteManifest?.(repo)

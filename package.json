@@ -62,10 +62,15 @@
     "files": [
       "dist/**/*",
       "electron/main.cjs",
+      "electron/atomic-write.cjs",
       "electron/crash-recovery.cjs",
       "electron/extension-origins.cjs",
       "electron/plugin-files.cjs",
+      "electron/plugin-releases.cjs",
+      "electron/registry-cache.cjs",
       "electron/remote-json-cache.cjs",
+      "electron/unzip.cjs",
+      "electron/window-policy.cjs",
       "electron/preload.cjs",
       "package.json"
     ],

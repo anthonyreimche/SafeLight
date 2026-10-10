@@ -10,6 +10,7 @@ Safelight stores everything inside the folder you edit:
 - Catalog data lives in `<project>/.safelight/`: `catalog.json` (photo records and edit histories), `previews/` (grid thumbnails), and `raw/` (a decoded-RAW cache so Develop opens instantly).
 - Reopening a project reconciles the catalog against the disk: new files are picked up, deleted files drop out, everything else keeps its ratings and edits.
 - Originals are never written to. Deleting `.safelight/` simply discards Safelight's data for that folder.
+- **Saving the catalog.** If the catalog can't be saved (a sync or antivirus program is using it, or the disk is full), a bar at the bottom of the window says "Couldn't save the catalog" with the reason. Safelight keeps trying, and the bar goes once a save works. Safelight also keeps a backup of the catalog and restores it when `catalog.json` is damaged or missing. See [Installation ▸ Troubleshooting](installation.md#projects-and-files).
 - The last project is reopened on launch when **Restore last project** is enabled. In the browser, click **Reconnect** in the top bar when permissions expire between sessions.
 
 ## Library Module
@@ -65,11 +66,13 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 - **Older edits.** Photos you edited in an earlier version of Safelight keep their look. **Update processing** in Develop's status bar (or in the Library right-click menu, for many photos at once) moves a photo to the new processing, which keeps bright, very saturated colors. Undo puts it back.
 - **Sliders** — hold **Shift** while dragging for fine adjustment (or widen the panel); double-click to reset.
 - **Clipping indicators** — toggle shadow/highlight clipping warnings on the canvas.
+- **Preview and Full quality.** While a photo's full image loads, Develop shows its stored preview or the camera's preview. If that takes a moment, the corner of the image says **Preview**, then **Full quality** for a moment once the full image arrives. The previews ease into the full image unless Reduce motion is on. Moving to another photo keeps the one before on screen until the next one appears.
+- **Photos that only show a preview.** When Develop can only show a preview, the corner says why: Safelight can't open this RAW yet, the RAW took too long to open, or the original isn't available (a drive unplugged, or access not granted). A RAW Safelight can't decode opens on the camera's preview. Once two launches have failed on it, it opens that way straight away. **Re-import** (Library right-click menu) or **Preferences ▸ Previews ▸ Clear preview cache** tries it again. If Develop can't show a photo at all, the corner says "Can't show this photo."
 
 ### Tone and color
 
 - **White Balance** — temperature and tint, with an eyedropper that solves both from a neutral target you click.
-- **Basic** — exposure (±5 EV), contrast, highlights, shadows, whites, blacks, texture, clarity, dehaze, vibrance, saturation, plus Auto Tone.
+- **Basic** — exposure (±5 EV), contrast, highlights, shadows, whites, blacks, texture, clarity, dehaze, vibrance, saturation, plus Auto Tone. On photos using the current processing, Highlights and Shadows work on regions of the photo, so recovered highlights and lifted shadows keep their texture.
 - **Tone Curve** — point curves for the RGB master and individual red, green, and blue channels. Click to add a point, drag to shape, double-click a point to remove/reset. The end points move too: drag the black point right to clip shadows or the white point left to clip highlights, and up or down to lift or lower them.
 - **HSL** — hue, saturation, and luminance for 8 bands: red, orange, yellow, green, aqua, blue, purple, magenta. A picker lets you click the image to adjust the band under the cursor.
 - **Color Grading** — shadows / midtones / highlights / global color wheels with per-wheel luma and shadow/highlight range. Drag to set hue and saturation, Shift for precision; double-click resets hue and saturation only (not luma).
@@ -112,6 +115,8 @@ Open the **Export** panel (docked in Library by default, or via **View ▸ Expor
 
 Exports render through the same worker WebGL pipeline as the Develop view, so output matches what you see. Because output goes through a canvas, exported files carry **no EXIF or location metadata** — fitting for a privacy-first tool. Defaults are configurable in Preferences, and named export presets save full recipes.
 
+When a photo can't be exported, the panel counts it, and lists it with the reason where that is known. An edited photo is skipped with "The original isn't available." when its original can't be reached (a drive unplugged, or access not granted) and all Safelight has of it is its stored preview, which already shows the edit. Reconnect the original and export it again.
+
 ## Workspace
 
 <img width="3837" height="2065" alt="Dockable workspace" src="https://github.com/user-attachments/assets/811242de-0973-4378-bfb5-7add1433595e" />
@@ -120,11 +125,11 @@ Exports render through the same worker WebGL pipeline as the Develop view, so ou
 
 ### Docking
 
-Safelight uses collapsible edge rails with Photoshop-style docking. Every panel can be dragged to either rail, tabbed with other panels, resized, minimized, or floated as its own window. The **View** menu toggles any registered panel — an opened panel appears as a floating window in the middle of the workspace, ready to drag into a rail; the **Layout** menu switches named layouts (the built-in **Classic** layout restores the default arrangement). Layouts persist per module.
+Safelight uses collapsible edge rails with Photoshop-style docking. Every panel can be dragged to either rail, tabbed with other panels, resized, minimized, or floated as its own window. The **View** menu toggles any registered panel — an opened panel appears as a floating window in the middle of the workspace, ready to drag into a rail; the **Layout** menu switches named layouts (the built-in **Classic** layout restores the default arrangement). Layouts persist per module. A layout you save in **Preferences ▸ Interface** also remembers which panel and tool extensions are on, and picking it switches them to match; extensions that change how photos look or export, Accessibility and Developer Tools are never switched by a layout.
 
 ### Multi-window
 
-Library and Develop can each be detached into a separate OS window from the top bar — ideal for a grid on one monitor and a 1:1 view on another. Selection, edits, and settings stay synchronized across windows.
+Library and Develop can each be detached into a separate OS window from the top bar — ideal for a grid on one monitor and a 1:1 view on another. The selected photo, ratings, labels, flags, keywords, edits and settings stay synchronized across windows. A few changes, such as photos added, moved or renamed in one window, show correctly in the other only after you reopen the project there. The [FAQ](faq.md#how-does-multi-window-support-work) has the details.
 
 ### Preferences (Ctrl+,)
 
@@ -133,7 +138,7 @@ Preferences is organized into sections: **Interface**, **Library**, **Rendering*
 - **Interface** — Interface scale (80–200%, − and + buttons), reduce motion, custom UI font.
 - **Library** — default grid size, sort field/direction, confirm-before-remove, thumbnail source and resolution (320/640/960 px), preview persistence.
 - **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both.
-- **Performance** — RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (4096/6144/8192 px); GPU source-cache budget; neighbor prefetch; 16-bit GPU textures; live histogram; opening zoom.
+- **Performance** — RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (4096/6144/8192 px); GPU source-cache budget; neighbor prefetch; high bit-depth previews; live histogram; opening zoom.
 - **Export** — default format, quality, long edge, color space, ZIP bundling, and saved export presets.
 - **Shortcuts** — rebind every action; single-letter shortcuts (G/D/F…) can be disabled, while Tab and Ctrl-combos always work.
 - **Extensions** — each installed extension's settings, the GitHub topic used to discover official extensions, and update preferences. This includes the built-in **Accessibility** extension (below).

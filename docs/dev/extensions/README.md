@@ -9,13 +9,13 @@ Safelight's extension system is inspired by modern IDE plugin architectures. The
 | **This page** | The orchestrator model, repo anatomy, the manifest, and the build |
 | [Contribution Types](contribution-types.md) | What an extension can register, with worked examples |
 | [Debugging](debugging.md) | The in-app Developer Tools, live-loading, and common load errors |
-| [Publishing](publishing.md) | Store listing — thumbnail, README, and metadata |
+| [Publishing](publishing.md) | Store listing — thumbnail, README, metadata — and releases |
 
 For exact type signatures, see the [API Reference](../api/README.md); `src/extensions/types.ts` is the source of truth. To *install and manage* extensions as a user, see [Using Extensions](../../user/using-extensions.md).
 
 ## Anatomy of an extension
 
-A repo needs two things: a `safelight.json` manifest at the root, and a prebuilt ESM bundle (commit your `dist/`, or attach it to the branch you install from). Safelight installs an extension by downloading the repo and importing `main` **as-is** — there is no build step on the user's machine.
+A repo needs two things: a `safelight.json` manifest at the root, and a prebuilt ESM bundle (zip it into a GitHub Release, or commit your `dist/`). Safelight installs an extension by downloading the repo or its release zip and importing `main` **as-is** — there is no build step on the user's machine.
 
 ### Repo layout
 
@@ -52,7 +52,7 @@ export function activate(api) {
   "description": "Cool blue-gray dark theme.", "author": "Tokyo", "main": "index.js" }
 ```
 
-**With a build (anything using JSX/TypeScript or npm dependencies).** Author in `src/`, bundle to `dist/`, and commit `dist/` so installs need no toolchain:
+**With a build (anything using JSX/TypeScript or npm dependencies).** Author in `src/`, bundle to `dist/`, and ship `dist/` (zipped into a release, or committed) so installs need no toolchain:
 
 ```
 my-extension/
@@ -60,7 +60,7 @@ my-extension/
 ├─ src/
 │  └─ index.js          # your source
 ├─ dist/
-│  └─ index.js          # built ESM bundle — COMMIT THIS (or attach to a release)
+│  └─ index.js          # built ESM bundle — zip it into a release, or commit it
 ├─ rolldown.config.mjs  # bundler config
 ├─ package.json
 └─ README.md
@@ -80,7 +80,7 @@ Three build invariants, regardless of bundler:
   };
   ```
 
-- **Commit the built `dist/`** (or attach it to the branch/release you tell users to install from) — the store fetches files, it does not run your build.
+- **Ship the built bundle.** Attach a zip of it to a GitHub Release (see [Releases and versions](publishing.md#releases-and-versions)) or commit `dist/`. The store downloads files; it does not run your build.
 
 Finally, **tag the GitHub repo with the `safelight-extension` topic** so it appears in the in-app store, and (optionally) add an [icon / og:image](publishing.md) for a good thumbnail.
 
@@ -103,6 +103,8 @@ Finally, **tag the GitHub repo with the `safelight-extension` topic** so it appe
 ```
 
 Only `id`, `name`, `version`, and `main` are required; everything else (`description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `license`, `minAppVersion`, `permissions`) is optional and enriches the store detail view. `minAppVersion` is the **minimum supported Safelight version** — the oldest build the extension works on. Installs (and updates) on an older build are refused before any files are written, and the app reports the version it needs; the extension's detail page also flags the mismatch. When a newer version raises `minAppVersion` above the user's build, the store lists it as needing that Safelight version, never offers or auto-installs it, and the installed version keeps running. An update that installs but fails to start is rolled back to the previous version and remembered, so auto-update does not retry it until you publish a newer version. Set it whenever you depend on an API or contribution point added in a specific release. Versions are compared as dotted `major.minor.patch` (a `v` prefix and missing parts are tolerated).
+
+**`id`** names the extension and the folder it is installed into. It starts with a letter or a digit and holds only letters, digits, `.`, `_` and `-`. Pick one that is yours alone, such as `com.example.histogram-pro`. `core` and anything under `core.` (like `core.tools`), in any letter case, belong to Safelight's built-in extensions: installing an extension with one of those ids is refused, and the Developer Tools dev folder will not load one (its row in the Dev tab says why). `corel`, `coreutils` and `my.core` are fine.
 
 **`permissions`** declares capabilities the extension needs, shown to the user on its store page. Only `network` is **enforced**: the listed HTTPS origins are added to the app's content-security policy, so the extension can reach **only** the hosts it declares — any other host is blocked. A new declaration takes effect on the next app launch (installing a network-using extension prompts the user to restart before it can connect; an extension loaded from the Developer Tools dev folder is read the same way, and the Dev tab says which origins wait on a restart). Because extensions run in-app, ambient access to the user's catalog and files is **not** confined by this field — it is a consent/disclosure layer, not a sandbox. See [Extensions — safety & terms](../../../EXTENSIONS.md).
 
@@ -145,7 +147,7 @@ The `api` object is a scoped [`SafelightAPI`](../api/README.md). Its UI building
 
 ## Tips
 
-- Namespace contribution ids with your extension id (`com.example.panel-name`); `core.*` is reserved for built-ins.
+- Namespace contribution ids with your extension id (`com.example.panel-name`); `core.*` is reserved for built-ins, and the same goes for extension ids: `core` and anything under `core.` is refused, in any letter case.
 - To *replace* a stock panel, register your own and tell users to disable the built-in (e.g. "Histogram") in the Extensions panel.
 - Keep bundles dependency-light. React, the [component kit](../api/components.md), and [state](../api/stores.md) come from the API.
 - Style with `api.ui`, `api.components` and theme CSS variables, not ad-hoc Tailwind classes (they aren't compiled for runtime bundles).

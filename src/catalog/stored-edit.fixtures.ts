@@ -69,13 +69,17 @@ export function legacySnapshot(label: string, params: Partial<DevelopParams>): E
 }
 
 export interface MemoryEdits {
-  /** Every edit state handed to putEditState, oldest first. */
+  /** Every edit state stored, oldest first, by whichever method stored it. */
   written: EditState[];
+  /** The edit states of each putEditStates call, oldest call first. */
+  batches: EditState[][];
+  /** The edit states handed to putEditState, oldest first. */
+  singles: EditState[];
 }
 
 /** Install a catalog storage that holds `seed` in memory. */
 export function installMemoryStorage(...seed: EditState[]): MemoryEdits {
-  const written: EditState[] = [];
+  const edits: MemoryEdits = { written: [], batches: [], singles: [] };
   const states = new Map<string, EditState>(seed.map((s) => [s.photoId, s]));
   const storage: CatalogStorage = {
     getAllPhotos: async () => [],
@@ -86,9 +90,15 @@ export function installMemoryStorage(...seed: EditState[]): MemoryEdits {
     getAllEditStates: async () => [...states.values()],
     putEditState: async (editState) => {
       states.set(editState.photoId, editState);
-      written.push(editState);
+      edits.written.push(editState);
+      edits.singles.push(editState);
+    },
+    putEditStates: async (editStates) => {
+      for (const editState of editStates) states.set(editState.photoId, editState);
+      edits.written.push(...editStates);
+      edits.batches.push([...editStates]);
     },
   };
   setCatalogStorage(storage);
-  return { written };
+  return edits;
 }

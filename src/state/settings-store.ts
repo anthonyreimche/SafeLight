@@ -214,7 +214,9 @@ export interface AppSettings {
   /** Background-decode the previous/next photo while editing so navigating to it
    *  is instant. Off saves CPU/VRAM at the cost of a decode on each step. */
   developPrefetchNeighbors: boolean;
-  /** 16-bit GPU textures for cached previews when the GPU supports them. */
+  /** Lets the heal/clone copy of a photo with the older processing be 16-bit instead of
+   *  8-bit, on graphics cards that support it. Newer photos ignore it. Read when a
+   *  window's renderer starts and at each export. */
   highBitDepth: boolean;
   /** Recompute the histogram on every render (off = after edits settle). */
   liveHistogram: boolean;

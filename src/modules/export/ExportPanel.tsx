@@ -17,10 +17,12 @@ import {
   exportPhotos,
   type DeliveryMode,
   type ExportFormat,
+  type ExportResult,
   type ExportSettings,
   type ProcessorSettings,
 } from "./export-image";
 import { ResolutionControl } from "./ResolutionControl";
+import { ExportFailureList } from "./ExportFailureList";
 import {
   getSettings,
   useSettings,
@@ -162,6 +164,7 @@ export function ExportPanel() {
     null,
   );
   const [status, setStatus] = useState<string | null>(null);
+  const [failures, setFailures] = useState<ExportResult["failures"]>(undefined);
   // Absolute path of the most recent successful folder export, if it was a
   // native (Electron) destination — drives the "Open Folder" reveal button.
   const [exportedDir, setExportedDir] = useState<string | null>(null);
@@ -309,6 +312,7 @@ export function ExportPanel() {
 
     setBusy(true);
     setStatus(null);
+    setFailures(undefined);
     setExportedDir(null);
     setProgress({ done: 0, total: targets.length });
 
@@ -345,6 +349,7 @@ export function ExportPanel() {
         msg += " ZIP exceeded 4 GiB; delivered as individual files.";
       }
       setStatus(msg);
+      setFailures(result.failures);
       // Offer "Open Folder" only when files actually landed in a native folder
       // destination whose absolute path we can reveal (Electron, not browser).
       if (delivery === "folder" && result.exported > 0) {
@@ -641,6 +646,7 @@ export function ExportPanel() {
         >
           {status}
         </p>
+        <ExportFailureList failures={failures} />
         {exportedDir && (
           <button
             onClick={() => void revealNativePath(exportedDir)}

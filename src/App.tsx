@@ -95,6 +95,7 @@ export function App() {
         <ExtensionsDialog />
         <ConfirmDialogHost />
         <ExtensionSecurityBanner />
+        <StorageBanner />
         <UpdateBanner />
       </>
     );
@@ -115,6 +116,7 @@ export function App() {
         <ExtensionsDialog />
         <ConfirmDialogHost />
         <ExtensionSecurityBanner />
+        <StorageBanner />
         <UpdateBanner />
       </>
     );

@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
@@ -66,6 +66,16 @@ function importNoticeFor(
   }
 }
 
+// The Save and Update dialogs capture the live edit. Only this wrapper subscribes
+// to it, and it is mounted only while a dialog is open.
+function LivePresetSaveDialog(
+  props: Omit<ComponentProps<typeof PresetSaveDialog>, "params" | "paramBag">,
+) {
+  const params = useDevelopStore((s) => s.params);
+  const paramBag = useDevelopStore((s) => s.paramBag);
+  return <PresetSaveDialog {...props} params={params} paramBag={paramBag} />;
+}
+
 export function PresetsPanel() {
   const [hovered, setHovered] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -77,8 +87,6 @@ export function PresetsPanel() {
   const [collision, setCollision] = useState<{ existingId: string; pending: PendingSave } | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [importNotice, setImportNotice] = useState<ImportNotice | null>(null);
-  const params = useDevelopStore((s) => s.params);
-  const paramBag = useDevelopStore((s) => s.paramBag);
   const photoId = useDevelopStore((s) => s.photoId);
   const photoName = useCatalogStore(
     (s) => s.photos.find((p) => p.id === photoId)?.filename,
@@ -98,12 +106,21 @@ export function PresetsPanel() {
 
   // A preset carries only some adjustments; applying merges them over the
   // photo's current params (partial presets), so unselected settings are kept.
+  // The live edit is read when a handler runs: the panel doesn't subscribe to
+  // it, or every slider tick would re-render every preset row.
   const effective = (partial: Partial<DevelopParams>): DevelopParams =>
-    normalizeParams({ ...params, ...withoutProcessVersion(partial) });
+    normalizeParams({
+      ...useDevelopStore.getState().params,
+      ...withoutProcessVersion(partial),
+    });
 
   // The toolbar Export writes the live edit; name it after the open photo (sans
   // extension) so exports aren't all one collided file. No photo → generic name.
   const liveExportName = photoName?.replace(/\.[^.]+$/, "") || "preset";
+  const exportLive = () => {
+    const { params, paramBag } = useDevelopStore.getState();
+    exportPreset(liveExportName, params, undefined, paramBag);
+  };
 
   const groups = useMemo(() => {
     const names = new Set<string>();
@@ -236,7 +253,7 @@ export function PresetsPanel() {
           Import
         </button>
         <button
-          onClick={() => exportPreset(liveExportName, params, undefined, paramBag)}
+          onClick={exportLive}
           className="flex-1 rounded bg-surface-2 px-2 py-1 text-[10px] text-text-secondary hover:bg-surface-3 hover:text-text-primary"
         >
           Export
@@ -332,9 +349,7 @@ export function PresetsPanel() {
       )}
 
       {saving && (
-        <PresetSaveDialog
-          params={params}
-          paramBag={paramBag}
+        <LivePresetSaveDialog
           groups={groups}
           onSave={(result) => {
             setSaving(false);
@@ -349,9 +364,7 @@ export function PresetsPanel() {
           the preset's name/group as a confirmation, writing back to the same
           preset id (with the current live params). */}
       {updating && (
-        <PresetSaveDialog
-          params={params}
-          paramBag={paramBag}
+        <LivePresetSaveDialog
           groups={groups}
           initialName={updating.name}
           initialGroup={updating.group}

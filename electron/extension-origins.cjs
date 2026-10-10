@@ -22,11 +22,27 @@ const path = require("node:path");
 const VALID_CONNECT_ORIGIN = /^https:\/\/(\*\.)?[a-z0-9.-]+(:\d+)?$/i;
 const VALID_ID = /^[a-z0-9][a-z0-9._-]*$/i;
 
+const CORE_EXTENSION_ID = "core";
+
+/** An id only Safelight's own extensions may hold: "core" and everything under
+ *  "core.", compared without case because the plugins folder may sit on a
+ *  filesystem that ignores it. An installed extension sharing one would share
+ *  the registry id of a built-in, so stopping it would sweep Safelight's own
+ *  contributions. The renderer states the same rule in
+ *  src/extensions/core-extension.ts. */
+function isReservedExtensionId(id) {
+  const lower = id.toLowerCase();
+  return lower === CORE_EXTENSION_ID || lower.startsWith(`${CORE_EXTENSION_ID}.`);
+}
+
+/** Whether `m` is a manifest an extension may be installed, listed or read from:
+ *  well formed, and not under a reserved id. */
 function validManifest(m) {
   return (
     m &&
     typeof m.id === "string" &&
     VALID_ID.test(m.id) &&
+    !isReservedExtensionId(m.id) &&
     typeof m.name === "string" &&
     typeof m.version === "string" &&
     typeof m.main === "string" &&
@@ -120,6 +136,7 @@ function writeDevFolder(file, folder) {
 
 module.exports = {
   VALID_CONNECT_ORIGIN,
+  isReservedExtensionId,
   validManifest,
   listInstalledManifests,
   listDevManifests,

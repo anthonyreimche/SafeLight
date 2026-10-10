@@ -52,6 +52,24 @@ describe("the version 2 program", () => {
   });
 });
 
+describe("Highlights and Shadows in the version 2 program", () => {
+  const v2 = buildFragmentShader(null, undefined, V2_VARIANT);
+  const v1 = buildFragmentShader(null, undefined, V1_VARIANT);
+
+  it("runs the tone block through the shared curves", () => {
+    expect(v2).toContain("float L1 = slToneHighlights(Lx, E, H);");
+    expect(v2).toContain("float L2 = slToneShadows(L1, S);");
+    expect(v1).not.toContain("slToneHighlights");
+  });
+
+  it("leaves Highlight and Shadow Detail to their own sliders", () => {
+    expect(v2).toContain("float hiGain = uHighlightDetail / 100.0;");
+    expect(v2).toContain("float shGain = uShadowDetail / 100.0;");
+    expect(v1).toContain("float hiGain = (H < 0.0 ? -H : 0.0) + uHighlightDetail / 100.0;");
+    expect(v1).toContain("float shGain = (S > 0.0 ? 0.5 * S : 0.0) + uShadowDetail / 100.0;");
+  });
+});
+
 describe("buildFragmentShader", () => {
   // String.replace reads $&, $$, $' and $` in a replacement string as
   // patterns; contributed GLSL must still arrive as written.

@@ -19,6 +19,65 @@ export async function readJSON<T>(
   }
 }
 
+/** What reading a JSON file that should hold an object found. `bytes` are the
+ *  file as read, so a damaged one can be kept exactly as it was. */
+export type JSONFileRead =
+  | { kind: "missing" }
+  | { kind: "ok"; value: Record<string, unknown>; bytes: Uint8Array<ArrayBuffer> }
+  | { kind: "corrupt"; bytes: Uint8Array<ArrayBuffer> }
+  | { kind: "unreadable"; error: unknown };
+
+/** Read a JSON file that should hold an object, telling apart the four outcomes
+ *  readJSON makes null: no such file; an object; a file that is empty, cut
+ *  short, not JSON, or JSON that isn't an object; and a file that couldn't be
+ *  read at all (another program holds it: EBUSY, EPERM, NotReadableError). */
+export async function readJSONFile(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+): Promise<JSONFileRead> {
+  let bytes: Uint8Array<ArrayBuffer>;
+  try {
+    const file = await (await dir.getFileHandle(name)).getFile();
+    bytes = new Uint8Array(await file.arrayBuffer());
+  } catch (error) {
+    return isNotFound(error) ? { kind: "missing" } : { kind: "unreadable", error };
+  }
+  const value = parseJSONObject(bytes);
+  return value ? { kind: "ok", value, bytes } : { kind: "corrupt", bytes };
+}
+
+/** The object a JSON file's bytes hold, or null when they hold none: empty, cut
+ *  short, not JSON, or JSON that isn't an object. */
+export function parseJSONObject(bytes: Uint8Array): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return isPlainObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a read failed because the file isn't there. The desktop bridge loses
+ *  an error's `code` on its way to the page, so its ENOENT survives only in the
+ *  message, in Node's "ENOENT: no such file…" form; the path the message also
+ *  holds may contain the word itself. The browser throws a NotFoundError. */
+export function isNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  if ("name" in error && error.name === "NotFoundError") return true;
+  const message = "message" in error ? error.message : undefined;
+  return typeof message === "string" && /\bENOENT:/.test(message);
+}
+
+/** The time, for a file name: ISO 8601 with its `:` and `.` as `-`, as the
+ *  copies of catalogs kept beside catalog.json are named. */
+export function fileTimestamp(date = new Date()): string {
+  return date.toISOString().replace(/[:.]/g, "-");
+}
+
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export async function writeJSON(
   dir: FileSystemDirectoryHandle,
   name: string,
@@ -39,6 +98,20 @@ export async function readBlob(
     return await fh.getFile();
   } catch {
     return null;
+  }
+}
+
+/** Read a file, or null when it isn't there. A read that fails otherwise (another
+ *  program holds the file) throws, so a caller can tell the two apart. */
+export async function readBlobIfThere(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+): Promise<Blob | null> {
+  try {
+    return await (await dir.getFileHandle(name)).getFile();
+  } catch (error) {
+    if (isNotFound(error)) return null;
+    throw error;
   }
 }
 

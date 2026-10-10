@@ -16,6 +16,7 @@ import {
   rotateBitmap,
 } from "@/catalog/orient";
 import {
+  extractRawPreview,
   extractRawPreviewDecoded,
   getExtension,
   isRawFile,
@@ -25,18 +26,24 @@ import {
 } from "./raw-preview";
 import { decodeNetpbm, isNetpbmName } from "./netpbm";
 import { decodeTiff, isTiffName } from "./tiff-image";
-import { decodeRawToFloat, decodeRawToBitmap } from "@/raw/decode";
-import {
-  extractRawMetadata,
-  lastLibRawStatus,
-  type RawMetadata,
-} from "@/raw/libraw-wasm-adapter";
-import { decodePoolSize } from "@/raw/decode-pool";
+import { decodeRawToFloat, decodeRawToBitmap, type DecodeFailure } from "@/raw/decode";
+import { acceptDecode } from "@/raw/accept-decode";
+import { extractRawMetadata, type RawMetadata } from "@/raw/libraw-wasm-adapter";
+import { decodePoolSize, warmDecodePool, type DecodeRequest } from "@/raw/decode-pool";
 import { rotateFloatRGBA } from "@/catalog/orient";
 import { createThumbnail, type ThumbTaskResult } from "./import-thumb-task";
 import { processThumb } from "./import-thumb-pool";
-import { cachedKeys, deleteCachedPreview, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
+import {
+  cachedKeys,
+  deleteCachedPreview,
+  hasDecodeMarker,
+  markDecode,
+  rawCacheGeneration,
+  rawCacheKey,
+  writeCachedPreview,
+} from "@/raw/raw-cache";
 import { getSettings, type PreviewSource } from "@/state/settings-store";
+import { useCatalogStore, type RebuiltChange } from "@/state/catalog-store";
 import { catalogStorage } from "@/catalog/storage";
 
 const SUPPORTED_TYPES = new Set([
@@ -157,10 +164,14 @@ function looksDegenerate(data: Float32Array, width: number, height: number): boo
 // would leave it sideways. Non-RAW files decode directly, a JPEG with its Exif
 // segment left out (sensorNativeImage) so the decoder can't orient it first.
 //
-// Returns null only when the pixels are genuinely undecodable.
+// It gives no image only when the pixels are genuinely undecodable: for a RAW,
+// what its float decode answered, otherwise null.
 interface DecodedImport {
   bitmap: ImageBitmap;
   oriented: boolean;
+  /** The camera's preview, standing in for a RAW decode that background work
+   *  passed over (see decode.ts): fine to show, not worth storing. */
+  passedOver?: boolean;
   colorTemperature?: number;
   /** True pixel size the bitmap stands for, in the bitmap's orientation — set
    *  when the embedded preview was decoded downscaled to thumbnail size. */
@@ -192,10 +203,13 @@ function uprightSize(decoded: DecodedImport, bakeRotation: number): Size {
 
 /** Frame size and as-shot WB of a RAW from a metadata-only libraw open —
  *  undefined for any other file, and for a RAW libraw can't read. */
-async function readRawMetadata(file: File): Promise<RawMetadata | undefined> {
+async function readRawMetadata(
+  file: File,
+  request?: DecodeRequest,
+): Promise<RawMetadata | undefined> {
   if (!isRawFile(file)) return undefined;
   try {
-    return await extractRawMetadata(await file.arrayBuffer());
+    return await extractRawMetadata(await file.arrayBuffer(), request);
   } catch {
     return undefined;
   }
@@ -219,8 +233,9 @@ function catalogSize(
 async function decodeImportBitmap(
   file: File,
   orientation: number | undefined,
+  request?: DecodeRequest,
   source: PreviewSource = getSettings().previewSource,
-): Promise<DecodedImport | null> {
+): Promise<DecodedImport | DecodeFailure | null> {
   // Bring an embedded camera preview (already decoded sensor-native by
   // extractRawPreviewDecoded) upright using the master RAW's EXIF orientation —
   // the preview's own tag is unreliable, often absent. Returns an already-
@@ -296,8 +311,8 @@ async function decodeImportBitmap(
     // (libraw-wasm) handles every compression, so generate the thumbnail from it —
     // unless the render looks degenerate (near-black/flat) and we still hold a
     // camera preview, in which case that trustworthy preview wins.
-    const f = await decodeRawToFloat(file);
-    if (f && !(embedded && looksDegenerate(f.data, f.width, f.height))) {
+    const f = await decodeRawToFloat(file, request);
+    if (!("failure" in f) && !(embedded && looksDegenerate(f.data, f.width, f.height))) {
       embedded?.bitmap.close();
       const bm = await floatToBitmap(f.data, f.width, f.height);
       return { bitmap: bm, oriented: f.oriented ?? false, colorTemperature: f.colorTemperature };
@@ -307,7 +322,8 @@ async function decodeImportBitmap(
     // "auto", or a fresh extract in "rendered") rather than drop the file. Skip
     // this for renderOnly formats (CRW) — their byte-scan preview is gray noise,
     // so a ⚠ "no preview" tile is more honest than a garbage thumbnail.
-    if (embedded) return embedded;
+    const passedOver = "failure" in f && f.passedOver === true;
+    if (embedded) return { ...embedded, passedOver };
     if (effectiveSource === "rendered" && !renderOnly) {
       const preview = await extractRawPreviewDecoded(file, {
         targetLongEdge: getSettings().thumbMaxEdge,
@@ -322,13 +338,14 @@ async function decodeImportBitmap(
             oriented: true,
             sourceWidth: swap ? preview.height : preview.width,
             sourceHeight: swap ? preview.width : preview.height,
+            passedOver,
           };
         } catch {
           /* genuinely undecodable */
         }
       }
     }
-    return null;
+    return "failure" in f ? f : null;
   }
   if (isNetpbmName(file.name)) {
     const bitmap = await decodeNetpbm(file);
@@ -350,15 +367,32 @@ async function decodeImportBitmap(
   }
 }
 
+/** What a pass that stores previews keeps of a decode: nothing for a camera
+ *  preview standing in for a decode that was passed over, since the decode
+ *  under way will give the photo its own. */
+function storable(decoded: DecodedImport | DecodeFailure | null): DecodedImport | null {
+  if (!decoded || "failure" in decoded) return null;
+  if (!decoded.passedOver) return decoded;
+  decoded.bitmap.close();
+  return null;
+}
+
 /** Build a grid preview blob for a photo straight from its source file, at the
  *  current Thumbnail quality. Used to rebuild previews on demand when "Store
- *  previews on disk" is off (memory-only mode). Returns null if it can't decode. */
-export async function buildPreviewBlob(photo: CatalogPhoto): Promise<Blob | null> {
+ *  previews on disk" is off (memory-only mode). Returns null if it can't decode.
+ *  Its decode is background work: a photo opened meanwhile goes first. */
+export async function buildPreviewBlob(
+  photo: CatalogPhoto,
+  signal?: AbortSignal,
+): Promise<Blob | null> {
   if (!photo.fileHandle) return null;
   try {
     const file = await photo.fileHandle.getFile();
-    const decoded = await decodeImportBitmap(file, photo.exif.orientation);
-    if (!decoded) return null;
+    const decoded = await decodeImportBitmap(file, photo.exif.orientation, {
+      background: true,
+      signal,
+    });
+    if (!decoded || "failure" in decoded) return null;
     const { bitmap, oriented } = decoded;
     // Bake to the photo's canonical orientation (EXIF + manual). When the decode
     // already oriented the pixels, subtract the EXIF portion so we don't rotate
@@ -427,13 +461,17 @@ function mapColorLabel(
   }
 }
 
-/** Human-readable reason the decode chain produced no preview, for the grid's
- *  warning tooltip. RAW failures surface libraw's last status (the chain ends at
- *  libraw); TIFF/other report the format generically. */
-function decodeFailureReason(file: File): string {
-  if (isRawFile(file)) return `RAW decode failed — ${lastLibRawStatus}`;
-  if (isTiffName(file.name)) return "TIFF decode failed (unsupported variant)";
-  return "no decoder could read this file";
+/** One plain sentence on why the decode chain produced no preview, shown after
+ *  the file name in the grid's warning tooltip: for a RAW, whether reading it
+ *  again could help (its float decode's own words go to the console). */
+function decodeFailureReason(file: File, failure: DecodeFailure | null): string {
+  if (isRawFile(file)) {
+    return failure?.failure === "unsupported"
+      ? "This RAW file can't be decoded."
+      : "This RAW file couldn't be read this time.";
+  }
+  if (isTiffName(file.name)) return "This kind of TIFF file isn't supported.";
+  return "No decoder could read this file.";
 }
 
 // Fast path: hand the pixel stage (decode → orient → thumbnail encode) to the
@@ -535,12 +573,15 @@ export async function buildPhoto(
   }
 
   const decoded = await decodeImportBitmap(file, exif.orientation).catch(() => null);
-  if (!decoded) {
+  if (!decoded || "failure" in decoded) {
     // Couldn't build a preview right now (e.g. a file briefly locked, or a format
     // libraw can't yet read). Record it anyway with width 0 as the "preview not
     // built" marker; repairMissingPreviews (and the next open) will retry — the
     // photo is never re-imported, just updated in place later.
-    console.warn(`[import] preview deferred (decode failed for now): ${file.name}`);
+    console.warn(
+      `[import] preview deferred (decode failed for now): ${file.name}`,
+      decoded?.reason ?? "no decoder could read it",
+    );
     return {
       ...base,
       thumbnailBlob: null,
@@ -548,7 +589,7 @@ export async function buildPhoto(
       width: 0,
       height: 0,
       rotation: orientationToRotation(exif.orientation),
-      decodeError: decodeFailureReason(file),
+      decodeError: decodeFailureReason(file, decoded),
     };
   }
 
@@ -582,24 +623,71 @@ export async function buildPhoto(
   };
 }
 
+/** Store what a repair, rebuild or re-import worked out for `photo`, on the photo
+ *  as the catalog holds it once the decode is done. The decode takes a while, and
+ *  the photo may have been rated or changed meanwhile, here or in another window;
+ *  those changes stay. Nothing is stored for a photo that left the catalog, nor a
+ *  preview built for a turn the photo no longer has. Resolves with what was
+ *  stored and the fields that changed, or null. Only those fields are for the
+ *  catalog to take on (mergeRebuiltPhoto): the photo may change again while the
+ *  preview is written. A preview built here comes from the file, so it shows no
+ *  edit: an edited one it replaces no longer counts as the photo's look. */
+async function storeOnCurrent(
+  photo: CatalogPhoto,
+  change: Omit<RebuiltChange, "thumbnailUrl" | "previewEdit">,
+): Promise<{ photo: CatalogPhoto; change: RebuiltChange } | null> {
+  const current = useCatalogStore.getState().photos.find((p) => p.id === photo.id);
+  if (!current) return null;
+  if (change.thumbnailBlob && current.rotation !== photo.rotation) return null;
+  const changed: RebuiltChange = changedFields(change, current);
+  if (change.thumbnailBlob) {
+    changed.thumbnailUrl = URL.createObjectURL(change.thumbnailBlob);
+    if (current.previewEdit !== undefined) changed.previewEdit = undefined;
+  }
+  const updated: CatalogPhoto = { ...current, ...changed };
+  await catalogStorage().putPhoto(updated); // writes the preview + persists
+  return { photo: updated, change: changed };
+}
+
+/** The fields of `change` whose values differ from `photo`'s. */
+function changedFields<T extends object>(change: T, photo: T): Partial<T> {
+  const changed: Partial<T> = {};
+  for (const key in change) if (change[key] !== photo[key]) changed[key] = change[key];
+  return changed;
+}
+
 /**
  * Retry building previews for records imported without one (width 0). Updates
  * each in place — same id, so ratings/edits are untouched — writes its grid
- * preview, persists, and notifies via `onRepaired` so the live grid refreshes.
- * Records that still can't decode are left as-is and retried on a later open.
- * Sequential + fire-and-forget, like the RAW pre-decode.
+ * preview, persists, and hands `onRepaired` the fields it changed so the live
+ * grid refreshes. Records that still can't decode are left as-is and retried on
+ * a later open. A RAW the decoder has failed on for good (see raw-cache.ts)
+ * would only fail again, so it is left alone until a Reimport.
+ * Sequential + fire-and-forget, like the RAW pre-decode. `signal` belongs to
+ * the project: once the user leaves it, the pass reads and stores no more.
  */
 export async function repairMissingPreviews(
   photos: CatalogPhoto[],
-  onRepaired?: (photo: CatalogPhoto) => void,
+  onRepaired?: (photo: CatalogPhoto, change: RebuiltChange) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
+  const request: DecodeRequest = { background: true, signal };
   const todo = photos.filter((p) => p.fileHandle && p.width === 0);
   for (const photo of todo) {
+    if (signal?.aborted) return;
     try {
+      const key = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
+      const raw = isRawFile({ name: photo.filename } as File);
+      if (raw && (await hasDecodeMarker(key, "unsupported"))) continue;
       const file = await photo.fileHandle!.getFile();
-      const decoded = await decodeImportBitmap(file, photo.exif.orientation);
+      if (signal?.aborted) return;
+      const decoded = storable(await decodeImportBitmap(file, photo.exif.orientation, request));
       if (!decoded) continue; // still can't — try again next open
-      const rawMeta = await readRawMetadata(file);
+      if (signal?.aborted) {
+        decoded.bitmap.close();
+        return;
+      }
+      const rawMeta = await readRawMetadata(file, request);
 
       const { bitmap, oriented } = decoded;
       // Keep the photo's canonical rotation (EXIF + manual). The thumbnail only
@@ -612,18 +700,16 @@ export async function repairMissingPreviews(
       const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
       const { width, height } = catalogSize(rawMeta?.frame, manual, decoded, bakeRotation);
       bitmap.close();
+      if (signal?.aborted) return;
 
-      const updated: CatalogPhoto = {
-        ...photo,
+      const updated = await storeOnCurrent(photo, {
         thumbnailBlob: thumb,
-        thumbnailUrl: URL.createObjectURL(thumb),
         width,
         height,
         rotation,
         decodeError: undefined, // a preview built this time — clear the marker
-      };
-      await catalogStorage().putPhoto(updated); // writes the preview + persists
-      onRepaired?.(updated);
+      });
+      if (updated) onRepaired?.(updated.photo, updated.change);
 
       await new Promise<void>((res) => setTimeout(res, 0));
     } catch {
@@ -637,24 +723,35 @@ export async function repairMissingPreviews(
  * "Thumbnail quality" (thumbMaxEdge). Unlike repairMissingPreviews this rebuilds
  * ALL previews, not just missing ones — it's the way a changed thumbMaxEdge takes
  * effect on an existing library, since known photos are otherwise never re-decoded
- * on open. Updates each photo in place (same id) and rewrites its disk preview.
- * Reports progress so a Preferences button can show "12 / 340". Sequential to keep
- * memory sane; one failure doesn't stop the rest.
+ * on open. Updates each photo in place (same id), rewrites its disk preview and
+ * hands `onRebuilt` the fields it changed. Reports progress so a Preferences
+ * button can show "12 / 340". Sequential to keep memory sane; one failure doesn't
+ * stop the rest. `signal` belongs to the project: once the user leaves it, the
+ * rebuild reads and stores no more.
  */
 export async function rebuildThumbnails(
   photos: CatalogPhoto[],
   onProgress?: (done: number, total: number) => void,
-  onRebuilt?: (photo: CatalogPhoto) => void,
+  onRebuilt?: (photo: CatalogPhoto, change: RebuiltChange) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const todo = photos.filter((p) => p.fileHandle);
   let done = 0;
   onProgress?.(0, todo.length);
+  // Long enough that the user goes on editing: a photo opened meanwhile goes first.
+  const request: DecodeRequest = { background: true, signal };
   for (const photo of todo) {
+    if (signal?.aborted) return;
     try {
       const file = await photo.fileHandle!.getFile();
-      const decoded = await decodeImportBitmap(file, photo.exif.orientation);
+      if (signal?.aborted) return;
+      const decoded = storable(await decodeImportBitmap(file, photo.exif.orientation, request));
       if (decoded) {
-        const rawMeta = await readRawMetadata(file);
+        if (signal?.aborted) {
+          decoded.bitmap.close();
+          return;
+        }
+        const rawMeta = await readRawMetadata(file, request);
         const { bitmap, oriented } = decoded;
         // Preserve the photo's canonical rotation (EXIF + any manual rotation);
         // a rebuild changes pixels, not orientation. Bake only what this decode
@@ -665,18 +762,16 @@ export async function rebuildThumbnails(
         const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
         const { width, height } = catalogSize(rawMeta?.frame, manual, decoded, bakeRotation);
         bitmap.close();
+        if (signal?.aborted) return;
 
-        const updated: CatalogPhoto = {
-          ...photo,
+        const updated = await storeOnCurrent(photo, {
           thumbnailBlob: thumb,
-          thumbnailUrl: URL.createObjectURL(thumb),
           width,
           height,
           rotation,
           decodeError: undefined, // a preview built this time — clear the marker
-        };
-        await catalogStorage().putPhoto(updated); // writes the preview + persists
-        onRebuilt?.(updated);
+        });
+        if (updated) onRebuilt?.(updated.photo, updated.change);
       }
     } catch {
       // One failure shouldn't stop the rest.
@@ -692,27 +787,39 @@ export async function rebuildThumbnails(
  * and invalidate the develop-preview cache so the next Develop open re-decodes
  * the (possibly changed) pixels. User curation — rating, label, flag, keywords,
  * manual rotation — and develop edits are preserved (they key off the stable
- * photo id, not the file). Updates each record in place via `onReimported`,
- * persists, and reports progress. Sequential; one failure doesn't stop the rest.
- * Returns how many succeeded / failed.
+ * photo id, not the file). Updates each record in place, persists, hands
+ * `onReimported` the fields it changed, and reports progress. Sequential; one
+ * failure doesn't stop the rest.
+ * Returns how many succeeded / failed. A photo removed while it was read, or
+ * turned while its new preview was built, counts as neither: nothing was stored.
+ * `signal` belongs to the project: once the user leaves it, the re-import
+ * reads, drops and stores no more, and the photos it didn't finish count as
+ * neither.
  */
 export async function reimportPhotos(
   photos: CatalogPhoto[],
   onProgress?: (done: number, total: number) => void,
-  onReimported?: (photo: CatalogPhoto) => void,
+  onReimported?: (photo: CatalogPhoto, change: RebuiltChange) => void,
+  signal?: AbortSignal,
 ): Promise<{ ok: number; failed: number }> {
   const todo = photos.filter((p) => p.fileHandle);
   let done = 0;
   let ok = 0;
   let failed = 0;
   onProgress?.(0, todo.length);
+  const request: DecodeRequest = { signal };
   for (const photo of todo) {
+    if (signal?.aborted) break;
     try {
       const file = await photo.fileHandle!.getFile();
+      // Checked in the step that sends the delete: the next project's cache,
+      // which may hold the same key, is set only after its open stops this.
+      if (signal?.aborted) break;
 
-      // Drop the stale develop-preview cache entry so the next Develop open
-      // re-decodes from the current file. The key folds in fileSize, so a
-      // changed file already misses — this also covers a same-size edit.
+      // Drop the stale develop-preview cache entry, and any marker that the
+      // decoder can't use the file, so the next Develop open re-decodes from
+      // the current file. The key folds in fileSize, so a changed file already
+      // misses — this also covers a same-size edit.
       await deleteCachedPreview(
         rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0),
       );
@@ -726,36 +833,47 @@ export async function reimportPhotos(
         const xmp = await parseXmp(file);
         if (xmp.title) exif.imageDescription = xmp.title;
       }
-      const rawMeta = await readRawMetadata(file);
+      const rawMeta = await readRawMetadata(file, request);
       if (rawMeta?.colorTemperature && !exif.colorTemperature) {
         exif.colorTemperature = rawMeta.colorTemperature;
       }
       if (rawMeta?.rawExposureBias !== undefined) exif.rawExposureBias = rawMeta.rawExposureBias;
 
-      const meta: CatalogPhoto = {
-        ...photo,
+      const meta = {
         fileSize: file.size,
         mimeType: file.type || mimeTypeFromName(file.name) || photo.mimeType,
         exif,
         dateCreated: parseExifDate(exif.dateTimeOriginal) ?? file.lastModified,
       };
 
-      const decoded = await decodeImportBitmap(file, exif.orientation).catch(() => null);
-      if (!decoded) {
+      const decoded = await decodeImportBitmap(file, exif.orientation, request).catch(() => null);
+      if (signal?.aborted) {
+        if (decoded && !("failure" in decoded)) decoded.bitmap.close();
+        break;
+      }
+      if (!decoded || "failure" in decoded) {
         // The file is readable but undecodable right now — keep the existing
         // preview, just surface the reason. (A missing/locked file throws above
         // and counts as a failure with nothing changed.)
-        const updated: CatalogPhoto = { ...meta, decodeError: decodeFailureReason(file) };
-        await catalogStorage().putPhoto(updated);
-        onReimported?.(updated);
-        failed++;
+        console.warn(
+          `[import] re-import kept the old preview: ${file.name}`,
+          decoded?.reason ?? "no decoder could read it",
+        );
+        const updated = await storeOnCurrent(photo, {
+          ...meta,
+          decodeError: decodeFailureReason(file, decoded),
+        });
+        if (updated) {
+          onReimported?.(updated.photo, updated.change);
+          failed++;
+        }
         onProgress?.(++done, todo.length);
         continue;
       }
 
       const { bitmap, oriented, colorTemperature } = decoded;
-      if (colorTemperature && !meta.exif.colorTemperature) {
-        meta.exif.colorTemperature = colorTemperature;
+      if (colorTemperature && !exif.colorTemperature) {
+        exif.colorTemperature = colorTemperature;
       }
       // Recompute the canonical rotation (EXIF + manual) against the FRESHLY
       // parsed EXIF — the orientation tag may have changed on disk since import
@@ -769,19 +887,20 @@ export async function reimportPhotos(
       const thumb = await createThumbnail(bitmap, bakeRotation, getSettings().thumbMaxEdge);
       const { width, height } = catalogSize(rawMeta?.frame, manual, decoded, bakeRotation);
       bitmap.close();
+      if (signal?.aborted) break;
 
-      const updated: CatalogPhoto = {
+      const updated = await storeOnCurrent(photo, {
         ...meta,
         thumbnailBlob: thumb,
-        thumbnailUrl: URL.createObjectURL(thumb),
         width,
         height,
         rotation,
         decodeError: undefined,
-      };
-      await catalogStorage().putPhoto(updated); // writes the preview + persists
-      onReimported?.(updated);
-      ok++;
+      });
+      if (updated) {
+        onReimported?.(updated.photo, updated.change);
+        ok++;
+      }
     } catch (e) {
       console.warn(`[import] re-import failed: ${photo.filename}`, e);
       failed++;
@@ -798,7 +917,8 @@ export async function reimportPhotos(
  * instead of waiting for libraw.
  *
  * Decode-once, cheaply: the cache directory is listed ONCE up front, and any
- * photo whose cache key is already present is skipped without touching its file.
+ * photo whose cache key is already present is skipped without touching its file
+ * (so is one with a marker that the decoder can't use it; see raw-cache.ts).
  * The key is derived from the catalog record (relPath + fileSize), so deciding
  * what to skip needs no getFile — which matters because in Electron getFile()
  * reads the whole RAW off disk. So reopening a fully-cached project (this session
@@ -815,7 +935,12 @@ export async function reimportPhotos(
  */
 export async function preDecodeRawsForCache(
   photos: CatalogPhoto[],
-  opts?: { force?: boolean; onProgress?: (done: number, total: number) => void },
+  opts?: {
+    force?: boolean;
+    onProgress?: (done: number, total: number) => void;
+    /** The project's: once the user leaves it, the pass reads and writes no more. */
+    signal?: AbortSignal;
+  },
 ): Promise<void> {
   const s = getSettings();
   // Master switch off → never write the cache, even for a forced "Cache all now".
@@ -823,7 +948,11 @@ export async function preDecodeRawsForCache(
   // "As needed" mode skips the background pass (only opened photos get cached),
   // unless the user explicitly asked to cache everything now.
   if (!opts?.force && !s.rawCachePrefetch) return;
+  const signal = opts?.signal;
+  if (signal?.aborted) return;
 
+  // Writes land only in the cache folder of the project the pass began in.
+  const generation = rawCacheGeneration();
   const present = await cachedKeys(); // one directory listing
   const todo = photos.filter(
     (p) =>
@@ -834,12 +963,23 @@ export async function preDecodeRawsForCache(
   opts?.onProgress?.(0, todo.length);
   if (todo.length === 0) return;
   let done = 0;
+  // Sized by the pool below, which "Cache all now" can reach before it warms up.
+  await warmDecodePool();
 
   const decodeOne = async (photo: CatalogPhoto): Promise<void> => {
+    const key = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
     try {
       const file = await photo.fileHandle!.getFile();
-      const f = await decodeRawToFloat(file);
-      if (!f) return; // failed decode is retried on a later open
+      if (signal?.aborted) return;
+      // Background: a photo opened in Develop meanwhile goes ahead of the queue.
+      const f = await decodeRawToFloat(file, { background: true, signal });
+      if (signal?.aborted) return;
+      if ("failure" in f) {
+        // Only a failure that would recur is remembered; any other is retried
+        // on a later pass.
+        if (f.failure === "unsupported") await markDecode(key, "unsupported", generation);
+        return;
+      }
 
       let rotateDeg = photo.rotation ?? 0;
       if (f.oriented) {
@@ -847,12 +987,19 @@ export async function preDecodeRawsForCache(
       }
       const r = rotateFloatRGBA(f.data, f.width, f.height, rotateDeg);
 
-      await writeCachedPreview(
-        rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0),
-        r.data,
-        r.width,
-        r.height,
-      );
+      // Same ruling as Develop's open. A cached decode is served without a
+      // second look, so a marginal or wrong-colour one would show on every open.
+      // The preview is read only now, once there is a decode to judge.
+      const { use, cache } = await acceptDecode(f, r, await extractRawPreview(file));
+      if (signal?.aborted) return;
+      if (!cache) {
+        // Either verdict would come out the same on every pass. A marginal
+        // decode is still shown in Develop; a rejected one never is.
+        await markDecode(key, use ? "suspicious" : "unsupported", generation);
+        return;
+      }
+
+      await writeCachedPreview(key, r.data, r.width, r.height, generation);
     } catch {
       // A single decode failure shouldn't stop the rest.
     } finally {
@@ -860,13 +1007,15 @@ export async function preDecodeRawsForCache(
     }
   };
 
-  // Bounded concurrency: match the persistent decode pool size (default 3).
-  // Each full-res float decode holds ~380 MB, but the pool caps total instances
-  // so memory stays bounded. Workers yield between files for the UI thread.
-  const limit = Math.min(decodePoolSize() || 2, todo.length);
+  // Bounded concurrency: one fewer than the persistent decode pool (default 3),
+  // whose last instance background work never gets (see decode-pool.ts); one
+  // more decode would only hold its file's bytes while it waited. Each full-res
+  // float decode holds ~380 MB, but the pool caps total instances so memory
+  // stays bounded. Workers yield between files for the UI thread.
+  const limit = Math.min(Math.max(1, decodePoolSize() - 1), todo.length);
   let next = 0;
   const worker = async (): Promise<void> => {
-    while (next < todo.length) {
+    while (next < todo.length && !signal?.aborted) {
       const photo = todo[next++];
       await decodeOne(photo);
       await new Promise<void>((res) => setTimeout(res, 0)); // yield to UI

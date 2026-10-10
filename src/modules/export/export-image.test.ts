@@ -13,6 +13,7 @@
 // renderer.webgl.test.ts.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DecodedImage } from "@/catalog/load-image";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION, normalizeParams } from "@/catalog/types";
 
@@ -50,6 +51,11 @@ const h = vi.hoisted(() => {
 
     setStageTextures() {}
     setOutputColorSpace() {}
+    setAsShotTemperature() {}
+    setHslStyle() {}
+    setImage() {
+      events.push("setImage");
+    }
 
     dispose() {
       this.disposed = true;
@@ -60,6 +66,8 @@ const h = vi.hoisted(() => {
     events,
     /** The saved edit a photo id loads, or undefined to make the read fail. */
     edits: new Map<string, DevelopParams>(),
+    /** What loading a photo id decodes to; none decodes to null. */
+    decoded: new Map<string, DecodedImage>(),
   };
 });
 
@@ -68,7 +76,7 @@ vi.mock("@/rendering/render-bridge", () => ({ getStageTextures: () => ({}) }));
 vi.mock("@/catalog/load-image", () => ({
   loadPhotoImage: async (photo: CatalogPhoto) => {
     h.events.push(`decode:${photo.id}`);
-    return null;
+    return h.decoded.get(photo.id) ?? null;
   },
 }));
 vi.mock("@/catalog/edit-params", () => ({
@@ -139,6 +147,7 @@ beforeEach(() => {
   h.FakeRenderer.stockError = null;
   h.events.length = 0;
   h.edits.clear();
+  h.decoded.clear();
   vi.stubGlobal("document", { createElement: () => ({}) });
 });
 
@@ -243,5 +252,44 @@ describe("a batch's develop program", () => {
     expect(out.map((r) => r.blob)).toEqual([null, null]);
     expect(progress).toHaveBeenCalledTimes(2);
     expect(h.events).toEqual(["decode:b"]);
+  });
+});
+
+describe("a photo whose original can't be read", () => {
+  // Its stored preview already shows its edit: rendered again, the edit would apply twice.
+  function editedPreviewOnly(id: string): ReturnType<typeof vi.fn> {
+    const close = vi.fn();
+    const bitmap = { width: 768, height: 512, close } as unknown as ImageBitmap;
+    h.decoded.set(id, {
+      kind: "bitmap",
+      bitmap,
+      fallback: { from: "stored-edited", offline: true, unsupported: false, timedOut: false },
+    });
+    return close;
+  }
+
+  it("fails its export, saying the original isn't available, with nothing rendered", async () => {
+    h.edits.set("a", CURRENT);
+    const close = editedPreviewOnly("a");
+
+    const result = await exportPhotos([photo("a")], SETTINGS);
+
+    expect(result).toMatchObject({
+      exported: 0,
+      failed: ["a.RAF"],
+      failures: [{ filename: "a.RAF", reason: "The original isn't available." }],
+    });
+    expect(h.events).not.toContain("setImage");
+    expect(close).toHaveBeenCalled();
+  });
+
+  it("renders nothing for it in a batch rendered to blobs", async () => {
+    h.edits.set("a", CURRENT);
+    editedPreviewOnly("a");
+
+    const out = await renderPhotosToBlobs([photo("a")], SETTINGS);
+
+    expect(out.map((r) => r.blob)).toEqual([null]);
+    expect(h.events).not.toContain("setImage");
   });
 });

@@ -29,6 +29,9 @@ import {
 
 const blobFor = (id: string): Blob => new Blob([id]);
 
+/** The loader's read window (its `CONCURRENCY`). */
+const CONCURRENCY = 3;
+
 /** Resolve after every already-queued microtask chain has run to completion. */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -207,6 +210,171 @@ describe("requestThumbnail", () => {
   });
 });
 
+describe("visible requests", () => {
+  const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => String(i));
+
+  it("serves a visible cell before the rest of the idle prefill", async () => {
+    const g = gate();
+    const { calls, loader } = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(loader);
+    for (const id of ids(1000)) requestThumbnail(id); // the idle prefill
+    requestThumbnail("999", { visible: true });
+
+    g.open();
+    await settle();
+    // The read window is full with 0..2 when the cell mounts, so the first slot
+    // to free up goes to it (today it would be the very last read).
+    expect(calls.slice(0, CONCURRENCY + 1)).toContain("999");
+  });
+
+  it("reads a prefilled id once when the prefill later reaches it", async () => {
+    const { calls, loader } = trackingLoader();
+    setThumbnailLoader(loader);
+    for (const id of ids(50)) requestThumbnail(id);
+    requestThumbnail("40", { visible: true });
+    await settle();
+
+    expect(calls).toHaveLength(50);
+    expect(new Set(calls).size).toBe(50);
+    expect(calls.indexOf("40")).toBe(CONCURRENCY);
+  });
+
+  it("serves visible cells in request order, ahead of the prefill", async () => {
+    const g = gate();
+    const { calls, loader } = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(loader);
+    for (const id of ids(10)) requestThumbnail(id);
+    requestThumbnail("9", { visible: true });
+    requestThumbnail("7", { visible: true });
+    requestThumbnail("8", { visible: true });
+
+    g.open();
+    await settle();
+    expect(calls.slice(CONCURRENCY, CONCURRENCY + 3)).toEqual(["9", "7", "8"]);
+  });
+
+  it("serves a visible request for an id that was never prefilled", async () => {
+    const g = gate();
+    const { calls, loader } = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(loader);
+    for (const id of ids(10)) requestThumbnail(id);
+    requestThumbnail("late", { visible: true });
+
+    g.open();
+    await settle();
+    expect(calls[CONCURRENCY]).toBe("late");
+    expect(calls).toHaveLength(11);
+  });
+
+  it("keeps an id in flight single when it is requested as visible", async () => {
+    const g = gate();
+    const { calls, loader } = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(loader);
+    requestThumbnail("a");
+    await settle();
+    requestThumbnail("a", { visible: true });
+
+    g.open();
+    await settle();
+    expect(calls).toEqual(["a"]);
+  });
+
+  it("dedupes repeated visible requests and a plain one behind them", async () => {
+    const g = gate();
+    const { calls, loader } = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(loader);
+    for (const id of ["a", "b", "c"]) requestThumbnail(id); // fill the window
+    requestThumbnail("d", { visible: true });
+    requestThumbnail("d", { visible: true });
+    requestThumbnail("d");
+
+    g.open();
+    await settle();
+    expect(calls).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("merges a visible cell's preview like any other read", async () => {
+    const { loader } = trackingLoader();
+    setThumbnailLoader(loader);
+    requestThumbnail("a", { visible: true });
+    await settle();
+    flushFrames();
+    expect(mergedIds()).toEqual(["a"]);
+  });
+
+  it("abandons visible requests still waiting when the project swaps", async () => {
+    const g = gate();
+    const stale = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(stale.loader);
+    for (const id of ["a", "b", "c"]) requestThumbnail(id);
+    await settle();
+    requestThumbnail("d", { visible: true });
+
+    // The stale reads keep their slots, so the new loader's first read happens
+    // when they settle: a surviving front entry would be read by it then.
+    const fresh = trackingLoader();
+    setThumbnailLoader(fresh.loader);
+    g.open();
+    await settle();
+    flushFrames();
+    expect(stale.calls).toEqual(["a", "b", "c"]);
+    expect(fresh.calls).toEqual([]);
+    expect(catalog.mergeThumbnails).not.toHaveBeenCalled();
+  });
+
+  it("starts the new project's prefill from its first id after a swap", async () => {
+    const g = gate();
+    const stale = trackingLoader(async (id) => {
+      await g.wait;
+      return blobFor(id);
+    });
+    setThumbnailLoader(stale.loader);
+    // c takes the last slot with the prefill's head index just past it; d/e/f
+    // then wait behind it. A swap that left the head there would skip new ids.
+    for (const id of ["a", "b", "c", "d", "e", "f"]) requestThumbnail(id);
+    await settle();
+
+    const fresh = trackingLoader();
+    setThumbnailLoader(fresh.loader);
+    const next = ids(6).map((id) => `n${id}`);
+    for (const id of next) requestThumbnail(id);
+    g.open();
+    await settle();
+
+    expect(fresh.calls).toEqual(next);
+  });
+
+  it("drains a 30k-entry prefill with a visible cell in the middle", async () => {
+    const { calls, loader } = trackingLoader();
+    setThumbnailLoader(loader);
+    const all = ids(30_000);
+    for (const id of all) requestThumbnail(id);
+    requestThumbnail("15000", { visible: true });
+    await settle();
+
+    expect(calls).toHaveLength(30_000);
+    expect(calls.indexOf("15000")).toBe(CONCURRENCY);
+  });
+});
+
 describe("project generation", () => {
   it("bumps the generation on every install", () => {
     const before = thumbnailGen();
@@ -317,6 +485,101 @@ describe("reloadThumbnail", () => {
     setThumbnailLoader(trackingLoader().loader);
     g.open();
     await done;
+    expect(catalog.replaceThumbnail).not.toHaveBeenCalled();
+  });
+
+  /** A loader whose reads wait until the test lets them land, counting the most
+   *  that ran at once. */
+  function heldLoader() {
+    const held: Gate[] = [];
+    const state = { running: 0, most: 0, calls: [] as string[] };
+    setThumbnailLoader(async (id) => {
+      state.calls.push(id);
+      state.most = Math.max(state.most, ++state.running);
+      const g = gate();
+      held.push(g);
+      await g.wait;
+      state.running--;
+      return blobFor(id);
+    });
+    /** Land every read until `done` settles. */
+    const landAll = async (done: Promise<unknown>) => {
+      let settled = false;
+      void done.finally(() => (settled = true));
+      for (let rounds = 0; !settled && rounds < 1000; rounds++) {
+        await settle();
+        for (const g of held.splice(0)) g.open();
+      }
+    };
+    return { state, landAll };
+  }
+
+  it("reads no more at once than the window holds, however many photos are reloaded", async () => {
+    const { state, landAll } = heldLoader();
+    const ids = Array.from({ length: 300 }, (_, i) => `p${i}`);
+
+    const done = Promise.all(ids.map((id) => reloadThumbnail(id)));
+    await landAll(done);
+
+    expect(state.most).toBeLessThanOrEqual(CONCURRENCY);
+    expect(catalog.replaceThumbnail.mock.calls.map(([id]) => id).sort()).toEqual([...ids].sort());
+  });
+
+  it("serves a cell scrolled into view during a burst of reloads next", async () => {
+    const { state, landAll } = heldLoader();
+    const reloads = Array.from({ length: 10 }, (_, i) => reloadThumbnail(`r${i}`));
+    await settle();
+    expect(state.calls).toEqual(["r0", "r1", "r2"]);
+
+    requestThumbnail("v", { visible: true });
+    await landAll(Promise.all(reloads));
+
+    expect(state.calls[3]).toBe("v");
+  });
+
+  it("serves reloads before the idle prefill", async () => {
+    const { state, landAll } = heldLoader();
+    const busy = ["a", "b", "c"].map((id) => reloadThumbnail(id));
+    await settle();
+    requestThumbnail("idle");
+    const reload = reloadThumbnail("r");
+
+    await landAll(Promise.all([...busy, reload]));
+
+    expect(state.calls.slice(3)).toEqual(["r", "idle"]);
+  });
+
+  it("reads a photo once for reloads asked before its read starts", async () => {
+    const { state, landAll } = heldLoader();
+    const busy = ["a", "b", "c"].map((id) => reloadThumbnail(id));
+
+    const twice = [reloadThumbnail("d"), reloadThumbnail("d")];
+    await landAll(Promise.all([...busy, ...twice]));
+
+    expect(state.calls.filter((id) => id === "d")).toEqual(["d"]);
+  });
+
+  it("reads a photo again when it is reloaded while a read of it runs", async () => {
+    const { state, landAll } = heldLoader();
+    requestThumbnail("a");
+    await settle();
+
+    const done = reloadThumbnail("a"); // the read running may have the old preview
+    await settle();
+    expect(state.calls).toEqual(["a"]); // never two reads of one file at once
+    await landAll(done);
+
+    expect(state.calls).toEqual(["a", "a"]);
+    expect(catalog.replaceThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles reloads still waiting when the project is swapped, replacing nothing", async () => {
+    heldLoader();
+    const waiting = ["a", "b", "c", "d"].map((id) => reloadThumbnail(id));
+
+    setThumbnailLoader(trackingLoader().loader);
+
+    await expect(waiting[3]).resolves.toBeUndefined();
     expect(catalog.replaceThumbnail).not.toHaveBeenCalled();
   });
 });

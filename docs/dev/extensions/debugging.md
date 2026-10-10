@@ -35,7 +35,8 @@ Network access works the same way as for an installed extension: the origins a d
 
 ## Common load errors
 
-- **`safelight.json is missing 'id' or 'main'`** — both are required; check the manifest path and JSON validity.
+- **`safelight.json is missing 'id' or 'main'`** — both are required, and `id` must be text; check the manifest path and JSON validity.
+- **`<id>: extension ids under 'core' are reserved for Safelight`** — `core` and anything under `core.`, in any letter case, belong to Safelight's built-in extensions, so the dev folder will not load an extension with such an `id` (the Dev tab row shows this text and the console logs `[dev-folder] refused …`). Installing one from GitHub is refused too, and that failure reads only `Invalid safelight.json`. Pick your own id in `safelight.json`, such as `com.example.name` (see [Manifest](README.md#manifest) for the rules).
 - **`bundle has no activate(api) export`** — your bundle must `export function activate(api)`. Usually means React wasn't left external (so the bundle threw on import) or the entry file is wrong.
 - **Blank/unstyled UI** — Tailwind utility classes aren't compiled for runtime bundles. Use theme CSS variables + inline styles, or `api.components`. See [UI Components → Theming tokens](../api/components.md#theming-tokens).
 - **Hooks crash (`Invalid hook call`)** — you bundled your own React. Mark `react`/`react-dom`/`react/jsx-runtime` external and use `api.react`.

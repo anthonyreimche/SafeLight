@@ -183,6 +183,22 @@ async function copyDir(
 
 // ── catalog updates ──────────────────────────────────────────────────────────
 
+/** Where a photo lives now, as far as a move or rename changed it. */
+type Relocation = Partial<
+  Pick<CatalogPhoto, "filename" | "folder" | "relPath" | "directoryHandle" | "fileHandle">
+>;
+
+/** Persist where photos now live, keyed by id; a virtual copy shares its master's
+ *  file, so it follows its master. Applied to the photos as the store holds them
+ *  once the disk work is done, which another window's records may have changed. */
+async function relocate(moved: Map<string, Relocation>): Promise<void> {
+  const updated = useCatalogStore.getState().photos.flatMap((p) => {
+    const to = moved.get(p.id) ?? (p.copyOf ? moved.get(p.copyOf) : undefined);
+    return to ? [{ ...p, ...to }] : [];
+  });
+  await useCatalogStore.getState().relocatePhotos(updated);
+}
+
 /** Rebuild handle + path fields for every photo under `oldPrefix`, rewriting
  *  the prefix to `newPrefix`, then persist them. */
 async function relocateSubtree(
@@ -201,22 +217,21 @@ async function relocateSubtree(
     return d;
   };
 
-  const updated: CatalogPhoto[] = [];
+  const moved = new Map<string, Relocation>();
   for (const p of photos) {
     const under = p.folder === oldPrefix || p.folder.startsWith(`${oldPrefix}/`);
     if (!under) continue;
     const newFolder = newPrefix + p.folder.slice(oldPrefix.length);
     const dir = await dirFor(newFolder);
     const fileHandle = await dir.getFileHandle(p.filename);
-    updated.push({
-      ...p,
+    moved.set(p.id, {
       folder: newFolder,
       relPath: joinRel(newFolder, p.filename),
       directoryHandle: dir,
       fileHandle,
     });
   }
-  await useCatalogStore.getState().relocatePhotos(updated);
+  await relocate(moved);
 }
 
 // ── public operations ────────────────────────────────────────────────────────
@@ -284,11 +299,10 @@ export async function movePhotos(ids: string[], destRel: string): Promise<void> 
   const rootHandle = root();
   if (!rootHandle || ids.length === 0) return;
   const idSet = new Set(ids);
-  const all = useCatalogStore.getState().photos;
-  const photos = all.filter((p) => idSet.has(p.id) && !p.copyOf);
+  const photos = useCatalogStore.getState().photos.filter((p) => idSet.has(p.id) && !p.copyOf);
   const destDir = await resolveDir(rootHandle, destRel, true);
 
-  const updated: CatalogPhoto[] = [];
+  const moved = new Map<string, Relocation>();
   for (const p of photos) {
     if (p.folder === destRel) continue; // already here
     const newRel = joinRel(destRel, p.filename);
@@ -318,22 +332,11 @@ export async function movePhotos(ids: string[], destRel: string): Promise<void> 
     }
 
     const fileHandle = await destDir.getFileHandle(p.filename);
-    // Virtual copies share this file — carry the new folder/relPath/handles to
-    // them too so they don't go stale before the next scan re-attaches them.
-    updated.push(
-      { ...p, folder: destRel, relPath: newRel, directoryHandle: destDir, fileHandle },
-      ...all
-        .filter((c) => c.copyOf === p.id)
-        .map((c) => ({
-          ...c,
-          folder: destRel,
-          relPath: newRel,
-          directoryHandle: destDir,
-          fileHandle,
-        })),
-    );
+    // Its virtual copies come along (see relocate), so they don't go stale before
+    // the next scan re-attaches them.
+    moved.set(p.id, { folder: destRel, relPath: newRel, directoryHandle: destDir, fileHandle });
   }
-  await useCatalogStore.getState().relocatePhotos(updated);
+  await relocate(moved);
   await useProjectStore.getState().refreshTree();
 }
 
@@ -410,22 +413,11 @@ export async function renamePhoto(
 
   const dir = await resolveDir(rootHandle, photo.folder);
   const fileHandle = await dir.getFileHandle(newFilename);
-  // Virtual copies share this file — carry the new name/handle/relPath to them
-  // too so they don't go stale before the next project scan re-attaches them.
-  const copies = useCatalogStore
-    .getState()
-    .photos.filter((p) => p.copyOf === id);
-  await useCatalogStore.getState().relocatePhotos([
-    { ...photo, filename: newFilename, relPath: newRel, fileHandle },
-    ...copies.map((c) => ({
-      ...c,
-      filename: newFilename,
-      relPath: newRel,
-      folder: photo.folder,
-      fileHandle,
-      directoryHandle: photo.directoryHandle,
-    })),
-  ]);
+  // Its virtual copies come along (see relocate), so they don't go stale before
+  // the next project scan re-attaches them.
+  const { folder, directoryHandle } = photo;
+  const renamed = { filename: newFilename, relPath: newRel, folder, directoryHandle, fileHandle };
+  await relocate(new Map([[id, renamed]]));
   return { ok: true, filename: newFilename };
 }
 
