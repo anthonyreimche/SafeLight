@@ -52,14 +52,22 @@ const USER_IDENTITY_CURVE = {
 
 const luma = ([r, g, b]: readonly number[]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
+/** A frame per source through one renderer, so a sweep compiles its program
+ *  once: SwiftShader takes most of CI's per-test budget to build it. */
+function renderEach(pipeline: ResolvedPipeline, sources: FloatImage[], over: Partial<DevelopParams>): Frame[] {
+  return withRenderer({ stages: [], pipeline }, (renderer) =>
+    sources.map((source) => {
+      renderer.setImage(source);
+      renderer.setParams(identityParams(over));
+      const frame = renderer.captureFloatFrame();
+      if (!frame) throw new Error("captureFloatFrame returned null");
+      return frame;
+    }),
+  );
+}
+
 function render(pipeline: ResolvedPipeline, source: FloatImage, over: Partial<DevelopParams>): Frame {
-  return withRenderer({ stages: [], pipeline }, (renderer) => {
-    renderer.setImage(source);
-    renderer.setParams(identityParams(over));
-    const frame = renderer.captureFloatFrame();
-    if (!frame) throw new Error("captureFloatFrame returned null");
-    return frame;
-  });
+  return renderEach(pipeline, [source], over)[0];
 }
 
 /** Scene luminance the probe shows at (x, y). */
@@ -75,28 +83,29 @@ const STRIPED = floatImage(64, 16, (x) => {
 
 describe("version 2 Highlights and Shadows on a flat grey", () => {
   const CASES: [number, number][] = [[-100, 0], [-40, 60], [0, -50], [0, 100], [30, 0], [100, 100]];
+  const VALUES = [0.05, 0.3, 0.9, 1.6];
   for (const [highlights, shadows] of CASES) {
     for (const exposure of [0, 1.5]) {
       it(`land where the TypeScript curves do at Highlights ${highlights}, Shadows ${shadows}, Exposure ${exposure}`, () => {
-        for (const value of [0.05, 0.3, 0.9, 1.6]) {
+        const frames = renderEach(HALVING, VALUES.map(flat), { ...V2, highlights, shadows, exposure });
+        VALUES.forEach((value, i) => {
           const expected = toneShadows(
             toneHighlights(value * 2 ** exposure, exposure, highlights / 100, false),
             shadows / 100,
           );
-          const frame = render(HALVING, flat(value), { ...V2, highlights, shadows, exposure });
-          expect(Math.abs(sceneLuma(frame, 8, 8) - expected), `at ${value}`).toBeLessThan(TOLERANCE);
-        }
+          expect(Math.abs(sceneLuma(frames[i], 8, 8) - expected), `at ${value}`).toBeLessThan(TOLERANCE);
+        });
       });
     }
   }
 
   for (const [highlights, shadows] of CASES.filter(([h]) => h <= 0)) {
     it(`land where the TypeScript curves do without the core shoulder at Highlights ${highlights}, Shadows ${shadows}`, () => {
-      for (const value of [0.05, 0.3, 0.9, 1.6]) {
+      const frames = renderEach(SHOULDERLESS, VALUES.map(flat), { ...V2, highlights, shadows });
+      VALUES.forEach((value, i) => {
         const expected = toneShadows(toneHighlights(value, 0, highlights / 100, true), shadows / 100);
-        const frame = render(SHOULDERLESS, flat(value), { ...V2, highlights, shadows });
-        expect(Math.abs(sceneLuma(frame, 8, 8) - expected), `at ${value}`).toBeLessThan(TOLERANCE);
-      }
+        expect(Math.abs(sceneLuma(frames[i], 8, 8) - expected), `at ${value}`).toBeLessThan(TOLERANCE);
+      });
     });
   }
 
@@ -109,9 +118,8 @@ describe("version 2 Highlights and Shadows on a flat grey", () => {
   ];
   for (const { highlights, exposure } of RISING) {
     it(`keeps brighter input brighter at Highlights +${highlights}, Exposure +${exposure}`, () => {
-      const out = RAMP.map((value) =>
-        sceneLuma(render(HALVING, flat(value / 2 ** exposure), { ...V2, highlights, exposure }), 8, 8),
-      );
+      const sources = RAMP.map((value) => flat(value / 2 ** exposure));
+      const out = renderEach(HALVING, sources, { ...V2, highlights, exposure }).map((frame) => sceneLuma(frame, 8, 8));
       for (let i = 1; i < out.length; i++) {
         expect(out[i], `${RAMP[i - 1]} → ${RAMP[i]}`).toBeGreaterThan(out[i - 1]);
       }
