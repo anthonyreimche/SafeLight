@@ -20,7 +20,7 @@ vi.mock("@/state/broadcast", () => ({
 
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { normalizeParams } from "@/catalog/types";
+import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION, normalizeParams } from "@/catalog/types";
 import { registerPresetImporter, unregisterExtension } from "@/extensions/registry";
 import { useExtStoreUI } from "@/extensions/store-ui";
 import type { PresetImporterContribution } from "@/extensions/types";
@@ -142,4 +142,34 @@ describe("PresetsPanel import feedback", () => {
     await user.click(await screen.findByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText(NO_XMP_IMPORTER)).toBeNull();
   });
+});
+
+describe("PresetsPanel process versions", () => {
+  // Export and import drop a preset's version, but a hand-edited or
+  // extension-written preset can still carry one; the open photo's must win.
+  it.each([
+    { open: LEGACY_PROCESS_VERSION, carried: CURRENT_PROCESS_VERSION },
+    { open: CURRENT_PROCESS_VERSION, carried: LEGACY_PROCESS_VERSION },
+  ])(
+    "previews and applies a preset at the open photo's version ($open), not the preset's ($carried)",
+    async ({ open, carried }) => {
+      useDevelopStore.setState({ params: normalizeParams({ processVersion: open }) });
+      usePresetsStore.setState({
+        presets: [
+          { id: "p1", name: "Warm Matte", params: { exposure: 0.5, processVersion: carried } },
+        ],
+      });
+      const user = userEvent.setup();
+      render(<PresetsPanel />);
+      const preset = screen.getByRole("button", { name: "Warm Matte" });
+
+      await user.hover(preset);
+      expect(useDevelopStore.getState().previewParams?.exposure).toBe(0.5);
+      expect(useDevelopStore.getState().previewParams?.processVersion).toBe(open);
+
+      await user.click(preset);
+      expect(useDevelopStore.getState().params.exposure).toBe(0.5);
+      expect(useDevelopStore.getState().params.processVersion).toBe(open);
+    },
+  );
 });

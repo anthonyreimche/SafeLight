@@ -35,7 +35,9 @@ const {
   settlePlugin,
   sweepPluginWork,
   contains,
+  retry,
 } = require("./plugin-files.cjs");
+const { createAtomicWriter } = require("./atomic-write.cjs");
 const {
   validManifest,
   listInstalledManifests,
@@ -45,6 +47,32 @@ const {
   readDevFolder,
   writeDevFolder,
 } = require("./extension-origins.cjs");
+const { createRemoteJsonCache } = require("./remote-json-cache.cjs");
+const {
+  navigationAllowed,
+  windowOpenAction,
+  indexRedirectFor,
+  guardPrivileged,
+  validRepo,
+} = require("./window-policy.cjs");
+const { pruneExpired, usableIndex } = require("./registry-cache.cjs");
+const { unzip } = require("./unzip.cjs");
+const {
+  checkInstallFiles,
+  compareSemver,
+  createReleaseListCache,
+  downloadReleaseFiles,
+  findRelease,
+  isSemver,
+  mustContainFor,
+  normaliseReleases,
+  parseRegistryVersions,
+  rateLimitMessage,
+  remoteFromRegistry,
+  remoteFromReleases,
+  resolveInstallSource,
+  safeEntries,
+} = require("./plugin-releases.cjs");
 
 // `app.isPackaged` is false when Electron runs an app from a plain directory
 // rather than an asar/bundled build — which is exactly how the Nix derivation
@@ -345,23 +373,11 @@ const pluginWorkDir = () => path.join(app.getPath("userData"), "plugins-update")
 const devFolderFile = () => path.join(app.getPath("userData"), "dev-folder.json");
 
 // True when this app build is older than the extension's declared minimum
-// supported version. Dotted versions only; a missing part reads as 0. Mirrors
-// the renderer's semver helper so a too-old install is refused before any files
-// are written (the renderer can't know minAppVersion until the manifest lands).
+// supported version, by semver precedence (plugin-releases.cjs mirrors the
+// renderer's helper). A too-old install is refused before any files are
+// written; the renderer can't know minAppVersion until the manifest lands.
 function appOlderThan(minVersion) {
-  const parse = (v) =>
-    String(v)
-      .replace(/^v/i, "")
-      .split(".")
-      .map((n) => parseInt(n, 10) || 0);
-  const cur = parse(appVersion());
-  const want = parse(minVersion);
-  for (let i = 0; i < 3; i++) {
-    const a = cur[i] || 0;
-    const b = want[i] || 0;
-    if (a !== b) return a < b;
-  }
-  return false;
+  return compareSemver(appVersion(), minVersion) < 0;
 }
 
 function listPlugins() {
@@ -393,17 +409,18 @@ function untar(buf) {
   return files;
 }
 
-// spec: "owner/repo", "owner/repo#ref", or a github.com URL.
+// spec: "owner/repo", "owner/repo#ref", or a github.com URL. `ref` is null when
+// the spec names none; the install then resolves a release (or the branch).
 function parseRepoSpec(spec) {
   let s = String(spec).trim();
   const url = s.match(
     /^https?:\/\/github\.com\/([^/\s]+)\/([^/\s#]+?)(?:\.git)?(?:\/tree\/([^\s]+))?\/?$/
   );
-  if (url) return { owner: url[1], repo: url[2], ref: url[3] || "HEAD" };
+  if (url) return { owner: url[1], repo: url[2], ref: url[3] || null };
   const [repoPart, ref] = s.split("#");
   const m = repoPart.match(/^([^/\s]+)\/([^/\s]+)$/);
   if (!m) throw new Error("Use owner/repo, owner/repo#branch, or a GitHub URL");
-  return { owner: m[1], repo: m[2], ref: ref || "HEAD" };
+  return { owner: m[1], repo: m[2], ref: ref || null };
 }
 
 // ---------------------------------------------------------------------------
@@ -543,43 +560,150 @@ function bannedReason(list, owner, repo) {
   return null;
 }
 
-async function installPlugin(spec) {
+// ── Extension releases ───────────────────────────────────────────────────────
+// An extension installs from its newest GitHub Release, or from its default
+// branch when it publishes none (plugin-releases.cjs decides which). Versions
+// come from the registry index whenever it lists the repo, so update checks
+// cost no API call; release lists are read from the API only when the store
+// shows them or an older version is installed, and are kept on disk.
+
+// Total time a release zip or tarball download may take, body included. Generous
+// for a slow link, but a dead connection ends the install instead of hanging it.
+const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
+// The codeload tarball of `ref`, unpacked, with GitHub's "<repo>-<ref>/" folder
+// stripped and unsafe names dropped.
+async function fetchTarballFiles(owner, repo, ref) {
+  const tarUrl = `https://codeload.github.com/${owner}/${repo}/tar.gz/${encodeURIComponent(ref)}`;
+  const res = await net.fetch(tarUrl, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`GitHub download failed (${res.status})`);
+  const tar = zlib.gunzipSync(Buffer.from(await res.arrayBuffer()));
+  return safeEntries(
+    untar(tar).map((f) => ({ ...f, name: f.name.split("/").slice(1).join("/") }))
+  );
+}
+
+async function fetchBuffer(url) {
+  const res = await net.fetch(url, {
+    headers: { "User-Agent": "Safelight" },
+    signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`download failed (${res.status})`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// safelight.json at `ref` (a tag, or HEAD) from GitHub's file CDN, which the API
+// rate limit doesn't cover. Null when the file is missing or isn't JSON; any
+// other failure rejects so callers keep what they had.
+async function fetchManifestAt(repo, ref) {
+  // AbortSignal.timeout, unlike fetchWithTimeout's timer, stays armed while the
+  // body is read, so a stalled body can't hang the caller.
+  const res = await net.fetch(
+    `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(ref)}/safelight.json`,
+    {
+      headers: { "User-Agent": "Safelight", Accept: "application/json" },
+      cache: "no-cache",
+      signal: AbortSignal.timeout(10000),
+    }
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GitHub error: ${res.status}`);
+  // Read before parsing so a timeout mid-body rejects rather than reading as
+  // "no manifest".
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchReleaseListLive(repo) {
+  const res = await net.fetch(`https://api.github.com/repos/${repo}/releases?per_page=30`, {
+    headers: { Accept: "application/vnd.github+json", "User-Agent": "Safelight" },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(rateLimitMessage(res.status, res.headers, repo));
+  return normaliseReleases(await res.json(), repo);
+}
+
+const releaseListFile = () => path.join(app.getPath("userData"), "extension-releases.json");
+const releaseLists = createReleaseListCache({
+  load: () => {
+    try {
+      return JSON.parse(fs.readFileSync(releaseListFile(), "utf8"));
+    } catch {
+      return null;
+    }
+  },
+  save: (map) => {
+    fileWriter.write(releaseListFile(), JSON.stringify(map)).catch(() => {});
+  },
+  fetchList: fetchReleaseListLive,
+  ttlMs: 6 * 60 * 60 * 1000,
+  maxAgeMs: 30 * 24 * 60 * 60 * 1000,
+});
+
+// The registry's version record for "owner/repo": undefined when the index is
+// unavailable, doesn't list the repo, or predates version records, so callers
+// ask GitHub themselves.
+async function registryVersionsFor(repo) {
+  const items = await fetchRegistryIndex();
+  if (!items) return undefined;
+  const key = String(repo).toLowerCase();
+  const hit = items.find((it) => it.fullName.toLowerCase() === key);
+  return (hit && hit.versions) || undefined;
+}
+
+async function installPlugin(spec, version) {
   const { owner, repo, ref } = parseRepoSpec(spec);
+  // parseRepoSpec only splits the spec; a name GitHub could resolve differently
+  // than banned.json spells it (owner/rep%6f) must not reach the gate or a fetch.
+  if (!validRepo(`${owner}/${repo}`)) throw new Error("Bad repository");
+  if (version !== undefined && (ref || !isSemver(version)))
+    throw new Error(ref ? "Install a branch or a version, not both" : "Bad version");
   // Remote kill-switch: refuse banned repos/owners before any download or write.
   // The renderer enforces this too (nicer UX), but this is the authoritative
   // gate — it holds even if the renderer bundle is tampered with.
   const banned = bannedReason(await fetchTrustList(), owner, repo);
   if (banned)
     throw new Error(`"${owner}/${repo}" is blocked by Safelight — ${banned}.`);
-  const tarUrl = `https://codeload.github.com/${owner}/${repo}/tar.gz/${encodeURIComponent(ref)}`;
-  const res = await net.fetch(tarUrl);
-  if (!res.ok) throw new Error(`GitHub download failed (${res.status})`);
-  const tar = zlib.gunzipSync(Buffer.from(await res.arrayBuffer()));
-
-  // Strip the "<repo>-<ref>/" top-level folder GitHub adds. Reject any entry
-  // whose name carries a backslash (a separator on Windows, so it escapes the
-  // "/"-only traversal filter) or a ".." segment once normalised — a
-  // Linux-authored repo may legally ship either.
-  const files = untar(tar)
-    .map((f) => ({ ...f, name: f.name.split("/").slice(1).join("/") }))
-    .filter(
-      (f) =>
-        f.name &&
-        !f.name.includes("\\") &&
-        !path.normalize(f.name).split(/[/\\]/).includes("..")
-    );
-
-  const manifestFile = files.find((f) => f.name === "safelight.json");
-  if (!manifestFile) throw new Error("Repo has no safelight.json manifest");
-  const manifest = JSON.parse(manifestFile.data.toString("utf8"));
-  if (!validManifest(manifest)) throw new Error("Invalid safelight.json");
-  if (manifest.minAppVersion && appOlderThan(manifest.minAppVersion))
-    throw new Error(
-      `"${manifest.name}" requires SafeLight ${manifest.minAppVersion} or newer — you have ${appVersion()}. Update SafeLight first.`
-    );
-  if (!files.some((f) => f.name === manifest.main))
-    throw new Error(`Entry bundle "${manifest.main}" not found in repo`);
-
+  const full = `${owner}/${repo}`;
+  let files;
+  let release = null;
+  let origin = "the repo";
+  let skipped = [];
+  if (ref) {
+    files = await fetchTarballFiles(owner, repo, ref);
+  } else {
+    const registry = await registryVersionsFor(full);
+    const source = await resolveInstallSource({
+      repo: full,
+      version,
+      registry,
+      releaseList: () => releaseLists.get(full, { mustContain: mustContainFor(registry) }),
+    });
+    if (source.kind === "branch") {
+      files = await fetchTarballFiles(owner, repo, "HEAD");
+    } else {
+      release = source.release;
+      ({ files, origin, skipped } = await downloadReleaseFiles({
+        release,
+        fetchBuffer,
+        readTarball: (tag) => fetchTarballFiles(owner, repo, tag),
+        unzip,
+      }));
+    }
+  }
+  const manifest = checkInstallFiles(files, {
+    repo: full,
+    release,
+    origin,
+    skipped,
+    appOlderThan,
+    appVersion: appVersion(),
+  });
   if (!contains(pluginsDir(), path.join(pluginsDir(), manifest.id)))
     throw new Error("Bad extension id");
   // Atomic: the files land in a work folder first, and the current install is
@@ -601,7 +725,8 @@ async function installPlugin(spec) {
 // default browse grid (empty query) is the first thing the store fetches on every
 // open, so serving it from a warm cache makes re-opens instant and spares the
 // unauthenticated 60/hr GitHub Search budget. On rate-limit / network failure we
-// fall back to any cached payload (even if stale) rather than surfacing an error.
+// fall back to the cached payload while one is still held, even past its TTL,
+// rather than surfacing an error.
 const searchCache = new Map(); // `${topic}\n${query}` -> { at, items }
 const SEARCH_TTL_MS = 15 * 60 * 1000; // results turn over slowly; 15 min is plenty
 const searchCacheFile = () => path.join(app.getPath("userData"), "search-cache.json");
@@ -617,10 +742,14 @@ function loadSearchDisk() {
         if (v && typeof v.at === "number" && Array.isArray(v.items))
           searchCache.set(k, { at: v.at, items: v.items });
   } catch {}
+  // One row per query ever run: expired rows go on load and on write, or the
+  // file only grows across sessions.
+  pruneExpired(searchCache, SEARCH_TTL_MS, Date.now());
 }
 
 let searchWriteTimer = null;
 function persistSearchDisk() {
+  pruneExpired(searchCache, SEARCH_TTL_MS, Date.now());
   if (searchWriteTimer) return;
   searchWriteTimer = setTimeout(() => {
     searchWriteTimer = null;
@@ -691,6 +820,7 @@ function normalizeRegistryEntry(e) {
     avatarUrl,
     thumbnail: thumb || { url: avatarFor(e.fullName, avatarUrl), custom: false },
     source: "registry",
+    versions: parseRegistryVersions(e),
   };
 }
 
@@ -699,7 +829,7 @@ function normalizeRegistryEntry(e) {
 // nothing cached) so the caller can fall back to a live search. A fresh cache
 // short-circuits the network; a stale cache is still returned on any fetch
 // failure (last-good beats an error, same policy as searchExtensionsLive).
-async function fetchRegistryIndex(force = false) {
+async function loadRegistryIndex(force) {
   loadRegistryDisk();
   if (
     !force &&
@@ -717,14 +847,13 @@ async function fetchRegistryIndex(force = false) {
   // (cheap, 304-able) revalidation so our 1h TTL is the single source of truth.
   const url = `https://raw.githubusercontent.com/${TRUST_REGISTRY}/main/registry.json`;
   try {
-    const res = await fetchWithTimeout(
-      url,
-      {
-        headers: { "User-Agent": "Safelight", Accept: "application/json" },
-        cache: "no-cache",
-      },
-      6000,
-    );
+    // The signal, unlike fetchWithTimeout's timer, stays armed while the body is
+    // read: a stalled registry.json must not wedge registryIndexInflight.
+    const res = await net.fetch(url, {
+      headers: { "User-Agent": "Safelight", Accept: "application/json" },
+      cache: "no-cache",
+      signal: AbortSignal.timeout(6000),
+    });
     // 404 = index not published yet; any non-OK = serve last-good or signal
     // "unavailable" (null) so searchExtensions falls back to a live search.
     if (!res.ok) return registryIndexCache ? registryIndexCache.items : null;
@@ -736,12 +865,26 @@ async function fetchRegistryIndex(force = false) {
         : null;
     if (!rows) return registryIndexCache ? registryIndexCache.items : null;
     const items = rows.map(normalizeRegistryEntry).filter(Boolean);
+    // Cached, an empty catalog would blank the store for the whole TTL.
+    if (!usableIndex(items)) return registryIndexCache ? registryIndexCache.items : null;
     registryIndexCache = { at: Date.now(), items };
     persistRegistryDisk();
     return items;
   } catch {
     return registryIndexCache ? registryIndexCache.items : null;
   }
+}
+
+// Update checks read the index from up to eight workers at once; while the
+// network fetch is in flight they share it instead of each downloading it.
+let registryIndexInflight = null;
+function fetchRegistryIndex(force = false) {
+  if (force) return loadRegistryIndex(true);
+  if (!registryIndexInflight)
+    registryIndexInflight = loadRegistryIndex(false).finally(() => {
+      registryIndexInflight = null;
+    });
+  return registryIndexInflight;
 }
 
 // Client-side query filter over the registry index — substring match on
@@ -758,6 +901,35 @@ function filterRegistry(items, query) {
   );
 }
 
+// The welcome setup's starter kits: curated groups of verified extensions,
+// published as kits.json beside registry.json so they change without an app
+// release. Same CDN and cache discipline as the registry index (raw, never
+// jsDelivr, `cache: "no-cache"` so the 1h TTL is the only clock).
+const kitsIndex = createRemoteJsonCache({
+  url: `https://raw.githubusercontent.com/${TRUST_REGISTRY}/main/kits.json`,
+  cacheFile: () => path.join(app.getPath("userData"), "kits-cache.json"),
+  ttlMs: 60 * 60 * 1000,
+  // The signal, unlike fetchWithTimeout's, stays armed while the cache reads
+  // the body.
+  fetchJson: (url) =>
+    net.fetch(url, {
+      headers: { "User-Agent": "Safelight", Accept: "application/json" },
+      cache: "no-cache",
+      signal: AbortSignal.timeout(6000),
+    }),
+});
+
+// Re-resolve each item's thumbnail from the (now-warm) icon/og caches: a cached
+// search payload may pre-date a thumbnail that has since been resolved, so a warm
+// re-open (or a stale-cache fallback) paints real icons with no round-trips.
+// cachedThumbnail is a purely local lookup, so this stays offline-safe.
+function withFreshThumbs(items) {
+  return items.map((it) => ({
+    ...it,
+    thumbnail: cachedThumbnail(it.fullName, it.avatarUrl || null),
+  }));
+}
+
 async function searchExtensionsLive(query, topic, force = false) {
   const t = String(topic || DEFAULT_EXT_TOPIC).trim();
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(t)) throw new Error("Bad extension topic");
@@ -767,14 +939,8 @@ async function searchExtensionsLive(query, topic, force = false) {
   loadSearchDisk();
   const key = `${t}\n${String(query || "").trim()}`;
   const hit = searchCache.get(key);
-  // Re-resolve each item's thumbnail from the (now-warm) icon/og caches on the
-  // way out: a cached search payload may pre-date a thumbnail that has since been
-  // resolved, so a warm re-open paints real icons with no round-trips.
   if (!force && hit && Date.now() - hit.at < SEARCH_TTL_MS)
-    return hit.items.map((it) => ({
-      ...it,
-      thumbnail: cachedThumbnail(it.fullName, it.avatarUrl || null),
-    }));
+    return withFreshThumbs(hit.items);
   let res;
   try {
     res = await net.fetch(
@@ -787,15 +953,15 @@ async function searchExtensionsLive(query, topic, force = false) {
       }
     );
   } catch (e) {
-    if (hit) return hit.items; // network hiccup — serve last-good rather than fail
+    if (hit) return withFreshThumbs(hit.items); // network hiccup — serve last-good rather than fail
     throw e;
   }
   if (res.status === 403 || res.status === 429) {
-    if (hit) return hit.items; // rate-limited — stale results beat an error
+    if (hit) return withFreshThumbs(hit.items); // rate-limited — stale results beat an error
     throw new Error("GitHub rate limit reached — try again in a minute.");
   }
   if (!res.ok) {
-    if (hit) return hit.items;
+    if (hit) return withFreshThumbs(hit.items);
     throw new Error(`GitHub search failed (${res.status})`);
   }
   const body = await res.json();
@@ -832,12 +998,16 @@ async function searchExtensions(query, topic, force = false) {
   const t = String(topic || DEFAULT_EXT_TOPIC).trim();
   if (t === DEFAULT_EXT_TOPIC) {
     const index = await fetchRegistryIndex(force);
-    if (index) return filterRegistry(index, query);
+    // Zip asset lists stay in main: registryVersionsFor reads them from the
+    // cached index, the renderer only needs the card fields.
+    if (usableIndex(index))
+      return filterRegistry(index, query).map(({ versions, ...item }) => item);
   }
   return searchExtensionsLive(query, topic, force);
 }
 
 async function fetchReleases(repo) {
+  if (!validRepo(repo)) throw new Error("Bad repository");
   // Called from the main process so net.fetch is not subject to the renderer
   // CSP (connect-src 'self') that would block https:// requests.
   const res = await net.fetch(
@@ -853,46 +1023,61 @@ async function fetchReleases(repo) {
   return res.json();
 }
 
-// The `version` and `minAppVersion` from the repo's root safelight.json on its
-// default branch — enough for the updater to tell "newer" from "newer, but needs
-// a newer Safelight" without a GitHub Release. Null means the repo publishes no
-// usable manifest (404, unreadable JSON, no version): there is nothing to offer.
-// A network failure or any other API error (rate limit, outage) rejects instead,
-// so the renderer keeps its last record rather than forgetting a pending update
-// — or a version that already failed to start here.
-async function fetchRemoteManifest(repo) {
+// The newest version a repo publishes, with its minAppVersion, for the update
+// check: the registry's record when it lists the repo, else the repo's own
+// release list (or its branch manifest when it has none). Null when there is
+// nothing to offer. A network failure or API error rejects instead, so the
+// renderer keeps its last record rather than forgetting a pending update — or a
+// version that already failed to start here.
+async function fetchRemoteManifest(repo, opts) {
   if (!validRepo(repo)) return null;
-  const res = await net.fetch(
-    `https://api.github.com/repos/${repo}/contents/safelight.json`,
-    {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "Safelight",
-      },
-    }
-  );
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
-  const data = await res.json();
-  if (!data || typeof data.content !== "string") return null;
-  let manifest;
-  try {
-    manifest = JSON.parse(
-      Buffer.from(data.content, data.encoding || "base64").toString("utf8")
-    );
-  } catch {
-    return null;
-  }
-  if (typeof manifest.version !== "string") return null;
-  const remote = { version: manifest.version };
-  if (typeof manifest.minAppVersion === "string")
-    remote.minAppVersion = manifest.minAppVersion;
-  return remote;
+  const prerelease = !!(opts && opts.prerelease);
+  const registry = await registryVersionsFor(repo);
+  if (registry) return remoteFromRegistry(registry, prerelease);
+  return remoteFromReleases({
+    list: await releaseLists.get(repo),
+    prerelease,
+    manifestAt: (tag) => fetchManifestAt(repo, tag),
+    branchManifest: () => fetchManifestAt(repo, "HEAD"),
+  });
 }
 
-// Validate an "owner/repo" string before interpolating it into a GitHub URL.
-function validRepo(repo) {
-  return /^[\w.-]+\/[\w.-]+$/.test(String(repo));
+// A repo's releases for the store's version picker and release notes, without
+// the download URLs. A branch source the registry lists answers [] without an
+// API call, unless `force` (the store's ↻) asks GitHub whether it has just
+// published its first release.
+async function fetchReleasesForStore(repo, force) {
+  if (!validRepo(repo)) throw new Error("Bad repository");
+  const registry = await registryVersionsFor(repo);
+  if (registry && registry.releaseError) throw new Error(registry.releaseError);
+  if (registry && registry.latest.from === "branch" && !force) return [];
+  const list = await releaseLists.get(repo, { force, mustContain: mustContainFor(registry) });
+  return list.map(({ zips, ...release }) => release);
+}
+
+// safelight.json at the tag of `version`, so the store can say a chosen
+// release needs a newer Safelight (or is broken) before trying it.
+async function fetchReleaseManifest(repo, version) {
+  if (!validRepo(repo) || !isSemver(version)) return null;
+  const registry = await registryVersionsFor(repo);
+  const named =
+    registry && registry.latest
+      ? [registry.latest, registry.prerelease].find(
+          (r) => r && r.tag && compareSemver(r.version, version) === 0
+        )
+      : null;
+  let tag = named ? named.tag : null;
+  if (!tag) {
+    const list = await releaseLists.get(repo, { mustContain: mustContainFor(registry) });
+    const hit = findRelease(list, version);
+    if (!hit) return null;
+    tag = hit.tag;
+  }
+  const m = await fetchManifestAt(repo, tag);
+  if (!m || typeof m.version !== "string") return null;
+  return typeof m.minAppVersion === "string"
+    ? { version: m.version, minAppVersion: m.minAppVersion }
+    : { version: m.version };
 }
 
 // Repo metadata for the Extensions detail view — runs in the main process to
@@ -1239,6 +1424,7 @@ function pickAsset(assets) {
 }
 
 async function installRelease(repo, tag) {
+  if (!validRepo(repo)) throw new Error("Bad repository");
   const { spawn } = require("node:child_process");
 
   // 1. Fetch the release assets list for the given tag.
@@ -1278,6 +1464,17 @@ async function installRelease(repo, tag) {
   }
 }
 
+// Each webContents' committed main-frame URL, recorded on did-navigate in
+// web-contents-created. The privileged guard judges this rather than
+// frame.url, which history.pushState moves without loading a document.
+const committedUrls = new WeakMap();
+
+// The channels behind claimPrivileged (fs:*, updates:install) answer only the
+// app's own top-level document; see window-policy.cjs.
+function handlePrivileged(channel, handler) {
+  ipcMain.handle(channel, guardPrivileged(channel, handler, { committedUrls }));
+}
+
 function registerPluginIpc() {
   // Nothing is in flight before the first window: a previous version still in
   // the work area belongs to an update that was never settled, so it goes back.
@@ -1313,16 +1510,24 @@ function registerPluginIpc() {
   ipcMain.handle("github:readme", (_e, repo, ref) =>
     fetchReadme(String(repo), String(ref ?? "HEAD"))
   );
-  ipcMain.handle("updates:install", (_e, repo, tag) =>
+  handlePrivileged("updates:install", (_e, repo, tag) =>
     installRelease(String(repo), String(tag))
   );
   ipcMain.handle("plugins:list", () => listPlugins());
-  ipcMain.handle("plugins:install", (_e, spec) => installPlugin(spec));
+  ipcMain.handle("plugins:install", (_e, spec, version) =>
+    installPlugin(spec, version == null ? undefined : String(version))
+  );
   ipcMain.handle("plugins:search", (_e, query, topic, force) =>
     searchExtensions(query, topic, force)
   );
-  ipcMain.handle("plugins:remote-manifest", (_e, repo) =>
-    fetchRemoteManifest(String(repo))
+  ipcMain.handle("plugins:remote-manifest", (_e, repo, opts) =>
+    fetchRemoteManifest(String(repo), { prerelease: !!(opts && opts.prerelease) })
+  );
+  ipcMain.handle("plugins:releases", (_e, repo, force) =>
+    fetchReleasesForStore(String(repo), !!force)
+  );
+  ipcMain.handle("plugins:manifest-at", (_e, repo, version) =>
+    fetchReleaseManifest(String(repo), String(version))
   );
   ipcMain.handle("plugins:settle-update", async (_e, id, outcome) => {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))
@@ -1339,6 +1544,7 @@ function registerPluginIpc() {
     return restored && validManifest(restored) ? restored : null;
   });
   ipcMain.handle("plugins:trust-list", (_e, force) => fetchTrustList(!!force));
+  ipcMain.handle("plugins:kits", (_e, force) => kitsIndex.get(!!force));
   ipcMain.handle("plugins:uninstall", (_e, id) => {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))
       throw new Error("Bad extension id");
@@ -1397,33 +1603,29 @@ async function dirSizeBytes(dir) {
 // Native file bridge. Lets the renderer read/write the open project folder by
 // absolute path instead of through File System Access handles. Paths don't
 // expire across sessions the way FSA permissions do, so the originals reconnect
-// on launch with no user gesture (Lightroom-style). Trust scope: the renderer
-// only ever loads our own bundle (navigation is locked to app://), so exposing
-// fs by path is the same trust level the app already runs at.
+// on launch with no user gesture (Lightroom-style). Trust scope: windows only
+// ever hold the app's own index (window-policy.cjs), and every fs:* call is
+// refused unless it comes from such a document's top frame.
 // ---------------------------------------------------------------------------
+// Shared by every window so writes to one file stay ordered; drained on quit.
+const fileWriter = createAtomicWriter({
+  fsp: fs.promises,
+  randomId: () => crypto.randomBytes(8).toString("hex"),
+  retry,
+});
+
 function registerFsIpc() {
-  ipcMain.handle("fs:read", async (_e, p) => {
+  handlePrivileged("fs:read", async (_e, p) => {
     const st = await fs.promises.stat(p);
     const data = await fs.promises.readFile(p); // Buffer → Uint8Array in renderer
     return { data, mtimeMs: st.mtimeMs, size: st.size };
   });
-  ipcMain.handle("fs:write", async (_e, p, data) => {
-    await fs.promises.mkdir(path.dirname(p), { recursive: true });
-    // Atomic write: write to a temp sibling, then rename over the target. A
-    // crash/quit mid-write leaves the existing file intact (rename is atomic on
-    // the same filesystem), so an interrupted save — e.g. the fire-and-forget
-    // beforeunload catalog flush on app quit — can never truncate catalog.json
-    // and trigger a spurious full re-import on the next launch.
-    const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
-    try {
-      await fs.promises.writeFile(tmp, Buffer.from(data));
-      await fs.promises.rename(tmp, p);
-    } catch (err) {
-      await fs.promises.rm(tmp, { force: true }).catch(() => {});
-      throw err;
-    }
-  });
-  ipcMain.handle("fs:list", async (_e, p) => {
+  // Atomic, ordered per file (atomic-write.cjs). The write is queued before the
+  // handler returns, so a window's last flush is already pending at will-quit.
+  handlePrivileged("fs:write", (_e, p, data) =>
+    fileWriter.write(p, data instanceof Uint8Array ? data : Buffer.from(data)),
+  );
+  handlePrivileged("fs:list", async (_e, p) => {
     let ents;
     try {
       ents = await fs.promises.readdir(p, { withFileTypes: true });
@@ -1436,7 +1638,7 @@ function registerFsIpc() {
       kind: d.isDirectory() ? "directory" : "file",
     }));
   });
-  ipcMain.handle("fs:mkdir", async (_e, p) => {
+  handlePrivileged("fs:mkdir", async (_e, p) => {
     await fs.promises.mkdir(p, { recursive: true });
   });
   // Resolve a "separate" .safelight working directory for a project folder — used
@@ -1451,7 +1653,7 @@ function registerFsIpc() {
   //   create !== false → creates the directory (so a write failure surfaces, e.g.
   //     an unwriteable override) and returns its absolute path. Idempotent: an
   //     existing catalog is left untouched.
-  ipcMain.handle("fs:externalCatalogDir", async (_e, rootPath, baseOverride, create) => {
+  handlePrivileged("fs:externalCatalogDir", async (_e, rootPath, baseOverride, create) => {
     const src = path.resolve(String(rootPath));
     const base = externalCatalogBase(baseOverride);
     const tag = crypto.createHash("sha1").update(src).digest("hex").slice(0, 8);
@@ -1483,7 +1685,7 @@ function registerFsIpc() {
   // Enumerate the "separate" catalogs under `baseOverride` (or the app data dir)
   // for the Preferences manager: each entry is a per-source folder the user can
   // reveal or delete to reclaim disk. Best-effort — unreadable entries are skipped.
-  ipcMain.handle("fs:listExternalCatalogs", async (_e, baseOverride) => {
+  handlePrivileged("fs:listExternalCatalogs", async (_e, baseOverride) => {
     const base = externalCatalogBase(baseOverride);
     let entries;
     try {
@@ -1529,7 +1731,7 @@ function registerFsIpc() {
     return out;
   });
   // Record where a source's read-only spillover catalog lives (atomic write).
-  ipcMain.handle("fs:setSpilloverPointer", async (_e, rootPath, spilloverDir) => {
+  handlePrivileged("fs:setSpilloverPointer", async (_e, rootPath, spilloverDir) => {
     const p = spilloverPointerPath(rootPath);
     await fs.promises.mkdir(path.dirname(p), { recursive: true });
     const body = JSON.stringify({
@@ -1544,7 +1746,7 @@ function registerFsIpc() {
   });
   // Look up a source's spillover dir, or null. Verifies the recorded source path
   // matches so a (truncated-hash) collision can't return another source's catalog.
-  ipcMain.handle("fs:getSpilloverPointer", async (_e, rootPath) => {
+  handlePrivileged("fs:getSpilloverPointer", async (_e, rootPath) => {
     try {
       const meta = JSON.parse(
         await fs.promises.readFile(spilloverPointerPath(rootPath), "utf8"),
@@ -1560,25 +1762,25 @@ function registerFsIpc() {
     }
     return null;
   });
-  ipcMain.handle("fs:clearSpilloverPointer", async (_e, rootPath) => {
+  handlePrivileged("fs:clearSpilloverPointer", async (_e, rootPath) => {
     await fs.promises.rm(spilloverPointerPath(rootPath), { force: true });
   });
-  ipcMain.handle("fs:remove", async (_e, p) => {
+  handlePrivileged("fs:remove", async (_e, p) => {
     await fs.promises.rm(p, { recursive: true, force: true });
   });
   // Recoverable delete: the OS trash (Recycle Bin) instead of rm. Rejects when
   // the platform can't trash the path (e.g. some network mounts) — the renderer
   // reports that per file rather than falling back to a hard delete.
-  ipcMain.handle("fs:trash", async (_e, p) => {
+  handlePrivileged("fs:trash", async (_e, p) => {
     await shell.trashItem(path.normalize(p));
   });
   // Move/rename a file or directory. Used by folder-ops for drag-to-reorganise
   // and folder rename; one rename handles a whole subtree atomically.
-  ipcMain.handle("fs:move", async (_e, src, dest) => {
+  handlePrivileged("fs:move", async (_e, src, dest) => {
     await fs.promises.mkdir(path.dirname(dest), { recursive: true });
     await fs.promises.rename(src, dest);
   });
-  ipcMain.handle("fs:exists", async (_e, p) => {
+  handlePrivileged("fs:exists", async (_e, p) => {
     try {
       await fs.promises.access(p);
       return true;
@@ -1586,7 +1788,7 @@ function registerFsIpc() {
       return false;
     }
   });
-  ipcMain.handle("fs:pickDirectory", async (e) => {
+  handlePrivileged("fs:pickDirectory", async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender);
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
       properties: ["openDirectory"],
@@ -1595,7 +1797,7 @@ function registerFsIpc() {
   });
   // Reveal a path in the OS file manager: open a directory window, or select a
   // file inside its parent folder. Backs Export's "Open Folder" action.
-  ipcMain.handle("fs:reveal", async (_e, p) => {
+  handlePrivileged("fs:reveal", async (_e, p) => {
     try {
       const st = await fs.promises.stat(p);
       if (st.isDirectory()) {
@@ -1784,6 +1986,37 @@ function trackWindowState(win) {
   });
 }
 
+// window.open policy for every webContents (main window, pop-outs and their
+// children). The app's own index opens as a native child with the same
+// isolation settings, so the app:// origin, preload and COOP/COEP carry over and
+// BroadcastChannel sync keeps working. http(s) goes to the system browser.
+// Anything else is denied: an extension's own file opened as a window would be
+// a fresh document that could claim the privileged bridge.
+function windowOpenHandler({ url }) {
+  const action = windowOpenAction(url);
+  if (action === "allow-app") {
+    return {
+      action: "allow",
+      overrideBrowserWindowOptions: {
+        show: false,
+        backgroundColor: "#1a1a1a",
+        autoHideMenuBar: true,
+        ...titleBarOpts,
+        webPreferences: {
+          preload: path.join(__dirname, "preload.cjs"),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          devTools: true,
+          backgroundThrottling: false,
+        },
+      },
+    };
+  }
+  if (action === "external") shell.openExternal(url);
+  return { action: "deny" };
+}
+
 function createWindow() {
   const state = readWindowState();
   const win = new BrowserWindow({
@@ -1821,41 +2054,6 @@ function createWindow() {
     win.show();
   });
 
-  // Detached windows (shortcuts, loupe, etc.): defer show until ready-to-show
-  // to avoid black frames on macOS — same pattern as the main window.
-  win.webContents.on("did-create-window", (childWin) => {
-    childWin.once("ready-to-show", () => childWin.show());
-  });
-
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    // Internal windows = detachable modules (window.open to an app:// URL).
-    // Allow them as native child windows with the same isolation settings so
-    // the custom-protocol origin, preload, and COOP/COEP all carry over and
-    // BroadcastChannel sync keeps working.
-    if (url.startsWith("app://")) {
-      return {
-        action: "allow",
-        overrideBrowserWindowOptions: {
-          show: false,
-          backgroundColor: "#1a1a1a",
-          autoHideMenuBar: true,
-          ...titleBarOpts,
-          webPreferences: {
-            preload: path.join(__dirname, "preload.cjs"),
-            contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: true,
-            devTools: true,
-            backgroundThrottling: false,
-          },
-        },
-      };
-    }
-    // External links → system browser, never in-app.
-    if (/^https?:\/\//.test(url)) shell.openExternal(url);
-    return { action: "deny" };
-  });
-
   win.loadURL("app://bundle/index.html");
   if (isDev) win.webContents.openDevTools({ mode: "detach" });
   return win;
@@ -1873,15 +2071,35 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  // Lock every webContents (main + detached module windows) to the bundled
-  // app: in-page navigation may only target app://, anything http(s) goes to
-  // the system browser. Stops extensions/markdown links from hijacking a window.
+  // Lock every webContents (main window, pop-outs and any children they open)
+  // to the app's own index: navigation may only target it, and window.open goes
+  // through windowOpenHandler. will-navigate never sees a new window's first
+  // load, so a webContents without the open handler could open any URL. http(s)
+  // goes to the system browser. Stops extensions/markdown links from hijacking
+  // a window.
   app.on("web-contents-created", (_e, contents) => {
+    contents.setWindowOpenHandler(windowOpenHandler);
+    // Children open hidden (show: false above) to avoid a black first frame;
+    // whichever window opened them shows them once painted.
+    contents.on("did-create-window", (childWin) => {
+      childWin.once("ready-to-show", () => childWin.show());
+    });
     contents.on("will-navigate", (event, url) => {
-      if (!url.startsWith("app://")) {
-        event.preventDefault();
-        if (/^https?:\/\//.test(url)) shell.openExternal(url);
-      }
+      if (navigationAllowed(url)) return;
+      event.preventDefault();
+      if (windowOpenAction(url) === "external") shell.openExternal(url);
+    });
+    // Fires for loads and reloads; pushState fires did-navigate-in-page
+    // instead, so this is the document actually in the window. A reload skips
+    // will-navigate, so a non-index app:// document is sent back to the index.
+    contents.on("did-navigate", (_event, url) => {
+      committedUrls.set(contents, url);
+      const index = indexRedirectFor(url);
+      if (index === null) return;
+      console.warn(`[safelight] ${url} is not the app's index; loading ${index}`);
+      contents
+        .loadURL(index)
+        .catch((err) => console.warn(`[safelight] ${index} did not load: ${err.message}`));
     });
   });
 
@@ -1955,5 +2173,20 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
+  });
+
+  // Windows send their last catalog flush as they close, which is after
+  // before-quit, so the wait for pending writes happens here. Bounded, so a
+  // stuck disk can't keep the app from quitting.
+  let writesDrained = false;
+  app.on("will-quit", async (event) => {
+    if (writesDrained || fileWriter.activePaths() === 0) return;
+    event.preventDefault();
+    writesDrained = true;
+    await Promise.race([
+      fileWriter.drain(),
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]);
+    app.quit();
   });
 }

@@ -6,8 +6,8 @@
 // Mask and retouch state, carved out of the develop store as a self-contained
 // slice: the ephemeral tool UI (active tool, brush/retouch settings, selection)
 // plus the data mutations on params.masks / params.retouch. The mutations write
-// params directly and broadcast a live re-render (pushEdit); they do NOT commit
-// to history — commitEdit ends a gesture for undo and is called by the canvas
+// params directly and post nothing to other windows; they do NOT commit to
+// history — commitEdit ends a gesture for undo and is called by the canvas
 // overlay at gesture end. Composed in develop-store.ts; `DevelopState extends
 // MaskSlice`, so the slice owns these members' types.
 
@@ -33,7 +33,6 @@ import {
 } from "@/catalog/types";
 import { getParamDescriptor } from "@/extensions/param-registry";
 import type { DevelopState } from "../develop-store";
-import { pushEdit } from "./push-edit";
 
 export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
 
@@ -192,10 +191,8 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
   setRetouchMode: (retouchMode) => set({ retouchMode }),
 
   addMask(mask) {
-    let added = false;
     set((s) => {
       if (s.params.masks.length >= MAX_MASKS) return s;
-      added = true;
       return {
         params: { ...s.params, masks: [...s.params.masks, mask] },
         selectedMaskId: mask.id,
@@ -205,7 +202,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         maskTab: "coverage",
       };
     });
-    if (added) pushEdit(get);
   },
 
   addComponent(maskId, comp) {
@@ -219,7 +215,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
       selectedMaskId: maskId,
       selectedComponentId: comp.id,
     }));
-    pushEdit(get);
   },
 
   // Cycle a component's combine mode: add -> subtract -> intersect -> add.
@@ -242,7 +237,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         ),
       },
     }));
-    pushEdit(get);
   },
 
   addRangeComponent(kind) {
@@ -297,7 +291,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         ),
       },
     }));
-    pushEdit(get);
   },
 
   // Removing the last component removes the whole mask.
@@ -326,7 +319,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
           maskGone && s.hoveredMaskId === maskId ? null : s.hoveredMaskId,
       };
     });
-    pushEdit(get);
   },
 
   // undefined values delete their key so cleared blocks (e.g. hsl) don't persist
@@ -345,7 +337,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         }),
       },
     }));
-    pushEdit(get);
   },
 
   updateMaskAdj(id, patch) {
@@ -357,7 +348,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         ),
       },
     }));
-    pushEdit(get);
   },
 
   updateMaskBag(id, patch) {
@@ -376,7 +366,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         }),
       },
     }));
-    pushEdit(get);
   },
 
   seedMaskPanelValues(maskId, owns) {
@@ -394,7 +383,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         masks: s.params.masks.map((m) => (m.id === id ? { ...m, name } : m)),
       },
     }));
-    pushEdit(get);
   },
 
   addBrushDab(maskId, compId, dab) {
@@ -415,7 +403,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         ),
       },
     }));
-    pushEdit(get);
   },
 
   removeMask(id) {
@@ -426,20 +413,16 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         s.selectedMaskId === id ? null : s.selectedComponentId,
       hoveredMaskId: s.hoveredMaskId === id ? null : s.hoveredMaskId,
     }));
-    pushEdit(get);
   },
 
   addSpot(spot) {
-    let added = false;
     set((s) => {
       if (s.params.retouch.length >= MAX_RETOUCH) return s;
-      added = true;
       return {
         params: { ...s.params, retouch: [...s.params.retouch, spot] },
         selectedSpotId: spot.id,
       };
     });
-    if (added) pushEdit(get);
   },
 
   updateSpot(id, patch) {
@@ -451,7 +434,6 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
         ),
       },
     }));
-    pushEdit(get);
   },
 
   removeSpot(id) {
@@ -459,6 +441,5 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
       params: { ...s.params, retouch: s.params.retouch.filter((sp) => sp.id !== id) },
       selectedSpotId: s.selectedSpotId === id ? null : s.selectedSpotId,
     }));
-    pushEdit(get);
   },
 });

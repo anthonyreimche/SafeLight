@@ -22,15 +22,20 @@ import {
 import { resolveCursorCss, useCanvasCursor } from "@/state/cursor-store";
 import { useCanvasGesture, setCanvasZoomGesture } from "@/state/canvas-gesture";
 import { registerViewportZoomCommands } from "@/state/viewport-zoom-commands";
+import { cancelCrossfade, snapshotCrossfade } from "@/ui/canvas-crossfade";
 import { frameLocalPoint } from "@/ui/frame-point";
 
 interface ViewportImageProps {
   canvasRef: RefObject<HTMLCanvasElement | null>;
+  // The crossfade overlay, laid over the canvas with its placement. The develop
+  // renderer fades its tiers on it too.
+  fadeCanvasRef: RefObject<HTMLCanvasElement | null>;
   bufferWidth: number; // rendered buffer size, in px
   bufferHeight: number;
   zoom: number | null; // null = fit; number = scale (1 = 100% of buffer)
   onZoomChange: (zoom: number | null) => void;
-  loading?: boolean;
+  // A short word on what the image shows (e.g. "Preview"), in the frame's corner.
+  status?: string | null;
   resetKey?: string; // changing this snaps back to the initial zoom (e.g. a new photo)
   // Zoom a fresh photo (resetKey change) opens at. null = fit (default); a number
   // = that scale (1 = 100%). Lets the Develop loupe honor the user's preference.
@@ -73,10 +78,12 @@ interface ViewportImageProps {
   // (e.g. a before/after split) align to the displayed image. `visible` is where
   // the displayed pixels sit (the window fills the frame in ROI-zoom mode);
   // `image` is where the FULL image sits (extends past the frame when zoomed),
-  // which interactive image-anchored overlays map against.
+  // which interactive image-anchored overlays map against. `frame` is the
+  // viewport's own size.
   onLayout?: (
     visible: { x: number; y: number; w: number; h: number },
     image: { x: number; y: number; w: number; h: number },
+    frame: { w: number; h: number },
   ) => void;
   // ISO 12646 color-assessment mode: frame the displayed image in brilliant
   // white (a paper-white reference). The surround grey is set by the parent.
@@ -97,6 +104,12 @@ const ZOOM_STEP = 1.25; // per keyboard step and per classic wheel notch (100 px
 const MAX_ZOOM = 2; // the status bar's 200% top stop
 const FIT_SNAP = 1.0001; // a zoom-out landing within this of fit snaps to fit
 
+/** Width in px of the colour-assessment mat for a viewport of `frameW`×`frameH`,
+ *  `assessBorder` being its share of the smaller side. */
+export function assessMatPx(frameW: number, frameH: number, assessBorder: number): number {
+  return Math.max(2, Math.round(Math.min(frameW, frameH) * assessBorder));
+}
+
 // An interactive image viewport. The GL canvas keeps its buffer resolution; we
 // position and scale it with a CSS transform. The zoom level is owned by the
 // parent (so its controls can live in the status bar); panning offset is local.
@@ -104,11 +117,12 @@ const FIT_SNAP = 1.0001; // a zoom-out landing within this of fit snaps to fit
 // the cursor, dragging pans, clicking again returns to fit.
 export function ViewportImage({
   canvasRef,
+  fadeCanvasRef,
   bufferWidth,
   bufferHeight,
   zoom,
   onZoomChange,
-  loading,
+  status,
   resetKey,
   initialZoom = null,
   overlay,
@@ -176,8 +190,9 @@ export function ViewportImage({
   // we shrink the image to leave room for the band inside the frame, so "Assess"
   // frames the whole image plus its white surround. Computed up front so the fit
   // scale can reserve the border.
-  const matBorder = Math.max(2, Math.round(Math.min(frame.w, frame.h) * assessBorder));
-  const showMat = !!colorAssessment && hasImage;
+  const matBorder = assessMatPx(frame.w, frame.h, assessBorder);
+  // An empty buffer (the canvas cleared for the next photo) has nothing to frame.
+  const showMat = !!colorAssessment && hasImage && bufferWidth > 0 && bufferHeight > 0;
   const fitInset = showMat && zoom == null ? matBorder : 0;
 
   const fitScale = hasImage
@@ -281,7 +296,7 @@ export function ViewportImage({
     const image = { x: effOffset.x, y: effOffset.y, w: imgW * effScale, h: imgH * effScale };
     // Where the displayed pixels sit: the window fills the frame in ROI-zoom mode.
     const visible = roiMode ? { x: 0, y: 0, w: frame.w, h: frame.h } : image;
-    onLayout(visible, image);
+    onLayout(visible, image, { w: frame.w, h: frame.h });
   }, [onLayout, hasImage, roiMode, effOffset.x, effOffset.y, effScale, imgW, imgH, frame.w, frame.h]);
 
   // Recenter on external zoom changes (status-bar buttons). Cursor-anchored
@@ -520,35 +535,31 @@ export function ViewportImage({
     if (panRaf.current != null) cancelAnimationFrame(panRaf.current);
   }, []);
 
-  // Crossfade: when fadeToken changes, snapshot the current frame into an
-  // overlay canvas (the display canvas is a 2D canvas, so drawImage is reliable)
-  // and fade it out over the new frame the renderer draws underneath.
-  const fadeRef = useRef<HTMLCanvasElement>(null);
+  // Crossfade: when fadeToken changes, fade the current frame out over the new
+  // frame the renderer draws underneath.
   const seenFadeToken = useRef(fadeToken);
   useLayoutEffect(() => {
     if (fadeToken == null || fadeToken === seenFadeToken.current) return;
     seenFadeToken.current = fadeToken;
     const src = canvasRef.current;
-    const dst = fadeRef.current;
-    if (!src || !dst || !src.width || !src.height) return;
-    dst.width = src.width;
-    dst.height = src.height;
-    const c = dst.getContext("2d");
-    if (!c) return;
-    try {
-      c.drawImage(src, 0, 0);
-    } catch {
-      return; // tainted/empty source — skip the fade rather than throw
-    }
-    dst.style.transition = "none";
-    dst.style.opacity = "1";
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        dst.style.transition = "opacity 220ms ease-out";
-        dst.style.opacity = "0";
-      }),
-    );
-  }, [fadeToken, canvasRef]);
+    const dst = fadeCanvasRef.current;
+    if (src && dst) snapshotCrossfade(src, dst, 220);
+  }, [fadeToken, canvasRef, fadeCanvasRef]);
+
+  // The overlay is laid out like the canvas, so when the view moves between fit and
+  // the 100% layout (which fills the frame with the window rendered), a picture
+  // fading out would show in a framing it never had: the whole image stretched over
+  // a crop. Cut it. The develop renderer starts its fades in its own layout effect,
+  // after this one in the same commit, hence the second cut once the commit is done.
+  const placedRef = useRef(roiMode);
+  useLayoutEffect(() => {
+    if (placedRef.current === roiMode) return;
+    placedRef.current = roiMode;
+    const overlay = fadeCanvasRef.current;
+    if (!overlay) return;
+    cancelCrossfade(overlay);
+    queueMicrotask(() => cancelCrossfade(overlay));
+  }, [roiMode, fadeCanvasRef]);
 
   // Track drag picking state
   const pickDragRef = useRef<{ active: boolean }>({ active: false });
@@ -752,9 +763,10 @@ export function ViewportImage({
 
       {/* Crossfade overlay: holds the previous frame and fades to reveal the new
           one. Same transform as the canvas so it stays aligned; click-through.
-          Resting opacity 0 — the layout effect drives the fade. */}
+          Resting opacity 0. The fadeToken effect above drives a fade on it, and so
+          does the develop renderer's paint, between tiers of the open photo. */}
       <canvas
-        ref={fadeRef}
+        ref={fadeCanvasRef}
         aria-hidden
         style={{ ...canvasStyle, opacity: 0, pointerEvents: "none" }}
       />
@@ -783,9 +795,9 @@ export function ViewportImage({
         </div>
       )}
 
-      {loading && (
+      {status && (
         <div className="absolute bottom-2 left-2 text-[10px] text-text-muted">
-          Loading…
+          {status}
         </div>
       )}
     </div>

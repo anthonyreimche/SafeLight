@@ -163,7 +163,9 @@ function verificationStatusIn(
   return "verified";
 }
 
-function bannedReasonIn(
+/** List-taking form of {@link bannedReason}, for filtering a collection under
+ *  a `useTrust` subscription. */
+export function bannedReasonIn(
   list: TrustList,
   repo: string | null | undefined,
 ): string | null {

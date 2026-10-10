@@ -3,8 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useRef, useState } from "react";
+import { memo, useRef, useState } from "react";
 import type { RefObject } from "react";
+import { createStore, useStore, type StoreApi } from "zustand";
 import type {
   BrushDab,
   CropRect,
@@ -110,6 +111,25 @@ function unionOutlinePath(
   return parts;
 }
 
+function projectToScreen(rect: Rect, crop: CropRect, forward: Mat3, sx: number, sy: number) {
+  const t = mat3Apply(forward, sx, sy);
+  const ox = (t.x - crop.x) / crop.width;
+  const oy = (t.y - crop.y) / crop.height;
+  return { x: rect.x + ox * rect.w, y: rect.y + oy * rect.h };
+}
+
+const radiusOnScreen = (rect: Rect, crop: CropRect, r: number) => (r / crop.height) * rect.h;
+
+// Traced brush outlines, keyed by spot: the store replaces a spot object on
+// every edit, and `sig` holds the view numbers, because DevelopCanvas hands
+// over new rect / crop / forward objects on each of its renders.
+const outlineCache = new WeakMap<RetouchSpot, { sig: string; path: string }>();
+
+function viewSignature(rect: Rect, crop: CropRect, forward: Mat3): string {
+  const { x, y, w, h } = rect;
+  return [x, y, w, h, crop.x, crop.y, crop.width, crop.height, ...forward].join(",");
+}
+
 const HIT = 13; // px handle hit radius (generous grips)
 const ROT_OFFSET = 0.06; // rotate-handle gap beyond the ellipse top (q-units)
 const SNAP = Math.PI / 12; // 15° rotation snap
@@ -142,6 +162,21 @@ type DragKind =
   | "spot-src"
   | "retouch-paint";
 
+interface DragState {
+  kind: DragKind;
+  maskId?: string;
+  compId?: string;
+  id?: string; // retouch spot id
+  downSrc: { x: number; y: number };
+  lastDab?: { x: number; y: number };
+  dabs?: BrushDab[];
+  fromCenter?: boolean;
+}
+
+// Last pointer position over the overlay, frame-local layout px. Only the
+// cursor rings subscribe, so a hover move re-renders them and nothing else.
+type PointerStore = StoreApi<{ at: { x: number; y: number; alt: boolean } | null }>;
+
 export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }: MaskOverlayProps) {
   const activeTool = useDevelopStore((s) => s.activeTool);
   const maskToolType = useDevelopStore((s) => s.maskToolType);
@@ -150,15 +185,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
   const selectedMaskId = useDevelopStore((s) => s.selectedMaskId);
   const selectedComponentId = useDevelopStore((s) => s.selectedComponentId);
   const selectedSpotId = useDevelopStore((s) => s.selectedSpotId);
-  const brushErase = useDevelopStore((s) => s.brushErase);
-  const maskCompMode = useDevelopStore((s) => s.maskCompMode);
-  const brushSize = useDevelopStore((s) => s.brushSize);
-  const brushFeather = useDevelopStore((s) => s.brushFeather);
-  const brushPreview = useDevelopStore((s) => s.brushPreview);
-  const retouchSize = useDevelopStore((s) => s.retouchSize);
-  const retouchFeather = useDevelopStore((s) => s.retouchFeather);
 
-  const [cursor, setCursor] = useState<{ x: number; y: number; alt: boolean } | null>(null);
+  const [pointer] = useState<PointerStore>(() => createStore(() => ({ at: null })));
   const [hovered, setHovered] = useState<HandleId | null>(null);
 
   // --- coordinate transforms -------------------------------------------------
@@ -175,13 +203,8 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
     const oy = (py - rect.y) / rect.h;
     return mat3Apply(inv, crop.x + ox * crop.width, crop.y + oy * crop.height);
   };
-  const toScreen = (sx: number, sy: number) => {
-    const t = mat3Apply(forward, sx, sy);
-    const ox = (t.x - crop.x) / crop.width;
-    const oy = (t.y - crop.y) / crop.height;
-    return { x: rect.x + ox * rect.w, y: rect.y + oy * rect.h };
-  };
-  const radiusToScreen = (r: number) => (r / crop.height) * rect.h;
+  const toScreen = (sx: number, sy: number) => projectToScreen(rect, crop, forward, sx, sy);
+  const radiusToScreen = (r: number) => radiusOnScreen(rect, crop, r);
 
   // Screen-proportional ("q") space helpers: x scaled by aspect so rotation is
   // rigid. Used for the radial ellipse, its handles, and rotation math.
@@ -225,16 +248,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
     return "M" + pts.join("L") + "Z";
   };
 
-  const dragRef = useRef<{
-    kind: DragKind;
-    maskId?: string;
-    compId?: string;
-    id?: string; // retouch spot id
-    downSrc: { x: number; y: number };
-    lastDab?: { x: number; y: number };
-    dabs?: BrushDab[];
-    fromCenter?: boolean;
-  } | null>(null);
+  const dragRef = useRef<DragState | null>(null);
   // Last brush point, kept across strokes for Shift+click straight lines.
   const lastBrushPt = useRef<{ x: number; y: number } | null>(null);
 
@@ -520,7 +534,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
 
   const onPointerMove = (e: React.PointerEvent) => {
     const { x: px, y: py } = frameXY(e);
-    setCursor({ x: px, y: py, alt: e.altKey });
+    pointer.setState({ at: { x: px, y: py, alt: e.altKey } });
     const d = dragRef.current;
     if (!d) {
       // Hover feedback on the selected component's handles.
@@ -802,22 +816,6 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
   // centrally as rebindable shortcuts in use-keyboard-shortcuts.
 
   // --- rendering -------------------------------------------------------------
-  const showBrushCursor = activeTool === "mask" && maskToolType === "brush" && cursor;
-  const showSpotCursor = activeTool === "retouch" && cursor && !dragRef.current;
-  // Reactive so the cursor ring resizes the instant [ / ] change the size.
-  const brushPx = radiusToScreen(brushSize);
-  const spotPx = radiusToScreen(retouchSize);
-  const subErase = (cursor?.alt || brushErase) || maskCompMode === "subtract";
-  // Centre reference circle shown while a Size/Feather slider is dragged — for
-  // the mask brush or the heal brush (shared behaviour).
-  const showBrushRef =
-    brushPreview &&
-    ((activeTool === "mask" && maskToolType === "brush") || activeTool === "retouch");
-  const refRadiusPx = activeTool === "retouch" ? spotPx : brushPx;
-  const refFeather = activeTool === "retouch" ? retouchFeather / 100 : brushFeather;
-  const refCx = rect.x + rect.w / 2;
-  const refCy = rect.y + rect.h / 2;
-
   return (
     <div
       className="absolute inset-0"
@@ -825,7 +823,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerLeave={() => setCursor(null)}
+      onPointerLeave={() => pointer.setState({ at: null })}
     >
       <svg className="pointer-events-none absolute inset-0 h-full w-full">
         {/* Mask components — only while the masking tool is active. */}
@@ -885,75 +883,156 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
         )}
 
         {/* Retouch — only while the retouch tool is active. */}
-        {activeTool === "retouch" && spots.map((s) => {
-          const src = toScreen(s.srcX, s.srcY);
-          const dst = toScreen(s.dstX, s.dstY);
-          const r = radiusToScreen(s.radius);
-          const sel = s.id === selectedSpotId;
-          const col = "#e0e0e0";
-          if (s.shape === "brush" && s.dabs && s.dabs.length > 0) {
-            // One outline for the whole painted region; the source mirrors that
-            // exact shape, translated by the source offset (transform is affine).
-            const circles = s.dabs.map((db) => {
-              const c = toScreen(db.x, db.y);
-              return { x: c.x, y: c.y, r: radiusToScreen(db.radius) };
-            });
-            const outline = unionOutlinePath(circles);
-            const dx = src.x - dst.x, dy = src.y - dst.y;
-            return (
-              <g key={s.id}>
-                <line x1={src.x} y1={src.y} x2={dst.x} y2={dst.y} stroke={col} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
-                <path d={outline} fill="none" stroke={col} strokeWidth={1} strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" opacity={0.8} transform={`translate(${dx} ${dy})`} />
-                <path d={outline} fill="none" stroke={col} strokeWidth={sel ? 2 : 1.2} strokeLinecap="round" strokeLinejoin="round" />
-              </g>
-            );
-          }
-          return (
-            <g key={s.id}>
-              <line x1={src.x} y1={src.y} x2={dst.x} y2={dst.y} stroke={col} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
-              <circle cx={src.x} cy={src.y} r={r} fill="none" stroke={col} strokeWidth={1} strokeDasharray="2 2" />
-              <circle cx={dst.x} cy={dst.y} r={r} fill="none" stroke={col} strokeWidth={sel ? 2 : 1.2} />
-            </g>
-          );
-        })}
+        {activeTool === "retouch" && (
+          <RetouchOutlines
+            spots={spots}
+            selectedSpotId={selectedSpotId}
+            rect={rect}
+            crop={crop}
+            forward={forward}
+          />
+        )}
 
-        {/* Tool cursors */}
-        {showBrushCursor && (
-          <g>
-            <circle
-              cx={cursor!.x}
-              cy={cursor!.y}
-              r={Math.max(3, brushPx)}
-              fill="none"
-              stroke={subErase ? "#ff6b6b" : "#fff"}
-              strokeWidth={1.2}
-              strokeDasharray={subErase ? "4 3" : undefined}
-              opacity={0.9}
-            />
-            {/* Inner ring shows the feathered core. */}
-            <circle
-              cx={cursor!.x}
-              cy={cursor!.y}
-              r={Math.max(1, brushPx * (1 - brushFeather))}
-              fill="none"
-              stroke={subErase ? "#ff6b6b" : "#fff"}
-              strokeWidth={0.6}
-              opacity={0.4}
-            />
-          </g>
-        )}
-        {/* Centre reference while dragging the Size / Feather sliders. */}
-        {showBrushRef && (
-          <g opacity={0.8}>
-            <circle cx={refCx} cy={refCy} r={Math.max(3, refRadiusPx)} fill="none" stroke="#fff" strokeWidth={1.2} />
-            <circle cx={refCx} cy={refCy} r={Math.max(1, refRadiusPx * (1 - refFeather))} fill="none" stroke="#fff" strokeWidth={0.6} opacity={0.5} />
-          </g>
-        )}
-        {showSpotCursor && (
-          <circle cx={cursor!.x} cy={cursor!.y} r={Math.max(3, spotPx)} fill="none" stroke="#e0e0e0" strokeWidth={1} opacity={0.8} />
-        )}
+        <ToolCursors pointer={pointer} dragRef={dragRef} rect={rect} crop={crop} />
       </svg>
     </div>
+  );
+}
+
+interface RetouchOutlinesProps {
+  spots: RetouchSpot[];
+  selectedSpotId: string | null;
+  rect: Rect;
+  crop: CropRect;
+  forward: Mat3;
+}
+
+const RetouchOutlines = memo(function RetouchOutlines({
+  spots,
+  selectedSpotId,
+  rect,
+  crop,
+  forward,
+}: RetouchOutlinesProps) {
+  const toScreen = (sx: number, sy: number) => projectToScreen(rect, crop, forward, sx, sy);
+  const radiusToScreen = (r: number) => radiusOnScreen(rect, crop, r);
+  const sig = viewSignature(rect, crop, forward);
+  const brushOutline = (s: RetouchSpot, dabs: BrushDab[]) => {
+    const cached = outlineCache.get(s);
+    if (cached?.sig === sig) return cached.path;
+    const circles = dabs.map((db) => {
+      const c = toScreen(db.x, db.y);
+      return { x: c.x, y: c.y, r: radiusToScreen(db.radius) };
+    });
+    const path = unionOutlinePath(circles);
+    outlineCache.set(s, { sig, path });
+    return path;
+  };
+
+  return spots.map((s) => {
+    const src = toScreen(s.srcX, s.srcY);
+    const dst = toScreen(s.dstX, s.dstY);
+    const r = radiusToScreen(s.radius);
+    const sel = s.id === selectedSpotId;
+    const col = "#e0e0e0";
+    if (s.shape === "brush" && s.dabs && s.dabs.length > 0) {
+      // One outline for the whole painted region; the source mirrors that
+      // exact shape, translated by the source offset (transform is affine).
+      const outline = brushOutline(s, s.dabs);
+      const dx = src.x - dst.x, dy = src.y - dst.y;
+      return (
+        <g key={s.id}>
+          <line x1={src.x} y1={src.y} x2={dst.x} y2={dst.y} stroke={col} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+          <path d={outline} fill="none" stroke={col} strokeWidth={1} strokeDasharray="2 2" strokeLinecap="round" strokeLinejoin="round" opacity={0.8} transform={`translate(${dx} ${dy})`} />
+          <path d={outline} fill="none" stroke={col} strokeWidth={sel ? 2 : 1.2} strokeLinecap="round" strokeLinejoin="round" />
+        </g>
+      );
+    }
+    return (
+      <g key={s.id}>
+        <line x1={src.x} y1={src.y} x2={dst.x} y2={dst.y} stroke={col} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+        <circle cx={src.x} cy={src.y} r={r} fill="none" stroke={col} strokeWidth={1} strokeDasharray="2 2" />
+        <circle cx={dst.x} cy={dst.y} r={r} fill="none" stroke={col} strokeWidth={sel ? 2 : 1.2} />
+      </g>
+    );
+  });
+});
+
+interface ToolCursorsProps {
+  pointer: PointerStore;
+  dragRef: RefObject<DragState | null>;
+  rect: Rect;
+  crop: CropRect;
+}
+
+// Re-renders on every pointer move, so it holds only what follows the pointer
+// or is cheap to draw. Not memoised: a parent render must re-read `dragRef`,
+// which hides the heal ring once a stroke starts.
+function ToolCursors({ pointer, dragRef, rect, crop }: ToolCursorsProps) {
+  const at = useStore(pointer, (s) => s.at);
+  const activeTool = useDevelopStore((s) => s.activeTool);
+  const maskToolType = useDevelopStore((s) => s.maskToolType);
+  const brushErase = useDevelopStore((s) => s.brushErase);
+  const maskCompMode = useDevelopStore((s) => s.maskCompMode);
+  const brushSize = useDevelopStore((s) => s.brushSize);
+  const brushFeather = useDevelopStore((s) => s.brushFeather);
+  const brushPreview = useDevelopStore((s) => s.brushPreview);
+  const retouchSize = useDevelopStore((s) => s.retouchSize);
+  const retouchFeather = useDevelopStore((s) => s.retouchFeather);
+
+  const brushRing = activeTool === "mask" && maskToolType === "brush" ? at : null;
+  const spotRing = activeTool === "retouch" && !dragRef.current ? at : null;
+  // Reactive so the cursor ring resizes the instant [ / ] change the size.
+  const brushPx = radiusOnScreen(rect, crop, brushSize);
+  const spotPx = radiusOnScreen(rect, crop, retouchSize);
+  const subErase = (at?.alt || brushErase) || maskCompMode === "subtract";
+  // Centre reference circle shown while a Size/Feather slider is dragged — for
+  // the mask brush or the heal brush (shared behaviour).
+  const showBrushRef =
+    brushPreview &&
+    ((activeTool === "mask" && maskToolType === "brush") || activeTool === "retouch");
+  const refRadiusPx = activeTool === "retouch" ? spotPx : brushPx;
+  const refFeather = activeTool === "retouch" ? retouchFeather / 100 : brushFeather;
+  const refCx = rect.x + rect.w / 2;
+  const refCy = rect.y + rect.h / 2;
+
+  return (
+    <>
+      {brushRing && (
+        <g>
+          <circle
+            cx={brushRing.x}
+            cy={brushRing.y}
+            r={Math.max(3, brushPx)}
+            fill="none"
+            stroke={subErase ? "#ff6b6b" : "#fff"}
+            strokeWidth={1.2}
+            strokeDasharray={subErase ? "4 3" : undefined}
+            opacity={0.9}
+          />
+          {/* Inner ring shows the feathered core. */}
+          <circle
+            cx={brushRing.x}
+            cy={brushRing.y}
+            r={Math.max(1, brushPx * (1 - brushFeather))}
+            fill="none"
+            stroke={subErase ? "#ff6b6b" : "#fff"}
+            strokeWidth={0.6}
+            opacity={0.4}
+          />
+        </g>
+      )}
+      {/* Centre reference while dragging the Size / Feather sliders. */}
+      {showBrushRef && (
+        <g opacity={0.8}>
+          <circle cx={refCx} cy={refCy} r={Math.max(3, refRadiusPx)} fill="none" stroke="#fff" strokeWidth={1.2} />
+          <circle cx={refCx} cy={refCy} r={Math.max(1, refRadiusPx * (1 - refFeather))} fill="none" stroke="#fff" strokeWidth={0.6} opacity={0.5} />
+        </g>
+      )}
+      {spotRing && (
+        <circle cx={spotRing.x} cy={spotRing.y} r={Math.max(3, spotPx)} fill="none" stroke="#e0e0e0" strokeWidth={1} opacity={0.8} />
+      )}
+    </>
   );
 }
 

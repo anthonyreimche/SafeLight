@@ -16,6 +16,7 @@ import {
   type RecentProject,
 } from "@/project/recent";
 import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
+import { openSetup } from "./setup/setup-store";
 
 function timeAgo(ts: number): string {
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -84,14 +85,23 @@ export function WelcomeView() {
           </span>
           <span className="text-xs text-text-muted">Recent projects</span>
         </div>
-        <button
-          onClick={() => void openProjectPicker()}
-          disabled={opening}
-          style={noDragStyle}
-          className="rounded bg-slider-fill px-4 py-1.5 text-xs font-medium text-white hover:bg-surface-4 disabled:opacity-60"
-        >
-          Open Folder…
-        </button>
+        <div className="flex items-center gap-2" style={noDragStyle}>
+          {window.safelightNative && (
+            <button
+              onClick={() => openSetup("rerun")}
+              className="rounded px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-3 hover:text-text-primary"
+            >
+              Welcome setup
+            </button>
+          )}
+          <button
+            onClick={() => void openProjectPicker()}
+            disabled={opening}
+            className="rounded bg-slider-fill px-4 py-1.5 text-xs font-medium text-white hover:bg-surface-4 disabled:opacity-60"
+          >
+            Open Folder…
+          </button>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-10">

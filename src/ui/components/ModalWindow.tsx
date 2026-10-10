@@ -12,10 +12,7 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { getSettings, useSettings } from "@/state/settings-store";
-
-// What counts as a tab stop inside the dialog, for the focus trap.
-const FOCUSABLE =
-  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+import { trapTab } from "@/ui/focus-trap";
 
 interface ModalWindowProps {
   title: string;
@@ -84,25 +81,7 @@ export function ModalWindow({ title, onClose, titlebar, boxClassName, children }
     if (box && !box.contains(document.activeElement)) box.focus();
     return () => prev?.focus?.();
   }, []);
-  const onBoxKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key !== "Tab") return;
-    const box = boxRef.current;
-    if (!box) return;
-    const items = Array.from(
-      box.querySelectorAll<HTMLElement>(FOCUSABLE),
-    ).filter((el) => el.getClientRects().length > 0);
-    if (items.length === 0) return;
-    const first = items[0];
-    const last = items[items.length - 1];
-    const active = document.activeElement;
-    if (e.shiftKey && (active === first || active === box)) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && active === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
+  const onBoxKeyDown = (e: React.KeyboardEvent) => trapTab(e, boxRef.current);
 
   return (
     <div

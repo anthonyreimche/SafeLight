@@ -23,6 +23,11 @@ import { LibraryView } from "@/modules/library/LibraryView";
 import { DevelopView } from "@/modules/develop/DevelopView";
 import { ModuleView } from "@/ui/components/ModuleView";
 import { WelcomeView } from "@/modules/welcome/WelcomeView";
+import { SetupFlow } from "@/modules/welcome/setup/SetupFlow";
+import {
+  initFirstRun,
+  useSetupStore,
+} from "@/modules/welcome/setup/setup-store";
 import { UpdateBanner } from "@/update/UpdateBanner";
 import { StorageBanner } from "@/ui/components/StorageBanner";
 import { ExtensionSecurityBanner } from "@/extensions/ExtensionSecurityBanner";
@@ -44,6 +49,7 @@ export function App() {
   const loadCatalog = useCatalogStore((s) => s.loadCatalog);
   const root = useProjectStore((s) => s.root);
   const opening = useProjectStore((s) => s.opening);
+  const setupPhase = useSetupStore((s) => s.phase);
 
   useKeyboardShortcuts();
   useWindowSync();
@@ -70,6 +76,14 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Main window only: decide whether the welcome setup opens by itself. Detached
+  // windows share localStorage and must never decide or show it.
+  useEffect(() => {
+    if (dm || devtoolsWindow) return;
+    void initFirstRun();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // The Developer Tools window renders only the panel — no module, no project.
   if (devtoolsWindow) return <DevToolsWindow />;
 
@@ -81,6 +95,7 @@ export function App() {
         <ExtensionsDialog />
         <ConfirmDialogHost />
         <ExtensionSecurityBanner />
+        <StorageBanner />
         <UpdateBanner />
       </>
     );
@@ -96,10 +111,12 @@ export function App() {
             </p>
           </div>
         </AppShell>
+        <SetupFlow />
         <PreferencesDialog />
         <ExtensionsDialog />
         <ConfirmDialogHost />
         <ExtensionSecurityBanner />
+        <StorageBanner />
         <UpdateBanner />
       </>
     );
@@ -109,7 +126,15 @@ export function App() {
   if (!root && !opening) {
     return (
       <>
-        <WelcomeView />
+        {/* A plain fill while the first-run decision is pending (only on a
+            launch with no setup record), so the grid doesn't flash before
+            setup covers it. */}
+        {setupPhase === "checking" ? (
+          <div className="h-full bg-surface-0" />
+        ) : (
+          <WelcomeView />
+        )}
+        <SetupFlow />
         <PreferencesDialog />
         <ExtensionsDialog />
         <ConfirmDialogHost />
@@ -123,6 +148,7 @@ export function App() {
   return (
     <>
       {renderModule(activeModule)}
+      <SetupFlow />
       <PreferencesDialog />
       <ExtensionsDialog />
       <ConfirmDialogHost />

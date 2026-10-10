@@ -10,26 +10,92 @@
 // for its highlight mode; both are undone here. Runs in libraw's Web Worker
 // off the main thread.
 //
+// libraw clips its integer output to the gamut it renders into, which in sRGB
+// cuts away every colour outside the sRGB primaries (saturated flowers, LEDs,
+// deep cyans) and shifts its hue. So the decode asks for ACES instead, whose
+// AP0 primaries enclose every visible colour, and rotates to linear sRGB in
+// float, where those colours keep their negative channels. A camera matrix can
+// still produce colours outside AP0, and libraw clips those at 0.
+//
 // Requires the page to be cross-origin isolated (COOP/COEP) for libraw's shared
-// memory — see vite.config.ts. If anything is unavailable, returns null and the
-// caller falls back to the in-house decoder / embedded preview. It logs the
-// reason so a silent fallback can be diagnosed.
+// memory — see vite.config.ts. Without an image it answers why (DecodeFailure)
+// and the caller falls back to the in-house decoder / embedded preview. It logs
+// the reason so a silent fallback can be diagnosed. A photo it calls
+// unsupported is remembered under raw-cache.ts's DECODER_ID: bump that with the
+// vendored LibRaw or with any change to what counts as unsupported here.
 
 import { kelvinFromWhiteBalanceGains } from "@/rendering/blackbody";
-import type { RawFloatImage } from "./decode";
-import { acquireInstance, releaseInstance } from "./decode-pool";
+import type { DecodeFailure, RawFloatImage } from "./decode";
+import {
+  acquireInstance,
+  discardInstance,
+  releaseInstance,
+  type DecodeRequest,
+  type LibRawInstance,
+} from "./decode-pool";
 
-// Why the most recent attempt did (not) use libraw — surfaced in the UI.
-export let lastLibRawStatus = "not attempted";
+interface Watched {
+  /** Awaits a call on the instance; it fails once the time limit is up. */
+  call<R>(pending: Promise<R>): Promise<R>;
+  /** Lengthens the limit, counted from the start, to `limitMs`; never shortens it. */
+  extendTo(limitMs: number): void;
+  /** Milliseconds since the instance was lent. */
+  elapsed(): number;
+  /** Hands the instance back: released if every call answered, else discarded. */
+  done(): void;
+}
+
+/** A call still out when the decode's time limit ran down. */
+class NoAnswer extends Error {}
+
+// Every call awaited on a pooled instance goes through here. One that rejects
+// (a trap or an abort leaves the module unusable) or that is still out when
+// the limit runs down (the worker will never answer) breaks the instance, and
+// the pool replaces it. A late answer to a call given up on goes nowhere.
+function watch(raw: LibRawInstance, limitMs: number): Watched {
+  const started = Date.now();
+  let limit = limitMs;
+  let broken = false;
+  let expire = (): void => {};
+  const expired = new Promise<never>((_, reject) => {
+    expire = () => reject(new NoAnswer(`no answer within ${Math.round(limit / 1000)} s`));
+  });
+  expired.catch(() => {});
+  let timer = setTimeout(expire, limit);
+  return {
+    call<R>(pending: Promise<R>): Promise<R> {
+      return Promise.race([pending, expired]).catch((e: unknown) => {
+        broken = true;
+        throw e;
+      });
+    },
+    extendTo(limitMs: number): void {
+      if (limitMs <= limit) return;
+      limit = limitMs;
+      clearTimeout(timer);
+      timer = setTimeout(expire, Math.max(0, started + limit - Date.now()));
+    },
+    elapsed(): number {
+      return Date.now() - started;
+    },
+    done(): void {
+      clearTimeout(timer);
+      if (broken) discardInstance(raw);
+      else releaseInstance(raw);
+    },
+  };
+}
 
 const num = (v: unknown): number =>
   typeof v === "number" && isFinite(v) ? v : 0;
 
 // As-shot Kelvin from libraw's camera WB multipliers (imgdata.color.cam_mul[]).
-// This build of libraw-wasm exposes no camera colour matrix (color_data carries
-// cam_mul / pre_mul only, no cam_xyz or rgb_cam), so the multipliers can only be
-// matched against the blackbody curve — a ratio fit that ignores the camera's
-// primaries. DNGs take the exact colour-matrix route in catalog/exif.ts instead.
+// This build of libraw-wasm exposes none of libraw's camera colour matrices
+// (color_data carries the black and maximum levels, cam_mul / pre_mul and a few
+// model and ID fields, but no cam_xyz, rgb_cam, cmatrix or ccm), so the
+// multipliers can only be matched against the blackbody curve — a ratio fit that
+// ignores the camera's primaries. DNGs take the exact colour-matrix route in
+// catalog/exif.ts instead.
 function kelvinFromCamMul(colorData: unknown): number | undefined {
   if (typeof colorData !== "object" || colorData === null) return undefined;
   const camMul: unknown = (colorData as Record<string, unknown>).cam_mul;
@@ -89,6 +155,28 @@ function dcrawInverseTransfer(power: number, toeSlope: number): Float32Array {
 
 const LINEAR_OF_CODE = dcrawInverseTransfer(0.45, 4.5);
 
+// Row-major 3×3 inverse by cofactors.
+function invert3(m: readonly number[]): number[] {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const c0 = e * i - f * h;
+  const c1 = f * g - d * i;
+  const c2 = d * h - e * g;
+  const s = 1 / (a * c0 + b * c1 + c * c2);
+  return [
+    c0 * s, (c * h - b * i) * s, (b * f - c * e) * s,
+    c1 * s, (a * i - c * g) * s, (c * d - a * f) * s,
+    c2 * s, (b * g - a * h) * s, (a * e - b * d) * s,
+  ];
+}
+
+// Linear sRGB -> ACES AP0 (D65): aces_rgb, LibRaw 0.22 tables/colorconst.cpp.
+const ACES_FROM_SRGB = [
+  0.43968015, 0.38295299, 0.17736686,
+  0.08978964, 0.81343316, 0.09677734,
+  0.01754827, 0.11156156, 0.87089017,
+];
+const SRGB_FROM_ACES = invert3(ACES_FROM_SRGB);
+
 // EV by which the sensor was exposed under the tagged ISO, or 0. Fujifilm's DR
 // modes buy highlight room that way and let the camera JPEG push it back; the
 // RAF records the amount as RawExposureBias (tag 0x9650: -0.72 at DR100, -1.72
@@ -125,22 +213,48 @@ function frameOf(meta: Record<string, unknown>): RawMetadata["frame"] {
   return width > 0 && height > 0 ? { width, height } : undefined;
 }
 
+/**
+ * How long libraw may take over one file before its instance counts as hung: a
+ * minute, plus 20 s for every 25 MB. A full decode takes 3–10 s here (see the
+ * develop-preview cache's figures); unpacking and demosaicing scale with the
+ * file, and three decodes may share a slow CPU. The limit is several times the
+ * worst of that, so only a worker that will never answer reaches it.
+ */
+export function decodeTimeLimit(byteLength: number): number {
+  return 60_000 + 20_000 * (byteLength / 25_000_000);
+}
+
+/**
+ * The same limit by the frame metadata() reports: a minute, plus 2 s per
+ * megapixel, so a 61 MP frame gets three. Demosaicing scales with pixels, and a
+ * lossy file can be small for its pixel count. open() only reads the header and
+ * the unpack waits for imageData(), so this can still lengthen the limit for
+ * the heavy part; it never shortens it. It stops at five minutes: the frame is
+ * the header's word, and a broken one can claim any size.
+ */
+export function decodeTimeLimitForFrame(width: number, height: number): number {
+  return Math.min(300_000, 60_000 + 2_000 * ((width * height) / 1_000_000));
+}
+
 // Lightweight metadata-only extraction: open the RAW, read its frame size and
 // color_data.cam_mul, and close — no pixel decode. Fast enough for import time.
 export async function extractRawMetadata(
   buffer: ArrayBuffer,
+  request?: DecodeRequest,
 ): Promise<RawMetadata | undefined> {
   if (typeof Worker === "undefined" || typeof SharedArrayBuffer === "undefined") return undefined;
   if (buffer.byteLength < 1024 * 1024) return undefined;
 
-  const raw = await acquireInstance();
+  const raw = await acquireInstance(request);
   if (!raw) return undefined;
 
+  const watched = watch(raw, decodeTimeLimit(buffer.byteLength));
   try {
     // open() transfers the passed buffer to libraw's worker (detaching it), so
     // hand it a copy — the caller keeps its ArrayBuffer for the fallback path.
-    await raw.open(new Uint8Array(buffer.slice(0)), { useCameraWb: true });
-    const meta = await raw.metadata(true);
+    await watched.call(raw.open(new Uint8Array(buffer.slice(0)), { useCameraWb: true }));
+    const meta = await watched.call(raw.metadata(true));
+    if (!meta) return undefined;
     return {
       colorTemperature: kelvinFromCamMul(meta.color_data),
       frame: frameOf(meta),
@@ -149,52 +263,58 @@ export async function extractRawMetadata(
   } catch {
     return undefined;
   } finally {
-    releaseInstance(raw);
+    watched.done();
   }
 }
 
 export async function decodeRawFloatViaLibRaw(
   buffer: ArrayBuffer,
-): Promise<RawFloatImage | null> {
+  request?: DecodeRequest,
+): Promise<RawFloatImage | DecodeFailure> {
   if (typeof Worker === "undefined") {
-    lastLibRawStatus = "no Worker support";
-    console.warn("[libraw]", lastLibRawStatus);
-    return null;
+    const reason = "no Worker support";
+    console.warn("[libraw]", reason);
+    return { failure: "transient", reason };
   }
   // What libraw actually needs is SharedArrayBuffer. On http(s) that means
   // cross-origin isolation (COOP/COEP); in Electron the app:// scheme can't
   // become crossOriginIsolated, so SAB is re-enabled via a feature flag
   // instead and crossOriginIsolated stays false. Gate on SAB itself.
   if (typeof SharedArrayBuffer === "undefined") {
-    lastLibRawStatus = globalThis.crossOriginIsolated
+    const reason = globalThis.crossOriginIsolated
       ? "no SharedArrayBuffer support"
       : "no SharedArrayBuffer (not cross-origin isolated — restart dev server for COOP/COEP)";
-    console.warn("[libraw]", lastLibRawStatus);
-    return null;
+    console.warn("[libraw]", reason);
+    return { failure: "transient", reason };
   }
   
   // Sanity floor only — reject obviously-truncated/empty files, but keep small
   // legacy RAWs (old Canon CRW, Kodak KDC, some Hasselblad 3FR) which are well
   // under 1 MB yet decode fine. A 64 KB floor still catches corrupt stubs.
   if (buffer.byteLength < 64 * 1024) {
-    lastLibRawStatus = `file too small (${buffer.byteLength} bytes)`;
-    console.warn("[libraw]", lastLibRawStatus);
-    return null;
-  }
-  
-  const raw = await acquireInstance();
-  if (!raw) {
-    lastLibRawStatus = "decode pool unavailable";
-    return null;
+    const reason = `file too small (${buffer.byteLength} bytes)`;
+    console.warn("[libraw]", reason);
+    return { failure: "unsupported", reason };
   }
 
+  const raw = await acquireInstance(request);
+  if (!raw) {
+    // An abandoned request is no failure: nobody is waiting to learn why.
+    if (request?.signal?.aborted) return { failure: "aborted" };
+    return { failure: "transient", reason: "decode pool unavailable" };
+  }
+
+  const watched = watch(raw, decodeTimeLimit(buffer.byteLength));
   try {
     // open() transfers the passed buffer to libraw's worker (detaching it), so
     // hand it a copy — the caller keeps its ArrayBuffer for the fallback path.
-    await raw.open(new Uint8Array(buffer.slice(0)), {
+    await watched.call(raw.open(new Uint8Array(buffer.slice(0)), {
       outputBps: 16,
       useCameraWb: true,
-      outputColor: 1,
+      // ACES (LibRaw -o 6), not sRGB: libraw clips its output at 0, and the
+      // ACES primaries enclose every visible colour (see the header).
+      // SRGB_FROM_ACES rotates the samples to linear sRGB below.
+      outputColor: 6,
       // No `gamm`: the wrapper ignores it and always encodes Rec.709 (see
       // LINEAR_OF_CODE), which is linearised below.
       // No content-driven auto-brighten: it scaled each image so ~1% of pixels
@@ -208,15 +328,17 @@ export async function decodeRawFloatViaLibRaw(
       // Any mode but 0 also lowers the white point (see highlightModeScale).
       highlight: 2,
       noAutoScale: false,
-    });
-    const meta = await raw.metadata(true);
-    const px: unknown = await raw.imageData();
+    }));
+    const meta = (await watched.call(raw.metadata(true))) ?? {};
+    const frame = frameOf(meta);
+    if (frame) watched.extendTo(decodeTimeLimitForFrame(frame.width, frame.height));
+    const px: unknown = await watched.call(raw.imageData());
 
     // imageData() may return undefined on WASM errors even if metadata succeeded
     if (!px) {
-      lastLibRawStatus = "imageData returned undefined (WASM error)";
-      console.warn("[libraw]", lastLibRawStatus, "metadata =", meta);
-      return null;
+      const reason = "imageData returned undefined (WASM error)";
+      console.warn("[libraw]", reason, "metadata =", meta);
+      return { failure: "unsupported", reason };
     }
 
     // imageData may be a bare typed array of pixels or an object carrying dims.
@@ -243,9 +365,9 @@ export async function decodeRawFloatViaLibRaw(
     }
 
     if (width < 2 || height < 2 || !pixels || !("length" in pixels)) {
-      lastLibRawStatus = "decoded but missing dimensions";
+      const reason = "decoded but missing dimensions";
       console.warn("[libraw] missing dims; metadata =", meta, "px =", px);
-      return null;
+      return { failure: "unsupported", reason };
     }
 
     // Detect the per-pixel channel stride before the pixel-count check so we
@@ -279,9 +401,9 @@ export async function decodeRawFloatViaLibRaw(
       }
     }
     if (stride === 0) {
-      lastLibRawStatus = `pixel/size mismatch (${pixels.length} for ${width}x${height})`;
-      console.warn("[libraw]", lastLibRawStatus);
-      return null;
+      const reason = `pixel/size mismatch (${pixels.length} for ${width}x${height})`;
+      console.warn("[libraw]", reason);
+      return { failure: "unsupported", reason };
     }
 
     const n = width * height;
@@ -290,14 +412,19 @@ export async function decodeRawFloatViaLibRaw(
     const gain = scale * 2 ** -bias;
     // 8-bit codes index the 16-bit table at its matching level (255 -> 65535).
     const step = pixels instanceof Uint16Array ? 1 : 257;
+    const [m0, m1, m2, m3, m4, m5, m6, m7, m8] = SRGB_FROM_ACES;
     const data = new Float32Array(n * 4);
     for (let i = 0, o = 0, s = 0; i < n; i++, o += 4, s += stride) {
-      const r = LINEAR_OF_CODE[pixels[s] * step] * gain;
-      const g = stride >= 3 ? LINEAR_OF_CODE[pixels[s + 1] * step] * gain : r;
-      const b = stride >= 3 ? LINEAR_OF_CODE[pixels[s + 2] * step] * gain : r;
-      data[o] = r;
-      data[o + 1] = g;
-      data[o + 2] = b;
+      const r = LINEAR_OF_CODE[pixels[s] * step];
+      if (stride >= 3) {
+        const g = LINEAR_OF_CODE[pixels[s + 1] * step];
+        const b = LINEAR_OF_CODE[pixels[s + 2] * step];
+        data[o] = (m0 * r + m1 * g + m2 * b) * gain;
+        data[o + 1] = (m3 * r + m4 * g + m5 * b) * gain;
+        data[o + 2] = (m6 * r + m7 * g + m8 * b) * gain;
+      } else {
+        data[o] = data[o + 1] = data[o + 2] = r * gain;
+      }
       data[o + 3] = 1;
     }
 
@@ -323,19 +450,20 @@ export async function decodeRawFloatViaLibRaw(
       const isFoveon = num((meta as Record<string, unknown>).is_foveon) > 0;
       // Blown + colour imbalance > 0.3 across channels = bad decode.
       if (!isFoveon && meanLum > 0.80 && (maxCh - minCh) > 0.30) {
-        lastLibRawStatus = `rejected: blown+imbalanced R=${mR.toFixed(2)} G=${mG.toFixed(2)} B=${mB.toFixed(2)}`;
-        console.warn("[libraw]", lastLibRawStatus);
-        return null;
+        const reason = `rejected: blown+imbalanced R=${mR.toFixed(2)} G=${mG.toFixed(2)} B=${mB.toFixed(2)}`;
+        console.warn("[libraw]", reason);
+        return { failure: "unsupported", reason };
       }
     }
 
     const colorTemperature = kelvinFromCamMul(meta.color_data);
 
-    lastLibRawStatus =
+    const status =
       `libraw ${pixels instanceof Uint16Array ? 16 : 8}-bit ${stride}ch ${width}×${height}` +
       ` ×${scale.toFixed(2)} white point` +
       (bias ? `, ${(-bias).toFixed(2)} EV exposure bias` : "");
-    console.log("[libraw] decoded", lastLibRawStatus);
+    const seconds = (watched.elapsed() / 1000).toFixed(1);
+    console.log("[libraw] decoded", status, `in ${seconds} s`);
     return {
       data,
       width,
@@ -345,10 +473,16 @@ export async function decodeRawFloatViaLibRaw(
       rawExposureBias: bias || undefined,
     };
   } catch (e) {
-    lastLibRawStatus = `decode error: ${e instanceof Error ? e.message : String(e)}`;
+    const reason = `decode error: ${e instanceof Error ? e.message : String(e)}`;
     console.warn("[libraw] decode failed", e);
-    return null;
+    // Nothing here blames the file. LibRaw's own errors come back as an
+    // undefined image (above). What throws is a worker error with a message
+    // (a trap or an abort, possibly a one-off), a call that outlived the time
+    // limit, or this page running out of memory for the copy or the float frame.
+    const failure: DecodeFailure = { failure: "transient", reason };
+    if (e instanceof NoAnswer) failure.timedOut = true;
+    return failure;
   } finally {
-    releaseInstance(raw);
+    watched.done();
   }
 }

@@ -15,7 +15,16 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { preDecodeRawsForCache, repairMissingPreviews } from "@/modules/library/import-photos";
 import { setRawCacheDir } from "@/raw/raw-cache";
-import { ProjectStorage } from "./project-storage";
+import { warmDecodePool } from "@/raw/decode-pool";
+import { detachedModule } from "@/state/detach";
+import {
+  ProjectStorage,
+  flushLeftCopies,
+  onSaveStatus,
+  type CatalogRecovery,
+} from "./project-storage";
+import { CatalogDamagedError, CatalogTooNewError, CatalogUnreadableError } from "./catalog-errors";
+import { shouldWarmDecodePool } from "./warm-decode";
 import { ReadOnlyProjectError } from "./working-dir";
 import { getSettings } from "@/state/settings-store";
 import {
@@ -34,10 +43,12 @@ import {
 } from "@/state/thumbnail-loader";
 
 // Best-effort flush of the debounced catalog on quit, so the last edits/imports
-// in the final save window aren't lost (incremental saves cover the rest).
+// in the final save window aren't lost (incremental saves cover the rest). The
+// catalogs this window left go first, so the open one's write is asked for last.
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
-    void catalogStorage().flush?.();
+    flushLeftCopies();
+    void catalogStorage().flush?.({ unloading: true });
   });
 }
 
@@ -51,14 +62,83 @@ function onIdle(fn: () => void): void {
   else setTimeout(fn, 200);
 }
 
+// Spin up the libraw decoder pool at idle, only in a window that decodes RAWs.
+// Resolves once it is ready (immediately where it is not wanted), because the
+// "Cache all" pre-decode sizes its concurrency from the warmed pool. A failed
+// warm-up resolves too: decoding then runs on the pool's fallback size.
+function warmDecoding(): Promise<void> {
+  if (!shouldWarmDecodePool(detachedModule())) return Promise.resolve();
+  return new Promise((resolve) => {
+    onIdle(() => void warmDecodePool().then(resolve, resolve));
+  });
+}
+
 // Module-level abort controller for the current import, so stopImport() can
 // cancel the expensive decode loop without touching Zustand (AbortController is
 // mutable and shouldn't trigger re-renders).
 let importAbort: AbortController | null = null;
 
+// The open project's background passes (preview repair, Cache all pre-decode):
+// stopped as the next project starts opening or this one closes, so they read,
+// decode and write nothing more for a project the user has left.
+let passesAbort: AbortController | null = null;
+
+/** The open project's passes signal, for background work the user starts on it
+ *  (Cache all now, Rebuild previews, Reimport): it aborts as the next project
+ *  starts opening or this one closes. Undefined with no project open. */
+export function projectPassSignal(): AbortSignal | undefined {
+  return passesAbort?.signal;
+}
+
 // Generation counter — bumped on each openProject / closeProject so that an
 // in-flight open whose generation no longer matches skips its finalization.
 let openGen = 0;
+
+// The save of the catalog the window last left. The next open waits for it to
+// settle before reading catalog.json, as reopening that folder must find the save
+// there; a failed save holds up no open.
+let leftCatalogSaved: Promise<void> = Promise.resolve();
+
+/** The name of the project each catalog the window left belonged to. */
+const leftProjects = new WeakMap<object, string>();
+
+/** Leave the installed catalog: save what it holds, and close it (setCatalogStorage)
+ *  so it takes no more changes. */
+function leaveCatalog(): void {
+  const storage = catalogStorage();
+  leftProjects.set(storage, useProjectStore.getState().name);
+  const saving = storage.flush?.();
+  if (saving) leftCatalogSaved = saving.catch(() => {});
+  setCatalogStorage(null);
+}
+
+let hearingSaves = false;
+
+/** Show why the open project's catalog saves fail (saveError). A catalog the window
+ *  has left keeps saving for a while, unshown, and only tells this window if it
+ *  gives up (storageNotice). Started by the first open, not as this module loads:
+ *  project-storage reaches this module through its own imports, so it may not
+ *  have loaded yet. */
+function hearSaves(): void {
+  if (hearingSaves) return;
+  hearingSaves = true;
+  onSaveStatus((status, storage) => {
+    if (storage !== catalogStorage()) {
+      const name = leftProjects.get(storage);
+      if (!status.ok && status.gaveUp && name)
+        useProjectStore.setState({
+          storageNotice:
+            `Safelight couldn't save your last changes to “${name}” after you left it ` +
+            `(${status.reason}). If “${name}” is open in another Safelight window, that ` +
+            `window saves them.`,
+        });
+      return;
+    }
+    useProjectStore.setState({
+      saveError: status.ok ? null : `Couldn't save the catalog: ${status.reason}`,
+    });
+  });
+}
 
 // Per-project persistence of the selected library folder, so a folder filter
 // (and its non-recursive scope) survives an app restart — openProject runs on
@@ -109,8 +189,36 @@ function describeOpenError(e: unknown, folderName: string): string {
       `open a writeable copy of the folder.`
     );
   }
+  if (e instanceof CatalogUnreadableError)
+    return (
+      `Couldn't open “${folderName}”: its catalog can't be read right now (${e.reason}). ` +
+      `A sync or antivirus program may be using it. Nothing was changed. Try again in a moment.`
+    );
+  if (e instanceof CatalogDamagedError)
+    return (
+      `Couldn't open “${folderName}”: its catalog is damaged and Safelight couldn't keep ` +
+      `a copy of it (${e.reason}). Nothing was changed.`
+    );
+  if (e instanceof CatalogTooNewError)
+    return (
+      `“${folderName}” was saved by a newer version of Safelight. Update Safelight to ` +
+      `open it. Nothing was changed.`
+    );
   const msg = e instanceof Error ? e.message : String(e);
   return `Couldn't open “${folderName}”: ${msg}`;
+}
+
+/** Tell the user how a catalog that couldn't be used as saved was recovered. */
+function describeRecovery(recovered: CatalogRecovery, folderName: string): string {
+  const how =
+    recovered.from === "backup"
+      ? `The catalog of “${folderName}” couldn't be used, so Safelight restored it from ` +
+        `its backup. Changes made since that backup may be missing.`
+      : `The catalog of “${folderName}” couldn't be used and had no usable backup, so ` +
+        `Safelight imported the folder again. Earlier ratings and edits could not be ` +
+        `recovered.`;
+  if (!recovered.kept) return how;
+  return `${how} The damaged file was kept next to the catalog as ${recovered.kept}.`;
 }
 
 interface ProjectState {
@@ -125,9 +233,15 @@ interface ProjectState {
   /** Blocking message shown when opening a folder failed (e.g. it's read-only
    *  and no writeable catalog location could be established). null = no error. */
   openError: string | null;
+  /** Whether openError is about a folder Safelight can't write to, which a
+   *  separate catalog location in Preferences can fix. */
+  openErrorReadOnly: boolean;
   /** Non-blocking notice shown when a read-only folder's catalog was redirected
    *  to a writeable location, so the user knows where their data lives. */
   storageNotice: string | null;
+  /** Why the open project's last catalog save failed, while its saves keep
+   *  failing (the storage tries again by itself). null = the last save landed. */
+  saveError: string | null;
   /** Dismiss the current open error / storage notice banners. */
   dismissOpenError: () => void;
   dismissStorageNotice: () => void;
@@ -161,7 +275,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   importDone: 0,
   importTotal: 0,
   openError: null,
+  openErrorReadOnly: false,
   storageNotice: null,
+  saveError: null,
   dismissOpenError: () => set({ openError: null }),
   dismissStorageNotice: () => set({ storageNotice: null }),
 
@@ -187,11 +303,29 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   async openProject(handle) {
+    hearSaves();
     if (get().opening) return;
+    // The project being left is saved and takes no more changes. Until the new
+    // one's catalog is read, a change has no catalog to go into.
+    leaveCatalog();
     const gen = ++openGen;
     importAbort = new AbortController();
     const signal = importAbort.signal;
-    set({ opening: true, importDone: 0, importTotal: 0, openError: null, storageNotice: null });
+    passesAbort?.abort();
+    passesAbort = new AbortController();
+    const passes = passesAbort.signal;
+    // The tree goes with the project: folder actions resolve its paths against
+    // the root, which the new project takes once its catalog is read.
+    set({
+      opening: true,
+      importDone: 0,
+      importTotal: 0,
+      openError: null,
+      openErrorReadOnly: false,
+      storageNotice: null,
+      saveError: null,
+      tree: null,
+    });
     // Clear the old catalog immediately so the grid shows photos as they arrive
     // rather than showing the previous folder until the new one is fully loaded.
     useCatalogStore.getState().replaceCatalog([]);
@@ -202,6 +336,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const restoredFolder = restoreActiveFolder(activeProjectKey);
     lastPersistedFolder = restoredFolder;
     useUIStore.getState().setActiveFolder(restoredFolder);
+    // Started when this project's storage is installed, once its catalog is read
+    // (onSkeletons).
+    let decoderWarm: Promise<void> | null = null;
+    const warmOnce = () => (decoderWarm ??= warmDecoding());
     try {
       // Buffer streamed (newly-decoded) photos and flush once per frame, so a
       // large import appends in a few batches instead of one re-render per photo.
@@ -234,8 +372,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         });
       };
 
-      // Phase 1 — paint the grid from the saved catalog the instant it's read,
-      // before the disk scan, so skeletons appear with the UI rather than after.
+      // Phase 1 — the instant the catalog is read, before the disk scan: install
+      // this project's storage, a first import's too, so every change from now on
+      // is stored in it, and paint the grid from the saved photos, so skeletons
+      // appear with the UI rather than after.
       let painted = false;
       const onSkeletons = (
         storage: ProjectStorage,
@@ -243,15 +383,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         skeletons: CatalogPhoto[],
       ) => {
         if (gen !== openGen) return;
-        painted = true;
+        painted = skeletons.length > 0;
         setRawCacheDir(rawCacheDir);
         setCatalogStorage(storage);
         set({ root: handle, name: handle.name });
         const thumbGen = setThumbnailLoader((id) => storage.readPreview(id));
-        useCatalogStore.getState().finalizeCatalog(skeletons);
-        kickThumbnails(skeletons, thumbGen);
+        if (painted) {
+          useCatalogStore.getState().finalizeCatalog(skeletons);
+          kickThumbnails(skeletons, thumbGen);
+        }
+        warmOnce();
       };
 
+      await leftCatalogSaved;
       const opened = await ProjectStorage.open(
         handle,
         (photo) => {
@@ -270,12 +414,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       );
       if (gen !== openGen) {
         buf = []; // discard any stragglers if cancelled
+        opened.storage.close(); // no window shows it, so it stops following the others
         return;
       }
       flush(); // drain any photos buffered since the last frame
-      setRawCacheDir(opened.rawCacheDir);
-      setCatalogStorage(opened.storage);
-      set({ root: handle, name: handle.name, tree: opened.tree });
+      // The storage, raw cache and name went in once the catalog was read
+      // (onSkeletons); the folder tree is known only now.
+      set({ tree: opened.tree });
+      const notices: string[] = [];
+      if (opened.recovered) notices.push(describeRecovery(opened.recovered, handle.name));
       // The catalog/previews/cache landed in a separate location (a read-only
       // source can't host its own .safelight). Tell the user where their data
       // lives. In explicit "external" mode this is expected, so stay quiet there.
@@ -283,23 +430,24 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         opened.storageLocation === "external" &&
         getSettings().catalogLocation !== "external"
       ) {
-        set({
-          storageNotice:
-            `“${handle.name}” can't store its Safelight catalog in the folder ` +
+        notices.push(
+          `“${handle.name}” can't store its Safelight catalog in the folder ` +
             `itself, so its catalog, previews and cache are kept at ` +
             `${opened.externalPath}. Edits and ratings are saved there.`,
-        });
+        );
       } else if (opened.promotedFromExternal) {
         // The folder is writeable again; edits made while it was read-only have
         // been folded back into its in-folder catalog and the separate copy
-        // retired. The pre-merge catalog is kept as a one-time backup.
-        set({
-          storageNotice:
-            `Edits you made to “${handle.name}” while it was read-only have been ` +
-            `merged back into its catalog. The previous catalog was kept as ` +
-            `.safelight/catalog.bak.json in case you need it.`,
-        });
+        // retired. The pre-merge catalog is kept under its own name, which no
+        // session's backup writes over (working-dir.ts).
+        notices.push(
+          `Edits you made to “${handle.name}” while it was read-only have been ` +
+            `merged back into its catalog. The catalog from before the merge was kept ` +
+            `in .safelight as catalog.before-merge- followed by the date and time, in ` +
+            `case you need it.`,
+        );
       }
+      if (notices.length > 0) set({ storageNotice: notices.join(" ") });
       // Phase 2 — the scan finished: attach handles, add new, drop removed. If we
       // painted skeletons, reconcile (keeps already-loaded previews); otherwise
       // (first import / no cache) finalize and kick off loading normally.
@@ -327,18 +475,39 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // lose that race and never land, re-importing everything on the next open.
       // Flushing first guarantees catalog.json is durable before any heavy work.
       await catalogStorage().flush?.();
-      // Background: fill in previews for any records imported without one (decode
-      // failed at scan time), updating them in place so they're never re-imported.
-      void repairMissingPreviews(opened.photos, (p) =>
-        useCatalogStore.getState().updatePhoto(p),
-      );
-      // Background: pre-decode RAWs so first Develop open is instant. Pass the
-      // full set (not just newPhotos) so any RAW left uncached by an interrupted
-      // earlier run is filled in now; the per-file check skips ones already done.
-      void preDecodeRawsForCache(opened.photos);
+      // A popped-out window shows the main window's project; that one runs them.
+      if (detachedModule() === null) {
+        // Background: fill in previews for any records imported without one (decode
+        // failed at scan time), updating them in place so they're never re-imported.
+        void repairMissingPreviews(
+          opened.photos,
+          (p, change) => useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
+          passes,
+        );
+        // Background: pre-decode RAWs so first Develop open is instant. Pass the
+        // full set (not just newPhotos) so any RAW left uncached by an interrupted
+        // earlier run is filled in now; the per-file check skips ones already done.
+        // The warm-up can outlast this project: one left meanwhile starts no pass.
+        void warmOnce().then(() => {
+          if (!passes.aborted) return preDecodeRawsForCache(opened.photos, { signal: passes });
+        });
+      }
     } catch (e) {
       console.error("[project] open failed:", e);
-      if (gen === openGen) set({ openError: describeOpenError(e, handle.name) });
+      // The grid was cleared when the open began; no project stays named over it,
+      // nor takes the changes made from here, nor runs passes for it.
+      if (gen === openGen) {
+        setCatalogStorage(null);
+        passesAbort?.abort();
+        passesAbort = null;
+        set({
+          openError: describeOpenError(e, handle.name),
+          openErrorReadOnly: e instanceof ReadOnlyProjectError,
+          saveError: null,
+          root: null,
+          tree: null,
+        });
+      }
     } finally {
       if (gen === openGen) {
         importAbort = null;
@@ -389,10 +558,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     ++openGen;
     importAbort?.abort();
     importAbort = null;
-    if (get().root) {
-      try { void catalogStorage().flush?.(); } catch { /* best effort */ }
-    }
-    set({ root: null, name: "", tree: null, opening: false, importDone: 0, importTotal: 0 });
+    passesAbort?.abort();
+    passesAbort = null;
+    leaveCatalog();
+    set({
+      root: null,
+      name: "",
+      tree: null,
+      opening: false,
+      importDone: 0,
+      importTotal: 0,
+      saveError: null,
+    });
     useCatalogStore.getState().replaceCatalog([]);
     activeProjectKey = ""; // stop persisting folder changes under the closed project
   },

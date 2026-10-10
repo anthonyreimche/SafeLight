@@ -5,14 +5,13 @@
 
 import type {
   ProcessingStageContribution,
-  ProcessingPhase,
   UniformDeclaration,
   InterStageVariable,
   GlslType,
 } from "@/extensions/types";
-import { PROCESSING_PHASE_ORDER } from "@/extensions/types";
 import { useRegistry } from "@/extensions/registry";
 import { VERTEX_SHADER, buildFragmentShader as legacyBuildFragmentShader } from "./shaders";
+import { sortStages } from "./stage-order";
 
 // ---------------------------------------------------------------------------
 // Deterministic prefix for GLSL names contributed by each stage
@@ -31,23 +30,6 @@ export function uniformPrefix(stageId: string): string {
 
 export function helperPrefix(stageId: string): string {
   return `_${hashStageId(stageId)}_`;
-}
-
-// ---------------------------------------------------------------------------
-// Stage sorting
-// ---------------------------------------------------------------------------
-
-const phaseIndex = new Map<ProcessingPhase, number>(
-  PROCESSING_PHASE_ORDER.map((p, i) => [p, i]),
-);
-
-function stageOrder(
-  a: ProcessingStageContribution,
-  b: ProcessingStageContribution,
-): number {
-  const pi = (phaseIndex.get(a.phase) ?? 99) - (phaseIndex.get(b.phase) ?? 99);
-  if (pi !== 0) return pi;
-  return (a.priority ?? 100) - (b.priority ?? 100);
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +150,7 @@ export interface CompiledShaderSource {
 export function compileShaderSource(
   stages: ProcessingStageContribution[],
 ): CompiledShaderSource {
-  const sorted = [...stages].sort(stageOrder);
+  const sorted = sortStages(stages);
 
   const uniformNameMap = new Map<string, string>();
   const uniformTypes = new Map<string, GlslType>();
@@ -359,7 +341,7 @@ void main() {
 
 export function getActiveStages(): ProcessingStageContribution[] {
   const stages = useRegistry.getState().processingStages;
-  return Object.values(stages).sort(stageOrder);
+  return sortStages(Object.values(stages));
 }
 
 // ---------------------------------------------------------------------------

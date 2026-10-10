@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CatalogPhoto, CropRect } from "@/catalog/types";
 import { HSL_CHANNELS } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
@@ -20,7 +20,8 @@ import {
   mat3Apply,
 } from "@/rendering/transform";
 import { computeGuidedCorrection } from "@/rendering/upright";
-import { ViewportImage } from "@/ui/ViewportImage";
+import { ViewportImage, assessMatPx } from "@/ui/ViewportImage";
+import { leavePicture, releaseHandover, takeHandover } from "@/ui/canvas-handover";
 import { Slot } from "@/extensions/Slot";
 import { useCanvasGesture } from "@/state/canvas-gesture";
 import { DevelopOverlayProvider } from "@/extensions/develop-host";
@@ -90,10 +91,20 @@ export function DevelopCanvas({
   onZoomChange: (zoom: number | null) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { supported, availability, loading, width, height, sourceWidth, sourceHeight, setViewport } = useDevelopRenderer(
-    canvasRef,
-    photo,
-  );
+  // The crossfade overlay over the canvas: the renderer fades one tier of the photo
+  // into the next on it, and the viewport fades the Presets hover on it.
+  const fadeCanvasRef = useRef<HTMLCanvasElement>(null);
+  const {
+    supported,
+    availability,
+    status,
+    width,
+    height,
+    sourceWidth,
+    sourceHeight,
+    setViewport,
+    pictureCanvas,
+  } = useDevelopRenderer(canvasRef, photo, fadeCanvasRef);
 
   // Geometry of the displayed image + a nonce that bumps on any view change, so
   // extension overlays (e.g. before/after) can align and refresh. Generic: core
@@ -101,13 +112,42 @@ export function DevelopCanvas({
   const [overlayRect, setOverlayRect] = useState<OverlayRect | null>(null);
   const [overlayImageRect, setOverlayImageRect] = useState<OverlayRect | null>(null);
   const [overlayNonce, setOverlayNonce] = useState(0);
+  // Where the pixels last showed, in the viewport's own CSS px, and its size.
+  const layoutRef = useRef<{ visible: OverlayRect; frame: { w: number; h: number } } | null>(null);
   const sameRect = (a: OverlayRect | null, r: OverlayRect) =>
     !!a && a.x === r.x && a.y === r.y && a.w === r.w && a.h === r.h;
-  const handleLayout = useCallback((r: OverlayRect, image: OverlayRect) => {
-    setOverlayRect((prev) => (sameRect(prev, r) ? prev : r));
-    setOverlayImageRect((prev) => (sameRect(prev, image) ? prev : image));
-    setOverlayNonce((n) => n + 1);
-  }, []);
+  const handleLayout = useCallback(
+    (r: OverlayRect, image: OverlayRect, frame: { w: number; h: number }) => {
+      layoutRef.current = { visible: r, frame };
+      setOverlayRect((prev) => (sameRect(prev, r) ? prev : r));
+      setOverlayImageRect((prev) => (sameRect(prev, image) ? prev : image));
+      setOverlayNonce((n) => n + 1);
+    },
+    [],
+  );
+
+  // DevelopView builds this view anew for every photo, so the picture on screen is
+  // handed to the next view as this one goes, and the one the view before left is
+  // shown until this photo's first picture (canvas-handover.ts). Layout effects: the
+  // view going away and the one coming run theirs in the same commit, before paint.
+  const handoverRef = useRef<HTMLCanvasElement>(null);
+  useLayoutEffect(() => {
+    const handover = handoverRef.current;
+    if (handover) takeHandover(handover);
+    return () => {
+      if (handover) releaseHandover(handover);
+      const picture = pictureCanvas();
+      const layout = layoutRef.current;
+      if (!picture || !layout) return;
+      const { colorAssessment: assessing } = useDevelopStore.getState();
+      const { assessBorderPct: border } = useSettings.getState();
+      leavePicture({
+        canvas: picture,
+        rect: layout.visible,
+        mat: assessing ? assessMatPx(layout.frame.w, layout.frame.h, border / 100) : 0,
+      });
+    };
+  }, [pictureCanvas]);
 
   // Crossfade the canvas whenever the hover preview turns on, off, or switches
   // to another preset, so the look eases in/out instead of snapping.
@@ -327,7 +367,7 @@ export function DevelopCanvas({
             className="max-h-[80vh] max-w-full object-contain opacity-80"
           />
         )}
-        <p className="text-xs">WebGL 2 unavailable — showing unedited preview</p>
+        <p className="text-xs">Can't show edits on this computer. Showing the unedited preview.</p>
       </div>
     );
   }
@@ -338,13 +378,14 @@ export function DevelopCanvas({
       <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
         <p className="rounded bg-surface-2 px-3 py-2 text-xs text-text-muted">
           {availability === "failed"
-            ? "GPU renderer unavailable — restart Safelight"
-            : "GPU renderer unavailable — retrying…"}
+            ? "Can't show images right now. Restart Safelight."
+            : "Can't show images right now. Trying again…"}
         </p>
       </div>
     )}
     <ViewportImage
       canvasRef={canvasRef}
+      fadeCanvasRef={fadeCanvasRef}
       bufferWidth={width}
       bufferHeight={height}
       zoom={zoom}
@@ -353,7 +394,7 @@ export function DevelopCanvas({
       onLayout={handleLayout}
       colorAssessment={colorAssessment}
       assessBorder={assessBorderPct / 100}
-      loading={loading}
+      status={status}
       resetKey={photo.id}
       initialZoom={openZoom === "100" ? 1 : null}
       fadeToken={fadeToken}
@@ -454,6 +495,16 @@ export function DevelopCanvas({
               : undefined
       }
     />
+      {/* The photo before, where it showed, until this photo's first picture. Placed
+          and sized by canvas-handover; hidden until then. */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <canvas
+          ref={handoverRef}
+          data-handover=""
+          aria-hidden
+          style={{ position: "absolute", display: "none", pointerEvents: "none" }}
+        />
+      </div>
       {/* Extension overlay layer (e.g. before/after split). Click-through by
           default; interactive children opt back in via pointerEvents. While a
           zoom-gesture key (Ctrl/⌘/Space) is held, the whole subtree is forced

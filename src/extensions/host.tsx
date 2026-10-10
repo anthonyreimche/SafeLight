@@ -91,7 +91,7 @@ import {
   loadBuiltins,
   loadExternalPlugins,
 } from "./loader";
-import { warmDecodePool } from "@/raw/decode-pool";
+import { initPinSync } from "./pins";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { Histogram } from "@/ui/components/Histogram";
@@ -222,7 +222,17 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
         catalogStorage()
           .getEditState(photoId)
           .then((e) => e ?? null),
-      putEditState: (editState) => catalogStorage().putEditState(editState),
+      putEditState: async (editState) => {
+        const stored = catalogStorage().putEditState(editState);
+        // Develop's next commit writes back the history it holds, which would drop
+        // this edit, so the photo open there reloads from the catalog. The storage
+        // holds the edit once the call returns, so that is now, not after the save.
+        const develop = useDevelopStore.getState();
+        const reloaded =
+          develop.photoId === editState.photoId &&
+          develop.loadEdit(editState.photoId, develop.asShotTemperature);
+        await Promise.all([stored, reloaded]);
+      },
       renamePhoto: (photoId, newBaseName) => renamePhoto(photoId, newBaseName),
       useVisiblePhotos,
       usePhotoActions,
@@ -244,6 +254,7 @@ export function initExtensionHost(): void {
   initPresets();
   initExtSettings();
   initEnablement();
+  initPinSync();
   initThemes();
   initStylesheets();
   // Accessibility overlays are owned by the `core.accessibility` built-in
@@ -257,5 +268,4 @@ export function initExtensionHost(): void {
   // Re-discover periodically so a version bumped while the app is left open is
   // noticed without a restart (force past the per-extension TTL).
   setInterval(() => void checkAllExtensionUpdates(true), EXT_UPDATE_POLL_MS);
-  void warmDecodePool();
 }

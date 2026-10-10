@@ -4,12 +4,48 @@
 // be preserved in derived versions.
 
 import { create } from "zustand";
-import type { CatalogPhoto, ColorLabel, FlagStatus } from "@/catalog/types";
+import {
+  mergeStoredPhoto,
+  type CatalogPhoto,
+  type ColorLabel,
+  type FlagStatus,
+  type StoredPhoto,
+} from "@/catalog/types";
 import { catalogStorage } from "@/catalog/storage";
 import { rotateBlob, normalizeRotation } from "@/catalog/orient";
 import { useProjectStore } from "@/project/project-store";
 import { broadcast, WINDOW_ID } from "./broadcast";
+import type { LoadedPreview } from "./thumbnail-loader";
 import { emitMetadataChange, emitPhotoRemove } from "@/extensions/registry";
+
+/** What a background rebuild of a photo changed (see mergeRebuiltPhoto): an
+ *  edited or repaired preview with its size, rotation and the edit it shows, or a
+ *  re-import's file details. */
+export type RebuiltChange = Partial<
+  Pick<
+    CatalogPhoto,
+    | "thumbnailBlob"
+    | "thumbnailUrl"
+    | "previewEdit"
+    | "width"
+    | "height"
+    | "rotation"
+    | "exif"
+    | "decodeError"
+    | "fileSize"
+    | "mimeType"
+    | "dateCreated"
+  >
+>;
+
+/** The fields `after` changes from `before`, compared by identity: what a caller
+ *  that built `after` from `before` changed. A field `after` lacks is undefined. */
+function changesFrom<T extends object>(before: T, after: T): Partial<T> {
+  const changes: Partial<T> = {};
+  for (const key in after) if (after[key] !== before[key]) changes[key] = after[key];
+  for (const key in before) if (!(key in after)) changes[key] = undefined;
+  return changes;
+}
 
 /** Expand a removal set to also include virtual copies of any master in it — a
  *  copy shares its master's file, so removing the master removes its copies too
@@ -23,6 +59,17 @@ function withVirtualCopies(
     if (p.copyOf && set.has(p.copyOf)) set.add(p.id);
   }
   return [...set];
+}
+
+/** `photo` showing a preview the loader read, with a new object URL for it and the
+ *  edit that preview shows, whatever edit the one it replaces showed. */
+function withPreview(photo: CatalogPhoto, blob: LoadedPreview): CatalogPhoto {
+  return {
+    ...photo,
+    thumbnailBlob: blob,
+    thumbnailUrl: URL.createObjectURL(blob),
+    previewEdit: blob.previewEdit,
+  };
 }
 
 interface CatalogState {
@@ -53,24 +100,41 @@ interface CatalogState {
   finalizeCatalog: (photos: CatalogPhoto[]) => void;
   /** Attach freshly-read grid previews to existing photos (the open-time block
    *  loader). One batched update per block; photos that already have a preview
-   *  are left untouched. */
-  mergeThumbnails: (updates: { id: string; blob: Blob }[]) => void;
-  /** Replace one photo record in place (same id) after its preview was rebuilt
-   *  in the background. Revokes the old object URL. Persistence is the caller's
-   *  job (the repair pass already wrote it via putPhoto). */
+   *  are left untouched. A photo that takes a preview takes the edit it shows
+   *  (previewEdit) with it. */
+  mergeThumbnails: (updates: { id: string; blob: LoadedPreview }[]) => void;
+  /** Replace one photo record in place (same id) with `photo` as given. Revokes
+   *  the old object URL. Persistence is the caller's job. */
   updatePhoto: (photo: CatalogPhoto) => void;
+  /** Take what a background rebuild changed on a photo (an edited or repaired
+   *  preview, or a re-import's file details) onto the photo as the store holds it
+   *  now: only the fields in `change`, so whatever else changed while the rebuild
+   *  was written, here or in another window, stays. A new preview comes with the
+   *  edit `change` names for it (previewEdit), or none. Revokes a preview URL it
+   *  replaces. Persistence is the caller's job (it already wrote via putPhoto). */
+  mergeRebuiltPhoto: (id: string, change: RebuiltChange) => void;
   /** Replace one photo's preview blob in place (revoking the old URL), e.g. after
-   *  another window edited it and we reloaded its <id>.jpg from disk. */
-  replaceThumbnail: (id: string, blob: Blob) => void;
+   *  another window edited it and we reloaded its <id>.jpg from disk. The photo
+   *  takes the edit the preview shows (previewEdit) with it. */
+  replaceThumbnail: (id: string, blob: LoadedPreview) => void;
+  /** Take on what another window wrote to the catalog (see state/catalog-sync):
+   *  each photo here gets the stored fields of its record in `photos` and keeps
+   *  its own handles, preview, URL and the edit that preview shows (previewEdit),
+   *  and the photos in `deletedIds` leave the catalog and the selection. Ids this
+   *  window doesn't have are ignored. Nothing is stored or broadcast: this
+   *  window's storage already holds the records. */
+  mergeRemoteRecords: (photos: StoredPhoto[], deletedIds: string[]) => void;
   /** Replace the skeleton catalog with the post-scan list: attach live handles,
    *  add newly-found photos, drop vanished ones — while keeping any previews that
-   *  already loaded during the skeleton phase. */
+   *  already loaded during the skeleton phase, with the edit each shows. */
   reconcileCatalog: (photos: CatalogPhoto[]) => void;
 
   removePhoto: (id: string) => Promise<void>;
   removePhotos: (ids: string[]) => Promise<void>;
-  /** Persist already-built photo records whose location changed (moved on disk).
-   *  Caller supplies updated relPath/folder/handles; thumbnails are unchanged. */
+  /** Persist already-built photo records and show them: photos moved or renamed on
+   *  disk, or metadata an extension changed. Build each from the photo as the store
+   *  holds it right before the call, since every field that differs is taken as
+   *  changed. A record another window sends during the write keeps the rest. */
   relocatePhotos: (updated: CatalogPhoto[]) => Promise<void>;
   /** Set a virtual copy's display name (the distinguisher folded into its
    *  shown/exported name). Display-only — it never touches the file on disk. */
@@ -104,6 +168,12 @@ interface CatalogState {
 }
 
 export const useCatalogStore = create<CatalogState>((set, get) => {
+  // Tell the windows (this one's own listeners included) the catalog changed. The
+  // stamp lets a window tell its own echo from another's change. Name a photo
+  // (`id`) only when its preview was rewritten: the others reload it.
+  const announce = (action: string, id?: string): void =>
+    broadcast({ type: "catalog-change", payload: { action, id, origin: WINDOW_ID } });
+
   // Apply a field change to many photos at once: one storage write, one state
   // update, one broadcast. The single-photo setters delegate here as well.
   const commit = async (
@@ -118,12 +188,29 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       photos: updated,
       getEditState: (id) => catalogStorage().getEditState(id).then((e) => e ?? null),
     });
-    const byId = new Map(updated.map((p) => [p.id, p] as const));
-    set((s) => ({ photos: s.photos.map((p) => byId.get(p.id) ?? p) }));
-    broadcast({
-      type: "catalog-change",
-      payload: { action: "update", id: ids.length === 1 ? ids[0] : undefined },
-    });
+    // Another window's records may have landed during the awaits: change the
+    // photos as they are now, not the copies read before them.
+    set((s) => ({ photos: s.photos.map((p) => (idSet.has(p.id) ? mutate(p) : p)) }));
+    // Metadata leaves every preview as it is: no photo is named. The other
+    // windows get the records through catalog-records.
+    announce("update");
+  };
+
+  // Swap in one photo's record, revoking the preview URL it supersedes. Naming the
+  // photo makes other windows reload its preview from disk (see use-window-sync)
+  // while this window, which already holds the new blob, ignores its own echo.
+  const swapPhoto = (id: string, next: (p: CatalogPhoto) => CatalogPhoto): void => {
+    set((s) => ({
+      photos: s.photos.map((p) => {
+        if (p.id !== id) return p;
+        const swapped = next(p);
+        if (p.thumbnailUrl && p.thumbnailUrl !== swapped.thumbnailUrl) {
+          URL.revokeObjectURL(p.thumbnailUrl);
+        }
+        return swapped;
+      }),
+    }));
+    announce("update", id);
   };
 
   return {
@@ -171,7 +258,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         activePhotoId: null,
         needsReconnect: false,
       });
-      broadcast({ type: "catalog-change", payload: { action: "add" } });
+      announce("add");
     },
 
     appendPhotos(photos) {
@@ -194,7 +281,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         }
         return { photos: [...s.photos, ...photos] };
       });
-      broadcast({ type: "catalog-change", payload: { action: "add" } });
+      announce("add");
     },
 
     mergeThumbnails(updates) {
@@ -206,29 +293,19 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
           // Skip if no blob for this photo, or it already has a preview (avoids
           // leaking an object URL by overwriting a live one).
           if (!blob || p.thumbnailUrl) return p;
-          return {
-            ...p,
-            thumbnailBlob: blob,
-            thumbnailUrl: URL.createObjectURL(blob),
-          };
+          return withPreview(p, blob);
         }),
       }));
     },
 
     updatePhoto(photo) {
-      set((s) => ({
-        photos: s.photos.map((p) => {
-          if (p.id !== photo.id) return p;
-          if (p.thumbnailUrl && p.thumbnailUrl !== photo.thumbnailUrl) {
-            URL.revokeObjectURL(p.thumbnailUrl);
-          }
-          return photo;
-        }),
-      }));
-      // Stamp the origin so other windows reload this photo's preview from disk
-      // (see use-window-sync) while this window — which already holds the new
-      // blob — ignores its own echo.
-      broadcast({ type: "catalog-change", payload: { action: "update", id: photo.id, origin: WINDOW_ID } });
+      swapPhoto(photo.id, () => photo);
+    },
+
+    mergeRebuiltPhoto(id, change) {
+      // A new preview shows the edit its change names, or none.
+      const preview = change.thumbnailBlob ? { previewEdit: change.previewEdit } : {};
+      swapPhoto(id, (p) => ({ ...p, ...change, ...preview }));
     },
 
     // Swap in a freshly-read preview blob for one photo, revoking the superseded
@@ -241,9 +318,35 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         photos: s.photos.map((p) => {
           if (p.id !== id) return p;
           if (p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
-          return { ...p, thumbnailBlob: blob, thumbnailUrl: URL.createObjectURL(blob) };
+          return withPreview(p, blob);
         }),
       }));
+    },
+
+    mergeRemoteRecords(photos, deletedIds) {
+      const byId = new Map(photos.map((p) => [p.id, p] as const));
+      const gone = new Set(deletedIds);
+      const current = get().photos;
+      if (!current.some((p) => byId.has(p.id) || gone.has(p.id))) return;
+      // Previews of removed photos would dangle for the life of the window.
+      for (const p of current) {
+        if (gone.has(p.id) && p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
+      }
+      set((s) => {
+        const merged = s.photos.flatMap((p) => {
+          if (gone.has(p.id)) return [];
+          const stored = byId.get(p.id);
+          // The record's previewEdit names the preview on disk, not the one kept here.
+          return [stored ? { ...mergeStoredPhoto(p, stored), previewEdit: p.previewEdit } : p];
+        });
+        if (gone.size === 0) return { photos: merged };
+        return {
+          photos: merged,
+          selectedIds: new Set([...s.selectedIds].filter((id) => !gone.has(id))),
+          activePhotoId:
+            s.activePhotoId && gone.has(s.activePhotoId) ? null : s.activePhotoId,
+        };
+      });
     },
 
     finalizeCatalog(photos) {
@@ -254,7 +357,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         activePhotoId: null,
         needsReconnect: false,
       });
-      broadcast({ type: "catalog-change", payload: { action: "add" } });
+      announce("add");
     },
 
     reconcileCatalog(photos) {
@@ -267,6 +370,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
             ...p,
             thumbnailBlob: old.thumbnailBlob,
             thumbnailUrl: old.thumbnailUrl,
+            previewEdit: old.previewEdit,
           };
         }
         return p;
@@ -285,7 +389,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
             s.activePhotoId && keep.has(s.activePhotoId) ? s.activePhotoId : null,
         };
       });
-      broadcast({ type: "catalog-change", payload: { action: "add" } });
+      announce("add");
     },
 
     async removePhoto(id) {
@@ -299,6 +403,8 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       // Removing a master also removes its virtual copies.
       ids = withVirtualCopies(get().photos, ids);
       const idSet = new Set(ids);
+      // The project the photos belong to: once another is open, none is removed.
+      const storage = catalogStorage();
       // Let extensions react to removal (e.g. delete XMP sidecars).
       for (const id of ids) {
         const photo = get().photos.find((p) => p.id === id);
@@ -311,8 +417,10 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         }
       }
       for (const id of ids) {
-        await catalogStorage().deletePhoto(id);
+        if (catalogStorage() !== storage) return;
+        await storage.deletePhoto(id);
       }
+      if (catalogStorage() !== storage) return;
       // Previews of removed photos would dangle for the life of the window.
       for (const p of get().photos) {
         if (idSet.has(p.id) && p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
@@ -329,28 +437,39 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
               : s.activePhotoId,
         };
       });
-      broadcast({
-        type: "catalog-change",
-        payload: { action: "remove", id: ids.length === 1 ? ids[0] : undefined },
-      });
+      announce("remove", ids.length === 1 ? ids[0] : undefined);
     },
 
     async relocatePhotos(updated) {
       if (updated.length === 0) return;
-      await catalogStorage().putPhotos(updated);
       const byId = new Map(updated.map((p) => [p.id, p] as const));
-      set((s) => ({ photos: s.photos.map((p) => byId.get(p.id) ?? p) }));
-      broadcast({ type: "catalog-change", payload: { action: "update" } });
+      const was = new Map(
+        get().photos.filter((p) => byId.has(p.id)).map((p) => [p.id, p] as const),
+      );
+      await catalogStorage().putPhotos(updated);
+      // A photo another window's record changed during the write takes only what
+      // the caller changed.
+      set((s) => ({
+        photos: s.photos.map((p) => {
+          const to = byId.get(p.id);
+          if (!to) return p;
+          const from = was.get(p.id);
+          return !from || p === from ? to : { ...p, ...changesFrom(from, to) };
+        }),
+      }));
+      announce("update");
     },
 
     async setCopyName(id, copyName) {
       const photo = get().photos.find((p) => p.id === id);
       if (!photo) return;
-      const clean = copyName.trim();
-      const updated: CatalogPhoto = { ...photo, copyName: clean || undefined };
-      await catalogStorage().putPhotos([updated]);
-      set((s) => ({ photos: s.photos.map((p) => (p.id === id ? updated : p)) }));
-      broadcast({ type: "catalog-change", payload: { action: "update", id } });
+      const named = (p: CatalogPhoto): CatalogPhoto => ({
+        ...p,
+        copyName: copyName.trim() || undefined,
+      });
+      await catalogStorage().putPhotos([named(photo)]);
+      set((s) => ({ photos: s.photos.map((p) => (p.id === id ? named(p) : p)) }));
+      announce("update");
     },
 
     async rotatePhotos(ids, deg) {
@@ -358,30 +477,44 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       if (d === 0 || ids.length === 0) return;
       const idSet = new Set(ids);
       const swap = d === 90 || d === 270;
+      const turnBlob = (blob: Blob | null) => (blob ? rotateBlob(blob, d) : Promise.resolve(null));
       const updates = new Map<string, CatalogPhoto>();
 
       await Promise.all(
         get()
           .photos.filter((p) => idSet.has(p.id))
           .map(async (p) => {
-            const thumbnailBlob = p.thumbnailBlob
-              ? await rotateBlob(p.thumbnailBlob, d)
-              : p.thumbnailBlob;
-            const thumbnailUrl = thumbnailBlob
-              ? URL.createObjectURL(thumbnailBlob)
-              : p.thumbnailUrl;
-            const updated: CatalogPhoto = {
-              ...p,
-              rotation: normalizeRotation((p.rotation ?? 0) + d),
-              thumbnailBlob,
-              thumbnailUrl,
-              width: swap ? p.height : p.width,
-              height: swap ? p.width : p.height,
-            };
-            await catalogStorage().putPhoto(updated);
-            if (p.thumbnailUrl && p.thumbnailUrl !== thumbnailUrl) {
-              URL.revokeObjectURL(p.thumbnailUrl);
+            // The photo may have changed, or left the catalog, while its preview
+            // turned: turn it as it is now, and only if it's still here. A preview
+            // stored meanwhile (an edit's) is turned in place of the one it began
+            // with, and the turn keeps the edit its source shows.
+            let from = p;
+            let turned = await turnBlob(from.thumbnailBlob);
+            let current = get().photos.find((photo) => photo.id === p.id);
+            while (current && current.thumbnailBlob !== from.thumbnailBlob) {
+              from = current;
+              turned = await turnBlob(from.thumbnailBlob);
+              current = get().photos.find((photo) => photo.id === p.id);
             }
+            if (!current) return;
+            const turn = {
+              rotation: normalizeRotation((current.rotation ?? 0) + d),
+              width: swap ? current.height : current.width,
+              height: swap ? current.width : current.height,
+              thumbnailBlob: turned ?? current.thumbnailBlob,
+              thumbnailUrl: turned ? URL.createObjectURL(turned) : current.thumbnailUrl,
+              previewEdit: from.previewEdit,
+            };
+            // Shown before it is written, onto the photo as it is now: an edit's
+            // preview rendered from here on is made at the new rotation, and one
+            // stored later replaces this one.
+            set((s) => ({
+              photos: s.photos.map((photo) => (photo.id === p.id ? { ...photo, ...turn } : photo)),
+            }));
+            if (current.thumbnailUrl && current.thumbnailUrl !== turn.thumbnailUrl)
+              URL.revokeObjectURL(current.thumbnailUrl);
+            const updated: CatalogPhoto = { ...current, ...turn };
+            await catalogStorage().putPhoto(updated);
             updates.set(p.id, updated);
           }),
       );
@@ -390,8 +523,9 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         photos: [...updates.values()],
         getEditState: (id) => catalogStorage().getEditState(id).then((e) => e ?? null),
       });
-      set((s) => ({ photos: s.photos.map((p) => updates.get(p.id) ?? p) }));
-      broadcast({ type: "catalog-change", payload: { action: "rotate" } });
+      // putPhoto waited for each turned preview to be stored, so the other windows
+      // can reload them now; this one already holds them and ignores its echo.
+      for (const id of updates.keys()) announce("update", id);
     },
 
     setRating: (id, rating) => commit([id], (p) => ({ ...p, rating })),

@@ -4,13 +4,14 @@
 // be preserved in derived versions.
 
 import type { DevelopParams } from "./types";
-import { normalizeParams } from "./types";
+import { freshParams, normalizeParams } from "./types";
 import { catalogStorage } from "./storage";
+import { historyCursor } from "./history-cursor";
 import { normalizeParamBag } from "@/extensions/param-registry";
 
 // The saved develop params for a photo — the current point in its edit history,
-// or normalized defaults if it was never edited. Shared by Loupe preview
-// rendering and Export so both show exactly what Develop persisted.
+// or fresh defaults at the current process version if it was never edited.
+// The Library histogram uses this; Export reads the same edit through loadSavedEdit.
 export async function loadSavedParams(photoId: string, asShotTemperature?: number): Promise<DevelopParams> {
   return (await loadSavedEdit(photoId, asShotTemperature)).params;
 }
@@ -22,15 +23,16 @@ export interface SavedEdit {
 }
 
 // Both the develop params and the contributed param bag in one storage read, so
-// Loupe and Export reproduce extension stages (denoise, …) exactly as Develop.
+// Export reproduces extension stages (denoise, …) exactly as Develop.
 export async function loadSavedEdit(photoId: string, asShotTemperature?: number): Promise<SavedEdit> {
   const edit = await catalogStorage().getEditState(photoId);
   if (edit && edit.stack.length > 0) {
-    const snap = edit.stack[edit.currentIndex];
+    // The stored cursor may be unusable; resolve it as Develop does on open.
+    const snap = edit.stack[historyCursor(edit.currentIndex, edit.stack.length)];
     return { params: normalizeParams(snap.params), paramBag: normalizeParamBag(snap.paramBag) };
   }
   return {
-    params: normalizeParams(asShotTemperature ? { temperature: asShotTemperature } : undefined),
+    params: freshParams(asShotTemperature),
     paramBag: {},
   };
 }

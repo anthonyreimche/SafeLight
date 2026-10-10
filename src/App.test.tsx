@@ -12,6 +12,7 @@ import { App } from "./App";
 import { useUIStore } from "@/state/ui-store";
 import { useProjectStore } from "@/project/project-store";
 import { registerModule, unregisterExtension, useRegistry } from "@/extensions/registry";
+import { openSetup, resetSetupForTests } from "@/modules/welcome/setup/setup-store";
 
 /** The main window has no other windows to sync with here. */
 class SilentChannel {
@@ -50,5 +51,51 @@ describe("App", () => {
     expect(useUIStore.getState().activeModule).toBe("library");
     expect(screen.queryByText("map-main")).toBeNull();
     expect(screen.getByText("0 photos in catalog")).toBeTruthy();
+  });
+});
+
+describe("App welcome setup", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetSetupForTests();
+  });
+
+  afterEach(() => {
+    unregisterExtension("ext");
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the setup layer over a project in the main window", async () => {
+    registerModule("ext", { id: "map", label: "Map", component: () => <p>map-main</p> });
+    useUIStore.setState({ activeModule: "map" });
+    render(<App />);
+    act(() => openSetup("rerun"));
+    expect(
+      await screen.findByRole("dialog", { name: "Pick a look" }),
+    ).toBeTruthy();
+  });
+
+  it("shows a plain fill instead of the welcome grid while deciding", async () => {
+    // Without the bridge the decision is synchronous; with it, it waits on the
+    // installed-extension count, which this holds back.
+    let release!: (installed: unknown[]) => void;
+    const held = new Promise<unknown[]>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal("safelightNative", { plugins: { list: () => held } });
+    useProjectStore.setState({ root: null });
+    render(<App />);
+    expect(screen.queryByText("Recent projects")).toBeNull();
+    await act(async () => release([{ id: "acme.widget" }]));
+    expect(await screen.findByText("Recent projects")).toBeTruthy();
+  });
+
+  it("never shows setup in a detached module window", async () => {
+    registerModule("ext", { id: "map", label: "Map", component: () => <p>map-main</p> });
+    window.history.replaceState({}, "", "/?detached=map");
+    render(<App />);
+    act(() => openSetup("rerun"));
+    await act(async () => {});
+    expect(screen.queryByRole("dialog", { name: "Pick a look" })).toBeNull();
   });
 });

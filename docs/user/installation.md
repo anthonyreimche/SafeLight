@@ -70,7 +70,7 @@ Everything is driven by the npm scripts in `package.json`; the `.bat`/`.sh` file
 | `npm run dev` | Vite dev server (browser) at `http://localhost:5173`. |
 | `npm run build` | Type-check (`tsc`) + Vite production build → `dist/`. |
 | `npm run preview` | Serve the production `dist/` locally. |
-| `npm run icon` | Generate `build/icon.ico` / `icon.png` from `public/favicon.svg`. |
+| `npm run icon` | Generate `build/icon.ico` / `icon.png` and the installer artwork from `public/favicon.svg` and `art/logo/`. |
 | `npm run electron:dev` | Build the renderer and open it in an Electron window. |
 | `npm run build:electron` | `build` + `icon` + `electron-builder --win` → Windows installer in `release/`. |
 | `npm run build:linux` | `build` + `icon` + `electron-builder --linux` → Linux package(s) in `release/`. |
@@ -314,11 +314,13 @@ sudo apt --fix-broken install
 sudo dnf install libXScrnSaver libappindicator-gtk3
 ```
 
+**Colors look oversaturated on a wide-gamut monitor (Wayland)** — under Wayland, Chromium applies no display color management, so sRGB values reach the panel unconverted. The cause and the XWayland workaround (`--ozone-platform=x11`) are in the [FAQ](faq.md#colors-look-oversaturated-on-linux-with-a-wide-gamut-monitor).
+
 ### RAW and image quality
 
 **RAW files look soft or load as small previews (browser)** — full-speed RAW decoding requires cross-origin isolation (`SharedArrayBuffer`), which the plain Vite dev server does not guarantee. Use the desktop app for full-resolution decoding. If you must use the browser, confirm the server sends `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
 
-**Unsupported RAW format / file shows as grey tile** — Safelight falls back to the embedded JPEG preview if libraw-wasm can't decode the file. Very new camera models may need a libraw-wasm update. Check the [libraw supported cameras list](https://www.libraw.org/supported-cameras) and open a GitHub issue if your camera is listed but fails.
+**Unsupported RAW format / file shows as grey tile** — Safelight falls back to the embedded JPEG preview if libraw-wasm can't decode the file, and Develop's corner says "Preview (Safelight can't open this RAW yet)". A file with no usable preview at all shows a warning tile; hover it for the reason. Once two launches have failed on a file, Safelight stops trying it on every open. After updating Safelight, **Re-import** the photo or use **Preferences ▸ Previews ▸ Clear preview cache** to try it again. Very new camera models may need a newer LibRaw. Check the [libraw supported cameras list](https://www.libraw.org/supported-cameras) and open a GitHub issue if your camera is listed but fails.
 
 **Colors look wrong after decoding** — check that the correct camera profile is applied (Preferences ▸ Color). Some cameras benefit from a DCP profile; export the photo with the "Use embedded profile" option and compare.
 
@@ -326,7 +328,7 @@ sudo dnf install libXScrnSaver libappindicator-gtk3
 
 **Photos missing after restart (browser)** — folder permissions expire between browser sessions. Click **Reconnect** in the top bar to re-grant access; the desktop app is not affected once permission is granted.
 
-**Edits lost / catalog not saving** — Safelight writes to `.safelight/` inside the project folder. Ensure the folder is not read-only and is not inside a path that sync software (OneDrive, Dropbox) has locked. If a sync conflict occurs, `.safelight/catalog.json` will have a backup alongside it — rename it to restore.
+**Edits lost / catalog not saving** — Safelight writes to `.safelight/` inside the project folder. Ensure the folder is not read-only and is not inside a path that sync software (OneDrive, Dropbox) has locked. The first time you change a project after opening it, Safelight saves the catalog as it was when you opened it as `.safelight/catalog.bak.json`. If `catalog.json` is later damaged or missing, Safelight restores it from that copy when you open the folder, and tells you so. A damaged catalog is kept next to it, named `catalog.corrupt-` followed by the date and time (a damaged backup, `catalog.bak.corrupt-`). When edits you made while a folder was read-only are merged back, the catalog from before the merge is kept the same way, as `catalog.before-merge-`. If another program is using the catalog, the folder doesn't open and nothing is changed. Wait a moment and open it again. If a save fails, a bar at the bottom of the window says "Couldn't save the catalog" with the reason, and Safelight keeps trying until a save works; the bar then goes by itself. If you open another folder while the changes still can't be saved, Safelight keeps trying for a while, and tells you if it has to give up.
 
 **Extension install fails ("Failed to fetch")** — extension installation downloads from GitHub. Check your internet connection and, on corporate networks, whether `raw.githubusercontent.com` is allowed through the firewall. You can also install extensions manually: clone the repo to a local folder, then drag-and-drop the folder onto the Extensions panel.
 

@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { HistogramData } from "@/rendering/histogram";
 import { channelHex, channelRgba } from "./channel-colors";
+import { reducedMotion } from "@/ui/reduced-motion";
 
 type Mode = "luma" | "rgb" | "red" | "green" | "blue";
 
@@ -155,11 +156,13 @@ export function Histogram({
       const t = targetRef.current;
 
       if (d && t) {
-        const settled =
-          lerpBins(d.r, t.r, LERP_RATE) &
-          lerpBins(d.g, t.g, LERP_RATE) &
-          lerpBins(d.b, t.b, LERP_RATE) &
-          lerpBins(d.luma, t.luma, LERP_RATE);
+        // Read live so the setting applies to a glide already under way.
+        const settled = reducedMotion()
+          ? snapBins(d, t)
+          : lerpBins(d.r, t.r, LERP_RATE) &
+            lerpBins(d.g, t.g, LERP_RATE) &
+            lerpBins(d.b, t.b, LERP_RATE) &
+            lerpBins(d.luma, t.luma, LERP_RATE);
         draw();
         if (!settled) {
           animRef.current = requestAnimationFrame(tick);
@@ -304,6 +307,18 @@ function lerpBins(display: Float32Array, target: Uint32Array, rate: number): num
     }
   }
   return settled;
+}
+
+// Jump every displayed bin to the target. Always settled, so no frame follows.
+function snapBins(
+  display: { r: Float32Array; g: Float32Array; b: Float32Array; luma: Float32Array },
+  target: HistogramData,
+): number {
+  display.r.set(target.r);
+  display.g.set(target.g);
+  display.b.set(target.b);
+  display.luma.set(target.luma);
+  return 1;
 }
 
 function u32From(f: Float32Array): Uint32Array {

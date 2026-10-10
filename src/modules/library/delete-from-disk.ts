@@ -13,6 +13,7 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { nativeFs, nativePathOf } from "@/project/native-fs";
 import { deleteCachedPreview, rawCacheKey } from "@/raw/raw-cache";
 import { SIDECAR_SUFFIX } from "@/project/folder-ops";
+import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
 
 export interface DeleteFromDiskResult {
   /** Photos whose file went to the OS trash (and left the catalog). */
@@ -96,26 +97,37 @@ export async function deletePhotosFromDisk(
   return result;
 }
 
+let confirmOpen = false;
+
 /** Confirm, trash, then report anything that didn't go cleanly. Shared by the
- *  grid context menu and the keyboard action so the wording never drifts. */
+ *  grid context menu and the keyboard action so the wording never drifts. A
+ *  request made while the confirmation is already open is dropped, not queued
+ *  behind it. */
 export async function confirmAndDeleteFromDisk(ids: string[]): Promise<void> {
-  if (ids.length === 0 || !diskTrashAvailable()) return;
+  if (ids.length === 0 || !diskTrashAvailable() || confirmOpen) return;
   const n = ids.length;
   const bin = trashLabel();
-  const ok = window.confirm(
-    `Move ${n} photo${n === 1 ? "" : "s"} to the ${bin}? They'll also be removed from the catalog; the file${n === 1 ? "" : "s"} can be restored from the ${bin}.`,
-  );
+  confirmOpen = true;
+  const ok = await confirmDialog({
+    title: "Delete from disk",
+    message: `Move ${n} photo${n === 1 ? "" : "s"} to the ${bin}? They'll also be removed from the catalog; the file${n === 1 ? "" : "s"} can be restored from the ${bin}.`,
+    confirmLabel: `Move to ${bin}`,
+    variant: "danger",
+  }).finally(() => {
+    confirmOpen = false;
+  });
   if (!ok) return;
   const r = await deletePhotosFromDisk(ids);
   const notes: string[] = [];
   if (r.skippedCopies > 0)
     notes.push(
-      `Skipped ${r.skippedCopies} virtual ${r.skippedCopies === 1 ? "copy" : "copies"} — a copy shares its master's file. Use Remove to take copies out of the catalog.`,
+      `Skipped ${r.skippedCopies} virtual ${r.skippedCopies === 1 ? "copy" : "copies"}. A copy shares its master's file. Use Remove to take copies out of the catalog.`,
     );
   if (r.failed.length > 0)
     notes.push(
       `Couldn't delete ${r.failed.length} file${r.failed.length === 1 ? "" : "s"}:\n` +
-        r.failed.map((f) => `• ${f.filename} — ${f.message}`).join("\n"),
+        r.failed.map((f) => `• ${f.filename}: ${f.message}`).join("\n"),
     );
-  if (notes.length > 0) window.alert(notes.join("\n\n"));
+  if (notes.length > 0)
+    await alertDialog({ title: "Delete from disk", message: notes.join("\n\n") });
 }

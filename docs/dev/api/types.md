@@ -26,13 +26,17 @@ interface CatalogPhoto {
   dateCreated: number;
   dateImported: number;
   exif: ExifData;
-  decodeError?: string;      // why the last decode failed (grid warning tooltip); cleared once a preview builds
+  decodeError?: string;      // one plain sentence on why no preview could be built (grid warning tooltip); cleared once a preview builds
+  previewEdit?: string;      // fingerprint of the edit the stored preview shows; undefined for a preview built from the file
+  previewRotation?: number;  // rotation the stored preview was made at; undefined means `rotation`
   copyOf?: string;           // on a virtual copy: the id of the master record that owns the file
   copyName?: string;         // on a virtual copy: its distinguisher, e.g. "copy 2"
 }
 ```
 
 Handles, blobs, and URLs are runtime-only — stripped before the record is written to `catalog.json`.
+
+`previewEdit` and `previewRotation` describe the stored preview (`<id>.jpg`), not the photo. The edit can change without a new preview (Paste Settings, Update processing, an extension's `putEditState`), so Develop draws the stored preview first only while `previewEdit` matches the edit it opens with. A preview made at another rotation than the photo's is never shown: one is built from the file instead. Core sets both as it writes a preview. A record stored with a new `thumbnailBlob` should carry the `previewEdit` of the edit that blob shows, and none for a preview made without the edit.
 
 A **virtual copy** is a second record that shares another photo's source file but keeps its own id, edits and metadata. `filename` still mirrors the master's file; the displayed and exported name folds in `copyName` as `base_<copyName>.ext`. Copies of copies point at the root master. Create them with [`api.catalog.addPhotos`](stores.md#apicatalog).
 
@@ -80,12 +84,15 @@ interface DevelopParams {
   retouch;             // RetouchSpot[], ≤ MAX_RETOUCH (32); ≤ MAX_RETOUCH_BRUSH (4) brush-shaped
   // Rendering
   displayTransform;    // display transform picked for this photo, or null to follow the Preferences default
+  processVersion;      // rendering generation of this edit: 1 for edits saved before process versions, 2 for new ones
 }
 ```
 
+`processVersion` is the rendering generation an edit was made with. Edits saved before process versions existed carry none and read as version 1 (`LEGACY_PROCESS_VERSION`), so they render exactly as they always have; new edits get version 2 (`CURRENT_PROCESS_VERSION`). Presets, pasted settings and previews never change it. Reset all edits starts a photo over at the current version, and Update processing raises the version and keeps every other setting; resetting a single panel keeps it. Extensions read it and never write it. [Contribution Types → Process versions](contributions.md#process-versions) says what each version changes.
+
 Extension-contributed adjustments are not in `DevelopParams`: they live in a separate **param bag** keyed by qualified key (`"{stageId}.{key}"`), stored alongside the params in each history snapshot (see [EditState](#editstate)) and read through [`api.params`](stores.md#apiparams). Lens correction moved out of core into an [extension](contributions.md#processingstagecontribution--gpu-stage), so it has no field here either.
 
-`normalizeParams` upgrades older/partial params (e.g. from imported presets) so they stay compatible.
+`normalizeParams` upgrades older/partial params (e.g. from imported presets) so they stay compatible. The one field it doesn't fill from the defaults is `processVersion`: a missing one reads as version 1.
 
 ## Masks and retouch
 
@@ -131,4 +138,4 @@ interface EditSnapshot {
 }
 ```
 
-`commitEdit(label)` in the develop store pushes a snapshot. Read and write whole stacks with [`api.catalog.getEditState` / `putEditState`](stores.md#apicatalog), and observe commits with a [catalog hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.
+`commitEdit(label)` in the develop store records a history entry when the edit changed since the current entry; a commit that changes nothing adds no entry, keeps the redo steps, and fires no `onEditCommit`. Read and write whole stacks with [`api.catalog.getEditState` / `putEditState`](stores.md#apicatalog) (writing the stack of the photo open in Develop reloads it there), and observe commits with a [catalog hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.

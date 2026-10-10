@@ -5,10 +5,10 @@
 
 // Bridge between the central rebindable shortcuts (use-keyboard-shortcuts) and
 // whichever image viewport is on screen: zoom level is owned by the viewport's
-// parent (DevelopView / the loupe), not by a global store, so the mounted
-// ViewportImage registers its zoom commands here and the shortcut handler
-// drives the most recently mounted one. Per-window by nature — a detached
-// module runs its own context with its own registration.
+// parent (DevelopView), not by a global store, so the mounted ViewportImage
+// registers its zoom commands here and the shortcut handler drives the most
+// recently mounted one. Per-window by nature — a detached module runs its own
+// context with its own registration.
 
 export interface ViewportZoomCommands {
   /** One keyboard zoom step (dir 1 = in, -1 = out), cursor-anchored. */

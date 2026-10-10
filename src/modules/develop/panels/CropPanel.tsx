@@ -7,7 +7,7 @@ import { useRef, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
-import { useCatalogStore } from "@/state/catalog-store";
+import { useActivePhotoAspect } from "@/state/use-active-photo";
 import { DEFAULT_CROP, type CropRect } from "@/catalog/types";
 import {
   computeCropForAspect,
@@ -42,19 +42,19 @@ export function CropPanel() {
   const crop = useDevelopStore((s) => s.params.crop);
   const setParam = useDevelopStore((s) => s.setParam);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
-  const activePhotoId = useCatalogStore((s) => s.activePhotoId);
-  const photos = useCatalogStore((s) => s.photos);
+  const photoAspect = useActivePhotoAspect();
   const sourceSize = useDevelopStore((s) => s.sourceSize);
 
-  const photo = photos.find((p) => p.id === activePhotoId);
   // Prefer the decoded buffer's aspect over metadata: decode paths disagree on
   // baking EXIF orientation, so photo.width/height can be transposed relative to
-  // the pixels on screen (mirrors DevelopCanvas / use-develop-renderer).
+  // the pixels on screen. DevelopCanvas and use-develop-renderer choose the
+  // same way, except for a stored width of 0 with a nonzero height: they give
+  // 0 there, this gives 1.
   const imageAspect =
     sourceSize.width > 0 && sourceSize.height > 0
       ? sourceSize.width / sourceSize.height
-      : photo && photo.height > 0
-        ? photo.width / photo.height
+      : photoAspect > 0
+        ? photoAspect
         : 1;
 
   // The crop as it was before a straighten drag began. Fitting against this

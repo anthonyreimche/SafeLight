@@ -3,16 +3,18 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The single read path Loupe and Export share with Develop: resolve a photo's
-// persisted edit to normalized params plus a sanitised extension param bag, or
-// to as-shot defaults when it was never edited. Driven through a real
+// The single read path Export and the Library share with Develop: resolve a
+// photo's persisted edit to normalized params plus a sanitised extension param
+// bag, or to as-shot defaults when it was never edited. Driven through a real
 // CatalogStorage implementation rather than a module mock. Run with `npm test`.
 
 import { afterEach, describe, expect, it } from "vitest";
 import { loadSavedEdit, loadSavedParams } from "./edit-params";
 import { setCatalogStorage, type CatalogStorage } from "./storage";
 import {
+  CURRENT_PROCESS_VERSION,
   DEFAULT_DEVELOP_PARAMS,
+  LEGACY_PROCESS_VERSION,
   NEUTRAL_TEMPERATURE_K,
   type DevelopParams,
   type EditSnapshot,
@@ -31,6 +33,7 @@ function install(edit: EditState | undefined): void {
     getEditState: async (photoId) => (photoId === edit?.photoId ? edit : undefined),
     getAllEditStates: async () => (edit ? [edit] : []),
     putEditState: async () => {},
+    putEditStates: async () => {},
   };
   setCatalogStorage(storage);
 }
@@ -106,6 +109,19 @@ describe("loadSavedEdit — photo with a stored edit", () => {
       ),
     );
     expect((await loadSavedEdit(PHOTO)).params.exposure).toBe(0.5);
+  });
+
+  it.each([
+    { cursor: 7, nearest: "last", exposure: 2 },
+    { cursor: -3, nearest: "first", exposure: 0.5 },
+  ])("clamps a stored cursor of $cursor to the $nearest snapshot", async ({ cursor, exposure }) => {
+    install(stackOf([snapshot({ exposure: 0.5 }), snapshot({ exposure: 2 })], cursor));
+    expect((await loadSavedEdit(PHOTO)).params.exposure).toBe(exposure);
+  });
+
+  it("opens on the newest snapshot when the stored cursor is NaN", async () => {
+    install(stackOf([snapshot({ exposure: 0.5 }), snapshot({ exposure: 2 })], NaN));
+    expect((await loadSavedEdit(PHOTO)).params.exposure).toBe(2);
   });
 
   it("lets the persisted white balance win over the as-shot temperature", async () => {
@@ -198,5 +214,23 @@ describe("loadSavedParams", () => {
   it("threads the as-shot temperature through for unedited photos", async () => {
     install(undefined);
     expect((await loadSavedParams(PHOTO, 2850)).temperature).toBe(2850);
+  });
+});
+
+describe("loadSavedEdit — process versions", () => {
+  it("gives a photo that was never edited the current version", async () => {
+    install(undefined);
+    expect((await loadSavedEdit(PHOTO, 3200)).params.processVersion).toBe(CURRENT_PROCESS_VERSION);
+    expect((await loadSavedEdit(PHOTO)).params.processVersion).toBe(CURRENT_PROCESS_VERSION);
+  });
+
+  it("keeps an edit saved before process versions at version 1", async () => {
+    install(stackOf([snapshot({ exposure: 0.5 })]));
+    expect((await loadSavedEdit(PHOTO)).params.processVersion).toBe(LEGACY_PROCESS_VERSION);
+  });
+
+  it("keeps a stored version", async () => {
+    install(stackOf([snapshot({ exposure: 0.5, processVersion: 2 })]));
+    expect((await loadSavedEdit(PHOTO)).params.processVersion).toBe(2);
   });
 });

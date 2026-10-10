@@ -45,12 +45,14 @@ const VST_SCALE_DEFAULT = 600;
 // A-trous iterations: dilation doubles each step (1,2,4,8,16).
 const ATROUS_ITERATIONS = 5;
 
-// Pass 1 — forward: linear RGB -> (VST-luma, Co, Cg). YCoCg inlined.
+// Pass 1 — forward: linear RGB -> (VST-luma, Co, Cg). YCoCg inlined. Colours
+// outside the sRGB primaries arrive with channels below black; YCoCg is
+// linear, so they pass through signed, and only the VST's square root needs
+// its argument held at zero.
 const FORWARD_PASS = `
-vec3 rgb = max(c, 0.0);
-float Y = dot(rgb, vec3(0.25, 0.5, 0.25));
-float Co = 0.5 * rgb.r - 0.5 * rgb.b;
-float Cg = -0.25 * rgb.r + 0.5 * rgb.g - 0.25 * rgb.b;
+float Y = dot(c, vec3(0.25, 0.5, 0.25));
+float Co = 0.5 * c.r - 0.5 * c.b;
+float Cg = -0.25 * c.r + 0.5 * c.g - 0.25 * c.b;
 float Yv = 2.0 * sqrt(max(Y * vstScale + 0.375, 0.0));
 c = vec3(Yv, Co, Cg);
 `;
@@ -95,11 +97,13 @@ c = vec3(mix(ctr.x, yFilt, lumBlend), mix(ctr.yz, cFilt, colBlend));
 `;
 
 // Pass 3 — inverse: (VST-luma, Co, Cg) -> linear RGB. YCoCg inverse inlined.
+// Luma comes back floored at black, as the forward pass's square-root guard
+// left it; chroma, and with it each channel, keeps its sign.
 const INVERSE_PASS = `
 float Yv = c.x;
 float Y = max((Yv * Yv * 0.25 - 0.375) / max(vstScale, 1e-3), 0.0);
 float t = Y - c.z;
-c = max(vec3(t + c.y, Y + c.z, t - c.y), 0.0);
+c = vec3(t + c.y, Y + c.z, t - c.y);
 `;
 
 export const DENOISE_STAGE: ProcessingStageContribution = {
@@ -114,7 +118,7 @@ export const DENOISE_STAGE: ProcessingStageContribution = {
   // actually ran and produced a real float result — so a no-float-targets fallback
   // never corrupts the image. uDenoiseReady/uLuminanceNR/uColorNR are main-shader
   // globals (not stage uniforms), so they pass through unrewritten.
-  glsl: `if (uDenoiseReady && (uLuminanceNR > 0.001 || uColorNR > 0.001)) { lin = max(stageResult, 0.0); }`,
+  glsl: `if (uDenoiseReady && (uLuminanceNR > 0.001 || uColorNR > 0.001)) { lin = stageResult; }`,
   uniforms: [],
   passes: [
     { glsl: FORWARD_PASS, iterations: 1, uniforms: [

@@ -3,15 +3,18 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// RAW decode orchestrator. Produces a full-resolution ImageBitmap from a RAW
-// file, choosing the best available path:
+// RAW decode orchestrator. Decodes a RAW file to a full-precision linear float
+// image (decodeRawToFloat) or an 8-bit bitmap (decodeRawToBitmap), choosing the
+// best available path:
 //
-//   1. a registered libraw WASM build (handles everything, best color science)
+//   1. libraw (handles everything, best color science): the bundled
+//      libraw-wasm for the float image, a registered build for the bitmap
 //   2. the in-house decoder for uncompressed CFA data (TIFF-based RAW / DNG)
-//   3. null  -> caller falls back to the embedded JPEG preview
+//   3. no image: the float decode says why (DecodeFailure), the bitmap decode
+//      answers null, and the caller falls back to the embedded JPEG preview
 //
-// Compressed sensor data (e.g. Nikon NEF lossless) needs the WASM path; without
-// it we return null and the preview is shown, so RAW files always display.
+// Compressed sensor data (e.g. Nikon NEF lossless) needs libraw; without it the
+// preview is shown, so RAW files always display.
 
 import {
   TiffReader,
@@ -30,6 +33,7 @@ import {
 } from "./pixels";
 import { getLibRaw } from "./libraw";
 import { decodeRawFloatViaLibRaw } from "./libraw-wasm-adapter";
+import type { DecodeRequest } from "./decode-pool";
 
 export interface RawFloatImage {
   data: Float32Array; // linear RGBA, row-major, top-left origin
@@ -42,38 +46,99 @@ export interface RawFloatImage {
   rawExposureBias?: number;  // EV the sensor sat below the tagged ISO (Fujifilm DR modes), compensated in `data`
 }
 
+/**
+ * Why a float decode produced no image. `unsupported`: the file was read and
+ * nothing usable came of it, so reading it again won't help until the decoder
+ * changes. `transient`: the decoder or the file wasn't available this time.
+ * `aborted`: the request was abandoned (see DecodeRequest).
+ */
+export interface DecodeFailure {
+  failure: "unsupported" | "transient" | "aborted";
+  /** Why, in the decoder's words, for the grid's warning and Develop's status
+   *  line. An abandoned request has none: nobody is waiting to learn it. */
+  reason?: string;
+  /** libraw gave no answer within its time limit (see decodeTimeLimit). */
+  timedOut?: boolean;
+  /** Background work passed the file over (see decodeRawToFloat): its decode
+   *  is running elsewhere or ran out of time. Nothing is wrong with the file,
+   *  so nothing should stand in for its decode. */
+  passedOver?: boolean;
+}
+
 const DEFAULT_CFA: [number, number, number, number] = [0, 1, 1, 2]; // RGGB
 
+// A file libraw gave no answer for holds a decoder for the whole time limit,
+// so background work (the "Cache all" pass, the preview repair, Develop's
+// prefetch) tries it once a session. It also leaves a file alone while a decode
+// of it is under way, which fills the cache itself. A photo the user opens is
+// always decoded. A file is told apart by its name, size and modification time.
+const decoding = new Map<string, number>();
+const unanswered = new Set<string>();
+
+function fileId(file: Blob): string | undefined {
+  return file instanceof File ? `${file.name}:${file.size}:${file.lastModified}` : undefined;
+}
+
 // Decode to a full-precision LINEAR float image, for the high-bit-depth editing
-// pipeline. Only the in-house uncompressed CFA path is float-capable today;
-// compressed sensor data (e.g. Nikon NEF) needs libraw and returns null here, so
-// the caller falls back to the 8-bit bitmap path.
+// pipeline. libraw handles every compression; the in-house fallback only
+// uncompressed CFA. When neither yields an image, the caller falls back to the
+// camera's embedded preview.
 export async function decodeRawToFloat(
   file: Blob,
-): Promise<RawFloatImage | null> {
+  request?: DecodeRequest,
+): Promise<RawFloatImage | DecodeFailure> {
+  if (request?.signal?.aborted) return { failure: "aborted" };
+  const id = fileId(file);
+  if (id === undefined) return decodeFloat(file, request);
+  if (request?.background) {
+    const reason = unanswered.has(id)
+      ? "no answer earlier this session"
+      : decoding.has(id)
+        ? "being decoded already"
+        : undefined;
+    if (reason) return { failure: "transient", reason, passedOver: true };
+  }
+  decoding.set(id, (decoding.get(id) ?? 0) + 1);
+  try {
+    return await decodeFloat(file, request, id);
+  } finally {
+    const left = (decoding.get(id) ?? 1) - 1;
+    if (left > 0) decoding.set(id, left);
+    else decoding.delete(id);
+  }
+}
+
+async function decodeFloat(
+  file: Blob,
+  request?: DecodeRequest,
+  id?: string,
+): Promise<RawFloatImage | DecodeFailure> {
   let buffer: ArrayBuffer;
   try {
     buffer = await file.arrayBuffer();
   } catch {
-    return null;
+    return { failure: "transient", reason: "couldn't read the file" };
   }
 
   // Prefer libraw: it decodes every compression (incl. Nikon NEF), applies
   // camera WB and orientation, and outputs full-precision linear data.
-  const viaLib = await decodeRawFloatViaLibRaw(buffer);
-  if (viaLib) return { ...viaLib, oriented: true };
+  const viaLib = await decodeRawFloatViaLibRaw(buffer, request);
+  if (!("failure" in viaLib)) return { ...viaLib, oriented: true };
+  if (viaLib.timedOut && id !== undefined) unanswered.add(id);
+  if (request?.signal?.aborted) return { failure: "aborted" };
 
   // In-house fallback handles only uncompressed CFA (sensor-native orientation).
+  // A file it can't take either keeps libraw's verdict.
   try {
     const reader = new TiffReader(buffer);
     const info = findRawIfd(reader);
-    if (!info || info.compression !== COMPRESSION.None) return null;
+    if (!info || info.compression !== COMPRESSION.None) return viaLib;
     const plane = readSensorPlane(reader, info);
-    if (!plane) return null;
+    if (!plane) return viaLib;
     const data = developRawPlaneFloat(plane.samples, plane.options);
     return { data, width: info.width, height: info.height, oriented: false };
   } catch {
-    return null;
+    return viaLib;
   }
 }
 

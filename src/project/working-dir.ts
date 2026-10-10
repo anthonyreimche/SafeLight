@@ -41,9 +41,10 @@
 //     empty one) and edits accumulate on a *superset*. A `.seeded` marker records
 //     that this separate is a spillover of a specific in-folder catalog.
 //   • Promote: the next time the folder opens writeable, that superset is folded
-//     back into the in-folder catalog (the previous catalog.json is kept as
-//     catalog.bak.json first), then the spillover's catalog.json + marker are
-//     retired so nothing is left to re-promote.
+//     back into the in-folder catalog (the previous catalog.json is kept first as
+//     catalog.before-merge-<time>.json, a name no session's backup writes over),
+//     then the spillover's catalog.json + marker are retired so nothing is left to
+//     re-promote.
 // Promotion is guarded against clobbering: it folds back only a spillover that is
 // newer than *and* differs from the in-folder catalog, so a stale or leftover
 // spillover (e.g. a marker that survived a failed cleanup, or a no-edit read-only
@@ -58,6 +59,8 @@
 // orphan can be found and reclaimed.
 
 import { getSettings } from "@/state/settings-store";
+import { CATALOG_VERSION, CatalogTooNewError, CatalogUnreadableError } from "./catalog-errors";
+import { fileTimestamp, isNotFound, parseJSONObject } from "./fs";
 import { isNativeFS, nativeDirectoryHandle, nativeFs, nativePathOf } from "./native-fs";
 
 export type WorkingDirLocation = "in-folder" | "external";
@@ -165,23 +168,33 @@ const catalogJsonIn = (slDir: string) => `${stripSlash(slDir)}/catalog.json`;
 const seededMarkerIn = (slDir: string) => `${stripSlash(slDir)}/.seeded`;
 const inFolderSlDir = (rootPath: string) => `${stripSlash(rootPath)}/.safelight`;
 
+/** Read a catalog that may not be there (null). One that is there but can't be
+ *  read (another program holds it) throws CatalogUnreadableError: taken for
+ *  missing, it would be written over, or its edits never folded back. */
+const readIfThere = (fs: Bridge, path: string) =>
+  fs.read(path).catch((error: unknown) => {
+    if (isNotFound(error)) return null;
+    throw new CatalogUnreadableError(error);
+  });
+
 /** Seed the separate catalog (at `externalSl`) from the readable in-folder catalog
  *  so a read-only session opens onto the user's real catalog rather than an empty
  *  one. Copies only when the in-folder catalog is newer (or the separate is
  *  missing), so writeable edits made since the last spell aren't shadowed by a
  *  stale copy; always (re)writes the `.seeded` marker so the next writeable open
  *  knows to promote. Best-effort: on any failure the separate just starts empty
- *  (the pre-seed behavior). */
+ *  (the pre-seed behavior), except that a catalog that can't be read right now
+ *  fails the open (CatalogUnreadableError, see readIfThere). */
 async function seedExternalCatalog(
   fs: Bridge,
   rootPath: string,
   externalSl: string,
 ): Promise<void> {
   try {
-    const inInfo = await fs.read(catalogJsonIn(inFolderSlDir(rootPath))).catch(() => null);
+    const inInfo = await readIfThere(fs, catalogJsonIn(inFolderSlDir(rootPath)));
     if (!inInfo) return; // no in-folder catalog to seed from
     const extCat = catalogJsonIn(externalSl);
-    const extInfo = await fs.read(extCat).catch(() => null);
+    const extInfo = await readIfThere(fs, extCat);
     if (!extInfo || inInfo.mtimeMs > extInfo.mtimeMs) {
       await fs.write(extCat, inInfo.data);
     }
@@ -191,8 +204,8 @@ async function seedExternalCatalog(
     // fallback in findSeededSpillover covers a lost pointer).
     if (typeof fs.setSpilloverPointer === "function")
       await fs.setSpilloverPointer(rootPath, externalSl).catch(() => {});
-  } catch {
-    /* best-effort */
+  } catch (error) {
+    if (error instanceof CatalogUnreadableError) throw error;
   }
 }
 
@@ -244,13 +257,22 @@ async function findSeededSpillover(
  *     edits) is a no-op — it can never clobber newer in-folder data, even though
  *     the in-folder catalog is always written with the host clock so its mtime is a
  *     reliable comparand here (both files are app-written, not camera-stamped).
- *   • The previous in-folder catalog is copied to catalog.bak.json before the
- *     overwrite, and the spillover's catalog.json + marker are removed *after* a
+ *   • The previous in-folder catalog is copied to catalog.before-merge-<time>.json
+ *     before the overwrite: catalog.bak.json would be rewritten by the first save
+ *     of the next session to open the project (a pop-out, or the next launch), and
+ *     after a fold this copy can be the only one of the catalog it replaced. The
+ *     spillover's catalog.json + marker are removed *after* a
  *     successful fold, so nothing is left to re-promote and the next read-only
  *     spell re-seeds fresh. A swallowed cleanup failure is harmless: the guard
  *     makes the leftover a no-op next time.
  *  Any failure (e.g. the folder is actually still read-only, so the backup write
- *  throws first) is swallowed and leaves both catalogs intact. */
+ *  throws first) is swallowed and leaves both catalogs intact. One exception: a
+ *  catalog that is there but can't be read (another program holds it) fails the
+ *  open with CatalogUnreadableError. Taken for missing, the in-folder catalog
+ *  would be replaced with no backup, or the spillover retired unfolded. Nor is a
+ *  spillover folded that the open would not take: a damaged one is left where it
+ *  is, and one a newer version saved fails the open with CatalogTooNewError, both
+ *  with the in-folder catalog untouched. */
 async function promoteSeparateCatalog(
   fs: Bridge,
   rootPath: string,
@@ -259,20 +281,29 @@ async function promoteSeparateCatalog(
   try {
     const externalSl = await findSeededSpillover(fs, rootPath, base);
     if (!externalSl) return null;
-    const extInfo = await fs.read(catalogJsonIn(externalSl)).catch(() => null);
+    const extInfo = await readIfThere(fs, catalogJsonIn(externalSl));
     const inCat = catalogJsonIn(inFolderSlDir(rootPath));
-    const inInfo = await fs.read(inCat).catch(() => null);
+    const inInfo = await readIfThere(fs, inCat);
     const fold =
       !!extInfo &&
       (!inInfo || (extInfo.mtimeMs >= inInfo.mtimeMs && !bytesEqual(extInfo.data, inInfo.data)));
-    if (!fold) {
+    // A spillover is folded only as an open would read it. A damaged one counts as
+    // nothing to fold, and stays where it is; one a newer version saved stops the
+    // open before anything is written, as that open would refuse it.
+    const spilled = extInfo ? parseJSONObject(extInfo.data) : null;
+    if (fold && typeof spilled?.version === "number" && spilled.version > CATALOG_VERSION)
+      throw new CatalogTooNewError(spilled.version);
+    if (!fold || !spilled) {
       // Nothing (newer) to fold: consume the spent marker + pointer so they can't
       // re-arm, but never touch the in-folder catalog.
       await fs.remove(seededMarkerIn(externalSl)).catch(() => {});
       await clearSpilloverPointer(fs, rootPath);
       return null;
     }
-    if (inInfo) await fs.write(`${inFolderSlDir(rootPath)}/catalog.bak.json`, inInfo.data);
+    if (inInfo) {
+      const kept = `${inFolderSlDir(rootPath)}/catalog.before-merge-${fileTimestamp()}.json`;
+      await fs.write(kept, inInfo.data);
+    }
     await fs.write(inCat, extInfo!.data); // fold the read-only-session edits back in
     // Retire the spillover so a stuck marker has nothing to re-promote and the
     // next read-only spell re-seeds fresh from the (now-current) in-folder catalog.
@@ -280,14 +311,18 @@ async function promoteSeparateCatalog(
     await fs.remove(seededMarkerIn(externalSl)).catch(() => {});
     await clearSpilloverPointer(fs, rootPath);
     return externalSl;
-  } catch {
+  } catch (error) {
+    if (error instanceof CatalogUnreadableError || error instanceof CatalogTooNewError) throw error;
     return null;
   }
 }
 
 /** Resolve the writeable .safelight working dir for `root`, redirecting to a
  *  separate location when the folder is read-only (or when "external" mode is on).
- *  Throws ReadOnlyProjectError when no writeable location can be established. */
+ *  Throws ReadOnlyProjectError when no writeable location can be established,
+ *  CatalogUnreadableError when a catalog a promotion or a seed needs can't be read,
+ *  and CatalogTooNewError when the spillover a promotion would fold was saved by a
+ *  newer version. */
 export async function resolveWorkingDir(
   root: FileSystemDirectoryHandle,
 ): Promise<WorkingDir> {
@@ -341,6 +376,7 @@ export async function resolveWorkingDir(
           return wd;
         }
       } catch (err) {
+        if (err instanceof CatalogUnreadableError) throw err; // a busy catalog, not a read-only one
         throw new ReadOnlyProjectError(root.name, true, err);
       }
       throw new ReadOnlyProjectError(root.name, false);

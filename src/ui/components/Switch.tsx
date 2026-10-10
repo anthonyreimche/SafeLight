@@ -14,6 +14,8 @@ export interface SwitchProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
   ariaLabel?: string;
+  /** Id of an element that describes the switch (aria-describedby). */
+  ariaDescribedBy?: string;
   title?: string;
   disabled?: boolean;
   /** Layout classes for the button (it is already an inline-flex row). */
@@ -26,6 +28,7 @@ export function Switch({
   checked,
   onChange,
   ariaLabel,
+  ariaDescribedBy,
   title,
   disabled,
   className = "",
@@ -37,6 +40,7 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       title={title}
       disabled={disabled}
       onClick={() => onChange(!checked)}

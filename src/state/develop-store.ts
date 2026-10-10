@@ -14,20 +14,25 @@ import type {
   ToneCurveChannel,
 } from "@/catalog/types";
 import {
+  CURRENT_PROCESS_VERSION,
   DEFAULT_DEVELOP_PARAMS,
   NEUTRAL_TEMPERATURE_K,
+  UPDATE_PROCESSING_LABEL,
   assignDevelopParam,
+  freshParams,
   normalizeParams,
+  usesOlderProcessing,
 } from "@/catalog/types";
 
 export type { ToolMode } from "./develop-slices/mask-slice";
 import type { HistogramData } from "@/rendering/histogram";
 import { catalogStorage } from "@/catalog/storage";
+import { historyCursor } from "@/catalog/history-cursor";
+import { sameEdit } from "@/catalog/edit-equality";
 import { broadcast } from "./broadcast";
 import { createCropSlice, type CropSlice } from "./develop-slices/crop-slice";
 import { createViewSlice, type ViewSlice } from "./develop-slices/view-slice";
 import { createMaskSlice, type MaskSlice } from "./develop-slices/mask-slice";
-import { pushEdit } from "./develop-slices/push-edit";
 import { emitEditCommit } from "@/extensions/registry";
 import { normalizeParamBag } from "@/extensions/param-registry";
 import { useCatalogStore } from "./catalog-store";
@@ -54,10 +59,11 @@ export interface DevelopState extends CropSlice, ViewSlice, MaskSlice {
   historyIndex: number;
   histogram: HistogramData | null;
   asShotTemperature: number;
-  /** True dimensions of the decoded source last handed to the renderer (already
-   *  upright). Panels derive imageAspect from this, not photo.width/height, so
-   *  aspect-locked crops / Upright match the pixels on screen when a decode path
-   *  transposes stored metadata. {0,0} until the first frame decodes. */
+  /** Size of the source the last frame was drawn from, as the renderer holds it
+   *  (already upright, after the upload cap), published by every frame, the camera
+   *  preview's included. Panels derive imageAspect from this, not photo.width/height,
+   *  so aspect-locked crops / Upright match the pixels on screen when a decode path
+   *  transposes stored metadata. {0,0} until a frame of the photo is drawn. */
   sourceSize: { width: number; height: number };
 
   // Crop tool UI lives in CropSlice (develop-slices/crop-slice.ts); canvas-view
@@ -82,14 +88,16 @@ export interface DevelopState extends CropSlice, ViewSlice, MaskSlice {
   /** Replace the live params wholesale (the caller merges a partial preset over
    *  the current params first) and merge the preset's contributed bag over the
    *  live one, committed as one undoable edit. Full params only — a partial
-   *  would silently reset every omitted core adjustment to its default. */
+   *  would silently reset every omitted core adjustment to its default. The
+   *  photo keeps its own process version, whatever `params` carries. */
   applyPreset: (
     params: DevelopParams,
     paramBag?: Record<string, unknown>,
   ) => Promise<void>;
   /** Set (or clear with null) the render-only preview params, optionally with a
    *  preset's contributed param bag (previewed by merging over the live bag). No
-   *  history write, no broadcast — purely local to the Develop canvas. */
+   *  history write, no broadcast — purely local to the Develop canvas. The
+   *  preview is at the open photo's process version, whatever `params` carries. */
   setPreviewParams: (
     params: Partial<DevelopParams> | null,
     paramBag?: Record<string, unknown> | null,
@@ -102,6 +110,12 @@ export interface DevelopState extends CropSlice, ViewSlice, MaskSlice {
   undo: () => void;
   redo: () => void;
   reset: () => Promise<void>;
+  /** Move the open photo from the older processing to the current one, as one
+   *  undoable step that keeps every other setting. Does nothing with no photo
+   *  open or on a photo that is already current. With reset(), the only store
+   *  actions that change a photo's process version; the Library's bulk update
+   *  (catalog/update-processing) writes the stored edit directly. */
+  updateProcessing: () => Promise<void>;
   canUndo: () => boolean;
   canRedo: () => boolean;
 }
@@ -157,7 +171,7 @@ function moveHistory(
 
 export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   photoId: null,
-  params: normalizeParams(undefined),
+  params: freshParams(),
   previewParams: null,
   previewParamBag: null,
   paramBag: {},
@@ -185,19 +199,23 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     const asShot = asShotTemperature ?? NEUTRAL_TEMPERATURE_K;
     const editState = await catalogStorage().getEditState(photoId);
     if (editState && editState.stack.length > 0) {
-      // Older stacks lack the seeded "Original" snapshot — prepend one so the
-      // first real edit is always undoable.
+      // Stacks lacking the seeded "Original" snapshot (older ones, or one an
+      // extension wrote) get one prepended so the first real edit is always
+      // undoable. It belongs to that stack, so it takes the stack's version
+      // (normalizeParams reads no version as 1), not freshParams's current one.
       let stack = editState.stack;
-      // The stored cursor can fall outside its stack (a truncated write, a
-      // catalog edited by hand); clamp so the photo opens on its nearest real
-      // snapshot instead of throwing on an undefined one.
-      let index = Math.min(Math.max(editState.currentIndex, 0), stack.length - 1);
+      // The stored cursor may be unusable; resolve it so the photo opens on a
+      // real snapshot instead of throwing on an undefined one.
+      let index = historyCursor(editState.currentIndex, stack.length);
       if (stack[0].label !== "Original") {
         stack = [
           {
             timestamp: stack[0].timestamp,
             label: "Original",
-            params: normalizeParams({ temperature: asShot }),
+            params: normalizeParams({
+              temperature: asShot,
+              processVersion: stack[0].params?.processVersion,
+            }),
             paramBag: {},
           },
           ...stack,
@@ -219,7 +237,7 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     } else {
       // Seed history with the untouched state so undo can return to it.
       // Use the camera's as-shot WB as the default temperature.
-      const initial = normalizeParams({ temperature: asShot });
+      const initial = freshParams(asShot);
       set({
         photoId,
         asShotTemperature: asShot,
@@ -246,21 +264,18 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     set((s) => ({
       params: { ...s.params, [key]: value },
     }));
-    pushEdit(get);
   },
 
   setDynParam(key, value) {
     set((s) => ({
       paramBag: { ...s.paramBag, [key]: value },
     }));
-    pushEdit(get);
   },
 
   setDynParams(patch) {
     set((s) => ({
       paramBag: { ...s.paramBag, ...patch },
     }));
-    pushEdit(get);
   },
 
   setToneCurve(channel, points) {
@@ -270,7 +285,6 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
         toneCurve: { ...s.params.toneCurve, [channel]: points },
       },
     }));
-    pushEdit(get);
   },
 
   setHslValue(band, channel, value) {
@@ -283,27 +297,27 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
         },
       },
     }));
-    pushEdit(get);
   },
 
   async applyPreset(params, paramBag) {
     set((s) => ({
       previewParams: null,
       previewParamBag: null,
-      params: normalizeParams(params),
+      params: normalizeParams({ ...params, processVersion: s.params.processVersion }),
       // Merge the preset's contributed params over the current bag (a partial
       // preset leaves untouched extension settings in place).
       paramBag: paramBag
         ? { ...s.paramBag, ...normalizeParamBag(paramBag) }
         : s.paramBag,
     }));
-    pushEdit(get);
     await get().commitEdit("Preset");
   },
 
   setPreviewParams(params, paramBag) {
     set((s) => ({
-      previewParams: params ? normalizeParams(params) : null,
+      previewParams: params
+        ? normalizeParams({ ...params, processVersion: s.params.processVersion })
+        : null,
       // Pair the bag with the param preview: merge the preset's contributed
       // params over the live bag (so untouched extension settings stay), and
       // clear it whenever the param preview clears.
@@ -317,6 +331,23 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   async commitEdit(label: string) {
     const { photoId, params, paramBag, history, historyIndex, asShotTemperature } = get();
     if (!photoId) return;
+
+    // An unchanged edit costs no step and keeps the redo tail. The raw compare
+    // matches an entry this version wrote, stored or not; right after a commit
+    // it is cheap too, as the entry still shares nested objects with the live
+    // params. A stack written by an older build only matches once normalized.
+    const entry = history[historyIndex];
+    const current = { params, paramBag };
+    if (
+      entry &&
+      (sameEdit(current, { params: entry.params, paramBag: entry.paramBag ?? {} }) ||
+        sameEdit(current, {
+          params: normalizeParams(entry.params),
+          paramBag: normalizeParamBag(entry.paramBag),
+        }))
+    ) {
+      return;
+    }
 
     const snapshot: EditSnapshot = {
       timestamp: Date.now(),
@@ -367,6 +398,8 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
     set((s) => {
       const next = { ...s.params };
       for (const k of keys) {
+        // Not an adjustment: only reset() starts a photo over at the current version.
+        if (k === "processVersion") continue;
         assignDevelopParam(
           next,
           k,
@@ -375,16 +408,21 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
       }
       return { params: next };
     });
-    pushEdit(get);
     await get().commitEdit(label);
   },
 
   async reset() {
-    const fresh = normalizeParams({ temperature: get().asShotTemperature });
+    const fresh = freshParams(get().asShotTemperature);
     set({ params: fresh, paramBag: {} });
-    pushEdit(get);
     // Persist as an undoable history step so the reset survives navigation.
     await get().commitEdit("Reset");
+  },
+
+  async updateProcessing() {
+    const { photoId, params } = get();
+    if (!photoId || !usesOlderProcessing(params)) return;
+    set({ params: { ...params, processVersion: CURRENT_PROCESS_VERSION } });
+    await get().commitEdit(UPDATE_PROCESSING_LABEL);
   },
 
   canUndo: () => get().historyIndex > 0,

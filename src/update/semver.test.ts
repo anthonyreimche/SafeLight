@@ -6,7 +6,7 @@
 // Tests for the shared semver helper. Run with `npm test`.
 
 import { describe, it, expect } from "vitest";
-import { parseSemver, isSemver, compareSemver, isNewer } from "./semver.ts";
+import { parseSemver, isSemver, compareSemver, isNewer, isPrerelease } from "./semver.ts";
 
 describe("parseSemver", () => {
   it("handles v-prefix, missing components, and garbage", () => {
@@ -70,5 +70,14 @@ describe("isNewer", () => {
     expect(isNewer("2.6.0-beta.1", "v2.6.0")).toBe(true);
     expect(isNewer("2.6.0", "v2.6.0-beta.1")).toBe(false);
     expect(isNewer("2.6.0-beta.1", "v2.6.0-beta.2")).toBe(true);
+  });
+});
+
+describe("isPrerelease", () => {
+  it("is true only for a pre-release suffix", () => {
+    expect(isPrerelease("1.3.0-beta.1")).toBe(true);
+    expect(isPrerelease("v2.0.0-rc.1")).toBe(true);
+    expect(isPrerelease("1.3.0")).toBe(false);
+    expect(isPrerelease("1.3.0+build.5")).toBe(false);
   });
 });

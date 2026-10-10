@@ -11,7 +11,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import type { ExtensionManifest, ExtensionModule, SafelightAPI } from "./types";
-import { registerModule, useRegistry } from "./registry";
+import { registerModule, registerStylesheet, useRegistry } from "./registry";
+import { CORE_EXTENSION_ID } from "./core-extension";
 import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
 import { updateSettings } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
@@ -20,14 +21,17 @@ import { App } from "@/App";
 import { importPluginModule } from "./plugin-module";
 import {
   checkAllExtensionUpdates,
+  checkExtensionUpdate,
   classifyUpdate,
   installFromGitHub,
   loadExternalPlugins,
+  setExtensionEnabled,
   uninstallPlugin,
   updateExtension,
   useDisabledExtensions,
   useExternalPluginsSettled,
 } from "./loader";
+import { keptVersion, setKept, usePins } from "./pins";
 
 vi.mock("./plugin-module", () => ({ importPluginModule: vi.fn() }));
 
@@ -508,5 +512,241 @@ describe("useExternalPluginsSettled", () => {
     serve({ "1.0.0": broken() });
     await loadExternalPlugins();
     expect(useExternalPluginsSettled.getState().settled).toBe(true);
+  });
+});
+
+// Ids under "core" are Safelight's own: an extension holding one would share the
+// registry id of a built-in, and stopping it would sweep that built-in's
+// contributions. Keep this last: if the refusal ever regresses, these runs sweep
+// the registry the other tests share, and a test after them would fail for the
+// wrong reason.
+describe("an installed extension whose id is under core", () => {
+  const RESERVED = ["core", "core.hsl", "CORE", "Core.Tools"];
+  const reason = (id: string) => `${id}: extension ids under 'core' are reserved for Safelight`;
+  const claiming = (id: string): ExtensionManifest => ({ ...manifest("1.0.0"), id });
+  const ownSheet = (id: string) => `${id}.sheet`;
+  const ownerOfSheet = (id: string) =>
+    useRegistry.getState().stylesheets[ownSheet(id)]?.extensionId;
+  /** What Safelight's own extension under `id` has registered. */
+  const registerOwn = (id: string) => registerStylesheet(id, { id: ownSheet(id), css: ".own{}" });
+  /** A bundle that registers something and then fails, so activating it would sweep its id. */
+  const failing = () =>
+    vi.fn((api: SafelightAPI) => {
+      api.registerStylesheet({ id: GHOST, css: ".g{}" });
+      throw new Error("boom");
+    });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(RESERVED)(
+    "is not imported or activated at launch, and the log says why (%s)",
+    async (id) => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const activate = failing();
+      registerOwn(id);
+      list = [claiming(id)];
+      serve({ "1.0.0": { activate } });
+
+      await loadExternalPlugins();
+
+      expect(importer).not.toHaveBeenCalled();
+      expect(activate).not.toHaveBeenCalled();
+      expect(ownerOfSheet(id)).toBe(id);
+      expect(error).toHaveBeenCalledWith(expect.any(String), new Error(reason(id)));
+    },
+  );
+
+  it("does not stop the extensions listed after it from loading", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    list = [claiming("core"), manifest("1.0.0")];
+    serve({ "1.0.0": bundle() });
+
+    await loadExternalPlugins();
+
+    expect(importer).toHaveBeenCalledTimes(1);
+    expect(importer).toHaveBeenCalledWith(expect.stringContaining(`/__plugins__/${ID}/`));
+    expect(live()).toBe(true);
+  });
+
+  it("is not started by turning it on either, and the error says why", async () => {
+    const activate = failing();
+    list = [claiming("core.tools")];
+    serve({ "1.0.0": { activate } });
+
+    await expect(setExtensionEnabled("core.tools", true)).rejects.toThrow(reason("core.tools"));
+
+    expect(importer).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled();
+  });
+
+  it("is refused on install and rolled back, keeping Safelight's own contributions", async () => {
+    const activate = failing();
+    registerOwn(CORE_EXTENSION_ID);
+    install.mockResolvedValueOnce(claiming(CORE_EXTENSION_ID));
+    settleUpdate.mockResolvedValueOnce(null); // nothing to restore
+    serve({ "1.0.0": { activate } });
+
+    await expect(installFromGitHub(REPO)).rejects.toThrow(
+      `Widget 1.0.0 failed to start (${reason(CORE_EXTENSION_ID)})`,
+    );
+
+    expect(settleUpdate).toHaveBeenCalledWith(CORE_EXTENSION_ID, "rollback");
+    expect(importer).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled();
+    expect(ownerOfSheet(CORE_EXTENSION_ID)).toBe(CORE_EXTENSION_ID);
+  });
+});
+
+describe("release versions", () => {
+  it("installs the latest release when no version is given", async () => {
+    await bootWith(bundle());
+    serve({ "1.0.0": bundle(), "2.0.0": bundle() });
+    await installFromGitHub(REPO);
+    expect(install).toHaveBeenCalledWith(REPO);
+  });
+
+  it("installs the chosen version", async () => {
+    await bootWith(bundle());
+    serve({ "1.0.0": bundle(), "2.0.0": bundle() });
+    await installFromGitHub(REPO, "2.0.0");
+    expect(install).toHaveBeenCalledWith(REPO, "2.0.0");
+  });
+
+  it("updates to the version the check offered", async () => {
+    await bootWith(bundle());
+    serve({ "1.0.0": bundle(), "2.0.0": bundle() });
+    await updateExtension(REPO, "2.0.0");
+    expect(install).toHaveBeenCalledWith(REPO, "2.0.0");
+  });
+
+  it("asks for pre-releases when the installed version is one", async () => {
+    await checkExtensionUpdate(manifest("2.0.0-beta.1"), true);
+    expect(remoteManifest).toHaveBeenCalledWith(REPO, { prerelease: true });
+  });
+
+  it("asks for full releases otherwise", async () => {
+    await checkExtensionUpdate(manifest("1.0.0"), true);
+    expect(remoteManifest).toHaveBeenCalledWith(REPO);
+  });
+
+  it("auto-update installs the version the check found", async () => {
+    updateSettings({ autoUpdateExtensions: true });
+    await bootWith(bundle());
+    serve({ "1.0.0": bundle(), "2.0.0": bundle() });
+    await checkAllExtensionUpdates(true);
+    expect(install).toHaveBeenCalledWith(REPO, "2.0.0");
+  });
+});
+
+describe("install queueing", () => {
+  /** An install the test settles by hand, so overlap between installs is visible. */
+  const held = () => {
+    let resolve!: (m: ExtensionManifest) => void;
+    let reject!: (e: Error) => void;
+    const promise = new Promise<ExtensionManifest>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it("joins a running install of the same version", async () => {
+    await bootWith(bundle());
+    serve({ "1.0.0": bundle(), "2.0.0": bundle() });
+    const gate = held();
+    install.mockImplementationOnce(() => gate.promise);
+
+    const first = installFromGitHub(REPO, "2.0.0");
+    const second = installFromGitHub(REPO, "2.0.0");
+    gate.resolve(manifest("2.0.0"));
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(b).toBe(a);
+  });
+
+  it("queues a different version behind the running install", async () => {
+    await bootWith(bundle());
+    serve({ "1.0.0": bundle(), "3.0.0": bundle() });
+    install.mockImplementation(async (_spec: string, version?: string) =>
+      manifest(version ?? "2.0.0"),
+    );
+    const gate = held();
+    install.mockImplementationOnce(() => gate.promise);
+
+    const first = installFromGitHub(REPO, "3.0.0");
+    const second = installFromGitHub(REPO, "1.0.0");
+    await tick();
+    expect(install).toHaveBeenCalledTimes(1);
+
+    gate.resolve(manifest("3.0.0"));
+    expect((await first).version).toBe("3.0.0");
+    expect((await second).version).toBe("1.0.0");
+    expect(install).toHaveBeenLastCalledWith(REPO, "1.0.0");
+  });
+
+  it("runs a queued install after the running one fails", async () => {
+    await bootWith(bundle());
+    serve({ "1.0.0": bundle(), "3.0.0": bundle() });
+    install.mockImplementation(async (_spec: string, version?: string) =>
+      manifest(version ?? "2.0.0"),
+    );
+    const gate = held();
+    install.mockImplementationOnce(() => gate.promise);
+
+    const first = installFromGitHub(REPO, "3.0.0");
+    const second = installFromGitHub(REPO, "1.0.0").catch((e: Error) => e);
+    gate.reject(new Error("offline"));
+
+    await expect(first).rejects.toThrow("offline");
+    expect(await second).toMatchObject({ version: "1.0.0" });
+    expect(install).toHaveBeenLastCalledWith(REPO, "1.0.0");
+  });
+
+  it("joins a queued install of the same version instead of queuing a second", async () => {
+    await bootWith(bundle());
+    serve({ "1.0.0": bundle(), "3.0.0": bundle() });
+    install.mockImplementation(async (_spec: string, version?: string) =>
+      manifest(version ?? "2.0.0"),
+    );
+    const gate = held();
+    install.mockImplementationOnce(() => gate.promise);
+
+    const running = installFromGitHub(REPO, "3.0.0");
+    const queued = installFromGitHub(REPO, "1.0.0");
+    const joiner = installFromGitHub(REPO, "1.0.0");
+    gate.resolve(manifest("3.0.0"));
+
+    expect(await joiner).toBe(await queued);
+    await running;
+    expect(install.mock.calls.filter(([, v]) => v === "1.0.0")).toHaveLength(1);
+  });
+});
+
+describe("kept versions", () => {
+  beforeEach(() => usePins.setState({ pins: {} }));
+
+  it("auto-update leaves a kept extension alone", async () => {
+    updateSettings({ autoUpdateExtensions: true });
+    setKept(ID, "1.0.0");
+    await bootWith(bundle());
+    await checkAllExtensionUpdates(true);
+    expect(install).not.toHaveBeenCalled();
+    expect(useExtStoreUI.getState().updates[ID]?.hasUpdate).toBe(true);
+  });
+
+  it("updating stops keeping the old version", async () => {
+    setKept(ID, "1.0.0");
+    await bootWith(bundle());
+    serve({ "1.0.0": bundle(), "2.0.0": bundle() });
+    await updateExtension(REPO, "2.0.0");
+    expect(keptVersion(ID)).toBeNull();
+  });
+
+  it("uninstalling forgets the kept version", async () => {
+    setKept(ID, "1.0.0");
+    await uninstallPlugin(ID);
+    expect(keptVersion(ID)).toBeNull();
   });
 });

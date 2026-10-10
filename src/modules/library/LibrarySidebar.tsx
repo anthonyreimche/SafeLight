@@ -23,6 +23,7 @@ import {
   uniqueFolderName,
 } from "@/project/folder-ops";
 import type { ColorLabel } from "@/catalog/types";
+import { confirmDialog } from "@/ui/components/ConfirmDialog";
 import { isFilterActive, type RatingOp } from "./visible-photos";
 
 // Drag payload MIME types. Photos carry a JSON id array; a folder carries its
@@ -428,10 +429,13 @@ function FolderRow({
     void renameFolder(node.path, value);
   };
 
-  const handleDelete = () => {
-    const ok = window.confirm(
-      `Delete the folder "${node.name}" and everything inside it from disk, and remove its photos from the catalog? This can't be undone.`,
-    );
+  const handleDelete = async () => {
+    const ok = await confirmDialog({
+      title: "Delete folder",
+      message: `Delete the folder "${node.name}" and everything inside it from disk, and remove its photos from the catalog? This can't be undone.`,
+      confirmLabel: "Delete",
+      variant: "danger",
+    });
     if (ok) void deleteFolder(node.path);
   };
 
@@ -540,7 +544,7 @@ function FolderRow({
                 aria-label="Delete folder"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleDelete();
+                  void handleDelete();
                 }}
                 className="hidden w-4 text-text-muted hover:text-label-red group-hover:block"
               >

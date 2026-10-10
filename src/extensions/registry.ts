@@ -39,6 +39,9 @@ import {
   unregisterStageParams,
   type ParamDescriptor,
 } from "./param-registry";
+import { isReservedExtensionId } from "./core-extension";
+import { checkStageContract } from "./stage-validation";
+import { noteRendersPixels } from "./extension-kinds";
 import { unregisterExtensionActions } from "@/state/keybindings-store";
 import { clearExtensionCursors } from "@/state/cursor-store";
 
@@ -278,6 +281,7 @@ export function registerPipeline(
   extensionId: string,
   c: PipelineContribution,
 ): void {
+  noteRendersPixels(extensionId);
   useRegistry.setState((s) => ({
     pipelines: { ...s.pipelines, [c.id]: { ...c, extensionId } },
   }));
@@ -287,6 +291,7 @@ export function registerExportProcessor(
   extensionId: string,
   c: ExportProcessorContribution,
 ): void {
+  noteRendersPixels(extensionId);
   useRegistry.setState((s) => {
     const existing = Object.values(s.exportProcessors);
     // Keep an id's slot on re-registration; new ids append past the current max
@@ -319,15 +324,26 @@ export function registerProcessingStage(
   extensionId: string,
   c: ProcessingStageContribution,
 ): void {
-  // Clear any prior descriptors for this id first, so re-registering the same
-  // stage with a different uniform set (e.g. swapping denoise methods) fully
-  // replaces its params instead of leaking the old ones.
-  unregisterStageParams(c.id);
-  registerStageParams(c.id, c.name, extensionId, c.uniforms);
+  noteRendersPixels(extensionId);
+  const check = checkStageContract(c, extensionId);
+  if (check.error) {
+    console.error(`[extensions] ${extensionId}: ${check.error}; stage not registered`);
+    return;
+  }
+  if (check.readsIgnored) console.warn(`[extensions] ${extensionId}: ${check.readsIgnored}`);
+  for (const warning of check.warnings) {
+    console.warn(`[extensions] ${extensionId}: ${warning}`);
+  }
+  const stage: ProcessingStageContribution = check.readsIgnored ? { ...c, reads: "source" } : c;
+  // Clear any prior descriptors for this id, so re-registering the same stage
+  // with a different uniform set (e.g. swapping denoise methods) fully replaces
+  // its params instead of leaking the old ones.
+  unregisterStageParams(stage.id);
+  registerStageParams(stage.id, stage.name, extensionId, stage.uniforms);
   useRegistry.setState((s) => ({
     processingStages: {
       ...s.processingStages,
-      [c.id]: { ...c, extensionId },
+      [stage.id]: { ...stage, extensionId },
     },
   }));
 }
@@ -598,12 +614,6 @@ export interface PresetStageField {
   changed: boolean;
 }
 
-/** A built-in stage lives in the "core" / "core.*" extension namespace; its
- *  adjustments are already represented by DevelopParams preset fields. */
-function isCoreExtension(extensionId: string): boolean {
-  return extensionId === "core" || extensionId.startsWith("core.");
-}
-
 function bagDiffersFromDefault(
   value: unknown,
   def: ParamDescriptor["default"],
@@ -628,7 +638,9 @@ export function collectPresetStages(
 
   const out: PresetStageField[] = [];
   for (const stage of Object.values(stages)) {
-    if (isCoreExtension(stage.extensionId)) continue;
+    // This skip means "built-in stage": only built-in extensions can hold a reserved id
+    // (the loaders refuse it), and their adjustments are DevelopParams preset fields.
+    if (isReservedExtensionId(stage.extensionId)) continue;
     const descs = descsByStage.get(stage.id);
     if (!descs || descs.length === 0) continue; // no savable params
     out.push({
@@ -655,6 +667,18 @@ export function describePresetBag(
     .map((s) => s.label);
 }
 
+// What is kept for a stage outside the registry (the render bridge's stage
+// textures) goes with it when its extension is swept.
+const stageReleases = new Set<(stageIds: readonly string[]) => void>();
+
+/** Call `release` with the ids of the stages an extension owned whenever
+ *  unregisterExtension sweeps one. A single stage removed with
+ *  unregisterProcessingStage isn't released: its extension may register it
+ *  again and expects what it set for it to be there. */
+export function onStagesReleased(release: (stageIds: readonly string[]) => void): void {
+  stageReleases.add(release);
+}
+
 /** Remove every contribution an extension made (uninstall/deactivate). */
 export function unregisterExtension(extensionId: string): void {
   const drop = <T extends { extensionId: string }>(map: Record<string, T>) =>
@@ -663,8 +687,11 @@ export function unregisterExtension(extensionId: string): void {
     );
   // Clean up param descriptors for any processing stages owned by this extension
   const stages = useRegistry.getState().processingStages;
+  const owned: string[] = [];
   for (const s of Object.values(stages)) {
-    if (s.extensionId === extensionId) unregisterStageParams(s.id);
+    if (s.extensionId !== extensionId) continue;
+    unregisterStageParams(s.id);
+    owned.push(s.id);
   }
   unregisterExtensionParams(extensionId);
   useRegistry.setState((s) => ({
@@ -689,6 +716,7 @@ export function unregisterExtension(extensionId: string): void {
   }));
   unregisterExtensionActions(extensionId);
   clearExtensionCursors(extensionId);
+  if (owned.length > 0) for (const release of stageReleases) release(owned);
 }
 
 export function panelsForSlot(

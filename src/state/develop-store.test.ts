@@ -22,22 +22,30 @@ import { useDevelopStore } from "./develop-store";
 import { broadcast } from "./broadcast";
 import { regenerateEditedThumbnail } from "./edited-thumbnail";
 import { useCatalogStore } from "./catalog-store";
-import { setCatalogStorage, type CatalogStorage } from "@/catalog/storage";
+import { setCatalogStorage } from "@/catalog/storage";
+import { installMemoryStorage, photo, type MemoryEdits } from "@/catalog/stored-edit.fixtures";
 import { registerCatalogHooks, useRegistry } from "@/extensions/registry";
 import {
   registerStageParams,
   unregisterStageParams,
 } from "@/extensions/param-registry";
 import {
+  CURRENT_PROCESS_VERSION,
   DEFAULT_DEVELOP_PARAMS,
+  DEFAULT_MASK_PANELS,
+  LEGACY_PROCESS_VERSION,
   NEUTRAL_TEMPERATURE_K,
+  defaultMaskAdjustments,
+  freshParams,
   normalizeParams,
 } from "@/catalog/types";
 import type {
-  CatalogPhoto,
+  BrushDab,
   DevelopParams,
   EditSnapshot,
   EditState,
+  Mask,
+  RetouchSpot,
 } from "@/catalog/types";
 import type { CatalogHooksContribution } from "@/extensions/types";
 
@@ -47,56 +55,7 @@ type EditCommitCtx = Parameters<
 
 const PHOTO_ID = "photo-1";
 
-function photo(id = PHOTO_ID): CatalogPhoto {
-  return {
-    id,
-    filename: `${id}.NEF`,
-    relPath: `${id}.NEF`,
-    folder: "",
-    directoryHandle: null,
-    fileHandle: null,
-    thumbnailBlob: null,
-    thumbnailUrl: null,
-    width: 6000,
-    height: 4000,
-    fileSize: 1024,
-    mimeType: "image/x-nikon-nef",
-    rating: 0,
-    colorLabel: "none",
-    flag: "none",
-    rotation: 0,
-    keywords: [],
-    dateCreated: 0,
-    dateImported: 0,
-    exif: {},
-  };
-}
-
-interface MemoryStorage extends CatalogStorage {
-  /** Every stack handed to putEditState, in order — the persistence assertions. */
-  written: EditState[];
-}
-
-function memoryStorage(seed?: EditState): MemoryStorage {
-  const states = new Map<string, EditState>();
-  if (seed) states.set(seed.photoId, seed);
-  const written: EditState[] = [];
-  return {
-    written,
-    getAllPhotos: async () => [],
-    putPhoto: async () => {},
-    putPhotos: async () => {},
-    deletePhoto: async () => {},
-    getEditState: async (id) => states.get(id),
-    getAllEditStates: async () => [...states.values()],
-    putEditState: async (editState) => {
-      states.set(editState.photoId, editState);
-      written.push(editState);
-    },
-  };
-}
-
-const snapshot = (label: string, params: Partial<DevelopParams>): EditSnapshot => ({
+const snapshot =(label: string, params: Partial<DevelopParams>): EditSnapshot => ({
   timestamp: 1_700_000_000_000,
   label,
   params: normalizeParams(params),
@@ -130,13 +89,12 @@ const labels = () => s().history.map((h) => h.label);
 // reset baseline (nothing mutates it in place).
 const INITIAL = useDevelopStore.getState();
 
-let storage: MemoryStorage;
+let storage: MemoryEdits;
 
 beforeEach(() => {
   useDevelopStore.setState(INITIAL, true);
-  useCatalogStore.setState({ photos: [photo()] });
-  storage = memoryStorage();
-  setCatalogStorage(storage);
+  useCatalogStore.setState({ photos: [photo(PHOTO_ID)] });
+  storage = installMemoryStorage();
   vi.mocked(broadcast).mockClear();
   vi.mocked(regenerateEditedThumbnail).mockClear();
 });
@@ -173,16 +131,14 @@ describe("loadEdit", () => {
   });
 
   it("restores a stored stack at its stored cursor", async () => {
-    setCatalogStorage(
-      memoryStorage(
-        editState(
-          [
-            snapshot("Original", { temperature: 5000 }),
-            snapshot("Exposure", { temperature: 5000, exposure: 1.5 }),
-            snapshot("Contrast", { temperature: 5000, exposure: 1.5, contrast: 20 }),
-          ],
-          1,
-        ),
+    installMemoryStorage(
+      editState(
+        [
+          snapshot("Original", { temperature: 5000 }),
+          snapshot("Exposure", { temperature: 5000, exposure: 1.5 }),
+          snapshot("Contrast", { temperature: 5000, exposure: 1.5, contrast: 20 }),
+        ],
+        1,
       ),
     );
     await s().loadEdit(PHOTO_ID, 5000);
@@ -194,9 +150,7 @@ describe("loadEdit", () => {
   });
 
   it("prepends an Original to a legacy stack and keeps the stored step current", async () => {
-    setCatalogStorage(
-      memoryStorage(editState([snapshot("Exposure", { exposure: 1.5 })], 0)),
-    );
+    installMemoryStorage(editState([snapshot("Exposure", { exposure: 1.5 })], 0));
     await s().loadEdit(PHOTO_ID, 4800);
     expect(labels()).toEqual(["Original", "Exposure"]);
     expect(s().historyIndex).toBe(1);
@@ -208,15 +162,35 @@ describe("loadEdit", () => {
 
   it("clamps a stored cursor that falls outside its stack", async () => {
     const stack = [snapshot("Original", {}), snapshot("Exposure", { exposure: 2 })];
-    setCatalogStorage(memoryStorage(editState(stack, 7)));
+    installMemoryStorage(editState(stack, 7));
     await s().loadEdit(PHOTO_ID);
     expect(s().historyIndex).toBe(1);
     expect(params().exposure).toBe(2);
 
-    setCatalogStorage(memoryStorage(editState(stack, -3)));
+    installMemoryStorage(editState(stack, -3));
     await s().loadEdit(PHOTO_ID);
     expect(s().historyIndex).toBe(0);
     expect(params().exposure).toBe(0);
+  });
+
+  it("opens on the newest snapshot when the stored cursor is NaN", async () => {
+    const stack = [snapshot("Original", {}), snapshot("Exposure", { exposure: 2 })];
+    installMemoryStorage(editState(stack, NaN));
+    await s().loadEdit(PHOTO_ID);
+    expect(s().historyIndex).toBe(1);
+    expect(params().exposure).toBe(2);
+  });
+
+  it("opens on the newest snapshot after the seeded Original when the cursor is NaN", async () => {
+    const stack = [
+      snapshot("Exposure", { exposure: 1.5 }),
+      snapshot("Contrast", { exposure: 1.5, contrast: 20 }),
+    ];
+    installMemoryStorage(editState(stack, NaN));
+    await s().loadEdit(PHOTO_ID);
+    expect(labels()).toEqual(["Original", "Exposure", "Contrast"]);
+    expect(s().historyIndex).toBe(2);
+    expect(params().contrast).toBe(20);
   });
 
   it("clears the previous photo's preview and tool selection", async () => {
@@ -238,20 +212,106 @@ describe("loadEdit", () => {
   });
 });
 
+const brushMask = (): Mask => ({
+  id: "m1",
+  name: "Brush",
+  visible: true,
+  invert: false,
+  opacity: 100,
+  adj: defaultMaskAdjustments(),
+  panels: [...DEFAULT_MASK_PANELS],
+  components: [
+    {
+      id: "c1",
+      kind: "brush",
+      mode: "add",
+      invert: false,
+      brush: { dabs: [], feather: 0.5 },
+    },
+  ],
+});
+
+const dab = (x: number): BrushDab => ({
+  x,
+  y: 0.5,
+  radius: 0.05,
+  erase: false,
+  feather: 0.5,
+});
+
+const healSpot = (id: string): RetouchSpot => ({
+  id,
+  shape: "circle",
+  mode: "heal",
+  visible: true,
+  dstX: 0.5,
+  dstY: 0.5,
+  srcX: 0.4,
+  srcY: 0.4,
+  radius: 0.04,
+  feather: 50,
+  opacity: 100,
+});
+
 describe("live edits", () => {
   beforeEach(async () => {
     await s().loadEdit(PHOTO_ID, 5000);
     vi.mocked(broadcast).mockClear();
   });
 
-  it("broadcasts the live params without writing history", () => {
+  // Every tick used to post the whole params object (brush dabs included) to
+  // other windows, and the only reader re-loads the saved edit. Only commits,
+  // undo/redo and stored edits announce.
+  it("applies a slider tick without announcing it or writing history", () => {
     s().setParam("exposure", 1.5);
     expect(params().exposure).toBe(1.5);
     expect(s().history).toHaveLength(1);
-    expect(broadcast).toHaveBeenCalledWith({
-      type: "edit-update",
-      payload: { photoId: PHOTO_ID, params: params() },
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("stays silent through a whole slider drag", () => {
+    for (let i = 1; i <= 10; i++) s().setParam("exposure", i / 10);
+    expect(params().exposure).toBe(1);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("stays silent for extension parameters", () => {
+    s().setDynParam("ext.stage.amount", 40);
+    s().setDynParams({ "ext.stage.amount": 41, "ext.stage.size": 3 });
+    expect(s().paramBag).toEqual({ "ext.stage.amount": 41, "ext.stage.size": 3 });
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("stays silent through ten brush dabs", () => {
+    s().addMask(brushMask());
+    for (let i = 1; i <= 10; i++) s().addBrushDab("m1", "c1", dab(i / 20));
+    expect(params().masks[0].components[0].brush?.dabs).toHaveLength(10);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("stays silent for every mask and retouch mutation", () => {
+    s().addMask(brushMask());
+    s().addComponent("m1", {
+      id: "c2",
+      kind: "brush",
+      mode: "add",
+      invert: false,
+      brush: { dabs: [], feather: 0.5 },
     });
+    s().cycleComponentMode("m1", "c2");
+    s().updateComponent("m1", "c2", { invert: true });
+    s().updateMask("m1", { visible: false });
+    s().updateMaskAdj("m1", { exposure: 0.5 });
+    s().updateMaskBag("m1", { "ext.stage.amount": 5 });
+    s().renameMask("m1", "Sky");
+    s().removeComponent("m1", "c2");
+    s().addSpot(healSpot("s1"));
+    s().updateSpot("s1", { opacity: 80 });
+    s().removeSpot("s1");
+    s().removeMask("m1");
+    expect(params().masks).toEqual([]);
+    expect(params().retouch).toEqual([]);
+    expect(broadcast).not.toHaveBeenCalled();
   });
 
   it("coalesces a whole gesture into a single history entry", async () => {
@@ -261,7 +321,7 @@ describe("live edits", () => {
     expect(s().history[1].params.exposure).toBe(1.5);
   });
 
-  it("broadcasts nested tone-curve and HSL edits too", () => {
+  it("applies nested tone-curve and HSL edits without announcing them", () => {
     s().setToneCurve("red", [
       { x: 0, y: 0 },
       { x: 1, y: 0.8 },
@@ -270,8 +330,44 @@ describe("live edits", () => {
     s().setHslValue("saturation", "blue", -30);
     expect(params().hsl.saturation.blue).toBe(-30);
     expect(params().hsl.hue.blue).toBe(0);
-    expect(broadcast).toHaveBeenCalledTimes(2);
+    expect(broadcast).not.toHaveBeenCalled();
     expect(s().history).toHaveLength(1);
+  });
+
+  it("announces a whole gesture once, when it commits", async () => {
+    for (let i = 1; i <= 10; i++) s().setParam("exposure", i / 10);
+    expect(broadcast).not.toHaveBeenCalled();
+    await s().commitEdit("Exposure");
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith({
+      type: "edit-update",
+      payload: { photoId: PHOTO_ID, params: params() },
+    });
+  });
+
+  it("announces an undo once", async () => {
+    s().setParam("exposure", 1);
+    await s().commitEdit("Exposure");
+    vi.mocked(broadcast).mockClear();
+
+    s().undo();
+    expect(params().exposure).toBe(0);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith({
+      type: "edit-update",
+      payload: { photoId: PHOTO_ID, params: params() },
+    });
+  });
+
+  it("announces a redo once", async () => {
+    s().setParam("exposure", 1);
+    await s().commitEdit("Exposure");
+    s().undo();
+    vi.mocked(broadcast).mockClear();
+
+    s().redo();
+    expect(params().exposure).toBe(1);
+    expect(broadcast).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -442,18 +538,16 @@ describe("undo / redo", () => {
     registerStageParams("teststage", "Test Stage", "test-ext", [
       { key: "amount", glslType: "float", default: 25 },
     ]);
-    setCatalogStorage(
-      memoryStorage(
-        editState(
-          [
-            snapshot("Original", { temperature: 5000 }),
-            legacySnapshot("Exposure", { exposure: 1.5 }, {
-              "teststage.amount": "not-a-float",
-            }),
-            snapshot("Contrast", { temperature: 5000, contrast: 20 }),
-          ],
-          2,
-        ),
+    installMemoryStorage(
+      editState(
+        [
+          snapshot("Original", { temperature: 5000 }),
+          legacySnapshot("Exposure", { exposure: 1.5 }, {
+            "teststage.amount": "not-a-float",
+          }),
+          snapshot("Contrast", { temperature: 5000, contrast: 20 }),
+        ],
+        2,
       ),
     );
     await s().loadEdit(PHOTO_ID, 5000);
@@ -522,7 +616,7 @@ describe("reset", () => {
     await s().commitEdit("Exposure");
 
     await s().reset();
-    expect(params()).toEqual(normalizeParams({ temperature: 3200 }));
+    expect(params()).toEqual(freshParams(3200));
     expect(s().paramBag).toEqual({});
     expect(labels()).toEqual(["Original", "Exposure", "Reset"]);
     expect(s().canUndo()).toBe(true);
@@ -593,5 +687,198 @@ describe("setPreviewParams", () => {
     s().setDynParam("a.stage.k", 1);
     s().setPreviewParams(normalizeParams({ exposure: 3 }));
     expect(s().previewParamBag).toBeNull();
+  });
+});
+
+describe("process versions", () => {
+  const loadLegacy = async () => {
+    storage = installMemoryStorage(editState([legacySnapshot("Exposure", { exposure: 1 })], 0));
+    await s().loadEdit(PHOTO_ID, 5200);
+  };
+
+  it("starts the store on the current version, before any photo loads", () => {
+    expect(INITIAL.params.processVersion).toBe(CURRENT_PROCESS_VERSION);
+  });
+
+  it("gives a photo with no stored edit the current version, Original included", async () => {
+    await s().loadEdit(PHOTO_ID, 5200);
+    expect(params().processVersion).toBe(CURRENT_PROCESS_VERSION);
+    expect(s().history[0].params.processVersion).toBe(CURRENT_PROCESS_VERSION);
+  });
+
+  it("opens an edit saved before process versions at version 1, its prepended Original too", async () => {
+    await loadLegacy();
+    expect(params().processVersion).toBe(LEGACY_PROCESS_VERSION);
+    expect(s().history[0].label).toBe("Original");
+    expect(s().history[0].params.processVersion).toBe(LEGACY_PROCESS_VERSION);
+  });
+
+  it("gives a version 2 edit that has no Original a version 2 Original", async () => {
+    storage = installMemoryStorage(
+      editState([snapshot("Exposure", { exposure: 1, processVersion: 2 })], 0),
+    );
+    await s().loadEdit(PHOTO_ID, 5200);
+    expect(labels()).toEqual(["Original", "Exposure"]);
+    expect(s().history[0].params.processVersion).toBe(2);
+    expect(s().history[0].params.temperature).toBe(5200);
+  });
+
+  it("keeps version 2 for an edit made after undoing to that prepended Original", async () => {
+    storage = installMemoryStorage(
+      editState([snapshot("Exposure", { exposure: 1, processVersion: 2 })], 0),
+    );
+    await s().loadEdit(PHOTO_ID, 5200);
+    s().undo();
+    expect(params().processVersion).toBe(2);
+
+    s().setParam("contrast", 20);
+    await s().commitEdit("Contrast");
+    const top = storage.written.at(-1)!.stack.at(-1)!;
+    expect(top.params.processVersion).toBe(2);
+  });
+
+  it("keeps version 1 through edits and commits", async () => {
+    await loadLegacy();
+    s().setParam("contrast", 20);
+    await s().commitEdit("Contrast");
+    const top = storage.written.at(-1)!.stack.at(-1)!;
+    expect(top.params.processVersion).toBe(LEGACY_PROCESS_VERSION);
+  });
+
+  it("keeps a stored version 2 through loading and committing", async () => {
+    storage = installMemoryStorage(
+      editState(
+        [
+          snapshot("Original", { processVersion: 2 }),
+          snapshot("Exposure", { exposure: 1, processVersion: 2 }),
+        ],
+        1,
+      ),
+    );
+    await s().loadEdit(PHOTO_ID, 5200);
+    expect(params().processVersion).toBe(2);
+
+    s().setParam("contrast", 20);
+    await s().commitEdit("Contrast");
+    const top = storage.written.at(-1)!.stack.at(-1)!;
+    expect(top.params.processVersion).toBe(2);
+  });
+
+  it("starts a reset photo over at the current version", async () => {
+    await loadLegacy();
+    await s().reset();
+    expect(params().processVersion).toBe(CURRENT_PROCESS_VERSION);
+  });
+
+  it("never lets a preset change the version", async () => {
+    await loadLegacy();
+    await s().applyPreset({ ...freshParams(), exposure: 1.5 });
+    expect(params().exposure).toBe(1.5);
+    expect(params().processVersion).toBe(LEGACY_PROCESS_VERSION);
+  });
+
+  it("previews a partial at the open photo's version", async () => {
+    await s().loadEdit(PHOTO_ID, 5200);
+    s().setPreviewParams({ exposure: 1 });
+    expect(s().previewParams?.exposure).toBe(1);
+    expect(s().previewParams?.processVersion).toBe(CURRENT_PROCESS_VERSION);
+  });
+
+  it("never lets a preview change the version", async () => {
+    await loadLegacy();
+    s().setPreviewParams({ exposure: 1, processVersion: CURRENT_PROCESS_VERSION });
+    expect(s().previewParams?.exposure).toBe(1);
+    expect(s().previewParams?.processVersion).toBe(LEGACY_PROCESS_VERSION);
+  });
+
+  it("leaves the version alone when a panel reset lists it", async () => {
+    await loadLegacy();
+    await s().resetParams(["processVersion", "exposure"], "Reset Basic");
+    expect(params().exposure).toBe(0);
+    expect(params().processVersion).toBe(LEGACY_PROCESS_VERSION);
+  });
+
+  describe("updateProcessing", () => {
+    const BAG = { "ext.stage.amount": 40 };
+
+    // An edit saved before process versions existed, with a look and a bag to keep.
+    const openLegacy = async () => {
+      storage = installMemoryStorage(
+        editState([legacySnapshot("Exposure", { exposure: 1, contrast: 20 }, BAG)], 0),
+      );
+      await s().loadEdit(PHOTO_ID, 5200);
+      vi.mocked(broadcast).mockClear();
+      vi.mocked(regenerateEditedThumbnail).mockClear();
+    };
+    const lastWritten = () => storage.written[storage.written.length - 1];
+
+    it("moves a version 1 photo to the current version and keeps every other setting", async () => {
+      await openLegacy();
+      const before = params();
+      expect(before.processVersion).toBe(LEGACY_PROCESS_VERSION);
+
+      await s().updateProcessing();
+
+      expect(params()).toEqual({ ...before, processVersion: CURRENT_PROCESS_VERSION });
+      expect(s().paramBag).toEqual(BAG);
+    });
+
+    it("is one history step, labelled and persisted", async () => {
+      await openLegacy();
+      await s().updateProcessing();
+
+      expect(labels()).toEqual(["Original", "Exposure", "Update processing"]);
+      expect(s().historyIndex).toBe(2);
+      expect(storage.written).toHaveLength(1);
+      expect(lastWritten().currentIndex).toBe(2);
+      const stored = lastWritten().stack[2];
+      expect(stored.label).toBe("Update processing");
+      expect(stored.params).toEqual(params());
+      expect(stored.paramBag).toEqual(BAG);
+    });
+
+    it("undoes back to version 1 and redoes forward again", async () => {
+      await openLegacy();
+      await s().updateProcessing();
+
+      s().undo();
+      expect(params().processVersion).toBe(LEGACY_PROCESS_VERSION);
+      expect(params().exposure).toBe(1);
+      expect(lastWritten().currentIndex).toBe(1);
+
+      s().redo();
+      expect(params().processVersion).toBe(CURRENT_PROCESS_VERSION);
+      expect(params().exposure).toBe(1);
+    });
+
+    it("announces the new version and refreshes the grid thumbnail like any commit", async () => {
+      await openLegacy();
+      await s().updateProcessing();
+
+      expect(regenerateEditedThumbnail).toHaveBeenCalledWith(PHOTO_ID, params(), 5200, BAG);
+      expect(vi.mocked(broadcast).mock.lastCall?.[0]).toEqual({
+        type: "edit-update",
+        payload: { photoId: PHOTO_ID, params: params() },
+      });
+    });
+
+    it("adds no step to a photo that is already current", async () => {
+      await s().loadEdit(PHOTO_ID, 5200);
+      await s().updateProcessing();
+
+      expect(labels()).toEqual(["Original"]);
+      expect(storage.written).toHaveLength(0);
+      expect(regenerateEditedThumbnail).not.toHaveBeenCalled();
+    });
+
+    it("does nothing with no photo open", async () => {
+      await openLegacy();
+      useDevelopStore.setState({ photoId: null });
+      await s().updateProcessing();
+
+      expect(params().processVersion).toBe(LEGACY_PROCESS_VERSION);
+      expect(labels()).toEqual(["Original", "Exposure"]);
+      expect(storage.written).toHaveLength(0);
+    });
   });
 });

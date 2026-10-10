@@ -84,7 +84,10 @@ contextBridge.exposeInMainWorld("safelightNative", {
   },
   plugins: {
     list: () => ipcRenderer.invoke("plugins:list"),
-    install: (spec) => ipcRenderer.invoke("plugins:install", String(spec)),
+    install: (spec, version) =>
+      version == null
+        ? ipcRenderer.invoke("plugins:install", String(spec))
+        : ipcRenderer.invoke("plugins:install", String(spec), String(version)),
     search: (query, topic, force) =>
       ipcRenderer.invoke(
         "plugins:search",
@@ -93,14 +96,24 @@ contextBridge.exposeInMainWorld("safelightNative", {
         !!force,
       ),
     uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
-    remoteManifest: (repo) =>
-      ipcRenderer.invoke("plugins:remote-manifest", String(repo)),
+    remoteManifest: (repo, opts) =>
+      ipcRenderer.invoke("plugins:remote-manifest", String(repo), {
+        prerelease: !!(opts && opts.prerelease),
+      }),
+    // A repo's GitHub releases, for the store's version picker and notes.
+    releases: (repo, force) =>
+      ipcRenderer.invoke("plugins:releases", String(repo), !!force),
+    // safelight.json at one release's tag (its version and minAppVersion).
+    manifestAt: (repo, version) =>
+      ipcRenderer.invoke("plugins:manifest-at", String(repo), String(version)),
     // Finish an install/update: "keep" drops the previous copy, "rollback"
     // restores it (and returns its manifest).
     settleUpdate: (id, outcome) =>
       ipcRenderer.invoke("plugins:settle-update", String(id), String(outcome)),
     // Verified-allowlist + banned-kill-switch lists from the trust registry.
     trustList: (force) => ipcRenderer.invoke("plugins:trust-list", !!force),
+    // The welcome setup's starter kits (kits.json in the trust registry).
+    kits: (force) => ipcRenderer.invoke("plugins:kits", !!force),
   },
   // Chrome DevTools control + main-process diagnostics for the opt-in
   // Developer Tools extension (src/extensions/devtools/).

@@ -9,15 +9,18 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { reloadThumbnail } from "@/state/thumbnail-loader";
 import { detachedModule, goToModule } from "@/state/detach";
+import { followCatalogRecords } from "@/state/catalog-sync";
 import { hasModule } from "@/extensions/registry";
 
 // Keeps every window (main + detached) in sync: the active photo follows across
-// windows, and the main window reflects detach/attach of modules and carries out
-// a detached window's navigation. A detached window also announces its return
-// when closed, so the module is reclaimed.
+// windows, catalog records another window writes reach this window's stores, and
+// the main window reflects detach/attach of modules and carries out a detached
+// window's navigation. A detached window also announces its return when closed,
+// so the module is reclaimed.
 export function useWindowSync() {
   useEffect(() => {
     const dm = detachedModule();
+    const stopFollowing = followCatalogRecords();
 
     const off = onBroadcast((msg) => {
       if (msg.type === "selection-change") {
@@ -57,6 +60,7 @@ export function useWindowSync() {
 
     return () => {
       off();
+      stopFollowing();
       if (onUnload) window.removeEventListener("beforeunload", onUnload);
     };
   }, []);

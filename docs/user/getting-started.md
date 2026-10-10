@@ -7,6 +7,16 @@ Safelight is a fast, project-based RAW photo editor. This guide takes you from l
 - **Desktop app**: run the installed `Safelight` shortcut (see [Installation](installation.md)).
 - **From source** (Node.js 20.19+/22.12+): `npm install`, then `npm run dev` and open the printed URL in a Chromium-based browser, or `npm run electron:dev` for a desktop window. See [Installation](installation.md) to build your own installer.
 
+## First launch
+
+The first time you open Safelight, a short setup walks you through three things:
+
+1. **Look**: pick a theme, an interface font and the interface scale, and switch on accessibility options such as high contrast, larger text or reduced motion.
+2. **Workspace**: choose the canvas surround behind photos in Develop, how sliders respond, whether single-key shortcuts are on, and whether Safelight reopens your last project.
+3. **Extensions**: pick starter kits for how you shoot. Open a kit to choose single extensions. They install from GitHub when you finish, after the same third-party notice the Extensions store shows.
+
+Everything in the first two steps also lives in Preferences. You can skip setup at any point. To run it again, use **Welcome setup** on the welcome screen or **Preferences ▸ Interface ▸ Welcome setup**.
+
 ## Open a Project
 
 Safelight is project-based: instead of importing photos into a central catalog, you open a folder.

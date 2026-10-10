@@ -110,6 +110,11 @@ describe("exportPreset", () => {
     exportPreset("P", { clarity: 5 });
     expect(await exportedText()).toContain('\n  "format"');
   });
+
+  it("never writes a process version", async () => {
+    exportPreset("Live", { exposure: 1, processVersion: 2 });
+    expect((await exportedJSON()).params).toEqual({ exposure: 1 });
+  });
 });
 
 describe("parseSafelightPreset", () => {
@@ -262,6 +267,10 @@ describe("parseSafelightPreset: param sanitizing", () => {
     );
     expect(arrayBag?.paramBag).toBeUndefined();
   });
+
+  it("drops a process version, so a preset can't move a photo between versions", async () => {
+    expect(await parseParams('{"exposure":1,"processVersion":2}')).toEqual({ exposure: 1 });
+  });
 });
 
 describe("parseSafelightPreset: display transform", () => {
@@ -377,5 +386,28 @@ describe("presetPickerAccept", () => {
     expect(presetPickerAccept([claiming(".xmp", ".dcp"), claiming(".dcp")])).toBe(
       ".json,.xmp,.lrtemplate,.dcp",
     );
+  });
+});
+
+describe("importPresetFile — process versions", () => {
+  it("drops a version a foreign importer hands back", async () => {
+    const importer: PresetImporterContribution = {
+      id: "acme.xmp",
+      label: "Acme preset (.xmp)",
+      extensions: [".xmp"],
+      parse: async () => ({ name: "Foreign", params: { exposure: 1, processVersion: 2 } }),
+    };
+    const outcome = await importPresetFile(new File(["x"], "look.xmp"), [importer]);
+    expect(outcome).toEqual({ status: "imported", preset: { name: "Foreign", params: { exposure: 1 } } });
+  });
+
+  it("reports no settings when a version was all the importer found", async () => {
+    const importer: PresetImporterContribution = {
+      id: "acme.xmp",
+      label: "Acme preset (.xmp)",
+      extensions: [".xmp"],
+      parse: async () => ({ name: "Empty", params: { processVersion: 2 } }),
+    };
+    expect(await importPresetFile(new File(["x"], "look.xmp"), [importer])).toEqual({ status: "no-settings" });
   });
 });

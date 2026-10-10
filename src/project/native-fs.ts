@@ -111,6 +111,13 @@ function makeFileHandle(fs: Bridge, p: string): FileSystemFileHandle {
         async seek(_pos: number) {},
         async abort() {},
         async close() {
+          // Text goes to the bridge with no await first: the catalog flush on
+          // window close runs in beforeunload, and the send must leave before
+          // the page unloads.
+          if (parts.every((part): part is string => typeof part === "string")) {
+            await fs.write(p, new TextEncoder().encode(parts.join("")));
+            return;
+          }
           const buf = new Uint8Array(await new Blob(parts).arrayBuffer());
           await fs.write(p, buf);
         },

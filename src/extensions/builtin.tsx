@@ -18,6 +18,7 @@ import type {
 } from "./types";
 import type { DevelopParams } from "@/catalog/types";
 import { DENOISE_STAGE } from "@/rendering/webgl/builtin-denoise";
+import { CORE_DISPLAY_CLAMP } from "@/rendering/webgl/stage-injection";
 import { useDevelopStore } from "@/state/develop-store";
 import { HistogramPanel } from "@/modules/develop/panels/HistogramPanel";
 import { CropPanel } from "@/modules/develop/panels/CropPanel";
@@ -37,6 +38,7 @@ import { FoldersPanel, LibraryFiltersPanel } from "@/modules/library/LibrarySide
 import { InfoPanel } from "@/modules/library/InfoPanel";
 import { KeywordsPanel } from "@/modules/library/KeywordsPanel";
 import { ExportPanel } from "@/modules/export/ExportPanel";
+import { CORE_EXTENSION_ID } from "./core-extension";
 import { DevToolsPanel } from "./devtools/DevToolsPanel";
 import { DevSettings } from "./devtools/DevSettings";
 import { installLogCapture, uninstallLogCapture } from "./devtools/log-capture";
@@ -60,6 +62,9 @@ export interface BuiltinExtension {
   locked?: boolean;
   /** Ships inactive — seeded into the disabled list on first launch. */
   disabledByDefault?: boolean;
+  /** Saved layouts never switch it on or off: whatever the user chose for it
+   *  stands, whichever layout is picked. */
+  keepAcrossLayouts?: boolean;
   activate(api: SafelightAPI): void;
   /** Tear down side effects when disabled (built-ins can't be uninstalled, but
    *  may patch globals — e.g. Developer Tools patches console). */
@@ -156,7 +161,8 @@ const VIGNETTE_STAGE: ProcessingStageContribution = {
     : 0.0;
   darkening *= (1.0 - hlProtect);
   c = c * (1.0 - darkening) + c * lightening;
-  return clamp(c, 0.0, 1.0);
+  // Version 2 drops this clamp (see stage-injection.ts).
+  ${CORE_DISPLAY_CLAMP}
 }`,
   uniforms: [
     { key: "uVignetteAmount",     glslType: "float", default: 0, range: { min: -100, max: 100 }, label: "Amount" },
@@ -229,7 +235,8 @@ vec3 applyGrain(vec3 c, vec2 uv) {
     c.g += nG * sigma;
     c.b += nB * sigma;
   }
-  return clamp(c, 0.0, 1.0);
+  // Version 2 drops this clamp (see stage-injection.ts).
+  ${CORE_DISPLAY_CLAMP}
 }`,
   uniforms: [
     { key: "uGrainAmount",    glslType: "float", default: 0, range: { min: 0, max: 100 }, label: "Amount" },
@@ -242,7 +249,7 @@ vec3 applyGrain(vec3 c, vec2 uv) {
 export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   // ── Core (locked): the Extensions manager, stock themes, Classic layout ──
   {
-    id: "core",
+    id: CORE_EXTENSION_ID,
     name: "Safelight Core",
     version: V,
     description: "Extension manager, the stock themes and the Classic layout.",
@@ -376,6 +383,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     id: "core.accessibility",
     name: "Accessibility",
     version: V,
+    keepAcrossLayouts: true,
     description:
       "High-contrast and colour-vision overlays, larger text and controls, reduced motion and transparency, OS-preference sync, and opt-in keyboard editing for the canvas tools. Disable to remove all of these — the app stays screen-reader navigable either way.",
     activate(api) {
@@ -534,6 +542,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
     description:
       "In-app inspector: console, errors/warnings, system & WebGL info, localStorage editor and Electron DevTools controls. Disabled by default.",
     disabledByDefault: true,
+    keepAcrossLayouts: true,
     activate(api) {
       installLogCapture();
       initDevtoolsDetachSync(); // cross-window re-dock control

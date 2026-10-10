@@ -13,7 +13,6 @@
 import {
   Field,
   OptionRow,
-  SliderField,
   ToggleField,
   useFieldVisible,
 } from "@/ui/components/PreferencesDialog";
@@ -22,6 +21,7 @@ import {
   useSettings,
   type ColorVisionFilter,
 } from "@/state/settings-store";
+import { ScaleStepper } from "@/ui/components/ScaleStepper";
 import { ColorOverrides } from "./ColorOverrides";
 
 const COLOR_VISION_OPTIONS: { value: ColorVisionFilter; label: string }[] = [
@@ -64,15 +64,13 @@ export function AccessibilitySettings() {
         onChange={(v) => updateSettings({ highContrast: v })}
       />
       <div>
-        <SliderField
-          label="Interface scale"
-          value={uiScale}
-          min={0.8}
-          max={2}
-          step={0.05}
-          format={(v) => `${Math.round(v * 100)}%`}
-          onChange={(v) => updateSettings({ uiScale: v })}
-        />
+        <Field label="Interface scale">
+          <ScaleStepper
+            value={uiScale}
+            onChange={(v) => updateSettings({ uiScale: v })}
+            label="Interface scale"
+          />
+        </Field>
         {useFieldVisible("Interface scale") && (
           <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
             Enlarges the whole interface — text included — up to 200%. The same

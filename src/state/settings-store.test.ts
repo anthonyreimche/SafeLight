@@ -107,6 +107,14 @@ describe("hydration", () => {
     }
   });
 
+  it("replaces a non-finite stored scale with the default, keeps a real one", async () => {
+    // JSON turns NaN and Infinity into null; the stepper can't recover from them.
+    const { getSettings, DEFAULT_SETTINGS } = await boot('{"uiScale":null}');
+    expect(getSettings().uiScale).toBe(DEFAULT_SETTINGS.uiScale);
+    expect(DEFAULT_SETTINGS.uiScale).toBe(1);
+    expect((await boot('{"uiScale":1.3}')).getSettings().uiScale).toBe(1.3);
+  });
+
   it("folds the retired update channels into stable", async () => {
     for (const legacy of ["minor", "patch", ""]) {
       const { getSettings } = await boot(JSON.stringify({ updateChannel: legacy }));

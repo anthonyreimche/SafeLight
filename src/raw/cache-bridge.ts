@@ -3,6 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import { nativePathOf } from "@/project/native-fs";
 import type { CacheRequest, CacheResponse } from "./cache-worker";
 
 let worker: Worker | null = null;
@@ -83,13 +84,17 @@ export function setCacheDirOnWorker(dir: FileSystemDirectoryHandle | null): void
   ready!
     .then(() => {
       try {
-        w.postMessage({ cmd: "setCacheDir", dir } satisfies CacheRequest);
+        w.postMessage({ cmd: "setCacheDir", dir, scope: "" } satisfies CacheRequest);
       } catch {
         // Some environments (notably an Electron File System Access polyfill)
         // expose directory handles as plain objects that structuredClone can't
         // serialise, so postMessage throws DataCloneError. Fall back to the
-        // worker's IndexedDB cache rather than crashing folder open.
-        w.postMessage({ cmd: "setCacheDir", dir: null } satisfies CacheRequest);
+        // worker's IndexedDB cache rather than crashing folder open. Every
+        // project shares that cache, so scope it by the folder's absolute path;
+        // never by dir.name, which is "raw" for every project.
+        w.postMessage(
+          { cmd: "setCacheDir", dir: null, scope: nativePathOf(dir) } satisfies CacheRequest,
+        );
       }
     })
     .catch(() => {});
@@ -118,6 +123,18 @@ export async function workerWriteCachedPreview(
     { cmd: "write", id, key, data: copy, width, height, maxEdge },
     [copy.buffer],
   );
+}
+
+export async function workerWriteMarker(key: string, value: string): Promise<void> {
+  const id = nextId++;
+  await send<Extract<CacheResponse, { type: "mark" }>>({ cmd: "mark", id, key, value });
+}
+
+/** The text a marker holds, or null when there is none under `key`. */
+export async function workerReadMarker(key: string): Promise<string | null> {
+  const id = nextId++;
+  const resp = await send<Extract<CacheResponse, { type: "peek" }>>({ cmd: "peek", id, key });
+  return resp.value;
 }
 
 export async function workerDeleteCachedPreview(key: string): Promise<void> {

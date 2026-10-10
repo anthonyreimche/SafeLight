@@ -18,6 +18,7 @@ import { Select } from "@/ui/components/Select";
 import { Slot } from "@/extensions/Slot";
 import { useLibrarySorts } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
+import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: "dateImported", label: "Imported" },
@@ -45,13 +46,15 @@ export function LibraryToolbar() {
   const importPct = importing ? Math.round((importDone / importTotal) * 100) : 0;
   const librarySorts = useLibrarySorts();
 
-  const handleRemove = () => {
+  const handleRemove = async () => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
     if (getSettings().confirmRemovePhotos) {
-      const ok = window.confirm(
-        `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted, and won't be re-imported on the next folder scan.`,
-      );
+      const ok = await confirmDialog({
+        title: "Remove from catalog",
+        message: `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted, and won't be re-imported on the next folder scan.`,
+        confirmLabel: "Remove",
+      });
       if (!ok) return;
     }
     removePhotos(ids);
@@ -61,9 +64,10 @@ export function LibraryToolbar() {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
     const n = await exportPhotoData(ids);
-    window.alert(
-      `Wrote ${n} sidecar file${n === 1 ? "" : "s"} (“<name>.safelight.json”) next to the selected photo${ids.length === 1 ? "" : "s"}. Move the photos with their sidecars and the next project to scan them will pick up the ratings, labels and edits.`,
-    );
+    await alertDialog({
+      title: "Export data",
+      message: `Wrote ${n} sidecar file${n === 1 ? "" : "s"} (“<name>.safelight.json”) next to the selected photo${ids.length === 1 ? "" : "s"}. Move the photos with their sidecars and the next project to scan them will pick up the ratings, labels and edits.`,
+    });
   };
 
   return (
@@ -121,7 +125,7 @@ export function LibraryToolbar() {
               Export Data
             </button>
             <button
-              onClick={handleRemove}
+              onClick={() => void handleRemove()}
               className="rounded bg-surface-3 px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-label-red"
             >
               Remove

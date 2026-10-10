@@ -12,7 +12,18 @@
 
 import { useEffect, useState } from "react";
 import type { ExtensionManifest, ExtensionSearchResult } from "./types";
-import { useExtStoreUI, loadRepoMeta, loadReadme, updateNote } from "./store-ui";
+import { useExtStoreUI, loadRepoMeta, loadReadme, loadReleases, updateNote } from "./store-ui";
+import {
+  LATEST,
+  latestFull,
+  releaseBlock,
+  releasesBetween,
+  sameVersion,
+  versionChoices,
+} from "./release-picks";
+import { usePins } from "./pins";
+import { Select } from "@/ui/components/Select";
+import { ReleaseNotes } from "./ReleaseNotes";
 import { resolveUrl } from "./markdown-url";
 import { useVerificationStatus, useReviewedFor, useBannedReason } from "./trust";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
@@ -44,7 +55,8 @@ export interface DetailTarget {
 interface Props {
   target: DetailTarget;
   busy: string | null;
-  onInstall: (spec: string) => void;
+  /** Install `spec`: its latest release, or `version` when one was chosen. */
+  onInstall: (spec: string, version?: string) => void;
   onUpdate: (id: string, repo: string) => void;
   onUninstall: (id: string) => void;
   onToggle: (id: string, enable: boolean) => void;
@@ -101,6 +113,7 @@ export function ExtensionDetail({
   const update = useExtStoreUI((s) =>
     target.manifest ? s.updates[target.manifest.id] : undefined,
   );
+  const releases = useExtStoreUI((s) => (repo ? s.releases[repo] : undefined));
 
   const repoMeta = meta?.status === "ready" ? meta.data : null;
   const branch = repoMeta?.defaultBranch;
@@ -112,6 +125,9 @@ export function ExtensionDetail({
   useEffect(() => {
     if (repo && branch) void loadReadme(repo, branch);
   }, [repo, branch]);
+  useEffect(() => {
+    if (repo) void loadReleases(repo);
+  }, [repo]);
 
   // Prefer manifest-declared assets, then GitHub-derived ones. The manifest icon
   // may be repo-relative (ExtensionManifest.icon), so resolve it like a README
@@ -153,10 +169,69 @@ export function ExtensionDetail({
       ? updateNote(installedVersion, pendingUpdate)
       : null;
 
+  // What an update brings, or the latest release before install.
+  const releaseList = releases?.status === "ready" ? releases.data : null;
+  const pendingTag = pendingUpdate?.latestTag ?? null;
+  const latest = releaseList ? latestFull(releaseList) : null;
+  const whatsNew = !releaseList
+    ? []
+    : pendingTag && installedVersion
+      ? releasesBetween(releaseList, installedVersion, pendingTag)
+      : !target.installed && latest
+        ? [latest]
+        : [];
+
+  const kept = usePins((s) => (id ? (s.pins[id] ?? null) : null));
+
+  // The version picker: LATEST follows new releases, any other value is a
+  // version to install. A chosen version's manifest is read at its tag first,
+  // so a release this build can't run (or a broken one) is explained, not tried.
+  const [choice, setChoice] = useState(LATEST);
+  useEffect(() => setChoice(LATEST), [repo]);
+  const chosen = choice === LATEST ? null : choice;
+  const [block, setBlock] = useState<{ version: string; note: string | null } | null>(null);
+  useEffect(() => {
+    const manifestAt = window.safelightNative?.plugins?.manifestAt;
+    if (!repo || !chosen || !manifestAt) return;
+    let alive = true;
+    manifestAt(repo, chosen)
+      .then((m) => {
+        if (alive) setBlock({ version: chosen, note: releaseBlock(chosen, m, __APP_VERSION__) });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [repo, chosen]);
+  const blockedBy = chosen && block?.version === chosen ? block.note : null;
+  // Latest on an installed extension the update check has nothing to offer
+  // (a pre-release past the latest full release, or a kept version whose
+  // re-check failed) is a switch to that release; with an update pending, the
+  // Update button already covers it.
+  const switchTo = chosen
+    ? sameVersion(chosen, installedVersion)
+      ? null
+      : chosen
+    : target.installed && !pendingUpdate && latest && !sameVersion(latest.version, installedVersion)
+      ? latest.version
+      : null;
+
   // The extension declares a newer SafeLight than this build — warn (the running
   // version comes from the Vite build-time constant).
   const minApp = target.manifest?.minAppVersion;
   const appTooOld = !!minApp && isNewer(__APP_VERSION__, minApp);
+
+  const refreshVersions = repo && (
+    <button
+      disabled={busy !== null}
+      onClick={() => void loadReleases(repo, true)}
+      aria-label="Refresh versions"
+      title="Check GitHub for new releases"
+      className="rounded px-1.5 text-[12px] leading-none text-text-muted hover:text-text-primary disabled:opacity-40"
+    >
+      ↻
+    </button>
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -186,6 +261,11 @@ export function ExtensionDetail({
             {target.installed && target.manifest && (
               <span className="text-[10px] text-text-muted">
                 v{target.manifest.version}
+              </span>
+            )}
+            {target.installed && kept && (
+              <span className="rounded bg-surface-3 px-1 py-px text-[9px] text-text-muted">
+                Kept at {kept}
               </span>
             )}
             {repo && banned ? (
@@ -231,7 +311,7 @@ export function ExtensionDetail({
             Blocked by the Safelight registry — {banned}
           </span>
         )}
-        {!target.installed && repo && !banned && (
+        {!target.installed && repo && !banned && !chosen && (
           <button
             disabled={busy !== null}
             onClick={() => onInstall(repo)}
@@ -253,7 +333,7 @@ export function ExtensionDetail({
                   : "Install (unverified)"}
           </button>
         )}
-        {target.installed && pendingUpdate && id && repo && (
+        {target.installed && pendingUpdate && id && repo && !chosen && (
           <>
             {updateNoteText && (
               <span className="text-[11px] text-text-muted">{updateNoteText}</span>
@@ -268,6 +348,45 @@ export function ExtensionDetail({
               </button>
             )}
           </>
+        )}
+        {repo && !banned && releaseList && releaseList.length > 0 && (
+          <>
+            <Select
+              value={choice}
+              onChange={setChoice}
+              options={versionChoices(releaseList, installedVersion)}
+              ariaLabel="Version"
+              disabled={busy !== null}
+            />
+            {refreshVersions}
+            {switchTo &&
+              (blockedBy ? (
+                <span className="text-[11px] text-text-muted">{blockedBy}</span>
+              ) : (
+                <button
+                  disabled={busy !== null}
+                  onClick={() => onInstall(repo, switchTo)}
+                  className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+                >
+                  {busy === repo
+                    ? "Installing…"
+                    : target.installed
+                      ? `Switch to ${switchTo}`
+                      : `Install ${switchTo}`}
+                </button>
+              ))}
+          </>
+        )}
+        {repo && releaseList && releaseList.length === 0 && (
+          <>
+            <span className="text-[11px] text-text-muted">
+              Installs from the main branch; this extension publishes no releases.
+            </span>
+            {refreshVersions}
+          </>
+        )}
+        {repo && releases?.status === "error" && (
+          <span className="text-[11px] text-text-muted">Versions unavailable: {releases.error}</span>
         )}
         {target.installed && target.id && !target.locked && (
           <button
@@ -330,6 +449,16 @@ export function ExtensionDetail({
             </div>
           </div>
         )}
+
+      {repo && whatsNew.some((r) => r.notes.trim()) && (
+        <div className="max-h-64 overflow-y-auto border-b border-border-subtle px-3 py-2">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium text-text-secondary">What's new</span>
+            <LinkBtn label="All releases on GitHub" url={`https://github.com/${repo}/releases`} />
+          </div>
+          <ReleaseNotes releases={whatsNew} repo={repo} />
+        </div>
+      )}
 
       {/* README / body */}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">

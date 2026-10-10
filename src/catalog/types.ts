@@ -29,6 +29,17 @@ export interface CatalogPhoto {
   /** Set when the last decode attempt failed (no thumbnail). Human-readable
    *  reason for the grid's warning tooltip; cleared once a preview is built. */
   decodeError?: string;
+  /** The editFingerprint of the edit the stored preview was rendered with.
+   *  Undefined when the preview was built from the file, without any edit. The
+   *  edit can change without a new preview (Paste Settings, Update processing,
+   *  an extension), so Develop draws the preview first only while this matches
+   *  the edit it opens with. */
+  previewEdit?: string;
+  /** The rotation the stored preview was made at; undefined means `rotation`. They
+   *  can differ: a turn is stored before its preview, whose write can fail or be cut
+   *  short by a quit. A preview made at another rotation is never shown: one is
+   *  built from the file instead. */
+  previewRotation?: number;
   /** Set on a *virtual copy* — a second catalog record that shares another
    *  photo's source file but keeps its own id, edits and metadata. Holds the id
    *  of the master record (the one that owns the file on disk). A virtual copy
@@ -41,6 +52,37 @@ export interface CatalogPhoto {
    *  displayed/exported name folds them together as `base_<copyName>.ext` (see
    *  catalog/copy-name.ts). Undefined on a master. */
   copyName?: string;
+}
+
+/** A photo record as catalog.json stores it. The live file handles, the preview
+ *  blob and its object URL belong to the window holding the record. */
+export type StoredPhoto = Omit<
+  CatalogPhoto,
+  "directoryHandle" | "fileHandle" | "thumbnailBlob" | "thumbnailUrl"
+>;
+
+export function storedPhoto(photo: CatalogPhoto): StoredPhoto {
+  const {
+    directoryHandle: _d,
+    fileHandle: _f,
+    thumbnailBlob: _b,
+    thumbnailUrl: _u,
+    ...stored
+  } = photo;
+  return stored;
+}
+
+/** The record `stored`, which another window wrote, with this window's own
+ *  handles, preview blob and URL from `local`. A field the other window cleared
+ *  by leaving it out is cleared here too. */
+export function mergeStoredPhoto(local: CatalogPhoto, stored: StoredPhoto): CatalogPhoto {
+  return {
+    ...stored,
+    directoryHandle: local.directoryHandle,
+    fileHandle: local.fileHandle,
+    thumbnailBlob: local.thumbnailBlob,
+    thumbnailUrl: local.thumbnailUrl,
+  };
 }
 
 export type ColorLabel = "none" | "red" | "yellow" | "green" | "blue" | "purple";
@@ -405,6 +447,11 @@ export interface DevelopParams {
    *  or null to follow the Preferences default. Resolved by
    *  resolvePipelineFor in extensions/pipelines.ts. */
   displayTransform: string | null;
+  /** The rendering generation this edit was made with. Edits saved before
+   *  process versions existed carry none and read as LEGACY_PROCESS_VERSION,
+   *  so they render exactly as they always have; new edits get
+   *  CURRENT_PROCESS_VERSION. Presets and pasted settings never change it. */
+  processVersion: number;
 }
 
 export const MAX_MASKS = 16;
@@ -508,6 +555,25 @@ export function isDefaultHSL(h: HSLAdjustments): boolean {
   );
 }
 
+/** True when the grading wheels change nothing: every range's colour offset
+ *  (the shader drops saturation below 0.001) and luma lift are zero. */
+export function isNeutralColorGrading(cg: ColorGradingParams): boolean {
+  return [cg.shadows, cg.midtones, cg.highlights, cg.global].every(
+    (r) => r.sat < 0.001 && r.luma === 0,
+  );
+}
+
+/** True when a mask carries an adjustment the develop shader applies in its
+ *  display stage (mask stage 2); exposure, highlights, shadows and white
+ *  balance run in the linear stage and don't count. */
+export function maskHasDisplayAdjustments(a: MaskAdjustments): boolean {
+  return (
+    a.contrast !== 0 || a.saturation !== 0 || a.vibrance !== 0 ||
+    a.whites !== 0 || a.blacks !== 0 || a.clarity !== 0 ||
+    a.sharpness !== 0 || a.texture !== 0 || a.dehaze !== 0
+  );
+}
+
 export const DEFAULT_CROP: CropRect = { x: 0, y: 0, width: 1, height: 1 };
 
 function defaultColorGradingRange(): ColorGradingRange {
@@ -565,6 +631,19 @@ export const DEFAULT_GRAIN: GrainParams = {
 // fallback whenever a photo has no as-shot WB.
 export const NEUTRAL_TEMPERATURE_K = 6500;
 
+/** Every edit saved before process versions existed. */
+export const LEGACY_PROCESS_VERSION = 1;
+/** What new edits are made with. Version 2: tools after the display transform
+ *  work on unclipped values unless a tool that needs [0, 1] is in use. */
+export const CURRENT_PROCESS_VERSION = 2;
+/** Label of the history step that moves a photo to CURRENT_PROCESS_VERSION.
+ *  Develop's button and the Library menu both write it, and it is stored in the
+ *  photo's history, so the two must agree. */
+export const UPDATE_PROCESSING_LABEL = "Update processing";
+
+/** Spreading these yields the current process version, so stored data must go
+ *  through normalizeParams (a missing version reads as 1) and fresh photos
+ *  through freshParams. */
 export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   exposure: 0,
   contrast: 0,
@@ -606,6 +685,7 @@ export const DEFAULT_DEVELOP_PARAMS: DevelopParams = {
   masks: [],
   retouch: [],
   displayTransform: null,
+  processVersion: CURRENT_PROCESS_VERSION,
 };
 
 function normalizeTransform(
@@ -1015,8 +1095,18 @@ function normalizeDisplayTransform(v: unknown): string | null {
   return typeof v === "string" && v !== "" ? v : null;
 }
 
+/** A stored version as a version: anything that isn't an integer ≥ 1 is an
+ *  edit from before process versions, which renders as version 1. */
+export function normalizeProcessVersion(v: unknown): number {
+  return typeof v === "number" && Number.isInteger(v) && v >= LEGACY_PROCESS_VERSION
+    ? v
+    : LEGACY_PROCESS_VERSION;
+}
+
 // Merge a (possibly partial / legacy) params object with current defaults so
-// snapshots saved before a field existed still load cleanly.
+// snapshots saved before a field existed still load cleanly. The process
+// version is the exception: a missing one reads as LEGACY_PROCESS_VERSION,
+// not as the defaults' current one.
 export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopParams {
   const base = { ...DEFAULT_DEVELOP_PARAMS, ...p };
   return {
@@ -1041,7 +1131,30 @@ export function normalizeParams(p: Partial<DevelopParams> | undefined): DevelopP
     masks: normalizeMasks(p?.masks),
     retouch: normalizeRetouch(p?.retouch),
     displayTransform: normalizeDisplayTransform(p?.displayTransform),
+    processVersion: normalizeProcessVersion(p?.processVersion),
   };
+}
+
+/** Params for a photo with no stored edit: today's defaults at the current
+ *  process version, with the camera's white balance. */
+export function freshParams(asShotTemperature?: number): DevelopParams {
+  return normalizeParams({ temperature: asShotTemperature, processVersion: CURRENT_PROCESS_VERSION });
+}
+
+/** A partial edit (preset, pasted settings) never carries a process version:
+ *  applying one keeps the target's. */
+export function withoutProcessVersion(p: Partial<DevelopParams>): Partial<DevelopParams> {
+  const out = { ...p };
+  delete out.processVersion;
+  return out;
+}
+
+/** True when the edit renders with an earlier process version than the current
+ *  one, which is when Update processing has something to do. A version from a
+ *  newer build is not older. Develop's button and both update paths ask this, so
+ *  the button shows exactly when the action acts. */
+export function usesOlderProcessing(params: Pick<DevelopParams, "processVersion">): boolean {
+  return params.processVersion < CURRENT_PROCESS_VERSION;
 }
 
 export type SortField = 'dateImported' | 'dateCreated' | 'filename' | 'rating';

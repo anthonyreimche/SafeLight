@@ -3,15 +3,26 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { decodeRawToFloat } from "./decode";
 import { COMPRESSION, PHOTOMETRIC_CFA, TIFF_TAG } from "./tiff";
 import { TYPE, buildTiffWithTrailer, field, type Field, type IfdSpec } from "./tiff.test-support";
 
+const libraw = vi.hoisted(() => ({
+  /** Whether each libraw decode was asked for as background work. */
+  background: [] as (boolean | undefined)[],
+}));
+
 // The in-house path is what these tests exercise; libraw is a Worker-only
-// decoder and answers null here as it does anywhere without one.
+// decoder and can't run here, as anywhere without one.
 vi.mock("./libraw-wasm-adapter", () => ({
-  decodeRawFloatViaLibRaw: async () => null,
+  decodeRawFloatViaLibRaw: async (
+    _buffer: ArrayBuffer,
+    priority?: { background?: boolean },
+  ) => {
+    libraw.background.push(priority?.background);
+    return { failure: "transient" as const };
+  },
 }));
 
 const SIDE = 4;
@@ -46,9 +57,9 @@ const plane = (code: number): Uint8Array => new Uint8Array(SIDE * SIDE).fill(cod
 // the one normalised value.
 async function flatValue(file: Blob): Promise<number> {
   const image = await decodeRawToFloat(file);
-  expect(image).not.toBeNull();
-  expect([image!.width, image!.height]).toEqual([SIDE, SIDE]);
-  const rgb = Array.from(image!.data).filter((_, i) => i % 4 !== 3);
+  if ("failure" in image) throw new Error(`no image: ${image.failure}`);
+  expect([image.width, image.height]).toEqual([SIDE, SIDE]);
+  const rgb = Array.from(image.data).filter((_, i) => i % 4 !== 3);
   const [first] = rgb;
   for (const v of rgb) expect(v).toBeCloseTo(first, 5);
   return first;
@@ -57,6 +68,18 @@ async function flatValue(file: Blob): Promise<number> {
 // Leica M8 style: 8-bit stored codes, a table that expands them to 14-bit
 // linear values, and a WhiteLevel in that linear space.
 const TABLE = field(TIFF_TAG.LinearizationTable, TYPE.SHORT, 0, 1000, 4000, 8000);
+
+describe("decodeRawToFloat priority", () => {
+  beforeEach(() => {
+    libraw.background = [];
+  });
+
+  it("hands a background decode's priority on to libraw", async () => {
+    await decodeRawToFloat(new Blob(["raw"]), { background: true });
+    await decodeRawToFloat(new Blob(["raw"]));
+    expect(libraw.background).toEqual([true, undefined]);
+  });
+});
 
 describe("decodeRawToFloat in-house path", () => {
   it("scales stored codes against the white level when there is no table", async () => {

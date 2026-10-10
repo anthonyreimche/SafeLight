@@ -39,6 +39,11 @@ function parsePrerelease(tag: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Whether `tag` carries a pre-release suffix ("1.3.0-beta.1"). */
+export function isPrerelease(tag: string): boolean {
+  return parsePrerelease(tag) !== null;
+}
+
 /** Semver §11 pre-release precedence: numeric identifiers compare numerically
  *  and rank below alphanumeric ones; more identifiers wins a shared prefix. */
 function comparePrerelease(a: string, b: string): -1 | 0 | 1 {

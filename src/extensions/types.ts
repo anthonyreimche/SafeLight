@@ -167,8 +167,11 @@ export interface ThemeContribution {
  *  ▸ Rendering sets the default for photos without a pick. The GLSL must define
  *    vec3 pipelineToDisplay(vec3 lin)
  *  mapping scene-linear RGB (sRGB primaries, HDR — values may exceed 1.0) to
- *  display-encoded output. Helpers available: luma(), srgbToLinear(),
- *  linearToSrgb(), linearToSrgbU(). */
+ *  display-encoded output. A channel of `lin` can also be negative: colours
+ *  outside the sRGB primaries reach it that way from RAW sources, and colour
+ *  noise reduction can leave small excursions below zero on any source, so
+ *  guard a channel before taking its log, pow or sqrt. Helpers available:
+ *  luma(), srgbToLinear(), linearToSrgb(), linearToSrgbU(). */
 export interface PipelineContribution {
   id: string;
   name: string;
@@ -180,11 +183,23 @@ export interface PipelineContribution {
    *  output space (Display-P3 / Adobe RGB / ProPhoto) — transforms must NOT
    *  bake in their own output-space handling. */
   glsl?: string;
-  /** The transform brings its own complete look (AgX, ACES, …): Safelight
-   *  drops its default baseline tone (the camera-style lift applied to RAW
-   *  sources in linear light), so the transform sees true scene-linear data.
-   *  The transform is the profile. */
+  /** The transform brings its own look (AgX, ACES, …): Safelight drops its
+   *  default baseline tone (the camera-style lift applied to RAW sources in
+   *  linear light), so the transform is the profile. It drops the baseline
+   *  only: the core filmic shoulder still runs unless `skipToneShoulder` is
+   *  set. */
   skipBaseCurve?: boolean;
+  /** The transform brings its own highlight roll-off: the core filmic
+   *  shoulder (which compresses luminance above 0.85 at Highlights 0) is
+   *  bypassed, so the transform receives exposure-scaled scene-linear values
+   *  with their headroom. Highlights still works, globally and in masks: a
+   *  negative value blends in the core recovery in proportion to the slider;
+   *  a positive value lifts values up to white and leaves values above white
+   *  untouched. Independent of `skipBaseCurve`; set both for true scene-linear
+   *  input. Safelight builds from before this flag ignore it and keep the
+   *  shoulder, so set the manifest's `minAppVersion` if the transform relies
+   *  on it. */
+  skipToneShoulder?: boolean;
 }
 
 export interface SliderIconContribution {
@@ -326,6 +341,8 @@ export interface ExtensionRepoMeta {
  *  five (id/name/version/main) are optional and additive — older manifests load
  *  unchanged; the store simply shows richer detail when they're present. */
 export interface ExtensionManifest {
+  /** A letter or digit, then letters, digits, `.`, `_` and `-`. `core` and anything
+   *  under `core.`, in any case, belong to Safelight's built-ins and are refused. */
   id: string;
   name: string;
   version: string;
@@ -359,10 +376,22 @@ export interface ExtensionManifest {
   permissions?: ExtensionPermissions;
 }
 
-/** The update-relevant fields of a repo's current safelight.json. */
+/** The update-relevant fields of the safelight.json a repo currently publishes. */
 export interface RemoteManifest {
   version: string;
   minAppVersion?: string;
+}
+
+/** One GitHub release of an extension. Lists are newest version first. */
+export interface ExtensionRelease {
+  version: string;
+  tag: string;
+  prerelease: boolean;
+  /** ISO date, or "" when GitHub gave none. */
+  publishedAt: string;
+  /** Release notes as Markdown, capped at 20 KB. */
+  notes: string;
+  htmlUrl: string;
 }
 
 /** Declared extension capabilities. See ExtensionManifest.permissions. */
@@ -476,6 +505,8 @@ export interface UniformDeclaration {
   label?: string;
 }
 
+/** Reserved with ProcessingStageContribution.produces and `consumes`: not
+ *  implemented. */
 export interface InterStageVariable {
   /** Shared variable name, e.g. "refT". Emitted as `isv_{name}` in the shader. */
   name: string;
@@ -519,12 +550,32 @@ export interface StageTextureData {
   version: number;
 }
 
-/** Fixed processing phases. Order is enforced by the shader compiler.
+/** Fixed processing phases. The order is set in stage-order.ts, and
+ *  stage-injection.ts decides where each phase's GLSL goes.
  *  "geometry" runs first and is special: its GLSL operates on the mutable
  *  source-UV `vec2 srcUv` (after crop/transform/lens, before the image is
  *  sampled), so a stage can warp/displace the coordinate and have the entire
  *  downstream pipeline — source sampling, white balance, exposure, NR, masks —
- *  follow. Every other phase operates on a color (`lin` or `c`). */
+ *  follow. Every other phase operates on a color (`lin` or `c`).
+ *
+ *  "decode" runs on the linear colour after the baseline tone (applied to RAW
+ *  sources unless the display transform skips it), at the same injection
+ *  point as "noise-reduction": before core NR. Stage prepasses read the source
+ *  through the same linearisation and baseline (`toLin`), so no extension hook
+ *  sees the decode before the baseline.
+ *
+ *  "scene-linear" and "tone-map" run on `lin` after the core linear edits.
+ *  Under a display transform that sets `skipToneShoulder` they also receive
+ *  the headroom above 1.0 that the core shoulder otherwise compresses.
+ *
+ *  "display-adjust", "effects" and "output-encode" run on the display-encoded
+ *  `c`, in that order: after Sharpening and the masks' display adjustments,
+ *  before the core's own output encoding and its final clip to [0, 1].
+ *
+ *  Scene-linear `lin` can hold negative components: colours outside the sRGB
+ *  primaries arrive that way from RAW sources, and colour noise reduction can
+ *  leave small excursions below zero on any source. A stage that takes the
+ *  log, pow or sqrt of a channel must guard it. */
 export type ProcessingPhase =
   | "geometry"
   | "decode"
@@ -535,7 +586,7 @@ export type ProcessingPhase =
   | "effects"
   | "output-encode";
 
-/** Ordered phase list for the shader compiler's sort. */
+/** Ordered phase list: the order stage-order.ts sorts stages by. */
 export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
   "geometry",
   "decode",
@@ -552,15 +603,19 @@ export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
  *  and neighbourhood algorithms (à trous wavelets, non-local means, separable
  *  blurs) that a single inline fragment can't express become possible.
  *
- *  Contract: the body mutates `vec3 c`, initialised to `readPrev(vUv)` — linear
- *  scene RGB sampled from the previous pass (or the source image for the first
- *  pass). Sample neighbours with `readPrev(uv)`. The final pass's output is
- *  exposed to the owning stage's inline `glsl` as `vec3 stageResult` (sampled at
- *  the current pixel). Engine-provided uniforms/helpers in every pass:
+ *  Contract: the body mutates `vec3 c`, initialised to `readPrev(vUv)` — the
+ *  previous pass's output, or on the first pass the stage's input: the decoded
+ *  source linearized for `reads: "source"`, the image as edited up to the stage
+ *  for `reads: "current"`, in the stage's declared `space` either way. With no
+ *  `space`, the source reads as linear Rec.709 and the current image as the
+ *  values the stage's inline `glsl` receives. Sample neighbours with
+ *  `readPrev(uv)`. The final pass's output is exposed to the owning stage's
+ *  inline `glsl` as `vec3 stageResult` (sampled at the current pixel).
+ *  Engine-provided uniforms/helpers in every pass:
  *    uniform vec2 uTexel;      // 1.0 / passResolution
  *    uniform int  uPassIndex;  // current iteration, 0 .. uPassCount-1
  *    uniform int  uPassCount;  // this pass's `iterations`
- *    vec3 readPrev(vec2 uv);   // linear RGB of the previous pass at uv
+ *    vec3 readPrev(vec2 uv);   // previous pass at uv; first pass: the stage's input
  *    float luma(vec3); vec3 srgbToLinear(vec3); vec3 linearToSrgb(vec3);
  *  Pass `uniforms` share the owning stage's qualified-key namespace, so the same
  *  param (e.g. "{id}.lumaAmount") can drive both the pass and the inline glsl. */
@@ -572,15 +627,32 @@ export interface StagePass {
   uniforms?: UniformDeclaration[];
 }
 
+/** The values a processing stage receives and hands back (see
+ *  ProcessingStageContribution.space). */
+export interface StageSpace {
+  /** "linear": proportional to light. "perceptual": the same values through
+   *  the sRGB curve extended both ways — sign kept, no ceiling — so math
+   *  written for display-encoded [0, 1] behaves the same there and still sees
+   *  what lies beyond it. The core converts in before the stage and back out
+   *  after it. */
+  encoding: "linear" | "perceptual";
+  /** Primaries of the values handed to the stage. Default "rec709", the core's
+   *  working primaries; "rec2020" is a lossless matrix view of the same data. */
+  primaries?: "rec709" | "rec2020";
+}
+
 export interface ProcessingStageContribution {
-  /** Globally unique, e.g. "core.exposure" or "film-sim.halation". */
+  /** Globally unique, e.g. "film-sim.halation". Ids under "core." and
+   *  "builtin.denoise" are Safelight's own: registering one from an extension is
+   *  refused. */
   id: string;
   name: string;
   phase: ProcessingPhase;
   /** Order within the phase. Lower = runs first. Default 100. */
   priority?: number;
 
-  /** GLSL code fragment operating on `vec3 color` (read/write). */
+  /** GLSL code fragment operating, by phase, on `vec2 srcUv`, `vec3 lin` or
+   *  `vec3 c` (read/write; see ProcessingPhase). */
   glsl: string;
   /** Helper functions available to this stage's glsl (namespaced by compiler). */
   helpers?: string;
@@ -591,13 +663,19 @@ export interface ProcessingStageContribution {
    *  stage's inline `glsl` as `vec3 stageResult`. */
   passes?: StagePass[];
 
+  /** Reserved, not implemented: nothing in the render path reads it, and
+   *  registering a stage that sets it logs a warning. Meant for variables handed
+   *  from one stage to the next. */
   produces?: InterStageVariable[];
-  /** Names of InterStageVariables this stage reads. */
+  /** Reserved, not implemented, like `produces`. Meant for the names of the
+   *  InterStageVariables this stage reads. */
   consumes?: string[];
 
   textures?: TextureRequirement[];
 
-  /** Whether this stage participates in masked local adjustments. */
+  /** Reserved, not implemented: nothing in the render path reads it, and
+   *  registering a stage that sets it logs a warning. Meant for masked local
+   *  adjustments. */
   mask?: { maskable: true; maskPhase: "linear" | "display" };
 
   /** How this stage's params behave in presets. "global" (the default) is a
@@ -608,7 +686,33 @@ export interface ProcessingStageContribution {
    *  dialog's "Show all". Omit for ordinary global adjustments. */
   presetScope?: "global" | "per-image";
 
-  /** Stage IDs this one should run after (soft dependency — skipped if absent). */
+  /** Opt into full-information values. Omitted, a stage before the display
+   *  transform gets `lin` as linear Rec.709 (signed, unclamped) and one after
+   *  it gets `c` display-encoded and clamped to [0, 1], bar the offset
+   *  Sharpening adds after a version 1 photo's last clamp (a mask covering a
+   *  pixel in part mixes it through). Set, the stage gets its variable in this
+   *  encoding and these primaries. After the display transform that is `c` as
+   *  the core's display tools leave it: on a version 2 photo unclamped until a
+   *  tool in use that needs [0, 1] or an earlier stage without `space` clips it
+   *  (Vignette and Grain don't clip); on a version 1 photo with the
+   *  old core's clamps. Ignored on geometry stages, which run before the image
+   *  is sampled (registration warns). Details in docs/dev/api/contributions.md:
+   *  "Values a stage sees: space" and "Process versions". */
+  space?: StageSpace;
+
+  /** What the stage's passes read first. "source" (the default) is the decoded
+   *  image. "current" is the image as edited up to this stage, drawn into a
+   *  float texture before the passes run; effects and output-encode stages
+   *  read it as of the end of display-adjust. Ignored without `passes` and on
+   *  geometry stages. */
+  reads?: "source" | "current";
+
+  /** Ids of the stages this one runs after, even against priority: a soft
+   *  dependency inside the phase. An id that isn't registered, or sits in another
+   *  phase (a phase boundary always wins), is ignored. Stages that name each other
+   *  in a cycle lose the entries between them and nothing else, with a warning.
+   *  A value that isn't a list of ids is ignored, with a warning at registration.
+   *  Older builds ignore it. */
   after?: string[];
 }
 
@@ -873,7 +977,10 @@ export interface SafelightAPI {
   /** Supply (or clear, with null) the pixel data for a processing stage's
    *  declared texture — e.g. a baked LUT atlas. Bound to the stage's sampler
    *  (named by the texture's `key`) on every frame; re-call with a bumped
-   *  `version` to swap the data without recompiling the shader. */
+   *  `version` to swap the data without recompiling the shader. Disabling,
+   *  updating or reloading the extension drops its stages' textures and frees
+   *  their GPU copies, so supply them from `activate`, not only from module
+   *  top-level code (a re-enabled extension's module is not re-run). */
   setStageTexture(
     stageId: string,
     key: string,
@@ -1120,7 +1227,9 @@ export interface SafelightAPI {
    *  records and inserts them into the live grid (optionally right after a given
    *  photo). `getEditState` / `putEditState` read and write a photo's saved
    *  develop recipe (the undo stack) by id — so an extension can, for instance,
-   *  clone one photo's edits onto another. */
+   *  clone one photo's edits onto another. Writing the photo open in Develop
+   *  reloads it there from the catalog, which also clears the active tool and the
+   *  mask and spot selection. */
   catalog: {
     addPhotos(
       photos: import("@/catalog/types").CatalogPhoto[],
@@ -1302,8 +1411,9 @@ declare global {
       };
       plugins: {
         list(): Promise<ExtensionManifest[]>;
-        /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. */
-        install(spec: string): Promise<ExtensionManifest>;
+        /** Accepts "owner/repo", "owner/repo#ref", or a github.com URL. With a
+         *  `version`, installs that GitHub release instead of the latest. */
+        install(spec: string, version?: string): Promise<ExtensionManifest>;
         uninstall(id: string): Promise<void>;
         /** Browse official extensions. For the default topic this serves the
          *  prebuilt registry index (one CDN fetch, whole catalog, baked
@@ -1314,11 +1424,22 @@ declare global {
           topic: string,
           force?: boolean,
         ): Promise<ExtensionSearchResult[]>;
-        /** The `version` and `minAppVersion` from the repo's root safelight.json
-         *  on its default branch, or null. Lets the updater detect a pushed
-         *  version bump without a GitHub Release and tell whether this build
-         *  can run it. Optional: absent in older Electron builds. */
-        remoteManifest?(repo: string): Promise<RemoteManifest | null>;
+        /** The newest version a repo publishes, with its minAppVersion, or
+         *  null: its newest GitHub release (a newer pre-release with
+         *  `prerelease`), or its default branch's safelight.json when it has no
+         *  releases. Read from the registry index when that lists the repo.
+         *  Optional: absent in older Electron builds. */
+        remoteManifest?(
+          repo: string,
+          opts?: { prerelease?: boolean },
+        ): Promise<RemoteManifest | null>;
+        /** The repo's releases, newest first; [] for a repo that publishes from
+         *  its branch. Rejects when GitHub can't be read. Optional: absent in
+         *  older Electron builds. */
+        releases?(repo: string, force?: boolean): Promise<ExtensionRelease[]>;
+        /** safelight.json at one release's tag, or null. Optional: absent in
+         *  older Electron builds. */
+        manifestAt?(repo: string, version: string): Promise<RemoteManifest | null>;
         /** Finish an install/update: "keep" drops the previous version that
          *  install() kept aside; "rollback" puts it back and returns its
          *  manifest (null when there was none — the install is then removed).
@@ -1331,6 +1452,11 @@ declare global {
          *  registry, cached in the main process. Optional: absent in older
          *  Electron builds (callers then treat everything as unverified). */
         trustList?(force?: boolean): Promise<TrustList>;
+        /** The welcome setup's starter kits (kits.json in the trust registry),
+         *  cached in the main process; null when it was never fetched. Typed
+         *  unknown because it is remote data: parseKits validates it before
+         *  anything reads it. Optional: absent in older Electron builds. */
+        kits?(force?: boolean): Promise<unknown>;
       };
       /** Renderer-side control of the window's Chrome DevTools. Backs the
        *  Developer Tools extension's Native tab. */

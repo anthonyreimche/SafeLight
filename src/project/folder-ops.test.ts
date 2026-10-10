@@ -422,6 +422,20 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(find(copy.id).relPath).toBe("a.jpg");
   });
 
+  it("keeps what changes in the catalog while the files move", async () => {
+    // Another window's rating, or a new virtual copy, can land during the move.
+    const env = start();
+    const master = await addPhoto(env, "a.jpg");
+
+    const moving = movePhotos([master.id], "2024");
+    h.photos = h.photos.map((p) => ({ ...p, rating: 4 }));
+    const late = addCopy(find(master.id), "late");
+    await moving;
+
+    expect(find(master.id)).toMatchObject({ rating: 4, relPath: "2024/a.jpg" });
+    expect(find(late.id)).toMatchObject({ rating: 4, relPath: "2024/a.jpg", folder: "2024" });
+  });
+
   // ── renamePhoto ───────────────────────────────────────────────────────────
 
   it("renames a photo in place, keeping its extension and its sidecar", async () => {
@@ -510,6 +524,17 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     await renamePhoto(master.id, "b");
 
     expect(find(copy.id)).toMatchObject({ filename: "b.jpg", relPath: "b.jpg", copyName: "copy" });
+  });
+
+  it("keeps what changes in the catalog while the file is renamed", async () => {
+    const env = start();
+    await addPhoto(env, "a.jpg");
+
+    const renaming = renamePhoto("id:a.jpg", "b");
+    h.photos = h.photos.map((p) => ({ ...p, rating: 4 }));
+    await renaming;
+
+    expect(find("id:a.jpg")).toMatchObject({ rating: 4, filename: "b.jpg", relPath: "b.jpg" });
   });
 
   it("reports a missing photo or a closed project instead of throwing", async () => {
@@ -613,6 +638,24 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
 
     await expect(exportPhotoData(["id:a.jpg"])).resolves.toBe(0);
     expect(env.fs.tree()).toEqual([at(env, "a.jpg")]);
+  });
+});
+
+describe("folder ops in the browser build, where each new handle is a disk lookup", () => {
+  it("keeps what changes in the catalog while a renamed folder's photos are found again", async () => {
+    const env = open("/home/u/photos", false);
+    await addPhoto(env, "trip/a.jpg");
+    const exists = env.fs.exists.bind(env.fs);
+    vi.spyOn(env.fs, "exists").mockImplementation(async (path: string) => {
+      // Another window's rating lands as the moved photo's file is looked up.
+      if (path === at(env, "Iceland/a.jpg") && !env.fs.has(at(env, "trip")))
+        h.photos = h.photos.map((p) => ({ ...p, rating: 4 }));
+      return exists(path);
+    });
+
+    await renameFolder("trip", "Iceland");
+
+    expect(find("id:trip/a.jpg")).toMatchObject({ rating: 4, relPath: "Iceland/a.jpg" });
   });
 });
 

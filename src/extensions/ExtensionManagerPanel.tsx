@@ -36,8 +36,11 @@ import { useRegistry } from "./registry";
 import { useSettings } from "@/state/settings-store";
 import { Select } from "@/ui/components/Select";
 import { Switch } from "@/ui/components/Switch";
+import { reducedMotion } from "@/ui/reduced-motion";
 import { openPreferences } from "@/ui/components/PreferencesDialog";
 import { closeExtensions } from "@/ui/components/ExtensionsDialog";
+import { openSetup } from "@/modules/welcome/setup/setup-store";
+import { detachedModule } from "@/state/detach";
 import { confirmDialog } from "@/ui/components/ConfirmDialog";
 import {
   forgetSource,
@@ -56,9 +59,7 @@ import {
 import {
   loadTrustList,
   useTrust,
-  isVerified,
   isVerifiedIn,
-  reviewedFor,
   bannedReason,
   repoFromSpec,
   useIsVerified,
@@ -66,29 +67,20 @@ import {
   useReviewedFor,
   useBannedReason,
 } from "./trust";
-import { isNewer } from "@/update/semver";
+import {
+  checkReview,
+  EXTENSION_RISK_NOTICE,
+  hasAckedExtensionRisk,
+  setAckedExtensionRisk,
+} from "./install-gate";
+import { setKept, usePins } from "./pins";
+import { keepAfterInstall } from "./release-picks";
+import { UpdateNotes } from "./ReleaseNotes";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
 import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
 
 type Section = "Updates" | "Browse" | "Installed" | "Dev";
-
-// One-time acknowledgment shown before the user's first extension install (verified
-// or not): extensions are third-party code Safelight neither controls nor guarantees.
-// Persisted in localStorage — it's a safety gate, not a tunable preference.
-const RISK_ACK_KEY = "sl_ext_risk_ack_v1";
-function hasAckedExtensionRisk(): boolean {
-  try {
-    return localStorage.getItem(RISK_ACK_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-function setAckedExtensionRisk(): void {
-  try {
-    localStorage.setItem(RISK_ACK_KEY, "1");
-  } catch {}
-}
 
 const SORTS: { id: StoreSort; label: string }[] = [
   { id: "popular", label: "Popular" },
@@ -113,6 +105,7 @@ export function ExtensionManagerPanel() {
   const updates = useExtStoreUI((s) => s.updates);
   const openDetail = useExtStoreUI((s) => s.openDetail);
   const back = useExtStoreUI((s) => s.back);
+  const pins = usePins((s) => s.pins);
 
   const [list, setList] = useState<ExtensionManifest[]>([]);
   const [results, setResults] = useState<ExtensionSearchResult[] | null>(null);
@@ -253,7 +246,11 @@ export function ExtensionManagerPanel() {
     };
   }, [results, native, reloadNonce]);
 
-  const install = async (installSpec: string, fromSearch?: ExtensionSearchResult) => {
+  const install = async (
+    installSpec: string,
+    fromSearch?: ExtensionSearchResult,
+    version?: string,
+  ) => {
     const repo = fromSearch?.fullName.toLowerCase() ?? repoFromSpec(installSpec);
     // Banned: hard stop. The main process refuses it too — this is the faster,
     // clearer path so the user never watches a doomed download spin.
@@ -262,22 +259,14 @@ export function ExtensionManagerPanel() {
       setMsg(`Blocked — this extension is flagged as unsafe: ${banned}.`);
       return;
     }
-    const verified = !!repo && isVerified(repo);
     // A pinned "verified" entry only covers the version that was reviewed. If the
     // repo has since moved to a newer version, the code we'd install is past the
     // review point — drop the green-light and treat it as an unverified install.
-    const reviewedVersion =
-      verified && repo ? reviewedFor(repo)?.version ?? null : null;
-    let reviewedStale = false;
-    if (reviewedVersion && repo) {
-      try {
-        const latest = (await window.safelightNative?.plugins?.remoteManifest?.(repo))
-          ?.version;
-        if (latest && isNewer(reviewedVersion, latest)) reviewedStale = true;
-      } catch {
-        // Best-effort: don't block an install on a version-check network blip.
-      }
-    }
+    const {
+      verified,
+      reviewedVersion,
+      stale: reviewedStale,
+    } = await checkReview(repo, version);
     const trusted = verified && !reviewedStale;
     // Strict mode: only reviewed extensions may be installed.
     if (onlyVerified && !trusted) {
@@ -296,13 +285,7 @@ export function ExtensionManagerPanel() {
     if (!hasAckedExtensionRisk()) {
       const ok = await confirmDialog({
         title: "Before installing extensions",
-        message:
-          "Safelight extensions are third-party software — not made, controlled, or " +
-          "guaranteed by Safelight. They install from GitHub and run with full access " +
-          "to your photos, metadata, edits and files.\n\n" +
-          "A “Verified” badge means a maintainer reviewed the code at a point in time. " +
-          "It is not a guarantee of safety, and later updates may not be reviewed.\n\n" +
-          "Install extensions at your own risk.",
+        message: EXTENSION_RISK_NOTICE,
         confirmLabel: "Continue",
       });
       if (!ok) return;
@@ -316,8 +299,10 @@ export function ExtensionManagerPanel() {
         title: "Unreviewed extension",
         message: reviewedStale
           ? `${repo ?? installSpec} is verified only up to version ${reviewedVersion}. ` +
-            "The current version is newer and has NOT been reviewed. It runs with full " +
-            "access to your photos, metadata and files."
+            (version
+              ? `Version ${version} is newer and has NOT been reviewed. `
+              : "The current version is newer and has NOT been reviewed. ") +
+            "It runs with full access to your photos, metadata and files."
           : `${repo ?? installSpec} hasn't been reviewed by Safelight.\n\n` +
             "Installed extensions run with full access to your photos, metadata and " +
             "edits. Only install extensions you trust.",
@@ -328,9 +313,22 @@ export function ExtensionManagerPanel() {
     setBusy(installSpec);
     setMsg(null);
     try {
-      const manifest = await installFromGitHub(installSpec);
+      // A repo that's already installed is reinstalled in place, so its settings
+      // and enabled/disabled state survive a version switch; only a fresh install
+      // starts enabled.
+      const installedHere =
+        !!repo && list.some((m) => repoFor(m)?.toLowerCase() === repo.toLowerCase());
+      const manifest = installedHere
+        ? await updateExtension(installSpec, version)
+        : await installFromGitHub(installSpec, version);
       if (fromSearch) rememberSource(manifest.id, fromSearch.fullName);
       else setSpec("");
+      // An older version chosen on the detail page keeps the extension on it;
+      // any other install follows new releases again.
+      const known = useExtStoreUI.getState().releases[installSpec];
+      const keep = keepAfterInstall(version, known?.status === "ready" ? known.data : null);
+      setKept(manifest.id, keep ? manifest.version : null);
+      if (version) void checkExtensionUpdate(manifest, true);
       const net = manifest.permissions?.network;
       setMsg(
         net && net.length
@@ -365,7 +363,7 @@ export function ExtensionManagerPanel() {
     setBusy(id);
     setMsg(null);
     try {
-      const manifest = await updateExtension(repo);
+      const manifest = await updateExtension(repo, updates[id]?.latestTag ?? undefined);
       setMsg(`Updated ${manifest.name} to ${manifest.version}.`);
       refresh();
     } catch (e) {
@@ -394,14 +392,14 @@ export function ExtensionManagerPanel() {
 
   // Installed extensions with a newer version — drives the Updates tab. Needs a
   // known repo to update from (built-ins / custom imports without a source can't
-  // be updated). One this build can't run is listed so the user knows, but
-  // neither counted in the badge nor offered for install; auto-update skips it
-  // too (loader.ts).
+  // be updated). One this build can't run, or one kept at an older version, is
+  // listed so the user knows, but not counted in the badge; auto-update skips
+  // both too (loader.ts).
   const pending = list.filter((m) => {
     const upd = updates[m.id];
     return !!upd?.hasUpdate && !!upd.latestTag && !!repoFor(m);
   });
-  const installable = pending.filter((m) => !updates[m.id]?.requiresApp);
+  const installable = pending.filter((m) => !updates[m.id]?.requiresApp && !pins[m.id]);
 
   // Verified lookups for the grid subscribe to the trust store: on a first
   // launch the registry can land after the search results, and the filters
@@ -535,7 +533,7 @@ export function ExtensionManagerPanel() {
         <ExtensionDetail
           target={target}
           busy={busy}
-          onInstall={(s) => void install(s, target.search)}
+          onInstall={(s, version) => void install(s, target.search, version)}
           onUpdate={(id, repo) => void update(id, repo)}
           onUninstall={(id) => void remove(id)}
           onToggle={toggle}
@@ -615,22 +613,29 @@ export function ExtensionManagerPanel() {
                 {pending.map((m) => {
                   const upd = updates[m.id]!;
                   const repo = repoFor(m)!;
+                  const keptHere = !!pins[m.id] && !upd.requiresApp && !upd.failed;
                   return (
-                    <ExtensionRow
-                      key={m.id}
-                      name={m.name}
-                      version={m.version}
-                      repo={repo}
-                      description={updateNote(m.version, upd)}
-                      enabled={enabled(m.id)}
-                      busy={busy !== null}
-                      hasSettings={!!extSettings[m.id]}
-                      onOpen={() => openDetail(repo)}
-                      onUpdate={upd.requiresApp ? undefined : () => void update(m.id, repo)}
-                      onSettings={() => openSettings(m.id)}
-                      onToggle={() => toggle(m.id, !enabled(m.id))}
-                      onUninstall={() => void remove(m.id)}
-                    />
+                    <div key={m.id} className="flex flex-col gap-0.5">
+                      <ExtensionRow
+                        name={m.name}
+                        version={m.version}
+                        repo={repo}
+                        description={
+                          keptHere
+                            ? `Kept at ${m.version} · ${upd.latestTag} is available`
+                            : updateNote(m.version, upd)
+                        }
+                        enabled={enabled(m.id)}
+                        busy={busy !== null}
+                        hasSettings={!!extSettings[m.id]}
+                        onOpen={() => openDetail(repo)}
+                        onUpdate={upd.requiresApp ? undefined : () => void update(m.id, repo)}
+                        onSettings={() => openSettings(m.id)}
+                        onToggle={() => toggle(m.id, !enabled(m.id))}
+                        onUninstall={() => void remove(m.id)}
+                      />
+                      {upd.latestTag && <UpdateNotes repo={repo} version={upd.latestTag} />}
+                    </div>
                   );
                 })}
               </div>
@@ -662,6 +667,19 @@ export function ExtensionManagerPanel() {
                     options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
                     title="Sort"
                   />
+                )}
+                {!detachedModule() && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeExtensions();
+                      openSetup("rerun", "extensions");
+                    }}
+                    title="Pick starter kits in the welcome setup"
+                    className="rounded px-1.5 py-0.5 text-[11px] text-text-secondary hover:text-text-primary"
+                  >
+                    Starter kits
+                  </button>
                 )}
                 <button
                   onClick={reload}
@@ -972,10 +990,15 @@ function ExtensionCard({
   // Cascade the cards in instead of popping the whole grid at once: each card
   // fades/rises in, staggered by its position (capped so a full page of 25 still
   // finishes quickly). `fill: backwards` holds it hidden until its turn. Honour
-  // reduced-motion by leaving the card at its natural (visible) style.
+  // reduced-motion (the app setting or the OS) by leaving the card at its natural
+  // (visible) style.
   useEffect(() => {
     const el = cardRef.current;
-    if (!el || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)
+    if (
+      !el ||
+      reducedMotion() ||
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    )
       return;
     const anim = el.animate(
       [

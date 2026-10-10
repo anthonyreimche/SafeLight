@@ -8,7 +8,16 @@
 // persisted settings store immediately — there is no OK/Apply; close when done.
 // Theme and layout drive their own stores (themes.ts / dock.ts) directly.
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { create } from "zustand";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { SettingsFieldList } from "@/extensions/SettingsFieldList";
@@ -30,6 +39,8 @@ import { ResolutionControl } from "@/modules/export/ResolutionControl";
 import { ModalWindow } from "@/ui/components/ModalWindow";
 import { Select } from "@/ui/components/Select";
 import { Switch } from "@/ui/components/Switch";
+import { ScaleStepper } from "./ScaleStepper";
+import { CanvasSurroundSwatches } from "./CanvasSurroundSwatches";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import {
   addUserLayout,
@@ -43,13 +54,15 @@ import {
 } from "@/extensions/dock";
 import { openExtensions } from "./ExtensionsDialog";
 import {
-  CANVAS_SURROUND_SHADES,
   DEFAULT_SETTINGS,
   resetSettings,
   updateSettings,
   useSettings,
+  UI_FONT_PRESETS,
 } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
+import { detachedModule } from "@/state/detach";
+import { openSetup } from "@/modules/welcome/setup/setup-store";
 import {
   applyPipeline,
   DEFAULT_PIPELINE,
@@ -57,6 +70,7 @@ import {
 } from "@/extensions/pipelines";
 import { clearRawCache } from "@/raw/raw-cache";
 import { isNativeFS, nativeFs } from "@/project/native-fs";
+import { projectPassSignal } from "@/project/project-store";
 import type { ExternalCatalogEntry } from "@/extensions/types";
 import {
   preDecodeRawsForCache,
@@ -183,6 +197,7 @@ const CORE_SECTIONS: PrefSection[] = [
       "Sliders jump to cursor",
       "Highlight & shadow detail sliders",
       "Restore last project on launch",
+      "Welcome setup",
       "Interface font",
     ),
     keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal", "slider", "jump", "cursor", "click", "drag", "tone", "detail", "highlight", "shadow", "basic", "micro-contrast", "clarity"],
@@ -673,15 +688,13 @@ function InterfaceSection() {
         />
       </Field>
       <LayoutField />
-      <SliderField
-        label="Interface scale"
-        value={uiScale}
-        min={0.8}
-        max={2}
-        step={0.05}
-        format={(v) => `${Math.round(v * 100)}%`}
-        onChange={(v) => updateSettings({ uiScale: v })}
-      />
+      <Field label="Interface scale">
+        <ScaleStepper
+          value={uiScale}
+          onChange={(v) => updateSettings({ uiScale: v })}
+          label="Interface scale"
+        />
+      </Field>
       <CanvasSurroundField />
       <SliderField
         label="Color assessment border"
@@ -718,7 +731,7 @@ function InterfaceSection() {
       />
       <ToggleField
         label="Highlight & shadow detail sliders"
-        hint="Add Highlight Detail and Shadow Detail sliders to the Develop Basic panel for per-band micro-contrast control. Off by default to keep the panel compact — highlight recovery and shadow lift already preserve detail on their own; turn this on to tune or reverse that per band."
+        hint="Add Highlight Detail and Shadow Detail sliders to the Develop Basic panel for per-band micro-contrast control. Off by default to keep the panel compact — Highlights and Shadows already keep texture on their own; turn this on to add or soften fine detail per band."
         checked={basicDetailSliders}
         onChange={(v) => updateSettings({ basicDetailSliders: v })}
       />
@@ -728,6 +741,23 @@ function InterfaceSection() {
         checked={restoreLastProject}
         onChange={(v) => updateSettings({ restoreLastProject: v })}
       />
+      {window.safelightNative && !detachedModule() && (
+        <Field
+          label="Welcome setup"
+          hint="Pick a look, workspace settings and starter kits again. Nothing installed is removed."
+        >
+          <button
+            type="button"
+            className={btnCls}
+            onClick={() => {
+              closePreferences();
+              openSetup("rerun");
+            }}
+          >
+            Run again
+          </button>
+        </Field>
+      )}
       <FontField />
     </div>
   );
@@ -903,6 +933,9 @@ function LayoutField() {
         Saves the current panel arrangement (both Library and Develop) as a named
         layout. Switch layouts here or from the Layout menu in the top bar.
       </p>
+      <p className="mt-1 text-[10px] leading-relaxed text-text-muted">
+        A saved layout also remembers which panel and tool extensions are on.
+      </p>
     </div>
   );
 }
@@ -992,57 +1025,20 @@ function CanvasSurroundField() {
         bracket the range. Off = follow the active theme. Also adjustable from
         the Develop toolbar.
       </p>
-      <div
-        className={`mt-2 flex gap-1.5 transition-opacity ${
-          override ? "" : "pointer-events-none opacity-40"
-        }`}
-      >
-        {CANVAS_SURROUND_SHADES.map((shade) => (
-          <button
-            key={shade.value}
-            title={shade.label}
-            aria-label={shade.label}
-            aria-pressed={surround === shade.value}
-            disabled={!override}
-            onClick={() => updateSettings({ canvasSurround: shade.value })}
-            className={`relative h-7 flex-1 rounded border transition-all ${
-              surround === shade.value
-                ? "border-slider-fill ring-1 ring-slider-fill"
-                : "border-border hover:border-text-muted"
-            }`}
-            style={{ background: shade.value }}
-          >
-            {surround === shade.value && (
-              // A checkmark, not just the ring/colour, marks the active swatch
-              // (WCAG 1.4.1). The dark halo keeps the white tick legible on
-              // every shade, light or dark.
-              <span
-                className="pointer-events-none absolute inset-0 flex items-center justify-center text-[11px] font-bold leading-none text-white"
-                style={{ textShadow: "0 0 2px #000, 0 0 2px #000" }}
-              >
-                ✓
-              </span>
-            )}
-          </button>
-        ))}
+      <div className="mt-2">
+        <CanvasSurroundSwatches
+          value={surround}
+          enabled={override}
+          onChange={(shade) => updateSettings({ canvasSurround: shade })}
+        />
       </div>
     </div>
   );
 }
 
-const FONT_PRESETS: { value: string; label: string }[] = [
-  { value: "", label: "Default (Mono)" },
-  {
-    value: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-    label: "System Sans",
-  },
-  { value: "Inter, system-ui, sans-serif", label: "Inter" },
-  { value: 'Georgia, "Times New Roman", serif', label: "Serif" },
-];
-
 function FontField() {
   const uiFont = useSettings((s) => s.uiFont);
-  const isPreset = FONT_PRESETS.some((p) => p.value === uiFont);
+  const isPreset = UI_FONT_PRESETS.some((p) => p.value === uiFont);
   return (
     <Field
       label="Interface font"
@@ -1050,7 +1046,7 @@ function FontField() {
     >
       <OptionRow
         value={isPreset ? uiFont : "custom"}
-        options={FONT_PRESETS}
+        options={UI_FONT_PRESETS}
         onChange={(v) => updateSettings({ uiFont: v as string })}
       />
       <input
@@ -1133,7 +1129,7 @@ function RenderingSection() {
     <div className="flex flex-col gap-4">
       <Field
         label="Default display transform"
-        hint="The tone mapper for photos without their own pick. Pick one per photo from the display transform menu in Develop's bottom bar; a photo's transform applies everywhere it renders — develop, loupe, thumbnails and export. Transforms from extensions appear here too."
+        hint="The tone mapper for photos without their own pick. Pick one per photo from the display transform menu in Develop's bottom bar; a photo's transform applies everywhere it renders: develop, thumbnails and export. Transforms from extensions appear here too."
       >
         <Select
           value={active ? activeId : DEFAULT_PIPELINE}
@@ -1162,6 +1158,37 @@ function RenderingSection() {
 // migrate for free (rawCacheEnabled stays meaningful; prefetch defaults on).
 type CacheMode = "eager" | "ondemand" | "off";
 
+// A Previews pass the user started: how far it got, and whether leaving the
+// project (opening another, or closing it) stopped it before the end. It shows
+// as stopped at once: the work already under way may take minutes to finish,
+// and what it reports after the stop is ignored.
+interface PassProgress {
+  done: number;
+  total: number;
+  stopped?: boolean;
+}
+
+const STOPPED_NOTE = "Stopped.";
+
+const passRunning = (p: PassProgress | null): boolean =>
+  p !== null && !p.stopped && p.done < p.total;
+
+// A run that had already reached its end stays finished.
+const stoppedEarly = (p: PassProgress | null): PassProgress | null =>
+  p && p.done < p.total ? { ...p, stopped: true } : p;
+
+/** The progress callback for a pass on the open project: it shows the pass as
+ *  stopped as soon as `signal` aborts, and takes no report after that. */
+function passProgress(
+  show: Dispatch<SetStateAction<PassProgress | null>>,
+  signal: AbortSignal | undefined,
+): (done: number, total: number) => void {
+  signal?.addEventListener("abort", () => show(stoppedEarly), { once: true });
+  return (done, total) => {
+    if (!signal?.aborted) show({ done, total });
+  };
+}
+
 function PreviewsSection() {
   const s = useSettings();
   const cacheMode: CacheMode = !s.rawCacheEnabled
@@ -1171,32 +1198,32 @@ function PreviewsSection() {
       : "ondemand";
 
   const [cleared, setCleared] = useState(false);
-  const [rebuild, setRebuild] = useState<{ done: number; total: number } | null>(
-    null,
-  );
-  const rebuilding = rebuild !== null && rebuild.done < rebuild.total;
+  const [rebuild, setRebuild] = useState<PassProgress | null>(null);
+  const rebuilding = passRunning(rebuild);
   const handleRebuild = () => {
     const photos = useCatalogStore.getState().photos;
     if (photos.length === 0 || rebuilding) return;
     setRebuild({ done: 0, total: photos.length });
+    const signal = projectPassSignal();
     void rebuildThumbnails(
       photos,
-      (done, total) => setRebuild({ done, total }),
-      (p) => useCatalogStore.getState().updatePhoto(p),
+      passProgress(setRebuild, signal),
+      (p, change) => useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
+      signal,
     );
   };
 
-  const [cacheAll, setCacheAll] = useState<{ done: number; total: number } | null>(
-    null,
-  );
-  const cachingAll = cacheAll !== null && cacheAll.done < cacheAll.total;
+  const [cacheAll, setCacheAll] = useState<PassProgress | null>(null);
+  const cachingAll = passRunning(cacheAll);
   const handleCacheAll = () => {
     const photos = useCatalogStore.getState().photos;
     if (photos.length === 0 || cachingAll || !s.rawCacheEnabled) return;
     setCacheAll({ done: 0, total: 1 }); // placeholder until the real count lands
+    const signal = projectPassSignal();
     void preDecodeRawsForCache(photos, {
       force: true,
-      onProgress: (done, total) => setCacheAll({ done, total }),
+      onProgress: passProgress(setCacheAll, signal),
+      signal,
     });
   };
 
@@ -1247,9 +1274,11 @@ function PreviewsSection() {
         </button>
         {rebuild !== null && (
           <span className="ml-2 text-[10px] text-text-muted">
-            {rebuilding
-              ? `${rebuild.done} / ${rebuild.total}`
-              : `Rebuilt ${rebuild.total}.`}
+            {rebuild.stopped
+              ? STOPPED_NOTE
+              : rebuilding
+                ? `${rebuild.done} / ${rebuild.total}`
+                : `Rebuilt ${rebuild.total}.`}
           </span>
         )}
       </Field>
@@ -1318,11 +1347,13 @@ function PreviewsSection() {
         </div>
         {cacheAll !== null && (
           <span className="ml-2 text-[10px] text-text-muted">
-            {cachingAll
-              ? `${cacheAll.done} / ${cacheAll.total}`
-              : cacheAll.total === 0
-                ? "Already cached."
-                : `Cached ${cacheAll.total}.`}
+            {cacheAll.stopped
+              ? STOPPED_NOTE
+              : cachingAll
+                ? `${cacheAll.done} / ${cacheAll.total}`
+                : cacheAll.total === 0
+                  ? "Already cached."
+                  : `Cached ${cacheAll.total}.`}
           </span>
         )}
         {cleared && (
@@ -1581,7 +1612,7 @@ function PerformanceSection() {
       />
       <ToggleField
         label="High bit-depth previews"
-        hint="16-bit GPU textures for cached previews (smoother gradients). Turn off to halve texture memory. Applies when Develop is reopened."
+        hint="Smoother gradients on graphics cards that support it, for photos that still use the older processing and have heal or clone spots. Turn off to use less graphics memory on those photos. Applies after you restart Safelight."
         checked={s.highBitDepth}
         onChange={(v) => updateSettings({ highBitDepth: v })}
       />

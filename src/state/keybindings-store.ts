@@ -39,7 +39,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "app.preferences", label: "Preferences", category: "General", def: "Ctrl+," },
   { id: "app.extensions", label: "Extensions", category: "General", def: "Ctrl+Shift+X" },
   { id: "app.openFolder", label: "Open folder", category: "General", def: "Ctrl+O" },
-  // The wheel-zoom gesture over the image viewports (Develop and loupe). Same
+  // The wheel-zoom gesture over the image viewport (Develop). Same
   // combo grammar with "Wheel" as the key, so it can carry a modifier
   // ("Alt+Wheel") or be cleared to disable wheel zoom entirely. Ctrl/⌘+Wheel
   // stays a fixed gesture on top (trackpad pinch + overlay passthrough).

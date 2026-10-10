@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CatalogPhoto, ExifData } from "@/catalog/types";
 import type { RawMetadata } from "@/raw/libraw-wasm-adapter";
+import type { RebuiltChange } from "@/state/catalog-store";
 
 interface XmpFields {
   rating?: number;
@@ -31,13 +32,34 @@ const h = vi.hoisted(() => ({
     height: number;
     oriented?: boolean;
     colorTemperature?: number;
+    suspicious?: boolean;
   } | null,
+  /** What the shared accept/reject check rules on a full decode. */
+  verdict: { use: true, cache: true } as { use: boolean; cache: boolean },
+  /** What that check was asked to judge, in order. */
+  judged: [] as {
+    suspicious: boolean | undefined;
+    size: [number, number];
+    preview: Blob | null;
+  }[],
+  /** How many times the embedded preview was extracted. */
+  previewReads: 0,
+  /** Entries handed to writeCachedPreview, as [key, width, height]. */
+  cacheWrites: [] as [string, number, number][],
+  /** How the full float decode fails when it gives no image. */
+  floatFailure: "unsupported" as "unsupported" | "transient",
   /** What libraw's metadata-only open yields for a RAW; undefined = can't read it. */
   rawMeta: undefined as RawMetadata | undefined,
   /** How many times that metadata-only open ran. */
   libRawReads: 0,
+  /** Whether each full float decode was asked for as background work. */
+  floatDecodes: [] as (boolean | undefined)[],
+  /** The project signal each full float decode was handed. */
+  floatSignals: [] as (AbortSignal | undefined)[],
   /** Photos handed to catalogStorage().putPhoto. */
   saved: [] as CatalogPhoto[],
+  /** The catalog's photos as the store holds them when a decode finishes. */
+  catalog: [] as CatalogPhoto[],
 }));
 
 vi.mock("@/catalog/exif", () => ({
@@ -48,7 +70,10 @@ vi.mock("@/catalog/exif", () => ({
 
 vi.mock("./raw-preview", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./raw-preview")>()),
-  extractRawPreview: async () => h.embedded,
+  extractRawPreview: async () => {
+    h.previewReads++;
+    return h.embedded;
+  },
   // Mirrors the real contract: an undecodable embedded JPEG (blobSize 0) means
   // no candidate survives; a targetLongEdge decodes the bitmap downscaled while
   // width/height report the true frame size.
@@ -84,16 +109,40 @@ vi.mock("@/raw/decode", () => ({
     h.rawBitmap
       ? { bitmap: bitmapOf(h.rawBitmap.width, h.rawBitmap.height), oriented: h.rawBitmap.oriented }
       : null,
-  decodeRawToFloat: async () =>
-    h.rawFloat
+  decodeRawToFloat: async (
+    _file: Blob,
+    priority?: { background?: boolean; signal?: AbortSignal },
+  ) => {
+    h.floatDecodes.push(priority?.background);
+    h.floatSignals.push(priority?.signal);
+    return h.rawFloat
       ? {
           data: new Float32Array(h.rawFloat.width * h.rawFloat.height * 4).fill(0.5),
           width: h.rawFloat.width,
           height: h.rawFloat.height,
           oriented: h.rawFloat.oriented ?? false,
           colorTemperature: h.rawFloat.colorTemperature,
+          suspicious: h.rawFloat.suspicious,
         }
-      : null,
+      : { failure: h.floatFailure, reason: "unsupported model" };
+  },
+}));
+
+// The colour check needs an image decoder and WebGL; accept-decode.test.ts
+// pins what makes a decode acceptable, so here the ruling is a given.
+vi.mock("@/raw/accept-decode", () => ({
+  acceptDecode: async (
+    decode: { suspicious?: boolean },
+    upright: { width: number; height: number },
+    preview: Blob | null,
+  ) => {
+    h.judged.push({
+      suspicious: decode.suspicious,
+      size: [upright.width, upright.height],
+      preview,
+    });
+    return h.verdict;
+  },
 }));
 
 vi.mock("@/raw/libraw-wasm-adapter", () => ({
@@ -101,20 +150,28 @@ vi.mock("@/raw/libraw-wasm-adapter", () => ({
     h.libRawReads++;
     return h.rawMeta;
   },
-  lastLibRawStatus: "unsupported model",
 }));
 
-vi.mock("@/raw/decode-pool", () => ({ decodePoolSize: () => 2 }));
+vi.mock("@/raw/decode-pool", () => ({ decodePoolSize: () => 2, warmDecodePool: async () => {} }));
 
 vi.mock("@/raw/raw-cache", () => ({
   cachedKeys: async () => new Set<string>(),
   deleteCachedPreview: async () => {},
+  hasDecodeMarker: async () => false,
   rawCacheKey: (rel: string, size: number, rot: number) => `${rel}:${size}:${rot}`,
-  writeCachedPreview: async () => {},
+  rawCacheGeneration: () => 0,
+  writeCachedPreview: async (key: string, _data: Float32Array, w: number, ht: number) => {
+    h.cacheWrites.push([key, w, ht]);
+  },
+  markDecode: async () => {},
 }));
 
 vi.mock("@/state/settings-store", () => ({
-  getSettings: () => ({ previewSource: h.previewSource, thumbMaxEdge: h.thumbMaxEdge }),
+  getSettings: () => ({
+    previewSource: h.previewSource,
+    thumbMaxEdge: h.thumbMaxEdge,
+    rawCacheEnabled: true,
+  }),
 }));
 
 vi.mock("@/catalog/storage", () => ({
@@ -125,10 +182,15 @@ vi.mock("@/catalog/storage", () => ({
   }),
 }));
 
+vi.mock("@/state/catalog-store", () => ({
+  useCatalogStore: { getState: () => ({ photos: h.catalog }) },
+}));
+
 import {
   buildPhoto,
   buildPreviewBlob,
   isSupportedName,
+  preDecodeRawsForCache,
   rebuildThumbnails,
   reimportPhotos,
   repairMissingPreviews,
@@ -211,9 +273,10 @@ const TEMPLATE: Omit<CatalogPhoto, "id" | "filename" | "relPath" | "folder"> = {
 };
 
 /** A catalog record whose fileHandle serves `name` — the shape the repair and
- *  rebuild passes walk. */
+ *  rebuild passes walk. It is in the catalog (h.catalog) until a test says
+ *  otherwise. */
 function record(name: string, extra: Partial<CatalogPhoto> = {}): CatalogPhoto {
-  return {
+  const photo: CatalogPhoto = {
     ...TEMPLATE,
     id: `id:${name}`,
     filename: name,
@@ -227,9 +290,18 @@ function record(name: string, extra: Partial<CatalogPhoto> = {}): CatalogPhoto {
     } as unknown as FileSystemFileHandle,
     ...extra,
   };
+  h.catalog.push(photo);
+  return photo;
+}
+
+/** The record the catalog holds for `photo` changes, as it would while a decode
+ *  runs: a rating here, or one taken on from another window. */
+function changeInCatalog(photo: CatalogPhoto, change: Partial<CatalogPhoto>): void {
+  h.catalog = h.catalog.map((p) => (p.id === photo.id ? { ...p, ...change } : p));
 }
 
 beforeEach(() => {
+  h.catalog = [];
   h.exif = {};
   h.xmp = {};
   h.exifDate = undefined;
@@ -239,8 +311,15 @@ beforeEach(() => {
   h.blobSize = { width: 4000, height: 3000 };
   h.rawBitmap = null;
   h.rawFloat = null;
+  h.verdict = { use: true, cache: true };
+  h.judged = [];
+  h.previewReads = 0;
+  h.cacheWrites = [];
   h.rawMeta = undefined;
   h.libRawReads = 0;
+  h.floatDecodes = [];
+  h.floatSignals = [];
+  h.floatFailure = "unsupported";
   h.saved = [];
   installCanvasStubs();
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -337,7 +416,7 @@ describe("buildPhoto", () => {
 
     expect(photo).toMatchObject({ width: 0, height: 0, rotation: 180, filename: "a.jpg" });
     expect(photo.thumbnailBlob).toBeNull();
-    expect(photo.decodeError).toBe("no decoder could read this file");
+    expect(photo.decodeError).toBe("No decoder could read this file.");
   });
 
   it("names the format in the failure reason so the grid can explain itself", async () => {
@@ -346,8 +425,28 @@ describe("buildPhoto", () => {
     const raw = (await buildPhoto(file("a.NEF"), null, null))!;
     const tiff = (await buildPhoto(file("a.tif"), null, null))!;
 
-    expect(raw.decodeError).toBe("RAW decode failed — unsupported model");
-    expect(tiff.decodeError).toBe("TIFF decode failed (unsupported variant)");
+    expect(raw.decodeError).toBe("This RAW file can't be decoded.");
+    expect(tiff.decodeError).toBe("This kind of TIFF file isn't supported.");
+  });
+
+  it("says a RAW that failed for now couldn't be read this time", async () => {
+    h.blobSize = { width: 0, height: 0 };
+    h.floatFailure = "transient";
+
+    const raw = (await buildPhoto(file("a.NEF"), null, null))!;
+
+    expect(raw.decodeError).toBe("This RAW file couldn't be read this time.");
+  });
+
+  it("keeps the decoder's own reason for the console", async () => {
+    h.blobSize = { width: 0, height: 0 };
+
+    await buildPhoto(file("a.NEF"), null, null);
+
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining("a.NEF"),
+      "unsupported model",
+    );
   });
 
   it("falls back to the float decode when the bitmap decoder can't handle the RAW", async () => {
@@ -550,6 +649,19 @@ describe("buildPreviewBlob", () => {
     const blob = await buildPreviewBlob(record("a.jpg"));
     expect(await blob!.text()).toBe("jpeg:400x300");
   });
+
+  // The grid asks for these while the user works: a photo opened meanwhile
+  // goes first.
+  it("decodes a RAW as background work, with the signal it is handed", async () => {
+    h.rawFloat = { width: 20, height: 10 };
+    const project = new AbortController();
+
+    await buildPreviewBlob(record("a.NEF"));
+    await buildPreviewBlob(record("b.NEF"), project.signal);
+
+    expect(h.floatDecodes).toEqual([true, true]);
+    expect(h.floatSignals).toEqual([undefined, project.signal]);
+  });
 });
 
 describe("repairMissingPreviews", () => {
@@ -637,5 +749,279 @@ describe("reimportPhotos", () => {
     expect(result).toEqual({ ok: 1, failed: 0 });
     expect(reimported[0]).toMatchObject({ width: 6240, height: 4160 });
     expect(reimported[0].exif.colorTemperature).toBe(4800);
+  });
+});
+
+describe("a photo that changes while its preview is rebuilt", () => {
+  // These passes walk a list read before their decodes, which take a while. What
+  // they store goes onto the photo as the catalog holds it by then.
+
+  it("keeps a rating and keywords given meanwhile when a missing preview is repaired", async () => {
+    const broken = record("broken.jpg", { width: 0, decodeError: "RAW decode failed" });
+    changeInCatalog(broken, { rating: 4, keywords: ["dusk"] });
+    const repaired: CatalogPhoto[] = [];
+
+    await repairMissingPreviews([broken], (p) => repaired.push(p));
+
+    expect(h.saved).toHaveLength(1);
+    expect(h.saved[0]).toMatchObject({ rating: 4, keywords: ["dusk"], width: 4000 });
+    expect(h.saved[0].decodeError).toBeUndefined();
+    expect(repaired).toEqual(h.saved);
+  });
+
+  it("stores nothing for a photo that left the catalog meanwhile", async () => {
+    const broken = record("broken.jpg", { width: 0 });
+    h.catalog = [];
+    const repaired: CatalogPhoto[] = [];
+
+    await repairMissingPreviews([broken], (p) => repaired.push(p));
+
+    expect(h.saved).toEqual([]);
+    expect(repaired).toEqual([]);
+  });
+
+  it("stores no preview built for a turn the photo no longer has", async () => {
+    const broken = record("broken.jpg", { width: 0 });
+    changeInCatalog(broken, { rotation: 90 });
+
+    await repairMissingPreviews([broken]);
+
+    expect(h.saved).toEqual([]);
+  });
+
+  it("keeps a change made meanwhile when every preview is rebuilt", async () => {
+    const photo = record("a.jpg", { width: 100, height: 75 });
+    changeInCatalog(photo, { flag: "pick" });
+
+    await rebuildThumbnails([photo]);
+
+    expect(h.saved[0]).toMatchObject({ flag: "pick", width: 4000 });
+  });
+
+  it("keeps a change made meanwhile when a photo is imported again", async () => {
+    const photo = record("a.jpg", { width: 100, height: 75 });
+    changeInCatalog(photo, { colorLabel: "red" });
+
+    const result = await reimportPhotos([photo]);
+
+    expect(result).toEqual({ ok: 1, failed: 0 });
+    expect(h.saved[0]).toMatchObject({ colorLabel: "red", width: 4000 });
+  });
+
+  it("keeps a change made meanwhile when an imported-again photo won't decode", async () => {
+    h.blobSize = { width: 0, height: 0 };
+    const photo = record("a.jpg", { width: 100, height: 75 });
+    changeInCatalog(photo, { colorLabel: "red" });
+
+    const result = await reimportPhotos([photo]);
+
+    expect(result).toEqual({ ok: 0, failed: 1 });
+    expect(h.saved[0]).toMatchObject({ colorLabel: "red", width: 100 });
+    expect(h.saved[0].decodeError).toBeTruthy();
+  });
+
+  it("counts a photo removed or turned meanwhile neither as re-imported nor as unreadable", async () => {
+    const removed = record("gone.jpg", { width: 100, height: 75 });
+    const turned = record("turned.jpg", { width: 100, height: 75 });
+    h.catalog = h.catalog.filter((p) => p.id !== removed.id);
+    changeInCatalog(turned, { rotation: 90 });
+
+    const result = await reimportPhotos([removed, turned]);
+
+    expect(result).toEqual({ ok: 0, failed: 0 });
+    expect(h.saved).toEqual([]);
+  });
+
+  it("gives an imported-again RAW that won't decode its own decode's reason", async () => {
+    h.blobSize = { width: 0, height: 0 };
+    const photo = record("a.NEF", { width: 100, height: 75 });
+
+    await reimportPhotos([photo]);
+
+    expect(h.saved[0].decodeError).toBe("This RAW file can't be decoded.");
+  });
+
+  it("doesn't count an unreadable photo removed meanwhile as unreadable", async () => {
+    h.blobSize = { width: 0, height: 0 };
+    const removed = record("gone.jpg", { width: 100, height: 75 });
+    h.catalog = [];
+
+    const result = await reimportPhotos([removed]);
+
+    expect(result).toEqual({ ok: 0, failed: 0 });
+  });
+});
+
+describe("what a pass hands on to the catalog", () => {
+  // Only the fields it changed: the catalog takes them onto the photo as it holds
+  // it once the preview is written, and another window may have turned the photo
+  // during that write.
+  const keys = (changes: RebuiltChange[]) => changes.map((change) => Object.keys(change).sort());
+
+  it("a repair hands on the preview, its size and the cleared reason", async () => {
+    const broken = record("broken.jpg", { width: 0, height: 0, decodeError: "RAW decode failed" });
+    const changes: RebuiltChange[] = [];
+
+    await repairMissingPreviews([broken], (_photo, change) => changes.push(change));
+
+    expect(keys(changes)).toEqual([
+      ["decodeError", "height", "thumbnailBlob", "thumbnailUrl", "width"],
+    ]);
+    expect(changes[0]).toMatchObject({ width: 4000, height: 3000 });
+  });
+
+  it("a rebuild that keeps the size hands on the preview alone", async () => {
+    const photo = record("a.jpg", { width: 4000, height: 3000 });
+    const changes: RebuiltChange[] = [];
+
+    await rebuildThumbnails([photo], undefined, (_photo, change) => changes.push(change));
+
+    expect(keys(changes)).toEqual([["thumbnailBlob", "thumbnailUrl"]]);
+  });
+
+  it("a re-import hands on the details it read again and the new preview", async () => {
+    const photo = record("a.jpg", { width: 4000, height: 3000, dateCreated: 1_600_000_000_000 });
+    const changes: RebuiltChange[] = [];
+
+    await reimportPhotos([photo], undefined, (_photo, change) => changes.push(change));
+
+    expect(keys(changes)).toEqual([["exif", "thumbnailBlob", "thumbnailUrl"]]);
+  });
+
+  // A preview built from the file shows no edit, whatever the one it replaces
+  // showed, so Develop must not take it for the edited look.
+  describe("of a photo whose preview showed its edit", () => {
+    const EDIT = "0123456789abcdef";
+
+    it("a repair hands on that the new preview shows no edit", async () => {
+      const broken = record("broken.jpg", { width: 0, height: 0, previewEdit: EDIT });
+      const changes: RebuiltChange[] = [];
+
+      await repairMissingPreviews([broken], (_photo, change) => changes.push(change));
+
+      expect(keys(changes)[0]).toContain("previewEdit");
+      expect(changes[0].previewEdit).toBeUndefined();
+      expect(h.saved[0].previewEdit).toBeUndefined();
+    });
+
+    it("a rebuild hands on that the new preview shows no edit", async () => {
+      const photo = record("a.jpg", { width: 4000, height: 3000, previewEdit: EDIT });
+      const changes: RebuiltChange[] = [];
+
+      await rebuildThumbnails([photo], undefined, (_photo, change) => changes.push(change));
+
+      expect(keys(changes)).toEqual([["previewEdit", "thumbnailBlob", "thumbnailUrl"]]);
+      expect(changes[0].previewEdit).toBeUndefined();
+      expect(h.saved[0].previewEdit).toBeUndefined();
+    });
+
+    it("a re-import hands on that the new preview shows no edit", async () => {
+      const photo = record("a.jpg", { width: 4000, height: 3000, previewEdit: EDIT });
+      const changes: RebuiltChange[] = [];
+
+      await reimportPhotos([photo], undefined, (_photo, change) => changes.push(change));
+
+      expect(keys(changes)[0]).toContain("previewEdit");
+      expect(changes[0].previewEdit).toBeUndefined();
+      expect(h.saved[0].previewEdit).toBeUndefined();
+    });
+
+    it("a re-import that keeps the preview keeps the edit it shows", async () => {
+      h.blobSize = { width: 0, height: 0 };
+      const photo = record("a.jpg", { width: 4000, height: 3000, previewEdit: EDIT });
+      const changes: RebuiltChange[] = [];
+
+      await reimportPhotos([photo], undefined, (_photo, change) => changes.push(change));
+
+      expect(keys(changes)[0]).not.toContain("previewEdit");
+      expect(h.saved[0].previewEdit).toBe(EDIT);
+    });
+  });
+});
+
+describe("preDecodeRawsForCache", () => {
+  // The pre-fill shares libraw with Develop; it must not hold up the photo the
+  // user opens while it runs.
+  it("decodes as background work", async () => {
+    await preDecodeRawsForCache([record("DSC_0001.NEF")], { force: true });
+    expect(h.floatDecodes).toEqual([true]);
+  });
+});
+
+// Develop refuses to remember a marginal decode and rejects one whose colours
+// disagree with the camera's own preview; the background pass has to hold the
+// same line, or a bad frame is cached once and served on every later open.
+describe("preDecodeRawsForCache choosing what to remember", () => {
+  const key = "DSC_0001.NEF:64:0";
+
+  beforeEach(() => {
+    h.rawFloat = { width: 4, height: 2, oriented: true };
+  });
+
+  it("writes a decode the check accepts", async () => {
+    await preDecodeRawsForCache([record("DSC_0001.NEF")], { force: true });
+    expect(h.cacheWrites).toEqual([[key, 4, 2]]);
+  });
+
+  it("does not write a decode the check will not have cached (a suspicious one)", async () => {
+    h.rawFloat = { width: 4, height: 2, oriented: true, suspicious: true };
+    h.verdict = { use: true, cache: false };
+
+    await preDecodeRawsForCache([record("DSC_0001.NEF")], { force: true });
+
+    expect(h.cacheWrites).toEqual([]);
+    expect(h.judged).toHaveLength(1);
+  });
+
+  it("does not write a decode whose colours the check rejected", async () => {
+    h.verdict = { use: false, cache: false };
+
+    await preDecodeRawsForCache([record("DSC_0001.NEF")], { force: true });
+
+    expect(h.cacheWrites).toEqual([]);
+    expect(h.judged).toHaveLength(1);
+  });
+
+  it("judges the decode as it will be cached, against the embedded preview", async () => {
+    const preview = new Blob(["jpeg"], { type: "image/jpeg" });
+    h.embedded = preview;
+    h.rawFloat = { width: 4, height: 2, oriented: false, suspicious: true };
+
+    await preDecodeRawsForCache([record("DSC_0001.NEF", { rotation: 90 })], { force: true });
+
+    expect(h.judged).toEqual([{ suspicious: true, size: [2, 4], preview }]);
+  });
+
+  it("judges without a preview when the camera embedded none, and still writes", async () => {
+    h.embedded = null;
+
+    await preDecodeRawsForCache([record("DSC_0001.NEF")], { force: true });
+
+    expect(h.judged).toEqual([{ suspicious: undefined, size: [4, 2], preview: null }]);
+    expect(h.cacheWrites).toEqual([[key, 4, 2]]);
+  });
+
+  // libraw fails the same way on every pass for an unsupported body; the
+  // preview is only worth reading once there is a decode to judge.
+  it("leaves the embedded preview alone when libraw has no decode", async () => {
+    h.rawFloat = null;
+
+    await preDecodeRawsForCache([record("DSC_0001.NEF")], { force: true });
+
+    expect(h.previewReads).toBe(0);
+    expect(h.judged).toEqual([]);
+    expect(h.cacheWrites).toEqual([]);
+  });
+
+  it("counts a rejected decode as done", async () => {
+    h.verdict = { use: false, cache: false };
+    const progress: [number, number][] = [];
+
+    await preDecodeRawsForCache([record("DSC_0001.NEF")], {
+      force: true,
+      onProgress: (done, total) => progress.push([done, total]),
+    });
+
+    expect(progress).toEqual([[0, 1], [1, 1]]);
   });
 });

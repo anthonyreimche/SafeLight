@@ -19,9 +19,10 @@ import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { getStageTextures } from "@/rendering/render-bridge";
 import { getExtSetting } from "@/extensions/ext-settings";
-import { resolveDefaultPipeline, setPhotoParams } from "@/extensions/pipelines";
+import { resolveDefaultPipeline, resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { getSettings } from "@/state/settings-store";
+import { showsEdit } from "@/state/fallback-rules";
 import { buildExportIfds, embedExif, serializeExifTiff, type ExportIfds } from "./exif-write";
 import { applyOutputSharpening } from "./sharpen";
 import { encodeTiff } from "./tiff";
@@ -76,6 +77,8 @@ export interface ExportProgress {
 export interface ExportResult {
   exported: number;
   failed: string[]; // filenames that could not be rendered
+  /** Why some of them failed, worded for the user, where that is known. */
+  failures?: { filename: string; reason: string }[];
   /** Count of photos whose 16-bit TIFF request fell back to 8-bit because the
    *  device can't render to a float target. */
   degradedTo8Bit: number;
@@ -148,12 +151,24 @@ function encode16BitTiff(
   return new Blob([bytes as BlobPart], { type: "image/tiff" });
 }
 
+// Characters Windows forbids in a file name. The folder handle rejects them
+// on every platform, so one in an EXIF value would fail that photo's export.
+const UNSAFE_NAME_CHARS = /[\\/:*?"<>|\u0000-\u001f]+/g;
+
+/** A name any platform's file system accepts: forbidden characters become a
+ *  dash (a run becomes one), trailing dots and spaces go (Windows drops them
+ *  silently), and an empty result is "untitled". */
+export function safeFileName(name: string): string {
+  const safe = name.replace(UNSAFE_NAME_CHARS, "-").replace(/[. ]+$/, "");
+  return safe === "" ? "untitled" : safe;
+}
+
 // Output filename: original base name + the chosen format's extension.
 export function exportFilename(
   photo: CatalogPhoto,
   format: ExportFormat,
 ): string {
-  const base = photoExportBase(photo);
+  const base = safeFileName(photoExportBase(photo));
   return `${base}.${EXTENSION[format]}`;
 }
 
@@ -181,8 +196,11 @@ export function resolveFilenameTemplate(
     lens: photo.exif.lens ?? "",
   };
   const result = template.replace(/{(\w+)}/g, (_, key: string) => vars[key] ?? `{${key}}`);
-  // Ensure the resolved name always ends with the format extension.
-  return result.endsWith(`.${ext}`) ? result : `${result}.${ext}`;
+  // The name always ends with the format extension. Clean the base alone, so a
+  // trailing dot or an empty base never sits next to the extension.
+  const dotExt = `.${ext}`;
+  const stem = result.endsWith(dotExt) ? result.slice(0, -dotExt.length) : result;
+  return `${safeFileName(stem)}${dotExt}`;
 }
 
 /** Run each registered export processor in registration order, chaining the
@@ -214,19 +232,21 @@ async function runProcessors(
 
 // Ensure a filename is unique within a batch by appending " (2)", " (3)", …
 // before the extension. Prevents collisions inside a ZIP and silent overwrites
-// when several files are downloaded to the same folder.
-function uniqueName(name: string, used: Set<string>): string {
-  if (!used.has(name)) {
-    used.add(name);
+// when several files are downloaded to the same folder. Windows and macOS
+// treat names that differ only in case as one file, so `used` holds lower-cased
+// names and the returned name keeps its own casing.
+export function uniqueName(name: string, used: Set<string>): string {
+  if (!used.has(name.toLowerCase())) {
+    used.add(name.toLowerCase());
     return name;
   }
   const dot = name.lastIndexOf(".");
   const base = dot > 0 ? name.slice(0, dot) : name;
   const ext = dot > 0 ? name.slice(dot) : "";
   let n = 2;
-  while (used.has(`${base} (${n})${ext}`)) n++;
+  while (used.has(`${base} (${n})${ext}`.toLowerCase())) n++;
   const unique = `${base} (${n})${ext}`;
-  used.add(unique);
+  used.add(unique.toLowerCase());
   return unique;
 }
 
@@ -247,6 +267,8 @@ interface RenderOneResult {
   blob: Blob | null;
   /** The 16-bit TIFF request fell back to 8-bit (device can't render float). */
   degradedTo8Bit: boolean;
+  /** Why no blob was rendered, worded for the user, where that is known. */
+  failure?: string;
 }
 
 // Source EXIF for re-embedding. A virtual copy shares its master's live file
@@ -283,10 +305,19 @@ async function renderOne(
   const minEdge =
     settings.longEdge == null ? Infinity : Math.ceil(settings.longEdge / cropFracLow);
 
-  // Same decode as Develop/Loupe: full-res RAW float when available (gets the
+  // Same decode as Develop: full-res RAW float when available (gets the
   // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
   const image = await loadPhotoImage(photo, { minEdge });
   if (!image) return { blob: null, degradedTo8Bit: false };
+  // The stored preview, rendered with the edit, stands in for an original out of
+  // reach: the edit rendered over it would apply twice.
+  if (image.kind === "bitmap" && showsEdit(image)) {
+    image.bitmap.close();
+    const failure = image.fallback?.offline
+      ? "The original isn't available."
+      : "The original can't be read.";
+    return { blob: null, degradedTo8Bit: false, failure };
+  }
   const bitmap = image.kind === "bitmap" ? image.bitmap : null;
   try {
     const w = image.kind === "bitmap" ? image.bitmap.width : image.width;
@@ -300,7 +331,7 @@ async function renderOne(
     const requestEdge = settings.longEdge ?? Math.max(w, h);
     // Float sources are downsampled to maxEdge at upload, so a cropped export
     // must inflate the cap to keep enough pixels inside the crop (bounded by
-    // the native size and the GPU's texture limit). Bitmap/srgb16 sources
+    // the native size and the GPU's texture limit). Bitmap/float16 sources
     // upload at native size — for them maxEdge is purely the output cap, and
     // inflating it would overshoot the requested long edge.
     const maxEdge =
@@ -401,18 +432,46 @@ async function renderOne(
  *  - Stage textures: without them, stages that sample uploaded textures fall
  *    back to the renderer's 1×1 black dummy and render pure black.
  *  - Output colour space: the renderer converts pixels and renderOne embeds the
- *    matching ICC; set once, persists across the batch's single context. */
-function makeBatchRenderer(
+ *    matching ICC; set once, persists across the batch's single context.
+ *  - First photo's program: a renderer builds its develop program on the first
+ *    frame, so it is built here, with that photo's process version and display
+ *    transform, ahead of any decode. A stock program the driver can't build fails
+ *    the whole batch up front, like a context that can't be created, instead of
+ *    decoding every photo only to fail each at its frame. Stages or a transform
+ *    that can't be built are logged, and the photos that use them fail one by one,
+ *    as they always did. A photo whose edit can't be read is left to fail on its
+ *    own when it is rendered. */
+async function makeBatchRenderer(
   settings: ExportSettings,
-): { renderer: WebGLRenderer; canvas: HTMLCanvasElement } | null {
+  first: CatalogPhoto | undefined,
+): Promise<{ renderer: WebGLRenderer; canvas: HTMLCanvasElement } | null> {
   const canvas = document.createElement("canvas");
-  let renderer: WebGLRenderer;
+  let renderer: WebGLRenderer | null = null;
   try {
     renderer = new WebGLRenderer(canvas, {
       stages: Object.values(useRegistry.getState().processingStages),
       pipeline: resolveDefaultPipeline(),
     });
-  } catch {
+    const saved = first
+      ? await loadSavedEdit(first.id, first.exif.colorTemperature).catch(() => null)
+      : null;
+    if (saved) {
+      const { displayTransform, processVersion } = saved.params;
+      renderer.setActivePipeline(resolvePipelineFor(displayTransform));
+      try {
+        renderer.prepareProgram(processVersion);
+      } catch (err) {
+        // Only a stock program that can't be built throws out of here.
+        renderer.prepareStockProgram(processVersion);
+        console.error(
+          "[export] stages or display transform can't be built; photos that use them will fail:",
+          err,
+        );
+      }
+    }
+  } catch (err) {
+    console.error("[export] the renderer is unavailable:", err);
+    renderer?.dispose();
     return null;
   }
   renderer.setStageTextures(getStageTextures());
@@ -458,7 +517,7 @@ export async function renderPhotosToBlobs(
   settings: ExportSettings,
   onProgress?: (p: ExportProgress) => void,
 ): Promise<RenderedPhoto[]> {
-  const made = makeBatchRenderer(settings);
+  const made = await makeBatchRenderer(settings, photos[0]);
   if (!made)
     return photos.map((photo) => ({ photo, blob: null, width: 0, height: 0 }));
   const { renderer, canvas } = made;
@@ -496,7 +555,7 @@ export async function exportPhotos(
   onProgress?: (p: ExportProgress) => void,
   destDir?: FileSystemDirectoryHandle,
 ): Promise<ExportResult> {
-  const made = makeBatchRenderer(settings);
+  const made = await makeBatchRenderer(settings, photos[0]);
   if (!made)
     return { exported: 0, failed: photos.map((p) => p.filename), degradedTo8Bit: 0 };
   const { renderer, canvas } = made;
@@ -512,6 +571,7 @@ export async function exportPhotos(
   let zipFellBack = false;
   const usedNames = new Set<string>();
   const failed: string[] = [];
+  const failures: { filename: string; reason: string }[] = [];
   let exported = 0;
   let degradedTo8Bit = 0;
 
@@ -529,6 +589,7 @@ export async function exportPhotos(
         const r = await renderOne(renderer, canvas, photo, settings, procSettings);
         blob = r.blob;
         if (r.degradedTo8Bit) degradedTo8Bit++;
+        if (r.failure) failures.push({ filename: photo.filename, reason: r.failure });
       } catch {
         blob = null;
       }
@@ -577,5 +638,11 @@ export async function exportPhotos(
     downloadBlob(zip.blob(), ARCHIVE_NAME);
   }
 
-  return { exported, failed, degradedTo8Bit, zipFellBack };
+  return {
+    exported,
+    failed,
+    degradedTo8Bit,
+    zipFellBack,
+    ...(failures.length > 0 ? { failures } : {}),
+  };
 }

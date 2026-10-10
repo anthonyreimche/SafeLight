@@ -10,10 +10,10 @@
 // pin the promise contract, keyboard/focus behavior, and FIFO queueing.
 
 import { describe, expect, it } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { popEscapeHandler } from "@/ui/escape-stack";
-import { ConfirmDialogHost, confirmDialog } from "./ConfirmDialog";
+import { ConfirmDialogHost, alertDialog, confirmDialog } from "./ConfirmDialog";
 
 describe("confirmDialog", () => {
   it("resolves true when the confirm button is clicked", async () => {
@@ -110,6 +110,51 @@ describe("confirmDialog", () => {
     await decision;
   });
 
+  it("styles the confirm button by variant — red for danger, accent otherwise", async () => {
+    const user = userEvent.setup();
+    render(<ConfirmDialogHost />);
+    let danger!: Promise<boolean>;
+    act(() => {
+      danger = confirmDialog({
+        title: "Delete from disk",
+        message: "Move 3 photos to the Trash?",
+        confirmLabel: "Move to Trash",
+        variant: "danger",
+      });
+    });
+    const dangerButton = screen.getByRole("button", { name: "Move to Trash" });
+    expect(dangerButton.className).toContain("var(--color-label-red)");
+    expect(dangerButton.className).not.toContain("var(--color-accent)");
+    await user.click(dangerButton);
+    await danger;
+
+    let plain!: Promise<boolean>;
+    act(() => {
+      plain = confirmDialog({ title: "Reset edits", message: "Sure?" });
+    });
+    expect(screen.getByRole("button", { name: "OK" }).className).toContain(
+      "var(--color-accent)",
+    );
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await plain;
+  });
+
+  it("keeps single-newline line structure within a message paragraph", async () => {
+    const user = userEvent.setup();
+    render(<ConfirmDialogHost />);
+    let decision!: Promise<boolean>;
+    act(() => {
+      decision = confirmDialog({
+        title: "Delete from disk",
+        message: "Couldn't delete 2 files:\n• a.NEF — locked\n• b.NEF — busy",
+      });
+    });
+    const paragraph = screen.getByText(/a\.NEF/);
+    expect(paragraph.className).toContain("whitespace-pre-line");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await decision;
+  });
+
   it("queues concurrent requests, first in first out", async () => {
     const user = userEvent.setup();
     render(<ConfirmDialogHost />);
@@ -127,5 +172,64 @@ describe("confirmDialog", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await expect(second).resolves.toBe(false);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+describe("alertDialog", () => {
+  it("shows one acknowledge button and resolves once it's clicked", async () => {
+    const user = userEvent.setup();
+    render(<ConfirmDialogHost />);
+    let done = false;
+    let notice!: Promise<void>;
+    act(() => {
+      notice = alertDialog({
+        title: "Export data",
+        message: "Wrote 3 sidecar files.",
+      }).then(() => {
+        done = true;
+      });
+    });
+    const dialog = screen.getByRole("alertdialog", { name: "Export data" });
+    expect(dialog.textContent).toContain("Wrote 3 sidecar files.");
+    expect(within(dialog).queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(within(dialog).getAllByRole("button")).toHaveLength(1);
+    await user.click(within(dialog).getByRole("button", { name: "OK" }));
+    await notice;
+    expect(done).toBe(true);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("resolves when dismissed by the escape stack", async () => {
+    render(<ConfirmDialogHost />);
+    let notice!: Promise<void>;
+    act(() => {
+      notice = alertDialog({ title: "Export data", message: "Done." });
+    });
+    let consumed = false;
+    act(() => {
+      consumed = popEscapeHandler();
+    });
+    expect(consumed).toBe(true);
+    await expect(notice).resolves.toBeUndefined();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("queues behind confirms in the same FIFO", async () => {
+    const user = userEvent.setup();
+    render(<ConfirmDialogHost />);
+    let question!: Promise<boolean>;
+    let notice!: Promise<void>;
+    act(() => {
+      question = confirmDialog({ title: "First question", message: "A" });
+      notice = alertDialog({ title: "Heads up", message: "B" });
+    });
+    screen.getByRole("dialog", { name: "First question" });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    await expect(question).resolves.toBe(true);
+    screen.getByRole("alertdialog", { name: "Heads up" });
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    await expect(notice).resolves.toBeUndefined();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });

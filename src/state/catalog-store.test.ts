@@ -17,6 +17,11 @@ const h = vi.hoisted(() => ({
     getEditState: (id: string) => Promise<EditState | null>;
   }[],
   removals: [] as { id: string; fileName: string }[],
+  /** While set, the awaited step it names waits for it: extension hooks told of
+   *  a metadata change, a preview being turned, or a storage write. */
+  metadataGate: null as Promise<void> | null,
+  rotateGate: null as Promise<void> | null,
+  storageGate: null as Promise<void> | null,
 }));
 
 // Cross-window fan-out is a side effect here; capture the messages instead so the
@@ -36,6 +41,7 @@ vi.mock("@/project/project-store", () => ({
 vi.mock("@/extensions/registry", () => ({
   emitMetadataChange: async (ctx: (typeof h.metadata)[number]) => {
     h.metadata.push(ctx);
+    if (h.metadataGate) await h.metadataGate;
   },
   emitPhotoRemove: async (ctx: { photo: CatalogPhoto; fileName: string }) => {
     h.removals.push({ id: ctx.photo.id, fileName: ctx.fileName });
@@ -46,10 +52,15 @@ vi.mock("@/extensions/registry", () => ({
 // store's blob/URL swap stays observable. normalizeRotation is pure — keep it real.
 vi.mock("@/catalog/orient", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/catalog/orient")>()),
-  rotateBlob: async (blob: Blob, deg: number) => new Blob([`${await blob.text()}+${deg}`]),
+  rotateBlob: async (blob: Blob, deg: number) => {
+    if (h.rotateGate) await h.rotateGate;
+    return new Blob([`${await blob.text()}+${deg}`]);
+  },
 }));
 
-import { setCatalogStorage } from "@/catalog/storage";
+import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
+import { installMemoryStorage } from "@/catalog/stored-edit.fixtures";
+import { storedPhoto } from "@/catalog/types";
 import { useCatalogStore } from "./catalog-store";
 
 function memoryCatalogStorage() {
@@ -60,11 +71,15 @@ function memoryCatalogStorage() {
     putPhoto: async (p) => void rows.set(p.id, p),
     putPhotos: async (list) => {
       for (const p of list) rows.set(p.id, p);
+      if (h.storageGate) await h.storageGate;
     },
     deletePhoto: async (id) => void rows.delete(id),
     getEditState: async (id) => edits.get(id),
     getAllEditStates: async () => [...edits.values()],
     putEditState: async (e) => void edits.set(e.photoId, e),
+    putEditStates: async (list) => {
+      for (const e of list) edits.set(e.photoId, e);
+    },
   };
   return { storage, rows, edits };
 }
@@ -131,6 +146,9 @@ beforeEach(() => {
   h.broadcasts.length = 0;
   h.metadata.length = 0;
   h.removals.length = 0;
+  h.metadataGate = null;
+  h.rotateGate = null;
+  h.storageGate = null;
   h.openLast.mockReset();
   h.reconnectLast.mockReset();
 
@@ -250,6 +268,7 @@ describe("addPhotos", () => {
     expect(store.rows.size).toBe(0);
     expect(h.broadcasts).toEqual([]);
   });
+
 });
 
 describe("previews", () => {
@@ -298,6 +317,34 @@ describe("previews", () => {
     expect(liveUrls.has(before.thumbnailUrl)).toBe(true);
   });
 
+  it("mergeRebuiltPhoto takes only what a rebuild changed onto the photo as it is now", () => {
+    // Its callers stored the rebuild before an awaited preview write, and another
+    // window may have turned or relabelled the photo meanwhile.
+    const before = previewed("a");
+    useCatalogStore.setState({ photos: [before] });
+    const turned = { rotation: 90, width: 4000, height: 6000, exif: { iso: 400 } };
+    state().mergeRemoteRecords([storedPhoto(photo("a", { ...turned, colorLabel: "red" }))], []);
+    const rebuilt = previewed("a");
+
+    state().mergeRebuiltPhoto("a", {
+      thumbnailBlob: rebuilt.thumbnailBlob,
+      thumbnailUrl: rebuilt.thumbnailUrl,
+      fileSize: 1234,
+    });
+
+    expect(state().photos[0]).toMatchObject({
+      ...turned,
+      colorLabel: "red",
+      fileSize: 1234,
+      thumbnailBlob: rebuilt.thumbnailBlob,
+      thumbnailUrl: rebuilt.thumbnailUrl,
+    });
+    expect(liveUrls.has(before.thumbnailUrl)).toBe(false);
+    expect(h.broadcasts).toEqual([
+      { type: "catalog-change", payload: { action: "update", id: "a", origin: "test-window" } },
+    ]);
+  });
+
   it("replaceThumbnail swaps in a reloaded preview without re-broadcasting", () => {
     const before = previewed("a");
     useCatalogStore.setState({ photos: [before] });
@@ -309,6 +356,111 @@ describe("previews", () => {
     expect(liveUrls.has(before.thumbnailUrl)).toBe(false);
     // Reacting to another window's broadcast — echoing it back would loop.
     expect(h.broadcasts).toEqual([]);
+  });
+});
+
+describe("the edit a loaded preview shows", () => {
+  // previewEdit names the edit of the preview this window holds. A preview built
+  // from the photo's file shows it unedited, and the loader hands it on with no
+  // edit; one read from disk shows the edit its record named when it was read.
+  const builtFromFile = (text: string) => new Blob([text]);
+  const readFromDisk = (text: string, previewEdit: string | undefined) =>
+    Object.assign(new Blob([text]), { previewEdit });
+
+  it("mergeThumbnails clears it for a preview built from the file and takes it from one read from disk", () => {
+    useCatalogStore.setState({
+      photos: [
+        photo("built", { previewEdit: "edit-1" }),
+        photo("read", { previewEdit: "edit-1" }),
+        photo("plain", { previewEdit: "edit-1" }),
+      ],
+    });
+
+    state().mergeThumbnails([
+      { id: "built", blob: builtFromFile("built") },
+      { id: "read", blob: readFromDisk("read", "edit-2") },
+      { id: "plain", blob: readFromDisk("plain", undefined) },
+    ]);
+
+    const [built, read, plain] = state().photos;
+    expect(built.previewEdit).toBeUndefined();
+    expect(read.previewEdit).toBe("edit-2");
+    expect(plain.previewEdit).toBeUndefined();
+  });
+
+  it("mergeThumbnails keeps it on a photo whose preview it leaves in place", () => {
+    useCatalogStore.setState({ photos: [previewed("held", { previewEdit: "edit-1" })] });
+
+    state().mergeThumbnails([{ id: "held", blob: builtFromFile("ignored") }]);
+
+    expect(state().photos[0].previewEdit).toBe("edit-1");
+  });
+
+  it("replaceThumbnail clears it for a preview built from the file and takes it from one read from disk", () => {
+    useCatalogStore.setState({
+      photos: [previewed("built", { previewEdit: "edit-1" }), previewed("read", { previewEdit: "edit-1" })],
+    });
+
+    state().replaceThumbnail("built", builtFromFile("built"));
+    state().replaceThumbnail("read", readFromDisk("read", "edit-2"));
+
+    const [built, read] = state().photos;
+    expect(built.previewEdit).toBeUndefined();
+    expect(read.previewEdit).toBe("edit-2");
+  });
+
+  it("stays this window's when another window's record names another", () => {
+    // The record names the preview on disk; this window keeps the preview it holds.
+    useCatalogStore.setState({
+      photos: [previewed("mine", { previewEdit: "edit-1" }), previewed("plain")],
+    });
+
+    state().mergeRemoteRecords(
+      [
+        storedPhoto(photo("mine", { rating: 3, previewEdit: "edit-2" })),
+        storedPhoto(photo("plain", { rating: 4, previewEdit: "edit-2" })),
+      ],
+      [],
+    );
+
+    const [mine, plain] = state().photos;
+    expect(mine).toMatchObject({ rating: 3, previewEdit: "edit-1" });
+    expect(plain.rating).toBe(4);
+    expect(plain.previewEdit).toBeUndefined();
+  });
+
+  it("stays with the preview reconcileCatalog carries over", () => {
+    const skeleton = previewed("a", { previewEdit: "edit-1" });
+    useCatalogStore.setState({ photos: [skeleton] });
+
+    state().reconcileCatalog([photo("a", { previewEdit: "edit-2" })]);
+
+    expect(state().photos[0].thumbnailBlob).toBe(skeleton.thumbnailBlob);
+    expect(state().photos[0].previewEdit).toBe("edit-1");
+  });
+
+  it("goes with the preview a rebuild replaces, unless the rebuild names the one it shows", () => {
+    // A reimport's preview, built from the file, may land after an edit's preview.
+    useCatalogStore.setState({
+      photos: [
+        previewed("reimported", { previewEdit: "edit-1" }),
+        previewed("edited", { previewEdit: "edit-1" }),
+        previewed("details", { previewEdit: "edit-1" }),
+      ],
+    });
+    const preview = (text: string) => {
+      const thumbnailBlob = new Blob([text]);
+      return { thumbnailBlob, thumbnailUrl: URL.createObjectURL(thumbnailBlob) };
+    };
+
+    state().mergeRebuiltPhoto("reimported", preview("built"));
+    state().mergeRebuiltPhoto("edited", { ...preview("edited"), previewEdit: "edit-2" });
+    state().mergeRebuiltPhoto("details", { fileSize: 1234 });
+
+    const [reimported, edited, details] = state().photos;
+    expect(reimported.previewEdit).toBeUndefined();
+    expect(edited.previewEdit).toBe("edit-2");
+    expect(details).toMatchObject({ fileSize: 1234, previewEdit: "edit-1" });
   });
 });
 
@@ -402,6 +554,209 @@ describe("removal", () => {
     expect(ids()).toEqual(["a"]);
     expect(h.broadcasts).toEqual([]);
   });
+
+  it("removes nothing from the next project when the project changes partway", async () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    const fromNext: string[] = [];
+    vi.spyOn(store.storage, "deletePhoto").mockImplementationOnce(async () => {
+      installMemoryStorage(); // the project changed while "a" was removed
+      vi.spyOn(catalogStorage(), "deletePhoto").mockImplementation(
+        async (id) => void fromNext.push(id),
+      );
+    });
+
+    await state().removePhotos(["a", "b"]);
+
+    expect(fromNext).toEqual([]);
+  });
+});
+
+describe("records another window wrote", () => {
+  it("takes on their stored fields and keeps this window's handles and preview", () => {
+    const local = previewed("a", { rating: 1, keywords: ["old"] });
+    const untouched = photo("b");
+    useCatalogStore.setState({ photos: [local, untouched] });
+
+    state().mergeRemoteRecords(
+      [storedPhoto(photo("a", { rating: 5, colorLabel: "red", keywords: ["dawn"] }))],
+      [],
+    );
+
+    const [merged, other] = state().photos;
+    expect(merged).toMatchObject({ rating: 5, colorLabel: "red", keywords: ["dawn"] });
+    expect(merged.directoryHandle).toBe(local.directoryHandle);
+    expect(merged.fileHandle).toBe(local.fileHandle);
+    expect(merged.thumbnailBlob).toBe(local.thumbnailBlob);
+    expect(merged.thumbnailUrl).toBe(local.thumbnailUrl);
+    expect(liveUrls.has(local.thumbnailUrl)).toBe(true);
+    expect(other).toBe(untouched);
+  });
+
+  it("drops the photos another window removed, with their selection and previews", () => {
+    const gone = previewed("gone");
+    useCatalogStore.setState({
+      photos: [photo("a"), gone],
+      selectedIds: new Set(["a", "gone"]),
+      activePhotoId: "gone",
+    });
+
+    state().mergeRemoteRecords([], ["gone"]);
+
+    expect(ids()).toEqual(["a"]);
+    expect(selected()).toEqual(["a"]);
+    expect(state().activePhotoId).toBeNull();
+    expect(liveUrls.has(gone.thumbnailUrl)).toBe(false);
+  });
+
+  it("ignores photos this window doesn't have, and stores and announces nothing", () => {
+    useCatalogStore.setState({ photos: [photo("a")], activePhotoId: "a" });
+
+    state().mergeRemoteRecords([storedPhoto(photo("ghost", { rating: 5 }))], ["phantom"]);
+
+    expect(ids()).toEqual(["a"]);
+    expect(state().activePhotoId).toBe("a");
+    expect(store.rows.size).toBe(0);
+    expect(h.broadcasts).toEqual([]);
+  });
+
+  it("clears a field the other window's record leaves out", () => {
+    useCatalogStore.setState({ photos: [previewed("a", { decodeError: "unreadable" })] });
+
+    state().mergeRemoteRecords([storedPhoto(photo("a"))], []);
+
+    expect(state().photos[0]).not.toHaveProperty("decodeError");
+  });
+});
+
+/** A step a test lets finish when it chooses. */
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open = () => {};
+  const promise = new Promise<void>((resolve) => (open = resolve));
+  return { promise, open: () => open() };
+}
+
+describe("a change made while another window's records arrive", () => {
+  // Another window's records can land while a change here is between reading
+  // the photo and storing it. The change goes on top of them, not over them.
+
+  it("keeps what arrives while extensions hear of a new rating", async () => {
+    useCatalogStore.setState({ photos: [photo("a")] });
+    const hooks = gate();
+    h.metadataGate = hooks.promise;
+
+    const rating = state().setRating("a", 3);
+    await vi.waitFor(() => expect(h.metadata).toHaveLength(1));
+    // The other window took the rating on, then added a keyword.
+    state().mergeRemoteRecords([storedPhoto(photo("a", { rating: 3, keywords: ["dusk"] }))], []);
+    hooks.open();
+    await rating;
+
+    expect(state().photos[0]).toMatchObject({ rating: 3, keywords: ["dusk"] });
+  });
+
+  it("turns the photo as it stands once its preview is turned", async () => {
+    useCatalogStore.setState({ photos: [previewed("a")] });
+    const turning = gate();
+    h.rotateGate = turning.promise;
+
+    const rotation = state().rotatePhotos(["a"], 90);
+    state().mergeRemoteRecords([storedPhoto(photo("a", { rating: 4 }))], []);
+    turning.open();
+    await rotation;
+
+    expect(state().photos[0]).toMatchObject({ rating: 4, rotation: 90, width: 4000 });
+    expect(store.rows.get("a")).toMatchObject({ rating: 4, rotation: 90, width: 4000 });
+  });
+
+  it("keeps what arrives while extensions hear of a turn", async () => {
+    useCatalogStore.setState({ photos: [previewed("a")] });
+    const hooks = gate();
+    h.metadataGate = hooks.promise;
+
+    const rotation = state().rotatePhotos(["a"], 90);
+    await vi.waitFor(() => expect(h.metadata).toHaveLength(1));
+    state().mergeRemoteRecords(
+      [storedPhoto(photo("a", { rotation: 90, width: 4000, height: 6000, rating: 4 }))],
+      [],
+    );
+    hooks.open();
+    await rotation;
+
+    expect(state().photos[0]).toMatchObject({ rating: 4, rotation: 90, width: 4000 });
+  });
+
+  it("doesn't bring back a photo removed while its preview was being turned", async () => {
+    useCatalogStore.setState({ photos: [previewed("a"), photo("b")] });
+    const turning = gate();
+    h.rotateGate = turning.promise;
+
+    const rotation = state().rotatePhotos(["a"], 90);
+    state().mergeRemoteRecords([], ["a"]);
+    turning.open();
+    await rotation;
+
+    expect(ids()).toEqual(["b"]);
+    expect(store.rows.has("a")).toBe(false);
+  });
+
+  it("names a virtual copy on top of what arrives while the name is stored", async () => {
+    useCatalogStore.setState({ photos: [photo("a-c1", { copyOf: "a" })] });
+    const writing = gate();
+    h.storageGate = writing.promise;
+
+    const naming = state().setCopyName("a-c1", "dusk grade");
+    state().mergeRemoteRecords([storedPhoto(photo("a-c1", { copyOf: "a", rating: 5 }))], []);
+    writing.open();
+    await naming;
+
+    expect(state().photos[0]).toMatchObject({ copyName: "dusk grade", rating: 5 });
+  });
+
+  it("stores and shows every field a relocated record changes", async () => {
+    // Extensions write a location or a description through relocatePhotos.
+    const before = photo("a");
+    useCatalogStore.setState({ photos: [before] });
+    const tagged = { ...before, exif: { gpsLatitude: 9, gpsLongitude: 8 }, keywords: ["harbour"] };
+
+    await state().relocatePhotos([tagged]);
+
+    expect(state().photos[0]).toBe(tagged);
+    expect(store.rows.get("a")).toMatchObject({
+      exif: { gpsLatitude: 9, gpsLongitude: 8 },
+      keywords: ["harbour"],
+    });
+  });
+
+  it("keeps what arrives while a move is being stored", async () => {
+    useCatalogStore.setState({ photos: [photo("a")] });
+    const writing = gate();
+    h.storageGate = writing.promise;
+
+    const moving = state().relocatePhotos([
+      { ...photo("a"), relPath: "archive/a.NEF", folder: "archive" },
+    ]);
+    state().mergeRemoteRecords([storedPhoto(photo("a", { rating: 4 }))], []);
+    writing.open();
+    await moving;
+
+    expect(state().photos[0]).toMatchObject({ rating: 4, folder: "archive" });
+  });
+
+  it("drops a field the relocated record leaves out even when a record arrives meanwhile", async () => {
+    const named = photo("a-c1", { copyOf: "a", copyName: "dusk" });
+    useCatalogStore.setState({ photos: [named] });
+    const writing = gate();
+    h.storageGate = writing.promise;
+
+    const { copyName: _dropped, ...unnamed } = named;
+    const storing = state().relocatePhotos([unnamed]);
+    state().mergeRemoteRecords([storedPhoto({ ...named, rating: 4 })], []);
+    writing.open();
+    await storing;
+
+    expect(state().photos[0].rating).toBe(4);
+    expect(state().photos[0].copyName).toBeUndefined();
+  });
 });
 
 describe("rating, label and flag", () => {
@@ -430,7 +785,17 @@ describe("rating, label and flag", () => {
 
     expect(state().photos.map((p) => p.flag)).toEqual(["pick", "none", "pick"]);
     expect(h.broadcasts).toEqual([
-      { type: "catalog-change", payload: { action: "update", id: undefined } },
+      { type: "catalog-change", payload: { action: "update", origin: "test-window" } },
+    ]);
+  });
+
+  it("stamps this window on a rating and names no photo", async () => {
+    // A metadata change leaves every preview alone: naming the photo would make
+    // each window, this one included, reload it from disk or rebuild it.
+    await state().setRating("b", 4);
+
+    expect(h.broadcasts).toEqual([
+      { type: "catalog-change", payload: { action: "update", origin: "test-window" } },
     ]);
   });
 
@@ -546,6 +911,100 @@ describe("rotatePhotos", () => {
 
     expect(state().photos[0].rotation).toBe(0);
     expect(store.rows.size).toBe(0);
+    expect(h.broadcasts).toEqual([]);
+  });
+
+  it("names each photo it turned, so other windows reload those previews", async () => {
+    useCatalogStore.setState({ photos: [previewed("a"), previewed("b"), previewed("c")] });
+
+    await state().rotatePhotos(["a", "c"], 90);
+
+    // Written to disk before the message goes out; this window already holds the
+    // turned preview and ignores its own echo (origin).
+    expect(h.broadcasts).toHaveLength(2);
+    expect(h.broadcasts).toEqual(
+      expect.arrayContaining([
+        { type: "catalog-change", payload: { action: "update", id: "a", origin: "test-window" } },
+        { type: "catalog-change", payload: { action: "update", id: "c", origin: "test-window" } },
+      ]),
+    );
+  });
+
+  it("names only the photos still in the catalog when their previews were turned", async () => {
+    useCatalogStore.setState({ photos: [previewed("a"), photo("b")] });
+    const turning = gate();
+    h.rotateGate = turning.promise;
+
+    const rotation = state().rotatePhotos(["a", "b"], 90);
+    state().mergeRemoteRecords([], ["a"]);
+    turning.open();
+    await rotation;
+
+    expect(h.broadcasts).toEqual([
+      { type: "catalog-change", payload: { action: "update", id: "b", origin: "test-window" } },
+    ]);
+  });
+
+  /** An edit's preview landing on "a", as edited-thumbnail stores it. */
+  const editLands = () => {
+    const thumbnailBlob = new Blob(["edited"]);
+    const thumbnailUrl = URL.createObjectURL(thumbnailBlob);
+    state().mergeRebuiltPhoto("a", { thumbnailBlob, thumbnailUrl, previewEdit: "edit-2" });
+    return thumbnailBlob;
+  };
+
+  it("shows the turn before writing it, so an edit's preview rendered meanwhile is turned", async () => {
+    useCatalogStore.setState({ photos: [previewed("a", { previewEdit: "edit-1" })] });
+    let shownWhileWritten: CatalogPhoto | undefined;
+    vi.spyOn(store.storage, "putPhoto").mockImplementation(async (p) => {
+      shownWhileWritten = state().photos[0];
+      store.rows.set(p.id, p);
+    });
+
+    await state().rotatePhotos(["a"], 90);
+
+    expect(shownWhileWritten).toMatchObject({
+      rotation: 90,
+      width: 4000,
+      height: 6000,
+      previewEdit: "edit-1",
+    });
+    expect(await shownWhileWritten?.thumbnailBlob?.text()).toBe("a+90");
+  });
+
+  it("turns an edit's preview stored mid-turn, in place of the one it began with", async () => {
+    useCatalogStore.setState({ photos: [previewed("a", { previewEdit: "edit-1" })] });
+    const turning = gate();
+    h.rotateGate = turning.promise;
+
+    const rotation = state().rotatePhotos(["a"], 90);
+    editLands();
+    turning.open();
+    await rotation;
+
+    const turned = state().photos[0];
+    expect(await turned.thumbnailBlob!.text()).toBe("edited+90");
+    expect(turned.previewEdit).toBe("edit-2");
+    expect(await store.rows.get("a")?.thumbnailBlob?.text()).toBe("edited+90");
+    expect(store.rows.get("a")?.previewEdit).toBe("edit-2");
+  });
+
+  it("keeps an edit's preview stored once its turn was written, with the edit it shows", async () => {
+    useCatalogStore.setState({ photos: [previewed("a", { previewEdit: "edit-1" })] });
+    const hooks = gate();
+    h.metadataGate = hooks.promise;
+
+    const rotation = state().rotatePhotos(["a"], 90);
+    await vi.waitFor(() => expect(h.metadata).toHaveLength(1));
+    const edited = editLands();
+    hooks.open();
+    await rotation;
+
+    const now = state().photos[0];
+    expect(now).toMatchObject({ rotation: 90, width: 4000, height: 6000, previewEdit: "edit-2" });
+    expect(now.thumbnailBlob).toBe(edited);
+    expect(liveUrls.has(now.thumbnailUrl as string)).toBe(true);
+    expect(liveUrls.size).toBe(1);
   });
 });
 
@@ -575,6 +1034,39 @@ describe("relocatePhotos and setCopyName", () => {
     await state().setCopyName("ghost", "x");
 
     expect(store.rows.size).toBe(0);
+    expect(h.broadcasts).toEqual([]);
+  });
+
+  it("stamps this window on a copy name and names no photo", async () => {
+    useCatalogStore.setState({ photos: [photo("a-c1", { copyOf: "a" })] });
+
+    await state().setCopyName("a-c1", "dusk grade");
+
+    expect(h.broadcasts).toEqual([
+      { type: "catalog-change", payload: { action: "update", origin: "test-window" } },
+    ]);
+  });
+
+  it("stamps this window on every other catalog-change it sends", async () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+
+    state().replaceCatalog([photo("a"), photo("b")]);
+    await state().addPhotos([photo("c")]);
+    state().finalizeCatalog([photo("a"), photo("b"), photo("c")]);
+    state().reconcileCatalog([photo("a"), photo("b"), photo("c")]);
+    await state().relocatePhotos([photo("a", { relPath: "archive/a.NEF", folder: "archive" })]);
+    await state().removePhoto("c");
+
+    expect(
+      h.broadcasts.map((m) => (m.type === "catalog-change" ? [m.payload.action, m.payload.origin] : m.type)),
+    ).toEqual([
+      ["add", "test-window"],
+      ["add", "test-window"],
+      ["add", "test-window"],
+      ["add", "test-window"],
+      ["update", "test-window"],
+      ["remove", "test-window"],
+    ]);
   });
 });
 

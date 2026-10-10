@@ -8,11 +8,19 @@
 // assertions. Imported only by tests, so it never reaches the app bundle.
 
 import type { DevelopParams } from "@/catalog/types";
-import { DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
+import {
+  CURRENT_PROCESS_VERSION,
+  DEFAULT_DEVELOP_PARAMS,
+  LEGACY_PROCESS_VERSION,
+} from "@/catalog/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import type { ProcessingStageContribution, SafelightAPI } from "@/extensions/types";
 import { BUILTIN_EXTENSIONS } from "@/extensions/builtin";
+import { CORE_EXTENSION_ID } from "@/extensions/core-extension";
+import { useRegistry } from "@/extensions/registry";
 import { WebGLRenderer, type WebGLRendererOpts } from "./renderer";
+import { V2_VARIANT } from "./shaders";
+import { PASS_VERTEX_SHADER, buildStageInjection } from "./stage-injection";
 
 export interface GlHarness {
   canvas: HTMLCanvasElement;
@@ -110,11 +118,39 @@ export function withRenderer<T>(
   }
 }
 
-/** null when every program these options imply compiled and linked; otherwise
- *  the info log the renderer threw with. */
+/** Compile every pass of every prepass stage these options imply, on the shared
+ *  context. The stages are the ones the renderer resolves for the options. Pass
+ *  programs don't depend on the process version, so one injection stands for
+ *  both. Throws with the info log of the first pass that fails. */
+function compilePassPrograms(opts: WebGLRendererOpts | undefined): void {
+  const { gl } = glHarness();
+  const stages = opts?.stages ?? Object.values(useRegistry.getState().processingStages);
+  for (const stage of buildStageInjection(stages, V2_VARIANT).prepass) {
+    stage.passes.forEach((pass, index) => {
+      const build = buildProgram(gl, PASS_VERTEX_SHADER, pass.fragmentSource);
+      releaseProgram(gl, build);
+      if (build.error) throw new Error(`${stage.stageId} pass ${index}: ${build.error}`);
+    });
+  }
+}
+
+/** null when every program these options imply compiles and links, for both
+ *  process versions; otherwise the info log the failing build threw with. The
+ *  renderer compiles nothing ahead of a frame, so one frame per version builds
+ *  the two develop programs; a frame with an empty param bag runs no prepass, so
+ *  the pass programs are compiled directly. */
 export function rendererBuildError(opts?: WebGLRendererOpts): string | null {
   try {
-    withRenderer(opts, () => undefined);
+    withRenderer(opts, (renderer) => {
+      renderer.setImage(floatImage(1, 1, () => [0.18, 0.18, 0.18]));
+      // Version 2 first: with the stock transform and no stages, a fresh
+      // renderer's signatures already match a version 2 frame.
+      for (const processVersion of [CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION]) {
+        renderer.setParams(identityParams({ processVersion }));
+        renderer.render();
+      }
+    });
+    compilePassPrograms(opts);
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
@@ -126,7 +162,7 @@ export function rendererBuildError(opts?: WebGLRendererOpts): string | null {
  *  activate(), so the only way to reach the real GLSL is to run it against a
  *  recording API — the alternative, a hand-copied duplicate, would drift. */
 export function builtinStages(): ProcessingStageContribution[] {
-  const core = BUILTIN_EXTENSIONS.find((e) => e.id === "core");
+  const core = BUILTIN_EXTENSIONS.find((e) => e.id === CORE_EXTENSION_ID);
   if (!core) throw new Error("no core built-in extension");
   const stages: ProcessingStageContribution[] = [];
   const recorder = new Proxy({} as SafelightAPI, {
@@ -175,9 +211,17 @@ export function floatImage(
 }
 
 /** The shipping defaults carry capture sharpening (25) and colour NR (25), so
- *  they are not an identity render. Pixel assertions start from this instead. */
+ *  they are not an identity render. Pixel assertions start from this instead.
+ *  Pinned to process version 1: the suites written before process versions
+ *  describe version 1, and version 2 behaviour is asserted explicitly. */
 export function identityParams(over: Partial<DevelopParams> = {}): DevelopParams {
-  return { ...DEFAULT_DEVELOP_PARAMS, sharpening: 0, colorNR: 0, ...over };
+  return {
+    ...DEFAULT_DEVELOP_PARAMS,
+    sharpening: 0,
+    colorNR: 0,
+    processVersion: LEGACY_PROCESS_VERSION,
+    ...over,
+  };
 }
 
 /** A display transform that hands the scene-linear working colour straight to
@@ -190,7 +234,19 @@ export const LINEAR_PROBE_PIPELINE: ResolvedPipeline = {
   id: "test.linear-probe",
   glsl: "vec3 pipelineToDisplay(vec3 lin) { return lin; }",
   skipBaseCurve: true,
+  skipToneShoulder: false,
   sig: "test.linear-probe",
+};
+
+/** A display transform that keeps the RAW baseline and hands the working
+ *  colour back negated, so a channel below black survives the display clamp
+ *  and reads back as a positive value. */
+export const NEGATING_PIPELINE: ResolvedPipeline = {
+  id: "test.negate",
+  glsl: "vec3 pipelineToDisplay(vec3 lin) { return -lin; }",
+  skipBaseCurve: false,
+  skipToneShoulder: false,
+  sig: "test.negate",
 };
 
 export interface Frame {
@@ -203,6 +259,30 @@ export interface Frame {
 export function pixelAt(frame: Frame, x: number, y: number): [number, number, number] {
   const o = (y * frame.width + x) * 4;
   return [frame.data[o], frame.data[o + 1], frame.data[o + 2]];
+}
+
+/** The largest difference in any channel between two frames of one size, over every
+ *  pixel `skip` doesn't name (by top-down x and y). A NaN anywhere makes it NaN, so an
+ *  assertion against a tolerance fails instead of passing. */
+export function worstDifference(
+  a: Frame,
+  b: Frame,
+  skip?: (x: number, y: number) => boolean,
+): number {
+  if (a.width !== b.width || a.height !== b.height) {
+    throw new Error(`frames differ in size: ${a.width}x${a.height} against ${b.width}x${b.height}`);
+  }
+  let worst = 0;
+  for (let y = 0; y < a.height; y++) {
+    for (let x = 0; x < a.width; x++) {
+      if (skip?.(x, y)) continue;
+      const first = (y * a.width + x) * 4;
+      for (let channel = 0; channel < 4; channel++) {
+        worst = Math.max(worst, Math.abs(a.data[first + channel] - b.data[first + channel]));
+      }
+    }
+  }
+  return worst;
 }
 
 /** Read-back tolerance. The tone-curve LUT is a 256-entry 8-bit texture sampled
@@ -222,6 +302,9 @@ export interface GlObjectCounts {
 export interface GlObjectTally {
   /** Objects created but not yet deleted, per family. */
   live: GlObjectCounts;
+  /** Objects created since tracking began, per family. A cache that deletes
+   *  what it rebuilds keeps `live` flat, so only this count shows the churn. */
+  created: GlObjectCounts;
   restore(): void;
 }
 
@@ -230,14 +313,16 @@ export interface GlObjectTally {
  *  outlives the renderer and the browser's object budget is finite, so this is
  *  the failure mode a `gl.getError()` check cannot see. */
 export function trackGlObjects(gl: WebGL2RenderingContext): GlObjectTally {
-  const live: GlObjectCounts = {
+  const none = (): GlObjectCounts => ({
     texture: 0,
     framebuffer: 0,
     buffer: 0,
     program: 0,
     shader: 0,
     vertexArray: 0,
-  };
+  });
+  const live = none();
+  const created = none();
   const original = {
     createTexture: gl.createTexture,
     deleteTexture: gl.deleteTexture,
@@ -263,6 +348,7 @@ export function trackGlObjects(gl: WebGL2RenderingContext): GlObjectTally {
     return {
       create: () => {
         live[family]++;
+        created[family]++;
         return create();
       },
       destroy: (object) => {
@@ -315,6 +401,7 @@ export function trackGlObjects(gl: WebGL2RenderingContext): GlObjectTally {
   // createShader takes the shader type, so it doesn't fit the pair above.
   gl.createShader = (type: number) => {
     live.shader++;
+    created.shader++;
     return original.createShader.call(gl, type);
   };
   gl.deleteShader = (shader: WebGLShader | null) => {
@@ -324,6 +411,7 @@ export function trackGlObjects(gl: WebGL2RenderingContext): GlObjectTally {
 
   return {
     live,
+    created,
     restore() {
       Object.assign(gl, original);
     },

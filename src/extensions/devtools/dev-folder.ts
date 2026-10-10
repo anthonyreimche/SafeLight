@@ -24,6 +24,7 @@
 import { create } from "zustand";
 import type { ExtensionManifest, ExtensionModule } from "../types";
 import { makeScopedAPI } from "../host";
+import { isReservedExtensionId, reservedIdReason } from "../core-extension";
 import { unregisterExtension } from "../registry";
 import { privilegedFs } from "@/native/privileged";
 import {
@@ -122,7 +123,7 @@ async function syncFolder(folder: string | null): Promise<void> {
 }
 
 /** Read + activate one extension folder. Throws on any failure (no manifest,
- *  bad JSON, missing bundle, no activate export). */
+ *  bad JSON, a reserved id, missing bundle, no activate export). */
 async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
   const fs = privilegedFs();
   if (!fs) throw new Error("Loading extensions from a folder requires the desktop app.");
@@ -130,8 +131,13 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
   const manifest = JSON.parse(
     new TextDecoder().decode(manifestBytes.data),
   ) as ExtensionManifest;
-  if (!manifest.id || !manifest.main)
+  if (typeof manifest.id !== "string" || !manifest.id || !manifest.main)
     throw new Error("safelight.json is missing `id` or `main`");
+  if (isReservedExtensionId(manifest.id)) {
+    const reason = reservedIdReason(manifest.id);
+    console.warn(`[dev-folder] refused ${reason}`);
+    throw new Error(reason);
+  }
 
   // Replace any prior live instance of this id (a previous dev load).
   if (loaded.has(manifest.id)) unload(manifest.id);

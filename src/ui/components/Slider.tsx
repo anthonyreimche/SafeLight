@@ -38,9 +38,8 @@ interface SliderProps {
 const FINE = 0.2;
 
 // Keys that actually move a focused range input's value. onKeyUp commits only
-// after one of these, so global shortcuts that happen to release over a focused
-// slider — Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z — don't fire a spurious commitEdit
-// that re-snapshots the just-undone params and corrupts the history stack.
+// after one of these; any other key released over a focused slider (Ctrl+Z,
+// Ctrl+Y, Ctrl+Shift+Z) moved nothing worth a commit.
 const VALUE_KEYS = new Set([
   "ArrowLeft",
   "ArrowRight",

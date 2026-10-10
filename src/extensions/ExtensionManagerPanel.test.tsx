@@ -18,9 +18,11 @@ import userEvent from "@testing-library/user-event";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { ExtensionManagerPanel } from "@/extensions/ExtensionManagerPanel";
 import { useExtStoreUI } from "@/extensions/store-ui";
+import { usePins } from "@/extensions/pins";
 import { useTrust } from "@/extensions/trust";
 import type { ExtensionSearchResult, TrustList } from "@/extensions/types";
 import { useSettings } from "@/state/settings-store";
+import { resetSetupForTests, useSetupStore } from "@/modules/welcome/setup/setup-store";
 
 const RISK_ACK_KEY = "sl_ext_risk_ack_v1";
 
@@ -244,5 +246,78 @@ describe("ExtensionManagerPanel verified-only browse", () => {
     await screen.findAllByText("reviewed-tool");
     expect(screen.queryByText("random-tool")).toBeNull();
     screen.getByText(/1 unverified extension hidden/);
+  });
+});
+
+describe("ExtensionManagerPanel starter kits", () => {
+  it("opens the welcome setup on its Extensions step", async () => {
+    const user = userEvent.setup();
+    resetSetupForTests();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Starter kits" }));
+    const s = useSetupStore.getState();
+    expect([s.phase, s.mode, s.step]).toEqual(["open", "rerun", "extensions"]);
+  });
+});
+
+describe("ExtensionManagerPanel kept versions and release notes", () => {
+  const installed = {
+    id: "acme.widget",
+    name: "Widget",
+    version: "1.0.0",
+    main: "index.js",
+    repository: "acme/widget",
+  };
+  let releases: Mock;
+
+  beforeEach(() => {
+    useExtStoreUI.setState({ updates: {}, releases: {} });
+    usePins.setState({ pins: {} });
+    releases = vi.fn(async () => [
+      { version: "2.1.0", tag: "v2.1.0", prerelease: false, publishedAt: "", notes: "Faster grain.", htmlUrl: "" },
+    ]);
+    vi.stubGlobal("safelightNative", {
+      plugins: {
+        list: async () => [installed],
+        install: installBridge,
+        remoteManifest: async () => ({ version: "2.1.0" }),
+        releases,
+      },
+    });
+  });
+
+  afterEach(() => usePins.setState({ pins: {} }));
+
+  it("lists a kept extension without counting it in the badge", async () => {
+    usePins.setState({ pins: { "acme.widget": "1.0.0" } });
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Updates" }));
+    await screen.findByText("Kept at 1.0.0 · 2.1.0 is available");
+    expect(screen.getByRole("button", { name: /^Updates/ }).textContent).toBe("Updates");
+  });
+
+  it("counts an update that isn't kept", async () => {
+    mountStore();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Updates/ }).textContent).toBe("Updates1"),
+    );
+  });
+
+  it("shows the update's release notes on request", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: /^Updates/ }));
+    await user.click(await screen.findByRole("button", { name: /What's new/ }));
+    await screen.findByText("Faster grain.");
+    expect(releases).toHaveBeenCalledWith("acme/widget", false);
+  });
+
+  it("updates to the version the check offered", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: /^Updates/ }));
+    await user.click(await screen.findByRole("button", { name: "Update" }));
+    await waitFor(() => expect(installBridge).toHaveBeenCalledWith("acme/widget", "2.1.0"));
   });
 });

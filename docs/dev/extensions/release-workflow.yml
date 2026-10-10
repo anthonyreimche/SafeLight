@@ -1,0 +1,101 @@
+# Safelight extension release. Copy this file to .github/workflows/release.yml
+# in your extension's repo. Pushing a tag like v1.3.0 builds the extension,
+# checks that safelight.json says the same version, zips what the extension
+# needs at runtime and publishes a GitHub Release with that zip attached. A tag
+# with a "-" (v1.4.0-beta.1) is published as a pre-release, which Safelight only
+# installs when someone picks it.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  # Everything the extension loads at runtime, relative to the repo root:
+  # the manifest, the main bundle and any file it reaches through
+  # /__plugins__/<id>/. The list must include the manifest's "main" file, or the
+  # job fails. Entries that don't exist are skipped.
+  RELEASE_FILES: safelight.json dist README.md LICENSE
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # The token stays out of git config while npm runs third-party code;
+      # the Publish step passes it to gh as GH_TOKEN.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build
+        run: |
+          if [ -f package-lock.json ]; then npm ci; fi
+          if [ -f package.json ] && node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+            npm run build
+          fi
+
+      - name: Check the manifest matches the tag
+        run: |
+          node -e '
+            const fs = require("fs");
+            const norm = (v) => {
+              const [core, ...pre] = String(v).replace(/^v/i, "").split("+")[0].split("-");
+              const parts = core.split(".").map(Number);
+              while (parts.length < 3) parts.push(0);
+              return [parts.join("."), ...pre].join("-");
+            };
+            const tag = process.env.GITHUB_REF_NAME;
+            const m = JSON.parse(fs.readFileSync("safelight.json", "utf8"));
+            if (norm(m.version) !== norm(tag)) {
+              console.error(`safelight.json says ${m.version}, but the tag is ${tag}.`);
+              process.exit(1);
+            }
+            if (!fs.existsSync(m.main)) {
+              console.error(`The main bundle ${m.main} is missing. Build it, or commit it.`);
+              process.exit(1);
+            }
+          '
+
+      - name: Zip
+        id: zip
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          ZIP="${REPO_NAME}-${GITHUB_REF_NAME#v}.zip"
+          FILES=""
+          for f in $RELEASE_FILES; do
+            if [ -e "$f" ]; then FILES="$FILES $f"; fi
+          done
+          zip -r "$ZIP" $FILES
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Check the zip contains main
+        env:
+          ZIP: ${{ steps.zip.outputs.zip }}
+        run: |
+          MAIN=$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync("safelight.json", "utf8")).main).replace(/^\.\//, ""))')
+          if ! unzip -Z1 "$ZIP" | grep -qxF "$MAIN"; then
+            echo "The release zip doesn't contain $MAIN. Add it to RELEASE_FILES."
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP: ${{ steps.zip.outputs.zip }}
+        run: |
+          PRE=""
+          case "$GITHUB_REF_NAME" in *-*) PRE="--prerelease" ;; esac
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$ZIP" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$ZIP" --generate-notes --verify-tag $PRE
+          fi

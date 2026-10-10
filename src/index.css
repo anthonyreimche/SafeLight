@@ -5,6 +5,17 @@
 
 @import "tailwindcss";
 
+/* The interface font (SIL OFL 1.1, public/fonts/afacad/OFL.txt). Its x-height
+   is small for its size, so size-adjust brings it to the old mono's text width
+   without rescaling fonts the user picks instead. */
+@font-face {
+  font-family: "Afacad";
+  src: url("/fonts/afacad/Afacad[wght].ttf") format("truetype");
+  font-weight: 400 700;
+  font-display: block;
+  size-adjust: 120%;
+}
+
 /* These defaults mirror the "Safelight Neutral" theme (see builtin.tsx) so the
    at-rest UI — before any theme vars are injected on boot — is already the
    neutral, achromatic mid-grey the app ships with. Keep the two in sync. */
@@ -30,7 +41,9 @@
   --color-label-green: #27ae60;
   --color-label-blue: #3498db;
   --color-label-purple: #9b59b6;
-  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code",
+  --font-mono: "Afacad", system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
+  --font-code: "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code",
     ui-monospace, monospace;
 }
 
@@ -55,6 +68,7 @@ body,
   background: var(--color-surface-0);
   color: var(--color-text-primary);
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 ::selection {

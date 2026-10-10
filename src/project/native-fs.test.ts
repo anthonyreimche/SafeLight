@@ -219,3 +219,37 @@ describe("native handle sandboxing", () => {
     expect(fs.text("/home/u/secret/keys.txt")).toBe("top secret");
   });
 });
+
+describe("native writable close", () => {
+  const root = "/home/u/photos";
+
+  async function writable(name: string) {
+    return (await nativeDirectoryHandle(root).getFileHandle(name)).createWritable();
+  }
+
+  it("sends a text write to the bridge before close() is awaited", async () => {
+    // The last catalog flush runs inside beforeunload; anything still waiting on
+    // an await when the page unloads never reaches the main process.
+    const fs = mount(root);
+    const send = vi.spyOn(fs, "write");
+    const w = await writable("catalog.json");
+    await w.write('{"version":1}');
+
+    const closing = w.close();
+    expect(send).toHaveBeenCalledTimes(1);
+    await closing;
+
+    expect(fs.text(`${root}/catalog.json`)).toBe('{"version":1}');
+  });
+
+  it("joins binary and Blob parts with text parts in order", async () => {
+    const fs = mount(root);
+    const w = await writable("mixed.json");
+    await w.write(new Uint8Array([0x7b]));
+    await w.write(new Blob(['"a":']));
+    await w.write("1}");
+    await w.close();
+
+    expect(fs.text(`${root}/mixed.json`)).toBe('{"a":1}');
+  });
+});
