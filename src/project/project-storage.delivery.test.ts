@@ -270,6 +270,10 @@ async function runSeed(seed: number, removals: boolean): Promise<string[]> {
   return problems;
 }
 
+/** 300 seeds take about a second here, and ran past the 5 s default on a busy
+ *  macOS CI runner. */
+const SEEDS_TIMEOUT = 30_000;
+
 describe("two windows changing their own photos at random", () => {
   it("end with the same records in both windows and on disk", async () => {
     const failures: string[] = [];
@@ -278,7 +282,7 @@ describe("two windows changing their own photos at random", () => {
       if (problems.length > 0) failures.push(`seed ${seed}: ${problems.join(", ")}`);
     }
     expect(failures).toEqual([]);
-  });
+  }, SEEDS_TIMEOUT);
 
   it("do so with removals too", async () => {
     const failures: string[] = [];
@@ -287,5 +291,5 @@ describe("two windows changing their own photos at random", () => {
       if (problems.length > 0) failures.push(`seed ${seed}: ${problems.join(", ")}`);
     }
     expect(failures).toEqual([]);
-  });
+  }, SEEDS_TIMEOUT);
 });
