@@ -31,6 +31,12 @@ export default defineConfig({
     // `.browser.test.ts` specs need Chromium's real image decoder rather than a
     // GL context, and ride along for the same reason: the engine Electron ships.
     include: ["src/**/*.webgl.test.ts", "src/**/*.browser.test.ts"],
+    // One file at a time. Every page's GL goes through Chromium's one GPU
+    // process, which takes the work in turn, so files run side by side only
+    // queue behind each other's shader compiles: the run is no faster (136 s
+    // with up to 12 files at once, 126 s one by one), and each test's 15 s
+    // timer counts the other files' compiles (slowest test 22 s, against 4 s).
+    fileParallelism: false,
     browser: {
       enabled: true,
       headless: true,
