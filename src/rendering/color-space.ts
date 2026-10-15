@@ -230,6 +230,19 @@ export function buildIccProfile(id: ColorSpaceId): Uint8Array {
   return out;
 }
 
+/** encoded [0,1] → linear: the curve an output space's encode inverts. */
+export function outputDecode(id: ColorSpaceId): (v: number) => number {
+  return SPACE_DEF[id].decode;
+}
+
+export type Xyz = readonly [number, number, number];
+
+/** An output space's D50-adapted primaries: its rXYZ, gXYZ and bXYZ tags. */
+export function outputColorants(id: ColorSpaceId): readonly [Xyz, Xyz, Xyz] {
+  const def = SPACE_DEF[id];
+  return [def.r, def.g, def.b];
+}
+
 // ─── Embedding the profile into encoded image bytes ──────────────────────────
 
 /**

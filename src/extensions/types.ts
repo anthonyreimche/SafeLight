@@ -1144,8 +1144,12 @@ export interface SafelightAPI {
      *  mask's bag — not yet applied by extension stages). `commit` ends a
      *  gesture as one undo step. */
     useMaskScope(): import("@/modules/develop/mask-scope").MaskParamScope;
+    /** The frame is sRGB, for measuring. Pass `{ asShown: true }` for a frame
+     *  drawn over the canvas: on Linux with a display profile set it is then
+     *  converted to the monitor like the canvas is (elsewhere the two match). */
     captureFrame(
       params: import("@/catalog/types").DevelopParams,
+      options?: { asShown?: boolean },
     ): Promise<ImageBitmap>;
     /** Render an arbitrary catalog photo by id through the full develop pipeline
      *  with `params` (and optionally that photo's extension-stage `paramBag`) to
@@ -1349,6 +1353,9 @@ export interface NativeFsBridge {
   move(src: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   pickDirectory(): Promise<string | null>;
+  /** Pick one file with the OS dialog; null when cancelled. Absent on older
+   *  Electron builds — feature-detect. */
+  pickFile?(filters?: { name: string; extensions: string[] }[]): Promise<string | null>;
   /** Reveal a path in the OS file manager — open a directory, or select a file
    *  inside its parent folder. Resolves true on success. */
   reveal(path: string): Promise<boolean>;

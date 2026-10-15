@@ -53,6 +53,7 @@ import {
   outMatrixColumnMajor,
   type ColorSpaceId,
 } from "../color-space";
+import { DISPLAY_CURVE_CODE, type MonitorTransform } from "../display-profile";
 import {
   BUILTIN_RESOLVED,
   resolveDefaultPipeline,
@@ -429,6 +430,8 @@ export class WebGLRenderer {
   // Output color space. Live develop/thumbnails stay sRGB (a no-op in the
   // shader); export sets a wider space so the encode + ICC match.
   private outSpace: ColorSpaceId = "srgb";
+  // The monitor's profile (Linux, Preferences ▸ Rendering), for the live view.
+  private monitorTransform: MonitorTransform | null = null;
   private linear = false;
   private isFallbackPreview = false;
   private applyBaseCurve = false;
@@ -1344,6 +1347,22 @@ export class WebGLRenderer {
     this.outSpace = space;
   }
 
+  /** Convert frames into the monitor's profile. Ignored while an export
+   *  output space is set, and never applied to the histogram or Upright. */
+  setMonitorTransform(transform: MonitorTransform | null) {
+    this.monitorTransform = transform;
+  }
+
+  // Only frames headed for the screen carry the monitor conversion; a
+  // measurement binds the plain output.
+  private bindOutputSpace(display: boolean) {
+    const gl = this.gl;
+    const u = this.uniforms;
+    const t = display && this.outSpace === "srgb" ? this.monitorTransform : null;
+    gl.uniform1i(u.uOutSpace, t ? DISPLAY_CURVE_CODE[t.curve] : OUT_SPACE_CODE[this.outSpace]);
+    gl.uniformMatrix3fv(u.uOutMatrix, false, t ? t.matrix : outMatrixColumnMajor(this.outSpace));
+  }
+
   setAsShotTemperature(kelvin: number) {
     this.asShotTemperature = kelvin >= 2000 && kelvin <= 50000 ? kelvin : 6500;
   }
@@ -1628,8 +1647,7 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
     gl.uniform1i(u.uCurve, 1);
 
-    gl.uniform1i(u.uOutSpace, OUT_SPACE_CODE[this.outSpace]);
-    gl.uniformMatrix3fv(u.uOutMatrix, false, outMatrixColumnMajor(this.outSpace));
+    this.bindOutputSpace(true);
 
     gl.uniform1i(u.uLinear, this.linear ? 1 : 0);
     gl.uniform1i(u.uIsFallbackPreview, this.isFallbackPreview ? 1 : 0);
@@ -2071,10 +2089,12 @@ export class WebGLRenderer {
 
     // Standard histogram: re-render the display output at 128x128 and read it
     // back. We share GL state with the clipping/viz uniforms reset to off so the
-    // sampled frame is the plain developed image.
+    // sampled frame is the plain developed image, in sRGB: Auto Tone and Auto
+    // WB read it, so a display profile must not reach it.
     gl.uniform1i(this.uniforms.uShowClipping, 0);
     gl.uniform1i(this.uniforms.uVizMask, -1);
     gl.uniform1i(this.uniforms.uSharpenViz, 0);
+    this.bindOutputSpace(false);
     // A zoomed render leaves only the visible window bound; Auto Tone and Auto
     // WB read this histogram, so it measures the whole picture.
     gl.uniform4f(this.uniforms.uViewport, 0, 0, 1, 1);
@@ -2251,6 +2271,7 @@ export class WebGLRenderer {
     gl.uniform1i(u.uShowClipping, 0);
     gl.uniform1i(u.uVizMask, -1);
     gl.uniform1i(u.uSharpenViz, 0);
+    this.bindOutputSpace(false);
     gl.viewport(0, 0, w, h);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     const data = new Uint8Array(w * h * 4);

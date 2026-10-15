@@ -38,6 +38,8 @@ import {
 } from "@/extensions/registry";
 import { DEFAULT_PIPELINE, usePipelineStore } from "@/extensions/pipelines";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
+import type { MonitorTransform } from "./display-profile";
+import { useDisplayProfile, type DisplayProfileState } from "./display-profile-store";
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -2123,5 +2125,73 @@ describe("RenderBridge render mailbox", () => {
       expect(renders(worker)).toHaveLength(1);
       expect(warn).not.toHaveBeenCalled();
     });
+  });
+});
+
+// A Linux display profile reaches the worker for the live view. Captures stay
+// sRGB, since extensions measure them, unless one asks for the frame as shown.
+describe("RenderBridge display profile", () => {
+  const DISPLAY: MonitorTransform = {
+    matrix: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+    curve: "gamma22",
+  };
+  const ACTIVE: DisplayProfileState = {
+    status: "active",
+    path: "/monitor.icc",
+    description: "Monitor",
+    transform: DISPLAY,
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+    useDisplayProfile.setState({ status: "off" }, true);
+  });
+
+  afterEach(() => {
+    disposeRenderBridge();
+    useDisplayProfile.setState({ status: "off" }, true);
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const transforms = (worker: FakeWorker) =>
+    worker.posted.flatMap((m) => (m.cmd === "setMonitorTransform" ? [m.transform] : []));
+
+  it("hands the worker the profile active when it starts, and follows it", () => {
+    useDisplayProfile.setState(ACTIVE, true);
+    getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    expect(transforms(worker)).toEqual([DISPLAY]);
+
+    useDisplayProfile.setState({ status: "loading", path: "/other.icc" }, true);
+    useDisplayProfile.setState({ status: "error", path: "/other.icc", error: "no" }, true);
+    expect(transforms(worker)).toEqual([DISPLAY, null]);
+  });
+
+  it("tells the worker nothing while there is no profile", () => {
+    getRenderBridge();
+    useDisplayProfile.setState({ status: "loading", path: "/monitor.icc" }, true);
+    expect(transforms(FakeWorker.instances[0])).toEqual([]);
+  });
+
+  it("redraws the view with a new profile", () => {
+    const render = vi.spyOn(RenderBridge.prototype, "render");
+    getRenderBridge();
+    useDisplayProfile.setState(ACTIVE, true);
+    vi.advanceTimersByTime(50);
+    expect(render).toHaveBeenCalledWith(false);
+  });
+
+  it("captures in sRGB unless asked for the frame as shown", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    void bridge.capture(normalizeParams({}));
+    void bridge.capture(normalizeParams({}), { asShown: true });
+    const asked = worker.posted.flatMap((m) => (m.cmd === "capture" ? [m.asShown] : []));
+    expect(asked).toEqual([false, true]);
+    bridge.dispose();
   });
 });

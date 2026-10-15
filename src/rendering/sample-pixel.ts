@@ -7,12 +7,23 @@
 // linear light. Used by the white-balance eyedropper: the clicked point's colour
 // (post-render, display sRGB) is averaged over a few pixels to reject noise, then
 // linearised so the WB solver works in the same space as Auto WB's histogram means.
+// Under a Linux display profile the canvas holds monitor values, which are
+// taken back to sRGB-linear first.
+
+import { monitorToSrgbLinear } from "./display-profile";
+import { activeMonitorTransform } from "./display-profile-store";
 
 const PATCH = 5; // odd box side, in canvas (buffer) pixels — Lightroom-style 5×5
 
 function srgbToLinear(c: number): number {
   return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
 }
+
+const srgbTripleToLinear = (r: number, g: number, b: number): [number, number, number] => [
+  srgbToLinear(r),
+  srgbToLinear(g),
+  srgbToLinear(b),
+];
 
 // Tiny scratch canvas reused across samples (one per call would thrash the GC).
 let scratch: HTMLCanvasElement | null = null;
@@ -50,14 +61,17 @@ export function sampleLinearRGB(
   ctx.drawImage(canvas, x0, y0, w, h, 0, 0, w, h);
   const data = ctx.getImageData(0, 0, w, h).data;
 
+  const monitor = activeMonitorTransform();
+  const toLinear = monitor ? monitorToSrgbLinear(monitor) : srgbTripleToLinear;
   let r = 0;
   let g = 0;
   let b = 0;
   const n = w * h;
   for (let i = 0; i < n; i++) {
-    r += srgbToLinear(data[i * 4] / 255);
-    g += srgbToLinear(data[i * 4 + 1] / 255);
-    b += srgbToLinear(data[i * 4 + 2] / 255);
+    const lin = toLinear(data[i * 4] / 255, data[i * 4 + 1] / 255, data[i * 4 + 2] / 255);
+    r += lin[0];
+    g += lin[1];
+    b += lin[2];
   }
   return [r / n, g / n, b / n];
 }

@@ -55,6 +55,7 @@ import {
 import { openExtensions } from "./ExtensionsDialog";
 import {
   DEFAULT_SETTINGS,
+  getSettings,
   resetSettings,
   updateSettings,
   useSettings,
@@ -80,6 +81,13 @@ import type { PreviewSource } from "@/state/settings-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import type { SortDirection, SortField } from "@/catalog/types";
 import { COLOR_SPACES } from "@/rendering/color-space";
+import { DISPLAY_CURVE_LABEL } from "@/rendering/display-profile";
+import {
+  displayProfileSupported,
+  reloadDisplayProfile,
+  useDisplayProfile,
+  type DisplayProfileState,
+} from "@/rendering/display-profile-store";
 import {
   checkForUpdateNow,
   fetchAllReleases,
@@ -253,8 +261,20 @@ const CORE_SECTIONS: PrefSection[] = [
     id: "Rendering",
     label: "Rendering",
     group: "General",
-    items: settings("Default display transform"),
-    keywords: ["tone map", "pipeline", "display transform"],
+    items: settings(
+      "Default display transform",
+      ...(displayProfileSupported() ? ["Display profile"] : []),
+    ),
+    keywords: [
+      "tone map",
+      "pipeline",
+      "display transform",
+      "icc",
+      "monitor",
+      "wayland",
+      "wide gamut",
+      "color management",
+    ],
     render: () => <RenderingSection />,
   },
   {
@@ -1149,7 +1169,87 @@ function RenderingSection() {
         the tone sliders through their own response — the same edit will read
         differently between transforms by design.
       </p>
+      <DisplayProfileField />
     </div>
+  );
+}
+
+// ICC only: the chosen file is read whole, now and at every launch.
+const ICC_FILTERS = [{ name: "ICC profiles", extensions: ["icc", "icm", "ICC", "ICM"] }];
+
+function displayProfileStatus(
+  state: DisplayProfileState,
+): { text: string; error: boolean } | null {
+  switch (state.status) {
+    case "off":
+      return null;
+    case "loading":
+      return { text: "Reading profile…", error: false };
+    case "error":
+      return { text: state.error, error: true };
+    case "active": {
+      const name = state.description || state.path.split(/[\\/]/).pop();
+      const curve = DISPLAY_CURVE_LABEL[state.transform.curve];
+      return {
+        text: `${name}. Primaries from the profile, tone curve treated as ${curve}.`,
+        error: false,
+      };
+    }
+  }
+}
+
+// Linux only: Wayland leaves Safelight's window unconverted, so the Develop
+// view converts itself to the monitor's profile.
+function DisplayProfileField() {
+  const path = useSettings((s) => s.displayProfilePath);
+  const status = displayProfileStatus(useDisplayProfile());
+  if (!displayProfileSupported()) return null;
+
+  const choose = () => {
+    void nativeFs()
+      ?.pickFile?.(ICC_FILTERS)
+      .then((picked) => {
+        if (!picked) return;
+        // The same file again may have been recalibrated in place.
+        if (picked === getSettings().displayProfilePath) void reloadDisplayProfile();
+        else updateSettings({ displayProfilePath: picked });
+      });
+  };
+
+  return (
+    <Field
+      label="Display profile"
+      hint="Under Wayland nothing converts Safelight's window to your monitor, so a wide-gamut monitor shows colors oversaturated. Choose the monitor's ICC profile to convert the Develop view to it. Leave this empty if you run Safelight under X11 with the monitor's profile already set (the FAQ workaround), or colors are converted twice. Library thumbnails aren't converted, and exports don't change."
+    >
+      <div className="flex items-center gap-1.5">
+        <span
+          className="min-w-0 flex-1 truncate rounded bg-surface-2 px-2 py-1 text-[11px] text-text-secondary"
+          title={path || undefined}
+        >
+          {path || "None"}
+        </span>
+        <button onClick={choose} className={btnCls}>
+          Choose profile…
+        </button>
+        {path && (
+          <button
+            onClick={() => updateSettings({ displayProfilePath: "" })}
+            className={btnCls}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      {status && (
+        <p
+          className={`mt-1 text-[10px] leading-relaxed ${
+            status.error ? "text-red-400" : "text-text-secondary"
+          }`}
+        >
+          {status.text}
+        </p>
+      )}
+    </Field>
   );
 }
 
