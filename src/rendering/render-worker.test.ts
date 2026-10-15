@@ -29,6 +29,7 @@ import {
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
+import type { MonitorTransform } from "./display-profile";
 
 /** What the worker hands a renderer it has just made, from the state it holds. */
 type SeedingMethod = "setCacheBudget" | "setContributedParams" | "setStageTextures" | "setParams";
@@ -66,6 +67,9 @@ const { FakeRenderer } = vi.hoisted(() => {
     prepared: { version: number; pipeline: ResolvedPipeline | null }[] = [];
     /** The version of each prepareStockProgram call. */
     stockPrepared: number[] = [];
+    /** The display transform it holds, and the one each render drew with. */
+    monitorTransform: MonitorTransform | null = null;
+    renderedWith: (MonitorTransform | null)[] = [];
     disposed = false;
 
     constructor(_canvas: unknown, opts: unknown) {
@@ -183,7 +187,12 @@ const { FakeRenderer } = vi.hoisted(() => {
       this.paramsSeen.push(params);
     }
 
+    setMonitorTransform(transform: MonitorTransform | null) {
+      this.monitorTransform = transform;
+    }
+
     render() {
+      this.renderedWith.push(this.monitorTransform);
       if (FakeRenderer.renderError) throw FakeRenderer.renderError;
     }
   }
@@ -1339,5 +1348,60 @@ describe("render-worker thumbnails", () => {
       expect(FakeRenderer.instances).toHaveLength(2);
       expect(FakeRenderer.instances[1].uploads).toEqual(["k"]);
     });
+  });
+});
+
+// A Linux display profile converts what the live view shows. Thumbnails are
+// written to disk and extensions measure captures, so neither takes it, unless
+// a capture asks for the frame as it is drawn on screen.
+describe("render-worker display profile", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const DISPLAY: MonitorTransform = {
+    matrix: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+    curve: "gamma22",
+  };
+  const capture = (asShown?: boolean): WorkerRequest => ({
+    cmd: "capture",
+    reqId: 1,
+    params: DEFAULT_DEVELOP_PARAMS,
+    pipeline: BUILTIN_RESOLVED,
+    asShown,
+  });
+
+  it("hands it to the live renderer and never to the thumbnail one", () => {
+    send(INIT);
+    send({ cmd: "setMonitorTransform", transform: DISPLAY });
+    send(thumbnail());
+    const [live, thumb] = FakeRenderer.instances;
+    expect(live.monitorTransform).toBe(DISPLAY);
+    expect(thumb.renderedWith).toEqual([null]);
+  });
+
+  it("seeds a renderer made after it arrived", () => {
+    FakeRenderer.throwOnConstruct = true;
+    send(INIT);
+    send({ cmd: "setMonitorTransform", transform: DISPLAY });
+    FakeRenderer.throwOnConstruct = false;
+    send(INIT);
+    expect(FakeRenderer.instances[0].monitorTransform).toBe(DISPLAY);
+  });
+
+  it("captures without it unless asked for the frame as shown", () => {
+    send(INIT);
+    send({ cmd: "setMonitorTransform", transform: DISPLAY });
+    send(capture());
+    send(capture(true));
+    const live = FakeRenderer.instances[0];
+    expect(live.renderedWith).toEqual([null, DISPLAY]);
+    expect(live.monitorTransform).toBe(DISPLAY);
+  });
+
+  it("holds it again after a capture whose render fails", () => {
+    send(INIT);
+    send({ cmd: "setMonitorTransform", transform: DISPLAY });
+    FakeRenderer.renderError = new Error("boom");
+    send(capture());
+    expect(FakeRenderer.instances[0].monitorTransform).toBe(DISPLAY);
+    expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 1 });
   });
 });

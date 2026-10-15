@@ -12,6 +12,8 @@ import { onStagesReleased, useRegistry } from "@/extensions/registry";
 import type { HistogramData } from "./histogram";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
 import { getSettings, useSettings } from "@/state/settings-store";
+import type { MonitorTransform } from "./display-profile";
+import { activeMonitorTransform, useDisplayProfile } from "./display-profile-store";
 
 export interface FrameResult {
   bitmap: ImageBitmap;
@@ -536,13 +538,25 @@ export class RenderBridge {
   /** Render one frame with `params` (at the current source + viewport) to an
    *  ImageBitmap, without touching the live display. Used to grab a "before"
    *  frame for before/after comparison overlays. The live params are restored
-   *  in the worker afterwards. */
-  capture(params: DevelopParams): Promise<ImageBitmap> {
+   *  in the worker afterwards. The frame is sRGB unless `asShown` asks for it
+   *  as the screen shows it, through the display profile. */
+  capture(params: DevelopParams, opts: { asShown?: boolean } = {}): Promise<ImageBitmap> {
     return new Promise<ImageBitmap>((resolve) => {
       const reqId = ++this.reqIdSeq;
       this.captureResolvers.set(reqId, resolve);
-      this.post({ cmd: "capture", reqId, params, pipeline: resolvePipelineFor(params.displayTransform) });
+      this.post({
+        cmd: "capture",
+        reqId,
+        params,
+        pipeline: resolvePipelineFor(params.displayTransform),
+        asShown: opts.asShown === true,
+      });
     });
+  }
+
+  /** The monitor's profile for the live view (Linux), or null for none. */
+  setMonitorTransform(transform: MonitorTransform | null) {
+    this.post({ cmd: "setMonitorTransform", transform });
   }
 
   setAsShotTemperature(kelvin: number) {
@@ -814,6 +828,7 @@ let singleton: RenderBridge | null = null;
 let unsubStages: (() => void) | null = null;
 let unsubPipeline: (() => void) | null = null;
 let unsubSettings: (() => void) | null = null;
+let unsubMonitor: (() => void) | null = null;
 
 // Stage textures live here (not in the per-photo param bag — they're bulk static
 // data tied to the stage, not the edit). Extensions push via api.setStageTexture;
@@ -900,6 +915,18 @@ export function getRenderBridge(): RenderBridge {
       }
     });
 
+    // The display profile, now and whenever it changes; the worker starts
+    // without one.
+    let prevMonitor = activeMonitorTransform();
+    if (prevMonitor) singleton.setMonitorTransform(prevMonitor);
+    unsubMonitor = useDisplayProfile.subscribe(() => {
+      const next = activeMonitorTransform();
+      if (next === prevMonitor) return;
+      prevMonitor = next;
+      singleton?.setMonitorTransform(next);
+      requestStageRender();
+    });
+
     let prevStages = useRegistry.getState().processingStages;
     let prevPipelines = useRegistry.getState().pipelines;
     unsubStages = useRegistry.subscribe((s) => {
@@ -934,6 +961,12 @@ export function disposeRenderBridge() {
   unsubPipeline = null;
   unsubSettings?.();
   unsubSettings = null;
+  unsubMonitor?.();
+  unsubMonitor = null;
+  // A frame that hasn't run would hold back the next bridge's redraws until
+  // it does, and one that never runs (a hidden page) would hold them for good.
+  if (stageRenderRaf != null) cancelAnimationFrame(stageRenderRaf);
+  stageRenderRaf = null;
   singleton?.dispose();
   singleton = null;
 }

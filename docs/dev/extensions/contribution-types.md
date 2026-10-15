@@ -105,8 +105,9 @@ export function activate(api) {
     const before = React.useRef(null);
     React.useEffect(() => {
       if (!rect) return;
-      // capture an off-screen "before" frame aligned to the live view
-      api.develop.captureFrame(/* original params */).then((bmp) => { before.current = bmp; });
+      // capture an off-screen "before" frame (originalParams: the photo's params
+      // before editing) aligned to the live view, as shown on screen
+      api.develop.captureFrame(originalParams, { asShown: true }).then((bmp) => { before.current = bmp; });
     }, [nonce]);
     // ...draw a draggable divider that reveals `before` on one side...
     return React.createElement("div", { /* positioned over rect, click-through */ });
@@ -121,7 +122,7 @@ export function activate(api) {
 }
 ```
 
-`useDevelopOverlay()` returns the displayed image's rect (in the overlay's local coordinates) and a `nonce` that bumps whenever the view geometry changes (zoom, pan, resize, photo switch) — re-capture/re-align when it changes. `captureFrame(params)` renders the live pipeline with arbitrary params off-screen and returns an `ImageBitmap` aligned to the current view. For brush/mask/retouch tools that paint on the canvas, see [State Stores & Tools → Brushes, masks & retouch](../api/stores.md#brushes-masks--retouch-interactive-develop-tools).
+`useDevelopOverlay()` returns the displayed image's rect (in the overlay's local coordinates) and a `nonce` that bumps whenever the view geometry changes (zoom, pan, resize, photo switch) — re-capture/re-align when it changes. `captureFrame(params)` renders the live pipeline with arbitrary params off-screen and returns an `ImageBitmap` aligned to the current view. The frame is sRGB, for measuring; pass `{ asShown: true }` when you draw it over the canvas, so that on Linux with a display profile set it is converted to the monitor like the canvas is. For brush/mask/retouch tools that paint on the canvas, see [State Stores & Tools → Brushes, masks & retouch](../api/stores.md#brushes-masks--retouch-interactive-develop-tools).
 
 ## Example: catalog hooks (sidecar ownership)
 

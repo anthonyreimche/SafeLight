@@ -9,6 +9,7 @@ import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { BUILTIN_RESOLVED, withPipeline } from "@/extensions/pipelines";
 import { WebGLRenderer } from "./webgl/renderer";
 import type { HistogramData } from "./histogram";
+import type { MonitorTransform } from "./display-profile";
 import { detectLines, computeUprightCorrection, type UprightResult } from "./upright";
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,14 @@ export type WorkerRequest =
   // blitted to the display) so an extension can grab a "before" frame at the
   // current source + viewport without disturbing the live view. The live params
   // and pipeline are restored afterwards. See render-bridge.capture().
-  | { cmd: "capture"; reqId: number; params: DevelopParams; pipeline: ResolvedPipeline }
+  // `asShown`: the frame as the screen shows it, through the display profile.
+  | {
+      cmd: "capture";
+      reqId: number;
+      params: DevelopParams;
+      pipeline: ResolvedPipeline;
+      asShown?: boolean;
+    }
   | { cmd: "setAsShotTemperature"; kelvin: number }
   | { cmd: "setHslStyle"; range: number; smooth: number }
   // Answered exactly once, by `seq`: with a frame, frameSkipped or renderError. The
@@ -75,6 +83,7 @@ export type WorkerRequest =
     }
   | { cmd: "setShowClipping"; mode: number }
   | { cmd: "setOutsideColor"; rgb: [number, number, number] }
+  | { cmd: "setMonitorTransform"; transform: MonitorTransform | null }
   | { cmd: "setMaskViz"; index: number; color: [number, number, number]; strength: number }
   | { cmd: "setSharpenViz"; mode: number }
   | { cmd: "computeHistogram"; wantExtended?: boolean }
@@ -183,6 +192,9 @@ let latestParamBag: Record<string, unknown> = {};
 // Stage textures (e.g. baked LUT atlases), keyed by qualified key. Persisted so a
 // newly-created thumb renderer inherits them.
 let latestStageTextures: Record<string, StageTextureData> = {};
+// The monitor's profile (Linux). Only the develop renderer, whose frames go to
+// the screen, ever holds it; thumbnails are stored and must stay sRGB.
+let latestMonitorTransform: MonitorTransform | null = null;
 // The last params pushed to the develop renderer. A `capture` swaps in override
 // params, renders, then restores these so a later display render (e.g. from a
 // viewport or clipping change that doesn't re-send params) isn't left showing
@@ -274,6 +286,7 @@ function seedRenderer(target: WebGLRenderer): void {
   });
   attempt("stage params", () => target.setContributedParams(latestParamBag));
   attempt("stage textures", () => target.setStageTextures(latestStageTextures));
+  attempt("display profile", () => target.setMonitorTransform(latestMonitorTransform));
   attempt("params", () => {
     if (lastParams) target.setParams(lastParams);
   });
@@ -476,6 +489,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         }
         const live = renderer;
         const target = canvas;
+        // Extensions measure captures, so they stay sRGB unless one asks for
+        // the frame as it is shown.
+        live.setMonitorTransform(msg.asShown ? latestMonitorTransform : null);
         // A throw here would otherwise fall to the generic "error" response, which
         // carries no reqId, so the awaiting capture() would hang. Settle with the
         // blank fallback instead.
@@ -491,6 +507,8 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           if (lastParams) live.setParams(lastParams);
           const blank = new OffscreenCanvas(1, 1);
           respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
+        } finally {
+          live.setMonitorTransform(latestMonitorTransform);
         }
         break;
       }
@@ -567,6 +585,12 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
       case "setOutsideColor": {
         if (renderer) renderer.setOutsideColor(msg.rgb);
+        break;
+      }
+
+      case "setMonitorTransform": {
+        latestMonitorTransform = msg.transform;
+        renderer?.setMonitorTransform(msg.transform);
         break;
       }
 

@@ -1795,6 +1795,22 @@ function registerFsIpc() {
     });
     return canceled || !filePaths[0] ? null : filePaths[0];
   });
+  // One file, e.g. the monitor's ICC profile in Preferences. Filters come from
+  // the renderer, so only well-formed ones reach the dialog.
+  handlePrivileged("fs:pickFile", async (e, filters) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const wellFormed = (Array.isArray(filters) ? filters : [])
+      .filter((f) => f && typeof f.name === "string" && Array.isArray(f.extensions))
+      .map((f) => ({
+        name: f.name,
+        extensions: f.extensions.filter((x) => typeof x === "string"),
+      }));
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      properties: ["openFile"],
+      filters: wellFormed,
+    });
+    return canceled || !filePaths[0] ? null : filePaths[0];
+  });
   // Reveal a path in the OS file manager: open a directory window, or select a
   // file inside its parent folder. Backs Export's "Open Folder" action.
   handlePrivileged("fs:reveal", async (_e, p) => {

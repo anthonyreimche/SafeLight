@@ -104,6 +104,7 @@ import { catalogStorage } from "@/catalog/storage";
 import { useUIStore } from "@/state/ui-store";
 import { goToModule } from "@/state/detach";
 import { initSettings, useSettings } from "@/state/settings-store";
+import { initDisplayProfile } from "@/rendering/display-profile-store";
 import { initPresets, usePresetsStore } from "@/state/presets-store";
 import {
   openPreferences,
@@ -250,6 +251,7 @@ export function initExtensionHost(): void {
   loadBuiltins(); // pre-installed extensions, minus any the user disabled
   window.safelight = makeScopedAPI("host");
   initSettings();
+  initDisplayProfile();
   initKeybindings();
   initPresets();
   initExtSettings();

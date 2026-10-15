@@ -222,6 +222,9 @@ export interface AppSettings {
   liveHistogram: boolean;
   /** Zoom a photo opens at in Develop: fit-to-window or 100% (1:1). */
   developOpenZoom: "fit" | "100";
+  /** The monitor's ICC profile the Develop view converts to; "" = none.
+   *  Linux only: Windows and macOS convert the window themselves. */
+  displayProfilePath: string;
 
   // ── Export defaults ────────────────────────────────────────────────────
   exportFormat: ExportFormatPref;
@@ -347,6 +350,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   highBitDepth: true,
   liveHistogram: true,
   developOpenZoom: "fit",
+  displayProfilePath: "",
   exportFormat: "image/jpeg",
   exportQuality: 90,
   exportLongEdge: null,

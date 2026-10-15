@@ -73,9 +73,13 @@ export function useDevelopOverlay(): DevelopOverlayState {
 /** Render one frame through the live Develop pipeline with `params` (at the
  *  current photo, source and viewport) to an ImageBitmap, without disturbing
  *  the on-screen view. Returns a bitmap aligned 1:1 with the displayed canvas —
- *  draw it into an overlay to show a "before" image. */
-export function captureDevelopFrame(params: DevelopParams): Promise<ImageBitmap> {
-  return getRenderBridge().capture(params);
+ *  draw it into an overlay to show a "before" image, with `asShown: true` so
+ *  it matches the canvas under a Linux display profile. */
+export function captureDevelopFrame(
+  params: DevelopParams,
+  options?: { asShown?: boolean },
+): Promise<ImageBitmap> {
+  return getRenderBridge().capture(params, options);
 }
 
 /** Render an arbitrary catalog photo by id through the full develop pipeline with
