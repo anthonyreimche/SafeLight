@@ -7,8 +7,34 @@ import { Panel } from "@/ui/components/Panel";
 import { CurveEditor } from "@/ui/components/CurveEditor";
 import { useDevelopStore } from "@/state/develop-store";
 import { useMaskScope } from "@/modules/develop/mask-scope";
+import { getExtSetting, useExtSettings } from "@/extensions/ext-settings";
 import { defaultToneCurves } from "@/catalog/types";
-import type { MaskPanelContribution } from "@/extensions/types";
+import type { MaskPanelContribution, SettingsContribution } from "@/extensions/types";
+
+const TONE_CURVE_ID = "core.tone-curve";
+const SHOW_POINT_VALUES = "showPointValues";
+
+// Preferences ▸ Tone Curve, registered by the core.tone-curve extension.
+export const TONE_CURVE_SETTINGS: SettingsContribution = {
+  title: "Tone Curve",
+  order: 50,
+  keywords: ["curve", "point", "input", "output", "levels", "numbers", "exact", "lightroom"],
+  fields: [
+    {
+      key: SHOW_POINT_VALUES,
+      label: "Show point values",
+      hint: "Show In and Out boxes under the curve for the selected point, in 0–255 levels like Lightroom, to read or type exact values.",
+      type: "boolean",
+      default: false,
+    },
+  ],
+};
+
+// Re-renders when the preference changes, so an open panel follows it live.
+function useShowPointValues(): boolean {
+  useExtSettings((s) => s[TONE_CURVE_ID]);
+  return getExtSetting(TONE_CURVE_ID, SHOW_POINT_VALUES, false);
+}
 
 export function ToneCurvePanel() {
   return (
@@ -24,12 +50,14 @@ function GlobalCurveEditor() {
   const curves = useDevelopStore((s) => s.params.toneCurve);
   const setToneCurve = useDevelopStore((s) => s.setToneCurve);
   const commitEdit = useDevelopStore((s) => s.commitEdit);
+  const showPointValues = useShowPointValues();
 
   return (
     <CurveEditor
       curves={curves}
       onChange={setToneCurve}
       onCommit={() => commitEdit("Tone Curve")}
+      showPointValues={showPointValues}
     />
   );
 }
@@ -40,12 +68,14 @@ function GlobalCurveEditor() {
 function ToneCurveMaskPanel() {
   const scope = useMaskScope();
   const curves = scope.toneCurve ?? defaultToneCurves();
+  const showPointValues = useShowPointValues();
   return (
     <CurveEditor
       compact
       curves={curves}
       onChange={(channel, points) => scope.setToneCurve({ ...curves, [channel]: points })}
       onCommit={() => scope.commit("Mask Tone Curve")}
+      showPointValues={showPointValues}
     />
   );
 }

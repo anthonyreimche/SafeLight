@@ -272,9 +272,10 @@ export function deactivateAccessibility(): void {
 // ── Keyboard canvas editing gate ────────────────────────────────────────────
 // The on-canvas arrow-key manipulation layer (tone-curve points, mask handles,
 // viewport pan/zoom) is opt-in: it runs only when the accessibility extension is
-// active AND the user enabled "Keyboard canvas editing". The always-on numeric
-// fields (curve In/Out, mask geometry) are NOT gated — they're the conformance
-// baseline. Components use the hook so they re-render on either change.
+// active AND the user enabled "Keyboard canvas editing". The numeric fields
+// (curve In/Out, mask geometry) show with it too; the curve's In/Out row can
+// also be turned on alone in Preferences ▸ Tone Curve. Components use the hook
+// so they re-render on either change.
 
 /** Hook: true when on-canvas keyboard editing should be live. */
 export function useKeyboardCanvasEditing(): boolean {

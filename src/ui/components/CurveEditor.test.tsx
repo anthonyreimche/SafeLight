@@ -84,9 +84,11 @@ const at = (x: number, y: number) => ({
 function Harness({
   rgb,
   onChange,
+  showPointValues,
 }: {
   rgb: CurvePoint[];
   onChange: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
+  showPointValues?: boolean;
 }) {
   const [curves, setCurves] = useState<ToneCurves>({ ...defaultToneCurves(), rgb });
   return (
@@ -97,13 +99,14 @@ function Harness({
         setCurves((c) => ({ ...c, [channel]: points }));
       }}
       onCommit={() => {}}
+      showPointValues={showPointValues}
     />
   );
 }
 
-function setup(rgb: CurvePoint[]) {
+function setup(rgb: CurvePoint[], showPointValues?: boolean) {
   const onChange = vi.fn<(channel: ToneCurveChannel, points: CurvePoint[]) => void>();
-  render(<Harness rgb={rgb} onChange={onChange} />);
+  render(<Harness rgb={rgb} onChange={onChange} showPointValues={showPointValues} />);
   const canvas = screen.getByLabelText(/^Tone curve,/);
   const lastPoints = () => onChange.mock.lastCall?.[1];
   return { user: userEvent.setup(), onChange, canvas, lastPoints };
@@ -190,11 +193,52 @@ describe("CurveEditor end points with keyboard canvas editing", () => {
   it("sets an end point's input level from the In field", async () => {
     const { user, lastPoints } = setup(IDENTITY);
     const input = screen.getByLabelText<HTMLInputElement>(
-      "Selected point input level (%)",
+      "Selected point input level (0–255)",
     );
     expect(input.disabled).toBe(false);
     await user.clear(input);
-    await user.type(input, "30");
-    expect(lastPoints()?.[0]).toEqual({ x: 0.3, y: 0 });
+    await user.type(input, "77");
+    expect(lastPoints()?.[0]).toEqual({ x: 77 / 255, y: 0 });
+  });
+});
+
+// Lightroom shows and takes curve points as 0–255 levels, so a preset's points
+// can be read off one app and typed into the other without rounding.
+describe("CurveEditor point values", () => {
+  const inField = () =>
+    screen.queryByLabelText<HTMLInputElement>("Selected point input level (0–255)");
+  const outField = () =>
+    screen.queryByLabelText<HTMLInputElement>("Selected point output level (0–255)");
+
+  it("hides the point boxes unless asked for", () => {
+    setup(IDENTITY);
+    expect(inField()).toBeNull();
+    expect(outField()).toBeNull();
+  });
+
+  it("shows the selected point as 0–255 levels", async () => {
+    const { user } = setup(
+      [
+        { x: 0, y: 0 },
+        { x: 32 / 255, y: 22 / 255 },
+        { x: 1, y: 1 },
+      ],
+      true,
+    );
+    await user.click(screen.getByRole("button", { name: "Select next point" }));
+    expect(inField()?.value).toBe("32");
+    expect(outField()?.value).toBe("22");
+    expect(inField()?.max).toBe("255");
+    expect(outField()?.max).toBe("255");
+  });
+
+  it("sets the selected point from typed 0–255 levels", async () => {
+    const { user, canvas, lastPoints } = setup(IDENTITY, true);
+    await user.clear(inField()!);
+    await user.type(inField()!, "32");
+    await user.clear(outField()!);
+    await user.type(outField()!, "22");
+    expect(lastPoints()?.[0]).toEqual({ x: 32 / 255, y: 22 / 255 });
+    expect(canvas.getAttribute("aria-label")).toContain("input 32, output 22");
   });
 });
