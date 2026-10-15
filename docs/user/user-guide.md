@@ -73,7 +73,7 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 
 - **White Balance** — temperature and tint, with an eyedropper that solves both from a neutral target you click.
 - **Basic** — exposure (±5 EV), contrast, highlights, shadows, whites, blacks, texture, clarity, dehaze, vibrance, saturation, plus Auto Tone. On photos using the current processing, Highlights and Shadows work on regions of the photo, so recovered highlights and lifted shadows keep their texture.
-- **Tone Curve** — point curves for the RGB master and individual red, green, and blue channels. Click to add a point, drag to shape, double-click a point to remove/reset. The end points move too: drag the black point right to clip shadows or the white point left to clip highlights, and up or down to lift or lower them.
+- **Tone Curve** — point curves for the RGB master and individual red, green, and blue channels. Click to add a point, drag to shape, double-click a point to remove/reset. The end points move too: drag the black point right to clip shadows or the white point left to clip highlights, and up or down to lift or lower them. Turn on **Preferences ▸ Tone Curve ▸ Show point values** to read and type the selected point's **In** and **Out** levels, on the same 0–255 scale as Lightroom.
 - **HSL** — hue, saturation, and luminance for 8 bands: red, orange, yellow, green, aqua, blue, purple, magenta. A picker lets you click the image to adjust the band under the cursor.
 - **Color Grading** — shadows / midtones / highlights / global color wheels with per-wheel luma and shadow/highlight range. Drag to set hue and saturation, Shift for precision; double-click resets hue and saturation only (not luma).
 

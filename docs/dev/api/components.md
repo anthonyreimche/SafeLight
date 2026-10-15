@@ -74,6 +74,7 @@ A controlled tone-curve editor (the RGB + per-channel point curve used by the To
 | `onChange` | `(channel: ToneCurveChannel, points: CurvePoint[]) => void` | — | Fires while dragging a point. `channel` is `"rgb" \| "red" \| "green" \| "blue"`. |
 | `onCommit` | `() => void` | — | Fires at drag end — snapshot history here. |
 | `compact` | `boolean` | `false` | Smaller plot for embedding inside another panel. |
+| `showPointValues` | `boolean` | `false` | Shows the selected point's **In**/**Out** boxes (0–255 levels) without keyboard canvas editing. The Tone Curve panels pass the user's **Preferences ▸ Tone Curve ▸ Show point values**. |
 
 ## `Rating`
 

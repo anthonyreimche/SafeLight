@@ -15,6 +15,10 @@ const HIT_RADIUS = 11;
 // Arrow-key nudge amounts (fraction of the 0..1 range); Shift = coarse.
 const STEP = 0.01;
 const COARSE = 0.05;
+// Point values are shown and typed as 0–255 levels, Lightroom's scale, so a
+// curve read off one app can be entered in the other without rounding.
+const LEVELS = 255;
+const toLevel = (v: number) => Math.round(v * LEVELS);
 
 const CHANNELS: { key: ToneCurveChannel; label: string; color: string }[] = [
   { key: "rgb", label: "RGB", color: "#c8c8c8" },
@@ -29,6 +33,8 @@ export interface CurveEditorProps {
   onCommit: () => void;
   // Compact mode for embedding inside another panel (mask sub-panels).
   compact?: boolean;
+  // Show the selected point's In/Out row even without keyboard canvas editing.
+  showPointValues?: boolean;
 }
 
 // Controlled RGB + per-channel curve editor. The global Tone Curve panel and
@@ -41,7 +47,14 @@ export interface CurveEditorProps {
 // below give a single-click non-drag path; edits are announced via a polite live
 // region. When OFF: the graph is the plain pointer-only editor (click to add,
 // drag to move, double-click to remove) and doesn't capture bare-key shortcuts.
-export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditorProps) {
+// `showPointValues` shows the In/Out row on its own, for typing exact points.
+export function CurveEditor({
+  curves,
+  onChange,
+  onCommit,
+  compact,
+  showPointValues,
+}: CurveEditorProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState(220);
@@ -56,8 +69,9 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   // A run of arrow nudges commits once on key-up, not per repeat, to keep undo sane.
   const dirtyRef = useRef(false);
   const helpId = useId();
-  // Opt-in: gates only the on-canvas keyboard layer, not the number fields below.
+  // Opt-in: gates the on-canvas keyboard layer and, with it, the number row below.
   const kbd = useKeyboardCanvasEditing();
+  const showNumberRow = kbd || !!showPointValues;
   // Whether to draw the selection/focus ring on the active point.
   const showHighlights = useSettings((s) => s.editingHighlights);
 
@@ -99,7 +113,7 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
 
   const update = (next: CurvePoint[]) => onChange(channel, next);
   const describe = (i: number, p: CurvePoint) =>
-    `Point ${i + 1} of ${points.length}: input ${Math.round(p.x * 100)}%, output ${Math.round(p.y * 100)}%`;
+    `Point ${i + 1} of ${points.length}: input ${toLevel(p.x)}, output ${toLevel(p.y)}`;
 
   // Pointer position in the canvas's `size`-unit space. Derived from clientX/Y
   // and the element rect rather than offsetX/offsetY, which Chromium/Electron
@@ -249,25 +263,25 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
   };
 
   // ── Selected-point number fields (non-drag pointer path) ────────────────────
-  const setInputPct = (raw: string) => {
+  const setInputLevel = (raw: string) => {
     setEditing({ field: "in", raw });
     if (raw === "") return;
     const n = Number(raw);
     if (!Number.isFinite(n)) return;
     const i = sel;
-    const nx = clampPointX(points, i, n / 100);
+    const nx = clampPointX(points, i, n / LEVELS);
     const next = points.map((p, j) => (j === i ? { ...p, x: nx } : p));
     update(next);
     onCommit();
     setAnnounce(describe(i, next[i]));
   };
-  const setOutputPct = (raw: string) => {
+  const setOutputLevel = (raw: string) => {
     setEditing({ field: "out", raw });
     if (raw === "") return;
     const n = Number(raw);
     if (!Number.isFinite(n)) return;
     const i = sel;
-    const next = points.map((p, j) => (j === i ? { ...p, y: clamp01(n / 100) } : p));
+    const next = points.map((p, j) => (j === i ? { ...p, y: clamp01(n / LEVELS) } : p));
     update(next);
     onCommit();
     setAnnounce(describe(i, next[i]));
@@ -320,9 +334,9 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
       </div>
 
       {/* Selected-point editor: the non-drag (single-click + keyboard) path.
-          Shown only with "Keyboard canvas editing" on — otherwise the curve is
-          the plain pointer-only graph. */}
-      {kbd && (
+          Shown with "Keyboard canvas editing" or `showPointValues` on —
+          otherwise the curve is the plain pointer-only graph. */}
+      {showNumberRow && (
       <div className="mt-1.5 flex items-center gap-1 text-[10px] text-text-secondary">
         <button
           onClick={() => selectIndex(sel - 1)}
@@ -348,12 +362,12 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
           id={`${helpId}-in`}
           type="number"
           min={0}
-          max={100}
-          value={editing?.field === "in" ? editing.raw : Math.round(selPoint.x * 100)}
-          onFocus={() => setEditing({ field: "in", raw: String(Math.round(selPoint.x * 100)) })}
-          onChange={(e) => setInputPct(e.target.value)}
+          max={LEVELS}
+          value={editing?.field === "in" ? editing.raw : toLevel(selPoint.x)}
+          onFocus={() => setEditing({ field: "in", raw: String(toLevel(selPoint.x)) })}
+          onChange={(e) => setInputLevel(e.target.value)}
           onBlur={() => { setEditing(null); onCommit(); }}
-          aria-label="Selected point input level (%)"
+          aria-label="Selected point input level (0–255)"
           className={numCls}
         />
         <label className="text-text-muted" htmlFor={`${helpId}-out`}>Out</label>
@@ -361,12 +375,12 @@ export function CurveEditor({ curves, onChange, onCommit, compact }: CurveEditor
           id={`${helpId}-out`}
           type="number"
           min={0}
-          max={100}
-          value={editing?.field === "out" ? editing.raw : Math.round(selPoint.y * 100)}
-          onFocus={() => setEditing({ field: "out", raw: String(Math.round(selPoint.y * 100)) })}
-          onChange={(e) => setOutputPct(e.target.value)}
+          max={LEVELS}
+          value={editing?.field === "out" ? editing.raw : toLevel(selPoint.y)}
+          onFocus={() => setEditing({ field: "out", raw: String(toLevel(selPoint.y)) })}
+          onChange={(e) => setOutputLevel(e.target.value)}
           onBlur={() => { setEditing(null); onCommit(); }}
-          aria-label="Selected point output level (%)"
+          aria-label="Selected point output level (0–255)"
           className={numCls}
         />
         <button onClick={addPoint} aria-label="Add point" className={`${fieldBtn} ml-auto`}>

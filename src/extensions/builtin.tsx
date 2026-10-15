@@ -25,7 +25,7 @@ import { CropPanel } from "@/modules/develop/panels/CropPanel";
 import { TransformPanel } from "@/modules/develop/panels/TransformPanel";
 import { WhiteBalancePanel, WHITE_BALANCE_MASK_PANEL } from "@/modules/develop/panels/WhiteBalancePanel";
 import { BasicPanel, BASIC_MASK_PANEL } from "@/modules/develop/panels/BasicPanel";
-import { ToneCurvePanel, TONE_CURVE_MASK_PANEL } from "@/modules/develop/panels/ToneCurvePanel";
+import { ToneCurvePanel, TONE_CURVE_MASK_PANEL, TONE_CURVE_SETTINGS } from "@/modules/develop/panels/ToneCurvePanel";
 import { ColorGradingPanel } from "@/modules/develop/panels/ColorGradingPanel";
 import { DetailPanel, DETAIL_MASK_PANEL } from "@/modules/develop/panels/DetailPanel";
 import { EffectsPanel } from "@/modules/develop/panels/EffectsPanel";
@@ -427,7 +427,25 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
   }),
   panelExt("core.white-balance", "White Balance", WhiteBalancePanel, "Temperature and tint.", right(4, 120), resetDevelop(["temperature", "tint"], "Reset White Balance"), WHITE_BALANCE_MASK_PANEL),
   panelExt("core.basic", "Basic", BasicPanel, "Exposure, contrast, highlights, shadows, presence.", right(5, 220), resetDevelop(["exposure", "contrast", "highlights", "highlightDetail", "shadows", "shadowDetail", "whites", "blacks", "texture", "clarity", "dehaze", "vibrance", "saturation"], "Reset Basic"), BASIC_MASK_PANEL),
-  panelExt("core.tone-curve", "Tone Curve", ToneCurvePanel, "Parametric and point tone curves per channel.", right(6, 220), resetDevelop(["toneCurve"], "Reset Tone Curve"), TONE_CURVE_MASK_PANEL),
+  // A full extension so it can contribute Preferences ▸ Tone Curve (the
+  // selected point's In/Out boxes, read by the panel and its mask instance).
+  {
+    id: "core.tone-curve",
+    name: "Tone Curve",
+    version: V,
+    description: "Parametric and point tone curves per channel.",
+    activate(api) {
+      api.registerPanel({
+        id: "core.tone-curve",
+        title: "Tone Curve",
+        component: ToneCurvePanel,
+        defaultDock: right(6, 220),
+        onReset: resetDevelop(["toneCurve"], "Reset Tone Curve"),
+        mask: TONE_CURVE_MASK_PANEL,
+      });
+      api.registerSettings(TONE_CURVE_SETTINGS);
+    },
+  },
   panelExt("core.color-grading", "Color Grading", ColorGradingPanel, "Shadow / midtone / highlight color wheels.", right(7, 200), resetDevelop(["colorGrading"], "Reset Color Grading")),
   panelExt("core.detail", "Detail", DetailPanel, "Sharpening and noise reduction.", right(8, 150), resetDevelop(["sharpening", "sharpenRadius", "sharpenDetail", "sharpenMasking", "luminanceNR", "luminanceNRDetail", "luminanceNRContrast", "luminanceNRShadows", "luminanceNRHighlights", "colorNR", "colorNRDetail", "colorNRSmoothness"], "Reset Detail"), DETAIL_MASK_PANEL),
   panelExt("core.effects", "Effects", EffectsPanel, "Vignette and grain.", right(10, 150), resetDevelop(["vignette", "grain"], "Reset Effects")),
