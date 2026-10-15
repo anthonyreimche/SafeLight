@@ -71,6 +71,8 @@ function previewReason(fallback: Fallback | null | undefined): string | null {
  *  always has one; but no open binds this one, so the next open loads the photo again. */
 const fallbackKey = (key: string): string => `${key}#fallback`;
 
+const NO_STAGES: readonly string[] = [];
+
 /** The stage bag the worker draws with: the photo's own and the built-in denoise stage's
  *  entries, with what bypassed panels own taken out. */
 function stageBag(
@@ -227,6 +229,9 @@ interface RendererStatus {
   tier: DevelopTier | null;
   // The canvas corner's label for it (useTierLabel), or why nothing of the photo shows.
   status: string | null;
+  // The processing stages the last frame of the photo was drawn without, for want
+  // of a GPU texture unit: they are on, but change nothing.
+  overflowedStages: readonly string[];
   // The display canvas while it holds a picture of the open photo, else null: what a
   // view going away hands to the next (canvas-handover.ts).
   pictureCanvas: () => HTMLCanvasElement | null;
@@ -292,6 +297,8 @@ export function useDevelopRenderer(
   // Size of the source the last frame was drawn from, as the renderer holds it
   // (already upright). Drives the image aspect — see `aspect` below.
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
+  // The stages the last frame of the photo was drawn without (FrameResult).
+  const [overflowedStages, setOverflowedStages] = useState<readonly string[]>(NO_STAGES);
   // Effective params: a hover preview (e.g. from the Presets panel) overrides
   // the committed params for rendering only, without touching history.
   const params = useDevelopStore((s) => s.previewParams ?? s.params);
@@ -530,6 +537,10 @@ export function useDevelopRenderer(
       const frameTier: DevelopTier =
         finalGen !== null && frame.sourceGen >= finalGen ? "final" : "preview";
       present({ bitmap: frame.bitmap, width: frame.width, height: frame.height, tier: frameTier });
+      const overflowed = frame.overflowedStages;
+      setOverflowedStages((s) =>
+        s.length === overflowed.length && s.every((id, i) => id === overflowed[i]) ? s : overflowed,
+      );
       // The renderer's own size of the source, which the drawn transform's aspect
       // comes from, so the crop overlay agrees with the pixels on screen. A source
       // bound from the GPU cache is reported by its frames alone.
@@ -628,6 +639,7 @@ export function useDevelopRenderer(
     sentGenRef.current = null;
     setCantShow(null);
     setSettledReason(null);
+    setOverflowedStages(NO_STAGES);
     editedPreviewRef.current = null;
     tierRef.current = null;
     setTier(null);
@@ -998,6 +1010,7 @@ export function useDevelopRenderer(
     sourceHeight: sourceSize.height,
     tier,
     status,
+    overflowedStages,
     pictureCanvas,
     setViewport,
   };

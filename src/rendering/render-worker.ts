@@ -141,6 +141,9 @@ export type WorkerResponse =
       sourceHeight: number;
       sourceGen: number;
       histogram?: HistogramData;
+      // The prepass stages this frame was drawn without (no texture unit was left
+      // for their result); absent when it ran every stage that was on.
+      overflowedStages?: string[];
     }
   // Render `seq` had nothing to draw with or from: no renderer, or no source yet for
   // the photo the develop view moved to.
@@ -548,6 +551,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           };
           if (msg.wantHistogram) {
             resp.histogram = renderer.computeHistogram(!!msg.wantExtended);
+          }
+          if (renderer.overflowedStages.length > 0) {
+            resp.overflowedStages = [...renderer.overflowedStages];
           }
           respond(resp, [bitmap]);
         } catch (err) {

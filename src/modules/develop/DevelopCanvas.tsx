@@ -32,6 +32,8 @@ import { MaskOverlay } from "./MaskOverlay";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
 import { sampleLinearRGB } from "@/rendering/sample-pixel";
 import { getExtSetting } from "@/extensions/ext-settings";
+import { useRegistry } from "@/extensions/registry";
+import { overflowNotice } from "./stage-overflow";
 
 // HSL hue centers matching the shader
 const HSL_CENTERS = [0, 30, 60, 120, 180, 240, 280, 320];
@@ -98,6 +100,7 @@ export function DevelopCanvas({
     supported,
     availability,
     status,
+    overflowedStages,
     width,
     height,
     sourceWidth,
@@ -105,6 +108,8 @@ export function DevelopCanvas({
     setViewport,
     pictureCanvas,
   } = useDevelopRenderer(canvasRef, photo, fadeCanvasRef);
+  const processingStages = useRegistry((s) => s.processingStages);
+  const notice = overflowNotice(overflowedStages, processingStages);
 
   // Geometry of the displayed image + a nonce that bumps on any view change, so
   // extension overlays (e.g. before/after) can align and refresh. Generic: core
@@ -381,6 +386,11 @@ export function DevelopCanvas({
             ? "Can't show images right now. Restart Safelight."
             : "Can't show images right now. Trying again…"}
         </p>
+      </div>
+    )}
+    {notice && (
+      <div className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center">
+        <p className="rounded bg-surface-2 px-3 py-2 text-xs text-text-muted">{notice}</p>
       </div>
     )}
     <ViewportImage

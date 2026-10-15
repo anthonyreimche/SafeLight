@@ -1772,6 +1772,35 @@ describe("the patch pass", () => {
       watch.restore();
     }
   });
+
+  // Five active stages take units 8-11 and 5, so the unit the idle stage shares,
+  // which holds the copy, is one past them.
+  it("draws into a copy no texture unit holds when the idle stages' unit is past the first five", () => {
+    const busy = Array.from({ length: 5 }, (_, i): ProcessingStageContribution => ({
+      id: `busy-${i}.test`,
+      name: `Busy ${i}`,
+      phase: "scene-linear",
+      glsl: "lin = mix(lin, stageResult, 0.0 * take);",
+      uniforms: [{ key: "take", glslType: "float", default: 0 }],
+      passes: [{ glsl: "c = c;" }],
+    }));
+    const idle: ProcessingStageContribution = { ...busy[0], id: "idle.test", name: "Idle" };
+    const watch = watchDrawsIntoCopy(glHarness().gl);
+    try {
+      withRenderer({ stages: [...busy, idle], pipeline: WIDE_PROBE }, (renderer) => {
+        renderer.setImage(SPECKLED_SKY);
+        renderer.setContributedParams(Object.fromEntries(busy.map((s) => [`${s.id}.take`, 1])));
+        for (const version of [V1, V2, V1, V2]) {
+          renderer.setParams(healed(version));
+          renderer.render();
+        }
+      });
+      expect(watch.draws).toBe(4);
+      expect(watch.held).toEqual([]);
+    } finally {
+      watch.restore();
+    }
+  });
 });
 
 describe("histogram readback", () => {

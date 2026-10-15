@@ -25,7 +25,8 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useSettings } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
-import { registerGridFilter, useRegistry } from "@/extensions/registry";
+import { registerGridFilter, useRegistry, type RegisteredProcessingStage } from "@/extensions/registry";
+import { setExtensionName } from "@/extensions/param-registry";
 import { NO_FILTER } from "@/modules/library/visible-photos";
 import {
   loadPhotoImage,
@@ -352,7 +353,7 @@ function answerBinds(worker: FakeWorker, hit: boolean, answered: Set<number>) {
 }
 
 /** The worker's frame for `request`, carrying the histogram it asked for. */
-function frameFor(request: Render, size = { width: 10, height: 10 }): WorkerResponse {
+function frameFor(request: Render, size = { width: 10, height: 10 }): Frame {
   return {
     type: "frame",
     seq: request.seq,
@@ -3049,5 +3050,72 @@ describe("DevelopCanvas saying why it shows no edits", () => {
     });
     render(develop);
     expect(says("Can't show edits on this computer. Showing the unedited preview.")).toBe(true);
+  });
+});
+
+// A stage the worker had no texture unit for this frame changes nothing, so
+// Develop names its extension in plain words, until a frame runs it again.
+describe("DevelopCanvas saying which effects it can't apply", () => {
+  function CanvasView({ subject }: { subject: CatalogPhoto }) {
+    return <DevelopCanvas photo={subject} zoom={null} onZoomChange={() => {}} />;
+  }
+  const says = (text: string) => document.body.textContent?.includes(text) ?? false;
+  const TOO_MANY = "Too many effects are on for this graphics card.";
+
+  function stage(id: string, extensionId: string): RegisteredProcessingStage {
+    return { id, name: id, phase: "scene-linear", glsl: "", uniforms: [], extensionId };
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", FixedFrameObserver);
+    setExtensionName("colour-equaliser", "Colour Equaliser");
+    setExtensionName("contrast-equalizer", "Contrast Equalizer");
+    useRegistry.setState({
+      processingStages: Object.fromEntries(
+        [
+          stage("colour-equaliser.rings", "colour-equaliser"),
+          stage("contrast-equalizer.luma", "contrast-equalizer"),
+          stage("contrast-equalizer.chroma-red", "contrast-equalizer"),
+        ].map((s) => [s.id, s]),
+      ),
+    });
+  });
+
+  afterEach(() => {
+    useRegistry.setState({ processingStages: {} });
+  });
+
+  /** Answers every render the bridge sends with a frame drawn without `overflowed`. */
+  async function framesWithout(worker: FakeWorker, overflowed: string[]) {
+    await act(async () => {
+      for (let request = worker.inFlight(); request; request = worker.inFlight()) {
+        worker.reply({ ...frameFor(request), overflowedStages: overflowed });
+        await Promise.resolve();
+      }
+    });
+  }
+
+  it("names the effect a frame was drawn without", async () => {
+    const { worker } = await open(photo(), true, CanvasView);
+    await framesWithout(worker, ["colour-equaliser.rings"]);
+    expect(says(`Can't apply Colour Equaliser. ${TOO_MANY}`)).toBe(true);
+  });
+
+  it("names each extension once, however many of its stages went without", async () => {
+    const { worker } = await open(photo(), true, CanvasView);
+    await framesWithout(worker, [
+      "contrast-equalizer.luma",
+      "colour-equaliser.rings",
+      "contrast-equalizer.chroma-red",
+    ]);
+    expect(says(`Can't apply Contrast Equalizer or Colour Equaliser. ${TOO_MANY}`)).toBe(true);
+  });
+
+  it("says nothing once a frame runs them all", async () => {
+    const { worker } = await open(photo(), true, CanvasView);
+    await framesWithout(worker, ["colour-equaliser.rings"]);
+    act(() => getRenderBridge().render(false));
+    await framesWithout(worker, []);
+    expect(says(TOO_MANY)).toBe(false);
   });
 });

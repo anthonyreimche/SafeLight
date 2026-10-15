@@ -70,6 +70,8 @@ const { FakeRenderer } = vi.hoisted(() => {
     /** The display transform it holds, and the one each render drew with. */
     monitorTransform: MonitorTransform | null = null;
     renderedWith: (MonitorTransform | null)[] = [];
+    /** The stages the last render left without a prepass unit. */
+    overflowedStages: string[] = [];
     disposed = false;
 
     constructor(_canvas: unknown, opts: unknown) {
@@ -632,6 +634,16 @@ describe("render-worker frames", () => {
     expect(posted).toHaveLength(1);
     expect(posted[0]).toMatchObject({ type: "frame", seq: 7, bitmap: handedOut[0] });
     expect(posted[0]).not.toHaveProperty("histogram");
+  });
+
+  it("names the stages the render left without a prepass unit", () => {
+    send(INIT);
+    FakeRenderer.instances[0].overflowedStages = ["ext.equaliser.rings"];
+    posted = [];
+    send({ cmd: "render", seq: 9 });
+    expect(posted).toEqual([
+      expect.objectContaining({ type: "frame", seq: 9, overflowedStages: ["ext.equaliser.rings"] }),
+    ]);
   });
 
   it("carries the histogram the render asked for", () => {

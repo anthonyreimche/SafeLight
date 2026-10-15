@@ -41,6 +41,7 @@ import {
   type StageTextureBinding,
 } from "./stage-injection";
 import { SplitTokens } from "./split-signature";
+import { MAX_STAGE_TEXTURES, STAGE_TEX_UNIT_BASE, prepassUnits } from "./prepass-units";
 import { useRegistry } from "@/extensions/registry";
 import {
   type GlslType,
@@ -73,21 +74,6 @@ import { halfToFloat32 } from "@/raw/half-float";
 // the program shares the one VAO — swapping pipelines never rebuilds geometry.
 const ATTR_POS = 0;
 const ATTR_UV = 1;
-
-// Texture units for prepass result samplers. The develop shader owns 0 (image),
-// 1 (curve), 2 (mask), 3 (retouch), 4 (developed), 6 (mask curves) and uses 7 as
-// transient scratch; unit 5 is the one free slot below the prepass range, listed
-// last so the four long-standing prepass units keep their numbers. Five slots let
-// the builtin denoise and a four-stage extension (e.g. the Contrast Equalizer's
-// wavelet octaves) hold results at once within the 16 fragment units WebGL2
-// guarantees (ANGLE reports exactly 16).
-const PREPASS_UNITS: readonly number[] = [8, 9, 10, 11, 5];
-const MAX_PREPASS_STAGES = PREPASS_UNITS.length;
-
-// Extension stage textures (baked LUT atlases, etc.) bind above the classic
-// prepass range; 12-15 stay inside the 16-unit guarantee.
-const STAGE_TEX_UNIT_BASE = 12;
-const MAX_STAGE_TEXTURES = 4;
 
 // One compiled develop program per pipeline, stage set and process version:
 // switching transforms or photos (or back) is an O(1) swap with no shader
@@ -366,6 +352,10 @@ export class WebGLRenderer {
   // thereafter so one bad stage can't throw out of render() and freeze the view.
   private failedPrepass = new Set<string>();
   private warnedPrepassOverflow = new Set<string>();
+  // Active prepass stages the last frame had no texture unit left for.
+  private overflowed: string[] = [];
+  // MAX_COMBINED_TEXTURE_IMAGE_UNITS: the units a sampler may read (prepass-units.ts).
+  private combinedUnits = 0;
   private warnedCoverageOverflow = new Set<string>();
   private warnedSplitFallback = new Set<string>();
   // True when the built-in denoise prepass produced a real float result this
@@ -532,6 +522,7 @@ export class WebGLRenderer {
 
     this.haveColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
     this.haveFloat16Developed = this.haveColorBufferFloat;
+    this.combinedUnits = gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS);
 
     this.setupQuad();
 
@@ -558,6 +549,12 @@ export class WebGLRenderer {
   /** Cumulative split and pass draws since construction. */
   get renderDrawCounts(): { readonly split: number; readonly pass: number } {
     return { ...this.draws };
+  }
+
+  /** The prepass stages the last frame was drawn without: active, but with no
+   *  texture unit left for their result, so their inline glsl read another's. */
+  get overflowedStages(): readonly string[] {
+    return this.overflowed;
   }
 
   // 1x1 transparent default so a coverage sampler is always valid even with no
@@ -1775,9 +1772,10 @@ export class WebGLRenderer {
     }
 
     // Extension stage textures (baked LUT atlases). Bound to units 12.. (above
-    // the fixed 0-7 and prepass 8-11 ranges), so they stay resident through the
-    // mask/retouch binds below and the draw passes. Like the scalar uniforms,
-    // the sampler binding persists on the program across both draw paths.
+    // the fixed 0-7 and prepass 8-11 ranges; prepass results only take the ones
+    // left over), so they stay resident through the mask/retouch binds below and
+    // the draw passes. Like the scalar uniforms, the sampler binding persists on
+    // the program across both draw paths.
     {
       let unit = STAGE_TEX_UNIT_BASE;
       for (const tb of this.stageTextureBindings) {
@@ -2461,6 +2459,7 @@ export class WebGLRenderer {
     params: DevelopParams,
   ) {
     this.prepassResults = [];
+    this.overflowed = [];
     this.denoiseReady = false; // set true below only if the denoise prepass yields a real result
     if (this.prepassStages.length === 0) return;
     const gl = this.gl;
@@ -2469,30 +2468,32 @@ export class WebGLRenderer {
     const baseCurve = this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0;
 
     // The units are a hard budget, so they go to the stages that actually
-    // produce a result this frame; every inactive/failed stage shares one slot
-    // holding the raw source. EVERY stage gets an explicit binding — a sampler
-    // that is never uniform1i'd defaults to unit 0 and silently reads uImage,
-    // which is exactly the garbage an active-but-starved stage must never see
-    // (SafeLight #96: the Contrast Equalizer's coarsest band decoded the raw
+    // produce a result this frame; every inactive/failed stage shares the next
+    // free unit, holding the raw source. EVERY stage gets an explicit binding — a
+    // sampler that is never uniform1i'd defaults to unit 0 and silently reads
+    // uImage, which is exactly the garbage an active-but-starved stage must never
+    // see (SafeLight #96: the Contrast Equalizer's coarsest band decoded the raw
     // image as wavelet detail and crushed the render to black).
+    const units = this.prepassUnitPool();
     const active = this.prepassStages.map(
       (s) => haveTargets && !this.failedPrepass.has(s.stageId) && this.prepassActive(s.stageId),
     );
     const unitOf = new Map<number, number>();
     let next = 0;
     for (let i = 0; i < this.prepassStages.length; i++) {
-      if (active[i] && next < PREPASS_UNITS.length) unitOf.set(i, PREPASS_UNITS[next++]);
+      if (active[i] && next < units.length) unitOf.set(i, units[next++]);
     }
-    const spareUnit = next < PREPASS_UNITS.length ? PREPASS_UNITS[next] : -1;
+    const spareUnit = next < units.length ? units[next] : -1;
 
     for (let i = 0; i < this.prepassStages.length; i++) {
       const stage = this.prepassStages[i];
       const unit = unitOf.get(i);
       if (unit === undefined) {
+        if (active[i]) this.overflowed.push(stage.stageId);
         if (active[i] && !this.warnedPrepassOverflow.has(stage.stageId)) {
           this.warnedPrepassOverflow.add(stage.stageId);
           console.warn(
-            `[render] prepass stage '${stage.stageId}' exceeds the ${MAX_PREPASS_STAGES}-slot ` +
+            `[render] prepass stage '${stage.stageId}' exceeds the ${units.length}-unit ` +
               `budget and will not run; its inline reads another stage's result.`,
           );
         }
@@ -2605,6 +2606,13 @@ export class WebGLRenderer {
     }
   }
 
+  // The units prepass results may take under the current stage set: every unit
+  // the develop program and its stage textures leave free.
+  private prepassUnitPool(): number[] {
+    const textures = this.stageTextureBindings.filter((b) => b.kind !== "coverage").length;
+    return prepassUnits(this.combinedUnits, textures);
+  }
+
   // Bind each prepass result onto the (already active) main program.
   private bindPrepassResults() {
     const gl = this.gl;
@@ -2690,7 +2698,7 @@ export class WebGLRenderer {
     // program is a GL feedback loop (undefined — drivers can drop the write,
     // leaving the patched source stale, so heal edits never appear when a stage
     // with an active prepass result is registered). Detach those units first.
-    for (const pu of PREPASS_UNITS) {
+    for (const pu of this.prepassUnitPool()) {
       gl.activeTexture(gl.TEXTURE0 + pu);
       gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     }
