@@ -18,6 +18,7 @@ import { DEFAULT_MASK_PANELS, defaultColorRange, defaultMaskAdjustments } from "
 import { mat3Apply, type Mat3 } from "@/rendering/transform";
 import { useDevelopStore } from "@/state/develop-store";
 import { findHealSource, healColorOffset } from "@/rendering/heal-source";
+import { regionAnchor, spotRegion } from "@/rendering/heal-region";
 import { sampleLinearRGB } from "@/rendering/sample-pixel";
 import { resolveCursorCss } from "@/state/cursor-store";
 import { frameLocalPoint } from "@/ui/frame-point";
@@ -742,27 +743,22 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
     return m?.components.find((c) => c.id === d.compId);
   }
 
-  // Choose the source for a freshly painted spot, from its whole painted region
-  // (centre + extent) rather than the first click. Heal auto-fits; clone just
-  // offsets clear of the region. Either can be dragged afterwards.
+  // Choose the source for a freshly painted spot from its whole painted region
+  // rather than the first click. Heal and clone both search; clone weighs
+  // matching colour more, since it copies verbatim. Either can be dragged
+  // afterwards.
   function chooseRetouchSource(id: string) {
     const st = store();
     const s = st.params.retouch.find((sp) => sp.id === id);
     if (!s) return;
-    let cx = s.dstX, cy = s.dstY, rad = s.radius;
-    if (s.shape === "brush" && s.dabs && s.dabs.length > 0) {
-      let sx = 0, sy = 0;
-      for (const d of s.dabs) { sx += d.x; sy += d.y; }
-      cx = sx / s.dabs.length; cy = sy / s.dabs.length;
-      let m = 0;
-      for (const d of s.dabs) m = Math.max(m, Math.hypot((d.x - cx) * imageAspect, d.y - cy) + d.radius);
-      rad = m;
-    }
+    const region = spotRegion(s);
     const patch: Partial<RetouchSpot> = {};
-    const auto = findHealSource(cx, cy, rad, imageAspect);
+    const auto = findHealSource(region, s.mode);
     if (auto) {
-      patch.srcX = s.dstX + (auto.x - cx);
-      patch.srcY = s.dstY + (auto.y - cy);
+      // The search answers for the region's anchor; the spot keeps its own.
+      const anchor = regionAnchor(region);
+      patch.srcX = s.dstX + (auto.x - anchor.x);
+      patch.srcY = s.dstY + (auto.y - anchor.y);
       patch.angle = auto.angle; patch.scale = auto.scale;
       if (s.mode !== "clone") {
         patch.recolorR = auto.r; patch.recolorG = auto.g; patch.recolorB = auto.b;
@@ -771,6 +767,12 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
       return;
     }
     // No usable candidate: offset clear of the painted region.
+    let rad = s.radius;
+    if (region.kind === "brush") {
+      const c = regionAnchor(region);
+      rad = 0;
+      for (const d of region.dabs) rad = Math.max(rad, Math.hypot((d.x - c.x) * imageAspect, d.y - c.y) + d.radius);
+    }
     const off = Math.max(0.04, rad * 2.2);
     patch.srcX = s.dstX - off / imageAspect;
     patch.srcY = s.dstY - off;

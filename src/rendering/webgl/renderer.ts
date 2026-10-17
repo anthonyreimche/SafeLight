@@ -130,11 +130,11 @@ interface SourceEntry {
   lastUsed: number;
 }
 
-// Working resolution for the CPU heal-source search (and the disabled
-// content-aware fill). Big enough that thin structures (edges, lines) survive
-// the downscale so the source picker can match and continue them; the search
-// cost is independent of this, only the sampling fidelity changes.
-const FILL_EDGE = 384;
+// Long edge of the CPU heal-source search image (and the disabled content-aware
+// fill). The picker searches the pyramid level that suits each spot, so this
+// only sets how fine the smallest spots are matched: at 1024 a 0.004-radius
+// dust spot still spans several pixels.
+const FILL_EDGE = 1024;
 
 // Gradient-domain (membrane) heal: heal spots blend their copied texture into the
 // surroundings with a per-pixel low-frequency correction instead of one flat mean

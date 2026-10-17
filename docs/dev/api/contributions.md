@@ -132,6 +132,14 @@ The core's own working values stay linear Rec.709 and signed before the display 
 
 **Registration checks.** An invalid `space` or `reads` refuses the stage: a missing or unknown `encoding`, an unknown `primaries` or `reads` value, or a `space` that isn't an object. The core logs a console error and doesn't register the stage, and a refused re-registration keeps the previously registered stage and its params instead of replacing them. Unknown keys inside `space` (a typo such as `primary`) and `space` on a `geometry` stage are accepted with a console warning, and the core ignores them.
 
+### Scene luminance after the transform: `slSceneLuma`
+
+A stage in `display-adjust`, `effects` or `output-encode` can read `float slSceneLuma` in its inline `glsl`: the pixel's scene luminance as the display transform would receive it if the core's default filmic shoulder hadn't compressed it, with every other edit the same: Highlights, Shadows, Exposure, masks and `scene-linear` and `tone-map` stages all carry through. It is the headroom the SDR rendition gave up, which an HDR or highlight-aware stage needs. Under a transform that sets `skipToneShoulder` the shoulder doesn't run, and `slSceneLuma` is simply `luma(lin)` at the transform's input.
+
+- Only version 2 photos carry the headroom. On a version 1 photo, whose program is frozen, a stage that names `slSceneLuma` gets `luma(lin)` after the shoulder, so values stay at or under about 1.
+- It is read-only and exists only in the inline `glsl` of post-transform stages; pass it to helpers as an argument. A stage before the transform that names it doesn't compile.
+- Set `minAppVersion` to the first release with it (3.0.0): older builds don't compile a stage that names it.
+
 ### Process versions
 
 A photo's edit carries `params.processVersion`, the rendering generation it was made with. It decides how the core treats values after the display transform. Before the transform both versions give a stage the same `lin`, with two exceptions: on version 2 the built-in denoiser keeps what `decode` stages did to it (see [`phase: "decode"`](#processingstagecontribution--gpu-stage)), and with any heal or clone spot version 2 develops, denoises and splits from a copy of the source that keeps its headroom and its channels below black, where version 1 clips the whole frame to [0, 1].

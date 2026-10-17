@@ -51,6 +51,16 @@ export function variantKey(v: ShaderVariant): string {
   return v.fullInfo ? "pv2" : "pv1";
 }
 
+// Version 2 records what the core's default shoulder (the curve at Highlights
+// 0) took off each pixel's luminance, so stages after the display transform can
+// read the scene's headroom as slSceneLuma (contributions.md). The Highlights
+// slider's own knee and lift stay in it, as do Shadows, Exposure and masks.
+// It is taken before path-to-white, which is part of the shoulder's machinery
+// and can move a bright pixel's luminance. Version 1's text is frozen and has
+// neither.
+const SHOULDER_GAIN_DECL = "\n  float slShoulderGain = 1.0;";
+const SCENE_LUMA_DECL = "\n  float slSceneLuma = max(luma(lin), 0.0) * slShoulderGain;";
+
 // Process version 2's tone block: version 1's curves (local-tone.ts) on the
 // pixel and, while Highlights or Shadows is moved, on the pixel's region too,
 // keeping the pixel's ratio to it and blended in with the slider.
@@ -67,6 +77,7 @@ const V2_TONE_BLOCK = `  {
       L1 = mix(L1, Lx * B1 / Bx, abs(H));
       L2 = mix(slToneShadows(L1, S), L1 * slToneShadows(B1, S) / B1, abs(S));
     }
+    if (uApplyToneShoulder) slShoulderGain = Lx / max(abs(H) > 0.001 ? slToneHighlights(Lx, E, 0.0) : L1, 1e-6);
     lin = retargetLuma(lin, L, L2);
     // Hunt effect: restore colourfulness lost by pulling bright values down.
     if (H < -0.001) {
@@ -1209,7 +1220,7 @@ void main() {
   // Either way highlight recovery works even at high exposure (+3..+5 EV).
   float E = uExposure;
   float H = clamp(uHighlights / 100.0, -1.0, 1.0);
-  float S = clamp(uShadows / 100.0, -1.0, 1.0);
+  float S = clamp(uShadows / 100.0, -1.0, 1.0);${v2(SHOULDER_GAIN_DECL)}
   ${pick(`{
     float L = max(luma(lin), 1e-4);
 
@@ -1313,7 +1324,7 @@ void main() {
 
   // Contributed scene-linear stages (extension-owned), on lin after all the
   // core linear edits and just before the display transform.
-  //__CONTRIBUTED_SCENE_LINEAR__
+  //__CONTRIBUTED_SCENE_LINEAR__${v2(SCENE_LUMA_DECL)}
 ${v2(`
   // The core shoulder bounds luminance; this rolls the strongest channel off
   // into white with it, so bright colours whiten instead of clipping.

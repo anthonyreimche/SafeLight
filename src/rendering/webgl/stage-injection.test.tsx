@@ -935,3 +935,35 @@ describe("version 2 stage results", () => {
     expect(prepass.map((p) => p.layerUniform)).toEqual([undefined, undefined]);
   });
 });
+
+// A post-transform stage can read the scene's headroom as slSceneLuma. Version
+// 2's main() declares it; version 1's frozen text can't, so the injector
+// declares it inside the block of a display stage that names it.
+describe("slSceneLuma", () => {
+  const reader = flagged({
+    id: "acme.hdr",
+    phase: "output-encode",
+    space: { encoding: "perceptual" },
+    glsl: "c = vec3(slSceneLuma);",
+  });
+
+  it("is declared from lin inside a version 1 display stage that reads it", () => {
+    const { injection } = buildStageInjection([reader], V1_VARIANT);
+    expect(injection.effects).toContain("float slSceneLuma = max(luma(lin), 0.0);");
+  });
+
+  it("is left to main() on version 2", () => {
+    const { injection } = buildStageInjection([reader], V2_VARIANT);
+    expect(injection.effects).not.toContain("float slSceneLuma");
+  });
+
+  it("is not declared for a stage that doesn't name it", () => {
+    const plain = flagged({ id: "acme.plain", phase: "output-encode", glsl: "c *= 1.0;" });
+    expect(buildStageInjection([plain], V1_VARIANT).injection.effects).not.toContain("slSceneLuma");
+  });
+
+  it("is not declared before the display transform", () => {
+    const early = flagged({ glsl: "lin *= slSceneLuma;" });
+    expect(buildStageInjection([early], V1_VARIANT).injection.sceneLinear).not.toContain("float slSceneLuma");
+  });
+});

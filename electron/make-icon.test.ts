@@ -3,30 +3,37 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The icon pipeline's pure parts: which drawing each .ico size comes from, and
-// the BMP encoder the NSIS installer artwork goes through.
+// The icon pipeline's pure parts: the master's drawing grid, and the BMP
+// encoder the NSIS installer artwork goes through.
 
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
 import path from "node:path";
-import { ICO_SIZES, INSTALLER_SCALES, encodeBmp24, iconSourceFor, installerArtSize } from "./make-icon.cjs";
+import { fileURLToPath } from "node:url";
+import { ICO_SIZES, INSTALLER_SCALES, encodeBmp24, installerArtSize, viewBoxSize } from "./make-icon.cjs";
 
-const base = (size: number) => path.basename(iconSourceFor(size).file);
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
-describe("iconSourceFor", () => {
-  it("uses the pixel-fitted drawings below 48 px and the master above", () => {
-    expect(ICO_SIZES.map((s) => [s, base(s)])).toEqual([
-      [16, "safelight-icon-16.svg"],
-      [24, "safelight-icon-32.svg"],
-      [32, "safelight-icon-32.svg"],
-      [48, "favicon.svg"],
-      [64, "favicon.svg"],
-      [128, "favicon.svg"],
-      [256, "favicon.svg"],
-    ]);
+describe("viewBoxSize", () => {
+  it("reads the side of a square viewBox", () => {
+    expect(viewBoxSize('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">')).toBe(512);
+    expect(viewBoxSize('<svg viewBox="0 0 1024.5 1024.5" width="16">')).toBe(1024.5);
   });
 
-  it("reports the grid each drawing is drawn on", () => {
-    expect([16, 32, 256].map((s) => iconSourceFor(s).grid)).toEqual([16, 32, 1024]);
+  it("rejects an icon that isn't drawn on a square", () => {
+    expect(() => viewBoxSize('<svg viewBox="0 0 512 256">')).toThrow(/square/);
+    expect(() => viewBoxSize('<svg width="512" height="512">')).toThrow(/viewBox/);
+  });
+
+  it("finds the master's grid", () => {
+    const master = fs.readFileSync(path.join(ROOT, "public", "favicon.svg"), "utf8");
+    expect(viewBoxSize(master)).toBe(512);
+  });
+});
+
+describe("ICO_SIZES", () => {
+  it("covers Windows' small, list, tile and jumbo sizes", () => {
+    expect(ICO_SIZES).toEqual([16, 24, 32, 48, 64, 128, 256]);
   });
 });
 

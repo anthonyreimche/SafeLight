@@ -223,7 +223,7 @@ Function ${SL_UN}slGuiInit
     ${Next}
   ${EndIf}
 
-  ; header: title, subtitle and the wordmark
+  ; header: title, subtitle and the logo
   GetDlgItem $0 $HWNDPARENT 1037
   SetCtlColors $0 "${SL_INK}" "${SL_PAPER}"
   ${If} $slAfacad == 1

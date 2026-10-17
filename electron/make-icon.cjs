@@ -1,5 +1,5 @@
 // Generate the app icons and the Windows installer artwork:
-//   icon.ico                16-256 px, each size from the drawing made for it
+//   icon.ico                16-256 px, each size drawn from the master at that size
 //   icon.png                1024 px (electron-builder derives Linux icons and
 //                           the macOS .icns from it)
 //   installer/sidebar-<scale>.bmp, installer/header-<scale>.bmp
@@ -17,8 +17,6 @@ const fs = require("node:fs");
 const ROOT = path.join(__dirname, "..");
 const LOGO = path.join(ROOT, "art", "logo");
 const MASTER = path.join(ROOT, "public", "favicon.svg");
-const ICON_16 = path.join(LOGO, "safelight-icon-16.svg");
-const ICON_32 = path.join(LOGO, "safelight-icon-32.svg");
 const SIDEBAR = path.join(LOGO, "installer-sidebar.svg");
 const HEADER = path.join(LOGO, "installer-header.svg");
 const PAPER = { r: 243, g: 236, b: 224 };
@@ -33,11 +31,13 @@ function installerArtSize(base, scale) {
   return base.map((n) => Math.round((n * scale) / 100));
 }
 
-/** The drawing an icon size is rasterised from: pixel-fitted ones below 48 px. */
-function iconSourceFor(size) {
-  if (size <= 16) return { file: ICON_16, grid: 16 };
-  if (size <= 32) return { file: ICON_32, grid: 32 };
-  return { file: MASTER, grid: 1024 };
+/** Side of the square viewBox an icon is drawn on. */
+function viewBoxSize(svg) {
+  const m = /viewBox="\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)\s*"/.exec(svg);
+  if (!m) throw new Error("icon master has no viewBox");
+  const [width, height] = [Number(m[1]), Number(m[2])];
+  if (width !== height) throw new Error(`icon master must be square, viewBox is ${width} x ${height}`);
+  return width;
 }
 
 /** 24-bit uncompressed bottom-up BMP, the format NSIS wizard bitmaps need. */
@@ -93,7 +93,7 @@ async function main(outDir) {
     ...Object.values(out),
     ...INSTALLER_SCALES.flatMap((s) => [scaled("sidebar", s), scaled("header", s)]),
   ];
-  const sources = [MASTER, ICON_16, ICON_32, SIDEBAR, HEADER];
+  const sources = [MASTER, SIDEBAR, HEADER];
   for (const f of sources) {
     if (!fs.existsSync(f)) throw new Error(`icon source not found: ${f}`);
   }
@@ -103,20 +103,16 @@ async function main(outDir) {
   }
   fs.mkdirSync(path.join(outDir, "installer"), { recursive: true });
 
-  // Rendering each SVG straight at its target size (density scales the
-  // viewBox) keeps the pixel-fitted drawings on their pixel grid.
-  const render = (file, grid, size) =>
-    sharp(fs.readFileSync(file), { density: (72 * size) / grid }).resize(size, size).png().toBuffer();
+  // Each size is drawn from the SVG at that size (density scales the viewBox),
+  // not resampled from another size.
+  const master = fs.readFileSync(MASTER);
+  const grid = viewBoxSize(master.toString("utf8"));
+  const render = (size) => sharp(master, { density: (72 * size) / grid }).resize(size, size).png().toBuffer();
 
-  const pngs = await Promise.all(
-    ICO_SIZES.map((size) => {
-      const { file, grid } = iconSourceFor(size);
-      return render(file, grid, size);
-    }),
-  );
+  const pngs = await Promise.all(ICO_SIZES.map(render));
   const ico = await pngToIco(pngs);
   fs.writeFileSync(out.ico, ico);
-  fs.writeFileSync(out.png, await render(MASTER, 1024, 1024));
+  fs.writeFileSync(out.png, await render(1024));
 
   // Each scale is drawn from the SVG at that density, not resampled from
   // another size, so every one is sharp.
@@ -156,4 +152,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { ICO_SIZES, INSTALLER_SCALES, iconSourceFor, encodeBmp24, installerArtSize };
+module.exports = { ICO_SIZES, INSTALLER_SCALES, viewBoxSize, encodeBmp24, installerArtSize };
