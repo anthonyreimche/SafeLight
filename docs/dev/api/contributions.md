@@ -134,9 +134,9 @@ The core's own working values stay linear Rec.709 and signed before the display 
 
 ### Scene luminance after the transform: `slSceneLuma`
 
-A stage in `display-adjust`, `effects` or `output-encode` can read `float slSceneLuma` in its inline `glsl`: the pixel's scene luminance as the display transform would receive it if the core's default filmic shoulder hadn't compressed it, with every other edit the same: Highlights, Shadows, Exposure, masks and `scene-linear` and `tone-map` stages all carry through. It is the headroom the SDR rendition gave up, which an HDR or highlight-aware stage needs. Under a transform that sets `skipToneShoulder` the shoulder doesn't run, and `slSceneLuma` is simply `luma(lin)` at the transform's input.
+A stage in `display-adjust`, `effects` or `output-encode` can read `float slSceneLuma` in its inline `glsl`: the pixel's scene luminance as the display transform would receive it if the core's default filmic shoulder hadn't compressed it. The shoulder is undone on the same per-pixel and regional blend the tone block uses, so Highlights, Shadows, Exposure, masks and `scene-linear` and `tone-map` stages all carry through. It is the headroom the SDR rendition gave up, which an HDR or highlight-aware stage needs. Under a transform that sets `skipToneShoulder` the shoulder doesn't run, and `slSceneLuma` is simply `luma(lin)` at the transform's input.
 
-- Only version 2 photos carry the headroom. On a version 1 photo, whose program is frozen, a stage that names `slSceneLuma` gets `luma(lin)` after the shoulder, so values stay at or under about 1.
+- Only version 2 photos carry the headroom. On a version 1 photo, whose program is frozen, a stage that names `slSceneLuma` gets `luma(lin)` after the shoulder, so under the default shoulder values stay at or under about 1. Under a transform that sets `skipToneShoulder`, version 1 still leaves values above 1.
 - It is read-only and exists only in the inline `glsl` of post-transform stages; pass it to helpers as an argument. A stage before the transform that names it doesn't compile.
 - Set `minAppVersion` to the first release with it (3.0.0): older builds don't compile a stage that names it.
 
@@ -229,6 +229,10 @@ interface ExportProcessorContribution {
 ```
 
 Called once per exported image after the WebGL pipeline encodes it. Processors run in registration order, each receiving the previous step's Blob. Each declared field's `default` is merged with the user's current values before `process`. Processor errors are caught and logged and the unmodified Blob is forwarded, so a broken extension never silently drops an export.
+
+A processor may render more of the photo through `api.export.renderPhotos` (an auxiliary image at export size); a render of that same photo started from inside its processors runs no export processors.
+
+If `process` returns another image type (its Blob's `type` is `image/avif`, `image/jxl`, `image/heic`, `image/png`, `image/webp`, `image/tiff` or `image/jpeg` and differs from the export format), the delivered file takes that type's extension, in files, ZIP and folder delivery alike.
 
 ## `FilenameTemplateContribution`
 

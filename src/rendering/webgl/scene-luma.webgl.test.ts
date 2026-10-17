@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION, type DevelopParams } from "@/catalog/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import type { ProcessingStageContribution } from "@/extensions/types";
-import { toneHighlights } from "../local-tone";
+import { localToneBlend, toneHighlights } from "../local-tone";
 import {
   LINEAR_PROBE_PIPELINE,
   floatImage,
@@ -21,6 +21,8 @@ import {
   pixelAt,
   rendererBuildError,
   withRenderer,
+  type FloatImage,
+  type Frame,
 } from "./webgl.test-support";
 
 const V1 = { processVersion: LEGACY_PROCESS_VERSION };
@@ -52,24 +54,43 @@ const OWN_SHOULDER: ResolvedPipeline = {
   sig: "test.own-shoulder",
 };
 
+function captured(
+  stages: ProcessingStageContribution[],
+  pipeline: ResolvedPipeline,
+  image: FloatImage,
+  over: Partial<DevelopParams>,
+): Frame {
+  return withRenderer({ stages, pipeline }, (r) => {
+    r.setImage(image);
+    r.setParams(identityParams(over));
+    const frame = r.captureFloatFrame();
+    if (!frame) throw new Error("captureFloatFrame returned null");
+    return frame;
+  });
+}
+
 function sceneLuma(
   stages: ProcessingStageContribution[],
   pipeline: ResolvedPipeline,
   value: number,
   over: Partial<DevelopParams>,
 ): number {
-  return withRenderer({ stages, pipeline }, (r) => {
-    r.setImage(floatImage(16, 16, () => [value, value, value]));
-    r.setParams(identityParams(over));
-    const frame = r.captureFloatFrame();
-    if (!frame) throw new Error("captureFloatFrame returned null");
-    return pixelAt(frame, 8, 8)[0] * SCALE;
-  });
+  const image = floatImage(16, 16, () => [value, value, value]);
+  return pixelAt(captured(stages, pipeline, image, over), 8, 8)[0] * SCALE;
 }
 
 describe("slSceneLuma", () => {
   it("compiles in a post-transform stage for both process versions", () => {
     expect(rendererBuildError({ stages: [READER], pipeline: LINEAR_PROBE_PIPELINE })).toBeNull();
+  });
+
+  it("compiles with a reader in every post-transform phase at once, for both process versions", () => {
+    const readers = (["display-adjust", "effects", "output-encode"] as const).map((phase) => ({
+      ...READER,
+      id: `test.scene-luma-${phase}`,
+      phase,
+    }));
+    expect(rendererBuildError({ stages: readers, pipeline: LINEAR_PROBE_PIPELINE })).toBeNull();
   });
 
   it("is the luminance before the core shoulder on version 2", () => {
@@ -112,4 +133,83 @@ describe("slSceneLuma", () => {
     expect(v).toBeGreaterThan(0.85);
     expect(v).toBeLessThan(1);
   });
+});
+
+// One bright pixel on a darker field: its region is darker than it is, so the
+// tone block blends the pixel toward the region's curve and slSceneLuma has to
+// undo the default shoulder on that same blend. The region luminance has no CPU
+// twin, so it is read off the render: the spot's edited luminance (the render
+// without the reader) pins the base localToneBlend would have needed, and that
+// base gives the expected value. Shadows stays 0, so the Shadows curve doesn't
+// enter.
+describe("slSceneLuma on a bright spot", () => {
+  const SPOT = 2.83;
+  const SURROUND = 1;
+  const AT = 32;
+  const FIELD = floatImage(64, 64, (x, y) => {
+    const v = x === AT && y === AT ? SPOT : SURROUND;
+    return [v, v, v];
+  });
+
+  // The capture clips at 1, so the edited spot is read at a quarter of its value.
+  const QUARTERING: ResolvedPipeline = {
+    ...LINEAR_PROBE_PIPELINE,
+    id: "test.quartering",
+    glsl: "vec3 pipelineToDisplay(vec3 lin) { return lin * 0.25; }",
+    sig: "test.quartering",
+  };
+
+  const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
+  const read = (highlights: number): number =>
+    pixelAt(captured([READER], LINEAR_PROBE_PIPELINE, FIELD, { ...V2, highlights }), AT, AT)[0] * SCALE;
+
+  /** The base in [SURROUND, SPOT] for which the blend lands on what the render
+   *  made of the spot. */
+  function baseOf(highlights: number): number {
+    const frame = captured([], QUARTERING, FIELD, { ...V2, highlights });
+    const edited = pixelAt(frame, AT, AT)[0] * 4;
+    let best = SURROUND;
+    let error = Infinity;
+    for (let i = 0; i <= 2000; i++) {
+      const base = SURROUND + ((SPOT - SURROUND) * i) / 2000;
+      const off = Math.abs(localToneBlend(SPOT, base, 0, highlights / 100, 0, false).l1 - edited);
+      if (off < error) {
+        error = off;
+        best = base;
+      }
+    }
+    return best;
+  }
+
+  /** Lx * R, R being the default shoulder undone on the pixel/region blend. */
+  function expected(highlights: number, base: number): number {
+    const h = highlights / 100;
+    const undone = (x: number): number => toneHighlights(x, 0, h, false) / toneHighlights(x, 0, 0, false);
+    return SPOT * mix(undone(SPOT), undone(base), Math.abs(h));
+  }
+
+  it("never reads above the scene when Highlights recovers", () => {
+    const flat = read(0);
+    expect(flat).toBeCloseTo(SPOT, 2);
+    for (const highlights of [-100, -50]) {
+      const v = read(highlights);
+      expect(v, `Highlights ${highlights}`).toBeLessThanOrEqual(SPOT + 1e-3);
+      expect(v, `Highlights ${highlights}`).toBeLessThan(flat - 0.1);
+    }
+  });
+
+  it("reads above the scene when Highlights brightens", () => {
+    for (const highlights of [50, 100]) {
+      expect(read(highlights), `Highlights ${highlights}`).toBeGreaterThan(SPOT + 0.1);
+    }
+  });
+
+  for (const highlights of [-100, -50, 50, 100]) {
+    it(`undoes the default shoulder on the spot's own region at Highlights ${highlights}`, () => {
+      const base = baseOf(highlights);
+      // The test only means something where the region really is darker.
+      expect(base).toBeLessThan(SPOT - 0.3);
+      expect(Math.abs(read(highlights) - expected(highlights, base))).toBeLessThan(0.01);
+    });
+  }
 });

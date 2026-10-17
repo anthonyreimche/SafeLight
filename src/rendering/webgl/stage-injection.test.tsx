@@ -952,6 +952,28 @@ describe("slSceneLuma", () => {
     expect(injection.effects).toContain("float slSceneLuma = max(luma(lin), 0.0);");
   });
 
+  for (const phase of ["display-adjust", "effects", "output-encode"] as const) {
+    it(`is declared inside a version 1 ${phase} stage that reads it`, () => {
+      const stage = flagged({ phase, glsl: "c *= slSceneLuma;" });
+      const { injection } = buildStageInjection([stage], V1_VARIANT);
+      expect(injection.effects).toBe("{\nfloat slSceneLuma = max(luma(lin), 0.0);\nc *= slSceneLuma;\n}");
+    });
+  }
+
+  it("is declared once in each block when several stages read it on version 1", () => {
+    const readers = [
+      flagged({ id: "acme.a", phase: "display-adjust", glsl: "c *= slSceneLuma;" }),
+      flagged({ id: "acme.b", phase: "effects", glsl: "c += slSceneLuma;" }),
+      flagged({ id: "acme.c", phase: "output-encode", glsl: "c = vec3(slSceneLuma);" }),
+    ];
+    const { injection } = buildStageInjection(readers, V1_VARIANT);
+    // Each declaration opens its own braces and the block closes before the
+    // next one starts, so no two share a scope: the output is exactly these.
+    const block = /\{\nfloat slSceneLuma = max\(luma\(lin\), 0\.0\);\n[^{}]*\}/g;
+    expect(injection.effects.match(block)).toHaveLength(3);
+    expect(injection.effects.replace(block, "").trim()).toBe("");
+  });
+
   it("is left to main() on version 2", () => {
     const { injection } = buildStageInjection([reader], V2_VARIANT);
     expect(injection.effects).not.toContain("float slSceneLuma");

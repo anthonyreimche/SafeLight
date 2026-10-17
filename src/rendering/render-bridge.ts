@@ -545,8 +545,12 @@ export class RenderBridge {
    *  ImageBitmap, without touching the live display. Used to grab a "before"
    *  frame for before/after comparison overlays. The live params are restored
    *  in the worker afterwards. The frame is sRGB unless `asShown` asks for it
-   *  as the screen shows it, through the display profile. */
-  capture(params: DevelopParams, opts: { asShown?: boolean } = {}): Promise<ImageBitmap> {
+   *  as the screen shows it, through the display profile. `paramBag` is merged
+   *  over the live stage params for this capture only. */
+  capture(
+    params: DevelopParams,
+    opts: { asShown?: boolean; paramBag?: Record<string, unknown> } = {},
+  ): Promise<ImageBitmap> {
     return new Promise<ImageBitmap>((resolve) => {
       const reqId = ++this.reqIdSeq;
       this.captureResolvers.set(reqId, resolve);
@@ -556,6 +560,7 @@ export class RenderBridge {
         params,
         pipeline: resolvePipelineFor(params.displayTransform),
         asShown: opts.asShown === true,
+        ...(opts.paramBag ? { bagPatch: opts.paramBag } : {}),
       });
     });
   }

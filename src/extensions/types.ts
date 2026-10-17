@@ -477,7 +477,8 @@ export interface FilenameTemplateContribution {
   label: string;
   /**
    * Template string using {variable} placeholders. Built-in variables:
-   * {filename} base name without extension, {ext} format extension,
+   * {filename} base name without extension, {ext} the delivered file's
+   * extension (a processor's output type when it changed it),
    * {year} {month} {day} from EXIF date, {rating} star count (0-5),
    * {camera} camera model, {lens} lens name.
    */
@@ -1146,10 +1147,13 @@ export interface SafelightAPI {
     useMaskScope(): import("@/modules/develop/mask-scope").MaskParamScope;
     /** The frame is sRGB, for measuring. Pass `{ asShown: true }` for a frame
      *  drawn over the canvas: on Linux with a display profile set it is then
-     *  converted to the monitor like the canvas is (elsewhere the two match). */
+     *  converted to the monitor like the canvas is (elsewhere the two match).
+     *  `paramBag` is merged over the photo's extension-stage params for this
+     *  capture only, e.g. a stage's switch to render an auxiliary image (a gain
+     *  map, a mask) aligned to the live view; the live view is untouched. */
     captureFrame(
       params: import("@/catalog/types").DevelopParams,
-      options?: { asShown?: boolean },
+      options?: { asShown?: boolean; paramBag?: Record<string, unknown> },
     ): Promise<ImageBitmap>;
     /** Render an arbitrary catalog photo by id through the full develop pipeline
      *  with `params` (and optionally that photo's extension-stage `paramBag`) to
@@ -1214,8 +1218,10 @@ export interface SafelightAPI {
     /** Render each photo to a Blob, reusing one WebGL context for the batch.
      *  `settings` is merged OVER the defaults, so pass only what you want to
      *  override (e.g. { format: "image/jpeg", longEdge: 2048, quality: 0.85 }).
-     *  Returns one entry per input, in order; `blob` is null for a photo that
-     *  couldn't be decoded. */
+     *  `options.paramBag` is merged over each photo's own extension-stage
+     *  params for this render only. A render of the same photo started from
+     *  inside its export processors runs none. Returns one entry per input, in
+     *  order; `blob` is null for a photo that couldn't be decoded. */
     renderPhotos(
       photos: import("@/catalog/types").CatalogPhoto[],
       settings?: Partial<
@@ -1224,6 +1230,7 @@ export interface SafelightAPI {
       onProgress?: (
         p: import("@/modules/export/export-image").ExportProgress,
       ) => void,
+      options?: import("@/modules/export/export-image").RenderPhotosOptions,
     ): Promise<import("@/modules/export/export-image").RenderedPhoto[]>;
   };
   /** Lower-level catalog persistence, for extensions that add records the core

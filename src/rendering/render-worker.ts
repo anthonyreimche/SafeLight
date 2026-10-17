@@ -55,6 +55,9 @@ export type WorkerRequest =
       params: DevelopParams;
       pipeline: ResolvedPipeline;
       asShown?: boolean;
+      /** Merged over the live bag for this capture only (an extension's
+       *  auxiliary render: a gain map, a mask). */
+      bagPatch?: Record<string, unknown>;
     }
   | { cmd: "setAsShotTemperature"; kelvin: number }
   | { cmd: "setHslStyle"; range: number; smooth: number }
@@ -501,7 +504,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         // A throw here would otherwise fall to the generic "error" response, which
         // carries no reqId, so the awaiting capture() would hang. Settle with the
         // blank fallback instead.
+        const patched = msg.bagPatch !== undefined;
         try {
+          if (patched) live.setContributedParams({ ...latestParamBag, ...msg.bagPatch });
           const captured = withPipeline(live, msg.pipeline, latestPipeline, () => {
             live.setParams(msg.params);
             live.render();
@@ -514,6 +519,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           const blank = new OffscreenCanvas(1, 1);
           respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
         } finally {
+          // The patched bag was this capture's alone; the live view renders
+          // with the merged bag again, as thumbnails restore theirs.
+          if (patched) live.setContributedParams(latestParamBag);
           live.setMonitorTransform(latestMonitorTransform);
         }
         break;

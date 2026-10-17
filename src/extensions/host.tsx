@@ -209,11 +209,12 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       getDefaultSettings: () => getDefaultExportSettings(),
       // Merge the caller's overrides over the persisted defaults, so a caller
       // can pass just { format, longEdge, quality } and inherit the rest.
-      renderPhotos: (photos, settings, onProgress) =>
+      renderPhotos: (photos, settings, onProgress, options) =>
         renderPhotosToBlobs(
           photos,
           { ...getDefaultExportSettings(), ...(settings ?? {}) },
           onProgress,
+          options,
         ),
     },
     catalog: {

@@ -69,15 +69,25 @@ const V2_TONE_BLOCK = `  {
     float Lx = L * exp2(E);
     float L1 = slToneHighlights(Lx, E, H);
     float L2 = slToneShadows(L1, S);
+    float curveRatio = 1.0;
     if (abs(H) > 0.001 || abs(S) > 0.001) {
       // Floored after Exposure (as localToneBlend is): under the curves' own
       // 1e-4 floor a region's Shadows gain would grow as Exposure goes down.
       float Bx = max(slLocalToneBase(srcUv, L) * exp2(E), 1e-4);
       float B1 = slToneHighlights(Bx, E, H);
+      // The Highlights curve over the default one, for the pixel and for its
+      // region, blended as L1 is below. L1 is still the pixel's curve here.
+      if (abs(H) > 0.001) {
+        curveRatio = mix(
+          L1 / slToneHighlights(Lx, E, 0.0),
+          B1 / slToneHighlights(Bx, E, 0.0), abs(H));
+      }
       L1 = mix(L1, Lx * B1 / Bx, abs(H));
       L2 = mix(slToneShadows(L1, S), L1 * slToneShadows(B1, S) / B1, abs(S));
     }
-    if (uApplyToneShoulder) slShoulderGain = Lx / max(abs(H) > 0.001 ? slToneHighlights(Lx, E, 0.0) : L1, 1e-6);
+    // slSceneLuma undoes only the default shoulder, on the same pixel/region
+    // blend the edit above used, so Highlights carries into it.
+    if (uApplyToneShoulder) slShoulderGain = Lx * curveRatio / max(L1, 1e-6);
     lin = retargetLuma(lin, L, L2);
     // Hunt effect: restore colourfulness lost by pulling bright values down.
     if (H < -0.001) {

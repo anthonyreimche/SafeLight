@@ -77,7 +77,7 @@ export function useDevelopOverlay(): DevelopOverlayState {
  *  it matches the canvas under a Linux display profile. */
 export function captureDevelopFrame(
   params: DevelopParams,
-  options?: { asShown?: boolean },
+  options?: { asShown?: boolean; paramBag?: Record<string, unknown> },
 ): Promise<ImageBitmap> {
   return getRenderBridge().capture(params, options);
 }

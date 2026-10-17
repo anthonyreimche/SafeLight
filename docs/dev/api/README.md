@@ -116,7 +116,7 @@ All contributions are tagged with the calling extension's `extensionId` and swep
 | `keybindings` | `getBinding(actionId)` — current combo for any action (built-in or extension), `""` when unbound / `list()` — every built-in action with its live combo, label and category |
 | `cursors` | `labels` / `resolve(token)` — see [Contribution Types → Cursors](contributions.md#cursorcontribution) |
 | `develop` | Develop-canvas integration — see [State Stores → `api.develop`](stores.md#apidevelop) |
-| `export` | `getDefaultSettings()` / `renderPhotos(photos, settings?, onProgress?)` — see [State Stores → `api.export`](stores.md#apiexport) |
+| `export` | `getDefaultSettings()` / `renderPhotos(photos, settings?, onProgress?, options?)` — see [State Stores → `api.export`](stores.md#apiexport) |
 | `catalog` | Record, edit-stack, rename and photo-surface helpers — see [State Stores → `api.catalog`](stores.md#apicatalog) |
 
 In the desktop build, `window.safelightNative` exposes a locked-down native bridge (plugin host, GitHub proxy, DevTools, diagnostics). Feature-detect it, as it's absent in the browser. Raw filesystem access and the update installer are not on it: core claims them once at boot, so extension code can't reach them. See [Subsystems → Electron bridge](subsystems.md#electron-bridge-windowsafelightnative).

@@ -24,11 +24,15 @@ const h = vi.hoisted(() => {
     static instances: FakeRenderer[] = [];
     static prepareError: Error | null = null;
     static stockError: Error | null = null;
+    static texturesError: Error | null = null;
 
     pipeline: unknown = null;
     /** Each prepareProgram call: its version, and the pipeline the renderer held. */
     prepared: { version: number; pipeline: unknown }[] = [];
     disposed = false;
+    /** Each setContributedParams call's bag. */
+    contributed: Record<string, unknown>[] = [];
+    maxTextureEdge = 16384;
 
     constructor() {
       FakeRenderer.instances.push(this);
@@ -49,10 +53,16 @@ const h = vi.hoisted(() => {
       if (FakeRenderer.stockError) throw FakeRenderer.stockError;
     }
 
-    setStageTextures() {}
+    setStageTextures() {
+      if (FakeRenderer.texturesError) throw FakeRenderer.texturesError;
+    }
     setOutputColorSpace() {}
     setAsShotTemperature() {}
     setHslStyle() {}
+    setContributedParams(bag: Record<string, unknown>) {
+      this.contributed.push(bag);
+    }
+    render() {}
     setImage() {
       events.push("setImage");
     }
@@ -68,6 +78,18 @@ const h = vi.hoisted(() => {
     edits: new Map<string, DevelopParams>(),
     /** What loading a photo id decodes to; none decodes to null. */
     decoded: new Map<string, DecodedImage>(),
+    /** The stage params a photo id's saved edit carries. */
+    bags: new Map<string, Record<string, unknown>>(),
+    /** Registered export processors, by id. */
+    processors: {} as Record<
+      string,
+      {
+        id: string;
+        order: number;
+        settings?: unknown[];
+        process: (b: Blob, p: CatalogPhoto, s: Record<string, unknown>) => Promise<Blob>;
+      }
+    >,
   };
 });
 
@@ -83,7 +105,7 @@ vi.mock("@/catalog/edit-params", () => ({
   loadSavedEdit: async (id: string) => {
     const params = h.edits.get(id);
     if (!params) throw new Error(`no edit for ${id}`);
-    return { params, paramBag: {} };
+    return { params, paramBag: h.bags.get(id) ?? {} };
   },
 }));
 vi.mock("@/extensions/pipelines", () => ({
@@ -93,13 +115,22 @@ vi.mock("@/extensions/pipelines", () => ({
 }));
 vi.mock("@/extensions/registry", () => ({
   useRegistry: {
-    getState: () => ({ processingStages: {}, exportProcessors: {}, filenameTemplates: {} }),
+    getState: () => ({
+      processingStages: {},
+      exportProcessors: h.processors,
+      filenameTemplates: {},
+    }),
   },
 }));
 vi.mock("@/extensions/ext-settings", () => ({ getExtSetting: () => 100 }));
 vi.mock("@/state/settings-store", () => ({ getSettings: () => ({}) }));
 
-import { exportPhotos, renderPhotosToBlobs, type ExportSettings } from "./export-image";
+import {
+  exportPhotos,
+  renderPhotosToBlobs,
+  type ExportSettings,
+  type RenderPhotosOptions,
+} from "./export-image";
 
 const SETTINGS: ExportSettings = {
   format: "image/jpeg",
@@ -145,9 +176,12 @@ beforeEach(() => {
   h.FakeRenderer.instances = [];
   h.FakeRenderer.prepareError = null;
   h.FakeRenderer.stockError = null;
+  h.FakeRenderer.texturesError = null;
   h.events.length = 0;
   h.edits.clear();
   h.decoded.clear();
+  h.bags.clear();
+  for (const id of Object.keys(h.processors)) delete h.processors[id];
   vi.stubGlobal("document", { createElement: () => ({}) });
 });
 
@@ -291,5 +325,185 @@ describe("a photo whose original can't be read", () => {
 
     expect(out.map((r) => r.blob)).toEqual([null]);
     expect(h.events).not.toContain("setImage");
+  });
+});
+
+// What a headless render takes beyond the export settings, and what a batch
+// leaves behind: a stage-param patch merged over each photo's own, no export
+// processors for a render of the same photo that one of its processors started
+// (they would run again, the caller included, without end) while other batches
+// still run theirs, and no WebGL context once it ends.
+describe("a rendered batch", () => {
+  const lose = vi.fn();
+  const written: string[] = [];
+  const canvas = {
+    width: 600,
+    height: 400,
+    toBlob: (done: BlobCallback) => done(new Blob(["jpeg"], { type: "image/jpeg" })),
+    getContext: () => ({
+      getExtension: (name: string) => (name === "WEBGL_lose_context" ? { loseContext: lose } : null),
+    }),
+  };
+  const folder = {
+    getFileHandle: async (name: string) => {
+      written.push(name);
+      return { createWritable: async () => ({ write: async () => undefined, close: async () => undefined }) };
+    },
+  } as unknown as FileSystemDirectoryHandle;
+  const FOLDER: ExportSettings = { ...SETTINGS, delivery: "folder" };
+
+  beforeEach(() => {
+    lose.mockClear();
+    written.length = 0;
+    vi.stubGlobal("document", { createElement: () => canvas });
+    h.edits.set("a", CURRENT);
+    h.decoded.set("a", { kind: "bitmap", bitmap: { width: 600, height: 400, close: () => undefined } as unknown as ImageBitmap });
+    h.bags.set("a", { "own.stage.x": 1, "own.stage.mode": 0 });
+  });
+
+  it("merges a stage-param patch over each photo's own", async () => {
+    const [out] = await renderPhotosToBlobs([photo("a")], SETTINGS, undefined, { paramBag: { "own.stage.mode": 1 } });
+    expect(out.blob).not.toBeNull();
+    expect(h.FakeRenderer.instances[0].contributed).toEqual([{ "own.stage.x": 1, "own.stage.mode": 1 }]);
+  });
+
+  it("renders a photo's own params without a patch", async () => {
+    await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(h.FakeRenderer.instances[0].contributed).toEqual([{ "own.stage.x": 1, "own.stage.mode": 0 }]);
+  });
+
+  it("runs no processors for a render a processor started", async () => {
+    let calls = 0;
+    h.processors.nest = {
+      id: "nest",
+      order: 0,
+      process: async (blob, p) => {
+        calls++;
+        if (calls > 3) throw new Error("processors recursed");
+        await renderPhotosToBlobs([p], SETTINGS, undefined, { paramBag: { "own.stage.mode": 1 } });
+        return blob;
+      },
+    };
+    const [out] = await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(calls).toBe(1);
+    expect(out.blob).not.toBeNull();
+  });
+
+  // A gallery publish beside a user export: one batch waits inside a processor
+  // while another renders other photos, and that one's processors still run.
+  it("runs its processors while another batch is inside its own", async () => {
+    h.edits.set("b", CURRENT);
+    h.decoded.set("b", { kind: "bitmap", bitmap: { width: 600, height: 400, close: () => undefined } as unknown as ImageBitmap });
+    let entered!: () => void;
+    const aIsInside = new Promise<void>((resolve) => (entered = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    h.processors.mark = {
+      id: "mark",
+      order: 0,
+      process: async (_blob, p) => {
+        if (p.id === "a") {
+          entered();
+          await gate;
+        }
+        return new Blob([`done:${p.id}`]);
+      },
+    };
+
+    const first = renderPhotosToBlobs([photo("a")], SETTINGS);
+    await aIsInside;
+    const [second] = await renderPhotosToBlobs([photo("b")], SETTINGS);
+    release();
+    const [firstOut] = await first;
+
+    expect(await second.blob?.text()).toBe("done:b");
+    expect(await firstOut.blob?.text()).toBe("done:a");
+  });
+
+  it("runs a processor again for a photo after the processor threw", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let calls = 0;
+    h.processors.flaky = {
+      id: "flaky",
+      order: 0,
+      process: async (blob) => {
+        calls++;
+        if (calls === 1) throw new Error("boom");
+        return blob;
+      },
+    };
+    await renderPhotosToBlobs([photo("a")], SETTINGS);
+    await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(calls).toBe(2);
+  });
+
+  it("runs processors for a photo again after they failed to start", async () => {
+    h.processors.broken = {
+      id: "broken",
+      order: 0,
+      settings: {} as unknown as unknown[],
+      process: async (blob) => blob,
+    };
+    const [failed] = await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(failed.blob).toBeNull();
+
+    delete h.processors.broken;
+    let calls = 0;
+    h.processors.ok = {
+      id: "ok",
+      order: 0,
+      process: async (blob) => {
+        calls++;
+        return blob;
+      },
+    };
+    await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(calls).toBe(1);
+  });
+
+  it("renders with its own params when a JS caller passes null options", async () => {
+    const [out] = await renderPhotosToBlobs(
+      [photo("a")],
+      SETTINGS,
+      undefined,
+      null as unknown as RenderPhotosOptions,
+    );
+    expect(out.blob).not.toBeNull();
+    expect(h.FakeRenderer.instances[0].contributed).toEqual([{ "own.stage.x": 1, "own.stage.mode": 0 }]);
+  });
+
+  it("frees its WebGL context when it ends", async () => {
+    await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(lose).toHaveBeenCalledTimes(1);
+    await exportPhotos([photo("a")], FOLDER, undefined, folder);
+    expect(lose).toHaveBeenCalledTimes(2);
+  });
+
+  it("frees its WebGL context when no program can be built", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    driverFails(new Error("Shader compile failed: boom"));
+    const [out] = await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(out.blob).toBeNull();
+    expect(h.FakeRenderer.instances[0].disposed).toBe(true);
+    expect(lose).toHaveBeenCalledTimes(1);
+  });
+
+  it("frees its WebGL context when the renderer can't take its stage textures", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    h.FakeRenderer.texturesError = new Error("texture upload failed");
+    const [out] = await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(out.blob).toBeNull();
+    expect(h.FakeRenderer.instances[0].disposed).toBe(true);
+    expect(lose).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a file by the type a processor turned it into", async () => {
+    h.processors.avif = {
+      id: "avif",
+      order: 0,
+      process: async () => new Blob(["avif"], { type: "image/avif" }),
+    };
+    await exportPhotos([photo("a")], FOLDER, undefined, folder);
+    expect(written).toEqual(["a.avif"]);
   });
 });

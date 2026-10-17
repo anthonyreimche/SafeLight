@@ -1100,6 +1100,41 @@ describe("render-worker contributed params", () => {
       expect(FakeRenderer.instances[1].contributedParams).toEqual({ "a.gain": 2 });
     });
   });
+
+  describe("with a capture's bag patch", () => {
+    const PARAMS = { exposure: 0 } as unknown as DevelopParams;
+
+    it("renders the patch over the merged bag, then restores the merged bag", () => {
+      send(INIT);
+      whole({ "a.gain": 1, "b.take": 2 });
+      patch({ "a.gain": 3 });
+      send({ cmd: "capture", reqId: 7, params: PARAMS, pipeline: BUILTIN_RESOLVED, bagPatch: { "a.mode": 1 } });
+
+      const live = develop();
+      const merged = { "a.gain": 3, "b.take": 2 };
+      expect(live.contributedSeen.slice(-2)).toEqual([{ ...merged, "a.mode": 1 }, merged]);
+      expect(live.contributedParams).toEqual(merged);
+      expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 7 });
+    });
+
+    it("leaves the bag alone without a patch", () => {
+      send(INIT);
+      whole({ "a.gain": 1 });
+      const seen = develop().contributedSeen.length;
+      send({ cmd: "capture", reqId: 8, params: PARAMS, pipeline: BUILTIN_RESOLVED });
+      expect(develop().contributedSeen.length).toBe(seen);
+    });
+
+    it("restores the merged bag even when the render throws", () => {
+      send(INIT);
+      whole({ "a.gain": 1 });
+      FakeRenderer.renderError = new Error("Shader compile failed: boom");
+      send({ cmd: "capture", reqId: 9, params: PARAMS, pipeline: BUILTIN_RESOLVED, bagPatch: { "a.mode": 1 } });
+      FakeRenderer.renderError = null;
+      expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 9 });
+      expect(develop().contributedParams).toEqual({ "a.gain": 1 });
+    });
+  });
 });
 
 // The bridge posts the params whole first, and first after every init, then only the
