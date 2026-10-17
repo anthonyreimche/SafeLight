@@ -45,6 +45,7 @@ import {
   noteExtensionRunning,
 } from "./extension-kinds";
 import { keptVersion, setKept } from "./pins";
+import { recordActiveLayoutExtension } from "./dock";
 
 const loaded = new Map<string, ExtensionModule>();
 
@@ -135,12 +136,22 @@ async function applyEnablement(id: string, enabled: boolean): Promise<void> {
 // flight could leave the extension running while it is recorded as off, or
 // start it twice.
 let enablementQueue: Promise<unknown> = Promise.resolve();
+let queuedChanges = 0;
 
 function queueEnablement<T>(change: () => Promise<T>): Promise<T> {
-  const run = enablementQueue.then(() => change());
+  queuedChanges++;
+  const run = enablementQueue
+    .then(() => change())
+    .finally(() => {
+      queuedChanges--;
+    });
   enablementQueue = run.catch(() => {});
   return run;
 }
+
+/** True while a change asked for earlier hasn't finished: the disabled list
+ *  may not yet say what extensions will end up on. */
+export const enablementPending = (): boolean => queuedChanges > 0;
 
 export async function setExtensionEnabled(
   id: string,
@@ -150,6 +161,7 @@ export async function setExtensionEnabled(
   const ids = useDisabledExtensions.getState().ids.filter((x) => x !== id);
   if (!enabled) ids.push(id);
   persistDisabled(ids);
+  if (layoutSwitches(id, extensionKinds())) recordActiveLayoutExtension(id, enabled);
   await queueEnablement(() => applyEnablement(id, enabled));
 }
 
@@ -168,18 +180,55 @@ export function initEnablement(): void {
 }
 
 // ─── Saved layouts ─────────────────────────────────────────────────────────
-// A saved layout remembers which extensions that only add interface (panels,
-// tools, themes) are on, so picking it can switch them off for room and memory.
-// It never switches the locked core, a built-in kept across layouts, or an
-// extension that renders into photos, nor one never seen running, which could
-// be either.
+// A saved layout the user lets switch extensions turns the ones they tick on
+// and the rest off, for room and memory. Only extensions that just add
+// interface (panels, tools, themes) can be ticked: never the locked core, a
+// built-in kept across layouts, or an extension that renders into photos, nor
+// one never seen running, which could be either.
 
-/** Whether a saved layout may switch `id` on or off, given what each
- *  extension has been seen doing. */
-function layoutSwitches(id: string, kinds: Record<string, ExtensionKind>): boolean {
+/** Why a saved layout never switches an extension. */
+export type LayoutExtensionHold = "pixels" | "unseen" | "kept";
+
+/** Why a saved layout never switches `id`, given what each extension has been
+ *  seen doing, or null when it may. */
+function layoutHold(
+  id: string,
+  kinds: Record<string, ExtensionKind>,
+): LayoutExtensionHold | null {
   const builtin = BUILTIN_EXTENSIONS.find((b) => b.id === id);
-  if (builtin?.locked || builtin?.keepAcrossLayouts) return false;
-  return Object.hasOwn(kinds, id) && kinds[id] === "interface";
+  if (builtin?.locked || builtin?.keepAcrossLayouts) return "kept";
+  if (!Object.hasOwn(kinds, id)) return "unseen";
+  return kinds[id] === "pixels" ? "pixels" : null;
+}
+
+function layoutSwitches(id: string, kinds: Record<string, ExtensionKind>): boolean {
+  return layoutHold(id, kinds) === null;
+}
+
+export interface LayoutExtensionChoice {
+  id: string;
+  name: string;
+  hold: LayoutExtensionHold | null;
+}
+
+/** Every extension a layout's checklist lists, by name: the built-ins but the
+ *  locked core, and `installed` but banned ones. */
+export function layoutExtensionChoices(
+  installed: ExtensionManifest[],
+): LayoutExtensionChoice[] {
+  const kinds = extensionKinds();
+  const choice = (id: string, name: string): LayoutExtensionChoice => ({
+    id,
+    name,
+    hold: layoutHold(id, kinds),
+  });
+  const external = installed.filter(
+    (m) => !bannedReasonForManifest(m) && !BUILTIN_EXTENSIONS.some((b) => b.id === m.id),
+  );
+  return [
+    ...BUILTIN_EXTENSIONS.filter((b) => !b.locked).map((b) => choice(b.id, b.name)),
+    ...external.map((m) => choice(m.id, m.name)),
+  ].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** On/off, as the user has them now, for every extension a layout switches. */

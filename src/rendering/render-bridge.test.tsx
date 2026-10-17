@@ -1094,6 +1094,16 @@ describe("RenderBridge worker replies", () => {
       expect(onFrame.mock.calls[0][0].histogram).toBeUndefined();
     });
 
+    it("hands over the window a frame was drawn for, and null for the whole image", () => {
+      const onFrame = vi.fn<(frame: FrameResult) => void>();
+      bridge.setOnFrame(onFrame);
+      const frame = { type: "frame", width: 320, height: 240, sourceWidth: 320, sourceHeight: 240, sourceGen: 1 } as const;
+      worker.reply({ ...frame, seq: 1, bitmap: bitmapOf(320), roi: { x: 0, y: 0, w: 0.5, h: 0.5 } });
+      worker.reply({ ...frame, seq: 2, bitmap: bitmapOf(320) });
+
+      expect(onFrame.mock.calls.map(([f]) => f.roi)).toEqual([{ x: 0, y: 0, w: 0.5, h: 0.5 }, null]);
+    });
+
     it("hands over the stages a frame was drawn without, and none when it names none", () => {
       const onFrame = vi.fn<(frame: FrameResult) => void>();
       bridge.setOnFrame(onFrame);

@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { updateSettings, useSettings } from "@/state/settings-store";
+import { useUserLayouts } from "@/extensions/dock";
 import { openPreferences, PreferencesDialog } from "./PreferencesDialog";
 
 class SilentChannel {
@@ -65,5 +66,24 @@ describe("Preferences ▸ Interface", () => {
       "interface scale",
     );
     expect(screen.getAllByRole("group", { name: "Interface scale" }).length).toBeGreaterThan(0);
+  });
+
+  it("opens a saved layout's Extensions list under its row", async () => {
+    const user = userEvent.setup();
+    useUserLayouts.setState({
+      layouts: { "user.a": { id: "user.a", name: "Culling", modules: {} } },
+    });
+    showInterface();
+    const toggle = screen.getByRole("button", { name: "Extensions for Culling" });
+    const extensionSwitch = () =>
+      screen.queryByRole("switch", { name: "Switch extensions with this layout" });
+
+    await user.click(toggle);
+    expect(extensionSwitch()).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    await user.click(toggle);
+    expect(extensionSwitch()).toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
   });
 });

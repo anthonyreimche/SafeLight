@@ -2268,6 +2268,46 @@ describe("brush coverage across frames", () => {
       });
     }
   });
+
+  // Colour NR is on by default, and the denoiser's result stands in for the whole
+  // frame, so its cached result must follow the spot's source offset and opacity
+  // as well as its coverage: a dragged source otherwise showed the old patch.
+  describe("under the denoiser", () => {
+    const DENOISER = [builtinStage(BUILTIN_DENOISE_ID)];
+    const painted = (spot: RetouchSpot) => identityParams({ colorNR: 25, retouch: [spot] });
+    const BEFORE = brushSpot([LEFT], 0.3);
+
+    function frameOf(params: DevelopParams): Frame {
+      return withRenderer({ stages: DENOISER, pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+        renderer.setImage(rampSource(SIZE));
+        renderer.setParams(params);
+        renderer.setContributedParams(denoiseBag(params));
+        return capture(renderer);
+      });
+    }
+
+    const CASES: { name: string; after: RetouchSpot }[] = [
+      { name: "source", after: brushSpot([LEFT], 0.5) },
+      { name: "opacity", after: { ...BEFORE, opacity: 40 } },
+    ];
+
+    for (const { name, after } of CASES) {
+      it(`draws a brush spot's new ${name} as a fresh renderer does`, () => {
+        const reference = frameOf(painted(after));
+        const first = frameOf(painted(BEFORE));
+        expect(worstDifference(reference, first)).toBeGreaterThan(0.02);
+
+        withRenderer({ stages: DENOISER, pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+          renderer.setImage(rampSource(SIZE));
+          renderer.setParams(painted(BEFORE));
+          renderer.setContributedParams(denoiseBag(painted(BEFORE)));
+          capture(renderer);
+          renderer.setParams(painted(after));
+          expect(worstDifference(capture(renderer), reference)).toBeLessThan(PIXEL_TOLERANCE);
+        });
+      });
+    }
+  });
 });
 
 describe("stage signature", () => {

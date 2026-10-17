@@ -224,6 +224,32 @@ export function identityParams(over: Partial<DevelopParams> = {}): DevelopParams
   };
 }
 
+/** A prepass stage whose result is (i + 1) / 64 everywhere, exact in half float,
+ *  and whose inline glsl adds `step` to lin only when it reads that value back,
+ *  so a frame counts the stages that read their own result. `step` must print
+ *  with a decimal point (GLSL ES has no int→float). The ids keep distinct
+ *  4-char hash prefixes up to i = 29; `test.marker-${i}` would not, since the
+ *  prefix is the hash's high digits. */
+export function markerStage(i: number, step: number): ProcessingStageContribution {
+  const mark = `${i + 1}.0 / 64.0`;
+  return {
+    id: `marker-${i}.test`,
+    name: `Marker ${i}`,
+    phase: "scene-linear",
+    priority: 10 + i,
+    glsl: `if (take > 0.5 && abs(stageResult.r - ${mark}) < 0.001) lin += vec3(${step});`,
+    uniforms: [{ key: "take", glslType: "float", default: 0 }],
+    passes: [{ glsl: `c = vec3(${mark});` }],
+  };
+}
+
+/** The bag that turns `stages` on: each holds a non-zero key, so its prepass runs. */
+export function takingStages(
+  stages: readonly ProcessingStageContribution[],
+): Record<string, number> {
+  return Object.fromEntries(stages.map((s) => [`${s.id}.take`, 1]));
+}
+
 /** A display transform that hands the scene-linear working colour straight to
  *  the framebuffer and owns the baseline, so the RAW baseline tone is not
  *  applied. Everything between `lin` and the output is

@@ -22,8 +22,18 @@ import {
 import { resolveCursorCss, useCanvasCursor } from "@/state/cursor-store";
 import { useCanvasGesture, setCanvasZoomGesture } from "@/state/canvas-gesture";
 import { registerViewportZoomCommands } from "@/state/viewport-zoom-commands";
-import { cancelCrossfade, snapshotCrossfade } from "@/ui/canvas-crossfade";
+import { snapshotCrossfade } from "@/ui/canvas-crossfade";
 import { frameLocalPoint } from "@/ui/frame-point";
+import { reducedMotion } from "@/ui/reduced-motion";
+import {
+  clampView,
+  easeOutCubic,
+  interpolateView,
+  placeBuffer,
+  viewWindow,
+  type ImageWindow,
+  type View,
+} from "@/ui/viewport-view";
 
 interface ViewportImageProps {
   canvasRef: RefObject<HTMLCanvasElement | null>;
@@ -32,6 +42,10 @@ interface ViewportImageProps {
   fadeCanvasRef: RefObject<HTMLCanvasElement | null>;
   bufferWidth: number; // rendered buffer size, in px
   bufferHeight: number;
+  // The window of the image the buffer holds, normalized (the develop renderer's
+  // zoom window); null or absent, the whole image. The canvas is placed by it, so a
+  // buffer drawn for another view shows where its pixels belong in this one.
+  bufferWindow?: ImageWindow | null;
   zoom: number | null; // null = fit; number = scale (1 = 100% of buffer)
   onZoomChange: (zoom: number | null) => void;
   // A short word on what the image shows (e.g. "Preview"), in the frame's corner.
@@ -103,6 +117,10 @@ const WHEEL_ZOOM_ACTION = "viewport.wheelZoom";
 const ZOOM_STEP = 1.25; // per keyboard step and per classic wheel notch (100 px)
 const MAX_ZOOM = 2; // the status bar's 200% top stop
 const FIT_SNAP = 1.0001; // a zoom-out landing within this of fit snaps to fit
+const ZOOM_MS = 150; // a zoom eases from the view on screen to its target
+// Wheel input under this per frame (a trackpad pinch, precision scrolling) streams
+// its own motion, so it zooms at once.
+const WHEEL_EASE_MIN = 50;
 
 /** Width in px of the colour-assessment mat for a viewport of `frameW`×`frameH`,
  *  `assessBorder` being its share of the smaller side. */
@@ -120,6 +138,7 @@ export function ViewportImage({
   fadeCanvasRef,
   bufferWidth,
   bufferHeight,
+  bufferWindow = null,
   zoom,
   onZoomChange,
   status,
@@ -152,11 +171,22 @@ export function ViewportImage({
   // hand a tool drag (e.g. the HSL picker) back to pan/zoom.
   const zoomGesture = useCanvasGesture((s) => s.zoomGesture);
 
-  // A new image starts at the initial zoom (fit by default), centered.
+  // The view drawn eases from the view on screen to the target after each zoom
+  // change. `snapRef` marks the next zoom change as one that shows at once.
+  const animRef = useRef<{ from: View; start: number } | null>(null);
+  const snapRef = useRef(false);
+  const zoomSeenRef = useRef(zoom);
+  const drawnRef = useRef<View | null>(null);
+  const [, setTick] = useState(0);
+
+  // A new image starts at the initial zoom (fit by default), centered, without
+  // easing there from the image before.
   useEffect(() => {
     setOffset({ x: 0, y: 0 });
+    animRef.current = null;
+    if (zoom !== initialZoom) snapRef.current = true;
     onZoomChange(initialZoom);
-    // onZoomChange is a stable setter; initialZoom is read at reset time only.
+    // onZoomChange is a stable setter; zoom and initialZoom are read at reset time only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey]);
 
@@ -172,15 +202,15 @@ export function ViewportImage({
     return () => ro.disconnect();
   }, []);
 
-  // Logical full-image buffer dims. In fit mode the worker renders the whole
-  // image so this equals the live buffer; in ROI-zoom mode the live buffer holds
-  // only the window, so pan/zoom math reuses the dims captured during fit.
+  // Logical full-image buffer dims: the size of the last buffer that held the whole
+  // image. A window buffer (the develop renderer's zoom) holds only part of it, so
+  // pan/zoom math keeps the dims of the last whole one, whatever the zoom.
   const fitBufferRef = useRef({ w: 0, h: 0 });
-  if (zoom == null && bufferWidth > 0 && bufferHeight > 0) {
+  if (!bufferWindow && bufferWidth > 0 && bufferHeight > 0) {
     fitBufferRef.current = { w: bufferWidth, h: bufferHeight };
   }
-  // Stable full-image dims: the dims captured during fit, falling back to the
-  // live buffer until the first fit render lands.
+  // Stable full-image dims: the dims captured from a whole buffer, falling back to
+  // the live buffer until the first one lands.
   const logicalW = fitBufferRef.current.w > 0 ? fitBufferRef.current.w : bufferWidth;
   const logicalH = fitBufferRef.current.h > 0 ? fitBufferRef.current.h : bufferHeight;
 
@@ -206,55 +236,76 @@ export function ViewportImage({
     ? Math.max(frame.w / logicalW, frame.h / logicalH)
     : 1;
 
-  // ROI zoom: render just the visible window from the resident full-res source,
-  // but only while the image covers the frame; below cover we render whole-frame.
-  const roiMode =
+  // The renderer is asked for the zoom window, drawn crisp from the resident
+  // full-res source, only while the image covers the frame; below cover (a zoom-out
+  // past fit) it renders the whole image.
+  const windowed =
     !staticFit && zoom != null && !!onViewport && zoom >= coverScale - 1e-3;
 
-  const imgW = roiMode ? logicalW : bufferWidth;
-  const imgH = roiMode ? logicalH : bufferHeight;
+  const image = { w: logicalW, h: logicalH };
 
   const centered = (s: number) => ({
-    x: (frame.w - imgW * s) / 2,
-    y: (frame.h - imgH * s) / 2,
+    x: (frame.w - logicalW * s) / 2,
+    y: (frame.h - logicalH * s) / 2,
   });
 
   const clampOffset = (o: { x: number; y: number }, s: number) => {
-    const iw = imgW * s;
-    const ih = imgH * s;
-    const x =
-      iw <= frame.w
-        ? (frame.w - iw) / 2
-        : Math.min(0, Math.max(frame.w - iw, o.x));
-    const y =
-      ih <= frame.h
-        ? (frame.h - ih) / 2
-        : Math.min(0, Math.max(frame.h - ih, o.y));
-    return { x, y };
+    const v = clampView({ scale: s, x: o.x, y: o.y }, frame, image);
+    return { x: v.x, y: v.y };
   };
 
+  // The target view: where the zoom and pan put the image.
   const effScale = staticFit ? fitScale : (zoom ?? fitScale);
   const effOffset =
     staticFit || zoom == null ? centered(fitScale) : clampOffset(offset, zoom);
+  const targetView: View = { scale: effScale, x: effOffset.x, y: effOffset.y };
 
-  const stateRef = useRef({ zoom, fitScale, effScale, effOffset, imgW, imgH, roiMode, frameW: frame.w, frameH: frame.h, bufW: bufferWidth, bufH: bufferHeight });
-  stateRef.current = { zoom, fitScale, effScale, effOffset, imgW, imgH, roiMode, frameW: frame.w, frameH: frame.h, bufW: bufferWidth, bufH: bufferHeight };
+  // A zoom change eases from the view drawn last; pans, resizes and a locked fit
+  // move the target alone, which the view drawn follows at once (or mid-ease).
+  if (zoomSeenRef.current !== zoom) {
+    zoomSeenRef.current = zoom;
+    const from = drawnRef.current;
+    animRef.current =
+      from && hasImage && !staticFit && !snapRef.current && !reducedMotion()
+        ? { from, start: performance.now() }
+        : null;
+    snapRef.current = false;
+  }
+  // A view locked to fit (crop) shows it at once, mid-ease or not.
+  if (staticFit) animRef.current = null;
+  let drawn = targetView;
+  const anim = animRef.current;
+  if (anim) {
+    const t = (performance.now() - anim.start) / ZOOM_MS;
+    if (t >= 1) animRef.current = null;
+    else drawn = clampView(interpolateView(anim.from, targetView, easeOutCubic(t)), frame, image);
+  }
+  drawnRef.current = drawn;
+  // A zoom-in shows the pixels on screen, scaled up, until it settles, and only then
+  // asks for its window: they cover every view on the way. A zoom-out asks at once,
+  // so its wider frame comes in time to cover the views it widens through.
+  const holdWindow = !!animRef.current && targetView.scale > animRef.current.from.scale;
 
-  // Map a frame-local point to canvas-BUFFER pixels (what samplers index). The
-  // mapping differs by render mode: in ROI-zoom mode the live buffer holds only
-  // the visible window and fills the frame 1:1, so we scale by the frame; in
-  // fit / CSS-zoom mode the buffer is the whole image and we undo its pan/scale
-  // transform. Using the fit formula in ROI mode is the bug that made the colour
-  // picker sample the wrong pixel (or nothing) when zoomed in.
+  useEffect(() => {
+    if (!animRef.current) return;
+    const id = requestAnimationFrame(() => setTick((n) => n + 1));
+    return () => cancelAnimationFrame(id);
+  });
+
+  // Where the buffer's pixels sit under the view drawn, and the CSS scale that puts
+  // them there from the buffer's own size.
+  const placed = placeBuffer(bufferWindow, drawn, image);
+  const sx = drawn.scale * (((bufferWindow?.w ?? 1) * logicalW) / (bufferWidth || 1));
+  const sy = drawn.scale * (((bufferWindow?.h ?? 1) * logicalH) / (bufferHeight || 1));
+
+  const stateRef = useRef({ zoom, fitScale, effScale, effOffset, drawn, placed, logicalW, logicalH, bufW: bufferWidth, bufH: bufferHeight });
+  stateRef.current = { zoom, fitScale, effScale, effOffset, drawn, placed, logicalW, logicalH, bufW: bufferWidth, bufH: bufferHeight };
+
+  // Map a frame-local point to canvas-BUFFER pixels (what samplers index), through
+  // where the buffer is placed: the whole image, or the zoom window it holds.
   const frameToBuffer = (fx: number, fy: number) => {
-    const st = stateRef.current;
-    if (st.roiMode) {
-      return {
-        bx: st.frameW > 0 ? (fx / st.frameW) * st.bufW : fx,
-        by: st.frameH > 0 ? (fy / st.frameH) * st.bufH : fy,
-      };
-    }
-    return { bx: (fx - st.effOffset.x) / st.effScale, by: (fy - st.effOffset.y) / st.effScale };
+    const { placed: p, bufW, bufH } = stateRef.current;
+    return { bx: ((fx - p.x) / p.w) * bufW, by: ((fy - p.y) / p.h) * bufH };
   };
 
   // Emit the visible window (normalized image coords) + device-pixel output size
@@ -262,42 +313,30 @@ export function ViewportImage({
   // In fit mode (or without a handler) clear the ROI so the whole frame renders.
   const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
   useEffect(() => {
-    if (!onViewport) return;
-    if (!roiMode || !hasImage) {
+    if (!onViewport || holdWindow) return;
+    if (!windowed || !hasImage) {
       onViewport(null, 0, 0);
       return;
     }
-    const z = zoom as number;
-    // Visible region of the logical image, in image pixels, from the pan offset.
-    const x0 = -effOffset.x / z;
-    const y0 = -effOffset.y / z;
-    const roi = {
-      x: x0 / imgW,
-      y: y0 / imgH,
-      w: frame.w / z / imgW,
-      h: frame.h / z / imgH,
-    };
-    // Clamp to [0,1]; the image fully covers the frame at zoom ≥ fit.
-    roi.x = Math.max(0, Math.min(1, roi.x));
-    roi.y = Math.max(0, Math.min(1, roi.y));
-    roi.w = Math.max(0.001, Math.min(1 - roi.x, roi.w));
-    roi.h = Math.max(0.001, Math.min(1 - roi.y, roi.h));
+    const roi = viewWindow(
+      { scale: effScale, x: effOffset.x, y: effOffset.y },
+      { w: frame.w, h: frame.h },
+      { w: logicalW, h: logicalH },
+    );
     onViewport(roi, Math.round(frame.w * dpr), Math.round(frame.h * dpr));
-  }, [roiMode, hasImage, zoom, effOffset.x, effOffset.y, frame.w, frame.h, imgW, imgH, dpr, onViewport]);
+  }, [holdWindow, windowed, hasImage, effScale, effOffset.x, effOffset.y, frame.w, frame.h, logicalW, logicalH, dpr, onViewport]);
 
-  // Report the on-screen image rect to a sibling overlay. In ROI-zoom mode the
-  // worker has already rendered just the visible window to fill the frame, so
-  // the pixels cover it edge-to-edge; in fit/CSS mode they sit at the letterbox.
+  // Report the on-screen image rect to a sibling overlay: `visible` where the
+  // buffer's pixels are placed, `image` where the full image sits in the view drawn.
   useEffect(() => {
     if (!onLayout) return;
     if (!hasImage) return;
-    // Where the FULL image sits at the current pan/zoom (the same rect handed to
-    // the overlay render-prop); image-anchored overlays map against this.
-    const image = { x: effOffset.x, y: effOffset.y, w: imgW * effScale, h: imgH * effScale };
-    // Where the displayed pixels sit: the window fills the frame in ROI-zoom mode.
-    const visible = roiMode ? { x: 0, y: 0, w: frame.w, h: frame.h } : image;
-    onLayout(visible, image, { w: frame.w, h: frame.h });
-  }, [onLayout, hasImage, roiMode, effOffset.x, effOffset.y, effScale, imgW, imgH, frame.w, frame.h]);
+    onLayout(
+      { x: placed.x, y: placed.y, w: placed.w, h: placed.h },
+      { x: drawn.x, y: drawn.y, w: logicalW * drawn.scale, h: logicalH * drawn.scale },
+      { w: frame.w, h: frame.h },
+    );
+  }, [onLayout, hasImage, placed.x, placed.y, placed.w, placed.h, drawn.x, drawn.y, drawn.scale, logicalW, logicalH, frame.w, frame.h]);
 
   // Recenter on external zoom changes (status-bar buttons). Cursor-anchored
   // zooms set the offset themselves and skip this via the ref.
@@ -352,13 +391,16 @@ export function ViewportImage({
 
   // Absolute-scale zoom anchored at a frame-local point (null = centre). A
   // zoom-out landing at/under the fit scale returns to fit rather than
-  // stranding a sub-fit scale.
-  const zoomTo = (target: number, cx: number | null, cy: number | null) => {
+  // stranding a sub-fit scale. `ease` false shows the zoom at once.
+  const zoomTo = (target: number, cx: number | null, cy: number | null, ease = true) => {
     if (!hasImage) return;
     const cur = zoom ?? fitScale;
     const next = Math.min(target, MAX_ZOOM);
     if (next <= cur && next <= fitScale * FIT_SNAP) {
-      if (zoom != null) onZoomChange(null);
+      if (zoom != null) {
+        snapRef.current = !ease;
+        onZoomChange(null);
+      }
       return;
     }
     if (next === cur) return;
@@ -372,6 +414,7 @@ export function ViewportImage({
       ),
     );
     skipRecenterRef.current = true;
+    snapRef.current = !ease;
     onZoomChange(next);
   };
 
@@ -465,6 +508,7 @@ export function ViewportImage({
         cur * Math.pow(ZOOM_STEP, -d / 100),
         anchor?.x ?? null,
         anchor?.y ?? null,
+        Math.abs(d) >= WHEEL_EASE_MIN,
       );
     };
     const onWheel = (e: WheelEvent) => {
@@ -546,21 +590,6 @@ export function ViewportImage({
     if (src && dst) snapshotCrossfade(src, dst, 220);
   }, [fadeToken, canvasRef, fadeCanvasRef]);
 
-  // The overlay is laid out like the canvas, so when the view moves between fit and
-  // the 100% layout (which fills the frame with the window rendered), a picture
-  // fading out would show in a framing it never had: the whole image stretched over
-  // a crop. Cut it. The develop renderer starts its fades in its own layout effect,
-  // after this one in the same commit, hence the second cut once the commit is done.
-  const placedRef = useRef(roiMode);
-  useLayoutEffect(() => {
-    if (placedRef.current === roiMode) return;
-    placedRef.current = roiMode;
-    const overlay = fadeCanvasRef.current;
-    if (!overlay) return;
-    cancelCrossfade(overlay);
-    queueMicrotask(() => cancelCrossfade(overlay));
-  }, [roiMode, fadeCanvasRef]);
-
   // Track drag picking state
   const pickDragRef = useRef<{ active: boolean }>({ active: false });
 
@@ -605,8 +634,8 @@ export function ViewportImage({
     const rect = frameRef.current?.getBoundingClientRect();
     if (!rect) return false;
     const { x: fx, y: fy } = frameLocalPoint(rect, clientX, clientY);
-    const { effScale: s, effOffset: o, imgW: iw, imgH: ih } = stateRef.current;
-    return fx >= o.x && fx <= o.x + iw * s && fy >= o.y && fy <= o.y + ih * s;
+    const { drawn: v, logicalW: iw, logicalH: ih } = stateRef.current;
+    return fx >= v.x && fx <= v.x + iw * v.scale && fy >= v.y && fy <= v.y + ih * v.scale;
   };
 
   const onPointerMove = (e: ReactPointerEvent) => {
@@ -703,36 +732,25 @@ export function ViewportImage({
     ? resolveCursorCss(baseToken)
     : extCursor ?? resolveCursorCss(baseToken);
 
-  // In ROI mode the worker has already rendered the visible window, so the canvas
-  // simply fills the frame 1:1 (no CSS scale). Otherwise the fit/zoom view scales
-  // and pans the full-image buffer with a CSS transform as before.
-  const canvasStyle: CSSProperties = roiMode
-    ? {
-        position: "absolute",
-        left: 0,
-        top: 0,
-        width: "100%",
-        height: "100%",
-        willChange: "transform",
-      }
-    : {
-        position: "absolute",
-        left: 0,
-        top: 0,
-        width: bufferWidth || 1,
-        height: bufferHeight || 1,
-        transformOrigin: "0 0",
-        transform: `translate(${effOffset.x}px, ${effOffset.y}px) scale(${effScale})`,
-        willChange: "transform",
-      };
+  // The canvas keeps its buffer size and is moved and scaled to where the image
+  // region it holds sits in the view drawn: the whole image letterboxed or zoomed,
+  // or the zoom window filling the frame. A buffer drawn for another view shows
+  // its pixels where they belong in this one, softer until the renderer catches up.
+  const canvasStyle: CSSProperties = {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    width: bufferWidth || 1,
+    height: bufferHeight || 1,
+    transformOrigin: "0 0",
+    transform: `translate(${placed.x}px, ${placed.y}px) scale(${sx === sy ? sx : `${sx}, ${sy}`})`,
+    willChange: "transform",
+  };
 
-  // Color-assessment white mat: a brilliant-white band hugging the displayed
-  // image, painted behind the canvas. In ROI-zoom mode the pixels fill the
-  // frame, so the band sits at the frame edges; in fit/CSS mode it wraps the
-  // letterboxed image. Border scales with the viewport, clamped to sane bounds.
-  const display = roiMode
-    ? { x: 0, y: 0, w: frame.w, h: frame.h }
-    : { x: effOffset.x, y: effOffset.y, w: imgW * effScale, h: imgH * effScale };
+  // Color-assessment white mat: a brilliant-white band hugging the image in the
+  // view drawn, painted behind the canvas. Zoomed past the frame, it sits outside
+  // it. Border scales with the viewport, clamped to sane bounds.
+  const display = { x: drawn.x, y: drawn.y, w: logicalW * drawn.scale, h: logicalH * drawn.scale };
 
   return (
     <div
@@ -781,15 +799,13 @@ export function ViewportImage({
           }}
         >
           {overlay({
-            // Where the FULL image sits at the current pan/zoom, in frame
-            // coords. In fit/CSS-zoom mode imgW===bufferWidth so this is the
-            // displayed image rect; in ROI-zoom mode the live buffer holds only
-            // the window, so we must use the full-image dims (imgW/imgH) — else
-            // overlay coords (masks, heal) drift with zoom.
-            x: effOffset.x,
-            y: effOffset.y,
-            w: imgW * effScale,
-            h: imgH * effScale,
+            // Where the FULL image sits in the view drawn, in frame coords: the
+            // full-image dims, never a zoom window's buffer — else overlay coords
+            // (masks, heal) drift with zoom.
+            x: drawn.x,
+            y: drawn.y,
+            w: logicalW * drawn.scale,
+            h: logicalH * drawn.scale,
           })}
           {/* overlay rect = full image region in frame coords */}
         </div>

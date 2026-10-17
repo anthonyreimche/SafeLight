@@ -72,6 +72,8 @@ const { FakeRenderer } = vi.hoisted(() => {
     renderedWith: (MonitorTransform | null)[] = [];
     /** The stages the last render left without a prepass unit. */
     overflowedStages: string[] = [];
+    /** The window setViewport holds, which each render draws. */
+    viewport: { x: number; y: number; w: number; h: number } | null = null;
     disposed = false;
 
     constructor(_canvas: unknown, opts: unknown) {
@@ -634,6 +636,18 @@ describe("render-worker frames", () => {
     expect(posted).toHaveLength(1);
     expect(posted[0]).toMatchObject({ type: "frame", seq: 7, bitmap: handedOut[0] });
     expect(posted[0]).not.toHaveProperty("histogram");
+  });
+
+  it("names the window the render was drawn for, and none for the whole image", () => {
+    send(INIT);
+    posted = [];
+    send({ cmd: "render", seq: 3 });
+    FakeRenderer.instances[0].viewport = { x: 0.25, y: 0.25, w: 0.5, h: 0.5 };
+    send({ cmd: "render", seq: 4 });
+    expect(posted.map((msg) => (msg.type === "frame" ? msg.roi : msg.type))).toEqual([
+      null,
+      { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
+    ]);
   });
 
   it("names the stages the render left without a prepass unit", () => {

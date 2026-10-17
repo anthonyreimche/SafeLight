@@ -33,6 +33,7 @@ import { isBuiltInStage } from "./builtin-stage";
 import { simpleHash } from "./shader-compiler";
 import {
   PASS_VERTEX_SHADER,
+  RESULT_ARRAY_UNIFORM,
   buildStageInjection,
   type BuiltStageInjection,
   type ContributedBinding,
@@ -41,7 +42,13 @@ import {
   type StageTextureBinding,
 } from "./stage-injection";
 import { SplitTokens } from "./split-signature";
-import { MAX_STAGE_TEXTURES, STAGE_TEX_UNIT_BASE, prepassUnits } from "./prepass-units";
+import {
+  DEVELOP_SAMPLERS,
+  MAX_STAGE_TEXTURES,
+  STAGE_TEX_UNIT_BASE,
+  prepassUnits,
+} from "./prepass-units";
+import { StageResultLayers } from "./stage-result-layers";
 import { useRegistry } from "@/extensions/registry";
 import {
   type GlslType,
@@ -288,6 +295,20 @@ export interface WebGLRendererOpts {
   pipeline?: ResolvedPipeline;
 }
 
+type UnitResult = { kind: "unit"; resultUniform: string; tex: WebGLTexture; unit: number };
+type LayerResult = { kind: "layer"; layerUniform: string; layer: number };
+
+/** What a frame's prepasses are drawn from and at. */
+interface PrepassFrame {
+  srcTex: WebGLTexture;
+  srcSig: string;
+  applyRetouch: boolean;
+  params: DevelopParams;
+  w: number;
+  h: number;
+  baseCurve: number;
+}
+
 export class WebGLRenderer {
   private canvas: RenderCanvas;
   private gl: WebGL2RenderingContext;
@@ -356,6 +377,9 @@ export class WebGLRenderer {
   private overflowed: string[] = [];
   // MAX_COMBINED_TEXTURE_IMAGE_UNITS: the units a sampler may read (prepass-units.ts).
   private combinedUnits = 0;
+  // The samplers MAX_TEXTURE_IMAGE_UNITS leaves the stages past the develop
+  // shader's own; a version 2 set that would pass it shares one result array.
+  private samplerBudget = 0;
   private warnedCoverageOverflow = new Set<string>();
   private warnedSplitFallback = new Set<string>();
   // True when the built-in denoise prepass produced a real float result this
@@ -381,9 +405,12 @@ export class WebGLRenderer {
   private ppInternalFormat = 0; // gl.RGBA16F or gl.RGBA8
   private stageResultTargets = new Map<string, { tex: WebGLTexture; fbo: WebGLFramebuffer; w: number; h: number }>();
   private passPrograms = new Map<string, { program: WebGLProgram; locs: Record<string, WebGLUniformLocation | null> }>();
-  // Result texture + assigned texture unit per prepass stage, filled by
-  // runPrepasses each frame and bound onto the main program before the draw.
-  private prepassResults: { resultUniform: string; tex: WebGLTexture; unit: number }[] = [];
+  // Each prepass stage's result this frame: a texture on its unit, or its layer
+  // of the shared array. Filled by runPrepasses each frame and bound onto the
+  // main program before the draw.
+  private prepassResults: (UnitResult | LayerResult)[] = [];
+  // A layered program's prepass results: one array, a layer per stage that has run.
+  private readonly resultLayers: StageResultLayers;
   // Per-stage signature of the last prepass run; lets runPrepasses skip the
   // (expensive) passes and reuse the cached result when nothing it depends on
   // (source, this stage's pass params, dims, linearization, and for a
@@ -523,6 +550,8 @@ export class WebGLRenderer {
     this.haveColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
     this.haveFloat16Developed = this.haveColorBufferFloat;
     this.combinedUnits = gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS);
+    this.samplerBudget = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) - DEVELOP_SAMPLERS;
+    this.resultLayers = new StageResultLayers(gl, this.haveColorBufferFloat);
 
     this.setupQuad();
 
@@ -937,10 +966,13 @@ export class WebGLRenderer {
     for (const b of built.bindings) {
       u[b.qualifiedKey] = gl.getUniformLocation(program, b.glslName);
     }
-    // Prepass result samplers (one per passes-bearing stage).
+    // Prepass results: a sampler per stage that has one, a layer uniform per
+    // stage reading the shared array, and the array itself.
     for (const ps of built.prepass) {
       u[ps.resultUniform] = gl.getUniformLocation(program, ps.resultUniform);
+      if (ps.layerUniform) u[ps.layerUniform] = gl.getUniformLocation(program, ps.layerUniform);
     }
+    u[RESULT_ARRAY_UNIFORM] = gl.getUniformLocation(program, RESULT_ARRAY_UNIFORM);
     // Extension stage-texture samplers / coverage channel uniforms, keyed by
     // qualified key.
     for (const tb of built.textureBindings) {
@@ -1269,6 +1301,11 @@ export class WebGLRenderer {
     this.roiOut = roi && outW && outH ? { w: Math.max(1, Math.round(outW)), h: Math.max(1, Math.round(outH)) } : null;
   }
 
+  /** The window setViewport holds, which each frame is drawn for (null: the whole image). */
+  get viewport(): { x: number; y: number; w: number; h: number } | null {
+    return this.roi;
+  }
+
   // Size the output canvas to the cropped region (capped at maxEdge). Driven by
   // both setImage and setParams, since the crop lives in the develop params.
   private resize() {
@@ -1538,7 +1575,7 @@ export class WebGLRenderer {
     const builtIn = this.currentStages().filter(isBuiltInStage);
     this.entryFor(
       BUILTIN_RESOLVED,
-      buildStageInjection(builtIn, variant),
+      buildStageInjection(builtIn, variant, this.samplerBudget),
       variant,
       new Set(builtIn.map((s) => s.id)),
     );
@@ -1562,7 +1599,7 @@ export class WebGLRenderer {
     }
     let built = memo.built.get(variant);
     if (!built) {
-      built = buildStageInjection(this.currentStages(), variant);
+      built = buildStageInjection(this.currentStages(), variant, this.samplerBudget);
       memo.built.set(variant, built);
     }
     return built;
@@ -1598,6 +1635,11 @@ export class WebGLRenderer {
       // programs and prepass targets with it.
       this.releaseProgramsWithout(stageIds);
       this.releasePrepassTargets(built.prepass);
+      // Only the stages that read a layer in the program now selected keep one.
+      // A set within the sampler budget has no use for the array, the one large
+      // result texture, and the cache was cleared above, so what it held is stale.
+      const layered = built.prepass.filter((s) => s.layerUniform !== undefined);
+      this.resultLayers.release(new Set(layered.map((s) => s.stageId)));
     }
     this.contributedBindings = built.bindings;
     this.stageTextureBindings = built.textureBindings;
@@ -1943,10 +1985,11 @@ export class WebGLRenderer {
     gl.uniform1i(u.uDevelopedSrc, 4);
 
     const hasRetouch = circles.length > 0 || brushSpots.length > 0;
-    // The patched source depends on every circle spot's geometry/source/recolour,
-    // not just the brush coverage captured by retouchSig. Without this, editing a
-    // circle heal doesn't bust the prepass cache (e.g. denoise), so the patched
-    // result stays stale until an app restart clears stageResultTargets.
+    // The patched source depends on every circle spot's geometry/source/recolour
+    // and every brush spot's source offset and opacity, not just the brush
+    // coverage captured by retouchSig. Without them, editing a heal doesn't bust
+    // the prepass cache (e.g. denoise, which the default Colour NR keeps on), so
+    // the patched result stays stale until an app restart clears stageResultTargets.
     const circleSig = circles
       .map(
         (s) =>
@@ -1954,6 +1997,9 @@ export class WebGLRenderer {
           `${s.radius.toFixed(4)},${s.feather},${s.opacity},${(s.angle ?? 0).toFixed(3)},${(s.scale ?? 1).toFixed(3)},` +
           `${(s.recolorR ?? 0).toFixed(3)},${(s.recolorG ?? 0).toFixed(3)},${(s.recolorB ?? 0).toFixed(3)},${s.mode}`,
       )
+      .join(";");
+    const brushSig = brushSpots
+      .map((s) => `${(s.srcX - s.dstX).toFixed(4)},${(s.srcY - s.dstY).toFixed(4)},${s.opacity}`)
       .join(";");
     const patched =
       hasRetouch && this.prepareDevelopedTarget() && this.bakePatchedSource();
@@ -1965,7 +2011,7 @@ export class WebGLRenderer {
       // clips: a photo on the other version must not reuse this one's result.
       this.runPrepasses(
         this.developedTex!,
-        `e${this.sourceEpoch}|r${this.retouchSig}|c${circleSig}|h${this.healSig}` +
+        `e${this.sourceEpoch}|r${this.retouchSig}|c${circleSig}|b${brushSig}|h${this.healSig}` +
           `|${variantKey(this.variant)}:${this.developedFormat}`,
         false,
         p,
@@ -2450,8 +2496,9 @@ export class WebGLRenderer {
   // retouch is active). `srcSig` identifies the source contents for caching.
   // `applyRetouch`: whether a split draw must apply the retouch itself, as the
   // main draw does when there is no patched source. `params` are the frame's,
-  // read for a split draw's cache key. Leaves results in per-stage targets and
-  // records the unit bindings the main draw applies via bindPrepassResults().
+  // read for a split draw's cache key. Leaves results in per-stage targets or
+  // layers of the shared array, and records the unit and layer bindings the main
+  // draw applies via bindPrepassResults().
   private runPrepasses(
     srcTex: WebGLTexture,
     srcSig: string,
@@ -2465,7 +2512,15 @@ export class WebGLRenderer {
     const gl = this.gl;
     const { w, h } = this.prepassDims();
     const haveTargets = this.ensurePingPong(w, h);
-    const baseCurve = this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0;
+    const frame: PrepassFrame = {
+      srcTex,
+      srcSig,
+      applyRetouch,
+      params,
+      w,
+      h,
+      baseCurve: this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
+    };
 
     // The units are a hard budget, so they go to the stages that actually
     // produce a result this frame; every inactive/failed stage shares the next
@@ -2473,20 +2528,36 @@ export class WebGLRenderer {
     // sampler that is never uniform1i'd defaults to unit 0 and silently reads
     // uImage, which is exactly the garbage an active-but-starved stage must never
     // see (SafeLight #96: the Contrast Equalizer's coarsest band decoded the raw
-    // image as wavelet detail and crushed the render to black).
-    const units = this.prepassUnitPool();
+    // image as wavelet detail and crushed the render to black). On a layered
+    // program the shared result array takes the pool's first unit, and only
+    // stages that name their result sampler take the rest.
+    const pool = this.prepassUnitPool();
+    const layered = this.prepassStages.some((s) => s.layerUniform !== undefined);
+    const units = layered ? pool.slice(1) : pool;
     const active = this.prepassStages.map(
       (s) => haveTargets && !this.failedPrepass.has(s.stageId) && this.prepassActive(s.stageId),
     );
+    // Layers for every active stage at once, so the array grows at most once a frame.
+    if (layered) {
+      const ids = this.prepassStages
+        .filter((s, i) => active[i] && s.layerUniform !== undefined)
+        .map((s) => s.stageId);
+      this.resultLayers.reserve(ids, w, h, this.sourceEpoch);
+    }
     const unitOf = new Map<number, number>();
     let next = 0;
     for (let i = 0; i < this.prepassStages.length; i++) {
-      if (active[i] && next < units.length) unitOf.set(i, units[next++]);
+      const sampled = this.prepassStages[i].layerUniform === undefined;
+      if (active[i] && sampled && next < units.length) unitOf.set(i, units[next++]);
     }
     const spareUnit = next < units.length ? units[next] : -1;
 
     for (let i = 0; i < this.prepassStages.length; i++) {
       const stage = this.prepassStages[i];
+      if (stage.layerUniform !== undefined) {
+        this.runLayerStage(stage, stage.layerUniform, active[i], frame);
+        continue;
+      }
       const unit = unitOf.get(i);
       if (unit === undefined) {
         if (active[i]) this.overflowed.push(stage.stageId);
@@ -2502,14 +2573,10 @@ export class WebGLRenderer {
 
       // Cache hit: nothing the prepass depends on changed — reuse the result and
       // skip the passes entirely.
-      const split = stage.split && this.splitDrawable(stage.stageId) ? stage.split : null;
-      const stageSrcSig = split
-        ? `${srcSig}|split:${this.splitToken(stage.stageId, split, params)}`
-        : srcSig;
-      const sig = this.prepassSig(stage, stageSrcSig, w, h, baseCurve);
+      const { split, sig } = this.prepassKey(stage, frame);
       const cached = this.stageResultTargets.get(stage.stageId);
       if (cached && cached.w === w && cached.h === h && this.prepassSigs.get(stage.stageId) === sig) {
-        this.prepassResults.push({ resultUniform: stage.resultUniform, tex: cached.tex, unit });
+        this.prepassResults.push({ kind: "unit", resultUniform: stage.resultUniform, tex: cached.tex, unit });
         if (stage.stageId === BUILTIN_DENOISE_ID) this.denoiseReady = true;
         continue;
       }
@@ -2518,67 +2585,22 @@ export class WebGLRenderer {
       // whole render. Disable just this stage for the session and fall back to
       // the raw source so the rest of the pipeline keeps working.
       try {
-        let readTex: WebGLTexture = srcTex;
-        let prevRaw = true;            // first read linearizes + base-curves the source
-        let writeIdx = 0;
-        let lastIdx = 0;
-        if (split) {
-          this.drawSplit(split.index, srcTex, applyRetouch, w, h);
-          readTex = this.ppTex[0]!;
-          prevRaw = false;
-          writeIdx = 1;
-        }
-        let passIdx = 0;
-        for (const pass of stage.passes) {
-          // Distinguish passes by index AND source hash: two passes of one stage
-          // with equal-length sources (separable H/V blur) share a length, so a
-          // length-only key collided and reused the first pass's program.
-          const key = `${this.stageSig}|${stage.stageId}|${passIdx}|${simpleHash(pass.fragmentSource)}`;
-          passIdx++;
-          const prog = this.getPassProgram(key, pass.fragmentSource, pass.bindings);
-          for (let it = 0; it < pass.iterations; it++) {
-            gl.bindFramebuffer(gl.FRAMEBUFFER, this.ppFbo[writeIdx]);
-            gl.viewport(0, 0, w, h);
-            gl.useProgram(prog.program);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, readTex);
-            gl.uniform1i(prog.locs.uPrevPass!, 0);
-            gl.uniform2f(prog.locs.uTexel!, 1 / w, 1 / h);
-            gl.uniform1i(prog.locs.uPassIndex!, it);
-            gl.uniform1i(prog.locs.uPassCount!, pass.iterations);
-            gl.uniform1i(prog.locs.uPrevRaw!, prevRaw ? 1 : 0);
-            gl.uniform1i(prog.locs.uSrcLinear!, this.linear ? 1 : 0);
-            gl.uniform1i(prog.locs.uIsFallbackPreview!, this.isFallbackPreview ? 1 : 0);
-            gl.uniform1i(prog.locs.uApplyBaseCurve!, baseCurve);
-            for (const b of pass.bindings) {
-              const loc = prog.locs[b.glslName];
-              if (loc == null) continue;
-              bindUniformByType(gl, loc, b.glslType, this.contributedParams[b.qualifiedKey] ?? b.default);
-            }
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
-            this.draws.pass++;
-            readTex = this.ppTex[writeIdx]!;
-            prevRaw = false;
-            lastIdx = writeIdx;
-            writeIdx = 1 - writeIdx;
-          }
-        }
-
+        const result = this.drawStagePasses(stage, split, frame);
         // Copy the final ping-pong result into the stage's dedicated target so the
         // next stage's ping-pong doesn't clobber it.
         const target = this.ensureStageResult(stage.stageId, w, h);
-        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.ppFbo[lastIdx]);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, result);
         gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, target.fbo);
         gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
         gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
         gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
         this.prepassSigs.set(stage.stageId, sig);
-        this.prepassResults.push({ resultUniform: stage.resultUniform, tex: target.tex, unit });
+        this.prepassResults.push({ kind: "unit", resultUniform: stage.resultUniform, tex: target.tex, unit });
         if (stage.stageId === BUILTIN_DENOISE_ID) this.denoiseReady = true;
       } catch (err) {
         console.error(`[render] prepass stage '${stage.stageId}' failed; disabling it`, err);
         this.failedPrepass.add(stage.stageId);
-        this.prepassResults.push({ resultUniform: stage.resultUniform, tex: srcTex, unit });
+        this.prepassResults.push({ kind: "unit", resultUniform: stage.resultUniform, tex: srcTex, unit });
       }
     }
 
@@ -2587,23 +2609,134 @@ export class WebGLRenderer {
     // never used). When every slot went to an active stage there is no spare,
     // so the rest alias the first winner's binding — a complete texture with
     // bounded values, never the unit-0 image.
+    const winner = this.prepassResults.find((r): r is UnitResult => r.kind === "unit");
     const fallback =
       spareUnit >= 0
         ? { tex: srcTex, unit: spareUnit }
-        : this.prepassResults.length > 0
-          ? { tex: this.prepassResults[0].tex, unit: this.prepassResults[0].unit }
+        : winner
+          ? { tex: winner.tex, unit: winner.unit }
           : null;
     if (fallback) {
       for (let i = 0; i < this.prepassStages.length; i++) {
-        if (!unitOf.has(i)) {
-          this.prepassResults.push({
-            resultUniform: this.prepassStages[i].resultUniform,
-            tex: fallback.tex,
-            unit: fallback.unit,
-          });
+        const stage = this.prepassStages[i];
+        if (stage.layerUniform === undefined && !unitOf.has(i)) {
+          this.prepassResults.push({ kind: "unit", resultUniform: stage.resultUniform, ...fallback });
         }
       }
     }
+  }
+
+  // A layered stage: its result goes to its layer of the shared array, cached
+  // apart from the result a version 1 frame keeps in the stage's own target, so
+  // frames of the two versions never take each other's.
+  private runLayerStage(
+    stage: PrepassStage,
+    layerUniform: string,
+    active: boolean,
+    frame: PrepassFrame,
+  ): void {
+    const layer = active ? this.resultLayers.layer(stage.stageId) : -1;
+    if (active && layer < 0) {
+      this.overflowed.push(stage.stageId);
+      if (!this.warnedPrepassOverflow.has(stage.stageId)) {
+        this.warnedPrepassOverflow.add(stage.stageId);
+        console.warn(
+          `[render] prepass stage '${stage.stageId}' got no result layer (the GPU refused ` +
+            `the shared result array) and will not run.`,
+        );
+      }
+    }
+    if (layer < 0) {
+      this.prepassResults.push({ kind: "layer", layerUniform, layer: -1 });
+      return;
+    }
+    // A dropped layer is never read through an old signature: every signature
+    // carries the source epoch, and the store drops on a new epoch or size.
+    const cacheKey = `layer:${stage.stageId}`;
+    try {
+      const { split, sig } = this.prepassKey(stage, frame);
+      if (this.prepassSigs.get(cacheKey) !== sig) {
+        const result = this.drawStagePasses(stage, split, frame);
+        this.resultLayers.write(stage.stageId, result, frame.w, frame.h);
+        this.prepassSigs.set(cacheKey, sig);
+      }
+      this.prepassResults.push({ kind: "layer", layerUniform, layer });
+      if (stage.stageId === BUILTIN_DENOISE_ID) this.denoiseReady = true;
+    } catch (err) {
+      console.error(`[render] prepass stage '${stage.stageId}' failed; disabling it`, err);
+      this.failedPrepass.add(stage.stageId);
+      this.prepassResults.push({ kind: "layer", layerUniform, layer: -1 });
+    }
+  }
+
+  // The split a stage's prepass is drawn from this frame, if any, and the
+  // signature of everything its result depends on.
+  private prepassKey(
+    stage: PrepassStage,
+    frame: PrepassFrame,
+  ): { split: StageSplit | null; sig: string } {
+    const split = stage.split && this.splitDrawable(stage.stageId) ? stage.split : null;
+    const stageSrcSig = split
+      ? `${frame.srcSig}|split:${this.splitToken(stage.stageId, split, frame.params)}`
+      : frame.srcSig;
+    return { split, sig: this.prepassSig(stage, stageSrcSig, frame.w, frame.h, frame.baseCurve) };
+  }
+
+  // Draws a stage's passes over the ping-pong pair, after its split draw when it
+  // reads the current image, and returns the framebuffer holding the result.
+  private drawStagePasses(
+    stage: PrepassStage,
+    split: StageSplit | null,
+    frame: PrepassFrame,
+  ): WebGLFramebuffer {
+    const gl = this.gl;
+    const { srcTex, applyRetouch, w, h, baseCurve } = frame;
+    let readTex: WebGLTexture = srcTex;
+    let prevRaw = true;            // first read linearizes + base-curves the source
+    let writeIdx = 0;
+    let lastIdx = 0;
+    if (split) {
+      this.drawSplit(split.index, srcTex, applyRetouch, w, h);
+      readTex = this.ppTex[0]!;
+      prevRaw = false;
+      writeIdx = 1;
+    }
+    let passIdx = 0;
+    for (const pass of stage.passes) {
+      // Distinguish passes by index AND source hash: two passes of one stage
+      // with equal-length sources (separable H/V blur) share a length, so a
+      // length-only key collided and reused the first pass's program.
+      const key = `${this.stageSig}|${stage.stageId}|${passIdx}|${simpleHash(pass.fragmentSource)}`;
+      passIdx++;
+      const prog = this.getPassProgram(key, pass.fragmentSource, pass.bindings);
+      for (let it = 0; it < pass.iterations; it++) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.ppFbo[writeIdx]);
+        gl.viewport(0, 0, w, h);
+        gl.useProgram(prog.program);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, readTex);
+        gl.uniform1i(prog.locs.uPrevPass!, 0);
+        gl.uniform2f(prog.locs.uTexel!, 1 / w, 1 / h);
+        gl.uniform1i(prog.locs.uPassIndex!, it);
+        gl.uniform1i(prog.locs.uPassCount!, pass.iterations);
+        gl.uniform1i(prog.locs.uPrevRaw!, prevRaw ? 1 : 0);
+        gl.uniform1i(prog.locs.uSrcLinear!, this.linear ? 1 : 0);
+        gl.uniform1i(prog.locs.uIsFallbackPreview!, this.isFallbackPreview ? 1 : 0);
+        gl.uniform1i(prog.locs.uApplyBaseCurve!, baseCurve);
+        for (const b of pass.bindings) {
+          const loc = prog.locs[b.glslName];
+          if (loc == null) continue;
+          bindUniformByType(gl, loc, b.glslType, this.contributedParams[b.qualifiedKey] ?? b.default);
+        }
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        this.draws.pass++;
+        readTex = this.ppTex[writeIdx]!;
+        prevRaw = false;
+        lastIdx = writeIdx;
+        writeIdx = 1 - writeIdx;
+      }
+    }
+    return this.ppFbo[lastIdx]!;
   }
 
   // The units prepass results may take under the current stage set: every unit
@@ -2616,7 +2749,13 @@ export class WebGLRenderer {
   // Bind each prepass result onto the (already active) main program.
   private bindPrepassResults() {
     const gl = this.gl;
+    this.bindResultArray();
     for (const r of this.prepassResults) {
+      if (r.kind === "layer") {
+        const loc = this.uniforms[r.layerUniform];
+        if (loc != null) gl.uniform1i(loc, r.layer);
+        continue;
+      }
       const loc = this.uniforms[r.resultUniform];
       if (loc == null) continue;
       gl.activeTexture(gl.TEXTURE0 + r.unit);
@@ -2627,6 +2766,19 @@ export class WebGLRenderer {
     // (set during runPrepasses) so its inline only swaps `lin` when it's valid.
     const okLoc = this.uniforms.uDenoiseReady;
     if (okLoc != null) gl.uniform1i(okLoc, this.denoiseReady ? 1 : 0);
+  }
+
+  // Points a layered program's result array at the first prepass unit.
+  private bindResultArray(): void {
+    const gl = this.gl;
+    const arrayLoc = this.uniforms[RESULT_ARRAY_UNIFORM];
+    if (arrayLoc == null) return;
+    const unit = this.prepassUnitPool()[0];
+    // Fetched first: making the stand-in moves the active unit.
+    const tex = this.resultLayers.texture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+    gl.uniform1i(arrayLoc, unit);
   }
 
   // A split stores signed, unbounded values; an RGBA8 target would clip
@@ -2702,6 +2854,10 @@ export class WebGLRenderer {
       gl.activeTexture(gl.TEXTURE0 + pu);
       gl.bindTexture(gl.TEXTURE_2D, this.imageTexture);
     }
+    // This draw comes before the frame's bindPrepassResults, and a freshly linked
+    // program has every sampler on unit 0: the result array left there beside
+    // uImage is two sampler types on one unit, which fails the draw.
+    this.bindResultArray();
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.imageTexture); // read the original source
     gl.uniform1i(u.uImage, 0);
@@ -2832,6 +2988,7 @@ export class WebGLRenderer {
       gl.deleteFramebuffer(t.fbo);
     }
     this.stageResultTargets.clear();
+    this.resultLayers.dispose();
     // Extension stage textures (LUT atlases) + the shared dummy.
     for (const e of this.uploadedStageTex.values()) gl.deleteTexture(e.tex);
     this.uploadedStageTex.clear();

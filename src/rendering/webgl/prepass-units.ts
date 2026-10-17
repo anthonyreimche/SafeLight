@@ -12,10 +12,18 @@
 // limits how many samplers a shader declares, not which unit one reads: a unit
 // only has to be below MAX_COMBINED_TEXTURE_IMAGE_UNITS, which WebGL2 puts at 32
 // or more. Five units used to be the whole budget, and a sixth active stage read
-// another stage's result instead of its own (SafeLight #155).
+// another stage's result instead of its own (SafeLight #155). A version 2
+// program whose stages would pass the sampler limit reads their results from one
+// array instead (stage-result-layers.ts), which takes the first of these units;
+// the rest serve stages that keep a sampler of their own.
 
 export const STAGE_TEX_UNIT_BASE = 12;
 export const MAX_STAGE_TEXTURES = 4;
+
+/** The samplers the develop shader declares before any stage adds its own:
+ *  uImage, uCurve, uMaskTex, uRetouchTex, uDevelopedSrc and uMaskCurves. What
+ *  MAX_TEXTURE_IMAGE_UNITS leaves past them is the stages' sampler budget. */
+export const DEVELOP_SAMPLERS = 6;
 
 // The four long-standing prepass units, then unit 5, so their numbers stay put.
 const FIRST_PREPASS_UNITS: readonly number[] = [8, 9, 10, 11, 5];

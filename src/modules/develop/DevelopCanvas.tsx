@@ -103,6 +103,7 @@ export function DevelopCanvas({
     overflowedStages,
     width,
     height,
+    bufferWindow,
     sourceWidth,
     sourceHeight,
     setViewport,
@@ -398,6 +399,7 @@ export function DevelopCanvas({
       fadeCanvasRef={fadeCanvasRef}
       bufferWidth={width}
       bufferHeight={height}
+      bufferWindow={bufferWindow}
       zoom={zoom}
       onZoomChange={onZoomChange}
       onViewport={setViewport}

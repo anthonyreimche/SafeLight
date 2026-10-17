@@ -44,6 +44,7 @@ import {
 import { transformedViewCrop } from "@/rendering/crop-transform";
 import { buildForwardTransform } from "@/rendering/transform";
 import { ViewportImage, assessMatPx } from "@/ui/ViewportImage";
+import type { ImageWindow } from "@/ui/viewport-view";
 import { endHandover } from "@/ui/canvas-handover";
 import { DevelopCanvas } from "@/modules/develop/DevelopCanvas";
 import { useDevelopRenderer, useTierLabel } from "./use-develop-renderer";
@@ -352,8 +353,9 @@ function answerBinds(worker: FakeWorker, hit: boolean, answered: Set<number>) {
   }
 }
 
-/** The worker's frame for `request`, carrying the histogram it asked for. */
-function frameFor(request: Render, size = { width: 10, height: 10 }): Frame {
+/** The worker's frame for `request`, carrying the histogram it asked for, drawn for
+ *  `roi` of the image (all of it when absent). */
+function frameFor(request: Render, size = { width: 10, height: 10 }, roi?: ImageWindow): Frame {
   return {
     type: "frame",
     seq: request.seq,
@@ -361,6 +363,7 @@ function frameFor(request: Render, size = { width: 10, height: 10 }): Frame {
     width: size.width,
     height: size.height,
     ...renderWorker().sourceOf(request.seq),
+    ...(roi ? { roi } : {}),
     ...(request.wantHistogram ? { histogram: histogram() } : {}),
   };
 }
@@ -2332,6 +2335,24 @@ describe("useDevelopRenderer easing between what it shows of a photo", () => {
     expect(copies()).toEqual([]);
   });
 
+  // The overlay is placed by the canvas's window: left showing, the old picture would
+  // sit where the new window's pixels belong until the fade ends.
+  it("hides a fade still running when a frame of another window comes", async () => {
+    const { worker } = await open(photo(), true);
+    await answerRenders(worker, FRAME);
+    const fade = fadeCanvas();
+    expect(fade?.style.opacity).toBe("1");
+
+    act(() => getRenderBridge().render(false));
+    const next = worker.inFlight();
+    if (!next) throw new Error("no render in flight");
+    await act(async () => worker.reply(frameFor(next, FRAME, { x: 0, y: 0, w: 0.5, h: 0.5 })));
+
+    expect(status?.bufferWindow).toEqual({ x: 0, y: 0, w: 0.5, h: 0.5 });
+    expect(fade?.style.opacity).toBe("0");
+    expect(fade?.style.transition).toBe("none");
+  });
+
   // The overlay is laid out in the canvas's box, which follows the new shape: left
   // showing, the old picture would be stretched into it until the fade ends.
   it("hides a fade still running when a frame of another shape comes", async () => {
@@ -2477,6 +2498,7 @@ describe("useDevelopRenderer sizing the canvas", () => {
         fadeCanvasRef={fade}
         bufferWidth={status.width}
         bufferHeight={status.height}
+        bufferWindow={status.bufferWindow}
         zoom={zoom}
         onZoomChange={setZoom}
         resetKey={subject.id}
@@ -2528,6 +2550,22 @@ describe("useDevelopRenderer sizing the canvas", () => {
     const draws = paints.filter((p) => p.canvas === develop && p.op === "draw");
     expect(draws.length).toBeGreaterThan(1);
     for (const d of draws) expect(d.box).toBe(`${d.width}px`);
+  });
+
+  // The viewport places the canvas by the window it holds; drawn ahead of the commit
+  // that hands the window over, a zoomed frame showed at the whole image's place.
+  it("draws a frame of another window in the commit that hands over its window", async () => {
+    const { worker, next } = await shown(LANDSCAPE);
+    const before = drawn.length;
+    const half = { x: 0.25, y: 0.25, w: 0.5, h: 0.5 };
+
+    act(() => {
+      worker.reply(frameFor(next, LANDSCAPE, half));
+      expect(drawn).toHaveLength(before);
+    });
+
+    expect(drawn).toHaveLength(before + 1);
+    expect(status?.bufferWindow).toEqual(half);
   });
 
   it("draws a frame of the same shape at once, without waiting for a render", async () => {

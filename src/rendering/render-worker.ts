@@ -140,6 +140,9 @@ export type WorkerResponse =
       sourceWidth: number;
       sourceHeight: number;
       sourceGen: number;
+      // The window of the image it was drawn for (setViewport); null or absent, the
+      // whole image.
+      roi?: { x: number; y: number; w: number; h: number } | null;
       histogram?: HistogramData;
       // The prepass stages this frame was drawn without (no texture unit was left
       // for their result); absent when it ran every stage that was on.
@@ -548,6 +551,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
             sourceWidth: renderer.sourceWidth,
             sourceHeight: renderer.sourceHeight,
             sourceGen,
+            roi: renderer.viewport,
           };
           if (msg.wantHistogram) {
             resp.histogram = renderer.computeHistogram(!!msg.wantExtended);

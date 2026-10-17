@@ -250,11 +250,47 @@ export interface StageSplit {
 
 export interface PrepassStage {
   stageId: string;
-  /** Sampler name the main shader reads stageResult from. */
+  /** The stage's result sampler, which the main shader reads stageResult from.
+   *  A layered stage (layerUniform set) doesn't declare it. */
   resultUniform: string;
+  /** A layered program's (see layersResults): the int uniform holding the
+   *  stage's layer of RESULT_ARRAY_UNIFORM (−1 while it has none). Absent for a
+   *  stage that reads its own result sampler, as every stage of a program that
+   *  isn't layered does. */
+  layerUniform?: string;
   passes: PrepassPass[];
   split?: StageSplit;
 }
+
+/** The array a layered program reads every layered stage result from. */
+export const RESULT_ARRAY_UNIFORM = "uStageResults";
+
+/** The samplers the stages add to the develop program while each keeps its own:
+ *  one per prepass result, and one per lut or dynamic texture (coverage rides
+ *  the brush atlas). A core stage declares neither. */
+function stageSamplers(ordered: readonly ProcessingStageContribution[]): number {
+  let samplers = 0;
+  for (const s of ordered) {
+    if (isCoreStage(s)) continue;
+    if ((s.passes?.length ?? 0) > 0) samplers++;
+    samplers += (s.textures ?? []).filter((t) => t.kind !== "coverage").length;
+  }
+  return samplers;
+}
+
+// Whether the program reads its stage results from layers of one shared array
+// rather than a sampler each. A sampler per stage is a texture per stage, each
+// a separate small resource. The array is one large one, which D3D11 (ANGLE on
+// Windows) only guarantees up to min(max(128 MB, a quarter of dedicated VRAM),
+// 2048 MB); an RGBA16F layer at the 4096 px develop edge is about 90 MB, so two
+// stages can pass that on an integrated GPU. The array is therefore kept for a
+// set that a sampler per stage would take past the shader's sampler limit.
+// Version 1 never layers: its text is frozen.
+const layersResults = (
+  ordered: readonly ProcessingStageContribution[],
+  variant: ShaderVariant,
+  samplerBudget: number,
+): boolean => variant.fullInfo && stageSamplers(ordered) > samplerBudget;
 
 /** Build a complete fragment program for one StagePass, namespacing its uniforms
  *  + helpers under the owning stage's prefix so they share the stage's param keys. */
@@ -500,6 +536,8 @@ interface Declared {
   bindings: ContributedBinding[];
   textureBindings: StageTextureBinding[];
   prepass: PrepassStage[];
+  /** Whether a stage reads RESULT_ARRAY_UNIFORM, which is then declared. */
+  readsArray: boolean;
 }
 
 /** The line that ends the core Vignette and Grain helpers; builtin.tsx writes it
@@ -534,13 +572,14 @@ function emitExtensionStage(
   s: ProcessingStageContribution,
   declared: Declared,
   split: StageSplit | undefined,
+  layered: boolean,
 ): string {
   const uPfx = uniformPrefix(s.id);
   const hPfx = helperPrefix(s.id);
   declareUniforms(s, uPfx, declared);
   declareTextures(s, uPfx, declared);
   const helperNames = declareHelpers(s, uPfx, hPfx, declared);
-  const prelude = declarePrepass(s, uPfx, split, declared);
+  const prelude = declarePrepass(s, uPfx, split, declared, layered);
   let inline = rewriteGlsl(s.glsl, s.uniforms, uPfx, hPfx, helperNames);
   inline = replaceIdentifiers(inline, (s.textures ?? []).map((t) => t.key), uPfx);
   return `{\n${prelude}${inline}\n}`;
@@ -598,17 +637,28 @@ function declareHelpers(
 /** Prepass-bearing stages: expose the prepass result to the inline glsl as
  *  `vec3 stageResult` and compile a program per pass. Pass uniforms join the
  *  same namespace so one param key can drive both the pass and the inline glsl.
- *  Returns the line that declares `stageResult` ("" for a stage without passes). */
+ *  In a layered program the stage reads its layer of the shared result array,
+ *  unless its own glsl names its result sampler (to texelFetch it, say), which
+ *  then stays. Returns the line that declares `stageResult` ("" for a stage
+ *  without passes). */
 function declarePrepass(
   s: ProcessingStageContribution,
   uPfx: string,
   split: StageSplit | undefined,
   declared: Declared,
+  layered: boolean,
 ): string {
   const stagePasses = s.passes ?? [];
   if (stagePasses.length === 0) return "";
   const resultUniform = `${uPfx}stageResult`;
-  declared.uniforms.push(`uniform sampler2D ${resultUniform};`);
+  const named = s.glsl.includes(resultUniform) || (s.helpers ?? "").includes(resultUniform);
+  const layerUniform = layered && !named ? `${uPfx}stageResultLayer` : undefined;
+  if (layerUniform) {
+    declared.uniforms.push(`uniform int ${layerUniform};`);
+    declared.readsArray = true;
+  } else {
+    declared.uniforms.push(`uniform sampler2D ${resultUniform};`);
+  }
   const passes: PrepassPass[] = stagePasses.map((p) => {
     const built = buildPassFragment(s.id, p, s.space);
     for (const b of built.bindings) {
@@ -622,8 +672,18 @@ function declarePrepass(
       bindings: built.bindings,
     };
   });
-  declared.prepass.push({ stageId: s.id, resultUniform, passes, split });
-  return `vec3 stageResult = texture(${resultUniform}, srcUv).rgb;\n`;
+  declared.prepass.push({
+    stageId: s.id,
+    resultUniform,
+    passes,
+    split,
+    ...(layerUniform ? { layerUniform } : {}),
+  });
+  if (!layerUniform) return `vec3 stageResult = texture(${resultUniform}, srcUv).rgb;\n`;
+  return (
+    `vec3 stageResult = ${layerUniform} < 0 ? texture(uImage, srcUv).rgb : ` +
+    `texture(${RESULT_ARRAY_UNIFORM}, vec3(srcUv, float(${layerUniform}))).rgb;\n`
+  );
 }
 
 /** The injection, bindings and prepass programs for the stages passed in. It
@@ -631,12 +691,16 @@ function declarePrepass(
  *  `variant` must be the one the program is assembled with: version 2 clips
  *  display values ahead of extension stages that declared no space, its core
  *  Vignette and Grain no longer clip their own output, and its built-in denoiser
- *  reads the image as the decode stages ahead of it left it. */
+ *  reads the image as the decode stages ahead of it left it. `samplerBudget` is
+ *  how many samplers the shader's limit leaves the stages; a version 2 set that
+ *  would pass it reads its results from one array (layersResults). */
 export function buildStageInjection(
   stages: readonly ProcessingStageContribution[],
   variant: ShaderVariant = V1_VARIANT,
+  samplerBudget = Infinity,
 ): BuiltStageInjection {
   const ordered = sortStages(withoutSupersededDenoiser(stages));
+  const layered = layersResults(ordered, variant, samplerBudget);
   const writer = new GroupWriter();
   const exits = new SplitExits(ordered, variant, writer);
   const declared: Declared = {
@@ -645,6 +709,7 @@ export function buildStageInjection(
     bindings: [],
     textureBindings: [],
     prepass: [],
+    readsArray: false,
   };
 
   for (const stage of ordered) {
@@ -653,11 +718,14 @@ export function buildStageInjection(
     if (group !== "srcUv" && domain) prepareInput(writer, stage, group, domain, variant);
     const block = isCoreStage(stage)
       ? emitCoreStage(stage, declared, variant)
-      : emitExtensionStage(stage, declared, exits.splitOf(stage.id));
+      : emitExtensionStage(stage, declared, exits.splitOf(stage.id), layered);
     writer.push(group, block);
     exits.afterStage(stage);
   }
   if (exits.count > 0) declared.uniforms.push("uniform int uSplitAt;");
+  if (declared.readsArray) {
+    declared.uniforms.push(`uniform highp sampler2DArray ${RESULT_ARRAY_UNIFORM};`);
+  }
   const written = writer.finish();
 
   return {

@@ -22,7 +22,9 @@ import {
   floatImage,
   glHarness,
   identityParams,
+  markerStage,
   pixelAt,
+  takingStages,
   withRenderer,
 } from "./webgl.test-support";
 import type { WebGLRenderer } from "./renderer";
@@ -30,26 +32,7 @@ import type { WebGLRenderer } from "./renderer";
 const STEP = 0.05;
 const BASE = 0.1;
 
-/** Stage `i`'s result is (i + 1) / 64 everywhere, exact in half float. */
-function marker(i: number): ProcessingStageContribution {
-  const mark = `${i + 1}.0 / 64.0`;
-  return {
-    id: `marker-${i}.test`,
-    name: `Marker ${i}`,
-    phase: "scene-linear",
-    priority: 10 + i,
-    glsl: `if (take > 0.5 && abs(stageResult.r - ${mark}) < 0.001) lin += vec3(${STEP});`,
-    uniforms: [{ key: "take", glslType: "float", default: 0 }],
-    passes: [{ glsl: `c = vec3(${mark});` }],
-  };
-}
-
-const markers = (n: number) => Array.from({ length: n }, (_, i) => marker(i));
-
-/** The bag that turns stages on: each holds a non-zero key, so its prepass runs. */
-function taking(stages: readonly ProcessingStageContribution[]): Record<string, number> {
-  return Object.fromEntries(stages.map((s) => [`${s.id}.take`, 1]));
-}
+const markers = (n: number) => Array.from({ length: n }, (_, i) => markerStage(i, STEP));
 
 const SOURCE = floatImage(8, 8, () => [BASE, BASE, BASE]);
 
@@ -91,14 +74,14 @@ describe("prepass result units", () => {
   // to be below MAX_COMBINED_TEXTURE_IMAGE_UNITS.
   it("runs ten active prepass stages, each on its own result", () => {
     const stages = markers(10);
-    const steps = draw(stages, (r) => stepsTaken(r, taking(stages)));
+    const steps = draw(stages, (r) => stepsTaken(r, takingStages(stages)));
     expect(steps).toBe(10);
   });
 
   it("reports no stage left without a unit when every one gets one", () => {
     const stages = markers(8);
     const overflowed = draw(stages, (r) => {
-      r.setContributedParams(taking(stages));
+      r.setContributedParams(takingStages(stages));
       r.render();
       return r.overflowedStages;
     });
@@ -129,7 +112,7 @@ describe("prepass result units", () => {
           version: 1,
         },
       });
-      r.setContributedParams(taking(markers(6)));
+      r.setContributedParams(takingStages(markers(6)));
       return Math.round((level(r) - idle) / STEP);
     });
     expect(steps).toBe(7);
@@ -147,7 +130,7 @@ describe("prepass result units", () => {
       driver = combinedUnits(16);
       const stages = markers(10);
       const { steps, overflowed } = draw(stages, (r) => ({
-        steps: stepsTaken(r, taking(stages)),
+        steps: stepsTaken(r, takingStages(stages)),
         overflowed: r.overflowedStages,
       }));
       expect(steps).toBe(9);
@@ -158,9 +141,9 @@ describe("prepass result units", () => {
       driver = combinedUnits(16);
       const stages = markers(10);
       const overflowed = draw(stages, (r) => {
-        r.setContributedParams(taking(stages));
+        r.setContributedParams(takingStages(stages));
         r.render();
-        r.setContributedParams(taking(stages.slice(1)));
+        r.setContributedParams(takingStages(stages.slice(1)));
         r.render();
         return r.overflowedStages;
       });
