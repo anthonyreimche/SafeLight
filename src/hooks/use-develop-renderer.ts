@@ -8,6 +8,7 @@ import type { RefObject } from "react";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { cancelCrossfade, snapshotCrossfade } from "@/ui/canvas-crossfade";
 import { endHandover } from "@/ui/canvas-handover";
+import type { ImageWindow } from "@/ui/viewport-view";
 
 // Coverage overlay: a single red tint, faded in/out for all masks.
 const VIZ_COLOR: [number, number, number] = [0.9, 0.25, 0.25];
@@ -70,6 +71,8 @@ function previewReason(fallback: Fallback | null | undefined): string | null {
  *  (prefetchNeighbors) only when it held it under a key, so the open photo's source
  *  always has one; but no open binds this one, so the next open loads the photo again. */
 const fallbackKey = (key: string): string => `${key}#fallback`;
+
+const NO_STAGES: readonly string[] = [];
 
 /** The stage bag the worker draws with: the photo's own and the built-in denoise stage's
  *  entries, with what bypassed panels own taken out. */
@@ -141,12 +144,20 @@ function sameAspect(aw: number, ah: number, bw: number, bh: number): boolean {
   return Math.abs(aw / ah / (bw / bh) - 1) < 0.01;
 }
 
+/** Whether two pictures hold the same window of the image (null: all of it). */
+function sameWindow(a: ImageWindow | null, b: ImageWindow | null): boolean {
+  if (!a || !b) return a === b;
+  return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+}
+
 /** Something to put on the canvas: a frame, or the stored preview. Owns its bitmap. */
 interface Picture {
   bitmap: ImageBitmap;
   width: number;
   height: number;
   tier: DevelopTier;
+  // The window of the image it holds (FrameResult.roi); null, the whole image.
+  window: ImageWindow | null;
 }
 
 // The canvas corner says "Preview" once a preview has shown for LABEL_DELAY_MS, and
@@ -218,6 +229,9 @@ interface RendererStatus {
   availability: RendererAvailability;
   width: number;
   height: number;
+  // The window of the image the canvas holds, committed with its pixels and size;
+  // null, the whole image.
+  bufferWindow: ImageWindow | null;
   // Size of the source the last frame was drawn from (upright, as the renderer
   // holds it), for image-aspect-dependent UI like the crop overlay. 0 until a
   // frame of the photo is drawn.
@@ -227,6 +241,9 @@ interface RendererStatus {
   tier: DevelopTier | null;
   // The canvas corner's label for it (useTierLabel), or why nothing of the photo shows.
   status: string | null;
+  // The processing stages the last frame of the photo was drawn without, for want
+  // of a GPU texture unit: they are on, but change nothing.
+  overflowedStages: readonly string[];
   // The display canvas while it holds a picture of the open photo, else null: what a
   // view going away hands to the next (canvas-handover.ts).
   pictureCanvas: () => HTMLCanvasElement | null;
@@ -275,12 +292,17 @@ export function useDevelopRenderer(
   const [supported, setSupported] = useState(true);
   const [availability, setAvailability] = useState<RendererAvailability>("starting");
   const [loading, setLoading] = useState(false);
-  // The canvas's box size. Changes in the same commit as the pixels (see present).
-  const [size, setSize] = useState({ width: 0, height: 0 });
+  // The canvas's box size and the window of the image it holds. Change in the same
+  // commit as the pixels (see present).
+  const [size, setSize] = useState<{ width: number; height: number; window: ImageWindow | null }>(
+    { width: 0, height: 0, window: null },
+  );
   // What the canvas holds of the open photo, and at what size; the tier is null while
   // it holds nothing of it (blank, or the photo before).
   const shownRef = useRef<DevelopTier | null>(null);
-  const paintedRef = useRef({ width: 0, height: 0 });
+  const paintedRef = useRef<{ width: number; height: number; window: ImageWindow | null }>(
+    { width: 0, height: 0, window: null },
+  );
   // The photo the load effect opened last, and the one the canvas holds a picture of.
   const openedRef = useRef<string | null>(null);
   const paintedPhotoRef = useRef<string | null>(null);
@@ -292,6 +314,8 @@ export function useDevelopRenderer(
   // Size of the source the last frame was drawn from, as the renderer holds it
   // (already upright). Drives the image aspect — see `aspect` below.
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
+  // The stages the last frame of the photo was drawn without (FrameResult).
+  const [overflowedStages, setOverflowedStages] = useState<readonly string[]>(NO_STAGES);
   // Effective params: a hover preview (e.g. from the Presets panel) overrides
   // the committed params for rendering only, without touching history.
   const params = useDevelopStore((s) => s.previewParams ?? s.params);
@@ -341,13 +365,18 @@ export function useDevelopRenderer(
   const forRender = (p: DevelopParams, crop: boolean): DevelopParams =>
     renderParams(p, crop, aspect, bypassedPanels);
 
-  const resize = useCallback((width: number, height: number) => {
-    setSize((s) => (s.width === width && s.height === height ? s : { width, height }));
+  const resize = useCallback((width: number, height: number, window: ImageWindow | null) => {
+    setSize((s) =>
+      s.width === width && s.height === height && sameWindow(s.window, window)
+        ? s
+        : { width, height, window },
+    );
   }, []);
 
   // Draws `next` now. What the canvas held eases into it when that was a lower tier of
-  // the same photo, of the same shape. A picture of another shape ends any fade: the
-  // overlay takes the canvas's new box and would show the old picture stretched in it.
+  // the same photo, of the same shape and window. A picture of another shape or window
+  // ends any fade: the overlay takes the canvas's new box and placement, and would show
+  // the old picture stretched in it or where the new window's pixels belong.
   const paint = useCallback(
     (next: Picture) => {
       const cv = canvasRef.current;
@@ -359,7 +388,9 @@ export function useDevelopRenderer(
       const from = shownRef.current;
       const ms = from === null ? null : fadeMs(from, next.tier);
       const overlay = fadeCanvasRef?.current;
-      const sameShape = sameAspect(cv.width, cv.height, next.width, next.height);
+      const sameShape =
+        sameAspect(cv.width, cv.height, next.width, next.height) &&
+        sameWindow(paintedRef.current.window, next.window);
       if (overlay && ms !== null && fadesRef.current && sameShape) {
         snapshotCrossfade(cv, overlay, ms);
       } else if (overlay && !sameShape) {
@@ -372,7 +403,7 @@ export function useDevelopRenderer(
       // The photo's first picture replaces what the view before left on screen.
       if (from === null) endHandover();
       shownRef.current = next.tier;
-      paintedRef.current = { width: next.width, height: next.height };
+      paintedRef.current = { width: next.width, height: next.height, window: next.window };
       paintedPhotoRef.current = openedRef.current;
     },
     [canvasRef, fadeCanvasRef],
@@ -387,18 +418,24 @@ export function useDevelopRenderer(
     [canvasRef],
   );
 
-  // Shows `next`. A picture of the size already painted is drawn at once, so a drag
-  // costs no React render. Another size waits for the commit that resizes the box
-  // (the layout effect below): drawn ahead of it, it showed stretched to the old box.
+  // Shows `next`. A picture of the size and window already painted is drawn at once, so
+  // a drag costs no React render. Another size or window waits for the commit that
+  // resizes and places the box (the layout effect below): drawn ahead of it, it showed
+  // stretched to the old box, or at the old window's place.
   const present = useCallback(
     (next: Picture) => {
       const painted = paintedRef.current;
-      if (!pendingRef.current && painted.width === next.width && painted.height === next.height) {
+      if (
+        !pendingRef.current &&
+        painted.width === next.width &&
+        painted.height === next.height &&
+        sameWindow(painted.window, next.window)
+      ) {
         paint(next);
       } else {
         pendingRef.current?.bitmap.close();
         pendingRef.current = next;
-        resize(next.width, next.height);
+        resize(next.width, next.height, next.window);
         setPendingCount((n) => n + 1);
       }
       if (tierRef.current !== next.tier) {
@@ -415,7 +452,8 @@ export function useDevelopRenderer(
     if (!next) return;
     next.bitmap.close();
     pendingRef.current = null;
-    resize(paintedRef.current.width, paintedRef.current.height);
+    const painted = paintedRef.current;
+    resize(painted.width, painted.height, painted.window);
   }, [resize]);
 
   // Empties the canvas and its box: what it holds of the photo is no longer true.
@@ -429,11 +467,11 @@ export function useDevelopRenderer(
     const overlay = fadeCanvasRef?.current;
     if (overlay) cancelCrossfade(overlay);
     shownRef.current = null;
-    paintedRef.current = { width: 0, height: 0 };
+    paintedRef.current = { width: 0, height: 0, window: null };
     paintedPhotoRef.current = null;
     tierRef.current = null;
     setTier(null);
-    resize(0, 0);
+    resize(0, 0, null);
   }, [canvasRef, fadeCanvasRef, dropPending, resize]);
 
   // An edited photo's stored preview, its original out of reach (Fallback
@@ -455,7 +493,7 @@ export function useDevelopRenderer(
       }
       setCantShow(null);
       if (bitmap) {
-        present({ bitmap, width: bitmap.width, height: bitmap.height, tier: "stored" });
+        present({ bitmap, width: bitmap.width, height: bitmap.height, tier: "stored", window: null });
         return;
       }
       const blob = held.photo.thumbnailBlob;
@@ -466,7 +504,7 @@ export function useDevelopRenderer(
             editedPreviewRef.current === held &&
             shownRef.current === null &&
             previewShowsEdit(held.photo, useDevelopStore.getState());
-          if (still) present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored" });
+          if (still) present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored", window: null });
           else bm.close();
         },
         () => {},
@@ -529,7 +567,17 @@ export function useDevelopRenderer(
       const finalGen = finalGenRef.current;
       const frameTier: DevelopTier =
         finalGen !== null && frame.sourceGen >= finalGen ? "final" : "preview";
-      present({ bitmap: frame.bitmap, width: frame.width, height: frame.height, tier: frameTier });
+      present({
+        bitmap: frame.bitmap,
+        width: frame.width,
+        height: frame.height,
+        tier: frameTier,
+        window: frame.roi,
+      });
+      const overflowed = frame.overflowedStages;
+      setOverflowedStages((s) =>
+        s.length === overflowed.length && s.every((id, i) => id === overflowed[i]) ? s : overflowed,
+      );
       // The renderer's own size of the source, which the drawn transform's aspect
       // comes from, so the crop overlay agrees with the pixels on screen. A source
       // bound from the GPU cache is reported by its frames alone.
@@ -628,6 +676,7 @@ export function useDevelopRenderer(
     sentGenRef.current = null;
     setCantShow(null);
     setSettledReason(null);
+    setOverflowedStages(NO_STAGES);
     editedPreviewRef.current = null;
     tierRef.current = null;
     setTier(null);
@@ -677,7 +726,7 @@ export function useDevelopRenderer(
       }
       const shows = previewShowsEdit(photo, useDevelopStore.getState());
       if (!cancelled && awaitingSourceRef.current && shows) {
-        present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored" });
+        present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored", window: null });
       } else {
         bm.close();
       }
@@ -994,10 +1043,12 @@ export function useDevelopRenderer(
     availability,
     width: size.width,
     height: size.height,
+    bufferWindow: size.window,
     sourceWidth: sourceSize.width,
     sourceHeight: sourceSize.height,
     tier,
     status,
+    overflowedStages,
     pictureCanvas,
     setViewport,
   };

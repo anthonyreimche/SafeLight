@@ -1772,6 +1772,35 @@ describe("the patch pass", () => {
       watch.restore();
     }
   });
+
+  // Five active stages take units 8-11 and 5, so the unit the idle stage shares,
+  // which holds the copy, is one past them.
+  it("draws into a copy no texture unit holds when the idle stages' unit is past the first five", () => {
+    const busy = Array.from({ length: 5 }, (_, i): ProcessingStageContribution => ({
+      id: `busy-${i}.test`,
+      name: `Busy ${i}`,
+      phase: "scene-linear",
+      glsl: "lin = mix(lin, stageResult, 0.0 * take);",
+      uniforms: [{ key: "take", glslType: "float", default: 0 }],
+      passes: [{ glsl: "c = c;" }],
+    }));
+    const idle: ProcessingStageContribution = { ...busy[0], id: "idle.test", name: "Idle" };
+    const watch = watchDrawsIntoCopy(glHarness().gl);
+    try {
+      withRenderer({ stages: [...busy, idle], pipeline: WIDE_PROBE }, (renderer) => {
+        renderer.setImage(SPECKLED_SKY);
+        renderer.setContributedParams(Object.fromEntries(busy.map((s) => [`${s.id}.take`, 1])));
+        for (const version of [V1, V2, V1, V2]) {
+          renderer.setParams(healed(version));
+          renderer.render();
+        }
+      });
+      expect(watch.draws).toBe(4);
+      expect(watch.held).toEqual([]);
+    } finally {
+      watch.restore();
+    }
+  });
 });
 
 describe("histogram readback", () => {
@@ -2235,6 +2264,46 @@ describe("brush coverage across frames", () => {
 
           renderer.setImage(WIDE);
           expect(worstDifference(capture(renderer), reference)).toBeLessThan(1e-3);
+        });
+      });
+    }
+  });
+
+  // Colour NR is on by default, and the denoiser's result stands in for the whole
+  // frame, so its cached result must follow the spot's source offset and opacity
+  // as well as its coverage: a dragged source otherwise showed the old patch.
+  describe("under the denoiser", () => {
+    const DENOISER = [builtinStage(BUILTIN_DENOISE_ID)];
+    const painted = (spot: RetouchSpot) => identityParams({ colorNR: 25, retouch: [spot] });
+    const BEFORE = brushSpot([LEFT], 0.3);
+
+    function frameOf(params: DevelopParams): Frame {
+      return withRenderer({ stages: DENOISER, pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+        renderer.setImage(rampSource(SIZE));
+        renderer.setParams(params);
+        renderer.setContributedParams(denoiseBag(params));
+        return capture(renderer);
+      });
+    }
+
+    const CASES: { name: string; after: RetouchSpot }[] = [
+      { name: "source", after: brushSpot([LEFT], 0.5) },
+      { name: "opacity", after: { ...BEFORE, opacity: 40 } },
+    ];
+
+    for (const { name, after } of CASES) {
+      it(`draws a brush spot's new ${name} as a fresh renderer does`, () => {
+        const reference = frameOf(painted(after));
+        const first = frameOf(painted(BEFORE));
+        expect(worstDifference(reference, first)).toBeGreaterThan(0.02);
+
+        withRenderer({ stages: DENOISER, pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+          renderer.setImage(rampSource(SIZE));
+          renderer.setParams(painted(BEFORE));
+          renderer.setContributedParams(denoiseBag(painted(BEFORE)));
+          capture(renderer);
+          renderer.setParams(painted(after));
+          expect(worstDifference(capture(renderer), reference)).toBeLessThan(PIXEL_TOLERANCE);
         });
       });
     }

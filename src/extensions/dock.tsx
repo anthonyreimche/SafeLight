@@ -42,6 +42,7 @@ import { detachedModule } from "@/state/detach";
 import {
   applyLayoutExtensions,
   captureLayoutExtensions,
+  enablementPending,
   layoutExtensionsMatch,
 } from "./loader";
 
@@ -277,9 +278,11 @@ export interface UserLayout {
   id: string;
   name: string;
   modules: Partial<Record<string, ModuleLayoutDef>>;
-  /** On/off for the panel and tool extensions known when it was saved (see
-   *  captureLayoutExtensions). Absent from layouts saved before layouts
-   *  remembered extensions; applying one of those switches none. */
+  /** Whether picking this layout switches extensions to its ticks. Off for new
+   *  layouts and for those saved before layouts had the choice. */
+  switchesExtensions?: boolean;
+  /** The layout's ticks: on or off by extension id. Kept while switching is
+   *  off; an extension with no tick is left as it is. */
   extensions?: Record<string, boolean>;
 }
 
@@ -320,14 +323,15 @@ function defaultLayoutName(layouts: Record<string, UserLayout>): string {
 let layoutRequests = 0;
 
 /** Switch the active layout and rebuild the current module's dock. A saved
- *  layout that remembers extensions switches them first, so the panels they
+ *  layout that switches extensions switches them first, so the panels they
  *  bring are registered by the time the module's arrangement is resolved.
- *  Resolves once the layout is showing; with nothing to switch, that happens
- *  before this returns. */
+ *  Resolves once the layout is showing; with nothing to switch and no change
+ *  still under way, that happens before this returns. */
 export function applyDockLayout(id: string): Promise<void> {
   const request = ++layoutRequests;
-  const states = moduleEntry(useUserLayouts.getState().layouts, id)?.extensions;
-  if (!states || layoutExtensionsMatch(states)) {
+  const layout = moduleEntry(useUserLayouts.getState().layouts, id);
+  const states = layout?.switchesExtensions ? layout.extensions : undefined;
+  if (!states || (!enablementPending() && layoutExtensionsMatch(states))) {
     showLayout(id);
     return Promise.resolve();
   }
@@ -484,16 +488,16 @@ export function addUserLayout(name?: string): string {
       id,
       name: name?.trim() || defaultLayoutName(layouts),
       modules: captureCurrentLayout(),
-      extensions: captureLayoutExtensions(),
     },
   });
   setActiveLayout(id);
   return id;
 }
 
-/** Overwrite an existing user layout with the current arrangement and the
- *  extensions on now. Entries for modules not registered right now (their
- *  extension is off), and for extensions no longer known, are kept. */
+/** Overwrite an existing user layout with the current arrangement. Entries for
+ *  modules not registered right now (their extension is off) are kept, and so
+ *  are its extension ticks: when it switches extensions and they differ from
+ *  what is on, they switch, as picking the layout would. */
 export function updateUserLayout(id: string): void {
   const existing = useUserLayouts.getState().layouts[id];
   if (!existing) return;
@@ -502,12 +506,71 @@ export function updateUserLayout(id: string): void {
     [id]: {
       ...existing,
       modules: { ...existing.modules, ...captureCurrentLayout() },
-      extensions: { ...existing.extensions, ...captureLayoutExtensions() },
     },
   });
+  const ticks = existing.switchesExtensions ? existing.extensions : undefined;
+  if (ticks && (enablementPending() || !layoutExtensionsMatch(ticks))) {
+    void applyDockLayout(id);
+    return;
+  }
   // The dock now matches the saved layout again, so re-select it (editing a
   // preset/layout flips the active id to Custom).
   setActiveLayout(id);
+}
+
+/** Turn extension switching on or off for a user layout. Turning it on ticks
+ *  every extension a layout can switch, without switching any: the layout
+ *  showing takes what is running, another keeps the ticks it has and takes the
+ *  rest from what is on now. Turning it off keeps the ticks. */
+export function setLayoutSwitchesExtensions(id: string, on: boolean): void {
+  const layouts = useUserLayouts.getState().layouts;
+  const existing = moduleEntry(layouts, id);
+  if (!existing || !!existing.switchesExtensions === on) return;
+  const now = captureLayoutExtensions();
+  const showing = useLayoutStore.getState().activeId === id;
+  persistUserLayouts({
+    ...layouts,
+    [id]: {
+      ...existing,
+      switchesExtensions: on,
+      ...(on && {
+        extensions: showing
+          ? { ...existing.extensions, ...now }
+          : { ...now, ...existing.extensions },
+      }),
+    },
+  });
+}
+
+/** Tick or untick extensions in a user layout. When it is the layout showing
+ *  and it switches extensions, they switch now; resolves once they have. */
+export function setLayoutExtensions(
+  id: string,
+  ticks: Record<string, boolean>,
+): Promise<void> {
+  const layouts = useUserLayouts.getState().layouts;
+  const existing = moduleEntry(layouts, id);
+  if (!existing) return Promise.resolve();
+  persistUserLayouts({
+    ...layouts,
+    [id]: { ...existing, extensions: { ...existing.extensions, ...ticks } },
+  });
+  const live =
+    existing.switchesExtensions && useLayoutStore.getState().activeId === id;
+  return live ? applyLayoutExtensions(ticks) : Promise.resolve();
+}
+
+/** Record `id` on or off in the layout showing, if that layout switches
+ *  extensions, so picking it again keeps what was just chosen elsewhere. */
+export function recordActiveLayoutExtension(id: string, enabled: boolean): void {
+  const layouts = useUserLayouts.getState().layouts;
+  const active = moduleEntry(layouts, useLayoutStore.getState().activeId);
+  if (!active?.switchesExtensions || moduleEntry(active.extensions, id) === enabled)
+    return;
+  persistUserLayouts({
+    ...layouts,
+    [active.id]: { ...active, extensions: { ...active.extensions, [id]: enabled } },
+  });
 }
 
 export function renameUserLayout(id: string, name: string): void {

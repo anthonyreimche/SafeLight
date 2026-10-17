@@ -3,8 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Saved layouts remember which panel and tool extensions are on, and turning
-// extensions on and off runs one change at a time. Drives the real loader and
+// Saved layouts the user lets switch extensions turn the panel and tool
+// extensions they tick on and the rest off, and turning extensions on and off
+// runs one change at a time. Drives the real loader and
 // dock through the stubbed Electron bridge (window.safelightNative), with only
 // the bundle import — an app:// URL jsdom cannot fetch — substituted, as in
 // loader.test.tsx.
@@ -17,6 +18,8 @@ import { importPluginModule } from "./plugin-module";
 import { BUILTIN_EXTENSIONS } from "./builtin";
 import { noteExtensionRunning } from "./extension-kinds";
 import {
+  initEnablement,
+  layoutExtensionChoices,
   loadExternalPlugins,
   setExtensionEnabled,
   uninstallPlugin,
@@ -26,6 +29,8 @@ import {
   CUSTOM_LAYOUT,
   addUserLayout,
   applyDockLayout,
+  setLayoutExtensions,
+  setLayoutSwitchesExtensions,
   updateUserLayout,
   useDockStore,
   useLayoutStore,
@@ -149,8 +154,67 @@ afterEach(async () => {
 const remembered = (layoutId: string) =>
   useUserLayouts.getState().layouts[layoutId]?.extensions;
 
-describe("what a saved layout remembers", () => {
-  it("records panel and tool extensions as on or off, and nothing that renders into photos", async () => {
+const LAYOUT = "user.test";
+
+/** A layout with no module entries, so the dock is seeded from the defaults of
+ *  whatever panels are registered when it is resolved. */
+function saveLayout(extensions?: Record<string, boolean>, switches = true): void {
+  useUserLayouts.setState({
+    layouts: {
+      [LAYOUT]: {
+        id: LAYOUT,
+        name: "Test",
+        modules: {},
+        switchesExtensions: switches,
+        ...(extensions && { extensions }),
+      },
+    },
+  });
+}
+const docked = () => useDockStore.getState().rails.flatMap((r) => r.panels);
+const disabled = () => [...useDisabledExtensions.getState().ids].sort();
+/** Counts writes of the disabled list from here on. */
+function countDisabledWrites(): () => number {
+  const setItem = vi.spyOn(Storage.prototype, "setItem");
+  return () => setItem.mock.calls.filter(([key]) => key === "sl_ext_disabled").length;
+}
+
+/** Install and start a panel extension per id, then turn off those in `off`. */
+async function boot(ids: string[], off: string[] = []): Promise<void> {
+  for (const id of ids) install(id, panelBundle(id));
+  await loadExternalPlugins();
+  for (const id of off) await setExtensionEnabled(id, false);
+}
+
+beforeEach(() => useDockStore.setState({ module: "develop" }));
+
+describe("a layout's extension switch", () => {
+  it("is off for a new layout, which ticks nothing", async () => {
+    install("acme.panel", panelBundle("acme.panel"));
+    await loadExternalPlugins();
+
+    const id = addUserLayout("Culling");
+
+    expect(useUserLayouts.getState().layouts[id].switchesExtensions).toBeFalsy();
+    expect(remembered(id)).toBeUndefined();
+  });
+
+  it("is left alone, with its ticks, when the layout is updated", async () => {
+    install("acme.panel", panelBundle("acme.panel"));
+    install("acme.tool", panelBundle("acme.tool"));
+    await loadExternalPlugins();
+    const id = addUserLayout();
+    setLayoutSwitchesExtensions(id, true);
+    await applyDockLayout(CUSTOM_LAYOUT);
+
+    await setExtensionEnabled("acme.tool", false);
+    updateUserLayout(id);
+
+    expect(useUserLayouts.getState().layouts[id].switchesExtensions).toBe(true);
+    expect(remembered(id)).toEqual({ "acme.panel": true, "acme.tool": true });
+  });
+
+  it("ticks panel and tool extensions as they run when turned on, and nothing that renders into photos", async () => {
     install("acme.panel", panelBundle("acme.panel"));
     install("acme.tool", panelBundle("acme.tool"));
     install("acme.film", stageBundle("acme.film"));
@@ -162,10 +226,13 @@ describe("what a saved layout remembers", () => {
     // Safelight's own that a layout never switches, seen running earlier.
     for (const id of ["core", "core.accessibility", "core.devtools"]) noteExtensionRunning(id);
     await setExtensionEnabled("core.devtools", false);
-
     const id = addUserLayout("Culling");
+    const disabledWrites = countDisabledWrites();
+
+    setLayoutSwitchesExtensions(id, true);
 
     expect(remembered(id)).toEqual({ "acme.panel": true, "acme.tool": false });
+    expect(disabledWrites()).toBe(0);
   });
 
   it("leaves out an installed extension it has never seen running", async () => {
@@ -173,63 +240,113 @@ describe("what a saved layout remembers", () => {
     install("acme.idle", panelBundle("acme.idle"));
     useDisabledExtensions.setState({ ids: ["acme.idle"] });
     await loadExternalPlugins();
-
     const id = addUserLayout();
+
+    setLayoutSwitchesExtensions(id, true);
 
     expect(remembered(id)).toEqual({ "acme.panel": true });
   });
 
-  it("refreshes what it remembers when the layout is updated", async () => {
-    install("acme.panel", panelBundle("acme.panel"));
-    install("acme.tool", panelBundle("acme.tool"));
-    await loadExternalPlugins();
-    const id = addUserLayout();
-
-    await setExtensionEnabled("acme.tool", false);
-    updateUserLayout(id);
-
-    expect(remembered(id)).toEqual({ "acme.panel": true, "acme.tool": false });
-  });
-
-  it("forgets an uninstalled extension in layouts saved afterwards", async () => {
+  it("forgets an uninstalled extension", async () => {
     install("acme.panel", panelBundle("acme.panel"));
     install("acme.tool", panelBundle("acme.tool"));
     await loadExternalPlugins();
     await uninstallPlugin("acme.tool");
-
     const id = addUserLayout();
 
+    setLayoutSwitchesExtensions(id, true);
+
     expect(remembered(id)).toEqual({ "acme.panel": true });
+  });
+
+  it("keeps a layout's saved ticks when turned on for one not showing, filling the rest from what is on", async () => {
+    await boot(["acme.panel", "acme.tool", "acme.new"], ["acme.new"]);
+    saveLayout({ "acme.panel": false }, false);
+
+    setLayoutSwitchesExtensions(LAYOUT, true);
+
+    expect(remembered(LAYOUT)).toEqual({
+      "acme.panel": false,
+      "acme.tool": true,
+      "acme.new": false,
+    });
+    expect(running("acme.panel")).toBe(true);
+  });
+
+  it("switches extensions to its ticks when the layout is updated while they differ, as picking it would", async () => {
+    await boot(["acme.tool"]);
+    saveLayout({ "acme.tool": true });
+    await setExtensionEnabled("acme.tool", false);
+
+    updateUserLayout(LAYOUT);
+
+    await vi.waitFor(() => expect(running("acme.tool")).toBe(true));
+    expect(remembered(LAYOUT)).toEqual({ "acme.tool": true });
+    expect(useLayoutStore.getState().activeId).toBe(LAYOUT);
+  });
+
+  it("keeps the ticks when turned off, and picking the layout then switches nothing", async () => {
+    await boot(["acme.panel"]);
+    saveLayout({ "acme.panel": false });
+
+    setLayoutSwitchesExtensions(LAYOUT, false);
+    const disabledWrites = countDisabledWrites();
+    await applyDockLayout(LAYOUT);
+
+    expect(remembered(LAYOUT)).toEqual({ "acme.panel": false });
+    expect(disabledWrites()).toBe(0);
+    expect(running("acme.panel")).toBe(true);
+  });
+});
+
+describe("ticking an extension in a layout", () => {
+  it("switches it now in the layout showing", async () => {
+    await boot(["acme.panel", "acme.tool"]);
+    saveLayout({ "acme.panel": true, "acme.tool": true });
+    await applyDockLayout(LAYOUT);
+
+    await setLayoutExtensions(LAYOUT, { "acme.tool": false });
+
+    expect(remembered(LAYOUT)).toEqual({ "acme.panel": true, "acme.tool": false });
+    expect(running("acme.tool")).toBe(false);
+    expect(disabled()).toEqual(["acme.tool"]);
+  });
+
+  it("switches every extension ticked at once with one write of the disabled list", async () => {
+    await boot(["acme.a", "acme.b"]);
+    saveLayout({ "acme.a": true, "acme.b": true });
+    await applyDockLayout(LAYOUT);
+    const disabledWrites = countDisabledWrites();
+
+    await setLayoutExtensions(LAYOUT, { "acme.a": false, "acme.b": false });
+
+    expect(disabledWrites()).toBe(1);
+    expect(disabled()).toEqual(["acme.a", "acme.b"]);
+  });
+
+  it("only saves in a layout not showing", async () => {
+    await boot(["acme.tool"]);
+    saveLayout({ "acme.tool": true });
+
+    await setLayoutExtensions(LAYOUT, { "acme.tool": false });
+
+    expect(remembered(LAYOUT)).toEqual({ "acme.tool": false });
+    expect(running("acme.tool")).toBe(true);
+  });
+
+  it("only saves in the layout showing while it doesn't switch extensions", async () => {
+    await boot(["acme.tool"]);
+    saveLayout({ "acme.tool": true }, false);
+    await applyDockLayout(LAYOUT);
+
+    await setLayoutExtensions(LAYOUT, { "acme.tool": false });
+
+    expect(remembered(LAYOUT)).toEqual({ "acme.tool": false });
+    expect(running("acme.tool")).toBe(true);
   });
 });
 
 describe("applying a saved layout", () => {
-  const LAYOUT = "user.test";
-
-  /** A layout with no module entries, so the dock is seeded from the defaults of
-   *  whatever panels are registered when it is resolved. */
-  function saveLayout(extensions?: Record<string, boolean>): void {
-    useUserLayouts.setState({
-      layouts: { [LAYOUT]: { id: LAYOUT, name: "Test", modules: {}, ...(extensions && { extensions }) } },
-    });
-  }
-  const docked = () => useDockStore.getState().rails.flatMap((r) => r.panels);
-  const disabled = () => [...useDisabledExtensions.getState().ids].sort();
-  /** Counts writes of the disabled list from here on. */
-  function countDisabledWrites(): () => number {
-    const setItem = vi.spyOn(Storage.prototype, "setItem");
-    return () => setItem.mock.calls.filter(([key]) => key === "sl_ext_disabled").length;
-  }
-
-  beforeEach(() => useDockStore.setState({ module: "develop" }));
-
-  /** Install and start a panel extension per id, then turn off those in `off`. */
-  async function boot(ids: string[], off: string[] = []): Promise<void> {
-    for (const id of ids) install(id, panelBundle(id));
-    await loadExternalPlugins();
-    for (const id of off) await setExtensionEnabled(id, false);
-  }
-
   it("switches its extensions before the dock is rebuilt", async () => {
     await boot(["acme.panel", "acme.tool", "acme.other"], ["acme.tool", "acme.other"]);
     saveLayout({ "acme.panel": false, "acme.tool": true });
@@ -291,9 +408,18 @@ describe("applying a saved layout", () => {
     );
   });
 
-  it("switches nothing for a layout saved before layouts remembered extensions", async () => {
+  it("switches nothing for a layout saved before layouts had the choice", async () => {
     await boot(["acme.panel", "acme.tool"], ["acme.tool"]);
-    saveLayout();
+    useUserLayouts.setState({
+      layouts: {
+        [LAYOUT]: {
+          id: LAYOUT,
+          name: "Test",
+          modules: {},
+          extensions: { "acme.panel": false, "acme.tool": true },
+        },
+      },
+    });
     const disabledWrites = countDisabledWrites();
 
     await applyDockLayout(LAYOUT);
@@ -317,6 +443,26 @@ describe("applying a saved layout", () => {
 
     expect(useLayoutStore.getState().activeId).toBe(CUSTOM_LAYOUT);
     expect(running("acme.tool")).toBe(true);
+  });
+
+  it("shows a later pick whose ticks match only once a layout still switching has finished", async () => {
+    await boot(["acme.tool"]);
+    const layout = (id: string, on: boolean) => ({
+      id,
+      name: id,
+      modules: {},
+      switchesExtensions: true,
+      extensions: { "acme.tool": on },
+    });
+    useUserLayouts.setState({
+      layouts: { "user.a": layout("user.a", false), "user.b": layout("user.b", true) },
+    });
+
+    await Promise.all([applyDockLayout("user.a"), applyDockLayout("user.b")]);
+
+    expect(useLayoutStore.getState().activeId).toBe("user.b");
+    expect(running("acme.tool")).toBe(true);
+    expect(disabled()).toEqual([]);
   });
 });
 
@@ -381,5 +527,74 @@ describe("turning an extension on and off", () => {
       await setExtensionEnabled("core.hsl", false);
       activate.mockRestore();
     }
+  });
+});
+
+describe("turning an extension on or off elsewhere", () => {
+  it("records it in the layout showing when that layout switches extensions", async () => {
+    await boot(["acme.tool"]);
+    saveLayout({ "acme.tool": true });
+    await applyDockLayout(LAYOUT);
+
+    await setExtensionEnabled("acme.tool", false);
+
+    expect(remembered(LAYOUT)).toEqual({ "acme.tool": false });
+  });
+
+  it("records nothing in a layout that doesn't switch, one not showing, or for one that renders into photos", async () => {
+    await boot(["acme.tool"]);
+    install("acme.film", stageBundle("acme.film"));
+    await loadExternalPlugins();
+    saveLayout({ "acme.tool": true }, false);
+    await applyDockLayout(LAYOUT);
+    await setExtensionEnabled("acme.tool", false);
+    expect(remembered(LAYOUT)).toEqual({ "acme.tool": true });
+
+    setLayoutSwitchesExtensions(LAYOUT, true);
+    await setExtensionEnabled("acme.film", false);
+    expect(remembered(LAYOUT)).toEqual({ "acme.tool": false });
+
+    await applyDockLayout(CUSTOM_LAYOUT);
+    await setExtensionEnabled("acme.tool", true);
+    expect(remembered(LAYOUT)).toEqual({ "acme.tool": false });
+  });
+
+  it("records nothing when another window turns it off", async () => {
+    initEnablement();
+    await boot(["acme.tool"]);
+    saveLayout({ "acme.tool": true });
+    await applyDockLayout(LAYOUT);
+
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: "sl_ext_disabled", newValue: '["acme.tool"]' }),
+    );
+    await vi.waitFor(() => expect(running("acme.tool")).toBe(false));
+
+    expect(remembered(LAYOUT)).toEqual({ "acme.tool": true });
+  });
+});
+
+describe("the extensions a layout lists", () => {
+  it("lists built-ins but the core and installed ones but banned, saying why a layout won't switch some", async () => {
+    install("acme.panel", panelBundle("acme.panel"));
+    install("acme.film", stageBundle("acme.film"));
+    install("acme.idle", panelBundle("acme.idle"));
+    install("acme.banned", panelBundle("acme.banned"));
+    useDisabledExtensions.setState({ ids: ["acme.idle"] });
+    await loadExternalPlugins();
+    noteExtensionRunning("core.hsl");
+    useTrust.setState({ list: { ...trustBefore, repos: ["acme/banned"] } });
+
+    const choices = layoutExtensionChoices(installed);
+    const hold = (id: string) => choices.find((c) => c.id === id)?.hold;
+
+    expect(hold("acme.panel")).toBeNull();
+    expect(hold("core.hsl")).toBeNull();
+    expect(hold("acme.film")).toBe("pixels");
+    expect(hold("acme.idle")).toBe("unseen");
+    expect(hold("core.accessibility")).toBe("kept");
+    expect(choices.some((c) => c.id === "core" || c.id === "acme.banned")).toBe(false);
+    const names = choices.map((c) => c.name);
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
   });
 });

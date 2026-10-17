@@ -20,7 +20,7 @@ import {
   type UniformDeclaration,
 } from "@/extensions/types";
 import { BUILTIN_DENOISE_ID, DENOISE_STAGE } from "./builtin-denoise";
-import { compileShaderSource, getActiveStages } from "./shader-compiler";
+import { compileShaderSource, getActiveStages, uniformPrefix } from "./shader-compiler";
 import { V1_VARIANT, V2_VARIANT, type ShaderVariant } from "./shaders";
 import { CORE_DISPLAY_CLAMP, PHASES, buildStageInjection } from "./stage-injection";
 import { builtinStage } from "./webgl.test-support";
@@ -859,5 +859,79 @@ describe("prepass passes", () => {
     const counted = [0, -4, 3].map((iterations) => ({ ...PASS, iterations }));
     const { prepass } = buildStageInjection([flagged({ passes: [PASS, ...counted] })]);
     expect(prepass[0].passes.map((p) => p.iterations)).toEqual([1, 1, 1, 3]);
+  });
+});
+
+// A version 2 program whose stages would pass the sampler budget reads their
+// prepass results from their layers of one shared array, so its sampler count
+// stops growing with the stage set. A set that fits keeps a sampler per stage,
+// as version 1 always does: the array is one large texture, where a sampler
+// per stage is several small ones. A stage that names its result sampler (to
+// texelFetch it) keeps it either way.
+describe("version 2 stage results", () => {
+  const OTHER: ProcessingStageContribution = { ...STAGE, id: "acme.other", name: "Other" };
+  const ARRAY = "uniform highp sampler2DArray uStageResults;";
+  const layered = (s: ProcessingStageContribution): string => `${uniformPrefix(s.id)}stageResultLayer`;
+  const sampled = (s: ProcessingStageContribution): string => `${uniformPrefix(s.id)}stageResult`;
+
+  it("gives every prepass stage a layer of one shared array", () => {
+    const { injection, prepass } = buildStageInjection([STAGE, OTHER], V2_VARIANT, 1);
+    expect(injection.uniforms.split(ARRAY)).toHaveLength(2);
+    for (const s of [STAGE, OTHER]) {
+      const layer = layered(s);
+      expect(injection.uniforms).toContain(`uniform int ${layer};`);
+      expect(injection.uniforms).not.toContain(`uniform sampler2D ${uniformPrefix(s.id)}stageResult;`);
+      expect(injection.sceneLinear).toContain(
+        `vec3 stageResult = ${layer} < 0 ? texture(uImage, srcUv).rgb : ` +
+          `texture(uStageResults, vec3(srcUv, float(${layer}))).rgb;`,
+      );
+    }
+    expect(prepass.map((p) => p.layerUniform)).toEqual([layered(STAGE), layered(OTHER)]);
+  });
+
+  it("keeps the sampler of a stage that reads it by name", () => {
+    const sampler = `${uniformPrefix(STAGE.id)}stageResult`;
+    const named = { ...STAGE, glsl: `lin += texelFetch(${sampler}, ivec2(0), 0).rgb * amount;` };
+    const { injection, prepass } = buildStageInjection([named], V2_VARIANT, 0);
+    expect(injection.uniforms).toContain(`uniform sampler2D ${sampler};`);
+    expect(injection.uniforms).not.toContain("sampler2DArray");
+    expect(prepass[0].layerUniform).toBeUndefined();
+  });
+
+  it("keeps a sampler per stage on version 2 while the set fits the budget", () => {
+    const { injection, prepass } = buildStageInjection([STAGE, OTHER], V2_VARIANT, 2);
+    expect(injection.uniforms).not.toContain("sampler2DArray");
+    for (const s of [STAGE, OTHER]) {
+      expect(injection.uniforms).toContain(`uniform sampler2D ${sampled(s)};`);
+      expect(injection.uniforms).not.toContain(layered(s));
+      expect(injection.sceneLinear).toContain(
+        `vec3 stageResult = texture(${sampled(s)}, srcUv).rgb;`,
+      );
+    }
+    expect(prepass.map((p) => p.layerUniform)).toEqual([undefined, undefined]);
+  });
+
+  // A lut or dynamic texture is a sampler too; coverage rides the brush atlas.
+  it("counts stage textures against the budget", () => {
+    const table: ProcessingStageContribution = {
+      ...flagged({ id: "acme.table" }),
+      textures: [
+        { key: "table", kind: "lut", width: 1, height: 1, format: "rgba8" },
+        { key: "brush", kind: "coverage" },
+      ],
+    };
+    const layersAt = (budget: number): (string | undefined)[] =>
+      buildStageInjection([STAGE, table], V2_VARIANT, budget).prepass.map((p) => p.layerUniform);
+    expect(layersAt(1)).toEqual([layered(STAGE)]);
+    expect(layersAt(2)).toEqual([undefined]);
+  });
+
+  it("leaves version 1 with a sampler per stage", () => {
+    const { injection, prepass } = buildStageInjection([STAGE, OTHER], V1_VARIANT);
+    expect(injection.uniforms).not.toContain("sampler2DArray");
+    for (const s of [STAGE, OTHER]) {
+      expect(injection.uniforms).toContain(`uniform sampler2D ${uniformPrefix(s.id)}stageResult;`);
+    }
+    expect(prepass.map((p) => p.layerUniform)).toEqual([undefined, undefined]);
   });
 });

@@ -24,7 +24,11 @@ export interface FrameResult {
   sourceHeight: number;
   /** The number of that source; see RenderBridge.sourceGen. */
   sourceGen: number;
+  /** The window of the image it was drawn for (setViewport); null, the whole image. */
+  roi: { x: number; y: number; w: number; h: number } | null;
   histogram?: HistogramData;
+  /** The prepass stages it was drawn without, for want of a texture unit. */
+  overflowedStages: readonly string[];
 }
 
 export interface ThumbnailResult {
@@ -202,7 +206,9 @@ export class RenderBridge {
           sourceWidth: msg.sourceWidth,
           sourceHeight: msg.sourceHeight,
           sourceGen: msg.sourceGen,
+          roi: msg.roi ?? null,
           histogram: msg.histogram,
+          overflowedStages: msg.overflowedStages ?? [],
         });
         break;
       case "frameSkipped":
