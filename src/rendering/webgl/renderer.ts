@@ -1662,8 +1662,13 @@ export class WebGLRenderer {
     return this.program;
   }
 
-  render() {
+  // `viewOverlays: false` draws without the clipping warning, the mask tint
+  // and the sharpening preview, which are for the eye: a frame an extension
+  // measures (a gain map, which shadow clipping would paint blue) leaves them
+  // out, as computeHistogram does. The view state itself is kept.
+  render(options: { viewOverlays?: boolean } = {}) {
     if (!this.hasImage || !this.params) return;
+    const overlays = options.viewOverlays ?? true;
     this.syncPipeline();
     this.resize();
     const gl = this.gl;
@@ -1699,12 +1704,12 @@ export class WebGLRenderer {
     // Only version 2 photos give up the shoulder: an older edit keeps its
     // look when a transform starts setting skipToneShoulder.
     gl.uniform1i(u.uApplyToneShoulder, this.pipelineSkipShoulder && this.variant.fullInfo ? 0 : 1);
-    gl.uniform1i(u.uShowClipping, this.showClipping);
+    gl.uniform1i(u.uShowClipping, overlays ? this.showClipping : 0);
     gl.uniform3f(u.uOutsideColor, this.outsideColor[0], this.outsideColor[1], this.outsideColor[2]);
-    gl.uniform1i(u.uVizMask, this.vizMask);
+    gl.uniform1i(u.uVizMask, overlays ? this.vizMask : -1);
     gl.uniform3f(u.uVizColor, this.vizColor[0], this.vizColor[1], this.vizColor[2]);
     gl.uniform1f(u.uVizStrength, this.vizStrength);
-    gl.uniform1i(u.uSharpenViz, this.sharpenViz);
+    gl.uniform1i(u.uSharpenViz, overlays ? this.sharpenViz : 0);
     // GLSL zero-initialises uniforms, and 0 is a valid split index: every
     // draw but a split's must run with -1.
     gl.uniform1i(u.uSplitAt, -1);

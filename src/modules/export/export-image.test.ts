@@ -87,7 +87,12 @@ const h = vi.hoisted(() => {
         id: string;
         order: number;
         settings?: unknown[];
-        process: (b: Blob, p: CatalogPhoto, s: Record<string, unknown>) => Promise<Blob>;
+        process: (
+          b: Blob,
+          p: CatalogPhoto,
+          s: Record<string, unknown>,
+          context: { longEdge: number | null },
+        ) => Promise<Blob>;
       }
     >,
   };
@@ -495,6 +500,21 @@ describe("a rendered batch", () => {
     expect(out.blob).toBeNull();
     expect(h.FakeRenderer.instances[0].disposed).toBe(true);
     expect(lose).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells a processor the export's long-edge setting", async () => {
+    const seen: unknown[] = [];
+    h.processors.watch = {
+      id: "watch",
+      order: 0,
+      process: async (blob, _photo, _settings, context) => {
+        seen.push(context);
+        return blob;
+      },
+    };
+    await renderPhotosToBlobs([photo("a")], { ...SETTINGS, longEdge: 1500 });
+    await renderPhotosToBlobs([photo("a")], { ...SETTINGS, longEdge: null });
+    expect(seen).toEqual([{ longEdge: 1500 }, { longEdge: null }]);
   });
 
   it("names a file by the type a processor turned it into", async () => {

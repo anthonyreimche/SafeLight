@@ -21,6 +21,7 @@ import { getStageTextures } from "@/rendering/render-bridge";
 import { getExtSetting } from "@/extensions/ext-settings";
 import { resolveDefaultPipeline, resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
+import type { ExportProcessorContext } from "@/extensions/types";
 import { getSettings } from "@/state/settings-store";
 import { showsEdit } from "@/state/fallback-rules";
 import { buildExportIfds, embedExif, serializeExifTiff, type ExportIfds } from "./exif-write";
@@ -254,6 +255,7 @@ async function runProcessors(
   blob: Blob,
   photo: CatalogPhoto,
   processorSettings: ProcessorSettings,
+  context: ExportProcessorContext,
 ): Promise<Blob> {
   if (photosInProcessors.has(photo.id)) return blob;
   const processors = Object.values(
@@ -268,7 +270,7 @@ async function runProcessors(
       );
       const settings = { ...defaults, ...(processorSettings[proc.id] ?? {}) };
       try {
-        current = await proc.process(current, photo, settings);
+        current = await proc.process(current, photo, settings, context);
       } catch (err) {
         console.error(`[safelight] export processor "${proc.id}" threw:`, err);
       }
@@ -346,6 +348,10 @@ async function renderOne(
   // still unknown (never-decoded photo) the decode backfills it and the edit
   // is re-read below so default WB resolves correctly.
   const knownTemp = photo.exif.colorTemperature;
+  // The request, not the delivered size: a crop makes the file smaller than
+  // the long edge asked for, and a processor that renders the photo again
+  // needs the request to land on the same pixel grid.
+  const processorContext: ExportProcessorContext = { longEdge: settings.longEdge ?? null };
   let saved = await loadSavedEdit(photo.id, knownTemp);
   const crop = saved.params.crop;
   // Source aspect is unknown before decoding, so this estimate uses the
@@ -439,7 +445,7 @@ async function renderOne(
       const cap = renderer.captureFloatFrame();
       if (cap) {
         const tiff = encode16BitTiff(cap, colorSpace, exifFor(cap.width, cap.height));
-        const blob = await runProcessors(tiff, photo, processorSettings);
+        const blob = await runProcessors(tiff, photo, processorSettings, processorContext);
         return { blob, degradedTo8Bit: false };
       }
       degradedTo8Bit = true;
@@ -455,14 +461,14 @@ async function renderOne(
     const exifIfds = exifFor(encodeCanvas.width, encodeCanvas.height);
     if (settings.format === "image/tiff") {
       const tiff = encode8BitTiff(encodeCanvas, colorSpace, exifIfds);
-      const blob = await runProcessors(tiff, photo, processorSettings);
+      const blob = await runProcessors(tiff, photo, processorSettings, processorContext);
       return { blob, degradedTo8Bit };
     }
     const raw = await canvasToBlob(encodeCanvas, settings.format, settings.quality);
     if (!raw) return { blob: null, degradedTo8Bit };
     const profiled = await embedColorProfile(raw, colorSpace);
     const tagged = exifIfds ? await embedExif(profiled, serializeExifTiff(exifIfds)) : profiled;
-    const blob = await runProcessors(tagged, photo, processorSettings);
+    const blob = await runProcessors(tagged, photo, processorSettings, processorContext);
     return { blob, degradedTo8Bit };
   } finally {
     bitmap?.close();

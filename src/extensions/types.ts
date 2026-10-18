@@ -442,6 +442,18 @@ export type ExportProcessorField =
       options: { value: string; label: string }[];
     };
 
+/** What an export processor is told about the export it runs in. */
+export interface ExportProcessorContext {
+  /** The export's long-edge setting in pixels, `null` for original size. It
+   *  caps the source before the crop, so a cropped photo is delivered smaller
+   *  than this. A processor that renders the photo again through
+   *  `api.export.renderPhotos` with the same `longEdge` gets the delivered
+   *  file's pixel grid, to within a pixel when the second render is served
+   *  from a different decode of the source (a cache entry written in
+   *  between). */
+  longEdge: number | null;
+}
+
 /** A post-processing step called for each image after the WebGL pipeline
  *  encodes it to a Blob. Processors run in registration order, each receiving
  *  the Blob returned by the previous step. */
@@ -457,12 +469,14 @@ export interface ExportProcessorContribution {
    * @param blob    The encoded image Blob from the previous pipeline stage.
    * @param photo   The CatalogPhoto record (filename, exif, rating, …).
    * @param settings  Current values of the declared settings fields.
+   * @param context   The export's own settings that a processor may need.
    * @returns       A new Blob, or the original if no modification was needed.
    */
   process(
     blob: Blob,
     photo: import("@/catalog/types").CatalogPhoto,
     settings: Record<string, unknown>,
+    context: ExportProcessorContext,
   ): Promise<Blob>;
 }
 
@@ -1145,12 +1159,16 @@ export interface SafelightAPI {
      *  mask's bag — not yet applied by extension stages). `commit` ends a
      *  gesture as one undo step. */
     useMaskScope(): import("@/modules/develop/mask-scope").MaskParamScope;
-    /** The frame is sRGB, for measuring. Pass `{ asShown: true }` for a frame
-     *  drawn over the canvas: on Linux with a display profile set it is then
-     *  converted to the monitor like the canvas is (elsewhere the two match).
-     *  `paramBag` is merged over the photo's extension-stage params for this
-     *  capture only, e.g. a stage's switch to render an auxiliary image (a gain
-     *  map, a mask) aligned to the live view; the live view is untouched. */
+    /** The frame is for measuring: sRGB, and without the clipping warning, the
+     *  mask overlay and the sharpening preview the view may be showing. Pass
+     *  `{ asShown: true }` for a frame drawn over the canvas: it keeps those
+     *  overlays, and on Linux with a display profile set it is converted to
+     *  the monitor like the canvas is (elsewhere the two match). `paramBag` is
+     *  merged over the photo's extension-stage params for this capture only,
+     *  e.g. a stage's switch to render an auxiliary image (a gain map, a mask)
+     *  aligned to the live view. Neither the params nor the bag reach the live
+     *  view or the core's measurements of it (the histogram, Auto Tone, Auto
+     *  WB, Upright). */
     captureFrame(
       params: import("@/catalog/types").DevelopParams,
       options?: { asShown?: boolean; paramBag?: Record<string, unknown> },
