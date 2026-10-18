@@ -7,8 +7,8 @@
 // catalog exclusively through the project scan (see src/project/), which calls
 // buildPhoto for each new file it finds.
 
-import type { CatalogPhoto } from "@/catalog/types";
-import { parseExif, parseExifDate, parseXmp } from "@/catalog/exif";
+import type { CatalogPhoto, ExifData } from "@/catalog/types";
+import { parseExif, parseExifDate, parseXmp, type XmpData } from "@/catalog/exif";
 import {
   normalizeRotation,
   orientationToRotation,
@@ -22,6 +22,7 @@ import {
   isRawFile,
   prefersEmbeddedPreview,
   distrustsEmbeddedPreview,
+  previewLongEdge,
   sensorNativeImage,
 } from "./raw-preview";
 import { decodeNetpbm, isNetpbmName } from "./netpbm";
@@ -45,6 +46,7 @@ import {
 import { getSettings, type PreviewSource } from "@/state/settings-store";
 import { useCatalogStore, type RebuiltChange } from "@/state/catalog-store";
 import { catalogStorage } from "@/catalog/storage";
+import { readFileSlice, type FileSlice } from "@/project/native-fs";
 
 const SUPPORTED_TYPES = new Set([
   "image/jpeg",
@@ -505,6 +507,113 @@ async function workerThumb(
   }
 }
 
+/** A file's EXIF and XMP, both read from its first MiB. EXIF is independent of
+ *  the pixel decode, so even a file that can't be decoded yet gets its date and
+ *  orientation. XMP carries the camera/editor-written star rating, colour label,
+ *  keywords and title (Nikon stores the in-camera rating here, not in an EXIF tag
+ *  — it's what Windows Explorer surfaces). These seed the catalog's editable
+ *  fields; a SafeLight sidecar, if present, overrides them on import (see
+ *  project-storage). */
+async function readTags(file: Blob): Promise<{ exif: ExifData; xmp: XmpData }> {
+  const exif = await parseExif(file);
+  const xmp = await parseXmp(file);
+  if (!exif.imageDescription && xmp.title) exif.imageDescription = xmp.title;
+  return { exif, xmp };
+}
+
+/** The fields a new record starts with, whatever built its preview. A supported
+ *  file is ALWAYS recorded so it imports exactly once and is never re-scanned as
+ *  "new" on later opens — the id stays stable (edits/ratings stick to it) and the
+ *  catalog count is honest. `size` is the whole file's. */
+function newRecord(
+  file: { name: string; type: string; lastModified: number },
+  size: number,
+  { exif, xmp }: { exif: ExifData; xmp: XmpData },
+  directoryHandle: FileSystemDirectoryHandle | null,
+  fileHandle: FileSystemFileHandle | null,
+) {
+  return {
+    id: generateId(),
+    filename: file.name,
+    relPath: "",
+    folder: "",
+    directoryHandle,
+    fileHandle,
+    fileSize: size,
+    mimeType: file.type || mimeTypeFromName(file.name),
+    rating: xmp.rating ?? 0,
+    colorLabel: mapColorLabel(xmp.colorLabel) ?? ("none" as const),
+    flag: "none" as const,
+    keywords: xmp.keywords ?? [],
+    dateCreated: parseExifDate(exif.dateTimeOriginal) ?? file.lastModified,
+    dateImported: Date.now(),
+    exif,
+  };
+}
+
+/** How far into a RAW the import reads for a camera preview the grid can use:
+ *  its head first (EXIF and XMP lie in the first MiB), then twice as far each
+ *  time, before it gives up on a preview and reads the rest. Cameras put their
+ *  previews ahead of the sensor data, within the first few MB. */
+const PREVIEW_READS = [1, 2, 4, 8, 16].map((mib) => mib * 2 ** 20);
+
+/** The start of a RAW, read on until it holds a complete camera preview whose
+ *  long edge reaches `minLongEdge`, or else the whole file. */
+async function readPreviewPrefix(
+  handle: FileSystemFileHandle,
+  minLongEdge: number,
+): Promise<FileSlice> {
+  const head = await readFileSlice(handle, 0, PREVIEW_READS[0]);
+  let data = head.data;
+  for (const end of [...PREVIEW_READS.slice(1), head.size]) {
+    if (data.length >= head.size || previewLongEdge(data) >= minLongEdge) break;
+    const more = await readFileSlice(handle, data.length, end);
+    const joined = new Uint8Array(data.length + more.data.length);
+    joined.set(data);
+    joined.set(more.data, data.length);
+    data = joined;
+  }
+  return { ...head, data };
+}
+
+/** Import a file the project scan found, reading as little of it as its grid
+ *  preview needs. A RAW is read only as far as a camera preview the grid can use
+ *  (a 25 MB RAW off a spinning disk takes ten times as long to read whole) and is
+ *  recorded with its libraw metadata pending, for readPendingMetadata to read
+ *  from the whole file once the import is done. Any other file, and a RAW whose
+ *  preview won't do, is read whole and built by buildPhoto. The caller fills in
+ *  relPath/folder. */
+export async function importPhoto(
+  fileHandle: FileSystemFileHandle,
+  directoryHandle: FileSystemDirectoryHandle | null,
+): Promise<CatalogPhoto | null> {
+  const whole = async () => buildPhoto(await fileHandle.getFile(), directoryHandle, fileHandle);
+  const named = { name: fileHandle.name } as File;
+  const { previewSource, thumbMaxEdge } = getSettings();
+  if (!isRawFile(named) || previewSource === "rendered" || distrustsEmbeddedPreview(named))
+    return whole();
+
+  const prefix = await readPreviewPrefix(fileHandle, thumbMaxEdge);
+  const file = new File([prefix.data], fileHandle.name, {
+    type: prefix.type,
+    lastModified: prefix.lastModified,
+  });
+  if (prefix.data.length >= prefix.size) return buildPhoto(file, directoryHandle, fileHandle);
+
+  const tags = await readTags(file);
+  const pix = await workerThumb(file, tags.exif.orientation);
+  if (!pix) return whole();
+  return {
+    ...newRecord(file, prefix.size, tags, directoryHandle, fileHandle),
+    thumbnailBlob: pix.thumb,
+    thumbnailUrl: URL.createObjectURL(pix.thumb),
+    width: pix.width,
+    height: pix.height,
+    rotation: orientationToRotation(tags.exif.orientation),
+    metadataPending: true,
+  };
+}
+
 /** Build a catalog record for a file: thumbnail, EXIF, orientation. The caller
  *  fills in relPath/folder (they're project-relative). */
 export async function buildPhoto(
@@ -514,16 +623,8 @@ export async function buildPhoto(
 ): Promise<CatalogPhoto | null> {
   if (!isSupported(file)) return null;
 
-  // EXIF first — it's independent of pixel decode, so even a file we can't
-  // decode yet still gets correct date/orientation metadata.
-  const exif = await parseExif(file);
-
-  // XMP carries the camera/editor-written star rating, colour label, keywords
-  // and title (Nikon stores the in-camera rating here, not in an EXIF tag — it's
-  // what Windows Explorer surfaces). These seed the catalog's editable fields; a
-  // SafeLight sidecar, if present, overrides them on import (see project-storage).
-  const xmp = await parseXmp(file);
-  if (!exif.imageDescription && xmp.title) exif.imageDescription = xmp.title;
+  const tags = await readTags(file);
+  const { exif } = tags;
 
   // The metadata-only libraw pass (frame size, plus as-shot WB from cam_mul —
   // parseExif already covers DNG via AsShotNeutral) and the pixel stage run
@@ -538,26 +639,7 @@ export async function buildPhoto(
   }
   if (rawMeta?.rawExposureBias !== undefined) exif.rawExposureBias = rawMeta.rawExposureBias;
 
-  // Fields common to both outcomes. A supported file is ALWAYS recorded so it
-  // imports exactly once and is never re-scanned as "new" on later opens — the
-  // id stays stable (edits/ratings stick to it) and the catalog count is honest.
-  const base = {
-    id: generateId(),
-    filename: file.name,
-    relPath: "",
-    folder: "",
-    directoryHandle,
-    fileHandle,
-    fileSize: file.size,
-    mimeType: file.type || mimeTypeFromName(file.name),
-    rating: xmp.rating ?? 0,
-    colorLabel: mapColorLabel(xmp.colorLabel) ?? ("none" as const),
-    flag: "none" as const,
-    keywords: xmp.keywords ?? [],
-    dateCreated: parseExifDate(exif.dateTimeOriginal) ?? file.lastModified,
-    dateImported: Date.now(),
-    exif,
-  };
+  const base = newRecord(file, file.size, tags, directoryHandle, fileHandle);
 
   if (pix) {
     // The worker sized the record by what it thumbnailed — see catalogSize.
@@ -714,6 +796,109 @@ export async function repairMissingPreviews(
       await new Promise<void>((res) => setTimeout(res, 0));
     } catch {
       // One failure shouldn't stop the rest.
+    }
+  }
+}
+
+/**
+ * Read what libraw knows of each RAW whose import left it pending (see
+ * importPhoto) from the whole file: its frame size, as-shot white balance and
+ * exposure bias. Each is stored on the photo as the catalog holds it once libraw
+ * is done, the frame turned by the photo's manual rotation then, and `onRead` is
+ * handed the fields that changed. A white balance the file's EXIF declared stays.
+ * A RAW libraw can't read keeps its preview's size and isn't tried again; one
+ * whose file can't be read now keeps its mark for a later open. A photo whose
+ * mark was cleared meanwhile, or that left the catalog, isn't read at all.
+ * Sequential background work, like repairMissingPreviews. `signal` belongs to the
+ * project: once the user leaves it, the pass reads and stores no more.
+ */
+export async function readPendingMetadata(
+  photos: CatalogPhoto[],
+  onRead?: (photo: CatalogPhoto, change: RebuiltChange) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return readMetadataOf(photos, { background: true, signal }, onRead);
+}
+
+/** Read now, ahead of the background pass, the metadata still pending for the
+ *  photos among `ids`, and show it on them in the catalog: for an action about to
+ *  start an edit from a photo's as-shot white balance. Libraw takes it as work
+ *  the user waits on. */
+export async function settlePendingMetadata(ids: readonly string[]): Promise<void> {
+  const wanted = new Set(ids);
+  const pending = useCatalogStore
+    .getState()
+    .photos.filter((p) => p.metadataPending && wanted.has(p.id));
+  if (pending.length === 0) return;
+  await readMetadataOf(pending, { background: false }, (p, change) =>
+    useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
+  );
+}
+
+/** The photo selected last whose pending metadata is still to be read, and the
+ *  run of reads under way. */
+let selectedNext: string | null = null;
+let selectedReads: Promise<void> | null = null;
+
+/** Read the pending metadata of the photo the Library shows (null: one with
+ *  nothing pending), as settlePendingMetadata does, one photo at a time. A read
+ *  under way finishes, then only the photo selected last is read, so arrowing
+ *  through the grid reads the photo it stops on, not every photo it passes.
+ *  Resolves once the run of reads ends. */
+export function settleSelectedPhoto(id: string | null): Promise<void> {
+  selectedNext = id;
+  selectedReads ??= (async () => {
+    try {
+      while (selectedNext !== null) {
+        const next = selectedNext;
+        selectedNext = null;
+        await settlePendingMetadata([next]);
+      }
+    } finally {
+      selectedReads = null;
+    }
+  })();
+  return selectedReads;
+}
+
+async function readMetadataOf(
+  photos: CatalogPhoto[],
+  request: DecodeRequest,
+  onRead?: (photo: CatalogPhoto, change: RebuiltChange) => void,
+): Promise<void> {
+  const signal = request.signal;
+  const held = (id: string) => useCatalogStore.getState().photos.find((p) => p.id === id);
+  for (const photo of photos) {
+    if (signal?.aborted) return;
+    if (!photo.metadataPending || !photo.fileHandle || !held(photo.id)?.metadataPending) continue;
+    try {
+      const file = await photo.fileHandle.getFile();
+      if (signal?.aborted) return;
+      const meta = await readRawMetadata(file, request);
+      if (signal?.aborted) return;
+
+      const current = held(photo.id);
+      if (!current?.metadataPending) continue;
+      const exif = { ...current.exif };
+      if (meta?.colorTemperature && !exif.colorTemperature) {
+        exif.colorTemperature = meta.colorTemperature;
+      }
+      if (meta?.rawExposureBias !== undefined) exif.rawExposureBias = meta.rawExposureBias;
+      const manual = normalizeRotation(
+        current.rotation - orientationToRotation(current.exif.orientation),
+      );
+      const { width, height } = meta?.frame ? turned(meta.frame, manual) : current;
+      const updated = await storeOnCurrent(current, {
+        width,
+        height,
+        exif,
+        metadataPending: undefined,
+      });
+      if (updated) onRead?.(updated.photo, updated.change);
+
+      await new Promise<void>((res) => setTimeout(res, 0));
+    } catch {
+      // The file can't be read now; the mark stays for a later open.
     }
   }
 }
@@ -896,6 +1081,7 @@ export async function reimportPhotos(
         height,
         rotation,
         decodeError: undefined,
+        metadataPending: undefined, // libraw read the file above
       });
       if (updated) {
         onReimported?.(updated.photo, updated.change);
@@ -910,6 +1096,19 @@ export async function reimportPhotos(
   }
   return { ok, failed };
 }
+
+/**
+ * The most photos the automatic cache pass takes on. Filling the cache costs
+ * about 2.3 s of decode and 36 MB of storage per photo (measured 2026-10-18 on
+ * 24 MP NEFs), so 1,000 photos is some 40 minutes and 36 GB. A project that
+ * needs more than that is left to the caching Develop does as photos are opened;
+ * "Cache all now" still caches every photo.
+ */
+export const EAGER_CACHE_LIMIT = 1000;
+
+/** Refused writes in a row after which a pass gives up on the cache: a full
+ *  disk or storage quota would otherwise cost a decode per photo for nothing. */
+const REFUSED_WRITES_BEFORE_GIVING_UP = 3;
 
 /**
  * Pre-decode RAW files and write them to the develop-preview cache
@@ -931,6 +1130,8 @@ export async function reimportPhotos(
  * Develop open hit a warm cache instead of racing a slow sequential walk. Each
  * libraw decode runs in its own Web Worker, so concurrency genuinely uses extra
  * cores; the pool is capped to keep memory/CPU sane while the user browses.
+ * The automatic pass skips a project that needs more than EAGER_CACHE_LIMIT
+ * photos cached, and any pass stops once the cache refuses writes in a row.
  * Fire and forget.
  */
 export async function preDecodeRawsForCache(
@@ -954,15 +1155,33 @@ export async function preDecodeRawsForCache(
   // Writes land only in the cache folder of the project the pass began in.
   const generation = rawCacheGeneration();
   const present = await cachedKeys(); // one directory listing
+  // A cached decode is served without libraw, so Develop takes the as-shot white
+  // balance from the photo's record alone: a RAW whose import left it pending, as
+  // the catalog holds the photo now, waits for a later pass.
+  const pending = new Set(
+    useCatalogStore
+      .getState()
+      .photos.flatMap((p) => (p.metadataPending ? [p.id] : [])),
+  );
   const todo = photos.filter(
     (p) =>
       p.fileHandle &&
+      !pending.has(p.id) &&
       isRawFile({ name: p.filename } as File) &&
       !present.has(rawCacheKey(p.relPath, p.fileSize, p.rotation ?? 0)),
   );
+  if (!opts?.force && todo.length > EAGER_CACHE_LIMIT) {
+    console.info(
+      `[cache] ${todo.length} photos need caching, more than the ${EAGER_CACHE_LIMIT} ` +
+        `the automatic pass takes on: they cache as they are opened`,
+    );
+    return;
+  }
   opts?.onProgress?.(0, todo.length);
   if (todo.length === 0) return;
   let done = 0;
+  let refusedInARow = 0;
+  let giveUp = false;
   // Sized by the pool below, which "Cache all now" can reach before it warms up.
   await warmDecodePool();
 
@@ -999,7 +1218,16 @@ export async function preDecodeRawsForCache(
         return;
       }
 
-      await writeCachedPreview(key, r.data, r.width, r.height, generation);
+      const taken = await writeCachedPreview(key, r.data, r.width, r.height, generation);
+      if (taken) {
+        refusedInARow = 0;
+      } else if (++refusedInARow >= REFUSED_WRITES_BEFORE_GIVING_UP && !giveUp) {
+        giveUp = true;
+        console.warn(
+          `[cache] ${refusedInARow} writes in a row were refused (the disk or the ` +
+            `storage quota may be full); the rest are left to cache as they are opened`,
+        );
+      }
     } catch {
       // A single decode failure shouldn't stop the rest.
     } finally {
@@ -1015,7 +1243,7 @@ export async function preDecodeRawsForCache(
   const limit = Math.min(Math.max(1, decodePoolSize() - 1), todo.length);
   let next = 0;
   const worker = async (): Promise<void> => {
-    while (next < todo.length && !signal?.aborted) {
+    while (next < todo.length && !signal?.aborted && !giveUp) {
       const photo = todo[next++];
       await decodeOne(photo);
       await new Promise<void>((res) => setTimeout(res, 0)); // yield to UI

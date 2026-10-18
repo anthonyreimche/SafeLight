@@ -3,12 +3,11 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Builds every logo asset from the two masters exported from art/icon.ai:
-// safelight-stamp.svg (the round badge) gives the favicons and the app icon;
-// safelight-logo.svg (the sticker) gives the landing site logo, the README
-// banner, the social preview and the installer header. The installer sidebar's
-// card titles are set in Afacad Bold (SIL OFL 1.1, source/Afacad-Bold.ttf).
-// From the repo root:
+// Builds every logo asset from the one master exported from art/icon.ai,
+// safelight-logo.svg (the sticker): the favicons and the app icon, the landing
+// site logo, the README banner, the social preview and the installer header.
+// The installer sidebar's card titles are set in Afacad Bold (SIL OFL 1.1,
+// source/Afacad-Bold.ttf). From the repo root:
 //
 //   npm i --no-save opentype.js
 //   node art/logo/build-logo.cjs
@@ -26,10 +25,10 @@ const DARKROOM = "#0f0b0b";
 // The landing site's print palette (site/index.html), used by the installer art.
 const PRINT = { paper: "#f3ece0", card: "#fbf8f2", ink: "#16110f", muted: "#5c514b", red: "#e5172f" };
 
-const STAMP = fs.readFileSync(path.join(LOGO, "safelight-stamp.svg"), "utf8");
 const STICKER = fs.readFileSync(path.join(LOGO, "safelight-logo.svg"), "utf8");
 
-const font = opentype.loadSync(path.join(LOGO, "source", "Afacad-Bold.ttf"));
+const fontFile = fs.readFileSync(path.join(LOGO, "source", "Afacad-Bold.ttf"));
+const font = opentype.parse(fontFile.buffer.slice(fontFile.byteOffset, fontFile.byteOffset + fontFile.byteLength));
 const UPM = font.unitsPerEm;
 const round = (n) => Math.round(n * 100) / 100;
 
@@ -57,7 +56,8 @@ function pathData(commands, penX, scale) {
     .join("");
 }
 
-const svg = (viewBox, body) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">${body}</svg>\n`;
+const svg = (viewBox, body) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="${viewBox}">${body}</svg>\n`;
 
 /** The master's drawing: everything inside its root <svg>. */
 function inner(master) {
@@ -197,6 +197,12 @@ function installerHeader(box) {
   );
 }
 
+// App icon and favicons, 512 x 512: the sticker's longer side at 94% of the
+// square, centred, on a transparent ground. Every icon size gets the same even
+// margin and nothing clips.
+const icon = (box) =>
+  svg("0 0 512 512", embedCentred(STICKER, box, 512, 512, (box.h * 512 * 0.94) / Math.max(box.w, box.h)));
+
 // README banner, 2560 x 1280: the sticker at 70% height on darkroom.
 const banner = (box) =>
   svg("0 0 2560 1280", `<rect width="2560" height="1280" fill="${DARKROOM}"/>` + embedCentred(STICKER, box, 2560, 1280, 896));
@@ -212,8 +218,9 @@ async function main() {
   write("installer-header.svg", installerHeader(box));
   const bannerSvg = banner(box);
   write("banner.svg", bannerSvg);
+  const iconSvg = icon(box);
   for (const target of ["public/favicon.svg", "site/favicon.svg", "art/favicon.svg"]) {
-    fs.writeFileSync(path.join(ROOT, target), STAMP);
+    fs.writeFileSync(path.join(ROOT, target), iconSvg);
   }
   fs.writeFileSync(path.join(ROOT, "site", "logo.svg"), cropped(STICKER, box));
   await sharp(Buffer.from(ogCover(box))).jpeg({ quality: 90 }).toFile(path.join(ROOT, "site", "shots", "og-cover.jpg"));

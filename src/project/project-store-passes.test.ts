@@ -3,8 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Once a project is open, the main window repairs missing previews and fills
-// the RAW cache in the background. Both belong to that project: they get its
+// Once a project is open, the main window repairs missing previews, reads the
+// RAW metadata its imports left pending, then fills the RAW cache, all in the
+// background. Each belongs to that project: they get its
 // signal, which stops them as soon as the next project starts opening or this
 // one closes. A popped-out window shares the main window's project and runs
 // neither. Everything the open flow touches is a leaf stub; only the wiring in
@@ -18,6 +19,14 @@ const h = vi.hoisted(() => ({
   repairs: [] as (AbortSignal | undefined)[],
   /** The signal each Cache all pre-decode was handed, in order. */
   preDecodes: [] as (AbortSignal | undefined)[],
+  /** The signal each pending-metadata pass was handed, in order. */
+  metadataReads: [] as (AbortSignal | undefined)[],
+  /** Holds each pending-metadata pass until it settles. */
+  metadataDone: (): Promise<void> => Promise.resolve(),
+  /** What the pending-metadata pass reports for each photo it reads. */
+  metadataRead: null as null | { id: string; change: Record<string, unknown> },
+  /** Changes merged into the catalog store, as [id, change]. */
+  merged: [] as [string, unknown][],
   open: vi.fn(),
   /** Remembering the folder for the welcome grid, one of an open's last steps. */
   remembered: (): Promise<void> => Promise.resolve(),
@@ -31,6 +40,15 @@ vi.mock("@/modules/library/import-photos", () => ({
   },
   preDecodeRawsForCache: async (_photos: unknown, opts?: { signal?: AbortSignal }) => {
     h.preDecodes.push(opts?.signal);
+  },
+  readPendingMetadata: async (
+    _photos: unknown,
+    onRead?: (photo: { id: string }, change: Record<string, unknown>) => void,
+    signal?: AbortSignal,
+  ) => {
+    h.metadataReads.push(signal);
+    if (h.metadataRead) onRead?.({ id: h.metadataRead.id }, h.metadataRead.change);
+    await h.metadataDone();
   },
 }));
 vi.mock("./project-storage", () => ({
@@ -61,7 +79,7 @@ vi.mock("@/state/catalog-store", () => ({
       finalizeCatalog: () => {},
       reconcileCatalog: () => {},
       appendPhotos: () => {},
-      mergeRebuiltPhoto: () => {},
+      mergeRebuiltPhoto: (id: string, change: unknown) => h.merged.push([id, change]),
     }),
   },
 }));
@@ -104,6 +122,10 @@ beforeEach(async () => {
   h.detached = null;
   h.repairs = [];
   h.preDecodes = [];
+  h.metadataReads = [];
+  h.metadataDone = () => Promise.resolve();
+  h.metadataRead = null;
+  h.merged = [];
   h.remembered = () => Promise.resolve();
   h.open.mockReset();
   h.open.mockImplementation(async () => opened());
@@ -116,13 +138,50 @@ beforeEach(async () => {
 });
 
 describe("the background passes of an open project", () => {
-  it("run in the main window, both with the project's signal", async () => {
+  it("run in the main window, each with the project's signal", async () => {
     await openProject("A");
     await settle();
 
     expect(h.repairs).toHaveLength(1);
+    expect(h.metadataReads).toEqual(h.repairs);
     expect(h.preDecodes).toEqual(h.repairs);
     expect(h.repairs[0]?.aborted).toBe(false);
+  });
+
+  it("fill the RAW cache only once the pending metadata is read", async () => {
+    let finish: () => void = () => {};
+    h.metadataDone = () => new Promise<void>((resolve) => (finish = resolve));
+
+    await openProject("A");
+    await settle();
+    expect(h.metadataReads).toHaveLength(1);
+    expect(h.preDecodes).toEqual([]);
+
+    finish();
+    await settle();
+    expect(h.preDecodes).toEqual(h.metadataReads);
+  });
+
+  it("show the metadata they read on the photos in the catalog", async () => {
+    h.metadataRead = { id: "p1", change: { width: 6240, height: 4160, metadataPending: undefined } };
+
+    await openProject("A");
+    await settle();
+
+    expect(h.merged).toEqual([["p1", { width: 6240, height: 4160, metadataPending: undefined }]]);
+  });
+
+  it("fill no RAW cache for a project left while its metadata was read", async () => {
+    let finish: () => void = () => {};
+    h.metadataDone = () => new Promise<void>((resolve) => (finish = resolve));
+    await openProject("A");
+    await settle();
+
+    useProjectStore.getState().closeProject();
+    finish();
+    await settle();
+
+    expect(h.preDecodes).toEqual([]);
   });
 
   it.each(["library", "develop"])("don't run in a popped-out %s window", async (module) => {
@@ -132,6 +191,7 @@ describe("the background passes of an open project", () => {
     await settle();
 
     expect(h.repairs).toEqual([]);
+    expect(h.metadataReads).toEqual([]);
     expect(h.preDecodes).toEqual([]);
   });
 

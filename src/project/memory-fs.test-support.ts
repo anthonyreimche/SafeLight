@@ -86,6 +86,9 @@ export class MemoryFs implements NativeFsBridge {
    *  there have been at once. */
   private readonly inFlight = new Map<string, number>();
   private readonly mostInFlight = new Map<string, number>();
+  /** Bytes read() handed back per path, so a test can tell a range read from a
+   *  whole-file one. */
+  private readonly readTally = new Map<string, number>();
   /** What pickDirectory() resolves to. */
   picked: string | null = null;
 
@@ -111,6 +114,13 @@ export class MemoryFs implements NativeFsBridge {
     return this;
   }
 
+  putBytes(path: string, data: Uint8Array): this {
+    const n = norm(path);
+    this.mkdirp(parentOf(n));
+    this.files.set(n, { data: new Uint8Array(data), mtimeMs: this.clock++ });
+    return this;
+  }
+
   text(path: string): string | null {
     const f = this.files.get(norm(path));
     return f ? dec.decode(f.data) : null;
@@ -123,6 +133,11 @@ export class MemoryFs implements NativeFsBridge {
   has(path: string): boolean {
     const n = norm(path);
     return this.files.has(n) || this.dirs.has(n);
+  }
+
+  /** How many bytes read() has handed back for `path`. */
+  bytesRead(path: string): number {
+    return this.readTally.get(norm(path)) ?? 0;
   }
 
   /** How many times write() reached `path`, for asserting a save is one write. */
@@ -173,10 +188,16 @@ export class MemoryFs implements NativeFsBridge {
 
   // ── NativeFsBridge ─────────────────────────────────────────────────────────
 
-  async read(path: string): Promise<{ data: Uint8Array; mtimeMs: number; size: number }> {
-    const f = this.files.get(norm(path));
+  async read(
+    path: string,
+    range?: { start: number; end: number },
+  ): Promise<{ data: Uint8Array; mtimeMs: number; size: number }> {
+    const n = norm(path);
+    const f = this.files.get(n);
     if (!f) throw new FsError("ENOENT", "open", path);
-    return { data: f.data, mtimeMs: f.mtimeMs, size: f.data.length };
+    const data = range ? f.data.slice(range.start, range.end) : f.data;
+    this.readTally.set(n, (this.readTally.get(n) ?? 0) + data.length);
+    return { data, mtimeMs: f.mtimeMs, size: f.data.length };
   }
 
   async write(path: string, data: Uint8Array): Promise<void> {

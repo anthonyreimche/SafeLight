@@ -161,6 +161,42 @@ function makeDirHandle(fs: Bridge, p: string): FileSystemDirectoryHandle {
   return handle as unknown as FileSystemDirectoryHandle;
 }
 
+/** Part of a file, with what getFile() would say of the whole file. */
+export interface FileSlice {
+  data: Uint8Array<ArrayBuffer>;
+  size: number;
+  lastModified: number;
+  type: string;
+}
+
+/** Bytes [start, end) of a file, clipped to its end, reading no more of it than
+ *  that: a range read over the desktop bridge, where getFile() would carry the
+ *  whole file across, or a slice of the disk-backed File in the browser build. */
+export async function readFileSlice(
+  handle: FileSystemFileHandle,
+  start: number,
+  end: number,
+): Promise<FileSlice> {
+  const path = nativePathOf(handle);
+  const fs = nativeFs();
+  if (path !== null && fs) {
+    const { data, size, mtimeMs } = await fs.read(path, { start, end });
+    return {
+      data: new Uint8Array(data),
+      size,
+      lastModified: mtimeMs,
+      type: mimeFromName(handle.name),
+    };
+  }
+  const file = await handle.getFile();
+  return {
+    data: new Uint8Array(await file.slice(start, end).arrayBuffer()),
+    size: file.size,
+    lastModified: file.lastModified,
+    type: file.type,
+  };
+}
+
 /** Build a native directory handle for an absolute path. */
 export function nativeDirectoryHandle(path: string): FileSystemDirectoryHandle {
   const fs = nativeFs();

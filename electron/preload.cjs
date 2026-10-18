@@ -18,7 +18,12 @@ const privileged = {
       ipcRenderer.invoke("updates:install", String(repo), String(tag)),
   },
   fs: {
-    read: (p) => ipcRenderer.invoke("fs:read", String(p)),
+    read: (p, range) =>
+      ipcRenderer.invoke(
+        "fs:read",
+        String(p),
+        range ? { start: Number(range.start), end: Number(range.end) } : undefined,
+      ),
     write: (p, data) => ipcRenderer.invoke("fs:write", String(p), data),
     list: (p) => ipcRenderer.invoke("fs:list", String(p)),
     mkdir: (p) => ipcRenderer.invoke("fs:mkdir", String(p)),

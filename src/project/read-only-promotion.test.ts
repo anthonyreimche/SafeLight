@@ -30,32 +30,34 @@ vi.mock("@/state/settings-store", () => ({
 vi.mock("@/extensions/registry", () => ({ emitPhotoImport: async () => null }));
 vi.mock("@/modules/library/import-photos", () => ({
   isSupportedName: (name: string) => /\.jpe?g$/i.test(name),
-  buildPhoto: async (
-    file: File,
+  importPhoto: async (
+    fileHandle: FileSystemFileHandle,
     directoryHandle: FileSystemDirectoryHandle | null,
-    fileHandle: FileSystemFileHandle | null,
-  ): Promise<CatalogPhoto> => ({
-    id: `p${++h.built}:${file.name}`,
-    filename: file.name,
-    relPath: "",
-    folder: "",
-    directoryHandle,
-    fileHandle,
-    thumbnailBlob: null,
-    thumbnailUrl: null,
-    width: 4000,
-    height: 3000,
-    fileSize: file.size,
-    mimeType: "image/jpeg",
-    rating: 0,
-    colorLabel: "none",
-    flag: "none",
-    rotation: 0,
-    keywords: [],
-    dateCreated: 1,
-    dateImported: 2,
-    exif: {},
-  }),
+  ): Promise<CatalogPhoto> => {
+    const file = await fileHandle.getFile();
+    return {
+      id: `p${++h.built}:${file.name}`,
+      filename: file.name,
+      relPath: "",
+      folder: "",
+      directoryHandle,
+      fileHandle,
+      thumbnailBlob: null,
+      thumbnailUrl: null,
+      width: 4000,
+      height: 3000,
+      fileSize: file.size,
+      mimeType: "image/jpeg",
+      rating: 0,
+      colorLabel: "none",
+      flag: "none",
+      rotation: 0,
+      keywords: [],
+      dateCreated: 1,
+      dateImported: 2,
+      exif: {},
+    };
+  },
   buildPreviewBlob: async () => null,
 }));
 

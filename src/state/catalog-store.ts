@@ -19,8 +19,8 @@ import type { LoadedPreview } from "./thumbnail-loader";
 import { emitMetadataChange, emitPhotoRemove } from "@/extensions/registry";
 
 /** What a background rebuild of a photo changed (see mergeRebuiltPhoto): an
- *  edited or repaired preview with its size, rotation and the edit it shows, or a
- *  re-import's file details. */
+ *  edited or repaired preview with its size, rotation and the edit it shows, a
+ *  re-import's file details, or the RAW metadata an import left pending. */
 export type RebuiltChange = Partial<
   Pick<
     CatalogPhoto,
@@ -35,6 +35,7 @@ export type RebuiltChange = Partial<
     | "fileSize"
     | "mimeType"
     | "dateCreated"
+    | "metadataPending"
   >
 >;
 

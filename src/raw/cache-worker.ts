@@ -122,6 +122,18 @@ function idbReq<T>(req: IDBRequest<T>): Promise<T> {
   });
 }
 
+// IndexedDB answers a put before its transaction commits, and an exhausted
+// storage quota fails the commit. So an entry counts as written only when the
+// transaction completes.
+function putCommitted(db: IDBDatabase, entry: CacheEntry): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error ?? new Error("the cache write was aborted"));
+    tx.objectStore(STORE).put(entry);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Compression
 // ---------------------------------------------------------------------------
@@ -218,8 +230,7 @@ async function handleWrite(
   if (s === null) return;
   const blob = await gzip(enc.data);
   const entry: CacheEntry = { key: scopedKey(s, key), blob, width: enc.width, height: enc.height };
-  const db = await getDB();
-  await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).put(entry));
+  await putCommitted(await getDB(), entry);
 }
 
 async function handleMark(key: string, value: string): Promise<void> {

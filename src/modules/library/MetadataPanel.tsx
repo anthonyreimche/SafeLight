@@ -3,9 +3,11 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import { useEffect } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Rating } from "@/ui/components/Rating";
 import { useCatalogStore } from "@/state/catalog-store";
+import { settleSelectedPhoto } from "./import-photos";
 
 function formatSize(bytes: number): string {
   if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
@@ -64,6 +66,12 @@ export function MetadataPanel() {
     s.photos.find((p) => p.id === s.activePhotoId),
   );
   const setRating = useCatalogStore((s) => s.setRating);
+  // A RAW imported from its camera preview has the preview's size until its
+  // metadata is read from the whole file: read it now for the photo shown.
+  const pendingId = photo?.metadataPending ? photo.id : null;
+  useEffect(() => {
+    void settleSelectedPhoto(pendingId);
+  }, [pendingId]);
   if (!photo) {
     return (
       <Panel title="Metadata">

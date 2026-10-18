@@ -25,8 +25,7 @@ import { isNativeFS } from "@/project/native-fs";
 import { projectPassSignal } from "@/project/project-store";
 import { reimportPhotos } from "./import-photos";
 import { getSettings } from "@/state/settings-store";
-import { loadSavedEdit } from "@/catalog/edit-params";
-import { pasteSettings } from "@/catalog/paste-settings";
+import { copySettingsSource, pasteSettings } from "@/catalog/paste-settings";
 import { updateProcessing } from "@/catalog/update-processing";
 import { useDevelopClipboard } from "@/state/develop-clipboard";
 
@@ -215,8 +214,13 @@ export function usePhotoActions(): PhotoActions {
   const handleCopySettings = useCallback(async (id: string) => {
     const photo = useCatalogStore.getState().photos.find((p) => p.id === id);
     if (!photo) return;
-    const { params, paramBag } = await loadSavedEdit(id, photo.exif.colorTemperature);
-    setCopyDialog({ params, paramBag, sourceName: photo.filename });
+    const source = await copySettingsSource(id);
+    if (!source) return;
+    setCopyDialog({
+      params: source.params,
+      paramBag: source.paramBag,
+      sourceName: photo.filename,
+    });
   }, []);
 
   const handlePasteSettings = useCallback(async (ids: string[]) => {

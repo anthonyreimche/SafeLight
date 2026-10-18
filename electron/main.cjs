@@ -38,6 +38,7 @@ const {
   retry,
 } = require("./plugin-files.cjs");
 const { createAtomicWriter } = require("./atomic-write.cjs");
+const { readFileRange } = require("./file-range.cjs");
 const {
   validManifest,
   listInstalledManifests,
@@ -1615,7 +1616,10 @@ const fileWriter = createAtomicWriter({
 });
 
 function registerFsIpc() {
-  handlePrivileged("fs:read", async (_e, p) => {
+  // With a range, only those bytes cross (file-range.cjs): the import reads a
+  // RAW's head and camera preview, not the whole file.
+  handlePrivileged("fs:read", async (_e, p, range) => {
+    if (range) return readFileRange(p, range.start, range.end);
     const st = await fs.promises.stat(p);
     const data = await fs.promises.readFile(p); // Buffer → Uint8Array in renderer
     return { data, mtimeMs: st.mtimeMs, size: st.size };

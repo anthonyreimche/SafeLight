@@ -28,6 +28,8 @@ build/safelight-cert.pfx
 !.vscode/extensions.json
 .idea
 .DS_Store
+desktop.ini
+*.bak
 *.suo
 *.ntvs*
 *.njsproj
@@ -58,6 +60,13 @@ docs/superpowers/
 task_plan.md
 findings.md
 progress.md
+/AUDIT-REPORT.md
+/CROSS-FILE-WORKLIST.md
+/DEEP-CLEAN-SUMMARY.md
+
+# Local scratch files at the repo root
+/testwrite_root
+/raw.test.mts
 
 # Lensfun vendor database (5MB XML, regenerable — only ship the JSON)
 src/lens-profiles/vendor/

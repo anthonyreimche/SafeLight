@@ -1344,7 +1344,12 @@ export interface ExternalCatalogEntry {
  *  extension code shares the renderer realm and could otherwise read/write/delete
  *  any file. Backs the path-based handle adapters (src/project/native-fs.ts). */
 export interface NativeFsBridge {
-  read(path: string): Promise<{ data: Uint8Array; mtimeMs: number; size: number }>;
+  /** Read a file. With `range`, only bytes [start, end) are read, clipped to the
+   *  file's end; `size` is always the whole file's. */
+  read(
+    path: string,
+    range?: { start: number; end: number },
+  ): Promise<{ data: Uint8Array; mtimeMs: number; size: number }>;
   write(path: string, data: Uint8Array): Promise<void>;
   list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]>;
   mkdir(path: string): Promise<void>;

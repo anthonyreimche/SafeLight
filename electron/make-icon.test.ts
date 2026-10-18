@@ -7,6 +7,7 @@
 // encoder the NSIS installer artwork goes through.
 
 import { describe, expect, it } from "vitest";
+import sharp from "sharp";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,42 @@ describe("viewBoxSize", () => {
   it("finds the master's grid", () => {
     const master = fs.readFileSync(path.join(ROOT, "public", "favicon.svg"), "utf8");
     expect(viewBoxSize(master)).toBe(512);
+  });
+});
+
+describe("icon master", () => {
+  const read = (...parts: string[]) => fs.readFileSync(path.join(ROOT, ...parts), "utf8");
+  const icon = read("public", "favicon.svg");
+
+  it("is the logo's sticker, so every icon matches it", () => {
+    const sticker = read("art", "logo", "safelight-logo.svg");
+    const drawing = sticker.slice(sticker.indexOf(">", sticker.indexOf("<svg")) + 1, sticker.lastIndexOf("</svg>"));
+    expect(icon).toContain(drawing.trim());
+  });
+
+  it("is one file for the app, the site and art", () => {
+    expect(read("site", "favicon.svg")).toBe(icon);
+    expect(read("art", "favicon.svg")).toBe(icon);
+  });
+
+  it("is centred on the square with a margin on every side", async () => {
+    const { data, info } = await sharp(Buffer.from(icon), { density: 72 })
+      .ensureAlpha()
+      .extractChannel(3)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let [x1, y1, x2, y2] = [info.width, info.height, -1, -1];
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        if (data[y * info.width + x] === 0) continue;
+        [x1, y1, x2, y2] = [Math.min(x1, x), Math.min(y1, y), Math.max(x2, x), Math.max(y2, y)];
+      }
+    }
+    const margins = [x1, y1, info.width - 1 - x2, info.height - 1 - y2];
+    expect(Math.abs(margins[0] - margins[2])).toBeLessThanOrEqual(2);
+    expect(Math.abs(margins[1] - margins[3])).toBeLessThanOrEqual(2);
+    expect(Math.min(...margins)).toBeGreaterThanOrEqual(info.width * 0.02);
+    expect(Math.max(x2 - x1, y2 - y1) + 1).toBeGreaterThanOrEqual(info.width * 0.92);
   });
 });
 

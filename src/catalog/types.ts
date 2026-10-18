@@ -29,6 +29,11 @@ export interface CatalogPhoto {
   /** Set when the last decode attempt failed (no thumbnail). Human-readable
    *  reason for the grid's warning tooltip; cleared once a preview is built. */
   decodeError?: string;
+  /** Set on a RAW imported from its camera preview alone: libraw has yet to read
+   *  its frame size, as-shot white balance and exposure bias from the whole file
+   *  (readPendingMetadata, in the background once the import is done). Until
+   *  then width/height are the preview's. */
+  metadataPending?: true;
   /** The editFingerprint of the edit the stored preview was rendered with.
    *  Undefined when the preview was built from the file, without any edit. The
    *  edit can change without a new preview (Paste Settings, Update processing,

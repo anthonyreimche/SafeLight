@@ -166,25 +166,33 @@ export async function cachedKeys(): Promise<Set<string>> {
   }
 }
 
+/**
+ * Whether the cache could take the write: false only when the write itself
+ * failed (the disk or the storage quota is full, say), which a caller filling
+ * the cache in bulk needs to know. A write left undone because the cache is
+ * off or the project changed is not a failure.
+ */
 export async function writeCachedPreview(
   key: string,
   data: Float32Array,
   width: number,
   height: number,
   begunIn: number,
-): Promise<void> {
-  if (!getSettings().rawCacheEnabled) return;
+): Promise<boolean> {
+  if (!getSettings().rawCacheEnabled) return true;
   // Checked in the same synchronous step that queues the write, so a folder
   // change made after the check is queued, and reaches the worker, after it.
-  if (begunIn !== generation) return;
+  if (begunIn !== generation) return true;
   try {
     // An accepted decode outranks any verdict struck against the photo before.
     await Promise.all([
       workerWriteCachedPreview(key, data, width, height, getSettings().rawCacheMaxEdge),
       ...markerKeysOf(key).map((k) => workerDeleteCachedPreview(k)),
     ]);
+    return true;
   } catch {
     // Cache write failure is non-fatal — the next load will just re-decode.
+    return false;
   }
 }
 

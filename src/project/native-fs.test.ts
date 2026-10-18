@@ -17,6 +17,7 @@ import {
   nativeFs,
   nativePathOf,
   pickNativeDirectory,
+  readFileSlice,
   revealNativePath,
 } from "./native-fs";
 
@@ -251,5 +252,59 @@ describe("native writable close", () => {
     await w.close();
 
     expect(fs.text(`${root}/mixed.json`)).toBe('{"a":1}');
+  });
+});
+
+describe("readFileSlice", () => {
+  const BYTES = Uint8Array.from({ length: 100 }, (_, i) => i);
+  const numbers = (from: number, to: number) =>
+    Array.from({ length: to - from }, (_, i) => from + i);
+
+  /** A 100-byte RAW and a JPEG in /photos, through the build's own handles. */
+  function photos(native: boolean) {
+    const fs = mount("/photos");
+    fs.putBytes("/photos/a.NEF", BYTES).putBytes("/photos/b.jpg", BYTES);
+    h.fs = native ? fs : null;
+    const dir = native ? nativeDirectoryHandle("/photos") : fsaDirectoryHandle(fs, "/photos");
+    return { fs, dir };
+  }
+
+  it("reads only the range over the desktop bridge", async () => {
+    const { fs, dir } = photos(true);
+    const slice = await readFileSlice(await dir.getFileHandle("a.NEF"), 10, 20);
+    expect([...slice.data]).toEqual(numbers(10, 20));
+    expect(fs.bytesRead("/photos/a.NEF")).toBe(10);
+  });
+
+  it.each([
+    ["desktop", true],
+    ["browser", false],
+  ])("reports the whole file's size and mtime in the %s build", async (_build, native) => {
+    const { fs, dir } = photos(native);
+    const { size, lastModified } = await readFileSlice(await dir.getFileHandle("a.NEF"), 10, 20);
+    expect(size).toBe(100);
+    expect(lastModified).toBe((await fs.read("/photos/a.NEF")).mtimeMs);
+  });
+
+  it.each([
+    ["desktop", true],
+    ["browser", false],
+  ])("stops at the end of the file in the %s build", async (_build, native) => {
+    const { dir } = photos(native);
+    const { data } = await readFileSlice(await dir.getFileHandle("a.NEF"), 90, 4096);
+    expect([...data]).toEqual(numbers(90, 100));
+  });
+
+  it("slices the file in the browser build", async () => {
+    const { dir } = photos(false);
+    const { data } = await readFileSlice(await dir.getFileHandle("a.NEF"), 10, 20);
+    expect([...data]).toEqual(numbers(10, 20));
+  });
+
+  it("types a desktop file by its name, as getFile does", async () => {
+    const { dir } = photos(true);
+    const raw = await readFileSlice(await dir.getFileHandle("a.NEF"), 0, 4);
+    const jpeg = await readFileSlice(await dir.getFileHandle("b.jpg"), 0, 4);
+    expect([raw.type, jpeg.type]).toEqual(["", "image/jpeg"]);
   });
 });

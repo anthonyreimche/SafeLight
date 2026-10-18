@@ -1,22 +1,21 @@
 # Safelight logo
 
-The logo is drawn in `art/icon.ai`. Two of its artboards are the masters here,
-exported as SVG on a 512 x 512 viewBox:
+The logo is drawn in `art/icon.ai`: artboard 3, the sticker, is the one master
+here, `safelight-logo.svg`, on a 512 x 512 viewBox. It is the source of the app
+icon, the favicons, the landing site logo, the README banner, the social
+preview and the installer header. The bulb's grain is a 234 x 301 px raster
+inside the artboard, so the logo is sharp at any size except for that texture.
 
-| File | Artboard | Use |
-| --- | --- | --- |
-| `safelight-stamp.svg` | 6, round badge | App icon and favicons |
-| `safelight-logo.svg` | 7, sticker | Landing site logo, README banner, social preview, installer header |
-
-To change the logo, re-export the artboard over its master, then run, from the
-repo root:
+To change the logo, export the artboard over the master and round its path
+coordinates to 0.01 (`pdftocairo -svg -f 3 -l 3 art/icon.ai` gives the SVG; the
+root's pt size is dropped and a `<title>` added), then run, from the repo root:
 
     npm i --no-save opentype.js
     node art/logo/build-logo.cjs
 
 It writes `banner.svg`, `installer-header.svg` and `installer-sidebar.svg`
 here, and overwrites `public/favicon.svg`, `site/favicon.svg` and
-`art/favicon.svg` (the stamp), `site/logo.svg` (the sticker cropped to its
+`art/favicon.svg` (the icon), `site/logo.svg` (the sticker cropped to its
 outline), `art/Banner.png` and `site/shots/og-cover.jpg`. Then `npm run icon`
 rebuilds `build/icon.*` and the installer bitmaps. opentype.js is only for the
 installer sidebar's card titles, set in Afacad Bold (`source/Afacad-Bold.ttf`,
@@ -24,9 +23,10 @@ SIL Open Font License 1.1, `source/OFL.txt`).
 
 ## Icon
 
-The stamp at every size: `npm run icon` draws each `.ico` size (16 to 256 px)
-and the 1024 px `icon.png` from `public/favicon.svg` at that size. Below 48 px
-the script can't be read; the red bulb on the dark disc is what carries it.
+The sticker centred on a transparent 512 x 512 square, its longer side at 94%
+of the side. `npm run icon` draws each `.ico` size (16 to 256 px) and the
+1024 px `icon.png` from `public/favicon.svg` at that size. Below 48 px the
+script can't be read; the red bulb in its black outline is what carries it.
 
 ## Logo
 

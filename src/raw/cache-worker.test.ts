@@ -114,6 +114,20 @@ describe("cache worker, no reachable folder", () => {
     cmd: "setCacheDir", dir: null, scope,
   });
 
+  // IndexedDB answers a put before its transaction commits, and an exhausted
+  // quota fails the commit. The pass counts refused writes to know when to stop,
+  // so a write is only reported once it has landed.
+  it("replies with an error when the write's transaction does not commit", async () => {
+    const idb = new FakeIndexedDB();
+    idb.commitError = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    const { send } = await startCacheWorker(idb);
+
+    const reply = await send(write(1, new Float32Array([0.25, 0.5, 0.75, 1])));
+
+    expect(reply).toEqual({ type: "error", id: 1, message: expect.stringContaining("quota") });
+    expect(idb.rows.size).toBe(0);
+  });
+
   it("keeps same-named RAWs from different projects apart", async () => {
     const { send } = await startCacheWorker(new FakeIndexedDB());
     const fromA = new Float32Array([0.25, 0.5, 0.75, 1]);

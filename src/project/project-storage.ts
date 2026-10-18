@@ -48,7 +48,7 @@ import {
   type StoredPhoto,
 } from "@/catalog/types";
 import type { CatalogStorage } from "@/catalog/storage";
-import { buildPhoto, buildPreviewBlob } from "@/modules/library/import-photos";
+import { buildPreviewBlob, importPhoto } from "@/modules/library/import-photos";
 import { getSettings } from "@/state/settings-store";
 import type { LoadedPreview } from "@/state/thumbnail-loader";
 import {
@@ -667,14 +667,14 @@ export class ProjectStorage implements CatalogStorage {
           if (counted.has(f)) onProgress?.(++newDone, newTotal);
           return null;
         }
-        // New file: decode, thumbnail, cache the preview on disk.
+        // New file: decode, thumbnail, cache the preview on disk. The import reads
+        // only as much of the file as its preview needs.
         if (signal?.aborted) {
           onProgress?.(++newDone, newTotal);
           return null;
         }
         try {
-          const file = await f.handle.getFile();
-          const built = await buildPhoto(file, f.parent, f.handle);
+          const built = await importPhoto(f.handle, f.parent);
           if (!built) {
             onProgress?.(++newDone, newTotal);
             return null;

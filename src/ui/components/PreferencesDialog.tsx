@@ -75,6 +75,7 @@ import { isNativeFS, nativeFs } from "@/project/native-fs";
 import { projectPassSignal } from "@/project/project-store";
 import type { ExternalCatalogEntry } from "@/extensions/types";
 import {
+  EAGER_CACHE_LIMIT,
   preDecodeRawsForCache,
   rebuildThumbnails,
 } from "@/modules/library/import-photos";
@@ -1423,7 +1424,7 @@ function PreviewsSection() {
       </div>
       <Field
         label="Cache decoded RAW previews"
-        hint="Re-opening a photo in Develop loads in ~50ms instead of re-decoding (3–8s). Cache all decodes the whole catalog on open; As needed only caches photos as you open them; Off never caches."
+        hint={`Re-opening a photo in Develop loads in ~50ms instead of re-decoding (3–8s). Cache all decodes the uncached photos on open, up to ${EAGER_CACHE_LIMIT.toLocaleString()} at a time (a larger project caches as you open photos, or use Cache all now); As needed only caches photos as you open them; Off never caches.`}
       >
         <OptionRow
           value={cacheMode}
