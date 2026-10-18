@@ -646,6 +646,9 @@ describe("buildPhoto", () => {
 describe("importPhoto", () => {
   /** The grid-sized camera preview most RAWs carry near their start. */
   const PREVIEW = { width: 1620, height: 1080, payload: 500_000 };
+  /** The sensor render a whole-file decode hands back: small, because the
+   *  real float-to-sRGB bake visits every pixel. */
+  const RENDER = { width: 960, height: 640 };
 
   /** A RAW of `size` bytes on the desktop bridge holding `previews`, and the
    *  native handles the project scan would hand the import. The preview the
@@ -751,7 +754,7 @@ describe("importPhoto", () => {
   it("reads the file again whole when the preview it found won't decode", async () => {
     const raw = await onDisk("a.NEF", 5 * MiB, [{ at: 200_000, ...PREVIEW }]);
     h.blobSize = { width: 0, height: 0 };
-    h.rawFloat = { width: 6000, height: 4000 };
+    h.rawFloat = RENDER;
 
     const photo = (await importPhoto(raw.handle, raw.dir))!;
 
@@ -767,7 +770,7 @@ describe("importPhoto", () => {
     ["a JPEG", "a.jpg", "auto"],
   ] as const)("reads %s whole, as before", async (_what, name, mode) => {
     h.previewSource = mode;
-    h.rawFloat = { width: 6000, height: 4000 };
+    h.rawFloat = RENDER;
     const raw = await onDisk(name, 5 * MiB, [{ at: 200_000, ...PREVIEW }]);
 
     const photo = (await importPhoto(raw.handle, raw.dir))!;
