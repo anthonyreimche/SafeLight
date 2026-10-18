@@ -48,13 +48,17 @@ export type WorkerRequest =
   // blitted to the display) so an extension can grab a "before" frame at the
   // current source + viewport without disturbing the live view. The live params
   // and pipeline are restored afterwards. See render-bridge.capture().
-  // `asShown`: the frame as the screen shows it, through the display profile.
+  // `asShown`: the frame as the screen shows it, through the display profile and
+  // with the view's overlays (clipping warning, mask tint, sharpening preview).
   | {
       cmd: "capture";
       reqId: number;
       params: DevelopParams;
       pipeline: ResolvedPipeline;
       asShown?: boolean;
+      /** Merged over the live bag for this capture only (an extension's
+       *  auxiliary render: a gain map, a mask). */
+      bagPatch?: Record<string, unknown>;
     }
   | { cmd: "setAsShotTemperature"; kelvin: number }
   | { cmd: "setHslStyle"; range: number; smooth: number }
@@ -210,6 +214,11 @@ let lastParams: DevelopParams | null = null;
 // Set by clearSource, cleared once the develop renderer is handed the next
 // photo's source.
 let awaitingSource = false;
+// Set by each capture, cleared by each live render. The histogram and Upright
+// redraw with the uniforms and program the last render bound, and restoring a
+// capture's params, bag and pipeline only puts back what the next render binds,
+// so until one runs they would measure the capture (a gain map, a "before").
+let liveStateStale = false;
 // The number of the develop renderer's source, carried by every frame: moved on by each
 // setImage and each main uploadSource that binds, sent while there is a renderer or not,
 // and by each bindSource hit. RenderBridge.sourceGen counts the same messages, so the
@@ -243,6 +252,14 @@ function sourceFailed(err: unknown) {
     sourceGen,
     message: err instanceof Error ? err.message : String(err),
   });
+}
+
+// Draws the live view, kept on the canvas rather than sent, when a capture
+// drew last: a readback that redraws what the last render bound measures it.
+function bindLiveView(target: WebGLRenderer): void {
+  if (!liveStateStale) return;
+  target.render();
+  liveStateStale = false;
 }
 
 // The bag both renderers draw with. Kept, so a renderer created later starts from it.
@@ -486,8 +503,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         // Render `params` with their photo's pipeline to a detached bitmap
         // without touching the display canvas the main thread blits from.
         // transferToImageBitmap() resets the offscreen, so the next live
-        // render() repaints it; restoring lastParams and the live pipeline keeps
-        // the renderer's state in sync with the live view.
+        // render() repaints it; restoring lastParams and the live pipeline puts
+        // back what that render binds, and liveStateStale has a readback before
+        // it draw the live view first.
         if (!renderer || !canvas) {
           const blank = new OffscreenCanvas(1, 1);
           respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
@@ -501,10 +519,14 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         // A throw here would otherwise fall to the generic "error" response, which
         // carries no reqId, so the awaiting capture() would hang. Settle with the
         // blank fallback instead.
+        const patched = msg.bagPatch !== undefined;
         try {
+          if (patched) live.setContributedParams({ ...latestParamBag, ...msg.bagPatch });
           const captured = withPipeline(live, msg.pipeline, latestPipeline, () => {
             live.setParams(msg.params);
-            live.render();
+            // Only a frame drawn over the canvas keeps what the view draws for
+            // the eye; a measured one would carry it into its numbers.
+            live.render({ viewOverlays: msg.asShown === true });
             return target.transferToImageBitmap();
           });
           if (lastParams) live.setParams(lastParams);
@@ -514,7 +536,11 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           const blank = new OffscreenCanvas(1, 1);
           respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
         } finally {
+          // The patched bag was this capture's alone; the live view renders
+          // with the merged bag again, as thumbnails restore theirs.
+          if (patched) live.setContributedParams(latestParamBag);
           live.setMonitorTransform(latestMonitorTransform);
+          liveStateStale = true;
         }
         break;
       }
@@ -541,6 +567,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         let bitmap: ImageBitmap | null = null;
         try {
           renderer.render();
+          liveStateStale = false;
           bitmap = canvas.transferToImageBitmap();
           const resp: WorkerResponse = {
             type: "frame",
@@ -616,6 +643,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
 
       case "computeHistogram": {
         if (!renderer || awaitingSource) break;
+        bindLiveView(renderer);
         const histogram = renderer.computeHistogram(!!msg.wantExtended);
         respond({ type: "histogram", histogram });
         break;
@@ -725,6 +753,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         // via uprightError (carrying the reqId) rather than the reqId-less generic
         // "error" response, which wouldn't clear the pending promise.
         try {
+          if (renderer) bindLiveView(renderer);
           const pixels = renderer?.readDownscaledPixels(256);
           if (!pixels) {
             respond({ type: "upright", reqId: msg.reqId, result: { straighten: 0, perspectiveV: 0, perspectiveH: 0 } });

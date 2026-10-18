@@ -1429,6 +1429,14 @@ describe("RenderBridge worker replies", () => {
       expect(first.state).toBe("resolved");
       expect(first.value).toBe(bitmapOne);
     });
+
+    it("sends a bag patch only when asked for one", () => {
+      void bridge.capture(params);
+      void bridge.capture(params, { paramBag: { "a.mode": 1 } });
+      const [plain, patched] = sent(worker, "capture");
+      expect("bagPatch" in plain).toBe(false);
+      expect(patched.bagPatch).toEqual({ "a.mode": 1 });
+    });
   });
 
   describe("upright", () => {

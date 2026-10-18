@@ -21,6 +21,7 @@ import { getStageTextures } from "@/rendering/render-bridge";
 import { getExtSetting } from "@/extensions/ext-settings";
 import { resolveDefaultPipeline, resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
+import type { ExportProcessorContext } from "@/extensions/types";
 import { getSettings } from "@/state/settings-store";
 import { showsEdit } from "@/state/fallback-rules";
 import { buildExportIfds, embedExif, serializeExifTiff, type ExportIfds } from "./exif-write";
@@ -87,12 +88,43 @@ export interface ExportResult {
   zipFellBack?: boolean;
 }
 
+/** What a headless render (api.export.renderPhotos) takes beyond the export
+ *  settings. */
+export interface RenderPhotosOptions {
+  /** Merged over each photo's own extension-stage params for this render
+   *  only, e.g. a stage's switch to render an auxiliary image (a gain map, a
+   *  mask) at export size with the photo's exact geometry. */
+  paramBag?: Record<string, unknown>;
+}
+
 const EXTENSION: Record<ExportFormat, string> = {
   "image/jpeg": "jpg",
   "image/png": "png",
   "image/webp": "webp",
   "image/tiff": "tif",
 };
+
+/** Image types an export processor may turn a file into, with the extension
+ *  the delivered file takes. */
+const PROCESSED_EXTENSION: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/tiff": "tif",
+  "image/avif": "avif",
+  "image/jxl": "jxl",
+  "image/heic": "heic",
+};
+
+/** The delivered file's extension: the format's, unless a processor changed
+ *  the image to another known type (e.g. an HDR processor writing AVIF). */
+export function exportExtension(format: ExportFormat, blobType: string): string {
+  // Own keys only: "constructor" is as valid a Blob type as any.
+  const processed = Object.hasOwn(PROCESSED_EXTENSION, blobType)
+    ? PROCESSED_EXTENSION[blobType]
+    : undefined;
+  return processed && blobType !== format ? processed : EXTENSION[format];
+}
 
 function canvasToBlob(
   canvas: HTMLCanvasElement,
@@ -163,13 +195,15 @@ export function safeFileName(name: string): string {
   return safe === "" ? "untitled" : safe;
 }
 
-// Output filename: original base name + the chosen format's extension.
+// Output filename: original base name + the chosen format's extension (or the
+// one a processor's image type gave it).
 export function exportFilename(
   photo: CatalogPhoto,
   format: ExportFormat,
+  ext: string = EXTENSION[format],
 ): string {
   const base = safeFileName(photoExportBase(photo));
-  return `${base}.${EXTENSION[format]}`;
+  return `${base}.${ext}`;
 }
 
 /** Resolve a filename template string, substituting built-in variables from
@@ -178,9 +212,9 @@ export function resolveFilenameTemplate(
   template: string,
   photo: CatalogPhoto,
   format: ExportFormat,
+  ext: string = EXTENSION[format],
 ): string {
   const base = photoExportBase(photo);
-  const ext = EXTENSION[format];
   const exifDate = photo.exif.dateTimeOriginal ?? "";
   // EXIF dates are "YYYY:MM:DD HH:MM:SS" or ISO; grab the first 10 chars.
   const datePart = exifDate.replace(/:/g, "-").slice(0, 10);
@@ -203,6 +237,16 @@ export function resolveFilenameTemplate(
   return `${safeFileName(stem)}${dotExt}`;
 }
 
+// Processors run inside renderOne. One that renders its photo again through
+// api.export.renderPhotos (an auxiliary image at export size) would otherwise
+// run every processor again, itself included, without end, so a render of a
+// photo whose processors are running skips them. It is keyed by photo, not one
+// flag: the nested render is of the photo the processor was handed, while
+// other batches (a gallery publish beside a user export) render other photos
+// at the same time, awaiting processors of their own that must still run. A
+// photo is in here at most once, as a second render of it skips the processors.
+const photosInProcessors = new Set<string>();
+
 /** Run each registered export processor in registration order, chaining the
  *  output Blob of each step into the next. Errors in a processor are caught
  *  and logged; the unmodified input Blob is forwarded so a broken extension
@@ -211,21 +255,28 @@ async function runProcessors(
   blob: Blob,
   photo: CatalogPhoto,
   processorSettings: ProcessorSettings,
+  context: ExportProcessorContext,
 ): Promise<Blob> {
+  if (photosInProcessors.has(photo.id)) return blob;
   const processors = Object.values(
     useRegistry.getState().exportProcessors,
   ).sort((a, b) => a.order - b.order);
   let current = blob;
-  for (const proc of processors) {
-    const defaults = Object.fromEntries(
-      (proc.settings ?? []).map((f) => [f.key, f.default]),
-    );
-    const settings = { ...defaults, ...(processorSettings[proc.id] ?? {}) };
-    try {
-      current = await proc.process(current, photo, settings);
-    } catch (err) {
-      console.error(`[safelight] export processor "${proc.id}" threw:`, err);
+  photosInProcessors.add(photo.id);
+  try {
+    for (const proc of processors) {
+      const defaults = Object.fromEntries(
+        (proc.settings ?? []).map((f) => [f.key, f.default]),
+      );
+      const settings = { ...defaults, ...(processorSettings[proc.id] ?? {}) };
+      try {
+        current = await proc.process(current, photo, settings, context);
+      } catch (err) {
+        console.error(`[safelight] export processor "${proc.id}" threw:`, err);
+      }
     }
+  } finally {
+    photosInProcessors.delete(photo.id);
   }
   return current;
 }
@@ -289,6 +340,7 @@ async function renderOne(
   photo: CatalogPhoto,
   settings: ExportSettings,
   processorSettings: ProcessorSettings,
+  bagPatch?: Record<string, unknown>,
 ): Promise<RenderOneResult> {
   // The saved crop determines how many source pixels the requested long edge
   // needs: exporting a half-width crop at 2048 px must render from a 4096 px
@@ -296,6 +348,10 @@ async function renderOne(
   // still unknown (never-decoded photo) the decode backfills it and the edit
   // is re-read below so default WB resolves correctly.
   const knownTemp = photo.exif.colorTemperature;
+  // The request, not the delivered size: a crop makes the file smaller than
+  // the long edge asked for, and a processor that renders the photo again
+  // needs the request to land on the same pixel grid.
+  const processorContext: ExportProcessorContext = { longEdge: settings.longEdge ?? null };
   let saved = await loadSavedEdit(photo.id, knownTemp);
   const crop = saved.params.crop;
   // Source aspect is unknown before decoding, so this estimate uses the
@@ -361,7 +417,7 @@ async function renderOne(
     if (knownTemp == null) {
       saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
     }
-    renderer.setContributedParams(saved.paramBag);
+    renderer.setContributedParams(bagPatch ? { ...saved.paramBag, ...bagPatch } : saved.paramBag);
     setPhotoParams(renderer, saved.params);
     const colorSpace = settings.colorSpace ?? "srgb";
 
@@ -389,7 +445,7 @@ async function renderOne(
       const cap = renderer.captureFloatFrame();
       if (cap) {
         const tiff = encode16BitTiff(cap, colorSpace, exifFor(cap.width, cap.height));
-        const blob = await runProcessors(tiff, photo, processorSettings);
+        const blob = await runProcessors(tiff, photo, processorSettings, processorContext);
         return { blob, degradedTo8Bit: false };
       }
       degradedTo8Bit = true;
@@ -405,14 +461,14 @@ async function renderOne(
     const exifIfds = exifFor(encodeCanvas.width, encodeCanvas.height);
     if (settings.format === "image/tiff") {
       const tiff = encode8BitTiff(encodeCanvas, colorSpace, exifIfds);
-      const blob = await runProcessors(tiff, photo, processorSettings);
+      const blob = await runProcessors(tiff, photo, processorSettings, processorContext);
       return { blob, degradedTo8Bit };
     }
     const raw = await canvasToBlob(encodeCanvas, settings.format, settings.quality);
     if (!raw) return { blob: null, degradedTo8Bit };
     const profiled = await embedColorProfile(raw, colorSpace);
     const tagged = exifIfds ? await embedExif(profiled, serializeExifTiff(exifIfds)) : profiled;
-    const blob = await runProcessors(tagged, photo, processorSettings);
+    const blob = await runProcessors(tagged, photo, processorSettings, processorContext);
     return { blob, degradedTo8Bit };
   } finally {
     bitmap?.close();
@@ -469,14 +525,29 @@ async function makeBatchRenderer(
         );
       }
     }
+    renderer.setStageTextures(getStageTextures());
+    renderer.setOutputColorSpace(settings.colorSpace ?? "srgb");
   } catch (err) {
     console.error("[export] the renderer is unavailable:", err);
     renderer?.dispose();
+    loseContext(canvas);
     return null;
   }
-  renderer.setStageTextures(getStageTextures());
-  renderer.setOutputColorSpace(settings.colorSpace ?? "srgb");
   return { renderer, canvas };
+}
+
+/** Free a canvas's WebGL context now rather than at garbage collection:
+ *  Chromium keeps only so many contexts (about 16) and drops the oldest,
+ *  which could be a running export's when a processor renders more. */
+function loseContext(canvas: HTMLCanvasElement): void {
+  const gl = canvas.getContext?.("webgl2") as WebGL2RenderingContext | null | undefined;
+  gl?.getExtension("WEBGL_lose_context")?.loseContext();
+}
+
+/** Dispose a batch's renderer and free its canvas's WebGL context. */
+function releaseBatch(made: { renderer: WebGLRenderer; canvas: HTMLCanvasElement }): void {
+  made.renderer.dispose();
+  loseContext(made.canvas);
 }
 
 /** The persisted default export settings (Preferences ▸ Export) as a ready-to-
@@ -516,6 +587,7 @@ export async function renderPhotosToBlobs(
   photos: CatalogPhoto[],
   settings: ExportSettings,
   onProgress?: (p: ExportProgress) => void,
+  options?: RenderPhotosOptions,
 ): Promise<RenderedPhoto[]> {
   const made = await makeBatchRenderer(settings, photos[0]);
   if (!made)
@@ -528,7 +600,9 @@ export async function renderPhotosToBlobs(
       const photo = photos[i];
       let blob: Blob | null = null;
       try {
-        blob = (await renderOne(renderer, canvas, photo, settings, procSettings)).blob;
+        blob = (
+          await renderOne(renderer, canvas, photo, settings, procSettings, options?.paramBag)
+        ).blob;
       } catch {
         blob = null;
       }
@@ -541,7 +615,7 @@ export async function renderPhotosToBlobs(
       onProgress?.({ done: i + 1, total: photos.length, filename: photo.filename });
     }
   } finally {
-    renderer.dispose();
+    releaseBatch(made);
   }
   return out;
 }
@@ -594,9 +668,10 @@ export async function exportPhotos(
         blob = null;
       }
       if (blob) {
+        const ext = exportExtension(settings.format, blob.type);
         const rawName = templateEntry
-          ? resolveFilenameTemplate(templateEntry.template, photo, settings.format)
-          : exportFilename(photo, settings.format);
+          ? resolveFilenameTemplate(templateEntry.template, photo, settings.format, ext)
+          : exportFilename(photo, settings.format, ext);
         const name = uniqueName(rawName, usedNames);
         try {
           if (zip) {
@@ -631,7 +706,7 @@ export async function exportPhotos(
       onProgress?.({ done: i + 1, total: photos.length, filename: photo.filename });
     }
   } finally {
-    renderer.dispose();
+    releaseBatch(made);
   }
 
   if (zip && exported > 0) {

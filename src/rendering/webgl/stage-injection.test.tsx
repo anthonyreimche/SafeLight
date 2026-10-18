@@ -935,3 +935,57 @@ describe("version 2 stage results", () => {
     expect(prepass.map((p) => p.layerUniform)).toEqual([undefined, undefined]);
   });
 });
+
+// A post-transform stage can read the scene's headroom as slSceneLuma. Version
+// 2's main() declares it; version 1's frozen text can't, so the injector
+// declares it inside the block of a display stage that names it.
+describe("slSceneLuma", () => {
+  const reader = flagged({
+    id: "acme.hdr",
+    phase: "output-encode",
+    space: { encoding: "perceptual" },
+    glsl: "c = vec3(slSceneLuma);",
+  });
+
+  it("is declared from lin inside a version 1 display stage that reads it", () => {
+    const { injection } = buildStageInjection([reader], V1_VARIANT);
+    expect(injection.effects).toContain("float slSceneLuma = max(luma(lin), 0.0);");
+  });
+
+  for (const phase of ["display-adjust", "effects", "output-encode"] as const) {
+    it(`is declared inside a version 1 ${phase} stage that reads it`, () => {
+      const stage = flagged({ phase, glsl: "c *= slSceneLuma;" });
+      const { injection } = buildStageInjection([stage], V1_VARIANT);
+      expect(injection.effects).toBe("{\nfloat slSceneLuma = max(luma(lin), 0.0);\nc *= slSceneLuma;\n}");
+    });
+  }
+
+  it("is declared once in each block when several stages read it on version 1", () => {
+    const readers = [
+      flagged({ id: "acme.a", phase: "display-adjust", glsl: "c *= slSceneLuma;" }),
+      flagged({ id: "acme.b", phase: "effects", glsl: "c += slSceneLuma;" }),
+      flagged({ id: "acme.c", phase: "output-encode", glsl: "c = vec3(slSceneLuma);" }),
+    ];
+    const { injection } = buildStageInjection(readers, V1_VARIANT);
+    // Each declaration opens its own braces and the block closes before the
+    // next one starts, so no two share a scope: the output is exactly these.
+    const block = /\{\nfloat slSceneLuma = max\(luma\(lin\), 0\.0\);\n[^{}]*\}/g;
+    expect(injection.effects.match(block)).toHaveLength(3);
+    expect(injection.effects.replace(block, "").trim()).toBe("");
+  });
+
+  it("is left to main() on version 2", () => {
+    const { injection } = buildStageInjection([reader], V2_VARIANT);
+    expect(injection.effects).not.toContain("float slSceneLuma");
+  });
+
+  it("is not declared for a stage that doesn't name it", () => {
+    const plain = flagged({ id: "acme.plain", phase: "output-encode", glsl: "c *= 1.0;" });
+    expect(buildStageInjection([plain], V1_VARIANT).injection.effects).not.toContain("slSceneLuma");
+  });
+
+  it("is not declared before the display transform", () => {
+    const early = flagged({ glsl: "lin *= slSceneLuma;" });
+    expect(buildStageInjection([early], V1_VARIANT).injection.sceneLinear).not.toContain("float slSceneLuma");
+  });
+});

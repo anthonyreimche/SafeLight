@@ -132,6 +132,14 @@ The core's own working values stay linear Rec.709 and signed before the display 
 
 **Registration checks.** An invalid `space` or `reads` refuses the stage: a missing or unknown `encoding`, an unknown `primaries` or `reads` value, or a `space` that isn't an object. The core logs a console error and doesn't register the stage, and a refused re-registration keeps the previously registered stage and its params instead of replacing them. Unknown keys inside `space` (a typo such as `primary`) and `space` on a `geometry` stage are accepted with a console warning, and the core ignores them.
 
+### Scene luminance after the transform: `slSceneLuma`
+
+A stage in `display-adjust`, `effects` or `output-encode` can read `float slSceneLuma` in its inline `glsl`: the pixel's scene luminance as the display transform would receive it if the core's default filmic shoulder hadn't compressed it. The shoulder is undone on the same per-pixel and regional blend the tone block uses, so Highlights, Shadows, Exposure, masks and `scene-linear` and `tone-map` stages all carry through. It is the headroom the SDR rendition gave up, which an HDR or highlight-aware stage needs. Under a transform that sets `skipToneShoulder` the shoulder doesn't run, and `slSceneLuma` is simply `luma(lin)` at the transform's input.
+
+- Only version 2 photos carry the headroom. On a version 1 photo, whose program is frozen, a stage that names `slSceneLuma` gets `luma(lin)` after the core's tone block, which carries none of the headroom the shoulder removed. Version 1 runs the shoulder under every transform, one that sets `skipToneShoulder` included.
+- It is read-only and exists only in the inline `glsl` of post-transform stages; pass it to helpers as an argument. A stage before the transform that names it doesn't compile.
+- Set `minAppVersion` to the first release with it (3.0.0): older builds don't compile a stage that names it.
+
 ### Process versions
 
 A photo's edit carries `params.processVersion`, the rendering generation it was made with. It decides how the core treats values after the display transform. Before the transform both versions give a stage the same `lin`, with two exceptions: on version 2 the built-in denoiser keeps what `decode` stages did to it (see [`phase: "decode"`](#processingstagecontribution--gpu-stage)), and with any heal or clone spot version 2 develops, denoises and splits from a copy of the source that keeps its headroom and its channels below black, where version 1 clips the whole frame to [0, 1].
@@ -216,11 +224,24 @@ interface ExportProcessorContribution {
   id: string;     // globally unique, e.g. "my-ext.watermark"
   label: string;  // collapsible section header in the Export panel
   settings?: ExportProcessorField[]; // same shape as SettingsField
-  process(blob: Blob, photo: CatalogPhoto, settings: Record<string, unknown>): Promise<Blob>;
+  process(
+    blob: Blob,
+    photo: CatalogPhoto,
+    settings: Record<string, unknown>,
+    context: ExportProcessorContext,
+  ): Promise<Blob>;
+}
+
+interface ExportProcessorContext {
+  longEdge: number | null; // the export's long-edge setting; null = original size
 }
 ```
 
 Called once per exported image after the WebGL pipeline encodes it. Processors run in registration order, each receiving the previous step's Blob. Each declared field's `default` is merged with the user's current values before `process`. Processor errors are caught and logged and the unmodified Blob is forwarded, so a broken extension never silently drops an export.
+
+A processor may render more of the photo through `api.export.renderPhotos` (an auxiliary image at export size); a render of that same photo started from inside its processors runs no export processors. `context.longEdge` is the export's long-edge setting, applied before the crop, so the delivered file can be smaller than it; render again with the same `longEdge` and the image lands on the delivered file's pixel grid, to within a pixel when the second render comes from a different decode of the source.
+
+If `process` returns another image type (its Blob's `type` is `image/avif`, `image/jxl`, `image/heic`, `image/png`, `image/webp`, `image/tiff` or `image/jpeg` and differs from the export format), the delivered file takes that type's extension, in files, ZIP and folder delivery alike.
 
 ## `FilenameTemplateContribution`
 

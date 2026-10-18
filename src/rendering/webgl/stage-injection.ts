@@ -565,6 +565,10 @@ function emitCoreStage(
   return `{\n${s.glsl}\n}`;
 }
 
+/** Version 1's frozen tone block can't record the scene's headroom, so a
+ *  display stage that names slSceneLuma gets the luminance it does have. */
+const V1_SCENE_LUMA = "float slSceneLuma = max(luma(lin), 0.0);\n";
+
 /** Extension stages: namespace uniforms + helpers so two extensions never
  *  collide, and record bindings so render() can drive them from the bag.
  *  Returns the stage's block. */
@@ -573,6 +577,8 @@ function emitExtensionStage(
   declared: Declared,
   split: StageSplit | undefined,
   layered: boolean,
+  variant: ShaderVariant,
+  domain: StageDomain | null,
 ): string {
   const uPfx = uniformPrefix(s.id);
   const hPfx = helperPrefix(s.id);
@@ -582,7 +588,9 @@ function emitExtensionStage(
   const prelude = declarePrepass(s, uPfx, split, declared, layered);
   let inline = rewriteGlsl(s.glsl, s.uniforms, uPfx, hPfx, helperNames);
   inline = replaceIdentifiers(inline, (s.textures ?? []).map((t) => t.key), uPfx);
-  return `{\n${prelude}${inline}\n}`;
+  const sceneLuma =
+    !variant.fullInfo && domain === "display" && /\bslSceneLuma\b/.test(s.glsl) ? V1_SCENE_LUMA : "";
+  return `{\n${sceneLuma}${prelude}${inline}\n}`;
 }
 
 function declareUniforms(s: ProcessingStageContribution, uPfx: string, declared: Declared): void {
@@ -718,7 +726,7 @@ export function buildStageInjection(
     if (group !== "srcUv" && domain) prepareInput(writer, stage, group, domain, variant);
     const block = isCoreStage(stage)
       ? emitCoreStage(stage, declared, variant)
-      : emitExtensionStage(stage, declared, exits.splitOf(stage.id), layered);
+      : emitExtensionStage(stage, declared, exits.splitOf(stage.id), layered, variant, domain);
     writer.push(group, block);
     exits.afterStage(stage);
   }

@@ -5,8 +5,8 @@
 
 // The welcome setup: a full-window layer in the main window that walks through
 // the look, the workspace behaviour and the starter kits. It opens by itself on
-// a fresh install (see initFirstRun) and from the welcome grid, Preferences and
-// the Extensions store later on. It is modal: app shortcuts stand down while it
+// a fresh install (see initFirstRun) and from Preferences and the Extensions
+// store later on. It is modal: app shortcuts stand down while it
 // is up (they would otherwise open dialogs or switch modules underneath), Tab
 // stays inside, and Escape closes only a rerun, so a first run can't be skipped
 // by a stray key. It sits below ModalWindow (z-100) and the confirm and banners

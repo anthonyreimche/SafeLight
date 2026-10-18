@@ -5,7 +5,7 @@
 
 // State of the welcome setup: whether it is showing, the step, the starter
 // kits and what's installed, the picks, and the install rows. It lives in a
-// store rather than in the component so the welcome grid, Preferences and the
+// store rather than in the component so first-run, Preferences and the
 // Extensions store can open it, and so installs outlive re-renders.
 
 import { create } from "zustand";

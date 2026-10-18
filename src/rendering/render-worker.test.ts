@@ -70,6 +70,11 @@ const { FakeRenderer } = vi.hoisted(() => {
     /** The display transform it holds, and the one each render drew with. */
     monitorTransform: MonitorTransform | null = null;
     renderedWith: (MonitorTransform | null)[] = [];
+    /** What each render drew with: the last params and bag set, and whether
+     *  the view's overlays (clipping warning, mask tint, sharpening preview) were on. */
+    drawn: { params: DevelopParams | undefined; bag: Record<string, unknown> | null; overlays: boolean }[] = [];
+    /** Each render and readback, in order. */
+    calls: ("render" | "computeHistogram" | "readDownscaledPixels")[] = [];
     /** The stages the last render left without a prepass unit. */
     overflowedStages: string[] = [];
     /** The window setViewport holds, which each render draws. */
@@ -165,6 +170,7 @@ const { FakeRenderer } = vi.hoisted(() => {
     }
 
     computeHistogram(_extended?: boolean) {
+      this.calls.push("computeHistogram");
       if (FakeRenderer.histogramError) throw FakeRenderer.histogramError;
       const bins = () => new Uint32Array(256);
       return { r: bins(), g: bins(), b: bins(), luma: bins() };
@@ -195,8 +201,20 @@ const { FakeRenderer } = vi.hoisted(() => {
       this.monitorTransform = transform;
     }
 
-    render() {
+    /** No readable pixels: Upright answers with a zero correction. */
+    readDownscaledPixels(_size: number) {
+      this.calls.push("readDownscaledPixels");
+      return null;
+    }
+
+    render(options?: { viewOverlays?: boolean }) {
+      this.calls.push("render");
       this.renderedWith.push(this.monitorTransform);
+      this.drawn.push({
+        params: this.paramsSeen.at(-1),
+        bag: this.contributedParams,
+        overlays: options?.viewOverlays ?? true,
+      });
       if (FakeRenderer.renderError) throw FakeRenderer.renderError;
     }
   }
@@ -1100,6 +1118,41 @@ describe("render-worker contributed params", () => {
       expect(FakeRenderer.instances[1].contributedParams).toEqual({ "a.gain": 2 });
     });
   });
+
+  describe("with a capture's bag patch", () => {
+    const PARAMS = { exposure: 0 } as unknown as DevelopParams;
+
+    it("renders the patch over the merged bag, then restores the merged bag", () => {
+      send(INIT);
+      whole({ "a.gain": 1, "b.take": 2 });
+      patch({ "a.gain": 3 });
+      send({ cmd: "capture", reqId: 7, params: PARAMS, pipeline: BUILTIN_RESOLVED, bagPatch: { "a.mode": 1 } });
+
+      const live = develop();
+      const merged = { "a.gain": 3, "b.take": 2 };
+      expect(live.contributedSeen.slice(-2)).toEqual([{ ...merged, "a.mode": 1 }, merged]);
+      expect(live.contributedParams).toEqual(merged);
+      expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 7 });
+    });
+
+    it("leaves the bag alone without a patch", () => {
+      send(INIT);
+      whole({ "a.gain": 1 });
+      const seen = develop().contributedSeen.length;
+      send({ cmd: "capture", reqId: 8, params: PARAMS, pipeline: BUILTIN_RESOLVED });
+      expect(develop().contributedSeen.length).toBe(seen);
+    });
+
+    it("restores the merged bag even when the render throws", () => {
+      send(INIT);
+      whole({ "a.gain": 1 });
+      FakeRenderer.renderError = new Error("Shader compile failed: boom");
+      send({ cmd: "capture", reqId: 9, params: PARAMS, pipeline: BUILTIN_RESOLVED, bagPatch: { "a.mode": 1 } });
+      FakeRenderer.renderError = null;
+      expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 9 });
+      expect(develop().contributedParams).toEqual({ "a.gain": 1 });
+    });
+  });
 });
 
 // The bridge posts the params whole first, and first after every init, then only the
@@ -1429,5 +1482,120 @@ describe("render-worker display profile", () => {
     send(capture());
     expect(FakeRenderer.instances[0].monitorTransform).toBe(DISPLAY);
     expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 1 });
+  });
+});
+
+// The histogram (and Auto Tone and Auto WB, which read it) and Upright redraw
+// with what the last render left bound. A capture renders its own params and
+// bag, a gain map say, and restores only what the worker holds, so after one
+// the worker draws the live view again before it measures.
+describe("render-worker measuring after a capture", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const LIVE = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1 };
+  const BEFORE = { ...DEFAULT_DEVELOP_PARAMS, exposure: -1 };
+  const BAG = { "a.gain": 2 };
+  const PATCHED: WorkerRequest = {
+    cmd: "capture",
+    reqId: 1,
+    params: BEFORE,
+    pipeline: BUILTIN_RESOLVED,
+    bagPatch: { "a.mode": 1 },
+  };
+  const MEASURES: [string, WorkerRequest, "computeHistogram" | "readDownscaledPixels"][] = [
+    ["a histogram", { cmd: "computeHistogram", wantExtended: true }, "computeHistogram"],
+    ["an Upright analysis", { cmd: "analyzeUpright", reqId: 2, mode: "auto" }, "readDownscaledPixels"],
+  ];
+  const develop = () => FakeRenderer.instances[0];
+
+  /** The live view drawn once, then its log cleared. */
+  function liveView() {
+    send(INIT);
+    send({ cmd: "setParams", params: LIVE });
+    send({ cmd: "setContributedParams", bag: BAG });
+    send({ cmd: "render", seq: 1 });
+    develop().calls = [];
+    develop().drawn = [];
+  }
+
+  it.each(MEASURES)("draws the live view before %s after a patched capture", (_label, measure, readback) => {
+    liveView();
+    send(PATCHED);
+    const bitmaps = handedOut.length;
+    send(measure);
+    expect(develop().calls).toEqual(["render", "render", readback]);
+    expect(develop().drawn.map(({ params, bag }) => ({ params, bag }))).toEqual([
+      { params: BEFORE, bag: { ...BAG, "a.mode": 1 } },
+      { params: LIVE, bag: BAG },
+    ]);
+    // The live frame stays on the canvas: nothing is handed to the view.
+    expect(handedOut).toHaveLength(bitmaps);
+  });
+
+  it.each(MEASURES)("draws nothing extra before %s with no capture since the last render", (_label, measure, readback) => {
+    liveView();
+    send(measure);
+    send(PATCHED);
+    send({ cmd: "render", seq: 2 });
+    develop().calls = [];
+    send(measure);
+    expect(develop().calls).toEqual([readback]);
+  });
+
+  it.each(MEASURES)("measures %s twice after a capture, drawing the live view once", (_label, measure, readback) => {
+    liveView();
+    send(PATCHED);
+    send(measure);
+    send(measure);
+    expect(develop().calls).toEqual(["render", "render", readback, readback]);
+  });
+
+  it.each(MEASURES)("draws the live view before %s after a capture whose render failed", (_label, measure, readback) => {
+    liveView();
+    FakeRenderer.renderError = new Error("Shader compile failed: boom");
+    send(PATCHED);
+    FakeRenderer.renderError = null;
+    send(measure);
+    expect(develop().calls).toEqual(["render", "render", readback]);
+    expect(develop().drawn.at(-1)).toMatchObject({ params: LIVE, bag: BAG });
+  });
+
+  it("still measures nothing between photos", () => {
+    liveView();
+    send(PATCHED);
+    send({ cmd: "clearSource" });
+    posted = [];
+    send({ cmd: "computeHistogram" });
+    expect(develop().calls).toEqual(["render"]);
+    expect(posted).toEqual([]);
+  });
+});
+
+// The clipping warning, the mask tint and the sharpening preview are drawn for
+// the eye. A capture an extension measures (a gain map: shadow clipping would
+// paint each of its zero-gain pixels blue) leaves them out; one asked for as
+// shown keeps them, as it is drawn over the canvas.
+describe("render-worker view overlays in captures", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const capture = (asShown?: boolean): WorkerRequest => ({
+    cmd: "capture",
+    reqId: 1,
+    params: DEFAULT_DEVELOP_PARAMS,
+    pipeline: BUILTIN_RESOLVED,
+    asShown,
+  });
+  const overlays = () => FakeRenderer.instances[0].drawn.map((d) => d.overlays);
+
+  it("captures for measuring without them, and as shown with them", () => {
+    send(INIT);
+    send(capture());
+    send(capture(true));
+    expect(overlays()).toEqual([false, true]);
+  });
+
+  it.each([undefined, true])("draws the live view with them again after a capture (asShown %s)", (asShown) => {
+    send(INIT);
+    send(capture(asShown));
+    send({ cmd: "render", seq: 1 });
+    expect(overlays()).toEqual([asShown === true, true]);
   });
 });

@@ -17,6 +17,7 @@ vi.mock("@/extensions/registry", () => ({ useRegistry: { getState: () => ({}) } 
 vi.mock("@/state/settings-store", () => ({ getSettings: () => ({}) }));
 
 import {
+  exportExtension,
   exportFilename,
   resolveFilenameTemplate,
   safeFileName,
@@ -110,6 +111,26 @@ describe("exportFilename", () => {
     expect(exportFilename(photo("IMG_0001.CR3", {}, "a/b"), "image/jpeg")).toBe(
       "IMG_0001_a-b.jpg",
     );
+  });
+});
+
+describe("exportExtension", () => {
+  it("keeps the format's extension unless a processor made another image type", () => {
+    expect(exportExtension("image/jpeg", "image/jpeg")).toBe("jpg");
+    expect(exportExtension("image/jpeg", "image/avif")).toBe("avif");
+    expect(exportExtension("image/png", "image/jxl")).toBe("jxl");
+    expect(exportExtension("image/tiff", "image/heic")).toBe("heic");
+    expect(exportExtension("image/jpeg", "")).toBe("jpg");
+    expect(exportExtension("image/jpeg", "application/octet-stream")).toBe("jpg");
+    expect(exportExtension("image/jpeg", "constructor")).toBe("jpg");
+    expect(exportExtension("image/png", "__proto__")).toBe("png");
+  });
+
+  it("names files with it, plain or through a template", () => {
+    const p = photo("IMG_0001.CR3");
+    expect(exportFilename(p, "image/jpeg", "avif")).toBe("IMG_0001.avif");
+    expect(resolveFilenameTemplate("{filename}", p, "image/jpeg", "avif")).toBe("IMG_0001.avif");
+    expect(exportFilename(p, "image/jpeg")).toBe("IMG_0001.jpg");
   });
 });
 
