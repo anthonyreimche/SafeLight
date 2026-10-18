@@ -15,27 +15,49 @@ type Handler = (() => void) | null;
 type Row = { key: string };
 type KeyRange = { lower: string; upper: string };
 
-function request<T>(run: () => T) {
+interface Transaction {
+  oncomplete: Handler;
+  onabort: Handler;
+  error: Error | null;
+  /** Requests answered so far; the commit waits for the last one. */
+  answered: number;
+  objectStore: () => ReturnType<typeof storeOf>;
+}
+
+function request<T>(run: () => T, tx: Transaction, commit: () => void) {
   const req: { result?: T; onsuccess: Handler; onerror: Handler } =
     { onsuccess: null, onerror: null };
   queueMicrotask(() => {
     req.result = run();
     req.onsuccess?.();
+    // A request is answered before its transaction commits, as in IndexedDB:
+    // a failure at the commit (the quota, say) reaches the transaction, not it.
+    const answered = ++tx.answered;
+    queueMicrotask(() => {
+      if (tx.answered === answered) commit();
+    });
   });
   return req;
 }
 
 const FakeKeyRange = { bound: (lower: string, upper: string): KeyRange => ({ lower, upper }) };
 
-function connection(rows: Map<string, Row>) {
-  const store = {
-    get: (key: string) => request(() => rows.get(key)),
-    put: (row: Row) => request(() => void rows.set(row.key, row)),
-    delete: (key: string) => request(() => void rows.delete(key)),
-    clear: () => request(() => rows.clear()),
+function storeOf(rows: Map<string, Row>, tx: Transaction, commit: () => void) {
+  return {
+    get: (key: string) => request(() => rows.get(key), tx, commit),
+    put: (row: Row) => request(() => void rows.set(row.key, row), tx, commit),
+    delete: (key: string) => request(() => void rows.delete(key), tx, commit),
+    clear: () => request(() => rows.clear(), tx, commit),
     getAllKeys: (r?: KeyRange) =>
-      request(() => [...rows.keys()].filter((k) => !r || (k >= r.lower && k <= r.upper))),
+      request(
+        () => [...rows.keys()].filter((k) => !r || (k >= r.lower && k <= r.upper)),
+        tx,
+        commit,
+      ),
   };
+}
+
+function connection(rows: Map<string, Row>, commitError: () => Error | null) {
   const db = {
     closed: false,
     onversionchange: null as Handler,
@@ -43,9 +65,26 @@ function connection(rows: Map<string, Row>) {
     deleteObjectStore: () => rows.clear(),
     createObjectStore: () => {},
     close: () => void (db.closed = true),
-    transaction: () => {
+    transaction: (): Transaction => {
       if (db.closed) throw new DOMException("The connection is closed.", "InvalidStateError");
-      return { objectStore: () => store };
+      const before = new Map(rows);
+      const commit = () => {
+        const error = commitError();
+        if (!error) return tx.oncomplete?.();
+        // The transaction rolls back and aborts.
+        rows.clear();
+        before.forEach((row, key) => rows.set(key, row));
+        tx.error = error;
+        tx.onabort?.();
+      };
+      const tx: Transaction = {
+        oncomplete: null,
+        onabort: null,
+        error: null,
+        answered: 0,
+        objectStore: () => storeOf(rows, tx, commit),
+      };
+      return tx;
     },
   };
   return db;
@@ -64,10 +103,12 @@ export class FakeIndexedDB {
   blockOpens = false;
   /** That window finally closes, so the blocked open goes through. */
   release = () => {};
+  /** Why each transaction fails to commit, until cleared: the quota ran out. */
+  commitError: Error | null = null;
 
   open(_name: string, version: number) {
     this.opens++;
-    const req = { result: connection(this.rows), onupgradeneeded: null as Handler,
+    const req = { result: connection(this.rows, () => this.commitError), onupgradeneeded: null as Handler,
       onsuccess: null as Handler, onerror: null as Handler, onblocked: null as Handler };
     const finish = () => {
       if (version > this.version) {

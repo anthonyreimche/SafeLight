@@ -23,14 +23,19 @@ const h = vi.hoisted(() => ({
   /** Loads the photo: by default `decoded`, counting a decode each time. */
   load: null as ((opts?: { background?: boolean }) => DecodedImage | null) | null,
   asyncRenders: 0,
+  /** The as-shot temperature each render from the resident source was given. */
+  sourceTemperatures: [] as number[],
 }));
 
 vi.mock("@/rendering/render-bridge", () => ({
   getRenderBridge: () => ({
     ready: Promise.resolve(),
     uploadSource: (_target: string, key: string) => void h.resident.add(key),
-    renderThumbnailFromSource: async (opts: { key: string }) =>
-      h.resident.has(opts.key) ? new Blob(["from source"]) : null,
+    renderThumbnailFromSource: async (opts: { key: string; asShotTemperature: number }) => {
+      if (!h.resident.has(opts.key)) return null;
+      h.sourceTemperatures.push(opts.asShotTemperature);
+      return new Blob(["from source"]);
+    },
     renderThumbnailAsync: async () => {
       h.asyncRenders++;
       return new Blob(["from bitmap"]);
@@ -70,6 +75,7 @@ beforeEach(() => {
   h.decodes = 0;
   h.load = null;
   h.asyncRenders = 0;
+  h.sourceTemperatures = [];
   vi.stubGlobal("createImageBitmap", async () => frame);
 });
 
@@ -121,6 +127,19 @@ describe("measuring a photo off-screen", () => {
 
     expect(h.resident.has(KEY)).toBe(true);
     expect(h.decodes).toBe(1);
+  });
+
+  it("renders a first touch at the as-shot white balance its decode learned", async () => {
+    // A RAW whose import left its metadata pending has no as-shot white balance
+    // until a decode reads one, which the load stores on the photo.
+    h.load = () => {
+      h.photos[0].exif.colorTemperature = 5200;
+      return { kind: "float", data: new Float32Array(4), width: 2, height: 2 };
+    };
+
+    await measure();
+
+    expect(h.sourceTemperatures).toEqual([5200]);
   });
 
   it("doesn't fall back on the grid's preview when it already shows an edit", async () => {

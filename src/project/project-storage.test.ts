@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
   persistPreviews: true,
   /** Overrides an extension contributes on import, or null for none. */
   importOverride: null as Partial<CatalogPhoto> | null,
-  /** Bumped per buildPhoto call so a re-imported file gets a NEW id — which is
+  /** Bumped per importPhoto call so a re-imported file gets a NEW id — which is
    *  how the tests tell "reused the saved record" from "decoded it again". */
   built: 0,
   /** While set, a preview built from a source file waits for it. */
@@ -41,32 +41,34 @@ vi.mock("@/extensions/registry", () => ({
 
 vi.mock("@/modules/library/import-photos", () => ({
   isSupportedName: (name: string) => /\.(jpe?g|png|tiff?|nef|cr2|dng)$/i.test(name),
-  buildPhoto: async (
-    file: File,
+  importPhoto: async (
+    fileHandle: FileSystemFileHandle,
     directoryHandle: FileSystemDirectoryHandle | null,
-    fileHandle: FileSystemFileHandle | null,
-  ): Promise<CatalogPhoto | null> => ({
-    id: `p${++h.built}:${file.name}`,
-    filename: file.name,
-    relPath: "",
-    folder: "",
-    directoryHandle,
-    fileHandle,
-    thumbnailBlob: new Blob([`thumb:${file.name}`]),
-    thumbnailUrl: null,
-    width: 4000,
-    height: 3000,
-    fileSize: file.size,
-    mimeType: "image/jpeg",
-    rating: 0,
-    colorLabel: "none",
-    flag: "none",
-    rotation: 0,
-    keywords: [],
-    dateCreated: 1,
-    dateImported: 2,
-    exif: {},
-  }),
+  ): Promise<CatalogPhoto | null> => {
+    const file = await fileHandle.getFile();
+    return {
+      id: `p${++h.built}:${file.name}`,
+      filename: file.name,
+      relPath: "",
+      folder: "",
+      directoryHandle,
+      fileHandle,
+      thumbnailBlob: new Blob([`thumb:${file.name}`]),
+      thumbnailUrl: null,
+      width: 4000,
+      height: 3000,
+      fileSize: file.size,
+      mimeType: "image/jpeg",
+      rating: 0,
+      colorLabel: "none",
+      flag: "none",
+      rotation: 0,
+      keywords: [],
+      dateCreated: 1,
+      dateImported: 2,
+      exif: {},
+    };
+  },
   buildPreviewBlob: async (photo: CatalogPhoto) => {
     if (h.buildGate) await h.buildGate;
     return photo.fileHandle ? new Blob([`rebuilt:${photo.filename}`]) : null;

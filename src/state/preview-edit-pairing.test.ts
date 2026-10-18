@@ -21,7 +21,7 @@ vi.mock("@/project/project-store", () => ({
 
 vi.mock("@/modules/library/import-photos", () => ({
   isSupportedName: (name: string) => /\.nef$/i.test(name),
-  buildPhoto: async () => null,
+  importPhoto: async () => null,
   buildPreviewBlob: async (photo: CatalogPhoto) =>
     photo.fileHandle ? new Blob([`built:${photo.id}`]) : null,
 }));

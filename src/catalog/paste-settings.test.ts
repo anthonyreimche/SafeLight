@@ -8,7 +8,7 @@
 // whole selection is stored in one catalog write.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { pasteSettings } from "./paste-settings";
+import { copySettingsSource, pasteSettings } from "./paste-settings";
 import { installMemoryStorage, photo } from "./stored-edit.fixtures";
 import { setCatalogStorage } from "./storage";
 import {
@@ -25,6 +25,21 @@ import { registerCatalogHooks, useRegistry } from "@/extensions/registry";
 import type { CatalogHooksContribution } from "@/extensions/types";
 
 type EditCommitCtx = Parameters<NonNullable<CatalogHooksContribution["onEditCommit"]>>[0];
+
+// Reading a RAW's pending metadata needs libraw; here it finds a 5200 K as-shot
+// white balance for every pending photo it is asked about.
+vi.mock("@/modules/library/import-photos", () => ({
+  settlePendingMetadata: async (ids: string[]) => {
+    const { useCatalogStore: store } = await import("@/state/catalog-store");
+    store.setState((s) => ({
+      photos: s.photos.map((p) =>
+        ids.includes(p.id) && p.metadataPending
+          ? { ...p, metadataPending: undefined, exif: { ...p.exif, colorTemperature: 5200 } }
+          : p,
+      ),
+    }));
+  },
+}));
 
 vi.mock("@/state/broadcast", () => ({
   broadcast: vi.fn(),
@@ -58,6 +73,38 @@ beforeEach(() => {
 afterEach(() => {
   setCatalogStorage(null);
   useDevelopStore.setState(INITIAL_DEVELOP, true);
+});
+
+describe("pasteSettings — as-shot white balance", () => {
+  it("seeds a pending RAW's Original from the white balance its file holds, read first", async () => {
+    useCatalogStore.setState({
+      photos: [{ ...photo(PHOTO), metadataPending: true, exif: {} }],
+    });
+    install();
+
+    await pasteSettings([PHOTO], clip({ exposure: 1 }));
+
+    const { stack } = written.at(-1)!;
+    expect(stack[0].label).toBe("Original");
+    expect(stack[0].params.temperature).toBe(5200);
+    expect(stack.at(-1)!.params.temperature).toBe(5200);
+  });
+
+  it("offers Copy settings a pending RAW's white balance as its file holds it, read first", async () => {
+    useCatalogStore.setState({
+      photos: [{ ...photo(PHOTO), metadataPending: true, exif: {} }],
+    });
+    install();
+
+    const source = await copySettingsSource(PHOTO);
+
+    expect(source?.params.temperature).toBe(5200);
+  });
+
+  it("offers Copy settings nothing for a photo not in the catalog", async () => {
+    install();
+    await expect(copySettingsSource("gone")).resolves.toBeNull();
+  });
 });
 
 describe("pasteSettings — process versions", () => {

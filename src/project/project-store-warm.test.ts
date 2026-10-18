@@ -23,6 +23,7 @@ vi.mock("@/state/detach", () => ({ detachedModule: () => h.detached }));
 vi.mock("@/raw/decode-pool", () => ({ warmDecodePool: h.warm }));
 vi.mock("@/modules/library/import-photos", () => ({
   preDecodeRawsForCache: h.preDecode,
+  readPendingMetadata: async () => {},
   repairMissingPreviews: async () => {},
 }));
 vi.mock("./project-storage", () => ({

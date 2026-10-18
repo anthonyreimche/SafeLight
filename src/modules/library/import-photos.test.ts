@@ -7,6 +7,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CatalogPhoto, ExifData } from "@/catalog/types";
 import type { RawMetadata } from "@/raw/libraw-wasm-adapter";
 import type { RebuiltChange } from "@/state/catalog-store";
+import type { NativeFsBridge } from "@/extensions/types";
+import { MemoryFs } from "@/project/memory-fs.test-support";
+import { MiB, rawBytes, type EmbeddedPreview } from "./raw-bytes.test-support";
 
 interface XmpFields {
   rating?: number;
@@ -16,6 +19,8 @@ interface XmpFields {
 }
 
 const h = vi.hoisted(() => ({
+  /** The desktop bridge native handles read through, or null in the browser build. */
+  fs: null as NativeFsBridge | null,
   exif: {} as ExifData,
   xmp: {} as XmpFields,
   /** Date parseExifDate resolves dateTimeOriginal to, or undefined for "unset". */
@@ -52,6 +57,8 @@ const h = vi.hoisted(() => ({
   rawMeta: undefined as RawMetadata | undefined,
   /** How many times that metadata-only open ran. */
   libRawReads: 0,
+  /** The priority each metadata-only open was asked for with, in order. */
+  metaRequests: [] as unknown[],
   /** Whether each full float decode was asked for as background work. */
   floatDecodes: [] as (boolean | undefined)[],
   /** The project signal each full float decode was handed. */
@@ -60,7 +67,11 @@ const h = vi.hoisted(() => ({
   saved: [] as CatalogPhoto[],
   /** The catalog's photos as the store holds them when a decode finishes. */
   catalog: [] as CatalogPhoto[],
+  /** Changes merged into the catalog store's photos, as [id, change]. */
+  merged: [] as [string, RebuiltChange][],
 }));
+
+vi.mock("@/native/privileged", () => ({ privilegedFs: () => h.fs }));
 
 vi.mock("@/catalog/exif", () => ({
   parseExif: async (): Promise<ExifData> => ({ ...h.exif }),
@@ -146,8 +157,9 @@ vi.mock("@/raw/accept-decode", () => ({
 }));
 
 vi.mock("@/raw/libraw-wasm-adapter", () => ({
-  extractRawMetadata: async () => {
+  extractRawMetadata: async (_buffer: ArrayBuffer, request?: unknown) => {
     h.libRawReads++;
+    h.metaRequests.push(request);
     return h.rawMeta;
   },
 }));
@@ -183,18 +195,28 @@ vi.mock("@/catalog/storage", () => ({
 }));
 
 vi.mock("@/state/catalog-store", () => ({
-  useCatalogStore: { getState: () => ({ photos: h.catalog }) },
+  useCatalogStore: {
+    getState: () => ({
+      photos: h.catalog,
+      mergeRebuiltPhoto: (id: string, change: RebuiltChange) => h.merged.push([id, change]),
+    }),
+  },
 }));
 
 import {
   buildPhoto,
   buildPreviewBlob,
+  importPhoto,
   isSupportedName,
   preDecodeRawsForCache,
+  readPendingMetadata,
+  settlePendingMetadata,
+  settleSelectedPhoto,
   rebuildThumbnails,
   reimportPhotos,
   repairMissingPreviews,
 } from "./import-photos";
+import { nativeDirectoryHandle } from "@/project/native-fs";
 
 // ── canvas/bitmap stand-ins ──────────────────────────────────────────────────
 // The decode chain is pure pixel plumbing here; what matters is the geometry it
@@ -301,6 +323,7 @@ function changeInCatalog(photo: CatalogPhoto, change: Partial<CatalogPhoto>): vo
 }
 
 beforeEach(() => {
+  h.fs = null;
   h.catalog = [];
   h.exif = {};
   h.xmp = {};
@@ -317,10 +340,12 @@ beforeEach(() => {
   h.cacheWrites = [];
   h.rawMeta = undefined;
   h.libRawReads = 0;
+  h.metaRequests = [];
   h.floatDecodes = [];
   h.floatSignals = [];
   h.floatFailure = "unsupported";
   h.saved = [];
+  h.merged = [];
   installCanvasStubs();
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -618,6 +643,174 @@ describe("buildPhoto", () => {
   });
 });
 
+describe("importPhoto", () => {
+  /** The grid-sized camera preview most RAWs carry near their start. */
+  const PREVIEW = { width: 1620, height: 1080, payload: 500_000 };
+
+  /** A RAW of `size` bytes on the desktop bridge holding `previews`, and the
+   *  native handles the project scan would hand the import. The preview the
+   *  pixel stage decodes is the 1620×1080 one. */
+  async function onDisk(name: string, size: number, previews: EmbeddedPreview[]) {
+    const fs = new MemoryFs("/photos");
+    fs.putBytes(`/photos/${name}`, rawBytes(size, previews));
+    h.fs = fs;
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: PREVIEW.width, height: PREVIEW.height };
+    const dir = nativeDirectoryHandle("/photos");
+    const handle = await dir.getFileHandle(name);
+    return { fs, dir, handle, read: () => fs.bytesRead(`/photos/${name}`) };
+  }
+
+  it("imports a RAW from the start of the file when its camera preview lies there", async () => {
+    const raw = await onDisk("a.NEF", 5 * MiB, [{ at: 200_000, ...PREVIEW }]);
+
+    const photo = (await importPhoto(raw.handle, raw.dir))!;
+
+    expect(await thumbText(photo)).toBe("jpeg:768x512");
+    expect(raw.read()).toBe(1 * MiB);
+  });
+
+  it("reads on until the preview the grid needs is complete", async () => {
+    const raw = await onDisk("a.NEF", 5 * MiB, [
+      { at: 1.5 * MiB, ...PREVIEW, payload: 1.4 * MiB },
+    ]);
+
+    const photo = (await importPhoto(raw.handle, raw.dir))!;
+
+    expect(await thumbText(photo)).toBe("jpeg:768x512");
+    expect(raw.read()).toBe(4 * MiB);
+  });
+
+  it("reads past a preview too small for the grid to one that will do", async () => {
+    const raw = await onDisk("a.NEF", 5 * MiB, [
+      { at: 10_000, width: 160, height: 120, payload: 10_000 },
+      { at: 1.5 * MiB, ...PREVIEW },
+    ]);
+
+    await importPhoto(raw.handle, raw.dir);
+
+    expect(raw.read()).toBe(2 * MiB);
+  });
+
+  it("leaves libraw's metadata to the background pass, sized from the preview until then", async () => {
+    const raw = await onDisk("a.RAF", 5 * MiB, [{ at: 200_000, ...PREVIEW }]);
+    h.rawMeta = { frame: { width: 6240, height: 4160 }, colorTemperature: 4800 };
+
+    const photo = (await importPhoto(raw.handle, raw.dir))!;
+
+    expect(h.libRawReads).toBe(0);
+    expect(photo).toMatchObject({ metadataPending: true, width: 1620, height: 1080 });
+    expect(photo.exif.colorTemperature).toBeUndefined();
+  });
+
+  it("records the whole file's size, type and date, not the part it read", async () => {
+    const raw = await onDisk("a.NEF", 5 * MiB, [{ at: 200_000, ...PREVIEW }]);
+    const { mtimeMs } = await raw.fs.read("/photos/a.NEF", { start: 0, end: 0 });
+
+    const photo = (await importPhoto(raw.handle, raw.dir))!;
+
+    expect(photo).toMatchObject({
+      filename: "a.NEF",
+      fileSize: 5 * MiB,
+      mimeType: "image/x-nikon-nef",
+      dateCreated: mtimeMs,
+    });
+  });
+
+  it("reads EXIF and XMP from the start of the file", async () => {
+    const raw = await onDisk("a.NEF", 5 * MiB, [{ at: 200_000, ...PREVIEW }]);
+    h.exif = { orientation: 6, cameraMake: "NIKON" };
+    h.xmp = { rating: 4 };
+
+    const photo = (await importPhoto(raw.handle, raw.dir))!;
+
+    expect(photo).toMatchObject({ rating: 4, rotation: 90, exif: { cameraMake: "NIKON" } });
+  });
+
+  it("carries the handles it was given onto the record", async () => {
+    const raw = await onDisk("a.NEF", 5 * MiB, [{ at: 200_000, ...PREVIEW }]);
+
+    const photo = (await importPhoto(raw.handle, raw.dir))!;
+
+    expect(photo.fileHandle).toBe(raw.handle);
+    expect(photo.directoryHandle).toBe(raw.dir);
+  });
+
+  it("reads the whole file, and libraw, when no preview the grid can use lies in the first 16 MiB", async () => {
+    const raw = await onDisk("a.PEF", 17 * MiB, [{ at: 16.5 * MiB, ...PREVIEW }]);
+    h.rawMeta = { frame: { width: 6000, height: 4000 } };
+
+    const photo = (await importPhoto(raw.handle, raw.dir))!;
+
+    expect(raw.read()).toBe(17 * MiB);
+    expect(h.libRawReads).toBe(1);
+    expect(photo).toMatchObject({ width: 6000, height: 4000 });
+    expect(photo.metadataPending).toBeUndefined();
+  });
+
+  it("reads the file again whole when the preview it found won't decode", async () => {
+    const raw = await onDisk("a.NEF", 5 * MiB, [{ at: 200_000, ...PREVIEW }]);
+    h.blobSize = { width: 0, height: 0 };
+    h.rawFloat = { width: 6000, height: 4000 };
+
+    const photo = (await importPhoto(raw.handle, raw.dir))!;
+
+    expect(raw.read()).toBe(1 * MiB + 5 * MiB);
+    expect(await thumbText(photo)).toBe("jpeg:768x512");
+    expect(h.libRawReads).toBe(1);
+    expect(photo.metadataPending).toBeUndefined();
+  });
+
+  it.each([
+    ["a RAW in rendered mode", "a.NEF", "rendered"],
+    ["a CRW, whose embedded preview can't be trusted", "a.crw", "auto"],
+    ["a JPEG", "a.jpg", "auto"],
+  ] as const)("reads %s whole, as before", async (_what, name, mode) => {
+    h.previewSource = mode;
+    h.rawFloat = { width: 6000, height: 4000 };
+    const raw = await onDisk(name, 5 * MiB, [{ at: 200_000, ...PREVIEW }]);
+
+    const photo = (await importPhoto(raw.handle, raw.dir))!;
+
+    expect(raw.read()).toBe(5 * MiB);
+    expect(photo.metadataPending).toBeUndefined();
+  });
+
+  it("reads a RAW from a browser handle the same way", async () => {
+    const whole = new File([rawBytes(5 * MiB, [{ at: 200_000, ...PREVIEW }])], "a.NEF", {
+      lastModified: 1_700_000_000_000,
+    });
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: PREVIEW.width, height: PREVIEW.height };
+    let sliced = 0;
+    const file = new Proxy(whole, {
+      get(target, key) {
+        if (key === "slice")
+          return (start = 0, end = target.size) => {
+            sliced += Math.min(end, target.size) - start;
+            return target.slice(start, end);
+          };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const handle = {
+      kind: "file",
+      name: "a.NEF",
+      getFile: async () => file,
+    } as unknown as FileSystemFileHandle;
+
+    const photo = (await importPhoto(handle, null))!;
+
+    expect(sliced).toBe(1 * MiB);
+    expect(photo).toMatchObject({
+      fileSize: 5 * MiB,
+      dateCreated: 1_700_000_000_000,
+      metadataPending: true,
+    });
+  });
+});
+
 describe("buildPreviewBlob", () => {
   it("returns null for a record with no live file handle", async () => {
     await expect(buildPreviewBlob(record("a.jpg", { fileHandle: null }))).resolves.toBeNull();
@@ -720,6 +913,277 @@ describe("repairMissingPreviews", () => {
   });
 });
 
+describe("readPendingMetadata", () => {
+  /** A RAW the import sized from its 1620×1080 camera preview. */
+  const pending = (name: string, extra: Partial<CatalogPhoto> = {}) =>
+    record(name, { metadataPending: true, width: 1620, height: 1080, ...extra });
+
+  /** Counts the reads of `photo`'s file, running `during` inside each. */
+  function countReads(photo: CatalogPhoto, during: () => void = () => {}): () => number {
+    let reads = 0;
+    photo.fileHandle = {
+      name: photo.filename,
+      getFile: async () => {
+        reads++;
+        during();
+        return file(photo.filename);
+      },
+    } as unknown as FileSystemFileHandle;
+    return () => reads;
+  }
+
+  it("stores libraw's frame, as-shot white balance and exposure bias, and clears the mark", async () => {
+    h.rawMeta = { frame: { width: 6240, height: 4160 }, colorTemperature: 4800, rawExposureBias: -1 };
+    const photo = pending("a.RAF");
+    const read: CatalogPhoto[] = [];
+
+    await readPendingMetadata([photo], (p) => read.push(p));
+
+    expect(h.saved).toHaveLength(1);
+    expect(h.saved[0]).toMatchObject({
+      width: 6240,
+      height: 4160,
+      exif: { colorTemperature: 4800, rawExposureBias: -1 },
+    });
+    expect(h.saved[0].metadataPending).toBeUndefined();
+    expect(read.map((p) => p.id)).toEqual(["id:a.RAF"]);
+  });
+
+  it("hands on the fields it changed, the mark's clearing among them", async () => {
+    h.rawMeta = { frame: { width: 6240, height: 4160 } };
+    const changes: RebuiltChange[] = [];
+
+    await readPendingMetadata([pending("a.RAF")], (_p, change) => changes.push(change));
+
+    expect(changes[0]).toMatchObject({ width: 6240, height: 4160 });
+    expect(changes[0]).toHaveProperty("metadataPending", undefined);
+  });
+
+  it("keeps a white balance the file's EXIF declared", async () => {
+    h.rawMeta = { colorTemperature: 4800 };
+    const photo = pending("a.dng", { exif: { colorTemperature: 6100 } });
+
+    await readPendingMetadata([photo]);
+
+    expect(h.saved[0].exif.colorTemperature).toBe(6100);
+  });
+
+  it("turns the upright frame by the photo's manual rotation", async () => {
+    h.rawMeta = { frame: { width: 4160, height: 6240 } };
+    const photo = pending("a.RAF", { exif: { orientation: 6 }, rotation: 180 });
+
+    await readPendingMetadata([photo]);
+
+    expect(h.saved[0]).toMatchObject({ width: 6240, height: 4160, rotation: 180 });
+  });
+
+  it("sizes the photo by the turn it has once libraw is done, not the one it had", async () => {
+    h.rawMeta = { frame: { width: 6240, height: 4160 } };
+    const photo = pending("a.RAF");
+    countReads(photo, () => changeInCatalog(photo, { rotation: 90 }));
+
+    await readPendingMetadata([photo]);
+
+    expect(h.saved[0]).toMatchObject({ width: 4160, height: 6240, rotation: 90 });
+  });
+
+  it("keeps what changed on the photo while libraw read it", async () => {
+    h.rawMeta = { frame: { width: 6240, height: 4160 } };
+    const photo = pending("a.RAF");
+    countReads(photo, () => changeInCatalog(photo, { rating: 5 }));
+
+    await readPendingMetadata([photo]);
+
+    expect(h.saved[0]).toMatchObject({ rating: 5, width: 6240 });
+  });
+
+  it("clears the mark when libraw can't read the RAW, keeping the preview's size", async () => {
+    h.rawMeta = undefined;
+
+    await readPendingMetadata([pending("a.RAF")]);
+
+    expect(h.saved[0]).toMatchObject({ width: 1620, height: 1080 });
+    expect(h.saved[0].metadataPending).toBeUndefined();
+  });
+
+  it("keeps the mark when the file can't be read now, for a later open to try", async () => {
+    const photo = pending("a.RAF");
+    photo.fileHandle = {
+      name: "a.RAF",
+      getFile: async () => {
+        throw new Error("EBUSY");
+      },
+    } as unknown as FileSystemFileHandle;
+
+    await readPendingMetadata([photo, pending("b.RAF")]);
+
+    expect(h.saved.map((p) => p.id)).toEqual(["id:b.RAF"]);
+  });
+
+  it("reads no file whose metadata isn't pending", async () => {
+    const done = record("a.RAF", { width: 6240, height: 4160 });
+    const reads = countReads(done);
+
+    await readPendingMetadata([done]);
+
+    expect(reads()).toBe(0);
+    expect(h.saved).toEqual([]);
+  });
+
+  it("reads no file whose mark the catalog has cleared since", async () => {
+    const photo = pending("a.RAF");
+    const reads = countReads(photo);
+    changeInCatalog(photo, { metadataPending: undefined });
+
+    await readPendingMetadata([photo]);
+
+    expect(reads()).toBe(0);
+    expect(h.saved).toEqual([]);
+  });
+
+  it("reads no file of a photo that left the catalog", async () => {
+    const photo = pending("a.RAF");
+    const reads = countReads(photo);
+    h.catalog = [];
+
+    await readPendingMetadata([photo]);
+
+    expect(reads()).toBe(0);
+  });
+
+  it("asks libraw as background work, with the project's signal", async () => {
+    const signal = new AbortController().signal;
+
+    await readPendingMetadata([pending("a.RAF")], undefined, signal);
+
+    expect(h.metaRequests).toEqual([{ background: true, signal }]);
+  });
+
+  it("reads and stores no more once the project is left", async () => {
+    const leaving = new AbortController();
+    const first = pending("a.RAF");
+    const second = pending("b.RAF");
+    countReads(first, () => leaving.abort());
+    const secondReads = countReads(second);
+
+    await readPendingMetadata([first, second], undefined, leaving.signal);
+
+    expect(h.saved).toEqual([]);
+    expect(secondReads()).toBe(0);
+  });
+});
+
+describe("settlePendingMetadata", () => {
+  const pending = (name: string) =>
+    record(name, { metadataPending: true, width: 1620, height: 1080 });
+
+  it("reads the pending photos among the ids now, as work the user waits on", async () => {
+    h.rawMeta = { frame: { width: 6240, height: 4160 }, colorTemperature: 5200 };
+    pending("a.RAF");
+    pending("b.RAF");
+
+    await settlePendingMetadata(["id:a.RAF"]);
+
+    expect(h.saved.map((p) => p.id)).toEqual(["id:a.RAF"]);
+    expect(h.saved[0].exif.colorTemperature).toBe(5200);
+    expect(h.metaRequests).toEqual([{ background: false }]);
+  });
+
+  it("shows what it read on the photo in the catalog", async () => {
+    h.rawMeta = { colorTemperature: 5200 };
+    pending("a.RAF");
+
+    await settlePendingMetadata(["id:a.RAF"]);
+
+    expect(h.merged).toHaveLength(1);
+    expect(h.merged[0][0]).toBe("id:a.RAF");
+    expect(h.merged[0][1].exif?.colorTemperature).toBe(5200);
+  });
+
+  it("reads nothing for photos whose metadata is known", async () => {
+    record("a.RAF", { exif: { colorTemperature: 5600 } });
+
+    await settlePendingMetadata(["id:a.RAF"]);
+
+    expect(h.libRawReads).toBe(0);
+  });
+});
+
+describe("settleSelectedPhoto", () => {
+  /** A pending RAW whose file read waits for `gate`, logging each read in `reads`. */
+  function pendingBehind(name: string, reads: string[], gate?: Promise<void>): CatalogPhoto {
+    const photo = record(name, { metadataPending: true, width: 1620, height: 1080 });
+    photo.fileHandle = {
+      name,
+      getFile: async () => {
+        reads.push(name);
+        await gate;
+        return file(name);
+      },
+    } as unknown as FileSystemFileHandle;
+    return photo;
+  }
+
+  function gate() {
+    let open = () => {};
+    const opened = new Promise<void>((resolve) => (open = resolve));
+    return { open, opened };
+  }
+
+  it("reads the pending metadata of the photo selected", async () => {
+    h.rawMeta = { frame: { width: 6240, height: 4160 } };
+    const reads: string[] = [];
+    pendingBehind("a.RAF", reads);
+
+    await settleSelectedPhoto("id:a.RAF");
+
+    expect(reads).toEqual(["a.RAF"]);
+    expect(h.saved[0]).toMatchObject({ id: "id:a.RAF", width: 6240, height: 4160 });
+  });
+
+  it("reads only the photo selected last once the read under way is done", async () => {
+    const reads: string[] = [];
+    const first = gate();
+    pendingBehind("a.RAF", reads, first.opened);
+    pendingBehind("b.RAF", reads);
+    pendingBehind("c.RAF", reads);
+
+    const reading = settleSelectedPhoto("id:a.RAF");
+    void settleSelectedPhoto("id:b.RAF");
+    void settleSelectedPhoto("id:c.RAF");
+    first.open();
+    await reading;
+
+    expect(reads).toEqual(["a.RAF", "c.RAF"]);
+  });
+
+  it("reads no more once the selection moves to a photo with nothing pending", async () => {
+    const reads: string[] = [];
+    const first = gate();
+    pendingBehind("a.RAF", reads, first.opened);
+    pendingBehind("b.RAF", reads);
+
+    const reading = settleSelectedPhoto("id:a.RAF");
+    void settleSelectedPhoto("id:b.RAF");
+    void settleSelectedPhoto(null);
+    first.open();
+    await reading;
+
+    expect(reads).toEqual(["a.RAF"]);
+  });
+
+  it("starts afresh after a run of reads has ended", async () => {
+    const reads: string[] = [];
+    pendingBehind("a.RAF", reads);
+    pendingBehind("b.RAF", reads);
+
+    await settleSelectedPhoto("id:a.RAF");
+    await settleSelectedPhoto("id:b.RAF");
+
+    expect(reads).toEqual(["a.RAF", "b.RAF"]);
+  });
+});
+
 describe("rebuildThumbnails", () => {
   it("replaces a preview-sized record with libraw's frame", async () => {
     h.embedded = new Blob(["embedded-jpeg"]);
@@ -749,6 +1213,18 @@ describe("reimportPhotos", () => {
     expect(result).toEqual({ ok: 1, failed: 0 });
     expect(reimported[0]).toMatchObject({ width: 6240, height: 4160 });
     expect(reimported[0].exif.colorTemperature).toBe(4800);
+  });
+
+  it("reads the metadata an import left pending, and clears the mark", async () => {
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 1620, height: 1080 };
+    h.rawMeta = { frame: { width: 6240, height: 4160 }, colorTemperature: 4800 };
+    const pending = record("a.RAF", { metadataPending: true, width: 1620, height: 1080 });
+
+    await reimportPhotos([pending]);
+
+    expect(h.saved[0]).toMatchObject({ width: 6240, height: 4160 });
+    expect(h.saved[0].metadataPending).toBeUndefined();
   });
 });
 
@@ -944,6 +1420,24 @@ describe("preDecodeRawsForCache", () => {
   // user opens while it runs.
   it("decodes as background work", async () => {
     await preDecodeRawsForCache([record("DSC_0001.NEF")], { force: true });
+    expect(h.floatDecodes).toEqual([true]);
+  });
+
+  // A cached decode is served without libraw, so Develop could take the as-shot
+  // white balance only from the photo's record.
+  it("leaves a RAW whose as-shot white balance is still pending for a later pass", async () => {
+    await preDecodeRawsForCache([record("DSC_0001.NEF", { metadataPending: true })], {
+      force: true,
+    });
+    expect(h.floatDecodes).toEqual([]);
+  });
+
+  it("goes by the catalog's record, which the metadata pass cleared since", async () => {
+    const photo = record("DSC_0001.NEF", { metadataPending: true });
+    changeInCatalog(photo, { metadataPending: undefined });
+
+    await preDecodeRawsForCache([photo], { force: true });
+
     expect(h.floatDecodes).toEqual([true]);
   });
 });

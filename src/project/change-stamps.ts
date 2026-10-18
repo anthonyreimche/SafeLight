@@ -37,8 +37,9 @@ type StampedField = Exclude<keyof StoredPhoto, "id" | "previewEdit" | "previewRo
 
 /** The group of each stamped field: fields one change always writes together
  *  share a group, so a merge never takes half of such a change. A move or rename
- *  writes the location; a turn swaps width and height; a reimport rewrites the
- *  file's facts; copyOf and dateImported are set as the record is made. */
+ *  writes the location; a turn swaps width and height; a reimport, or the read of
+ *  metadata an import left pending, rewrites the file's facts; copyOf and
+ *  dateImported are set as the record is made. */
 const GROUP_OF: Record<StampedField, PhotoGroup> = {
   filename: "location",
   relPath: "location",
@@ -50,6 +51,7 @@ const GROUP_OF: Record<StampedField, PhotoGroup> = {
   mimeType: "file",
   dateCreated: "file",
   exif: "file",
+  metadataPending: "file",
   rating: "rating",
   colorLabel: "colorLabel",
   flag: "flag",

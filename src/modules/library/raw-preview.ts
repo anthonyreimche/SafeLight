@@ -270,6 +270,16 @@ export interface DecodedRawPreview {
 // candidates and fall back to the next. Handing the winning bitmap out lets the
 // import path decode each preview exactly once instead of once to test and
 // again to use.
+/** The long edge of the camera preview a decode of `buf` tries first (the largest
+ *  complete JPEG in it), or 0 when none is complete or its frame size can't be
+ *  read. A preview that runs past the end of `buf` doesn't count, so the import
+ *  can tell whether the start of a RAW it has read already holds one. */
+export function previewLongEdge(buf: Uint8Array): number {
+  const [largest] = collectJpegs(buf);
+  const dims = largest ? jpegDimensions(buf, largest.start) : null;
+  return dims ? Math.max(dims.width, dims.height) : 0;
+}
+
 export async function extractRawPreviewDecoded(
   file: File,
   opts?: { targetLongEdge?: number },

@@ -8,8 +8,10 @@ import {
   extractRawPreviewDecoded,
   findJpegEnd,
   jpegDimensions,
+  previewLongEdge,
   sensorNativeJpeg,
 } from "./raw-preview";
+import { rawBytes } from "./raw-bytes.test-support";
 
 // Helper: assemble bytes from a flat list of numbers.
 const bytes = (...b: number[]) => new Uint8Array(b);
@@ -92,6 +94,37 @@ describe("jpegDimensions", () => {
   it("returns null when the scan data starts before any SOF", () => {
     const buf = bytes(0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 0x11, 0xff, 0xd9);
     expect(jpegDimensions(buf, 0)).toBeNull();
+  });
+});
+
+describe("previewLongEdge", () => {
+  const THUMB = { width: 160, height: 120, payload: 4_000 };
+  const PREVIEW = { width: 1620, height: 1080, payload: 400_000 };
+
+  it("measures the largest preview in the bytes", () => {
+    const raw = rawBytes(1_000_000, [
+      { at: 1_000, ...THUMB },
+      { at: 100_000, ...PREVIEW },
+    ]);
+    expect(previewLongEdge(raw)).toBe(1620);
+  });
+
+  it("passes over a preview the bytes cut short", () => {
+    const raw = rawBytes(1_000_000, [
+      { at: 1_000, ...THUMB },
+      { at: 100_000, ...PREVIEW },
+    ]);
+    expect(previewLongEdge(raw.subarray(0, 300_000))).toBe(160);
+  });
+
+  it("is 0 when no preview in the bytes is complete", () => {
+    const raw = rawBytes(1_000_000, [{ at: 100_000, ...PREVIEW }]);
+    expect(previewLongEdge(raw.subarray(0, 300_000))).toBe(0);
+  });
+
+  it("measures a portrait preview by its long edge", () => {
+    const raw = rawBytes(600_000, [{ at: 100_000, width: 1080, height: 1620, payload: 400_000 }]);
+    expect(previewLongEdge(raw)).toBe(1620);
   });
 });
 

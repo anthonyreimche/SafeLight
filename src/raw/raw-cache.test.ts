@@ -8,6 +8,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   /** What reached the cache worker, in the order it was sent. */
   sent: [] as string[],
+  /** The worker cannot make a write: the disk or the storage quota is full. */
+  refuseWrites: false,
 }));
 
 vi.mock("./cache-bridge", () => ({
@@ -15,6 +17,7 @@ vi.mock("./cache-bridge", () => ({
     h.sent.push(`folder ${dir?.name ?? "none"}`);
   },
   workerWriteCachedPreview: async (key: string) => {
+    if (h.refuseWrites) throw new Error("The quota has been exceeded.");
     h.sent.push(`write ${key}`);
   },
   workerReadCachedPreview: async () => null,
@@ -39,6 +42,7 @@ const pixels = () => new Float32Array(4);
 
 beforeEach(() => {
   h.sent = [];
+  h.refuseWrites = false;
 });
 
 describe("rawCacheKey", () => {
@@ -96,5 +100,36 @@ describe("writeCachedPreview across a change of project", () => {
     await writing;
 
     expect(h.sent).toEqual(["folder A", "write v6:a.NEF:64:0", "folder B"]);
+  });
+});
+
+// A caller filling the cache in bulk has to know when the cache stops taking
+// writes, though the write itself stays non-fatal.
+describe("writeCachedPreview's answer", () => {
+  it("says the cache took the write", async () => {
+    setRawCacheDir(folder("A"));
+
+    const taken = await writeCachedPreview("v6:a.NEF:64:0", pixels(), 1, 1, rawCacheGeneration());
+
+    expect(taken).toBe(true);
+  });
+
+  it("says the write failed when the cache could not make it", async () => {
+    setRawCacheDir(folder("A"));
+    h.refuseWrites = true;
+
+    const taken = await writeCachedPreview("v6:a.NEF:64:0", pixels(), 1, 1, rawCacheGeneration());
+
+    expect(taken).toBe(false);
+  });
+
+  it("does not call a write dropped for a change of project a failure", async () => {
+    setRawCacheDir(folder("A"));
+    const begun = rawCacheGeneration();
+    setRawCacheDir(folder("B"));
+
+    const taken = await writeCachedPreview("v6:a.NEF:64:0", pixels(), 1, 1, begun);
+
+    expect(taken).toBe(true);
   });
 });

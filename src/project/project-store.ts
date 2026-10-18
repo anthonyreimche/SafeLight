@@ -13,7 +13,11 @@ import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { verifyPermission } from "@/catalog/permissions";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
-import { preDecodeRawsForCache, repairMissingPreviews } from "@/modules/library/import-photos";
+import {
+  preDecodeRawsForCache,
+  readPendingMetadata,
+  repairMissingPreviews,
+} from "@/modules/library/import-photos";
 import { setRawCacheDir } from "@/raw/raw-cache";
 import { warmDecodePool } from "@/raw/decode-pool";
 import { detachedModule } from "@/state/detach";
@@ -484,12 +488,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           (p, change) => useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
           passes,
         );
-        // Background: pre-decode RAWs so first Develop open is instant. Pass the
-        // full set (not just newPhotos) so any RAW left uncached by an interrupted
-        // earlier run is filled in now; the per-file check skips ones already done.
-        // The warm-up can outlast this project: one left meanwhile starts no pass.
-        void warmOnce().then(() => {
-          if (!passes.aborted) return preDecodeRawsForCache(opened.photos, { signal: passes });
+        // Background: read the RAW metadata the import left pending (frame size,
+        // as-shot white balance), then pre-decode RAWs so first Develop open is
+        // instant. A cached decode is served without libraw, so a photo is cached
+        // only once its as-shot white balance is known. Pass the full set (not just
+        // newPhotos) so any RAW left unread or uncached by an interrupted earlier
+        // run is done now; the per-photo checks skip ones already done. The
+        // warm-up can outlast this project: one left meanwhile starts no pass.
+        void warmOnce().then(async () => {
+          if (passes.aborted) return;
+          await readPendingMetadata(
+            opened.photos,
+            (p, change) => useCatalogStore.getState().mergeRebuiltPhoto(p.id, change),
+            passes,
+          );
+          if (!passes.aborted) await preDecodeRawsForCache(opened.photos, { signal: passes });
         });
       }
     } catch (e) {

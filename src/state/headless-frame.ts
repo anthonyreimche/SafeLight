@@ -42,13 +42,15 @@ export async function renderPhotoFrame(
   const bridge = getRenderBridge();
   await bridge.ready;
 
-  const asShotTemperature = photo.exif.colorTemperature ?? 6500;
+  // Read at each render: a first decode stores the as-shot white balance it learns
+  // on the photo, and a RAW whose import left it pending has none before that.
+  const asShot = () => photo.exif.colorTemperature ?? 6500;
   const key = photoSourceKey(photo);
   const maxEdge = MEASURE_MAX_EDGE;
 
   // 1) Render from the resident source if it's already cached in the thumb
   //    renderer (e.g. a prior measure of this photo this run).
-  let blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, paramBag);
+  let blob = await renderFromSource(bridge, key, params, asShot(), maxEdge, paramBag);
 
   // 2) First touch of this photo: decode, upload a capped source once, retry. A
   //    preview the load fell back on is rendered from once instead (standsForPhoto),
@@ -76,9 +78,9 @@ export async function renderPhotoFrame(
           decoded.kind === "float" ? decoded.isFallbackPreview : false,
           false,
         );
-        blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, paramBag);
+        blob = await renderFromSource(bridge, key, params, asShot(), maxEdge, paramBag);
       } else {
-        blob = await renderOnce(bridge, image, params, asShotTemperature, maxEdge, paramBag);
+        blob = await renderOnce(bridge, image, params, asShot(), maxEdge, paramBag);
       }
     }
   }
@@ -90,7 +92,7 @@ export async function renderPhotoFrame(
     try {
       const bitmap = await createImageBitmap(photo.thumbnailBlob);
       const image = { kind: "bitmap" as const, bitmap };
-      blob = await renderOnce(bridge, image, params, asShotTemperature, maxEdge, paramBag);
+      blob = await renderOnce(bridge, image, params, asShot(), maxEdge, paramBag);
     } catch {
       // fall through to null
     }
