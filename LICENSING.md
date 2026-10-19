@@ -43,9 +43,8 @@ be used.
 
 ## Supporting the project
 
-The app is free and stays free. If you want to help fund development, see
-[SPONSORS](SPONSORS.md) — sponsorship buys *timing* (early access to in-progress
-features that are then released free to everyone), never *access*.
+The app is free and stays free, and payment is never expected. If you'd like to
+say thanks, see [SPONSORS](SPONSORS.md).
 
 ---
 

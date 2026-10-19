@@ -1,27 +1,19 @@
 # Supporters
 
-Safelight is kept free and open by the people below. Thank you. 💛
+Safelight is free and nobody has to pay for it. These people help anyway.
+Thank you. 💛
 
-If you'd like to see your name here, see [SPONSORS.md](SPONSORS.md).
+## 🧩 Extension developers
 
-<!--
-  The lists below are generated automatically from GitHub Sponsors by
-  .github/workflows/sponsors.yml. Don't edit between the <!-- marker --> pairs by
-  hand — the action overwrites them. Add prose outside the markers freely.
--->
+Sorted by the number of extensions they've published.
 
-## 🏛️ Studio
+- [oatbiscuit](https://github.com/oatbiscuit), 5 extensions
+- [OPGERUIMD97](https://github.com/OPGERUIMD97), 5 extensions
 
-<!-- studio --><!-- studio -->
+## ☕ Bought a coffee
 
-## 🌑 Darkroom
+- Barrie Minney
+- A. Flech
 
-<!-- darkroom --><!-- darkroom -->
-
-## 🔴 Safelight
-
-<!-- safelight --><!-- safelight -->
-
-## 🎞️ Test Strip
-
-<!-- teststrip --><!-- teststrip -->
+Want to join them? Build an extension (tag the repo `safelight-extension`) or
+see [SPONSORS.md](SPONSORS.md).
