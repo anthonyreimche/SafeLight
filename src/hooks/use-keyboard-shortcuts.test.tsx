@@ -82,6 +82,21 @@ describe("zoom shortcut dispatch", () => {
     expect(press("=").defaultPrevented).toBe(false);
     expect(press("0").defaultPrevented).toBe(false);
   });
+
+  it("leaves the combos to an extension's open native dialog", () => {
+    const commands = mountInDevelop();
+    render(
+      <dialog open>
+        <input aria-label="Coordinates" />
+      </dialog>,
+    );
+    const e = new KeyboardEvent("keydown", { key: "=", ctrlKey: true, cancelable: true, bubbles: true });
+    act(() => {
+      screen.getByLabelText("Coordinates").dispatchEvent(e);
+    });
+    expect(e.defaultPrevented).toBe(false);
+    expect(commands.zoomStep).not.toHaveBeenCalled();
+  });
 });
 
 class SilentChannel {
@@ -316,6 +331,19 @@ describe("Esc exits one layer at a time", () => {
   it("leaves Esc to a focused text field when there is nothing to exit", () => {
     render(<input aria-label="Caption" />);
     expect(fire(screen.getByLabelText("Caption"), "Escape")).toBe(false);
+  });
+
+  it("leaves Esc to an extension's open native dialog, which closes itself", () => {
+    render(
+      <dialog open>
+        <input aria-label="Coordinates" />
+        <button type="button">Cancel</button>
+      </dialog>,
+    );
+    useDevelopStore.setState({ cropping: true });
+    expect(fire(screen.getByLabelText("Coordinates"), "Escape")).toBe(false);
+    expect(fire(screen.getByRole("button", { name: "Cancel" }), "Escape")).toBe(false);
+    expect(dev().cropping).toBe(true);
   });
 
   it("stands down while the shortcut editor is capturing a combo", () => {

@@ -20,9 +20,9 @@ import {
   type UniformDeclaration,
 } from "@/extensions/types";
 import { BUILTIN_DENOISE_ID, DENOISE_STAGE } from "./builtin-denoise";
-import { compileShaderSource, getActiveStages, uniformPrefix } from "./shader-compiler";
+import { compileShaderSource, getActiveStages, simpleHash, uniformPrefix } from "./shader-compiler";
 import { V1_VARIANT, V2_VARIANT, type ShaderVariant } from "./shaders";
-import { CORE_DISPLAY_CLAMP, PHASES, buildStageInjection } from "./stage-injection";
+import { CORE_DISPLAY_CLAMP, PHASES, buildStageInjection, stageSignature } from "./stage-injection";
 import { builtinStage } from "./webgl.test-support";
 
 const AMOUNT: UniformDeclaration = { key: "amount", glslType: "float", default: 0 };
@@ -987,5 +987,169 @@ describe("slSceneLuma", () => {
   it("is not declared before the display transform", () => {
     const early = flagged({ glsl: "lin *= slSceneLuma;" });
     expect(buildStageInjection([early], V1_VARIANT).injection.sceneLinear).not.toContain("float slSceneLuma");
+  });
+});
+
+// A producer's value reaches a later stage's glsl through a global the core
+// declares once per program; nothing changes for a stage set that uses none.
+describe("inter-stage variables", () => {
+  const PRODUCER: ProcessingStageContribution = {
+    id: "acme.maker",
+    name: "Maker",
+    phase: "scene-linear",
+    priority: 10,
+    glsl: "float made = lin.g * amount;",
+    uniforms: [AMOUNT],
+    produces: [{ name: "acmeMade", glslType: "float", producer: "made" }],
+  };
+  const CONSUMER: ProcessingStageContribution = {
+    id: "acme.reader",
+    name: "Reader",
+    phase: "output-encode",
+    glsl: "c = vec3(isv_acmeMade);",
+    uniforms: [],
+    consumes: ["acmeMade"],
+  };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("declares each variable once, ahead of the helpers", () => {
+    const { injection } = buildStageInjection([PRODUCER, CONSUMER, STAGE]);
+    expect(injection.helpers.match(/float isv_acmeMade = 0\.0;/g)).toHaveLength(1);
+    expect(injection.helpers.indexOf("isv_acmeMade")).toBeLessThan(injection.helpers.indexOf("lookScale"));
+  });
+
+  it.each([
+    ["vec2", "vec2(0.0)"],
+    ["vec3", "vec3(0.0)"],
+    ["vec4", "vec4(0.0)"],
+  ] as const)("zero-initialises a %s", (glslType, zero) => {
+    const stage = { ...PRODUCER, produces: [{ name: "acmeMade", glslType, producer: `${glslType}(1.0)` }] };
+    expect(buildStageInjection([stage]).injection.helpers).toContain(`${glslType} isv_acmeMade = ${zero};`);
+  });
+
+  it("assigns the producer's expression inside its block, after its glsl", () => {
+    const pfx = uniformPrefix(PRODUCER.id);
+    const { injection } = buildStageInjection([PRODUCER]);
+    expect(injection.sceneLinear).toContain(`float made = lin.g * ${pfx}amount;\nisv_acmeMade = (made);\n}`);
+  });
+
+  it("namespaces the producer's uniforms like the glsl's", () => {
+    const pfx = uniformPrefix(PRODUCER.id);
+    const stage = { ...PRODUCER, produces: [{ name: "acmeMade", glslType: "float" as const, producer: "amount * 2.0" }] };
+    expect(buildStageInjection([stage]).injection.sceneLinear).toContain(`isv_acmeMade = (${pfx}amount * 2.0);`);
+  });
+
+  it("declares a variable the producer assigns in its own glsl, and adds no assignment", () => {
+    const stage = { ...PRODUCER, glsl: "isv_acmeMade = lin.g;", produces: [{ name: "acmeMade", glslType: "float" as const }] };
+    const { injection } = buildStageInjection([stage]);
+    expect(injection.helpers).toContain("float isv_acmeMade = 0.0;");
+    expect(injection.sceneLinear.match(/isv_acmeMade =/g)).toHaveLength(1);
+  });
+
+  it("leaves the consumer's isv_ names as written", () => {
+    expect(buildStageInjection([PRODUCER, CONSUMER]).injection.effects).toContain("c = vec3(isv_acmeMade);");
+  });
+
+  it("leaves out a consumer whose variable no stage produces, and says so once", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const orphan = { ...CONSUMER, id: "acme.orphan" };
+    const built = buildStageInjection([orphan, STAGE]);
+    buildStageInjection([orphan, STAGE]);
+    expect(built.injection.effects).not.toContain("isv_acmeMade");
+    expect(built.injection.helpers).not.toContain("isv_");
+    expect(built.sig).not.toContain("acme.orphan");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/stage 'acme\.orphan' consumes 'acmeMade', which no stage left in the set produces; it is left out/);
+  });
+
+  it("leaves out the consumers of a variable whose only producer is itself left out", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const first: ProcessingStageContribution = {
+      ...PRODUCER,
+      id: "acme.chain-a",
+      glsl: "float chained = lin.g;",
+      uniforms: [],
+      produces: [{ name: "acmeChained", glslType: "float", producer: "chained" }],
+      consumes: ["acmeMissing"],
+    };
+    const second: ProcessingStageContribution = {
+      ...CONSUMER,
+      id: "acme.chain-b",
+      glsl: "c = vec3(isv_acmeChained);",
+      consumes: ["acmeChained"],
+    };
+    const built = buildStageInjection([first, second, STAGE]);
+    buildStageInjection([first, second, STAGE]);
+    expect(JSON.stringify(built.injection)).not.toContain("isv_");
+    expect(built.sig).not.toContain("acme.chain");
+    expect(warn.mock.calls.map((call) => call[0])).toEqual([
+      "[render] stage 'acme.chain-a' consumes 'acmeMissing', which no stage left in the set produces; it is left out",
+      "[render] stage 'acme.chain-b' consumes 'acmeChained', which no stage left in the set produces; it is left out",
+    ]);
+  });
+
+  it("keeps the built-in denoiser when the noise-reduction stage that would replace it is left out", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const nr = flagged({ id: "acme.nr-orphan", phase: "noise-reduction", consumes: ["acmeNever"] });
+    const built = buildStageInjection([DENOISE_STAGE, nr]);
+    expect(built.sig).toContain(BUILTIN_DENOISE_ID);
+    expect(built.sig).not.toContain("acme.nr-orphan");
+    expect(built.prepass.map((p) => p.stageId)).toEqual([BUILTIN_DENOISE_ID]);
+    expect(built.hasNoiseReduction).toBe(true);
+  });
+
+  it("warns once about a consumer ordered ahead of its producer, and keeps it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const early = { ...CONSUMER, id: "acme.early", phase: "scene-linear" as const, priority: 5, glsl: "lin = vec3(isv_acmeMade);" };
+    const built = buildStageInjection([early, PRODUCER]);
+    buildStageInjection([early, PRODUCER]);
+    expect(built.injection.sceneLinear).toContain("lin = vec3(isv_acmeMade);");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/stage 'acme\.early' runs ahead of the producer of 'acmeMade', so it reads zero/);
+  });
+
+  it("adds nothing to a stage set that uses no variable", () => {
+    for (const variant of [V1_VARIANT, V2_VARIANT]) {
+      expect(JSON.stringify(buildStageInjection([STAGE, CORE], variant).injection)).not.toContain("isv_");
+    }
+  });
+
+  it("keeps the signature of a stage that uses no variable", () => {
+    const before = simpleHash(
+      JSON.stringify([STAGE.phase, 100, STAGE.glsl, STAGE.helpers, STAGE.uniforms, [], STAGE.passes, null, "source"]),
+    );
+    expect(stageSignature(STAGE)).toBe(before);
+    expect(stageSignature({ ...STAGE, produces: undefined, consumes: undefined })).toBe(before);
+  });
+
+  it("changes the signature of a stage that produces or consumes a variable", () => {
+    expect(sig({ ...STAGE, produces: [{ name: "acmeMade", glslType: "float", producer: "1.0" }] })).not.toBe(sig(STAGE));
+    expect(sig({ ...STAGE, consumes: ["acmeMade"], produces: [{ name: "acmeMade", glslType: "float" }] })).not.toBe(
+      sig({ ...STAGE, produces: [{ name: "acmeMade", glslType: "float" }] }),
+    );
+  });
+});
+
+describe("pass draw counts", () => {
+  const DRAWS: UniformDeclaration = { key: "draws", glslType: "int", default: 3 };
+
+  it("hands the renderer the count's bag key, its default and its max", () => {
+    const stage = { ...STAGE, uniforms: [AMOUNT, DRAWS], passes: [{ ...PASS, iterations: { key: "draws", max: 6 } }] };
+    const [prepass] = buildStageInjection([stage]).prepass;
+    expect(prepass.passes[0].iterations).toBe(6);
+    expect(prepass.passes[0].drawCount).toEqual({ qualifiedKey: "acme.look.draws", max: 6, fallback: 3 });
+  });
+
+  it("finds the key among the pass's own uniforms", () => {
+    const pass = { ...PASS, uniforms: [{ ...DRAWS, default: 1 }], iterations: { key: "draws", max: 2 } };
+    const [prepass] = buildStageInjection([{ ...STAGE, passes: [pass] }]).prepass;
+    expect(prepass.passes[0].drawCount).toEqual({ qualifiedKey: "acme.look.draws", max: 2, fallback: 1 });
+  });
+
+  it("keeps a fixed count as it was", () => {
+    const [prepass] = buildStageInjection([{ ...STAGE, passes: [{ ...PASS, iterations: 4 }] }]).prepass;
+    expect(prepass.passes[0].iterations).toBe(4);
+    expect(prepass.passes[0].drawCount).toBeUndefined();
   });
 });

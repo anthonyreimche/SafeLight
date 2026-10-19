@@ -16,6 +16,7 @@ import { getSettings, stepCanvasSurround } from "@/state/settings-store";
 import { detachedModule } from "@/state/detach";
 import {
   getBinding,
+  inNativeDialog,
   isBareKey,
   isEditableTarget,
   matchAction,
@@ -41,7 +42,7 @@ export function useKeyboardShortcuts() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (shortcutsSuspended()) return;
+      if (shortcutsSuspended() || inNativeDialog(e.target)) return;
 
       // Esc = universal "exit": close the topmost modal, else leave the active
       // develop tool mode (the panel "Done" buttons). Runs before the editable-

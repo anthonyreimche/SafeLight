@@ -320,6 +320,22 @@ export function registerFilenameTemplate(
   }));
 }
 
+/** The first inter-stage variable `c` produces that another registered stage
+ *  already produces, as a refusal message, or null. Names are global across
+ *  extensions, so a second producer would leave the value to pipeline order. */
+function producerClash(
+  c: ProcessingStageContribution,
+  stages: Readonly<Record<string, RegisteredProcessingStage>>,
+): string | null {
+  for (const v of c.produces ?? []) {
+    const other = Object.values(stages).find(
+      (s) => s.id !== c.id && (s.produces ?? []).some((o) => o.name === v.name),
+    );
+    if (other) return `stage "${c.id}": inter-stage variable "${v.name}" is already produced by stage "${other.id}"`;
+  }
+  return null;
+}
+
 export function registerProcessingStage(
   extensionId: string,
   c: ProcessingStageContribution,
@@ -328,6 +344,11 @@ export function registerProcessingStage(
   const check = checkStageContract(c, extensionId);
   if (check.error) {
     console.error(`[extensions] ${extensionId}: ${check.error}; stage not registered`);
+    return;
+  }
+  const clash = producerClash(c, useRegistry.getState().processingStages);
+  if (clash) {
+    console.error(`[extensions] ${extensionId}: ${clash}; stage not registered`);
     return;
   }
   if (check.readsIgnored) console.warn(`[extensions] ${extensionId}: ${check.readsIgnored}`);

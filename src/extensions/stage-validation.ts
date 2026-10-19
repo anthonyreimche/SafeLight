@@ -8,8 +8,10 @@ import { isBuiltInStage } from "@/rendering/webgl/builtin-stage";
 import { CORE_EXTENSION_ID } from "./core-extension";
 import {
   PROCESSING_PHASE_ORDER,
+  type InterStageVariable,
   type ProcessingStageContribution,
   type StageSpace,
+  type UniformDeclaration,
 } from "./types";
 
 export interface StageContractCheck {
@@ -26,8 +28,15 @@ const ENCODINGS: Record<StageSpace["encoding"], true> = { linear: true, perceptu
 const PRIMARIES: Record<NonNullable<StageSpace["primaries"]>, true> = { rec709: true, rec2020: true };
 const READS: Record<NonNullable<ProcessingStageContribution["reads"]>, true> = { source: true, current: true };
 
+const ISV_TYPES: Record<InterStageVariable["glslType"], true> = { float: true, vec2: true, vec3: true, vec4: true };
+// No double underscore: GLSL reserves identifiers containing one, and ANGLE rejects them.
+const ISV_NAME = /^[A-Za-z](?:[A-Za-z0-9]|_(?!_))*$/;
+
+/** The most draws a bag-driven pass may take in one frame. */
+export const MAX_PASS_DRAWS = 1024;
+
 /** Fields the contract names that nothing in the core reads. */
-const RESERVED_FIELDS = ["produces", "consumes", "mask"] as const;
+const RESERVED_FIELDS = ["mask"] as const;
 
 /** What a message quotes for a value no formatting path can print. */
 const UNPRINTABLE = "[unprintable]";
@@ -56,6 +65,68 @@ function formatValue(v: unknown): string {
   } catch {
     return describeValue(v);
   }
+}
+
+/** Why `produces` or `consumes` can't be honoured, or null. */
+function interStageError(c: ProcessingStageContribution): string | null {
+  const produces: unknown = c.produces;
+  if (produces !== undefined) {
+    if (!Array.isArray(produces)) return "produces must be an array";
+    const names = new Set<string>();
+    for (const entry of produces as unknown[]) {
+      if (typeof entry !== "object" || entry === null) return "each produces entry must be an object";
+      const { name, glslType, producer } = entry as Record<string, unknown>;
+      if (typeof name !== "string" || !ISV_NAME.test(name)) {
+        return `produces name must be letters, digits and underscores starting with a letter, without "__", got ${formatValue(name)}`;
+      }
+      if (typeof glslType !== "string" || !Object.hasOwn(ISV_TYPES, glslType)) {
+        return `produces "${name}" glslType must be "float", "vec2", "vec3" or "vec4", got ${formatValue(glslType)}`;
+      }
+      if (producer !== undefined && (typeof producer !== "string" || producer.trim() === "")) {
+        return `produces "${name}" producer must be a non-empty GLSL expression`;
+      }
+      if (names.has(name)) return `produces "${name}" twice`;
+      names.add(name);
+    }
+  }
+  const consumes: unknown = c.consumes;
+  if (consumes !== undefined) {
+    if (!Array.isArray(consumes)) return "consumes must be an array of variable names";
+    for (const name of consumes as unknown[]) {
+      if (typeof name !== "string" || !ISV_NAME.test(name)) {
+        return `consumes must hold variable names (letters, digits and underscores starting with a letter, without "__"), got ${formatValue(name)}`;
+      }
+    }
+  }
+  return null;
+}
+
+/** Why a pass's bag-driven draw count can't be honoured, or null. */
+function passCountError(c: ProcessingStageContribution): string | null {
+  const passes: unknown = c.passes;
+  if (!Array.isArray(passes)) return null;
+  const stageUniforms: unknown = c.uniforms;
+  const inline = Array.isArray(stageUniforms) ? (stageUniforms as UniformDeclaration[]) : [];
+  for (const [index, pass] of (passes as unknown[]).entries()) {
+    if (typeof pass !== "object" || pass === null) continue;
+    const { iterations, uniforms } = pass as Record<string, unknown>;
+    if (iterations === undefined || typeof iterations === "number") continue;
+    const at = `passes[${index}].iterations`;
+    if (typeof iterations !== "object" || iterations === null) return `${at} must be a number or { key, max }`;
+    const { key, max } = iterations as Record<string, unknown>;
+    if (typeof max !== "number" || !Number.isInteger(max) || max < 1 || max > MAX_PASS_DRAWS) {
+      return `${at}.max must be an integer from 1 to ${MAX_PASS_DRAWS}, got ${formatValue(max)}`;
+    }
+    const own = Array.isArray(uniforms) ? (uniforms as UniformDeclaration[]) : [];
+    const declared = [...inline, ...own].find((u) => u.key === key);
+    if (typeof key !== "string" || !declared) {
+      return `${at}.key must name a uniform the stage declares, got ${formatValue(key)}`;
+    }
+    if (declared.glslType !== "int" && declared.glslType !== "float") {
+      return `${at}.key "${key}" must name an int or float uniform`;
+    }
+  }
+  return null;
 }
 
 /** Runtime check of the stage's contract, and of who may register it: ids under
@@ -102,6 +173,10 @@ export function checkStageContract(
   const reads: unknown = c.reads;
   if (reads !== undefined && (typeof reads !== "string" || !Object.hasOwn(READS, reads)))
     return fail(`reads must be "source" or "current", got ${formatValue(reads)}`);
+  const interStage = interStageError(c);
+  if (interStage) return fail(interStage);
+  const passCount = passCountError(c);
+  if (passCount) return fail(passCount);
 
   let readsIgnored: string | null = null;
   if (reads === "current") {

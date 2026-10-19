@@ -241,6 +241,15 @@ export const setShortcutsSuspended = (v: boolean): void => {
 };
 export const shortcutsSuspended = (): boolean => suspended;
 
+/** True when the key comes from inside an open native <dialog>. Core's own
+ *  dialogs close through the escape stack; an extension's modal <dialog> (the
+ *  Map's Set location) has no way onto it, so it owns its keys outright:
+ *  Escape closes it rather than exiting a Develop tool behind it, and Ctrl
+ *  combos stay with its fields. */
+export function inNativeDialog(t: EventTarget | null): boolean {
+  return t instanceof Element && t.closest("dialog[open]") !== null;
+}
+
 /** True when the event target actually accepts typed text — shortcuts must
  *  stay out of its way. Sliders, checkboxes and buttons are NOT editable:
  *  after dragging a slider it keeps focus, and Ctrl+Z should still undo. */

@@ -24,6 +24,7 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { useUIStore } from "@/state/ui-store";
 import {
+  inNativeDialog,
   isEditableTarget,
   matchAction,
   shortcutsSuspended,
@@ -99,7 +100,7 @@ async function removeFromCatalog(ids: string[]): Promise<void> {
 }
 
 function handleCullingKey(e: KeyboardEvent): void {
-  if (shortcutsSuspended()) return;
+  if (shortcutsSuspended() || inNativeDialog(e.target)) return;
   // A native confirm froze the window's key handlers; the in-app card doesn't,
   // so every culling key (not only Delete) waits until it's answered.
   if (isDialogOpen()) return;

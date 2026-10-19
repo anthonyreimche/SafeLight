@@ -241,27 +241,90 @@ describe("a value that can't be printed", () => {
   });
 });
 
-// The contract names three fields the core doesn't implement. An older extension
-// may carry one, so the stage still registers, but its author hears that the core
-// does nothing with it.
+// `mask` is the one field the contract still names without implementing. An
+// older extension may carry it, so the stage still registers, but its author
+// hears that the core does nothing with it.
 describe("reserved fields", () => {
-  const RESERVED: [string, unknown][] = [
-    ["produces", [{ name: "refT", glslType: "float", producer: "1.0" }]],
-    ["consumes", ["refT"]],
-    ["mask", { maskable: true, maskPhase: "linear" }],
-  ];
-
-  it.each(RESERVED)("warns that %s is reserved, and still accepts the stage", (field, value) => {
-    const check = checkStageContract(withFields({ [field]: value }));
+  it("warns that mask is reserved, and still accepts the stage", () => {
+    const check = checkStageContract(withFields({ mask: { maskable: true, maskPhase: "linear" } }));
     expect(check.error).toBeNull();
     expect(check.warnings).toHaveLength(1);
-    expect(check.warnings[0]).toMatch(new RegExp(`^stage "acme\\.stage": ${field} is reserved`));
+    expect(check.warnings[0]).toMatch(/^stage "acme\.stage": mask is reserved/);
+  });
+});
+
+describe("inter-stage variables", () => {
+  const clean = { error: null, readsIgnored: null, warnings: [] };
+
+  it("accepts a producer with an expression, without a warning", () => {
+    const fields = { produces: [{ name: "refT", glslType: "float", producer: "1.0" }] };
+    expect(checkStageContract(withFields(fields))).toEqual(clean);
   });
 
-  it("warns once for each reserved field a stage sets", () => {
-    const check = checkStageContract(withFields(Object.fromEntries(RESERVED)));
-    expect(check.error).toBeNull();
-    expect(check.warnings).toHaveLength(RESERVED.length);
+  it("accepts a producer that assigns the variable from its own glsl", () => {
+    const fields = { produces: [{ name: "refT_2", glslType: "vec3" }] };
+    expect(checkStageContract(withFields(fields))).toEqual(clean);
+  });
+
+  it("accepts a consumer, without a warning", () => {
+    expect(checkStageContract(withFields({ consumes: ["refT"] }))).toEqual(clean);
+  });
+
+  it.each([
+    ["produces that isn't an array", { produces: { name: "a", glslType: "float" } }, /produces must be an array/],
+    ["an entry that isn't an object", { produces: ["a"] }, /each produces entry must be an object/],
+    ["a name with a symbol", { produces: [{ name: "a-b", glslType: "float" }] }, /produces name must be/],
+    ["a name starting with a digit", { produces: [{ name: "1a", glslType: "float" }] }, /produces name must be/],
+    ["a name with a double underscore", { produces: [{ name: "a__b", glslType: "float" }] }, /produces name must be .*without "__"/],
+    ["an unknown type", { produces: [{ name: "a", glslType: "mat3" }] }, /produces "a" glslType must be/],
+    ["a producer that isn't text", { produces: [{ name: "a", glslType: "float", producer: 1 }] }, /produces "a" producer must be a non-empty GLSL expression/],
+    ["an empty producer", { produces: [{ name: "a", glslType: "float", producer: "" }] }, /produces "a" producer must be a non-empty GLSL expression/],
+    ["a blank producer", { produces: [{ name: "a", glslType: "float", producer: " \t " }] }, /produces "a" producer must be a non-empty GLSL expression/],
+    ["a name produced twice", { produces: [{ name: "a", glslType: "float" }, { name: "a", glslType: "vec2" }] }, /produces "a" twice/],
+    ["consumes that isn't an array", { consumes: "a" }, /consumes must be an array/],
+    ["a consumed name with a symbol", { consumes: ["a.b"] }, /consumes must hold variable names/],
+    ["a consumed name with a double underscore", { consumes: ["a__b"] }, /consumes must hold variable names .*without "__"/],
+  ])("refuses %s", (_what, fields, message) => {
+    expect(checkStageContract(withFields(fields)).error).toMatch(message);
+  });
+});
+
+describe("pass draw counts", () => {
+  const counted = (iterations: unknown, uniforms: unknown = [{ key: "draws", glslType: "int", default: 0 }]) =>
+    withFields({ uniforms, passes: [{ glsl: "", iterations }] });
+
+  it("accepts a key naming an int or a float uniform of the stage", () => {
+    expect(checkStageContract(counted({ key: "draws", max: 8 })).error).toBeNull();
+    const float = [{ key: "draws", glslType: "float", default: 0 }];
+    expect(checkStageContract(counted({ key: "draws", max: 1024 }, float)).error).toBeNull();
+  });
+
+  it("accepts a key naming one of the pass's own uniforms", () => {
+    const stage = withFields({
+      passes: [{ glsl: "", uniforms: [{ key: "n", glslType: "int", default: 1 }], iterations: { key: "n", max: 4 } }],
+    });
+    expect(checkStageContract(stage).error).toBeNull();
+  });
+
+  it("still accepts a fixed count", () => {
+    expect(checkStageContract(counted(3)).error).toBeNull();
+  });
+
+  it.each([
+    ["a string", "draws", /passes\[0\]\.iterations must be a number or \{ key, max \}/],
+    ["a max of 0", { key: "draws", max: 0 }, /passes\[0\]\.iterations\.max must be an integer from 1 to 1024/],
+    ["a max above 1024", { key: "draws", max: 2000 }, /passes\[0\]\.iterations\.max must be an integer from 1 to 1024/],
+    ["a fractional max", { key: "draws", max: 2.5 }, /passes\[0\]\.iterations\.max must be an integer from 1 to 1024/],
+    ["an undeclared key", { key: "other", max: 4 }, /passes\[0\]\.iterations\.key must name a uniform the stage declares/],
+  ])("refuses %s", (_what, iterations, message) => {
+    expect(checkStageContract(counted(iterations)).error).toMatch(message);
+  });
+
+  it("refuses a key naming a vector uniform", () => {
+    const vec = [{ key: "draws", glslType: "vec2", default: [0, 0] }];
+    expect(checkStageContract(counted({ key: "draws", max: 4 }, vec)).error).toMatch(
+      /passes\[0\]\.iterations\.key "draws" must name an int or float uniform/,
+    );
   });
 });
 

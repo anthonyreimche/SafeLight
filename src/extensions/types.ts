@@ -520,15 +520,30 @@ export interface UniformDeclaration {
   label?: string;
 }
 
-/** Reserved with ProcessingStageContribution.produces and `consumes`: not
- *  implemented. */
+/** A per-pixel value one stage hands to stages after it in the same draw (see
+ *  ProcessingStageContribution.produces / `consumes`). */
 export interface InterStageVariable {
-  /** Shared variable name, e.g. "refT". Emitted as `isv_{name}` in the shader. */
+  /** Emitted as the global `isv_{name}` in every program whose stage set holds
+   *  its producer. Letters, digits and underscores, starting with a letter,
+   *  and no `__` (GLSL reserves it). Names are global across extensions:
+   *  prefix them with your own. */
   name: string;
   glslType: "float" | "vec2" | "vec3" | "vec4";
-  /** GLSL initializer expression evaluated after this stage runs.
-   *  Omit if this stage only consumes the variable. */
+  /** GLSL expression assigned to `isv_{name}` right after the producing
+   *  stage's glsl, inside its block, so it may name the stage's locals,
+   *  uniforms, helpers and stageResult. Omit to assign `isv_{name}` in the
+   *  glsl itself; an empty string is refused. */
   producer?: string;
+}
+
+/** A pass draw count read from the param bag each frame (StagePass.iterations). */
+export interface PassDrawCount {
+  /** An int or float uniform the stage declares, inline or in this pass. Its
+   *  bag value `{stageId}.{key}`, or its default while the bag has none, is
+   *  rounded and clamped to [0, max]. */
+  key: string;
+  /** The most draws a frame may take: an integer from 1 to 1024. */
+  max: number;
 }
 
 export interface TextureRequirement {
@@ -629,7 +644,7 @@ export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
  *  Engine-provided uniforms/helpers in every pass:
  *    uniform vec2 uTexel;      // 1.0 / passResolution
  *    uniform int  uPassIndex;  // current iteration, 0 .. uPassCount-1
- *    uniform int  uPassCount;  // this pass's `iterations`
+ *    uniform int  uPassCount;  // this pass's resolved draw count (see `iterations`)
  *    vec3 readPrev(vec2 uv);   // previous pass at uv; first pass: the stage's input
  *    float luma(vec3); vec3 srgbToLinear(vec3); vec3 linearToSrgb(vec3);
  *  Pass `uniforms` share the owning stage's qualified-key namespace, so the same
@@ -637,8 +652,11 @@ export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
 export interface StagePass {
   glsl: string;
   helpers?: string;
-  /** Ping-pong iterations; uPassIndex runs 0..iterations-1. Default 1. */
-  iterations?: number;
+  /** Ping-pong iterations; uPassIndex runs 0..count-1 and uPassCount is the
+   *  count. A number is a fixed count (default 1). `{ key, max }` reads it from
+   *  the bag each frame; 0 skips the pass, and a stage whose passes all draw 0
+   *  times runs nothing that frame (no split either) and reads as idle. */
+  iterations?: number | PassDrawCount;
   uniforms?: UniformDeclaration[];
 }
 
@@ -678,12 +696,15 @@ export interface ProcessingStageContribution {
    *  stage's inline `glsl` as `vec3 stageResult`. */
   passes?: StagePass[];
 
-  /** Reserved, not implemented: nothing in the render path reads it, and
-   *  registering a stage that sets it logs a warning. Meant for variables handed
-   *  from one stage to the next. */
+  /** Values this stage hands to the stages after it in the same draw. The core
+   *  declares each as `isv_{name}`, and the registry refuses a name another
+   *  registered stage already produces. Inline code only: passes can't see
+   *  them. */
   produces?: InterStageVariable[];
-  /** Reserved, not implemented, like `produces`. Meant for the names of the
-   *  InterStageVariables this stage reads. */
+  /** Names of the InterStageVariables this stage reads as `isv_{name}`. A
+   *  consumer ordered ahead of the producer reads zero (with a warning); one
+   *  whose variable no stage in the set produces is left out of the program
+   *  (with a warning) rather than failing to compile. */
   consumes?: string[];
 
   textures?: TextureRequirement[];
