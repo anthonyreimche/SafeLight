@@ -18,7 +18,7 @@ Your repo's `README.md` is fetched and rendered on the detail page (relative ima
 
 ## Metadata
 
-`description`, `author`, `categories`, `keywords`, `license`, `homepage`, `screenshots`, and `minAppVersion` from the [manifest](README.md#manifest) enrich the listing; stars / last-updated / open-issues come live from GitHub. `categories` drive the store's category chips (preferred over repo topics). `minAppVersion` blocks installs on older Safelight builds.
+`description`, `author`, `categories`, `keywords`, `license`, `homepage`, `screenshots`, `worksWith`, and `minAppVersion` from the [manifest](README.md#manifest) enrich the listing; stars / last-updated / open-issues come live from GitHub. `categories` choose the store category (preferred over repo topics; see [Store listing](README.md#store-listing)). `worksWith` fills your page's Works with shelf. `minAppVersion` blocks installs on older Safelight builds.
 
 ## Releases and versions
 

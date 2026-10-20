@@ -94,7 +94,7 @@ Finally, **tag the GitHub repo with the `safelight-extension` topic** so it appe
   "description": "RGB parade + waveform histogram",
   "author": "You <you@example.com>",
   "main": "dist/index.js",
-  "categories": ["Panels"],
+  "categories": ["Detail"],
   "keywords": ["histogram", "waveform"],
   "license": "MIT",
   "minAppVersion": "2.0.0",
@@ -102,11 +102,32 @@ Finally, **tag the GitHub repo with the `safelight-extension` topic** so it appe
 }
 ```
 
-Only `id`, `name`, `version`, and `main` are required; everything else (`description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `license`, `minAppVersion`, `permissions`) is optional and enriches the store detail view. `minAppVersion` is the **minimum supported Safelight version** — the oldest build the extension works on. Installs (and updates) on an older build are refused before any files are written, and the app reports the version it needs; the extension's detail page also flags the mismatch. When a newer version raises `minAppVersion` above the user's build, the store lists it as needing that Safelight version, never offers or auto-installs it, and the installed version keeps running. An update that installs but fails to start is rolled back to the previous version and remembered, so auto-update does not retry it until you publish a newer version. Set it whenever you depend on an API or contribution point added in a specific release. Versions are compared as dotted `major.minor.patch` (a `v` prefix and missing parts are tolerated).
+Only `id`, `name`, `version`, and `main` are required; everything else (`description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `worksWith`, `license`, `minAppVersion`, `permissions`) is optional and enriches the store detail view. `minAppVersion` is the **minimum supported Safelight version** — the oldest build the extension works on. Installs (and updates) on an older build are refused before any files are written, and the app reports the version it needs; the extension's detail page also flags the mismatch. When a newer version raises `minAppVersion` above the user's build, the store lists it as needing that Safelight version, never offers or auto-installs it, and the installed version keeps running. An update that installs but fails to start is rolled back to the previous version and remembered, so auto-update does not retry it until you publish a newer version. Set it whenever you depend on an API or contribution point added in a specific release. Versions are compared as dotted `major.minor.patch` (a `v` prefix and missing parts are tolerated).
 
 **`id`** names the extension and the folder it is installed into. It starts with a letter or a digit and holds only letters, digits, `.`, `_` and `-`. Pick one that is yours alone, such as `com.example.histogram-pro`. `core` and anything under `core.` (like `core.tools`), in any letter case, belong to Safelight's built-in extensions: installing an extension with one of those ids is refused, and the Developer Tools dev folder will not load one (its row in the Dev tab says why). `corel`, `coreutils` and `my.core` are fine.
 
 **`permissions`** declares capabilities the extension needs, shown to the user on its store page. Only `network` is **enforced**: the listed HTTPS origins are added to the app's content-security policy, so the extension can reach **only** the hosts it declares — any other host is blocked. A new declaration takes effect on the next app launch (installing a network-using extension prompts the user to restart before it can connect; an extension loaded from the Developer Tools dev folder is read the same way, and the Dev tab says which origins wait on a restart). Because extensions run in-app, ambient access to the user's catalog and files is **not** confined by this field — it is a consent/disclosure layer, not a sandbox. See [Extensions — safety & terms](../../../EXTENSIONS.md).
+
+### Store listing
+
+The store groups extensions by what they're for. Add one to three purpose topics to the repo beside `safelight-extension`:
+
+| Topic | Category |
+|---|---|
+| `safelight-library` | Library |
+| `safelight-metadata` | Metadata |
+| `safelight-tone` | Tone |
+| `safelight-color` | Colour |
+| `safelight-look` | Looks |
+| `safelight-detail` | Detail and repair |
+| `safelight-workflow` | Workflow |
+| `safelight-export` | Export and sharing |
+| `safelight-preset` | Presets |
+| `safelight-theme` | Themes and interface |
+
+`categories` in `safelight.json` overrides the topics when any value names a category by its slug or label, in any case (`["Detail", "Tone"]`); values that name none, such as "Develop", are ignored. `safelight-module`, `safelight-pipeline` and `safelight-panel` aren't categories: the store shows the first one present as a badge (Module, Processing, Panel). The store also searches your manifest's `keywords`. The list lives in [safelight-registry's `categories.json`](https://github.com/anthonyreimche/safelight-registry/blob/main/categories.json), so new categories appear without an app update.
+
+`screenshots` (https URLs or paths in your repo, at most 6) show as a strip on your detail page. `worksWith` lists `"owner/repo"` extensions yours pairs well with (at most 6), such as a panel that draws on another extension's module: they appear on your detail page, and yours appears on theirs when your extension is verified.
 
 ### The entry bundle
 

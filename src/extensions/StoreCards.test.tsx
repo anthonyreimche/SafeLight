@@ -57,4 +57,21 @@ describe("ExtensionCard", () => {
     screen.getByText("Colour · Panel");
     screen.getByText("warp");
   });
+
+  it("gives a truncated tag its full text on hover", () => {
+    render(
+      <ExtensionCard
+        index={0}
+        result={result({ categories: ["export"], type: "pipeline" })}
+        thumb={null}
+        installing={false}
+        disabled={false}
+        onOpen={() => {}}
+        onInstall={() => {}}
+      />,
+    );
+    expect(screen.getByText("Export and sharing · Processing").getAttribute("title")).toBe(
+      "Export and sharing · Processing",
+    );
+  });
 });

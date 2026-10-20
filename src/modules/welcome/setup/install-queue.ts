@@ -41,6 +41,9 @@ export interface InstallDeps {
   install(repo: string): Promise<ExtensionManifest>;
   rememberSource(id: string, repo: string): void;
   timeoutMs: number;
+  /** Where the person can try again, named in skip and timeout reasons:
+   *  "Extensions" (the default, for setup) or "its page" (in the store). */
+  where?: string;
 }
 
 export const SETUP_INSTALL_TIMEOUT_MS = 120_000;
@@ -62,6 +65,7 @@ export async function installOne(
   deps: InstallDeps,
 ): Promise<InstallRow> {
   const { repo } = row;
+  const where = deps.where ?? "Extensions";
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
     timer = setTimeout(() => resolve(TIMED_OUT), deps.timeoutMs);
@@ -88,14 +92,13 @@ export async function installOne(
       return {
         ...row,
         status: "skipped",
-        detail:
-          "Couldn't confirm the reviewed version right now. You can install it from Extensions.",
+        detail: `Couldn't confirm the reviewed version right now. You can install it from ${where}.`,
       };
     if (review.stale)
       return {
         ...row,
         status: "skipped",
-        detail: `The newest version hasn't been reviewed yet (reviewed up to ${review.reviewedVersion}). You can install it from Extensions.`,
+        detail: `The newest version hasn't been reviewed yet (reviewed up to ${review.reviewedVersion}). You can install it from ${where}.`,
       };
     const work = deps.install(repo);
     // Recorded however late the download lands, so a timed-out install that
@@ -109,8 +112,7 @@ export async function installOne(
       return {
         ...row,
         status: "timed-out",
-        detail:
-          "Still downloading. It may finish in the background; check Extensions later.",
+        detail: `Still downloading. It may finish in the background; check ${where} later.`,
       };
     return {
       ...row,
@@ -145,7 +147,7 @@ export async function runSetupInstalls(
       result = {
         ...row,
         status: "skipped",
-        detail: "GitHub isn't responding. Try again from Extensions.",
+        detail: `GitHub isn't responding. Try again from ${deps.where ?? "Extensions"}.`,
       };
     } else {
       onRow({ ...row, status: "installing" });

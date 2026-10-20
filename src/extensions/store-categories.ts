@@ -84,3 +84,38 @@ export function categoryInfo(key: string, vocab: StoreVocabulary): StoreCategory
   if (key === OTHER.slug) return OTHER;
   return vocab.categories.find((c) => c.slug === key) ?? null;
 }
+
+const ownerOf = (fullName: string) => fullName.split("/")[0].toLowerCase();
+const byStars = (a: Pick<ExtensionSearchResult, "stars">, b: Pick<ExtensionSearchResult, "stars">) =>
+  b.stars - a.stars;
+
+/** The loaded results a result says it works with, in its order. */
+export function worksWithOf<T extends Pick<ExtensionSearchResult, "fullName">>(
+  result: Pick<ExtensionSearchResult, "worksWith">,
+  results: T[],
+): T[] {
+  const byName = new Map(results.map((r) => [r.fullName.toLowerCase(), r]));
+  return (result.worksWith ?? []).flatMap((repo) => byName.get(repo.toLowerCase()) ?? []);
+}
+
+export function moreFromAuthor<T extends Pick<ExtensionSearchResult, "fullName" | "stars">>(
+  results: T[],
+  fullName: string,
+  limit: number,
+): T[] {
+  const self = fullName.toLowerCase();
+  return results
+    .filter((r) => ownerOf(r.fullName) === ownerOf(fullName) && r.fullName.toLowerCase() !== self)
+    .sort(byStars)
+    .slice(0, limit);
+}
+
+export function moreInCategory<
+  T extends Pick<ExtensionSearchResult, "fullName" | "stars" | "categories" | "topics">,
+>(results: T[], fullName: string, slug: string, vocab: StoreVocabulary, limit: number): T[] {
+  const self = fullName.toLowerCase();
+  return inCategory(results, slug, vocab)
+    .filter((r) => r.fullName.toLowerCase() !== self)
+    .sort(byStars)
+    .slice(0, limit);
+}

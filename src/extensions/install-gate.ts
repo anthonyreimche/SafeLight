@@ -10,6 +10,7 @@
 
 import { isVerified, reviewedFor } from "./trust";
 import { isNewer } from "@/update/semver";
+import { confirmDialog } from "@/ui/components/ConfirmDialog";
 
 // Persisted in localStorage: it's a safety gate, not a tunable preference.
 export const RISK_ACK_KEY = "sl_ext_risk_ack_v1";
@@ -34,6 +35,19 @@ export function setAckedExtensionRisk(): void {
   try {
     localStorage.setItem(RISK_ACK_KEY, "1");
   } catch {}
+}
+
+/** The one-time acknowledgement before a first install: true when it was
+ *  already given or the person gives it now, which records it. */
+export async function confirmExtensionRisk(): Promise<boolean> {
+  if (hasAckedExtensionRisk()) return true;
+  const ok = await confirmDialog({
+    title: "Before installing extensions",
+    message: EXTENSION_RISK_NOTICE,
+    confirmLabel: "Continue",
+  });
+  if (ok) setAckedExtensionRisk();
+  return ok;
 }
 
 export interface ReviewCheck {

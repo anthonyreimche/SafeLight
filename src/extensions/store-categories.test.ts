@@ -14,7 +14,10 @@ import {
   categoriesOf,
   categoryInfo,
   inCategory,
+  moreFromAuthor,
+  moreInCategory,
   typeOf,
+  worksWithOf,
 } from "./store-categories";
 
 const slugs = (list: { slug: string }[]) => list.map((c) => c.slug);
@@ -107,5 +110,34 @@ describe("inCategory and categoryInfo", () => {
     expect(categoryInfo("tone", V)?.label).toBe("Tone");
     expect(categoryInfo("home", V)).toBeNull();
     expect(categoryInfo("retired", V)).toBeNull();
+  });
+});
+
+describe("related lists", () => {
+  const results = [
+    { fullName: "Acme/Warp", stars: 1, categories: ["detail"] },
+    { fullName: "acme/gps", stars: 5, categories: ["metadata"] },
+    { fullName: "acme/scopes", stars: 9, categories: ["color"] },
+    { fullName: "other/denoise", stars: 3, categories: ["detail"] },
+    { fullName: "other/moire", stars: 7, topics: ["safelight-detail"] },
+  ];
+  const names = (list: { fullName: string }[]) => list.map((r) => r.fullName);
+
+  it("resolves Works with against the loaded results, in its order, any case", () => {
+    expect(names(worksWithOf({ worksWith: ["other/denoise", "ACME/GPS", "gone/repo"] }, results))).toEqual([
+      "other/denoise",
+      "acme/gps",
+    ]);
+    expect(worksWithOf({}, results)).toEqual([]);
+  });
+
+  it("lists more from the same owner by stars, without itself", () => {
+    expect(names(moreFromAuthor(results, "acme/warp", 12))).toEqual(["acme/scopes", "acme/gps"]);
+    expect(names(moreFromAuthor(results, "acme/warp", 1))).toEqual(["acme/scopes"]);
+  });
+
+  it("lists more in a category by stars, without itself", () => {
+    expect(names(moreInCategory(results, "acme/warp", "detail", V, 12))).toEqual(["other/moire", "other/denoise"]);
+    expect(moreInCategory(results, "acme/warp", "tone", V, 12)).toEqual([]);
   });
 });

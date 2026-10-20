@@ -3,15 +3,13 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Covers the Extensions-store UI state: repo-topic → category mapping, the
-// update-check cache and its localStorage mirror (the thing that keeps the 6h
-// TTL alive across launches), and the fetch-once-per-repo caching in
-// loadRepoMeta / loadReadme. Run with `npm test`.
+// Covers the Extensions-store UI state: the update-check cache and its
+// localStorage mirror (the thing that keeps the 6h TTL alive across launches),
+// and the fetch-once-per-repo caching in loadRepoMeta / loadReadme. Run with
+// `npm test`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  CATEGORY_ORDER,
-  categoryFor,
   loadReadme,
   loadReleases,
   loadRepoMeta,
@@ -94,7 +92,6 @@ beforeEach(() => {
   useExtStoreUI.setState({
     view: "list",
     selected: null,
-    category: "All",
     sort: "popular",
     meta: {},
     readme: {},
@@ -103,63 +100,16 @@ beforeEach(() => {
     browse: "home",
     railExpanded: false,
     vocabulary: FALLBACK_VOCABULARY,
+    kits: null,
+    kit: null,
+    kitRuns: {},
+    kitRunning: null,
   });
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-});
-
-describe("categoryFor", () => {
-  it("maps each safelight-* repo topic to its store category", () => {
-    expect(categoryFor(["safelight-panel"])).toBe("Panels");
-    expect(categoryFor(["safelight-export"])).toBe("Export");
-    expect(categoryFor(["safelight-preset"])).toBe("Presets");
-    expect(categoryFor(["safelight-color"])).toBe("Color");
-    expect(categoryFor(["safelight-theme"])).toBe("Themes");
-    expect(categoryFor(["safelight-pipeline"])).toBe("Pipelines");
-    expect(categoryFor(["safelight-module"])).toBe("Modules");
-  });
-
-  it("only ever returns a category the chips can display", () => {
-    const topics = [
-      "safelight-panel",
-      "safelight-export",
-      "safelight-preset",
-      "safelight-color",
-      "safelight-theme",
-      "safelight-pipeline",
-      "safelight-module",
-      "unmapped-topic",
-    ];
-    for (const t of topics)
-      expect(CATEGORY_ORDER).toContain(categoryFor([t]));
-  });
-
-  it("keeps Modules beside Panels in the chip order", () => {
-    expect(CATEGORY_ORDER.indexOf("Modules")).toBe(CATEGORY_ORDER.indexOf("Panels") + 1);
-  });
-
-  it("falls back to Other for unmapped or missing topics", () => {
-    expect(categoryFor()).toBe("Other");
-    expect(categoryFor([])).toBe("Other");
-    expect(categoryFor(["photography", "webgl"])).toBe("Other");
-  });
-
-  it("takes the first mapped topic when a repo carries several", () => {
-    expect(categoryFor(["unmapped", "safelight-color", "safelight-theme"])).toBe("Color");
-  });
-
-  it("prefers an explicit manifest category over the repo topics", () => {
-    expect(categoryFor(["safelight-panel"], ["Export"])).toBe("Export");
-  });
-
-  it("ignores manifest categories that are not part of the chip set", () => {
-    expect(categoryFor(["safelight-panel"], ["Wizardry"])).toBe("Panels");
-    expect(categoryFor(undefined, ["Wizardry"])).toBe("Other");
-    expect(categoryFor(["safelight-panel"], ["Wizardry", "Themes"])).toBe("Themes");
-  });
 });
 
 describe("updateNote", () => {
@@ -189,13 +139,12 @@ describe("navigation state", () => {
     expect(useExtStoreUI.getState()).toMatchObject({ view: "list", selected: null });
   });
 
-  it("keeps the category and sort filters across a detail round-trip", () => {
-    const { setCategory, setSort, openDetail, back } = useExtStoreUI.getState();
-    setCategory("Themes");
+  it("keeps the sort across a detail round-trip", () => {
+    const { setSort, openDetail, back } = useExtStoreUI.getState();
     setSort("name");
     openDetail("acme/tool");
     back();
-    expect(useExtStoreUI.getState()).toMatchObject({ category: "Themes", sort: "name" });
+    expect(useExtStoreUI.getState().sort).toBe("name");
   });
 });
 
@@ -573,6 +522,24 @@ describe("browse navigation", () => {
     useExtStoreUI.getState().openDetail("acme/tool");
     useExtStoreUI.getState().back();
     expect(useExtStoreUI.getState().browse).toBe("look");
+  });
+
+  it("opens a kit page from a detail page, and leaves it for a category or home", () => {
+    useExtStoreUI.getState().openDetail("acme/tool");
+    useExtStoreUI.getState().openKit("film");
+    expect(useExtStoreUI.getState()).toMatchObject({ kit: "film", view: "list", selected: null });
+    useExtStoreUI.getState().openCategory("tone");
+    expect(useExtStoreUI.getState()).toMatchObject({ browse: "tone", kit: null });
+    useExtStoreUI.getState().openKit("film");
+    useExtStoreUI.getState().goHome();
+    expect(useExtStoreUI.getState()).toMatchObject({ browse: "home", kit: null });
+  });
+
+  it("keeps the open kit across a detail round-trip", () => {
+    useExtStoreUI.getState().openKit("film");
+    useExtStoreUI.getState().openDetail("acme/tool");
+    useExtStoreUI.getState().back();
+    expect(useExtStoreUI.getState().kit).toBe("film");
   });
 });
 

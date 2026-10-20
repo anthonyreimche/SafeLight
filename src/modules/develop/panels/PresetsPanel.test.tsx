@@ -67,7 +67,7 @@ beforeEach(() => {
     historyIndex: 0,
   });
   usePresetsStore.setState({ presets: [] });
-  useExtStoreUI.setState({ category: "All" });
+  useExtStoreUI.setState({ browse: "home", railExpanded: false });
   vi.stubGlobal("safelightNative", { plugins: { list: async () => [] } });
 });
 
@@ -98,8 +98,9 @@ describe("PresetsPanel import feedback", () => {
     await user.click(screen.getByRole("button", { name: "Browse importers" }));
 
     const store = await screen.findByRole("dialog", { name: "Extensions" });
-    const chip = within(store).getByRole("button", { name: "Presets" });
-    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    const row = within(store).getByRole("button", { name: "Presets" });
+    expect(row.getAttribute("aria-current")).toBe("page");
+    within(store).getByRole("heading", { name: "Presets" });
   });
 
   it("says so when the importer finds no develop settings, saving nothing", async () => {

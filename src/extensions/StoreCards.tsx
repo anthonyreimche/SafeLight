@@ -15,6 +15,9 @@ import { FlaggedBadge, VerifiedBadge } from "./TrustBadges";
 import { useExtStoreUI } from "./store-ui";
 import { categoriesOf, typeOf } from "./store-categories";
 
+/** How many cards a shelf shows. */
+export const SHELF_LIMIT = 12;
+
 /** "{first category} · {type}", either part left out when absent. */
 export function cardTag(result: ExtensionSearchResult, vocab: StoreVocabulary): string {
   return [categoriesOf(result, vocab)[0]?.label, typeOf(result, vocab)?.label]
@@ -33,6 +36,7 @@ export function Shelf({
   busy,
   onOpen,
   onInstall,
+  isInstalled,
 }: {
   title: string;
   items: ExtensionSearchResult[];
@@ -40,6 +44,8 @@ export function Shelf({
   busy: string | null;
   onOpen: (repo: string) => void;
   onInstall: (repo: string, r: ExtensionSearchResult) => void;
+  /** Cards of installed extensions show "Installed" in place of Install. */
+  isInstalled?: (r: ExtensionSearchResult) => boolean;
 }) {
   return (
     <div>
@@ -52,6 +58,7 @@ export function Shelf({
               result={r}
               thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
               installing={busy === r.fullName}
+              installed={isInstalled?.(r) ?? false}
               disabled={busy !== null}
               onOpen={() => onOpen(r.fullName)}
               onInstall={() => void onInstall(r.fullName, r)}
@@ -70,6 +77,7 @@ export function ExtensionCard({
   result,
   thumb,
   installing,
+  installed = false,
   disabled,
   onOpen,
   onInstall,
@@ -80,6 +88,8 @@ export function ExtensionCard({
    *  batched resolution lands — we then fall back to the owner avatar. */
   thumb: ExtensionThumbnail | null;
   installing: boolean;
+  /** Already installed: shows "Installed" in place of the Install button. */
+  installed?: boolean;
   disabled: boolean;
   onOpen: () => void;
   onInstall: () => void;
@@ -202,7 +212,10 @@ export function ExtensionCard({
       </button>
       <div className="mt-auto flex items-center justify-between gap-2 px-2 pb-2">
         {tag ? (
-          <span className="min-w-0 truncate rounded-full bg-surface-3 px-1.5 py-0.5 text-[9px] text-text-muted">
+          <span
+            title={tag}
+            className="min-w-0 truncate rounded-full bg-surface-3 px-1.5 py-0.5 text-[9px] text-text-muted"
+          >
             {tag}
           </span>
         ) : (
@@ -210,6 +223,8 @@ export function ExtensionCard({
         )}
         {banned ? (
           <FlaggedBadge reason={banned} />
+        ) : installed ? (
+          <span className="shrink-0 text-text-muted">Installed</span>
         ) : (
           <button
             disabled={disabled}
