@@ -11,7 +11,8 @@
 // before the dialog is ever opened, and avoids prop-drilling through the panel.
 
 import { create } from "zustand";
-import type { ExtensionRelease, ExtensionRepoMeta } from "./types";
+import { FALLBACK_VOCABULARY } from "./store-categories";
+import type { ExtensionRelease, ExtensionRepoMeta, StoreVocabulary } from "./types";
 
 export type StoreSort = "popular" | "updated" | "name";
 
@@ -131,6 +132,14 @@ interface ExtStoreUI {
   selected: string | null;
   category: string;
   sort: StoreSort;
+  /** What Browse shows: "home" (shelves), "other" (no category) or a
+   *  category slug. */
+  browse: string;
+  /** The category list under Browse in the rail: collapsed at launch, kept
+   *  for the session. */
+  railExpanded: boolean;
+  /** Categories and type badges from the registry index, or the fallback. */
+  vocabulary: StoreVocabulary;
   meta: Record<string, Async<ExtensionRepoMeta>>;
   readme: Record<string, Async<string | null>>;
   /** Each repo's GitHub releases, for the version picker and release notes. */
@@ -141,6 +150,10 @@ interface ExtStoreUI {
   back: () => void;
   setCategory: (c: string) => void;
   setSort: (s: StoreSort) => void;
+  openCategory: (key: string) => void;
+  goHome: () => void;
+  toggleRail: () => void;
+  setVocabulary: (v: StoreVocabulary) => void;
   setUpdate: (id: string, info: ExtUpdateInfo) => void;
   clearUpdate: (id: string) => void;
   pruneUpdates: (installedIds: string[]) => void;
@@ -151,6 +164,9 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
   selected: null,
   category: "All",
   sort: "popular",
+  browse: "home",
+  railExpanded: false,
+  vocabulary: FALLBACK_VOCABULARY,
   meta: {},
   readme: {},
   releases: {},
@@ -160,6 +176,10 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
   back: () => set({ view: "list", selected: null }),
   setCategory: (category) => set({ category }),
   setSort: (sort) => set({ sort }),
+  openCategory: (browse) => set({ browse, railExpanded: true, view: "list", selected: null }),
+  goHome: () => set({ browse: "home", railExpanded: true, view: "list", selected: null }),
+  toggleRail: () => set((s) => ({ railExpanded: !s.railExpanded })),
+  setVocabulary: (vocabulary) => set({ vocabulary }),
   setUpdate: (id, info) =>
     set((s) => {
       const updates = { ...s.updates, [id]: info };
@@ -271,4 +291,16 @@ export async function loadReleases(fullName: string, force = false): Promise<voi
       releases: { ...s.releases, [fullName]: { status: "error", error: ipcMessage(e) } },
     }));
   }
+}
+
+/** Take the registry index's vocabulary. Null, a failure or no bridge keeps
+ *  the current one: the fallback until the first answer. */
+export async function loadStoreVocabulary(): Promise<void> {
+  const ask = window.safelightNative?.plugins?.vocabulary;
+  if (!ask) return;
+  try {
+    const vocabulary = await ask();
+    if (vocabulary && vocabulary.categories.length > 0)
+      useExtStoreUI.getState().setVocabulary(vocabulary);
+  } catch {}
 }

@@ -12,6 +12,7 @@ import type {
   StageSpace,
   TextureRequirement,
 } from "@/extensions/types";
+import { MAX_PASS_DRAWS } from "@/extensions/stage-validation";
 import { BASELINE_TONE_GLSL } from "../baseline-tone";
 import {
   STAGE_SPACE_GLSL,
@@ -688,7 +689,7 @@ function emitExtensionStage(
   const produced = (s.produces ?? [])
     .flatMap((v) => {
       if (v.producer === undefined) return [];
-      return [`\nisv_${v.name} = (${rewrite(v.producer)});`];
+      return [`\nisv_${v.name} = (${rewrite(v.producer)}\n);`];
     })
     .join("");
   return `{\n${sceneLuma}${prelude}${inline}${produced}\n}`;
@@ -743,15 +744,24 @@ function declareHelpers(
   return helperNames;
 }
 
+/** A fixed draw count as the renderer takes it: a whole number from 1 to
+ *  MAX_PASS_DRAWS, or 1 when the count isn't finite. The worker loops once per
+ *  draw, so nothing unbounded may reach it. */
+function fixedDraws(count: number | undefined): number {
+  if (count === undefined || !Number.isFinite(count)) return 1;
+  return Math.min(MAX_PASS_DRAWS, Math.max(1, Math.floor(count)));
+}
+
 /** A pass's draws: a fixed count, or the bag entry the renderer reads it from. */
 function passCount(
   s: ProcessingStageContribution,
   p: StagePass,
 ): Pick<PrepassPass, "iterations" | "drawCount"> {
   const count = p.iterations;
-  if (typeof count !== "object") return { iterations: Math.max(1, count ?? 1) };
+  if (typeof count !== "object") return { iterations: fixedDraws(count) };
   const declared = [...s.uniforms, ...(p.uniforms ?? [])].find((u) => u.key === count.key);
-  const fallback = typeof declared?.default === "number" ? declared.default : 0;
+  const fallback =
+    typeof declared?.default === "number" && Number.isFinite(declared.default) ? declared.default : 0;
   return {
     iterations: count.max,
     drawCount: { qualifiedKey: `${s.id}.${count.key}`, max: count.max, fallback },

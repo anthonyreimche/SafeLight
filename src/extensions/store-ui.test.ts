@@ -15,11 +15,13 @@ import {
   loadReadme,
   loadReleases,
   loadRepoMeta,
+  loadStoreVocabulary,
   updateNote,
   useExtStoreUI,
   type ExtUpdateInfo,
 } from "./store-ui.ts";
-import type { ExtensionRelease, ExtensionRepoMeta } from "./types.ts";
+import { FALLBACK_VOCABULARY } from "./store-categories.ts";
+import type { ExtensionRelease, ExtensionRepoMeta, StoreVocabulary } from "./types.ts";
 
 const LS_UPDATES = "sl_ext_updates";
 
@@ -77,6 +79,7 @@ function stubGithub(github?: GithubBridge): void {
 /** Only the slice of the plugins bridge loadReleases reaches for. */
 interface PluginsBridge {
   releases: (repo: string, force?: boolean) => Promise<ExtensionRelease[]>;
+  vocabulary: () => Promise<StoreVocabulary | null>;
 }
 
 function stubPlugins(plugins?: Partial<PluginsBridge>): void {
@@ -97,6 +100,9 @@ beforeEach(() => {
     readme: {},
     releases: {},
     updates: {},
+    browse: "home",
+    railExpanded: false,
+    vocabulary: FALLBACK_VOCABULARY,
   });
 });
 
@@ -525,5 +531,78 @@ describe("loadReleases", () => {
     await loadReleases("acme/tool", true);
 
     expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({ status: "ready", data: list });
+  });
+});
+
+describe("browse navigation", () => {
+  it("starts on the home page with the category list collapsed", async () => {
+    vi.resetModules();
+    const fresh = await import("./store-ui.ts");
+    const state = fresh.useExtStoreUI.getState();
+    expect(state).toMatchObject({ browse: "home", railExpanded: false });
+    expect(state.vocabulary).toEqual(FALLBACK_VOCABULARY);
+  });
+
+  it("opens a category from a detail page, expanding the list", () => {
+    useExtStoreUI.getState().openDetail("acme/tool");
+    useExtStoreUI.getState().openCategory("tone");
+    expect(useExtStoreUI.getState()).toMatchObject({
+      browse: "tone",
+      railExpanded: true,
+      view: "list",
+      selected: null,
+    });
+  });
+
+  it("goes home, expanding the list", () => {
+    useExtStoreUI.setState({ browse: "tone" });
+    useExtStoreUI.getState().goHome();
+    expect(useExtStoreUI.getState()).toMatchObject({ browse: "home", railExpanded: true, view: "list" });
+  });
+
+  it("toggles the list without navigating", () => {
+    useExtStoreUI.setState({ browse: "tone" });
+    useExtStoreUI.getState().toggleRail();
+    expect(useExtStoreUI.getState()).toMatchObject({ browse: "tone", railExpanded: true });
+    useExtStoreUI.getState().toggleRail();
+    expect(useExtStoreUI.getState().railExpanded).toBe(false);
+  });
+
+  it("keeps the open category across a detail round-trip", () => {
+    useExtStoreUI.getState().openCategory("look");
+    useExtStoreUI.getState().openDetail("acme/tool");
+    useExtStoreUI.getState().back();
+    expect(useExtStoreUI.getState().browse).toBe("look");
+  });
+});
+
+describe("loadStoreVocabulary", () => {
+  const remote: StoreVocabulary = {
+    categories: [{ slug: "tone", label: "Tone", description: "" }],
+    types: [],
+  };
+
+  it("takes the registry's vocabulary", async () => {
+    stubPlugins({ vocabulary: async () => remote });
+    await loadStoreVocabulary();
+    expect(useExtStoreUI.getState().vocabulary).toEqual(remote);
+  });
+
+  it("keeps the current vocabulary on null, on a failure, and without the bridge", async () => {
+    stubPlugins({ vocabulary: async () => null });
+    await loadStoreVocabulary();
+    expect(useExtStoreUI.getState().vocabulary).toBe(FALLBACK_VOCABULARY);
+
+    stubPlugins({
+      vocabulary: async () => {
+        throw new Error("offline");
+      },
+    });
+    await loadStoreVocabulary();
+    expect(useExtStoreUI.getState().vocabulary).toBe(FALLBACK_VOCABULARY);
+
+    stubPlugins();
+    await loadStoreVocabulary();
+    expect(useExtStoreUI.getState().vocabulary).toBe(FALLBACK_VOCABULARY);
   });
 });

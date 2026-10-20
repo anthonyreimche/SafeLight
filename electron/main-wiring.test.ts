@@ -149,6 +149,16 @@ describe("extension install and search wiring", () => {
 
   it("keeps release zip URLs out of the results it hands the renderer", () => {
     const source = functionSource("searchExtensions");
-    expect(source).toMatch(/filterRegistry\(index, query\)\s*\.map\(\(\{ versions, \.\.\.item \}\) => item\)/);
+    expect(source).toMatch(
+      /filterRegistry\(index, query, vocabulary\)\s*\.map\(\(\{ versions, \.\.\.item \}\) => item\)/,
+    );
+  });
+
+  it("serves the store vocabulary from the cached registry index", () => {
+    const source = functionSource("storeVocabulary");
+    expect(source).toMatch(/await fetchRegistryIndex\(false\)/);
+    expect(source).toMatch(/registryIndexCache \? registryIndexCache\.vocabulary : null/);
+    expect(MAIN).toMatch(/ipcMain\.handle\("plugins:store-vocabulary", \(\) => storeVocabulary\(\)\)/);
+    expect(PRELOAD).toMatch(/vocabulary: \(\) => ipcRenderer\.invoke\("plugins:store-vocabulary"\)/);
   });
 });

@@ -1031,13 +1031,20 @@ describe("inter-stage variables", () => {
   it("assigns the producer's expression inside its block, after its glsl", () => {
     const pfx = uniformPrefix(PRODUCER.id);
     const { injection } = buildStageInjection([PRODUCER]);
-    expect(injection.sceneLinear).toContain(`float made = lin.g * ${pfx}amount;\nisv_acmeMade = (made);\n}`);
+    expect(injection.sceneLinear).toContain(`float made = lin.g * ${pfx}amount;\nisv_acmeMade = (made\n);\n}`);
+  });
+
+  // The closing parenthesis sits on its own line so a trailing // comment in the
+  // expression can't swallow it.
+  it("keeps a trailing line comment in a producer from swallowing the assignment's end", () => {
+    const stage = { ...PRODUCER, produces: [{ name: "acmeMade", glslType: "float" as const, producer: "made // the mask" }] };
+    expect(buildStageInjection([stage]).injection.sceneLinear).toContain("isv_acmeMade = (made // the mask\n);\n}");
   });
 
   it("namespaces the producer's uniforms like the glsl's", () => {
     const pfx = uniformPrefix(PRODUCER.id);
     const stage = { ...PRODUCER, produces: [{ name: "acmeMade", glslType: "float" as const, producer: "amount * 2.0" }] };
-    expect(buildStageInjection([stage]).injection.sceneLinear).toContain(`isv_acmeMade = (${pfx}amount * 2.0);`);
+    expect(buildStageInjection([stage]).injection.sceneLinear).toContain(`isv_acmeMade = (${pfx}amount * 2.0\n);`);
   });
 
   it("declares a variable the producer assigns in its own glsl, and adds no assignment", () => {
@@ -1151,5 +1158,31 @@ describe("pass draw counts", () => {
     const [prepass] = buildStageInjection([{ ...STAGE, passes: [{ ...PASS, iterations: 4 }] }]).prepass;
     expect(prepass.passes[0].iterations).toBe(4);
     expect(prepass.passes[0].drawCount).toBeUndefined();
+  });
+
+  // The worker loops once per draw, so a fixed count nothing bounds (Infinity,
+  // 1e9) would never return.
+  it.each([
+    [Infinity, 1],
+    [-Infinity, 1],
+    [NaN, 1],
+    [1e9, 1024],
+    [1025, 1024],
+    [1024, 1024],
+    [2.7, 2],
+    [0.4, 1],
+  ])("bounds a fixed count of %s to %s draws", (iterations, draws) => {
+    const [prepass] = buildStageInjection([{ ...STAGE, passes: [{ ...PASS, iterations }] }]).prepass;
+    expect(prepass.passes[0].iterations).toBe(draws);
+  });
+
+  it.each([NaN, Infinity, -Infinity])("falls back to 0 draws while the count's default is %s", (value) => {
+    const stage = {
+      ...STAGE,
+      uniforms: [AMOUNT, { ...DRAWS, default: value }],
+      passes: [{ ...PASS, iterations: { key: "draws", max: 6 } }],
+    };
+    const [prepass] = buildStageInjection([stage]).prepass;
+    expect(prepass.passes[0].drawCount?.fallback).toBe(0);
   });
 });

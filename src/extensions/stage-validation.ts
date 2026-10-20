@@ -29,7 +29,7 @@ const PRIMARIES: Record<NonNullable<StageSpace["primaries"]>, true> = { rec709: 
 const READS: Record<NonNullable<ProcessingStageContribution["reads"]>, true> = { source: true, current: true };
 
 const ISV_TYPES: Record<InterStageVariable["glslType"], true> = { float: true, vec2: true, vec3: true, vec4: true };
-// No double underscore: GLSL reserves identifiers containing one, and ANGLE rejects them.
+// No double underscore: GLSL ES reserves identifiers that contain one.
 const ISV_NAME = /^[A-Za-z](?:[A-Za-z0-9]|_(?!_))*$/;
 
 /** The most draws a bag-driven pass may take in one frame. */
@@ -101,6 +101,44 @@ function interStageError(c: ProcessingStageContribution): string | null {
   return null;
 }
 
+const GLSL_COMMENT = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+const ISV_REFERENCE = /\bisv_([A-Za-z0-9_]+)/g;
+
+/** The names `source` reads as `isv_<name>`, outside its comments. Whichever
+ *  comment opener comes first wins, so `/*` inside a line comment opens nothing. */
+function isvReads(source: unknown): string[] {
+  if (typeof source !== "string") return [];
+  return [...source.replace(GLSL_COMMENT, " ").matchAll(ISV_REFERENCE)].map((m) => m[1]);
+}
+
+/** Why the stage reads an inter-stage variable it doesn't list, or a pass reads
+ *  one at all, or null. A read the stage doesn't list works while another stage
+ *  produces the variable and fails the whole develop program once that stage
+ *  goes, because only `consumes` tells the injection who needs a producer.
+ *  Runs after interStageError, so `produces` and `consumes` are well formed. */
+function isvReferenceError(c: ProcessingStageContribution): string | null {
+  const produces = c.produces ?? [];
+  const listed = new Set([...produces.map((v) => v.name), ...(c.consumes ?? [])]);
+  const inline: [string, unknown][] = [
+    ["glsl", c.glsl],
+    ["helpers", c.helpers],
+    ...produces.map((v): [string, unknown] => [`produces "${v.name}" producer`, v.producer]),
+  ];
+  for (const [where, source] of inline) {
+    const name = isvReads(source).find((n) => !listed.has(n));
+    if (name !== undefined) return `${where} reads isv_${name} but neither produces nor consumes "${name}"`;
+  }
+  const passes: unknown = c.passes;
+  if (!Array.isArray(passes)) return null;
+  for (const [index, pass] of (passes as unknown[]).entries()) {
+    if (typeof pass !== "object" || pass === null) continue;
+    const { glsl, helpers } = pass as Record<string, unknown>;
+    const [name] = [...isvReads(glsl), ...isvReads(helpers)];
+    if (name !== undefined) return `passes[${index}] reads isv_${name}; inter-stage variables are not visible to passes`;
+  }
+  return null;
+}
+
 /** Why a pass's bag-driven draw count can't be honoured, or null. */
 function passCountError(c: ProcessingStageContribution): string | null {
   const passes: unknown = c.passes;
@@ -127,6 +165,25 @@ function passCountError(c: ProcessingStageContribution): string | null {
     }
   }
   return null;
+}
+
+/** Notes on the fixed draw counts the renderer clamps to 1…MAX_PASS_DRAWS (a
+ *  count that isn't finite becomes 1). They stay registrable: refusing them
+ *  would stop an extension written before the bound from loading. */
+function fixedCountWarnings(c: ProcessingStageContribution, stagePrefix: string): string[] {
+  const passes: unknown = c.passes;
+  if (!Array.isArray(passes)) return [];
+  const warnings: string[] = [];
+  for (const [index, pass] of (passes as unknown[]).entries()) {
+    if (typeof pass !== "object" || pass === null) continue;
+    const { iterations } = pass as Record<string, unknown>;
+    if (typeof iterations !== "number") continue;
+    if (Number.isFinite(iterations) && iterations >= 1 && iterations <= MAX_PASS_DRAWS) continue;
+    warnings.push(
+      `${stagePrefix}: passes[${index}].iterations ${iterations} is out of range; it is clamped to 1…${MAX_PASS_DRAWS}`,
+    );
+  }
+  return warnings;
 }
 
 /** Runtime check of the stage's contract, and of who may register it: ids under
@@ -175,8 +232,11 @@ export function checkStageContract(
     return fail(`reads must be "source" or "current", got ${formatValue(reads)}`);
   const interStage = interStageError(c);
   if (interStage) return fail(interStage);
+  const isvReference = isvReferenceError(c);
+  if (isvReference) return fail(isvReference);
   const passCount = passCountError(c);
   if (passCount) return fail(passCount);
+  warnings.push(...fixedCountWarnings(c, stagePrefix));
 
   let readsIgnored: string | null = null;
   if (reads === "current") {

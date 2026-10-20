@@ -158,4 +158,50 @@ describe("bag-driven pass draw counts", () => {
       expect(frame(r, { [key("take")]: 1, [key("draws")]: 2 })).toEqual({ steps: 2, draws: 2, splits: 1 });
     });
   });
+
+  // A keyed pass that draws behind one that doesn't, its body reading uPassCount,
+  // whose result reaches a later stage through an inter-stage variable: both
+  // hooks in the one frame, with the first pass's skip leaving the second's
+  // draws and its count untouched.
+  describe("a keyed pass that draws behind one that does not", () => {
+    const twoPass = (id: string, reads?: "current"): ProcessingStageContribution => ({
+      id,
+      name: "Two pass",
+      phase: "scene-linear",
+      glsl: "",
+      uniforms: [
+        { key: "a", glslType: "float", default: 0 },
+        { key: "b", glslType: "float", default: 0 },
+      ],
+      ...(reads ? { reads } : {}),
+      passes: [
+        { glsl: "c = vec3(0.9);", iterations: { key: "a", max: 8 } },
+        { glsl: `if (uPassIndex == 0) c += vec3(${STEP} * float(uPassCount));`, iterations: { key: "b", max: 8 } },
+      ],
+      produces: [{ name: "hookTwoPass", glslType: "float", producer: "stageResult.r" }],
+    });
+    const reader: ProcessingStageContribution = {
+      id: "hook-two-read.test",
+      name: "Reader",
+      phase: "output-encode",
+      priority: 100000,
+      glsl: "c = vec3(isv_hookTwoPass);",
+      uniforms: [],
+      consumes: ["hookTwoPass"],
+    };
+
+    it("counts the second pass's draws in uPassCount, with the split, when it reads the current image", () => {
+      const stage = twoPass("two-pass-hook.test", "current");
+      draw([stage, reader], (r) => {
+        expect(frame(r, { [`${stage.id}.a`]: 0, [`${stage.id}.b`]: 3 })).toEqual({ steps: 3, draws: 3, splits: 1 });
+      });
+    });
+
+    it("counts the same draws without a split when it reads the source", () => {
+      const stage = twoPass("hook-two-src.test");
+      draw([stage, reader], (r) => {
+        expect(frame(r, { [`${stage.id}.a`]: 0, [`${stage.id}.b`]: 3 })).toEqual({ steps: 3, draws: 3, splits: 0 });
+      });
+    });
+  });
 });

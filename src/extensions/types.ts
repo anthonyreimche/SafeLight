@@ -281,6 +281,20 @@ export interface ExtensionSearchResult {
   source?: "registry" | "live";
   /** GitHub repo topics — drive the store's category chips. */
   topics?: string[];
+  /** Store category slugs the registry build resolved. Absent on live-search
+   *  results and older indexes, where the store reads the topics instead;
+   *  [] means the registry found none (shown under Other). */
+  categories?: string[];
+  /** Type badge slug from the registry build (module, pipeline, panel), or
+   *  null when it found none. */
+  type?: string | null;
+  /** Search keywords from the extension's manifest. */
+  keywords?: string[];
+  /** Screenshot URLs (https) from the extension's manifest. */
+  screenshots?: string[];
+  /** "owner/repo" extensions it pairs well with, linked both ways by the
+   *  registry build. */
+  worksWith?: string[];
   /** Owner avatar on the direct avatars CDN — the instant fallback thumbnail and
    *  the card's first paint (no github.com/owner.png redirect). */
   avatarUrl?: string | null;
@@ -296,6 +310,25 @@ export interface ExtensionSearchResult {
 export interface ExtensionThumbnail {
   url: string;
   custom: boolean;
+}
+
+/** One Extensions-store category, as registry.json publishes it. */
+export interface StoreCategory {
+  slug: string;
+  label: string;
+  description: string;
+}
+
+/** A type badge: what an extension adds (Module, Processing, Panel). */
+export interface StoreType {
+  slug: string;
+  label: string;
+}
+
+/** The store's categories in display order and type badges in precedence order. */
+export interface StoreVocabulary {
+  categories: StoreCategory[];
+  types: StoreType[];
 }
 
 /** Curation lists from the trust registry repo, fetched + normalised (lowercased)
@@ -532,15 +565,15 @@ export interface InterStageVariable {
   /** GLSL expression assigned to `isv_{name}` right after the producing
    *  stage's glsl, inside its block, so it may name the stage's locals,
    *  uniforms, helpers and stageResult. Omit to assign `isv_{name}` in the
-   *  glsl itself; an empty string is refused. */
+   *  glsl itself; an empty or blank string is refused. */
   producer?: string;
 }
 
 /** A pass draw count read from the param bag each frame (StagePass.iterations). */
 export interface PassDrawCount {
   /** An int or float uniform the stage declares, inline or in this pass. Its
-   *  bag value `{stageId}.{key}`, or its default while the bag has none, is
-   *  rounded and clamped to [0, max]. */
+   *  bag value `{stageId}.{key}`, or its default while the bag holds no finite
+   *  number, is rounded and clamped to [0, max]. */
   key: string;
   /** The most draws a frame may take: an integer from 1 to 1024. */
   max: number;
@@ -653,9 +686,11 @@ export interface StagePass {
   glsl: string;
   helpers?: string;
   /** Ping-pong iterations; uPassIndex runs 0..count-1 and uPassCount is the
-   *  count. A number is a fixed count (default 1). `{ key, max }` reads it from
-   *  the bag each frame; 0 skips the pass, and a stage whose passes all draw 0
-   *  times runs nothing that frame (no split either) and reads as idle. */
+   *  count. A number is a fixed count (default 1), taken as a whole number from
+   *  1 to 1024; anything else is clamped, with a registration warning.
+   *  `{ key, max }` reads it from the bag each frame; 0 skips the pass, and a
+   *  stage whose passes all draw 0 times runs nothing that frame (no split
+   *  either) and reads as idle. */
   iterations?: number | PassDrawCount;
   uniforms?: UniformDeclaration[];
 }
@@ -699,12 +734,14 @@ export interface ProcessingStageContribution {
   /** Values this stage hands to the stages after it in the same draw. The core
    *  declares each as `isv_{name}`, and the registry refuses a name another
    *  registered stage already produces. Inline code only: passes can't see
-   *  them. */
+   *  them, and a pass that mentions one is refused. */
   produces?: InterStageVariable[];
-  /** Names of the InterStageVariables this stage reads as `isv_{name}`. A
-   *  consumer ordered ahead of the producer reads zero (with a warning); one
-   *  whose variable no stage in the set produces is left out of the program
-   *  (with a warning) rather than failing to compile. */
+  /** Names of the InterStageVariables this stage reads as `isv_{name}`. Every
+   *  `isv_` name the stage's glsl, helpers or producers read must be listed
+   *  here or in `produces`, or the stage is refused. A consumer ordered ahead
+   *  of the producer reads zero (with a warning); one whose variable no stage
+   *  in the set produces is left out of the program (with a warning) rather
+   *  than failing to compile. */
   consumes?: string[];
 
   textures?: TextureRequirement[];
@@ -1515,6 +1552,10 @@ declare global {
          *  unknown because it is remote data: parseKits validates it before
          *  anything reads it. Optional: absent in older Electron builds. */
         kits?(force?: boolean): Promise<unknown>;
+        /** The store's category vocabulary from the registry index, or null
+         *  when the index or its vocabulary is unavailable. Optional: absent in
+         *  older Electron builds. */
+        vocabulary?(): Promise<StoreVocabulary | null>;
       };
       /** Renderer-side control of the window's Chrome DevTools. Backs the
        *  Developer Tools extension's Native tab. */

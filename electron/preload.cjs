@@ -121,6 +121,8 @@ contextBridge.exposeInMainWorld("safelightNative", {
     trustList: (force) => ipcRenderer.invoke("plugins:trust-list", !!force),
     // The welcome setup's starter kits (kits.json in the trust registry).
     kits: (force) => ipcRenderer.invoke("plugins:kits", !!force),
+    // The store's category vocabulary from the registry index, or null.
+    vocabulary: () => ipcRenderer.invoke("plugins:store-vocabulary"),
   },
   // Chrome DevTools control + main-process diagnostics for the opt-in
   // Developer Tools extension (src/extensions/devtools/).

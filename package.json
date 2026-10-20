@@ -69,6 +69,7 @@
       "electron/plugin-files.cjs",
       "electron/plugin-releases.cjs",
       "electron/registry-cache.cjs",
+      "electron/registry-entry.cjs",
       "electron/remote-json-cache.cjs",
       "electron/unzip.cjs",
       "electron/window-policy.cjs",
