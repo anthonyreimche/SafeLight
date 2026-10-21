@@ -76,6 +76,8 @@ export type WorkerRequest =
       asShotTemperature: number;
       maxEdge: number;
       quality?: number;
+      // A PNG rather than a JPEG, for a frame whose channel bytes carry data.
+      lossless?: boolean;
       // Per-render extension-stage params. When present, applied to the thumb
       // renderer for THIS render only (then the global bag is restored), so a
       // headless/batch render of a photo other than the live develop one uses its
@@ -120,6 +122,8 @@ export type WorkerRequest =
       asShotTemperature: number;
       maxEdge: number;
       quality?: number;
+      // See renderThumbnail.lossless.
+      lossless?: boolean;
       // See renderThumbnail.contributedParams.
       contributedParams?: Record<string, unknown>;
       // See renderThumbnail.pipeline.
@@ -355,6 +359,7 @@ interface ThumbRenderRequest {
   params: DevelopParams;
   asShotTemperature: number;
   quality?: number;
+  lossless?: boolean;
   contributedParams?: Record<string, unknown>;
   pipeline: ResolvedPipeline;
 }
@@ -377,8 +382,10 @@ function finishThumbRender(tr: WebGLRenderer, msg: ThumbRenderRequest) {
     if (hadBag) tr.setContributedParams(latestParamBag);
   }
   if (!thumbCanvas) throw new Error("thumb canvas unavailable");
-  const quality = msg.quality ?? DEFAULT_THUMB_JPEG_QUALITY;
-  thumbCanvas.convertToBlob({ type: "image/jpeg", quality }).then(
+  const encoding: ImageEncodeOptions = msg.lossless
+    ? { type: "image/png" }
+    : { type: "image/jpeg", quality: msg.quality ?? DEFAULT_THUMB_JPEG_QUALITY };
+  thumbCanvas.convertToBlob(encoding).then(
     (blob) => respond({ type: "thumbnail", requestId: msg.requestId, blob }),
     (err) => respondThumbError(msg.requestId, err),
   );

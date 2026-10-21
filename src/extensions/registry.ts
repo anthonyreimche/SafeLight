@@ -44,6 +44,7 @@ import { checkStageContract } from "./stage-validation";
 import { noteRendersPixels } from "./extension-kinds";
 import { unregisterExtensionActions } from "@/state/keybindings-store";
 import { clearExtensionCursors } from "@/state/cursor-store";
+import { dropExtensionVariables } from "./variables-host";
 
 export interface RegisteredPanel extends PanelContribution {
   extensionId: string;
@@ -737,6 +738,7 @@ export function unregisterExtension(extensionId: string): void {
   }));
   unregisterExtensionActions(extensionId);
   clearExtensionCursors(extensionId);
+  dropExtensionVariables(extensionId);
   if (owned.length > 0) for (const release of stageReleases) release(owned);
 }
 

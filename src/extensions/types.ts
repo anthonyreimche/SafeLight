@@ -1075,7 +1075,7 @@ export interface SharedVariablesAPI {
   /** Make `name` exist. Idempotent: the first registration's `initial` and
    *  `description` win; a later call (any extension, any window) joins and
    *  gets the current snapshot. Throws on an invalid or reserved name, or an
-   *  `initial` that isn't JSON data. */
+   *  `initial` that isn't JSON data, or a `description` that isn't a string. */
   register<T>(name: string, init: { initial: T; description?: string }): VariableSnapshot<T>;
   /** The current snapshot, or undefined when nobody has registered `name`. */
   get<T>(name: string): VariableSnapshot<T> | undefined;
@@ -1304,11 +1304,23 @@ export interface SafelightAPI {
      *  an off-screen ImageBitmap, or null if it can't render. Unlike captureFrame
      *  this is NOT tied to the live Develop source, so it measures the requested
      *  photo even when another (or none) is open — e.g. batch Auto Tone / Auto WB
-     *  across a Library selection. Rendered small (for histogram measurement). */
+     *  across a Library selection. Rendered small (for histogram measurement).
+     *  A `paramBag` is drawn as the live view draws one: under the entries the
+     *  built-in stages take from `params`, such as the Detail panel's noise
+     *  reduction. The frame is a JPEG at quality 0.9, which suits a picture. `lossless: true`
+     *  returns it from a PNG instead, so every 8-bit channel value the pipeline
+     *  wrote reaches the bitmap exactly: use it for a frame that carries data,
+     *  such as a stage's measurement encoding, which a JPEG would smear across
+     *  neighbouring values. A PNG costs more to encode than a JPEG, so leave it
+     *  off for a frame you only look at. Needs Safelight 3.1.0; earlier builds
+     *  ignore the option and return the JPEG. A lossless frame is null where only
+     *  the grid's camera preview could stand in for the photo: that is another
+     *  source, so no frame is better than a wrong one. */
     renderPhotoFrame(
       photoId: string,
       params: import("@/catalog/types").DevelopParams,
       paramBag?: Record<string, unknown>,
+      options?: { lossless?: boolean },
     ): Promise<ImageBitmap | null>;
     /** Drive the Develop-canvas cursor while a tool is active. Pass a registered
      *  cursor id (built-in token or one from registerCursor), an inline spec, or
@@ -1441,6 +1453,11 @@ export interface SafelightAPI {
       options?: import("@/modules/library/use-culling-shortcuts").CullingShortcutOptions,
     ): void;
   };
+  /** Shared variables: named JSON values any extension can register, read,
+   *  subscribe to and write, synced across windows. A set() from an extension
+   *  that hasn't seen the current value is refused and reported; use update()
+   *  for read-modify-write. See docs/dev/api/stores.md. */
+  variables: SharedVariablesAPI;
 }
 
 export interface ExtensionModule {

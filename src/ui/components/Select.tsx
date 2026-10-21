@@ -8,7 +8,9 @@
 // app's dark surfaces). Drop-in for `<select value onChange>` with <option>s:
 // pass `options`, or `groups` for headed sections (the old <optgroup>). The menu
 // is portalled to <body> and fixed-positioned from the trigger rect, so it's
-// never clipped by a scroll container and sits above dialogs. Keyboard: open with
+// never clipped by a scroll container and sits above dialogs. It's at least as
+// wide as the trigger and grows to fit its longest label up to twice that; a
+// label that still doesn't fit shows in full on hover. Keyboard: open with
 // Enter/Space/↑/↓, navigate with ↑/↓/Home/End, type to jump, Enter to choose,
 // Esc to close.
 
@@ -107,10 +109,13 @@ export function Select({
 
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
+  const [tip, setTip] = useState(-1);
   const [pos, setPos] = useState<{
-    left: number;
+    side: number;
+    leftward: boolean;
     edge: number;
     width: number;
+    maxW: number;
     maxH: number;
     up: boolean;
   } | null>(null);
@@ -134,10 +139,19 @@ export function Select({
     const above = r.top / z;
     const up = below < 220 && above > below;
     const maxH = Math.max(120, Math.min(280, (up ? above : below) - 12));
+    // Room for the menu's growth to twice the trigger's width: anchored at the
+    // trigger's left edge, or at its right edge growing leftward when the
+    // window's right side has less room (a trigger in the right panel).
+    const width = r.width / z;
+    const rightRoom = (window.innerWidth - r.left) / z - 8;
+    const leftRoom = r.right / z - 8;
+    const leftward = rightRoom < 2 * width && leftRoom > rightRoom;
     setPos({
-      left: r.left / z,
+      side: (leftward ? window.innerWidth - r.right : r.left) / z,
+      leftward,
       edge: (up ? window.innerHeight - r.top : r.bottom) / z,
-      width: r.width / z,
+      width,
+      maxW: Math.min(2 * width, leftward ? leftRoom : rightRoom),
       maxH,
       up,
     });
@@ -297,10 +311,13 @@ export function Select({
             aria-label={ariaLabel}
             style={{
               position: "fixed",
-              left: pos.left,
+              left: pos.leftward ? undefined : pos.side,
+              right: pos.leftward ? pos.side : undefined,
               top: pos.up ? undefined : pos.edge + 4,
               bottom: pos.up ? pos.edge + 4 : undefined,
-              width: pos.width,
+              width: "max-content",
+              minWidth: pos.width,
+              maxWidth: pos.maxW,
               maxHeight: pos.maxH,
               zIndex: 9999,
             }}
@@ -326,7 +343,11 @@ export function Select({
                       role="option"
                       aria-selected={sel}
                       aria-disabled={o.disabled || undefined}
-                      onMouseEnter={() => !o.disabled && setActive(i)}
+                      title={tip === i ? o.label : undefined}
+                      onMouseEnter={(e) => {
+                        if (!o.disabled) setActive(i);
+                        setTip(e.currentTarget.scrollWidth > e.currentTarget.clientWidth ? i : -1);
+                      }}
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => choose(o)}
                       className={`truncate rounded px-2 py-1 text-[11px] ${

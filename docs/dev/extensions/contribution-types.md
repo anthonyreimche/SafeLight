@@ -28,7 +28,7 @@ What an extension can register. Each is auto-tagged with the extension's id and 
 - **Grid menu items** (`registerGridMenuItem`) — add an action to the Library right-click menu (e.g. "Create virtual copy").
 - **Preset importers** (`registerPresetImporter`) — teach the Presets panel to read other apps' preset files.
 
-Beyond `register*`, extensions can drive the app directly: render any photo headlessly (`api.export`, `api.develop.renderPhotoFrame`), add records and copy edit stacks (`api.catalog`), and inspect other extensions' sliders (`api.params`). See [State Stores & Data APIs](../api/stores.md).
+Beyond `register*`, extensions can drive the app directly: render any photo headlessly (`api.export`, `api.develop.renderPhotoFrame`), add records and copy edit stacks (`api.catalog`), inspect other extensions' sliders (`api.params`), and share state with other extensions through named, cross-window variables (`api.variables`). See [State Stores & Data APIs](../api/stores.md).
 
 **Export**
 - **Export processors** (`registerExportProcessor`) — a post-encode step (watermark, border, …) with its own Export-panel settings.

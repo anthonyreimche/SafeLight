@@ -23,7 +23,7 @@ import type {
   VariableWriteResult,
   VariableWriter,
 } from "./types";
-import { estimateSize, frozenCopy, nameProblem, valueProblem } from "./variables-values";
+import { estimateSize, frozenCopy, jsonEqual, nameProblem, valueProblem } from "./variables-values";
 
 export const HISTORY_LIMIT = 50;
 export const LARGE_VALUE_BYTES = 8 * 1024 * 1024;
@@ -161,6 +161,14 @@ function snapshotOf(f: EntryFields): VariableSnapshot<unknown> {
   });
 }
 
+function mergeHistories(a: readonly VariableHistoryItem[], b: readonly VariableHistoryItem[]): VariableHistoryItem[] {
+  const key = (h: VariableHistoryItem) =>
+    `${h.outcome}|${h.time}|${h.revision.n}|${h.revision.window}|${h.writer.extension}|${h.writer.window}`;
+  const byKey = new Map<string, VariableHistoryItem>();
+  for (const h of [...a, ...b]) byKey.set(key(h), h);
+  return [...byKey.values()].sort((x, y) => x.time - y.time).slice(-HISTORY_LIMIT);
+}
+
 export function createVariableRegistry(options: RegistryOptions): VariableRegistry {
   const self = options.window;
   const transport = options.transport ?? null;
@@ -194,10 +202,13 @@ export function createVariableRegistry(options: RegistryOptions): VariableRegist
     return w.window === self.id ? w.extension : `${w.extension} in window ${windowName(w.window)}`;
   }
 
+  // Only ever moves forward: a queued delivery of an older revision can reach an
+  // extension after it has already written or been handed a newer one.
   function markSeen(extension: string, name: string, revision: VariableRevision): void {
     let byName = seen.get(extension);
     if (!byName) seen.set(extension, (byName = new Map()));
-    byName.set(name, revision);
+    const prev = byName.get(name);
+    if (!prev || compareRevisions(revision, prev) > 0) byName.set(name, revision);
   }
 
   function record(e: Entry, item: VariableHistoryItem): void {
@@ -287,9 +298,12 @@ export function createVariableRegistry(options: RegistryOptions): VariableRegist
     changed();
   }
 
+  // A caller's entry can be out of date by now (a listener, getter or update
+  // function may have written meanwhile), so the refusal is recorded against
+  // whatever entry the name holds at this moment.
   function invalid<T>(extension: string, e: Entry, problem: string): VariableWriteResult<T> {
     warn(`[variables] ${e.name}: write by ${extension} refused — ${problem}.`);
-    refuse(extension, e, "invalid", problem);
+    refuse(extension, entries.get(e.name) ?? e, "invalid", problem);
     return { ok: false, reason: "invalid", message: problem };
   }
 
@@ -307,6 +321,11 @@ export function createVariableRegistry(options: RegistryOptions): VariableRegist
         if (bad) throw new Error(`[variables] ${bad}`);
         const problem = valueProblem(init.initial, "initial");
         if (problem) throw new Error(`[variables] ${name}: ${problem}`);
+        // Every write message carries the description, and a value the transport
+        // can't clone makes post() throw after the entry is stored, leaving a
+        // variable whose writes commit locally but never reach other windows.
+        if (init.description !== undefined && typeof init.description !== "string")
+          throw new Error(`[variables] ${name}: description must be a string`);
         const existing = entries.get(name);
         if (existing) {
           markSeen(extension, name, existing.revision);
@@ -372,7 +391,11 @@ export function createVariableRegistry(options: RegistryOptions): VariableRegist
           refuse(extension, e, "stale");
           return { ok: false, reason: "stale", current: e.snapshot as VariableSnapshot<T> };
         }
-        return { ok: true, revision: accept(extension, e, frozenCopy(value)) };
+        // Reading the value (getters) can run code that writes this variable;
+        // accepting then would number two different values with one revision.
+        const copy = frozenCopy(value);
+        if (entries.get(name) !== e) return invalid(extension, e, `${name} changed while its new value was being read`);
+        return { ok: true, revision: accept(extension, e, copy) };
       },
 
       update<T>(name: string, fn: (current: T) => T): VariableWriteResult<T> {
@@ -388,12 +411,122 @@ export function createVariableRegistry(options: RegistryOptions): VariableRegist
           return invalid(extension, e, "update function returned a Promise; it must return the new value");
         const problem = valueProblem(next);
         if (problem) return invalid(extension, e, problem);
-        return { ok: true, revision: accept(extension, e, frozenCopy(next)) };
+        const copy = frozenCopy(next);
+        // fn ran with the entry captured above; if it wrote this variable, the
+        // result is based on a value that no longer exists.
+        if (entries.get(name) !== e) return invalid(extension, e, `update function wrote ${name} while it ran`);
+        return { ok: true, revision: accept(extension, e, copy) };
       },
     };
     scopes.set(extension, api);
     return api;
   }
+
+  interface IncomingWrite extends EntryFields {
+    basedOn: VariableRevision | null;
+    time: number;
+  }
+
+  // The current value was written here and the incoming write replaces it
+  // without having seen it. A basedOn newer than ours means its writer saw a
+  // later state, so ours was replaced in order. An equal value or a
+  // registration being replaced is no loss worth reporting.
+  function lostHere(current: Entry, w: IncomingWrite): boolean {
+    if (current.writer.window !== self.id || current.revision.n === 0) return false;
+    const sawCurrent =
+      w.basedOn !== null && (w.basedOn.n > current.revision.n || sameRevision(w.basedOn, current.revision));
+    return !sawCurrent && !jsonEqual(current.value, w.value);
+  }
+
+  function applyRemote(w: IncomingWrite, history?: VariableHistoryItem[]): void {
+    const current = entries.get(w.name);
+    if (current && compareRevisions(w.revision, current.revision) <= 0) return;
+    const e = put(
+      {
+        name: w.name,
+        value: frozenCopy(w.value),
+        revision: w.revision,
+        writer: w.writer,
+        registeredBy: w.registeredBy,
+        description: w.description,
+      },
+      history ?? current?.history ?? [],
+    );
+    if (!history) record(e, { time: w.time, writer: w.writer, revision: w.revision, outcome: "accepted" });
+    if (current && lostHere(current, w)) {
+      const item: VariableHistoryItem = {
+        time: now(),
+        writer: current.writer,
+        revision: current.revision,
+        outcome: "lost",
+        other: w.writer,
+      };
+      record(e, item);
+      warn(
+        `[variables] ${w.name}: write by ${current.writer.extension} in this window lost to ${who(w.writer)} writing at the same time.`,
+      );
+      post({ type: "outcome", from: self, name: w.name, item });
+    }
+    changed();
+    deliver(e.snapshot, subscribers.get(w.name) ?? []);
+  }
+
+  function receive(m: VariableMessage): void {
+    labels.set(m.from.id, m.from.label);
+    switch (m.type) {
+      case "write":
+        applyRemote({
+          name: m.name,
+          value: m.value,
+          revision: m.revision,
+          basedOn: m.basedOn,
+          writer: m.writer,
+          registeredBy: m.registeredBy,
+          description: m.description,
+          time: m.time,
+        });
+        return;
+      case "outcome": {
+        const e = entries.get(m.name);
+        if (!e) return;
+        record(e, m.item);
+        changed();
+        return;
+      }
+      case "hello":
+        post({
+          type: "answer",
+          from: self,
+          to: m.from.id,
+          entries: [...entries.values()].map((e) => ({
+            name: e.name,
+            value: e.value,
+            revision: e.revision,
+            writer: e.writer,
+            registeredBy: e.registeredBy,
+            description: e.description,
+            history: e.history,
+          })),
+        });
+        return;
+      case "answer":
+        if (m.to !== self.id) return;
+        for (const w of m.entries) {
+          const current = entries.get(w.name);
+          const history = mergeHistories(current?.history ?? [], w.history);
+          if (current && compareRevisions(w.revision, current.revision) <= 0) {
+            current.history = history;
+            continue;
+          }
+          applyRemote({ ...w, basedOn: null, time: now() }, history);
+        }
+        changed();
+        return;
+    }
+  }
+
+  const unlisten = transport ? transport.listen(receive) : null;
+  post({ type: "hello", from: self });
 
   return {
     scoped,
@@ -422,6 +555,7 @@ export function createVariableRegistry(options: RegistryOptions): VariableRegist
     changeCount: () => changes,
     windowName,
     dispose(): void {
+      unlisten?.();
       changeListeners.clear();
     },
   };

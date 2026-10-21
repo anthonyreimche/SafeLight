@@ -57,6 +57,14 @@ describe("register", () => {
     expect(() => a.register("core.x", { initial: 1 })).toThrow("reserved for core");
     expect(() => a.register("x.v", { initial: NaN })).toThrow("[variables] x.v: initial: NaN");
   });
+
+  it("throws on a description that isn't a string, and stores nothing", () => {
+    const { a } = setup();
+    expect(() => a.register("x.v", { initial: 1, description: (() => "x") as unknown as string })).toThrow(
+      "[variables] x.v: description must be a string",
+    );
+    expect(a.get("x.v")).toBeUndefined();
+  });
 });
 
 describe("get and subscribe", () => {
@@ -163,6 +171,23 @@ describe("the write rule", () => {
     expect(warnings).toHaveLength(2);
   });
 
+  it("update refuses when its function wrote the same variable", () => {
+    const { reg, a, posted } = setup();
+    a.register("x.v", { initial: 0 });
+    const r = a.update<number>("x.v", (cur) => {
+      a.set("x.v", 100);
+      return cur + 1;
+    });
+    expect(r).toEqual({ ok: false, reason: "invalid", message: "update function wrote x.v while it ran" });
+    const s = a.get<number>("x.v");
+    expect(s?.value).toBe(100);
+    expect(s?.revision.n).toBe(1);
+    const h = reg.inspect()[0].history;
+    expect(h[h.length - 1]).toMatchObject({ outcome: "invalid", revision: { n: 1 } });
+    const writeRevisions = posted.flatMap((m) => (m.type === "write" ? [m.revision.n] : []));
+    expect(new Set(writeRevisions).size).toBe(writeRevisions.length);
+  });
+
   it("refuses values that aren't JSON data, naming the path", () => {
     const { a, warnings } = setup();
     a.register("x.v", { initial: 0 });
@@ -210,6 +235,22 @@ describe("delivery order", () => {
     expect(byC).toEqual([0, 1, 2]);
     expect(results.map((r) => r.ok)).toEqual([true, false]);
     expect(results[1]).toMatchObject({ reason: "stale" });
+  });
+
+  it("an extension that already wrote a newer revision is not refused when an older delivery reaches its other subscription", () => {
+    const { a, b, warnings } = setup();
+    a.register("x.v", { initial: 0 });
+    const results: VariableWriteResult<number>[] = [];
+    b.subscribe<number>("x.v", (s) => {
+      if (s.value === 1) results.push(b.set("x.v", 2));
+    });
+    b.subscribe<number>("x.v", (s) => {
+      if (s.value === 1) results.push(b.set("x.v", 3));
+    });
+    a.set("x.v", 1);
+    expect(a.get<number>("x.v")?.value).toBe(3);
+    expect(results.map((r) => r.ok)).toEqual([true, true]);
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -268,11 +309,11 @@ describe("transport posts", () => {
     b.register("x.v", { initial: 0 });
     a.set("x.v", 2);
     b.set("x.v", 3); // stale
-    expect(posted.map((m) => m.type)).toEqual(["write", "write", "write", "outcome"]);
-    expect(posted[0]).toMatchObject({ type: "write", revision: { n: 0 }, basedOn: null, value: 0 });
-    expect(posted[1]).toMatchObject({ type: "write", revision: { n: 1 }, basedOn: { n: 0, window: "w1" }, value: 1 });
-    expect(posted[3]).toMatchObject({ type: "outcome", name: "x.v", item: { outcome: "stale" } });
-    expect("value" in (posted[3] as { item: object }).item).toBe(false);
+    expect(posted.map((m) => m.type)).toEqual(["hello", "write", "write", "write", "outcome"]);
+    expect(posted[1]).toMatchObject({ type: "write", revision: { n: 0 }, basedOn: null, value: 0 });
+    expect(posted[2]).toMatchObject({ type: "write", revision: { n: 1 }, basedOn: { n: 0, window: "w1" }, value: 1 });
+    expect(posted[4]).toMatchObject({ type: "outcome", name: "x.v", item: { outcome: "stale" } });
+    expect("value" in (posted[4] as { item: object }).item).toBe(false);
   });
 });
 
