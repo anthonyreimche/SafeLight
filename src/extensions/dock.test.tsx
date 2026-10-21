@@ -19,12 +19,16 @@ import {
   DockHost,
   addUserLayout,
   applyDockLayout,
+  initDockLayouts,
   toggleDockPanel,
   toggleDockPanelFloating,
   updateUserLayout,
   useDockStore,
   useUserLayouts,
   CUSTOM_LAYOUT,
+  panelReplacements,
+  replacePanelIds,
+  type DockPlacement,
 } from "./dock";
 import {
   registerLayout,
@@ -573,5 +577,502 @@ describe("registered modules", () => {
     unregisterExtension("map-ext");
     updateUserLayout(id);
     expect(useUserLayouts.getState().layouts[id]?.modules?.map).toEqual(mapEntry);
+  });
+});
+
+describe("panel replacement helpers", () => {
+  const reg = (ids: Record<string, readonly string[] | undefined>) =>
+    Object.fromEntries(
+      Object.entries(ids).map(([id, replaces]) => [
+        id,
+        { id, title: id, component: Empty, extensionId: "test-ext", ...(replaces ? { replaces } : {}) },
+      ]),
+    );
+  const place = (over: Partial<DockPlacement> = {}): DockPlacement => ({
+    rails: [],
+    floating: {},
+    zOrder: [],
+    collapsed: {},
+    ...over,
+  });
+
+  it("maps an old id to the panel that replaces it", () => {
+    expect(panelReplacements(reg({ "x.new": ["x.old"] }))).toEqual(new Map([["x.old", "x.new"]]));
+  });
+
+  it("leaves an old id that is still registered to its own panel", () => {
+    expect(panelReplacements(reg({ "x.old": undefined, "x.new": ["x.old"] })).size).toBe(0);
+  });
+
+  it("ignores a panel replacing its own id", () => {
+    expect(panelReplacements(reg({ "x.new": ["x.new"] })).size).toBe(0);
+  });
+
+  // The warned set is module-level, so this test's ids are not reused anywhere else.
+  it("gives a contested old id to the first panel registered, and warns once", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const both = reg({ "claim.first": ["claim.old"], "claim.second": ["claim.old"] });
+      expect(panelReplacements(both).get("claim.old")).toBe("claim.first");
+      panelReplacements(both);
+      expect(warn.mock.calls).toEqual([
+        ['[dock] panel "claim.second" also replaces "claim.old"; "claim.first" keeps it.'],
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("ignores a replaces that is not an array, rather than iterating it", () => {
+    // A plain-JS extension can pass anything; a string would iterate by character
+    // and a number would throw on the dock load path.
+    const bad = (replaces: unknown) => reg({ "x.new": replaces as readonly string[] });
+    expect(panelReplacements(bad("x.old")).size).toBe(0);
+    expect(panelReplacements(bad(42)).size).toBe(0);
+  });
+
+  it("skips replaces entries that are not strings", () => {
+    const mixed = [42, null, "x.old"] as unknown as readonly string[];
+    expect(panelReplacements(reg({ "x.new": mixed }))).toEqual(new Map([["x.old", "x.new"]]));
+  });
+
+  it("renames an old id in place", () => {
+    const out = replacePanelIds(
+      place({ rails: [{ id: "r", side: "right", width: 280, panels: ["core.info", "x.old", "ext.a"] }] }),
+      new Map([["x.old", "x.new"]]),
+    );
+    expect(out.rails[0].panels).toEqual(["core.info", "x.new", "ext.a"]);
+  });
+
+  it("drops the old id where the new panel is already placed, and an emptied rail with it", () => {
+    const out = replacePanelIds(
+      place({
+        rails: [
+          { id: "l", side: "left", width: 240, panels: ["x.new"] },
+          { id: "r", side: "right", width: 280, panels: ["x.old"] },
+        ],
+      }),
+      new Map([["x.old", "x.new"]]),
+    );
+    expect(out.rails).toEqual([{ id: "l", side: "left", width: 240, panels: ["x.new"] }]);
+  });
+
+  it("moves a floating window, its z-order and its collapsed flag", () => {
+    const out = replacePanelIds(
+      place({ floating: { "x.old": { x: 10, y: 20, width: 300 } }, zOrder: ["x.old"], collapsed: { "x.old": true } }),
+      new Map([["x.old", "x.new"]]),
+    );
+    expect(out.floating).toEqual({ "x.new": { x: 10, y: 20, width: 300 } });
+    expect(out.zOrder).toEqual(["x.new"]);
+    expect(out.collapsed).toEqual({ "x.new": true });
+  });
+
+  it("drops a floating old window and its flag when the new panel is docked", () => {
+    const out = replacePanelIds(
+      place({
+        rails: [{ id: "r", side: "right", width: 280, panels: ["x.new"] }],
+        floating: { "x.old": { x: 1, y: 1, width: 300 } },
+        zOrder: ["x.old"],
+        collapsed: { "x.old": true },
+      }),
+      new Map([["x.old", "x.new"]]),
+    );
+    expect(out.floating).toEqual({});
+    expect(out.zOrder).toEqual([]);
+    expect(out.collapsed).toEqual({});
+  });
+
+  it("keeps the new panel's place in the z-order when a duplicate old window is dropped", () => {
+    const out = replacePanelIds(
+      place({
+        floating: {
+          "x.old": { x: 1, y: 1, width: 300 },
+          other: { x: 2, y: 2, width: 300 },
+          "x.new": { x: 3, y: 3, width: 300 },
+        },
+        zOrder: ["x.old", "other", "x.new"],
+      }),
+      new Map([["x.old", "x.new"]]),
+    );
+    expect(Object.keys(out.floating)).toEqual(["other", "x.new"]);
+    expect(out.zOrder).toEqual(["other", "x.new"]);
+  });
+
+  it("lets the renamed old flag win over a stale flag on the new id, whatever the key order", () => {
+    const rails = [{ id: "r", side: "right" as const, width: 280, panels: ["x.old"] }];
+    const replacements = new Map([["x.old", "x.new"]]);
+    for (const collapsed of [
+      { "x.new": false, "x.old": true },
+      { "x.old": true, "x.new": false },
+    ]) {
+      expect(replacePanelIds(place({ rails, collapsed }), replacements).collapsed).toEqual({ "x.new": true });
+    }
+  });
+
+  it("gives two old ids for one new panel to the first reached, and drops the other's rail and flag", () => {
+    const out = replacePanelIds(
+      place({
+        rails: [
+          { id: "a", side: "left", width: 240, panels: ["x.old1"] },
+          { id: "b", side: "right", width: 280, panels: ["core.info", "x.old2"] },
+        ],
+        collapsed: { "x.old1": true, "x.old2": false },
+      }),
+      new Map([
+        ["x.old1", "x.new"],
+        ["x.old2", "x.new"],
+      ]),
+    );
+    expect(out.rails).toEqual([
+      { id: "a", side: "left", width: 240, panels: ["x.new"] },
+      { id: "b", side: "right", width: 280, panels: ["core.info"] },
+    ]);
+    expect(out.collapsed).toEqual({ "x.new": true });
+  });
+
+  it("gives two floating old ids for one new panel to the first reached, and drops the other's window", () => {
+    const out = replacePanelIds(
+      place({
+        floating: { "x.old1": { x: 1, y: 1, width: 300 }, "x.old2": { x: 2, y: 2, width: 300 } },
+        zOrder: ["x.old2", "x.old1"],
+        collapsed: { "x.old1": true, "x.old2": false },
+      }),
+      new Map([
+        ["x.old1", "x.new"],
+        ["x.old2", "x.new"],
+      ]),
+    );
+    expect(out.floating).toEqual({ "x.new": { x: 1, y: 1, width: 300 } });
+    expect(out.zOrder).toEqual(["x.new"]);
+    expect(out.collapsed).toEqual({ "x.new": true });
+  });
+
+  it("renames an old id in a rail and drops its floating window when it is in both", () => {
+    const out = replacePanelIds(
+      place({
+        rails: [{ id: "r", side: "right", width: 280, panels: ["x.old"] }],
+        floating: { "x.old": { x: 1, y: 1, width: 300 } },
+        zOrder: ["x.old"],
+        collapsed: { "x.old": true },
+      }),
+      new Map([["x.old", "x.new"]]),
+    );
+    expect(out.rails[0].panels).toEqual(["x.new"]);
+    expect(out.floating).toEqual({});
+    expect(out.zOrder).toEqual([]);
+    expect(out.collapsed).toEqual({ "x.new": true });
+  });
+
+  it("returns the same object when nothing names a replaced id", () => {
+    const p = place({ rails: [{ id: "r", side: "right", width: 280, panels: ["core.info"] }] });
+    expect(replacePanelIds(p, new Map([["x.old", "x.new"]]))).toBe(p);
+    expect(replacePanelIds(p, new Map())).toBe(p);
+  });
+});
+
+describe("a panel that replaces an old one", () => {
+  const savedWith = (panels: string[]) =>
+    localStorage.setItem(
+      LAYOUT_KEY,
+      JSON.stringify({
+        rails: [{ id: "right-1", side: "right", width: 280, panels }],
+        floating: {},
+        zOrder: [],
+        collapsed: {},
+      }),
+    );
+
+  it("takes the old panel's spot in a saved layout, and the layout is stored with it", () => {
+    panel("core.info");
+    panel("x.new", { replaces: ["x.old"] });
+    savedWith(["x.old", "core.info"]);
+    const { close } = boot();
+    expect(rails()[0].panels).toEqual(["x.new", "core.info"]);
+    expect(saved().rails[0].panels).toEqual(["x.new", "core.info"]);
+    close();
+  });
+
+  it("swaps the live layout when it registers after the dock has loaded", async () => {
+    panel("core.info");
+    savedWith(["x.old", "core.info"]);
+    const { close } = boot();
+    expect(rails()[0].panels).toEqual(["x.old", "core.info"]);
+    act(() => panel("x.new", { replaces: ["x.old"] }));
+    expect(rails()[0].panels).toEqual(["x.new", "core.info"]);
+    expect(useDockStore.getState().open).toContain("x.new");
+    await flushSave();
+    expect(saved().rails[0].panels).toEqual(["x.new", "core.info"]);
+    close();
+  });
+
+  it("leaves the old panel alone while it is still registered", () => {
+    panel("x.old");
+    savedWith(["x.old"]);
+    const { close } = boot();
+    act(() => panel("x.new", { replaces: ["x.old"] }));
+    expect(rails()[0].panels).toEqual(["x.old"]);
+    close();
+  });
+
+  it("swaps in a layout preset without touching the saved Custom layout", async () => {
+    savedWith(["core.info"]);
+    registerLayout("test-ext", {
+      id: "test.preset",
+      name: "Preset",
+      modules: { develop: { rails: [{ side: "right", panels: ["x.old"] }] } },
+    });
+    panel("core.info");
+    panel("x.new", { replaces: ["x.old"] });
+    const { close } = boot();
+    await act(() => applyDockLayout("test.preset"));
+    expect(rails()[0].panels).toEqual(["x.new"]);
+    await flushSave();
+    expect(saved().rails[0].panels).toEqual(["core.info"]);
+    close();
+  });
+
+  it("swaps a preset's live layout on late registration without saving it as Custom", async () => {
+    savedWith(["core.info"]);
+    registerLayout("test-ext", {
+      id: "test.preset",
+      name: "Preset",
+      modules: { develop: { rails: [{ side: "right", panels: ["x.old"] }] } },
+    });
+    panel("core.info");
+    const { close } = boot();
+    await act(() => applyDockLayout("test.preset"));
+    act(() => panel("x.new", { replaces: ["x.old"] }));
+    expect(rails()[0].panels).toEqual(["x.new"]);
+    await flushSave();
+    expect(saved().rails[0].panels).toEqual(["core.info"]);
+    close();
+  });
+
+  it("stores the swapped layout once, not on every launch", () => {
+    panel("core.info");
+    panel("x.new", { replaces: ["x.old"] });
+    savedWith(["x.old", "core.info"]);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    try {
+      const writes = () => setItem.mock.calls.filter(([key]) => key === LAYOUT_KEY).length;
+      let session = boot();
+      expect(writes()).toBe(1);
+      session.close();
+      session = boot();
+      expect(writes()).toBe(1);
+      session.close();
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it("does not rewrite the stored layout of a module that is not loaded when a user layout is saved", () => {
+    panel("core.info");
+    panel("x.new", { replaces: ["x.old"] });
+    savedWith(["x.old", "core.info"]);
+    const before = localStorage.getItem(LAYOUT_KEY);
+    const { close } = boot("map");
+    const id = addUserLayout("Mine");
+    expect(localStorage.getItem(LAYOUT_KEY)).toBe(before);
+    expect(useUserLayouts.getState().layouts[id].modules.develop?.rails[0].panels).toEqual(["x.new", "core.info"]);
+    close();
+  });
+
+  it("takes the old panel's spot in a user layout without rewriting the layout", async () => {
+    panel("x.new", { replaces: ["x.old"] });
+    useUserLayouts.setState({
+      layouts: {
+        mine: {
+          id: "mine",
+          name: "Mine",
+          modules: { develop: { rails: [{ side: "right", panels: ["x.old"] }] } },
+        },
+      },
+    });
+    const { close } = boot();
+    await act(() => applyDockLayout("mine"));
+    expect(rails()[0].panels).toEqual(["x.new"]);
+    expect(useUserLayouts.getState().layouts.mine.modules.develop?.rails[0].panels).toEqual(["x.old"]);
+    close();
+  });
+
+  describe("in a bottom rail", () => {
+    const savedBottom = () =>
+      localStorage.setItem(
+        LAYOUT_KEY,
+        JSON.stringify({
+          rails: [
+            { id: "right-1", side: "right", width: 280, panels: ["core.info"] },
+            { id: "bottom-1", side: "bottom", width: 280, height: 112, panels: ["x.old"] },
+          ],
+          floating: {},
+          zOrder: [],
+          collapsed: {},
+        }),
+      );
+    const sides = () => rails().map((r) => r.side);
+
+    it("drops a replacement that cannot dock there, as the load swaps it", () => {
+      panel("core.info");
+      panel("x.new", { replaces: ["x.old"] });
+      savedBottom();
+      const { close } = boot();
+      expect(sides()).toEqual(["right"]);
+      close();
+    });
+
+    it("drops a replacement that cannot dock there, as a late registration swaps it", () => {
+      panel("core.info");
+      savedBottom();
+      const { close } = boot();
+      expect(sides()).toEqual(["right", "bottom"]);
+      act(() => panel("x.new", { replaces: ["x.old"] }));
+      expect(sides()).toEqual(["right"]);
+      close();
+    });
+
+    it("keeps a replacement that opts in to bottom docking, as the load swaps it", () => {
+      panel("core.info");
+      panel("x.new", { replaces: ["x.old"], allowBottomDock: true });
+      savedBottom();
+      const { close } = boot();
+      expect(rails().map((r) => [r.side, r.panels])).toEqual([
+        ["right", ["core.info"]],
+        ["bottom", ["x.new"]],
+      ]);
+      close();
+    });
+
+    it("keeps a replacement that opts in to bottom docking, as a late registration swaps it", () => {
+      panel("core.info");
+      savedBottom();
+      const { close } = boot();
+      act(() => panel("x.new", { replaces: ["x.old"], allowBottomDock: true }));
+      expect(rails().map((r) => [r.side, r.panels])).toEqual([
+        ["right", ["core.info"]],
+        ["bottom", ["x.new"]],
+      ]);
+      close();
+    });
+  });
+
+  describe("when a layout is picked before the debounced save has run", () => {
+    const registerPreset = () =>
+      registerLayout("test-ext", {
+        id: "test.preset",
+        name: "Preset",
+        modules: { develop: { rails: [{ side: "right", panels: ["x.preset"] }] } },
+      });
+
+    it("stores a live swap in the Custom layout, not the preset's", async () => {
+      panel("core.info");
+      savedWith(["x.old", "core.info"]);
+      registerPreset();
+      const { close } = boot();
+      act(() => panel("x.new", { replaces: ["x.old"] }));
+      await act(() => applyDockLayout("test.preset"));
+      expect(rails()[0].panels).toEqual(["x.preset"]);
+      await flushSave();
+      expect(saved().rails[0].panels).toEqual(["x.new", "core.info"]);
+      close();
+    });
+
+    it("stores a dock edit in the Custom layout, not the preset's", async () => {
+      panel("core.info");
+      panel("x.keep");
+      savedWith(["core.info", "x.keep"]);
+      registerPreset();
+      const { close } = boot();
+      act(() => toggleDockPanel("x.keep"));
+      await act(() => applyDockLayout("test.preset"));
+      await flushSave();
+      expect(saved().rails[0].panels).toEqual(["core.info"]);
+      close();
+    });
+
+    it("stores a dock edit in the Custom layout when another window picks the layout", async () => {
+      panel("core.info");
+      panel("x.keep");
+      savedWith(["core.info", "x.keep"]);
+      registerPreset();
+      initDockLayouts();
+      const { close } = boot();
+      act(() => toggleDockPanel("x.keep"));
+      act(() => {
+        window.dispatchEvent(new StorageEvent("storage", { key: "sl_layout_pref", newValue: "test.preset" }));
+      });
+      expect(rails()[0].panels).toEqual(["x.preset"]);
+      await flushSave();
+      expect(saved().rails[0].panels).toEqual(["core.info"]);
+      close();
+    });
+
+    const savedCollapsed = () =>
+      localStorage.setItem(
+        LAYOUT_KEY,
+        JSON.stringify({
+          rails: [{ id: "right-1", side: "right", width: 280, panels: ["core.info", "x.keep"] }],
+          floating: {},
+          zOrder: [],
+          collapsed: { "core.info": true },
+        }),
+      );
+    const editedCustom = {
+      rails: [{ id: "right-1", side: "right", width: 280, panels: ["core.info"] }],
+      floating: {},
+      zOrder: [],
+      collapsed: { "core.info": true },
+    };
+
+    it("stores a dock edit in the Custom layout when a user layout is saved from it", async () => {
+      panel("core.info");
+      panel("x.keep");
+      savedCollapsed();
+      let session = boot();
+      act(() => toggleDockPanel("x.keep"));
+      act(() => {
+        addUserLayout("Mine");
+      });
+      // The saved layout loads on the next launch of the module; the Custom layout stays as edited.
+      session.close();
+      session = boot();
+      await flushSave();
+      expect(saved()).toEqual(editedCustom);
+      session.close();
+    });
+
+    it("stores a dock edit in the Custom layout when a user layout is updated from it", async () => {
+      panel("core.info");
+      panel("x.keep");
+      savedCollapsed();
+      let session = boot();
+      let id = "";
+      act(() => {
+        id = addUserLayout("Mine");
+      });
+      act(() => toggleDockPanel("x.keep"));
+      act(() => updateUserLayout(id));
+      session.close();
+      session = boot();
+      await flushSave();
+      expect(saved()).toEqual(editedCustom);
+      session.close();
+    });
+
+    it("drops a pending edit when the module is initialised again, rather than writing the reloaded layout", async () => {
+      panel("core.info");
+      panel("x.keep");
+      const raw = JSON.stringify({
+        rails: [{ id: "right-1", side: "right", width: 280, panels: ["core.info", "x.keep"] }],
+      });
+      localStorage.setItem(LAYOUT_KEY, raw);
+      let session = boot();
+      act(() => toggleDockPanel("x.keep"));
+      session.close();
+      session = boot();
+      await flushSave();
+      expect(localStorage.getItem(LAYOUT_KEY)).toBe(raw);
+      session.close();
+    });
   });
 });

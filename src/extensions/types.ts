@@ -43,6 +43,11 @@ export interface PanelContribution {
   /** Sort position within the slot (lower = higher up). Default 100. */
   order?: number;
   defaultDock?: PanelDockDefault;
+  /** Old panel ids this panel takes the place of in saved layouts, e.g. a panel
+   *  that moved here from another extension. Wherever a layout names one of
+   *  them, and no registered panel uses that id any more, the dock shows this
+   *  panel in its spot. */
+  replaces?: readonly string[];
   /** Stretch to the remaining rail height instead of rendering at natural
    *  height; the panel body must size to 100% and manage its own scrolling.
    *  One fill panel per side rail stretches (the rail stops scrolling while it

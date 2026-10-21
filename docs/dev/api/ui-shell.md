@@ -65,6 +65,7 @@ interface PanelContribution {
     width?: number;           // side-rail column width
     height?: number;          // bottom-rail strip height
   };
+  replaces?: readonly string[]; // old panel ids this panel takes the place of in saved layouts
   onReset?: () => void;       // adds "Reset to defaults" to the dock header; one undoable action
   headerAccessory?: ComponentType; // a control left of this panel's title (e.g. a bypass eye)
   mask?: {                    // makes the panel addable per mask (see Per-mask panels)
@@ -76,6 +77,8 @@ interface PanelContribution {
 ```
 
 A `headerAccessory` must handle its own clicks. The header ignores pointerdowns on buttons, so clicking one won't start a panel drag.
+
+`replaces` is for a panel that moved, for example from one extension into another. Wherever a saved layout or a layout preset names one of the old ids, and no registered panel uses that id any more, the dock shows this panel in that spot instead: same rail position, floating window or collapsed state. If the layout already shows this panel, the old entry is dropped instead. A saved Custom layout is stored with the new id once it is swapped. The swap happens as soon as the old id is unused, live as well as on load, and a saved Custom layout keeps the new id even if a panel with the old id registers again later. If two panels claim the same old id, the first registered keeps it and the second gets a console warning. Older Safelight builds ignore `replaces`, so declaring it needs no `minAppVersion` change.
 
 Side rails render panels top-to-bottom at natural height; a **bottom** rail renders its panels side-by-side, each filling the strip's height, with the rail resized from its top edge. Collapsing folds a bottom rail downward — once every panel in it is collapsed the rail drops to its headers and gives the band back to the main view, restoring its height when one is expanded again.
 
