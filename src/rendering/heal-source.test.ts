@@ -232,7 +232,9 @@ describe("findHealSource", () => {
     const wire = stroke(300.5 / 1024, 150.5 / 683, 750.5 / 1024, 600.5 / 683, R, 1024 / 683);
     const t0 = performance.now();
     const src = healSourceAt(wire);
-    expect(performance.now() - t0).toBeLessThan(250);
+    // ~30 ms on a desktop, but shared CI runners have taken 260 ms, so the
+    // bound only catches a search that has blown up.
+    expect(performance.now() - t0).toBeLessThan(1000);
     const a = regionAnchor(wire);
     const dx = (src.x - a.x) * 1024;
     const dy = (src.y - a.y) * 683;
