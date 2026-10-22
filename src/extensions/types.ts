@@ -1317,7 +1317,7 @@ export interface SafelightAPI {
      *  wrote reaches the bitmap exactly: use it for a frame that carries data,
      *  such as a stage's measurement encoding, which a JPEG would smear across
      *  neighbouring values. A PNG costs more to encode than a JPEG, so leave it
-     *  off for a frame you only look at. Needs Safelight 3.1.0; earlier builds
+     *  off for a frame you only look at. Needs Safelight 3.0.1; earlier builds
      *  ignore the option and return the JPEG. A lossless frame is null where only
      *  the grid's camera preview could stand in for the photo: that is another
      *  source, so no frame is better than a wrong one. */
