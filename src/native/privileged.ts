@@ -7,18 +7,21 @@
 // path, and the in-app update installer. Extensions run as ESM in the *same*
 // renderer realm as core, so anything reachable on window.safelightNative is also
 // reachable by a malicious extension; the scoped SafelightAPI they're handed is
-// not a security boundary. The preload therefore exposes these two surfaces only
+// not a security boundary. The window capture behind Report an issue is held the
+// same way. The preload therefore exposes these surfaces only
 // through a one-shot claimPrivileged() that returns the bundle on its first call
 // and null thereafter. We claim it once, as early as possible at boot (before any
 // extension — builtin or external — loads), and keep the reference module-private.
-// Core reads it through privilegedFs()/privilegedUpdates(); extension code, which
+// Core reads it through privilegedFs()/privilegedUpdates()/privilegedCapture();
+// extension code, which
 // loads later, finds claimPrivileged() already spent and so can never reach it.
 
-import type { NativeFsBridge, NativeUpdatesBridge } from "@/extensions/types";
+import type { NativeCaptureBridge, NativeFsBridge, NativeUpdatesBridge } from "@/extensions/types";
 
 let claimed = false;
 let fsBridge: NativeFsBridge | null = null;
 let updatesBridge: NativeUpdatesBridge | null = null;
+let captureBridge: NativeCaptureBridge | null = null;
 
 /** Claim the privileged bridge into module scope. Idempotent. Must run before
  *  the first extension loads — call it at the very top of renderer boot. */
@@ -28,6 +31,7 @@ export function claimPrivileged(): void {
   const priv = window.safelightNative?.claimPrivileged?.() ?? null;
   fsBridge = priv?.fs ?? null;
   updatesBridge = priv?.updates ?? null;
+  captureBridge = priv?.capture ?? null;
 }
 
 /** The privileged fs bridge, or null in the plain-browser build. Lazily claims
@@ -41,4 +45,10 @@ export function privilegedFs(): NativeFsBridge | null {
 export function privilegedUpdates(): NativeUpdatesBridge | null {
   if (!claimed) claimPrivileged();
   return updatesBridge;
+}
+
+/** The window capture for Report an issue, or null outside Electron. */
+export function privilegedCapture(): NativeCaptureBridge | null {
+  if (!claimed) claimPrivileged();
+  return captureBridge;
 }

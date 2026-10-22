@@ -38,6 +38,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "view.fullscreen", label: "Fullscreen", category: "General", def: "F" },
   { id: "app.preferences", label: "Preferences", category: "General", def: "Ctrl+," },
   { id: "app.extensions", label: "Extensions", category: "General", def: "Ctrl+Shift+X" },
+  { id: "app.reportIssue", label: "Report an issue", category: "General", def: "" },
   { id: "app.openFolder", label: "Open folder", category: "General", def: "Ctrl+O" },
   // The wheel-zoom gesture over the image viewport (Develop). Same
   // combo grammar with "Wheel" as the key, so it can carry a modifier

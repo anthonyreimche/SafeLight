@@ -19,7 +19,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const MAIN = readFileSync(join(HERE, "main.cjs"), "utf8");
 const PRELOAD = readFileSync(join(HERE, "preload.cjs"), "utf8");
 
-const PRIVILEGED = /^(?:fs:.+|updates:install)$/;
+const PRIVILEGED = /^(?:fs:.+|updates:install|diagnostics:capturePage)$/;
 
 /** Channels registered as `<callee>("channel"`, each as "line:channel". */
 function registrations(source: string, callee: string): string[] {
@@ -54,6 +54,7 @@ describe("privileged channel wiring in main.cjs", () => {
     const guarded = registrations(MAIN, "handlePrivileged").map(channelOf);
     expect(handedOut).toContain("fs:write");
     expect(handedOut).toContain("updates:install");
+    expect(handedOut).toContain("diagnostics:capturePage");
     expect(handedOut.filter((channel) => !guarded.includes(channel))).toEqual([]);
   });
 
@@ -86,6 +87,25 @@ describe("privileged channel wiring in main.cjs", () => {
       "8:fs:trash",
       "9:fs:remove",
     ]);
+  });
+});
+
+describe("Report an issue channels", () => {
+  const handled = registrations(MAIN, "ipcMain\\s*\\.\\s*handle").map(channelOf);
+  const invoked = registrations(PRELOAD, "ipcRenderer\\s*\\.\\s*invoke").map(channelOf);
+
+  it("serves the crash list and opens issue links", () => {
+    for (const channel of ["diagnostics:crashes", "report:openIssue"]) {
+      expect(handled).toContain(channel);
+      expect(invoked).toContain(channel);
+    }
+  });
+
+  // A crash that the recovery gate ignores is still worth reporting, so the
+  // record comes before any filtering.
+  it("records every crash before deciding on recovery", () => {
+    expect(MAIN).toMatch(/app\.on\("child-process-gone", \(_e, details\) => \{\s*crashLog\.record\(details\.type, details\);/);
+    expect(MAIN).toMatch(/contents\.on\("render-process-gone", \(_ev, details\) => \{\s*crashLog\.record\("renderer", details\);/);
   });
 });
 

@@ -100,6 +100,7 @@ import {
   type ReleaseEntry,
   type UpdateChannel,
 } from "@/update/update-checker";
+import { openReportIssue } from "./report-issue-store";
 
 // ─── Open/close state (exported so the keyboard hook and TopBar can drive it) ─
 
@@ -2374,6 +2375,19 @@ function AboutSection() {
         >
           {repo.replace("https://", "")}
         </a>
+      </Field>
+
+      <Field label="Feedback" hint="Opens a GitHub issue with diagnostics you can check first.">
+        <button
+          type="button"
+          onClick={() => {
+            closePreferences();
+            void openReportIssue();
+          }}
+          className="text-[11px] text-slider-fill hover:underline"
+        >
+          Report an issue…
+        </button>
       </Field>
 
       <Field label="Legal">

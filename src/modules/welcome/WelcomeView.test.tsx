@@ -29,4 +29,9 @@ describe("WelcomeView", () => {
     expect(screen.queryByRole("button", { name: "Welcome setup" })).toBeNull();
     expect(screen.getByRole("button", { name: "Open Folder…" })).toBeTruthy();
   });
+
+  it("offers Report an issue, since the welcome screen has no top bar", () => {
+    render(<WelcomeView />);
+    expect(screen.getByRole("button", { name: "Report an issue" })).toBeTruthy();
+  });
 });

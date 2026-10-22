@@ -1546,10 +1546,31 @@ export interface NativeUpdatesBridge {
   install(repo: string, tag: string): Promise<void>;
 }
 
+/** Window capture for the Report an issue dialog. Privileged so extensions
+ *  can't take silent captures of the whole window. */
+export interface NativeCaptureBridge {
+  /** The sender window as PNG bytes, long edge at most 1920 px; null when the
+   *  window can't be captured (minimised, some Wayland setups). */
+  page(): Promise<Uint8Array<ArrayBuffer> | null>;
+}
+
+/** A child or renderer process the main process saw die this launch. */
+export interface NativeCrashRecord {
+  time: number;
+  /** Electron's process type ("GPU", "Utility", …) or "renderer". */
+  process: string;
+  reason: string;
+  exitCode: number;
+  /** Utility process service name, when Electron gives one. */
+  name?: string;
+}
+
 /** The one-shot privileged bundle returned by claimPrivileged(). */
 export interface PrivilegedBridge {
   fs: NativeFsBridge;
   updates: NativeUpdatesBridge;
+  /** Optional: absent in older Electron builds. */
+  capture?: NativeCaptureBridge;
 }
 
 declare global {
@@ -1560,6 +1581,9 @@ declare global {
     safelightNative?: {
       platform: string;
       versions: { electron: string; chrome: string };
+      /** CPU architecture and OS version (`process.getSystemVersion()`).
+       *  Optional: absent in older Electron builds. */
+      system?: { arch: string; osVersion: string };
       /** Returns the live version string from package.json (bypasses the Vite build-time constant). */
       appVersion(): Promise<string>;
       /** GitHub Releases API proxy — runs in the main process to bypass the renderer CSP. */
@@ -1676,6 +1700,16 @@ declare global {
             memoryMB: number;
           }[]
         >;
+        /** Processes that died this launch, oldest first. Optional: absent
+         *  in older Electron builds. */
+        crashes?(): Promise<NativeCrashRecord[]>;
+      };
+      /** Opens a prefilled Safelight new-issue page in the system browser.
+       *  Links too long for the OS hand-off travel through a one-shot local
+       *  redirect. Rejects for any other URL. Optional: absent in older
+       *  Electron builds. */
+      report?: {
+        openIssue(url: string): Promise<void>;
       };
       /** Recolor the native window-controls overlay (Windows/Linux) to follow
        *  the active theme; no-op on macOS. */

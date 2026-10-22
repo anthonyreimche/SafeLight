@@ -19,6 +19,7 @@ import {
 } from "./log-capture";
 import { detachDevtools, isDevtoolsWindow, reattachDevtools } from "./detach";
 import { VariablesTab } from "./VariablesTab";
+import { readWebGLInfo } from "@/diagnostics/environment";
 import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
 
 type Tab = "Console" | "Issues" | "System" | "Storage" | "Variables" | "Native";
@@ -721,42 +722,3 @@ function clockTime(ms: number): string {
 }
 
 const mb = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MB`;
-
-interface WebGLInfo {
-  vendor: string;
-  renderer: string;
-  glsl: string;
-  maxTexture: number;
-}
-
-// Cached: the values are fixed per session, and a probe context left alive
-// counts against the browser's ~16-context cap — enough refreshes would evict
-// the app's real render context.
-let webGLInfo: WebGLInfo | null | undefined;
-
-function readWebGLInfo(): WebGLInfo | null {
-  if (webGLInfo !== undefined) return webGLInfo;
-  try {
-    const canvas = document.createElement("canvas");
-    const gl = (canvas.getContext("webgl2") ||
-      canvas.getContext("webgl")) as WebGLRenderingContext | null;
-    if (!gl) return (webGLInfo = null);
-    const dbg = gl.getExtension("WEBGL_debug_renderer_info");
-    const vendor = dbg
-      ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL))
-      : String(gl.getParameter(gl.VENDOR));
-    const renderer = dbg
-      ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
-      : String(gl.getParameter(gl.RENDERER));
-    webGLInfo = {
-      vendor,
-      renderer,
-      glsl: String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION)),
-      maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
-    };
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
-    return webGLInfo;
-  } catch {
-    return (webGLInfo = null);
-  }
-}

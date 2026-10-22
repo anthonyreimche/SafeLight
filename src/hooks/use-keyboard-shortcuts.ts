@@ -29,6 +29,7 @@ import { viewportZoomCommands } from "@/state/viewport-zoom-commands";
 import { useProjectStore } from "@/project/project-store";
 import { togglePreferences } from "@/ui/components/PreferencesDialog";
 import { toggleExtensions } from "@/ui/components/ExtensionsDialog";
+import { toggleReportIssue } from "@/ui/components/report-issue-store";
 import { popEscapeHandler } from "@/ui/escape-stack";
 
 const clampSize = (v: number, lo: number, hi: number) =>
@@ -205,6 +206,9 @@ export function useKeyboardShortcuts() {
           break;
         case "app.extensions":
           toggleExtensions();
+          break;
+        case "app.reportIssue":
+          toggleReportIssue();
           break;
         case "app.openFolder": {
           const ps = useProjectStore.getState();

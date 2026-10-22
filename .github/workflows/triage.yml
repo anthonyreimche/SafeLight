@@ -21,7 +21,10 @@ jobs:
             const { owner, repo } = context.repo;
             const issue = context.payload.issue;
             const number = issue.number;
-            const text = `${issue.title}\n${issue.body || ''}`.toLowerCase();
+            // In-app reports carry a diagnostics block (versions, logs) full of
+            // keywords; label only on what the reporter wrote.
+            const stripDiagnostics = (s) => s.replace(/<!--\s*safelight:diagnostics\s*-->[\s\S]*?(?:<!--\s*\/safelight:diagnostics\s*-->|$)/g, ' ').replace(/<!--[\s\S]*?-->/g, ' ');
+            const text = `${issue.title}\n${stripDiagnostics(issue.body || '')}`.toLowerCase();
             const has = (...words) => words.some(w => {
               const re = new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
               return re.test(text);

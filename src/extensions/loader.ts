@@ -49,6 +49,9 @@ import { recordActiveLayoutExtension } from "./dock";
 
 const loaded = new Map<string, ExtensionModule>();
 
+/** Whether an installed extension is running in this window. */
+export const isPluginRunning = (id: string): boolean => loaded.has(id);
+
 // ─── Enable / disable state (persisted, synced across windows) ──────────────
 
 const DISABLED_KEY = "sl_ext_disabled";

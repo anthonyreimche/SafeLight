@@ -66,6 +66,7 @@
       "electron/crash-recovery.cjs",
       "electron/extension-origins.cjs",
       "electron/file-range.cjs",
+      "electron/issue-link.cjs",
       "electron/plugin-files.cjs",
       "electron/plugin-releases.cjs",
       "electron/registry-cache.cjs",

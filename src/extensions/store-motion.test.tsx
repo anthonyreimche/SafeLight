@@ -10,7 +10,7 @@
 // searches through; the real panel and cards render.
 
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { ExtensionManagerPanel } from "@/extensions/ExtensionManagerPanel";
 import type { ExtensionSearchResult } from "@/extensions/types";
 
@@ -42,9 +42,13 @@ afterEach(() => {
   document.documentElement.classList.remove("sl-reduce-motion");
 });
 
+// The search answers on a 0 ms timer. Waiting for it inside act has React
+// render the cards and run their mount effects (the cascade) before returning;
+// findAllByText can return between the two on a slow runner.
 async function cardsShown(): Promise<void> {
   render(<ExtensionManagerPanel />);
-  await screen.findAllByText("widget");
+  await act(() => new Promise((resolve) => setTimeout(resolve)));
+  screen.getAllByText("widget");
 }
 
 describe("Extensions store card cascade", () => {

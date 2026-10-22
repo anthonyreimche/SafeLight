@@ -15,6 +15,7 @@
 // stay unique in the merged buffer.
 
 import { create } from "zustand";
+import { formatArg } from "@/diagnostics/format-arg";
 
 export type LogLevel =
   | "log"
@@ -97,52 +98,7 @@ export function clearLog(): void {
 
 // ─── Argument formatting ────────────────────────────────────────────────────
 
-/** Render a single console argument to a compact, safe string. */
-export function formatArg(value: unknown, depth = 0): string {
-  if (value === null) return "null";
-  if (value === undefined) return "undefined";
-  const t = typeof value;
-  if (t === "string") return value as string;
-  if (t === "number" || t === "boolean" || t === "bigint") return String(value);
-  if (t === "function") {
-    const name = (value as { name?: string }).name;
-    return `ƒ ${name || "anonymous"}()`;
-  }
-  if (t === "symbol") return (value as symbol).toString();
-  if (value instanceof Error) {
-    return value.stack || `${value.name}: ${value.message}`;
-  }
-  if (value instanceof Element) {
-    const el = value as Element;
-    const id = el.id ? `#${el.id}` : "";
-    const cls = el.className && typeof el.className === "string"
-      ? `.${el.className.trim().split(/\s+/).join(".")}`
-      : "";
-    return `<${el.tagName.toLowerCase()}${id}${cls}>`;
-  }
-  // Objects and arrays: depth-limited JSON with circular protection.
-  if (depth > 2) return Array.isArray(value) ? "[…]" : "{…}";
-  try {
-    const seen = new WeakSet<object>();
-    const json = JSON.stringify(
-      value,
-      (_k, v) => {
-        if (typeof v === "object" && v !== null) {
-          if (seen.has(v)) return "[Circular]";
-          seen.add(v);
-        }
-        if (typeof v === "bigint") return `${v}n`;
-        if (typeof v === "function") return `ƒ ${v.name || "anonymous"}()`;
-        return v;
-      },
-      0,
-    );
-    if (json === undefined) return String(value);
-    return json.length > 2000 ? `${json.slice(0, 2000)}…` : json;
-  } catch {
-    return String(value);
-  }
-}
+export { formatArg };
 
 const formatArgs = (args: unknown[]): string[] => args.map((a) => formatArg(a));
 

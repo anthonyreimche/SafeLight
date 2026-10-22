@@ -53,4 +53,27 @@ function createRecoveryGate({ max = 3, minIntervalMs = 10_000, now = Date.now } 
   };
 }
 
-module.exports = { isRuntimeGpuCrash, isRendererCrash, createRecoveryGate };
+/** What died this launch, for Report an issue: the renderer reloads after a
+ *  crash and loses its own record, so the main process keeps one. Clean exits
+ *  are normal teardown and left out. */
+function createCrashLog({ max = 20, now = Date.now } = {}) {
+  const entries = [];
+  return {
+    record(processType, details) {
+      if (!details || details.reason === "clean-exit") return;
+      entries.push({
+        time: now(),
+        process: String(processType),
+        reason: String(details.reason),
+        exitCode: Number(details.exitCode) || 0,
+        ...(details.name ? { name: String(details.name) } : {}),
+      });
+      if (entries.length > max) entries.shift();
+    },
+    list() {
+      return entries.map((e) => ({ ...e }));
+    },
+  };
+}
+
+module.exports = { isRuntimeGpuCrash, isRendererCrash, createRecoveryGate, createCrashLog };

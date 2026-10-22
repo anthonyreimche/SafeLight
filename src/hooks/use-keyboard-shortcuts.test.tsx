@@ -29,6 +29,7 @@ import {
 import { useSettings } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
+import { closeReportIssue, useReportIssue } from "@/ui/components/report-issue-store";
 import {
   registerViewportZoomCommands,
   type ViewportZoomCommands,
@@ -544,5 +545,24 @@ describe("mask.delete in Develop", () => {
     expect(fire(window, bound("mask.delete"))).toBe(false);
     expect(removeComponent).not.toHaveBeenCalled();
     expect(commitEdit).not.toHaveBeenCalled();
+  });
+});
+
+describe("app.reportIssue", () => {
+  afterEach(() => {
+    resetBinding("app.reportIssue");
+    act(() => closeReportIssue());
+  });
+
+  it("ships unbound", () => {
+    expect(bound("app.reportIssue")).toBe("");
+  });
+
+  it("opens Report an issue once the user binds it", async () => {
+    setBinding("app.reportIssue", "Ctrl+Alt+R");
+    render(<Harness />);
+    expect(fire(window, "Ctrl+Alt+R")).toBe(true);
+    await act(async () => {});
+    expect(useReportIssue.getState().open).toBe(true);
   });
 });

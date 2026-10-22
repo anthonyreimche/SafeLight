@@ -7,7 +7,7 @@
 // JPEG previews. Until full RAW decoding lands (libraw/WASM, Phase 3), we
 // extract the largest *decodable* embedded JPEG so RAW files import and display.
 
-const RAW_EXTENSIONS = new Set([
+export const RAW_EXTENSIONS: ReadonlySet<string> = new Set([
   ".nef",
   ".cr2",
   ".cr3",
