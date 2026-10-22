@@ -4,14 +4,17 @@
 // be preserved in derived versions.
 
 // UI state for the Extensions "store" window: which view (list ↔ detail), the
-// selected extension, the active category/sort/search, and caches for the data
+// selected extension, the open Browse page, sort and search, and caches for the data
 // the detail view and the update checker fetch from GitHub. Kept separate from
 // the contribution registry and the enable/disable loader state. Lifting the
 // caches here lets the background launch check (loader.ts) populate update info
 // before the dialog is ever opened, and avoids prop-drilling through the panel.
 
 import { create } from "zustand";
-import type { ExtensionRelease, ExtensionRepoMeta } from "./types";
+import { FALLBACK_VOCABULARY } from "./store-categories";
+import type { ExtensionRelease, ExtensionRepoMeta, StoreVocabulary } from "./types";
+import type { StarterKit } from "@/modules/welcome/setup/kits";
+import type { InstallRow } from "@/modules/welcome/setup/install-queue";
 
 export type StoreSort = "popular" | "updated" | "name";
 
@@ -91,46 +94,29 @@ export function updateNote(installedVersion: string, upd: ExtUpdateInfo): string
   return `New version ${upd.latestTag} available`;
 }
 
-// ── Category mapping ─────────────────────────────────────────────────────────
-// Categories are derived from GitHub repo topics so authors get them for free.
-
-const TOPIC_CATEGORY: Record<string, string> = {
-  "safelight-panel": "Panels",
-  "safelight-module": "Modules",
-  "safelight-export": "Export",
-  "safelight-preset": "Presets",
-  "safelight-color": "Color",
-  "safelight-theme": "Themes",
-  "safelight-pipeline": "Pipelines",
-};
-
-/** Display order for the category chips. "All" is the unfiltered default. */
-export const CATEGORY_ORDER = [
-  "All",
-  "Panels",
-  "Modules",
-  "Export",
-  "Presets",
-  "Color",
-  "Themes",
-  "Pipelines",
-  "Other",
-] as const;
-
-/** First matching topic's category, or explicit manifest categories, else "Other". */
-export function categoryFor(topics?: string[], manifestCategories?: string[]): string {
-  for (const c of manifestCategories ?? [])
-    if ((CATEGORY_ORDER as readonly string[]).includes(c)) return c;
-  for (const t of topics ?? []) if (TOPIC_CATEGORY[t]) return TOPIC_CATEGORY[t];
-  return "Other";
-}
-
 interface ExtStoreUI {
   view: "list" | "detail";
   /** Selected extension: a repo "owner/repo" or a built-in id like "core.histogram". */
   selected: string | null;
-  category: string;
   sort: StoreSort;
+  /** What Browse shows: "home" (shelves), "other" (no category) or a
+   *  category slug. */
+  browse: string;
+  /** The category list under Browse in the rail: collapsed at launch, kept
+   *  for the session. */
+  railExpanded: boolean;
+  /** Categories and type badges from the registry index, or the fallback. */
+  vocabulary: StoreVocabulary;
+  /** Starter kits from the registry's kits.json; null until loaded, or when
+   *  unavailable. */
+  kits: StarterKit[] | null;
+  /** The open kit page, by id; null on every other Browse page. */
+  kit: string | null;
+  /** Install progress per kit id, kept while the app runs. */
+  kitRuns: Record<string, InstallRow[]>;
+  /** The kit whose Install all is running, also after the Extensions window
+   *  closes; null when none is. */
+  kitRunning: string | null;
   meta: Record<string, Async<ExtensionRepoMeta>>;
   readme: Record<string, Async<string | null>>;
   /** Each repo's GitHub releases, for the version picker and release notes. */
@@ -139,8 +125,12 @@ interface ExtStoreUI {
 
   openDetail: (selected: string) => void;
   back: () => void;
-  setCategory: (c: string) => void;
   setSort: (s: StoreSort) => void;
+  openCategory: (key: string) => void;
+  goHome: () => void;
+  toggleRail: () => void;
+  setVocabulary: (v: StoreVocabulary) => void;
+  openKit: (id: string) => void;
   setUpdate: (id: string, info: ExtUpdateInfo) => void;
   clearUpdate: (id: string) => void;
   pruneUpdates: (installedIds: string[]) => void;
@@ -149,8 +139,14 @@ interface ExtStoreUI {
 export const useExtStoreUI = create<ExtStoreUI>((set) => ({
   view: "list",
   selected: null,
-  category: "All",
   sort: "popular",
+  browse: "home",
+  railExpanded: false,
+  vocabulary: FALLBACK_VOCABULARY,
+  kits: null,
+  kit: null,
+  kitRuns: {},
+  kitRunning: null,
   meta: {},
   readme: {},
   releases: {},
@@ -158,8 +154,12 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
 
   openDetail: (selected) => set({ selected, view: "detail" }),
   back: () => set({ view: "list", selected: null }),
-  setCategory: (category) => set({ category }),
   setSort: (sort) => set({ sort }),
+  openCategory: (browse) => set({ browse, kit: null, railExpanded: true, view: "list", selected: null }),
+  goHome: () => set({ browse: "home", kit: null, railExpanded: true, view: "list", selected: null }),
+  openKit: (kit) => set({ kit, view: "list", selected: null }),
+  toggleRail: () => set((s) => ({ railExpanded: !s.railExpanded })),
+  setVocabulary: (vocabulary) => set({ vocabulary }),
   setUpdate: (id, info) =>
     set((s) => {
       const updates = { ...s.updates, [id]: info };
@@ -271,4 +271,16 @@ export async function loadReleases(fullName: string, force = false): Promise<voi
       releases: { ...s.releases, [fullName]: { status: "error", error: ipcMessage(e) } },
     }));
   }
+}
+
+/** Take the registry index's vocabulary. Null, a failure or no bridge keeps
+ *  the current one: the fallback until the first answer. */
+export async function loadStoreVocabulary(): Promise<void> {
+  const ask = window.safelightNative?.plugins?.vocabulary;
+  if (!ask) return;
+  try {
+    const vocabulary = await ask();
+    if (vocabulary && vocabulary.categories.length > 0)
+      useExtStoreUI.getState().setVocabulary(vocabulary);
+  } catch {}
 }

@@ -149,3 +149,17 @@ describe("builds without the privileged bridge", () => {
     expect(mod.privilegedUpdates()).toBeNull();
   });
 });
+
+describe("privilegedCapture", () => {
+  it("hands core the window capture from the bundle", async () => {
+    const page = () => Promise.resolve(new Uint8Array([1]));
+    const mod = await boot(() => ({ ...bundle("core"), capture: { page } }));
+    mod.claimPrivileged();
+    expect(mod.privilegedCapture()?.page).toBe(page);
+  });
+
+  it("is null for an older preload without capture, and in the browser build", async () => {
+    expect((await boot(preloadOneShot("core"))).privilegedCapture()).toBeNull();
+    expect((await boot()).privilegedCapture()).toBeNull();
+  });
+});

@@ -1219,6 +1219,30 @@ describe("RenderBridge worker replies", () => {
       expect(onThumbnail.mock.calls[0][0].requestId).toBe("s1");
     });
 
+    it("forwards a lossless request to the worker on both thumbnail calls", () => {
+      track(bridge.renderThumbnailFromSource({ ...sourceRequest("s1"), lossless: true }));
+      track(bridge.renderThumbnailAsync({ ...thumbRequest("t1"), lossless: true }));
+
+      expect(sent(worker, "renderThumbnailFromSource").map((m) => [m.requestId, m.lossless])).toEqual([
+        ["s1", true],
+      ]);
+      expect(sent(worker, "renderThumbnail").map((m) => [m.requestId, m.lossless])).toEqual([
+        ["t1", true],
+      ]);
+    });
+
+    it("adds no lossless field to a thumbnail request that didn't ask for one", () => {
+      track(bridge.renderThumbnailFromSource({ ...sourceRequest("s1"), quality: 0.9 }));
+      track(bridge.renderThumbnailAsync({ ...thumbRequest("t1"), quality: 0.9 }));
+
+      const [fromSource] = sent(worker, "renderThumbnailFromSource");
+      const [fromBitmap] = sent(worker, "renderThumbnail");
+      expect(fromSource).not.toHaveProperty("lossless");
+      expect(fromBitmap).not.toHaveProperty("lossless");
+      expect(fromSource.quality).toBe(0.9);
+      expect(fromBitmap.quality).toBe(0.9);
+    });
+
     it("settles each thumbnail by its requestId, whatever order the replies come in", async () => {
       const first = new Blob(["one"]);
       const second = new Blob(["two"]);

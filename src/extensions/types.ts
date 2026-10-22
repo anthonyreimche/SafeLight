@@ -43,6 +43,11 @@ export interface PanelContribution {
   /** Sort position within the slot (lower = higher up). Default 100. */
   order?: number;
   defaultDock?: PanelDockDefault;
+  /** Old panel ids this panel takes the place of in saved layouts, e.g. a panel
+   *  that moved here from another extension. Wherever a layout names one of
+   *  them, and no registered panel uses that id any more, the dock shows this
+   *  panel in its spot. */
+  replaces?: readonly string[];
   /** Stretch to the remaining rail height instead of rendering at natural
    *  height; the panel body must size to 100% and manage its own scrolling.
    *  One fill panel per side rail stretches (the rail stops scrolling while it
@@ -279,8 +284,22 @@ export interface ExtensionSearchResult {
    *  re-resolution for "registry" results — their thumbnail is already baked by
    *  the index build, so a runtime icon/og round-trip would add nothing. */
   source?: "registry" | "live";
-  /** GitHub repo topics — drive the store's category chips. */
+  /** GitHub repo topics — the store's category source when `categories` is absent. */
   topics?: string[];
+  /** Store category slugs the registry build resolved. Absent on live-search
+   *  results and older indexes, where the store reads the topics instead;
+   *  [] means the registry found none (shown under Other). */
+  categories?: string[];
+  /** Type badge slug from the registry build (module, pipeline, panel), or
+   *  null when it found none. */
+  type?: string | null;
+  /** Search keywords from the extension's manifest. */
+  keywords?: string[];
+  /** Screenshot URLs (https) from the extension's manifest. */
+  screenshots?: string[];
+  /** "owner/repo" extensions it pairs well with, linked both ways by the
+   *  registry build. */
+  worksWith?: string[];
   /** Owner avatar on the direct avatars CDN — the instant fallback thumbnail and
    *  the card's first paint (no github.com/owner.png redirect). */
   avatarUrl?: string | null;
@@ -296,6 +315,25 @@ export interface ExtensionSearchResult {
 export interface ExtensionThumbnail {
   url: string;
   custom: boolean;
+}
+
+/** One Extensions-store category, as registry.json publishes it. */
+export interface StoreCategory {
+  slug: string;
+  label: string;
+  description: string;
+}
+
+/** A type badge: what an extension adds (Module, Processing, Panel). */
+export interface StoreType {
+  slug: string;
+  label: string;
+}
+
+/** The store's categories in display order and type badges in precedence order. */
+export interface StoreVocabulary {
+  categories: StoreCategory[];
+  types: StoreType[];
 }
 
 /** Curation lists from the trust registry repo, fetched + normalised (lowercased)
@@ -363,6 +401,9 @@ export interface ExtensionManifest {
   repository?: string;
   /** Screenshot URLs (absolute, or relative to the repo's default branch). */
   screenshots?: string[];
+  /** "owner/repo" extensions this one pairs well with. The store lists them on
+   *  this extension's page, and this one on theirs when it is verified. */
+  worksWith?: string[];
   /** SPDX license id, e.g. "MIT". */
   license?: string;
   /** Minimum SafeLight version required, e.g. "1.2.0". Blocks install below it. */
@@ -520,15 +561,30 @@ export interface UniformDeclaration {
   label?: string;
 }
 
-/** Reserved with ProcessingStageContribution.produces and `consumes`: not
- *  implemented. */
+/** A per-pixel value one stage hands to stages after it in the same draw (see
+ *  ProcessingStageContribution.produces / `consumes`). */
 export interface InterStageVariable {
-  /** Shared variable name, e.g. "refT". Emitted as `isv_{name}` in the shader. */
+  /** Emitted as the global `isv_{name}` in every program whose stage set holds
+   *  its producer. Letters, digits and underscores, starting with a letter,
+   *  and no `__` (GLSL reserves it). Names are global across extensions:
+   *  prefix them with your own. */
   name: string;
   glslType: "float" | "vec2" | "vec3" | "vec4";
-  /** GLSL initializer expression evaluated after this stage runs.
-   *  Omit if this stage only consumes the variable. */
+  /** GLSL expression assigned to `isv_{name}` right after the producing
+   *  stage's glsl, inside its block, so it may name the stage's locals,
+   *  uniforms, helpers and stageResult. Omit to assign `isv_{name}` in the
+   *  glsl itself; an empty or blank string is refused. */
   producer?: string;
+}
+
+/** A pass draw count read from the param bag each frame (StagePass.iterations). */
+export interface PassDrawCount {
+  /** An int or float uniform the stage declares, inline or in this pass. Its
+   *  bag value `{stageId}.{key}`, or its default while the bag holds no finite
+   *  number, is rounded and clamped to [0, max]. */
+  key: string;
+  /** The most draws a frame may take: an integer from 1 to 1024. */
+  max: number;
 }
 
 export interface TextureRequirement {
@@ -629,7 +685,7 @@ export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
  *  Engine-provided uniforms/helpers in every pass:
  *    uniform vec2 uTexel;      // 1.0 / passResolution
  *    uniform int  uPassIndex;  // current iteration, 0 .. uPassCount-1
- *    uniform int  uPassCount;  // this pass's `iterations`
+ *    uniform int  uPassCount;  // this pass's resolved draw count (see `iterations`)
  *    vec3 readPrev(vec2 uv);   // previous pass at uv; first pass: the stage's input
  *    float luma(vec3); vec3 srgbToLinear(vec3); vec3 linearToSrgb(vec3);
  *  Pass `uniforms` share the owning stage's qualified-key namespace, so the same
@@ -637,8 +693,13 @@ export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
 export interface StagePass {
   glsl: string;
   helpers?: string;
-  /** Ping-pong iterations; uPassIndex runs 0..iterations-1. Default 1. */
-  iterations?: number;
+  /** Ping-pong iterations; uPassIndex runs 0..count-1 and uPassCount is the
+   *  count. A number is a fixed count (default 1), taken as a whole number from
+   *  1 to 1024; anything else is clamped, with a registration warning.
+   *  `{ key, max }` reads it from the bag each frame; 0 skips the pass, and a
+   *  stage whose passes all draw 0 times runs nothing that frame (no split
+   *  either) and reads as idle. */
+  iterations?: number | PassDrawCount;
   uniforms?: UniformDeclaration[];
 }
 
@@ -678,12 +739,17 @@ export interface ProcessingStageContribution {
    *  stage's inline `glsl` as `vec3 stageResult`. */
   passes?: StagePass[];
 
-  /** Reserved, not implemented: nothing in the render path reads it, and
-   *  registering a stage that sets it logs a warning. Meant for variables handed
-   *  from one stage to the next. */
+  /** Values this stage hands to the stages after it in the same draw. The core
+   *  declares each as `isv_{name}`, and the registry refuses a name another
+   *  registered stage already produces. Inline code only: passes can't see
+   *  them, and a pass that mentions one is refused. */
   produces?: InterStageVariable[];
-  /** Reserved, not implemented, like `produces`. Meant for the names of the
-   *  InterStageVariables this stage reads. */
+  /** Names of the InterStageVariables this stage reads as `isv_{name}`. Every
+   *  `isv_` name the stage's glsl, helpers or producers read must be listed
+   *  here or in `produces`, or the stage is refused. A consumer ordered ahead
+   *  of the producer reads zero (with a warning); one whose variable no stage
+   *  in the set produces is left out of the program (with a warning) rather
+   *  than failing to compile. */
   consumes?: string[];
 
   textures?: TextureRequirement[];
@@ -968,6 +1034,71 @@ export interface StylesheetContribution {
   css: string;
 }
 
+// ---------------------------------------------------------------------------
+// Shared variables (api.variables)
+// ---------------------------------------------------------------------------
+
+/** Who made a write or a registration. */
+export interface VariableWriter {
+  /** Extension id; Developer Tools' Edit value writes as "core.devtools". */
+  extension: string;
+  /** The window it happened in. */
+  window: string;
+}
+
+/** Orders writes across windows: the higher `n` wins, and an equal `n` is
+ *  broken by window id, so every window picks the same winner. */
+export interface VariableRevision {
+  n: number;
+  window: string;
+}
+
+export interface VariableSnapshot<T> {
+  name: string;
+  /** Deep-frozen: change it with set() or update(), never in place. */
+  value: T;
+  revision: VariableRevision;
+  writer: VariableWriter;
+  registeredBy: VariableWriter;
+  description?: string;
+}
+
+export type VariableWriteResult<T> =
+  | { ok: true; revision: VariableRevision }
+  | { ok: false; reason: "stale"; current: VariableSnapshot<T> }
+  | { ok: false; reason: "unregistered" }
+  | { ok: false; reason: "invalid"; message: string };
+
+/** Named JSON values every extension can share, in every window. Values are
+ *  plain JSON data (objects, arrays, strings, finite numbers, booleans, null)
+ *  and last for the session. Writes use optimistic locking: an extension's
+ *  set() is refused when another writer changed the variable after the latest
+ *  revision this extension saw (through register, get, a subscriber delivery,
+ *  or its own write). Refusals and lost cross-window races are logged as
+ *  `[variables]` warnings, which Developer Tools' Issues tab shows. */
+export interface SharedVariablesAPI {
+  /** Make `name` exist. Idempotent: the first registration's `initial` and
+   *  `description` win; a later call (any extension, any window) joins and
+   *  gets the current snapshot. Throws on an invalid or reserved name, or an
+   *  `initial` that isn't JSON data, or a `description` that isn't a string. */
+  register<T>(name: string, init: { initial: T; description?: string }): VariableSnapshot<T>;
+  /** The current snapshot, or undefined when nobody has registered `name`. */
+  get<T>(name: string): VariableSnapshot<T> | undefined;
+  /** Called with the current snapshot if `name` exists (right away, or right
+   *  after a delivery in progress), else on registration; then on every
+   *  accepted write, local or from another window, in revision order. Returns
+   *  the unsubscribe function. A listener that throws is logged; the others
+   *  still run. */
+  subscribe<T>(name: string, listener: (snapshot: VariableSnapshot<T>) => void): () => void;
+  /** Write `value`. Refused as "stale" when another writer changed the
+   *  variable after the latest revision this extension saw in this window. */
+  set<T>(name: string, value: T): VariableWriteResult<T>;
+  /** Read-modify-write: `fn` runs synchronously on the latest value and its
+   *  result is written, so it is never "stale" within a window. A throwing
+   *  `fn`, or one that returns a Promise, writes nothing ("invalid"). */
+  update<T>(name: string, fn: (current: T) => T): VariableWriteResult<T>;
+}
+
 export interface SafelightAPI {
   version: 1;
   extensionId: string;
@@ -1178,11 +1309,23 @@ export interface SafelightAPI {
      *  an off-screen ImageBitmap, or null if it can't render. Unlike captureFrame
      *  this is NOT tied to the live Develop source, so it measures the requested
      *  photo even when another (or none) is open — e.g. batch Auto Tone / Auto WB
-     *  across a Library selection. Rendered small (for histogram measurement). */
+     *  across a Library selection. Rendered small (for histogram measurement).
+     *  A `paramBag` is drawn as the live view draws one: under the entries the
+     *  built-in stages take from `params`, such as the Detail panel's noise
+     *  reduction. The frame is a JPEG at quality 0.9, which suits a picture. `lossless: true`
+     *  returns it from a PNG instead, so every 8-bit channel value the pipeline
+     *  wrote reaches the bitmap exactly: use it for a frame that carries data,
+     *  such as a stage's measurement encoding, which a JPEG would smear across
+     *  neighbouring values. A PNG costs more to encode than a JPEG, so leave it
+     *  off for a frame you only look at. Needs Safelight 3.1.0; earlier builds
+     *  ignore the option and return the JPEG. A lossless frame is null where only
+     *  the grid's camera preview could stand in for the photo: that is another
+     *  source, so no frame is better than a wrong one. */
     renderPhotoFrame(
       photoId: string,
       params: import("@/catalog/types").DevelopParams,
       paramBag?: Record<string, unknown>,
+      options?: { lossless?: boolean },
     ): Promise<ImageBitmap | null>;
     /** Drive the Develop-canvas cursor while a tool is active. Pass a registered
      *  cursor id (built-in token or one from registerCursor), an inline spec, or
@@ -1315,6 +1458,11 @@ export interface SafelightAPI {
       options?: import("@/modules/library/use-culling-shortcuts").CullingShortcutOptions,
     ): void;
   };
+  /** Shared variables: named JSON values any extension can register, read,
+   *  subscribe to and write, synced across windows. A set() from an extension
+   *  that hasn't seen the current value is refused and reported; use update()
+   *  for read-modify-write. See docs/dev/api/stores.md. */
+  variables: SharedVariablesAPI;
 }
 
 export interface ExtensionModule {
@@ -1398,10 +1546,31 @@ export interface NativeUpdatesBridge {
   install(repo: string, tag: string): Promise<void>;
 }
 
+/** Window capture for the Report an issue dialog. Privileged so extensions
+ *  can't take silent captures of the whole window. */
+export interface NativeCaptureBridge {
+  /** The sender window as PNG bytes, long edge at most 1920 px; null when the
+   *  window can't be captured (minimised, some Wayland setups). */
+  page(): Promise<Uint8Array<ArrayBuffer> | null>;
+}
+
+/** A child or renderer process the main process saw die this launch. */
+export interface NativeCrashRecord {
+  time: number;
+  /** Electron's process type ("GPU", "Utility", …) or "renderer". */
+  process: string;
+  reason: string;
+  exitCode: number;
+  /** Utility process service name, when Electron gives one. */
+  name?: string;
+}
+
 /** The one-shot privileged bundle returned by claimPrivileged(). */
 export interface PrivilegedBridge {
   fs: NativeFsBridge;
   updates: NativeUpdatesBridge;
+  /** Optional: absent in older Electron builds. */
+  capture?: NativeCaptureBridge;
 }
 
 declare global {
@@ -1412,6 +1581,9 @@ declare global {
     safelightNative?: {
       platform: string;
       versions: { electron: string; chrome: string };
+      /** CPU architecture and OS version (`process.getSystemVersion()`).
+       *  Optional: absent in older Electron builds. */
+      system?: { arch: string; osVersion: string };
       /** Returns the live version string from package.json (bypasses the Vite build-time constant). */
       appVersion(): Promise<string>;
       /** GitHub Releases API proxy — runs in the main process to bypass the renderer CSP. */
@@ -1494,6 +1666,10 @@ declare global {
          *  unknown because it is remote data: parseKits validates it before
          *  anything reads it. Optional: absent in older Electron builds. */
         kits?(force?: boolean): Promise<unknown>;
+        /** The store's category vocabulary from the registry index, or null
+         *  when the index or its vocabulary is unavailable. Optional: absent in
+         *  older Electron builds. */
+        vocabulary?(): Promise<StoreVocabulary | null>;
       };
       /** Renderer-side control of the window's Chrome DevTools. Backs the
        *  Developer Tools extension's Native tab. */
@@ -1524,6 +1700,16 @@ declare global {
             memoryMB: number;
           }[]
         >;
+        /** Processes that died this launch, oldest first. Optional: absent
+         *  in older Electron builds. */
+        crashes?(): Promise<NativeCrashRecord[]>;
+      };
+      /** Opens a prefilled Safelight new-issue page in the system browser.
+       *  Links too long for the OS hand-off travel through a one-shot local
+       *  redirect. Rejects for any other URL. Optional: absent in older
+       *  Electron builds. */
+      report?: {
+        openIssue(url: string): Promise<void>;
       };
       /** Recolor the native window-controls overlay (Windows/Linux) to follow
        *  the active theme; no-op on macOS. */

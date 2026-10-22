@@ -470,6 +470,9 @@ export class RenderBridge {
     asShotTemperature: number;
     maxEdge: number;
     quality?: number;
+    // Encode the blob as a PNG instead of a JPEG, for a frame whose channel bytes
+    // carry data. Wins over `quality`.
+    lossless?: boolean;
     // Per-render extension-stage params; the thumb renderer applies these for
     // this render only, so a photo other than the live develop one renders with
     // its own stage params rather than the active photo's.
@@ -718,6 +721,7 @@ export class RenderBridge {
     asShotTemperature: number;
     maxEdge: number;
     quality?: number;
+    lossless?: boolean;
     contributedParams?: Record<string, unknown>;
   }) {
     const { image } = opts;
@@ -738,6 +742,7 @@ export class RenderBridge {
     asShotTemperature: number;
     maxEdge: number;
     quality?: number;
+    lossless?: boolean;
     contributedParams?: Record<string, unknown>;
   }): Promise<Blob> {
     return new Promise<Blob>((resolve, reject) => {

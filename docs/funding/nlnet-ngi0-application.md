@@ -72,7 +72,7 @@ WebGL/GLSL, Electron, image processing and color science, GPU programming.
 
 Funding is requested per concrete, independently-deliverable milestone. There is
 no other funding; the project is currently unfunded and maintained by one person.
-Optional community support (GitHub Sponsors) covers nothing close to development
+Occasional one-time donations (Buy Me a Coffee) cover nothing close to development
 cost.
 
 | # | Milestone / deliverable | Est. effort | Amount |
@@ -123,7 +123,7 @@ photographers and developers can build and share extensions (discoverable via th
 `safelight-extension` GitHub topic); write technical articles on the imaging/color
 work (e.g. the spectral film simulation) to reach the graphics/photography
 communities; and release all grant deliverables as free upstream features under
-the GPL. Sponsorware funding releases features to the whole commons once funded.
+the GPL.
 
 ## Which NGI topic does this relate to?
 

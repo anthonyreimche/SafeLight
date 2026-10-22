@@ -131,4 +131,4 @@ The Export panel lists each photo it couldn't export with the reason, where it k
 
 ### How can I request a feature or report a bug?
 
-Open a GitHub issue. Pull requests are welcome — see [Contributing](../dev/contributing.md).
+Click **Report an issue**, the speech-bubble button in the top bar (also on the welcome screen and in **Preferences ▸ About**). It opens a GitHub issue with your Safelight version, system, graphics, extensions and recent errors already filled in: write what happened, check what's included (you can edit, clear or leave out any part), and submit it on GitHub. Tick **Attach a screenshot of the window** to put a screenshot on your clipboard, then paste it into the issue. No GitHub account? Use **Copy report** and email it to the address shown. Pull requests are welcome — see [Contributing](../dev/contributing.md).

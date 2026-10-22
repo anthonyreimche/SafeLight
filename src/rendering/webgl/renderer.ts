@@ -30,6 +30,7 @@ import {
 } from "./shaders";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import { isBuiltInStage } from "./builtin-stage";
+import { passDraws, stageDraws } from "./pass-draws";
 import { simpleHash } from "./shader-compiler";
 import {
   PASS_VERTEX_SHADER,
@@ -2494,7 +2495,8 @@ export class WebGLRenderer {
         params += `${b.qualifiedKey}=${String(this.contributedParams[b.qualifiedKey] ?? b.default)};`;
       }
     }
-    return `${srcSig}|${w}x${h}|${this.linear ? 1 : 0}${this.isFallbackPreview ? 1 : 0}${baseCurve}|${params}`;
+    const draws = stage.passes.map((p) => passDraws(p, this.contributedParams)).join(",");
+    return `${srcSig}|${w}x${h}|${this.linear ? 1 : 0}${this.isFallbackPreview ? 1 : 0}${baseCurve}|${params}|draws:${draws}`;
   }
 
   // Run every prepass stage against `srcTex` (the develop source — patched when
@@ -2539,8 +2541,14 @@ export class WebGLRenderer {
     const pool = this.prepassUnitPool();
     const layered = this.prepassStages.some((s) => s.layerUniform !== undefined);
     const units = layered ? pool.slice(1) : pool;
+    // A stage whose passes all resolve to 0 draws has nothing to run: it is
+    // idle this frame, split included.
     const active = this.prepassStages.map(
-      (s) => haveTargets && !this.failedPrepass.has(s.stageId) && this.prepassActive(s.stageId),
+      (s) =>
+        haveTargets &&
+        !this.failedPrepass.has(s.stageId) &&
+        this.prepassActive(s.stageId) &&
+        stageDraws(s, this.contributedParams) > 0,
     );
     // Layers for every active stage at once, so the array grows at most once a frame.
     if (layered) {
@@ -2714,7 +2722,8 @@ export class WebGLRenderer {
       const key = `${this.stageSig}|${stage.stageId}|${passIdx}|${simpleHash(pass.fragmentSource)}`;
       passIdx++;
       const prog = this.getPassProgram(key, pass.fragmentSource, pass.bindings);
-      for (let it = 0; it < pass.iterations; it++) {
+      const draws = passDraws(pass, this.contributedParams);
+      for (let it = 0; it < draws; it++) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.ppFbo[writeIdx]);
         gl.viewport(0, 0, w, h);
         gl.useProgram(prog.program);
@@ -2723,7 +2732,7 @@ export class WebGLRenderer {
         gl.uniform1i(prog.locs.uPrevPass!, 0);
         gl.uniform2f(prog.locs.uTexel!, 1 / w, 1 / h);
         gl.uniform1i(prog.locs.uPassIndex!, it);
-        gl.uniform1i(prog.locs.uPassCount!, pass.iterations);
+        gl.uniform1i(prog.locs.uPassCount!, draws);
         gl.uniform1i(prog.locs.uPrevRaw!, prevRaw ? 1 : 0);
         gl.uniform1i(prog.locs.uSrcLinear!, this.linear ? 1 : 0);
         gl.uniform1i(prog.locs.uIsFallbackPreview!, this.isFallbackPreview ? 1 : 0);

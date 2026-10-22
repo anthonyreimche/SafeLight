@@ -92,6 +92,7 @@ import {
   loadExternalPlugins,
 } from "./loader";
 import { initPinSync } from "./pins";
+import { initVariables, variableRegistry } from "./variables-host";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { Histogram } from "@/ui/components/Histogram";
@@ -241,6 +242,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       useCullingShortcuts,
       requestThumbnail,
     },
+    variables: variableRegistry().scoped(extensionId),
   };
 }
 
@@ -249,6 +251,7 @@ let booted = false;
 export function initExtensionHost(): void {
   if (booted) return;
   booted = true;
+  initVariables(); // before any extension registers, and before window.safelight below
   loadBuiltins(); // pre-installed extensions, minus any the user disabled
   window.safelight = makeScopedAPI("host");
   initSettings();

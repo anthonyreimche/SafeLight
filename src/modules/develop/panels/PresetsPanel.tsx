@@ -181,7 +181,7 @@ export function PresetsPanel() {
 
   const browseImporters = () => {
     setImportNotice(null);
-    useExtStoreUI.getState().setCategory("Presets");
+    useExtStoreUI.getState().openCategory("preset");
     openExtensions();
   };
 

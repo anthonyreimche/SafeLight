@@ -438,6 +438,19 @@ describe("culling shortcuts: focus and select-all", () => {
     expect(rotatePhotos).toHaveBeenCalledWith(["a"], 90);
   });
 
+  it("leaves every key to an extension's open native dialog", () => {
+    render(
+      <dialog open>
+        <input aria-label="Coordinates" />
+        <button type="button">Cancel</button>
+      </dialog>,
+    );
+    expect(fire(screen.getByLabelText("Coordinates"), bound("photo.rotateCW"))).toBe(false);
+    expect(fire(screen.getByRole("button", { name: "Cancel" }), "3")).toBe(false);
+    expect(rotatePhotos).not.toHaveBeenCalled();
+    expect(applyRating).not.toHaveBeenCalled();
+  });
+
   it("leaves Ctrl+A to a text field's own select-all", () => {
     render(<input aria-label="Caption" />);
     expect(fire(screen.getByLabelText("Caption"), "Ctrl+a")).toBe(false);

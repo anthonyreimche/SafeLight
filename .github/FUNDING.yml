@@ -1,22 +1,5 @@
-# How people can fund Safelight. Shows a "Sponsor" button on the repo and on
-# every release. See SPONSORS.md for tiers and the sponsorware model.
-#
-# NOTE: the `github` entry only renders once GitHub Sponsors is enabled for the
-# account — set it up at https://github.com/sponsors and mirror the SPONSORS.md
-# tiers there. Until then, Buy Me a Coffee still works.
+# Shows a "Sponsor" button on the repo and on every release. Payment is never
+# expected; this is only a way to say thanks with a coffee. See SPONSORS.md.
 
-github: [anthonyreimche]
 buy_me_a_coffee: anthonyreimche
-
-# Link the Sponsor button through to the full tier breakdown + sponsorware model.
 custom: ['https://github.com/anthonyreimche/SafeLight/blob/main/SPONSORS.md']
-
-# --- Bounties / pay-per-feature (optional; uncomment once you have an account) ---
-# polar:      # https://polar.sh  — subscriptions + per-issue funding for devs
-# issuehunt:  # https://issuehunt.io — put bounties on individual issues
-
-# --- Other platforms, unused (fill in only if you adopt one) ---
-# patreon:
-# open_collective:
-# ko_fi:
-# liberapay:

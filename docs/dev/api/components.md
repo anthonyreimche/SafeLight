@@ -151,7 +151,7 @@ Runtime-loaded extensions can't use Tailwind (only core is scanned), so these co
 | Component | Props | Notes |
 |---|---|---|
 | `Button` | `variant?: "primary" \| "secondary" \| "ghost" \| "danger"`, `size?: "sm" \| "md"`, `active?`, `full?`, plus any `<button>` attribute | Defaults: `secondary`, `md`, `type="button"`. `active` renders the selected state (accent fill) whatever the variant; `full` stretches to the container width. |
-| `Select` | `value`, `onChange(value)`, `options?: { value, label }[]` or `groups?` (headed sections), `placeholder?`, `disabled?`, `ariaLabel?`, `title?`, `className?` | The app's one dropdown, full-width by default. |
+| `Select` | `value`, `onChange(value)`, `options?: { value, label }[]` or `groups?` (headed sections), `placeholder?`, `disabled?`, `ariaLabel?`, `title?`, `className?` | The app's one dropdown, full-width by default. The open menu is at least as wide as the trigger and grows to fit its longest label, up to twice the trigger's width; near the window's right edge it grows leftward instead. A label that still doesn't fit shows in full on hover. |
 | `TextInput` | `value`, `onChange(value)`, plus any `<input>` attribute | Spellcheck off. |
 | `NumberInput` | `value: number`, `onChange(n)`, `width?` (CSS, default `"56px"`), plus any `<input>` attribute | Ignores empty and non-finite entries. For anything a user scrubs, prefer `api.components.Slider`. |
 | `TextArea` | `value`, `onChange(value)`, `mono?`, `rows?` (default 4) | `mono` switches to the monospace font, for code or SVG markup. |

@@ -168,6 +168,30 @@ describe("Select menu", () => {
     expect(screen.getAllByRole("option")).toHaveLength(3);
   });
 
+  it("names a clipped option in full on hover", async () => {
+    const user = userEvent.setup();
+    const label = "Compress shadows/highlights | EIGF | strong";
+    render(<Harness options={[...OPTIONS, { value: "long", label }]} />);
+    await user.click(trigger());
+    const option = screen.getByRole("option", { name: label });
+    // jsdom has no layout, so report the label as wider than its row.
+    Object.defineProperty(option, "scrollWidth", { configurable: true, value: 480 });
+    Object.defineProperty(option, "clientWidth", { configurable: true, value: 400 });
+    await user.hover(option);
+
+    expect(option.getAttribute("title")).toBe(label);
+  });
+
+  it("gives an option that fits no tooltip", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(trigger());
+    const option = screen.getByRole("option", { name: "Gamma" });
+    await user.hover(option);
+
+    expect(option.hasAttribute("title")).toBe(false);
+  });
+
   it("survives a malformed groups/options payload", () => {
     // Extension `select` settings fields are untyped at the boundary; one bad
     // entry must not throw, because a render crash here strands global
@@ -342,14 +366,26 @@ describe("Select menu placement", () => {
     return screen.getByRole("listbox");
   }
 
-  it("drops below the trigger at the trigger's width", async () => {
+  it("drops below the trigger, fitting its labels between the trigger's width and twice it", async () => {
     const menu = await openAt({ left: 100, top: 100, right: 300, bottom: 124 });
-    expect([menu.style.left, menu.style.top, menu.style.width, menu.style.maxHeight]).toEqual([
-      "100px",
-      "128px",
-      "200px",
-      "280px",
-    ]);
+    expect([
+      menu.style.left,
+      menu.style.top,
+      menu.style.width,
+      menu.style.minWidth,
+      menu.style.maxWidth,
+      menu.style.maxHeight,
+    ]).toEqual(["100px", "128px", "max-content", "200px", "400px", "280px"]);
+  });
+
+  it("grows leftward from the trigger's right edge when twice its width would leave the window", async () => {
+    const menu = await openAt({ left: 800, top: 100, right: 1000, bottom: 124 });
+    expect([menu.style.left, menu.style.right, menu.style.maxWidth]).toEqual(["", "24px", "400px"]);
+  });
+
+  it("stops at the window edge when neither side has room for twice the trigger", async () => {
+    const menu = await openAt({ left: 200, top: 100, right: 700, bottom: 124 });
+    expect([menu.style.left, menu.style.right, menu.style.maxWidth]).toEqual(["200px", "", "816px"]);
   });
 
   it("opens upward near the viewport bottom", async () => {
@@ -360,11 +396,18 @@ describe("Select menu placement", () => {
   it("maps the trigger rect into layout px under the UI-scale zoom", async () => {
     updateSettings({ uiScale: 2 });
     const menu = await openAt({ left: 100, top: 100, right: 300, bottom: 124 });
-    expect([menu.style.left, menu.style.top, menu.style.width]).toEqual([
+    expect([menu.style.left, menu.style.top, menu.style.minWidth, menu.style.maxWidth]).toEqual([
       "50px",
       "66px",
       "100px",
+      "200px",
     ]);
+  });
+
+  it("grows leftward in layout px under the UI-scale zoom", async () => {
+    updateSettings({ uiScale: 2 });
+    const menu = await openAt({ left: 800, top: 100, right: 1000, bottom: 124 });
+    expect([menu.style.right, menu.style.maxWidth]).toEqual(["12px", "200px"]);
   });
 
   it("opens upward in layout px under the UI-scale zoom", async () => {

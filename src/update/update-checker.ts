@@ -10,7 +10,7 @@
 import { isSemver, isNewer, compareSemver } from "./semver";
 import { privilegedUpdates } from "@/native/privileged";
 
-const REPO = "anthonyreimche/SafeLight";
+export const REPO = "anthonyreimche/SafeLight";
 const API_URL = `https://api.github.com/repos/${REPO}/releases?per_page=20`;
 const DISMISS_KEY = "sl_update_dismissed_v1";
 

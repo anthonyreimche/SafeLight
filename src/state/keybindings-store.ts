@@ -38,6 +38,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "view.fullscreen", label: "Fullscreen", category: "General", def: "F" },
   { id: "app.preferences", label: "Preferences", category: "General", def: "Ctrl+," },
   { id: "app.extensions", label: "Extensions", category: "General", def: "Ctrl+Shift+X" },
+  { id: "app.reportIssue", label: "Report an issue", category: "General", def: "" },
   { id: "app.openFolder", label: "Open folder", category: "General", def: "Ctrl+O" },
   // The wheel-zoom gesture over the image viewport (Develop). Same
   // combo grammar with "Wheel" as the key, so it can carry a modifier
@@ -240,6 +241,15 @@ export const setShortcutsSuspended = (v: boolean): void => {
   suspended = v;
 };
 export const shortcutsSuspended = (): boolean => suspended;
+
+/** True when the key comes from inside an open native <dialog>. Core's own
+ *  dialogs close through the escape stack; an extension's modal <dialog> (the
+ *  Map's Set location) has no way onto it, so it owns its keys outright:
+ *  Escape closes it rather than exiting a Develop tool behind it, and Ctrl
+ *  combos stay with its fields. */
+export function inNativeDialog(t: EventTarget | null): boolean {
+  return t instanceof Element && t.closest("dialog[open]") !== null;
+}
 
 /** True when the event target actually accepts typed text — shortcuts must
  *  stay out of its way. Sliders, checkboxes and buttons are NOT editable:

@@ -29,6 +29,7 @@ import {
 import { useSettings } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
+import { closeReportIssue, useReportIssue } from "@/ui/components/report-issue-store";
 import {
   registerViewportZoomCommands,
   type ViewportZoomCommands,
@@ -81,6 +82,21 @@ describe("zoom shortcut dispatch", () => {
     render(<Harness />);
     expect(press("=").defaultPrevented).toBe(false);
     expect(press("0").defaultPrevented).toBe(false);
+  });
+
+  it("leaves the combos to an extension's open native dialog", () => {
+    const commands = mountInDevelop();
+    render(
+      <dialog open>
+        <input aria-label="Coordinates" />
+      </dialog>,
+    );
+    const e = new KeyboardEvent("keydown", { key: "=", ctrlKey: true, cancelable: true, bubbles: true });
+    act(() => {
+      screen.getByLabelText("Coordinates").dispatchEvent(e);
+    });
+    expect(e.defaultPrevented).toBe(false);
+    expect(commands.zoomStep).not.toHaveBeenCalled();
   });
 });
 
@@ -318,6 +334,19 @@ describe("Esc exits one layer at a time", () => {
     expect(fire(screen.getByLabelText("Caption"), "Escape")).toBe(false);
   });
 
+  it("leaves Esc to an extension's open native dialog, which closes itself", () => {
+    render(
+      <dialog open>
+        <input aria-label="Coordinates" />
+        <button type="button">Cancel</button>
+      </dialog>,
+    );
+    useDevelopStore.setState({ cropping: true });
+    expect(fire(screen.getByLabelText("Coordinates"), "Escape")).toBe(false);
+    expect(fire(screen.getByRole("button", { name: "Cancel" }), "Escape")).toBe(false);
+    expect(dev().cropping).toBe(true);
+  });
+
   it("stands down while the shortcut editor is capturing a combo", () => {
     useDevelopStore.setState({ cropping: true });
     setShortcutsSuspended(true);
@@ -516,5 +545,24 @@ describe("mask.delete in Develop", () => {
     expect(fire(window, bound("mask.delete"))).toBe(false);
     expect(removeComponent).not.toHaveBeenCalled();
     expect(commitEdit).not.toHaveBeenCalled();
+  });
+});
+
+describe("app.reportIssue", () => {
+  afterEach(() => {
+    resetBinding("app.reportIssue");
+    act(() => closeReportIssue());
+  });
+
+  it("ships unbound", () => {
+    expect(bound("app.reportIssue")).toBe("");
+  });
+
+  it("opens Report an issue once the user binds it", async () => {
+    setBinding("app.reportIssue", "Ctrl+Alt+R");
+    render(<Harness />);
+    expect(fire(window, "Ctrl+Alt+R")).toBe(true);
+    await act(async () => {});
+    expect(useReportIssue.getState().open).toBe(true);
   });
 });

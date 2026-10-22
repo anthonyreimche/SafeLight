@@ -9,7 +9,12 @@
 // GPU process after a heavy import, leaving a black-but-draggable window.
 
 import { describe, it, expect } from "vitest";
-import { isRuntimeGpuCrash, isRendererCrash, createRecoveryGate } from "./crash-recovery.cjs";
+import {
+  isRuntimeGpuCrash,
+  isRendererCrash,
+  createRecoveryGate,
+  createCrashLog,
+} from "./crash-recovery.cjs";
 
 describe("isRuntimeGpuCrash", () => {
   const gone = (type: string, reason: string) => ({ type, reason });
@@ -67,5 +72,41 @@ describe("createRecoveryGate", () => {
     expect(gate.tryRecover()).toBe(false);
     t += 9_000; // 10s after the successful recovery, not the denied one
     expect(gate.tryRecover()).toBe(true);
+  });
+});
+
+// Kept for Report an issue: the renderer reloads after a crash and loses its
+// own memory, so the main process remembers what died this launch.
+describe("createCrashLog", () => {
+  it("records a crash with the time it happened", () => {
+    const log = createCrashLog({ now: () => 42 });
+    log.record("GPU", { type: "GPU", reason: "crashed", exitCode: 1 });
+    expect(log.list()).toEqual([{ time: 42, process: "GPU", reason: "crashed", exitCode: 1 }]);
+  });
+
+  it("keeps a utility process's service name", () => {
+    const log = createCrashLog({ now: () => 1 });
+    log.record("Utility", { reason: "oom", exitCode: 3, name: "Audio Service" });
+    expect(log.list()[0]).toMatchObject({ process: "Utility", name: "Audio Service" });
+  });
+
+  it("ignores clean exits", () => {
+    const log = createCrashLog();
+    log.record("renderer", { reason: "clean-exit", exitCode: 0 });
+    expect(log.list()).toEqual([]);
+  });
+
+  it("keeps only the newest records", () => {
+    let t = 0;
+    const log = createCrashLog({ max: 2, now: () => ++t });
+    for (const reason of ["crashed", "oom", "killed"]) log.record("renderer", { reason, exitCode: 1 });
+    expect(log.list().map((c) => c.reason)).toEqual(["oom", "killed"]);
+  });
+
+  it("hands out copies", () => {
+    const log = createCrashLog();
+    log.record("GPU", { reason: "crashed", exitCode: 1 });
+    log.list()[0].reason = "changed";
+    expect(log.list()[0].reason).toBe("crashed");
   });
 });

@@ -5,7 +5,7 @@
 
 // Developer Tools panel — a tabbed in-app inspector. Registered by the
 // (disabled-by-default) "core.devtools" extension and opened from the View
-// menu. Tabs: Console, Issues, System, Storage, Native. Nothing here runs
+// menu. Tabs: Console, Issues, System, Storage, Variables, Native. Nothing here runs
 // unless the extension is enabled, which installs the log capture.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,10 +18,12 @@ import {
   type LogLevel,
 } from "./log-capture";
 import { detachDevtools, isDevtoolsWindow, reattachDevtools } from "./detach";
+import { VariablesTab } from "./VariablesTab";
+import { readWebGLInfo } from "@/diagnostics/environment";
 import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
 
-type Tab = "Console" | "Issues" | "System" | "Storage" | "Native";
-const TABS: Tab[] = ["Console", "Issues", "System", "Storage", "Native"];
+type Tab = "Console" | "Issues" | "System" | "Storage" | "Variables" | "Native";
+const TABS: Tab[] = ["Console", "Issues", "System", "Storage", "Variables", "Native"];
 
 const LEVEL_STYLE: Record<LogLevel, string> = {
   log: "text-text-primary",
@@ -96,6 +98,7 @@ export function DevToolsPanel({ fill = false }: { fill?: boolean } = {}) {
         {tab === "Issues" && <ConsoleTab entries={entries} issuesOnly />}
         {tab === "System" && <SystemTab />}
         {tab === "Storage" && <StorageTab />}
+        {tab === "Variables" && <VariablesTab />}
         {tab === "Native" && <NativeTab />}
       </div>
     </div>
@@ -719,42 +722,3 @@ function clockTime(ms: number): string {
 }
 
 const mb = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MB`;
-
-interface WebGLInfo {
-  vendor: string;
-  renderer: string;
-  glsl: string;
-  maxTexture: number;
-}
-
-// Cached: the values are fixed per session, and a probe context left alive
-// counts against the browser's ~16-context cap — enough refreshes would evict
-// the app's real render context.
-let webGLInfo: WebGLInfo | null | undefined;
-
-function readWebGLInfo(): WebGLInfo | null {
-  if (webGLInfo !== undefined) return webGLInfo;
-  try {
-    const canvas = document.createElement("canvas");
-    const gl = (canvas.getContext("webgl2") ||
-      canvas.getContext("webgl")) as WebGLRenderingContext | null;
-    if (!gl) return (webGLInfo = null);
-    const dbg = gl.getExtension("WEBGL_debug_renderer_info");
-    const vendor = dbg
-      ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL))
-      : String(gl.getParameter(gl.VENDOR));
-    const renderer = dbg
-      ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
-      : String(gl.getParameter(gl.RENDERER));
-    webGLInfo = {
-      vendor,
-      renderer,
-      glsl: String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION)),
-      maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
-    };
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
-    return webGLInfo;
-  } catch {
-    return (webGLInfo = null);
-  }
-}

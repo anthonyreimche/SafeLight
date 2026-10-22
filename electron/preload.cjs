@@ -3,8 +3,9 @@
 // API itself lives in the bundle as `window.safelight`).
 const { contextBridge, ipcRenderer } = require("electron");
 
-// Privileged surface — raw filesystem by absolute path, and running an update
-// installer (which fetches + executes a release asset). Extension code shares
+// Privileged surface — raw filesystem by absolute path, running an update
+// installer (which fetches + executes a release asset), and capturing the
+// window for Report an issue. Extension code shares
 // the renderer realm, so anything left on window.safelightNative is reachable by
 // a malicious extension. These are handed out exactly once, at renderer boot, to
 // core code that captures them privately (src/native/privileged.ts); every later
@@ -51,6 +52,9 @@ const privileged = {
       ipcRenderer.invoke("fs:pickFile", Array.isArray(filters) ? filters : []),
     reveal: (p) => ipcRenderer.invoke("fs:reveal", String(p)),
   },
+  capture: {
+    page: () => ipcRenderer.invoke("diagnostics:capturePage"),
+  },
 };
 
 contextBridge.exposeInMainWorld("safelightNative", {
@@ -58,6 +62,10 @@ contextBridge.exposeInMainWorld("safelightNative", {
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,
+  },
+  system: {
+    arch: process.arch,
+    osVersion: process.getSystemVersion(),
   },
   appVersion: () => ipcRenderer.invoke("app:version"),
   // One-shot handover of the privileged fs + update-installer surface (above).
@@ -121,6 +129,8 @@ contextBridge.exposeInMainWorld("safelightNative", {
     trustList: (force) => ipcRenderer.invoke("plugins:trust-list", !!force),
     // The welcome setup's starter kits (kits.json in the trust registry).
     kits: (force) => ipcRenderer.invoke("plugins:kits", !!force),
+    // The store's category vocabulary from the registry index, or null.
+    vocabulary: () => ipcRenderer.invoke("plugins:store-vocabulary"),
   },
   // Chrome DevTools control + main-process diagnostics for the opt-in
   // Developer Tools extension (src/extensions/devtools/).
@@ -139,6 +149,10 @@ contextBridge.exposeInMainWorld("safelightNative", {
   diagnostics: {
     gpuInfo: () => ipcRenderer.invoke("diagnostics:gpuInfo"),
     metrics: () => ipcRenderer.invoke("diagnostics:metrics"),
+    crashes: () => ipcRenderer.invoke("diagnostics:crashes"),
+  },
+  report: {
+    openIssue: (url) => ipcRenderer.invoke("report:openIssue", String(url)),
   },
   // Recolor the native window-controls overlay (Windows/Linux) to match the
   // active theme; no-op on macOS.

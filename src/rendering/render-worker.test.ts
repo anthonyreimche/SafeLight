@@ -231,8 +231,9 @@ class FakeOffscreenCanvas {
     this.height = height;
   }
 
-  convertToBlob(): Promise<Blob> {
-    return Promise.resolve(new Blob());
+  convertToBlob(options?: ImageEncodeOptions): Promise<Blob> {
+    encodings.push(options);
+    return encodeError ? Promise.reject(encodeError) : Promise.resolve(new Blob());
   }
 
   transferToImageBitmap(): ImageBitmap {
@@ -251,6 +252,10 @@ class FakeOffscreenCanvas {
 
 /** Every bitmap a canvas handed out, and whether it was closed. */
 let handedOut: { closed: boolean }[];
+/** The options of each convertToBlob call, in order. */
+let encodings: (ImageEncodeOptions | undefined)[];
+/** What convertToBlob rejects with, as an encode that fails does. */
+let encodeError: Error | null;
 
 interface SelfStub {
   onmessage: ((e: MessageEvent<WorkerRequest>) => void) | null;
@@ -272,6 +277,8 @@ beforeEach(async () => {
   FakeRenderer.resident = new Set();
   FakeRenderer.residentSize = { width: 0, height: 0 };
   handedOut = [];
+  encodings = [];
+  encodeError = null;
   posted = [];
   selfStub = {
     onmessage: null,
@@ -1341,6 +1348,75 @@ describe("render-worker thumbnails", () => {
     });
     expect(FakeRenderer.instances[0].prepared).toEqual([{ version: 1, pipeline: PICK }]);
     expect(posted.at(-1)).toMatchObject({ type: "thumbnailMiss", requestId: "t1" });
+  });
+
+  // A thumbnail is a JPEG unless the request says its bytes carry data: then it is a
+  // PNG, which hands back every 8-bit channel value the renderer wrote.
+  describe("encoding", () => {
+    const fromSource = (over: Partial<Extract<WorkerRequest, { cmd: "renderThumbnailFromSource" }>> = {}) => {
+      FakeRenderer.resident.add("photo-1");
+      const request: WorkerRequest = {
+        cmd: "renderThumbnailFromSource",
+        requestId: "t1",
+        key: "photo-1",
+        params: DEFAULT_DEVELOP_PARAMS,
+        asShotTemperature: 5500,
+        maxEdge: 256,
+        pipeline: BUILTIN_RESOLVED,
+        ...over,
+      };
+      return request;
+    };
+    const REQUESTS: [string, (over: { quality?: number; lossless?: boolean }) => WorkerRequest][] = [
+      ["a bitmap sent with the render", (over) => thumbnail(over)],
+      ["a resident source", (over) => fromSource(over)],
+    ];
+
+    it.each(REQUESTS)("encodes %s as a JPEG at 0.8 by default", (_label, request) => {
+      send(request({}));
+      expect(encodings).toEqual([{ type: "image/jpeg", quality: 0.8 }]);
+    });
+
+    it.each(REQUESTS)("encodes %s as a JPEG at the quality asked for", (_label, request) => {
+      send(request({ quality: 0.9 }));
+      expect(encodings).toEqual([{ type: "image/jpeg", quality: 0.9 }]);
+    });
+
+    it.each(REQUESTS)("encodes %s as a PNG when the request is lossless", (_label, request) => {
+      send(request({ lossless: true }));
+      expect(encodings).toEqual([{ type: "image/png" }]);
+    });
+
+    it.each(REQUESTS)("encodes %s as a JPEG when lossless is false", (_label, request) => {
+      send(request({ lossless: false, quality: 0.9 }));
+      expect(encodings).toEqual([{ type: "image/jpeg", quality: 0.9 }]);
+    });
+
+    it.each(REQUESTS)("lets lossless win over a quality on %s", (_label, request) => {
+      send(request({ lossless: true, quality: 0.9 }));
+      expect(encodings).toEqual([{ type: "image/png" }]);
+    });
+
+    it("answers a lossless thumbnail with the blob it encoded", async () => {
+      send(thumbnail({ lossless: true }));
+      await Promise.resolve();
+      expect(posted.at(-1)).toMatchObject({ type: "thumbnail", requestId: "t1" });
+    });
+
+    const ENCODES = REQUESTS.flatMap(([label, request]) => [
+      [`${label} as a JPEG`, request, {}] as const,
+      [`${label} as a PNG`, request, { lossless: true }] as const,
+    ]);
+
+    it.each(ENCODES)("settles %s with thumbnailError when the encode rejects", async (_label, request, over) => {
+      encodeError = new Error("convertToBlob rejected");
+      send(request(over));
+      await Promise.resolve();
+      expect(encodings).toHaveLength(1);
+      expect(posted).toEqual([
+        { type: "thumbnailError", requestId: "t1", message: "convertToBlob rejected" },
+      ]);
+    });
   });
 
   it("answers thumbnailError and keeps no renderer when the stock program can't be built", () => {

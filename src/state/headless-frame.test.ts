@@ -13,6 +13,7 @@ import type { DecodedImage, Fallback } from "@/catalog/load-image";
 import type { CatalogPhoto } from "@/catalog/types";
 import { normalizeParams } from "@/catalog/types";
 import { photo as fixture } from "@/catalog/stored-edit.fixtures";
+import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
 
 const h = vi.hoisted(() => ({
   photos: [] as CatalogPhoto[],
@@ -25,6 +26,8 @@ const h = vi.hoisted(() => ({
   asyncRenders: 0,
   /** The as-shot temperature each render from the resident source was given. */
   sourceTemperatures: [] as number[],
+  /** Every request the bridge was asked to render, and which of its two calls took it. */
+  requests: [] as { call: "source" | "bitmap"; request: Record<string, unknown> }[],
 }));
 
 vi.mock("@/rendering/render-bridge", () => ({
@@ -32,11 +35,13 @@ vi.mock("@/rendering/render-bridge", () => ({
     ready: Promise.resolve(),
     uploadSource: (_target: string, key: string) => void h.resident.add(key),
     renderThumbnailFromSource: async (opts: { key: string; asShotTemperature: number }) => {
+      h.requests.push({ call: "source", request: opts });
       if (!h.resident.has(opts.key)) return null;
       h.sourceTemperatures.push(opts.asShotTemperature);
       return new Blob(["from source"]);
     },
-    renderThumbnailAsync: async () => {
+    renderThumbnailAsync: async (opts: Record<string, unknown>) => {
+      h.requests.push({ call: "bitmap", request: opts });
       h.asyncRenders++;
       return new Blob(["from bitmap"]);
     },
@@ -76,6 +81,7 @@ beforeEach(() => {
   h.load = null;
   h.asyncRenders = 0;
   h.sourceTemperatures = [];
+  h.requests = [];
   vi.stubGlobal("createImageBitmap", async () => frame);
 });
 
@@ -148,5 +154,175 @@ describe("measuring a photo off-screen", () => {
     await expect(measure()).resolves.toBeNull();
 
     expect(h.asyncRenders).toBe(0);
+  });
+});
+
+// A frame that carries data rather than a picture (a stage's measurement encoding,
+// say) is read back byte for byte, so the extension can ask for it lossless. Every
+// path a frame can take has to carry the ask to the renderer, and a frame asked for
+// without it is encoded exactly as before: JPEG at 0.9.
+describe("the encoding of a measured frame", () => {
+  const params = normalizeParams({ exposure: 1 });
+  const LAST_RESORT: [string, "source" | "bitmap", () => void] = [
+    "the grid's preview, as a last resort",
+    "bitmap",
+    () => {
+      h.photos = [{ ...fixture(ID), thumbnailBlob: new Blob(["preview"]) }];
+    },
+  ];
+  const LOSSLESS_PATHS: [string, "source" | "bitmap", () => void][] = [
+    ["the resident source", "source", () => void h.resident.add(KEY)],
+    [
+      "a first touch that uploads the source",
+      "source",
+      () => {
+        h.decoded = { kind: "float", data: new Float32Array(4), width: 2, height: 2 };
+      },
+    ],
+    [
+      "a preview rendered once",
+      "bitmap",
+      () => {
+        h.decoded = fellBack({ from: "embedded", ...NONE, timedOut: true });
+      },
+    ],
+  ];
+  const PATHS = [...LOSSLESS_PATHS, LAST_RESORT];
+
+  it.each(LOSSLESS_PATHS)("asks for a lossless frame on %s", async (_label, call, arrange) => {
+    arrange();
+
+    await expect(
+      renderPhotoFrame(ID, params, undefined, { lossless: true }),
+    ).resolves.toBe(frame);
+
+    expect(h.requests.at(-1)?.call).toBe(call);
+    expect(h.requests.length).toBeGreaterThan(0);
+    for (const { request } of h.requests) expect(request).toMatchObject({ lossless: true });
+  });
+
+  it.each(PATHS)("keeps JPEG at 0.9, with no new field, on %s", async (_label, call, arrange) => {
+    arrange();
+
+    await expect(measure()).resolves.toBe(frame);
+
+    expect(h.requests.at(-1)?.call).toBe(call);
+    for (const { request } of h.requests) {
+      expect(request).not.toHaveProperty("lossless");
+      expect(request).toMatchObject({ quality: 0.9 });
+    }
+  });
+
+  it("treats lossless: false as no option at all", async () => {
+    h.resident.add(KEY);
+
+    await renderPhotoFrame(ID, params, undefined, { lossless: false });
+
+    expect(h.requests).toHaveLength(1);
+    expect(h.requests[0].request).not.toHaveProperty("lossless");
+    expect(h.requests[0].request).toMatchObject({ quality: 0.9 });
+  });
+
+  it("hands the photo's stage params through alongside the option", async () => {
+    h.resident.add(KEY);
+    const bag = { "ext.stage.mode": 1 };
+
+    await renderPhotoFrame(ID, params, bag, { lossless: true });
+
+    expect(h.requests[0].request).toMatchObject({ contributedParams: bag, lossless: true });
+  });
+});
+
+// The live Develop view draws with the photo's stage bag under the keys Safelight's
+// built-in stages take from the params: the Detail panel's noise reduction, on by
+// default. A measured frame draws with the same bag, or it measures a photo the
+// user never sees.
+describe("the stage bag of a measured frame", () => {
+  const params = normalizeParams({ exposure: 1 });
+  const bag = { "ext.stage.mode": 1 };
+  const CALLS: [string, () => void][] = [
+    ["the resident source", () => void h.resident.add(KEY)],
+    [
+      "the grid's preview, as a last resort",
+      () => {
+        h.photos = [{ ...fixture(ID), thumbnailBlob: new Blob(["preview"]) }];
+      },
+    ],
+  ];
+
+  it.each(CALLS)("carries the core noise reduction under the caller's bag on %s", async (_label, arrange) => {
+    arrange();
+
+    await renderPhotoFrame(ID, params, bag);
+
+    expect(h.requests.length).toBeGreaterThan(0);
+    for (const { request } of h.requests) {
+      expect(request.contributedParams).toMatchObject({ ...bag, "builtin.denoise.colAmount": params.colorNR });
+      expect(request.contributedParams).toEqual({ ...bag, ...denoiseBag(params) });
+    }
+  });
+
+  it("takes the core keys from the params over the bag's, as the live view does", async () => {
+    h.resident.add(KEY);
+
+    await renderPhotoFrame(ID, params, { ...bag, "builtin.denoise.colAmount": 0 });
+
+    expect(h.requests[0].request.contributedParams).toMatchObject({
+      ...bag,
+      "builtin.denoise.colAmount": params.colorNR,
+    });
+  });
+
+  it("sends no bag when the caller gives none, so the renderer keeps its own", async () => {
+    h.resident.add(KEY);
+
+    await renderPhotoFrame(ID, params);
+
+    expect(h.requests[0].request.contributedParams).toBeUndefined();
+  });
+});
+
+// A frame asked for lossless carries data about the photo's own pixels, so one
+// rendered from another source (the grid's camera JPEG) would be wrong rather
+// than merely flat: there is no frame, and the caller reads that as not yet.
+describe("a lossless frame with no source of the photo's own", () => {
+  const params = normalizeParams({ exposure: 1 });
+  const arrange = () => {
+    h.photos = [{ ...fixture(ID), thumbnailBlob: new Blob(["preview"]) }];
+  };
+
+  it("is null, and the grid's preview is not rendered", async () => {
+    arrange();
+
+    await expect(renderPhotoFrame(ID, params, undefined, { lossless: true })).resolves.toBeNull();
+
+    expect(h.asyncRenders).toBe(0);
+    expect(h.requests.filter(({ call }) => call === "bitmap")).toEqual([]);
+    expect(h.resident.size).toBe(0);
+  });
+
+  it("is null for a RAW the background load passed over", async () => {
+    arrange();
+    h.load = () => null;
+
+    await expect(renderPhotoFrame(ID, params, undefined, { lossless: true })).resolves.toBeNull();
+
+    expect(h.asyncRenders).toBe(0);
+  });
+
+  it("is still rendered once the photo's own source is resident", async () => {
+    arrange();
+    h.resident.add(KEY);
+
+    await expect(renderPhotoFrame(ID, params, undefined, { lossless: true })).resolves.toBe(frame);
+  });
+
+  it("falls back on the grid's preview for a frame that is not lossless, as before", async () => {
+    arrange();
+
+    await expect(renderPhotoFrame(ID, params)).resolves.toBe(frame);
+    await expect(renderPhotoFrame(ID, params, undefined, { lossless: false })).resolves.toBe(frame);
+
+    expect(h.asyncRenders).toBe(2);
   });
 });

@@ -193,14 +193,35 @@ describe("registerProcessingStage: parts of the contract the core ignores", () =
   afterEach(() => {
     vi.restoreAllMocks();
     unregisterStageParams("acme.stage");
+    unregisterStageParams("acme.first");
   });
 
   it("warns about a reserved field, and still registers the stage", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    registerProcessingStage("acme", plain({ consumes: ["refT"] }));
+    registerProcessingStage("acme", plain({ mask: { maskable: true, maskPhase: "linear" } }));
     expect(useRegistry.getState().processingStages["acme.stage"]).toBeDefined();
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toMatch(/\[extensions\] acme: .*consumes is reserved/);
+    expect(warn.mock.calls[0][0]).toMatch(/\[extensions\] acme: .*mask is reserved/);
+  });
+
+  it("refuses a stage producing a variable another stage produces", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    registerProcessingStage("acme", plain({ id: "acme.first", produces: [{ name: "shared", glslType: "float" }] }));
+    registerProcessingStage("other", plain({ id: "other.second", produces: [{ name: "shared", glslType: "float" }] }));
+    expect(useRegistry.getState().processingStages["acme.first"]).toBeDefined();
+    expect(useRegistry.getState().processingStages["other.second"]).toBeUndefined();
+    expect(error.mock.calls[0][0]).toMatch(
+      /\[extensions\] other: stage "other\.second": inter-stage variable "shared" is already produced by stage "acme\.first"; stage not registered/,
+    );
+  });
+
+  it("lets a stage re-register with the variable it already produces", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const producer = plain({ produces: [{ name: "mine", glslType: "vec2", producer: "vec2(1.0)" }] });
+    registerProcessingStage("acme", producer);
+    registerProcessingStage("acme", { ...producer, glsl: "lin *= 2.0;" });
+    expect(useRegistry.getState().processingStages["acme.stage"]?.glsl).toBe("lin *= 2.0;");
+    expect(error).not.toHaveBeenCalled();
   });
 
   it("warns about a phase the pipeline doesn't have, and still registers the stage", () => {

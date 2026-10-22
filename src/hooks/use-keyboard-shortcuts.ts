@@ -16,6 +16,7 @@ import { getSettings, stepCanvasSurround } from "@/state/settings-store";
 import { detachedModule } from "@/state/detach";
 import {
   getBinding,
+  inNativeDialog,
   isBareKey,
   isEditableTarget,
   matchAction,
@@ -28,6 +29,7 @@ import { viewportZoomCommands } from "@/state/viewport-zoom-commands";
 import { useProjectStore } from "@/project/project-store";
 import { togglePreferences } from "@/ui/components/PreferencesDialog";
 import { toggleExtensions } from "@/ui/components/ExtensionsDialog";
+import { toggleReportIssue } from "@/ui/components/report-issue-store";
 import { popEscapeHandler } from "@/ui/escape-stack";
 
 const clampSize = (v: number, lo: number, hi: number) =>
@@ -41,7 +43,7 @@ export function useKeyboardShortcuts() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (shortcutsSuspended()) return;
+      if (shortcutsSuspended() || inNativeDialog(e.target)) return;
 
       // Esc = universal "exit": close the topmost modal, else leave the active
       // develop tool mode (the panel "Done" buttons). Runs before the editable-
@@ -204,6 +206,9 @@ export function useKeyboardShortcuts() {
           break;
         case "app.extensions":
           toggleExtensions();
+          break;
+        case "app.reportIssue":
+          toggleReportIssue();
           break;
         case "app.openFolder": {
           const ps = useProjectStore.getState();

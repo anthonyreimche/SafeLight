@@ -29,7 +29,13 @@ const fs = require("node:fs");
 const zlib = require("node:zlib");
 const crypto = require("node:crypto");
 const { pathToFileURL } = require("node:url");
-const { isRuntimeGpuCrash, isRendererCrash, createRecoveryGate } = require("./crash-recovery.cjs");
+const {
+  isRuntimeGpuCrash,
+  isRendererCrash,
+  createRecoveryGate,
+  createCrashLog,
+} = require("./crash-recovery.cjs");
+const { openIssueLink } = require("./issue-link.cjs");
 const {
   replacePlugin,
   settlePlugin,
@@ -57,6 +63,13 @@ const {
   validRepo,
 } = require("./window-policy.cjs");
 const { pruneExpired, usableIndex } = require("./registry-cache.cjs");
+const {
+  avatarFor,
+  filterRegistry,
+  normalizeRegistryEntry,
+  parseVocabulary,
+  readIndexCache,
+} = require("./registry-entry.cjs");
 const { unzip } = require("./unzip.cjs");
 const {
   checkInstallFiles,
@@ -67,7 +80,6 @@ const {
   isSemver,
   mustContainFor,
   normaliseReleases,
-  parseRegistryVersions,
   rateLimitMessage,
   remoteFromRegistry,
   remoteFromReleases,
@@ -82,6 +94,9 @@ const {
 // auto-DevTools) there. No effect on the electron-builder Win/Mac/Linux builds.
 const isDev = !app.isPackaged && process.env.SAFELIGHT_PACKAGED !== "1";
 const DIST = path.join(__dirname, "..", "dist");
+
+// Processes that died this launch, for Report an issue.
+const crashLog = createCrashLog();
 
 function appVersion() {
   return app.getVersion();
@@ -771,7 +786,7 @@ function persistSearchDisk() {
 // loads the full list fast; searchExtensionsLive stays as the fallback.
 const DEFAULT_EXT_TOPIC = "safelight-extension";
 const REGISTRY_INDEX_TTL_MS = 60 * 60 * 1000; // catalog turns over slowly; 1h
-let registryIndexCache = null; // { at, items } | null
+let registryIndexCache = null; // { at, items, vocabulary } | null
 const registryIndexFile = () =>
   path.join(app.getPath("userData"), "registry-index.json");
 let registryIndexLoaded = false;
@@ -781,8 +796,7 @@ function loadRegistryDisk() {
   registryIndexLoaded = true;
   try {
     const raw = JSON.parse(fs.readFileSync(registryIndexFile(), "utf8"));
-    if (raw && typeof raw.at === "number" && Array.isArray(raw.items))
-      registryIndexCache = { at: raw.at, items: raw.items };
+    registryIndexCache = readIndexCache(raw);
   } catch {}
 }
 
@@ -796,33 +810,6 @@ function persistRegistryDisk() {
       .catch(() => {});
   }, 1000);
   if (registryWriteTimer.unref) registryWriteTimer.unref();
-}
-
-// Normalise one registry.json row into the ExtensionSearchResult shape the
-// renderer already consumes. Tolerant of partial/garbage rows (drops them) so a
-// single malformed entry can never break the whole grid. A row with no usable
-// thumbnail falls back to the owner avatar, matching the live path.
-function normalizeRegistryEntry(e) {
-  if (!e || typeof e.fullName !== "string" || !validRepo(e.fullName)) return null;
-  const thumb =
-    e.thumbnail && typeof e.thumbnail.url === "string"
-      ? { url: e.thumbnail.url, custom: !!e.thumbnail.custom }
-      : null;
-  const avatarUrl = typeof e.avatarUrl === "string" ? e.avatarUrl : null;
-  return {
-    fullName: e.fullName,
-    description: typeof e.description === "string" ? e.description : null,
-    stars: Number.isFinite(e.stars) ? e.stars : 0,
-    createdAt: typeof e.createdAt === "string" ? e.createdAt : null,
-    updatedAt: typeof e.updatedAt === "string" ? e.updatedAt : "",
-    topics: Array.isArray(e.topics)
-      ? e.topics.filter((t) => typeof t === "string")
-      : [],
-    avatarUrl,
-    thumbnail: thumb || { url: avatarFor(e.fullName, avatarUrl), custom: false },
-    source: "registry",
-    versions: parseRegistryVersions(e),
-  };
 }
 
 // Fetch + cache the registry index. Returns the extension array, or null only
@@ -868,7 +855,7 @@ async function loadRegistryIndex(force) {
     const items = rows.map(normalizeRegistryEntry).filter(Boolean);
     // Cached, an empty catalog would blank the store for the whole TTL.
     if (!usableIndex(items)) return registryIndexCache ? registryIndexCache.items : null;
-    registryIndexCache = { at: Date.now(), items };
+    registryIndexCache = { at: Date.now(), items, vocabulary: parseVocabulary(body) };
     persistRegistryDisk();
     return items;
   } catch {
@@ -886,20 +873,6 @@ function fetchRegistryIndex(force = false) {
       registryIndexInflight = null;
     });
   return registryIndexInflight;
-}
-
-// Client-side query filter over the registry index — substring match on
-// "owner/repo", description and topics. Mirrors what `topic:… <query>` would do on
-// the Search API, but instantly and offline (the index is already the topic set).
-function filterRegistry(items, query) {
-  const q = String(query || "").trim().toLowerCase();
-  if (!q) return items;
-  return items.filter(
-    (it) =>
-      it.fullName.toLowerCase().includes(q) ||
-      (it.description && it.description.toLowerCase().includes(q)) ||
-      (it.topics || []).some((t) => String(t).toLowerCase().includes(q)),
-  );
 }
 
 // The welcome setup's starter kits: curated groups of verified extensions,
@@ -1001,10 +974,19 @@ async function searchExtensions(query, topic, force = false) {
     const index = await fetchRegistryIndex(force);
     // Zip asset lists stay in main: registryVersionsFor reads them from the
     // cached index, the renderer only needs the card fields.
-    if (usableIndex(index))
-      return filterRegistry(index, query).map(({ versions, ...item }) => item);
+    if (usableIndex(index)) {
+      const vocabulary = registryIndexCache ? registryIndexCache.vocabulary : null;
+      return filterRegistry(index, query, vocabulary).map(({ versions, ...item }) => item);
+    }
   }
   return searchExtensionsLive(query, topic, force);
+}
+
+// The category vocabulary published in registry.json, for the store's rail and
+// category pages; null when the index, or its vocabulary, is unavailable.
+async function storeVocabulary() {
+  await fetchRegistryIndex(false);
+  return registryIndexCache ? registryIndexCache.vocabulary : null;
 }
 
 async function fetchReleases(repo) {
@@ -1287,12 +1269,6 @@ function isAutoOgCard(url) {
   );
 }
 
-function avatarFor(repo, avatarUrl) {
-  if (avatarUrl) return avatarUrl;
-  const owner = String(repo).split("/")[0];
-  return `https://github.com/${owner}.png?size=120`;
-}
-
 // Synchronous best-effort read from the warm icon/og caches — no network. Lets
 // searchExtensions hand the renderer a resolved thumbnail the instant the caches
 // are warm (every open after the first), so re-opens paint real icons with zero
@@ -1470,7 +1446,8 @@ async function installRelease(repo, tag) {
 // frame.url, which history.pushState moves without loading a document.
 const committedUrls = new WeakMap();
 
-// The channels behind claimPrivileged (fs:*, updates:install) answer only the
+// The channels behind claimPrivileged (fs:*, updates:install,
+// diagnostics:capturePage) answer only the
 // app's own top-level document; see window-policy.cjs.
 function handlePrivileged(channel, handler) {
   ipcMain.handle(channel, guardPrivileged(channel, handler, { committedUrls }));
@@ -1546,6 +1523,7 @@ function registerPluginIpc() {
   });
   ipcMain.handle("plugins:trust-list", (_e, force) => fetchTrustList(!!force));
   ipcMain.handle("plugins:kits", (_e, force) => kitsIndex.get(!!force));
+  ipcMain.handle("plugins:store-vocabulary", () => storeVocabulary());
   ipcMain.handle("plugins:uninstall", (_e, id) => {
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(String(id)))
       throw new Error("Bad extension id");
@@ -1836,7 +1814,8 @@ function registerFsIpc() {
 // Developer Tools extension bridge. Lets the (opt-in, disabled-by-default)
 // Developer Tools panel drive the window's Chrome DevTools and read main-process
 // diagnostics. Gated by the renderer: the panel only exists when the user
-// enables the extension.
+// enables the extension. Report an issue reads the same diagnostics, plus the
+// crash log, a window capture and the issue-link opener.
 // ---------------------------------------------------------------------------
 function registerDevtoolsIpc() {
   const senderWindow = (e) => BrowserWindow.fromWebContents(e.sender);
@@ -1885,6 +1864,21 @@ function registerDevtoolsIpc() {
       memoryMB: m.memory ? m.memory.workingSetSize / 1024 : 0,
     }))
   );
+  ipcMain.handle("diagnostics:crashes", () => crashLog.list());
+  ipcMain.handle("report:openIssue", (_e, url) =>
+    openIssueLink(url, { openExternal: (u) => shell.openExternal(u) })
+  );
+  // Privileged: a public capture would let any extension take silent
+  // screenshots of the whole window.
+  handlePrivileged("diagnostics:capturePage", async (e) => {
+    let image = await e.sender.capturePage();
+    if (image.isEmpty()) return null;
+    const { width, height } = image.getSize();
+    if (Math.max(width, height) > 1920) {
+      image = image.resize(width >= height ? { width: 1920 } : { height: 1920 });
+    }
+    return image.toPNG();
+  });
 }
 
 // The custom in-app top bars (TopBar, welcome, DevTools — all h-[38px]) double
@@ -2132,6 +2126,7 @@ if (!app.requestSingleInstanceLock()) {
   // restart-by-hand behaviour instead of a reload storm.
   const gpuRecoveryGate = createRecoveryGate();
   app.on("child-process-gone", (_e, details) => {
+    crashLog.record(details.type, details);
     const windows = BrowserWindow.getAllWindows();
     if (!isRuntimeGpuCrash(details, windows.length)) return;
     const recover = gpuRecoveryGate.tryRecover();
@@ -2145,6 +2140,7 @@ if (!app.requestSingleInstanceLock()) {
   const rendererRecoveryGate = createRecoveryGate();
   app.on("web-contents-created", (_e, contents) => {
     contents.on("render-process-gone", (_ev, details) => {
+      crashLog.record("renderer", details);
       if (!isRendererCrash(details) || contents.isDestroyed()) return;
       const recover = rendererRecoveryGate.tryRecover();
       console.error(

@@ -16,6 +16,7 @@
 
 import type { DevelopParams } from "@/catalog/types";
 import { getRenderBridge } from "@/rendering/render-bridge";
+import { frameStageBag } from "@/rendering/stage-bag";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { useCatalogStore } from "./catalog-store";
 import { showsEdit, standsForPhoto } from "./fallback-rules";
@@ -26,18 +27,33 @@ const THUMB_SOURCE_MAX_EDGE = 1280;
 // Measurement frames only feed a 256-bin histogram, so a small edge is plenty
 // and keeps the per-photo convergence loop fast.
 const MEASURE_MAX_EDGE = 640;
+const MEASURE_JPEG_QUALITY = 0.9;
 
 let reqSeq = 0;
 
+/** How a measured frame is encoded for the trip back from the renderer: a JPEG,
+ *  or a PNG when the frame carries data whose channel bytes must survive. */
+function encodingFor(lossless: boolean): { quality: number } | { lossless: true } {
+  return lossless ? { lossless: true } : { quality: MEASURE_JPEG_QUALITY };
+}
+
 /** Render `photoId` with `params` (and the photo's own extension-stage
- *  `paramBag`) to an ImageBitmap, or null if the photo can't be rendered. */
+ *  `paramBag`, drawn as the live view draws it: under the entries the built-in
+ *  stages take from `params`) to an ImageBitmap, or null if the photo can't be
+ *  rendered.
+ *  `lossless` returns the frame from a PNG rather than a JPEG, so each channel
+ *  byte the pipeline wrote reaches the bitmap exactly; it is also null where
+ *  only the grid's camera preview could stand in for the photo. */
 export async function renderPhotoFrame(
   photoId: string,
   params: DevelopParams,
   paramBag?: Record<string, unknown>,
+  options?: { lossless?: boolean },
 ): Promise<ImageBitmap | null> {
   const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
   if (!photo) return null;
+  const lossless = options?.lossless === true;
+  const stageBag = paramBag && frameStageBag(params, paramBag);
 
   const bridge = getRenderBridge();
   await bridge.ready;
@@ -50,7 +66,7 @@ export async function renderPhotoFrame(
 
   // 1) Render from the resident source if it's already cached in the thumb
   //    renderer (e.g. a prior measure of this photo this run).
-  let blob = await renderFromSource(bridge, key, params, asShot(), maxEdge, paramBag);
+  let blob = await renderFromSource(bridge, key, params, asShot(), maxEdge, stageBag, lossless);
 
   // 2) First touch of this photo: decode, upload a capped source once, retry. A
   //    preview the load fell back on is rendered from once instead (standsForPhoto),
@@ -78,21 +94,23 @@ export async function renderPhotoFrame(
           decoded.kind === "float" ? decoded.isFallbackPreview : false,
           false,
         );
-        blob = await renderFromSource(bridge, key, params, asShot(), maxEdge, paramBag);
+        blob = await renderFromSource(bridge, key, params, asShot(), maxEdge, stageBag, lossless);
       } else {
-        blob = await renderOnce(bridge, image, params, asShot(), maxEdge, paramBag);
+        blob = await renderOnce(bridge, image, params, asShot(), maxEdge, stageBag, lossless);
       }
     }
   }
 
   // 3) Last resort: the in-memory camera JPEG preview (flatter, but lets Auto
   //    still measure something rather than skipping the photo). One that already
-  //    shows an edit would be measured with the edit twice.
-  if (!blob && photo.thumbnailBlob && photo.previewEdit === undefined) {
+  //    shows an edit would be measured with the edit twice. Never for a lossless
+  //    frame: it carries data about the photo's own pixels, and a frame rendered
+  //    from another source is wrong, not just flat.
+  if (!blob && !lossless && photo.thumbnailBlob && photo.previewEdit === undefined) {
     try {
       const bitmap = await createImageBitmap(photo.thumbnailBlob);
       const image = { kind: "bitmap" as const, bitmap };
-      blob = await renderOnce(bridge, image, params, asShot(), maxEdge, paramBag);
+      blob = await renderOnce(bridge, image, params, asShot(), maxEdge, stageBag, lossless);
     } catch {
       // fall through to null
     }
@@ -114,7 +132,8 @@ async function renderOnce(
   params: DevelopParams,
   asShotTemperature: number,
   maxEdge: number,
-  paramBag?: Record<string, unknown>,
+  paramBag: Record<string, unknown> | undefined,
+  lossless: boolean,
 ): Promise<Blob | null> {
   try {
     return await bridge.renderThumbnailAsync({
@@ -123,7 +142,7 @@ async function renderOnce(
       params,
       asShotTemperature,
       maxEdge,
-      quality: 0.9,
+      ...encodingFor(lossless),
       contributedParams: paramBag,
     });
   } catch {
@@ -137,7 +156,8 @@ function renderFromSource(
   params: DevelopParams,
   asShotTemperature: number,
   maxEdge: number,
-  paramBag?: Record<string, unknown>,
+  paramBag: Record<string, unknown> | undefined,
+  lossless: boolean,
 ): Promise<Blob | null> {
   return bridge.renderThumbnailFromSource({
     requestId: `measure-${key}-${++reqSeq}`,
@@ -145,7 +165,7 @@ function renderFromSource(
     params,
     asShotTemperature,
     maxEdge,
-    quality: 0.9,
+    ...encodingFor(lossless),
     contributedParams: paramBag,
   });
 }

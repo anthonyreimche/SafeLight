@@ -28,7 +28,7 @@ import { getSettings, useSettings } from "@/state/settings-store";
 import { usePipelineStore } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { applyPanelBypass, bypassParamBag } from "@/modules/develop/panel-bypass";
-import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
+import { frameStageBag } from "@/rendering/stage-bag";
 import { getExtSetting, useExtSettings } from "@/extensions/ext-settings";
 import { createRenderParams } from "./render-params";
 import { previewShowsEdit } from "./preview-shows-edit";
@@ -74,17 +74,14 @@ const fallbackKey = (key: string): string => `${key}#fallback`;
 
 const NO_STAGES: readonly string[] = [];
 
-/** The stage bag the worker draws with: the photo's own and the built-in denoise stage's
- *  entries, with what bypassed panels own taken out. */
+/** The stage bag the worker draws with: the photo's own and the built-in stages'
+ *  entries (frameStageBag), with what bypassed panels own taken out. */
 function stageBag(
   params: DevelopParams,
   paramBag: Record<string, unknown>,
   bypassed: Record<string, boolean>,
 ): Record<string, unknown> {
-  return {
-    ...bypassParamBag(paramBag, bypassed),
-    ...denoiseBag(applyPanelBypass(params, bypassed)),
-  };
+  return frameStageBag(applyPanelBypass(params, bypassed), bypassParamBag(paramBag, bypassed));
 }
 
 // The keys of the sources this view put in the GPU cache that are a preview (isPreview),

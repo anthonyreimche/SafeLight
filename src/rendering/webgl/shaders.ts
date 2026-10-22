@@ -142,7 +142,8 @@ uniform bool uApplyBaseCurve; // true: scene-linear RAW source -- apply the defa
                               // display transforms that own their own baseline
 uniform bool uApplyToneShoulder; // true: the core filmic shoulder compresses highlights;
                                  // off for display transforms with their own roll-off
-uniform bool uRawHistogram;   // true: output linear unclamped values for extended histogram
+uniform bool uRawHistogram;   // true: output c as the display tools leave it (display-encoded,
+                              // unclamped) for the extended histogram
 uniform int uShowClipping;    // bitmask: bit 0 = shadow clipping, bit 1 = highlight clipping
 
 uniform float uExposure;

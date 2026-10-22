@@ -25,8 +25,12 @@ import { usePins } from "./pins";
 import { Select } from "@/ui/components/Select";
 import { ReleaseNotes } from "./ReleaseNotes";
 import { resolveUrl } from "./markdown-url";
-import { useVerificationStatus, useReviewedFor, useBannedReason } from "./trust";
+import { useSettings } from "@/state/settings-store";
+import { useVerificationStatus, useReviewedFor, useBannedReason, useTrust, isVerifiedIn } from "./trust";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
+import { categoriesOf, moreFromAuthor, moreInCategory, typeOf, worksWithOf } from "./store-categories";
+import { SHELF_LIMIT, Shelf } from "./StoreCards";
+import { Screenshots } from "./Screenshots";
 import { Markdown } from "./Markdown";
 import { openUrl } from "@/update/update-checker";
 import { isNewer } from "@/update/semver";
@@ -52,6 +56,18 @@ export interface DetailTarget {
   search?: ExtensionSearchResult;
 }
 
+/** The store's loaded results and the panel's handlers, for the detail page's
+ *  category chips, Works with and More shelves. */
+export interface RelatedLists {
+  /** Every loaded result, installed ones included. */
+  results: ExtensionSearchResult[];
+  isInstalled: (r: ExtensionSearchResult) => boolean;
+  onOpen: (repo: string) => void;
+  onInstall: (repo: string, r: ExtensionSearchResult) => void;
+  /** Open a category page in Browse. */
+  onCategory: (slug: string) => void;
+}
+
 interface Props {
   target: DetailTarget;
   busy: string | null;
@@ -61,6 +77,8 @@ interface Props {
   onUninstall: (id: string) => void;
   onToggle: (id: string, enable: boolean) => void;
   onSettings: (id: string) => void;
+  /** Absent outside the store (and in tests): no chips, Works with or More shelves. */
+  related?: RelatedLists;
 }
 
 function relTime(iso: string): string {
@@ -100,6 +118,7 @@ export function ExtensionDetail({
   onUninstall,
   onToggle,
   onSettings,
+  related,
 }: Props) {
   const { repo } = target;
   // Compare the installed version against the reviewed version: a verified repo
@@ -154,6 +173,25 @@ export function ExtensionDetail({
     repoMeta?.description ??
     "";
   const homepage = target.manifest?.homepage ?? repoMeta?.homepage ?? null;
+
+  const vocabulary = useExtStoreUI((s) => s.vocabulary);
+  const onlyVerified = useSettings((s) => s.onlyVerifiedExtensions);
+  const trust = useTrust((s) => s.list);
+  const listing = target.search ?? null;
+  const categories = listing ? categoriesOf(listing, vocabulary) : [];
+  const badge = listing ? typeOf(listing, vocabulary) : null;
+  const shots = listing?.screenshots?.length
+    ? listing.screenshots
+    : (target.manifest?.screenshots ?? [])
+        .map((s) => resolveUrl(s, "img", repo ?? undefined, branch))
+        .filter((u): u is string => !!u);
+  const offerable = (r: ExtensionSearchResult) => !onlyVerified || isVerifiedIn(trust, r.fullName);
+  const companions = related && listing ? worksWithOf(listing, related.results).filter(offerable) : [];
+  const browsable = related ? related.results.filter((r) => !related.isInstalled(r) && offerable(r)) : [];
+  const fromAuthor = related && repo ? moreFromAuthor(browsable, repo, SHELF_LIMIT) : [];
+  const primary = categories[0] ?? null;
+  const inPrimary =
+    related && repo && primary ? moreInCategory(browsable, repo, primary.slug, vocabulary, SHELF_LIMIT) : [];
 
   // README/metadata come through the native github bridge; absent in the plain
   // browser build and older Electron, where the fetches no-op (no perpetual spin).
@@ -234,7 +272,7 @@ export function ExtensionDetail({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       {/* Header */}
       <div className="flex items-start gap-3 border-b border-border-subtle p-3">
         <div className="h-12 w-12 shrink-0 overflow-hidden rounded bg-surface-2">
@@ -253,6 +291,11 @@ export function ExtensionDetail({
             <span className="truncate text-[13px] font-semibold text-text-primary">
               {target.name}
             </span>
+            {badge && (
+              <span className="rounded bg-surface-3 px-1 py-px text-[9px] uppercase tracking-wider text-text-muted">
+                {badge.label}
+              </span>
+            )}
             {target.locked && (
               <span className="rounded bg-surface-3 px-1 py-px text-[9px] uppercase tracking-wider text-text-muted">
                 Core
@@ -291,6 +334,19 @@ export function ExtensionDetail({
           </div>
           {description && (
             <div className="mt-1 text-[11px] text-text-secondary">{description}</div>
+          )}
+          {related && categories.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {categories.map((c) => (
+                <button
+                  key={c.slug}
+                  onClick={() => related.onCategory(c.slug)}
+                  className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-text-secondary hover:bg-surface-3 hover:text-text-primary"
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
           )}
           {appTooOld && (
             <div className="mt-1 text-[10px]" style={{ color: "var(--color-rating)" }}>
@@ -450,45 +506,90 @@ export function ExtensionDetail({
           </div>
         )}
 
-      {repo && whatsNew.some((r) => r.notes.trim()) && (
-        <div className="max-h-64 overflow-y-auto border-b border-border-subtle px-3 py-2">
-          <div className="mb-1.5 flex items-center justify-between gap-2">
-            <span className="text-[11px] font-medium text-text-secondary">What's new</span>
-            <LinkBtn label="All releases on GitHub" url={`https://github.com/${repo}/releases`} />
-          </div>
-          <ReleaseNotes releases={whatsNew} repo={repo} />
-        </div>
-      )}
+      {/* One scroller below the action bar, so screenshots and Works with can't
+          squeeze the README. It takes no position class: the enlarged
+          screenshot (absolute inset-0) resolves to the root and covers the page. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {shots.length > 0 && <Screenshots urls={shots} />}
 
-      {/* README / body */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {!repo ? (
-          <div className="text-[11px] text-text-muted">
-            {target.locked
-              ? "A built-in extension — part of SafeLight core."
-              : "No repository linked for this extension."}
-          </div>
-        ) : !hasGithubBridge ? (
-          <div className="text-[11px] text-text-muted">
-            No repository details available in this build.
-          </div>
-        ) : meta?.status === "error" ? (
-          <div className="text-[11px] text-text-muted">
-            Couldn’t load details: {meta.error}
-          </div>
-        ) : !readme || readme.status === "loading" || meta?.status === "loading" ? (
-          <div className="text-[11px] text-text-muted">Loading…</div>
-        ) : readme.status === "error" ? (
-          <div className="text-[11px] text-text-muted">
-            Couldn’t load README: {readme.error}
-          </div>
-        ) : readme.data ? (
-          <Markdown source={readme.data} repo={repo} branch={branch} />
-        ) : (
-          <div className="text-[11px] text-text-muted">
-            This extension has no README.
+        {repo && whatsNew.some((r) => r.notes.trim()) && (
+          <div className="max-h-64 overflow-y-auto border-b border-border-subtle px-3 py-2">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium text-text-secondary">What's new</span>
+              <LinkBtn label="All releases on GitHub" url={`https://github.com/${repo}/releases`} />
+            </div>
+            <ReleaseNotes releases={whatsNew} repo={repo} />
           </div>
         )}
+
+        {related && companions.length > 0 && (
+          <div className="border-b border-border-subtle px-3 py-2">
+            <Shelf
+              title="Works with"
+              items={companions}
+              thumbs={{}}
+              busy={busy}
+              onOpen={related.onOpen}
+              onInstall={related.onInstall}
+              isInstalled={related.isInstalled}
+            />
+          </div>
+        )}
+
+        {/* README / body */}
+        <div className="p-3">
+          {!repo ? (
+            <div className="text-[11px] text-text-muted">
+              {target.locked
+                ? "A built-in extension — part of SafeLight core."
+                : "No repository linked for this extension."}
+            </div>
+          ) : !hasGithubBridge ? (
+            <div className="text-[11px] text-text-muted">
+              No repository details available in this build.
+            </div>
+          ) : meta?.status === "error" ? (
+            <div className="text-[11px] text-text-muted">
+              Couldn’t load details: {meta.error}
+            </div>
+          ) : !readme || readme.status === "loading" || meta?.status === "loading" ? (
+            <div className="text-[11px] text-text-muted">Loading…</div>
+          ) : readme.status === "error" ? (
+            <div className="text-[11px] text-text-muted">
+              Couldn’t load README: {readme.error}
+            </div>
+          ) : readme.data ? (
+            <Markdown source={readme.data} repo={repo} branch={branch} />
+          ) : (
+            <div className="text-[11px] text-text-muted">
+              This extension has no README.
+            </div>
+          )}
+          {related && repo && (fromAuthor.length > 0 || inPrimary.length > 0) && (
+            <div className="mt-4 flex flex-col gap-4 border-t border-border-subtle pt-3">
+              {fromAuthor.length > 0 && (
+                <Shelf
+                  title={`More from ${repo.split("/")[0]}`}
+                  items={fromAuthor}
+                  thumbs={{}}
+                  busy={busy}
+                  onOpen={related.onOpen}
+                  onInstall={related.onInstall}
+                />
+              )}
+              {primary && inPrimary.length > 0 && (
+                <Shelf
+                  title={`More in ${primary.label}`}
+                  items={inPrimary}
+                  thumbs={{}}
+                  busy={busy}
+                  onOpen={related.onOpen}
+                  onInstall={related.onInstall}
+                />
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

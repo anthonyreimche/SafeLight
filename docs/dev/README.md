@@ -19,7 +19,7 @@ The complete `SafelightAPI` surface, split by topic.
 - [UI Shell](api/ui-shell.md) — modules, panels, per-mask panels, header accessories, slots, layouts
 - [UI Components](api/components.md) — the component kit (Slider, Panel, …), the `api.ui` primitives (Button, Select, …), theming tokens, styling hooks
 - [Contribution Types](api/contributions.md) — signatures for every `register*` call
-- [State Stores & Data APIs](api/stores.md) — `api.stores`, the brush/mask/retouch model, `api.develop`, `api.catalog`, `api.export`, `api.params`
+- [State Stores & Data APIs](api/stores.md) — `api.stores`, the brush/mask/retouch model, `api.develop`, `api.catalog`, `api.export`, `api.params`, `api.variables` (shared variables)
 - [Core Data Types](api/types.md) — `CatalogPhoto`, `DevelopParams`, masks, `EditState`
 - [Subsystems](api/subsystems.md) — storage, rendering, RAW, presets, export, broadcast, keybindings, Electron bridge
 

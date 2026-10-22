@@ -3,23 +3,23 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Covers the Extensions-store UI state: repo-topic → category mapping, the
-// update-check cache and its localStorage mirror (the thing that keeps the 6h
-// TTL alive across launches), and the fetch-once-per-repo caching in
-// loadRepoMeta / loadReadme. Run with `npm test`.
+// Covers the Extensions-store UI state: the update-check cache and its
+// localStorage mirror (the thing that keeps the 6h TTL alive across launches),
+// and the fetch-once-per-repo caching in loadRepoMeta / loadReadme. Run with
+// `npm test`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  CATEGORY_ORDER,
-  categoryFor,
   loadReadme,
   loadReleases,
   loadRepoMeta,
+  loadStoreVocabulary,
   updateNote,
   useExtStoreUI,
   type ExtUpdateInfo,
 } from "./store-ui.ts";
-import type { ExtensionRelease, ExtensionRepoMeta } from "./types.ts";
+import { FALLBACK_VOCABULARY } from "./store-categories.ts";
+import type { ExtensionRelease, ExtensionRepoMeta, StoreVocabulary } from "./types.ts";
 
 const LS_UPDATES = "sl_ext_updates";
 
@@ -77,6 +77,7 @@ function stubGithub(github?: GithubBridge): void {
 /** Only the slice of the plugins bridge loadReleases reaches for. */
 interface PluginsBridge {
   releases: (repo: string, force?: boolean) => Promise<ExtensionRelease[]>;
+  vocabulary: () => Promise<StoreVocabulary | null>;
 }
 
 function stubPlugins(plugins?: Partial<PluginsBridge>): void {
@@ -91,69 +92,24 @@ beforeEach(() => {
   useExtStoreUI.setState({
     view: "list",
     selected: null,
-    category: "All",
     sort: "popular",
     meta: {},
     readme: {},
     releases: {},
     updates: {},
+    browse: "home",
+    railExpanded: false,
+    vocabulary: FALLBACK_VOCABULARY,
+    kits: null,
+    kit: null,
+    kitRuns: {},
+    kitRunning: null,
   });
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-});
-
-describe("categoryFor", () => {
-  it("maps each safelight-* repo topic to its store category", () => {
-    expect(categoryFor(["safelight-panel"])).toBe("Panels");
-    expect(categoryFor(["safelight-export"])).toBe("Export");
-    expect(categoryFor(["safelight-preset"])).toBe("Presets");
-    expect(categoryFor(["safelight-color"])).toBe("Color");
-    expect(categoryFor(["safelight-theme"])).toBe("Themes");
-    expect(categoryFor(["safelight-pipeline"])).toBe("Pipelines");
-    expect(categoryFor(["safelight-module"])).toBe("Modules");
-  });
-
-  it("only ever returns a category the chips can display", () => {
-    const topics = [
-      "safelight-panel",
-      "safelight-export",
-      "safelight-preset",
-      "safelight-color",
-      "safelight-theme",
-      "safelight-pipeline",
-      "safelight-module",
-      "unmapped-topic",
-    ];
-    for (const t of topics)
-      expect(CATEGORY_ORDER).toContain(categoryFor([t]));
-  });
-
-  it("keeps Modules beside Panels in the chip order", () => {
-    expect(CATEGORY_ORDER.indexOf("Modules")).toBe(CATEGORY_ORDER.indexOf("Panels") + 1);
-  });
-
-  it("falls back to Other for unmapped or missing topics", () => {
-    expect(categoryFor()).toBe("Other");
-    expect(categoryFor([])).toBe("Other");
-    expect(categoryFor(["photography", "webgl"])).toBe("Other");
-  });
-
-  it("takes the first mapped topic when a repo carries several", () => {
-    expect(categoryFor(["unmapped", "safelight-color", "safelight-theme"])).toBe("Color");
-  });
-
-  it("prefers an explicit manifest category over the repo topics", () => {
-    expect(categoryFor(["safelight-panel"], ["Export"])).toBe("Export");
-  });
-
-  it("ignores manifest categories that are not part of the chip set", () => {
-    expect(categoryFor(["safelight-panel"], ["Wizardry"])).toBe("Panels");
-    expect(categoryFor(undefined, ["Wizardry"])).toBe("Other");
-    expect(categoryFor(["safelight-panel"], ["Wizardry", "Themes"])).toBe("Themes");
-  });
 });
 
 describe("updateNote", () => {
@@ -183,13 +139,12 @@ describe("navigation state", () => {
     expect(useExtStoreUI.getState()).toMatchObject({ view: "list", selected: null });
   });
 
-  it("keeps the category and sort filters across a detail round-trip", () => {
-    const { setCategory, setSort, openDetail, back } = useExtStoreUI.getState();
-    setCategory("Themes");
+  it("keeps the sort across a detail round-trip", () => {
+    const { setSort, openDetail, back } = useExtStoreUI.getState();
     setSort("name");
     openDetail("acme/tool");
     back();
-    expect(useExtStoreUI.getState()).toMatchObject({ category: "Themes", sort: "name" });
+    expect(useExtStoreUI.getState().sort).toBe("name");
   });
 });
 
@@ -525,5 +480,96 @@ describe("loadReleases", () => {
     await loadReleases("acme/tool", true);
 
     expect(useExtStoreUI.getState().releases["acme/tool"]).toEqual({ status: "ready", data: list });
+  });
+});
+
+describe("browse navigation", () => {
+  it("starts on the home page with the category list collapsed", async () => {
+    vi.resetModules();
+    const fresh = await import("./store-ui.ts");
+    const state = fresh.useExtStoreUI.getState();
+    expect(state).toMatchObject({ browse: "home", railExpanded: false });
+    expect(state.vocabulary).toEqual(FALLBACK_VOCABULARY);
+  });
+
+  it("opens a category from a detail page, expanding the list", () => {
+    useExtStoreUI.getState().openDetail("acme/tool");
+    useExtStoreUI.getState().openCategory("tone");
+    expect(useExtStoreUI.getState()).toMatchObject({
+      browse: "tone",
+      railExpanded: true,
+      view: "list",
+      selected: null,
+    });
+  });
+
+  it("goes home, expanding the list", () => {
+    useExtStoreUI.setState({ browse: "tone" });
+    useExtStoreUI.getState().goHome();
+    expect(useExtStoreUI.getState()).toMatchObject({ browse: "home", railExpanded: true, view: "list" });
+  });
+
+  it("toggles the list without navigating", () => {
+    useExtStoreUI.setState({ browse: "tone" });
+    useExtStoreUI.getState().toggleRail();
+    expect(useExtStoreUI.getState()).toMatchObject({ browse: "tone", railExpanded: true });
+    useExtStoreUI.getState().toggleRail();
+    expect(useExtStoreUI.getState().railExpanded).toBe(false);
+  });
+
+  it("keeps the open category across a detail round-trip", () => {
+    useExtStoreUI.getState().openCategory("look");
+    useExtStoreUI.getState().openDetail("acme/tool");
+    useExtStoreUI.getState().back();
+    expect(useExtStoreUI.getState().browse).toBe("look");
+  });
+
+  it("opens a kit page from a detail page, and leaves it for a category or home", () => {
+    useExtStoreUI.getState().openDetail("acme/tool");
+    useExtStoreUI.getState().openKit("film");
+    expect(useExtStoreUI.getState()).toMatchObject({ kit: "film", view: "list", selected: null });
+    useExtStoreUI.getState().openCategory("tone");
+    expect(useExtStoreUI.getState()).toMatchObject({ browse: "tone", kit: null });
+    useExtStoreUI.getState().openKit("film");
+    useExtStoreUI.getState().goHome();
+    expect(useExtStoreUI.getState()).toMatchObject({ browse: "home", kit: null });
+  });
+
+  it("keeps the open kit across a detail round-trip", () => {
+    useExtStoreUI.getState().openKit("film");
+    useExtStoreUI.getState().openDetail("acme/tool");
+    useExtStoreUI.getState().back();
+    expect(useExtStoreUI.getState().kit).toBe("film");
+  });
+});
+
+describe("loadStoreVocabulary", () => {
+  const remote: StoreVocabulary = {
+    categories: [{ slug: "tone", label: "Tone", description: "" }],
+    types: [],
+  };
+
+  it("takes the registry's vocabulary", async () => {
+    stubPlugins({ vocabulary: async () => remote });
+    await loadStoreVocabulary();
+    expect(useExtStoreUI.getState().vocabulary).toEqual(remote);
+  });
+
+  it("keeps the current vocabulary on null, on a failure, and without the bridge", async () => {
+    stubPlugins({ vocabulary: async () => null });
+    await loadStoreVocabulary();
+    expect(useExtStoreUI.getState().vocabulary).toBe(FALLBACK_VOCABULARY);
+
+    stubPlugins({
+      vocabulary: async () => {
+        throw new Error("offline");
+      },
+    });
+    await loadStoreVocabulary();
+    expect(useExtStoreUI.getState().vocabulary).toBe(FALLBACK_VOCABULARY);
+
+    stubPlugins();
+    await loadStoreVocabulary();
+    expect(useExtStoreUI.getState().vocabulary).toBe(FALLBACK_VOCABULARY);
   });
 });

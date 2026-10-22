@@ -10,10 +10,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
+import { ExtensionDetail, type DetailTarget, type RelatedLists } from "./ExtensionDetail";
 import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
-import type { ExtensionRelease, RemoteManifest } from "./types";
+import type { ExtensionRelease, ExtensionSearchResult, RemoteManifest } from "./types";
 import { usePins } from "./pins";
+import { FALLBACK_VOCABULARY } from "./store-categories";
+import { useSettings } from "@/state/settings-store";
+import { useTrust } from "./trust";
 
 const ID = "acme.widget";
 
@@ -244,5 +247,153 @@ describe("ExtensionDetail Latest", () => {
     await screen.findByRole("combobox", { name: "Version" });
     screen.getByRole("button", { name: "Update to 2.1.0" });
     expect(screen.queryByRole("button", { name: /^Switch to/ })).toBeNull();
+  });
+});
+
+// What the store knows about an extension: its type badge and category chips,
+// screenshots, the extensions it works with, and more from its author and its
+// first category. Lists that offer an install follow "Only verified".
+describe("ExtensionDetail store links", () => {
+  const listing = (fullName: string, over: Partial<ExtensionSearchResult> = {}): ExtensionSearchResult => ({
+    fullName,
+    description: null,
+    stars: 1,
+    updatedAt: "2026-01-01T00:00:00Z",
+    source: "registry",
+    ...over,
+  });
+  const self = listing("acme/warp", {
+    categories: ["detail", "tone"],
+    type: "pipeline",
+    screenshots: ["https://e.com/a.png"],
+    worksWith: ["acme/gps", "other/map"],
+  });
+  const results = [
+    self,
+    listing("acme/gps", { categories: ["metadata"], stars: 5 }),
+    listing("other/map", { categories: ["metadata"] }),
+    listing("other/denoise", { categories: ["detail"], stars: 9 }),
+    listing("acme/scopes", { categories: ["color"], stars: 2 }),
+  ];
+  const browseTarget: DetailTarget = {
+    repo: "acme/warp",
+    name: "warp",
+    installed: false,
+    enabled: false,
+    locked: false,
+    hasSettings: false,
+    search: self,
+  };
+  const mountRelated = (over: Partial<RelatedLists> = {}) => {
+    const related: RelatedLists = {
+      results,
+      isInstalled: (r) => r.fullName === "acme/gps",
+      onOpen: vi.fn(),
+      onInstall: vi.fn(),
+      onCategory: vi.fn(),
+      ...over,
+    };
+    render(
+      <ExtensionDetail
+        target={browseTarget}
+        busy={null}
+        onInstall={vi.fn()}
+        onUpdate={vi.fn()}
+        onUninstall={vi.fn()}
+        onToggle={vi.fn()}
+        onSettings={vi.fn()}
+        related={related}
+      />,
+    );
+    return related;
+  };
+
+  beforeEach(() => {
+    useExtStoreUI.setState({ vocabulary: FALLBACK_VOCABULARY });
+    useTrust.setState({
+      list: { verified: ["acme/gps"], reviewed: {}, repos: [], owners: [], reason: {} },
+      loadedAt: 1,
+      flagged: [],
+    });
+  });
+
+  afterEach(() => {
+    useSettings.setState({ onlyVerifiedExtensions: false });
+    useTrust.setState({ list: { verified: [], reviewed: {}, repos: [], owners: [], reason: {} }, loadedAt: 0, flagged: [] });
+  });
+
+  it("shows the type badge and category chips that open their category", async () => {
+    const user = userEvent.setup();
+    const related = mountRelated();
+    screen.getByText("Processing");
+    screen.getByRole("button", { name: "Detail and repair" });
+    await user.click(screen.getByRole("button", { name: "Tone" }));
+    expect(related.onCategory).toHaveBeenCalledWith("tone");
+  });
+
+  it("shows the screenshots", () => {
+    mountRelated();
+    screen.getByAltText("Screenshot 1");
+  });
+
+  it("lists companions, an installed one as Installed", () => {
+    mountRelated();
+    screen.getByText("Works with");
+    screen.getByText("gps");
+    screen.getByText("map");
+    screen.getByText("Installed");
+  });
+
+  it("hides unverified companions under Only verified extensions", () => {
+    useSettings.setState({ onlyVerifiedExtensions: true });
+    mountRelated();
+    screen.getByText("gps");
+    expect(screen.queryByText("map")).toBeNull();
+  });
+
+  it("offers more from the author and the first category, without itself or installed ones", () => {
+    mountRelated();
+    screen.getByText("More from acme");
+    screen.getByText("scopes");
+    screen.getByText("More in Detail and repair");
+    screen.getByText("denoise");
+    expect(screen.getAllByText("warp")).toHaveLength(1);
+    expect(screen.getAllByText("gps")).toHaveLength(1);
+  });
+
+  it("keeps the badge and screenshots but no links without related lists", () => {
+    render(
+      <ExtensionDetail
+        target={browseTarget}
+        busy={null}
+        onInstall={vi.fn()}
+        onUpdate={vi.fn()}
+        onUninstall={vi.fn()}
+        onToggle={vi.fn()}
+        onSettings={vi.fn()}
+      />,
+    );
+    screen.getByText("Processing");
+    screen.getByAltText("Screenshot 1");
+    expect(screen.queryByRole("button", { name: "Tone" })).toBeNull();
+    expect(screen.queryByText("Works with")).toBeNull();
+  });
+
+  it("resolves an installed extension's manifest screenshots against its repo", () => {
+    render(
+      <ExtensionDetail
+        target={{
+          ...target,
+          manifest: { ...target.manifest!, screenshots: ["docs/shot.png"] },
+        }}
+        busy={null}
+        onInstall={vi.fn()}
+        onUpdate={vi.fn()}
+        onUninstall={vi.fn()}
+        onToggle={vi.fn()}
+        onSettings={vi.fn()}
+      />,
+    );
+    expect(screen.getByAltText("Screenshot 1").getAttribute("src")).toMatch(/acme\/widget.*docs\/shot\.png$/);
   });
 });

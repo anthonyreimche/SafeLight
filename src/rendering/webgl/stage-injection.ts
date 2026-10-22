@@ -5,12 +5,14 @@
 
 import type {
   GlslType,
+  InterStageVariable,
   ProcessingPhase,
   ProcessingStageContribution,
   StagePass,
   StageSpace,
   TextureRequirement,
 } from "@/extensions/types";
+import { MAX_PASS_DRAWS } from "@/extensions/stage-validation";
 import { BASELINE_TONE_GLSL } from "../baseline-tone";
 import {
   STAGE_SPACE_GLSL,
@@ -166,6 +168,84 @@ function withoutSupersededDenoiser(
 }
 
 // ---------------------------------------------------------------------------
+// Inter-stage variables
+// ---------------------------------------------------------------------------
+
+/** Each inter-stage variable type's zero, its global's initialiser. */
+const ISV_ZERO: Readonly<Record<InterStageVariable["glslType"], string>> = {
+  float: "0.0",
+  vec2: "vec2(0.0)",
+  vec3: "vec3(0.0)",
+  vec4: "vec4(0.0)",
+};
+
+const warnedIsv = new Set<string>();
+
+function warnIsvOnce(key: string, message: string): void {
+  if (warnedIsv.has(key)) return;
+  warnedIsv.add(key);
+  console.warn(message);
+}
+
+/** The variables the stages produce and their types. The registry refuses a
+ *  second producer of a name, so the first one's type is the only one. */
+function producedTypes(
+  stages: readonly ProcessingStageContribution[],
+): Map<string, InterStageVariable["glslType"]> {
+  const types = new Map<string, InterStageVariable["glslType"]>();
+  for (const s of stages) {
+    for (const v of s.produces ?? []) if (!types.has(v.name)) types.set(v.name, v.glslType);
+  }
+  return types;
+}
+
+/** A consumer of a variable no stage in the set produces would name an
+ *  undeclared identifier and fail the whole program, so it is left out. A stage
+ *  left out stops producing, so this repeats until no more consumers go. It runs
+ *  before withoutSupersededDenoiser: a noise-reduction stage left out here must
+ *  not take the built-in denoiser with it. */
+function withoutOrphanConsumers(
+  stages: readonly ProcessingStageContribution[],
+): readonly ProcessingStageContribution[] {
+  let kept = stages;
+  for (;;) {
+    const produced = producedTypes(kept);
+    const next = kept.filter((s) => {
+      const missing = (s.consumes ?? []).find((name) => !produced.has(name));
+      if (missing === undefined) return true;
+      warnIsvOnce(
+        `orphan|${s.id}|${missing}`,
+        `[render] stage '${s.id}' consumes '${missing}', which no stage left in the set produces; it is left out`,
+      );
+      return false;
+    });
+    if (next.length === kept.length) return kept;
+    kept = next;
+  }
+}
+
+/** A consumer ordered ahead of its producer reads the zero initialiser. */
+function warnConsumersAhead(ordered: readonly ProcessingStageContribution[]): void {
+  const seen = new Set<string>();
+  for (const s of ordered) {
+    for (const name of s.consumes ?? []) {
+      if (!seen.has(name)) {
+        warnIsvOnce(
+          `ahead|${s.id}|${name}`,
+          `[render] stage '${s.id}' runs ahead of the producer of '${name}', so it reads zero`,
+        );
+      }
+    }
+    for (const v of s.produces ?? []) seen.add(v.name);
+  }
+}
+
+/** The global each produced variable lives in, declared ahead of the helpers. */
+function isvDeclarations(ordered: readonly ProcessingStageContribution[]): string[] {
+  return [...producedTypes(ordered)].map(([name, type]) => `${type} isv_${name} = ${ISV_ZERO[type]};`);
+}
+
+// ---------------------------------------------------------------------------
 // Multi-pass prepass framework
 // ---------------------------------------------------------------------------
 
@@ -226,9 +306,21 @@ vec3 readPrev(vec2 uv) {
 `;
 }
 
+/** A pass whose draw count comes from the bag (StagePass.iterations `{ key, max }`). */
+export interface DrawCountBinding {
+  /** "{stageId}.{key}", the bag entry the count is read from. */
+  qualifiedKey: string;
+  max: number;
+  /** The uniform's declared default, used while the bag has no number. */
+  fallback: number;
+}
+
 export interface PrepassPass {
   fragmentSource: string;
+  /** The fixed draw count; with `drawCount`, the most draws a frame takes. */
   iterations: number;
+  /** Set when the count comes from the bag; passDraws() resolves it per frame. */
+  drawCount?: DrawCountBinding;
   bindings: ContributedBinding[];
 }
 
@@ -353,6 +445,7 @@ export interface BuiltStageInjection {
  *  a stage change reaches the bindings and prepass state only through this, and
  *  narrowing it to the shader text brings back stale defaults. */
 export function stageSignature(s: ProcessingStageContribution): string {
+  const handoff = s.produces || s.consumes ? [s.produces ?? [], s.consumes ?? []] : [];
   return simpleHash(
     JSON.stringify([
       s.phase,
@@ -364,6 +457,7 @@ export function stageSignature(s: ProcessingStageContribution): string {
       s.passes ?? [],
       s.space ?? null,
       s.reads ?? "source",
+      ...handoff,
     ]),
   );
 }
@@ -586,11 +680,19 @@ function emitExtensionStage(
   declareTextures(s, uPfx, declared);
   const helperNames = declareHelpers(s, uPfx, hPfx, declared);
   const prelude = declarePrepass(s, uPfx, split, declared, layered);
-  let inline = rewriteGlsl(s.glsl, s.uniforms, uPfx, hPfx, helperNames);
-  inline = replaceIdentifiers(inline, (s.textures ?? []).map((t) => t.key), uPfx);
+  const textureKeys = (s.textures ?? []).map((t) => t.key);
+  const rewrite = (src: string): string =>
+    replaceIdentifiers(rewriteGlsl(src, s.uniforms, uPfx, hPfx, helperNames), textureKeys, uPfx);
+  const inline = rewrite(s.glsl);
   const sceneLuma =
     !variant.fullInfo && domain === "display" && /\bslSceneLuma\b/.test(s.glsl) ? V1_SCENE_LUMA : "";
-  return `{\n${sceneLuma}${prelude}${inline}\n}`;
+  const produced = (s.produces ?? [])
+    .flatMap((v) => {
+      if (v.producer === undefined) return [];
+      return [`\nisv_${v.name} = (${rewrite(v.producer)}\n);`];
+    })
+    .join("");
+  return `{\n${sceneLuma}${prelude}${inline}${produced}\n}`;
 }
 
 function declareUniforms(s: ProcessingStageContribution, uPfx: string, declared: Declared): void {
@@ -642,6 +744,30 @@ function declareHelpers(
   return helperNames;
 }
 
+/** A fixed draw count as the renderer takes it: a whole number from 1 to
+ *  MAX_PASS_DRAWS, or 1 when the count isn't finite. The worker loops once per
+ *  draw, so nothing unbounded may reach it. */
+function fixedDraws(count: number | undefined): number {
+  if (count === undefined || !Number.isFinite(count)) return 1;
+  return Math.min(MAX_PASS_DRAWS, Math.max(1, Math.floor(count)));
+}
+
+/** A pass's draws: a fixed count, or the bag entry the renderer reads it from. */
+function passCount(
+  s: ProcessingStageContribution,
+  p: StagePass,
+): Pick<PrepassPass, "iterations" | "drawCount"> {
+  const count = p.iterations;
+  if (typeof count !== "object") return { iterations: fixedDraws(count) };
+  const declared = [...s.uniforms, ...(p.uniforms ?? [])].find((u) => u.key === count.key);
+  const fallback =
+    typeof declared?.default === "number" && Number.isFinite(declared.default) ? declared.default : 0;
+  return {
+    iterations: count.max,
+    drawCount: { qualifiedKey: `${s.id}.${count.key}`, max: count.max, fallback },
+  };
+}
+
 /** Prepass-bearing stages: expose the prepass result to the inline glsl as
  *  `vec3 stageResult` and compile a program per pass. Pass uniforms join the
  *  same namespace so one param key can drive both the pass and the inline glsl.
@@ -674,11 +800,7 @@ function declarePrepass(
         declared.bindings.push(b);
       }
     }
-    return {
-      fragmentSource: built.fragmentSource,
-      iterations: Math.max(1, p.iterations ?? 1),
-      bindings: built.bindings,
-    };
+    return { fragmentSource: built.fragmentSource, bindings: built.bindings, ...passCount(s, p) };
   });
   declared.prepass.push({
     stageId: s.id,
@@ -707,7 +829,8 @@ export function buildStageInjection(
   variant: ShaderVariant = V1_VARIANT,
   samplerBudget = Infinity,
 ): BuiltStageInjection {
-  const ordered = sortStages(withoutSupersededDenoiser(stages));
+  const ordered = sortStages(withoutSupersededDenoiser(withoutOrphanConsumers(stages)));
+  warnConsumersAhead(ordered);
   const layered = layersResults(ordered, variant, samplerBudget);
   const writer = new GroupWriter();
   const exits = new SplitExits(ordered, variant, writer);
@@ -739,7 +862,7 @@ export function buildStageInjection(
   return {
     injection: {
       uniforms: declared.uniforms.join("\n"),
-      helpers: declared.helpers.join("\n\n"),
+      helpers: [...isvDeclarations(ordered), ...declared.helpers].join("\n\n"),
       ...written,
       splitCount: exits.count,
     },

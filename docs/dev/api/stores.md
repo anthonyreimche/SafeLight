@@ -2,7 +2,7 @@
 
 ← [API Reference](README.md)
 
-The live app state extensions read and drive, the interactive brush/mask/retouch model, and the imperative APIs for the Develop canvas, headless export, and the catalog.
+The live app state extensions read and drive, the interactive brush/mask/retouch model, and the imperative APIs for the Develop canvas, headless export, the catalog, and variables shared across windows.
 
 - [State stores (`api.stores`)](#state-stores-apistores)
 - [Brushes, masks & retouch](#brushes-masks--retouch-interactive-develop-tools)
@@ -10,6 +10,7 @@ The live app state extensions read and drive, the interactive brush/mask/retouch
 - [`api.params`](#apiparams)
 - [`api.export`](#apiexport)
 - [`api.catalog`](#apicatalog)
+- [`api.variables` (shared variables)](#apivariables-shared-variables)
 
 ## State stores (`api.stores`)
 
@@ -100,7 +101,7 @@ The hooks an overlay or canvas tool uses to align to, capture, and decorate the 
 | `useDevelopOverlay` | `() => { rect: {x,y,w,h} \| null; nonce: number }` | React hook — call from a `develop-canvas-overlay` component. `rect` is the displayed image's rectangle in the overlay's local coordinates; `nonce` bumps on any view-geometry change (zoom, pan, resize, photo switch) so you can re-align/re-capture. |
 | `useMaskScope` | `() => MaskParamScope` | React hook for a per-mask sub-panel: the mask it belongs to. Valid only inside a `PanelContribution.mask` component. See [UI Shell → Per-mask panels](ui-shell.md#per-mask-panels-panelcontributionmask). |
 | `captureFrame` | `(params: DevelopParams, options?: { asShown?: boolean; paramBag?: Record<string, unknown> }) => Promise<ImageBitmap>` | Renders the live photo with arbitrary params off-screen, aligned to the current view — the basis of before/after overlays. By default the frame is for measuring: sRGB, without the clipping warning, the mask overlay or the sharpening preview the view may be showing. `asShown: true` returns the frame as the screen shows it (converted to the Linux display profile when one is set, with those overlays), for drawing over the canvas. `paramBag` is merged over the photo's extension-stage params for this capture only, so a stage can render an auxiliary image (a gain map, a mask) aligned to the view. Neither the capture's params nor its `paramBag` reach the live view or the core's measurements of it (the histogram, Auto Tone, Auto White Balance, Upright). |
-| `renderPhotoFrame` | `(photoId, params, paramBag?) => Promise<ImageBitmap \| null>` | Renders **any** catalog photo through the full pipeline with `params` (and optionally its extension `paramBag`), small, for measurement. Not tied to the live Develop source, so it works while another photo (or none) is open, e.g. batch Auto Tone across a Library selection. `null` if the photo can't render. |
+| `renderPhotoFrame` | `(photoId, params, paramBag?, options?: { lossless?: boolean }) => Promise<ImageBitmap \| null>` | Renders **any** catalog photo through the full pipeline with `params` (and optionally its extension `paramBag`), small, for measurement. Not tied to the live Develop source, so it works while another photo (or none) is open, e.g. batch Auto Tone across a Library selection. `null` if the photo can't render. A `paramBag` is drawn the way the live Develop view draws one: Safelight adds the entries its built-in stages take from `params` (the Detail panel's noise reduction), and those win where the bag names the same key, so set `luminanceNR` and `colorNR` to 0 in `params` for a frame without it. The frame comes back from a JPEG at quality 0.9, which suits a picture. `lossless: true` returns it from a PNG instead, so every 8-bit channel value the pipeline wrote reaches the bitmap exactly: use it for a frame that carries data (a stage's measurement encoding, say), which a JPEG would smear across neighbouring values. A lossless frame is `null` where only the grid's camera preview could stand in for the photo, since that is another source; a frame that is not lossless still falls back on it. A PNG costs more to encode than a JPEG, so leave it off for a frame you only look at. Safelight builds from before 3.1.0 ignore the option and return the JPEG; set `minAppVersion` to `"3.1.0"` in the [manifest](../extensions/README.md#manifest) when you rely on it. `minAppVersion` gates store installs and updates only, so run a dev-folder copy of such an extension on 3.1.0 or later too. |
 | `setCanvasCursor` | `(cursor: string \| CursorContribution \| null, opts?: { priority?: number }) => () => void` | Drive the canvas cursor while a tool is active. Pass a registered cursor id, an inline [`CursorContribution`](contributions.md#cursorcontribution), or a raw CSS value; `null` clears. Higher `priority` wins when several tools request at once (default 10). Returns a **release function** — call it on tool deactivate (the request is also swept if the extension unloads). Built-in zoom/pan/pick cursors take over during an active drag, so a passive tool cursor never fights a live gesture. |
 | `putPhotoData` | `(key: string, data: Uint8Array \| null) => void` | Persist (or delete, with `null`) an opaque binary blob for the **currently loaded** Develop photo. Key is namespaced per extension. Stored as a sidecar outside `catalog.json`, so large payloads (e.g. a warp displacement field) don't bloat the whole-file JSON rewrite. The extension owns the byte format and load/save timing. |
 | `getPhotoData` | `(key: string) => Promise<Uint8Array \| null>` | Read the blob stored under `key` for the current photo, or `null` if none exists (or no photo/project is open). |
@@ -157,3 +158,54 @@ Lower-level catalog access, for extensions that add records the scan didn't prod
 | `requestThumbnail` | `(photoId) => void` | Queue a photo's grid preview through core's on-demand loader. |
 
 The last four are covered with examples in [UI Components → Photo surfaces](components.md#photo-surfaces-menu-and-shortcuts).
+
+## `api.variables` (shared variables)
+
+Named JSON values that any extension can register, read, subscribe to and write. Each window holds a copy kept in step with every other Safelight window (main, module pop-outs, detached Developer Tools). Values last for the session.
+
+Needs Safelight 3.2.0 or later: on an older build `api.variables` is undefined, so `activate` would throw. Set `minAppVersion` to `"3.2.0"` in the [manifest](../extensions/README.md#manifest) (`safelight.json`) when you use it. `minAppVersion` gates store installs and updates only, so run a dev-folder copy of such an extension on 3.2.0 or later too.
+
+```ts
+register<T>(name, { initial: T, description?: string }): VariableSnapshot<T>
+get<T>(name): VariableSnapshot<T> | undefined
+subscribe<T>(name, listener: (s: VariableSnapshot<T>) => void): () => void
+set<T>(name, value: T): VariableWriteResult<T>
+update<T>(name, fn: (current: T) => T): VariableWriteResult<T>
+// VariableSnapshot = { name, value, revision: { n, window }, writer, registeredBy, description? }
+// VariableWriteResult = { ok: true, revision } | { ok: false, reason: "stale" | "unregistered" | "invalid", … }
+```
+
+- **Names:**
+  - Lower-case letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 128 characters. `core` and `core.*` are reserved.
+  - By convention, prefix a name with the id of the extension that defines the contract (`map.overlays`).
+  - `register` is idempotent: whoever registers first sets the initial value and description. Later callers (any extension, any window) join and get the current snapshot. Register before writing: a write to a name nobody registered is refused.
+  - Extensions activate in every window, so pass the same constant `initial` everywhere: when two windows register a name at the same moment, one registration replaces the other.
+  - `register` throws on an invalid or reserved name, an `initial` that isn't JSON data, or a `description` that isn't a string.
+- **Values:**
+  - Plain JSON data: objects, arrays, strings, finite numbers, booleans and `null`. Dates, Maps, Sets, typed arrays, class instances, NaN and Infinity are refused by `set` and `update`, and the result names where they are.
+  - Snapshots are deep-frozen. Change a value with `set` or `update`, never in place.
+- **Visibility:** Every installed extension, and Developer Tools, can read and write every variable. Don't put secrets or anything private in one.
+- **Write rule (optimistic locking):**
+  - Core remembers the latest revision of each variable your extension has seen in this window, through `register`, `get`, a subscriber delivery or your own write.
+  - A `set` after someone else wrote a newer revision is refused as `"stale"`, with the current snapshot.
+  - `update(fn)` runs `fn` on the latest value and writes its result, so use it for collections that several extensions add to.
+  - `update`'s function must not write the same variable itself, throw, or return a Promise; any of these makes the update refuse as `"invalid"`.
+- **Subscribers:** `subscribe` calls the listener at once, or right after a delivery already in progress, with the current snapshot (or on registration, if nobody has registered the name yet), then on every accepted write, local or from another window, your own included, in revision order. A listener that writes the same variable is called again with its own write. Guard such a write, for example by comparing with the current value first: a listener that writes its own variable unconditionally runs again for every write it makes and freezes the window.
+- **Patterns:**
+  - **Subscribe before you set.** An extension that subscribes always holds the latest revision, so its `set` only fails in a real race.
+  - **Collections shared by several writers:** each writer adds or removes its own key with `update`, as in `update<Record<string, Entry>>(name, (o) => ({ ...o, [myId]: entry }))`. Give `update` its type argument: TypeScript can't infer `T` from the name.
+  - **Remove your entries in `deactivate()`.** Values outlive the extension that wrote them, but subscriptions don't: disabling an extension drops its subscriptions.
+- **Across windows:** if two windows write at the same moment, the higher revision wins everywhere, and the window whose write lost logs it. A `set` or `update` result describes this window only: a write that then loses a simultaneous race with another window has already returned `ok`. The losing window logs the loss, and subscribers receive the winning value.
+- **Reports:** refused writes, lost races, throwing subscribers and writes over 8 MB are logged as `[variables] …` warnings, which **Developer Tools ▸ Issues** shows. **Developer Tools ▸ Variables** lists every variable with its writers, subscribers, value and recent history, and can edit a value.
+
+Example (Map draws what other extensions add to `map.overlays`):
+
+```ts
+// In the extension that owns the contract:
+api.variables.register("map.overlays", { initial: {}, description: "Lines and points drawn on the Map. One entry per extension, keyed by its id." });
+api.variables.subscribe("map.overlays", (s) => drawOverlays(s.value));
+
+// In any extension that draws on it:
+api.variables.register("map.overlays", { initial: {} }); // either may load first
+api.variables.update<Record<string, unknown>>("map.overlays", (o) => ({ ...o, "gps-track": { label: "ride.gpx", geojson } }));
+```

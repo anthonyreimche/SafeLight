@@ -13,6 +13,7 @@ import { ViewMenu } from "./ViewMenu";
 import { LayoutMenu } from "./LayoutMenu";
 import { openPreferences } from "./PreferencesDialog";
 import { openExtensions } from "./ExtensionsDialog";
+import { ReportIssueButton } from "./ReportIssueButton";
 import { useDisabledExtensions } from "@/extensions/loader";
 import { detachDevtools } from "@/extensions/devtools/detach";
 import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
@@ -144,6 +145,7 @@ export function TopBar() {
         <div className="flex items-center gap-2" style={noDragStyle}>
           {reconnectButton}
           {prefsButton}
+          <ReportIssueButton className={iconBtnCls} />
           <button
             onClick={() => reattachSelf(dm)}
             title="Return this window to the main app"
@@ -179,6 +181,7 @@ export function TopBar() {
         <button onClick={openExtensions} title="Extensions" aria-label="Extensions" className={iconBtnCls}>
           <BlocksIcon />
         </button>
+        <ReportIssueButton className={iconBtnCls} />
         {devtoolsEnabled && (
           <button
             onClick={detachDevtools}

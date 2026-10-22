@@ -8,11 +8,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { useUIStore } from "@/state/ui-store";
 import { useProjectStore } from "@/project/project-store";
 import { registerModule, unregisterExtension, useRegistry } from "@/extensions/registry";
 import { openSetup, resetSetupForTests } from "@/modules/welcome/setup/setup-store";
+import { closeReportIssue } from "@/ui/components/report-issue-store";
 
 /** The main window has no other windows to sync with here. */
 class SilentChannel {
@@ -97,5 +99,44 @@ describe("App welcome setup", () => {
     act(() => openSetup("rerun"));
     await act(async () => {});
     expect(screen.queryByRole("dialog", { name: "Pick a look" })).toBeNull();
+  });
+});
+
+describe("App Report an issue", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    closeReportIssue();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    registerModule("ext", { id: "map", label: "Map", component: () => <p>map-main</p> });
+  });
+
+  afterEach(() => {
+    act(() => closeReportIssue());
+    unregisterExtension("ext");
+    vi.restoreAllMocks();
+  });
+
+  async function reportFromTopBar() {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Report an issue" }));
+    expect(await screen.findByRole("dialog", { name: "Report an issue" })).toBeTruthy();
+  }
+
+  it("opens from the top bar with a project open", async () => {
+    render(<App />);
+    await reportFromTopBar();
+  });
+
+  it("opens while the active module is popped out", async () => {
+    useUIStore.setState({ activeModule: "map", detached: new Set(["map"]) });
+    render(<App />);
+    expect(screen.getByText("Map is open in a separate window.")).toBeTruthy();
+    await reportFromTopBar();
+  });
+
+  it("opens from a detached module window", async () => {
+    window.history.replaceState({}, "", "/?detached=map");
+    render(<App />);
+    await reportFromTopBar();
   });
 });

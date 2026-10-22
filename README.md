@@ -34,6 +34,18 @@ Safelight turns that inside out. Nothing is load-bearing except the safelight it
 
 What you're left with isn't a smaller version of someone else's app. It's the darkroom you'd have built yourself — only the tools you want, exactly where you expect them.
 
+## Calling all developers
+
+A lot of us are building great photo tools on our own: a film simulation, a denoiser, a set of scopes, a darktable module ported over a weekend. Each one ships as its own project with its own app, so using the one tool you like means installing a whole program around it. I got tired of that, so I built Safelight to bring them together.
+
+At its heart, Safelight is an extension manager that gathers everyone's tools and modules into one RAW editor. You keep your own repo, your own license, and your name on the work. Photographers install it from the in-app store in a click, right beside everything else they use, instead of adding yet another program to their machine.
+
+And it grows together. Someone who comes for one extension browses the store and finds the rest, so every new user is one more person who might find yours. The bigger the room gets, the more people see what everyone in it has built.
+
+- **Bring what you've built.** Panels, tools, GPU processing stages, display transforms, export processors, themes, whole modules. Start with [Building Extensions](docs/dev/extensions/README.md).
+- **Publish it on GitHub.** Add the `safelight-extension` topic and tag a release, and it shows up in the store. See [Publishing](docs/dev/extensions/publishing.md).
+- **Find something to build.** Propose an extension or claim one from the [roadmap](ROADMAP.md).
+
 ## What's inside
 
 Two modules and an open workspace, with defaults that feel familiar from the first photo:

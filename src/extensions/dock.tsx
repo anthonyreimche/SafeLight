@@ -72,7 +72,7 @@ const DRAG_THRESHOLD = 5;
 // State
 // ---------------------------------------------------------------------------
 
-interface RailState {
+export interface RailState {
   id: string;
   side: "left" | "right" | "bottom";
   /** Side rails: column width. Bottom rails size by `height` instead. */
@@ -84,7 +84,7 @@ interface RailState {
    *  innermost→outermost (i.e. render order); bottom rails top→bottom. */
   panels: string[];
 }
-interface FloatState {
+export interface FloatState {
   x: number;
   y: number;
   width: number;
@@ -159,6 +159,16 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleSave() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => saveLayout(useDockStore.getState()), 300);
+}
+
+/** Run a queued save now, while the dock still holds the state it was queued
+ *  for. Left to its timer, a layout switch would write the incoming layout under
+ *  the Custom key, and a module switch would drop the outgoing module's edit. */
+function flushPendingSave() {
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  saveLayout(useDockStore.getState());
 }
 
 function commit(partial: Partial<DockState>) {
@@ -341,6 +351,7 @@ export function applyDockLayout(id: string): Promise<void> {
 }
 
 function showLayout(id: string): void {
+  flushPendingSave();
   setActiveLayout(id);
   const m = useDockStore.getState().module;
   if (m) loadModuleLayout(m);
@@ -355,6 +366,7 @@ export function initDockLayouts(): void {
     }
     if (e.key !== LAYOUT_PREF_KEY || !e.newValue) return;
     if (e.newValue === useLayoutStore.getState().activeId) return;
+    flushPendingSave();
     useLayoutStore.setState({ activeId: e.newValue });
     const m = useDockStore.getState().module;
     if (m) loadModuleLayout(m);
@@ -386,18 +398,100 @@ function pruneBottomRails(rails: RailState[]): RailState[] {
     .filter((r) => r.panels.length > 0);
 }
 
-/** Resolve dock state for `module` under the active layout, without applying it. */
-function resolveModuleState(module: AppModule): {
+// ── Panel replacement: a panel can take the place of old panel ids (one that
+// moved to another extension, say) wherever a layout still names them.
+
+export interface DockPlacement {
   rails: RailState[];
   floating: Record<string, FloatState>;
   zOrder: string[];
   collapsed: Record<string, boolean>;
-} {
+}
+
+const warnedReplacements = new Set<string>();
+
+/** Old panel id → the registered panel that takes its place. An old id a
+ *  registered panel still uses keeps that panel; when two panels claim the same
+ *  old id, the first registered keeps it. */
+export function panelReplacements(registered: Record<string, RegisteredPanel>): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const p of Object.values(registered)) {
+    // Extensions are plain JS at runtime, so `replaces` may not be the array the type promises.
+    const olds: readonly unknown[] = Array.isArray(p.replaces) ? p.replaces : [];
+    for (const old of olds) {
+      if (typeof old !== "string" || old === p.id || Object.hasOwn(registered, old)) continue;
+      const holder = out.get(old);
+      if (holder === undefined) {
+        out.set(old, p.id);
+        continue;
+      }
+      const key = `${old}\n${p.id}`;
+      if (holder !== p.id && !warnedReplacements.has(key)) {
+        warnedReplacements.add(key);
+        console.warn(`[dock] panel "${p.id}" also replaces "${old}"; "${holder}" keeps it.`);
+      }
+    }
+  }
+  return out;
+}
+
+/** `placement` with each replaced id renamed to its replacement, or dropped
+ *  where the replacement is already placed, so it keeps the spot it had. The
+ *  same object comes back when nothing names a replaced id. */
+export function replacePanelIds(placement: DockPlacement, replacements: ReadonlyMap<string, string>): DockPlacement {
+  if (replacements.size === 0) return placement;
+  const named = (id: string) => replacements.has(id);
+  const ids = [...placement.rails.flatMap((r) => r.panels), ...Object.keys(placement.floating)];
+  if (!ids.some(named) && !Object.keys(placement.collapsed).some(named)) return placement;
+
+  const placed = new Set(ids.filter((id) => !named(id)));
+  const renamed = new Set<string>();
+  const rename = (id: string): string | null => {
+    const to = replacements.get(id);
+    if (to === undefined) return id;
+    if (placed.has(to)) return null;
+    placed.add(to);
+    renamed.add(id);
+    return to;
+  };
+
+  const rails = placement.rails
+    .map((r) => ({ ...r, panels: r.panels.flatMap((id) => rename(id) ?? []) }))
+    .filter((r) => r.panels.length > 0);
+  const floating: Record<string, FloatState> = {};
+  for (const [id, f] of Object.entries(placement.floating)) {
+    const to = rename(id);
+    if (to !== null) floating[to] = f;
+  }
+  // A dropped old id must not pull the panel it lost to forward in the stacking.
+  const zOrder = [
+    ...new Set(
+      placement.zOrder
+        .filter((id) => !named(id) || renamed.has(id))
+        .map((id) => replacements.get(id) ?? id),
+    ),
+  ].filter((id) => Object.hasOwn(floating, id));
+  // Renamed flags go in second so one beats a stale flag already on the new id.
+  const collapsed: Record<string, boolean> = {};
+  for (const [id, v] of Object.entries(placement.collapsed)) {
+    if (!named(id)) collapsed[id] = v;
+  }
+  for (const [id, v] of Object.entries(placement.collapsed)) {
+    if (renamed.has(id)) collapsed[replacements.get(id)!] = v;
+  }
+  return { rails, floating, zOrder, collapsed };
+}
+
+/** Resolve dock state for `module` under the active layout, without applying
+ *  it or writing anything. `rewritesSaved` says the saved layout it read named
+ *  a replaced panel, so the caller that loads it should store the swap. */
+function resolveModuleState(module: AppModule): DockPlacement & { rewritesSaved: boolean } {
   const activeId = useLayoutStore.getState().activeId;
   let rails: RailState[] | null = null;
   let floating: Record<string, FloatState> = {};
   let zOrder: string[] | null = null;
   let collapsed: Record<string, boolean> = {};
+  let fromSaved = false;
 
   if (activeId === CUSTOM_LAYOUT) {
     let saved: Partial<DockState> | null = null;
@@ -405,7 +499,10 @@ function resolveModuleState(module: AppModule): {
       const raw = localStorage.getItem(layoutKey(module));
       if (raw) saved = JSON.parse(raw);
     } catch {}
-    if (Array.isArray(saved?.rails)) rails = saved!.rails!;
+    if (Array.isArray(saved?.rails)) {
+      rails = saved!.rails!;
+      fromSaved = true;
+    }
     floating = saved?.floating ?? {};
     zOrder = saved?.zOrder ?? null;
     collapsed = saved?.collapsed ?? {};
@@ -424,13 +521,21 @@ function resolveModuleState(module: AppModule): {
     rails = seed.rails;
     floating = seed.floating;
   }
-  rails = pruneBottomRails(rails);
-  return { rails, floating, zOrder: zOrder ?? Object.keys(floating), collapsed };
+  const resolved: DockPlacement = { rails, floating, zOrder: zOrder ?? Object.keys(floating), collapsed };
+  const placement = replacePanelIds(resolved, panelReplacements(useRegistry.getState().panels));
+  return {
+    ...placement,
+    rails: pruneBottomRails(placement.rails),
+    rewritesSaved: fromSaved && placement !== resolved,
+  };
 }
 
 /** Build dock state for `module` from the active layout. */
 function loadModuleLayout(module: AppModule) {
-  const { rails, floating, zOrder, collapsed } = resolveModuleState(module);
+  const { rails, floating, zOrder, collapsed, rewritesSaved } = resolveModuleState(module);
+  // A saved layout that named a replaced panel is stored with the new id at
+  // once, so storage settles on it.
+  if (rewritesSaved) saveLayout({ module, rails, floating, zOrder, collapsed });
   useDockStore.setState({
     module,
     rails,
@@ -443,6 +548,27 @@ function loadModuleLayout(module: AppModule) {
     target: null,
   });
 }
+
+// Installed extensions register after the dock has loaded its layout, so a
+// replacing panel usually arrives late: swap its old ids in the live dock too.
+// No commit(): that would turn a preset into "Custom"; a preset resolves the
+// swap again whenever it is loaded.
+useRegistry.subscribe((s, prev) => {
+  if (s.panels === prev.panels) return;
+  const dock = useDockStore.getState();
+  if (!dock.module) return;
+  const next = replacePanelIds(dock, panelReplacements(s.panels));
+  if (next === dock) return;
+  const rails = pruneBottomRails(next.rails);
+  useDockStore.setState({
+    rails,
+    floating: next.floating,
+    zOrder: next.zOrder,
+    collapsed: next.collapsed,
+    open: openList(rails, next.floating),
+  });
+  if (useLayoutStore.getState().activeId === CUSTOM_LAYOUT) scheduleSave();
+});
 
 // ── User-layout capture + CRUD ──────────────────────────────────────────────
 
@@ -480,6 +606,7 @@ function captureCurrentLayout(): Partial<Record<string, ModuleLayoutDef>> {
 
 /** Save the current arrangement as a new named layout and switch to it. */
 export function addUserLayout(name?: string): string {
+  flushPendingSave();
   const layouts = useUserLayouts.getState().layouts;
   const id = `user.${Date.now().toString(36)}`;
   persistUserLayouts({
@@ -501,6 +628,7 @@ export function addUserLayout(name?: string): string {
 export function updateUserLayout(id: string): void {
   const existing = useUserLayouts.getState().layouts[id];
   if (!existing) return;
+  flushPendingSave();
   persistUserLayouts({
     ...useUserLayouts.getState().layouts,
     [id]: {
@@ -591,12 +719,13 @@ export function deleteUserLayout(id: string): void {
 }
 
 function initModule(module: AppModule) {
-  // Flush any pending save for the outgoing module before replacing state.
-  if (saveTimer) {
+  // Flush any pending save for the outgoing module before replacing state. For
+  // the same module the edit is dropped with the reload, and the timer with it:
+  // it must not write the reloaded layout, which may be a temporary swap.
+  if (useDockStore.getState().module !== module) flushPendingSave();
+  else if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
-    const prev = useDockStore.getState();
-    if (prev.module && prev.module !== module) saveLayout(prev);
   }
   loadModuleLayout(module);
 }

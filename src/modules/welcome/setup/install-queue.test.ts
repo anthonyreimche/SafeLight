@@ -319,3 +319,35 @@ describe("needsRestart", () => {
     expect(needsRestart(rows)).toEqual(["map"]);
   });
 });
+
+describe("caller wording", () => {
+  it("points the store's skip reasons at the extension's page", async () => {
+    const unconfirmed = deps({
+      where: "its page",
+      checkReview: async () => ({ verified: true, reviewedVersion: null, stale: false, confirmed: false }),
+    });
+    expect((await installOne(row("acme/one"), unconfirmed)).detail).toBe(
+      "Couldn't confirm the reviewed version right now. You can install it from its page.",
+    );
+    const stale = deps({
+      where: "its page",
+      checkReview: async () => ({ verified: true, reviewedVersion: "1.0.0", stale: true, confirmed: true }),
+    });
+    expect((await installOne(row("acme/one"), stale)).detail).toBe(
+      "The newest version hasn't been reviewed yet (reviewed up to 1.0.0). You can install it from its page.",
+    );
+  });
+
+  it("points the store's timeouts at the extension's page", async () => {
+    vi.useFakeTimers();
+    const run = runSetupInstalls(
+      [row("acme/a"), row("acme/b"), row("acme/c")],
+      deps({ where: "its page", install: vi.fn(never) }),
+      () => {},
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    const done = await run;
+    expect(done[0].detail).toBe("Still downloading. It may finish in the background; check its page later.");
+    expect(done[2].detail).toBe("GitHub isn't responding. Try again from its page.");
+  });
+});

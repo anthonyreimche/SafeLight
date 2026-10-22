@@ -87,11 +87,13 @@ export function captureDevelopFrame(
  *  off-screen. Unlike captureFrame this is NOT tied to the live Develop source,
  *  so it measures the requested photo even when another (or none) is open —
  *  e.g. batch Auto Tone / Auto WB over a Library selection. Null if it can't
- *  render. */
+ *  render. `options.lossless` returns the frame exactly as the pipeline wrote it
+ *  (PNG, not JPEG) for a frame that carries data. */
 export function renderDevelopPhotoFrame(
   photoId: string,
   params: DevelopParams,
   paramBag?: Record<string, unknown>,
+  options?: { lossless?: boolean },
 ): Promise<ImageBitmap | null> {
-  return renderPhotoFrame(photoId, params, paramBag);
+  return renderPhotoFrame(photoId, params, paramBag, options);
 }
