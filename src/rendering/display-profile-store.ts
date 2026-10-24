@@ -29,7 +29,7 @@ export const READ_ERROR = "Couldn't read the profile file.";
 export const useDisplayProfile = create<DisplayProfileState>(() => ({ status: "off" }));
 
 /** Chromium converts the window to the display everywhere but Linux, where
- *  Wayland leaves it unconverted. */
+ *  Wayland leaves it unconverted unless the desktop converts it. */
 export function displayProfileSupported(): boolean {
   return window.safelightNative?.platform === "linux";
 }

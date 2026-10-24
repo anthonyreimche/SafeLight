@@ -45,6 +45,12 @@ const genId = (p: string) => `${p}-${Date.now().toString(36)}-${idSeq++}`;
 // always contain a dot ("stage.key"), so they can't collide with these.
 const MASK_ADJ_KEYS = new Set(Object.keys(defaultMaskAdjustments()));
 
+/** Whether a mask sub-panel's owned key lives in the mask's bag: an extension
+ *  param, rather than a core adjustment or block. */
+export function isMaskBagKey(key: string): boolean {
+  return !MASK_ADJ_KEYS.has(key) && key !== "hsl" && key !== "toneCurve";
+}
+
 // Route each owned value to where it lives on the mask: adjustment fields are
 // zeroed either way (0 is their default), the structured blocks are seeded
 // with fresh defaults or stripped, and extension keys are restored to their

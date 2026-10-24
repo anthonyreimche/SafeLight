@@ -314,7 +314,7 @@ sudo apt --fix-broken install
 sudo dnf install libXScrnSaver libappindicator-gtk3
 ```
 
-**Colors look oversaturated on a wide-gamut monitor (Wayland)** — under Wayland, Chromium applies no display color management, so sRGB values reach the panel unconverted. The cause and the XWayland workaround (`--ozone-platform=x11`) are in the [FAQ](faq.md#colors-look-oversaturated-on-linux-with-a-wide-gamut-monitor).
+**Colors look oversaturated on a wide-gamut monitor (Wayland)** — under Wayland, Chromium applies no display color management, so sRGB values reach the panel unconverted unless the desktop converts them (KDE Plasma does once a Color profile is set). The cause and the fixes, KDE's Color profile, **Preferences ▸ Rendering ▸ Display profile** and the XWayland workaround (`--ozone-platform=x11`), are in the [FAQ](faq.md#colors-look-oversaturated-on-linux-with-a-wide-gamut-monitor).
 
 ### RAW and image quality
 

@@ -37,9 +37,13 @@ import {
   useRegistry,
 } from "@/extensions/registry";
 import { DEFAULT_PIPELINE, usePipelineStore } from "@/extensions/pipelines";
-import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
+import { makeScopedAPI } from "@/extensions/host";
+import { useCatalogStore } from "@/state/catalog-store";
+import { photo as photoFixture } from "@/catalog/stored-edit.fixtures";
+import type { ProcessingStageContribution, StageSpace, StageTextureData } from "@/extensions/types";
 import type { MonitorTransform } from "./display-profile";
 import { useDisplayProfile, type DisplayProfileState } from "./display-profile-store";
+import { DEFAULT_CAPTURE_SPACE, type CapturePoint, type FloatFrame } from "./float-frame";
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -252,6 +256,42 @@ describe("RenderBridge display transform", () => {
     );
     expect(sent).toEqual([
       ["capture", AGX.id],
+      ["renderThumbnailFromSource", AGX.id],
+      ["renderThumbnail", DEFAULT_PIPELINE],
+    ]);
+    bridge.dispose();
+  });
+
+  it("captures floats with the pick of the params they carry", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    void bridge.captureFloat(normalizeParams({ displayTransform: AGX.id }));
+    void bridge.captureFloat(normalizeParams({}));
+    const sent = worker.posted.flatMap((m) => (m.cmd === "captureFloat" ? [m.pipeline.id] : []));
+    expect(sent).toEqual([AGX.id, DEFAULT_PIPELINE]);
+    bridge.dispose();
+  });
+
+  it("renders float thumbnails with the pick of the params they carry", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    const request = { asShotTemperature: 5000, maxEdge: 640, float: {} };
+    void bridge.renderThumbnailFloat({
+      ...request,
+      requestId: "f1",
+      key: "k",
+      params: normalizeParams({ displayTransform: AGX.id }),
+    });
+    void bridge.renderThumbnailFloat({
+      ...request,
+      requestId: "f2",
+      image: { kind: "float16", data: new Uint16Array(4), width: 1, height: 1 },
+      params: normalizeParams({}),
+    });
+    const sent = worker.posted.flatMap((m) =>
+      m.cmd === "renderThumbnailFromSource" || m.cmd === "renderThumbnail" ? [[m.cmd, m.pipeline.id]] : [],
+    );
+    expect(sent).toEqual([
       ["renderThumbnailFromSource", AGX.id],
       ["renderThumbnail", DEFAULT_PIPELINE],
     ]);
@@ -1031,6 +1071,14 @@ describe("RenderBridge worker replies", () => {
     asShotTemperature: 5000,
     maxEdge: 256,
   });
+  const frameOf = (point: CapturePoint): FloatFrame => ({
+    data: new Float32Array([1.5, 0.5, -0.1, 1]),
+    width: 1,
+    height: 1,
+    space: DEFAULT_CAPTURE_SPACE,
+    point,
+  });
+  const WIDE: StageSpace = { encoding: "perceptual", primaries: "rec2020" };
 
   let bridge: RenderBridge;
   let worker: FakeWorker;
@@ -1102,6 +1150,31 @@ describe("RenderBridge worker replies", () => {
       worker.reply({ ...frame, seq: 2, bitmap: bitmapOf(320) });
 
       expect(onFrame.mock.calls.map(([f]) => f.roi)).toEqual([{ x: 0, y: 0, w: 0.5, h: 0.5 }, null]);
+    });
+
+    it("hands over the size of a frame of the whole image, and 0 when a frame doesn't say", () => {
+      const onFrame = vi.fn<(frame: FrameResult) => void>();
+      bridge.setOnFrame(onFrame);
+      const frame = { type: "frame", width: 320, height: 240, sourceWidth: 320, sourceHeight: 240, sourceGen: 1 } as const;
+      const roi = { x: 0, y: 0, w: 0.5, h: 0.5 };
+      worker.reply({ ...frame, seq: 1, bitmap: bitmapOf(320), roi, wholeWidth: 640, wholeHeight: 427 });
+      worker.reply({ ...frame, seq: 2, bitmap: bitmapOf(320) });
+
+      expect(onFrame.mock.calls.map(([f]) => [f.wholeWidth, f.wholeHeight])).toEqual([
+        [640, 427],
+        [0, 0],
+      ]);
+    });
+
+    it("hands over the region a frame was drawn for, and null when a frame doesn't say", () => {
+      const onFrame = vi.fn<(frame: FrameResult) => void>();
+      bridge.setOnFrame(onFrame);
+      const frame = { type: "frame", width: 320, height: 240, sourceWidth: 320, sourceHeight: 240, sourceGen: 1 } as const;
+      const crop = { x: 0.1, y: 0, width: 0.8, height: 1 };
+      worker.reply({ ...frame, seq: 1, bitmap: bitmapOf(320), crop });
+      worker.reply({ ...frame, seq: 2, bitmap: bitmapOf(320) });
+
+      expect(onFrame.mock.calls.map(([f]) => f.crop)).toEqual([crop, null]);
     });
 
     it("hands over the stages a frame was drawn without, and none when it names none", () => {
@@ -1307,6 +1380,82 @@ describe("RenderBridge worker replies", () => {
       expect(outcome.state).toBe("resolved");
       expect(outcome.value).toBeNull();
     });
+
+    // renderPhotoFloatFrame's request: a thumbnail read as floats, from a
+    // resident source or an image, settled by requestId like any other.
+    describe("as floats", () => {
+      it("asks for the point and space given, or pre-output in linear Rec.709, with no encoding", () => {
+        const asked = { point: "output", space: WIDE } as const;
+        const defaults = { point: "pre-output", space: DEFAULT_CAPTURE_SPACE };
+        const image = thumbRequest("t1");
+        track(bridge.renderThumbnailFloat({ ...sourceRequest("s1"), float: asked }));
+        track(bridge.renderThumbnailFloat({ ...sourceRequest("s2"), float: {} }));
+        track(bridge.renderThumbnailFloat({ ...image, float: asked }));
+        track(bridge.renderThumbnailFloat({ ...thumbRequest("t2"), float: {} }));
+
+        const fromSource = sent(worker, "renderThumbnailFromSource");
+        const fromImage = sent(worker, "renderThumbnail");
+        expect(fromSource.map((m) => [m.requestId, m.key, m.float])).toEqual([["s1", "k", asked], ["s2", "k", defaults]]);
+        expect(fromImage.map((m) => [m.requestId, m.float])).toEqual([["t1", asked], ["t2", defaults]]);
+        for (const request of [...fromSource, ...fromImage]) {
+          expect(request).not.toHaveProperty("quality");
+          expect(request).not.toHaveProperty("lossless");
+        }
+        // The image is handed over, as renderThumbnail hands it.
+        expect(fromImage[0].image).toBe(image.image);
+        expect(worker.transfers[worker.posted.indexOf(fromImage[0])]).toEqual([image.image.data.buffer]);
+      });
+
+      it("resolves each with its frame, or null, by requestId, without calling onThumbnail", async () => {
+        const onThumbnail = vi.fn<(result: ThumbnailResult) => void>();
+        bridge.setOnThumbnail(onThumbnail);
+        const blob = track(bridge.renderThumbnailFromSource(sourceRequest("b")));
+        const first = track(bridge.renderThumbnailFloat({ ...sourceRequest("f1"), float: {} }));
+        const second = track(bridge.renderThumbnailFloat({ ...thumbRequest("f2"), float: {} }));
+        const frame = frameOf("output");
+
+        worker.reply({ type: "thumbnailFloat", requestId: "f2", frame });
+        await flush();
+        expect([first.state, second.state, blob.state]).toEqual(["pending", "resolved", "pending"]);
+        expect(second.value).toBe(frame);
+
+        worker.reply({ type: "thumbnailFloat", requestId: "f1", frame: null });
+        await flush();
+        expect([first.state, first.value]).toEqual(["resolved", null]);
+        expect(blob.state).toBe("pending");
+        expect(onThumbnail).not.toHaveBeenCalled();
+      });
+
+      it("resolves null on a cache miss and on a thumbnailError, reporting the error", async () => {
+        const onError = vi.fn<(message: string) => void>();
+        bridge.setOnError(onError);
+        const miss = track(bridge.renderThumbnailFloat({ ...sourceRequest("s1"), float: {} }));
+        const failed = track(bridge.renderThumbnailFloat({ ...thumbRequest("t1"), float: {} }));
+
+        worker.reply({ type: "thumbnailMiss", requestId: "s1", key: "k" });
+        worker.reply({ type: "thumbnailError", requestId: "t1", message: "lost context" });
+        await flush();
+
+        expect([miss.state, miss.value, failed.state, failed.value]).toEqual(["resolved", null, "resolved", null]);
+        expect(onError).toHaveBeenCalledWith("thumbnail render failed: lost context");
+      });
+
+      it("resolves null, posting nothing, once the bridge is disposed", async () => {
+        bridge.dispose();
+        const late = track(bridge.renderThumbnailFloat({ ...sourceRequest("s1"), float: {} }));
+        await flush();
+        expect([late.state, late.value]).toEqual(["resolved", null]);
+        expect(sent(worker, "renderThumbnailFromSource")).toEqual([]);
+      });
+
+      it("takes a resident source's key or an image, and types both together as an error", () => {
+        // With both, "key" wins and the image is cloned into a post that ignores it.
+        const both = { ...sourceRequest("s1"), ...thumbRequest("t1"), float: {} };
+        // @ts-expect-error: key and image are exclusive
+        const ask = () => bridge.renderThumbnailFloat(both);
+        expect(ask).toBeTypeOf("function");
+      });
+    });
   });
 
   describe("source cache", () => {
@@ -1460,6 +1609,128 @@ describe("RenderBridge worker replies", () => {
       const [plain, patched] = sent(worker, "capture");
       expect("bagPatch" in plain).toBe(false);
       expect(patched.bagPatch).toEqual({ "a.mode": 1 });
+    });
+  });
+
+  describe("float capture", () => {
+    it("asks for pre-output in linear Rec.709 unless told otherwise, with a bag patch only when given one", () => {
+      void bridge.captureFloat(params);
+      void bridge.captureFloat(params, { point: "output", space: WIDE, paramBag: { "a.mode": 1 } });
+      const [plain, asked] = sent(worker, "captureFloat");
+      expect(plain.params).toBe(params);
+      expect([plain.point, plain.space, "bagPatch" in plain]).toEqual(["pre-output", DEFAULT_CAPTURE_SPACE, false]);
+      expect([asked.point, asked.space, asked.bagPatch]).toEqual(["output", WIDE, { "a.mode": 1 }]);
+    });
+
+    // A frame at the Develop render resolution is about 180 MB of floats and a
+    // second of worker time, so the full view is asked for, never defaulted to.
+    it("asks for 1280 px on the long edge unless given an edge, Infinity for the full view", () => {
+      for (const maxEdge of [undefined, 2000, Infinity, Number.NaN, 0, -640]) {
+        void bridge.captureFloat(params, maxEdge === undefined ? {} : { maxEdge });
+      }
+      expect(sent(worker, "captureFloat").map((m) => m.maxEdge)).toEqual([1280, 2000, Infinity, 1280, 1280, 1280]);
+    });
+
+    it("resolves the transferred frame, matched by reqId, or null when the worker had none", async () => {
+      const first = track(bridge.captureFloat(params));
+      const second = track(bridge.captureFloat(params, { point: "output" }));
+      const [one, two] = sent(worker, "captureFloat");
+      const frame = frameOf("output");
+
+      worker.reply({ type: "capturedFloat", reqId: 999, frame: frameOf("pre-output") });
+      worker.reply({ type: "capturedFloat", reqId: two.reqId, frame });
+      await flush();
+      expect([first.state, second.state]).toEqual(["pending", "resolved"]);
+      expect(second.value).toBe(frame);
+
+      worker.reply({ type: "capturedFloat", reqId: one.reqId, frame: null });
+      await flush();
+      expect(first.state).toBe("resolved");
+      expect(first.value).toBeNull();
+    });
+
+    // A terminated worker never answers, and the extension awaits its frame.
+    it("settles a float capture pending at dispose, and one asked after, with null", async () => {
+      const pending = track(bridge.captureFloat(params));
+      bridge.dispose();
+      const late = track(bridge.captureFloat(params));
+      await flush();
+      expect([pending.state, late.state]).toEqual(["resolved", "resolved"]);
+      expect([pending.value, late.value]).toEqual([null, null]);
+      expect(sent(worker, "captureFloat")).toHaveLength(1);
+    });
+
+    it("reaches extensions as api.develop.captureFloatFrame, through the shared bridge", async () => {
+      try {
+        const asked = track(
+          makeScopedAPI("test.float").develop.captureFloatFrame(params, { point: "output", maxEdge: 640 }),
+        );
+        const shared = FakeWorker.instances.at(-1);
+        if (!shared || shared === worker) throw new Error("the shared bridge made no worker");
+        const [request] = sent(shared, "captureFloat");
+        expect([request.params, request.point, request.maxEdge]).toEqual([params, "output", 640]);
+        const frame = frameOf("output");
+        shared.reply({ type: "capturedFloat", reqId: request.reqId, frame });
+        await flush();
+        expect(asked.value).toBe(frame);
+      } finally {
+        disposeRenderBridge();
+      }
+    });
+
+    it("reaches extensions as api.develop.renderPhotoFloatFrame, for a catalog photo, through the shared bridge", async () => {
+      const photos = useCatalogStore.getState().photos;
+      useCatalogStore.setState({ photos: [photoFixture("p1")] });
+      try {
+        const asked = track(
+          makeScopedAPI("test.float").develop.renderPhotoFloatFrame("p1", params, { point: "output", space: WIDE }),
+        );
+        const shared = FakeWorker.instances.at(-1);
+        if (!shared || shared === worker) throw new Error("the shared bridge made no worker");
+        shared.reply({ type: "ready", pipelineFloat: true });
+        await vi.waitFor(() => expect(sent(shared, "renderThumbnailFromSource")).toHaveLength(1));
+        const [request] = sent(shared, "renderThumbnailFromSource");
+        expect([request.params, request.maxEdge, request.float]).toEqual([params, 640, { point: "output", space: WIDE }]);
+        const frame = frameOf("output");
+        shared.reply({ type: "thumbnailFloat", requestId: request.requestId, frame });
+        await vi.waitFor(() => expect(asked.state).toBe("resolved"));
+        expect(asked.value).toBe(frame);
+      } finally {
+        disposeRenderBridge();
+        useCatalogStore.setState({ photos });
+      }
+    });
+  });
+
+  describe("probe", () => {
+    it("asks for the point it is given and resolves with the colour, matched by reqId", async () => {
+      const output = track(bridge.probe(0.25, 0.5, "output"));
+      const mask = track(bridge.probe(0.75, 0.5, "mask"));
+      const [one, two] = sent(worker, "probe");
+      expect([one.u, one.v, one.point, two.u, two.v, two.point]).toEqual([0.25, 0.5, "output", 0.75, 0.5, "mask"]);
+
+      worker.reply({ type: "probed", reqId: 999, rgb: [1, 1, 1] });
+      worker.reply({ type: "probed", reqId: two.reqId, rgb: [-0.2, 0.6, -0.1] });
+      await flush();
+      expect([output.state, mask.state]).toEqual(["pending", "resolved"]);
+      expect(mask.value).toEqual([-0.2, 0.6, -0.1]);
+
+      // The worker had nothing to read: no renderer, or no source.
+      worker.reply({ type: "probed", reqId: one.reqId, rgb: null });
+      await flush();
+      expect(output.state).toBe("resolved");
+      expect(output.value).toBeNull();
+    });
+
+    // A terminated worker never answers, and a white balance pick awaits one.
+    it("settles a probe pending at dispose, and one asked after, with null", async () => {
+      const pending = track(bridge.probe(0.5, 0.5, "output"));
+      bridge.dispose();
+      const late = track(bridge.probe(0.5, 0.5, "mask"));
+      await flush();
+      expect([pending.state, late.state]).toEqual(["resolved", "resolved"]);
+      expect([pending.value, late.value]).toEqual([null, null]);
+      expect(sent(worker, "probe")).toHaveLength(1);
     });
   });
 
@@ -1745,6 +2016,33 @@ describe("RenderBridge render mailbox", () => {
     worker.reply(frameFor(inFlight(worker)));
     bridge.render();
     expect(renders(worker)[3]).toMatchObject({ wantHistogram: false, wantExtended: false });
+  });
+
+  // A frame can put off mask copies' prepasses to the frames after it; those
+  // come with no new edit to ask for them.
+  describe("a frame that leaves prepasses pending", () => {
+    const pending = (seq: number): WorkerResponse => ({ ...frameFor(seq), prepassPending: true }) as WorkerResponse;
+
+    it("is followed by another render, asking what it asked", () => {
+      bridge.render(true, true);
+      worker.reply(pending(inFlight(worker)));
+      expect(renders(worker)).toHaveLength(2);
+      expect(renders(worker)[1]).toMatchObject({ wantHistogram: true, wantExtended: true });
+    });
+
+    it("lets the render that waits be that render", () => {
+      bridge.render();
+      bridge.render(true);
+      worker.reply(pending(inFlight(worker)));
+      expect(renders(worker)).toHaveLength(2);
+      expect(renders(worker)[1]).toMatchObject({ wantHistogram: true });
+    });
+
+    it("isn't followed by one when nothing is pending", () => {
+      bridge.render();
+      worker.reply(frameFor(inFlight(worker)));
+      expect(renders(worker)).toHaveLength(1);
+    });
   });
 
   it("frees nothing for an answer that carries a seq not in flight", () => {
@@ -2244,6 +2542,93 @@ describe("RenderBridge display profile", () => {
     void bridge.capture(normalizeParams({}), { asShown: true });
     const asked = worker.posted.flatMap((m) => (m.cmd === "capture" ? [m.asShown] : []));
     expect(asked).toEqual([false, true]);
+    bridge.dispose();
+  });
+});
+
+// A wide-gamut screen reaches the worker for the live view, as a Linux display
+// profile does, and a screen change (a window dragged to another monitor)
+// redraws it.
+describe("RenderBridge display space", () => {
+  /** A screen whose `(color-gamut: p3)` query can be flipped, with its listeners. */
+  function stubScreen(p3: boolean) {
+    const listeners = new Set<() => void>();
+    const query = {
+      matches: p3,
+      addEventListener: (_type: string, fn: () => void) => void listeners.add(fn),
+      removeEventListener: (_type: string, fn: () => void) => void listeners.delete(fn),
+    };
+    vi.stubGlobal("matchMedia", () => query);
+    return {
+      listeners,
+      moveTo(next: boolean) {
+        query.matches = next;
+        for (const fn of [...listeners]) fn();
+      },
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+  });
+
+  afterEach(() => {
+    disposeRenderBridge();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const spaces = (worker: FakeWorker) =>
+    worker.posted.flatMap((m) => (m.cmd === "setDisplaySpace" ? [m.space] : []));
+
+  it("hands the worker the P3 space a screen has when it starts", () => {
+    stubScreen(true);
+    getRenderBridge();
+    expect(spaces(FakeWorker.instances[0])).toEqual(["display-p3"]);
+  });
+
+  it("tells the worker nothing while the screen is sRGB", () => {
+    stubScreen(false);
+    getRenderBridge();
+    expect(spaces(FakeWorker.instances[0])).toEqual([]);
+  });
+
+  it("follows the screen and redraws the view", () => {
+    const screen = stubScreen(false);
+    const render = vi.spyOn(RenderBridge.prototype, "render");
+    getRenderBridge();
+    screen.moveTo(true);
+    vi.advanceTimersByTime(50);
+    expect(spaces(FakeWorker.instances[0])).toEqual(["display-p3"]);
+    expect(render).toHaveBeenCalledWith(false);
+
+    screen.moveTo(false);
+    expect(spaces(FakeWorker.instances[0])).toEqual(["display-p3", "srgb"]);
+  });
+
+  it("stops following the screen once disposed", () => {
+    const screen = stubScreen(false);
+    getRenderBridge();
+    expect(screen.listeners.size).toBe(1);
+    disposeRenderBridge();
+    expect(screen.listeners.size).toBe(0);
+  });
+});
+
+describe("RenderBridge proof", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("hands the worker the proof space, and its turning off", () => {
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+    const bridge = new RenderBridge();
+    bridge.setProof("adobe-rgb");
+    bridge.setProof(null);
+    const proofs = FakeWorker.instances[0].posted.flatMap((m) => (m.cmd === "setProof" ? [m.space] : []));
+    expect(proofs).toEqual(["adobe-rgb", null]);
     bridge.dispose();
   });
 });

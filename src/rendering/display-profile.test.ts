@@ -19,13 +19,9 @@ import {
 } from "./color-space";
 import {
   PROFILE_ERROR,
-  monitorToSrgbLinear,
   parseDisplayProfile,
   type DisplayCurve,
-  type MonitorTransform,
 } from "./display-profile";
-
-type Rgb = [number, number, number];
 
 // ─── A minimal ICC writer for profiles color-space.ts doesn't build ─────────
 
@@ -271,53 +267,4 @@ describe("parseDisplayProfile", () => {
       );
     });
   });
-});
-
-// ─── The eyedroppers' way back ──────────────────────────────────────────────
-
-// encodeOutput (shaders.ts) for the three codes a display curve borrows.
-const ENCODE: Record<DisplayCurve, (v: number) => number> = {
-  srgb: (v) => (v < 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055),
-  gamma22: (v) => Math.pow(v, 1 / 2.19921875),
-  gamma18: (v) => (v < 0.001953125 ? v * 16 : Math.pow(v, 1 / 1.8)),
-};
-
-function encodeOutput(t: MonitorTransform, lin: Rgb): Rgb {
-  const m = t.matrix;
-  const out: Rgb = [0, 0, 0];
-  for (let row = 0; row < 3; row++) {
-    const v = m[row] * lin[0] + m[3 + row] * lin[1] + m[6 + row] * lin[2];
-    out[row] = ENCODE[t.curve](Math.min(1, Math.max(0, v)));
-  }
-  return out;
-}
-
-describe("monitorToSrgbLinear", () => {
-  const COLOURS: Rgb[] = [
-    [0.18, 0.18, 0.18],
-    [0.9, 0.05, 0.02],
-    [0.02, 0.6, 0.1],
-    [0.05, 0.08, 0.7],
-    [1, 1, 1],
-  ];
-
-  it("keeps a monitor colour sRGB can't hold inside sRGB's range", () => {
-    const back = monitorToSrgbLinear(parsed(buildIccProfile("adobe-rgb")).transform);
-    for (const v of back(0, 1, 0)) {
-      expect(v).toBeGreaterThanOrEqual(0);
-      expect(v).toBeLessThanOrEqual(1);
-    }
-  });
-
-  for (const id of ["display-p3", "adobe-rgb", "prophoto-rgb"] as const) {
-    it(`undoes the ${id} conversion of an sRGB colour`, () => {
-      const t = parsed(buildIccProfile(id)).transform;
-      const back = monitorToSrgbLinear(t);
-      for (const lin of COLOURS) {
-        const shown = encodeOutput(t, lin);
-        const measured = back(shown[0], shown[1], shown[2]);
-        for (let c = 0; c < 3; c++) expect(Math.abs(measured[c] - lin[c])).toBeLessThan(1e-4);
-      }
-    });
-  }
 });

@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { HistogramData } from "@/rendering/histogram";
+import type { ClippingMask } from "@/state/develop-slices/view-slice";
 import { channelHex, channelRgba } from "./channel-colors";
 import { reducedMotion } from "@/ui/reduced-motion";
 
@@ -59,6 +60,14 @@ function zoneAt(frac: number) {
 
 const H = 76;
 
+/** The mask after a triangle flips its bit. The gamut warning (bit 2) rides along,
+ *  but with both triangles off a version 1/2 photo draws nothing for it, so the
+ *  overlay is off rather than left lit on the Clip button. */
+function flipTriangle(mask: ClippingMask, bit: 1 | 2): ClippingMask {
+  const next = mask ^ bit;
+  return (next & 3 ? next : 0) as ClippingMask;
+}
+
 export function Histogram({
   data,
   onAdjust,
@@ -70,9 +79,9 @@ export function Histogram({
   data: HistogramData | null;
   onAdjust?: (zone: HistogramZone, deltaPx: number, phase: Phase) => void;
   onReset?: (zone: HistogramZone) => void;
-  showClipping?: 0 | 1 | 2 | 3;
+  showClipping?: ClippingMask;
   onToggleClipping?: () => void;
-  onSetClipping?: (mode: 0 | 1 | 2 | 3) => void;
+  onSetClipping?: (mode: ClippingMask) => void;
 }) {
   const interactive = !!onAdjust;
   const [mode, setMode] = useState<Mode>(readHistMode);
@@ -203,11 +212,11 @@ export function Histogram({
     if (onSetClipping && e.button === 0 && data?.extended) {
       if (y < 16) {
         if (x < w * 0.3 && data.extended.clipLow > 0.001) {
-          onSetClipping(((showClipping ^ 1) & 3) as 0 | 1 | 2 | 3);
+          onSetClipping(flipTriangle(showClipping, 1));
           return;
         }
         if (x > w * 0.7 && data.extended.clipHigh > 0.001) {
-          onSetClipping(((showClipping ^ 2) & 3) as 0 | 1 | 2 | 3);
+          onSetClipping(flipTriangle(showClipping, 2));
           return;
         }
       }

@@ -95,7 +95,7 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 
 ### Local adjustments
 
-- **Masking** — up to 8 masks per photo. Each mask is built from **components** — radial, linear, brush, luminance-range, or color-range — combined with **add**, **subtract**, or **intersect** (up to 16 components total across all masks). Per-mask adjustments cover exposure, contrast, tone, color, clarity, and sharpness; masks can opt into extra sub-panels (white balance, HSL, tone curve, detail) and be inverted. Brush components support size (**[ / ]**), feather (**Shift+[ / Shift+]**), and an erase mode.
+- **Masking** — up to 16 masks per photo. Each mask is built from **components** — radial, linear, brush, luminance-range, or color-range — combined with **add**, **subtract**, or **intersect** (up to 24 components total across all masks). Per-mask adjustments cover exposure, contrast, tone, color, clarity, and sharpness; masks can opt into extra sub-panels (white balance, HSL, tone curve, detail) and be inverted. Extensions that offer it, such as Tone Equalizer, add their own sub-panel to the **Adjust** tab and then apply only inside that mask, with the mask's own settings; this needs the current processing, so use **Update processing** first on a photo edited in an earlier version. Brush components support size (**[ / ]**), feather (**Shift+[ / Shift+]**), and an erase mode.
 - **Heal / Clone** — up to 16 retouch spots (circle or brush; up to 4 brush-shaped). Heal blends with surroundings via content-aware source selection; clone copies a source area exactly. Each spot has size, feather, and opacity, toggles between heal and clone, and its source can be repositioned.
 
 ### Presets
@@ -106,7 +106,7 @@ The Presets panel saves the current edit as a named preset and applies presets t
 
 Open the **Export** panel (docked in Library by default, or via **View ▸ Export** from either module):
 
-- **Format** — JPEG, PNG, WebP, or TIFF, with a quality slider for JPEG/WebP and an 8- or 16-bit depth choice for TIFF (16-bit needs float render targets and falls back to 8-bit when unavailable).
+- **Format** — JPEG, PNG, WebP, or TIFF, with a quality slider for JPEG/WebP and an 8- or 16-bit depth choice for TIFF and PNG. Each keeps its own depth, and PNG starts at 8-bit each session; 16-bit falls back to 8-bit where the device can't render it. An 8-bit export in ProPhoto RGB, which can band in smooth gradients, shows a warning under the format with a **Use 16-bit TIFF** button.
 - **Color space** — sRGB, Display P3, Adobe RGB, or ProPhoto RGB; the matching ICC profile is embedded so other apps read the pixels correctly.
 - **Size** — limit the long edge or keep the original size, with optional output sharpening (amount and radius).
 - **Delivery** — multiple photos as a single ZIP, separate files, or into a chosen folder.
@@ -137,7 +137,7 @@ Preferences is organized into sections: **Interface**, **Library**, **Rendering*
 
 - **Interface** — Interface scale (80–200%, − and + buttons), reduce motion, custom UI font.
 - **Library** — default grid size, sort field/direction, confirm-before-remove, thumbnail source and resolution (320/640/960 px), preview persistence.
-- **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both. On Linux, **Display profile** takes your monitor's ICC profile and converts the Develop view to it, because Wayland leaves the window unconverted (see the FAQ on oversaturated colors).
+- **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both. On Linux, **Display profile** takes your monitor's ICC profile and converts the Develop view to it, because most Wayland desktops leave the window unconverted. On KDE Plasma, set the monitor's Color profile in System Settings instead and leave this empty (see the FAQ on oversaturated colors).
 - **Performance** — RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (4096/6144/8192 px); GPU source-cache budget; neighbor prefetch; high bit-depth previews; live histogram; opening zoom.
 - **Export** — default format, quality, long edge, color space, ZIP bundling, and saved export presets.
 - **Shortcuts** — rebind every action; single-letter shortcuts (G/D/F…) can be disabled, while Tab and Ctrl-combos always work.

@@ -5,7 +5,7 @@
 
 // Developer Tools panel — a tabbed in-app inspector. Registered by the
 // (disabled-by-default) "core.devtools" extension and opened from the View
-// menu. Tabs: Console, Issues, System, Storage, Variables, Native. Nothing here runs
+// menu. Tabs: Console, Issues, System, Storage, Variables, Pipeline, Native. Nothing here runs
 // unless the extension is enabled, which installs the log capture.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -19,11 +19,12 @@ import {
 } from "./log-capture";
 import { detachDevtools, isDevtoolsWindow, reattachDevtools } from "./detach";
 import { VariablesTab } from "./VariablesTab";
+import { PipelineTab } from "./PipelineTab";
 import { readWebGLInfo } from "@/diagnostics/environment";
 import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
 
-type Tab = "Console" | "Issues" | "System" | "Storage" | "Variables" | "Native";
-const TABS: Tab[] = ["Console", "Issues", "System", "Storage", "Variables", "Native"];
+type Tab = "Console" | "Issues" | "System" | "Storage" | "Variables" | "Pipeline" | "Native";
+const TABS: Tab[] = ["Console", "Issues", "System", "Storage", "Variables", "Pipeline", "Native"];
 
 const LEVEL_STYLE: Record<LogLevel, string> = {
   log: "text-text-primary",
@@ -99,6 +100,7 @@ export function DevToolsPanel({ fill = false }: { fill?: boolean } = {}) {
         {tab === "System" && <SystemTab />}
         {tab === "Storage" && <StorageTab />}
         {tab === "Variables" && <VariablesTab />}
+        {tab === "Pipeline" && <PipelineTab />}
         {tab === "Native" && <NativeTab />}
       </div>
     </div>

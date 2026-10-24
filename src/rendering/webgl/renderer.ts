@@ -3,8 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import type { DevelopParams, Mask, MaskAdjustments, RetouchSpot } from "@/catalog/types";
+import type { CropRect, DevelopParams, Mask, MaskAdjustments, RetouchSpot } from "@/catalog/types";
 import {
+  CURRENT_PROCESS_VERSION,
   DEFAULT_CROP,
   HSL_CHANNELS,
   MAX_BRUSH_MASKS,
@@ -20,16 +21,35 @@ import {
 import type { HistogramData } from "../histogram";
 import { buildMaskCurveLUT, buildRGBCurveLUT } from "../curve";
 import { buildInverseTransform, mat3ColumnMajor } from "../transform";
+import { cropOutputSize } from "../crop-transform";
 import {
   buildFragmentShader,
   shaderVariantFor,
   variantKey,
   V2_VARIANT,
   VERTEX_SHADER,
+  type ProcessVersion,
+  type ProgramExit,
   type ShaderVariant,
 } from "./shaders";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import { isBuiltInStage } from "./builtin-stage";
+import {
+  EXPORT_TARGETS,
+  allocateTarget,
+  createSharpenPrograms,
+  deleteSharpenPrograms,
+  drawExport,
+  drawSharpened,
+  ranOutOfMemory,
+  releaseTarget,
+  type ExportFramebuffer,
+  type ExportPixels,
+  type ExportPixelsOptions,
+  type Sharpen,
+  type SharpenPrograms,
+} from "./export-draw";
+import { maskInstances, type MaskInstances } from "./mask-stage-instances";
 import { passDraws, stageDraws } from "./pass-draws";
 import { simpleHash } from "./shader-compiler";
 import {
@@ -38,11 +58,18 @@ import {
   buildStageInjection,
   type BuiltStageInjection,
   type ContributedBinding,
+  type MaskSlotBinding,
   type PrepassStage,
   type StageSplit,
   type StageTextureBinding,
 } from "./stage-injection";
 import { SplitTokens } from "./split-signature";
+import {
+  clippingBits,
+  developedFormatFor,
+  toneShoulderOn,
+  type DevelopedFormat,
+} from "./variant-decisions";
 import {
   DEVELOP_SAMPLERS,
   MAX_STAGE_TEXTURES,
@@ -61,8 +88,12 @@ import {
   OUT_SPACE_CODE,
   outMatrixColumnMajor,
   type ColorSpaceId,
+  type DisplaySpace,
 } from "../color-space";
 import { DISPLAY_CURVE_CODE, type MonitorTransform } from "../display-profile";
+import { lmsUniforms, proofUniforms } from "../output-map";
+import { decodePerceptual } from "../stage-space";
+import { measureSize, type CapturePoint } from "../float-frame";
 import {
   BUILTIN_RESOLVED,
   resolveDefaultPipeline,
@@ -100,9 +131,40 @@ interface DrawTarget {
   h: number;
 }
 
-// Storage of the retouched frame's patched copy of the source. Only "float16"
-// keeps values outside [0, 1]; "norm16" (EXT_texture_norm16) and "rgba8" clip.
-type DevelopedFormat = "rgba8" | "norm16" | "float16";
+/** Where probe() reads: the colour the output stage receives, or the
+ *  scene-linear colour the mask components compare. */
+export type ProbePoint = "output" | "mask";
+
+// What a probe draws: its patch of the image, in setViewport's terms.
+interface ProbeDraw {
+  roi: { x: number; y: number; w: number; h: number };
+  point: ProbePoint;
+}
+
+// A frame drawn away from the canvas: a probe's patch, a measurement, or,
+// with neither, captureFloatFrame's frame as the screen would show it. A
+// measurement (an export frame, a float capture) has neither the view's
+// overlays nor the screen's space; "pre-output" draws `c` as the output stage
+// receives it, which output sharpening and float captures read.
+interface Redirect extends DrawTarget {
+  probe?: ProbeDraw;
+  measure?: CapturePoint;
+}
+
+// The buffer pixels a probe averages along each axis.
+const PROBE_PX = 5;
+
+// glReadPixels rows come back bottom-up; flips them to top-down image order, in place.
+function topDown(px: Float32Array, w: number, h: number): Float32Array {
+  const stride = w * 4;
+  const row = new Float32Array(stride);
+  for (let top = 0, bottom = h - 1; top < bottom; top++, bottom--) {
+    row.set(px.subarray(top * stride, (top + 1) * stride));
+    px.copyWithin(top * stride, bottom * stride, (bottom + 1) * stride);
+    px.set(row, bottom * stride);
+  }
+  return px;
+}
 
 // Default cap on render resolution for interactive performance. Export passes
 // a larger value (or the image's own long edge) to render at full size.
@@ -294,6 +356,15 @@ export interface WebGLRendererOpts {
   highBitDepth?: boolean;
   stages?: ProcessingStageContribution[];
   pipeline?: ResolvedPipeline;
+  /** The newest process version this renderer renders with. A photo stored
+   *  newer renders as it. Defaults to CURRENT_PROCESS_VERSION; tests pass a
+   *  later version to build its programs before it ships. */
+  processVersionCap?: ProcessVersion;
+  /** How many mask copies' prepasses a frame drawn to the canvas may run; the
+   *  rest run on the frames after it (prepassPending). Defaults to no limit,
+   *  which exports and thumbnails need: they draw one frame. A redirected
+   *  frame (a capture or a probe) is never limited. */
+  maskCopyPrepassesPerFrame?: number;
 }
 
 type UnitResult = { kind: "unit"; resultUniform: string; tex: WebGLTexture; unit: number };
@@ -361,15 +432,43 @@ export class WebGLRenderer {
   private histFboD: WebGLFramebuffer | null = null;
   private histTexD: WebGLTexture | null = null;
   private haveColorBufferFloat = false;
-  // When set, render()'s final composite pass draws into this framebuffer instead
-  // of the default (8-bit canvas). Used by captureFloatFrame for 16-bit export.
-  private outputFbo: WebGLFramebuffer | null = null;
+  // When set, render()'s final composite pass draws into this target instead of
+  // the (8-bit) canvas: the whole frame for a 16-bit export (captureFloatFrame,
+  // exportPixels) or a float capture (readFloatFrame), or `c` for output
+  // sharpening, at either depth; or for probe() just its patch, which replaces
+  // the live window.
+  private redirect: Redirect | null = null;
+  // Output sharpening's passes (export-draw.ts), built by the first sharpened export.
+  private sharpenPrograms: SharpenPrograms | null = null;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   // Extension-contributed stage uniforms (namespaced) and their live values.
   // Bindings are rebuilt whenever the stage set changes; values arrive via
   // setContributedParams (the develop store's generic param bag).
   private contributedBindings: ContributedBinding[] = [];
   private contributedParams: Record<string, unknown> = {};
+  // Mask copies of maskable stages (mask-stage-instances.ts) the frame's masks
+  // call for, and the bag the stages read with the copies' values added. Both
+  // are memoized on what they're made from: the split tokens compare bags by
+  // reference.
+  private copiesMemo: {
+    source: unknown;
+    masks: readonly Mask[];
+    variant: ShaderVariant;
+    copies: MaskInstances;
+  } | null = null;
+  private frameBagMemo: {
+    params: Record<string, unknown>;
+    copies: Record<string, unknown>;
+    bag: Record<string, unknown>;
+  } | null = null;
+  private maskSlotBindings: MaskSlotBinding[] = [];
+  // Copies whose prepass this frame put off with no earlier result to show:
+  // they apply nothing until it runs.
+  private unshownCopies = new Set<string>();
+  // The copies the program in use was built without: with them it failed.
+  private droppedCopies: string[] = [];
+  private copyPrepassesPending = false;
+  private readonly maskCopyPrepassesPerFrame: number;
   // Prepass stages whose program failed to compile/link this session — skipped
   // thereafter so one bad stage can't throw out of render() and freeze the view.
   private failedPrepass = new Set<string>();
@@ -450,6 +549,12 @@ export class WebGLRenderer {
   private outSpace: ColorSpaceId = "srgb";
   // The monitor's profile (Linux, Preferences ▸ Rendering), for the live view.
   private monitorTransform: MonitorTransform | null = null;
+  // The screen's own space, for version 3 frames. A frame encodes for it only
+  // when the canvas can be tagged to match; an untagged canvas is read as sRGB.
+  private displaySpace: DisplaySpace = "srgb";
+  // The export space a soft proof previews, or null with proofing off.
+  private proofSpace: ColorSpaceId | null = null;
+  private readonly canTagBuffer: boolean;
   private linear = false;
   private isFallbackPreview = false;
   private applyBaseCurve = false;
@@ -462,12 +567,14 @@ export class WebGLRenderer {
   // buffers make it renderable, and so mipmappable, until this driver fails to
   // mipmap a full-size one.
   private haveFloat16Developed = false;
-  // Active render pipeline + stage signatures + process version: compared on
-  // every render to detect when another program is needed (pipeline change,
-  // stage enable/disable, or a photo on another process version).
+  // Active render pipeline + stage signatures + process version + exit: compared
+  // on every render to detect when another program is needed (pipeline change,
+  // stage enable/disable, a photo on another process version, or a probe).
   private pipelineSig = "";
   private stageSig = "";
+  private readonly newestVersion: ProcessVersion;
   private variant: ShaderVariant = V2_VARIANT;
+  private programExit: ProgramExit | undefined;
   private pipelineSkipBase = false;
   private pipelineSkipShoulder = false;
   private programCache = new Map<string, PipelineProgram>();
@@ -484,11 +591,11 @@ export class WebGLRenderer {
   // stage's GLSL, so it happens only when the stage source changes: the registry
   // replaces its processingStages object on every change, and setStages drops
   // the memo, so an injected array edited in place is rebuilt too. Each process
-  // version keeps its own build, so photos alternating between versions reuse
-  // both.
+  // version and set of mask copies keeps its own build, so photos alternating
+  // between them reuse each.
   private injectionMemo: {
     source: readonly ProcessingStageContribution[] | Record<string, ProcessingStageContribution>;
-    built: Map<ShaderVariant, BuiltStageInjection>;
+    built: Map<string, BuiltStageInjection>;
   } | null = null;
 
   // ── GPU-resident source cache ──────────────────────────────────────────
@@ -523,8 +630,11 @@ export class WebGLRenderer {
     }
     this.canvas = canvas;
     this.gl = gl;
+    this.canTagBuffer = "drawingBufferColorSpace" in gl;
     if (opts?.stages) this.injectedStages = opts.stages;
     if (opts?.pipeline) this.injectedPipeline = opts.pipeline;
+    this.newestVersion = opts?.processVersionCap ?? CURRENT_PROCESS_VERSION;
+    this.maskCopyPrepassesPerFrame = opts?.maskCopyPrepassesPerFrame ?? Infinity;
 
     const highBitDepth = opts?.highBitDepth ?? getSettings().highBitDepth;
     const norm16 = highBitDepth
@@ -581,10 +691,17 @@ export class WebGLRenderer {
     return { ...this.draws };
   }
 
-  /** The prepass stages the last frame was drawn without: active, but with no
-   *  texture unit left for their result, so their inline glsl read another's. */
+  /** The stages the last frame was drawn without: prepass stages that were
+   *  active but had no texture unit left for their result (their inline glsl
+   *  read another's), and mask copies a program couldn't be built with. */
   get overflowedStages(): readonly string[] {
-    return this.overflowed;
+    return this.droppedCopies.length > 0 ? [...this.overflowed, ...this.droppedCopies] : this.overflowed;
+  }
+
+  /** Whether the last frame put off a mask copy's prepass (maskCopyPrepassesPerFrame):
+   *  another frame of the same params finishes it. */
+  get prepassPending(): boolean {
+    return this.copyPrepassesPending;
   }
 
   // 1x1 transparent default so a coverage sampler is always valid even with no
@@ -684,9 +801,9 @@ export class WebGLRenderer {
     });
   }
 
-  // Program + uniform locations for a pipeline + stage set + process version,
-  // cached by combined signature. A bad custom transform falls back to the
-  // built-in entry — cached under the failing sig too, so it isn't recompiled
+  // Program + uniform locations for a pipeline + stage set + process version (+ a
+  // probe's exit), cached by combined signature. A bad custom transform falls back
+  // to the built-in entry — cached under the failing sig too, so it isn't recompiled
   // (and re-logged) every frame. A build that throws is remembered under its key
   // and rethrown as it was, without compiling again, until a signature or the
   // version gives another key. The stage set comes in as an argument, not from the
@@ -697,14 +814,15 @@ export class WebGLRenderer {
     built: BuiltStageInjection,
     variant: ShaderVariant,
     stageIds: ReadonlySet<string>,
+    exit?: ProgramExit,
   ): PipelineProgram {
-    const cacheKey = `${p.sig}|${built.sig}|${variantKey(variant)}`;
+    const cacheKey = `${p.sig}|${built.sig}|${variantKey(variant)}${exit ? `|${exit}` : ""}`;
     const cached = this.programCache.get(cacheKey);
     if (cached) return cached;
     if (this.failedBuilds.has(cacheKey)) throw this.failedBuilds.get(cacheKey);
     this.programStages.set(cacheKey, stageIds);
     try {
-      const entry = this.buildEntry(p, built, variant, stageIds);
+      const entry = this.buildEntry(p, built, variant, stageIds, exit);
       this.programCache.set(cacheKey, entry);
       return entry;
     } catch (err) {
@@ -718,11 +836,12 @@ export class WebGLRenderer {
     built: BuiltStageInjection,
     variant: ShaderVariant,
     stageIds: ReadonlySet<string>,
+    exit: ProgramExit | undefined,
   ): PipelineProgram {
     try {
       const program = this.createProgram(
         VERTEX_SHADER,
-        buildFragmentShader(p.glsl, built.injection, variant),
+        buildFragmentShader(p.glsl, built.injection, variant, exit),
       );
       return {
         program,
@@ -733,7 +852,7 @@ export class WebGLRenderer {
     } catch (err) {
       if (!p.glsl) throw err; // built-in must compile
       console.error(`[pipeline] "${p.id}" failed to compile; using built-in:`, err);
-      return this.entryFor(BUILTIN_RESOLVED, built, variant, stageIds);
+      return this.entryFor(BUILTIN_RESOLVED, built, variant, stageIds, exit);
     }
   }
 
@@ -834,6 +953,14 @@ export class WebGLRenderer {
       "uCurve",
       "uOutSpace",
       "uOutMatrix",
+      "uOutToLms",
+      "uLmsToOut",
+      "uProof",
+      "uProofFits",
+      "uProofMatrix",
+      "uProofToLms",
+      "uLmsToProof",
+      "uProofToOut",
       "uCrop",
       "uInvTransform",
       "uOutsideColor",
@@ -967,6 +1094,7 @@ export class WebGLRenderer {
     for (const b of built.bindings) {
       u[b.qualifiedKey] = gl.getUniformLocation(program, b.glslName);
     }
+    for (const ms of built.maskSlots) u[ms.glslName] = gl.getUniformLocation(program, ms.glslName);
     // Prepass results: a sampler per stage that has one, a layer uniform per
     // stage reading the shared array, and the array itself.
     for (const ps of built.prepass) {
@@ -1327,13 +1455,17 @@ export class WebGLRenderer {
       this.gl.viewport(0, 0, w, h);
       return;
     }
-    const longEdge = Math.max(cw, ch);
-    const scale = longEdge > 0 ? Math.min(1, this.maxEdge / longEdge) : 1;
-    const w = Math.max(1, Math.round(cw * scale));
-    const h = Math.max(1, Math.round(ch * scale));
+    const { width: w, height: h } = this.wholeSize();
     if (this.canvas.width !== w) this.canvas.width = w;
     if (this.canvas.height !== h) this.canvas.height = h;
     this.gl.viewport(0, 0, w, h);
+  }
+
+  // The output size of the whole cropped image: the canvas size without a zoom window.
+  private wholeSize(): { width: number; height: number } {
+    if (!this.imageWidth || !this.imageHeight) return { width: 0, height: 0 };
+    const crop = this.params?.crop ?? DEFAULT_CROP;
+    return cropOutputSize(this.imageWidth, this.imageHeight, crop, this.maxEdge);
   }
 
   private initMaskCurveTexture() {
@@ -1377,6 +1509,11 @@ export class WebGLRenderer {
   /** The size the active source is held at, after the upload cap; 0 before any. */
   get sourceWidth(): number { return this.imageWidth; }
   get sourceHeight(): number { return this.imageHeight; }
+  /** The size of a frame of the whole image, which a zoom window's frame is a part of. */
+  get wholeWidth(): number { return this.wholeSize().width; }
+  get wholeHeight(): number { return this.wholeSize().height; }
+  /** The region of the transformed image a frame is of: the crop it draws. */
+  get drawnCrop(): CropRect { return this.params?.crop ?? DEFAULT_CROP; }
 
   setOutputColorSpace(space: ColorSpaceId) {
     this.outSpace = space;
@@ -1388,14 +1525,51 @@ export class WebGLRenderer {
     this.monitorTransform = transform;
   }
 
-  // Only frames headed for the screen carry the monitor conversion; a
-  // measurement binds the plain output.
-  private bindOutputSpace(display: boolean) {
+  /** The space the screen shows, which version 3 frames encode for. An export
+   *  output space and a monitor transform both win over it. */
+  setDisplaySpace(space: DisplaySpace) {
+    this.displaySpace = space;
+  }
+
+  /** Soft proof version 3 screen frames in `space`, the export's, or stop
+   *  with null. Ignored while an export output space is set. */
+  setProofSpace(space: ColorSpaceId | null) {
+    this.proofSpace = space;
+  }
+
+  // Only frames headed for the screen carry the monitor conversion, the
+  // display space or the proof; a measurement binds the plain output. Version
+  // 1 and 2 frames stay sRGB on any screen, so an older photo renders as it
+  // always has. Returns the tag the drawing buffer needs for this frame. `u`
+  // is the develop program's, or sharpening's output pass's.
+  private bindOutputSpace(display: boolean, u = this.uniforms): DisplaySpace {
     const gl = this.gl;
-    const u = this.uniforms;
-    const t = display && this.outSpace === "srgb" ? this.monitorTransform : null;
-    gl.uniform1i(u.uOutSpace, t ? DISPLAY_CURVE_CODE[t.curve] : OUT_SPACE_CODE[this.outSpace]);
-    gl.uniformMatrix3fv(u.uOutMatrix, false, t ? t.matrix : outMatrixColumnMajor(this.outSpace));
+    const live = display && this.outSpace === "srgb";
+    const t = live ? this.monitorTransform : null;
+    const tag: DisplaySpace =
+      live && !t && this.variant.signedOutput && this.canTagBuffer ? this.displaySpace : "srgb";
+    const space = live ? tag : this.outSpace;
+    gl.uniform1i(u.uOutSpace, t ? DISPLAY_CURVE_CODE[t.curve] : OUT_SPACE_CODE[space]);
+    const matrix = t ? t.matrix : outMatrixColumnMajor(space);
+    gl.uniformMatrix3fv(u.uOutMatrix, false, matrix);
+    // Version 1 and 2 programs have none of these, and GL ignores a null location.
+    const lms = lmsUniforms(matrix);
+    gl.uniformMatrix3fv(u.uOutToLms, false, lms.toLms);
+    gl.uniformMatrix3fv(u.uLmsToOut, false, lms.fromLms);
+    // Like the display space, the proof reaches only version 3 screen frames,
+    // but it is shown in whatever they target, a monitor profile included.
+    const proof = live && this.variant.signedOutput ? this.proofSpace : null;
+    gl.uniform1i(u.uProof, proof ? 1 : 0);
+    if (proof) {
+      const proofMatrix = outMatrixColumnMajor(proof);
+      const p = proofUniforms(proofMatrix, matrix);
+      gl.uniform1i(u.uProofFits, p.fits ? 1 : 0);
+      gl.uniformMatrix3fv(u.uProofMatrix, false, proofMatrix);
+      gl.uniformMatrix3fv(u.uProofToLms, false, p.toLms);
+      gl.uniformMatrix3fv(u.uLmsToProof, false, p.fromLms);
+      gl.uniformMatrix3fv(u.uProofToOut, false, p.toOut);
+    }
+    return tag;
   }
 
   setAsShotTemperature(kelvin: number) {
@@ -1410,7 +1584,7 @@ export class WebGLRenderer {
   }
 
   setShowClipping(mode: number) {
-    this.showClipping = mode & 3;
+    this.showClipping = mode & 7;
   }
 
   // Colour (display-space, 0..1) painted into out-of-image margins, so crop mode
@@ -1559,7 +1733,7 @@ export class WebGLRenderer {
    *  set, pipeline or bindings it draws with. Whoever creates a renderer calls this
    *  to fail there, ahead of any frame, rather than out of render(). */
   prepareProgram(processVersion: number): void {
-    const variant = shaderVariantFor(processVersion);
+    const variant = shaderVariantFor(processVersion, this.newestVersion);
     const pipeline = this.injectedPipeline ?? resolveDefaultPipeline();
     this.entryFor(pipeline, this.stageInjection(variant), variant, this.currentStageIds());
   }
@@ -1572,7 +1746,7 @@ export class WebGLRenderer {
    *  prepareProgram. A caller whose prepareProgram threw uses it to tell the two
    *  cases apart. */
   prepareStockProgram(processVersion: number): void {
-    const variant = shaderVariantFor(processVersion);
+    const variant = shaderVariantFor(processVersion, this.newestVersion);
     const builtIn = this.currentStages().filter(isBuiltInStage);
     this.entryFor(
       BUILTIN_RESOLVED,
@@ -1591,27 +1765,61 @@ export class WebGLRenderer {
     return new Set(this.currentStages().map((s) => s.id));
   }
 
-  private stageInjection(variant: ShaderVariant): BuiltStageInjection {
+  private stageInjection(variant: ShaderVariant, withCopies = true): BuiltStageInjection {
     const source = this.injectedStages ?? useRegistry.getState().processingStages;
     let memo = this.injectionMemo;
     if (memo?.source !== source) {
       memo = { source, built: new Map() };
       this.injectionMemo = memo;
     }
-    let built = memo.built.get(variant);
+    const copies = withCopies ? this.maskCopies(variant) : null;
+    const key = `${variantKey(variant)}|${copies?.sig ?? ""}`;
+    let built = memo.built.get(key);
     if (!built) {
-      built = buildStageInjection(this.currentStages(), variant, this.samplerBudget);
-      memo.built.set(variant, built);
+      built = buildStageInjection(copies?.stages ?? this.currentStages(), variant, this.samplerBudget);
+      memo.built.set(key, built);
     }
     return built;
   }
 
+  /** The registered stages with the copies the frame's masks call for. The
+   *  copies' ids stay out of currentStageIds(): a program is released when a
+   *  stage leaves, not when a photo has fewer masks using it. */
+  private maskCopies(variant: ShaderVariant = this.variant): MaskInstances {
+    const source = this.injectedStages ?? useRegistry.getState().processingStages;
+    const masks = this.params?.masks ?? [];
+    const m = this.copiesMemo;
+    if (m && m.source === source && m.masks === masks && m.variant === variant) return m.copies;
+    const copies = maskInstances(this.currentStages(), masks, variant);
+    this.copiesMemo = { source, masks, variant, copies };
+    return copies;
+  }
+
+  /** The bag the stage uniforms and prepasses read this frame: the photo's,
+   *  with the masks' values under their copies' keys. */
+  private frameBag(): Record<string, unknown> {
+    const copies = this.maskCopies();
+    if (copies.sig === "") return this.contributedParams;
+    const m = this.frameBagMemo;
+    if (m && m.params === this.contributedParams && m.copies === copies.bag) return m.bag;
+    const bag = { ...this.contributedParams, ...copies.bag };
+    this.frameBagMemo = { params: this.contributedParams, copies: copies.bag, bag };
+    return bag;
+  }
+
   private syncPipeline() {
     const p = this.injectedPipeline ?? resolveDefaultPipeline();
-    const variant = this.params ? shaderVariantFor(this.params.processVersion) : this.variant;
-    const built = this.stageInjection(variant);
+    const variant = this.params
+      ? shaderVariantFor(this.params.processVersion, this.newestVersion)
+      : this.variant;
+    let built = this.stageInjection(variant);
+    // A mask probe's frame stops where the mask components read `lin`.
+    const exit: ProgramExit | undefined = this.redirect?.probe?.point === "mask" ? "mask" : undefined;
     const unchanged =
-      p.sig === this.pipelineSig && built.sig === this.stageSig && variant === this.variant;
+      p.sig === this.pipelineSig &&
+      built.sig === this.stageSig &&
+      variant === this.variant &&
+      exit === this.programExit;
     // The stock transform and an empty stage set both sign as "", and the variant
     // starts at version 2, so a fresh renderer can already match its first frame:
     // equal signatures only mean "built" once a program exists.
@@ -1620,7 +1828,19 @@ export class WebGLRenderer {
     // leaves it on the stage set it was drawing with, so switching back to that set
     // finds its own bindings, not the failed set's.
     const stageIds = this.currentStageIds();
-    const e = this.entryFor(p, built, variant, stageIds);
+    let e: PipelineProgram;
+    try {
+      e = this.entryFor(p, built, variant, stageIds, exit);
+      this.droppedCopies = [];
+    } catch (err) {
+      // More mask copies than this GPU's shader limits hold: the frame is drawn
+      // without them, and the overflow notice names their stages.
+      const copies = this.maskCopies(variant);
+      if (copies.sig === "") throw err;
+      built = this.stageInjection(variant, false);
+      e = this.entryFor(p, built, variant, stageIds, exit);
+      this.droppedCopies = [...copies.slots.keys()];
+    }
     // Pass programs are keyed by stageSig; a stage-set change invalidates them
     // and the prepass result cache. No process version changes stageSig, so a
     // photo on the other version keeps both.
@@ -1643,6 +1863,7 @@ export class WebGLRenderer {
       this.resultLayers.release(new Set(layered.map((s) => s.stageId)));
     }
     this.contributedBindings = built.bindings;
+    this.maskSlotBindings = built.maskSlots;
     this.stageTextureBindings = built.textureBindings;
     this.prepassStages = built.prepass;
     this.hasContribNR = built.hasNoiseReduction;
@@ -1653,6 +1874,7 @@ export class WebGLRenderer {
     this.pipelineSig = p.sig;
     this.stageSig = built.sig;
     this.variant = variant;
+    this.programExit = exit;
   }
 
   // The program syncPipeline() last selected. Every draw path syncs first, so a
@@ -1692,7 +1914,15 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
     gl.uniform1i(u.uCurve, 1);
 
-    this.bindOutputSpace(true);
+    // The tag tells the compositor how to read the canvas. An export frame
+    // keeps sRGB whatever it encodes: export reads the canvas back through
+    // toBlob and drawImage, which convert out of the tag. Retagging
+    // reallocates and clears the buffer, so it happens only on a change, and
+    // never for a frame redirected away from the canvas.
+    const tag = this.bindOutputSpace(!this.redirect?.measure);
+    if (!this.redirect && this.canTagBuffer && gl.drawingBufferColorSpace !== tag) {
+      gl.drawingBufferColorSpace = tag;
+    }
 
     gl.uniform1i(u.uLinear, this.linear ? 1 : 0);
     gl.uniform1i(u.uIsFallbackPreview, this.isFallbackPreview ? 1 : 0);
@@ -1702,15 +1932,17 @@ export class WebGLRenderer {
       u.uApplyBaseCurve,
       this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
     );
-    // Only version 2 photos give up the shoulder: an older edit keeps its
-    // look when a transform starts setting skipToneShoulder.
-    gl.uniform1i(u.uApplyToneShoulder, this.pipelineSkipShoulder && this.variant.fullInfo ? 0 : 1);
-    gl.uniform1i(u.uShowClipping, overlays ? this.showClipping : 0);
+    gl.uniform1i(u.uApplyToneShoulder, toneShoulderOn(this.variant, this.pipelineSkipShoulder) ? 1 : 0);
+    gl.uniform1i(u.uShowClipping, overlays ? this.showClipping & clippingBits(this.variant) : 0);
     gl.uniform3f(u.uOutsideColor, this.outsideColor[0], this.outsideColor[1], this.outsideColor[2]);
     gl.uniform1i(u.uVizMask, overlays ? this.vizMask : -1);
     gl.uniform3f(u.uVizColor, this.vizColor[0], this.vizColor[1], this.vizColor[2]);
     gl.uniform1f(u.uVizStrength, this.vizStrength);
     gl.uniform1i(u.uSharpenViz, overlays ? this.sharpenViz : 0);
+    // An output probe and a pre-output measurement (output sharpening, a
+    // float capture) read `c` as the output stage receives it, unencoded.
+    const raw = this.redirect?.probe?.point === "output" || this.redirect?.measure === "pre-output";
+    gl.uniform1i(u.uRawHistogram, raw ? 1 : 0);
     // GLSL zero-initialises uniforms, and 0 is a valid split index: every
     // draw but a split's must run with -1.
     gl.uniform1i(u.uSplitAt, -1);
@@ -1749,7 +1981,7 @@ export class WebGLRenderer {
 
     const crop = p.crop ?? DEFAULT_CROP;
     gl.uniform4f(u.uCrop, crop.x, crop.y, crop.width, crop.height);
-    const vp = this.roi;
+    const vp = this.redirect?.probe?.roi ?? this.roi;
     gl.uniform4f(u.uViewport, vp ? vp.x : 0, vp ? vp.y : 0, vp ? vp.w : 1, vp ? vp.h : 1);
     const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
     gl.uniformMatrix3fv(
@@ -1812,10 +2044,11 @@ export class WebGLRenderer {
     // Extension-contributed stage uniforms, driven by the generic param bag.
     // Uniforms persist on the program, so binding here once (before the draw
     // passes below) covers both the single-pass and retouch two-pass paths.
+    const bag = this.frameBag();
     for (const b of this.contributedBindings) {
       const loc = u[b.qualifiedKey];
       if (loc == null) continue;
-      const value = this.contributedParams[b.qualifiedKey] ?? b.default;
+      const value = bag[b.qualifiedKey] ?? b.default;
       bindUniformByType(gl, loc, b.glslType, value);
     }
 
@@ -2034,7 +2267,7 @@ export class WebGLRenderer {
   }
 
   private outputTarget(): DrawTarget {
-    return { fbo: this.outputFbo, w: this.canvas.width, h: this.canvas.height };
+    return this.redirect ?? { fbo: null, w: this.canvas.width, h: this.canvas.height };
   }
 
   // One develop draw of the main program over `srcTex` into `target`, with
@@ -2046,6 +2279,7 @@ export class WebGLRenderer {
     const u = this.uniforms;
     gl.useProgram(this.developProgram());
     this.bindPrepassResults();
+    this.bindMaskSlots();
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
     gl.viewport(0, 0, target.w, target.h);
     gl.activeTexture(gl.TEXTURE0);
@@ -2064,59 +2298,204 @@ export class WebGLRenderer {
   // targets aren't available, so the caller falls back to the 8-bit path.
   captureFloatFrame(): { data: Float32Array; width: number; height: number } | null {
     if (!this.hasImage || !this.params || !this.haveColorBufferFloat) return null;
-    const gl = this.gl;
     // Size the canvas/viewport exactly as a normal render would (crop-capped).
     this.syncPipeline();
     this.resize();
     const w = this.canvas.width;
     const h = this.canvas.height;
+    const raw = this.drawFloat(w, h);
+    if (!raw) return null;
+    return { data: topDown(raw, w, h), width: w, height: h };
+  }
 
-    const tex = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE7);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    const fbo = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    if (!complete) {
-      gl.deleteFramebuffer(fbo);
-      gl.activeTexture(gl.TEXTURE7);
-      gl.deleteTexture(tex);
-      gl.activeTexture(gl.TEXTURE0);
-      return null;
-    }
-
-    // Redirect render()'s final composite into our float FBO, then read it back.
-    this.outputFbo = fbo;
+  /** The current frame as floats at the canvas's size, its long edge capped
+   *  at `captureEdge` (measureSize), RGBA, top-down, in perceptual Rec.709: at
+   *  "pre-output" the signed `c` the output stage receives, at "output" what
+   *  the output stage makes of it: sRGB as long as no export output space is
+   *  set, which holds for the worker's live and thumb renderers. A
+   *  measurement, like an export frame: without the view's overlays, the
+   *  screen's space, the monitor profile or the proof. Null with no source,
+   *  without float render targets, or when the target can't be allocated or
+   *  completed. */
+  readFloatFrame(point: CapturePoint, captureEdge = Infinity): { data: Float32Array; width: number; height: number } | null {
+    if (!this.hasImage || !this.params || !this.haveColorBufferFloat) return null;
+    this.syncPipeline();
+    this.resize();
+    const gl = this.gl;
+    // Drawn at the capped size, as an export or a thumbnail draws at its own,
+    // so the read-back and the worker's conversion shrink with it.
+    const { width: w, height: h } = measureSize(this.canvas.width, this.canvas.height, captureEdge);
+    let raw: Float32Array | null;
     try {
-      this.render();
+      // As for an export: a driver may refuse the target, or report the memory
+      // only at the first draw into it, leaving that draw undefined. The queue
+      // is emptied first, so only this frame's errors are read, and none is
+      // left for the next reader.
+      ranOutOfMemory(gl);
+      raw = this.drawFloat(w, h, { measure: point }, gl.RGBA32F);
+      if (ranOutOfMemory(gl)) raw = null;
     } finally {
-      this.outputFbo = null;
+      // computeHistogram and Upright redraw with what is bound: the frame's
+      // program, encoding its output.
+      gl.useProgram(this.developProgram());
+      gl.uniform1i(this.uniforms.uRawHistogram, 0);
     }
-    const raw = new Float32Array(w * h * 4);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, raw);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return raw && { data: topDown(raw, w, h), width: w, height: h };
+  }
 
-    gl.deleteFramebuffer(fbo);
-    gl.activeTexture(gl.TEXTURE7);
-    gl.deleteTexture(tex);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+  /** Whether a photo with `params` renders through version 3's signed output
+   *  stage here: the renderer's cap can hold it to an older version. */
+  signedOutputFor(params: DevelopParams): boolean {
+    return shaderVariantFor(params.processVersion, this.newestVersion).signedOutput;
+  }
 
-    // glReadPixels rows come back bottom-up; flip to top-down image order.
-    const stride = w * 4;
-    const data = new Float32Array(w * h * 4);
-    for (let y = 0; y < h; y++) {
-      data.set(raw.subarray((h - 1 - y) * stride, (h - y) * stride), y * stride);
+  /** The current frame as a version 3 16-bit export: drawn at captureFloatFrame's
+   *  size into the first of `targets` this context can render, sharpened when
+   *  asked, and read back as codes, RGBA, top-down. Null for a photo without
+   *  the signed output stage, which exports through captureFloatFrame as it
+   *  always has, with no source, when no target can be allocated, or when the
+   *  frame is too large to read back. */
+  exportPixels(opts: ExportPixelsOptions = {}): ExportPixels | null {
+    if (!this.hasImage || !this.params || !this.signedOutputFor(this.params)) return null;
+    this.syncPipeline();
+    this.resize();
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const { sharpen } = opts;
+    return drawExport(this.gl, w, h, opts.targets ?? EXPORT_TARGETS, (fbo, kind) => {
+      if (sharpen) return this.sharpenInto(sharpen, { fbo, kind });
+      this.drawRedirected({ fbo, w, h, measure: "output" });
+      return true;
+    });
+  }
+
+  /** The current frame for an 8-bit export, sharpened on the signed colour and
+   *  then mapped by the output stage, drawn into the canvas. False, with no
+   *  frame drawn, for a photo without the signed output stage, with no source,
+   *  or when no float texture can hold the frame: the caller then sharpens on
+   *  the CPU, as for older photos. By that last refusal the canvas has been
+   *  sized for the frame, which clears it if its size changed. */
+  renderSharpened(sharpen: Sharpen): boolean {
+    if (!this.hasImage || !this.params || !this.signedOutputFor(this.params) || !this.haveColorBufferFloat) {
+      return false;
     }
-    return { data, width: w, height: h };
+    this.syncPipeline();
+    this.resize();
+    return this.sharpenInto(sharpen, null);
+  }
+
+  // The frame at the canvas's size, sharpened into an export target, or into
+  // the canvas for null. False when there's no float texture for `c`.
+  private sharpenInto(sharpen: Sharpen, target: ExportFramebuffer | null): boolean {
+    const gl = this.gl;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    this.sharpenPrograms ??= createSharpenPrograms(gl, (vs, fs) => this.createProgram(vs, fs));
+    try {
+      return drawSharpened(
+        gl,
+        this.sharpenPrograms,
+        { w, h, sharpen, target },
+        (fbo) => this.drawRedirected({ fbo, w, h, measure: "pre-output" }),
+        (uniforms) => {
+          // An export reads the canvas back through toBlob and drawImage, which
+          // convert out of its tag, so a frame encoded for sRGB must say so.
+          // A live view's next frame tags it for the screen again.
+          if (!target && this.canTagBuffer && gl.drawingBufferColorSpace !== "srgb") {
+            gl.drawingBufferColorSpace = "srgb";
+          }
+          this.bindOutputSpace(false, uniforms);
+        },
+      );
+    } finally {
+      // computeHistogram and Upright redraw with what is bound: the frame's
+      // program, encoding its output.
+      gl.useProgram(this.developProgram());
+      gl.uniform1i(this.uniforms.uRawHistogram, 0);
+    }
+  }
+
+  /** The linear colour around (u, v) of the live frame, x right and y down in
+   *  [0, 1] across its buffer, averaged over 5×5 of its pixels, moved inside
+   *  the image at its edge. It is drawn
+   *  from the params, bag and pipeline held now, without the view's overlays.
+   *  "output" is the colour the output stage receives; "mask" the scene-linear
+   *  colour the mask components compare. Null with no source or no float
+   *  render targets. */
+  probe(u: number, v: number, point: ProbePoint): [number, number, number] | null {
+    if (!this.hasImage || !this.params || !this.haveColorBufferFloat) return null;
+    const live = this.roi ?? { x: 0, y: 0, w: 1, h: 1 };
+    // One target pixel per buffer pixel, so the patch's taps and derivatives
+    // see the frame's own pixel spacing.
+    const w = (PROBE_PX / this.canvas.width) * live.w;
+    const h = (PROBE_PX / this.canvas.height) * live.h;
+    // Centred on (u, v), but kept inside the image: a patch over its edge would
+    // average in the margin's colour.
+    const start = (centre: number, size: number): number =>
+      Math.min(Math.max(centre, size / 2), 1 - size / 2) - size / 2;
+    const roi = { x: start(live.x + u * live.w, w), y: start(live.y + v * live.h, h), w, h };
+    try {
+      const raw = this.drawFloat(PROBE_PX, PROBE_PX, { probe: { roi, point } });
+      if (!raw) return null;
+      // The mask point is linear already. Version 3 hands its output stage
+      // signed perceptual values; versions 1 and 2 encode `c` clipped to
+      // [0, 1], with the sRGB curve over that range. Each pixel is decoded
+      // before the average, so the patch is averaged in linear light.
+      const linear = (c: number): number =>
+        point === "mask"
+          ? c
+          : decodePerceptual(this.variant.signedOutput ? c : Math.min(Math.max(c, 0), 1));
+      const mean = (ch: number): number => {
+        let sum = 0;
+        for (let i = ch; i < raw.length; i += 4) sum += linear(raw[i]);
+        return sum / (PROBE_PX * PROBE_PX);
+      };
+      return [mean(0), mean(1), mean(2)];
+    } finally {
+      // computeHistogram and Upright redraw with what is bound: the frame's
+      // program, encoding its output over the live window.
+      this.syncPipeline();
+      const gl = this.gl;
+      gl.useProgram(this.developProgram());
+      gl.uniform1i(this.uniforms.uRawHistogram, 0);
+      gl.uniform4f(this.uniforms.uViewport, live.x, live.y, live.w, live.h);
+    }
+  }
+
+  // Draws a frame through render() into a w×h float target, RGBA16F unless
+  // `format` is RGBA32F, and reads it back, bottom-up: the whole frame, a
+  // probe's patch or a measurement, each as Redirect describes it. Null when
+  // the target can't be completed.
+  private drawFloat(
+    w: number,
+    h: number,
+    draw: Pick<Redirect, "probe" | "measure"> = {},
+    format: number = this.gl.RGBA16F,
+  ): Float32Array | null {
+    const gl = this.gl;
+    const target = allocateTarget(gl, format, format === gl.RGBA32F ? gl.FLOAT : gl.HALF_FLOAT, w, h);
+    try {
+      if (!target.complete) return null;
+      this.drawRedirected({ ...draw, fbo: target.fbo, w, h });
+      const raw = new Float32Array(w * h * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, raw);
+      return raw;
+    } finally {
+      releaseTarget(gl, target);
+    }
+  }
+
+  // Draws a frame through render() into the redirect's target instead of the
+  // canvas. A probe's patch and a measurement leave out the view's overlays.
+  private drawRedirected(redirect: Redirect): void {
+    try {
+      this.redirect = redirect;
+      this.render({ viewOverlays: !redirect.probe && !redirect.measure });
+    } finally {
+      this.redirect = null;
+      this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    }
   }
 
   computeHistogram(extended = false): HistogramData {
@@ -2475,9 +2854,11 @@ export class WebGLRenderer {
   // denoise stage cost nothing (its inline glsl early-outs anyway). Booleans and
   // vectors count alongside numbers: a bool/vector-driven prepass used to be seen
   // as inactive (only non-zero numbers qualified), so such stages never ran.
+  // A mask copy whose mask applies nothing (hidden, 0 opacity) is idle too.
   private prepassActive(stageId: string): boolean {
+    if (this.maskCopies().slots.get(stageId) === -1) return false;
     const prefix = stageId + ".";
-    for (const [k, v] of Object.entries(this.contributedParams)) {
+    for (const [k, v] of Object.entries(this.frameBag())) {
       if (!k.startsWith(prefix)) continue;
       if (paramIsActive(v)) return true;
     }
@@ -2489,13 +2870,14 @@ export class WebGLRenderer {
   // values (inline blend params don't affect the prepass, so they're excluded —
   // that's what makes dragging Luminance Amount, exposure, etc. a cache hit).
   private prepassSig(stage: PrepassStage, srcSig: string, w: number, h: number, baseCurve: number): string {
+    const bag = this.frameBag();
     let params = "";
     for (const pass of stage.passes) {
       for (const b of pass.bindings) {
-        params += `${b.qualifiedKey}=${String(this.contributedParams[b.qualifiedKey] ?? b.default)};`;
+        params += `${b.qualifiedKey}=${String(bag[b.qualifiedKey] ?? b.default)};`;
       }
     }
-    const draws = stage.passes.map((p) => passDraws(p, this.contributedParams)).join(",");
+    const draws = stage.passes.map((p) => passDraws(p, bag)).join(",");
     return `${srcSig}|${w}x${h}|${this.linear ? 1 : 0}${this.isFallbackPreview ? 1 : 0}${baseCurve}|${params}|draws:${draws}`;
   }
 
@@ -2514,6 +2896,8 @@ export class WebGLRenderer {
   ) {
     this.prepassResults = [];
     this.overflowed = [];
+    this.unshownCopies = new Set();
+    this.copyPrepassesPending = false;
     this.denoiseReady = false; // set true below only if the denoise prepass yields a real result
     if (this.prepassStages.length === 0) return;
     const gl = this.gl;
@@ -2548,8 +2932,9 @@ export class WebGLRenderer {
         haveTargets &&
         !this.failedPrepass.has(s.stageId) &&
         this.prepassActive(s.stageId) &&
-        stageDraws(s, this.contributedParams) > 0,
+        stageDraws(s, this.frameBag()) > 0,
     );
+    const held = this.putOffCopies(active, frame);
     // Layers for every active stage at once, so the array grows at most once a frame.
     if (layered) {
       const ids = this.prepassStages
@@ -2568,7 +2953,7 @@ export class WebGLRenderer {
     for (let i = 0; i < this.prepassStages.length; i++) {
       const stage = this.prepassStages[i];
       if (stage.layerUniform !== undefined) {
-        this.runLayerStage(stage, stage.layerUniform, active[i], frame);
+        this.runLayerStage(stage, stage.layerUniform, active[i], frame, held.has(i));
         continue;
       }
       const unit = unitOf.get(i);
@@ -2588,7 +2973,8 @@ export class WebGLRenderer {
       // skip the passes entirely.
       const { split, sig } = this.prepassKey(stage, frame);
       const cached = this.stageResultTargets.get(stage.stageId);
-      if (cached && cached.w === w && cached.h === h && this.prepassSigs.get(stage.stageId) === sig) {
+      const current = held.has(i) || this.prepassSigs.get(stage.stageId) === sig;
+      if (cached && cached.w === w && cached.h === h && current) {
         this.prepassResults.push({ kind: "unit", resultUniform: stage.resultUniform, tex: cached.tex, unit });
         if (stage.stageId === BUILTIN_DENOISE_ID) this.denoiseReady = true;
         continue;
@@ -2639,6 +3025,42 @@ export class WebGLRenderer {
     }
   }
 
+  // At most maskCopyPrepassesPerFrame mask copies run their passes in a frame
+  // drawn to the canvas, in mask order; the rest wait for the frames after it
+  // (prepassPending). A waiting copy that holds a result from this source at
+  // this size shows it meanwhile (held); one that doesn't applies nothing
+  // (unshown, and idle this frame). Cache hits cost nothing and never wait.
+  private putOffCopies(active: boolean[], frame: PrepassFrame): Set<number> {
+    const held = new Set<number>();
+    const budget = this.redirect ? Infinity : this.maskCopyPrepassesPerFrame;
+    if (budget === Infinity) return held;
+    let started = 0;
+    this.prepassStages.forEach((stage, i) => {
+      if (!active[i] || stage.passesOf === undefined) return;
+      const layered = stage.layerUniform !== undefined;
+      const last = this.prepassSigs.get(layered ? `layer:${stage.stageId}` : stage.stageId);
+      if (last === this.prepassKey(stage, frame).sig) return;
+      if (started < budget) {
+        started++;
+        return;
+      }
+      this.copyPrepassesPending = true;
+      const target = this.stageResultTargets.get(stage.stageId);
+      const sameSource =
+        last !== undefined &&
+        last.startsWith(`${frame.srcSig}|`) &&
+        last.includes(`|${frame.w}x${frame.h}|`) &&
+        (layered || (target?.w === frame.w && target.h === frame.h));
+      if (sameSource) {
+        held.add(i);
+      } else {
+        active[i] = false;
+        this.unshownCopies.add(stage.stageId);
+      }
+    });
+    return held;
+  }
+
   // A layered stage: its result goes to its layer of the shared array, cached
   // apart from the result a version 1 frame keeps in the stage's own target, so
   // frames of the two versions never take each other's.
@@ -2647,6 +3069,7 @@ export class WebGLRenderer {
     layerUniform: string,
     active: boolean,
     frame: PrepassFrame,
+    held = false,
   ): void {
     const layer = active ? this.resultLayers.layer(stage.stageId) : -1;
     if (active && layer < 0) {
@@ -2668,7 +3091,7 @@ export class WebGLRenderer {
     const cacheKey = `layer:${stage.stageId}`;
     try {
       const { split, sig } = this.prepassKey(stage, frame);
-      if (this.prepassSigs.get(cacheKey) !== sig) {
+      if (!held && this.prepassSigs.get(cacheKey) !== sig) {
         const result = this.drawStagePasses(stage, split, frame);
         this.resultLayers.write(stage.stageId, result, frame.w, frame.h);
         this.prepassSigs.set(cacheKey, sig);
@@ -2719,10 +3142,13 @@ export class WebGLRenderer {
       // Distinguish passes by index AND source hash: two passes of one stage
       // with equal-length sources (separable H/V blur) share a length, so a
       // length-only key collided and reused the first pass's program.
-      const key = `${this.stageSig}|${stage.stageId}|${passIdx}|${simpleHash(pass.fragmentSource)}`;
+      // A mask copy draws with its stage's programs (same source, its own values).
+      const owner = stage.passesOf ?? stage.stageId;
+      const key = `${this.stageSig}|${owner}|${passIdx}|${simpleHash(pass.fragmentSource)}`;
       passIdx++;
       const prog = this.getPassProgram(key, pass.fragmentSource, pass.bindings);
-      const draws = passDraws(pass, this.contributedParams);
+      const bag = this.frameBag();
+      const draws = passDraws(pass, bag);
       for (let it = 0; it < draws; it++) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.ppFbo[writeIdx]);
         gl.viewport(0, 0, w, h);
@@ -2740,7 +3166,7 @@ export class WebGLRenderer {
         for (const b of pass.bindings) {
           const loc = prog.locs[b.glslName];
           if (loc == null) continue;
-          bindUniformByType(gl, loc, b.glslType, this.contributedParams[b.qualifiedKey] ?? b.default);
+          bindUniformByType(gl, loc, b.glslType, bag[b.qualifiedKey] ?? b.default);
         }
         gl.drawArrays(gl.TRIANGLES, 0, 6);
         this.draws.pass++;
@@ -2782,6 +3208,20 @@ export class WebGLRenderer {
     if (okLoc != null) gl.uniform1i(okLoc, this.denoiseReady ? 1 : 0);
   }
 
+  // Each mask copy's coverage slot: its mask's index, or -1 while the mask
+  // applies nothing or the copy's prepass hasn't run yet. A copy the program
+  // has but the frame's masks don't call for (a program kept from another
+  // photo after a failed build) gets -1 too.
+  private bindMaskSlots(): void {
+    const slots = this.maskCopies().slots;
+    for (const ms of this.maskSlotBindings) {
+      const loc = this.uniforms[ms.glslName];
+      if (loc == null) continue;
+      const slot = this.unshownCopies.has(ms.stageId) ? -1 : (slots.get(ms.stageId) ?? -1);
+      this.gl.uniform1i(loc, slot);
+    }
+  }
+
   // Points a layered program's result array at the first prepass unit.
   private bindResultArray(): void {
     const gl = this.gl;
@@ -2816,7 +3256,7 @@ export class WebGLRenderer {
     for (const [qk, data] of Object.entries(this.stageTextures)) textureVersions[qk] = data.version;
     return this.splitTokens.token(stageId, split, {
       params,
-      bag: this.contributedParams,
+      bag: this.frameBag(),
       textureVersions,
       context: [
         this.pipelineSig,
@@ -2919,10 +3359,10 @@ export class WebGLRenderer {
     // three once float colour buffers are renderable, and it also keeps the headroom
     // and the channels below black: the copy a version 2 photo develops from.
     // Version 1 photos keep the clipped copy their edits were made with.
-    const wanted: DevelopedFormat =
-      this.variant.fullInfo && this.haveFloat16Developed ? "float16"
-      : this.haveNorm16 ? "norm16"
-      : "rgba8";
+    const wanted = developedFormatFor(this.variant, {
+      float16: this.haveFloat16Developed,
+      norm16: this.haveNorm16,
+    });
     if (this.devW !== w || this.devH !== h || this.developedFormat !== wanted) {
       // Try the wanted format first; if its target isn't framebuffer-complete on
       // this device, step down to norm16, then RGBA8, rather than fail.
@@ -3009,6 +3449,8 @@ export class WebGLRenderer {
     if (this.dummyStageTex) gl.deleteTexture(this.dummyStageTex);
     for (const e of this.passPrograms.values()) gl.deleteProgram(e.program);
     this.passPrograms.clear();
+    if (this.sharpenPrograms) deleteSharpenPrograms(gl, this.sharpenPrograms);
+    this.sharpenPrograms = null;
     // Fallback entries can share a program under several sigs — dedupe.
     // The active program is always one of the cache's entries, so the cache covers it.
     const programs = new Set<WebGLProgram>();

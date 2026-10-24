@@ -51,11 +51,14 @@ describe("clipping overlay", () => {
   it("hydrates the stored bitmask", () => {
     expect(boot({ sl_show_clipping: "2" }).getState().showClipping).toBe(2);
     expect(boot({ sl_show_clipping: "3" }).getState().showClipping).toBe(3);
+    expect(boot({ sl_show_clipping: "5" }).getState().showClipping).toBe(5);
   });
 
   it("falls back to off for a missing or unrecognised stored value", () => {
     expect(boot().getState().showClipping).toBe(0);
-    expect(boot({ sl_show_clipping: "7" }).getState().showClipping).toBe(0);
+    expect(boot({ sl_show_clipping: "9" }).getState().showClipping).toBe(0);
+    expect(boot({ sl_show_clipping: "-1" }).getState().showClipping).toBe(0);
+    expect(boot({ sl_show_clipping: "3.5" }).getState().showClipping).toBe(0);
   });
 
   it("persists the mode set from the UI", () => {
@@ -64,10 +67,10 @@ describe("clipping overlay", () => {
     expect(localStorage.getItem("sl_show_clipping")).toBe("1");
   });
 
-  it("toggles between off and both channels", () => {
+  it("toggles between off and every warning, the gamut warning included", () => {
     store.getState().toggleClipping();
-    expect(store.getState().showClipping).toBe(3);
-    expect(localStorage.getItem("sl_show_clipping")).toBe("3");
+    expect(store.getState().showClipping).toBe(7);
+    expect(localStorage.getItem("sl_show_clipping")).toBe("7");
     store.getState().toggleClipping();
     expect(store.getState().showClipping).toBe(0);
     expect(localStorage.getItem("sl_show_clipping")).toBe("0");
@@ -77,6 +80,26 @@ describe("clipping overlay", () => {
     store.getState().setShowClipping(2); // highlights only
     store.getState().toggleClipping();
     expect(store.getState().showClipping).toBe(0);
+  });
+});
+
+describe("soft proof", () => {
+  it("is off until it is turned on", () => {
+    expect(store.getState().proof).toBe(false);
+  });
+
+  it("flips on each toggle", () => {
+    store.getState().toggleProof();
+    expect(store.getState().proof).toBe(true);
+    store.getState().toggleProof();
+    expect(store.getState().proof).toBe(false);
+  });
+
+  it("is never persisted, so it is off again on launch", () => {
+    store.getState().toggleProof();
+    store.getState().toggleProof();
+    store.getState().toggleProof();
+    expect(localStorage.length).toBe(0);
   });
 });
 

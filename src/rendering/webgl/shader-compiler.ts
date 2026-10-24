@@ -24,12 +24,22 @@ function hashStageId(stageId: string): string {
   return (h >>> 0).toString(36).slice(0, 4);
 }
 
+// A mask copy's id ("{stageId}@{n}", mask-stage-instances.ts) is namespaced
+// under its stage's hash with the copy number after it: the hash keeps the id's
+// high digits, which a number at its end leaves alone, so the copies' own
+// hashes collide. A key, a GLSL identifier, can't start with the digit that
+// follows, so no name of the stage's can match a copy's.
+function namespaceOf(stageId: string): string {
+  const copy = /^(.*)@(\d+)$/.exec(stageId);
+  return copy ? `${hashStageId(copy[1])}_${copy[2]}m` : hashStageId(stageId);
+}
+
 export function uniformPrefix(stageId: string): string {
-  return `u_${hashStageId(stageId)}_`;
+  return `u_${namespaceOf(stageId)}_`;
 }
 
 export function helperPrefix(stageId: string): string {
-  return `_${hashStageId(stageId)}_`;
+  return `_${namespaceOf(stageId)}_`;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +66,11 @@ export function replaceIdentifiers(
     out = out.replace(new RegExp(`\\b${escapeRegExp(name)}\\b`, "g"), prefix + name);
   }
   return out;
+}
+
+/** Whether `src` names any of `names` as a whole identifier. */
+export function mentionsIdentifier(src: string, names: readonly string[]): boolean {
+  return names.some((name) => new RegExp(`\\b${escapeRegExp(name)}\\b`).test(src));
 }
 
 export function rewriteGlsl(

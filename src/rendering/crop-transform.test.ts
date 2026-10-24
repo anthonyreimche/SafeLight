@@ -12,6 +12,7 @@ import {
   computeCropForAspect,
   constrainCropToImage,
   cropFitsImage,
+  cropOutputSize,
   fitCropToImage,
   fitLockedCrop,
   maxCropForTransform,
@@ -111,6 +112,26 @@ describe("computeCropForAspect", () => {
     expect(c.width).toBeCloseTo(2 / 3, 12);
     expect(c.height).toBe(1);
     expect(c.x).toBeCloseTo(1 / 6, 12);
+  });
+});
+
+// The develop output for the whole crop (no zoom window): the view takes its shape
+// from this even while the renderer only draws windows of it.
+describe("cropOutputSize", () => {
+  it("is the crop's own pixels while they fit under the long edge", () => {
+    const crop = computeCropForAspect(3 / 2, 4 / 3);
+    expect(cropOutputSize(4000, 3000, crop, 4096)).toEqual({ width: 4000, height: 2667 });
+    expect(cropOutputSize(4000, 3000, FULL, 4096)).toEqual({ width: 4000, height: 3000 });
+  });
+
+  it("scales a crop past the long edge down to it, keeping its shape", () => {
+    const padded = transformedViewCrop(ID);
+    expect(cropOutputSize(4000, 3000, padded, 4096)).toEqual({ width: 4096, height: 3072 });
+  });
+
+  it("never goes below one pixel", () => {
+    const sliver = { x: 0, y: 0, width: 1e-6, height: 1 };
+    expect(cropOutputSize(4000, 3000, sliver, 4096)).toEqual({ width: 1, height: 3000 });
   });
 });
 

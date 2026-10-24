@@ -126,6 +126,7 @@ export const REPORTED_SETTINGS = [
   "developPrefetchNeighbors",
   "highBitDepth",
   "liveHistogram",
+  "autoSaveCollapsedPanels",
 ] as const satisfies readonly (keyof AppSettings)[];
 
 const PLATFORM_NAMES: Record<string, string> = { win32: "Windows", darwin: "macOS", linux: "Linux" };

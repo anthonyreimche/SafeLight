@@ -111,6 +111,10 @@ export interface AppSettings {
    *  already preserves micro-contrast on its own, so these are opt-in controls
    *  for users who want to tune (or reverse) that per band. */
   basicDetailSliders: boolean;
+  /** Collapsing or expanding a dock panel while a saved layout is picked writes
+   *  the change into that layout. Off = the edit turns the layout into Custom,
+   *  like any other dock edit, until it is saved with ↻. */
+  autoSaveCollapsedPanels: boolean;
 
   // ── Accessibility ──────────────────────────────────────────────────────
   // All off/neutral by default: the themes ship as designed, and a user who
@@ -319,6 +323,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   windowDim: 0.6,
   sliderJumpToCursor: false,
   basicDetailSliders: false,
+  autoSaveCollapsedPanels: true,
   highContrast: false,
   strongFocus: false,
   colorVisionFilter: "none",

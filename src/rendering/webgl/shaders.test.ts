@@ -10,19 +10,40 @@ import { describe, expect, it } from "vitest";
 import {
   V1_VARIANT,
   V2_VARIANT,
+  V3_VARIANT,
   buildFragmentShader,
   shaderVariantFor,
+  variantKey,
   type StageInjection,
 } from "./shaders";
 
 describe("shaderVariantFor", () => {
   it("renders anything that isn't a stored version 2 or later as version 1", () => {
-    for (const v of [undefined, null, 0, 1, 1.5, "2"]) expect(shaderVariantFor(v)).toBe(V1_VARIANT);
+    for (const v of [undefined, null, 0, -3, 1, 1.5, "2"]) expect(shaderVariantFor(v)).toBe(V1_VARIANT);
   });
 
-  it("renders version 2, and any newer version this build doesn't know, as version 2", () => {
-    expect(shaderVariantFor(2)).toBe(V2_VARIANT);
-    expect(shaderVariantFor(7)).toBe(V2_VARIANT);
+  it("renders version 2, and any newer version the default cap doesn't allow, as version 2", () => {
+    for (const v of [2, 3, 7, 99]) expect(shaderVariantFor(v)).toBe(V2_VARIANT);
+  });
+
+  it("renders a newer version as the newest the cap allows", () => {
+    expect(shaderVariantFor(3, 3)).toBe(V3_VARIANT);
+    expect(shaderVariantFor(99, 3)).toBe(V3_VARIANT);
+    expect(shaderVariantFor(2, 3)).toBe(V2_VARIANT);
+  });
+});
+
+describe("variants", () => {
+  // The renderer's shoulder gate and developed-copy format read fullInfo, so
+  // version 3 keeps version 2's decisions until a task changes them on purpose.
+  it("name what each version changes", () => {
+    expect(V1_VARIANT).toEqual({ version: 1, fullInfo: false, signedOutput: false });
+    expect(V2_VARIANT).toEqual({ version: 2, fullInfo: true, signedOutput: false });
+    expect(V3_VARIANT).toEqual({ version: 3, fullInfo: true, signedOutput: true });
+  });
+
+  it("key the program cache as before", () => {
+    expect([V1_VARIANT, V2_VARIANT, V3_VARIANT].map(variantKey)).toEqual(["pv1", "pv2", "pv3"]);
   });
 });
 

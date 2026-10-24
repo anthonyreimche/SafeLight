@@ -115,6 +115,14 @@ describe("splitUpstreamKey", () => {
     expect(withMask({ exposure: 1 })).not.toBe(withMask({}));
   });
 
+  // A mask's bag drives its stage copies, which reach a split through the bag
+  // under their own keys when they run upstream of it, like any other stage.
+  it.each<SplitCut>(["scene", "display"])("ignores a mask's extension values for a %s cut", (cut) => {
+    const withBag = (bag: Record<string, unknown>) =>
+      key({ cut, params: { ...freshParams(5000), masks: [{ ...MASK, bag }] } });
+    expect(withBag({ "up.stage.amount": 9 })).toBe(withBag({ "up.stage.amount": 1 }));
+  });
+
   it("changes with the renderer context", () => {
     expect(key({ context: "other" })).not.toBe(key());
   });

@@ -46,6 +46,11 @@ interface ViewportImageProps {
   // zoom window); null or absent, the whole image. The canvas is placed by it, so a
   // buffer drawn for another view shows where its pixels belong in this one.
   bufferWindow?: ImageWindow | null;
+  // The size of a buffer of the whole image, which a window buffer is part of; 0 or
+  // absent, unknown. A crop made while zoomed in changes the image's shape with only
+  // window buffers coming, so they bring it.
+  imageWidth?: number;
+  imageHeight?: number;
   zoom: number | null; // null = fit; number = scale (1 = 100% of buffer)
   onZoomChange: (zoom: number | null) => void;
   // A short word on what the image shows (e.g. "Preview"), in the frame's corner.
@@ -139,6 +144,8 @@ export function ViewportImage({
   bufferWidth,
   bufferHeight,
   bufferWindow = null,
+  imageWidth = 0,
+  imageHeight = 0,
   zoom,
   onZoomChange,
   status,
@@ -204,10 +211,13 @@ export function ViewportImage({
 
   // Logical full-image buffer dims: the size of the last buffer that held the whole
   // image. A window buffer (the develop renderer's zoom) holds only part of it, so
-  // pan/zoom math keeps the dims of the last whole one, whatever the zoom.
+  // pan/zoom math keeps the dims of the last whole one, whatever the zoom, or the
+  // whole size a window buffer comes with.
   const fitBufferRef = useRef({ w: 0, h: 0 });
   if (!bufferWindow && bufferWidth > 0 && bufferHeight > 0) {
     fitBufferRef.current = { w: bufferWidth, h: bufferHeight };
+  } else if (bufferWindow && imageWidth > 0 && imageHeight > 0) {
+    fitBufferRef.current = { w: imageWidth, h: imageHeight };
   }
   // Stable full-image dims: the dims captured from a whole buffer, falling back to
   // the live buffer until the first one lands.

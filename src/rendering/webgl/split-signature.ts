@@ -50,10 +50,17 @@ const LINEAR_MASK_ADJUSTMENTS: readonly (keyof MaskAdjustments)[] = [
   "exposure", "highlights", "shadows", "temperature", "tint",
 ];
 
+// A mask's bag drives its stage copies (mask-stage-instances.ts), whose values
+// reach a split through the stage bag under the copies' own keys, upstream
+// copies only, as any stage's do.
+function stagelessMask(m: Mask): Mask {
+  return { ...m, bag: undefined };
+}
+
 // Masks feed a scene cut through their coverage and linear adjustments only.
 function sceneMask(m: Mask): unknown {
   const adj = Object.fromEntries(LINEAR_MASK_ADJUSTMENTS.map((k) => [k, m.adj[k]]));
-  return { ...m, adj, hsl: undefined, toneCurve: undefined };
+  return { ...stagelessMask(m), adj, hsl: undefined, toneCurve: undefined };
 }
 
 function feedingParams(params: DevelopParams, cut: SplitCut): [string, unknown][] {
@@ -61,7 +68,7 @@ function feedingParams(params: DevelopParams, cut: SplitCut): [string, unknown][
   const dropped = new Set<string>(
     cut === "scene" ? [...NEVER_UPSTREAM, ...DISPLAY_ONLY] : NEVER_UPSTREAM,
   );
-  const masks = cut === "scene" ? params.masks.map(sceneMask) : params.masks;
+  const masks = params.masks.map(cut === "scene" ? sceneMask : stagelessMask);
   return Object.entries(params)
     .filter(([k]) => !dropped.has(k))
     .map(([k, v]) => [k, k === "masks" ? masks : v]);

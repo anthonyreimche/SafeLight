@@ -75,12 +75,13 @@ export interface PanelContribution {
 
 /** Per-mask instance of a panel: a compact variant rendered inside the Masking
  *  panel's Adjust tab. The component reads and writes the mask it belongs to
- *  through the mask scope (useMaskScope in core panels,
- *  api.develop.useMaskScope for extensions) — never the global develop params.
- *  Core adjustments (scope.adj / hsl / toneCurve) are applied by the GPU's
- *  local-adjustment path today; extension params (scope.setParam) are persisted
- *  per mask, but extension stages still apply globally — per-mask stage
- *  application is a planned follow-up. */
+ *  through the mask scope (useMaskScope in core panels, api.develop.useMaskScope
+ *  or api.develop.useParamScope for extensions) — never the global develop
+ *  params. Core adjustments (scope.adj / hsl / toneCurve) go to the GPU's
+ *  local-adjustment path; extension params (scope.setParams) to the mask's bag,
+ *  where each maskable stage they belong to runs once more inside the mask
+ *  (ProcessingStageContribution.mask). A stage that isn't maskable keeps its
+ *  values there unused. */
 export interface MaskPanelContribution {
   component: ComponentType;
   /** Sort position among a mask's sub-panels (lower = higher up). Default 100. */
@@ -89,7 +90,9 @@ export interface MaskPanelContribution {
    *  the structured blocks ("hsl", "toneCurve"), or qualified extension param
    *  keys ("my-ext.stage.amount"). Seeded with defaults when the sub-panel is
    *  added to a mask, cleared when it's removed, and restored to defaults by
-   *  the mask's Reset action. */
+   *  the mask's Reset action. List every key the component writes: a mask runs
+   *  a stage's copy while its bag holds any of the stage's keys, so one left
+   *  out would keep the copy running after the sub-panel is removed. */
   owns: readonly string[];
 }
 
@@ -114,6 +117,8 @@ export interface ModuleLayoutDef {
   rails: LayoutRail[];
   /** Panels that start as floating windows. */
   floating?: Record<string, { x: number; y: number; width: number }>;
+  /** Panels that start collapsed to their header. */
+  collapsed?: string[];
 }
 
 /** A named dock arrangement selectable from the Layout menu. Modules omitted
@@ -495,9 +500,25 @@ export interface ExportProcessorContext {
   longEdge: number | null;
 }
 
-/** A post-processing step called for each image after the WebGL pipeline
- *  encodes it to a Blob. Processors run in registration order, each receiving
- *  the Blob returned by the previous step. */
+/** An export's pixels before encoding: RGBA, top-down, encoded for the
+ *  export's colour space, 0..65535 (an 8-bit export's value is this divided by
+ *  257). */
+export interface ExportFrame {
+  data: Uint16Array;
+  width: number;
+  height: number;
+  colorSpace: import("@/rendering/color-space").ColorSpaceId;
+  /** The ICC profile the file will embed, or null (sRGB). */
+  icc: Uint8Array | null;
+  /** What the frame will be quantised to. */
+  bitDepth: 8 | 16;
+}
+
+/** A step called for each exported image: on its pixels before encoding
+ *  (`processPixels`), on the encoded Blob (`process`), or both; a processor
+ *  declares at least one. Processors run in registration order, every
+ *  `processPixels` before any `process`, each receiving what the previous step
+ *  returned. */
 export interface ExportProcessorContribution {
   /** Globally unique, e.g. "my-ext.watermark". */
   id: string;
@@ -506,19 +527,32 @@ export interface ExportProcessorContribution {
   /** Optional settings that appear in the Export panel UI. */
   settings?: ExportProcessorField[];
   /**
-   * Called once per exported image.
+   * Called once per exported image, after it is encoded.
    * @param blob    The encoded image Blob from the previous pipeline stage.
    * @param photo   The CatalogPhoto record (filename, exif, rating, …).
    * @param settings  Current values of the declared settings fields.
    * @param context   The export's own settings that a processor may need.
    * @returns       A new Blob, or the original if no modification was needed.
    */
-  process(
+  process?(
     blob: Blob,
     photo: import("@/catalog/types").CatalogPhoto,
     settings: Record<string, unknown>,
     context: ExportProcessorContext,
   ): Promise<Blob>;
+  /**
+   * Called once per exported image with its pixels, after mapping and
+   * sharpening, before quantisation and encode. Change `frame.data` in place
+   * and return nothing, or return a frame, which may change size (a mat). Only
+   * the returned `data`, `width` and `height` are read. Needs Safelight 3.1.0:
+   * older builds ignore it and require `process`.
+   */
+  processPixels?(
+    frame: ExportFrame,
+    photo: import("@/catalog/types").CatalogPhoto,
+    settings: Record<string, unknown>,
+    context: ExportProcessorContext,
+  ): Promise<ExportFrame | void>;
 }
 
 /** A filename template variable set contributed by an extension. Safelight
@@ -669,6 +703,17 @@ export const PROCESSING_PHASE_ORDER: ProcessingPhase[] = [
   "output-encode",
 ];
 
+/** The phases a stage can be masked in (ProcessingStageContribution.mask):
+ *  those that run after mask coverage is known. Geometry, decode and noise
+ *  reduction run before it. */
+export const MASKABLE_PHASES: readonly ProcessingPhase[] = [
+  "scene-linear",
+  "tone-map",
+  "display-adjust",
+  "effects",
+  "output-encode",
+];
+
 /** One full-screen GPU pass run BEFORE the main develop draw. Passes ping-pong
  *  through framebuffers in source-UV space at source resolution, so iterative
  *  and neighbourhood algorithms (à trous wavelets, non-local means, separable
@@ -754,10 +799,16 @@ export interface ProcessingStageContribution {
 
   textures?: TextureRequirement[];
 
-  /** Reserved, not implemented: nothing in the render path reads it, and
-   *  registering a stage that sets it logs a warning. Meant for masked local
-   *  adjustments. */
-  mask?: { maskable: true; maskPhase: "linear" | "display" };
+  /** Lets the stage run again inside local adjustment masks. A mask whose
+   *  `bag` holds one of the stage's keys (written by a panel's
+   *  `PanelContribution.mask` component) gets its own copy of the stage, right
+   *  after it in the pipeline: same glsl and passes, the mask's values, blended
+   *  in by the mask's coverage. Copies chain in mask order, each reading the
+   *  image as the one before left it, and a copy's passes run on their own.
+   *  Only stages in MASKABLE_PHASES can be masked (registration warns for the
+   *  others), and only on photos at process version 2 or later. A copy hands
+   *  on none of the stage's `produces`. */
+  mask?: { maskable: true };
 
   /** How this stage's params behave in presets. "global" (the default) is a
    *  look that applies to any photo — e.g. a film sim or a curve — so it is
@@ -1286,10 +1337,16 @@ export interface SafelightAPI {
     };
     /** The mask a sub-panel instance belongs to (valid only inside a
      *  PanelContribution.mask component). Core local adjustments go through
-     *  adj/setAdj; extension params through getParam/setParam (persisted in the
-     *  mask's bag — not yet applied by extension stages). `commit` ends a
+     *  adj/setAdj; extension params through getParam/setParam/setParams, kept in
+     *  the mask's bag, where they run a copy of each maskable stage they belong
+     *  to inside the mask (ProcessingStageContribution.mask). `commit` ends a
      *  gesture as one undo step. */
     useMaskScope(): import("@/modules/develop/mask-scope").MaskParamScope;
+    /** The params a panel component edits: the mask's inside a
+     *  PanelContribution.mask component, the photo's paramBag anywhere else, with
+     *  `maskId` null. Lets one component serve as both a panel's `component` and
+     *  its `mask.component`. */
+    useParamScope(): import("@/modules/develop/mask-scope").ParamScope;
     /** The frame is for measuring: sRGB, and without the clipping warning, the
      *  mask overlay and the sharpening preview the view may be showing. Pass
      *  `{ asShown: true }` for a frame drawn over the canvas: it keeps those
@@ -1304,6 +1361,42 @@ export interface SafelightAPI {
       params: import("@/catalog/types").DevelopParams,
       options?: { asShown?: boolean; paramBag?: Record<string, unknown> },
     ): Promise<ImageBitmap>;
+    /** captureFrame's frame as floats, for values an 8-bit sRGB bitmap can't
+     *  hold: RGBA, top-down, alpha 1. `point` "pre-output" (the
+     *  default) is the signed colour every stage has finished with, as the
+     *  output stage receives it: above 1 and below 0 where the photo goes
+     *  there (version 1 photos clamp it to [0, 1] after the display
+     *  transform, and hand over that). "output" is what the output stage
+     *  makes of it in sRGB, in [0, 1]. The frame is converted into `space`,
+     *  default `{ encoding: "linear", primaries: "rec709" }`. It is always a
+     *  measurement: sRGB, unproofed, without the view's overlays. As with
+     *  captureFrame, neither the params nor `paramBag` reach the live view or
+     *  the core's measurements of it. The floats are read straight from
+     *  the render target, never through an image encoder, so this supersedes
+     *  renderPhotoFrame's `lossless` for frames that carry data. Null without
+     *  float render targets (or with no photo open), so feature-detect with
+     *  it. `maxEdge` is the frame's long edge in pixels: 1280 by default
+     *  (about 17 MB of floats for a 3:2 frame), never upscaled. The frame is
+     *  the pipeline drawn at that size, not a shrunk copy of the full view:
+     *  tone and colour match the full view, but sharpening, noise reduction
+     *  and texture take their radii from the photo's own pixels, so in a
+     *  frame much smaller than the view (the default, from a 4096 px view)
+     *  their effect is lost or even reversed. Ask for `{ maxEdge: Infinity }`
+     *  to measure fine detail. `Infinity` asks for the full view, 16 bytes a
+     *  pixel: at fit at most the Develop render resolution in Preferences
+     *  (4096 px on the long edge by default, about 180 MB, up to 8192 px),
+     *  zoomed in the visible window at the screen's device pixels. Converting
+     *  that holds the render worker for around a second, during which the view
+     *  doesn't redraw, so ask for it only when you need its detail. The
+     *  perceptual space (`{ encoding: "perceptual" }`, Rec.709) skips the
+     *  conversion.
+     *  While Develop still shows the camera preview, before the RAW decodes,
+     *  the frame is drawn from that preview, as captureFrame's is. Needs
+     *  Safelight 3.1.0; on older builds it is undefined. */
+    captureFloatFrame(
+      params: import("@/catalog/types").DevelopParams,
+      options?: import("@/rendering/float-frame").LiveFloatCaptureOptions,
+    ): Promise<import("@/rendering/float-frame").FloatFrame | null>;
     /** Render an arbitrary catalog photo by id through the full develop pipeline
      *  with `params` (and optionally that photo's extension-stage `paramBag`) to
      *  an off-screen ImageBitmap, or null if it can't render. Unlike captureFrame
@@ -1317,7 +1410,7 @@ export interface SafelightAPI {
      *  wrote reaches the bitmap exactly: use it for a frame that carries data,
      *  such as a stage's measurement encoding, which a JPEG would smear across
      *  neighbouring values. A PNG costs more to encode than a JPEG, so leave it
-     *  off for a frame you only look at. Needs Safelight 3.1.0; earlier builds
+     *  off for a frame you only look at. Needs Safelight 3.0.1; earlier builds
      *  ignore the option and return the JPEG. A lossless frame is null where only
      *  the grid's camera preview could stand in for the photo: that is another
      *  source, so no frame is better than a wrong one. */
@@ -1327,6 +1420,23 @@ export interface SafelightAPI {
       paramBag?: Record<string, unknown>,
       options?: { lossless?: boolean },
     ): Promise<ImageBitmap | null>;
+    /** renderPhotoFrame's frame as floats: captureFloatFrame's FloatFrame, with
+     *  the same `point` and `space`, for any catalog photo. Rendered small, at
+     *  most 640 px on the long edge (about 4 MB of floats, where a default
+     *  captureFloatFrame frame is about 17 MB), so it suits measuring a
+     *  selection. `options.paramBag` is drawn as renderPhotoFrame draws its
+     *  `paramBag`. When Safelight can't decode the original (an unsupported
+     *  RAW, or an offline original) the frame is drawn from the photo's stored
+     *  or embedded preview, as renderPhotoFrame's lossless frame is, so its
+     *  values stay within [0, 1]. Null if the photo can't render from a source
+     *  of its own: the grid's camera preview never stands in, as for a lossless
+     *  frame, since that is another source. Null without float render targets
+     *  too. Needs Safelight 3.1.0; on older builds it is undefined. */
+    renderPhotoFloatFrame(
+      photoId: string,
+      params: import("@/catalog/types").DevelopParams,
+      options?: import("@/rendering/float-frame").FloatCaptureOptions,
+    ): Promise<import("@/rendering/float-frame").FloatFrame | null>;
     /** Drive the Develop-canvas cursor while a tool is active. Pass a registered
      *  cursor id (built-in token or one from registerCursor), an inline spec, or
      *  a raw CSS value; pass null to clear. Higher `priority` wins when several

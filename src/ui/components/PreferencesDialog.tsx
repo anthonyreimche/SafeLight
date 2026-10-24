@@ -201,6 +201,7 @@ const CORE_SECTIONS: PrefSection[] = [
     items: settings(
       "Theme",
       "Panel layout",
+      "Save collapsed panels to the layout",
       "Interface scale",
       "Canvas surround",
       "Color assessment border",
@@ -696,6 +697,7 @@ function InterfaceSection() {
   const sliderJumpToCursor = useSettings((s) => s.sliderJumpToCursor);
   const basicDetailSliders = useSettings((s) => s.basicDetailSliders);
   const restoreLastProject = useSettings((s) => s.restoreLastProject);
+  const autoSaveCollapsedPanels = useSettings((s) => s.autoSaveCollapsedPanels);
 
   return (
     <div className="flex flex-col gap-4">
@@ -711,6 +713,12 @@ function InterfaceSection() {
         />
       </Field>
       <LayoutField />
+      <ToggleField
+        label="Save collapsed panels to the layout"
+        hint="Collapsing or expanding a panel updates the saved layout you're using, so panels stay that way when you switch between Library and Develop. Off: collapsing a panel switches to Custom until you save the layout with ↻."
+        checked={autoSaveCollapsedPanels}
+        onChange={(v) => updateSettings({ autoSaveCollapsedPanels: v })}
+      />
       <Field label="Interface scale">
         <ScaleStepper
           value={uiScale}
@@ -1235,8 +1243,9 @@ function displayProfileStatus(
   }
 }
 
-// Linux only: Wayland leaves Safelight's window unconverted, so the Develop
-// view converts itself to the monitor's profile.
+// Linux only: Wayland desktops other than a colour-managed KDE leave
+// Safelight's window unconverted, so the Develop view converts itself to the
+// monitor's profile.
 function DisplayProfileField() {
   const path = useSettings((s) => s.displayProfilePath);
   const status = displayProfileStatus(useDisplayProfile());
@@ -1256,7 +1265,7 @@ function DisplayProfileField() {
   return (
     <Field
       label="Display profile"
-      hint="Under Wayland nothing converts Safelight's window to your monitor, so a wide-gamut monitor shows colors oversaturated. Choose the monitor's ICC profile to convert the Develop view to it. Leave this empty if you run Safelight under X11 with the monitor's profile already set (the FAQ workaround), or colors are converted twice. Library thumbnails aren't converted, and exports don't change."
+      hint="Under Wayland, Safelight's window reaches your monitor unconverted unless your desktop converts it, so a wide-gamut monitor shows colors oversaturated. Choose the monitor's ICC profile to convert the Develop view to it. On KDE Plasma, set Color profile in System Settings ▸ Display & Monitor instead, which converts every app. Leave this empty when your desktop already converts (KDE with a Color profile set, or the X11 workaround from the FAQ), or colors are converted twice. Library thumbnails aren't converted, and exports don't change."
     >
       <div className="flex items-center gap-1.5">
         <span

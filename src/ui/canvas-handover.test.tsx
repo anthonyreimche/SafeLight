@@ -18,6 +18,8 @@ import {
 } from "./canvas-handover";
 
 let copies: { into: HTMLCanvasElement; image: unknown }[];
+/** The options each getContext("2d") was given, in order. */
+let contextOptions: unknown[];
 let canvasContext: PropertyDescriptor | undefined;
 
 function canvas(width: number, height: number): HTMLCanvasElement {
@@ -40,11 +42,13 @@ const RECT = { x: 10, y: 20, w: 300, h: 200 };
 
 beforeEach(() => {
   copies = [];
+  contextOptions = [];
   canvasContext = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, "getContext");
   Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
     configurable: true,
-    value: function getContext(this: HTMLCanvasElement) {
+    value: function getContext(this: HTMLCanvasElement, _type: string, options?: unknown) {
       const into = this;
+      contextOptions.push(options);
       const drawImage = (image: unknown) => {
         // As a browser does: a canvas with no pixels can't be drawn.
         if (image instanceof HTMLCanvasElement && (!image.width || !image.height)) {
@@ -61,6 +65,7 @@ afterEach(() => {
   endHandover();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   if (canvasContext) {
     Object.defineProperty(HTMLCanvasElement.prototype, "getContext", canvasContext);
   }
@@ -89,6 +94,18 @@ describe("takeHandover", () => {
     expect(into.style.width).toBe("300px");
     expect(into.style.height).toBe("200px");
     expect(into.style.boxShadow).toBe("none");
+  });
+
+  // The picture left holds P3 pixels on a P3 screen; a copy in an sRGB context
+  // would squeeze them back to sRGB.
+  it.each([
+    [true, "display-p3"],
+    [false, "srgb"],
+  ])("draws it in a context for the screen's space (P3 screen: %s)", (p3, colorSpace) => {
+    vi.stubGlobal("matchMedia", () => ({ matches: p3 }));
+    leavePicture({ canvas: canvas(600, 400), rect: RECT, mat: 0 });
+    takeHandover(handover());
+    expect(contextOptions).toEqual([{ colorSpace }]);
   });
 
   it("frames it in the colour-assessment mat it had", () => {

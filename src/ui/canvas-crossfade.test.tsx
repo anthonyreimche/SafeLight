@@ -13,6 +13,8 @@ import { cancelCrossfade, snapshotCrossfade } from "./canvas-crossfade";
 
 let frameQueue: Map<number, FrameRequestCallback>;
 let copies: { into: HTMLCanvasElement; image: unknown }[];
+/** The options each getContext("2d") was given, in order. */
+let contextOptions: unknown[];
 let canvasContext: PropertyDescriptor | undefined;
 
 function nextFrame() {
@@ -38,11 +40,13 @@ beforeEach(() => {
   });
   vi.stubGlobal("cancelAnimationFrame", (id: number) => frameQueue.delete(id));
   copies = [];
+  contextOptions = [];
   canvasContext = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, "getContext");
   Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
     configurable: true,
-    value: function getContext(this: HTMLCanvasElement) {
+    value: function getContext(this: HTMLCanvasElement, _type: string, options?: unknown) {
       const into = this;
+      contextOptions.push(options);
       return { drawImage: (image: unknown) => copies.push({ into, image }) };
     },
   });
@@ -69,6 +73,17 @@ describe("snapshotCrossfade", () => {
     expect(overlay.height).toBe(400);
     expect(overlay.style.opacity).toBe("1");
     expect(overlay.style.transition).toBe("none");
+  });
+
+  // The display canvas holds P3 pixels on a P3 screen; a copy in an sRGB context
+  // would squeeze them back to sRGB.
+  it.each([
+    [true, "display-p3"],
+    [false, "srgb"],
+  ])("takes the copy in a context for the screen's space (P3 screen: %s)", (p3, colorSpace) => {
+    vi.stubGlobal("matchMedia", () => ({ matches: p3 }));
+    snapshotCrossfade(canvas(600, 400), canvas(10, 10), 150);
+    expect(contextOptions).toEqual([{ colorSpace }]);
   });
 
   it("eases the copy out over the time asked, from the second animation frame", () => {

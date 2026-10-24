@@ -94,14 +94,22 @@ To *replace* a stock panel, register your own and tell users to disable the buil
 
 ### Per-mask panels (`PanelContribution.mask`)
 
-A panel that declares `mask` shows up in the Masking panel's **+ Adjust** menu, and each mask that adds it renders its own instance of `mask.component` in the mask's Adjust tab. The built-in Basic, White Balance, HSL, Tone Curve and Detail panels work this way.
+A panel that declares `mask` shows up in the Masking panel's **+ Adjust** menu, and each mask that adds it renders its own instance of `mask.component` in the mask's Adjust tab. Selecting another mask mounts the component afresh, so its own state never carries from one mask to the next. The built-in Basic, White Balance, HSL, Tone Curve and Detail panels work this way.
 
 `owns` lists the mask values the sub-panel edits: `MaskAdjustments` keys (`"exposure"`, `"clarity"`, …), the structured blocks `"hsl"` and `"toneCurve"`, or qualified extension keys (`"my-ext.stage.amount"`). They are seeded with defaults when the sub-panel is added to a mask, cleared when it is removed, and restored to defaults by the mask's Reset action.
 
-The component reads and writes the mask it belongs to through `api.develop.useMaskScope()`, never the global develop params:
+The component reads and writes the mask it belongs to through `api.develop.useMaskScope()` or `api.develop.useParamScope()`, never the global develop params:
 
 ```typescript
-interface MaskParamScope {
+interface ParamScope {
+  maskId: string | null;                         // null: the photo's own paramBag
+  getParam(key: string): unknown;                // falls back to the registered default
+  getParams(): Readonly<Record<string, unknown>>; // the stored values, without defaults
+  setParams(patch: Record<string, unknown>): void; // several keys in one update; undefined clears one
+  commit(label: string): void;                   // end the gesture as one undo step
+}
+
+interface MaskParamScope extends ParamScope {
   maskId: string;
   adj: MaskAdjustments;                          // core local adjustments, -100..100, 0 = none
   setAdj(patch: Partial<MaskAdjustments>): void;
@@ -109,13 +117,15 @@ interface MaskParamScope {
   setHsl(value: HSLAdjustments): void;
   toneCurve: ToneCurves | undefined;             // present only while the Tone Curve sub-panel is added
   setToneCurve(value: ToneCurves): void;
-  getParam(key: string): unknown;                // extension params; falls back to the registered default
   setParam(key: string, value: unknown): void;
-  commit(label: string): void;                   // end the gesture as one undo step
 }
 ```
 
-`useMaskScope` throws outside a mask sub-panel, so only call it from `mask.component`. Core adjustments (`adj`, `hsl`, `toneCurve`) are applied by the GPU's local-adjustment path. Extension params set with `setParam` are saved per mask (in `Mask.bag`), but extension stages still apply globally: per-mask stage application is planned, not built.
+Reads see the store as it is now, not as the render was handed it, so a drag handler can start each step from the last step's write. `useMaskScope` throws outside a mask sub-panel, so only call it from `mask.component`. `useParamScope` returns the same scope there and the photo's own scope (`maskId` null, reading and writing `paramBag`) anywhere else, so one component can serve as both `component` and `mask.component`.
+
+Core adjustments (`adj`, `hsl`, `toneCurve`) are applied by the GPU's local-adjustment path. Extension params are saved in the mask's `Mask.bag`, and every [maskable stage](contributions.md#processingstagecontribution--gpu-stage) they belong to (`mask: { maskable: true }`) runs once more inside the mask with them, on photos at process version 2 or later. A mask runs a stage's copy while its bag holds any of the stage's keys, so list in `owns` every key the component writes: one left out keeps the copy running after the sub-panel is removed. On a photo with older processing the Masking panel shows an extension's sub-panel as needing Update processing instead of offering it.
+
+Tools that measure or drive the photo as a whole (an Auto button that probes the frame, an on-image control) act on the global stage, not a mask's copy: leave them out of `mask.component`, or check `maskId`.
 
 ## Panel header accessories (`registerPanelHeaderAccessory`)
 
@@ -173,6 +183,7 @@ interface LayoutContribution {
   modules?: Partial<Record<string, {   // keyed by module id
     rails: { side: "left" | "right" | "bottom"; width?: number; height?: number; panels: string[] }[];
     floating?: Record<string, { x: number; y: number; width: number }>;
+    collapsed?: string[];               // panels that start collapsed to their header
   }>>;
 }
 ```

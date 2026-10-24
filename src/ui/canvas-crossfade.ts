@@ -3,6 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import { currentDisplaySpace } from "@/rendering/display-space";
 import { reducedMotion } from "./reduced-motion";
 
 // How to stop each overlay's fade still under way: the animation frame it waits on,
@@ -23,7 +24,9 @@ export function snapshotCrossfade(
   if (reducedMotion() || !from.width || !from.height) return false;
   overlay.width = from.width;
   overlay.height = from.height;
-  const ctx = overlay.getContext("2d");
+  // The display's space, so a P3 frame isn't squeezed to sRGB. The first call fixes it:
+  // DevelopView builds the overlay again when the screen's space changes.
+  const ctx = overlay.getContext("2d", { colorSpace: currentDisplaySpace() });
   if (!ctx) {
     letGo(overlay);
     return false;

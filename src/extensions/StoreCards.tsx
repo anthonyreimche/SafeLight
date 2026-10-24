@@ -158,7 +158,7 @@ export function ExtensionCard({
   return (
     <div
       ref={cardRef}
-      className="flex flex-col overflow-hidden rounded border border-border-subtle bg-surface-2"
+      className="flex flex-col overflow-hidden rounded border border-border-subtle bg-surface-2 text-[11px]"
     >
       <button onClick={onOpen} className="block text-left">
         <div className="relative aspect-[2/1] w-full overflow-hidden bg-surface-3">

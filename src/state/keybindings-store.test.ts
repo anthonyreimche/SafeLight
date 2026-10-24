@@ -223,6 +223,12 @@ describe("matchAction", () => {
     expect(matchAction(key("j"), ["Library", "Develop"])).toBe("develop.toggleClipping");
   });
 
+  it("binds S to the soft proof in Develop only", () => {
+    expect(matchAction(key("s"), ["Develop"])).toBe("develop.toggleProof");
+    expect(matchAction(key("s"), ["Library"])).toBeNull();
+    expect(matchAction(key("s"), ["General"])).toBeNull();
+  });
+
   it("resolves the same combo to a different action per module", () => {
     // Delete is mask-component removal in Develop and catalog removal in Library.
     expect(matchAction(key("Delete"), ["Develop"])).toBe("mask.delete");

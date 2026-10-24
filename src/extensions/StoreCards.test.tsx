@@ -74,4 +74,19 @@ describe("ExtensionCard", () => {
       "Export and sharing · Processing",
     );
   });
+
+  it("sets its own text size, so a detail-page shelf matches the browse grid", () => {
+    const { container } = render(
+      <ExtensionCard
+        index={0}
+        result={result()}
+        thumb={null}
+        installing={false}
+        disabled={false}
+        onOpen={() => {}}
+        onInstall={() => {}}
+      />,
+    );
+    expect(container.firstElementChild?.classList.contains("text-[11px]")).toBe(true);
+  });
 });

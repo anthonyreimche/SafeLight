@@ -124,6 +124,7 @@ function renderOverlay(geometry: Geometry = view()) {
       inv={IDENTITY}
       forward={g.forward}
       imageAspect={ASPECT}
+      bufferRect={null}
     />
   );
   const result = render(ui(geometry));

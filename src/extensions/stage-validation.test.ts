@@ -241,15 +241,40 @@ describe("a value that can't be printed", () => {
   });
 });
 
-// `mask` is the one field the contract still names without implementing. An
-// older extension may carry it, so the stage still registers, but its author
-// hears that the core does nothing with it.
-describe("reserved fields", () => {
-  it("warns that mask is reserved, and still accepts the stage", () => {
-    const check = checkStageContract(withFields({ mask: { maskable: true, maskPhase: "linear" } }));
+// A maskable stage runs again inside masks, which only the phases after mask
+// coverage can do. A stage that asks elsewhere still registers, unmasked, and
+// its author hears why.
+describe("mask", () => {
+  const clean = { error: null, readsIgnored: null, warnings: [] };
+
+  it.each(["scene-linear", "tone-map", "display-adjust", "effects", "output-encode"])(
+    "accepts a maskable %s stage without a warning",
+    (phase) => {
+      expect(checkStageContract(withFields({ phase, mask: { maskable: true } }))).toEqual(clean);
+    },
+  );
+
+  it.each(["geometry", "decode", "noise-reduction"])(
+    "warns that a %s stage, ahead of mask coverage, is never masked",
+    (phase) => {
+      const check = checkStageContract(withFields({ phase, mask: { maskable: true } }));
+      expect(check.error).toBeNull();
+      expect(check.warnings).toEqual([
+        `stage "acme.stage": ${phase} stages run before mask coverage is known, so mask is ignored`,
+      ]);
+    },
+  );
+
+  it.each([true, { maskable: false }, "yes"])("warns that mask %j is ignored", (mask) => {
+    const check = checkStageContract(withFields({ mask }));
     expect(check.error).toBeNull();
-    expect(check.warnings).toHaveLength(1);
-    expect(check.warnings[0]).toMatch(/^stage "acme\.stage": mask is reserved/);
+    expect(check.warnings).toEqual([`stage "acme.stage": mask must be { maskable: true }, so it is ignored`]);
+  });
+
+  // Mask copies are named "{stageId}@{n}"; a stage named so would share a copy's names.
+  it("refuses an id ending in @ and a number", () => {
+    const check = checkStageContract(withFields({ id: "acme.stage@2" }));
+    expect(check.error).toMatch(/ends in "@2", which mask copies of stages are named with/);
   });
 });
 

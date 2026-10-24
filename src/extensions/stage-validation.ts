@@ -7,6 +7,7 @@ import { BUILTIN_DENOISE_ID } from "@/rendering/webgl/builtin-denoise";
 import { isBuiltInStage } from "@/rendering/webgl/builtin-stage";
 import { CORE_EXTENSION_ID } from "./core-extension";
 import {
+  MASKABLE_PHASES,
   PROCESSING_PHASE_ORDER,
   type InterStageVariable,
   type ProcessingStageContribution,
@@ -34,9 +35,6 @@ const ISV_NAME = /^[A-Za-z](?:[A-Za-z0-9]|_(?!_))*$/;
 
 /** The most draws a bag-driven pass may take in one frame. */
 export const MAX_PASS_DRAWS = 1024;
-
-/** Fields the contract names that nothing in the core reads. */
-const RESERVED_FIELDS = ["mask"] as const;
 
 /** What a message quotes for a value no formatting path can print. */
 const UNPRINTABLE = "[unprintable]";
@@ -206,6 +204,12 @@ export function checkStageContract(
       `ids under "core." and "${BUILTIN_DENOISE_ID}" are reserved for Safelight's own stages`,
     );
   }
+  // Mask copies are named "{stageId}@{n}" (mask-stage-instances.ts), and their
+  // GLSL names follow: a stage named so would share a copy's.
+  const copySuffix = typeof c.id === "string" ? /@(\d+)$/.exec(c.id) : null;
+  if (copySuffix) {
+    return fail(`the id ends in "@${copySuffix[1]}", which mask copies of stages are named with`);
+  }
   const warnings: string[] = [];
 
   // Extensions are plain JavaScript, so these fields arrive untyped.
@@ -246,9 +250,14 @@ export function checkStageContract(
       readsIgnored = `${stagePrefix}: reads "current" only feeds passes and this stage has none, so it is ignored`;
   }
 
-  for (const field of RESERVED_FIELDS) {
-    if (c[field] !== undefined) {
-      warnings.push(`${stagePrefix}: ${field} is reserved and not implemented, so it is ignored`);
+  const mask: unknown = c.mask;
+  if (mask !== undefined) {
+    if (typeof mask !== "object" || mask === null || (mask as { maskable?: unknown }).maskable !== true) {
+      warnings.push(`${stagePrefix}: mask must be { maskable: true }, so it is ignored`);
+    } else if (!MASKABLE_PHASES.includes(c.phase)) {
+      warnings.push(
+        `${stagePrefix}: ${describeValue(c.phase)} stages run before mask coverage is known, so mask is ignored`,
+      );
     }
   }
   // The ordering reads `after` as a list of ids; whatever else is there is skipped.

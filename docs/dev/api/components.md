@@ -60,9 +60,9 @@ A live RGB/luma histogram canvas with built-in mode buttons (Lum / RGB / R / G /
 | `data` | `HistogramData \| null` | — | Bins to draw (`r`/`g`/`b`/`luma`, plus optional `extended` clip data). `null` renders empty. |
 | `onAdjust` | `(zone, deltaPx, phase) => void` | — | Present ⇒ interactive. `zone: HistogramZone`, `deltaPx: number` (pointer delta from drag start), `phase: "start" \| "move" \| "end"`. |
 | `onReset` | `(zone: HistogramZone) => void` | — | Double-click on a zone. |
-| `showClipping` | `0 \| 1 \| 2 \| 3` | `0` | Bitfield: `1` = shadow clip overlay, `2` = highlight clip overlay. |
+| `showClipping` | `0 \| 1 \| 2 \| 3 \| 4 \| 5 \| 6 \| 7` | `0` | Bitfield: `1` = shadow clip overlay, `2` = highlight clip overlay, `4` = gamut warning (version 3 photos only). |
 | `onToggleClipping` | `() => void` | — | Renders the "Clip" button when provided. |
-| `onSetClipping` | `(mode: 0\|1\|2\|3) => void` | — | Lets clicking the clip-percentage badges toggle each side. |
+| `onSetClipping` | `(mode: 0\|1\|2\|3\|4\|5\|6\|7) => void` | — | Lets clicking the clip-percentage badges toggle each side. |
 
 ## `CurveEditor`
 

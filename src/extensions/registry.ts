@@ -292,6 +292,12 @@ export function registerExportProcessor(
   extensionId: string,
   c: ExportProcessorContribution,
 ): void {
+  if (typeof c.process !== "function" && typeof c.processPixels !== "function") {
+    console.warn(
+      `[extensions] ${extensionId}: export processor "${c.id}" declares neither process nor processPixels as a function; registerExportProcessor ignored`,
+    );
+    return;
+  }
   noteRendersPixels(extensionId);
   useRegistry.setState((s) => {
     const existing = Object.values(s.exportProcessors);

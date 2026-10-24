@@ -11,6 +11,7 @@ import { useEffect } from "react";
 import { useUIStore } from "@/state/ui-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
+import { usesSignedOutput } from "@/catalog/types";
 import { toggleDockVisibility } from "@/extensions/dock";
 import { getSettings, stepCanvasSurround } from "@/state/settings-store";
 import { detachedModule } from "@/state/detach";
@@ -183,6 +184,9 @@ export function useKeyboardShortcuts() {
         "brush.flowUp": ds.activeTool === "mask",
         "crop.cycleGuide": ds.cropping,
         "crop.flipGuide": ds.cropping,
+        // Only a photo with the version 3 output stage has a proof, as with the
+        // Proof button; on any other the key stays untouched and so does the flag.
+        "develop.toggleProof": usesSignedOutput(ds.params),
         // Surround steppers only act when the canvas surround is enabled in
         // Preferences; otherwise the surround follows the theme and there's
         // nothing to step, so let the key through.
@@ -296,6 +300,9 @@ export function useKeyboardShortcuts() {
           break;
         case "develop.toggleClipping":
           ds.toggleClipping();
+          break;
+        case "develop.toggleProof":
+          ds.toggleProof();
           break;
         case "develop.colorAssessment":
           ds.toggleColorAssessment();

@@ -7,6 +7,7 @@ import { type MouseEvent as ReactMouseEvent, useState } from "react";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
+import { isMaskBagKey } from "@/state/develop-slices/mask-slice";
 import { useKeyboardCanvasEditing } from "@/state/accessibility";
 import { useRegistry, type RegisteredPanel } from "@/extensions/registry";
 import type { MaskPanelContribution } from "@/extensions/types";
@@ -18,7 +19,12 @@ import type {
   MaskComponentMode,
   MaskType,
 } from "@/catalog/types";
-import { MAX_MASKS, defaultMaskAdjustments } from "@/catalog/types";
+import {
+  MAX_MASKS,
+  UPDATE_PROCESSING_LABEL,
+  defaultMaskAdjustments,
+  usesOlderProcessing,
+} from "@/catalog/types";
 
 // Tools that create a component by dragging on the canvas.
 const GEO_TOOLS: { type: MaskType; label: string }[] = [
@@ -211,6 +217,11 @@ export function MasksPanel() {
 
   // --- adjustment sub-panels (per mask) --------------------------------------
   const panelDefs = maskPanelDefs(registryPanels);
+  // An extension's values run its stage inside the mask only at the current
+  // processing; a photo with older processing renders as it always has.
+  const olderProcessing = useDevelopStore((s) => usesOlderProcessing(s.params));
+  const notApplied = (def: MaskPanelDef): boolean =>
+    olderProcessing && def.mask.owns.some(isMaskBagKey);
   const activeDefs = selected
     ? panelDefs.filter((d) => selected.panels.includes(d.id))
     : [];
@@ -617,15 +628,37 @@ export function MasksPanel() {
                   onCommit={() => commitEdit("Mask Amount")}
                 />
 
-                <MaskScopeProvider maskId={selected.id}>
-                  {activeDefs.map((def) => (
-                    <MaskSubPanel
-                      key={def.id}
-                      def={def}
-                      onRemove={() => removePanel(def.id)}
-                    />
-                  ))}
+                {/* Keyed by mask: a sub-panel's own state (a field mid-edit, a
+                    listener it attached) belongs to the mask it mounted for. */}
+                <MaskScopeProvider key={selected.id} maskId={selected.id}>
+                  {activeDefs
+                    .filter((def) => !notApplied(def))
+                    .map((def) => (
+                      <MaskSubPanel
+                        key={def.id}
+                        def={def}
+                        onRemove={() => removePanel(def.id)}
+                      />
+                    ))}
                 </MaskScopeProvider>
+
+                {activeDefs.filter(notApplied).map((def) => (
+                  <div
+                    key={def.id}
+                    className="flex items-center justify-between rounded bg-surface-2/40 p-1.5"
+                  >
+                    <span className="truncate text-[10px] text-text-muted">
+                      {def.title} <span className="opacity-70">(needs {UPDATE_PROCESSING_LABEL})</span>
+                    </span>
+                    <button
+                      onClick={() => removePanel(def.id)}
+                      title={`Remove ${def.title} (resets its values)`}
+                      className="rounded px-1 text-text-muted hover:text-label-red"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
 
                 {orphanedIds.map((id) => (
                   <div
@@ -652,7 +685,13 @@ export function MasksPanel() {
                       <button
                         key={d.id}
                         onClick={() => addPanel(d)}
-                        className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary"
+                        disabled={notApplied(d)}
+                        title={
+                          notApplied(d)
+                            ? `${d.title} in a mask needs the current processing: use ${UPDATE_PROCESSING_LABEL} on this photo first`
+                            : undefined
+                        }
+                        className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary disabled:cursor-default disabled:opacity-40"
                       >
                         + {d.title}
                       </button>

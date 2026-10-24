@@ -329,11 +329,11 @@ export interface LumRangeGeo {
 }
 
 // Color-range mask: selects pixels near a target colour. The target is stored
-// in scene-LINEAR RGB (the picker converts the sampled sRGB pixel to linear) so
-// it compares directly against the pipeline's working colour. hueRange/satRange
-// set the tolerance; smoothness softens the selection edge.
+// in scene-LINEAR RGB, as the mask stage sees it (the picker probes the render
+// worker at that stage), so it compares directly against the pipeline's working
+// colour. hueRange/satRange set the tolerance; smoothness softens the selection edge.
 export interface ColorRangeGeo {
-  r: number; // target colour, linear RGB
+  r: number; // target colour, scene-linear RGB
   g: number;
   b: number;
   hueRange: number; // 0..1 hue tolerance
@@ -370,8 +370,9 @@ export interface Mask {
   hsl?: HSLAdjustments;  // present only while the HSL sub-panel is added
   toneCurve?: ToneCurves; // present only while the Tone Curve sub-panel is added
   /** Mask-scoped extension params, keyed by qualified key ("{stageId}.{key}")
-   *  like DevelopParams.paramBag. Extension sub-panels store their values here;
-   *  the GPU does not read them yet (extension stages still apply globally).
+   *  like DevelopParams.paramBag. Extension sub-panels store their values here,
+   *  and a maskable stage with any key here runs once more inside this mask
+   *  with these values (version 2 and later; mask-stage-instances.ts).
    *  Unknown keys are preserved, mirroring the global bag. */
   bag?: Record<string, unknown>;
   components: MaskComponent[]; // at least one; combined in order
@@ -1160,6 +1161,14 @@ export function withoutProcessVersion(p: Partial<DevelopParams>): Partial<Develo
  *  the button shows exactly when the action acts. */
 export function usesOlderProcessing(params: Pick<DevelopParams, "processVersion">): boolean {
   return params.processVersion < CURRENT_PROCESS_VERSION;
+}
+
+/** True when the edit is stored as process version 3 or later, the versions whose
+ *  output stage takes signed colour (ShaderVariant.signedOutput). It reads the
+ *  stored version alone, whatever this build writes or renders, so the soft proof
+ *  controls and the proof they ask for agree on which photos have one. */
+export function usesSignedOutput(params: Pick<DevelopParams, "processVersion">): boolean {
+  return normalizeProcessVersion(params.processVersion) >= 3;
 }
 
 export type SortField = 'dateImported' | 'dateCreated' | 'filename' | 'rating';

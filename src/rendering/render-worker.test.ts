@@ -26,10 +26,15 @@ import {
   type Mask,
   type RetouchSpot,
 } from "@/catalog/types";
-import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
+import type { ProcessingStageContribution, StageSpace, StageTextureData } from "@/extensions/types";
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
+import { LIVE_MASK_COPY_PREPASSES } from "./webgl/mask-stage-instances";
+import type { ProbePoint } from "./webgl/renderer";
 import type { MonitorTransform } from "./display-profile";
+import type { ColorSpaceId, DisplaySpace } from "./color-space";
+import type { CapturePoint, FloatFrame } from "./float-frame";
+import { decodePerceptual, toStageSpace } from "./stage-space";
 
 /** What the worker hands a renderer it has just made, from the state it holds. */
 type SeedingMethod = "setCacheBudget" | "setContributedParams" | "setStageTextures" | "setParams";
@@ -48,6 +53,12 @@ const { FakeRenderer } = vi.hoisted(() => {
     static renderError: Error | null = null;
     /** Thrown by computeHistogram, as a readback that fails does. */
     static histogramError: Error | null = null;
+    /** What probe answers, and what it throws, as a probe that fails does. */
+    static probed: [number, number, number] | null = null;
+    static probeError: Error | null = null;
+    /** What readFloatFrame answers (null: no float targets), and what it throws. */
+    static floatFrame: { data: Float32Array; width: number; height: number } | null = null;
+    static floatError: Error | null = null;
     /** Thrown by the method of that name, as a renderer that can't take what it is handed does. */
     static failing: Partial<Record<FailingMethod, Error>> = {};
 
@@ -70,15 +81,42 @@ const { FakeRenderer } = vi.hoisted(() => {
     /** The display transform it holds, and the one each render drew with. */
     monitorTransform: MonitorTransform | null = null;
     renderedWith: (MonitorTransform | null)[] = [];
+    /** The display space it holds, the argument of each setDisplaySpace call, and the
+     *  space each render drew in. */
+    displaySpace: DisplaySpace = "srgb";
+    displaySpaceSeen: DisplaySpace[] = [];
+    renderedIn: DisplaySpace[] = [];
+    /** The proof space it holds, and the one each render drew with. */
+    proofSpace: ColorSpaceId | null = null;
+    renderedProof: (ColorSpaceId | null)[] = [];
     /** What each render drew with: the last params and bag set, and whether
      *  the view's overlays (clipping warning, mask tint, sharpening preview) were on. */
     drawn: { params: DevelopParams | undefined; bag: Record<string, unknown> | null; overlays: boolean }[] = [];
     /** Each render and readback, in order. */
-    calls: ("render" | "computeHistogram" | "readDownscaledPixels")[] = [];
+    calls: ("render" | "computeHistogram" | "readDownscaledPixels" | "probe" | "readFloatFrame")[] = [];
+    /** What each readFloatFrame drew: its point and long-edge cap, and the
+     *  params, bag, pipeline and screen it drew with. */
+    floatReads: {
+      point: CapturePoint;
+      maxEdge: number | undefined;
+      params: DevelopParams | undefined;
+      bag: Record<string, unknown> | null;
+      pipeline: ResolvedPipeline | null;
+      screen: [MonitorTransform | null, DisplaySpace, ColorSpaceId | null];
+    }[] = [];
+    /** The arguments of each probe call. */
+    probes: { u: number; v: number; point: ProbePoint }[] = [];
     /** The stages the last render left without a prepass unit. */
     overflowedStages: string[] = [];
+    /** Whether the last render put off a mask copy's prepass. */
+    prepassPending = false;
     /** The window setViewport holds, which each render draws. */
     viewport: { x: number; y: number; w: number; h: number } | null = null;
+    /** The size of a frame of the whole image, which a window's frame doesn't have. */
+    wholeWidth = 0;
+    wholeHeight = 0;
+    /** The region of the image each render draws: the crop it was handed. */
+    drawnCrop = { x: 0, y: 0, width: 1, height: 1 };
     disposed = false;
 
     constructor(_canvas: unknown, opts: unknown) {
@@ -201,15 +239,48 @@ const { FakeRenderer } = vi.hoisted(() => {
       this.monitorTransform = transform;
     }
 
+    setDisplaySpace(space: DisplaySpace) {
+      this.displaySpaceSeen.push(space);
+      this.displaySpace = space;
+    }
+
+    setProofSpace(space: ColorSpaceId | null) {
+      this.proofSpace = space;
+    }
+
     /** No readable pixels: Upright answers with a zero correction. */
     readDownscaledPixels(_size: number) {
       this.calls.push("readDownscaledPixels");
       return null;
     }
 
+    probe(u: number, v: number, point: ProbePoint) {
+      this.calls.push("probe");
+      this.probes.push({ u, v, point });
+      if (FakeRenderer.probeError) throw FakeRenderer.probeError;
+      return FakeRenderer.probed;
+    }
+
+    readFloatFrame(point: CapturePoint, maxEdge?: number) {
+      this.calls.push("readFloatFrame");
+      this.floatReads.push({
+        point,
+        maxEdge,
+        params: this.paramsSeen.at(-1),
+        bag: this.contributedParams,
+        pipeline: this.pipeline,
+        screen: [this.monitorTransform, this.displaySpace, this.proofSpace],
+      });
+      if (FakeRenderer.floatError) throw FakeRenderer.floatError;
+      const read = FakeRenderer.floatFrame;
+      return read && { ...read, data: read.data.slice() };
+    }
+
     render(options?: { viewOverlays?: boolean }) {
       this.calls.push("render");
       this.renderedWith.push(this.monitorTransform);
+      this.renderedIn.push(this.displaySpace);
+      this.renderedProof.push(this.proofSpace);
       this.drawn.push({
         params: this.paramsSeen.at(-1),
         bag: this.contributedParams,
@@ -259,10 +330,12 @@ let encodeError: Error | null;
 
 interface SelfStub {
   onmessage: ((e: MessageEvent<WorkerRequest>) => void) | null;
-  postMessage: (msg: WorkerResponse) => void;
+  postMessage: (msg: WorkerResponse, transfer?: Transferable[]) => void;
 }
 
 let posted: WorkerResponse[];
+/** The transfer list of each posted message, empty when it had none. */
+let transferred: Transferable[][];
 let selfStub: SelfStub;
 
 beforeEach(async () => {
@@ -273,6 +346,10 @@ beforeEach(async () => {
   FakeRenderer.stockError = null;
   FakeRenderer.renderError = null;
   FakeRenderer.histogramError = null;
+  FakeRenderer.probed = null;
+  FakeRenderer.probeError = null;
+  FakeRenderer.floatFrame = null;
+  FakeRenderer.floatError = null;
   FakeRenderer.failing = {};
   FakeRenderer.resident = new Set();
   FakeRenderer.residentSize = { width: 0, height: 0 };
@@ -280,9 +357,13 @@ beforeEach(async () => {
   encodings = [];
   encodeError = null;
   posted = [];
+  transferred = [];
   selfStub = {
     onmessage: null,
-    postMessage: (msg) => posted.push(msg),
+    postMessage: (msg, transfer = []) => {
+      posted.push(msg);
+      transferred.push(transfer);
+    },
   };
   vi.stubGlobal("self", selfStub);
   vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
@@ -675,6 +756,32 @@ describe("render-worker frames", () => {
     ]);
   });
 
+  // A window's frame says nothing of the whole image's shape, which the view places
+  // the window by, and which a new crop changes while the view stays zoomed in.
+  it("says the size a frame of the whole image would have, with a window's frame too", () => {
+    send(INIT);
+    const renderer = FakeRenderer.instances[0];
+    renderer.wholeWidth = 4000;
+    renderer.wholeHeight = 2667;
+    renderer.viewport = { x: 0.25, y: 0.25, w: 0.5, h: 0.5 };
+    posted = [];
+    send({ cmd: "render", seq: 4 });
+    expect(posted).toEqual([
+      expect.objectContaining({ type: "frame", seq: 4, wholeWidth: 4000, wholeHeight: 2667 }),
+    ]);
+  });
+
+  // Crop mode draws the whole image in place of the crop; the crop box is drawn over
+  // whichever the canvas shows, which on a slow GPU stays the one before for a while.
+  it("names the region of the image the render was drawn for", () => {
+    send(INIT);
+    const crop = { x: -0.03, y: -0.03, width: 1.06, height: 1.06 };
+    FakeRenderer.instances[0].drawnCrop = crop;
+    posted = [];
+    send({ cmd: "render", seq: 5 });
+    expect(posted).toEqual([expect.objectContaining({ type: "frame", seq: 5, crop })]);
+  });
+
   it("names the stages the render left without a prepass unit", () => {
     send(INIT);
     FakeRenderer.instances[0].overflowedStages = ["ext.equaliser.rings"];
@@ -683,6 +790,24 @@ describe("render-worker frames", () => {
     expect(posted).toEqual([
       expect.objectContaining({ type: "frame", seq: 9, overflowedStages: ["ext.equaliser.rings"] }),
     ]);
+  });
+
+  it("says when the render put off a mask copy's prepass, and only then", () => {
+    send(INIT);
+    posted = [];
+    send({ cmd: "render", seq: 9 });
+    FakeRenderer.instances[0].prepassPending = true;
+    send({ cmd: "render", seq: 10 });
+    const frames = posted.filter((m) => m.type === "frame");
+    expect(frames.map((m) => "prepassPending" in m)).toEqual([false, true]);
+    expect(frames[1]).toMatchObject({ prepassPending: true });
+  });
+
+  it("limits the develop renderer's mask copy prepasses per frame", () => {
+    send(INIT);
+    expect(FakeRenderer.instances[0].opts).toMatchObject({
+      maskCopyPrepassesPerFrame: LIVE_MASK_COPY_PREPASSES,
+    });
   });
 
   it("carries the histogram the render asked for", () => {
@@ -1561,6 +1686,114 @@ describe("render-worker display profile", () => {
   });
 });
 
+// A wide-gamut screen shows the live view in P3. Thumbnails are stored and
+// extensions measure captures, so neither takes it, unless a capture asks for
+// the frame as it is drawn on screen.
+describe("render-worker display space", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const P3: WorkerRequest = { cmd: "setDisplaySpace", space: "display-p3" };
+  const capture = (asShown?: boolean): WorkerRequest => ({
+    cmd: "capture",
+    reqId: 1,
+    params: DEFAULT_DEVELOP_PARAMS,
+    pipeline: BUILTIN_RESOLVED,
+    asShown,
+  });
+
+  it("hands it to the live renderer and never to the thumbnail one", () => {
+    send(INIT);
+    send(P3);
+    send(thumbnail());
+    const [live, thumb] = FakeRenderer.instances;
+    expect(live.displaySpace).toBe("display-p3");
+    expect(thumb.displaySpaceSeen).toEqual([]);
+    expect(thumb.renderedIn).toEqual(["srgb"]);
+  });
+
+  it("seeds a renderer made after it arrived", () => {
+    FakeRenderer.throwOnConstruct = true;
+    send(INIT);
+    send(P3);
+    FakeRenderer.throwOnConstruct = false;
+    send(INIT);
+    expect(FakeRenderer.instances[0].displaySpace).toBe("display-p3");
+  });
+
+  it("captures in sRGB unless asked for the frame as shown", () => {
+    send(INIT);
+    send(P3);
+    send(capture());
+    send(capture(true));
+    const live = FakeRenderer.instances[0];
+    expect(live.renderedIn).toEqual(["srgb", "display-p3"]);
+    expect(live.displaySpace).toBe("display-p3");
+  });
+
+  it("holds it again after a capture whose render fails", () => {
+    send(INIT);
+    send(P3);
+    FakeRenderer.renderError = new Error("boom");
+    send(capture());
+    expect(FakeRenderer.instances[0].displaySpace).toBe("display-p3");
+    expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 1 });
+  });
+});
+
+// Soft proofing previews the export space in the live view. Thumbnails are
+// stored and extensions measure captures, so neither takes it, unless a
+// capture asks for the frame as it is drawn on screen.
+describe("render-worker proof", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const PROOF: WorkerRequest = { cmd: "setProof", space: "adobe-rgb" };
+  const capture = (asShown?: boolean): WorkerRequest => ({
+    cmd: "capture",
+    reqId: 1,
+    params: DEFAULT_DEVELOP_PARAMS,
+    pipeline: BUILTIN_RESOLVED,
+    asShown,
+  });
+
+  it("hands it to the live renderer and never to the thumbnail one", () => {
+    send(INIT);
+    send(PROOF);
+    send(thumbnail());
+    const [live, thumb] = FakeRenderer.instances;
+    expect(live.proofSpace).toBe("adobe-rgb");
+    expect(thumb.renderedProof).toEqual([null]);
+
+    send({ cmd: "setProof", space: null });
+    expect(live.proofSpace).toBeNull();
+  });
+
+  it("seeds a renderer made after it arrived", () => {
+    FakeRenderer.throwOnConstruct = true;
+    send(INIT);
+    send(PROOF);
+    FakeRenderer.throwOnConstruct = false;
+    send(INIT);
+    expect(FakeRenderer.instances[0].proofSpace).toBe("adobe-rgb");
+  });
+
+  it("captures without it unless asked for the frame as shown", () => {
+    send(INIT);
+    send(PROOF);
+    send(capture());
+    send(capture(true));
+    const live = FakeRenderer.instances[0];
+    expect(live.renderedProof).toEqual([null, "adobe-rgb"]);
+    expect(live.proofSpace).toBe("adobe-rgb");
+  });
+
+  it("holds it again after a capture whose render fails", () => {
+    send(INIT);
+    send(PROOF);
+    FakeRenderer.renderError = new Error("boom");
+    send(capture());
+    expect(FakeRenderer.instances[0].proofSpace).toBe("adobe-rgb");
+    expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 1 });
+  });
+});
+
 // The histogram (and Auto Tone and Auto WB, which read it) and Upright redraw
 // with what the last render left bound. A capture renders its own params and
 // bag, a gain map say, and restores only what the worker holds, so after one
@@ -1673,5 +1906,297 @@ describe("render-worker view overlays in captures", () => {
     send(capture(asShown));
     send({ cmd: "render", seq: 1 });
     expect(overlays()).toEqual([asShown === true, true]);
+  });
+});
+
+// The eyedropper reads the live frame through the develop renderer. Every way
+// out answers by reqId. A probe draws its own patch but binds the live frame's
+// program again itself, so unlike a capture it leaves a readback nothing to redraw.
+describe("render-worker probe", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const PROBE: WorkerRequest = { cmd: "probe", reqId: 3, u: 0.25, v: 0.75, point: "mask" };
+  const develop = () => FakeRenderer.instances[0];
+
+  it("reads the live renderer and answers by reqId", () => {
+    FakeRenderer.probed = [-0.2, 0.6, -0.1];
+    send(INIT);
+    send(PROBE);
+    expect(develop().probes).toEqual([{ u: 0.25, v: 0.75, point: "mask" }]);
+    expect(posted.at(-1)).toEqual({ type: "probed", reqId: 3, rgb: [-0.2, 0.6, -0.1] });
+  });
+
+  it("answers null with no renderer", () => {
+    send(PROBE);
+    expect(posted).toEqual([{ type: "probed", reqId: 3, rgb: null }]);
+  });
+
+  it("answers null between photos, without reading the one before", () => {
+    FakeRenderer.probed = [0.5, 0.5, 0.5];
+    send(INIT);
+    send({ cmd: "clearSource" });
+    send(PROBE);
+    expect(develop().probes).toEqual([]);
+    expect(posted.at(-1)).toEqual({ type: "probed", reqId: 3, rgb: null });
+  });
+
+  it("answers null when the probe throws", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    FakeRenderer.probeError = new Error("Shader compile failed: boom");
+    send(INIT);
+    send(PROBE);
+    expect(posted.at(-1)).toEqual({ type: "probed", reqId: 3, rgb: null });
+  });
+
+  it("measures a histogram after a probe without drawing the live view again", () => {
+    send(INIT);
+    send({ cmd: "render", seq: 1 });
+    develop().calls = [];
+    send(PROBE);
+    send({ cmd: "computeHistogram" });
+    expect(develop().calls).toEqual(["probe", "computeHistogram"]);
+  });
+});
+
+/** A 2×1 frame as the renderer reads it: perceptual Rec.709, one value over 1, one under 0. */
+const FLOAT_READ = { data: new Float32Array([0.5, 1.5, -0.25, 1, 0.2, 0.4, 0.8, 1]), width: 2, height: 1 };
+/** Not the default space, so a worker that converts into the default shows. */
+const WIDE: StageSpace = { encoding: "perceptual", primaries: "rec2020" };
+
+/** `frame` holds FLOAT_READ converted into `space`, each pixel as the stage conversion makes it. */
+function expectConverted(frame: FloatFrame | null, space: StageSpace) {
+  if (!frame) throw new Error("no frame");
+  expect([frame.width, frame.height, frame.space]).toEqual([FLOAT_READ.width, FLOAT_READ.height, space]);
+  for (let i = 0; i < FLOAT_READ.data.length; i += 4) {
+    const rgb: [number, number, number] = [FLOAT_READ.data[i], FLOAT_READ.data[i + 1], FLOAT_READ.data[i + 2]];
+    const want = [...toStageSpace(rgb, space, "display"), 1];
+    want.forEach((v, ch) => expect(frame.data[i + ch], `pixel ${i / 4} ch ${ch}`).toBeCloseTo(v, 6));
+  }
+}
+
+// An extension's float capture of the live photo: drawn like a capture, with
+// its own params, pipeline and bag patch, which the live view gets back after,
+// read as floats at a capture point and converted here, before it is
+// transferred. Every way out answers by reqId.
+describe("render-worker float capture", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const LIVE = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1 };
+  const BEFORE = { ...DEFAULT_DEVELOP_PARAMS, exposure: -1 };
+  const BAG = { "a.gain": 2 };
+  const LINEAR = { encoding: "linear", primaries: "rec709" } as const;
+  const CAPTURE: WorkerRequest = {
+    cmd: "captureFloat",
+    reqId: 5,
+    params: BEFORE,
+    pipeline: PICK,
+    point: "pre-output",
+    space: LINEAR,
+    maxEdge: 1280,
+    bagPatch: { "a.mode": 1 },
+  };
+  const develop = () => FakeRenderer.instances[0];
+
+  /** The live view drawn once, then its log cleared. */
+  function liveView() {
+    send(INIT);
+    send({ cmd: "setParams", params: LIVE });
+    send({ cmd: "setContributedParams", bag: BAG });
+    send({ cmd: "render", seq: 1 });
+    develop().calls = [];
+    posted = [];
+    transferred = [];
+  }
+
+  it("answers with the frame converted into the space asked for, transferred, by reqId", () => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    liveView();
+    send(CAPTURE);
+    expect(posted).toHaveLength(1);
+    const reply = posted[0];
+    if (reply.type !== "capturedFloat" || !reply.frame) throw new Error(`no frame: ${JSON.stringify(reply)}`);
+    expect(reply.reqId).toBe(5);
+    expect(reply.frame).toMatchObject({ width: 2, height: 1, space: LINEAR, point: "pre-output" });
+    const want = [...FLOAT_READ.data].map((v, i) => (i % 4 === 3 ? 1 : decodePerceptual(v)));
+    [...reply.frame.data].forEach((v, i) => expect(v, `entry ${i}`).toBeCloseTo(want[i], 6));
+    expect(transferred[0]).toHaveLength(1);
+    expect(transferred[0][0]).toBe(reply.frame.data.buffer);
+  });
+
+  it("converts into a space other than the default, as the stage conversion does", () => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    liveView();
+    send({ ...CAPTURE, space: WIDE });
+    expect(posted).toEqual([{ type: "capturedFloat", reqId: 5, frame: expect.anything() }]);
+    expectConverted(posted[0].type === "capturedFloat" ? posted[0].frame : null, WIDE);
+  });
+
+  it("reads the point asked for", () => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    liveView();
+    send({ ...CAPTURE, point: "output" });
+    expect(develop().floatReads.map((r) => r.point)).toEqual(["output"]);
+    expect(posted[0]).toMatchObject({ type: "capturedFloat", frame: { point: "output" } });
+  });
+
+  it("draws the frame capped at the long edge asked for", () => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    liveView();
+    send(CAPTURE);
+    send({ ...CAPTURE, maxEdge: 640 });
+    send({ ...CAPTURE, maxEdge: Infinity });
+    expect(develop().floatReads.map((r) => r.maxEdge)).toEqual([1280, 640, Infinity]);
+  });
+
+  it("draws with its params, pipeline and bag patch, then gives the live view back its own", () => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    liveView();
+    send(CAPTURE);
+    const live = develop();
+    expect(live.floatReads).toEqual([
+      expect.objectContaining({ params: BEFORE, bag: { ...BAG, "a.mode": 1 }, pipeline: PICK }),
+    ]);
+    expect(live.paramsSeen.at(-1)).toBe(LIVE);
+    expect(live.contributedParams).toEqual(BAG);
+    expect(live.pipeline).toEqual(BUILTIN_RESOLVED);
+  });
+
+  it("reads sRGB and unproofed, then shows the screen's space again", () => {
+    const display: MonitorTransform = { matrix: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), curve: "gamma22" };
+    liveView();
+    send({ cmd: "setMonitorTransform", transform: display });
+    send({ cmd: "setDisplaySpace", space: "display-p3" });
+    send({ cmd: "setProof", space: "adobe-rgb" });
+    send(CAPTURE);
+    const live = develop();
+    expect(live.floatReads.map((r) => r.screen)).toEqual([[null, "srgb", null]]);
+    expect([live.monitorTransform, live.displaySpace, live.proofSpace]).toEqual([display, "display-p3", "adobe-rgb"]);
+  });
+
+  it("draws the live view again before the next histogram measures it", () => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    liveView();
+    send(CAPTURE);
+    send({ cmd: "computeHistogram" });
+    expect(develop().calls).toEqual(["readFloatFrame", "render", "computeHistogram"]);
+    expect(develop().drawn.at(-1)).toMatchObject({ params: LIVE, bag: BAG });
+  });
+
+  it("answers null with no renderer", () => {
+    send(CAPTURE);
+    expect(posted).toEqual([{ type: "capturedFloat", reqId: 5, frame: null }]);
+  });
+
+  it("answers null between photos, without reading the one before", () => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    liveView();
+    send({ cmd: "clearSource" });
+    send(CAPTURE);
+    expect(develop().calls).toEqual([]);
+    expect(posted).toEqual([{ type: "capturedFloat", reqId: 5, frame: null }]);
+  });
+
+  it("answers null without float render targets", () => {
+    liveView();
+    send(CAPTURE);
+    expect(posted).toEqual([{ type: "capturedFloat", reqId: 5, frame: null }]);
+  });
+
+  it("answers null by reqId when the read throws, and gives the live view back its own", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    FakeRenderer.floatError = new Error("Shader compile failed: boom");
+    liveView();
+    send(CAPTURE);
+    expect(posted).toEqual([{ type: "capturedFloat", reqId: 5, frame: null }]);
+    const live = develop();
+    expect(live.paramsSeen.at(-1)).toBe(LIVE);
+    expect(live.contributedParams).toEqual(BAG);
+    expect(live.pipeline).toEqual(BUILTIN_RESOLVED);
+  });
+});
+
+// renderPhotoFloatFrame: a thumbnail request that carries `float` is read as
+// floats at its point and converted into its space here, as a float capture
+// is, instead of being encoded. It draws with the request's own bag and
+// pipeline, which the thumb renderer gives back after, and a miss or a
+// failure is answered as a blob request's is.
+describe("render-worker float thumbnails", () => {
+  const FLOAT = { point: "output", space: WIDE } as const;
+  const BAG = { "a.gain": 2 };
+  const OWN_BAG = { "a.gain": 9 };
+  type Over = { contributedParams?: Record<string, unknown> };
+  const fromSource = (over: Over = {}): WorkerRequest => ({
+    cmd: "renderThumbnailFromSource",
+    requestId: "t1",
+    key: "photo-1",
+    params: DEFAULT_DEVELOP_PARAMS,
+    asShotTemperature: 5500,
+    maxEdge: 640,
+    pipeline: PICK,
+    float: FLOAT,
+    ...over,
+  });
+  const REQUESTS: [string, (over?: Over) => WorkerRequest][] = [
+    ["a bitmap sent with the render", (over) => thumbnail({ pipeline: PICK, float: FLOAT, ...over })],
+    [
+      "a resident source",
+      (over) => {
+        FakeRenderer.resident.add("photo-1");
+        return fromSource(over);
+      },
+    ],
+  ];
+  const thumb = () => FakeRenderer.instances[0];
+
+  it.each(REQUESTS)("answers %s with the frame read at its point, converted into its space, transferred", (_label, request) => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    send(request());
+    expect(posted).toEqual([{ type: "thumbnailFloat", requestId: "t1", frame: expect.objectContaining({ point: "output" }) }]);
+    const reply = posted[0];
+    const frame = reply.type === "thumbnailFloat" ? reply.frame : null;
+    expectConverted(frame, WIDE);
+    // The thumbnail is already drawn at its own measuring edge.
+    expect(thumb().floatReads.map((r) => [r.point, r.maxEdge])).toEqual([["output", undefined]]);
+    expect(transferred[0]).toHaveLength(1);
+    expect(transferred[0][0]).toBe(frame?.data.buffer);
+  });
+
+  it.each(REQUESTS)("neither encodes %s nor draws it to the canvas", async (_label, request) => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    send(request());
+    await Promise.resolve();
+    expect(encodings).toEqual([]);
+    expect(thumb().calls).toEqual(["readFloatFrame"]);
+  });
+
+  it.each(REQUESTS)("reads %s with its own bag and pipeline, then gives back the worker's", (_label, request) => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    send({ cmd: "setContributedParams", bag: BAG });
+    send(request({ contributedParams: OWN_BAG }));
+    expect(thumb().floatReads).toEqual([
+      expect.objectContaining({ params: DEFAULT_DEVELOP_PARAMS, bag: OWN_BAG, pipeline: PICK }),
+    ]);
+    expect(thumb().contributedParams).toBe(BAG);
+    expect(thumb().pipeline).toEqual(BUILTIN_RESOLVED);
+  });
+
+  it.each(REQUESTS)("answers %s with a null frame without float render targets", (_label, request) => {
+    send(request());
+    expect(posted).toEqual([{ type: "thumbnailFloat", requestId: "t1", frame: null }]);
+    expect(transferred[0]).toEqual([]);
+  });
+
+  it.each(REQUESTS)("answers thumbnailError when reading %s throws, and gives back the worker's bag and pipeline", (_label, request) => {
+    FakeRenderer.floatError = new Error("Shader compile failed: boom");
+    send({ cmd: "setContributedParams", bag: BAG });
+    send(request({ contributedParams: OWN_BAG }));
+    expect(posted).toEqual([{ type: "thumbnailError", requestId: "t1", message: "Shader compile failed: boom" }]);
+    expect(thumb().contributedParams).toBe(BAG);
+    expect(thumb().pipeline).toEqual(BUILTIN_RESOLVED);
+  });
+
+  it("answers a miss with thumbnailMiss, reading nothing", () => {
+    FakeRenderer.floatFrame = FLOAT_READ;
+    send(fromSource());
+    expect(posted).toEqual([{ type: "thumbnailMiss", requestId: "t1", key: "photo-1" }]);
+    expect(thumb().floatReads).toEqual([]);
   });
 });

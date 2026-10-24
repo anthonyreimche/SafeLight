@@ -9,13 +9,19 @@
 
 import { describe, expect, it } from "vitest";
 import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION } from "@/catalog/types";
-import { buildIccProfile, outputDecode } from "@/rendering/color-space";
-import { parseDisplayProfile, type MonitorTransform } from "@/rendering/display-profile";
+import { outputDecode } from "@/rendering/color-space";
+import { DISPLAY_CURVE_CODE, type MonitorTransform } from "@/rendering/display-profile";
+import { outputPixel } from "@/rendering/output-map";
+import { apply3, decodePerceptual, type Vec3 } from "@/rendering/stage-space";
 import type { WebGLRenderer } from "./renderer";
 import {
+  OPEN_PROBE,
   PIXEL_TOLERANCE,
+  adobeDisplay,
   floatImage,
   identityParams,
+  pixelAt,
+  toHalf,
   withRenderer,
   worstDifference,
   type Frame,
@@ -32,12 +38,6 @@ const COLOURS: [number, number, number][] = [
   [0.6, 0.55, 0.5],
 ];
 const SOURCE = floatImage(COLOURS.length, 1, (x) => COLOURS[x]);
-
-function adobeDisplay(): MonitorTransform {
-  const parsed = parseDisplayProfile(buildIccProfile("adobe-rgb"));
-  if (!parsed.ok) throw new Error(parsed.error);
-  return parsed.profile.transform;
-}
 
 function capture(renderer: WebGLRenderer): Frame {
   const frame = renderer.captureFloatFrame();
@@ -80,6 +80,39 @@ describe("display profile on the live renderer", () => {
       });
     });
   }
+
+  // Colours Adobe RGB can't hold: a green past every gamut, a blue and a green
+  // the knee compresses, and light over range. Version 2 clamps them; version 3
+  // maps them into the monitor's gamut, at the pixel's lightness and hue.
+  const BEYOND_ADOBE: Vec3[] = [[-1, 1, -1], [-0.4, 0.6, 1], [-0.8, 1, 0], [2.5, 1.2, 0.6]];
+  const BEYOND_SCENE = floatImage(BEYOND_ADOBE.length * 4, 4, (x) => BEYOND_ADOBE[Math.floor(x / 4)]);
+
+  it("maps version 3 frames into the monitor's gamut, where version 2 still clamps", () => {
+    const t = adobeDisplay();
+    const m = t.matrix;
+    const monitorMatrix = [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
+    for (const c of BEYOND_ADOBE) {
+      const shown = apply3(monitorMatrix, [decodePerceptual(c[0]), decodePerceptual(c[1]), decodePerceptual(c[2])]);
+      expect(shown.some((v) => v < 0 || v > 1), `${c} is outside the monitor`).toBe(true);
+    }
+    withRenderer({ stages: [], pipeline: OPEN_PROBE, processVersionCap: 3 }, (renderer) => {
+      renderer.setImage(BEYOND_SCENE);
+      renderer.setParams(identityParams({ processVersion: CURRENT_PROCESS_VERSION }));
+      const plain = capture(renderer);
+      renderer.setMonitorTransform(t);
+      const v2 = capture(renderer);
+      expect(worstDifference(v2, converted(plain, t))).toBeLessThan(PIXEL_TOLERANCE);
+
+      renderer.setParams(identityParams({ processVersion: 3 }));
+      const v3 = capture(renderer);
+      BEYOND_ADOBE.forEach((c, i) => {
+        const want = outputPixel([toHalf(c[0]), toHalf(c[1]), toHalf(c[2])], monitorMatrix, DISPLAY_CURVE_CODE[t.curve]);
+        const got = pixelAt(v3, i * 4 + 1, 2);
+        for (let ch = 0; ch < 3; ch++) expect(Math.abs(got[ch] - want[ch]), `${c} ch ${ch}`).toBeLessThan(2e-3);
+      });
+      expect(worstDifference(v3, v2), "version 3 differs from the clamp").toBeGreaterThan(0.02);
+    });
+  });
 
   it("measures the histogram on the plain output, and still shows the conversion after", () => {
     withRenderer({ stages: [] }, (renderer) => {

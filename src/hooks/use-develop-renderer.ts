@@ -5,7 +5,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
-import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
+import type { CatalogPhoto, CropRect, DevelopParams } from "@/catalog/types";
+import { usesSignedOutput } from "@/catalog/types";
 import { cancelCrossfade, snapshotCrossfade } from "@/ui/canvas-crossfade";
 import { endHandover } from "@/ui/canvas-handover";
 import type { ImageWindow } from "@/ui/viewport-view";
@@ -14,6 +15,7 @@ import type { ImageWindow } from "@/ui/viewport-view";
 const VIZ_COLOR: [number, number, number] = [0.9, 0.25, 0.25];
 const VIZ_STRENGTH = 0.5;
 import { resolveVizMaskIndex } from "@/modules/develop/mask-viz";
+import { currentDisplaySpace } from "@/rendering/display-space";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
@@ -147,14 +149,50 @@ function sameWindow(a: ImageWindow | null, b: ImageWindow | null): boolean {
   return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 }
 
-/** Something to put on the canvas: a frame, or the stored preview. Owns its bitmap. */
-interface Picture {
-  bitmap: ImageBitmap;
+/** What a picture on the canvas is of, which the view sizes and places it by. */
+interface Shown {
   width: number;
   height: number;
-  tier: DevelopTier;
   // The window of the image it holds (FrameResult.roi); null, the whole image.
   window: ImageWindow | null;
+  // The size of a picture of the whole image (FrameResult.wholeWidth); null, unknown.
+  whole: { width: number; height: number } | null;
+  // The region of the transformed image it is of (FrameResult.crop); null, unknown.
+  crop: CropRect | null;
+}
+
+const NOTHING_SHOWN: Shown = { width: 0, height: 0, window: null, whole: null, crop: null };
+
+/** Whether two pictures hold the same window of the same image: whole size and region. */
+function samePlace(a: Shown, b: Shown): boolean {
+  const sameWhole =
+    !a.whole || !b.whole
+      ? a.whole === b.whole
+      : a.whole.width === b.whole.width && a.whole.height === b.whole.height;
+  const sameCrop =
+    !a.crop || !b.crop
+      ? a.crop === b.crop
+      : a.crop.x === b.crop.x &&
+        a.crop.y === b.crop.y &&
+        a.crop.width === b.crop.width &&
+        a.crop.height === b.crop.height;
+  return sameWindow(a.window, b.window) && sameWhole && sameCrop;
+}
+
+/** Whether two pictures are of the same size and place. */
+function sameShown(a: Shown, b: Shown): boolean {
+  return a.width === b.width && a.height === b.height && samePlace(a, b);
+}
+
+/** What `p` is of, without its pixels. */
+function shownOf(p: Shown): Shown {
+  return { width: p.width, height: p.height, window: p.window, whole: p.whole, crop: p.crop };
+}
+
+/** Something to put on the canvas: a frame, or the stored preview. Owns its bitmap. */
+interface Picture extends Shown {
+  bitmap: ImageBitmap;
+  tier: DevelopTier;
 }
 
 // The canvas corner says "Preview" once a preview has shown for LABEL_DELAY_MS, and
@@ -229,6 +267,13 @@ interface RendererStatus {
   // The window of the image the canvas holds, committed with its pixels and size;
   // null, the whole image.
   bufferWindow: ImageWindow | null;
+  // The size of a picture of the whole image at the canvas's resolution, which its
+  // window is part of; 0 when nothing says.
+  wholeWidth: number;
+  wholeHeight: number;
+  // The region of the transformed image the canvas is of (the crop it was drawn with,
+  // which crop mode widens), committed with its pixels; null when nothing says.
+  bufferCrop: CropRect | null;
   // Size of the source the last frame was drawn from (upright, as the renderer
   // holds it), for image-aspect-dependent UI like the crop overlay. 0 until a
   // frame of the photo is drawn.
@@ -289,17 +334,13 @@ export function useDevelopRenderer(
   const [supported, setSupported] = useState(true);
   const [availability, setAvailability] = useState<RendererAvailability>("starting");
   const [loading, setLoading] = useState(false);
-  // The canvas's box size and the window of the image it holds. Change in the same
-  // commit as the pixels (see present).
-  const [size, setSize] = useState<{ width: number; height: number; window: ImageWindow | null }>(
-    { width: 0, height: 0, window: null },
-  );
+  // The canvas's box size and what of the image it holds. Change in the same commit as
+  // the pixels (see present).
+  const [size, setSize] = useState<Shown>(NOTHING_SHOWN);
   // What the canvas holds of the open photo, and at what size; the tier is null while
   // it holds nothing of it (blank, or the photo before).
   const shownRef = useRef<DevelopTier | null>(null);
-  const paintedRef = useRef<{ width: number; height: number; window: ImageWindow | null }>(
-    { width: 0, height: 0, window: null },
-  );
+  const paintedRef = useRef<Shown>(NOTHING_SHOWN);
   // The photo the load effect opened last, and the one the canvas holds a picture of.
   const openedRef = useRef<string | null>(null);
   const paintedPhotoRef = useRef<string | null>(null);
@@ -323,6 +364,11 @@ export function useDevelopRenderer(
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   const cropping = useDevelopStore((s) => s.cropping);
   const showClipping = useDevelopStore((s) => s.showClipping);
+  // The space the soft proof previews, the export default, or none: the proof is
+  // version 3's (usesSignedOutput), and says so rather than leave it to the worker.
+  const proof = useDevelopStore((s) => s.proof);
+  const exportColorSpace = useSettings((s) => s.exportColorSpace);
+  const proofSpace = proof && usesSignedOutput(params) ? exportColorSpace : null;
   // Drives the crop-mode margin colour (canvas surround). Read reactively so the
   // margin tracks the assessment toggle and the surround override/shade live.
   const colorAssessment = useDevelopStore((s) => s.colorAssessment);
@@ -362,16 +408,12 @@ export function useDevelopRenderer(
   const forRender = (p: DevelopParams, crop: boolean): DevelopParams =>
     renderParams(p, crop, aspect, bypassedPanels);
 
-  const resize = useCallback((width: number, height: number, window: ImageWindow | null) => {
-    setSize((s) =>
-      s.width === width && s.height === height && sameWindow(s.window, window)
-        ? s
-        : { width, height, window },
-    );
+  const resize = useCallback((next: Shown) => {
+    setSize((s) => (sameShown(s, next) ? s : shownOf(next)));
   }, []);
 
   // Draws `next` now. What the canvas held eases into it when that was a lower tier of
-  // the same photo, of the same shape and window. A picture of another shape or window
+  // the same photo, of the same shape and place. A picture of another shape or place
   // ends any fade: the overlay takes the canvas's new box and placement, and would show
   // the old picture stretched in it or where the new window's pixels belong.
   const paint = useCallback(
@@ -387,7 +429,7 @@ export function useDevelopRenderer(
       const overlay = fadeCanvasRef?.current;
       const sameShape =
         sameAspect(cv.width, cv.height, next.width, next.height) &&
-        sameWindow(paintedRef.current.window, next.window);
+        samePlace(paintedRef.current, next);
       if (overlay && ms !== null && fadesRef.current && sameShape) {
         snapshotCrossfade(cv, overlay, ms);
       } else if (overlay && !sameShape) {
@@ -400,7 +442,7 @@ export function useDevelopRenderer(
       // The photo's first picture replaces what the view before left on screen.
       if (from === null) endHandover();
       shownRef.current = next.tier;
-      paintedRef.current = { width: next.width, height: next.height, window: next.window };
+      paintedRef.current = shownOf(next);
       paintedPhotoRef.current = openedRef.current;
     },
     [canvasRef, fadeCanvasRef],
@@ -415,24 +457,19 @@ export function useDevelopRenderer(
     [canvasRef],
   );
 
-  // Shows `next`. A picture of the size and window already painted is drawn at once, so
-  // a drag costs no React render. Another size or window waits for the commit that
-  // resizes and places the box (the layout effect below): drawn ahead of it, it showed
-  // stretched to the old box, or at the old window's place.
+  // Shows `next`. A picture of the size and place already painted is drawn at once, so
+  // a drag costs no React render. Another waits for the commit that resizes and places
+  // the box (the layout effect below): drawn ahead of it, it showed stretched to the old
+  // box, at the old window's place, by the old image's shape, or under a crop box drawn
+  // for the old region.
   const present = useCallback(
     (next: Picture) => {
-      const painted = paintedRef.current;
-      if (
-        !pendingRef.current &&
-        painted.width === next.width &&
-        painted.height === next.height &&
-        sameWindow(painted.window, next.window)
-      ) {
+      if (!pendingRef.current && sameShown(paintedRef.current, next)) {
         paint(next);
       } else {
         pendingRef.current?.bitmap.close();
         pendingRef.current = next;
-        resize(next.width, next.height, next.window);
+        resize(next);
         setPendingCount((n) => n + 1);
       }
       if (tierRef.current !== next.tier) {
@@ -449,8 +486,7 @@ export function useDevelopRenderer(
     if (!next) return;
     next.bitmap.close();
     pendingRef.current = null;
-    const painted = paintedRef.current;
-    resize(painted.width, painted.height, painted.window);
+    resize(paintedRef.current);
   }, [resize]);
 
   // Empties the canvas and its box: what it holds of the photo is no longer true.
@@ -464,11 +500,11 @@ export function useDevelopRenderer(
     const overlay = fadeCanvasRef?.current;
     if (overlay) cancelCrossfade(overlay);
     shownRef.current = null;
-    paintedRef.current = { width: 0, height: 0, window: null };
+    paintedRef.current = NOTHING_SHOWN;
     paintedPhotoRef.current = null;
     tierRef.current = null;
     setTier(null);
-    resize(0, 0, null);
+    resize(NOTHING_SHOWN);
   }, [canvasRef, fadeCanvasRef, dropPending, resize]);
 
   // An edited photo's stored preview, its original out of reach (Fallback
@@ -490,7 +526,7 @@ export function useDevelopRenderer(
       }
       setCantShow(null);
       if (bitmap) {
-        present({ bitmap, width: bitmap.width, height: bitmap.height, tier: "stored", window: null });
+        present({ bitmap, width: bitmap.width, height: bitmap.height, tier: "stored", window: null, whole: null, crop: null });
         return;
       }
       const blob = held.photo.thumbnailBlob;
@@ -501,7 +537,7 @@ export function useDevelopRenderer(
             editedPreviewRef.current === held &&
             shownRef.current === null &&
             previewShowsEdit(held.photo, useDevelopStore.getState());
-          if (still) present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored", window: null });
+          if (still) present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored", window: null, whole: null, crop: null });
           else bm.close();
         },
         () => {},
@@ -522,7 +558,10 @@ export function useDevelopRenderer(
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
-    const ctx = cv.getContext("2d");
+    // A context's colour space is fixed by its first getContext, which is why
+    // DevelopView builds the canvas again when the screen's space changes. A P3
+    // frame keeps its gamut on a P3 screen; an sRGB one converts exactly onto it.
+    const ctx = cv.getContext("2d", { colorSpace: currentDisplaySpace() });
     if (!ctx) {
       setSupported(false);
       return;
@@ -570,6 +609,11 @@ export function useDevelopRenderer(
         height: frame.height,
         tier: frameTier,
         window: frame.roi,
+        whole:
+          frame.wholeWidth > 0 && frame.wholeHeight > 0
+            ? { width: frame.wholeWidth, height: frame.wholeHeight }
+            : null,
+        crop: frame.crop,
       });
       const overflowed = frame.overflowedStages;
       setOverflowedStages((s) =>
@@ -723,7 +767,7 @@ export function useDevelopRenderer(
       }
       const shows = previewShowsEdit(photo, useDevelopStore.getState());
       if (!cancelled && awaitingSourceRef.current && shows) {
-        present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored", window: null });
+        present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored", window: null, whole: null, crop: null });
       } else {
         bm.close();
       }
@@ -913,6 +957,11 @@ export function useDevelopRenderer(
   // comes with its first frame, doesn't render and measure that frame a second time.
   const cropAspect = cropping ? aspect : 0;
 
+  // What the view draws of the edit. It stays the same object while an edit changes
+  // nothing drawn, as a drag of the crop box in crop mode does, so that edit renders
+  // nothing. The stage bag doesn't read the crop either.
+  const drawn = forRender(params, cropping);
+
   // Re-render on parameter changes. The frame that answers asks for the
   // histogram (setOnFrame above), throttled or settled per Preferences.
   useEffect(() => {
@@ -921,7 +970,7 @@ export function useDevelopRenderer(
     bridge.setAsShotTemperature(asShotTemperature);
     bridge.setHslStyle(hslRangePref / 100, hslSmoothPref / 100);
     bridge.setContributedParams(stageBag(params, paramBag, bypassedPanels));
-    bridge.setParams(forRender(params, cropping));
+    bridge.setParams(drawn);
     histDirtyRef.current = true;
     histDirtyAtRef.current = performance.now();
     if (rafIdRef.current == null) {
@@ -930,7 +979,9 @@ export function useDevelopRenderer(
         bridgeRef.current?.render(false);
       });
     }
-  }, [params, paramBag, cropping, pipelineId, asShotTemperature, cropAspect, bypassedPanels, hslRangePref, hslSmoothPref]);
+    // `params` feeds only the stage bag here, which changes with `drawn`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawn, paramBag, cropping, pipelineId, asShotTemperature, cropAspect, bypassedPanels, hslRangePref, hslSmoothPref]);
 
   // An edited stored preview standing in for the photo holds only while it shows the edit.
   useEffect(() => {
@@ -950,6 +1001,13 @@ export function useDevelopRenderer(
     bridge.setShowClipping(showClipping);
     bridge.render(false);
   }, [showClipping]);
+
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+    if (!bridge) return;
+    bridge.setProof(proofSpace);
+    bridge.render(false);
+  }, [proofSpace]);
 
   // Paint out-of-image margins (crop mode, out-of-frame straighten) in the canvas
   // surround so the photo isn't framed in a black border. Re-reads the resolved
@@ -1041,6 +1099,9 @@ export function useDevelopRenderer(
     width: size.width,
     height: size.height,
     bufferWindow: size.window,
+    wholeWidth: size.whole?.width ?? 0,
+    wholeHeight: size.whole?.height ?? 0,
+    bufferCrop: size.crop,
     sourceWidth: sourceSize.width,
     sourceHeight: sourceSize.height,
     tier,
