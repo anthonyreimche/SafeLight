@@ -68,6 +68,17 @@ describe("Preferences ▸ Interface", () => {
     expect(screen.getAllByRole("group", { name: "Interface scale" }).length).toBeGreaterThan(0);
   });
 
+  it("turns saving collapsed panels to the layout off and on", async () => {
+    const user = userEvent.setup();
+    updateSettings({ autoSaveCollapsedPanels: true });
+    showInterface();
+    const toggle = screen.getByRole("switch", { name: /Save collapsed panels to the layout/ });
+    await user.click(toggle);
+    expect(useSettings.getState().autoSaveCollapsedPanels).toBe(false);
+    await user.click(toggle);
+    expect(useSettings.getState().autoSaveCollapsedPanels).toBe(true);
+  });
+
   it("opens a saved layout's Extensions list under its row", async () => {
     const user = userEvent.setup();
     useUserLayouts.setState({

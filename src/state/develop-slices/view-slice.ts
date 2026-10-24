@@ -4,14 +4,18 @@
 // be preserved in derived versions.
 
 // Canvas-view and picker UI, carved out of the develop store as a self-contained
-// slice: overlay toggles (clipping, colour-assessment), the guided-upright
+// slice: overlay toggles (clipping, colour-assessment, soft proof), the guided-upright
 // overlay flag, per-panel preview-off, and the click-to-sample picker modes
 // (white balance, HSL, mask colour-range). None of this is part of the edit;
-// only the two view toggles persist (to localStorage), the rest is ephemeral.
+// only clipping and colour-assessment persist (to localStorage), the rest is ephemeral.
 // Composed into the store in develop-store.ts; `DevelopState extends ViewSlice`.
 
 import type { StateCreator } from "zustand";
 import type { DevelopState } from "../develop-store";
+
+/** Clipping overlay bits: 1 shadows, 2 highlights, 4 the gamut warning, which
+ *  only version 3 photos show. */
+export type ClippingMask = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 export interface ViewSlice {
   // Whether the guided-upright drawing overlay is open. Transient: guided can be
@@ -33,10 +37,16 @@ export interface ViewSlice {
   setPanelBypass: (panelId: string, on: boolean) => void;
   togglePanelBypass: (panelId: string) => void;
 
-  // Clipping overlay: bitmask (bit 0 = shadows, bit 1 = highlights).
-  showClipping: 0 | 1 | 2 | 3;
-  setShowClipping: (mode: 0 | 1 | 2 | 3) => void;
+  // Clipping overlay. J toggles every warning; the histogram's triangles flip
+  // shadows and highlights one at a time.
+  showClipping: ClippingMask;
+  setShowClipping: (mode: ClippingMask) => void;
   toggleClipping: () => void;
+
+  // Soft proof: previews the export colour space on photos that have one (version
+  // 3). Global across photos, off on launch, so never persisted.
+  proof: boolean;
+  toggleProof: () => void;
 
   // Color assessment (ISO 12646 proofing): frames the image in brilliant white
   // on a fixed middle-grey surround, giving the eye a white + neutral reference
@@ -88,17 +98,20 @@ export const createViewSlice: StateCreator<DevelopState, [], [], ViewSlice> = (
   },
 
   showClipping: (() => {
-    try { const v = localStorage.getItem("sl_show_clipping"); return v === "1" ? 1 : v === "2" ? 2 : v === "3" ? 3 : 0; } catch { return 0; }
-  })() as 0 | 1 | 2 | 3,
+    try { const v = localStorage.getItem("sl_show_clipping"); return v && /^[0-7]$/.test(v) ? Number(v) : 0; } catch { return 0; }
+  })() as ClippingMask,
   setShowClipping: (mode) => {
     set({ showClipping: mode });
     try { localStorage.setItem("sl_show_clipping", String(mode)); } catch {}
   },
   toggleClipping: () => {
-    const next = (get().showClipping === 0 ? 3 : 0) as 0 | 3;
+    const next = get().showClipping === 0 ? 7 : 0;
     set({ showClipping: next });
     try { localStorage.setItem("sl_show_clipping", String(next)); } catch {}
   },
+
+  proof: false,
+  toggleProof: () => set({ proof: !get().proof }),
 
   colorAssessment: (() => {
     try { return localStorage.getItem("sl_color_assessment") === "1"; } catch { return false; }

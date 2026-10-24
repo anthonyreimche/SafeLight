@@ -12,7 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, renderHook, screen } from "@testing-library/react";
-import type { CatalogPhoto } from "@/catalog/types";
+import { normalizeParams, type CatalogPhoto } from "@/catalog/types";
 import { photo } from "@/catalog/stored-edit.fixtures";
 import { useKeyboardShortcuts } from "./use-keyboard-shortcuts";
 import { NO_FILTER } from "@/modules/library/visible-photos";
@@ -483,7 +483,46 @@ describe("the single-key shortcuts preference", () => {
   it("does not gate other bare keys", () => {
     useSettings.setState({ singleKeyShortcuts: false });
     expect(fire(window, bound("develop.toggleClipping"))).toBe(true);
-    expect(dev().showClipping).toBe(3);
+    expect(dev().showClipping).toBe(7);
+  });
+});
+
+// Soft proofing is a version 3 feature: on a photo without it the key does nothing,
+// as the Proof button isn't there, so the flag can't flip out of sight.
+describe("develop.toggleProof", () => {
+  const openPhotoAs = (processVersion: number) =>
+    useDevelopStore.setState({ params: normalizeParams({ processVersion }) });
+
+  beforeEach(() => {
+    useUIStore.setState({ activeModule: "develop" });
+    openPhotoAs(3);
+    render(<Harness />);
+  });
+  afterEach(resetStores);
+
+  it("toggles the soft proof on a version 3 photo", () => {
+    expect(fire(window, bound("develop.toggleProof"))).toBe(true);
+    expect(dev().proof).toBe(true);
+    expect(fire(window, bound("develop.toggleProof"))).toBe(true);
+    expect(dev().proof).toBe(false);
+  });
+
+  it.each([1, 2])("leaves the flag and the key alone on a version %i photo", (version) => {
+    openPhotoAs(version);
+    expect(fire(window, bound("develop.toggleProof"))).toBe(false);
+    expect(dev().proof).toBe(false);
+  });
+
+  it("is a bare key the single-key preference doesn't gate", () => {
+    useSettings.setState({ singleKeyShortcuts: false });
+    expect(fire(window, bound("develop.toggleProof"))).toBe(true);
+    expect(dev().proof).toBe(true);
+  });
+
+  it("lets the key through outside Develop", () => {
+    useUIStore.setState({ activeModule: "library" });
+    expect(fire(window, bound("develop.toggleProof"))).toBe(false);
+    expect(dev().proof).toBe(false);
   });
 });
 

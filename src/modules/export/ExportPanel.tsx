@@ -15,6 +15,8 @@ import type { ExportProcessorField } from "@/extensions/types";
 import type { ColorSpaceId } from "@/rendering/color-space";
 import {
   exportPhotos,
+  exportStatus,
+  proPhotoAt8Bit,
   type DeliveryMode,
   type ExportFormat,
   type ExportResult,
@@ -44,7 +46,7 @@ const FORMATS: { value: ExportFormat; label: string }[] = [
   { value: "image/tiff", label: "TIFF" },
 ];
 
-const TIFF_DEPTHS: { value: 8 | 16; label: string }[] = [
+const BIT_DEPTHS: { value: 8 | 16; label: string }[] = [
   { value: 8, label: "8-bit" },
   { value: 16, label: "16-bit" },
 ];
@@ -150,6 +152,9 @@ export function ExportPanel() {
   const [tiffBitDepth, setTiffBitDepth] = useState<8 | 16>(
     getSettings().exportTiffBitDepth,
   );
+  // Not a Preference: a PNG is 8-bit until picked otherwise, so none turns
+  // 16-bit unasked.
+  const [pngBitDepth, setPngBitDepth] = useState<8 | 16>(8);
   const [colorSpace, setColorSpace] = useState<ColorSpaceId>(
     getSettings().exportColorSpace,
   );
@@ -224,6 +229,13 @@ export function ExportPanel() {
 
   const hasQuality = format === "image/jpeg" || format === "image/webp";
   const isTiff = format === "image/tiff";
+  const hasBitDepth = isTiff || format === "image/png";
+  const bitDepth = isTiff ? tiffBitDepth : pngBitDepth;
+  const setBitDepth = isTiff ? setTiffBitDepth : setPngBitDepth;
+  // The warning and the export read the same depth fields, so the warning's
+  // tests also guard what the export is asked for.
+  const depth = { format, tiffBitDepth, pngBitDepth };
+  const bandsAt8Bit = proPhotoAt8Bit({ ...depth, colorSpace });
 
   // Revert to Files when dropping to a single photo (ZIP/Folder are multi-only).
   useEffect(() => {
@@ -317,7 +329,7 @@ export function ExportPanel() {
     setProgress({ done: 0, total: targets.length });
 
     const settings: ExportSettings = {
-      format,
+      ...depth,
       quality: quality / 100,
       longEdge,
       bundle: delivery === "zip",
@@ -327,7 +339,6 @@ export function ExportPanel() {
       filenameTemplateId,
       sharpenAmount,
       sharpenRadius,
-      tiffBitDepth,
       includeMetadata,
       includeLocation,
     };
@@ -338,17 +349,7 @@ export function ExportPanel() {
         (p) => setProgress({ done: p.done, total: p.total }),
         dir ?? undefined,
       );
-      let msg =
-        result.failed.length === 0
-          ? `Exported ${result.exported} photo${result.exported === 1 ? "" : "s"}.`
-          : `Exported ${result.exported}; ${result.failed.length} could not be exported.`;
-      if (result.degradedTo8Bit > 0) {
-        msg += ` ${result.degradedTo8Bit} exported as 8-bit (device can't render 16-bit).`;
-      }
-      if (result.zipFellBack) {
-        msg += " ZIP exceeded 4 GiB; delivered as individual files.";
-      }
-      setStatus(msg);
+      setStatus(exportStatus(result));
       setFailures(result.failures);
       // Offer "Open Folder" only when files actually landed in a native folder
       // destination whose absolute path we can reveal (Electron, not browser).
@@ -403,29 +404,47 @@ export function ExportPanel() {
             <button
               key={f.value}
               onClick={() => setFormat(f.value)}
+              aria-pressed={format === f.value}
               className={`flex-1 ${optionBtn(format === f.value)}`}
             >
               {f.label}
             </button>
           ))}
         </div>
+        {bandsAt8Bit && (
+          <div className="mt-2 flex items-center gap-2">
+            <p className="flex-1 text-[10px] leading-snug text-text-muted">
+              ProPhoto at 8 bits can band in smooth gradients.
+            </p>
+            <button
+              onClick={() => {
+                setFormat("image/tiff");
+                setTiffBitDepth(16);
+              }}
+              className={`shrink-0 ${optionBtn(false)}`}
+            >
+              Use 16-bit TIFF
+            </button>
+          </div>
+        )}
       </Panel>
 
-      {isTiff && (
+      {hasBitDepth && (
         <Panel title="Bit Depth">
           <div className="flex gap-1">
-            {TIFF_DEPTHS.map((d) => (
+            {BIT_DEPTHS.map((d) => (
               <button
                 key={d.value}
-                onClick={() => setTiffBitDepth(d.value)}
-                className={`flex-1 ${optionBtn(tiffBitDepth === d.value)}`}
+                onClick={() => setBitDepth(d.value)}
+                aria-pressed={bitDepth === d.value}
+                className={`flex-1 ${optionBtn(bitDepth === d.value)}`}
               >
                 {d.label}
               </button>
             ))}
           </div>
           <p className="mt-2 text-[10px] leading-snug text-text-muted">
-            {tiffBitDepth === 16
+            {bitDepth === 16
               ? "16-bit keeps the full editing precision for further work. Output sharpening is applied at 8-bit only."
               : "8-bit is smaller and universally compatible."}
           </p>

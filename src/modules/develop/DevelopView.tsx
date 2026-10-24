@@ -15,6 +15,8 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { useActivePhoto } from "@/state/use-active-photo";
 import { photoDisplayName } from "@/catalog/copy-name";
+import { usesSignedOutput } from "@/catalog/types";
+import { useDisplaySpace } from "@/rendering/display-space";
 
 // The canvas is the module's "main" dock panel; Tools (masks/retouch/presets)
 // and the Edit stack are extension panels placed by the develop dock layout.
@@ -28,6 +30,9 @@ export function DevelopView() {
   const activePhoto = useActivePhoto();
   const loadEdit = useDevelopStore((s) => s.loadEdit);
   const colorAssessment = useDevelopStore((s) => s.colorAssessment);
+  // A 2D context's colour space is fixed by its first getContext, so the canvases are
+  // built again when the window moves to a screen of another space.
+  const displaySpace = useDisplaySpace();
   const [zoom, setZoom] = useState<number | null>(null);
 
   useEffect(() => {
@@ -47,6 +52,7 @@ export function DevelopView() {
             <div className="flex items-center gap-3">
               <Slot name="develop-toolbar" />
               <AssessmentToggle />
+              <ProofToggle />
               <ProcessingUpdateControl />
               <DisplayTransformControl />
               <SurroundControl />
@@ -70,7 +76,7 @@ export function DevelopView() {
       >
         {activePhoto ? (
           <DevelopCanvas
-            key={activePhoto.id}
+            key={`${activePhoto.id}:${displaySpace}`}
             photo={activePhoto}
             zoom={zoom}
             onZoomChange={setZoom}
@@ -101,6 +107,26 @@ function AssessmentToggle() {
       className={`text-[10px] ${on ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`}
     >
       Assess
+    </button>
+  );
+}
+
+// Status-bar toggle for the soft proof (also bound to a shortcut). Only a photo with
+// the version 3 output stage has one, so only it shows the button.
+export function ProofToggle() {
+  const signed = useDevelopStore((s) => usesSignedOutput(s.params));
+  const on = useDevelopStore((s) => s.proof);
+  const toggle = useDevelopStore((s) => s.toggleProof);
+  if (!signed) return null;
+  return (
+    <button
+      onClick={toggle}
+      title="Soft proof (S): preview the export color space"
+      aria-label="Toggle soft proof"
+      aria-pressed={on}
+      className={`text-[10px] ${on ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`}
+    >
+      Proof
     </button>
   );
 }

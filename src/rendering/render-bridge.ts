@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import type { DevelopParams, UprightMode } from "@/catalog/types";
+import type { CropRect, DevelopParams, UprightMode } from "@/catalog/types";
 import type { UprightResult } from "./upright";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
@@ -11,9 +11,15 @@ import { resolvePipelineFor, usePipelineStore } from "@/extensions/pipelines";
 import { onStagesReleased, useRegistry } from "@/extensions/registry";
 import type { HistogramData } from "./histogram";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
+import type { ProbePoint } from "./webgl/renderer";
 import { getSettings, useSettings } from "@/state/settings-store";
 import type { MonitorTransform } from "./display-profile";
 import { activeMonitorTransform, useDisplayProfile } from "./display-profile-store";
+import type { ColorSpaceId, DisplaySpace } from "./color-space";
+import { currentDisplaySpace, subscribeDisplaySpace } from "./display-space";
+import {
+  DEFAULT_CAPTURE_SPACE, captureMaxEdge, type FloatCaptureOptions, type FloatFrame, type LiveFloatCaptureOptions,
+} from "./float-frame";
 
 export interface FrameResult {
   bitmap: ImageBitmap;
@@ -26,6 +32,13 @@ export interface FrameResult {
   sourceGen: number;
   /** The window of the image it was drawn for (setViewport); null, the whole image. */
   roi: { x: number; y: number; w: number; h: number } | null;
+  /** The size a frame of the whole image would have, which a window is part of; 0,
+   *  unknown. */
+  wholeWidth: number;
+  wholeHeight: number;
+  /** The region of the transformed image it is of: the crop drawn, which crop mode
+   *  widens to the whole image; null, unknown. */
+  crop: CropRect | null;
   histogram?: HistogramData;
   /** The prepass stages it was drawn without, for want of a texture unit. */
   overflowedStages: readonly string[];
@@ -74,6 +87,26 @@ interface WaitingRender {
   wantHistogram: boolean;
   wantExtended: boolean;
 }
+/** What a thumbnail request is answered with: its blob, or its frame as floats. */
+type ThumbAnswer = Extract<WorkerResponse, { type: "thumbnail" | "thumbnailFloat" }>;
+/** A thumbnail's source when the request carries it rather than naming a resident one. */
+export type ThumbImage = Extract<WorkerRequest, { cmd: "renderThumbnail" }>["image"];
+/** One thumbnail render, from the thumb renderer's resident source under `key` or
+ *  from `image`, which it doesn't keep. Exclusive: given both, `key` would win and
+ *  the image be cloned into a post that ignores it. */
+export type ThumbRequest = {
+  requestId: string;
+  params: DevelopParams;
+  asShotTemperature: number;
+  maxEdge: number;
+  contributedParams?: Record<string, unknown>;
+} & ({ key: string; image?: never } | { image: ThumbImage; key?: never });
+
+/** Where a float frame is read and the space it is converted into: pre-output
+ *  in linear Rec.709 unless asked otherwise. */
+function floatRead(opts: Pick<FloatCaptureOptions, "point" | "space">): Pick<FloatFrame, "point" | "space"> {
+  return { point: opts.point ?? "pre-output", space: opts.space ?? DEFAULT_CAPTURE_SPACE };
+}
 
 /** The top-level fields of `next` that `last` lacks or holds another value in, each the
  *  very value `next` holds. */
@@ -106,13 +139,15 @@ export class RenderBridge {
   private initAttempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
-  // Resolves with the rendered blob, or null when the worker reports a cache miss
-  // (the caller then decodes + uploads + retries).
-  private thumbResolvers = new Map<string, (blob: Blob | null) => void>();
+  // Settled with the request's answer, or with null when the worker reports a cache
+  // miss (the caller then decodes + uploads + retries) or a failure.
+  private thumbResolvers = new Map<string, (answer: ThumbAnswer | null) => void>();
   private uprightResolvers = new Map<number, (result: UprightResult) => void>();
   private sourceBoundResolvers = new Map<number, (hit: boolean) => void>();
   private hasSourceResolvers = new Map<number, (has: boolean) => void>();
   private captureResolvers = new Map<number, (bitmap: ImageBitmap) => void>();
+  private floatCaptureResolvers = new Map<number, (frame: FloatFrame | null) => void>();
+  private probeResolvers = new Map<number, (rgb: [number, number, number] | null) => void>();
   private reqIdSeq = 0;
   // The live photo's display-transform pick, mirrored from the params the
   // develop view sends, so the live pipeline follows the photo and can be
@@ -131,6 +166,8 @@ export class RenderBridge {
   // queues a backlog the view plays back after the user lets go.
   private renderSeq = 0;
   private renderInFlight: number | null = null;
+  // What the render in flight asked for besides the frame.
+  private renderInFlightWants: WaitingRender | null = null;
   // When the render in flight started to be timed: its post, or `ready` for one posted
   // before it. null while it isn't timed.
   private renderSince: number | null = null;
@@ -189,8 +226,16 @@ export class RenderBridge {
         }, delay);
         break;
       }
-      case "frame":
+      case "frame": {
+        // A frame that put off mask copies' prepasses is followed by a render of
+        // the same state, asking what it asked, unless a render already waits to
+        // be that one.
+        const again =
+          msg.prepassPending && msg.seq === this.renderInFlight && !this.renderWaiting
+            ? this.renderInFlightWants
+            : null;
         this.renderAnswered(msg.seq);
+        if (again) this.render(again.wantHistogram, again.wantExtended);
         // No view listens (Develop closed, or between one photo's view and the
         // next's): nothing will close the bitmap, which holds a decoded image.
         if (!this.onFrame) {
@@ -207,10 +252,14 @@ export class RenderBridge {
           sourceHeight: msg.sourceHeight,
           sourceGen: msg.sourceGen,
           roi: msg.roi ?? null,
+          wholeWidth: msg.wholeWidth ?? 0,
+          wholeHeight: msg.wholeHeight ?? 0,
+          crop: msg.crop ?? null,
           histogram: msg.histogram,
           overflowedStages: msg.overflowedStages ?? [],
         });
         break;
+      }
       case "frameSkipped":
         this.renderAnswered(msg.seq);
         break;
@@ -225,35 +274,23 @@ export class RenderBridge {
       case "histogram":
         this.onHistogram?.(msg.histogram);
         break;
-      case "thumbnail": {
-        const resolver = this.thumbResolvers.get(msg.requestId);
-        if (resolver) {
-          this.thumbResolvers.delete(msg.requestId);
-          resolver(msg.blob);
-        }
+      case "thumbnail":
+        this.settleThumbnail(msg.requestId, msg);
         this.onThumbnail?.({ requestId: msg.requestId, blob: msg.blob });
         break;
-      }
-      case "thumbnailMiss": {
-        const resolver = this.thumbResolvers.get(msg.requestId);
-        if (resolver) {
-          this.thumbResolvers.delete(msg.requestId);
-          resolver(null);
-        }
+      case "thumbnailFloat":
+        this.settleThumbnail(msg.requestId, msg);
         break;
-      }
-      case "thumbnailError": {
-        // Reject the pending request (resolver(null) -> renderThumbnailAsync
-        // rejects) so the caller stops awaiting and can retry on the next edit,
-        // then surface the underlying cause for diagnosis.
-        const resolver = this.thumbResolvers.get(msg.requestId);
-        if (resolver) {
-          this.thumbResolvers.delete(msg.requestId);
-          resolver(null);
-        }
+      case "thumbnailMiss":
+        this.settleThumbnail(msg.requestId, null);
+        break;
+      case "thumbnailError":
+        // Reject the pending request (null -> renderThumbnailAsync rejects) so the
+        // caller stops awaiting and can retry on the next edit, then surface the
+        // underlying cause for diagnosis.
+        this.settleThumbnail(msg.requestId, null);
         this.onError?.(`thumbnail render failed: ${msg.message}`);
         break;
-      }
       case "sourceBound": {
         if (msg.hit) this.sourcesBound++;
         const resolver = this.sourceBoundResolvers.get(msg.reqId);
@@ -276,6 +313,22 @@ export class RenderBridge {
         if (resolver) {
           this.captureResolvers.delete(msg.reqId);
           resolver(msg.bitmap);
+        }
+        break;
+      }
+      case "capturedFloat": {
+        const resolver = this.floatCaptureResolvers.get(msg.reqId);
+        if (resolver) {
+          this.floatCaptureResolvers.delete(msg.reqId);
+          resolver(msg.frame);
+        }
+        break;
+      }
+      case "probed": {
+        const resolver = this.probeResolvers.get(msg.reqId);
+        if (resolver) {
+          this.probeResolvers.delete(msg.reqId);
+          resolver(msg.rgb);
         }
         break;
       }
@@ -351,6 +404,12 @@ export class RenderBridge {
     // terminate() tears down the worker (and its GL context) synchronously; a
     // "dispose" message would be preempted by it, so don't bother sending one.
     this.worker.terminate();
+    // It will never answer, and an eyedropper awaits its probe, an extension
+    // its float frame.
+    for (const pending of [this.probeResolvers, this.floatCaptureResolvers]) {
+      for (const resolve of pending.values()) resolve(null);
+      pending.clear();
+    }
   }
 
   // ------------------------------------------------------------------
@@ -479,7 +538,7 @@ export class RenderBridge {
     contributedParams?: Record<string, unknown>;
   }): Promise<Blob | null> {
     return new Promise<Blob | null>((resolve) => {
-      this.thumbResolvers.set(opts.requestId, resolve);
+      this.thumbResolvers.set(opts.requestId, (answer) => resolve(answer?.type === "thumbnail" ? answer.blob : null));
       this.post({
         cmd: "renderThumbnailFromSource",
         ...opts,
@@ -568,9 +627,62 @@ export class RenderBridge {
     });
   }
 
+  /** Render one frame with `params` as capture() does, for measuring, and read
+   *  it as floats at `opts.point` (default "pre-output"), converted into
+   *  `opts.space` (default linear Rec.709) in the worker. It is drawn at most
+   *  `opts.maxEdge` px on its long edge (default DEFAULT_CAPTURE_MAX_EDGE;
+   *  Infinity for the full view). Null when the worker has no renderer, no
+   *  source or no float render targets, or is disposed. */
+  captureFloat(
+    params: DevelopParams,
+    opts: LiveFloatCaptureOptions = {},
+  ): Promise<FloatFrame | null> {
+    if (this.disposed) return Promise.resolve(null);
+    return new Promise<FloatFrame | null>((resolve) => {
+      const reqId = ++this.reqIdSeq;
+      this.floatCaptureResolvers.set(reqId, resolve);
+      this.post({
+        cmd: "captureFloat",
+        reqId,
+        params,
+        pipeline: resolvePipelineFor(params.displayTransform),
+        ...floatRead(opts),
+        // Not in floatRead: the thumbnails that share it are drawn small already.
+        maxEdge: captureMaxEdge(opts.maxEdge),
+        ...(opts.paramBag ? { bagPatch: opts.paramBag } : {}),
+      });
+    });
+  }
+
+  /** The linear colour around (u, v) of the live frame, x right and y down in
+   *  [0, 1] across its buffer, averaged over 5×5 of its pixels: "output" is the
+   *  colour the output stage receives, "mask" the scene-linear colour the mask
+   *  components compare. Drawn from what the worker holds when the request
+   *  arrives, so it follows params posted before it. Null when the worker has
+   *  nothing to read it from, or is disposed. */
+  probe(u: number, v: number, point: ProbePoint): Promise<[number, number, number] | null> {
+    if (this.disposed) return Promise.resolve(null);
+    return new Promise<[number, number, number] | null>((resolve) => {
+      const reqId = ++this.reqIdSeq;
+      this.probeResolvers.set(reqId, resolve);
+      this.post({ cmd: "probe", reqId, u, v, point });
+    });
+  }
+
   /** The monitor's profile for the live view (Linux), or null for none. */
   setMonitorTransform(transform: MonitorTransform | null) {
     this.post({ cmd: "setMonitorTransform", transform });
+  }
+
+  /** The space the screen shows, for the live view's version 3 frames. */
+  setDisplaySpace(space: DisplaySpace) {
+    this.post({ cmd: "setDisplaySpace", space });
+  }
+
+  /** Soft proof the live view's version 3 frames in `space`, the export's,
+   *  or stop with null. */
+  setProof(space: ColorSpaceId | null) {
+    this.post({ cmd: "setProof", space });
   }
 
   setAsShotTemperature(kelvin: number) {
@@ -607,6 +719,7 @@ export class RenderBridge {
   private postRender(request: WaitingRender) {
     const seq = ++this.renderSeq;
     this.renderInFlight = seq;
+    this.renderInFlightWants = request;
     this.renderSince = null;
     this.armRenderWatchdog();
     this.post({ cmd: "render", seq, ...request });
@@ -713,16 +826,14 @@ export class RenderBridge {
 
   renderThumbnail(opts: {
     requestId: string;
-    image:
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "float16"; data: Uint16Array; width: number; height: number }
-      | { kind: "bitmap"; bitmap: ImageBitmap };
+    image: ThumbImage;
     params: DevelopParams;
     asShotTemperature: number;
     maxEdge: number;
     quality?: number;
     lossless?: boolean;
     contributedParams?: Record<string, unknown>;
+    float?: Pick<FloatFrame, "point" | "space">;
   }) {
     const { image } = opts;
     const transfer = [image.kind === "bitmap" ? image.bitmap : image.data.buffer];
@@ -734,10 +845,7 @@ export class RenderBridge {
 
   renderThumbnailAsync(opts: {
     requestId: string;
-    image:
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "float16"; data: Uint16Array; width: number; height: number }
-      | { kind: "bitmap"; bitmap: ImageBitmap };
+    image: ThumbImage;
     params: DevelopParams;
     asShotTemperature: number;
     maxEdge: number;
@@ -746,10 +854,40 @@ export class RenderBridge {
     contributedParams?: Record<string, unknown>;
   }): Promise<Blob> {
     return new Promise<Blob>((resolve, reject) => {
-      this.thumbResolvers.set(opts.requestId, (blob) =>
-        blob ? resolve(blob) : reject(new Error("thumbnail render failed")),
+      this.thumbResolvers.set(opts.requestId, (answer) =>
+        answer?.type === "thumbnail" ? resolve(answer.blob) : reject(new Error("thumbnail render failed")),
       );
       this.renderThumbnail(opts);
+    });
+  }
+
+  /** A thumbnail read as floats rather than encoded (renderPhotoFloatFrame): at
+   *  `float.point`, converted into `float.space` in the worker, pre-output in
+   *  linear Rec.709 unless asked otherwise. Drawn from the thumb renderer's
+   *  resident source under `key`, or from `image`, which it doesn't keep. Null
+   *  on a cache miss, as renderThumbnailFromSource resolves, and when the render
+   *  fails or the worker has no float render targets. A request made after
+   *  dispose resolves null; one in flight at dispose is never settled, like the
+   *  blob thumbnails. */
+  renderThumbnailFloat(
+    opts: ThumbRequest & { float: Pick<FloatCaptureOptions, "point" | "space"> },
+  ): Promise<FloatFrame | null> {
+    if (this.disposed) return Promise.resolve(null);
+    return new Promise<FloatFrame | null>((resolve) => {
+      this.thumbResolvers.set(opts.requestId, (answer) =>
+        resolve(answer?.type === "thumbnailFloat" ? answer.frame : null),
+      );
+      const float = floatRead(opts.float);
+      if (opts.key !== undefined) {
+        this.post({
+          cmd: "renderThumbnailFromSource",
+          ...opts,
+          float,
+          pipeline: resolvePipelineFor(opts.params.displayTransform),
+        });
+      } else {
+        this.renderThumbnail({ ...opts, float });
+      }
     });
   }
 
@@ -829,6 +967,15 @@ export class RenderBridge {
   // Internal
   // ------------------------------------------------------------------
 
+  // A thumbnail request settles once, by its requestId: with its answer, or with
+  // null for a miss or a failure.
+  private settleThumbnail(requestId: string, answer: ThumbAnswer | null) {
+    const resolve = this.thumbResolvers.get(requestId);
+    if (!resolve) return;
+    this.thumbResolvers.delete(requestId);
+    resolve(answer);
+  }
+
   private post(msg: WorkerRequest, transfer?: Transferable[]) {
     if (this.disposed) return;
     if (transfer) {
@@ -845,6 +992,7 @@ let unsubStages: (() => void) | null = null;
 let unsubPipeline: (() => void) | null = null;
 let unsubSettings: (() => void) | null = null;
 let unsubMonitor: (() => void) | null = null;
+let unsubDisplaySpace: (() => void) | null = null;
 
 // Stage textures live here (not in the per-photo param bag — they're bulk static
 // data tied to the stage, not the edit). Extensions push via api.setStageTexture;
@@ -943,6 +1091,14 @@ export function getRenderBridge(): RenderBridge {
       requestStageRender();
     });
 
+    // The space the screen shows, likewise; the worker starts in sRGB.
+    const startSpace = currentDisplaySpace();
+    if (startSpace !== "srgb") singleton.setDisplaySpace(startSpace);
+    unsubDisplaySpace = subscribeDisplaySpace((space) => {
+      singleton?.setDisplaySpace(space);
+      requestStageRender();
+    });
+
     let prevStages = useRegistry.getState().processingStages;
     let prevPipelines = useRegistry.getState().pipelines;
     unsubStages = useRegistry.subscribe((s) => {
@@ -979,6 +1135,8 @@ export function disposeRenderBridge() {
   unsubSettings = null;
   unsubMonitor?.();
   unsubMonitor = null;
+  unsubDisplaySpace?.();
+  unsubDisplaySpace = null;
   // A frame that hasn't run would hold back the next bridge's redraws until
   // it does, and one that never runs (a hidden page) would hold them for good.
   if (stageRenderRaf != null) cancelAnimationFrame(stageRenderRaf);

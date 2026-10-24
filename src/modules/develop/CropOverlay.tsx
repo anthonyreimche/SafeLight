@@ -274,6 +274,21 @@ export function CropOverlay({
     onCommit();
   };
 
+  // The system can end a drag without its pointerup: pointercancel, or the capture
+  // lost to another window or a desktop gesture. A resize or move keeps the crop it
+  // reached, as on release; a level line, with no end point, is dropped. Without
+  // this the box went on following the bare pointer.
+  const onPointerEnd = () => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (!d) return;
+    if (d.mode === "level") {
+      setLine(null);
+      return;
+    }
+    onCommit();
+  };
+
   return (
     <div
       className="absolute inset-0"
@@ -281,6 +296,8 @@ export function CropOverlay({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerEnd}
+      onLostPointerCapture={onPointerEnd}
       onPointerLeave={() => {
         if (!dragRef.current) setHoverHandle(null);
       }}

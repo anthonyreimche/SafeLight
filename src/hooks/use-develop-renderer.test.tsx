@@ -12,10 +12,10 @@
 // source and edit are in place may reach the canvas or the histogram.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, renderHook } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook } from "@testing-library/react";
 import { StrictMode, useLayoutEffect, useRef, useState } from "react";
 import type { CatalogPhoto, DevelopParams, EditSnapshot, Mask } from "@/catalog/types";
-import { DEFAULT_DEVELOP_PARAMS, defaultMaskAdjustments } from "@/catalog/types";
+import { DEFAULT_DEVELOP_PARAMS, defaultColorRange, defaultMaskAdjustments } from "@/catalog/types";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
 import type { HistogramData } from "@/rendering/histogram";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
@@ -41,12 +41,14 @@ import {
   releaseInstance,
   warmDecodePool,
 } from "@/raw/decode-pool";
+import { whiteBalanceStepFromLinear } from "@/rendering/auto-adjust";
 import { transformedViewCrop } from "@/rendering/crop-transform";
 import { buildForwardTransform } from "@/rendering/transform";
 import { ViewportImage, assessMatPx } from "@/ui/ViewportImage";
 import type { ImageWindow } from "@/ui/viewport-view";
 import { endHandover } from "@/ui/canvas-handover";
 import { DevelopCanvas } from "@/modules/develop/DevelopCanvas";
+import { DevelopView } from "@/modules/develop/DevelopView";
 import { useDevelopRenderer, useTierLabel } from "./use-develop-renderer";
 import type { DevelopTier } from "./use-develop-renderer";
 
@@ -85,6 +87,8 @@ class FakeWorker {
   /** When set, the GPU source cache by key, in place of `hits`: a main upload puts its
    *  key in, and bindSource finds what was put in. */
   static cache: Set<string> | null = null;
+  /** What each probe is answered with, in order; nothing to read once they run out. */
+  static probed: ([number, number, number] | null)[] = [];
   /** Under `cache`, whether each bindSource found its key, by reqId. */
   readonly bindHits = new Map<number, boolean>();
   posted: WorkerRequest[] = [];
@@ -131,6 +135,9 @@ class FakeWorker {
     if (msg.cmd === "render") {
       if (this.bound) this.drawnFrom.set(msg.seq, this.source);
       else this.skip(msg.seq);
+    }
+    if (msg.cmd === "probe") {
+      this.answer({ type: "probed", reqId: msg.reqId, rgb: FakeWorker.probed.shift() ?? null });
     }
   }
 
@@ -244,6 +251,8 @@ interface Paint {
 }
 /** Every draw and clear on any canvas, in order. */
 let paints: Paint[];
+/** Every getContext call on any canvas, in order. */
+let contexts: { canvas: HTMLCanvasElement; type: string; options: unknown }[];
 let canvasContext: PropertyDescriptor | undefined;
 
 function photo(over: Partial<CatalogPhoto> = {}): CatalogPhoto {
@@ -477,11 +486,13 @@ beforeEach(() => {
   FakeWorker.residentSize = { width: 0, height: 0 };
   FakeWorker.failing = new Set();
   FakeWorker.cache = null;
+  FakeWorker.probed = [];
   vi.mocked(loadPhotoImage).mockClear();
   decoded = [];
   holdSource = null;
   drawn = [];
   paints = [];
+  contexts = [];
   FakeBitmap.made = [];
   vi.stubGlobal("Worker", FakeWorker);
   vi.stubGlobal("ImageBitmap", FakeBitmap);
@@ -496,8 +507,9 @@ beforeEach(() => {
   canvasContext = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, "getContext");
   Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
     configurable: true,
-    value: function getContext(this: HTMLCanvasElement) {
+    value: function getContext(this: HTMLCanvasElement, type: string, options?: unknown) {
       const canvas = this;
+      contexts.push({ canvas, type, options });
       const note = (op: "draw" | "clear", image?: unknown) =>
         paints.push({ canvas, op, image, box: canvas.style.width, width: canvas.width });
       return {
@@ -2568,6 +2580,45 @@ describe("useDevelopRenderer sizing the canvas", () => {
     expect(status?.bufferWindow).toEqual(half);
   });
 
+  // A crop made while zoomed in changes the whole image's shape, with frames of the
+  // same size and window as before. The view places the window by that shape.
+  it("hands the view the whole image's size each window frame comes with", async () => {
+    const { worker, next } = await shown(LANDSCAPE);
+    const half = { x: 0.25, y: 0.25, w: 0.5, h: 0.5 };
+
+    act(() => worker.reply({ ...frameFor(next, LANDSCAPE, half), wholeWidth: 1200, wholeHeight: 800 }));
+    expect([status?.wholeWidth, status?.wholeHeight]).toEqual([1200, 800]);
+    act(() => getRenderBridge().render(false));
+    const after = worker.inFlight();
+    if (!after) throw new Error("no render in flight");
+    act(() => worker.reply({ ...frameFor(after, LANDSCAPE, half), wholeWidth: 1200, wholeHeight: 900 }));
+
+    expect([status?.wholeWidth, status?.wholeHeight]).toEqual([1200, 900]);
+    expect(status?.bufferWindow).toEqual(half);
+  });
+
+  // The crop box is drawn over the region the canvas shows. Opening crop mode on a
+  // photo whose picture is as big as the crop mode one, the frame comes the same size.
+  it("hands the view the region each frame was drawn for, in the commit with its pixels", async () => {
+    const { worker, next } = await shown(LANDSCAPE);
+    const cropped = { x: 0, y: 0, width: 1, height: 1 };
+    const view = { x: -0.03, y: -0.03, width: 1.06, height: 1.06 };
+
+    act(() => worker.reply({ ...frameFor(next, LANDSCAPE), crop: cropped }));
+    expect(status?.bufferCrop).toEqual(cropped);
+    act(() => getRenderBridge().render(false));
+    const after = worker.inFlight();
+    if (!after) throw new Error("no render in flight");
+    const before = drawn.length;
+    act(() => {
+      worker.reply({ ...frameFor(after, LANDSCAPE), crop: view });
+      expect(drawn).toHaveLength(before);
+    });
+
+    expect(drawn).toHaveLength(before + 1);
+    expect(status?.bufferCrop).toEqual(view);
+  });
+
   it("draws a frame of the same shape at once, without waiting for a render", async () => {
     const { worker, develop, next } = await shown(LANDSCAPE);
     const before = drawn.length;
@@ -3155,5 +3206,356 @@ describe("DevelopCanvas saying which effects it can't apply", () => {
     act(() => getRenderBridge().render(false));
     await framesWithout(worker, []);
     expect(says(TOO_MANY)).toBe(false);
+  });
+});
+
+// The eyedroppers read the colour under the cursor from the render worker's live frame
+// rather than off the 8-bit screen canvas, so the monitor transform, the display's
+// rounding and anything drawn over the image can't skew a pick. The worker is asked at
+// the click's place across the frame buffer, whatever the viewport does to the frame.
+describe("DevelopCanvas eyedroppers", () => {
+  const LANDSCAPE = { width: 600, height: 400 };
+  // The 600×400 picture fitted into the 1000×800 frame: 1000 wide, from this y.
+  const SHOWN = { y: (800 - 400 * (1000 / 600)) / 2, h: 400 * (1000 / 600) };
+  const WARM: [number, number, number] = [0.8, 0.5, 0.3];
+  const GREEN: [number, number, number] = [0.1, 0.7, 0.1];
+
+  function CanvasView({ subject }: { subject: CatalogPhoto }) {
+    return <DevelopCanvas photo={subject} zoom={null} onZoomChange={() => {}} />;
+  }
+
+  /** The pointer at (u, v) across the picture; jsdom lays nothing out, so client
+   *  coordinates are frame coordinates. */
+  const at = (u: number, v: number) => ({
+    pointerId: 1,
+    button: 0,
+    clientX: u * 1000,
+    clientY: SHOWN.y + v * SHOWN.h,
+  });
+  const frame = () => {
+    const canvas = document.querySelector("canvas")?.parentElement;
+    if (!canvas) throw new Error("no viewport frame");
+    return canvas;
+  };
+  const probes = (worker: FakeWorker) =>
+    worker.posted.flatMap((m) => (m.cmd === "probe" ? [m] : []));
+  const store = () => useDevelopStore.getState();
+
+  async function openDevelop() {
+    vi.stubGlobal("ResizeObserver", FixedFrameObserver);
+    const { worker } = await open(photo(), true, CanvasView);
+    await answerRenders(worker, LANDSCAPE);
+    return worker;
+  }
+
+  describe("white balance", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("asks for the output colour where it was clicked, and sets Temp and Tint from the answer", async () => {
+      const worker = await openDevelop();
+      act(() => useDevelopStore.setState({ histogram: histogram(), wbPicking: true }));
+      const want = whiteBalanceStepFromLinear(...WARM, store().params, store().asShotTemperature);
+      FakeWorker.probed = [WARM];
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+      await act(async () => {
+        fireEvent.pointerDown(frame(), at(0.25, 0.75));
+        fireEvent.pointerUp(frame(), at(0.25, 0.75));
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      const [first] = probes(worker);
+      expect(first.point).toBe("output");
+      expect(first.u).toBeCloseTo(0.25);
+      expect(first.v).toBeCloseTo(0.75);
+      expect(store().params.temperature).toBe(want.temperature);
+      expect(store().params.tint).toBe(want.tint);
+      expect(store().history.at(-1)?.label).toBe("White Balance");
+      expect(store().wbPicking).toBe(false);
+    });
+  });
+
+  describe("the HSL picker", () => {
+    const hue = () => store().params.hsl.hue;
+
+    beforeEach(() => {
+      FakeWorker.probed = [GREEN, GREEN];
+    });
+
+    it("asks for the output colour where it was pressed, and drags from the hue it gets", async () => {
+      const worker = await openDevelop();
+      act(() => useDevelopStore.setState({ hslPicking: true }));
+      worker.holding = true;
+
+      await act(async () => {
+        fireEvent.pointerDown(frame(), at(0.25, 0.75));
+      });
+      await act(async () => {
+        fireEvent.pointerMove(frame(), at(0.25, 0.5));
+      });
+      expect(hue().green).toBe(0);
+
+      await act(async () => {
+        worker.release();
+        await settle();
+      });
+      await act(async () => {
+        fireEvent.pointerMove(frame(), at(0.25, 0.5));
+      });
+
+      const [probe] = probes(worker);
+      expect(probe.point).toBe("output");
+      expect(probe.u).toBeCloseTo(0.25);
+      expect(probe.v).toBeCloseTo(0.75);
+      expect(hue().green).toBeGreaterThan(0);
+      expect(hue().red).toBe(0);
+
+      await act(async () => {
+        fireEvent.pointerUp(frame(), at(0.25, 0.5));
+      });
+      expect(store().history.at(-1)?.label).toBe("HSL Picker");
+    });
+
+    it("starts no drag from a colour that comes back after the press was released", async () => {
+      const worker = await openDevelop();
+      act(() => useDevelopStore.setState({ hslPicking: true }));
+      worker.holding = true;
+
+      await act(async () => {
+        fireEvent.pointerDown(frame(), at(0.25, 0.75));
+        fireEvent.pointerUp(frame(), at(0.25, 0.75));
+      });
+      await act(async () => {
+        worker.release();
+        await settle();
+      });
+      await act(async () => {
+        fireEvent.pointerDown(frame(), at(0.25, 0.75));
+      });
+      await act(async () => {
+        fireEvent.pointerMove(frame(), at(0.25, 0.5));
+      });
+
+      expect(hue().green).toBe(0);
+    });
+  });
+
+  // A frame of the image's middle half shows over the middle of the picture, and the
+  // mask overlay's own rect still spans the whole image: the click maps through the
+  // first, the rect the viewport places the buffer in.
+  it("maps a Colour Range pick through where the viewport places the frame", async () => {
+    const worker = await openDevelop();
+    act(() => getRenderBridge().render(false));
+    const next = worker.inFlight();
+    if (!next) throw new Error("no render in flight");
+    await act(async () => {
+      worker.reply(frameFor(next, LANDSCAPE, { x: 0.25, y: 0.25, w: 0.5, h: 0.5 }));
+    });
+    const picker: Mask = {
+      id: "picker",
+      name: "Colour",
+      visible: true,
+      invert: false,
+      opacity: 100,
+      adj: defaultMaskAdjustments(),
+      panels: [],
+      components: [
+        { id: "c", kind: "colorRange", mode: "add", invert: false, colorRange: defaultColorRange() },
+      ],
+    };
+    act(() =>
+      useDevelopStore.setState({
+        activeTool: "mask",
+        maskColorPicking: true,
+        params: { ...store().params, masks: [picker] },
+        selectedMaskId: picker.id,
+        selectedComponentId: "c",
+      }),
+    );
+    const overlay = document.querySelector("svg.pointer-events-none")?.parentElement;
+    if (!overlay) throw new Error("no mask overlay");
+    const placed = { x: 250, y: SHOWN.y + SHOWN.h / 4, w: 500, h: SHOWN.h / 2 };
+
+    await act(async () => {
+      fireEvent.pointerDown(overlay, {
+        pointerId: 1,
+        button: 0,
+        clientX: placed.x + 0.25 * placed.w,
+        clientY: placed.y + 0.75 * placed.h,
+      });
+    });
+
+    const [probe] = probes(worker);
+    expect(probe.point).toBe("mask");
+    expect(probe.u).toBeCloseTo(0.25);
+    expect(probe.v).toBeCloseTo(0.75);
+  });
+});
+
+// A 2D context's colour space is fixed by its first getContext, so Develop's canvases
+// ask for the screen's own: P3 pixels on a P3 screen keep their gamut, and sRGB pixels
+// convert exactly onto it. Moving the window to another screen builds them again.
+describe("Develop's canvases in the screen's colour space", () => {
+  /** A screen that does, or doesn't, reach P3, as display-space.ts asks the browser,
+   *  and the window being dragged to another. */
+  function stubScreen(p3: boolean) {
+    const listeners = new Set<() => void>();
+    let matches = p3;
+    vi.stubGlobal("matchMedia", () => ({
+      get matches() {
+        return matches;
+      },
+      addEventListener: (_type: string, fn: () => void) => void listeners.add(fn),
+      removeEventListener: (_type: string, fn: () => void) => void listeners.delete(fn),
+    }));
+    return {
+      moveTo(next: boolean) {
+        matches = next;
+        for (const fn of [...listeners]) fn();
+      },
+    };
+  }
+
+  const displayCanvas = () =>
+    document.querySelector<HTMLCanvasElement>("canvas:not([data-fade]):not([data-handover])");
+  /** The options each 2D context of `canvas` was asked for with, in order. */
+  const asked = (canvas: HTMLCanvasElement | null) =>
+    contexts.filter((c) => c.canvas === canvas && c.type === "2d").map((c) => c.options);
+
+  it.each([
+    [true, "display-p3"],
+    [false, "srgb"],
+  ])("gives the display canvas a context for it (P3 screen: %s)", (p3, colorSpace) => {
+    stubScreen(p3);
+    render(<Develop subject={photo()} />);
+    expect(asked(displayCanvas())).toEqual([{ colorSpace }]);
+  });
+
+  describe("when the window moves to another screen", () => {
+    beforeEach(() => {
+      vi.stubGlobal("ResizeObserver", FixedFrameObserver);
+      useCatalogStore.setState({ photos: [photo()], activePhotoId: "next" });
+    });
+
+    afterEach(() => {
+      useCatalogStore.setState({ activePhotoId: null });
+    });
+
+    it("builds the view again, with a new display canvas in the new space", () => {
+      const screen = stubScreen(true);
+      render(<DevelopView />);
+      const first = displayCanvas();
+      expect(asked(first)).toEqual([{ colorSpace: "display-p3" }]);
+
+      act(() => screen.moveTo(false));
+
+      const second = displayCanvas();
+      expect(second).not.toBe(first);
+      expect(asked(second)).toEqual([{ colorSpace: "srgb" }]);
+    });
+  });
+});
+
+// The soft proof previews the export default colour space. The worker draws it for
+// version 3 frames only, and the view asks for it only for a photo stored as one, so
+// it says so outright: anything else is told "no proof".
+describe("useDevelopRenderer soft proof", () => {
+  const EXPORT_COLOR_SPACE = useSettings.getState().exportColorSpace;
+  const V3 = { ...edit(0.5), processVersion: 3 };
+  const V2 = { ...edit(0.5), processVersion: 2 };
+
+  /** The proof spaces the worker has been told, in order. */
+  const proofs = (worker: FakeWorker) =>
+    worker.posted.flatMap((m) => (m.cmd === "setProof" ? [m.space] : []));
+  const renders = (worker: FakeWorker) => worker.posted.filter((m) => m.cmd === "render").length;
+  const toggle = () => act(() => useDevelopStore.getState().toggleProof());
+
+  beforeEach(() => {
+    useSettings.setState({ exportColorSpace: "adobe-rgb" });
+  });
+
+  afterEach(() => {
+    useSettings.setState({ exportColorSpace: EXPORT_COLOR_SPACE });
+    useDevelopStore.setState({ proof: false });
+    status = null;
+  });
+
+  it("asks for the export space on a version 3 photo with the proof on", async () => {
+    useDevelopStore.setState({ ...loaded("next", V3), proof: true });
+    const { worker } = await open(photo());
+    expect(proofs(worker)).toEqual(["adobe-rgb"]);
+  });
+
+  it("asks for none while the proof is off", async () => {
+    useDevelopStore.setState(loaded("next", V3));
+    const { worker } = await open(photo());
+    expect(proofs(worker)).toEqual([null]);
+  });
+
+  it("asks for none on a version 2 photo, the proof on or not", async () => {
+    useDevelopStore.setState({ ...loaded("next", V2), proof: true });
+    const { worker } = await open(photo());
+    expect(proofs(worker)).toEqual([null]);
+  });
+
+  it("follows the toggle, and draws again each time", async () => {
+    useDevelopStore.setState(loaded("next", V3));
+    const { worker } = await open(photo());
+    await answerRenders(worker);
+
+    let drawn = renders(worker);
+    toggle();
+    expect(proofs(worker)).toEqual([null, "adobe-rgb"]);
+    expect(renders(worker)).toBeGreaterThan(drawn);
+    await answerRenders(worker);
+
+    drawn = renders(worker);
+    toggle();
+    expect(proofs(worker)).toEqual([null, "adobe-rgb", null]);
+    expect(renders(worker)).toBeGreaterThan(drawn);
+  });
+
+  it("follows the export space while it is on, and ignores it while it is off", async () => {
+    useDevelopStore.setState(loaded("next", V3));
+    const { worker } = await open(photo());
+    act(() => useSettings.setState({ exportColorSpace: "prophoto-rgb" }));
+    expect(proofs(worker)).toEqual([null]);
+
+    toggle();
+    act(() => useSettings.setState({ exportColorSpace: "display-p3" }));
+    expect(proofs(worker)).toEqual([null, "prophoto-rgb", "display-p3"]);
+  });
+
+  it("stops asking once the open photo isn't version 3", async () => {
+    useDevelopStore.setState({ ...loaded("next", V3), proof: true });
+    const { worker } = await open(photo());
+    act(() => useDevelopStore.setState({ params: V2 }));
+    expect(proofs(worker)).toEqual(["adobe-rgb", null]);
+  });
+
+  describe("with Develop's status bar", () => {
+    const button = () => document.querySelector('button[aria-label="Toggle soft proof"]');
+
+    beforeEach(() => {
+      vi.stubGlobal("ResizeObserver", FixedFrameObserver);
+      useCatalogStore.setState({ photos: [photo()], activePhotoId: "next" });
+    });
+
+    afterEach(() => {
+      useCatalogStore.setState({ activePhotoId: null });
+    });
+
+    it("offers the Proof button on a photo stored as version 3 only", async () => {
+      render(<DevelopView />);
+      await act(async () => {
+        await settle();
+      });
+      expect(button()).toBeNull();
+
+      act(() => useDevelopStore.setState({ params: V3 }));
+      expect(button()).not.toBeNull();
+    });
   });
 });

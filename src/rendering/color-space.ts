@@ -3,19 +3,23 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Output color-space management for export. The develop pipeline renders in
-// sRGB (sRGB primaries, sRGB transfer) — that's what the screen shows. For a
-// wider-gamut export the WebGL renderer converts the final pixels into the
-// chosen space (primary matrix in the shader, see shaders.ts / renderer's
-// setOutputColorSpace), and here we build the matching ICC profile and embed it
-// into the encoded file so other apps interpret the values correctly.
+// Output color-space management. The develop pipeline renders in sRGB (sRGB
+// primaries, sRGB transfer) for the screen, in Display P3 for a version 3
+// photo on a Display P3 screen. For a wider-gamut export the WebGL renderer
+// converts the final pixels into the chosen space (a primary matrix in the
+// shader, see setOutputColorSpace), and here we build the matching ICC
+// profile and embed it in the file so other apps read the values correctly.
 //
 // Matrices and D50-adapted primary XYZ values were computed offline (Bradford
 // adaptation; sRGB/P3/Adobe are D65, ProPhoto is D50) and verified to map white
 // to white. Each profile is a plain v2 matrix/TRC monitor profile — exactly how
 // the canonical sRGB / AdobeRGB / ProPhoto working-space profiles are built.
 
+import { mat3ColumnMajor, type Mat3 } from "./transform";
+
 export type ColorSpaceId = "srgb" | "display-p3" | "adobe-rgb" | "prophoto-rgb";
+/** The spaces a screen frame can encode for: the ones a canvas can be tagged with. */
+export type DisplaySpace = Extract<ColorSpaceId, "srgb" | "display-p3">;
 
 export const COLOR_SPACES: { value: ColorSpaceId; label: string }[] = [
   { value: "srgb", label: "sRGB" },
@@ -24,8 +28,9 @@ export const COLOR_SPACES: { value: ColorSpaceId; label: string }[] = [
   { value: "prophoto-rgb", label: "ProPhoto RGB" },
 ];
 
-// Shader output-space codes (uOutSpace uniform). sRGB is the no-op pass-through
-// the live develop view always uses; the others trigger the in-shader convert.
+// Shader output-space codes (uOutSpace uniform). sRGB is the no-op pass-through;
+// the others trigger the in-shader convert, for an export or for a version 3
+// photo's frames on a Display P3 screen.
 export const OUT_SPACE_CODE: Record<ColorSpaceId, number> = {
   srgb: 0,
   "display-p3": 1,
@@ -49,13 +54,14 @@ const MATRIX: Record<ColorSpaceId, number[]> = {
   ],
 };
 
+// Row-major, as MATRIX, copied so a caller can't change it.
+export function outMatrix(id: ColorSpaceId): Mat3 {
+  return [...MATRIX[id]];
+}
+
 // Column-major Float32Array for gl.uniformMatrix3fv(loc, false, …).
 export function outMatrixColumnMajor(id: ColorSpaceId): Float32Array {
-  const m = MATRIX[id];
-  // m is row-major (rows of the 3×3); column-major[col*3+row] = m[row*3+col].
-  return new Float32Array([
-    m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8],
-  ]);
+  return mat3ColumnMajor(outMatrix(id));
 }
 
 // ─── ICC profile construction ────────────────────────────────────────────────
@@ -347,21 +353,14 @@ function embedPng(src: Uint8Array, icc: Uint8Array): Uint8Array {
   return concat(out);
 }
 
-function iccpChunk(icc: Uint8Array): Uint8Array {
+export function iccpChunk(icc: Uint8Array): Uint8Array<ArrayBuffer> {
   const name = "ICC Profile\0";
   const compressed = zlibDeflate(icc);
   const body = new Uint8Array(name.length + 1 + compressed.length);
   for (let k = 0; k < name.length; k++) body[k] = name.charCodeAt(k);
   body[name.length] = 0; // compression method: 0 (deflate)
   body.set(compressed, name.length + 1);
-  // length + 'iCCP' + body + CRC
-  const chunk = new Uint8Array(12 + body.length);
-  const dv = new DataView(chunk.buffer);
-  dv.setUint32(0, body.length);
-  chunk[4] = 0x69; chunk[5] = 0x43; chunk[6] = 0x43; chunk[7] = 0x50; // 'iCCP'
-  chunk.set(body, 8);
-  dv.setUint32(8 + body.length, crc32(chunk.subarray(4, 8 + body.length)));
-  return chunk;
+  return pngChunk("iCCP", body);
 }
 
 // WebP metadata chunks live in an extended (VP8X) container with a feature
@@ -477,6 +476,17 @@ export function crc32(buf: Uint8Array): number {
   let c = 0xffffffff;
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
+}
+
+/** A PNG chunk: the data's length, the type, the data, then the CRC of type and data. */
+export function pngChunk(type: string, data: Uint8Array): Uint8Array<ArrayBuffer> {
+  const chunk = new Uint8Array(12 + data.length);
+  const dv = new DataView(chunk.buffer);
+  dv.setUint32(0, data.length);
+  for (let k = 0; k < 4; k++) chunk[4 + k] = type.charCodeAt(k);
+  chunk.set(data, 8);
+  dv.setUint32(8 + data.length, crc32(chunk.subarray(4, 8 + data.length)));
+  return chunk;
 }
 
 // Minimal zlib stream using stored (uncompressed) DEFLATE blocks. Avoids a

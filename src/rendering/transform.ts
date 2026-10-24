@@ -16,7 +16,7 @@ export interface Vec2 {
   y: number;
 }
 
-function mat3Mul(a: Mat3, b: Mat3): Mat3 {
+export function mat3Mul(a: Mat3, b: Mat3): Mat3 {
   const m: number[] = new Array(9);
   for (let r = 0; r < 3; r++) {
     for (let col = 0; col < 3; col++) {

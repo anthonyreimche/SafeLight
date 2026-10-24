@@ -6,8 +6,9 @@
 // A monitor's ICC profile, reduced to what the shader's output-space stage can
 // apply without new GLSL: a matrix from sRGB to the monitor's primaries, and
 // whichever of the stage's three encodes is closest to the monitor's tone
-// curve. Under Wayland nothing converts Safelight's window to the monitor, so
-// on Linux the live Develop view converts itself (Preferences ▸ Rendering).
+// curve. Under Wayland nothing converts Safelight's window to the monitor
+// unless the desktop does (KDE Plasma with a colour profile set), so on Linux
+// the live Develop view can convert itself (Preferences ▸ Rendering).
 //
 // Only matrix/TRC profiles qualify. A LUT-based profile is used through the
 // matrix and curves it carries alongside its LUTs, when those are plausible.
@@ -107,12 +108,6 @@ function invert(m: Mat3): Mat3 | null {
 
 const toColumnMajor = (m: Mat3) =>
   new Float32Array([m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]);
-
-const fromColumnMajor = (m: Float32Array): Mat3 => [
-  m[0], m[3], m[6],
-  m[1], m[4], m[7],
-  m[2], m[5], m[8],
-];
 
 // ─── Tags ───────────────────────────────────────────────────────────────────
 
@@ -299,24 +294,5 @@ export function parseDisplayProfile(bytes: Uint8Array): ParsedDisplayProfile {
       description: readDescription(bytes, view, tags.get("desc")),
       transform: { matrix: toColumnMajor(matrix), curve: nearestCurve(curves) },
     },
-  };
-}
-
-/** Undo a monitor transform on a pixel read off the screen: monitor-encoded
- *  0..1 in, sRGB-linear 0..1 out, so the eyedroppers measure what they did
- *  before. Colours one of the two spaces can't hold are clipped. */
-export function monitorToSrgbLinear(
-  t: MonitorTransform,
-): (r: number, g: number, b: number) => [number, number, number] {
-  const decode = outputDecode(CURVE_SPACE[t.curve]);
-  const back = invert(fromColumnMajor(t.matrix));
-  if (!back) throw new Error("display transform is not invertible");
-  return (r, g, b) => {
-    const d = [decode(r), decode(g), decode(b)];
-    return [
-      clamp01(back[0] * d[0] + back[1] * d[1] + back[2] * d[2]),
-      clamp01(back[3] * d[0] + back[4] * d[1] + back[5] * d[2]),
-      clamp01(back[6] * d[0] + back[7] * d[1] + back[8] * d[2]),
-    ];
   };
 }

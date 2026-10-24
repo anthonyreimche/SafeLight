@@ -210,6 +210,7 @@ function allowsBottom(panel: RegisteredPanel | undefined): boolean {
 function seedDefaults(module: AppModule): {
   rails: RailState[];
   floating: Record<string, FloatState>;
+  collapsed: Record<string, boolean>;
 } {
   const registered = useRegistry.getState().panels;
   const isRegistered = (id: string) => Object.hasOwn(registered, id);
@@ -222,6 +223,7 @@ function seedDefaults(module: AppModule): {
       floating: Object.fromEntries(
         Object.entries(def.floating ?? {}).filter(([id]) => isRegistered(id)),
       ),
+      collapsed: collapsedFlags(def.collapsed),
     };
   const panels = Object.values(registered)
     .filter((p) => p.defaultDock?.module === module)
@@ -242,7 +244,7 @@ function seedDefaults(module: AppModule): {
         panels: group.map((p) => p.id),
       });
   }
-  return { rails, floating: {} };
+  return { rails, floating: {}, collapsed: {} };
 }
 
 // ---------------------------------------------------------------------------
@@ -273,9 +275,16 @@ function setActiveLayout(id: string) {
   } catch {}
 }
 
+/** The edited module is saved as usual; every other module is stored as the
+ *  layout showed it, so Custom carries on from the layout rather than from an
+ *  arrangement left over from before it was picked. */
 function markLayoutCustom() {
-  if (useLayoutStore.getState().activeId !== CUSTOM_LAYOUT)
-    setActiveLayout(CUSTOM_LAYOUT);
+  if (useLayoutStore.getState().activeId === CUSTOM_LAYOUT) return;
+  const current = useDockStore.getState().module;
+  for (const m of layoutModules()) {
+    if (m !== current) saveLayout({ module: m, ...resolveModuleState(m) });
+  }
+  setActiveLayout(CUSTOM_LAYOUT);
 }
 
 // ── User layouts: named arrangements the user saves from their current dock.
@@ -381,6 +390,15 @@ function railsFromDef(module: AppModule, def: ModuleLayoutDef): RailState[] {
     ...(r.side === "bottom" ? { height: r.height ?? DEFAULT_BOTTOM } : {}),
     panels: [...r.panels],
   }));
+}
+
+/** A layout's collapsed list as dock flags. Extensions are plain JS at runtime,
+ *  so the list may not be the array the type promises. */
+function collapsedFlags(ids: unknown): Record<string, boolean> {
+  if (!Array.isArray(ids)) return {};
+  return Object.fromEntries(
+    ids.filter((id): id is string => typeof id === "string").map((id) => [id, true]),
+  );
 }
 
 /** Drop panels that don't lay out horizontally from bottom rails, and any rail
@@ -514,12 +532,14 @@ function resolveModuleState(module: AppModule): DockPlacement & { rewritesSaved:
     if (def) {
       rails = railsFromDef(module, def);
       floating = def.floating ?? {};
+      collapsed = collapsedFlags(def.collapsed);
     }
   }
   if (!rails) {
     const seed = seedDefaults(module);
     rails = seed.rails;
     floating = seed.floating;
+    collapsed = seed.collapsed;
   }
   const resolved: DockPlacement = { rails, floating, zOrder: zOrder ?? Object.keys(floating), collapsed };
   const placement = replacePanelIds(resolved, panelReplacements(useRegistry.getState().panels));
@@ -575,10 +595,11 @@ useRegistry.subscribe((s, prev) => {
 /** Every module a layout can describe: the built-ins plus registered ones. */
 const layoutModules = (): AppModule[] => moduleTabs().map((m) => m.id);
 
-/** Convert live rail/floating state into the serializable ModuleLayoutDef. */
+/** Convert live dock state into the serializable ModuleLayoutDef. */
 function moduleDefFromState(
   rails: RailState[],
   floating: Record<string, FloatState>,
+  collapsed: Record<string, boolean>,
 ): ModuleLayoutDef {
   const def: ModuleLayoutDef = {
     rails: rails.map((r) => ({
@@ -589,6 +610,8 @@ function moduleDefFromState(
     })),
   };
   if (Object.keys(floating).length) def.floating = { ...floating };
+  const folded = openList(rails, floating).filter((id) => collapsed[id]);
+  if (folded.length) def.collapsed = folded;
   return def;
 }
 
@@ -598,8 +621,8 @@ function captureCurrentLayout(): Partial<Record<string, ModuleLayoutDef>> {
   const s = useDockStore.getState();
   const out: Partial<Record<string, ModuleLayoutDef>> = {};
   for (const m of layoutModules()) {
-    const { rails, floating } = s.module === m ? s : resolveModuleState(m);
-    out[m] = moduleDefFromState(rails, floating);
+    const { rails, floating, collapsed } = s.module === m ? s : resolveModuleState(m);
+    out[m] = moduleDefFromState(rails, floating, collapsed);
   }
   return out;
 }
@@ -791,7 +814,30 @@ export function toggleDockVisibility(): void {
 
 function toggleCollapsed(id: string) {
   const s = useDockStore.getState();
-  commit({ collapsed: { ...s.collapsed, [id]: !s.collapsed[id] } });
+  const collapsed = { ...s.collapsed, [id]: !s.collapsed[id] };
+  if (!saveCollapsedToLayout(collapsed)) commit({ collapsed });
+}
+
+/** With the setting on, a collapse while a user layout is picked is written
+ *  into that layout, which stays picked. A registered preset can't be written,
+ *  so returns false and the edit turns it into Custom as usual. */
+function saveCollapsedToLayout(collapsed: Record<string, boolean>): boolean {
+  if (!getSettings().autoSaveCollapsedPanels) return false;
+  const s = useDockStore.getState();
+  const layouts = useUserLayouts.getState().layouts;
+  const layout = moduleEntry(layouts, useLayoutStore.getState().activeId);
+  if (!layout || !s.module) return false;
+  const base =
+    moduleEntry(layout.modules, s.module) ?? moduleDefFromState(s.rails, s.floating, {});
+  const folded = openList(s.rails, s.floating).filter((id) => collapsed[id]);
+  const def: ModuleLayoutDef = { ...base, collapsed: folded };
+  if (!folded.length) delete def.collapsed;
+  useDockStore.setState({ collapsed });
+  persistUserLayouts({
+    ...layouts,
+    [layout.id]: { ...layout, modules: { ...layout.modules, [s.module]: def } },
+  });
+  return true;
 }
 
 function bringToFront(id: string) {

@@ -13,7 +13,8 @@
 import { createContext, useContext } from "react";
 import type { DevelopParams } from "@/catalog/types";
 import { getRenderBridge } from "@/rendering/render-bridge";
-import { renderPhotoFrame } from "@/state/headless-frame";
+import type { FloatCaptureOptions, FloatFrame, LiveFloatCaptureOptions } from "@/rendering/float-frame";
+import { renderPhotoFloatFrame, renderPhotoFrame } from "@/state/headless-frame";
 
 export interface OverlayRect {
   x: number;
@@ -82,6 +83,17 @@ export function captureDevelopFrame(
   return getRenderBridge().capture(params, options);
 }
 
+/** Render one frame through the live Develop pipeline with `params`, as
+ *  captureDevelopFrame does for measuring, and hand it over as floats at a
+ *  capture point, in the space asked for, at most `options.maxEdge` px on its
+ *  long edge. Null without float render targets. */
+export function captureDevelopFloatFrame(
+  params: DevelopParams,
+  options?: LiveFloatCaptureOptions,
+): Promise<FloatFrame | null> {
+  return getRenderBridge().captureFloat(params, options);
+}
+
 /** Render an arbitrary catalog photo by id through the full develop pipeline with
  *  `params` (and that photo's own extension-stage `paramBag`) to an ImageBitmap,
  *  off-screen. Unlike captureFrame this is NOT tied to the live Develop source,
@@ -96,4 +108,16 @@ export function renderDevelopPhotoFrame(
   options?: { lossless?: boolean },
 ): Promise<ImageBitmap | null> {
   return renderPhotoFrame(photoId, params, paramBag, options);
+}
+
+/** renderDevelopPhotoFrame's frame as floats, read at a capture point and
+ *  converted into the space asked for, with `options.paramBag` as its bag.
+ *  Null without float render targets, or where only the grid's camera preview
+ *  could stand in for the photo. */
+export function renderDevelopPhotoFloatFrame(
+  photoId: string,
+  params: DevelopParams,
+  options?: FloatCaptureOptions,
+): Promise<FloatFrame | null> {
+  return renderPhotoFloatFrame(photoId, params, options);
 }

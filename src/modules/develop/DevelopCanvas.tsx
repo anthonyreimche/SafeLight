@@ -30,7 +30,7 @@ import { CropOverlay } from "./CropOverlay";
 import { GuidedOverlay } from "./GuidedOverlay";
 import { MaskOverlay } from "./MaskOverlay";
 import { useAutoAdjust } from "@/hooks/use-auto-adjust";
-import { sampleLinearRGB } from "@/rendering/sample-pixel";
+import { getRenderBridge } from "@/rendering/render-bridge";
 import { getExtSetting } from "@/extensions/ext-settings";
 import { useRegistry } from "@/extensions/registry";
 import { overflowNotice } from "./stage-overflow";
@@ -104,6 +104,9 @@ export function DevelopCanvas({
     width,
     height,
     bufferWindow,
+    wholeWidth,
+    wholeHeight,
+    bufferCrop,
     sourceWidth,
     sourceHeight,
     setViewport,
@@ -209,23 +212,30 @@ export function DevelopCanvas({
     initialValues: { hue: number[]; sat: number[]; lum: number[] };
   } | null>(null);
 
+  // The linear colour the output stage gives the buffer pixel (bx, by), read from
+  // the worker's live frame; null when it has none.
+  const probeOutput = (bx: number, by: number) =>
+    width > 0 && height > 0
+      ? getRenderBridge().probe(bx / width, by / height, "output")
+      : Promise.resolve(null);
+
   // Handle WB pick (simple click)
   const onWbPick = (bx: number, by: number) => {
     setWbPicking(false);
-    const cv = canvasRef.current;
-    if (!cv) return;
-    void whiteBalanceFromSample(() => sampleLinearRGB(cv, bx, by));
+    void whiteBalanceFromSample(() => probeOutput(bx, by));
   };
 
   // HSL picker: click+drag to adjust nearest HSL sliders
   const selectedHslBand = useDevelopStore((s) => s.selectedHslBand);
 
-  const onHslPointerDown = (bx: number, by: number) => {
-    const cv = canvasRef.current;
-    if (!cv) return;
+  // Counts presses and releases. A probe answers after the press that asked, so it
+  // only starts the drag if that press is still the latest and has not been released.
+  const hslPress = useRef(0);
 
-    const rgb = sampleLinearRGB(cv, bx, by);
-    if (!rgb) return;
+  const onHslPointerDown = async (bx: number, by: number) => {
+    const press = ++hslPress.current;
+    const rgb = await probeOutput(bx, by);
+    if (!rgb || press !== hslPress.current) return;
 
     const [r, g, bVal] = rgb;
     const hueDeg = rgbToHue(r, g, bVal);
@@ -273,6 +283,7 @@ export function DevelopCanvas({
   };
 
   const onHslPointerUp = () => {
+    hslPress.current++;
     if (dragState.current?.active) {
       dragState.current = null;
       commitEdit("HSL Picker");
@@ -295,7 +306,9 @@ export function DevelopCanvas({
   // enclosing the warped image for the crop overlay.
   const invRaw = buildInverseTransform(straighten, transform, imageAspect);
   const forwardRaw = buildForwardTransform(straighten, transform, imageAspect);
-  const viewCrop = transformedViewCrop(forwardRaw);
+  // The crop box is drawn over the region the canvas shows. Until the renderer draws
+  // the view asked for (crop mode opening, a straighten), that is still the one before.
+  const viewCrop = bufferCrop ?? transformedViewCrop(forwardRaw);
 
   // Mapping helpers handed to develop-canvas-overlay extensions, so interactive
   // marks anchored to the image stay correct through zoom/pan/crop/straighten —
@@ -400,6 +413,8 @@ export function DevelopCanvas({
       bufferWidth={width}
       bufferHeight={height}
       bufferWindow={bufferWindow}
+      imageWidth={wholeWidth}
+      imageHeight={wholeHeight}
       zoom={zoom}
       onZoomChange={onZoomChange}
       onViewport={setViewport}
@@ -501,7 +516,7 @@ export function DevelopCanvas({
                     inv={invRaw}
                     forward={forwardRaw}
                     imageAspect={imageAspect}
-                    canvasRef={canvasRef}
+                    bufferRect={overlayRect}
                   />
                 )
               : undefined

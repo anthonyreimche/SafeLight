@@ -79,7 +79,7 @@ interface ProcessingStageContribution {
   produces?: InterStageVariable[]; // values handed to later stages (see "Inter-stage variables")
   consumes?: string[];        // names of the variables this stage reads
   textures?: TextureRequirement[];
-  mask?: { maskable: true; maskPhase: "linear" | "display" }; // reserved, not implemented
+  mask?: { maskable: true };   // runs again inside masks that hold its keys
   presetScope?: "global" | "per-image"; // how the stage's params behave in presets (default "global")
   space?: StageSpace;         // opt into full-information values (see "Values a stage sees")
   reads?: "source" | "current"; // what the stage's passes read first (default "source")
@@ -97,7 +97,16 @@ The stage injection (`src/rendering/webgl/stage-injection.ts`, with the order se
 - **`textures`** declare what the stage samples. `kind: "lut"` / `"dynamic"` textures take pixel data from `api.setStageTexture` (a single global bag — right for film LUTs, wrong for anything per photo). Disabling, updating or reloading an extension drops its stages' textures and frees their GPU copies, so supply them from `activate`: a re-enabled extension's module is not run again. `kind: "coverage"` textures are painted: the photo's paramBag value at `"{stageId}.{key}"` is a `BrushDab[]` (source-UV, radius in image-height units — the same shape core brush masks use), baked into brush coverage per render and read by the inline `glsl`/`helpers` as `float key(vec2 uv)` (0..1 at source-UV; not available inside passes). Because the dabs are ordinary bag values they persist, undo, export and paste like any edit and never enter presets. Coverage shares the atlas's four channels with the photo's own brush masks; when they are all taken the key reads as unpainted and a warning is logged once. The render worker is sent only the bag values whose identity changed, so replace the `BrushDab[]` with a new array whenever it changes (`[...dabs, dab]`) and never push into or edit the one you set before: a value edited in place no longer reaches the renderer.
 - **`presetScope`** decides how the stage's params travel in presets. `"global"` (the default) is a look that suits any photo, such as a film sim or a curve: it is offered when saving a preset and pre-selected once changed. `"per-image"` is tied to one photo's content, such as warp, heal or red-eye: it is left out of presets and only listed under the Save dialog's **Show all**.
 - **`after`** orders stages inside a phase. A stage runs after every stage in its `after` that is registered in the same phase, even against its `priority`; everything else is ordered as before, by phase, then `priority`, then registration order. An id that isn't registered, or sits in another phase, is ignored (a phase boundary always wins), so a stage can name an optional partner. Stages that name each other in a cycle lose the entries between them and nothing else: a member that also names a stage outside the cycle still waits for it. The core logs one warning per distinct cycle (once per JavaScript context: the render worker and each window log separately), naming its stages. A value that isn't an array of ids is ignored, and registration warns about it. Older builds ignore `after`: set `minAppVersion` when a stage relies on it.
-- **`mask`** is reserved and not implemented: nothing in the render path reads it. A stage that sets it still registers, with a console warning.
+- **`mask: { maskable: true }`** lets the stage run again inside local adjustment masks. A mask whose `bag` holds any of the stage's keys (written by a [per-mask panel](ui-shell.md#per-mask-panels-panelcontributionmask)) gets its own copy of the stage, placed right after it. The copy has the same `glsl`, `helpers` and `passes`, is bound to that mask's values, and is blended in by the mask's coverage and opacity.
+  - Only `scene-linear`, `tone-map`, `display-adjust`, `effects` and `output-encode` stages can be masked: the other phases run before mask coverage is known. On those the field is ignored, with a console warning.
+  - Copies run on photos at [process version](#process-versions) 2 or later. Version 1 photos render as they always have, and the Masking panel offers the sub-panel only after Update processing.
+  - Copies chain in mask order. Each reads the image as the one before it left it, `reads: "current"` included.
+  - A copy runs its passes on their own, with its own result and the mask's values. They draw with the stage's compiled pass programs. The live view runs at most four copies' passes per frame and catches up on the frames after; exports, captures and thumbnails always run them all.
+  - A copy samples the stage's `lut`, `dynamic` and `coverage` textures instead of having its own, and calls the stage's helpers unless they read a uniform.
+  - What the stage `produces` stays inside the copy, so consumers keep reading the stage's own value.
+  - A copy's uniforms are namespaced apart from the stage's. GLSL that names its own `stageResult` sampler by its prefixed name is pointed at the copy's; no other prefixed name is rewritten.
+  - A stage id can't end in `@` and a number, which is how copies are named.
+  - When the GPU can't build the program with every copy (its shader's uniform limit, say), the frame is drawn without the copies and Develop shows its "Too many effects" notice.
 - **`phase`** must be one of the phases above. Any other name registers with a console warning, and the stage sorts after every listed phase.
 - **Reserved ids.** Ids under `core.` and the id `builtin.denoise` belong to Safelight's own stages, which the pipeline treats differently from an extension's (a `core.` stage keeps raw uniform names and has no param-bag bindings). An extension that registers one is refused with a console error, and a stage already registered under that id stays.
 - Re-registering the same `id` replaces the stage (and its params), unless the [registration checks](#values-a-stage-sees-space) refuse the new definition and leave the old one in place; `unregisterProcessingStage(id)` removes one without disabling the whole extension. The shader recompiles on any such change.
@@ -237,7 +246,14 @@ interface ExportProcessorContribution {
   id: string;     // globally unique, e.g. "my-ext.watermark"
   label: string;  // collapsible section header in the Export panel
   settings?: ExportProcessorField[]; // same shape as SettingsField
-  process(
+  // At least one of the two:
+  processPixels?(
+    frame: ExportFrame,
+    photo: CatalogPhoto,
+    settings: Record<string, unknown>,
+    context: ExportProcessorContext,
+  ): Promise<ExportFrame | void>; // Needs Safelight 3.1.0
+  process?(
     blob: Blob,
     photo: CatalogPhoto,
     settings: Record<string, unknown>,
@@ -248,13 +264,31 @@ interface ExportProcessorContribution {
 interface ExportProcessorContext {
   longEdge: number | null; // the export's long-edge setting; null = original size
 }
+
+interface ExportFrame {
+  data: Uint16Array;        // RGBA, top-down, encoded for the export's colour space, 0..65535
+  width: number;
+  height: number;
+  colorSpace: "srgb" | "display-p3" | "adobe-rgb" | "prophoto-rgb";
+  icc: Uint8Array | null;   // the ICC profile the file will embed; null for sRGB
+  bitDepth: 8 | 16;         // what the frame will be quantised to
+}
 ```
 
-Called once per exported image after the WebGL pipeline encodes it. Processors run in registration order, each receiving the previous step's Blob. Each declared field's `default` is merged with the user's current values before `process`. Processor errors are caught and logged and the unmodified Blob is forwarded, so a broken extension never silently drops an export.
+A processor declares `processPixels`, `process` or both; `registerExportProcessor` refuses one with neither, with a console warning naming its id. `process` is called once per exported image after the WebGL pipeline encodes it. Processors run in registration order, every `processPixels` before any `process`, each receiving what the previous step returned. Each declared field's `default` is merged with the user's current values before either method. Processor errors are caught and logged and the step's input is forwarded, so a broken extension never silently drops an export.
 
-A processor may render more of the photo through `api.export.renderPhotos` (an auxiliary image at export size); a render of that same photo started from inside its processors runs no export processors. `context.longEdge` is the export's long-edge setting, applied before the crop, so the delivered file can be smaller than it; render again with the same `longEdge` and the image lands on the delivered file's pixel grid, to within a pixel when the second render comes from a different decode of the source.
+A processor may render more of the photo through `api.export.renderPhotos` (an auxiliary image at export size); a render of that same photo started from inside its processors, in either method, runs no export processors. `context.longEdge` is the export's long-edge setting, applied before the crop, so the delivered file can be smaller than it; render again with the same `longEdge` and, unless a step before yours changed the size (a `processPixels` mat, or a `process` that resizes the file), the image lands on the delivered file's pixel grid, to within a pixel when the second render comes from a different decode of the source.
 
 If `process` returns another image type (its Blob's `type` is `image/avif`, `image/jxl`, `image/heic`, `image/png`, `image/webp`, `image/tiff` or `image/jpeg` and differs from the export format), the delivered file takes that type's extension, in files, ZIP and folder delivery alike.
+
+### Pixels before encoding: `processPixels`
+
+`processPixels` gets the export's pixels after mapping and sharpening, before they are quantised and encoded. A mat, a border or a watermark drawn here keeps the file's bit depth and ICC profile, and works on a TIFF, where a `process` would have to decode the file and encode it again.
+
+- **The frame.** `data` holds the file's values: a 16-bit export's own, and an 8-bit export's bytes multiplied by 257. What comes back is written at the export's depth, divided by 257 and rounded at 8 bits, so a frame handed back unchanged writes the same bytes. Alpha arrives opaque (65535), and only 8-bit PNG and WebP files keep it, passing through a browser canvas that makes colour under partial alpha approximate.
+- **What is read back.** Change `frame.data` in place and return nothing, or return a frame. Only its `data`, `width` and `height` are read: `colorSpace`, `icc` and `bitDepth` describe the export and stay as they are. A frame may change size, as a mat does; the file and its EXIF pixel dimensions take the new size. A frame the encoders can't take (`data` not a `Uint16Array` of `width × height × 4` values, or a size that isn't a positive whole number) is logged and the frame before it kept, as for a throw. A hook that writes `frame.data` in place and then throws keeps what it wrote; write into a copy if a failure part-way must leave the frame as it was.
+- **Cost.** A 16-bit export hands over the frame it already holds. An 8-bit export reads its canvas back, and widens it to 16 bits (8 bytes a pixel, about 190 MB at 24 MP), only when a processor declares `processPixels`; without one it encodes straight from the canvas, as before.
+- **Older builds.** Needs Safelight 3.1.0: older builds ignore `processPixels` and require `process`, so a processor that must run on older builds keeps a `process`. Otherwise set `minAppVersion` to `"3.1.0"` in the [manifest](../extensions/README.md#manifest).
 
 ## `FilenameTemplateContribution`
 

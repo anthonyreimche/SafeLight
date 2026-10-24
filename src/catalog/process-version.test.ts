@@ -19,6 +19,7 @@ import {
   maskHasDisplayAdjustments,
   normalizeParams,
   usesOlderProcessing,
+  usesSignedOutput,
   withoutProcessVersion,
   type DevelopParams,
 } from "./types";
@@ -82,6 +83,23 @@ describe("usesOlderProcessing", () => {
 
   it("is false for a version from a newer build, which is never offered an update", () => {
     expect(usesOlderProcessing({ processVersion: CURRENT_PROCESS_VERSION + 1 })).toBe(false);
+  });
+});
+
+// Asks the stored version alone, not the one this build writes, so the soft proof
+// controls follow a photo stored as version 3 before any build writes it.
+describe("usesSignedOutput", () => {
+  it.each([
+    [1, false],
+    [2, false],
+    [3, true],
+    [4, true],
+  ])("is %i -> %s", (version, expected) => {
+    expect(usesSignedOutput({ processVersion: version })).toBe(expected);
+  });
+
+  it("is false for an edit that stores no version, which reads as version 1", () => {
+    expect(usesSignedOutput(normalizeParams({ exposure: 1 }))).toBe(false);
   });
 });
 

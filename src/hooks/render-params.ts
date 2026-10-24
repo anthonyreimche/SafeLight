@@ -21,7 +21,9 @@ export type RenderParamsFor = (
  *  object whenever it applies, and the bridge posts each object it is handed once, so the
  *  last result is kept and returned again while `params` and `bypassed` are the same
  *  objects (callers replace them on change, never mutate them) and `cropping` and
- *  `aspect` the same values. */
+ *  `aspect` the same values. In crop mode the crop itself is never drawn, so params that
+ *  differ from the last only in their crop get the last result too: a drag of the crop
+ *  box then asks the renderer for nothing. */
 export function createRenderParams(): RenderParamsFor {
   let last: {
     params: DevelopParams;
@@ -34,11 +36,12 @@ export function createRenderParams(): RenderParamsFor {
   return (params, cropping, aspect, bypassed) => {
     if (
       last &&
-      last.params === params &&
+      (last.params === params || (cropping && sameButCrop(last.params, params))) &&
       last.cropping === cropping &&
       last.aspect === aspect &&
       last.bypassed === bypassed
     ) {
+      last.params = params;
       return last.drawn;
     }
     const bp = applyPanelBypass(params, bypassed);
@@ -51,4 +54,11 @@ export function createRenderParams(): RenderParamsFor {
     last = { params, cropping, aspect, bypassed, drawn };
     return drawn;
   };
+}
+
+/** Whether every top-level field but `crop` is the same value in both. */
+function sameButCrop(a: DevelopParams, b: DevelopParams): boolean {
+  const ka = Object.keys(a) as (keyof DevelopParams)[];
+  const kb = Object.keys(b) as (keyof DevelopParams)[];
+  return ka.length === kb.length && kb.every((k) => k === "crop" || a[k] === b[k]);
 }

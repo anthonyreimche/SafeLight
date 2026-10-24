@@ -50,7 +50,7 @@ export function isIdentitySpace(space: StageSpace | undefined, domain: StageDoma
   return spaceKey(space, domain) === spaceKey(undefined, domain);
 }
 
-function apply3(m: Mat3, v: Vec3): Vec3 {
+export function apply3(m: Mat3, v: Vec3): Vec3 {
   return [
     m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
     m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
@@ -75,7 +75,7 @@ export function fromStageSpace(rgb: Vec3, space: StageSpace, domain: StageDomain
 }
 
 // GLSL mat3 is column-major: emit the transpose of the row-major array.
-function glslMat3(m: Mat3): string {
+export function glslMat3(m: Mat3): string {
   const columnMajor = [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
   return `mat3(${columnMajor.map((x) => x.toFixed(12)).join(", ")})`;
 }

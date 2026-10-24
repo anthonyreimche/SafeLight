@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecodedImage, Fallback } from "@/catalog/load-image";
 import type { CatalogPhoto } from "@/catalog/types";
+import type { FloatCaptureOptions, FloatFrame } from "@/rendering/float-frame";
 import { normalizeParams } from "@/catalog/types";
 import { photo as fixture } from "@/catalog/stored-edit.fixtures";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
@@ -26,13 +27,20 @@ const h = vi.hoisted(() => ({
   asyncRenders: 0,
   /** The as-shot temperature each render from the resident source was given. */
   sourceTemperatures: [] as number[],
-  /** Every request the bridge was asked to render, and which of its two calls took it. */
-  requests: [] as { call: "source" | "bitmap"; request: Record<string, unknown> }[],
+  /** Every request the bridge was asked to render, and which of its calls took it. */
+  requests: [] as { call: "source" | "bitmap" | "float"; request: Record<string, unknown> }[],
+  /** What a float render answers when it isn't a miss. */
+  floatFrame: null as FloatFrame | null,
+  /** Whether a render from an image rejects, as one the worker failed does. */
+  asyncFails: false,
+  /** The worker's EXT_color_buffer_float flag, as the bridge reports it once ready. */
+  pipelineFloat: true,
 }));
 
 vi.mock("@/rendering/render-bridge", () => ({
   getRenderBridge: () => ({
     ready: Promise.resolve(),
+    pipelineFloat: h.pipelineFloat,
     uploadSource: (_target: string, key: string) => void h.resident.add(key),
     renderThumbnailFromSource: async (opts: { key: string; asShotTemperature: number }) => {
       h.requests.push({ call: "source", request: opts });
@@ -43,7 +51,13 @@ vi.mock("@/rendering/render-bridge", () => ({
     renderThumbnailAsync: async (opts: Record<string, unknown>) => {
       h.requests.push({ call: "bitmap", request: opts });
       h.asyncRenders++;
+      if (h.asyncFails) throw new Error("thumbnail render failed");
       return new Blob(["from bitmap"]);
+    },
+    renderThumbnailFloat: async (opts: { key?: string }) => {
+      h.requests.push({ call: "float", request: opts });
+      if (opts.key !== undefined && !h.resident.has(opts.key)) return null;
+      return h.floatFrame;
     },
   }),
 }));
@@ -59,7 +73,7 @@ vi.mock("./catalog-store", () => ({
   useCatalogStore: { getState: () => ({ photos: h.photos }) },
 }));
 
-import { renderPhotoFrame } from "./headless-frame";
+import { renderPhotoFloatFrame, renderPhotoFrame } from "./headless-frame";
 
 const ID = "x";
 const KEY = `${ID}:0`;
@@ -82,6 +96,9 @@ beforeEach(() => {
   h.asyncRenders = 0;
   h.sourceTemperatures = [];
   h.requests = [];
+  h.floatFrame = null;
+  h.asyncFails = false;
+  h.pipelineFloat = true;
   vi.stubGlobal("createImageBitmap", async () => frame);
 });
 
@@ -146,6 +163,15 @@ describe("measuring a photo off-screen", () => {
     await measure();
 
     expect(h.sourceTemperatures).toEqual([5200]);
+  });
+
+  it("is null, not a failure, when rendering a preview once fails", async () => {
+    h.decoded = fellBack({ from: "embedded", ...NONE, timedOut: true });
+    h.asyncFails = true;
+
+    await expect(measure()).resolves.toBeNull();
+
+    expect(h.asyncRenders).toBe(1);
   });
 
   it("doesn't fall back on the grid's preview when it already shows an edit", async () => {
@@ -324,5 +350,116 @@ describe("a lossless frame with no source of the photo's own", () => {
     await expect(renderPhotoFrame(ID, params, undefined, { lossless: false })).resolves.toBe(frame);
 
     expect(h.asyncRenders).toBe(2);
+  });
+});
+
+// A float frame carries data about the photo's own pixels, as a lossless frame
+// does: it takes the same sources, small, read at the point and in the space
+// asked for, and never the grid's camera preview, which is another source.
+describe("a float frame of a photo", () => {
+  const params = normalizeParams({ exposure: 1 });
+  const FLOAT = { point: "output", space: { encoding: "perceptual", primaries: "rec2020" } } as const;
+  const FRAME: FloatFrame = { data: new Float32Array(4), width: 1, height: 1, space: FLOAT.space, point: FLOAT.point };
+  const floats = (opts?: FloatCaptureOptions) => renderPhotoFloatFrame(ID, params, opts);
+
+  beforeEach(() => {
+    h.floatFrame = FRAME;
+  });
+
+  it("resolves the frame the resident source renders, small, at the point and in the space asked for", async () => {
+    h.resident.add(KEY);
+
+    await expect(floats(FLOAT)).resolves.toBe(FRAME);
+
+    expect(h.requests).toEqual([
+      { call: "float", request: expect.objectContaining({ key: KEY, params, maxEdge: 640, float: FLOAT }) },
+    ]);
+    expect(h.requests[0].request).not.toHaveProperty("quality");
+    expect(h.requests[0].request).not.toHaveProperty("lossless");
+    expect(h.decodes).toBe(0);
+  });
+
+  it("decodes, uploads and renders again from the source on a miss", async () => {
+    h.decoded = { kind: "float", data: new Float32Array(4), width: 2, height: 2 };
+
+    await expect(floats(FLOAT)).resolves.toBe(FRAME);
+
+    expect(h.decodes).toBe(1);
+    expect(h.resident.has(KEY)).toBe(true);
+    expect(h.requests.map(({ call, request }) => [call, request.key, request.float])).toEqual([
+      ["float", KEY, FLOAT],
+      ["float", KEY, FLOAT],
+    ]);
+  });
+
+  it("renders a preview the load fell back on once, from the image, as a lossless frame does", async () => {
+    const preview = fellBack({ from: "embedded", ...NONE, timedOut: true });
+    h.decoded = preview;
+
+    await expect(floats(FLOAT)).resolves.toBe(FRAME);
+
+    expect(h.resident.size).toBe(0);
+    expect(h.requests.at(-1)).toEqual({
+      call: "float",
+      request: expect.objectContaining({ image: { kind: "bitmap", bitmap: preview.bitmap }, maxEdge: 640, float: FLOAT }),
+    });
+  });
+
+  it("is null, and never renders the grid's camera preview, for a photo with no source of its own", async () => {
+    h.photos = [{ ...fixture(ID), thumbnailBlob: new Blob(["preview"]) }];
+    const decodeBlob = vi.fn(async () => frame);
+    vi.stubGlobal("createImageBitmap", decodeBlob);
+
+    await expect(floats(FLOAT)).resolves.toBeNull();
+
+    expect(decodeBlob).not.toHaveBeenCalled();
+    expect(h.requests.filter(({ request }) => "image" in request)).toEqual([]);
+    expect(h.asyncRenders).toBe(0);
+  });
+
+  it("is null for a photo the catalog doesn't hold, asking the renderer nothing", async () => {
+    await expect(renderPhotoFloatFrame("unknown", params, FLOAT)).resolves.toBeNull();
+
+    expect(h.requests).toEqual([]);
+    expect(h.decodes).toBe(0);
+  });
+
+  it("is null when the renderer reads no frame, as without float render targets", async () => {
+    h.resident.add(KEY);
+    h.floatFrame = null;
+
+    await expect(floats(FLOAT)).resolves.toBeNull();
+  });
+
+  it("is null without float render targets, before any render or decode", async () => {
+    // Every rung would read null there, and a null from a resident source starts
+    // a decode: a call per photo of a selection would decode them all for nothing.
+    h.pipelineFloat = false;
+    h.floatFrame = null;
+    h.decoded = { kind: "float", data: new Float32Array(4), width: 2, height: 2 };
+
+    await expect(floats(FLOAT)).resolves.toBeNull();
+
+    expect(h.requests).toEqual([]);
+    expect(h.decodes).toBe(0);
+    expect(h.resident.size).toBe(0);
+  });
+
+  it("draws the bag under the core noise reduction, as renderPhotoFrame draws its bag", async () => {
+    h.resident.add(KEY);
+    const bag = { "ext.stage.mode": 1, "builtin.denoise.colAmount": 0 };
+
+    await floats({ ...FLOAT, paramBag: bag });
+
+    expect(h.requests[0].request.contributedParams).toEqual({ ...bag, ...denoiseBag(params) });
+    expect(h.requests[0].request.float).toEqual(FLOAT);
+  });
+
+  it("sends no bag when the caller gives none, so the renderer keeps its own", async () => {
+    h.resident.add(KEY);
+
+    await floats(FLOAT);
+
+    expect(h.requests[0].request.contributedParams).toBeUndefined();
   });
 });

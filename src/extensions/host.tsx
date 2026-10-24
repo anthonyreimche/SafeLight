@@ -61,8 +61,14 @@ import { usePhotoActions } from "@/modules/library/photo-actions";
 import { useCullingShortcuts } from "@/modules/library/use-culling-shortcuts";
 import { LibraryListRow } from "@/modules/library/LibraryListRow";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
-import { captureDevelopFrame, renderDevelopPhotoFrame, useDevelopOverlay } from "./develop-host";
-import { useMaskScope } from "@/modules/develop/mask-scope";
+import {
+  captureDevelopFloatFrame,
+  captureDevelopFrame,
+  renderDevelopPhotoFloatFrame,
+  renderDevelopPhotoFrame,
+  useDevelopOverlay,
+} from "./develop-host";
+import { useMaskScope, useParamScope } from "@/modules/develop/mask-scope";
 import {
   getDefaultExportSettings,
   renderPhotosToBlobs,
@@ -188,8 +194,11 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     develop: {
       useDevelopOverlay,
       useMaskScope,
+      useParamScope,
       captureFrame: captureDevelopFrame,
+      captureFloatFrame: captureDevelopFloatFrame,
       renderPhotoFrame: renderDevelopPhotoFrame,
+      renderPhotoFloatFrame: renderDevelopPhotoFloatFrame,
       setCanvasCursor: (cursor, opts) =>
         setCanvasCursor(
           extensionId,

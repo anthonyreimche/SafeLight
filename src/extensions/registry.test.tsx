@@ -12,6 +12,7 @@ import {
   collectPresetStages,
   moduleLabel,
   moduleTabs,
+  registerExportProcessor,
   registerModule,
   registerProcessingStage,
   unregisterExtension,
@@ -22,8 +23,9 @@ import { getParamDescriptor, unregisterStageParams } from "./param-registry";
 import { BUILTIN_DENOISE_ID } from "@/rendering/webgl/builtin-denoise";
 import { BUILTIN_EXTENSIONS } from "./builtin";
 import { CORE_EXTENSION_ID } from "./core-extension";
+import { extensionKinds, forgetExtension } from "./extension-kinds";
 import { makeScopedAPI } from "./host";
-import type { ProcessingPhase, ProcessingStageContribution } from "./types";
+import type { ExportProcessorContribution, ProcessingPhase, ProcessingStageContribution } from "./types";
 
 const View = () => null;
 
@@ -196,12 +198,19 @@ describe("registerProcessingStage: parts of the contract the core ignores", () =
     unregisterStageParams("acme.first");
   });
 
-  it("warns about a reserved field, and still registers the stage", () => {
+  it("registers a maskable stage, keeping its mask field", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    registerProcessingStage("acme", plain({ mask: { maskable: true, maskPhase: "linear" } }));
+    registerProcessingStage("acme", plain({ mask: { maskable: true } }));
+    expect(useRegistry.getState().processingStages["acme.stage"]?.mask).toEqual({ maskable: true });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("warns about a mask its phase can't have, and still registers the stage", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    registerProcessingStage("acme", plain({ phase: "decode", mask: { maskable: true } }));
     expect(useRegistry.getState().processingStages["acme.stage"]).toBeDefined();
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toMatch(/\[extensions\] acme: .*mask is reserved/);
+    expect(warn.mock.calls[0][0]).toMatch(/\[extensions\] acme: .*decode stages run before mask coverage/);
   });
 
   it("refuses a stage producing a variable another stage produces", () => {
@@ -355,5 +364,41 @@ describe("processingStages identity", () => {
     const after = useRegistry.getState().processingStages;
     expect(after).not.toBe(before);
     expect(after).toEqual({});
+  });
+});
+
+// An export processor works on the pixels before encode, on the encoded file,
+// or both; one that declares neither has nothing to run.
+describe("registerExportProcessor", () => {
+  beforeEach(() => {
+    useRegistry.setState({ exportProcessors: {} });
+    forgetExtension("acme");
+  });
+
+  it("registers a processor with only a pixel hook", () => {
+    const processPixels = async () => undefined;
+    registerExportProcessor("acme", { id: "acme.mat", label: "Mat", processPixels });
+    expect(useRegistry.getState().exportProcessors["acme.mat"]).toMatchObject({
+      processPixels,
+      extensionId: "acme",
+      order: 0,
+    });
+    expect(extensionKinds().acme).toBe("pixels");
+  });
+
+  // Plain JavaScript can declare a method that isn't a function.
+  it("refuses a processor with neither process nor processPixels as a function, naming it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    registerExportProcessor("acme", { id: "acme.nothing", label: "Nothing" });
+    const broken = { id: "acme.broken", label: "Broken", process: "watermark" };
+    registerExportProcessor("acme", broken as unknown as ExportProcessorContribution);
+    expect(useRegistry.getState().exportProcessors).toEqual({});
+    expect(warn.mock.calls.map((call) => call[0])).toEqual([
+      expect.stringMatching(/\[extensions\] acme: .*"acme\.nothing" declares neither process nor processPixels as a function/),
+      expect.stringMatching(/\[extensions\] acme: .*"acme\.broken" declares neither process nor processPixels as a function/),
+    ]);
+    // A refused processor renders nothing, so saved layouts may still switch its extension.
+    expect(Object.hasOwn(extensionKinds(), "acme")).toBe(false);
+    warn.mockRestore();
   });
 });

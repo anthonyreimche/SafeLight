@@ -113,7 +113,7 @@ interface Mask {
 }
 ```
 
-`panels` lists [per-mask panels](ui-shell.md#per-mask-panels-panelcontributionmask) by id. Unknown ids are kept, so a disabled extension's sub-panels come back when it is re-enabled. The GPU does not read `bag` yet: extension stages still apply globally.
+`panels` lists [per-mask panels](ui-shell.md#per-mask-panels-panelcontributionmask) by id. Unknown ids are kept, so a disabled extension's sub-panels come back when it is re-enabled. A [maskable stage](contributions.md#processingstagecontribution--gpu-stage) with any key in `bag` runs once more inside the mask with those values, on photos at process version 2 or later.
 
 Brush coverage shares one four-channel texture (`MAX_BRUSH_MASKS` = 4) between brush mask components and extension [coverage textures](contributions.md#processingstagecontribution--gpu-stage). A `BrushDab` is `{ x, y, radius, erase, feather, opacity?, flow? }` in source-UV, with `radius` in image-height units.
 

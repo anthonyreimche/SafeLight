@@ -16,7 +16,7 @@
 
 import type { RawExifEntry, RawExifIfds } from "@/catalog/exif";
 import type { ExifData } from "@/catalog/types";
-import { addWebpChunk, concat, crc32, readU32 } from "@/rendering/color-space";
+import { addWebpChunk, concat, pngChunk, readU32 } from "@/rendering/color-space";
 
 const TAG = {
   ImageDescription: 0x010e,
@@ -336,12 +336,7 @@ function pngWithExif(src: Uint8Array, tiff: Uint8Array): Uint8Array {
   const SIG = [137, 80, 78, 71, 13, 10, 26, 10];
   for (let k = 0; k < 8; k++) if (src[k] !== SIG[k]) throw new Error("not png");
 
-  const chunk = new Uint8Array(12 + tiff.length);
-  const dv = new DataView(chunk.buffer);
-  dv.setUint32(0, tiff.length);
-  chunk[4] = 0x65; chunk[5] = 0x58; chunk[6] = 0x49; chunk[7] = 0x66; // 'eXIf'
-  chunk.set(tiff, 8);
-  dv.setUint32(8 + tiff.length, crc32(chunk.subarray(4, 8 + tiff.length)));
+  const chunk = pngChunk("eXIf", tiff);
 
   const out: Uint8Array[] = [src.subarray(0, 8)];
   let i = 8;

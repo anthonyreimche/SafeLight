@@ -78,6 +78,25 @@ export function computeCropForAspect(
   return { x: (1 - width) / 2, y: (1 - height) / 2, width, height };
 }
 
+// Size of the develop output for the whole of `crop` (transformed-frame coords,
+// normalized to the image) of a `width`×`height` source: the crop's own pixels,
+// scaled down so the long edge is at most `maxEdge`, and never below one pixel.
+export function cropOutputSize(
+  width: number,
+  height: number,
+  crop: CropRect,
+  maxEdge: number,
+): { width: number; height: number } {
+  const cw = width * crop.width;
+  const ch = height * crop.height;
+  const longEdge = Math.max(cw, ch);
+  const scale = longEdge > 0 ? Math.min(1, maxEdge / longEdge) : 1;
+  return {
+    width: Math.max(1, Math.round(cw * scale)),
+    height: Math.max(1, Math.round(ch * scale)),
+  };
+}
+
 // A region (in transformed-frame coords) that encloses the whole image after
 // the geometry transform, so crop mode can show it all with dark margins.
 export function transformedViewCrop(forward: Mat3, pad = 1.06): CropRect {

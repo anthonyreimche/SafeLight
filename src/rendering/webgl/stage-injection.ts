@@ -24,11 +24,13 @@ import {
 } from "../stage-space";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import { isCoreStage } from "./builtin-stage";
+import { isMaskInstance, type MaskInstanceStage } from "./mask-stage-instances";
 import {
   uniformPrefix,
   helperPrefix,
   extractHelperNames,
   emitUniformDecl,
+  mentionsIdentifier,
   rewriteGlsl,
   replaceIdentifiers,
   simpleHash,
@@ -80,8 +82,25 @@ function coverageHelperGlsl(name: string): string {
 // Phases, stage rules and pipeline order
 // ---------------------------------------------------------------------------
 
-type InjectionGroup = "srcUv" | "noiseReduction" | "sceneLinear" | "effects";
-type ColourGroup = Exclude<InjectionGroup, "srcUv">;
+export type InjectionGroup = "srcUv" | "noiseReduction" | "sceneLinear" | "effects";
+export type ColourGroup = Exclude<InjectionGroup, "srcUv">;
+
+/** What the injector wrote, recorded as it writes it, so describePipeline
+ *  can't drift from the GLSL: a stage's block; the group's variable brought
+ *  from one space into another (`elided` where it already held that space and
+ *  nothing was written); a clip inserted ahead of a stage; a split exit. */
+export type InjectionStep =
+  | { kind: "stage"; group: InjectionGroup; stageId: string }
+  | {
+      kind: "convert";
+      group: ColourGroup;
+      domain: StageDomain;
+      from: StageSpace | undefined;
+      to: StageSpace | undefined;
+      elided?: true;
+    }
+  | { kind: "clamp"; group: ColourGroup; reason: "legacy-display-stage"; stageId: string }
+  | { kind: "exit"; group: ColourGroup; stageId: string; clamped: boolean };
 
 interface PhaseInfo {
   /** The injection group the phase's blocks join. Linear-space phases operate on
@@ -114,7 +133,7 @@ export const PHASES: Readonly<Record<ProcessingPhase, PhaseInfo>> = {
 // in effects, handled as scene values, as it always has.
 const UNLISTED_PHASE: PhaseInfo = { group: "effects", domain: "scene", outputFrame: false };
 
-const phaseInfo = (phase: ProcessingPhase): PhaseInfo =>
+export const phaseInfo = (phase: ProcessingPhase): PhaseInfo =>
   Object.hasOwn(PHASES, phase) ? PHASES[phase] : UNLISTED_PHASE;
 
 const colourVariable = (domain: StageDomain): "lin" | "c" => (domain === "scene" ? "lin" : "c");
@@ -352,6 +371,16 @@ export interface PrepassStage {
   layerUniform?: string;
   passes: PrepassPass[];
   split?: StageSplit;
+  /** A mask copy's: the stage whose pass programs it draws with. Its passes
+   *  compile to the same programs, bound with the copy's values. */
+  passesOf?: string;
+}
+
+/** The uniform holding a mask copy's coverage slot (its mask's index, or -1
+ *  while the mask applies nothing), which render() binds per frame. */
+export interface MaskSlotBinding {
+  stageId: string;
+  glslName: string;
 }
 
 /** The array a layered program reads every layered stage result from. */
@@ -385,14 +414,16 @@ const layersResults = (
 ): boolean => variant.fullInfo && stageSamplers(ordered) > samplerBudget;
 
 /** Build a complete fragment program for one StagePass, namespacing its uniforms
- *  + helpers under the owning stage's prefix so they share the stage's param keys. */
+ *  + helpers under the owning stage's prefix so they share the stage's param keys.
+ *  A mask copy passes its stage's id as `prefixId`: same program, its own keys. */
 function buildPassFragment(
   stageId: string,
   pass: StagePass,
   space: StageSpace | undefined,
+  prefixId = stageId,
 ): { fragmentSource: string; bindings: ContributedBinding[] } {
-  const uPfx = uniformPrefix(stageId);
-  const hPfx = helperPrefix(stageId);
+  const uPfx = uniformPrefix(prefixId);
+  const hPfx = helperPrefix(prefixId);
   const uniforms = pass.uniforms ?? [];
   const bindings: ContributedBinding[] = uniforms.map((u) => ({
     qualifiedKey: `${stageId}.${u.key}`,
@@ -436,7 +467,11 @@ export interface BuiltStageInjection {
   bindings: ContributedBinding[];
   textureBindings: StageTextureBinding[];
   prepass: PrepassStage[];
+  maskSlots: MaskSlotBinding[];
   hasNoiseReduction: boolean;
+  /** In the order written. Kept out of `injection`, whose every field the
+   *  version 2 freeze hashes. */
+  steps: readonly InjectionStep[];
 }
 
 /** Everything about a stage that the renderer derives state from, hashed.
@@ -484,6 +519,7 @@ class GroupWriter {
     effects: undefined,
   };
   private needsSpaceHelpers = false;
+  readonly steps: InjectionStep[] = [];
 
   push(group: InjectionGroup, line: string): void {
     this.lines[group].push(line);
@@ -492,7 +528,13 @@ class GroupWriter {
   /** Brings the group's variable from the space it holds into `space`. */
   convert(group: ColourGroup, domain: StageDomain, space: StageSpace | undefined): void {
     const from = this.held[group];
-    if (spaceKey(from, domain) === spaceKey(space, domain)) return;
+    if (spaceKey(from, domain) === spaceKey(space, domain)) {
+      if (!isIdentitySpace(space, domain)) {
+        this.steps.push({ kind: "convert", group, domain, from, to: space, elided: true });
+      }
+      return;
+    }
+    this.steps.push({ kind: "convert", group, domain, from, to: space });
     const v = colourVariable(domain);
     if (!isIdentitySpace(from, domain)) {
       this.push(group, `${v} = ${fromSpaceExpr(from, domain, v)};`);
@@ -591,16 +633,21 @@ class SplitExits {
     const v = colourVariable(domain);
     // A legacy display stage's passes see what its inline glsl sees: on
     // version 2, values clipped to [0, 1].
-    const input = needsClippedInput(reader, domain, this.variant) ? `clamp(${v}, 0.0, 1.0)` : v;
+    const clamped = needsClippedInput(reader, domain, this.variant);
+    const input = clamped ? `clamp(${v}, 0.0, 1.0)` : v;
     const index = this.readers.indexOf(reader);
     const value = toSpaceExpr(reader.space, domain, input);
     if (!isIdentitySpace(reader.space, domain)) this.writer.markSpaceHelpers();
     const exit = `if (uSplitAt == ${index}) { fragColor = vec4(${value}, 1.0); return; }`;
     this.writer.push(group, exit);
+    this.writer.steps.push({ kind: "exit", group, stageId: reader.id, clamped });
     const cut: SplitCut = group === "noiseReduction" ? "decode" : domain;
     this.splits.set(reader.id, { index, cut, upstreamStageIds: [...this.upstream] });
   }
 }
+
+/** The clip ahead of a display stage that declares no space, on version 2. */
+const LEGACY_DISPLAY_CLAMP = "c = clamp(c, 0.0, 1.0);";
 
 /** Leaves the group's variable as the stage's block expects to receive it: a core
  *  stage gets working values, any other stage its declared space (clipped first
@@ -615,9 +662,14 @@ function prepareInput(
   const core = isCoreStage(s);
   if (!core && needsClippedInput(s, domain, variant)) {
     // Written for display values in [0, 1]: on a version 2 photo nothing
-    // upstream clipped them, so this stage gets them clipped here.
+    // upstream clipped them, so this stage gets them clipped here. A mask
+    // copy clips inside its coverage instead (emitMaskCopy): pixels its mask
+    // leaves alone keep what the stage before it made.
     writer.convert(group, domain, undefined);
-    writer.push(group, "c = clamp(c, 0.0, 1.0);");
+    if (!isMaskInstance(s)) {
+      writer.push(group, LEGACY_DISPLAY_CLAMP);
+      writer.steps.push({ kind: "clamp", group, reason: "legacy-display-stage", stageId: s.id });
+    }
   }
   writer.convert(group, domain, core ? undefined : s.space);
 }
@@ -630,6 +682,7 @@ interface Declared {
   bindings: ContributedBinding[];
   textureBindings: StageTextureBinding[];
   prepass: PrepassStage[];
+  maskSlots: MaskSlotBinding[];
   /** Whether a stage reads RESULT_ARRAY_UNIFORM, which is then declared. */
   readsArray: boolean;
 }
@@ -651,13 +704,13 @@ function emitCoreStage(
   variant: ShaderVariant,
 ): string {
   for (const u of s.uniforms) declared.uniforms.push(`uniform ${u.glslType} ${u.key};`);
-  if (s.helpers) {
-    declared.helpers.push(
-      variant.fullInfo ? s.helpers.replaceAll(CORE_DISPLAY_CLAMP, "return c;") : s.helpers,
-    );
-  }
+  if (s.helpers) declared.helpers.push(coreStageHelpers(s.helpers, variant));
   return `{\n${s.glsl}\n}`;
 }
+
+/** A core stage's helpers as `variant` compiles them. */
+export const coreStageHelpers = (helpers: string, variant: ShaderVariant): string =>
+  variant.fullInfo ? helpers.replaceAll(CORE_DISPLAY_CLAMP, "return c;") : helpers;
 
 /** Version 1's frozen tone block can't record the scene's headroom, so a
  *  display stage that names slSceneLuma gets the luminance it does have. */
@@ -674,6 +727,7 @@ function emitExtensionStage(
   variant: ShaderVariant,
   domain: StageDomain | null,
 ): string {
+  if (isMaskInstance(s) && domain) return emitMaskCopy(s, declared, split, layered, variant, domain);
   const uPfx = uniformPrefix(s.id);
   const hPfx = helperPrefix(s.id);
   declareUniforms(s, uPfx, declared);
@@ -693,6 +747,70 @@ function emitExtensionStage(
     })
     .join("");
   return `{\n${sceneLuma}${prelude}${inline}${produced}\n}`;
+}
+
+/** GLSL with its comments blanked out, for telling what the code names. */
+export const withoutComments = (glsl: string): string => glsl.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ");
+
+/** A stage's copy for one mask (mask-stage-instances.ts): the stage's block
+ *  under the copy's own uniforms, run where the mask covers and blended in by
+ *  its coverage (`mcovs`, which main() fills ahead of every maskable phase).
+ *  The copy samples the stage's lookup textures, calls its helpers when they
+ *  read no uniform, and draws its pass programs with its own values. What the
+ *  stage produces stays local to the copy, so consumers still read the stage.
+ *  A display stage that declares no space has its input clipped inside the
+ *  coverage, so the pixels the mask leaves alone keep their full range.
+ *  Copies run on version 2 or later only, so the version 1 scene-luma line
+ *  never applies. Returns the copy's block. */
+function emitMaskCopy(
+  s: MaskInstanceStage,
+  declared: Declared,
+  split: StageSplit | undefined,
+  layered: boolean,
+  variant: ShaderVariant,
+  domain: StageDomain,
+): string {
+  const uPfx = uniformPrefix(s.id);
+  const stagePfx = uniformPrefix(s.instanceOf);
+  // Glsl that names the stage's result sampler (to texelFetch it) reads the copy's.
+  const ownResult = (src: string): string =>
+    src.replaceAll(`${stagePfx}stageResult`, `${uPfx}stageResult`);
+  const copy: MaskInstanceStage = {
+    ...s,
+    glsl: ownResult(s.glsl),
+    ...(s.helpers ? { helpers: ownResult(s.helpers) } : {}),
+  };
+  declareUniforms(copy, uPfx, declared);
+  const uniformKeys = copy.uniforms.map((u) => u.key);
+  const sharesHelpers =
+    copy.helpers === s.helpers && !mentionsIdentifier(withoutComments(copy.helpers ?? ""), uniformKeys);
+  const hPfx = helperPrefix(sharesHelpers ? s.instanceOf : s.id);
+  const helperNames = sharesHelpers
+    ? extractHelperNames(copy.helpers ?? "")
+    : declareHelpers(copy, uPfx, hPfx, declared, stagePfx);
+  const prelude = declarePrepass(copy, uPfx, split, declared, layered, s.instanceOf);
+  const textureKeys = (copy.textures ?? []).map((t) => t.key);
+  const inline = replaceIdentifiers(
+    rewriteGlsl(copy.glsl, copy.uniforms, uPfx, hPfx, helperNames),
+    textureKeys,
+    stagePfx,
+  );
+  const slot = `${uPfx}slMaskSlot`;
+  declared.uniforms.push(`uniform int ${slot};`);
+  declared.maskSlots.push({ stageId: s.id, glslName: slot });
+  const local = (copy.produces ?? [])
+    .map((v) => `${v.glslType} isv_${v.name} = isv_${v.name};\n`)
+    .join("");
+  const v = colourVariable(domain);
+  // A legacy display stage's copy gets its input clipped here, inside its
+  // coverage, rather than ahead of it (prepareInput).
+  const clip = needsClippedInput(s, domain, variant) ? `${LEGACY_DISPLAY_CLAMP}\n` : "";
+  return (
+    `{\nint slInstSlot = ${slot};\n` +
+    `if (slInstSlot >= 0 && mcovs[slInstSlot] > 0.0) {\n` +
+    `vec3 slInstPre = ${v};\n${clip}${local}{\n${prelude}${inline}\n}\n` +
+    `${v} = mix(slInstPre, ${v}, mcovs[slInstSlot]);\n}\n}`
+  );
 }
 
 function declareUniforms(s: ProcessingStageContribution, uPfx: string, declared: Declared): void {
@@ -726,20 +844,26 @@ function declareTextures(s: ProcessingStageContribution, uPfx: string, declared:
 }
 
 /** Declares the stage's helpers under its prefixes and returns their original
- *  names, which the inline glsl is rewritten with. */
+ *  names, which the inline glsl is rewritten with. A mask copy's texture keys
+ *  take its stage's prefix (`texturePfx`), whose textures it samples. */
 function declareHelpers(
   s: ProcessingStageContribution,
   uPfx: string,
   hPfx: string,
   declared: Declared,
+  texturePfx = uPfx,
 ): string[] {
   if (!s.helpers) return [];
-  // Uniform + texture keys share the stage's uniform prefix; rewrite them in one
-  // longest-first pass so a short key never partially matches inside a longer one.
-  const uKeys = [...s.uniforms.map((u) => u.key), ...(s.textures ?? []).map((t) => t.key)];
+  const uniformKeys = s.uniforms.map((u) => u.key);
+  const textureKeys = (s.textures ?? []).map((t) => t.key);
   const helperNames = extractHelperNames(s.helpers);
   let h = replaceIdentifiers(s.helpers, helperNames, hPfx);
-  h = replaceIdentifiers(h, uKeys, uPfx);
+  // Uniform + texture keys share the stage's uniform prefix; rewrite them in one
+  // longest-first pass so a short key never partially matches inside a longer one.
+  h =
+    texturePfx === uPfx
+      ? replaceIdentifiers(h, [...uniformKeys, ...textureKeys], uPfx)
+      : replaceIdentifiers(replaceIdentifiers(h, uniformKeys, uPfx), textureKeys, texturePfx);
   declared.helpers.push(h);
   return helperNames;
 }
@@ -773,14 +897,16 @@ function passCount(
  *  same namespace so one param key can drive both the pass and the inline glsl.
  *  In a layered program the stage reads its layer of the shared result array,
  *  unless its own glsl names its result sampler (to texelFetch it, say), which
- *  then stays. Returns the line that declares `stageResult` ("" for a stage
- *  without passes). */
+ *  then stays. A mask copy names its stage as `passesOf`: its passes compile to
+ *  the stage's programs, and only its result and keys are its own. Returns the
+ *  line that declares `stageResult` ("" for a stage without passes). */
 function declarePrepass(
   s: ProcessingStageContribution,
   uPfx: string,
   split: StageSplit | undefined,
   declared: Declared,
   layered: boolean,
+  passesOf?: string,
 ): string {
   const stagePasses = s.passes ?? [];
   if (stagePasses.length === 0) return "";
@@ -794,8 +920,10 @@ function declarePrepass(
     declared.uniforms.push(`uniform sampler2D ${resultUniform};`);
   }
   const passes: PrepassPass[] = stagePasses.map((p) => {
-    const built = buildPassFragment(s.id, p, s.space);
-    for (const b of built.bindings) {
+    const built = buildPassFragment(s.id, p, s.space, passesOf);
+    // A copy's pass bindings name its stage's uniforms, which the develop
+    // program may declare too: binding a copy's value there would edit the stage.
+    for (const b of passesOf ? [] : built.bindings) {
       if (!declared.bindings.some((x) => x.qualifiedKey === b.qualifiedKey)) {
         declared.bindings.push(b);
       }
@@ -808,6 +936,7 @@ function declarePrepass(
     passes,
     split,
     ...(layerUniform ? { layerUniform } : {}),
+    ...(passesOf ? { passesOf } : {}),
   });
   if (!layerUniform) return `vec3 stageResult = texture(${resultUniform}, srcUv).rgb;\n`;
   return (
@@ -840,6 +969,7 @@ export function buildStageInjection(
     bindings: [],
     textureBindings: [],
     prepass: [],
+    maskSlots: [],
     readsArray: false,
   };
 
@@ -851,6 +981,7 @@ export function buildStageInjection(
       ? emitCoreStage(stage, declared, variant)
       : emitExtensionStage(stage, declared, exits.splitOf(stage.id), layered, variant, domain);
     writer.push(group, block);
+    writer.steps.push({ kind: "stage", group, stageId: stage.id });
     exits.afterStage(stage);
   }
   if (exits.count > 0) declared.uniforms.push("uniform int uSplitAt;");
@@ -870,6 +1001,8 @@ export function buildStageInjection(
     bindings: declared.bindings,
     textureBindings: declared.textureBindings,
     prepass: declared.prepass,
+    maskSlots: declared.maskSlots,
     hasNoiseReduction: ordered.some(isContributedNR),
+    steps: writer.steps,
   };
 }

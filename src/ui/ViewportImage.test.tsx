@@ -453,6 +453,8 @@ describe("placement and the colour-assessment mat", () => {
     zoom: number | null;
     roi?: boolean;
     win?: ImageWindow | null;
+    // The size of a buffer of the whole image, which a window buffer doesn't have.
+    whole?: { w: number; h: number };
     fadeInCommit?: boolean;
     buffer?: number;
     assess?: boolean;
@@ -470,6 +472,7 @@ describe("placement and the colour-assessment mat", () => {
     zoom,
     roi = true,
     win = null,
+    whole,
     fadeInCommit = false,
     buffer = 1600,
     assess,
@@ -490,6 +493,8 @@ describe("placement and the colour-assessment mat", () => {
         bufferWidth={buffer}
         bufferHeight={buffer * 0.75}
         bufferWindow={win}
+        imageWidth={whole?.w}
+        imageHeight={whole?.h}
         zoom={zoom}
         onZoomChange={() => {}}
         onViewport={onViewport ?? (roi ? asksForWindows : undefined)}
@@ -540,6 +545,27 @@ describe("placement and the colour-assessment mat", () => {
 
     // The window's 800×600 image px fill the frame from a 1000×750 buffer.
     expect(canvas?.style.transform).toBe("translate(0px, 0px) scale(0.8)");
+  });
+
+  // A crop of another shape made while zoomed in: the renderer draws only windows of
+  // it, so no whole buffer brings the new shape. Placed by the shape of the last whole
+  // buffer, the window showed stretched, and the next window asked for was too.
+  it("takes the image's shape from the whole size a window buffer comes with", () => {
+    const onLayout = vi.fn();
+    const onViewport = vi.fn();
+    const view = render(<Placed zoom={null} onLayout={onLayout} onViewport={onViewport} />);
+    const cropped = { w: 1600, h: 1067 };
+    view.rerender(
+      <Placed zoom={1} win={HALF} buffer={1000} whole={cropped} onLayout={onLayout} onViewport={onViewport} />,
+    );
+    advance(200);
+
+    const [visible, image] = onLayout.mock.lastCall ?? [];
+    expect(image).toEqual({ x: -400, y: -233.5, w: 1600, h: 1067 });
+    expect(visible).toEqual({ x: 0, y: 33.25, w: 800, h: 533.5 });
+    const [roi] = onViewport.mock.lastCall ?? [];
+    expect(roi.w * cropped.w).toBeCloseTo(FRAME.w);
+    expect(roi.h * cropped.h).toBeCloseTo(FRAME.h);
   });
 
   it("shows a stale window buffer where it belongs at fit, keeping the fit scale", () => {

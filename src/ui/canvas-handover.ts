@@ -3,6 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
+import { currentDisplaySpace } from "@/rendering/display-space";
+
 // Develop builds a new view, with a new display canvas, for every photo
 // (DevelopView keys it by photo), so a switch would show the bare surround until the
 // next photo's first picture. The view going away leaves its picture here, and the
@@ -47,7 +49,9 @@ export function takeHandover(into: HTMLCanvasElement): boolean {
     endHandover();
     return false;
   }
-  const ctx = into.getContext("2d");
+  // The display's space, so a P3 frame isn't squeezed to sRGB. The first call fixes it:
+  // DevelopView builds this canvas again when the screen's space changes.
+  const ctx = into.getContext("2d", { colorSpace: currentDisplaySpace() });
   if (!ctx) return false;
   into.width = width;
   into.height = height;

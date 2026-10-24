@@ -37,6 +37,8 @@ import {
   unregisterExtension,
   useRegistry,
 } from "./registry";
+import type { ModuleLayoutDef } from "./types";
+import { DEFAULT_SETTINGS, useSettings } from "@/state/settings-store";
 
 const LAYOUT_KEY = "sl_dock_layout_v4:develop";
 
@@ -68,6 +70,17 @@ async function dragResize(handle: Element, dy: number) {
   ]);
 }
 
+/** Click a panel header without moving — the dock's collapse gesture. */
+async function clickHeader(view: { container: HTMLElement }, title: string) {
+  const header = [...view.container.querySelectorAll("[data-dock-panel] span")].find(
+    (el) => el.textContent === title,
+  )!;
+  await userEvent.pointer([
+    { keys: "[MouseLeft>]", target: header, coords: { clientX: 40, clientY: 400 } },
+    { keys: "[/MouseLeft]", target: header },
+  ]);
+}
+
 /** Let the debounced layout save (300ms) run. */
 async function flushSave() {
   await act(() => new Promise((r) => setTimeout(r, 350)));
@@ -86,6 +99,7 @@ beforeEach(() => {
   localStorage.clear();
   useRegistry.setState({ panels: {}, modules: {}, layouts: {} });
   useUserLayouts.setState({ layouts: {} });
+  useSettings.setState({ ...DEFAULT_SETTINGS });
   useDockStore.setState({
     module: null,
     rails: [],
@@ -249,17 +263,6 @@ describe("bottom rails are opt-in", () => {
 });
 
 describe("collapsing a bottom rail", () => {
-  /** Click a panel header without moving — the dock's collapse gesture. */
-  async function clickHeader(view: { container: HTMLElement }, title: string) {
-    const header = [...view.container.querySelectorAll("[data-dock-panel] span")].find(
-      (el) => el.textContent === title,
-    )!;
-    await userEvent.pointer([
-      { keys: "[MouseLeft>]", target: header, coords: { clientX: 40, clientY: 400 } },
-      { keys: "[/MouseLeft]", target: header },
-    ]);
-  }
-
   it("folds down to the header instead of holding the band open", async () => {
     panel("ext.strip", {
       allowBottomDock: true,
@@ -301,6 +304,236 @@ describe("collapsing a bottom rail", () => {
       "140px",
     );
     close();
+  });
+});
+
+describe("collapsed panels in layouts", () => {
+  const savedCollapsed = (collapsed: Record<string, boolean>) =>
+    localStorage.setItem(
+      LAYOUT_KEY,
+      JSON.stringify({
+        rails: [{ id: "right-1", side: "right", width: 280, panels: ["x.a", "x.b"] }],
+        floating: {},
+        zOrder: [],
+        collapsed,
+      }),
+    );
+  const collapsed = () => useDockStore.getState().collapsed;
+
+  it("stores the collapsed panels when a user layout is saved", () => {
+    panel("x.a");
+    panel("x.b");
+    savedCollapsed({ "x.b": true });
+    const { close } = boot();
+    const id = addUserLayout("Mine");
+    expect(useUserLayouts.getState().layouts[id].modules.develop?.collapsed).toEqual(["x.b"]);
+    close();
+  });
+
+  it("stores only placed panels that are collapsed", () => {
+    panel("x.a");
+    panel("x.b");
+    savedCollapsed({ "x.a": false, "x.b": true, "x.closed": true });
+    const { close } = boot();
+    const id = addUserLayout("Mine");
+    expect(useUserLayouts.getState().layouts[id].modules.develop?.collapsed).toEqual(["x.b"]);
+    close();
+  });
+
+  it("keeps a panel collapsed across a module switch once the user layout is updated", async () => {
+    useSettings.setState({ autoSaveCollapsedPanels: false });
+    panel("x.a");
+    panel("x.b");
+    savedCollapsed({});
+    let session = boot();
+    const id = addUserLayout("Mine");
+    await clickHeader(session.view, "x.b");
+    act(() => updateUserLayout(id));
+    session.close();
+    session = boot("library");
+    session.close();
+    session = boot();
+    expect(collapsed()).toEqual({ "x.b": true });
+    session.close();
+  });
+
+  it("starts a registered layout's listed panels collapsed", async () => {
+    panel("x.a");
+    panel("x.b");
+    registerLayout("test-ext", {
+      id: "test.preset",
+      name: "Preset",
+      modules: { develop: { rails: [{ side: "right", panels: ["x.a", "x.b"] }], collapsed: ["x.a"] } },
+    });
+    const { close } = boot();
+    await act(() => applyDockLayout("test.preset"));
+    expect(collapsed()).toEqual({ "x.a": true });
+    close();
+  });
+
+  it("ignores a registered layout's collapsed list that is not an array", async () => {
+    panel("x.a");
+    // Extensions are plain JS at runtime, so the list may not be the array the type promises.
+    const def = { rails: [{ side: "right" as const, panels: ["x.a"] }], collapsed: "x.a" };
+    registerLayout("test-ext", {
+      id: "test.preset",
+      name: "Preset",
+      modules: { develop: def as unknown as ModuleLayoutDef },
+    });
+    const { close } = boot();
+    await act(() => applyDockLayout("test.preset"));
+    expect(rails()[0].panels).toEqual(["x.a"]);
+    expect(collapsed()).toEqual({});
+    close();
+  });
+
+  it("starts a module's defaultLayout panels collapsed on first visit", () => {
+    panel("x.a");
+    panel("x.b");
+    registerModule("test-ext", {
+      id: "map",
+      label: "Map",
+      component: Empty,
+      defaultLayout: { rails: [{ side: "right", panels: ["x.a", "x.b"] }], collapsed: ["x.b"] },
+    });
+    const { close } = boot("map");
+    expect(collapsed()).toEqual({ "x.b": true });
+    close();
+  });
+});
+
+describe("saving collapsed panels to the layout in use", () => {
+  const developDef: ModuleLayoutDef = { rails: [{ side: "right", panels: ["x.a", "x.b"] }] };
+  /** Pick a user layout named Mine; panels x.a and x.b are registered first. */
+  const pickMine = async (modules: Record<string, ModuleLayoutDef> = { develop: developDef }) => {
+    if (!useRegistry.getState().panels["x.a"]) {
+      panel("x.a");
+      panel("x.b");
+    }
+    useUserLayouts.setState({ layouts: { mine: { id: "mine", name: "Mine", modules } } });
+    const session = boot();
+    await act(() => applyDockLayout("mine"));
+    return session;
+  };
+  const activeLayout = () => localStorage.getItem("sl_layout_pref");
+  const mine = () => useUserLayouts.getState().layouts.mine.modules.develop;
+
+  describe("when on", () => {
+    beforeEach(() => useSettings.setState({ autoSaveCollapsedPanels: true }));
+
+    it("stores a collapsed panel in the user layout and keeps it picked", async () => {
+      const session = await pickMine();
+      await clickHeader(session.view, "x.b");
+      expect(mine()).toEqual({ ...developDef, collapsed: ["x.b"] });
+      expect(activeLayout()).toBe("mine");
+      session.close();
+    });
+
+    it("drops the panel from the user layout when it is expanded again", async () => {
+      const session = await pickMine();
+      await clickHeader(session.view, "x.b");
+      expect(mine()?.collapsed).toEqual(["x.b"]);
+      await clickHeader(session.view, "x.b");
+      expect(mine()).toEqual(developDef);
+      session.close();
+    });
+
+    it("adds the module to a user layout that had no entry for it", async () => {
+      panel("x.a", { defaultDock: { module: "develop", direction: "right" } });
+      panel("x.b", { defaultDock: { module: "develop", direction: "right" } });
+      const session = await pickMine({});
+      await clickHeader(session.view, "x.b");
+      expect(mine()).toEqual({
+        rails: [{ side: "right", width: 280, panels: ["x.a", "x.b"] }],
+        collapsed: ["x.b"],
+      });
+      session.close();
+    });
+
+    it("still turns a registered preset into Custom", async () => {
+      panel("x.a");
+      registerLayout("test-ext", {
+        id: "test.preset",
+        name: "Preset",
+        modules: { develop: { rails: [{ side: "right", panels: ["x.a"] }] } },
+      });
+      const session = boot();
+      await act(() => applyDockLayout("test.preset"));
+      await clickHeader(session.view, "x.a");
+      expect(activeLayout()).toBe(CUSTOM_LAYOUT);
+      expect(useDockStore.getState().collapsed).toEqual({ "x.a": true });
+      session.close();
+    });
+  });
+
+  describe("when off", () => {
+    beforeEach(() => useSettings.setState({ autoSaveCollapsedPanels: false }));
+
+    it("turns the user layout into Custom and leaves it as it was", async () => {
+      const session = await pickMine();
+      await clickHeader(session.view, "x.b");
+      expect(activeLayout()).toBe(CUSTOM_LAYOUT);
+      expect(mine()).toEqual(developDef);
+      session.close();
+    });
+  });
+});
+
+describe("editing a named layout turns it into Custom", () => {
+  const LIBRARY_KEY = "sl_dock_layout_v4:library";
+  const libraryDef: ModuleLayoutDef = {
+    rails: [{ side: "left", width: 240, panels: ["x.lib"] }],
+    collapsed: ["x.lib"],
+  };
+  /** A user layout for both modules, over a Custom Library arrangement from earlier. */
+  const setup = () => {
+    panel("x.a");
+    panel("x.b");
+    panel("x.lib");
+    panel("x.stale");
+    localStorage.setItem(
+      LIBRARY_KEY,
+      JSON.stringify({
+        rails: [{ id: "right-1", side: "right", width: 280, panels: ["x.stale"] }],
+        floating: {},
+        zOrder: [],
+        collapsed: {},
+      }),
+    );
+    useUserLayouts.setState({
+      layouts: {
+        mine: {
+          id: "mine",
+          name: "Mine",
+          modules: {
+            develop: { rails: [{ side: "right", panels: ["x.a", "x.b"] }] },
+            library: libraryDef,
+          },
+        },
+      },
+    });
+  };
+
+  it("keeps the layout's arrangement in the other module", async () => {
+    setup();
+    let session = boot();
+    await act(() => applyDockLayout("mine"));
+    act(() => toggleDockPanel("x.b"));
+    session.close();
+    session = boot("library");
+    expect(rails().map((r) => [r.side, r.width, r.panels])).toEqual([["left", 240, ["x.lib"]]]);
+    expect(useDockStore.getState().collapsed).toEqual({ "x.lib": true });
+    session.close();
+  });
+
+  it("keeps the other module's entry when the layout is then updated", async () => {
+    setup();
+    const session = boot();
+    await act(() => applyDockLayout("mine"));
+    act(() => toggleDockPanel("x.b"));
+    act(() => updateUserLayout("mine"));
+    expect(useUserLayouts.getState().layouts.mine.modules.library).toEqual(libraryDef);
+    session.close();
   });
 });
 

@@ -11,6 +11,7 @@ import {
 
 import { BASELINE_TONE_GLSL } from "../baseline-tone";
 import { LOCAL_TONE_GLSL } from "../local-tone";
+import { OUTPUT_MAP_GLSL } from "../output-map";
 import { STAGE_SPACE_GLSL } from "../stage-space";
 
 export const VERTEX_SHADER = `#version 300 es
@@ -27,28 +28,44 @@ void main() {
 }
 `;
 
+export type ProcessVersion = 1 | 2 | 3;
+
 /** What a photo's process version changes in the develop shader. */
 export interface ShaderVariant {
+  readonly version: ProcessVersion;
   /** Version 2 and later: nothing clips between the display transform and the
    *  output encode unless a tool that needs [0, 1] is in use (the fallback
    *  preview's clamp clips too), and the built-in transform keeps colours
    *  outside sRGB as signed values. The core Vignette and Grain lose their
    *  closing clamp (CORE_DISPLAY_CLAMP in stage-injection.ts). */
   readonly fullInfo: boolean;
+  /** Version 3 and later: the signed colour reaches the output stage, which
+   *  gamut-maps it into the target (slOutput, output-map.ts). Tools that need
+   *  [0, 1] still clamp their own input while in use. */
+  readonly signedOutput: boolean;
 }
-export const V1_VARIANT: ShaderVariant = { fullInfo: false };
-export const V2_VARIANT: ShaderVariant = { fullInfo: true };
+
+const VARIANTS: Readonly<Record<ProcessVersion, ShaderVariant>> = {
+  1: { version: 1, fullInfo: false, signedOutput: false },
+  2: { version: 2, fullInfo: true, signedOutput: false },
+  3: { version: 3, fullInfo: true, signedOutput: true },
+};
+export const V1_VARIANT = VARIANTS[1];
+export const V2_VARIANT = VARIANTS[2];
+export const V3_VARIANT = VARIANTS[3];
 
 /** The program a stored process version renders with. Anything that isn't a
  *  valid version predates them and renders as version 1; a version newer
- *  than this build renders as the newest it knows. */
-export function shaderVariantFor(processVersion: unknown): ShaderVariant {
-  const v = Math.min(normalizeProcessVersion(processVersion), CURRENT_PROCESS_VERSION);
-  return v >= 2 ? V2_VARIANT : V1_VARIANT;
+ *  than `newest` renders as `newest`, the newest this build lets a photo use. */
+export function shaderVariantFor(
+  processVersion: unknown,
+  newest: ProcessVersion = CURRENT_PROCESS_VERSION,
+): ShaderVariant {
+  return VARIANTS[Math.min(normalizeProcessVersion(processVersion), newest) as ProcessVersion];
 }
 
 export function variantKey(v: ShaderVariant): string {
-  return v.fullInfo ? "pv2" : "pv1";
+  return `pv${v.version}`;
 }
 
 // Version 2 records what the core's default shoulder (the curve at Highlights
@@ -96,19 +113,38 @@ const V2_TONE_BLOCK = `  {
     }
   }`;
 
+/** The clipped sRGB encode. OUTPUT_MAP_GLSL's slEncodeOutput calls it, so a
+ *  program that maps output outside this shader compiles it too. */
+export const LINEAR_TO_SRGB_GLSL = `vec3 linearToSrgb(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}`;
+
+/** Where a probe-only program stops and hands back its working colour instead
+ *  of the frame: "mask" at the scene-linear `lin` the mask components compare. */
+export type ProgramExit = "mask";
+
 // Single-pass develop shader, assembled per process version. Most stages are
 // per-pixel point operations; clarity is a midtone-contrast approximation.
 // `splits`: the program has reads-current exits (StageInjection.splitCount).
-function fragmentShaderSource(v: ShaderVariant, splits = false): string {
+function fragmentShaderSource(v: ShaderVariant, splits = false, exit?: ProgramExit): string {
   // Version 2 GLSL is "" under version 1, which keeps the version 1 program
   // token-for-token the frozen shader (v1-identity.test.tsx).
   const v2 = (glsl: string): string => (v.fullInfo ? glsl : "");
   const pick = (v1Glsl: string, v2Glsl: string): string => (v.fullInfo ? v2Glsl : v1Glsl);
+  // Version 3 GLSL is "" under versions 1 and 2, the same way.
+  const signed = (glsl: string): string => (v.signedOutput ? glsl : "");
   // Likewise "" without splits, so such a program's text is unchanged.
   const split = (glsl: string): string => (splits ? glsl : "");
+  // And "" without an exit. A split draw runs past it: a probe's frame can draw
+  // a stage's input, which is cached for the live frames after it.
+  const maskExit =
+    exit === "mask" ? `\n  ${split("if (uSplitAt < 0) ")}{ fragColor = vec4(lin, 1.0); return; }` : "";
   // Opens the block of a tool whose math needs [0, 1]: nothing upstream has
   // clipped its input on version 2.
   const clampInput = v2("\n    c = clamp(c, 0.0, 1.0);");
+  // Version 3 maps the signed colour into the target; earlier versions clip it.
+  const output = v.signedOutput ? "slOutput(c)" : "encodeOutput(clamp(c, 0.0, 1.0))";
   return `#version 300 es
 precision highp float;
 
@@ -121,7 +157,16 @@ uniform sampler2D uCurve;
 // Output color space: 0 sRGB (no-op, live view), 1 Display-P3, 2 Adobe RGB,
 // 3 ProPhoto. uOutMatrix is sRGB-linear -> target-linear; only used when != 0.
 uniform int uOutSpace;
-uniform mat3 uOutMatrix;
+uniform mat3 uOutMatrix;${signed(`
+uniform mat3 uOutToLms;
+uniform mat3 uLmsToOut;
+// Soft proof: map into the export's space first (proofUniforms, output-map.ts).
+uniform bool uProof;
+uniform bool uProofFits;    // the display holds the proof space whole
+uniform mat3 uProofMatrix;  // sRGB-linear -> proof-linear
+uniform mat3 uProofToLms;
+uniform mat3 uLmsToProof;
+uniform mat3 uProofToOut;   // proof-linear -> target-linear`)}
 
 uniform vec4 uCrop;         // x, y, width, height (transformed image space, y-down)
 uniform mat3 uInvTransform; // transformed-image coord -> source UV (projective)
@@ -144,7 +189,8 @@ uniform bool uApplyToneShoulder; // true: the core filmic shoulder compresses hi
                                  // off for display transforms with their own roll-off
 uniform bool uRawHistogram;   // true: output c as the display tools leave it (display-encoded,
                               // unclamped) for the extended histogram
-uniform int uShowClipping;    // bitmask: bit 0 = shadow clipping, bit 1 = highlight clipping
+uniform int uShowClipping;    // bitmask: bit 0 = shadow clipping, bit 1 = highlight clipping,
+                              // bit 2 = gamut warning (version 3 only)
 
 uniform float uExposure;
 uniform float uContrast;
@@ -300,10 +346,7 @@ vec3 srgbToLinear(vec3 c) {
   return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
 }
 
-vec3 linearToSrgb(vec3 c) {
-  c = clamp(c, 0.0, 1.0);
-  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-}
+${LINEAR_TO_SRGB_GLSL}
 
 // sRGB encode without the upper clamp, so exposure can carry highlights past 1.0
 // (HDR) into the highlight-recovery stage instead of hard-clipping immediately.
@@ -327,7 +370,7 @@ vec3 encodeOutput(vec3 srgb) {
 
 // Pluggable display transform (Pixel Peeper): scene-linear HDR -> display-encoded.
 // Replaced via buildFragmentShader() when a non-default pipeline is active.
-//__PIPELINE_GLSL__
+//__PIPELINE_GLSL__${signed(`\n${OUTPUT_MAP_GLSL}`)}
 
 // Approximate the (linear) RGB color of a blackbody at the given Kelvin
 // temperature (Tanner Helland's fit). Used to derive white-balance gains.
@@ -1307,7 +1350,7 @@ void main() {
   // (max), SUBTRACT carves away (×(1−c)), in list order. Then whole-mask invert
   // and opacity. Coverage is reused by stage 2 below.
   float mcovs[MAX_MASKS];
-  for (int mi = 0; mi < MAX_MASKS; mi++) mcovs[mi] = 0.0;
+  for (int mi = 0; mi < MAX_MASKS; mi++) mcovs[mi] = 0.0;${maskExit}
   float mLuma = luma(lin);
   for (int ci = 0; ci < MAX_COMPONENTS; ci++) {
     if (ci >= uCompCount) break;
@@ -1550,15 +1593,20 @@ ${v2(`
     fragColor = vec4(vec3(sharpenViz), 1.0);
   } else if (uRawHistogram) {
     fragColor = vec4(c, 1.0);
-  } else if (uShowClipping > 0) {
-    vec3 display = encodeOutput(clamp(c, 0.0, 1.0));
+  } else if (uShowClipping > 0) {${v.signedOutput ? `
+    // Mapped once: the warning measures the colour the display value encodes.
+    vec3 mapped = slOutputLinear(c);
+    vec3 display = slEncodeOutput(mapped);` : `
+    vec3 display = ${output};`}
     bool shadow = (uShowClipping & 1) != 0 && c.r <= 0.0 && c.g <= 0.0 && c.b <= 0.0;
-    bool highlight = (uShowClipping & 2) != 0 && (c.r >= 1.0 || c.g >= 1.0 || c.b >= 1.0);
+    bool highlight = (uShowClipping & 2) != 0 && (c.r >= 1.0 || c.g >= 1.0 || c.b >= 1.0);${signed(`
+    bool gamut = (uShowClipping & 4) != 0 && slGamutShift(c, mapped) > SL_OK_JND;`)}
     fragColor = shadow ? vec4(0.2, 0.3, 1.0, 1.0)
-               : highlight ? vec4(1.0, 0.2, 0.2, 1.0)
+               : highlight ? vec4(1.0, 0.2, 0.2, 1.0)${signed(`
+               : gamut ? vec4(vec3(0.5), 1.0)`)}
                : vec4(display, 1.0);
   } else {
-    vec3 outRgb = encodeOutput(clamp(c, 0.0, 1.0));
+    vec3 outRgb = ${output};
     // Coverage overlay: tint covered pixels toward the mask's colour on hover.
     if (uVizMask >= 0) outRgb = mix(outRgb, uVizColor, vizCov * uVizStrength);
     fragColor = vec4(outRgb, 1.0);
@@ -1605,11 +1653,13 @@ export interface StageInjection {
  *  stages parameter injects GLSL from registered ProcessingStageContributions
  *  at the appropriate markers; omit it (or pass empty strings) when no stages
  *  are registered. variant: the photo's process version (shaderVariantFor);
- *  defaults to version 1. */
+ *  defaults to version 1. exit: a probe's program (ProgramExit); omit it for
+ *  the frame's. */
 export function buildFragmentShader(
   pipelineGlsl?: string | null,
   stages?: StageInjection,
   variant: ShaderVariant = V1_VARIANT,
+  exit?: ProgramExit,
 ): string {
   const pipeline =
     pipelineGlsl || (variant.fullInfo ? V2_DEFAULT_PIPELINE_GLSL : DEFAULT_PIPELINE_GLSL);
@@ -1617,7 +1667,7 @@ export function buildFragmentShader(
     variant.fullInfo || stages?.needsSpaceHelpers ? `${STAGE_SPACE_GLSL}\n` : "";
   // Replacer functions: a replacement string would read $&, $$, $' and $` in
   // contributed GLSL (comments included) as patterns.
-  return fragmentShaderSource(variant, (stages?.splitCount ?? 0) > 0)
+  return fragmentShaderSource(variant, (stages?.splitCount ?? 0) > 0, exit)
     .replace("//__PIPELINE_GLSL__", () => spaceHelpers + pipeline)
     .replace("//__CONTRIBUTED_UNIFORMS__", () => stages?.uniforms ?? "")
     .replace("//__CONTRIBUTED_HELPERS__", () => stages?.helpers ?? "")

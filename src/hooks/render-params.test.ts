@@ -89,11 +89,39 @@ describe("createRenderParams", () => {
       expect(render(params, true, ASPECT, TRANSFORM_OFF)).toBe(first);
     });
 
+    // Crop mode draws the transformed view in place of the crop, so dragging the crop
+    // box changes nothing drawn: each step of the drag was posted and rendered again.
+    it("returns the same object in crop mode when only the crop changes", () => {
+      const render = createRenderParams();
+      const params = edit();
+      const first = render(params, true, ASPECT, OPEN);
+      const moved = { ...params, crop: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 } };
+      expect(render(moved, true, ASPECT, OPEN)).toBe(first);
+      const again = { ...moved, crop: { x: 0.2, y: 0.1, width: 0.5, height: 0.5 } };
+      expect(render(again, true, ASPECT, OPEN)).toBe(first);
+    });
+
+    it("returns a new object in crop mode once anything but the crop changes", () => {
+      const render = createRenderParams();
+      const params = edit();
+      const first = render(params, true, ASPECT, OPEN);
+      const moved = { ...params, crop: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 } };
+      expect(render({ ...moved, exposure: 2 }, true, ASPECT, OPEN)).not.toBe(first);
+    });
+
+    it("returns the params with their new crop outside crop mode", () => {
+      const render = createRenderParams();
+      const params = edit();
+      render(params, false, ASPECT, OPEN);
+      const moved = { ...params, crop: { x: 0.1, y: 0.1, width: 0.5, height: 0.5 } };
+      expect(render(moved, false, ASPECT, OPEN)).toBe(moved);
+    });
+
     // Each case changes one input of a call that was just remembered, so a memo that
     // forgot to compare it would hand back the old object. The replacements are
     // equal in value to what they replace: only their identity differs.
     const params = edit();
-    const replacedParams = { ...params };
+    const replacedParams = { ...params, masks: [...params.masks] };
     const replacedBypass = { ...BASIC_OFF };
     const changes: [string, (render: RenderParamsFor) => DevelopParams][] = [
       ["params", (r) => r(replacedParams, true, ASPECT, BASIC_OFF)],

@@ -617,6 +617,21 @@ describe("output sizing", () => {
       expect([renderer.bufferWidth, renderer.bufferHeight]).toEqual([8, 8]);
     });
   });
+
+  // A zoom window's frame is part of the cropped image; the view places it by the
+  // size of the whole and the region it is of, which a crop changes while zoomed in.
+  it("tells the size and region of the whole cropped image while drawing a window", () => {
+    withRenderer(undefined, (renderer) => {
+      const crop = { x: 0.25, y: 0, width: 0.5, height: 0.5 };
+      renderer.setImage(floatImage(24, 12, () => [0.2, 0.2, 0.2]));
+      renderer.setParams(identityParams({ crop }));
+      renderer.setViewport({ x: 0, y: 0, w: 0.5, h: 0.5 }, 256, 256);
+      renderer.render();
+      expect([renderer.bufferWidth, renderer.bufferHeight]).toEqual([6, 3]);
+      expect([renderer.wholeWidth, renderer.wholeHeight]).toEqual([12, 6]);
+      expect(renderer.drawnCrop).toEqual(crop);
+    });
+  });
 });
 
 describe("pixel behaviour", () => {

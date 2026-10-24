@@ -3,13 +3,21 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { CURRENT_PROCESS_VERSION, type DevelopParams, type UprightMode } from "@/catalog/types";
-import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
+import {
+  CURRENT_PROCESS_VERSION,
+  type CropRect,
+  type DevelopParams,
+  type UprightMode,
+} from "@/catalog/types";
+import type { ProcessingStageContribution, StageSpace, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { BUILTIN_RESOLVED, withPipeline } from "@/extensions/pipelines";
-import { WebGLRenderer } from "./webgl/renderer";
+import { WebGLRenderer, type ProbePoint } from "./webgl/renderer";
+import { toFloatFrame, type CapturePoint, type FloatFrame } from "./float-frame";
+import { LIVE_MASK_COPY_PREPASSES } from "./webgl/mask-stage-instances";
 import type { HistogramData } from "./histogram";
 import type { MonitorTransform } from "./display-profile";
+import type { ColorSpaceId, DisplaySpace } from "./color-space";
 import { detectLines, computeUprightCorrection, type UprightResult } from "./upright";
 
 // ---------------------------------------------------------------------------
@@ -49,7 +57,8 @@ export type WorkerRequest =
   // current source + viewport without disturbing the live view. The live params
   // and pipeline are restored afterwards. See render-bridge.capture().
   // `asShown`: the frame as the screen shows it, through the display profile and
-  // with the view's overlays (clipping warning, mask tint, sharpening preview).
+  // the soft proof, with the view's overlays (clipping warning, mask tint,
+  // sharpening preview).
   | {
       cmd: "capture";
       reqId: number;
@@ -60,6 +69,23 @@ export type WorkerRequest =
        *  auxiliary render: a gain map, a mask). */
       bagPatch?: Record<string, unknown>;
     }
+  // A capture as floats, for measuring (see render-bridge.captureFloat): drawn
+  // at most `maxEdge` px on its long edge, read at `point` and converted into
+  // `space` here, before it is transferred.
+  | {
+      cmd: "captureFloat";
+      reqId: number;
+      params: DevelopParams;
+      pipeline: ResolvedPipeline;
+      point: CapturePoint;
+      space: StageSpace;
+      maxEdge: number;
+      bagPatch?: Record<string, unknown>;
+    }
+  // The linear colour around (u, v) of the live frame, x right and y down in
+  // [0, 1] across its buffer, drawn from what the worker holds when it arrives.
+  // See WebGLRenderer.probe.
+  | { cmd: "probe"; reqId: number; u: number; v: number; point: ProbePoint }
   | { cmd: "setAsShotTemperature"; kelvin: number }
   | { cmd: "setHslStyle"; range: number; smooth: number }
   // Answered exactly once, by `seq`: with a frame, frameSkipped or renderError. The
@@ -86,10 +112,16 @@ export type WorkerRequest =
       // The rendered photo's display transform, resolved on the main thread
       // (the worker has no registry). Applied for THIS render only.
       pipeline: ResolvedPipeline;
+      // Read the frame as floats at this point, converted into this space, and
+      // answer thumbnailFloat instead of encoding a blob (renderPhotoFloatFrame).
+      float?: Pick<FloatFrame, "point" | "space">;
     }
   | { cmd: "setShowClipping"; mode: number }
   | { cmd: "setOutsideColor"; rgb: [number, number, number] }
   | { cmd: "setMonitorTransform"; transform: MonitorTransform | null }
+  | { cmd: "setDisplaySpace"; space: DisplaySpace }
+  // The export space the live view soft proofs, or null for none.
+  | { cmd: "setProof"; space: ColorSpaceId | null }
   | { cmd: "setMaskViz"; index: number; color: [number, number, number]; strength: number }
   | { cmd: "setSharpenViz"; mode: number }
   | { cmd: "computeHistogram"; wantExtended?: boolean }
@@ -128,6 +160,8 @@ export type WorkerRequest =
       contributedParams?: Record<string, unknown>;
       // See renderThumbnail.pipeline.
       pipeline: ResolvedPipeline;
+      // See renderThumbnail.float.
+      float?: Pick<FloatFrame, "point" | "space">;
     }
   | { cmd: "dispose" };
 
@@ -151,10 +185,21 @@ export type WorkerResponse =
       // The window of the image it was drawn for (setViewport); null or absent, the
       // whole image.
       roi?: { x: number; y: number; w: number; h: number } | null;
+      // The size a frame of the whole image would have now, which a window's frame
+      // is part of: the view places the window by it. Absent, unknown.
+      wholeWidth?: number;
+      wholeHeight?: number;
+      // The region of the transformed image it is of: the crop it was drawn with,
+      // which crop mode widens to the whole image. Its window is part of this.
+      // Absent, unknown.
+      crop?: CropRect;
       histogram?: HistogramData;
       // The prepass stages this frame was drawn without (no texture unit was left
       // for their result); absent when it ran every stage that was on.
       overflowedStages?: string[];
+      // Set when the frame put off mask copies' prepasses: another render of the
+      // same state draws them.
+      prepassPending?: boolean;
     }
   // Render `seq` had nothing to draw with or from: no renderer, or no source yet for
   // the photo the develop view moved to.
@@ -166,6 +211,8 @@ export type WorkerResponse =
   | { type: "sourceError"; sourceGen: number; message: string }
   | { type: "histogram"; histogram: HistogramData }
   | { type: "thumbnail"; requestId: string; blob: Blob }
+  // A thumbnail asked for as floats. null: no float render targets.
+  | { type: "thumbnailFloat"; requestId: string; frame: FloatFrame | null }
   | { type: "thumbnailMiss"; requestId: string; key: string }
   // A thumbnail render failed (threw, or convertToBlob rejected). Carries the
   // requestId so the bridge can settle THAT pending promise — without this a
@@ -174,6 +221,10 @@ export type WorkerResponse =
   | { type: "thumbnailError"; requestId: string; message: string }
   | { type: "sourceBound"; reqId: number; hit: boolean }
   | { type: "captured"; reqId: number; bitmap: ImageBitmap }
+  // null: no renderer, no source, no float render targets, or the draw threw.
+  | { type: "capturedFloat"; reqId: number; frame: FloatFrame | null }
+  // null: no renderer, no source, no float render targets, or the probe threw.
+  | { type: "probed"; reqId: number; rgb: [number, number, number] | null }
   | { type: "hasSource"; reqId: number; has: boolean }
   | { type: "upright"; reqId: number; result: UprightResult }
   // An upright analysis threw. Carries the reqId so the bridge settles THAT
@@ -209,6 +260,11 @@ let latestStageTextures: Record<string, StageTextureData> = {};
 // The monitor's profile (Linux). Only the develop renderer, whose frames go to
 // the screen, ever holds it; thumbnails are stored and must stay sRGB.
 let latestMonitorTransform: MonitorTransform | null = null;
+// The space the screen shows (P3 on a wide-gamut display). Like the monitor
+// transform, only the develop renderer takes it.
+let latestDisplaySpace: DisplaySpace = "srgb";
+// The soft proof's space, likewise the develop renderer's alone.
+let latestProof: ColorSpaceId | null = null;
 // The last params pushed to the develop renderer. A `capture` swaps in override
 // params, renders, then restores these so a later display render (e.g. from a
 // viewport or clipping change that doesn't re-send params) isn't left showing
@@ -266,6 +322,42 @@ function bindLiveView(target: WebGLRenderer): void {
   liveStateStale = false;
 }
 
+// Has `target` draw as the screen shows, or with `shown` false sRGB and unproofed.
+function showScreen(target: WebGLRenderer, shown: boolean): void {
+  target.setMonitorTransform(shown ? latestMonitorTransform : null);
+  target.setDisplaySpace(shown ? latestDisplaySpace : "srgb");
+  target.setProofSpace(shown ? latestProof : null);
+}
+
+// Runs `draw` with a capture's params, its photo's pipeline and its bag patch
+// merged over the live bag, on the screen when `shown`; extensions measure
+// captures, so they stay sRGB and unproofed unless one asks for the frame as
+// it is shown. Whatever happens, the live view gets back what its next render
+// binds, and liveStateStale has a readback before that render draw it first.
+function drawCapture<T>(
+  live: WebGLRenderer,
+  capture: { params: DevelopParams; pipeline: ResolvedPipeline; bagPatch?: Record<string, unknown> },
+  shown: boolean,
+  draw: () => T,
+): T {
+  showScreen(live, shown);
+  const patched = capture.bagPatch !== undefined;
+  try {
+    if (patched) live.setContributedParams({ ...latestParamBag, ...capture.bagPatch });
+    return withPipeline(live, capture.pipeline, latestPipeline, () => {
+      live.setParams(capture.params);
+      return draw();
+    });
+  } finally {
+    // The patched bag was this capture's alone; the live view renders
+    // with the merged bag again, as thumbnails restore theirs.
+    if (patched) live.setContributedParams(latestParamBag);
+    showScreen(live, true);
+    liveStateStale = true;
+    if (lastParams) live.setParams(lastParams);
+  }
+}
+
 // The bag both renderers draw with. Kept, so a renderer created later starts from it.
 function applyParamBag(bag: Record<string, unknown>) {
   latestParamBag = bag;
@@ -313,7 +405,7 @@ function seedRenderer(target: WebGLRenderer): void {
   });
   attempt("stage params", () => target.setContributedParams(latestParamBag));
   attempt("stage textures", () => target.setStageTextures(latestStageTextures));
-  attempt("display profile", () => target.setMonitorTransform(latestMonitorTransform));
+  attempt("display profile, display space and proof", () => showScreen(target, true));
   attempt("params", () => {
     if (lastParams) target.setParams(lastParams);
   });
@@ -362,24 +454,38 @@ interface ThumbRenderRequest {
   lossless?: boolean;
   contributedParams?: Record<string, unknown>;
   pipeline: ResolvedPipeline;
+  float?: Pick<FloatFrame, "point" | "space">;
 }
 
 // Shared tail for both thumbnail handlers (after their divergent setImage/bindSource
-// preamble): applies params + per-render stage bag and pipeline, renders, restores
-// the global bag and live pipeline, and settles the request — including the
-// convertToBlob rejection path — so the caller's promise never hangs.
+// preamble): applies params + per-render stage bag and pipeline, renders (or reads
+// the frame as floats), restores the global bag and live pipeline, and settles the
+// request — including the convertToBlob rejection path — so the caller's promise
+// never hangs.
 function finishThumbRender(tr: WebGLRenderer, msg: ThumbRenderRequest) {
   tr.setAsShotTemperature(msg.asShotTemperature);
   tr.setParams(msg.params);
   const hadBag = msg.contributedParams !== undefined;
   if (hadBag) tr.setContributedParams(msg.contributedParams!);
-  // Restore the global bag even if render() throws, or a failed render leaves the
+  const { float } = msg;
+  let read: ReturnType<WebGLRenderer["readFloatFrame"]> = null;
+  // Restore the global bag even if the draw throws, or a failed render leaves the
   // thumb renderer holding this photo's stage params and every later thumbnail
   // renders with the wrong photo's uniforms.
   try {
-    withPipeline(tr, msg.pipeline, latestPipeline, () => tr.render());
+    read = withPipeline(tr, msg.pipeline, latestPipeline, () => {
+      if (float) return tr.readFloatFrame(float.point);
+      tr.render();
+      return null;
+    });
   } finally {
     if (hadBag) tr.setContributedParams(latestParamBag);
+  }
+  if (float) {
+    // Converted here, before it is transferred, as a live float capture is.
+    const frame = read && toFloatFrame(read.data, read.width, read.height, float.space, float.point);
+    respond({ type: "thumbnailFloat", requestId: msg.requestId, frame }, frame ? [frame.data.buffer] : undefined);
+    return;
   }
   if (!thumbCanvas) throw new Error("thumb canvas unavailable");
   const encoding: ImageEncodeOptions = msg.lossless
@@ -413,6 +519,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
             // The worker can't read the preference itself (settings-store uses
             // localStorage, unavailable off the main thread), so it arrives here.
             highBitDepth: msg.highBitDepth,
+            // The live view spreads many masks' prepasses over a few frames; the
+            // thumbnail renderer draws each frame complete.
+            maskCopyPrepassesPerFrame: LIVE_MASK_COPY_PREPASSES,
             // A retry (after an earlier initError) may land after setPipeline /
             // setStages messages already updated the latest* state below —
             // seed from them, the same as ensureThumbRenderer, so recovery
@@ -510,9 +619,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         // Render `params` with their photo's pipeline to a detached bitmap
         // without touching the display canvas the main thread blits from.
         // transferToImageBitmap() resets the offscreen, so the next live
-        // render() repaints it; restoring lastParams and the live pipeline puts
-        // back what that render binds, and liveStateStale has a readback before
-        // it draw the live view first.
+        // render() repaints it, with what drawCapture puts back.
         if (!renderer || !canvas) {
           const blank = new OffscreenCanvas(1, 1);
           respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
@@ -520,35 +627,56 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         }
         const live = renderer;
         const target = canvas;
-        // Extensions measure captures, so they stay sRGB unless one asks for
-        // the frame as it is shown.
-        live.setMonitorTransform(msg.asShown ? latestMonitorTransform : null);
+        const shown = msg.asShown === true;
         // A throw here would otherwise fall to the generic "error" response, which
         // carries no reqId, so the awaiting capture() would hang. Settle with the
         // blank fallback instead.
-        const patched = msg.bagPatch !== undefined;
         try {
-          if (patched) live.setContributedParams({ ...latestParamBag, ...msg.bagPatch });
-          const captured = withPipeline(live, msg.pipeline, latestPipeline, () => {
-            live.setParams(msg.params);
+          const captured = drawCapture(live, msg, shown, () => {
             // Only a frame drawn over the canvas keeps what the view draws for
             // the eye; a measured one would carry it into its numbers.
-            live.render({ viewOverlays: msg.asShown === true });
+            live.render({ viewOverlays: shown });
             return target.transferToImageBitmap();
           });
-          if (lastParams) live.setParams(lastParams);
           respond({ type: "captured", reqId: msg.reqId, bitmap: captured }, [captured]);
         } catch {
-          if (lastParams) live.setParams(lastParams);
           const blank = new OffscreenCanvas(1, 1);
           respond({ type: "captured", reqId: msg.reqId, bitmap: blank.transferToImageBitmap() });
-        } finally {
-          // The patched bag was this capture's alone; the live view renders
-          // with the merged bag again, as thumbnails restore theirs.
-          if (patched) live.setContributedParams(latestParamBag);
-          live.setMonitorTransform(latestMonitorTransform);
-          liveStateStale = true;
         }
+        break;
+      }
+
+      case "captureFloat": {
+        // Answered by reqId whatever happens, as a capture is. Between photos
+        // the bound source is the last photo's, so nothing is drawn.
+        let frame: FloatFrame | null = null;
+        if (renderer && !awaitingSource) {
+          const live = renderer;
+          try {
+            const read = drawCapture(live, msg, false, () => live.readFloatFrame(msg.point, msg.maxEdge));
+            if (read) frame = toFloatFrame(read.data, read.width, read.height, msg.space, msg.point);
+          } catch (err) {
+            console.error("[render-worker] float capture failed:", err);
+          }
+        }
+        respond({ type: "capturedFloat", reqId: msg.reqId, frame }, frame ? [frame.data.buffer] : undefined);
+        break;
+      }
+
+      case "probe": {
+        // Answered by reqId whatever happens, as a capture is: the generic
+        // "error" carries none. Between photos the bound source is the last
+        // photo's, so nothing is read. The probe binds the live frame's program
+        // again itself, so a readback after it needs no redraw.
+        let rgb: [number, number, number] | null = null;
+        if (renderer && !awaitingSource) {
+          try {
+            rgb = renderer.probe(msg.u, msg.v, msg.point);
+          } catch (err) {
+            console.error("[render-worker] probe failed:", err);
+          }
+        }
+        respond({ type: "probed", reqId: msg.reqId, rgb });
         break;
       }
 
@@ -586,6 +714,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
             sourceHeight: renderer.sourceHeight,
             sourceGen,
             roi: renderer.viewport,
+            wholeWidth: renderer.wholeWidth,
+            wholeHeight: renderer.wholeHeight,
+            crop: renderer.drawnCrop,
           };
           if (msg.wantHistogram) {
             resp.histogram = renderer.computeHistogram(!!msg.wantExtended);
@@ -593,6 +724,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           if (renderer.overflowedStages.length > 0) {
             resp.overflowedStages = [...renderer.overflowedStages];
           }
+          if (renderer.prepassPending) resp.prepassPending = true;
           respond(resp, [bitmap]);
         } catch (err) {
           bitmap?.close();
@@ -635,6 +767,18 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       case "setMonitorTransform": {
         latestMonitorTransform = msg.transform;
         renderer?.setMonitorTransform(msg.transform);
+        break;
+      }
+
+      case "setDisplaySpace": {
+        latestDisplaySpace = msg.space;
+        renderer?.setDisplaySpace(msg.space);
+        break;
+      }
+
+      case "setProof": {
+        latestProof = msg.space;
+        renderer?.setProofSpace(msg.space);
         break;
       }
 

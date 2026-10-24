@@ -31,7 +31,7 @@ What an extension can register. Each is auto-tagged with the extension's id and 
 Beyond `register*`, extensions can drive the app directly: render any photo headlessly (`api.export`, `api.develop.renderPhotoFrame`), add records and copy edit stacks (`api.catalog`), inspect other extensions' sliders (`api.params`), and share state with other extensions through named, cross-window variables (`api.variables`). See [State Stores & Data APIs](../api/stores.md).
 
 **Export**
-- **Export processors** (`registerExportProcessor`) — a post-encode step (watermark, border, …) with its own Export-panel settings.
+- **Export processors** (`registerExportProcessor`) — a step on the export's pixels before encoding, on the encoded file, or both (mat, watermark, …), with its own Export-panel settings.
 - **Filename templates** (`registerFilenameTemplate`) — a named `{variable}` template for output names.
 
 **Input & settings**

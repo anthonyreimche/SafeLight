@@ -45,7 +45,7 @@ export function useAutoAdjust() {
 
   const run = useCallback(
     async (
-      apply: () => boolean, // applies one step, returns true when converged
+      apply: () => boolean | Promise<boolean>, // applies one step, returns true when converged
       label: string,
     ) => {
       if (running.current) return;
@@ -54,12 +54,12 @@ export function useAutoAdjust() {
       try {
         for (let i = 0; i < MAX_ITERS; i++) {
           if (!useDevelopStore.getState().histogram) break;
-          const done = apply();
-          if (done) break;
-          await settle();
+          const done = await apply();
+          if (!done) await settle();
           // Another photo opened mid-run; committing would add this run's step
           // to that photo's history.
           if (useDevelopStore.getState().photoId !== photoId) return;
+          if (done) break;
         }
         await useDevelopStore.getState().commitEdit(label);
       } finally {
@@ -82,15 +82,17 @@ export function useAutoAdjust() {
   );
 
   // White-balance eyedropper. `sample` reads the linear RGB at the picked point
-  // from the freshly rendered canvas; each iteration drives Temp/Tint to make
+  // from the render worker's live frame; each iteration drives Temp/Tint to make
   // that point neutral, re-renders, and re-samples — same settle loop as Auto WB,
   // so the tone curve's non-linearity converges instead of being inverted once.
   const whiteBalanceFromSample = useCallback(
-    (sample: () => [number, number, number] | null) =>
-      run(() => {
+    (sample: () => Promise<[number, number, number] | null>) =>
+      run(async () => {
+        const { photoId } = useDevelopStore.getState();
+        const rgb = await sample();
+        // The photo changed while the worker answered; `run` sees it and stops.
         const s = useDevelopStore.getState();
-        const rgb = sample();
-        if (!rgb) return true;
+        if (!rgb || s.photoId !== photoId) return true;
         const step = whiteBalanceStepFromLinear(rgb[0], rgb[1], rgb[2], s.params, s.asShotTemperature);
         s.setParam("temperature", step.temperature);
         s.setParam("tint", step.tint);

@@ -17,14 +17,16 @@ import { loadSavedEdit } from "@/catalog/edit-params";
 import { readExifEntries, type RawExifIfds } from "@/catalog/exif";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
+import { quantise16, type Sharpen } from "@/rendering/webgl/export-draw";
 import { getStageTextures } from "@/rendering/render-bridge";
 import { getExtSetting } from "@/extensions/ext-settings";
 import { resolveDefaultPipeline, resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
-import { useRegistry } from "@/extensions/registry";
-import type { ExportProcessorContext } from "@/extensions/types";
+import { useRegistry, type RegisteredExportProcessor } from "@/extensions/registry";
+import type { ExportFrame, ExportProcessorContext, ExportProcessorContribution } from "@/extensions/types";
 import { getSettings } from "@/state/settings-store";
 import { showsEdit } from "@/state/fallback-rules";
 import { buildExportIfds, embedExif, serializeExifTiff, type ExportIfds } from "./exif-write";
+import { encodePng16 } from "./png16";
 import { applyOutputSharpening } from "./sharpen";
 import { encodeTiff } from "./tiff";
 import { ZipWriter } from "./zip";
@@ -55,9 +57,13 @@ export interface ExportSettings {
   sharpenAmount?: number;
   /** Output sharpening radius in pixels (0.3–3.0). */
   sharpenRadius?: number;
-  /** Bits per sample for TIFF export. 16-bit needs float render targets and
-   *  falls back to 8-bit when unavailable. Ignored for non-TIFF formats. */
+  /** Bits per sample for TIFF export. 16-bit falls back to 8-bit where the
+   *  device can't render a 16-bit frame. Ignored for non-TIFF formats. */
   tiffBitDepth?: 8 | 16;
+  /** Bits per sample for PNG export, 8 unless asked. 16-bit falls back to
+   *  8-bit where the device can't render a 16-bit frame. Ignored for non-PNG
+   *  formats. */
+  pngBitDepth?: 8 | 16;
   /** Carry the source photo's EXIF (camera, lens, exposure, capture date)
    *  into the exported file. Off unless enabled — exports ship clean of
    *  metadata by default. */
@@ -80,12 +86,48 @@ export interface ExportResult {
   failed: string[]; // filenames that could not be rendered
   /** Why some of them failed, worded for the user, where that is known. */
   failures?: { filename: string; reason: string }[];
-  /** Count of photos whose 16-bit TIFF request fell back to 8-bit because the
-   *  device can't render to a float target. */
+  /** Count of photos whose 16-bit export fell back to 8-bit because the
+   *  device can't render or read back a 16-bit frame. */
   degradedTo8Bit: number;
+  /** Count of photos whose 16-bit export was drawn at reduced precision (half
+   *  float) because the device can't render to a full-precision target.
+   *  Version 3 only: versions 1 and 2 export through half float by design. */
+  reducedPrecision: number;
   /** True when a requested ZIP overflowed the ZIP32 limits and the batch was
    *  delivered as individual files instead. */
   zipFellBack?: boolean;
+}
+
+/** The Export panel's line on a finished batch: how many photos it exported,
+ *  and any that fell short of what was asked. */
+export function exportStatus(result: ExportResult): string {
+  let msg =
+    result.failed.length === 0
+      ? `Exported ${result.exported} photo${result.exported === 1 ? "" : "s"}.`
+      : `Exported ${result.exported}; ${result.failed.length} could not be exported.`;
+  if (result.degradedTo8Bit > 0) {
+    msg += ` ${result.degradedTo8Bit} exported as 8-bit (device can't render 16-bit).`;
+  }
+  if (result.reducedPrecision > 0) {
+    msg += ` ${result.reducedPrecision} exported at reduced 16-bit precision (device can't render full precision).`;
+  }
+  if (result.zipFellBack) {
+    msg += " ZIP exceeded 4 GiB; delivered as individual files.";
+  }
+  return msg;
+}
+
+type BitDepthSettings = Pick<ExportSettings, "format" | "tiffBitDepth" | "pngBitDepth">;
+
+// Only a TIFF or PNG whose own depth says so asks for 16 bits per sample.
+function asks16Bit({ format, tiffBitDepth, pngBitDepth }: BitDepthSettings): boolean {
+  return (format === "image/tiff" && tiffBitDepth === 16) || (format === "image/png" && pngBitDepth === 16);
+}
+
+/** True when an export writes ProPhoto at 8 bits, whose wide gamut spreads
+ *  the codes thin enough to band a smooth gradient. */
+export function proPhotoAt8Bit(settings: BitDepthSettings & Pick<ExportSettings, "colorSpace">): boolean {
+  return settings.colorSpace === "prophoto-rgb" && !asks16Bit(settings);
 }
 
 /** What a headless render (api.export.renderPhotos) takes beyond the export
@@ -134,53 +176,98 @@ function canvasToBlob(
   return new Promise((resolve) => canvas.toBlob(resolve, format, quality));
 }
 
-// ICC bytes to embed in a TIFF, or undefined for sRGB (the assumed default, and
-// what the rest of the app treats as "no tag needed").
-function tiffIcc(colorSpace: ColorSpaceId): Uint8Array | undefined {
+// ICC bytes for a file this module writes itself (TIFF, 16-bit PNG), or
+// undefined for sRGB (the assumed default, and what the rest of the app treats
+// as "no tag needed").
+function exportIcc(colorSpace: ColorSpaceId): Uint8Array | undefined {
   return colorSpace === "srgb" ? undefined : buildIccProfile(colorSpace);
 }
 
-// 8-bit TIFF: read the rendered canvas (already through optional sharpening) as
-// top-down RGBA via a 2D context, since a WebGL canvas has no getImageData.
-function encode8BitTiff(
-  source: HTMLCanvasElement,
-  colorSpace: ColorSpaceId,
-  meta: ExportIfds | null,
-): Blob {
+/** 8-bit codes, RGBA, top-down, encoded for the export space. */
+interface Pixels8 {
+  data: Uint8ClampedArray<ArrayBuffer>;
+  width: number;
+  height: number;
+}
+
+// The rendered canvas (already through optional sharpening) as bytes, read
+// through a 2D context, since a WebGL canvas has no getImageData.
+function readCanvas(source: HTMLCanvasElement): Pixels8 {
   const c = document.createElement("canvas");
   c.width = source.width;
   c.height = source.height;
   const ctx = c.getContext("2d")!;
   ctx.drawImage(source, 0, 0);
-  const rgba = ctx.getImageData(0, 0, c.width, c.height).data;
-  const bytes = encodeTiff(rgba, c.width, c.height, {
-    bitDepth: 8,
-    icc: tiffIcc(colorSpace),
+  return { data: ctx.getImageData(0, 0, c.width, c.height).data, width: c.width, height: c.height };
+}
+
+// A TIFF written from the codes, as canvas.toBlob can't write one.
+function tiffBlob(
+  { data, width, height }: Pixels8 | Pixels16,
+  bitDepth: 8 | 16,
+  colorSpace: ColorSpaceId,
+  meta: ExportIfds | null,
+): Blob {
+  const bytes = encodeTiff(data, width, height, {
+    bitDepth,
+    icc: exportIcc(colorSpace),
     meta: meta ?? undefined,
   });
   return new Blob([bytes as BlobPart], { type: "image/tiff" });
 }
 
-// 16-bit TIFF: quantise the float capture (display-encoded [0,1]) to 16-bit
-// unsigned samples. Output sharpening is a separate 8-bit canvas pass and is
-// not applied here.
-function encode16BitTiff(
-  cap: { data: Float32Array; width: number; height: number },
+// Bytes on a 2D canvas for canvas.toBlob. The canvas and the ImageData are
+// both sRGB by default, so putImageData converts nothing.
+function canvasOf({ data, width, height }: Pixels8): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = width;
+  c.height = height;
+  c.getContext("2d")!.putImageData(new ImageData(data, width, height), 0, 0);
+  return c;
+}
+
+/** 16-bit codes, RGBA, top-down, encoded for the export space. */
+type Pixels16 = Pick<ExportFrame, "data" | "width" | "height">;
+
+/** A rendered 16-bit frame. */
+interface Frame16Bit extends Pixels16 {
+  /** Drawn in half float: a version 3 frame on a device with no
+   *  full-precision target. */
+  reduced: boolean;
+}
+
+// The photo's 16 bits from the source its version exports through. Version 3
+// draws into a true 16-bit target where the device has one, sharpened there
+// when asked; versions 1 and 2 quantise their RGBA16F capture as they always
+// have, unsharpened. Null when the device can render neither.
+function render16Bit(
+  renderer: WebGLRenderer,
+  signedOutput: boolean,
+  sharpen: Sharpen | undefined,
+): Frame16Bit | null {
+  if (signedOutput) {
+    const pixels = renderer.exportPixels({ sharpen });
+    if (!pixels) return null;
+    const { data, width, height, target } = pixels;
+    return { data, width, height, reduced: target === "float16" };
+  }
+  const capture = renderer.captureFloatFrame();
+  if (!capture) return null;
+  const { width, height } = capture;
+  const data = new Uint16Array(width * height * 4);
+  for (let i = 0; i < data.length; i++) data[i] = quantise16(capture.data[i]);
+  return { data, width, height, reduced: false };
+}
+
+// 16-bit PNG: the encoder writes the iCCP itself, so the file skips
+// embedColorProfile, whose pass would copy a file of ~100 MB at 24 MP once more.
+async function encode16BitPng(
+  frame: Pixels16,
   colorSpace: ColorSpaceId,
   meta: ExportIfds | null,
-): Blob {
-  const { data, width, height } = cap;
-  const u16 = new Uint16Array(width * height * 4);
-  for (let i = 0; i < u16.length; i++) {
-    const v = data[i];
-    u16[i] = v <= 0 ? 0 : v >= 1 ? 65535 : Math.round(v * 65535);
-  }
-  const bytes = encodeTiff(u16, width, height, {
-    bitDepth: 16,
-    icc: tiffIcc(colorSpace),
-    meta: meta ?? undefined,
-  });
-  return new Blob([bytes as BlobPart], { type: "image/tiff" });
+): Promise<Blob> {
+  const png = await encodePng16(frame.data, frame.width, frame.height, { icc: exportIcc(colorSpace) });
+  return meta ? embedExif(png, serializeExifTiff(meta)) : png;
 }
 
 // Characters Windows forbids in a file name. The folder handle rejects them
@@ -247,21 +334,43 @@ export function resolveFilenameTemplate(
 // photo is in here at most once, as a second render of it skips the processors.
 const photosInProcessors = new Set<string>();
 
-/** Run each registered export processor in registration order, chaining the
- *  output Blob of each step into the next. Errors in a processor are caught
- *  and logged; the unmodified input Blob is forwarded so a broken extension
- *  never silently drops the export. */
-async function runProcessors(
-  blob: Blob,
-  photo: CatalogPhoto,
-  processorSettings: ProcessorSettings,
-  context: ExportProcessorContext,
-): Promise<Blob> {
-  if (photosInProcessors.has(photo.id)) return blob;
-  const processors = Object.values(
-    useRegistry.getState().exportProcessors,
-  ).sort((a, b) => a.order - b.order);
-  let current = blob;
+/** What each of one photo's export processors is handed beside its input. */
+interface ProcessorRun {
+  photo: CatalogPhoto;
+  processorSettings: ProcessorSettings;
+  context: ExportProcessorContext;
+}
+
+type ProcessorMethod = "process" | "processPixels";
+
+/** A registered processor that declares `M`. */
+type Declaring<M extends ProcessorMethod> = RegisteredExportProcessor &
+  Required<Pick<ExportProcessorContribution, M>>;
+
+// The registered processors that declare `method`, in registration order, or
+// none for a render of a photo whose processors are running.
+function processorsWith<M extends ProcessorMethod>(method: M, photo: CatalogPhoto): Declaring<M>[] {
+  if (photosInProcessors.has(photo.id)) return [];
+  return Object.values(useRegistry.getState().exportProcessors)
+    .filter((proc): proc is Declaring<M> => typeof proc[method] === "function")
+    .sort((a, b) => a.order - b.order);
+}
+
+/** Run each processor on what the one before it returned, with its declared
+ *  defaults under the user's values. Errors in a processor are caught and
+ *  logged and its input is forwarded, so a broken extension never silently
+ *  drops the export. */
+async function chainProcessors<P extends RegisteredExportProcessor, T>(
+  processors: P[],
+  run: ProcessorRun,
+  input: T,
+  step: (proc: P, current: T, settings: Record<string, unknown>) => Promise<T>,
+): Promise<T> {
+  // A render with nothing to run leaves the photo's mark alone: the render a
+  // processor started would otherwise lift the mark of the one around it.
+  if (processors.length === 0) return input;
+  const { photo, processorSettings } = run;
+  let current = input;
   photosInProcessors.add(photo.id);
   try {
     for (const proc of processors) {
@@ -270,7 +379,7 @@ async function runProcessors(
       );
       const settings = { ...defaults, ...(processorSettings[proc.id] ?? {}) };
       try {
-        current = await proc.process(current, photo, settings, context);
+        current = await step(proc, current, settings);
       } catch (err) {
         console.error(`[safelight] export processor "${proc.id}" threw:`, err);
       }
@@ -279,6 +388,84 @@ async function runProcessors(
     photosInProcessors.delete(photo.id);
   }
   return current;
+}
+
+/** Run each registered processor's `process` on the encoded file in
+ *  registration order, chaining the output Blob of each step into the next. */
+function runProcessors(blob: Blob, run: ProcessorRun): Promise<Blob> {
+  return chainProcessors(processorsWith("process", run.photo), run, blob, (proc, current, settings) =>
+    proc.process(current, run.photo, settings, run.context),
+  );
+}
+
+// Whether a hook's frame is one the encoders can take: 16-bit codes filling a
+// whole, positive size. A plain-JS hook can hand back any array.
+function encodable({ data, width, height }: ExportFrame): boolean {
+  return (
+    data instanceof Uint16Array &&
+    Number.isInteger(width) &&
+    Number.isInteger(height) &&
+    width > 0 &&
+    height > 0 &&
+    data.length === width * height * 4
+  );
+}
+
+// A frame the encoders can't take, described for the log. A plain-JS hook can
+// hand back anything, so this reads nothing off `data` that may not be there.
+function describeFrame({ data, width, height }: Record<"data" | "width" | "height", unknown>): string {
+  if (typeof data !== "object" || data === null) return `${width}×${height} with data ${String(data)}`;
+  const values = "length" in data ? ` of ${data.length} values` : "";
+  return `${width}×${height} with a ${data.constructor?.name ?? "prototype-less object"}${values}`;
+}
+
+// Run the pixel hooks on an export's frame. A hook's frame replaces the pixels
+// and the size; the space, profile and depth stay the export's, as the file is
+// written in them. A frame the encoders can't take is logged and the frame
+// before it kept, as for a throw.
+async function runPixelProcessors(
+  processors: Declaring<"processPixels">[],
+  { data, width, height }: Pixels16,
+  colorSpace: ColorSpaceId,
+  bitDepth: 8 | 16,
+  run: ProcessorRun,
+): Promise<Pixels16> {
+  if (processors.length === 0) return { data, width, height };
+  // A copy: the profile is cached for every later export, and a hook may write to it.
+  const icc = exportIcc(colorSpace)?.slice() ?? null;
+  const frame: ExportFrame = { data, width, height, colorSpace, icc, bitDepth };
+  return chainProcessors(processors, run, frame, async (proc, current, settings) => {
+    const out = await proc.processPixels(current, run.photo, settings, run.context);
+    if (!out) return current;
+    if (!encodable(out)) {
+      console.error(
+        `[safelight] export processor "${proc.id}" returned a frame the encoders can't take: ${describeFrame(out)}, where a whole, positive size needs a Uint16Array of width × height × 4; the frame before it is kept.`,
+      );
+      return current;
+    }
+    return { ...current, data: out.data, width: out.width, height: out.height };
+  });
+}
+
+// An 8-bit export's drawn canvas through the pixel hooks: read back once,
+// widened to 16-bit codes (× 257, which narrows back exactly), and narrowed to
+// the bytes the encode takes. Null without a hook: the drawn canvas then goes
+// to the encode as it always has, with no readback.
+async function hookDrawn(
+  source: HTMLCanvasElement,
+  processors: Declaring<"processPixels">[],
+  colorSpace: ColorSpaceId,
+  run: ProcessorRun,
+): Promise<Pixels8 | null> {
+  if (processors.length === 0) return null;
+  const drawn = readCanvas(source);
+  const codes = new Uint16Array(drawn.data.length);
+  for (let i = 0; i < codes.length; i++) codes[i] = drawn.data[i] * 257;
+  const pixels = { data: codes, width: drawn.width, height: drawn.height };
+  const { data, width, height } = await runPixelProcessors(processors, pixels, colorSpace, 8, run);
+  const bytes = new Uint8ClampedArray(data.length);
+  for (let i = 0; i < data.length; i++) bytes[i] = Math.round(data[i] / 257);
+  return { data: bytes, width, height };
 }
 
 // Ensure a filename is unique within a batch by appending " (2)", " (3)", …
@@ -316,8 +503,13 @@ export function downloadBlob(blob: Blob, filename: string): void {
 
 interface RenderOneResult {
   blob: Blob | null;
-  /** The 16-bit TIFF request fell back to 8-bit (device can't render float). */
+  /** The encoded image's size, which a pixel hook may have changed; 0 without a blob. */
+  width: number;
+  height: number;
+  /** The 16-bit export fell back to 8-bit (device can't render or read back 16 bits). */
   degradedTo8Bit: boolean;
+  /** The 16-bit export was drawn in half float (device can't render full precision). */
+  reducedPrecision: boolean;
   /** Why no blob was rendered, worded for the user, where that is known. */
   failure?: string;
 }
@@ -351,7 +543,11 @@ async function renderOne(
   // The request, not the delivered size: a crop makes the file smaller than
   // the long edge asked for, and a processor that renders the photo again
   // needs the request to land on the same pixel grid.
-  const processorContext: ExportProcessorContext = { longEdge: settings.longEdge ?? null };
+  const run: ProcessorRun = {
+    photo,
+    processorSettings,
+    context: { longEdge: settings.longEdge ?? null },
+  };
   let saved = await loadSavedEdit(photo.id, knownTemp);
   const crop = saved.params.crop;
   // Source aspect is unknown before decoding, so this estimate uses the
@@ -364,7 +560,7 @@ async function renderOne(
   // Same decode as Develop: full-res RAW float when available (gets the
   // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
   const image = await loadPhotoImage(photo, { minEdge });
-  if (!image) return { blob: null, degradedTo8Bit: false };
+  if (!image) return { blob: null, width: 0, height: 0, degradedTo8Bit: false, reducedPrecision: false };
   // The stored preview, rendered with the edit, stands in for an original out of
   // reach: the edit rendered over it would apply twice.
   if (image.kind === "bitmap" && showsEdit(image)) {
@@ -372,7 +568,7 @@ async function renderOne(
     const failure = image.fallback?.offline
       ? "The original isn't available."
       : "The original can't be read.";
-    return { blob: null, degradedTo8Bit: false, failure };
+    return { blob: null, width: 0, height: 0, degradedTo8Bit: false, reducedPrecision: false, failure };
   }
   const bitmap = image.kind === "bitmap" ? image.bitmap : null;
   try {
@@ -420,6 +616,12 @@ async function renderOne(
     renderer.setContributedParams(bagPatch ? { ...saved.paramBag, ...bagPatch } : saved.paramBag);
     setPhotoParams(renderer, saved.params);
     const colorSpace = settings.colorSpace ?? "srgb";
+    // Version 3 exports through the renderer's own draws. Whether a photo
+    // renders as version 3 is the renderer's call, as its version cap can hold
+    // an edit to an older version.
+    const signedOutput = renderer.signedOutputFor(saved.params);
+    const amount = settings.sharpenAmount ?? 0;
+    const sharpen = amount > 0 ? { amount, radius: settings.sharpenRadius ?? 1 } : undefined;
 
     // Opt-in only: harvest the source file's EXIF once per photo — the canvas
     // render below strips every metadata segment, so the export re-embeds it,
@@ -437,39 +639,52 @@ async function renderOne(
           })
         : null;
 
-    // 16-bit TIFF: read the develop pipeline's float output directly so the
-    // extra precision survives. Falls through to the 8-bit path when the device
-    // can't render to a float target.
+    // 16-bit TIFF or PNG: read the develop pipeline's output at 16 bits so the
+    // extra precision survives. Falls through to the 8-bit path when the
+    // device can't render a 16-bit frame.
     let degradedTo8Bit = false;
-    if (settings.format === "image/tiff" && (settings.tiffBitDepth ?? 8) === 16) {
-      const cap = renderer.captureFloatFrame();
-      if (cap) {
-        const tiff = encode16BitTiff(cap, colorSpace, exifFor(cap.width, cap.height));
-        const blob = await runProcessors(tiff, photo, processorSettings, processorContext);
-        return { blob, degradedTo8Bit: false };
+    if (asks16Bit(settings)) {
+      const rendered = render16Bit(renderer, signedOutput, sharpen);
+      if (rendered) {
+        const pixelProcessors = processorsWith("processPixels", photo);
+        const frame = await runPixelProcessors(pixelProcessors, rendered, colorSpace, 16, run);
+        const meta = exifFor(frame.width, frame.height);
+        const file =
+          settings.format === "image/tiff"
+            ? tiffBlob(frame, 16, colorSpace, meta)
+            : await encode16BitPng(frame, colorSpace, meta);
+        const blob = await runProcessors(file, run);
+        return { blob, width: frame.width, height: frame.height, degradedTo8Bit: false, reducedPrecision: rendered.reduced };
       }
       degradedTo8Bit = true;
       console.warn(
-        `[safelight] 16-bit TIFF requested but this device can't render to a float target; "${photo.filename}" exported as 8-bit.`,
+        `[safelight] 16-bit ${settings.format.split("/")[1].toUpperCase()} export requested but this device can't render or read back the frame at 16 bits; "${photo.filename}" exported as 8-bit.`,
       );
     }
 
-    renderer.render();
-    const encodeCanvas = (settings.sharpenAmount ?? 0) > 0
-      ? applyOutputSharpening(canvas, settings.sharpenAmount!, settings.sharpenRadius ?? 1)
+    // Version 3 sharpens the signed colour ahead of the output stage where the
+    // device has a float target for it, so overshoot is mapped, not clipped;
+    // otherwise the canvas is sharpened at 8 bits. renderSharpened draws
+    // nothing when it can't, so the frame is drawn then.
+    const sharpenedOnGpu = signedOutput && sharpen !== undefined && renderer.renderSharpened(sharpen);
+    if (!sharpenedOnGpu) renderer.render();
+    const drawn = sharpen && !sharpenedOnGpu
+      ? applyOutputSharpening(canvas, sharpen.amount, sharpen.radius)
       : canvas;
-    const exifIfds = exifFor(encodeCanvas.width, encodeCanvas.height);
+    const hooked = await hookDrawn(drawn, processorsWith("processPixels", photo), colorSpace, run);
+    const { width, height } = hooked ?? drawn;
+    const exifIfds = exifFor(width, height);
     if (settings.format === "image/tiff") {
-      const tiff = encode8BitTiff(encodeCanvas, colorSpace, exifIfds);
-      const blob = await runProcessors(tiff, photo, processorSettings, processorContext);
-      return { blob, degradedTo8Bit };
+      const tiff = tiffBlob(hooked ?? readCanvas(drawn), 8, colorSpace, exifIfds);
+      const blob = await runProcessors(tiff, run);
+      return { blob, width, height, degradedTo8Bit, reducedPrecision: false };
     }
-    const raw = await canvasToBlob(encodeCanvas, settings.format, settings.quality);
-    if (!raw) return { blob: null, degradedTo8Bit };
+    const raw = await canvasToBlob(hooked ? canvasOf(hooked) : drawn, settings.format, settings.quality);
+    if (!raw) return { blob: null, width: 0, height: 0, degradedTo8Bit, reducedPrecision: false };
     const profiled = await embedColorProfile(raw, colorSpace);
     const tagged = exifIfds ? await embedExif(profiled, serializeExifTiff(exifIfds)) : profiled;
-    const blob = await runProcessors(tagged, photo, processorSettings, processorContext);
-    return { blob, degradedTo8Bit };
+    const blob = await runProcessors(tagged, run);
+    return { blob, width, height, degradedTo8Bit, reducedPrecision: false };
   } finally {
     bitmap?.close();
   }
@@ -573,7 +788,9 @@ export interface RenderedPhoto {
   photo: CatalogPhoto;
   /** The rendered image, or null if the photo couldn't be decoded/rendered. */
   blob: Blob | null;
-  /** Rendered pixel dimensions (0 when blob is null). */
+  /** The encoded image's pixel size, a pixel hook's mat included (0 when blob
+   *  is null). A `process(blob)` that resizes the file can't report it: read
+   *  that size from the blob. */
   width: number;
   height: number;
 }
@@ -599,18 +816,18 @@ export async function renderPhotosToBlobs(
     for (let i = 0; i < photos.length; i++) {
       const photo = photos[i];
       let blob: Blob | null = null;
+      let width = 0;
+      let height = 0;
       try {
-        blob = (
-          await renderOne(renderer, canvas, photo, settings, procSettings, options?.paramBag)
-        ).blob;
+        ({ blob, width, height } = await renderOne(renderer, canvas, photo, settings, procSettings, options?.paramBag));
       } catch {
         blob = null;
       }
       out.push({
         photo,
         blob,
-        width: blob ? canvas.width : 0,
-        height: blob ? canvas.height : 0,
+        width: blob ? width : 0,
+        height: blob ? height : 0,
       });
       onProgress?.({ done: i + 1, total: photos.length, filename: photo.filename });
     }
@@ -631,7 +848,7 @@ export async function exportPhotos(
 ): Promise<ExportResult> {
   const made = await makeBatchRenderer(settings, photos[0]);
   if (!made)
-    return { exported: 0, failed: photos.map((p) => p.filename), degradedTo8Bit: 0 };
+    return { exported: 0, failed: photos.map((p) => p.filename), degradedTo8Bit: 0, reducedPrecision: 0 };
   const { renderer, canvas } = made;
 
   const delivery = settings.delivery ?? (settings.bundle ? "zip" : "files");
@@ -648,6 +865,7 @@ export async function exportPhotos(
   const failures: { filename: string; reason: string }[] = [];
   let exported = 0;
   let degradedTo8Bit = 0;
+  let reducedPrecision = 0;
 
   const procSettings = settings.processorSettings ?? {};
   // Resolve the active filename template once (if any) for the batch.
@@ -663,6 +881,7 @@ export async function exportPhotos(
         const r = await renderOne(renderer, canvas, photo, settings, procSettings);
         blob = r.blob;
         if (r.degradedTo8Bit) degradedTo8Bit++;
+        if (r.reducedPrecision) reducedPrecision++;
         if (r.failure) failures.push({ filename: photo.filename, reason: r.failure });
       } catch {
         blob = null;
@@ -717,6 +936,7 @@ export async function exportPhotos(
     exported,
     failed,
     degradedTo8Bit,
+    reducedPrecision,
     zipFellBack,
     ...(failures.length > 0 ? { failures } : {}),
   };

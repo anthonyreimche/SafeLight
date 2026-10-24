@@ -8,12 +8,14 @@ Safelight ships an in-app **Developer Tools** extension that is **disabled by de
 
 Extensions panel (**Ctrl+Shift+X**) ▸ **Installed** ▸ toggle **Developer Tools** on. Open the panel from **View ▸ Developer Tools** or **Ctrl+Alt+I**. It docks like any panel and can be popped out into its own OS window (the ⧉ button).
 
-The panel has five tabs:
+The panel has seven tabs:
 
 - **Console** — captured `console.*` output with level filters, text search, and an inline **REPL** (evaluate JS against the running app; `window.safelight` is the extension API, handy for poking at stores). Note: the Electron shell ships a strict CSP without `unsafe-eval`, so the REPL's `eval` is refused there — use the **Native** tab to open Chrome DevTools instead.
 - **Issues** — warnings and errors only, with a count badge.
 - **System** — app/runtime versions, platform, cross-origin-isolation status (affects RAW decode), WebGL vendor/renderer/limits, JS heap, and (desktop) GPU feature status.
 - **Storage** — a `localStorage` browser/editor (Safelight keys are `sl_*`).
+- **Variables** — every shared variable (`api.variables`) with its writers, subscribers, value and recent history, and an editor for its value.
+- **Pipeline** — the develop program the open photo renders with, read from the same code that writes its shader. It lists Safelight's own blocks in order, each stage between them (owner, phase and priority, space, whether it reads the current image, its copies inside masks), the conversions between spaces, and every place the colour is clipped to [0, 1], with when that happens. The v1/v2/v3 picker shows what another process version runs instead. With no photo open, or in the popped-out window, which can't see the main window's photo, it shows the current process version with default settings. A stage's "found in GLSL" lines come from a text scan of its inline GLSL and helpers for constant floors (`max(lin, 0.0)`) and clips (`clamp(c, …)`) of `lin` or `c` only. A floor on a copy of the colour, or inside one of the stage's passes, isn't seen, and a helper's own scalar named `c` can show up.
 - **Native** (desktop only) — open/dock/toggle the real Chrome DevTools, reload (soft/hard), and per-process CPU/memory metrics.
 
 ## Live-load from a folder (the iterate loop)

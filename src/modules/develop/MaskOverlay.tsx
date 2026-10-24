@@ -19,7 +19,7 @@ import { mat3Apply, type Mat3 } from "@/rendering/transform";
 import { useDevelopStore } from "@/state/develop-store";
 import { findHealSource, healColorOffset } from "@/rendering/heal-source";
 import { regionAnchor, spotRegion } from "@/rendering/heal-region";
-import { sampleLinearRGB } from "@/rendering/sample-pixel";
+import { getRenderBridge } from "@/rendering/render-bridge";
 import { resolveCursorCss } from "@/state/cursor-store";
 import { frameLocalPoint } from "@/ui/frame-point";
 
@@ -31,13 +31,15 @@ interface Rect {
 }
 
 interface MaskOverlayProps {
-  rect: Rect; // displayed buffer rect, frame coords (= cropped output region)
+  rect: Rect; // the whole cropped image's rect, frame coords; past the frame once zoomed
   crop: CropRect;
   inv: Mat3; // transformed coord -> source UV
   forward: Mat3; // source UV -> transformed coord
   imageAspect: number;
-  // The displayed render canvas, sampled by the colour-range eyedropper.
-  canvasRef?: RefObject<HTMLCanvasElement | null>;
+  // Where the live frame buffer is placed, in frame coords: all of `rect` at fit,
+  // the zoom window once zoomed in. Maps the colour-range eyedropper's click to a
+  // point of the frame; null until the first layout.
+  bufferRect: Rect | null;
 }
 
 let idSeq = 0;
@@ -178,7 +180,7 @@ interface DragState {
 // cursor rings subscribe, so a hover move re-renders them and nothing else.
 type PointerStore = StoreApi<{ at: { x: number; y: number; alt: boolean } | null }>;
 
-export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }: MaskOverlayProps) {
+export function MaskOverlay({ rect, crop, inv, forward, imageAspect, bufferRect }: MaskOverlayProps) {
   const activeTool = useDevelopStore((s) => s.activeTool);
   const maskToolType = useDevelopStore((s) => s.maskToolType);
   const masks = useDevelopStore((s) => s.params.masks);
@@ -345,6 +347,25 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
     return "new";
   }
 
+  // Frame px -> a point across the live frame buffer, which `bufferRect` places;
+  // a click on the surround beyond it picks nothing. The colour comes back after
+  // the user may have opened another photo or edited the component.
+  async function pickColour(maskId: string, compId: string, px: number, py: number) {
+    if (!bufferRect) return;
+    const u = (px - bufferRect.x) / bufferRect.w;
+    const v = (py - bufferRect.y) / bufferRect.h;
+    if (u < 0 || u > 1 || v < 0 || v > 1) return;
+    const photoId = store().photoId;
+    const rgb = await getRenderBridge().probe(u, v, "mask");
+    const st = store();
+    const comp = st.photoId === photoId ? findComp({ maskId, compId }) : undefined;
+    if (!rgb || !comp) return;
+    st.updateComponent(maskId, compId, {
+      colorRange: { ...(comp.colorRange ?? defaultColorRange()), r: rgb[0], g: rgb[1], b: rgb[2] },
+    });
+    void st.commitEdit("Colour Range Pick");
+  }
+
   // --- pointer handlers ------------------------------------------------------
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -353,19 +374,11 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, canvasRef }
     const down = toSource(px, py);
     const st = store();
 
-    // Colour-range eyedropper: sample the pixel under the cursor (px/py are in
-    // render-buffer coords) into the selected colour-range component, then stop.
+    // Colour-range eyedropper: probe the scene-linear colour under the cursor into
+    // the selected colour-range component, then stop picking.
     if (st.maskColorPicking && selectedMask && selectedComp?.kind === "colorRange") {
-      const cv = canvasRef?.current ?? null;
-      const rgb = cv ? sampleLinearRGB(cv, px, py) : null;
-      if (rgb) {
-        const cur = selectedComp.colorRange ?? defaultColorRange();
-        st.updateComponent(selectedMask.id, selectedComp.id, {
-          colorRange: { ...cur, r: rgb[0], g: rgb[1], b: rgb[2] },
-        });
-        st.commitEdit("Colour Range Pick");
-      }
       st.setMaskColorPicking(false);
+      void pickColour(selectedMask.id, selectedComp.id, px, py);
       return;
     }
 
