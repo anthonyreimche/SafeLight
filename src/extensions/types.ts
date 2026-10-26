@@ -1520,10 +1520,10 @@ export interface SafelightAPI {
      *  × `sourceHeight`. Null while no photo is open, between photos, for a
      *  bitmap (JPEG, TIFF, HEIF), for the camera preview shown before the RAW
      *  decodes, for a stored preview standing in for the photo, and for a cache
-     *  entry written before 3.1.0 until the cache pass or a later open rewrites
-     *  it: wait for `useDevelopStore().sourceSize.native` before asking. Each
-     *  call hands over a fresh copy, about 16 MB. Needs Safelight 3.1.0; on
-     *  older builds it is undefined. */
+     *  entry written before 3.1.0 until its rewrite lands, a few seconds after
+     *  the open: wait for `useDevelopStore().sourceSize.native` before asking.
+     *  Each call hands over a fresh copy, about 16 MB. Needs Safelight 3.1.0;
+     *  on older builds it is undefined. */
     readSourceSample(): Promise<import("@/rendering/source-sample").SourceSample | null>;
     /** Drive the Develop-canvas cursor while a tool is active. Pass a registered
      *  cursor id (built-in token or one from registerCursor), an inline spec, or

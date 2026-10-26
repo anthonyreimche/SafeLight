@@ -20,6 +20,7 @@ import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
 import type { Float16Source } from "@/rendering/source-sample";
+import { onCacheEntryFilled } from "@/catalog/cache-events";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import type { DecodedImage, Fallback } from "@/catalog/load-image";
 import { setHealSourceImage } from "@/rendering/heal-source";
@@ -100,6 +101,22 @@ function notePreviewSource(bridge: RenderBridge, key: string, image: DecodedImag
   }
   if (!isPreview(image)) keys.delete(key);
   else keys.set(key, image.kind === "bitmap" ? (image.fallback ?? null) : null);
+}
+
+// The keys of the sources this view put in the GPU cache as a cached preview
+// without the centre sample (a RAW cache entry written before 3.1.0). Once that
+// entry is rewritten, such a source takes the decoded size and sample in place
+// (cache-events.ts). Kept per bridge, whose worker holds the cache.
+const staleSources = new WeakMap<RenderBridge, Set<string>>();
+
+function noteStaleSource(bridge: RenderBridge, key: string, image: DecodedImage) {
+  let keys = staleSources.get(bridge);
+  if (!keys) {
+    keys = new Set();
+    staleSources.set(bridge, keys);
+  }
+  if (image.kind === "float16" && !image.sample) keys.add(key);
+  else keys.delete(key);
 }
 
 /** What the develop canvas shows of the open photo: "stored", its stored preview, drawn
@@ -311,6 +328,11 @@ export function useDevelopRenderer(
   fadeCanvasRef?: RefObject<HTMLCanvasElement | null>,
 ): RendererStatus {
   const bridgeRef = useRef<RenderBridge | null>(null);
+  // The photo this view draws, for listeners that outlive a render.
+  const openPhotoIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    openPhotoIdRef.current = photo?.id;
+  }, [photo?.id]);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const rafIdRef = useRef<number | null>(null);
   // True from the moment a photo opens until its own source is handed to the
@@ -577,6 +599,21 @@ export function useDevelopRenderer(
     const bridge = getRenderBridge();
     bridgeRef.current = bridge;
 
+    // A cached preview this view holds without its centre sample takes the
+    // decoded size and sample once its RAW cache entry is rewritten, so the
+    // open photo turns native (sourceSize.native) without a reload. Cut only
+    // for such a source, and once per key.
+    const offFilled = onCacheEntryFilled((entry) => {
+      const key = photoSourceKey(entry.photo);
+      if (!staleSources.get(bridge)?.delete(key)) return;
+      bridge.setSourceSample(key, {
+        fullWidth: entry.fullWidth,
+        fullHeight: entry.fullHeight,
+        sample: entry.cutSample(),
+      });
+      if (openPhotoIdRef.current === entry.photo.id) bridge.render(false);
+    });
+
     const setHistogramRef = useDevelopStore.getState().setHistogram;
     let histTimer: ReturnType<typeof setTimeout> | null = null;
     let lastHistTime = 0;
@@ -695,6 +732,7 @@ export function useDevelopRenderer(
 
     setSupported(true);
     return () => {
+      offFilled();
       stopWatchingStages();
       if (histTimer) { clearTimeout(histTimer); histTimer = null; }
       if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
@@ -873,6 +911,7 @@ export function useDevelopRenderer(
           continue;
         }
         notePreviewSource(bridge, nk, image);
+        noteStaleSource(bridge, nk, image);
         if (image.kind === "bitmap") {
           bridge.uploadSource("main", nk, { kind: "bitmap", bitmap: image.bitmap }, maxEdge, false, image.cached, false);
         } else {
@@ -948,7 +987,10 @@ export function useDevelopRenderer(
       const settled = stands
         ? { key, preview: isPreview(image) }
         : { key: fallbackKey(key), preview: true };
-      if (stands) notePreviewSource(bridge, key, image);
+      if (stands) {
+        notePreviewSource(bridge, key, image);
+        noteStaleSource(bridge, key, image);
+      }
       if (image.kind === "bitmap") {
         sendImage(image.bitmap, isFallback, cachedRaw, settled);
       } else {

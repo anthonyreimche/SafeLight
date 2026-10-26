@@ -8,14 +8,18 @@
 // The cache pass (import-photos.ts) runs it over a project; Develop runs it
 // behind an open served from an entry written before 3.1.0, which lacks the
 // decoded size and the centre sample the entry now keeps (cache-encode.ts).
+// Each entry written is announced (cache-events.ts), so a view holding the
+// photo from the entry as it was takes the decoded size and the sample at once.
 
 import type { CatalogPhoto } from "./types";
 import { normalizeRotation, orientationToRotation, rotateFloatRGBA } from "./orient";
 import { decodeRawToFloat } from "@/raw/decode";
 import { acceptDecode } from "@/raw/accept-decode";
 import { extractRawPreview } from "@/modules/library/raw-preview";
-import { markDecode, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
+import { markDecode, rawCacheGeneration, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
+import { cutSourceSample } from "@/rendering/source-sample";
 import { rememberLearned } from "./decode-learned";
+import { emitCacheEntryFilled } from "./cache-events";
 
 /** "refused": a write the cache could not take (the disk or the quota is full),
  *  which a pass counts to know when to stop. "nothing": a failed or rejected
@@ -69,7 +73,18 @@ export async function fillCacheEntry(
     await markDecode(key, use ? "suspicious" : "unsupported", generation);
     return "nothing";
   }
-  return (await writeCachedPreview(key, r.data, r.width, r.height, generation)) ? "taken" : "refused";
+  if (!(await writeCachedPreview(key, r.data, r.width, r.height, generation))) return "refused";
+  // A write dropped because the project changed meanwhile also answers true;
+  // its photo is no longer any view's to update.
+  if (rawCacheGeneration() === generation) {
+    emitCacheEntryFilled({
+      photo,
+      fullWidth: r.width,
+      fullHeight: r.height,
+      cutSample: () => cutSourceSample(r.data, r.width, r.height),
+    });
+  }
+  return "taken";
 }
 
 let completing = false;

@@ -21,7 +21,7 @@ import { currentDisplaySpace, subscribeDisplaySpace } from "./display-space";
 import {
   DEFAULT_CAPTURE_SPACE, captureMaxEdge, type FloatCaptureOptions, type FloatFrame, type LiveFloatCaptureOptions,
 } from "./float-frame";
-import type { Float16Source, SourceSample } from "./source-sample";
+import type { Float16Source, SourceSample, StoredSample } from "./source-sample";
 
 export interface FrameResult {
   bitmap: ImageBitmap;
@@ -544,6 +544,16 @@ export class RenderBridge {
 
   setCacheBudget(bytes: number) {
     this.post({ cmd: "setCacheBudget", bytes });
+  }
+
+  /** A resident cached source takes the decoded size and centre sample its
+   *  completed RAW cache entry now holds; the worker ignores a key it doesn't
+   *  hold. The sample moves to the worker. */
+  setSourceSample(key: string, update: { fullWidth: number; fullHeight: number; sample: StoredSample }) {
+    this.post(
+      { cmd: "setSourceSample", key, fullWidth: update.fullWidth, fullHeight: update.fullHeight, sample: update.sample },
+      [update.sample.data.buffer],
+    );
   }
 
   setViewport(

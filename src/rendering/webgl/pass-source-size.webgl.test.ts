@@ -35,6 +35,11 @@ const CACHED = {
   fullHeight: H,
   sample: cutSourceSample(SOURCE.data, W, H),
 };
+/** SOURCE as an entry written before 3.1.0 holds it: the preview alone, at SOURCE's aspect. */
+const PREVIEW: FloatImage = floatImage(275, 185, () => [0.2, 0.2, 0.2]);
+const STALE = { kind: "float16" as const, data: encodeHalf(PREVIEW.data), width: 275, height: 185 };
+/** What the entry's rewrite hands over for it. */
+const sampleOfSource = () => cutSourceSample(SOURCE.data, W, H);
 
 // A prepass runs only while one of its uniforms holds a value, so the probe has a
 // `take` the frame sets (takingStages).
@@ -245,5 +250,92 @@ describe("the sample against the cache budget", () => {
 
   it("keeps the same source resident when no sample is kept", () => {
     expect(aSurvives(false)).toBe(true);
+  });
+});
+
+// An entry written before 3.1.0 is rewritten in the background while its photo
+// is on the GPU; the resident source takes the decoded size and the sample in
+// place, and passes drawn with the old size are drawn again.
+describe("setSourceSample", () => {
+  it("patches the bound cached source, and the next frame's passes read the decoded size", () => {
+    const { before, after } = withRenderer({ stages: [PROBE], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+      r.keepSourceSample = true;
+      r.uploadSource("a", STALE, CAP);
+      r.setParams(identityParams());
+      r.setContributedParams(takingStages([PROBE]));
+      const first = r.captureFloatFrame();
+      expect(r.sourceNative).toBe(false);
+
+      expect(r.setSourceSample("a", W, H, sampleOfSource())).toBe(true);
+
+      expect(r.sourceFullSize).toEqual({ width: W, height: H });
+      expect(r.sourceNative).toBe(true);
+      expect(r.readSourceSample()).toMatchObject({ width: 1024, height: H, x: 38, y: 0, sourceWidth: W, sourceHeight: H });
+      const second = r.captureFloatFrame();
+      if (!first || !second) throw new Error("captureFloatFrame returned null");
+      return { before: first, after: second };
+    });
+    expectSame(before, frameWith(expected(275 / 2000, 185 / 2000, 0.9), (r) => r.setImage(SMALL, CAP)));
+    expectSame(after, frameWith(expected(W / 2000, H / 2000, 0.9), (r) => r.setImage(SMALL, CAP)));
+  });
+
+  it("patches a resident source that is not bound, which binds native", () => {
+    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+      r.keepSourceSample = true;
+      r.uploadSource("a", STALE, CAP);
+      r.uploadSource("b", SMALL, CAP);
+
+      expect(r.setSourceSample("a", W, H, sampleOfSource())).toBe(true);
+
+      expect(r.sourceFullSize).toEqual({ width: 300, height: 200 });
+      expect(r.readSourceSample()?.sourceWidth).toBe(300);
+      expect(r.bindSource("a")).toBe(true);
+      expect(r.sourceNative).toBe(true);
+      expect(r.sourceFullSize).toEqual({ width: W, height: H });
+      expect(r.readSourceSample()?.sourceWidth).toBe(W);
+    });
+  });
+
+  it("changes nothing for a key not resident, a source with its own sample, or a size turned the other way", () => {
+    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+      r.keepSourceSample = true;
+      r.uploadSource("live", SOURCE, CAP);
+      r.uploadSource("a", STALE, CAP);
+
+      expect(r.setSourceSample("missing", W, H, sampleOfSource())).toBe(false);
+      expect(r.setSourceSample("live", W, H, cutSourceSample(SMALL.data, 300, 200))).toBe(false);
+      expect(r.setSourceSample("a", H, W, sampleOfSource())).toBe(false);
+
+      expect(r.sourceNative).toBe(false);
+      expect(r.sourceFullSize).toEqual({ width: 275, height: 185 });
+      expect(r.bindSource("live")).toBe(true);
+      expect(r.readSourceSample()?.sourceWidth).toBe(W);
+    });
+  });
+
+  it("changes nothing on a renderer that keeps no samples", () => {
+    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+      r.uploadSource("a", STALE, CAP);
+      expect(r.setSourceSample("a", W, H, sampleOfSource())).toBe(false);
+      expect(r.sourceFullSize).toEqual({ width: 275, height: 185 });
+      expect(r.sourceNative).toBe(false);
+    });
+  });
+
+  it("counts the sample against the cache budget", () => {
+    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+      // Two 275 × 185 RGBA16F textures with mips are about 1.1 MB; SOURCE's
+      // sample is 1024 × 740 × 8 bytes, about 6 MB. 4 MB holds the first, not both.
+      r.setCacheBudget(1 << 22);
+      r.keepSourceSample = true;
+      r.uploadSource("a", STALE, CAP);
+      r.uploadSource("b", { ...STALE }, CAP);
+      expect(r.hasSource("a")).toBe(true);
+
+      expect(r.setSourceSample("a", W, H, sampleOfSource())).toBe(true);
+
+      expect(r.hasSource("a")).toBe(false);
+      expect(r.hasSource("b")).toBe(true);
+    });
   });
 });

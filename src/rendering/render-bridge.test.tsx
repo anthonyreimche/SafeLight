@@ -894,6 +894,21 @@ describe("RenderBridge image hand-off", () => {
     expect(uploadedTransfer[1]).toBe(uploaded.sample.data.buffer);
     bridge.dispose();
   });
+
+  // The sample is 8 MB; it moves to the worker rather than being copied.
+  it("hands a completed entry's size and sample to the worker, moving the sample", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    const sample = { data: new Uint16Array(8), width: 2, height: 1, x: 0, y: 0, sourceWidth: 6, sourceHeight: 4 };
+
+    bridge.setSourceSample("p:0", { fullWidth: 6, fullHeight: 4, sample });
+
+    const at = worker.posted.findIndex((m) => m.cmd === "setSourceSample");
+    expect(worker.posted[at]).toEqual({ cmd: "setSourceSample", key: "p:0", fullWidth: 6, fullHeight: 4, sample });
+    expect(worker.transfers[at]).toHaveLength(1);
+    expect(worker.transfers[at][0]).toBe(sample.data.buffer);
+    bridge.dispose();
+  });
 });
 
 // The worker builds its first develop program while it handles `init`, from the

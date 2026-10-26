@@ -7,7 +7,7 @@
 // of an old entry run it. The decoder, the colour check and the cache are
 // faked; what is decoded, marked and written, and the answer, are under test.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RawFloatImage } from "@/raw/decode";
 import type { CatalogPhoto } from "./types";
 
@@ -19,6 +19,9 @@ const h = vi.hoisted(() => ({
   decodeResult: (): Promise<Decode> => Promise.resolve({ data: new Float32Array(4).fill(0.5), width: 1, height: 1, oriented: true }),
   verdict: { use: true, cache: true } as { use: boolean; cache: boolean; exposure?: number },
   takes: true,
+  /** The cache's generation as it stands, and what happens inside a write. */
+  generation: 0,
+  duringWrite: () => {},
   /** The catalog's photos as the store holds them, and the records stored. */
   catalog: [] as CatalogPhoto[],
   saved: [] as CatalogPhoto[],
@@ -40,11 +43,13 @@ vi.mock("@/modules/library/raw-preview", () => ({ extractRawPreview: async () =>
 
 vi.mock("@/raw/raw-cache", () => ({
   rawCacheKey: (rel: string, size: number, rot: number) => `${rel}:${size}:${rot}`,
+  rawCacheGeneration: () => h.generation,
   markDecode: async (key: string, marker: string, begunIn: number) => {
     h.marks.push([key, marker, begunIn]);
   },
   writeCachedPreview: async (key: string, _data: Float32Array, w: number, ht: number, begunIn: number) => {
     h.writes.push([key, w, ht, begunIn]);
+    h.duringWrite();
     return h.takes;
   },
 }));
@@ -63,6 +68,8 @@ vi.mock("@/state/catalog-store", () => ({
 
 import { completeCachedEntry, fillCacheEntry } from "./cache-fill";
 import { rawPhoto } from "@/modules/library/raw-photo.test-support";
+import { onCacheEntryFilled, type FilledEntry } from "./cache-events";
+import { cutSourceSample } from "@/rendering/source-sample";
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
@@ -71,6 +78,8 @@ beforeEach(() => {
   h.decodeResult = () => Promise.resolve(decoded());
   h.verdict = { use: true, cache: true };
   h.takes = true;
+  h.generation = 0;
+  h.duringWrite = () => {};
   h.writes = [];
   h.marks = [];
   h.catalog = [];
@@ -204,5 +213,79 @@ describe("completeCachedEntry", () => {
     expect(h.writes).toEqual([["b.NEF:64:0", 1, 1, 1]]);
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+});
+
+// A Develop view still holding the photo from the entry as it was takes the
+// decoded size and the sample as soon as the rewrite lands (cache-events.ts).
+describe("the entry announced after a fill", () => {
+  /** A 2 × 1 frame, so its size and its sample are told apart from a 1 × 1 one. */
+  const frame = (): RawFloatImage => ({
+    data: new Float32Array(8).map((_, i) => i / 8),
+    width: 2,
+    height: 1,
+    oriented: true,
+  });
+  type Heard = Omit<FilledEntry, "cutSample"> & { sample: ReturnType<FilledEntry["cutSample"]> };
+  let heard: Heard[] = [];
+  let off = () => {};
+
+  beforeEach(() => {
+    heard = [];
+    off = onCacheEntryFilled(({ cutSample, ...rest }) => heard.push({ ...rest, sample: cutSample() }));
+    h.decodeResult = () => Promise.resolve(frame());
+  });
+
+  afterEach(() => off());
+
+  it("announces a taken write with the photo, the frame's size and its centre sample", async () => {
+    const photo = rawPhoto("DSC_0001.NEF");
+
+    expect(await fillCacheEntry(photo, 0)).toBe("taken");
+
+    expect(heard).toEqual([
+      { photo, fullWidth: 2, fullHeight: 1, sample: cutSourceSample(frame().data, 2, 1) },
+    ]);
+  });
+
+  it("announces nothing for a write the cache refused", async () => {
+    h.takes = false;
+    expect(await fillCacheEntry(rawPhoto("a.NEF"), 0)).toBe("refused");
+    expect(heard).toEqual([]);
+  });
+
+  it("announces nothing for a failed, a rejected or a marginal decode", async () => {
+    h.decodeResult = () => Promise.resolve({ failure: "unsupported" });
+    await fillCacheEntry(rawPhoto("a.NEF"), 0);
+    h.decodeResult = () => Promise.resolve(frame());
+    h.verdict = { use: false, cache: false };
+    await fillCacheEntry(rawPhoto("b.NEF"), 0);
+    h.verdict = { use: true, cache: false };
+    await fillCacheEntry(rawPhoto("c.NEF"), 0);
+
+    expect(heard).toEqual([]);
+  });
+
+  it("announces nothing once the work is abandoned", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    expect(await fillCacheEntry(rawPhoto("a.NEF"), 0, ctrl.signal)).toBe("nothing");
+    expect(heard).toEqual([]);
+  });
+
+  // The write is dropped once the project changes, and still answers true.
+  it("announces nothing for a write during which the project changed", async () => {
+    h.duringWrite = () => {
+      h.generation = 1;
+    };
+    await fillCacheEntry(rawPhoto("a.NEF"), 0);
+    expect(heard).toEqual([]);
+  });
+
+  it("announces a completion behind an open the same way", async () => {
+    const photo = rawPhoto("DSC_0002.NEF");
+    completeCachedEntry(photo, 0);
+    await settle();
+    expect(heard.map((e) => [e.photo, e.fullWidth, e.fullHeight])).toEqual([[photo, 2, 1]]);
   });
 });

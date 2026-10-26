@@ -16,6 +16,7 @@ import { act, cleanup, fireEvent, render, renderHook } from "@testing-library/re
 import { StrictMode, useLayoutEffect, useRef, useState } from "react";
 import type { CatalogPhoto, DevelopParams, EditSnapshot, Mask } from "@/catalog/types";
 import { DEFAULT_DEVELOP_PARAMS, defaultColorRange, defaultMaskAdjustments } from "@/catalog/types";
+import { emitCacheEntryFilled } from "@/catalog/cache-events";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
 import type { HistogramData } from "@/rendering/histogram";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
@@ -3566,5 +3567,71 @@ describe("useDevelopRenderer soft proof", () => {
       act(() => useDevelopStore.setState({ params: V3 }));
       expect(button()).not.toBeNull();
     });
+  });
+});
+
+// An entry written before 3.1.0 is rewritten in the background while its photo is
+// open; the view hands the worker the decoded size and sample for the source it
+// holds, then draws, so sourceSize.native turns true without a reload.
+describe("a cached preview whose RAW cache entry is rewritten while it is held", () => {
+  const SAMPLE = { data: new Uint16Array(4), width: 1, height: 1, x: 0, y: 0, sourceWidth: 6, sourceHeight: 4 };
+  const stale = (): Extract<DecodedImage, { kind: "float16" }> => ({ kind: "float16", data: new Uint16Array(24), width: 3, height: 2 });
+  const filled = (subject: CatalogPhoto) => ({ photo: subject, fullWidth: 6, fullHeight: 4, cutSample: () => SAMPLE });
+  const updates = (worker: FakeWorker) => worker.posted.filter((m) => m.cmd === "setSourceSample");
+
+  it("hands the open view the entry's size and sample, then draws", async () => {
+    const subject = photo();
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    const { worker } = await open(subject);
+    const render = vi.spyOn(getRenderBridge(), "render");
+
+    act(() => emitCacheEntryFilled(filled(subject)));
+
+    expect(updates(worker)).toEqual([
+      { cmd: "setSourceSample", key: photoSourceKey(subject), fullWidth: 6, fullHeight: 4, sample: SAMPLE },
+    ]);
+    expect(render).toHaveBeenCalledWith(false);
+    render.mockRestore();
+  });
+
+  it("hands it over once", async () => {
+    const subject = photo();
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    const { worker } = await open(subject);
+
+    act(() => emitCacheEntryFilled(filled(subject)));
+    act(() => emitCacheEntryFilled(filled(subject)));
+
+    expect(updates(worker)).toHaveLength(1);
+  });
+
+  it("ignores an entry of a photo it does not hold", async () => {
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    const { worker } = await open(photo());
+
+    act(() => emitCacheEntryFilled(filled(photo({ id: "other" }))));
+
+    expect(updates(worker)).toEqual([]);
+  });
+
+  it("ignores an entry when the view already holds its sample", async () => {
+    const subject = photo();
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => ({ ...stale(), fullWidth: 6, fullHeight: 4, sample: SAMPLE }));
+    const { worker } = await open(subject);
+
+    act(() => emitCacheEntryFilled(filled(subject)));
+
+    expect(updates(worker)).toEqual([]);
+  });
+
+  it("hears nothing once it is unmounted", async () => {
+    const subject = photo();
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    const { worker, unmount } = await open(subject);
+    unmount();
+
+    act(() => emitCacheEntryFilled(filled(subject)));
+
+    expect(updates(worker)).toEqual([]);
   });
 });

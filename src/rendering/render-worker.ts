@@ -14,7 +14,7 @@ import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { BUILTIN_RESOLVED, withPipeline } from "@/extensions/pipelines";
 import { WebGLRenderer, type ProbePoint } from "./webgl/renderer";
 import type { CapturePoint, FloatFrame } from "./float-frame";
-import type { Float16Source, SourceSample } from "./source-sample";
+import type { Float16Source, SourceSample, StoredSample } from "./source-sample";
 import { LIVE_MASK_COPY_PREPASSES } from "./webgl/mask-stage-instances";
 import type { HistogramData } from "./histogram";
 import type { MonitorTransform } from "./display-profile";
@@ -87,6 +87,10 @@ export type WorkerRequest =
   // its cache entry kept (source-sample.ts), for an extension measuring the
   // sensor's own pixels. See render-bridge.readSourceSample.
   | { cmd: "readSourceSample"; reqId: number }
+  // A resident cached source's RAW cache entry was rewritten with its decoded
+  // size and centre sample (cache-events.ts). The develop renderer takes them
+  // in place; the thumbnail renderer keeps no samples. No reply.
+  | { cmd: "setSourceSample"; key: string; fullWidth: number; fullHeight: number; sample: StoredSample }
   // The linear colour around (u, v) of the live frame, x right and y down in
   // [0, 1] across its buffer, drawn from what the worker holds when it arrives.
   // See WebGLRenderer.probe.
@@ -928,6 +932,11 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         cacheBudgetBytes = msg.bytes;
         renderer?.setCacheBudget(msg.bytes);
         thumbRenderer?.setCacheBudget(msg.bytes * THUMB_CACHE_FRACTION);
+        break;
+      }
+
+      case "setSourceSample": {
+        renderer?.setSourceSample(msg.key, msg.fullWidth, msg.fullHeight, msg.sample);
         break;
       }
 

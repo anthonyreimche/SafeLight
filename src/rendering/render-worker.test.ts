@@ -302,6 +302,14 @@ const { FakeRenderer } = vi.hoisted(() => {
       return s ? { ...s, data: s.data.slice() } : null;
     }
 
+    /** Each setSourceSample call, as [key, fullWidth, fullHeight, sample]. */
+    sourceSampleUpdates: [string, number, number, unknown][] = [];
+
+    setSourceSample(key: string, fullWidth: number, fullHeight: number, sample: unknown) {
+      this.sourceSampleUpdates.push([key, fullWidth, fullHeight, sample]);
+      return true;
+    }
+
     render(options?: { viewOverlays?: boolean }) {
       this.calls.push("render");
       this.renderedWith.push(this.monitorTransform);
@@ -2367,5 +2375,26 @@ describe("render-worker source sample", () => {
     send(thumbnail());
     expect(FakeRenderer.instances).toHaveLength(2);
     expect(FakeRenderer.instances[1].keepSourceSample).toBe(false);
+  });
+
+  const COMPLETED = { data: new Uint16Array(4), width: 1, height: 1, x: 0, y: 0, sourceWidth: 6, sourceHeight: 4 };
+
+  it("hands a completed entry's size and sample to the develop renderer only", () => {
+    send(INIT);
+    send(thumbnail());
+    posted = [];
+
+    send({ cmd: "setSourceSample", key: "p:0", fullWidth: 6, fullHeight: 4, sample: COMPLETED });
+
+    expect(develop().sourceSampleUpdates).toEqual([["p:0", 6, 4, COMPLETED]]);
+    expect(FakeRenderer.instances[1].sourceSampleUpdates).toEqual([]);
+    expect(posted).toEqual([]);
+  });
+
+  it("drops a completed entry's sample while there is no renderer", () => {
+    expect(() =>
+      send({ cmd: "setSourceSample", key: "p:0", fullWidth: 6, fullHeight: 4, sample: COMPLETED }),
+    ).not.toThrow();
+    expect(posted).toEqual([]);
   });
 });

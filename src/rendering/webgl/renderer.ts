@@ -221,6 +221,11 @@ interface SourceEntry {
 // dust spot still spans several pixels.
 const FILL_EDGE = 1024;
 
+// How far a cached source's aspect may stray from its decoded frame's before a
+// completed entry's size and sample are refused for it. The preview's own
+// rounding stays far inside this; a frame turned the other way does not.
+const SAMPLE_ASPECT_TOLERANCE = 0.01;
+
 // Gradient-domain (membrane) heal: heal spots blend their copied texture into the
 // surroundings with a per-pixel low-frequency correction instead of one flat mean
 // offset, so the seam vanishes across tone gradients. Flip to false to A/B against
@@ -1465,6 +1470,34 @@ export class WebGLRenderer {
     this.currentSourceKey = key;
     this.hasImage = true;
     this.resize();
+    return true;
+  }
+
+  /** Hand a resident cached source the decoded size and the centre sample its
+   *  completed RAW cache entry now holds (cache-events.ts). True when applied.
+   *  Refused, with nothing changed, on a renderer that keeps no samples, for a
+   *  key not resident, for a source that already has a sample or is not a
+   *  linear decode, and for a size whose aspect disagrees with the source's:
+   *  an entry written by an earlier build under the same key could hold the
+   *  frame turned the other way. */
+  setSourceSample(key: string, fullWidth: number, fullHeight: number, sample: StoredSample): boolean {
+    if (!this.keepSourceSample || fullWidth <= 0 || fullHeight <= 0) return false;
+    const e = this.sourceCache.get(key);
+    if (!e || e.sample || !e.linear || e.isFallbackPreview) return false;
+    const aspect = fullWidth / fullHeight;
+    if (Math.abs(e.width / e.height - aspect) > SAMPLE_ASPECT_TOLERANCE * aspect) return false;
+    e.fullWidth = fullWidth;
+    e.fullHeight = fullHeight;
+    e.sample = sample;
+    e.bytes += sample.data.byteLength;
+    if (key === this.currentSourceKey) {
+      this.sourceFullWidth = fullWidth;
+      this.sourceFullHeight = fullHeight;
+      this.sourceSample = sample;
+      // Prepass results are keyed by the epoch, and were drawn with the old uSourceSize.
+      this.sourceEpoch++;
+    }
+    this.evictToBudget();
     return true;
   }
 

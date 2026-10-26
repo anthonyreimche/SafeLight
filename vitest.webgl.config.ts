@@ -40,22 +40,21 @@ export default defineConfig({
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
-      instances: [
-        {
-          browser: "chromium",
-          // SwiftShader is the only GL backend available on a headless CI box;
-          // without these Chromium falls back to a null driver and getContext
-          // ("webgl2") returns null.
-          launch: {
-            args: [
-              "--use-gl=angle",
-              "--use-angle=swiftshader",
-              "--enable-unsafe-swiftshader",
-            ],
-          },
+      // vitest 4.1 builds Chromium's launch options from the provider's own
+      // `launchOptions` only; an instance-level `launch` is silently ignored.
+      provider: playwright({
+        launchOptions: {
+          // SwiftShader is the only GL backend available on a headless CI box,
+          // so name it rather than lean on the headless build's default (which
+          // is SwiftShader on current Chromium, but not by any promise).
+          args: [
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader",
+          ],
         },
-      ],
+      }),
+      instances: [{ browser: "chromium" }],
     },
   },
 });
