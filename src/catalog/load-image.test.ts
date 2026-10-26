@@ -15,16 +15,22 @@ import type { CatalogPhoto } from "./types";
 import type { RawFloatImage } from "@/raw/decode";
 import type { DecodeVerdict } from "@/raw/accept-decode";
 import type { DecodedImage } from "./load-image";
-
-interface CachedEntry {
-  data: Uint16Array;
-  width: number;
-  height: number;
-}
+import type { CachedPreview } from "@/raw/cache-encode";
+import type { StoredSample } from "@/rendering/source-sample";
 
 const h = vi.hoisted(() => ({
-  cached: null as CachedEntry | null,
+  cached: null as CachedPreview | null,
   cacheReads: 0,
+  /** Whether each cache read asked for the centre sample, in order. */
+  cacheReadSample: [] as boolean[],
+  /** What matching a cache entry against its camera's preview finds. */
+  cacheMatch: undefined as number | undefined,
+  /** The previews a cache entry was matched against, in order. */
+  cacheMatches: [] as Blob[],
+  /** The photos handed to completeCachedEntry, by id. */
+  completions: [] as string[],
+  /** The kinds of final decode marker the photo carries. */
+  marked: new Set<string>(),
   /** Entries handed to writeCachedPreview, as [key, width, height]. */
   cacheWrites: [] as [string, number, number][],
   permission: true,
@@ -65,15 +71,22 @@ vi.mock("./permissions", () => ({ verifyPermission: async () => h.permission }))
 vi.mock("@/raw/raw-cache", () => ({
   rawCacheKey: (rel: string, size: number, rot: number) => `${rel}:${size}:${rot}`,
   rawCacheGeneration: () => 0,
-  readCachedPreview: async () => {
+  readCachedPreview: async (_key: string, opts?: { sample?: boolean }) => {
     h.cacheReads++;
+    h.cacheReadSample.push(opts?.sample ?? false);
     return h.cached;
   },
   writeCachedPreview: async (key: string, _data: Float32Array, w: number, ht: number) => {
     h.cacheWrites.push([key, w, ht]);
   },
-  hasDecodeMarker: async () => false,
+  hasDecodeMarker: async (_key: string, kind: string) => h.marked.has(kind),
   markDecode: async () => {},
+}));
+
+vi.mock("./cache-fill", () => ({
+  completeCachedEntry: (photo: CatalogPhoto) => {
+    h.completions.push(photo.id);
+  },
 }));
 
 vi.mock("@/raw/decode", () => ({
@@ -103,6 +116,10 @@ vi.mock("@/raw/accept-decode", async (importOriginal) => {
         preview,
       });
       return h.verdict ? Promise.resolve(h.verdict) : actual.acceptDecode(decode, upright, preview);
+    },
+    matchCameraPreview: async (_scene: Float32Array, preview: Blob) => {
+      h.cacheMatches.push(preview);
+      return h.cacheMatch;
     },
   };
 });
@@ -211,6 +228,11 @@ function asFloat(
   return image;
 }
 
+/** The cached entry as the renderer takes it. */
+const float16 = (c: CachedPreview) => ({ kind: "float16", data: c.data, width: c.width, height: c.height });
+
+const STORED: StoredSample = { data: new Uint16Array(4), width: 1, height: 1, x: 2, y: 1, sourceWidth: 6, sourceHeight: 4 };
+
 /** Stands in for the OffscreenCanvas rotateBitmap draws on. */
 class TurnedCanvas {
   turnedBy = 0;
@@ -305,6 +327,9 @@ const storedThumbnail = new Blob(["thumbnail"], { type: "image/jpeg" });
 beforeEach(() => {
   h.cached = null;
   h.cacheReads = 0;
+  h.cacheReadSample = [];
+  h.completions = [];
+  h.marked = new Set();
   h.cacheWrites = [];
   h.permission = true;
   h.fileReads = 0;
@@ -321,6 +346,8 @@ beforeEach(() => {
   h.turns = [];
   h.verdict = null;
   h.judged = [];
+  h.cacheMatch = undefined;
+  h.cacheMatches = [];
   // The colour check's 64 px sample has no decoder here, so it trusts the
   // decode; any other bitmap decode stands in for the embedded preview.
   stubBitmapDecoder((src) =>
@@ -336,42 +363,118 @@ afterEach(() => {
 });
 
 describe("loadPhotoImage with a cached develop preview", () => {
+  /** An entry as a build before 3.1.0 wrote it: the preview alone. */
+  const oldEntry = (): CachedPreview => ({ data: new Uint16Array(4 * 2 * 4), width: 4, height: 2, full: null, sample: null });
+  /** An entry written since: the preview, the frame's size and its sample. */
+  const entry = (): CachedPreview => ({ ...oldEntry(), full: { width: 6, height: 4 }, sample: STORED });
+
   beforeEach(() => {
-    h.cached = { data: new Uint16Array(4 * 2 * 4), width: 4, height: 2 };
+    h.cached = oldEntry();
   });
 
   it("hands a cache hit over as a float16 source without decoding", async () => {
-    const cached = h.cached;
+    const cached = oldEntry();
+    h.cached = cached;
     const image = await loadPhotoImage(rawPhoto());
-    expect(image).toEqual({ kind: "float16", ...cached });
+    expect(image).toEqual(float16(cached));
     expect(h.decodes).toHaveLength(0);
   });
 
   it("falls back to the cached preview as float16 when the full decode fails", async () => {
-    const cached = h.cached;
+    const cached = oldEntry();
+    h.cached = cached;
     const image = await loadPhotoImage(rawPhoto(), { minEdge: Infinity });
     expect(h.decodes).toHaveLength(1);
-    expect(image).toEqual({ kind: "float16", ...cached });
+    expect(image).toEqual(float16(cached));
+  });
+
+  it("carries the decoded size and the sample when asked for", async () => {
+    const cached = entry();
+    h.cached = cached;
+    const image = await loadPhotoImage(rawPhoto(), { sample: true });
+    expect(image).toEqual({ ...float16(cached), fullWidth: 6, fullHeight: 4, sample: STORED });
+    expect(h.cacheReadSample).toEqual([true]);
+    await settle();
+    expect(h.completions).toEqual([]);
+  });
+
+  it("asks the cache for no sample unless told to", async () => {
+    const cached = { ...entry(), sample: null };
+    h.cached = cached;
+    const image = await loadPhotoImage(rawPhoto());
+    expect(h.cacheReadSample).toEqual([false]);
+    expect(image).toEqual({ ...float16(cached), fullWidth: 6, fullHeight: 4 });
+    expect(image).not.toHaveProperty("sample");
+  });
+
+  // An entry written before 3.1.0 is served as it is and completed behind the
+  // open, so the next open has the size and the sample.
+  it("has an entry from before 3.1.0 completed behind a Develop open", async () => {
+    const cached = oldEntry();
+    h.cached = cached;
+    const image = await loadPhotoImage(rawPhoto(), { sample: true });
+    expect(image).toEqual(float16(cached));
+    await settle();
+    expect(h.completions).toEqual([rawPhoto().id]);
+    expect(h.decodes).toHaveLength(0);
+  });
+
+  // Either verdict would only be reached again, by a decode every open repeats.
+  it("does not have an entry completed whose photo the decoder marked unsupported", async () => {
+    h.marked.add("unsupported");
+    const cached = oldEntry();
+    h.cached = cached;
+    const image = await loadPhotoImage(rawPhoto(), { sample: true });
+    expect(image).toEqual(float16(cached));
+    await settle();
+    expect(h.completions).toEqual([]);
+  });
+
+  it("does not have an entry completed whose photo the decoder marked suspicious", async () => {
+    h.marked.add("suspicious");
+    const cached = oldEntry();
+    h.cached = cached;
+    const image = await loadPhotoImage(rawPhoto(), { sample: true });
+    expect(image).toEqual(float16(cached));
+    await settle();
+    expect(h.completions).toEqual([]);
+  });
+
+  it("leaves an old entry alone when no sample was asked for", async () => {
+    await loadPhotoImage(rawPhoto());
+    await settle();
+    expect(h.completions).toEqual([]);
+  });
+
+  it("falls back to the cached preview with its size and sample when the full decode fails", async () => {
+    const cached = entry();
+    h.cached = cached;
+    const image = await loadPhotoImage(rawPhoto(), { minEdge: Infinity, sample: true });
+    expect(h.decodes).toHaveLength(1);
+    expect(image).toEqual({ ...float16(cached), fullWidth: 6, fullHeight: 4, sample: STORED });
   });
 
   // In Electron getFile() reads the whole RAW over IPC; the cache key needs
   // only the catalog record.
-  it("serves a cache hit without reading the original", async () => {
-    await loadPhotoImage(rawPhoto());
+  it("serves a cache hit without reading the original once the photo has its camera match", async () => {
+    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: 0.5 } }));
+    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: null } }));
     expect(h.fileReads).toBe(0);
   });
 
   it("serves a cache hit when the original is offline", async () => {
-    const cached = h.cached;
+    const cached = oldEntry();
+    h.cached = cached;
     const image = await loadPhotoImage(rawPhoto({ fileHandle: null }));
-    expect(image).toEqual({ kind: "float16", ...cached });
+    expect(image).toEqual(float16(cached));
   });
 
   it("serves a cache hit when access to the original was not re-granted", async () => {
     h.permission = false;
-    const cached = h.cached;
+    const cached = oldEntry();
+    h.cached = cached;
     const image = await loadPhotoImage(rawPhoto());
-    expect(image).toEqual({ kind: "float16", ...cached });
+    expect(image).toEqual(float16(cached));
   });
 
   it("never looks in the RAW cache for a non-RAW photo", async () => {
@@ -451,8 +554,9 @@ describe("loadPhotoImage on a cache miss", () => {
 
   it("stores what the decode learned on the photo as the catalog has it by then", async () => {
     // A full decode takes seconds; another window may change the photo meanwhile.
+    // The photo has its camera match already, which a decode never relearns.
     h.decodeResult = () => Promise.resolve(floatDecode({ colorTemperature: 5200 }));
-    const photo = rawPhoto();
+    const photo = rawPhoto({ exif: { baselineExposure: 0 } });
     h.catalog = [{ ...photo, rating: 4, exif: { lens: "35mm" } }];
 
     await loadPhotoImage(photo);
@@ -495,7 +599,17 @@ describe("loadPhotoImage cache writes after a full decode", () => {
   });
 
   it("upgrades a cache entry written below the decode's long edge", async () => {
-    h.cached = { data: new Uint16Array(2 * 1 * 4), width: 2, height: 1 };
+    h.cached = { data: new Uint16Array(2 * 1 * 4), width: 2, height: 1, full: null, sample: null };
+    h.decodeResult = () => Promise.resolve(floatDecode());
+
+    const image = await loadPhotoImage(rawPhoto(), { minEdge: Infinity });
+
+    expect(image).toMatchObject({ kind: "float", width: 4, height: 2 });
+    expect(h.cacheWrites).toEqual([[key, 4, 2]]);
+  });
+
+  it("completes an entry from before 3.1.0 with a full decode at the same edge", async () => {
+    h.cached = { data: new Uint16Array(4 * 2 * 4), width: 4, height: 2, full: null, sample: null };
     h.decodeResult = () => Promise.resolve(floatDecode());
 
     const image = await loadPhotoImage(rawPhoto(), { minEdge: Infinity });
@@ -505,7 +619,7 @@ describe("loadPhotoImage cache writes after a full decode", () => {
   });
 
   it("does not rewrite a cache entry as long as the decode", async () => {
-    h.cached = { data: new Uint16Array(4 * 2 * 4), width: 4, height: 2 };
+    h.cached = { data: new Uint16Array(4 * 2 * 4), width: 4, height: 2, full: { width: 4, height: 2 }, sample: null };
     h.decodeResult = () => Promise.resolve(floatDecode());
 
     const image = await loadPhotoImage(rawPhoto(), { minEdge: Infinity });
@@ -515,7 +629,7 @@ describe("loadPhotoImage cache writes after a full decode", () => {
   });
 
   it("does not rewrite an entry at the preference cap when the decode is larger", async () => {
-    h.cached = { data: new Uint16Array(3072 * 1 * 4), width: 3072, height: 1 };
+    h.cached = { data: new Uint16Array(3072 * 1 * 4), width: 3072, height: 1, full: { width: 3072, height: 1 }, sample: null };
     h.decodeResult = () =>
       Promise.resolve(
         floatDecode({ data: new Float32Array(4000 * 1 * 4), width: 4000, height: 1 }),
@@ -528,7 +642,7 @@ describe("loadPhotoImage cache writes after a full decode", () => {
   });
 
   it("upgrades an entry below the preference cap with the full decode", async () => {
-    h.cached = { data: new Uint16Array(2 * 1 * 4), width: 2, height: 1 };
+    h.cached = { data: new Uint16Array(2 * 1 * 4), width: 2, height: 1, full: null, sample: null };
     h.decodeResult = () =>
       Promise.resolve(
         floatDecode({ data: new Float32Array(4000 * 1 * 4), width: 4000, height: 1 }),
@@ -593,12 +707,12 @@ describe("loadPhotoImage acting on the decode check's ruling", () => {
     });
 
     it("serves the cached develop preview as float16 when one exists", async () => {
-      h.cached = { data: new Uint16Array(2 * 1 * 4), width: 2, height: 1 };
+      h.cached = { data: new Uint16Array(2 * 1 * 4), width: 2, height: 1, full: null, sample: null };
       const cached = h.cached;
 
       const image = await loadPhotoImage(rawPhoto(), { minEdge: Infinity });
 
-      expect(image).toEqual({ kind: "float16", ...cached });
+      expect(image).toEqual(float16(cached));
       expect(h.cacheWrites).toEqual([]);
     });
 
@@ -620,14 +734,15 @@ describe("loadPhotoImage acting on the decode check's ruling", () => {
 });
 
 describe("loadPhotoImage minEdge against the cached long edge", () => {
+  const cached: CachedPreview = { data: new Uint16Array(4 * 2 * 4), width: 4, height: 2, full: null, sample: null };
+
   beforeEach(() => {
-    h.cached = { data: new Uint16Array(4 * 2 * 4), width: 4, height: 2 };
+    h.cached = cached;
   });
 
   it("serves the cache when its long edge equals minEdge", async () => {
-    const cached = h.cached;
     const image = await loadPhotoImage(rawPhoto(), { minEdge: 4 });
-    expect(image).toEqual({ kind: "float16", ...cached });
+    expect(image).toEqual(float16(cached));
     expect(h.decodes).toHaveLength(0);
   });
 
@@ -642,6 +757,128 @@ describe("loadPhotoImage minEdge against the cached long edge", () => {
     expect(image).toMatchObject({ kind: "float", width: 8, height: 4 });
     expect(h.decodes).toHaveLength(1);
     expect(h.cacheWrites).toEqual([["DSCF0001.RAF:8:0", 8, 4]]);
+  });
+});
+
+// The renderer reads the camera maker's exposure offset off the source it is
+// given (baseline-tone.ts), so a RAW carries it from every way it arrives.
+describe("loadPhotoImage and the camera's baseline exposure", () => {
+  const sony = () => rawPhoto({ exif: { cameraMake: "SONY", cameraModel: "ILCE-7M3" } });
+  const canon = () => rawPhoto({ exif: { cameraMake: "Canon", cameraModel: "Canon EOS R5" } });
+  const entry = (): CachedPreview => ({ data: new Uint16Array(4 * 2 * 4), width: 4, height: 2, full: null, sample: null });
+
+  it("tags a cache hit with the maker's offset", async () => {
+    h.cached = entry();
+    expect(await loadPhotoImage(sony())).toMatchObject({ kind: "float16", baselineExposure: 0.31 });
+  });
+
+  it("tags a fresh decode with it", async () => {
+    h.decodeResult = () => Promise.resolve(floatDecode());
+    expect(await loadPhotoImage(sony())).toMatchObject({ kind: "float", baselineExposure: 0.31 });
+  });
+
+  it("tags the cached preview a failed decode falls back to", async () => {
+    h.cached = entry();
+    expect(await loadPhotoImage(sony(), { minEdge: Infinity })).toMatchObject({ kind: "float16", baselineExposure: 0.31 });
+  });
+
+  it("leaves a maker on the pooled curve untagged", async () => {
+    h.cached = entry();
+    expect(await loadPhotoImage(canon())).not.toHaveProperty("baselineExposure");
+    h.cached = null;
+    h.decodeResult = () => Promise.resolve(floatDecode());
+    expect(await loadPhotoImage(canon())).not.toHaveProperty("baselineExposure");
+  });
+});
+
+// Each RAW learns, from its camera's embedded JPEG, the exposure that brings
+// its default render to the camera's brightness (camera-match.ts), and keeps it
+// on the photo. The maker table stands in until it has one, and for a photo
+// whose camera stored no usable preview.
+describe("loadPhotoImage learning the camera match", () => {
+  const sony = (exif: CatalogPhoto["exif"] = {}) => rawPhoto({ exif: { cameraMake: "SONY", ...exif } });
+  const entry = (): CachedPreview => ({ data: new Uint16Array(4 * 2 * 4), width: 4, height: 2, full: null, sample: null });
+
+  it("learns it from a fresh decode, keeps it on the photo and renders with it", async () => {
+    h.previewResult = () => Promise.resolve(embeddedJpeg);
+    h.decodeResult = () => Promise.resolve(floatDecode());
+    h.verdict = { use: true, cache: true, exposure: 1.5 };
+    const photo = sony();
+    h.catalog = [photo];
+    expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float", baselineExposure: 1.5 });
+    expect(photo.exif.baselineExposure).toBe(1.5);
+    expect(h.saved.map((p) => p.exif.baselineExposure)).toEqual([1.5]);
+  });
+
+  it("remembers a decode that found no usable preview, and renders it on the maker table", async () => {
+    h.decodeResult = () => Promise.resolve(floatDecode());
+    const photo = sony();
+    h.catalog = [photo];
+    expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float", baselineExposure: 0.31 });
+    expect(photo.exif.baselineExposure).toBeNull();
+  });
+
+  it("keeps the match it has when a later decode finds another", async () => {
+    h.previewResult = () => Promise.resolve(embeddedJpeg);
+    h.decodeResult = () => Promise.resolve(floatDecode());
+    h.verdict = { use: true, cache: true, exposure: 0.9 };
+    const photo = sony({ baselineExposure: 1.2 });
+    h.catalog = [photo];
+    expect(await loadPhotoImage(photo)).toMatchObject({ baselineExposure: 1.2 });
+    expect(photo.exif.baselineExposure).toBe(1.2);
+    expect(h.saved).toEqual([]);
+  });
+
+  it("learns nothing from a decode it rejects", async () => {
+    h.previewResult = () => Promise.resolve(embeddedJpeg);
+    h.decodeResult = () => Promise.resolve(floatDecode());
+    h.verdict = { use: false, cache: false };
+    const photo = sony();
+    h.catalog = [photo];
+    await loadPhotoImage(photo);
+    expect(photo.exif.baselineExposure).toBeUndefined();
+  });
+
+  it("serves a cache hit with the stored match", async () => {
+    h.cached = entry();
+    expect(await loadPhotoImage(sony({ baselineExposure: 1.2 }))).toMatchObject({ kind: "float16", baselineExposure: 1.2 });
+    expect(h.cacheMatches).toEqual([]);
+  });
+
+  // An entry written before the photo learned its match: the original's
+  // preview is read once, against the entry, and the open renders with it.
+  it("learns it on a cache hit from the original's preview, once", async () => {
+    h.cached = entry();
+    h.previewResult = () => Promise.resolve(embeddedJpeg);
+    h.cacheMatch = 1.4;
+    const photo = sony();
+    h.catalog = [photo];
+    expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float16", baselineExposure: 1.4 });
+    expect(h.cacheMatches).toEqual([embeddedJpeg]);
+    expect(h.saved.map((p) => p.exif.baselineExposure)).toEqual([1.4]);
+    await loadPhotoImage(photo);
+    expect(h.fileReads).toBe(1);
+    expect(h.decodes).toHaveLength(0);
+  });
+
+  it("remembers a cache hit whose original holds no usable preview, so it isn't read again", async () => {
+    h.cached = entry();
+    const photo = sony();
+    h.catalog = [photo];
+    expect(await loadPhotoImage(photo)).toMatchObject({ baselineExposure: 0.31 });
+    expect(photo.exif.baselineExposure).toBeNull();
+    await loadPhotoImage(photo);
+    expect(h.fileReads).toBe(1);
+  });
+
+  it("serves a cache hit on the maker table while the original is out of reach, and asks again later", async () => {
+    h.cached = entry();
+    h.permission = false;
+    const photo = sony();
+    expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float16", baselineExposure: 0.31 });
+    expect(photo.exif.baselineExposure).toBeUndefined();
+    expect(h.fileReads).toBe(0);
+    expect(await loadPhotoImage(sony())).toMatchObject({ kind: "float16" });
   });
 });
 
@@ -703,10 +940,12 @@ describe("loadPhotoImage turning a full decode upright", () => {
   });
 });
 
+// These photos have their camera match already, which a decode never relearns,
+// so only the white balance and the exposure bias are learned.
 describe("loadPhotoImage keeping what the decode learned", () => {
   it("records the exposure bias a Fujifilm DR mode left in the raw", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ rawExposureBias: -1 }));
-    const photo = rawPhoto();
+    const photo = rawPhoto({ exif: { baselineExposure: 0 } });
     h.catalog = [{ ...photo, exif: { lens: "35mm" } }];
 
     await loadPhotoImage(photo);
@@ -720,7 +959,7 @@ describe("loadPhotoImage keeping what the decode learned", () => {
   it("stores a learned white balance and exposure bias in one write", async () => {
     h.decodeResult = () =>
       Promise.resolve(floatDecode({ colorTemperature: 5200, rawExposureBias: -2 }));
-    const photo = rawPhoto();
+    const photo = rawPhoto({ exif: { baselineExposure: 0 } });
     h.catalog = [{ ...photo, exif: {} }];
 
     await loadPhotoImage(photo);
@@ -731,7 +970,7 @@ describe("loadPhotoImage keeping what the decode learned", () => {
 
   it("writes nothing when the photo already has the decode's exposure bias", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ rawExposureBias: -1 }));
-    const photo = rawPhoto({ exif: { rawExposureBias: -1 } });
+    const photo = rawPhoto({ exif: { rawExposureBias: -1, baselineExposure: 0 } });
     h.catalog = [photo];
 
     await loadPhotoImage(photo);
@@ -753,7 +992,7 @@ describe("loadPhotoImage keeping what the decode learned", () => {
 
   it("keeps an as-shot temperature the photo already has", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ colorTemperature: 5200 }));
-    const photo = rawPhoto({ exif: { colorTemperature: 4000 } });
+    const photo = rawPhoto({ exif: { colorTemperature: 4000, baselineExposure: 0 } });
     h.catalog = [photo];
 
     await loadPhotoImage(photo);

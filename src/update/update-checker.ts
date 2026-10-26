@@ -53,8 +53,8 @@ export interface ReleaseEntry {
  * | update-available  | A newer release was found                            |
  */
 export type CheckResult =
-  | { kind: "network-error" }
-  | { kind: "parse-error" }
+  | { kind: "network-error"; detail: string }
+  | { kind: "parse-error"; detail: string }
   | { kind: "no-releases" }
   | { kind: "current-version-unknown"; rawVersion: string }
   | { kind: "up-to-date"; currentVersion: string; latestVersion: string }
@@ -78,7 +78,16 @@ function matchesChannel(release: GHRelease, channel: UpdateChannel): boolean {
 
 type FetchOutcome =
   | { ok: true; releases: GHRelease[] }
-  | { ok: false; reason: "network" | "parse" };
+  | { ok: false; reason: "network" | "parse"; detail: string };
+
+/** Why a payload that isn't a release list was sent: GitHub's own `message`
+ *  (a rate limit, a missing repo) when it has one. */
+function notAListDetail(data: unknown): string {
+  const message = (data as { message?: unknown } | null)?.message;
+  return typeof message === "string" && message
+    ? message
+    : "GitHub didn't send a list of releases";
+}
 
 /** Fetch recent releases from GitHub.
  *  Routes through the Electron main-process IPC bridge when available so the
@@ -94,13 +103,13 @@ async function fetchReleases(): Promise<FetchOutcome> {
         headers: { Accept: "application/vnd.github+json" },
         signal: AbortSignal.timeout(8000),
       });
-      if (!resp.ok) return { ok: false, reason: "network" };
+      if (!resp.ok) return { ok: false, reason: "network", detail: `GitHub answered HTTP ${resp.status}` };
       data = await resp.json();
     }
-    if (!Array.isArray(data)) return { ok: false, reason: "parse" };
+    if (!Array.isArray(data)) return { ok: false, reason: "parse", detail: notAListDetail(data) };
     return { ok: true, releases: data as GHRelease[] };
-  } catch {
-    return { ok: false, reason: "network" };
+  } catch (e) {
+    return { ok: false, reason: "network", detail: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -143,8 +152,8 @@ export async function checkForUpdateFull(
 
   if (!outcome.ok) {
     return outcome.reason === "parse"
-      ? { kind: "parse-error" }
-      : { kind: "network-error" };
+      ? { kind: "parse-error", detail: outcome.detail }
+      : { kind: "network-error", detail: outcome.detail };
   }
 
   // GitHub orders releases by publish date, not version, so a later-published
@@ -176,11 +185,11 @@ export async function checkForUpdateFull(
 
 /**
  * Returns all non-draft releases sorted newest-first, for the release history
- * / downgrade UI. Returns null on network failure.
+ * / downgrade UI. Rejects with why when the list can't be fetched or read.
  */
-export async function fetchAllReleases(): Promise<ReleaseEntry[] | null> {
+export async function fetchAllReleases(): Promise<ReleaseEntry[]> {
   const outcome = await fetchReleases();
-  if (!outcome.ok) return null;
+  if (!outcome.ok) throw new Error(outcome.detail);
   return outcome.releases
     .filter((r) => !r.draft)
     .map((r) => ({

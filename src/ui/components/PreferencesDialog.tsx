@@ -101,6 +101,11 @@ import {
   type UpdateChannel,
 } from "@/update/update-checker";
 import { openReportIssue } from "./report-issue-store";
+import { privilegedGpu } from "@/native/privileged";
+import type { NativeGpuBackendState } from "@/extensions/types";
+
+// The Rendering section lists it for search when the module loads.
+const SOFTWARE_RENDERING = "Software rendering";
 
 // ─── Open/close state (exported so the keyboard hook and TopBar can drive it) ─
 
@@ -268,6 +273,7 @@ const CORE_SECTIONS: PrefSection[] = [
     items: settings(
       "Default display transform",
       ...(displayProfileSupported() ? ["Display profile"] : []),
+      ...(softwareRenderingSupported() ? [SOFTWARE_RENDERING] : []),
     ),
     keywords: [
       "tone map",
@@ -278,6 +284,10 @@ const CORE_SECTIONS: PrefSection[] = [
       "wayland",
       "wide gamut",
       "color management",
+      "gpu",
+      "graphics card",
+      "webgl",
+      "virtual machine",
     ],
     render: () => <RenderingSection />,
   },
@@ -303,12 +313,13 @@ const CORE_SECTIONS: PrefSection[] = [
     items: settings(
       "Default format",
       "TIFF bit depth",
+      "PNG bit depth",
       "Default quality",
       "Default resolution",
       "Color space",
       "Bundle multiple photos as ZIP",
     ),
-    keywords: ["tiff"],
+    keywords: ["tiff", "png"],
     render: () => <ExportSection />,
   },
   {
@@ -1215,6 +1226,70 @@ function RenderingSection() {
         differently between transforms by design.
       </p>
       <DisplayProfileField />
+      <SoftwareRenderingField />
+    </div>
+  );
+}
+
+const SOFTWARE_REASON: Record<"webgl2-unavailable" | "gpu-crashes", string> = {
+  "webgl2-unavailable": "Safelight turned this on because the graphics card couldn't run WebGL2.",
+  "gpu-crashes": "Safelight turned this on because the graphics driver kept crashing.",
+};
+
+// Linux only: the graphics backend is picked before the window exists, from a
+// probe Safelight keeps in its config folder.
+function softwareRenderingSupported(): boolean {
+  return window.safelightNative?.platform === "linux" && privilegedGpu() !== null;
+}
+
+// Linux only: Safelight moves to software rendering by itself when the
+// graphics card can't run WebGL2 or its driver keeps crashing, which a
+// virtual machine often does; this says so and is the way back.
+function SoftwareRenderingField() {
+  const supported = softwareRenderingSupported();
+  const [state, setState] = useState<NativeGpuBackendState | null>(null);
+
+  useEffect(() => {
+    if (!supported) return;
+    let live = true;
+    void privilegedGpu()
+      ?.backend()
+      .then((s) => {
+        if (live) setState(s);
+      });
+    return () => {
+      live = false;
+    };
+  }, [supported]);
+
+  if (!supported || !state) return null;
+
+  const change = (on: boolean) => {
+    void privilegedGpu()
+      ?.setSoftware(on)
+      .then((s) => {
+        if (s) setState(s);
+      });
+  };
+  const why =
+    state.reason === "webgl2-unavailable" || state.reason === "gpu-crashes"
+      ? SOFTWARE_REASON[state.reason]
+      : null;
+
+  return (
+    <div>
+      <ToggleField
+        label={SOFTWARE_RENDERING}
+        hint="Draws on the processor instead of the graphics card: slower, but it works in virtual machines and with graphics drivers that can't run WebGL2. Safelight turns this on by itself when the graphics card fails; turn it off to try the graphics card again."
+        checked={state.nextSoftware}
+        onChange={change}
+      />
+      {why && <p className="mt-1 text-[10px] leading-relaxed text-text-secondary">{why}</p>}
+      {state.nextSoftware !== state.software && (
+        <p className="mt-1 text-[10px] leading-relaxed text-text-secondary">
+          Takes effect when you restart Safelight.
+        </p>
+      )}
     </div>
   );
 }
@@ -1792,23 +1867,37 @@ function ExportSection() {
           }
         />
       </Field>
-      {s.exportFormat === "image/tiff" && (
-        <Field
-          label="TIFF bit depth"
-          hint="16-bit preserves the full editing precision (best for further work or print); 8-bit is smaller and universally compatible."
-        >
-          <OptionRow
-            value={s.exportTiffBitDepth}
-            options={[
-              { value: 8, label: "8-bit" },
-              { value: 16, label: "16-bit" },
-            ]}
-            onChange={(v) =>
-              updateSettings({ exportTiffBitDepth: v as 8 | 16 })
-            }
-          />
-        </Field>
-      )}
+      <Field
+        label="TIFF bit depth"
+        hint="16-bit preserves the full editing precision (best for further work or print); 8-bit is smaller and universally compatible."
+      >
+        <OptionRow
+          value={s.exportTiffBitDepth}
+          options={[
+            { value: 8, label: "8-bit" },
+            { value: 16, label: "16-bit" },
+          ]}
+          onChange={(v) =>
+            updateSettings({ exportTiffBitDepth: v as 8 | 16 })
+          }
+        />
+      </Field>
+      <Field
+        label="PNG bit depth"
+        hint="16-bit keeps the full editing precision, but the files are large and slow to encode, and most viewers show them as 8-bit."
+      >
+        <OptionRow
+          value={s.exportPngBitDepth}
+          options={[
+            { value: 8, label: "8-bit" },
+            { value: 16, label: "16-bit" },
+          ]}
+          onChange={(v) =>
+            updateSettings({ exportPngBitDepth: v as 8 | 16 })
+          }
+        />
+      </Field>
+
       <SliderField
         label="Default quality"
         value={s.exportQuality}
@@ -2146,13 +2235,13 @@ function CheckResultBadge({
     case "network-error":
       return (
         <p className="text-[10px] text-red-400">
-          Could not reach GitHub. Check your internet connection.
+          Could not reach GitHub. Check your internet connection. Reason: {result.detail}
         </p>
       );
     case "parse-error":
       return (
         <p className="text-[10px] text-red-400">
-          GitHub responded with unexpected data. The API may be down.
+          GitHub responded with unexpected data. The API may be down. Reason: {result.detail}
         </p>
       );
     case "no-releases":
@@ -2212,7 +2301,7 @@ function UpdatesSection() {
   const [result, setResult] = useState<CheckResult | null>(null);
   const [releases, setReleases] = useState<ReleaseEntry[] | null>(null);
   const [loadingReleases, setLoadingReleases] = useState(false);
-  const [releasesError, setReleasesError] = useState(false);
+  const [releasesError, setReleasesError] = useState<string | null>(null);
 
   const checkNow = async () => {
     setChecking(true);
@@ -2224,10 +2313,12 @@ function UpdatesSection() {
 
   const loadReleases = async () => {
     setLoadingReleases(true);
-    setReleasesError(false);
-    const r = await fetchAllReleases();
-    if (r === null) setReleasesError(true);
-    else setReleases(r);
+    setReleasesError(null);
+    try {
+      setReleases(await fetchAllReleases());
+    } catch (e) {
+      setReleasesError(e instanceof Error ? e.message : String(e));
+    }
     setLoadingReleases(false);
   };
 
@@ -2286,7 +2377,9 @@ function UpdatesSection() {
           <span className="text-[10px] text-text-muted">Loading…</span>
         )}
         {releasesError && (
-          <span className="text-[10px] text-red-400">Could not load releases. Check your connection.</span>
+          <span className="text-[10px] text-red-400">
+            Could not load releases. Check your connection. Reason: {releasesError}
+          </span>
         )}
         {releases && releases.length > 0 && (
           <div className="mt-1 flex flex-col gap-1">

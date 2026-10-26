@@ -4,7 +4,8 @@
 // be preserved in derived versions.
 
 import { nativePathOf } from "@/project/native-fs";
-import type { CacheRequest, CacheResponse } from "./cache-worker";
+import type { CachedPreview } from "./cache-encode";
+import type { CacheListing, CacheRequest, CacheResponse } from "./cache-worker";
 
 let worker: Worker | null = null;
 let ready: Promise<void> | null = null;
@@ -100,14 +101,19 @@ export function setCacheDirOnWorker(dir: FileSystemDirectoryHandle | null): void
     .catch(() => {});
 }
 
+/** The entry under `key`, with its centre sample only when `sample` asks for it
+ *  (8 MB more to decompress and move). */
 export async function workerReadCachedPreview(
   key: string,
-): Promise<{ data: Uint16Array; width: number; height: number } | null> {
+  sample: boolean,
+): Promise<CachedPreview | null> {
   const id = nextId++;
   const resp = await send<Extract<CacheResponse, { type: "read" }>>(
-    { cmd: "read", id, key },
+    { cmd: "read", id, key, sample },
   );
-  return resp.data ? { data: resp.data, width: resp.width, height: resp.height } : null;
+  return resp.data
+    ? { data: resp.data, width: resp.width, height: resp.height, full: resp.full, sample: resp.sample }
+    : null;
 }
 
 export async function workerWriteCachedPreview(
@@ -147,8 +153,8 @@ export async function workerClearRawCache(): Promise<void> {
   await send<Extract<CacheResponse, { type: "clear" }>>({ cmd: "clear", id });
 }
 
-export async function workerCachedKeys(): Promise<string[]> {
+export async function workerCachedKeys(): Promise<CacheListing[]> {
   const id = nextId++;
   const resp = await send<Extract<CacheResponse, { type: "keys" }>>({ cmd: "keys", id });
-  return resp.keys;
+  return resp.entries;
 }

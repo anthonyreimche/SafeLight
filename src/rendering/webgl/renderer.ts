@@ -49,6 +49,12 @@ import {
   type Sharpen,
   type SharpenPrograms,
 } from "./export-draw";
+import {
+  createDownsamplePrograms,
+  deleteDownsamplePrograms,
+  drawDownsampled,
+  type DownsamplePrograms,
+} from "./downsample";
 import { maskInstances, type MaskInstances } from "./mask-stage-instances";
 import { passDraws, stageDraws } from "./pass-draws";
 import { simpleHash } from "./shader-compiler";
@@ -78,9 +84,11 @@ import {
 } from "./prepass-units";
 import { StageResultLayers } from "./stage-result-layers";
 import { useRegistry } from "@/extensions/registry";
+import { isUniformValue } from "@/extensions/pipeline-validation";
 import {
   type GlslType,
   type ProcessingStageContribution,
+  type StageSpace,
   type StageTextureData,
 } from "@/extensions/types";
 import { coverageItemsFromBag, paramIsActive } from "./stage-coverage";
@@ -92,8 +100,8 @@ import {
 } from "../color-space";
 import { DISPLAY_CURVE_CODE, type MonitorTransform } from "../display-profile";
 import { lmsUniforms, proofUniforms } from "../output-map";
-import { decodePerceptual } from "../stage-space";
-import { measureSize, type CapturePoint } from "../float-frame";
+import { decodePerceptual, isIdentitySpace } from "../stage-space";
+import { DEFAULT_CAPTURE_SPACE, measureSize, type CapturePoint } from "../float-frame";
 import {
   BUILTIN_RESOLVED,
   resolveDefaultPipeline,
@@ -108,6 +116,13 @@ import {
 import { healImageFromLinear, setHealSourceImage } from "../heal-source";
 import { getSettings } from "@/state/settings-store";
 import { halfToFloat32 } from "@/raw/half-float";
+import {
+  cutSourceSample,
+  unpackSourceSample,
+  type Float16Source,
+  type SourceSample,
+  type StoredSample,
+} from "@/rendering/source-sample";
 
 // Fixed attribute locations (bound before link), so every pipeline variant of
 // the program shares the one VAO — swapping pipelines never rebuilds geometry.
@@ -183,7 +198,14 @@ interface SourceEntry {
   height: number;
   linear: boolean;
   applyBaseCurve: boolean;
+  baselineGain: number;
   isFallbackPreview: boolean;
+  // The decoded frame's size before the upload cap, and the native-resolution
+  // centre of a live float decode or of the cache entry a float16 source came
+  // from (source-sample.ts); null for anything else.
+  fullWidth: number;
+  fullHeight: number;
+  sample: StoredSample | null;
   fill: { data: Uint8ClampedArray; w: number; h: number } | null;
   // The output-size cap this source was uploaded with. Restored on bind so a
   // cache-hit render doesn't inherit a stale cap from the previously-active
@@ -315,9 +337,14 @@ function capDrawableToEdge(
   return { source: c, width: w, height: h };
 }
 
-/** Bind one value to a uniform by its declared GLSL type. mat3/mat4/sampler2D
- *  are not driven by the scalar param bag (samplers are bound by the prepass
- *  framework), so they're skipped here. */
+// The bindings of a transform that declares none: one list, so the split
+// tokens, which compare the list by reference, see no change between frames.
+const NO_TRANSFORM_BINDINGS: readonly ContributedBinding[] = [];
+
+/** Bind one value to a uniform by its declared GLSL type. mat3, mat4 and
+ *  sampler2D are skipped: the param bag doesn't drive them for a stage
+ *  (samplers are bound by the prepass framework), and render() binds a
+ *  transform's derived mat3 itself. */
 function bindUniformByType(
   gl: WebGL2RenderingContext,
   loc: WebGLUniformLocation,
@@ -440,12 +467,20 @@ export class WebGLRenderer {
   private redirect: Redirect | null = null;
   // Output sharpening's passes (export-draw.ts), built by the first sharpened export.
   private sharpenPrograms: SharpenPrograms | null = null;
+  // The box filter's passes (downsample.ts), built by the first float capture
+  // that is capped or converted.
+  private downsamplePrograms: DownsamplePrograms | null = null;
   private uniforms: Record<string, WebGLUniformLocation | null> = {};
   // Extension-contributed stage uniforms (namespaced) and their live values.
   // Bindings are rebuilt whenever the stage set changes; values arrive via
   // setContributedParams (the develop store's generic param bag).
   private contributedBindings: ContributedBinding[] = [];
   private contributedParams: Record<string, unknown> = {};
+  // The live transform's bindings (ResolvedPipeline.bindings), taken from the
+  // pipeline on every syncPipeline: a re-registration can change a default
+  // without changing the program. A transform that fell back to the built-in
+  // program has no locations for them, so render() skips them.
+  private transformBindings: readonly ContributedBinding[] = [];
   // Mask copies of maskable stages (mask-stage-instances.ts) the frame's masks
   // call for, and the bag the stages read with the copies' values added. Both
   // are memoized on what they're made from: the split tokens compare bags by
@@ -486,6 +521,7 @@ export class WebGLRenderer {
   // frame (active, float targets, not failed). Drives uDenoiseReady so the
   // inline swap of `lin` never applies a raw fallback texture.
   private denoiseReady = false;
+  private warnedDenoiseSkipped = false;
   // Extension stage textures: namespaced sampler bindings (rebuilt with the stage
   // set), the latest pixel data per qualified key, and the GPU textures we've
   // uploaded (cached by version so an unchanged stock isn't re-uploaded).
@@ -496,8 +532,11 @@ export class WebGLRenderer {
   // Multi-pass prepass framework: ping-pong float targets, per-stage result
   // textures, and cached pass programs (keyed by stageSig|stageId|passIdx).
   private prepassStages: PrepassStage[] = [];
-  // True when a contributed noise-reduction stage is active → skip built-in NR.
-  private hasContribNR = false;
+  // Whether the core NR block steps aside (uSkipCoreNR) for a stage that
+  // replaces it, and whether it runs in place of a denoiser that can't, both
+  // decided with the program in syncPipeline.
+  private skipCoreNR = false;
+  private coreNRStandsIn = false;
   private ppTex: [WebGLTexture | null, WebGLTexture | null] = [null, null];
   private ppFbo: [WebGLFramebuffer | null, WebGLFramebuffer | null] = [null, null];
   private ppW = 0;
@@ -543,6 +582,22 @@ export class WebGLRenderer {
   private hasImage = false;
   private imageWidth = 0;
   private imageHeight = 0;
+  // The decoded source's size before the upload cap: a RAW's frame as decoded,
+  // a bitmap's own size, a cached preview's decoded frame size (its own size
+  // for an entry stored without one). Passes read it as uSourceSize to scale a
+  // radius given in source pixels to their texels.
+  private sourceFullWidth = 0;
+  private sourceFullHeight = 0;
+  // The centre of a live float decode at native resolution, or the sample
+  // stored with a cached preview (3.1.0 and later); null for a bitmap, the
+  // camera preview, an older cache entry, and any source on a renderer that
+  // keeps none (source-sample.ts).
+  private sourceSample: StoredSample | null = null;
+  /** Keep the native-resolution centre of each live float decode, and the sample
+   *  a cached preview was stored with, for readSourceSample (source-sample.ts).
+   *  Off by default: the thumb and export renderers never answer samples, and
+   *  the cut of a live decode costs a 16 MB pass. */
+  keepSourceSample = false;
   private maxEdge = MAX_EDGE;
   // Output color space. Live develop/thumbnails stay sRGB (a no-op in the
   // shader); export sets a wider space so the encode + ICC match.
@@ -558,6 +613,9 @@ export class WebGLRenderer {
   private linear = false;
   private isFallbackPreview = false;
   private applyBaseCurve = false;
+  // The source camera maker's exposure offset as a gain, which version 2 and
+  // later apply with the refit baseline (uBaselineGain); 1 for anything else.
+  private baselineGain = 1;
   // EXT_texture_norm16: lets the heal pass's developed target be a normalized,
   // GPU-mipmappable RGBA16 texture instead of RGBA8. 0 / false when the GPU
   // lacks it (or can't mipmap it) — the target then stays RGBA8.
@@ -802,7 +860,7 @@ export class WebGLRenderer {
   }
 
   // Program + uniform locations for a pipeline + stage set + process version (+ a
-  // probe's exit), cached by combined signature. A bad custom transform falls back
+  // probe's or scene measurement's exit), cached by combined signature. A bad custom transform falls back
   // to the built-in entry — cached under the failing sig too, so it isn't recompiled
   // (and re-logged) every frame. A build that throws is remembered under its key
   // and rethrown as it was, without compiling again, until a signature or the
@@ -841,11 +899,11 @@ export class WebGLRenderer {
     try {
       const program = this.createProgram(
         VERTEX_SHADER,
-        buildFragmentShader(p.glsl, built.injection, variant, exit),
+        buildFragmentShader(p.glsl, built.injection, variant, exit, p.uniformDecls),
       );
       return {
         program,
-        uniforms: this.cacheUniformsFor(program, built),
+        uniforms: this.cacheUniformsFor(program, built, p.bindings ?? []),
         skipBase: p.skipBaseCurve,
         skipShoulder: p.skipToneShoulder,
       };
@@ -945,6 +1003,7 @@ export class WebGLRenderer {
   private cacheUniformsFor(
     program: WebGLProgram,
     built: BuiltStageInjection,
+    transformBindings: readonly ContributedBinding[] = [],
   ): Record<string, WebGLUniformLocation | null> {
     const gl = this.gl;
     const u: Record<string, WebGLUniformLocation | null> = {};
@@ -968,6 +1027,7 @@ export class WebGLRenderer {
       "uLinear",
       "uIsFallbackPreview",
       "uApplyBaseCurve",
+      "uBaselineGain",
       "uApplyToneShoulder",
       "uRawHistogram",
       "uShowClipping",
@@ -1094,6 +1154,11 @@ export class WebGLRenderer {
     for (const b of built.bindings) {
       u[b.qualifiedKey] = gl.getUniformLocation(program, b.glslName);
     }
+    // The display transform's params or derived uniforms, keyed by the bag key
+    // each binds from.
+    for (const b of transformBindings) {
+      u[b.qualifiedKey] = gl.getUniformLocation(program, b.glslName);
+    }
     for (const ms of built.maskSlots) u[ms.glslName] = gl.getUniformLocation(program, ms.glslName);
     // Prepass results: a sampler per stage that has one, a layer uniform per
     // stage reading the shared array, and the array itself.
@@ -1164,8 +1229,8 @@ export class WebGLRenderer {
   setImage(
     image:
       | ImageBitmap
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "float16"; data: Uint16Array; width: number; height: number },
+      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+      | Float16Source,
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
     // True when an 8-bit bitmap is actually a linear-encoded RAW source (the
@@ -1218,6 +1283,8 @@ export class WebGLRenderer {
       const fimg = capFloatToEdge(src0, image.width, image.height, cap);
       this.imageWidth = fimg.width;
       this.imageHeight = fimg.height;
+      this.sourceFullWidth = image.kind === "float16" ? image.fullWidth ?? image.width : image.width;
+      this.sourceFullHeight = image.kind === "float16" ? image.fullHeight ?? image.height : image.height;
       this.lastUploadBpp = 8; // RGBA16F
       // Texture now holds true linear scene values, so the shader must NOT sRGB-decode.
       this.linear = true;
@@ -1227,6 +1294,17 @@ export class WebGLRenderer {
       // Real full-res RAW decode (not the pseudo-linear JPEG fallback) renders
       // scene-linear and flat; add the default tone curve to match other views.
       this.applyBaseCurve = !this.isFallbackPreview;
+      this.baselineGain = 2 ** (image.baselineExposure ?? 0);
+      // The sample is the sensor's own pixels: cut here from a live decode, or
+      // kept in the cache entry beside the preview (3.1.0 and later; an older
+      // entry has none). The camera preview is a JPEG and has none either. Only
+      // a renderer asked to keep it pays for it.
+      this.sourceSample =
+        !this.keepSourceSample || this.isFallbackPreview
+          ? null
+          : image.kind === "float16"
+            ? image.sample ?? null
+            : this.cutSampleOrSkip(src0, image.width, image.height);
       const f0 = fimg.data;
       gl.texImage2D(
         gl.TEXTURE_2D, 0, gl.RGBA16F, fimg.width, fimg.height, 0,
@@ -1253,12 +1331,16 @@ export class WebGLRenderer {
       const capped = capDrawableToEdge(image, image.width, image.height, cap);
       this.imageWidth = capped.width;
       this.imageHeight = capped.height;
+      this.sourceFullWidth = image.width;
+      this.sourceFullHeight = image.height;
+      this.sourceSample = null;
       this.lastUploadBpp = 4; // RGBA8
       this.linear = false;
       this.isFallbackPreview = isFallbackPreview;
       // Camera-rendered bitmaps already carry a tone curve; the cached develop
       // preview is linear-encoded RAW and needs the base curve added.
       this.applyBaseCurve = baseCurveForBitmap;
+      this.baselineGain = 1;
       // Orientation is handled by the vertex shader (V flip). Do NOT use
       // UNPACK_FLIP_Y_WEBGL: it is unreliable for ImageBitmap sources.
       gl.texImage2D(
@@ -1298,8 +1380,8 @@ export class WebGLRenderer {
     key: string,
     image:
       | ImageBitmap
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "float16"; data: Uint16Array; width: number; height: number },
+      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+      | Float16Source,
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
     baseCurveForBitmap = false,
@@ -1322,10 +1404,15 @@ export class WebGLRenderer {
       height: this.imageHeight,
       linear: this.linear,
       applyBaseCurve: this.applyBaseCurve,
+      baselineGain: this.baselineGain,
       isFallbackPreview: this.isFallbackPreview,
+      fullWidth: this.sourceFullWidth,
+      fullHeight: this.sourceFullHeight,
+      sample: this.sourceSample,
       fill: this.fillSrc ? { data: this.fillSrc, w: this.fillW, h: this.fillH } : null,
       maxEdge: this.maxEdge, // setImage just set this from `maxEdge`
-      bytes: this.estimateSourceBytes(this.imageWidth, this.imageHeight),
+      // The sample sits in memory beside the texture (up to 8 MB), so the budget counts it.
+      bytes: this.estimateSourceBytes(this.imageWidth, this.imageHeight) + (this.sourceSample?.data.byteLength ?? 0),
       lastUsed: ++this.useTick,
     };
     this.sourceCache.set(key, entry);
@@ -1358,7 +1445,11 @@ export class WebGLRenderer {
     this.maxEdge = maxEdge ?? e.maxEdge;
     this.linear = e.linear;
     this.applyBaseCurve = e.applyBaseCurve;
+    this.baselineGain = e.baselineGain;
     this.isFallbackPreview = e.isFallbackPreview;
+    this.sourceFullWidth = e.fullWidth;
+    this.sourceFullHeight = e.fullHeight;
+    this.sourceSample = e.sample;
     // Restore the heal source (the downscaled 8-bit copy) for this image; the
     // heal-source picker singleton is shared across images, so re-point it here.
     if (e.fill) {
@@ -1509,6 +1600,35 @@ export class WebGLRenderer {
   /** The size the active source is held at, after the upload cap; 0 before any. */
   get sourceWidth(): number { return this.imageWidth; }
   get sourceHeight(): number { return this.imageHeight; }
+  /** The decoded source's size before the upload cap (see sourceFullWidth). */
+  get sourceFullSize(): { width: number; height: number } {
+    return { width: this.sourceFullWidth, height: this.sourceFullHeight };
+  }
+  /** True while a native-resolution sample is kept for the bound source, on a
+   *  renderer asked to keep one (keepSourceSample): a live float decode, or a
+   *  cached preview stored with its sample (3.1.0 and later). False for a
+   *  bitmap, the camera preview, a cache entry written before, and for any
+   *  source on a renderer that keeps none; sourceFullSize is the decoded size
+   *  either way. */
+  get sourceNative(): boolean {
+    return this.sourceSample !== null;
+  }
+  /** The sample is an optional extra: cutting it allocates about 24 MB beside
+   *  the full decode, and failing to must not fail the source it came with. */
+  private cutSampleOrSkip(data: Float32Array, width: number, height: number): StoredSample | null {
+    try {
+      return cutSourceSample(data, width, height);
+    } catch (err) {
+      console.warn("[renderer] source sample skipped:", err);
+      return null;
+    }
+  }
+  /** The native-resolution centre of the bound live decode, or the sample a
+   *  cached preview was stored with, as floats, a fresh copy each call, or null
+   *  (source-sample.ts). */
+  readSourceSample(): SourceSample | null {
+    return this.sourceSample ? unpackSourceSample(this.sourceSample) : null;
+  }
   /** The size of a frame of the whole image, which a zoom window's frame is a part of. */
   get wholeWidth(): number { return this.wholeSize().width; }
   get wholeHeight(): number { return this.wholeSize().height; }
@@ -1813,20 +1933,26 @@ export class WebGLRenderer {
       ? shaderVariantFor(this.params.processVersion, this.newestVersion)
       : this.variant;
     let built = this.stageInjection(variant);
-    // A mask probe's frame stops where the mask components read `lin`.
-    const exit: ProgramExit | undefined = this.redirect?.probe?.point === "mask" ? "mask" : undefined;
+    // A mask probe's frame stops where the mask components read `lin`, a scene
+    // measurement where the display transform takes it.
+    const exit: ProgramExit | undefined =
+      this.redirect?.probe?.point === "mask" ? "mask" : this.redirect?.measure === "scene" ? "scene" : undefined;
     const unchanged =
       p.sig === this.pipelineSig &&
       built.sig === this.stageSig &&
       variant === this.variant &&
       exit === this.programExit;
+    // Taken ahead of the early return: a re-registered default changes the
+    // bindings and no signature.
+    this.transformBindings = p.bindings ?? NO_TRANSFORM_BINDINGS;
     // The stock transform and an empty stage set both sign as "", and the variant
     // starts at version 2, so a fresh renderer can already match its first frame:
     // equal signatures only mean "built" once a program exists.
     if (this.program && unchanged) return;
-    // The renderer changes only once the program is in hand: a build that throws
-    // leaves it on the stage set it was drawing with, so switching back to that set
-    // finds its own bindings, not the failed set's.
+    // Bar the transform's bindings, which render() binds only where the program
+    // it draws with has a location, the renderer changes only once the program is
+    // in hand: a build that throws leaves it on the stage set it was drawing with,
+    // so switching back to that set finds its own bindings, not the failed set's.
     const stageIds = this.currentStageIds();
     let e: PipelineProgram;
     try {
@@ -1866,7 +1992,12 @@ export class WebGLRenderer {
     this.maskSlotBindings = built.maskSlots;
     this.stageTextureBindings = built.textureBindings;
     this.prepassStages = built.prepass;
-    this.hasContribNR = built.hasNoiseReduction;
+    // The built-in denoiser is in the set only while no extension's noise
+    // reduction supersedes it. Where it can't run, the core block, which reads
+    // only the source's mips, takes its place.
+    const denoiserInSet = built.prepass.some((s) => s.stageId === BUILTIN_DENOISE_ID);
+    this.coreNRStandsIn = denoiserInSet && !this.denoiserRunnable();
+    this.skipCoreNR = denoiserInSet ? !this.coreNRStandsIn : built.hasNoiseReduction;
     this.program = e.program;
     this.uniforms = e.uniforms;
     this.pipelineSkipBase = e.skipBase;
@@ -1928,10 +2059,9 @@ export class WebGLRenderer {
     gl.uniform1i(u.uIsFallbackPreview, this.isFallbackPreview ? 1 : 0);
     // A replacement pipeline that brings its own look (AgX, ACES, …) can drop
     // the default RAW base curve and, separately, the core tone shoulder.
-    gl.uniform1i(
-      u.uApplyBaseCurve,
-      this.applyBaseCurve && !this.pipelineSkipBase ? 1 : 0,
-    );
+    const baseCurve = this.applyBaseCurve && !this.pipelineSkipBase;
+    gl.uniform1i(u.uApplyBaseCurve, baseCurve ? 1 : 0);
+    gl.uniform1f(u.uBaselineGain, this.baselineGain);
     gl.uniform1i(u.uApplyToneShoulder, toneShoulderOn(this.variant, this.pipelineSkipShoulder) ? 1 : 0);
     gl.uniform1i(u.uShowClipping, overlays ? this.showClipping & clippingBits(this.variant) : 0);
     gl.uniform3f(u.uOutsideColor, this.outsideColor[0], this.outsideColor[1], this.outsideColor[2]);
@@ -1961,8 +2091,12 @@ export class WebGLRenderer {
     gl.uniform1f(u.uSharpenRadius, p.sharpenRadius);
     gl.uniform1f(u.uSharpenDetail, p.sharpenDetail);
     gl.uniform1f(u.uSharpenMasking, p.sharpenMasking);
-    gl.uniform1f(u.uLuminanceNR, p.luminanceNR);
-    gl.uniform1i(u.uSkipCoreNR, this.hasContribNR ? 1 : 0);
+    // The core block's luminance branch measures detail against the source's
+    // mips, which never carry the baseline tone, so behind it the branch shrinks
+    // the tone's lift instead of noise and shifts the shadows. Standing in for
+    // the denoiser there, the block reduces colour noise only.
+    gl.uniform1f(u.uLuminanceNR, this.coreNRStandsIn && baseCurve ? 0 : p.luminanceNR);
+    gl.uniform1i(u.uSkipCoreNR, this.skipCoreNR ? 1 : 0);
     gl.uniform1f(u.uLumNRDetail, p.luminanceNRDetail);
     gl.uniform1f(u.uLumNRContrast, p.luminanceNRContrast);
     gl.uniform1f(u.uLumNRShadows, p.luminanceNRShadows);
@@ -2050,6 +2184,16 @@ export class WebGLRenderer {
       if (loc == null) continue;
       const value = bag[b.qualifiedKey] ?? b.default;
       bindUniformByType(gl, loc, b.glslType, value);
+    }
+    for (const b of this.transformBindings) {
+      const loc = u[b.qualifiedKey];
+      if (loc == null) continue;
+      const held = bag[b.qualifiedKey];
+      const value = isUniformValue(held, b.glslType) ? held : b.default;
+      // Nine numbers either way: isUniformValue took the value for mat3, and
+      // registration refuses a mat3 default it wouldn't take.
+      if (b.glslType === "mat3") gl.uniformMatrix3fv(loc, false, value as number[]);
+      else bindUniformByType(gl, loc, b.glslType, value);
     }
 
     // Extension stage textures (baked LUT atlases). Bound to units 12.. (above
@@ -2308,35 +2452,52 @@ export class WebGLRenderer {
     return { data: topDown(raw, w, h), width: w, height: h };
   }
 
-  /** The current frame as floats at the canvas's size, its long edge capped
-   *  at `captureEdge` (measureSize), RGBA, top-down, in perceptual Rec.709: at
-   *  "pre-output" the signed `c` the output stage receives, at "output" what
-   *  the output stage makes of it: sRGB as long as no export output space is
-   *  set, which holds for the worker's live and thumb renderers. A
+  /** The current frame as floats at the canvas's size, RGBA, top-down, in
+   *  `space`: converted from perceptual Rec.709 texel by texel, then averaged
+   *  down where `captureEdge` (measureSize) caps its long edge. At
+   *  "pre-output" it is the signed `c` the output stage receives, at "output"
+   *  what the output stage makes of it: sRGB as long as no export output space
+   *  is set, which holds for the worker's live and thumb renderers. At "scene"
+   *  it is the scene-linear `lin` the display transform receives. A
    *  measurement, like an export frame: without the view's overlays, the
    *  screen's space, the monitor profile or the proof. Null with no source,
-   *  without float render targets, or when the target can't be allocated or
+   *  without float render targets, or when a target can't be allocated or
    *  completed. */
-  readFloatFrame(point: CapturePoint, captureEdge = Infinity): { data: Float32Array; width: number; height: number } | null {
+  readFloatFrame(
+    point: CapturePoint,
+    captureEdge = Infinity,
+    space: StageSpace = DEFAULT_CAPTURE_SPACE,
+  ): { data: Float32Array; width: number; height: number } | null {
     if (!this.hasImage || !this.params || !this.haveColorBufferFloat) return null;
     this.syncPipeline();
     this.resize();
     const gl = this.gl;
-    // Drawn at the capped size, as an export or a thumbnail draws at its own,
-    // so the read-back and the worker's conversion shrink with it.
-    const { width: w, height: h } = measureSize(this.canvas.width, this.canvas.height, captureEdge);
+    const full = { w: this.canvas.width, h: this.canvas.height };
+    const { width: w, height: h } = measureSize(full.w, full.h, captureEdge);
     let raw: Float32Array | null;
     try {
-      // As for an export: a driver may refuse the target, or report the memory
+      // As for an export: a driver may refuse a target, or report the memory
       // only at the first draw into it, leaving that draw undefined. The queue
       // is emptied first, so only this frame's errors are read, and none is
       // left for the next reader.
       ranOutOfMemory(gl);
-      raw = this.drawFloat(w, h, { measure: point }, gl.RGBA32F);
-      if (ranOutOfMemory(gl)) raw = null;
+      if (w === full.w && h === full.h && isIdentitySpace(space, "display")) {
+        raw = this.drawFloat(w, h, { measure: point }, gl.RGBA32F);
+        if (ranOutOfMemory(gl)) raw = null;
+      } else {
+        // Converted and averaged down on the GPU from the full view's frame:
+        // the worker does no work per pixel, the read-back shrinks with the
+        // frame, and the detail tools still act at the view's scale, as a
+        // smaller view of it shows them.
+        this.downsamplePrograms ??= createDownsamplePrograms(gl, (vs, fs) => this.createProgram(vs, fs));
+        raw = drawDownsampled(gl, this.downsamplePrograms, full, { w, h }, space, (fbo) =>
+          this.drawRedirected({ fbo, ...full, measure: point }),
+        );
+      }
     } finally {
       // computeHistogram and Upright redraw with what is bound: the frame's
-      // program, encoding its output.
+      // program, encoding its output, which a scene capture's program isn't.
+      this.syncPipeline();
       gl.useProgram(this.developProgram());
       gl.uniform1i(this.uniforms.uRawHistogram, 0);
     }
@@ -2773,8 +2934,10 @@ export class WebGLRenderer {
   }
 
   // Lazily (re)allocate the two ping-pong targets. RGBA16F when float render
-  // targets are supported, else RGBA8 (denoise still works, clamps HDR). Returns
-  // false if a complete framebuffer can't be made (prepasses are then skipped).
+  // targets are supported, else RGBA8: the denoiser is then kept out
+  // (denoiserRunnable) and the core NR block takes over, while extension
+  // prepasses run clipped to [0, 1]. Returns false if a complete framebuffer
+  // can't be made (prepasses are then skipped).
   private ensurePingPong(w: number, h: number): boolean {
     const gl = this.gl;
     const internal = this.haveColorBufferFloat ? gl.RGBA16F : gl.RGBA8;
@@ -2839,7 +3002,7 @@ export class WebGLRenderer {
     const locs: Record<string, WebGLUniformLocation | null> = {};
     for (const n of [
       "uPrevPass", "uTexel", "uPassIndex", "uPassCount",
-      "uPrevRaw", "uSrcLinear", "uIsFallbackPreview", "uApplyBaseCurve",
+      "uPrevRaw", "uSrcLinear", "uIsFallbackPreview", "uApplyBaseCurve", "uSourceSize",
     ]) {
       locs[n] = gl.getUniformLocation(program, n);
     }
@@ -2849,20 +3012,28 @@ export class WebGLRenderer {
     return e;
   }
 
-  // True when the param bag holds a non-trivial value for any of this stage's
-  // keys, i.e. the stage actually does something this frame. Lets an untouched
+  // True when the stage actually does something this frame: the param bag holds
+  // a non-trivial value for any of its keys, or one of its `{ key, max }` passes
+  // resolves above 0 draws, the uniform's default included. Lets an untouched
   // denoise stage cost nothing (its inline glsl early-outs anyway). Booleans and
   // vectors count alongside numbers: a bool/vector-driven prepass used to be seen
   // as inactive (only non-zero numbers qualified), so such stages never ran.
-  // A mask copy whose mask applies nothing (hidden, 0 opacity) is idle too.
-  private prepassActive(stageId: string): boolean {
-    if (this.maskCopies().slots.get(stageId) === -1) return false;
-    const prefix = stageId + ".";
-    for (const [k, v] of Object.entries(this.frameBag())) {
+  // The draw-count test exists because the inline runs with the same defaults:
+  // a stage whose count defaults above 0 otherwise sat idle on an untouched
+  // photo and its inline read the idle fallback (the raw source) as its result.
+  // It covers `{ key, max }` counts only, so fixed counts and plain non-zero
+  // uniform defaults (Moiré's `pattern`/`edge` at 50) don't start every such
+  // stage on every photo. A mask copy whose mask applies nothing (hidden, 0
+  // opacity) is idle too.
+  private prepassActive(stage: PrepassStage): boolean {
+    if (this.maskCopies().slots.get(stage.stageId) === -1) return false;
+    const bag = this.frameBag();
+    const prefix = stage.stageId + ".";
+    for (const [k, v] of Object.entries(bag)) {
       if (!k.startsWith(prefix)) continue;
       if (paramIsActive(v)) return true;
     }
-    return false;
+    return stage.passes.some((pass) => pass.drawCount !== undefined && passDraws(pass, bag) > 0);
   }
 
   // Signature of everything a stage's prepass RESULT depends on: the source
@@ -2931,8 +3102,9 @@ export class WebGLRenderer {
       (s) =>
         haveTargets &&
         !this.failedPrepass.has(s.stageId) &&
-        this.prepassActive(s.stageId) &&
-        stageDraws(s, this.frameBag()) > 0,
+        this.prepassActive(s) &&
+        stageDraws(s, this.frameBag()) > 0 &&
+        (s.stageId !== BUILTIN_DENOISE_ID || this.denoiserRunnable()),
     );
     const held = this.putOffCopies(active, frame);
     // Layers for every active stage at once, so the array grows at most once a frame.
@@ -3161,6 +3333,8 @@ export class WebGLRenderer {
         gl.uniform1i(prog.locs.uPassCount!, draws);
         gl.uniform1i(prog.locs.uPrevRaw!, prevRaw ? 1 : 0);
         gl.uniform1i(prog.locs.uSrcLinear!, this.linear ? 1 : 0);
+        // Null where the pass doesn't name it (not declared, see stage-injection.ts); a no-op then.
+        gl.uniform2f(prog.locs.uSourceSize, this.sourceFullWidth, this.sourceFullHeight);
         gl.uniform1i(prog.locs.uIsFallbackPreview!, this.isFallbackPreview ? 1 : 0);
         gl.uniform1i(prog.locs.uApplyBaseCurve!, baseCurve);
         for (const b of pass.bindings) {
@@ -3235,6 +3409,22 @@ export class WebGLRenderer {
     gl.uniform1i(arrayLoc, unit);
   }
 
+  // The denoiser's forward pass stores VST luma, which is always above 1, so an
+  // RGBA8 ping-pong saturates it, and swapped in for `lin` that destroys the
+  // frame. Without float render targets it stays out and the core NR block
+  // runs in its place (skipCoreNR).
+  private denoiserRunnable(): boolean {
+    if (this.haveColorBufferFloat) return true;
+    if (!this.warnedDenoiseSkipped) {
+      this.warnedDenoiseSkipped = true;
+      console.warn(
+        "[render] The denoiser needs float render targets; this GPU has none, so the simpler " +
+          "built-in noise reduction is used instead.",
+      );
+    }
+    return false;
+  }
+
   // A split stores signed, unbounded values; an RGBA8 target would clip
   // exactly what reading the current image is for.
   private splitDrawable(stageId: string): boolean {
@@ -3258,13 +3448,14 @@ export class WebGLRenderer {
       params,
       bag: this.frameBag(),
       textureVersions,
+      transformBindings: this.transformBindings,
       context: [
         this.pipelineSig,
         variantKey(this.variant),
         this.hslRange,
         this.hslSmooth,
         this.asShotTemperature,
-        this.hasContribNR,
+        this.skipCoreNR,
       ].join("|"),
     });
   }
@@ -3451,6 +3642,8 @@ export class WebGLRenderer {
     this.passPrograms.clear();
     if (this.sharpenPrograms) deleteSharpenPrograms(gl, this.sharpenPrograms);
     this.sharpenPrograms = null;
+    if (this.downsamplePrograms) deleteDownsamplePrograms(gl, this.downsamplePrograms);
+    this.downsamplePrograms = null;
     // Fallback entries can share a program under several sigs — dedupe.
     // The active program is always one of the cache's entries, so the cache covers it.
     const programs = new Set<WebGLProgram>();

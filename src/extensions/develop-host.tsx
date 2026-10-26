@@ -14,6 +14,7 @@ import { createContext, useContext } from "react";
 import type { DevelopParams } from "@/catalog/types";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { FloatCaptureOptions, FloatFrame, LiveFloatCaptureOptions } from "@/rendering/float-frame";
+import type { SourceSample } from "@/rendering/source-sample";
 import { renderPhotoFloatFrame, renderPhotoFrame } from "@/state/headless-frame";
 
 export interface OverlayRect {
@@ -92,6 +93,13 @@ export function captureDevelopFloatFrame(
   options?: LiveFloatCaptureOptions,
 ): Promise<FloatFrame | null> {
   return getRenderBridge().captureFloat(params, options);
+}
+
+/** The native-resolution centre of the live photo's decode (source-sample.ts),
+ *  or null: no photo, between photos, a bitmap, the camera preview or a stored
+ *  preview standing in for the photo. */
+export function readDevelopSourceSample(): Promise<SourceSample | null> {
+  return getRenderBridge().readSourceSample();
 }
 
 /** Render an arbitrary catalog photo by id through the full develop pipeline with

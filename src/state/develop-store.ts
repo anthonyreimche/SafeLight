@@ -63,8 +63,13 @@ export interface DevelopState extends CropSlice, ViewSlice, MaskSlice {
    *  (already upright, after the upload cap), published by every frame, the camera
    *  preview's included. Panels derive imageAspect from this, not photo.width/height,
    *  so aspect-locked crops / Upright match the pixels on screen when a decode path
-   *  transposes stored metadata. {0,0} until a frame of the photo is drawn. */
-  sourceSize: { width: number; height: number };
+   *  transposes stored metadata. `fullWidth`/`fullHeight` are the decoded frame's
+   *  size before the cap, and `native` is true while a native-resolution sample is
+   *  held for the source (the one api.develop.readSourceSample answers): the live
+   *  float decode, or a cached preview stored with one (3.1.0 and later); false
+   *  for the camera preview, a stored preview, bitmaps and cache entries written
+   *  before. {0,0} and false until a frame of the photo is drawn. */
+  sourceSize: { width: number; height: number; fullWidth: number; fullHeight: number; native: boolean };
 
   // Crop tool UI lives in CropSlice (develop-slices/crop-slice.ts); canvas-view
   // overlays and picker modes live in ViewSlice (develop-slices/view-slice.ts).
@@ -73,7 +78,7 @@ export interface DevelopState extends CropSlice, ViewSlice, MaskSlice {
   // (develop-slices/mask-slice.ts).
 
   setHistogram: (histogram: HistogramData | null) => void;
-  setSourceSize: (width: number, height: number) => void;
+  setSourceSize: (width: number, height: number, full?: { width: number; height: number; native: boolean }) => void;
   loadEdit: (photoId: string, asShotTemperature?: number) => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
     key: K,
@@ -179,7 +184,7 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
   historyIndex: -1,
   histogram: null,
   asShotTemperature: NEUTRAL_TEMPERATURE_K,
-  sourceSize: { width: 0, height: 0 },
+  sourceSize: { width: 0, height: 0, fullWidth: 0, fullHeight: 0, native: false },
 
   ...createCropSlice(set, get, store),
   ...createViewSlice(set, get, store),
@@ -188,12 +193,24 @@ export const useDevelopStore = create<DevelopState>()((set, get, store) => ({
 
   setHistogram: (histogram) => set({ histogram }),
 
-  setSourceSize: (width, height) =>
-    set((s) =>
-      s.sourceSize.width === width && s.sourceSize.height === height
-        ? s
-        : { sourceSize: { width, height } },
-    ),
+  setSourceSize: (width, height, full) =>
+    set((s) => {
+      const next = {
+        width,
+        height,
+        fullWidth: full?.width ?? width,
+        fullHeight: full?.height ?? height,
+        native: full?.native ?? false,
+      };
+      const cur = s.sourceSize;
+      const same =
+        cur.width === next.width &&
+        cur.height === next.height &&
+        cur.fullWidth === next.fullWidth &&
+        cur.fullHeight === next.fullHeight &&
+        cur.native === next.native;
+      return same ? s : { sourceSize: next };
+    }),
 
   async loadEdit(photoId: string, asShotTemperature?: number) {
     const asShot = asShotTemperature ?? NEUTRAL_TEMPERATURE_K;

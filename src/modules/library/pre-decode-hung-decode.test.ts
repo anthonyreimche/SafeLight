@@ -56,6 +56,7 @@ vi.mock("./import-thumb-pool", () => ({ processThumb: async () => ({ ok: false }
 
 vi.mock("@/raw/raw-cache", () => ({
   cachedKeys: async () => new Set<string>(),
+  cacheListing: async () => ({ done: new Set<string>(), stale: new Set<string>() }),
   deleteCachedPreview: async () => {},
   rawCacheKey: (rel: string, size: number, rot: number) => `${rel}:${size}:${rot}`,
   rawCacheGeneration: () => 0,

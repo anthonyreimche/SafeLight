@@ -19,6 +19,7 @@ import { currentDisplaySpace } from "@/rendering/display-space";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
+import type { Float16Source } from "@/rendering/source-sample";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import type { DecodedImage, Fallback } from "@/catalog/load-image";
 import { setHealSourceImage } from "@/rendering/heal-source";
@@ -262,6 +263,9 @@ interface RendererStatus {
   /** Whether the worker's renderer exists (it can fail to create a WebGL2
    *  context after a GPU reset; the bridge retries). */
   availability: RendererAvailability;
+  /** Why edits can't be drawn: the last init failure while availability is
+   *  "retrying" or "failed", or the missing canvas when not supported. */
+  availabilityReason: string | null;
   width: number;
   height: number;
   // The window of the image the canvas holds, committed with its pixels and size;
@@ -333,6 +337,7 @@ export function useDevelopRenderer(
   const [tier, setTier] = useState<DevelopTier | null>(null);
   const [supported, setSupported] = useState(true);
   const [availability, setAvailability] = useState<RendererAvailability>("starting");
+  const [availabilityReason, setAvailabilityReason] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // The canvas's box size and what of the image it holds. Change in the same commit as
   // the pixels (see present).
@@ -564,6 +569,7 @@ export function useDevelopRenderer(
     const ctx = cv.getContext("2d", { colorSpace: currentDisplaySpace() });
     if (!ctx) {
       setSupported(false);
+      setAvailabilityReason("this window has no 2D canvas to draw on.");
       return;
     }
     ctxRef.current = ctx;
@@ -622,7 +628,7 @@ export function useDevelopRenderer(
       // The renderer's own size of the source, which the drawn transform's aspect
       // comes from, so the crop overlay agrees with the pixels on screen. A source
       // bound from the GPU cache is reported by its frames alone.
-      const { sourceWidth, sourceHeight } = frame;
+      const { sourceWidth, sourceHeight, sourceFullWidth, sourceFullHeight, sourceNative } = frame;
       if (sourceWidth > 0 && sourceHeight > 0) {
         setSourceSize((s) =>
           s.width === sourceWidth && s.height === sourceHeight
@@ -630,7 +636,9 @@ export function useDevelopRenderer(
             : { width: sourceWidth, height: sourceHeight },
         );
         // Panels (Crop/Transform) derive imageAspect from the store, not this hook.
-        useDevelopStore.getState().setSourceSize(sourceWidth, sourceHeight);
+        useDevelopStore
+          .getState()
+          .setSourceSize(sourceWidth, sourceHeight, { width: sourceFullWidth, height: sourceFullHeight, native: sourceNative });
       }
       if (frame.histogram) {
         setHistogramRef(frame.histogram);
@@ -662,10 +670,13 @@ export function useDevelopRenderer(
     bridge.setOnError((msg) => {
       console.error("[render-worker]", msg);
     });
-    bridge.setOnSourceError((gen) => {
-      if (gen === sentGenRef.current) setCantShow("Can't show this photo.");
+    bridge.setOnSourceError((gen, message) => {
+      if (gen === sentGenRef.current) setCantShow(`Can't show this photo: ${message}`);
     });
-    bridge.setOnAvailability(setAvailability);
+    bridge.setOnAvailability((next, detail) => {
+      setAvailability(next);
+      setAvailabilityReason(detail ?? null);
+    });
 
     // The worker owns the decoded source; mirror its downscaled heal-source buffer
     // into this (main-thread) module instance so the overlay's findHealSource /
@@ -782,7 +793,7 @@ export function useDevelopRenderer(
       image:
         | ImageBitmap
         | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | { kind: "float16"; data: Uint16Array; width: number; height: number },
+        | Float16Source,
       isFallback = false,
       cachedRaw = false,
       settled?: { key: string; preview: boolean },
@@ -848,7 +859,9 @@ export function useDevelopRenderer(
         const nk = photoSourceKey(np);
         if (await bridge.hasSource("main", nk)) continue;
         if (cancelled) return;
-        const image = await loadPhotoImage(np, { background: true, signal: abort.signal });
+        // The develop renderer keeps the native sample (render-worker.ts), and a
+        // neighbour bound later restores what was uploaded, so ask for it now.
+        const image = await loadPhotoImage(np, { background: true, signal: abort.signal, sample: true });
         if (cancelled) {
           if (image?.kind === "bitmap") image.bitmap.close();
           return;
@@ -909,6 +922,8 @@ export function useDevelopRenderer(
           }
         },
         signal: abort.signal,
+        // For api.develop.readSourceSample on a photo served from the RAW cache.
+        sample: true,
       });
       if (cancelled) {
         if (image?.kind === "bitmap") image.bitmap.close();
@@ -1096,6 +1111,7 @@ export function useDevelopRenderer(
   return {
     supported,
     availability,
+    availabilityReason,
     width: size.width,
     height: size.height,
     bufferWindow: size.window,

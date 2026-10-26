@@ -91,6 +91,37 @@ describe("Highlights and Shadows in the version 2 program", () => {
   });
 });
 
+describe("the camera baseline", () => {
+  const REFIT = "if (uApplyBaseCurve) lin = slBaselineRefit(lin) * uBaselineGain;";
+  const main = (src: string) => src.slice(src.indexOf("void main()"));
+
+  // The decode stages' passes share one prelude across versions, which runs
+  // the source through baselineTone alone. Refitting after them, and after clip
+  // recovery (whose 0.98 threshold assumes that curve), keeps both agreeing.
+  for (const variant of [V2_VARIANT, V3_VARIANT]) {
+    const src = buildFragmentShader(null, undefined, variant);
+
+    it(`is refit after channel reconstruction and before white balance on version ${variant.version}`, () => {
+      const body = main(src);
+      expect(body.split(REFIT)).toHaveLength(2);
+      expect(body).toContain("if (uApplyBaseCurve) lin = baselineTone(lin);");
+      expect(body.indexOf("lin = reconstructClipped(lin, srcUv);")).toBeLessThan(body.indexOf(REFIT));
+      expect(body.indexOf(REFIT)).toBeLessThan(body.indexOf("lin = applyWhiteBalance(lin, uTemperature"));
+    });
+
+    it(`declares the camera's gain and the refit curve on version ${variant.version}`, () => {
+      expect(src).toContain("uniform float uBaselineGain;");
+      expect(src).toContain("vec3 slBaselineRefit(vec3 x)");
+    });
+  }
+
+  it("leaves version 1 without either", () => {
+    const src = buildFragmentShader(null, undefined, V1_VARIANT);
+    expect(src).not.toContain("uBaselineGain");
+    expect(src).not.toContain("slBaselineRefit");
+  });
+});
+
 describe("buildFragmentShader", () => {
   // String.replace reads $&, $$, $' and $` in a replacement string as
   // patterns; contributed GLSL must still arrive as written.
@@ -128,5 +159,70 @@ describe("split draws", () => {
     expect(withSplits).toMatch(/if \(uSplitAt < 0\) \{\s*srcUv\.x \+= 0\.0;\s*\}/);
     const without = buildFragmentShader(null, { ...base, uniforms: "" }, V1_VARIANT);
     expect(without).not.toContain("uSplitAt");
+  });
+});
+
+describe("a transform's uniforms", () => {
+  const GLSL = "vec3 pipelineToDisplay(vec3 lin) { return u_t_gain * lin; }";
+
+  it("are declared ahead of the transform that reads them", () => {
+    const src = buildFragmentShader(GLSL, undefined, V2_VARIANT, undefined, "uniform float u_t_gain;");
+    const declared = src.indexOf("uniform float u_t_gain;");
+    expect(declared).toBeGreaterThan(-1);
+    expect(declared).toBeLessThan(src.indexOf(GLSL));
+  });
+
+  it("leave the program text alone when there are none", () => {
+    expect(buildFragmentShader(GLSL, undefined, V2_VARIANT, undefined, "")).toBe(
+      buildFragmentShader(GLSL, undefined, V2_VARIANT),
+    );
+  });
+});
+
+describe("the scene exit", () => {
+  const EXIT = "fragColor = vec4(slEncodePerceptual(lin), 1.0); return;";
+
+  it("is in a scene program only, once, ahead of the display transform", () => {
+    const src = buildFragmentShader(null, undefined, V2_VARIANT, "scene");
+    expect(src.split(EXIT)).toHaveLength(2);
+    const main = src.indexOf("void main()");
+    expect(src.indexOf(EXIT)).toBeLessThan(src.indexOf("pipelineToDisplay(lin)", main));
+    expect(buildFragmentShader(null, undefined, V2_VARIANT)).not.toContain(EXIT);
+  });
+
+  // The scene point is what the display transform receives: every scene-linear
+  // and tone-map stage has run.
+  it("comes after the scene-linear stages", () => {
+    const stages = {
+      uniforms: "",
+      helpers: "",
+      srcUv: "",
+      noiseReduction: "",
+      sceneLinear: "/*MARK*/",
+      effects: "",
+    };
+    for (const variant of [V1_VARIANT, V2_VARIANT]) {
+      const src = buildFragmentShader(null, stages, variant, "scene");
+      expect(src.indexOf("/*MARK*/")).toBeGreaterThan(-1);
+      expect(src.indexOf("/*MARK*/")).toBeLessThan(src.indexOf(EXIT));
+    }
+  });
+
+  it("lets a split draw run past it", () => {
+    const stages = {
+      uniforms: "uniform int uSplitAt;",
+      helpers: "",
+      srcUv: "",
+      noiseReduction: "",
+      sceneLinear: "",
+      effects: "",
+      splitCount: 1,
+    };
+    expect(buildFragmentShader(null, stages, V2_VARIANT, "scene")).toContain(`if (uSplitAt < 0) { ${EXIT} }`);
+  });
+
+  it("brings the encoding helpers into a version 1 scene program", () => {
+    expect(buildFragmentShader(null, undefined, V1_VARIANT, "scene")).toContain("vec3 slEncodePerceptual(");
+    expect(buildFragmentShader(null, undefined, V1_VARIANT)).not.toContain("vec3 slEncodePerceptual(");
   });
 });

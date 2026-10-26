@@ -72,6 +72,7 @@ interface SafelightAPI {
   pipelines: {
     apply(id: string): void;                                  // sets the Preferences default, followed by photos without their own pick
     effectiveId(displayTransform: string | null): string;    // the transform a photo renders with: its pick, else the default, else the built-in
+    paramKeys(id: string): string[];                          // the bag keys of a registered transform's params, "{id}.{key}"
   };
   preferences: { open(sectionId?: string): void; close(): void; toggle(): void };
   navigation:  { goTo(module: ModuleId): void };              // "library" | "develop" | a registered module id
@@ -113,7 +114,7 @@ All contributions are tagged with the calling extension's `extensionId` and swep
 | `params` | `list()` / `get(qualifiedKey)` — read-only metadata for every installed stage uniform; see [State Stores → `api.params`](stores.md#apiparams) |
 | `dock` | `togglePanel(id)` / `usePanelPlacement()` — see [UI Shell → Panels](ui-shell.md#panels-registerpanel) |
 | `themes` / `layouts` | `apply(id)` |
-| `pipelines` | `apply(id)` — sets the Preferences default / `effectiveId(displayTransform)` — the transform a photo renders with |
+| `pipelines` | `apply(id)` — sets the Preferences default / `effectiveId(displayTransform)` — the transform a photo renders with / `paramKeys(id)` — the bag keys of a transform's `params` |
 | `preferences` | `open(sectionId?)` / `close()` / `toggle()` — `sectionId` deep-links to a core section or an extension id |
 | `navigation` | `goTo(id)` (`ModuleId` = `"library" \| "develop"` or a registered id) |
 | `keybindings` | `getBinding(actionId)` — current combo for any action (built-in or extension), `""` when unbound / `list()` — every built-in action with its live combo, label and category |

@@ -54,6 +54,15 @@ function storeOf(rows: Map<string, Row>, tx: Transaction, commit: () => void) {
         tx,
         commit,
       ),
+    getAll: (r?: KeyRange) =>
+      request(
+        () =>
+          [...rows.entries()]
+            .filter(([k]) => !r || (k >= r.lower && k <= r.upper))
+            .map(([, row]) => row),
+        tx,
+        commit,
+      ),
   };
 }
 

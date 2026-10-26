@@ -103,6 +103,7 @@ export function MetadataPanel() {
     ["Exp. mode", e.exposureMode],
     ["Exp. comp.", formatExposureComp(e.exposureCompensation)],
     ["Raw exp. bias", formatExposureComp(e.rawExposureBias)],
+    ["Camera match", formatExposureComp(e.baselineExposure ?? undefined)],
     ["Metering", e.meteringMode],
     ["White balance", e.whiteBalance],
     ["Flash", e.flash],

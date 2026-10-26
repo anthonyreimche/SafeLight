@@ -53,6 +53,7 @@ const WHEN: Record<ClipWhen, string> = {
   "per-mask": "inside each mask that uses it, blended by coverage",
   "fallback-preview": "fallback preview only",
   "non-srgb-output": "only when the output isn't sRGB",
+  "no-float-targets": "only without float render targets or mipmaps",
 };
 
 /** Each row under the one it belongs to. A stage's clips are found by its id,
@@ -77,7 +78,7 @@ function itemsOf(rows: readonly PipelineRow[]): Item[] {
   }
   const output = items.find((i) => i.head.kind === "output");
   for (const clamp of owned) {
-    const owner = clamp.reason === "legacy-display-stage" ? stages.get(clamp.stageId) : output;
+    const owner = "stageId" in clamp ? stages.get(clamp.stageId) : output;
     if (owner) owner.under.push(clamp);
     else items.push({ head: clamp, under: [] });
   }

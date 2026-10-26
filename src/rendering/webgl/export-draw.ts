@@ -49,8 +49,12 @@ export function quantise16(v: number): number {
   return v <= 0 ? 0 : v >= 1 ? 65535 : Math.round(v * 65535);
 }
 
-/** A colour target: a texture made on the scratch unit, TEXTURE7, attached to
- *  its own framebuffer. */
+/** The renderer's scratch unit: no develop frame reads it, so a pass can bind
+ *  a texture there without lending a unit and giving it back. */
+export const SCRATCH_UNIT = 7;
+
+/** A colour target: a texture made on the scratch unit, attached to its own
+ *  framebuffer. */
 export interface ColourTarget {
   tex: WebGLTexture;
   fbo: WebGLFramebuffer;
@@ -68,7 +72,7 @@ export function allocateTarget(
   h: number,
 ): ColourTarget {
   const tex = gl.createTexture();
-  gl.activeTexture(gl.TEXTURE7);
+  gl.activeTexture(gl.TEXTURE0 + SCRATCH_UNIT);
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, w, h, 0, gl.RGBA, type, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -87,7 +91,7 @@ export function allocateTarget(
 export function releaseTarget(gl: WebGL2RenderingContext, target: ColourTarget): void {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.deleteFramebuffer(target.fbo);
-  gl.activeTexture(gl.TEXTURE7);
+  gl.activeTexture(gl.TEXTURE0 + SCRATCH_UNIT);
   gl.deleteTexture(target.tex);
   gl.activeTexture(gl.TEXTURE0);
 }
@@ -96,7 +100,7 @@ export function releaseTarget(gl: WebGL2RenderingContext, target: ColourTarget):
 // than leaving the framebuffer incomplete, so the queue is emptied first to
 // read only the allocation's, and read even for an incomplete target, which
 // would otherwise leave its error for the next reader.
-function allocateChecked(
+export function allocateChecked(
   gl: WebGL2RenderingContext,
   internalFormat: number,
   type: number,
@@ -149,7 +153,8 @@ interface TargetFormat {
   read: number;
 }
 
-function targetFormat(gl: WebGL2RenderingContext, target: ExportTarget): TargetFormat | null {
+/** The formats behind an ExportTarget; null for norm16 where the context has none. */
+export function targetFormat(gl: WebGL2RenderingContext, target: ExportTarget): TargetFormat | null {
   switch (target) {
     case "norm16": {
       const internalFormat = exportNorm16Format(gl);
@@ -301,9 +306,9 @@ vec3 slGaussian(sampler2D src, ivec2 p, ivec2 dir) {
 }
 `;
 
-// Both passes read float textures texel for texel, and a sampler is lowp
-// unless declared otherwise.
-const PASS_PRELUDE = `#version 300 es
+// These passes and downsample.ts's read float textures texel for texel, and a
+// sampler is lowp unless declared otherwise.
+export const PASS_PRELUDE = `#version 300 es
 precision highp float;
 precision highp sampler2D;
 out vec4 fragColor;
@@ -340,20 +345,30 @@ export interface SharpenPrograms {
   outputUniforms: UniformLocations;
 }
 
-/** Builds the passes with `createProgram`, which must pin aPos to the
- *  location the caller's quad feeds. */
+/** Two full-frame passes' programs from their fragment sources, built with
+ *  `createProgram`, which must pin aPos to the location the caller's quad
+ *  feeds. The first is freed when the second fails to build. */
+export function createProgramPair(
+  gl: WebGL2RenderingContext,
+  createProgram: (vertex: string, fragment: string) => WebGLProgram,
+  first: string,
+  second: string,
+): [WebGLProgram, WebGLProgram] {
+  const built = createProgram(VERTEX_SHADER, first);
+  try {
+    return [built, createProgram(VERTEX_SHADER, second)];
+  } catch (err) {
+    gl.deleteProgram(built);
+    throw err;
+  }
+}
+
+/** Builds the passes with `createProgram`, as createProgramPair does. */
 export function createSharpenPrograms(
   gl: WebGL2RenderingContext,
   createProgram: (vertex: string, fragment: string) => WebGLProgram,
 ): SharpenPrograms {
-  const horizontal = createProgram(VERTEX_SHADER, HORIZONTAL_SHADER);
-  let output: WebGLProgram;
-  try {
-    output = createProgram(VERTEX_SHADER, OUTPUT_SHADER);
-  } catch (err) {
-    gl.deleteProgram(horizontal);
-    throw err;
-  }
+  const [horizontal, output] = createProgramPair(gl, createProgram, HORIZONTAL_SHADER, OUTPUT_SHADER);
   const locate = (program: WebGLProgram, names: readonly string[]): UniformLocations =>
     Object.fromEntries(names.map((name) => [name, gl.getUniformLocation(program, name)]));
   return {
@@ -384,11 +399,9 @@ function preOutputFormats(target: ExportFramebuffer | null): readonly ExportTarg
   return target?.kind === "norm16" || target?.kind === "float32" ? ["float32"] : ["float32", "float16"];
 }
 
-// The output pass reads two textures. One goes on TEXTURE7, the renderer's
-// scratch unit; the other borrows TEXTURE6 and gives back what was there,
-// since computeHistogram redraws the develop program with its units as the
-// last frame left them.
-const SCRATCH_UNIT = 7;
+// The output pass reads two textures. One goes on the scratch unit; the other
+// borrows TEXTURE6 and gives back what was there, since computeHistogram
+// redraws the develop program with its units as the last frame left them.
 const LENT_UNIT = 6;
 
 /** A w×h frame sharpened into `target` (null for the canvas). `drawC` draws

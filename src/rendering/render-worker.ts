@@ -13,7 +13,8 @@ import type { ProcessingStageContribution, StageSpace, StageTextureData } from "
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { BUILTIN_RESOLVED, withPipeline } from "@/extensions/pipelines";
 import { WebGLRenderer, type ProbePoint } from "./webgl/renderer";
-import { toFloatFrame, type CapturePoint, type FloatFrame } from "./float-frame";
+import type { CapturePoint, FloatFrame } from "./float-frame";
+import type { Float16Source, SourceSample } from "./source-sample";
 import { LIVE_MASK_COPY_PREPASSES } from "./webgl/mask-stage-instances";
 import type { HistogramData } from "./histogram";
 import type { MonitorTransform } from "./display-profile";
@@ -29,8 +30,8 @@ export type WorkerRequest =
   | {
       cmd: "setImage";
       image:
-        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | { kind: "float16"; data: Uint16Array; width: number; height: number }
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+        | Float16Source
         | { kind: "bitmap"; bitmap: ImageBitmap };
       maxEdge?: number;
       isFallbackPreview?: boolean;
@@ -69,9 +70,9 @@ export type WorkerRequest =
        *  auxiliary render: a gain map, a mask). */
       bagPatch?: Record<string, unknown>;
     }
-  // A capture as floats, for measuring (see render-bridge.captureFloat): drawn
-  // at most `maxEdge` px on its long edge, read at `point` and converted into
-  // `space` here, before it is transferred.
+  // A capture as floats, for measuring (see render-bridge.captureFloat): read
+  // at most `maxEdge` px on its long edge, at `point` and in `space`, which the
+  // renderer converts it into on the GPU.
   | {
       cmd: "captureFloat";
       reqId: number;
@@ -82,6 +83,10 @@ export type WorkerRequest =
       maxEdge: number;
       bagPatch?: Record<string, unknown>;
     }
+  // The native-resolution centre of the bound source, a live decode's or the one
+  // its cache entry kept (source-sample.ts), for an extension measuring the
+  // sensor's own pixels. See render-bridge.readSourceSample.
+  | { cmd: "readSourceSample"; reqId: number }
   // The linear colour around (u, v) of the live frame, x right and y down in
   // [0, 1] across its buffer, drawn from what the worker holds when it arrives.
   // See WebGLRenderer.probe.
@@ -95,8 +100,8 @@ export type WorkerRequest =
       cmd: "renderThumbnail";
       requestId: string;
       image:
-        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | { kind: "float16"; data: Uint16Array; width: number; height: number }
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+        | Float16Source
         | { kind: "bitmap"; bitmap: ImageBitmap };
       params: DevelopParams;
       asShotTemperature: number;
@@ -135,8 +140,8 @@ export type WorkerRequest =
       target: "main" | "thumb";
       key: string;
       image:
-        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | { kind: "float16"; data: Uint16Array; width: number; height: number }
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+        | Float16Source
         | { kind: "bitmap"; bitmap: ImageBitmap };
       maxEdge?: number;
       isFallbackPreview?: boolean;
@@ -182,6 +187,12 @@ export type WorkerResponse =
       sourceWidth: number;
       sourceHeight: number;
       sourceGen: number;
+      // The decoded frame's size before the upload cap, and whether
+      // readSourceSample has a sample of the source: a live float decode, or a
+      // cached preview stored with one. Absent on a frame from an older worker build.
+      sourceFullWidth?: number;
+      sourceFullHeight?: number;
+      sourceNative?: boolean;
       // The window of the image it was drawn for (setViewport); null or absent, the
       // whole image.
       roi?: { x: number; y: number; w: number; h: number } | null;
@@ -223,6 +234,10 @@ export type WorkerResponse =
   | { type: "captured"; reqId: number; bitmap: ImageBitmap }
   // null: no renderer, no source, no float render targets, or the draw threw.
   | { type: "capturedFloat"; reqId: number; frame: FloatFrame | null }
+  // null: no renderer, no source yet for the photo the view moved to, or a
+  // source with no sample (a bitmap, the camera preview, a cache entry written
+  // before the sample was kept).
+  | { type: "sourceSample"; reqId: number; sample: SourceSample | null }
   // null: no renderer, no source, no float render targets, or the probe threw.
   | { type: "probed"; reqId: number; rgb: [number, number, number] | null }
   | { type: "hasSource"; reqId: number; has: boolean }
@@ -329,11 +344,30 @@ function showScreen(target: WebGLRenderer, shown: boolean): void {
   target.setProofSpace(shown ? latestProof : null);
 }
 
-// Runs `draw` with a capture's params, its photo's pipeline and its bag patch
-// merged over the live bag, on the screen when `shown`; extensions measure
-// captures, so they stay sRGB and unproofed unless one asks for the frame as
-// it is shown. Whatever happens, the live view gets back what its next render
-// binds, and liveStateStale has a readback before that render draw it first.
+// A capture's params drawn over the region the live view shows, which is what a
+// capture is aligned to: crop mode widens the view past the crop to the whole image,
+// and the params an extension hands over carry the crop itself.
+function inLiveRegion(params: DevelopParams): DevelopParams {
+  const view = lastParams?.crop;
+  const own = params.crop;
+  if (
+    !view ||
+    (own &&
+      own.x === view.x &&
+      own.y === view.y &&
+      own.width === view.width &&
+      own.height === view.height)
+  ) {
+    return params;
+  }
+  return { ...params, crop: view };
+}
+
+// Runs `draw` with a capture's params (in the live view's region), its photo's
+// pipeline and its bag patch merged over the live bag, on the screen when `shown`;
+// extensions measure captures, so they stay sRGB and unproofed unless one asks for
+// the frame as it is shown. Whatever happens, the live view gets back what its next
+// render binds, and liveStateStale has a readback before that render draw it first.
 function drawCapture<T>(
   live: WebGLRenderer,
   capture: { params: DevelopParams; pipeline: ResolvedPipeline; bagPatch?: Record<string, unknown> },
@@ -345,7 +379,7 @@ function drawCapture<T>(
   try {
     if (patched) live.setContributedParams({ ...latestParamBag, ...capture.bagPatch });
     return withPipeline(live, capture.pipeline, latestPipeline, () => {
-      live.setParams(capture.params);
+      live.setParams(inLiveRegion(capture.params));
       return draw();
     });
   } finally {
@@ -474,7 +508,7 @@ function finishThumbRender(tr: WebGLRenderer, msg: ThumbRenderRequest) {
   // renders with the wrong photo's uniforms.
   try {
     read = withPipeline(tr, msg.pipeline, latestPipeline, () => {
-      if (float) return tr.readFloatFrame(float.point);
+      if (float) return tr.readFloatFrame(float.point, Infinity, float.space);
       tr.render();
       return null;
     });
@@ -482,8 +516,7 @@ function finishThumbRender(tr: WebGLRenderer, msg: ThumbRenderRequest) {
     if (hadBag) tr.setContributedParams(latestParamBag);
   }
   if (float) {
-    // Converted here, before it is transferred, as a live float capture is.
-    const frame = read && toFloatFrame(read.data, read.width, read.height, float.space, float.point);
+    const frame: FloatFrame | null = read && { ...read, space: float.space, point: float.point };
     respond({ type: "thumbnailFloat", requestId: msg.requestId, frame }, frame ? [frame.data.buffer] : undefined);
     return;
   }
@@ -530,6 +563,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
             pipeline: latestPipeline,
             stages: latestStages,
           });
+          // Only the develop renderer answers readSourceSample; the thumb renderer
+          // would cut a sample from every thumbnail for nothing.
+          created.keepSourceSample = true;
           warmUp(created, lastParams?.processVersion ?? CURRENT_PROCESS_VERSION);
           renderer = created;
         } catch (err) {
@@ -653,13 +689,28 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         if (renderer && !awaitingSource) {
           const live = renderer;
           try {
-            const read = drawCapture(live, msg, false, () => live.readFloatFrame(msg.point, msg.maxEdge));
-            if (read) frame = toFloatFrame(read.data, read.width, read.height, msg.space, msg.point);
+            const read = drawCapture(live, msg, false, () => live.readFloatFrame(msg.point, msg.maxEdge, msg.space));
+            if (read) frame = { ...read, space: msg.space, point: msg.point };
           } catch (err) {
             console.error("[render-worker] float capture failed:", err);
           }
         }
         respond({ type: "capturedFloat", reqId: msg.reqId, frame }, frame ? [frame.data.buffer] : undefined);
+        break;
+      }
+
+      case "readSourceSample": {
+        // Answered by reqId whatever happens, as a capture is. Between photos the
+        // bound source is the last photo's, so nothing is handed over.
+        let sample: SourceSample | null = null;
+        if (renderer && !awaitingSource) {
+          try {
+            sample = renderer.readSourceSample();
+          } catch (err) {
+            console.error("[render-worker] source sample failed:", err);
+          }
+        }
+        respond({ type: "sourceSample", reqId: msg.reqId, sample }, sample ? [sample.data.buffer] : undefined);
         break;
       }
 
@@ -704,6 +755,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
           renderer.render();
           liveStateStale = false;
           bitmap = canvas.transferToImageBitmap();
+          const sourceFull = renderer.sourceFullSize;
           const resp: WorkerResponse = {
             type: "frame",
             seq: msg.seq,
@@ -713,6 +765,9 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
             sourceWidth: renderer.sourceWidth,
             sourceHeight: renderer.sourceHeight,
             sourceGen,
+            sourceFullWidth: sourceFull.width,
+            sourceFullHeight: sourceFull.height,
+            sourceNative: renderer.sourceNative,
             roi: renderer.viewport,
             wholeWidth: renderer.wholeWidth,
             wholeHeight: renderer.wholeHeight,

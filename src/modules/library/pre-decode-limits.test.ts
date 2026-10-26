@@ -3,11 +3,11 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// What the automatic cache fill costs (about 2.3 s of decode and 36 MB of cache
-// per photo, measured 2026-10-18) is why it has limits: it leaves a big project
-// to caching as photos are opened, and gives up on a cache that refuses writes.
-// The decoder and the cache are faked; only when the pass runs and stops is
-// under test.
+// What the automatic cache fill costs (about 2.3 s of decode and 43 MB of cache
+// per photo, 36 MB of it measured 2026-10-18 before the sample was added) is
+// why it has limits: it leaves a big project to caching as photos are opened,
+// and gives up on a cache that refuses writes. The decoder and the cache are
+// faked; only when the pass runs and stops is under test.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";
@@ -19,6 +19,11 @@ const h = vi.hoisted(() => ({
   writes: 0,
   /** Keys the cache already holds. */
   present: new Set<string>(),
+  /** Keys of entries from before 3.1.0, which serve but keep neither the
+   *  decoded size nor the sample. */
+  stale: new Set<string>(),
+  /** The file name of each decode, in the order they began. */
+  order: [] as string[],
   /** Whether the cache takes the nth write (counted from 1). */
   takes: (_n: number): boolean => true,
 }));
@@ -30,8 +35,9 @@ vi.mock("@/raw/decode-pool", () => ({
 
 vi.mock("@/raw/decode", () => ({
   decodeRawToBitmap: async () => null,
-  decodeRawToFloat: async () => {
+  decodeRawToFloat: async (file: File) => {
     h.decoded++;
+    h.order.push(file.name);
     return { data: new Float32Array(4).fill(0.5), width: 1, height: 1, oriented: true };
   },
 }));
@@ -47,6 +53,7 @@ vi.mock("./raw-preview", async (importOriginal) => ({
 
 vi.mock("@/raw/raw-cache", () => ({
   cachedKeys: async () => new Set(h.present),
+  cacheListing: async () => ({ done: new Set(h.present), stale: new Set(h.stale) }),
   deleteCachedPreview: async () => {},
   hasDecodeMarker: async () => false,
   rawCacheKey: (rel: string, size: number, rot: number) => `${rel}:${size}:${rot}`,
@@ -92,6 +99,8 @@ beforeEach(() => {
   h.decoded = 0;
   h.writes = 0;
   h.present = new Set();
+  h.stale = new Set();
+  h.order = [];
   h.takes = () => true;
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -132,6 +141,40 @@ describe("preDecodeRawsForCache on a large project", () => {
     await fill(photos(1001), { force: true });
 
     expect(h.decoded).toBe(1001);
+  });
+
+  // An entry from before 3.1.0 still serves, so it must never push the pass
+  // over its limit and starve the photos that have no entry at all.
+  it("judges the limit on the photos with no entry, not on entries from an earlier version", async () => {
+    const list = photos(1500);
+    h.stale = new Set(list.slice(0, 1400).map((_, i) => keyOf(i)));
+    await fill(list);
+    expect(h.decoded).toBe(100);
+  });
+
+  it("rewrites entries from an earlier version after the photos with no entry when the whole list fits", async () => {
+    const list = photos(30);
+    h.stale = new Set(list.slice(0, 20).map((_, i) => keyOf(i)));
+    await fill(list);
+    expect(h.decoded).toBe(30);
+    const names = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => name(from + i)).sort();
+    expect(h.order.slice(0, 10).sort()).toEqual(names(20, 30));
+    expect(h.order.slice(10).sort()).toEqual(names(0, 20));
+  });
+
+  it("leaves entries from an earlier version alone when they would not fit, and says so", async () => {
+    const list = photos(1200);
+    h.stale = new Set(list.slice(0, 600).map((_, i) => keyOf(i)));
+    await fill(list);
+    expect(h.decoded).toBe(600);
+    expect(vi.mocked(console.info).mock.calls.flat().join("\n")).toContain("600 entries from an earlier version");
+  });
+
+  it("rewrites every entry from an earlier version when asked to (Cache all now)", async () => {
+    const list = photos(1200);
+    h.stale = new Set(list.slice(0, 600).map((_, i) => keyOf(i)));
+    await fill(list, { force: true });
+    expect(h.decoded).toBe(1200);
   });
 });
 

@@ -14,7 +14,7 @@ import {
   toneHighlights,
   toneShadows,
 } from "./local-tone";
-import { V2_VARIANT, buildFragmentShader } from "./webgl/shaders";
+import { V2_VARIANT, V3_VARIANT, buildFragmentShader } from "./webgl/shaders";
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
@@ -162,6 +162,22 @@ describe("the cost of the region base", () => {
     expect(LOCAL_TONE_GLSL).toContain("for (int i = 0; i < 8; i++)");
     const v2 = buildFragmentShader(null, undefined, V2_VARIANT);
     expect(v2.match(/\bslLocalToneBase\(/g)).toHaveLength(2);
+  });
+});
+
+// A region and its pixel must be in the same units, or moving Highlights or
+// Shadows pulls the pixel toward a region a refit and a camera gain away.
+describe("the region base", () => {
+  it("takes each tap through the refit and the camera's gain, as the pixel went", () => {
+    expect(LOCAL_TONE_GLSL).toContain(
+      "if (uApplyBaseCurve) s = slBaselineRefit(baselineTone(s)) * uBaselineGain;",
+    );
+  });
+
+  it("is what the version 2 and 3 programs compile", () => {
+    for (const variant of [V2_VARIANT, V3_VARIANT]) {
+      expect(buildFragmentShader(null, undefined, variant)).toContain(LOCAL_TONE_GLSL);
+    }
   });
 });
 

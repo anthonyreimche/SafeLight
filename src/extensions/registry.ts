@@ -41,6 +41,7 @@ import {
 } from "./param-registry";
 import { isReservedExtensionId } from "./core-extension";
 import { checkStageContract } from "./stage-validation";
+import { pipelineContractError } from "./pipeline-validation";
 import { noteRendersPixels } from "./extension-kinds";
 import { unregisterExtensionActions } from "@/state/keybindings-store";
 import { clearExtensionCursors } from "@/state/cursor-store";
@@ -283,6 +284,17 @@ export function registerPipeline(
   c: PipelineContribution,
 ): void {
   noteRendersPixels(extensionId);
+  const error = pipelineContractError(c);
+  if (error) {
+    console.error(`[extensions] ${extensionId}: ${error}; transform not registered`);
+    return;
+  }
+  // A transform's params are bag values like a stage's uniforms: descriptors
+  // keep them through normalizeParamBag, and registering again replaces them.
+  // Only a registration that declared params has descriptors to drop: a
+  // param-less transform sharing a stage's id leaves the stage's in place.
+  if (useRegistry.getState().pipelines[c.id]?.params) unregisterStageParams(c.id);
+  if (c.params) registerStageParams(c.id, c.name, extensionId, c.params);
   useRegistry.setState((s) => ({
     pipelines: { ...s.pipelines, [c.id]: { ...c, extensionId } },
   }));
@@ -642,7 +654,9 @@ export interface PresetStageField {
   changed: boolean;
 }
 
-function bagDiffersFromDefault(
+/** Whether a bag value has moved from its param's default, for the preset
+ *  fields that carry bag keys. */
+export function bagDiffersFromDefault(
   value: unknown,
   def: ParamDescriptor["default"],
 ): boolean {

@@ -15,6 +15,7 @@ import { registerPipeline, useRegistry } from "@/extensions/registry";
 import {
   summarizePreset,
   presetFields,
+  buildPartialBag,
   buildPartialParams,
 } from "./preset-summary.ts";
 
@@ -133,5 +134,43 @@ describe("display transform", () => {
     expect(buildPartialParams(params, fields, new Set(["displayTransform"]))).toEqual({
       displayTransform: "test.agx",
     });
+  });
+
+  const GAIN = { bagKeys: ["t.x.gain"], bagDefaults: { "t.x.gain": 1 } };
+
+  it("carries the transform's bag keys, changed when they moved", () => {
+    const params = { ...DEFAULT_DEVELOP_PARAMS };
+    const field = presetFields(params, [], { ...GAIN, changed: true }).find(
+      (f) => f.id === "displayTransform",
+    );
+    expect(field).toMatchObject({ bagKeys: ["t.x.gain"], changed: true });
+    const bag = { "t.x.gain": 2, "other.stage.y": 1 };
+    expect(buildPartialBag(bag, presetFields(params, [], { ...GAIN, changed: true }), new Set(["displayTransform"]))).toEqual({
+      "t.x.gain": 2,
+    });
+  });
+
+  it("carries a transform setting the photo never stored as its default, so a tuned target is reset", () => {
+    const fields = presetFields({ ...DEFAULT_DEVELOP_PARAMS, displayTransform: "t.x" }, [], { ...GAIN, changed: false });
+    const partial = buildPartialBag({ "other.stage.y": 1 }, fields, new Set(["displayTransform"]));
+    expect(partial).toEqual({ "t.x.gain": 1 });
+    expect(JSON.parse(JSON.stringify(partial))).toEqual(partial);
+    expect({ "t.x.gain": 3, ...partial }).toEqual({ "t.x.gain": 1 });
+  });
+
+  it("carries a transform setting the photo holds as undefined as its default", () => {
+    const fields = presetFields({ ...DEFAULT_DEVELOP_PARAMS }, [], { ...GAIN, changed: false });
+    expect(buildPartialBag({ "t.x.gain": undefined }, fields, new Set(["displayTransform"]))).toEqual({ "t.x.gain": 1 });
+  });
+
+  it("leaves an extension stage's field to the keys the bag holds", () => {
+    const stage = { stageId: "s.y", label: "Y", scope: "global" as const, paramKeys: ["s.y.amount"], changed: false };
+    const fields = presetFields({ ...DEFAULT_DEVELOP_PARAMS }, [stage], { ...GAIN, changed: false });
+    expect(buildPartialBag({}, fields, new Set(["ext:s.y"]))).toEqual({});
+  });
+
+  it("carries no bag keys for a transform without params", () => {
+    const field = presetFields({ ...DEFAULT_DEVELOP_PARAMS }).find((f) => f.id === "displayTransform");
+    expect(field?.bagKeys).toBeUndefined();
   });
 });

@@ -12,7 +12,12 @@ import {
 import { decodeNetpbm, isNetpbmName } from "@/modules/library/netpbm";
 import { decodeTiff, isTiffName } from "@/modules/library/tiff-image";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
-import { acceptDecode } from "@/raw/accept-decode";
+import { acceptDecode, matchCameraPreview } from "@/raw/accept-decode";
+import { halfLumaSamples } from "@/raw/camera-match";
+import { baselineExposureFor } from "@/rendering/baseline-tone";
+import type { Float16Source } from "@/rendering/source-sample";
+import type { CachedPreview } from "@/raw/cache-encode";
+import { completeCachedEntry } from "./cache-fill";
 import {
   normalizeRotation,
   orientationToRotation,
@@ -31,8 +36,7 @@ import {
   type DecodeMarker,
 } from "@/raw/raw-cache";
 import { getSettings } from "@/state/settings-store";
-import { useCatalogStore } from "@/state/catalog-store";
-import { catalogStorage } from "./storage";
+import { rememberLearned, type DecodeLearned } from "./decode-learned";
 
 /** What a load settled on in place of the photo's own pixels, and why. */
 export interface Fallback {
@@ -58,8 +62,8 @@ export interface Fallback {
 // HDR-capable), the cached develop preview (the same linear scene RGBA as
 // binary16 bit patterns), or an 8-bit sRGB bitmap (a JPEG, or a fallback).
 export type DecodedImage =
-  | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-  | { kind: "float16"; data: Uint16Array; width: number; height: number }
+  | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+  | Float16Source
   | { kind: "bitmap"; bitmap: ImageBitmap; cached?: boolean; fallback?: Fallback };
 
 /** What the decode of a RAW said, for a fallback served after it. */
@@ -96,6 +100,11 @@ export interface LoadImageOptions {
   // the original or falling back to a lesser image. A libraw decode that has
   // already started runs to the end and is still cached.
   signal?: AbortSignal;
+  // Ask the RAW cache for the entry's centre sample at native resolution as
+  // well, about 8 MB more per hit (source-sample.ts), for
+  // api.develop.readSourceSample. Develop's opens set it; thumbnails, headless
+  // renders and exports leave it off.
+  sample?: boolean;
 }
 
 // Paint the embedded preview (camera-rendered, decodes in ~1s) so the user sees
@@ -118,6 +127,48 @@ async function paintPreview(
     if (upright !== bm) bm.close();
     onPreview({ kind: "bitmap", bitmap: upright });
   } catch { /* preview paint is best-effort */ }
+}
+
+/** The exposure the renderer adds with the camera baseline (baseline-tone.ts):
+ *  the photo's camera match once it has one, else its maker's offset. */
+function cameraExposure(photo: CatalogPhoto): { baselineExposure?: number } {
+  const matched = photo.exif?.baselineExposure;
+  const ev =
+    typeof matched === "number" ? matched : baselineExposureFor(photo.exif?.cameraMake, photo.exif?.cameraModel);
+  return ev ? { baselineExposure: ev } : {};
+}
+
+/** A cache entry written before its photo learned the camera match: read the
+ *  original's preview once and match the entry against it, so this open renders
+ *  with it. An original out of reach leaves the maker's offset for now, and a
+ *  later open asks again. */
+async function learnFromEntry(photo: CatalogPhoto, cached: CachedPreview): Promise<void> {
+  if (!photo.fileHandle || !(await verifyPermission(photo.fileHandle))) return;
+  try {
+    const preview = await extractRawPreview(await photo.fileHandle.getFile());
+    const exposure = preview ? await matchCameraPreview(halfLumaSamples(cached.data), preview) : undefined;
+    rememberLearned(photo, { baselineExposure: exposure ?? null });
+  } catch {
+    // unreadable now: a later open asks again
+  }
+}
+
+/** The cached entry as the renderer takes it: the decoded size and the sample
+ *  only when the entry kept them (3.1.0 and later) and the load asked. */
+function float16Of(cached: CachedPreview, photo: CatalogPhoto): Float16Source {
+  const image: Float16Source = {
+    kind: "float16",
+    data: cached.data,
+    width: cached.width,
+    height: cached.height,
+    ...cameraExposure(photo),
+  };
+  if (cached.full) {
+    image.fullWidth = cached.full.width;
+    image.fullHeight = cached.full.height;
+  }
+  if (cached.sample) image.sample = cached.sample;
+  return image;
 }
 
 // Prefer a full-precision linear RAW decode (so exposure/highlight recovery work
@@ -148,9 +199,22 @@ export async function loadPhotoImage(
   const unsupportedLookup = isRaw
     ? hasDecodeMarker(cacheKey, "unsupported")
     : Promise.resolve(false);
-  const cached = isRaw ? await readCachedPreview(cacheKey) : null;
+  const cached = isRaw ? await readCachedPreview(cacheKey, { sample: opts?.sample }) : null;
   if (cached && Math.max(cached.width, cached.height) >= (opts?.minEdge ?? 0)) {
-    return { kind: "float16", data: cached.data, width: cached.width, height: cached.height };
+    // An entry from before 3.1.0 kept neither the decoded size nor the centre
+    // sample. It serves as it is, and the photo is decoded again behind the
+    // open so a later open has both (cache-fill.ts).
+    if (opts?.sample && !cached.full) {
+      // A photo the decoder already failed on, or doubted, would only be marked
+      // again. The lookups settle behind the open, which returns at once.
+      void Promise.all([unsupportedLookup, hasDecodeMarker(cacheKey, "suspicious")]).then(
+        ([unsupported, suspicious]) => {
+          if (!unsupported && !suspicious) completeCachedEntry(photo, cacheGeneration);
+        },
+      );
+    }
+    if (photo.exif?.baselineExposure === undefined) await learnFromEntry(photo, cached);
+    return float16Of(cached, photo);
   }
 
   const signal = opts?.signal;
@@ -198,24 +262,14 @@ export async function loadPhotoImage(
             reason: f.reason,
           };
         } else if (f) {
-          // Propagate what the decode learned (as-shot WB, the exposure bias a
-          // Fujifilm DR mode left in the raw) to the photo's EXIF, and persist
-          // it so the cached-preview fast path has it next time.
-          const learnedTemperature = !!f.colorTemperature && !photo.exif.colorTemperature;
-          const learnedBias =
-            f.rawExposureBias !== undefined && photo.exif.rawExposureBias !== f.rawExposureBias;
-          if (learnedTemperature) photo.exif.colorTemperature = f.colorTemperature;
-          if (learnedBias) photo.exif.rawExposureBias = f.rawExposureBias;
-          if (learnedTemperature || learnedBias) {
-            // The decode took seconds: store what it learned on the catalog's record
-            // as it is now, and nothing for a photo that left the catalog meanwhile.
-            const current = useCatalogStore.getState().photos.find((p) => p.id === photo.id);
-            if (current) {
-              const exif = { ...current.exif };
-              if (learnedTemperature) exif.colorTemperature = f.colorTemperature;
-              if (learnedBias) exif.rawExposureBias = f.rawExposureBias;
-              void catalogStorage().putPhoto({ ...current, exif });
-            }
+          // What the decode learned (as-shot WB, the exposure bias a Fujifilm
+          // DR mode left in the raw, the camera match below) goes on the
+          // photo's EXIF and is stored, so the cached-preview fast path has it
+          // next time.
+          const learned: DecodeLearned = {};
+          if (f.colorTemperature && !photo.exif.colorTemperature) learned.colorTemperature = f.colorTemperature;
+          if (f.rawExposureBias !== undefined && photo.exif.rawExposureBias !== f.rawExposureBias) {
+            learned.rawExposureBias = f.rawExposureBias;
           }
 
           // photo.rotation = EXIF orientation + manual user rotation (from import).
@@ -233,18 +287,25 @@ export async function loadPhotoImage(
           // is off by more than 2× vs the preview, reject the decode and fall
           // through to the JPEG-based float path below. The same ruling keeps
           // marginal decodes out of the cache (see accept-decode.ts).
-          const { use, cache } = await acceptDecode(f, r, preview);
+          const { use, cache, exposure } = await acceptDecode(f, r, preview);
+          // A photo keeps the first match it learns, so its look doesn't move
+          // between a cached open and a larger export's fresh decode.
+          if (use && photo.exif.baselineExposure === undefined) learned.baselineExposure = exposure ?? null;
+          rememberLearned(photo, learned);
           if (use) {
-            // Write the cache when the photo has no entry yet, or upgrade one
+            // Write the cache when the photo has no entry yet, upgrade one
             // written under a smaller rawCacheMaxEdge than the current setting
-            // allows. Skip marginal decodes (inferred dimensions).
+            // allows, and complete one from before 3.1.0, which kept neither the
+            // decoded size nor the centre sample. Skip marginal decodes
+            // (inferred dimensions).
             const cachedEdge = cached ? Math.max(cached.width, cached.height) : 0;
             const bestEdge = Math.min(getSettings().rawCacheMaxEdge, Math.max(r.width, r.height));
-            if (cache && cachedEdge < bestEdge) {
+            const incomplete = cached !== null && cached.full === null;
+            if (cache && (cachedEdge < bestEdge || incomplete)) {
               writeCachedPreview(cacheKey, r.data, r.width, r.height, cacheGeneration);
             }
             if (!cache) remember("suspicious");
-            return { kind: "float", data: r.data, width: r.width, height: r.height };
+            return { kind: "float", data: r.data, width: r.width, height: r.height, ...cameraExposure(photo) };
           }
           console.warn("[load] RAW color mismatch vs embedded JPEG — using JPEG fallback");
           remember("unsupported");
@@ -260,9 +321,7 @@ export async function loadPhotoImage(
         // (smaller than the caller asked for): prefer it over the embedded
         // JPEG. It is the exact linear source Develop rendered the edit
         // against, so colors stay consistent even if resolution falls short.
-        if (cached) {
-          return { kind: "float16", data: cached.data, width: cached.width, height: cached.height };
-        }
+        if (cached) return float16Of(cached, photo);
 
         // libraw failed or produced bad colors: fall back to the embedded JPEG
         // preview as an 8-bit bitmap. We deliberately do NOT route it through

@@ -15,6 +15,7 @@ import {
   type DevelopParams,
 } from "@/catalog/types";
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
+import { baselineRefit, baselineTone } from "../baseline-tone";
 import { toneHighlights, toneShadows } from "../local-tone";
 import {
   PIXEL_TOLERANCE,
@@ -144,28 +145,50 @@ describe("version 2 with Highlights and Shadows at 0", () => {
 // On a flat field every tap reads the pixel's own value, so the region is the
 // pixel and version 2 must render what version 1 does: its per-pixel curves
 // are the same functions, and its automatic band detail is zero on a flat
-// field. The region base decodes its taps itself (sRGB decode, baseline tone,
-// white-balance gain), so this guards that the taps decode the source as the
-// pixel does: it fails only when they decode it differently.
+// field. The region base decodes its taps itself (sRGB decode, baseline tone
+// and the camera baseline, white-balance gain), so this guards that the taps
+// decode the source as the pixel does: it fails only when they decode it
+// differently.
 describe("version 2 Highlights and Shadows on a flat field under the built-in transform", () => {
-  function frames(source: FloatImage | ImageBitmap, over: Partial<DevelopParams>): [Frame, Frame] {
-    const draw = (version: Partial<DevelopParams>) =>
+  function frames(
+    source: FloatImage | ImageBitmap,
+    over: Partial<DevelopParams>,
+    v1Source = source,
+  ): [Frame, Frame] {
+    const draw = (image: FloatImage | ImageBitmap, version: Partial<DevelopParams>) =>
       withRenderer({ stages: [], pipeline: BUILTIN_RESOLVED }, (renderer) => {
         renderer.setAsShotTemperature(6500);
-        renderer.setImage(source);
+        renderer.setImage(image);
         renderer.setParams(identityParams({ ...version, toneCurve: USER_IDENTITY_CURVE, ...over }));
         const frame = renderer.captureFloatFrame();
         if (!frame) throw new Error("captureFloatFrame returned null");
         return frame;
       });
-    return [draw(V1), draw(V2)];
+    return [draw(v1Source, V1), draw(source, V2)];
+  }
+
+  /** The x in [0, 1] baselineTone takes to y, by bisection (it only rises). */
+  function belowBaselineTone(y: number): number {
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (baselineTone(mid) < y) lo = mid;
+      else hi = mid;
+    }
+    return (lo + hi) / 2;
   }
 
   for (const slider of [{ highlights: -100 }, { shadows: 100 }]) {
     it(`renders a float source with a white-balance gain as version 1 does at ${JSON.stringify(slider)}`, () => {
       // A warm grey of luminance 0.3, at 4000 K against an as-shot 6500 K.
-      const warm = floatImage(16, 16, () => [0.3625, 0.29, 0.2175]);
-      const [v1, v2] = frames(warm, { ...slider, temperature: 4000 });
+      const rgb = [0.3625, 0.29, 0.2175] as const;
+      const warm = floatImage(16, 16, () => rgb);
+      // Version 1 has baselineTone without the camera refit after it, so it
+      // gets the grey its baselineTone takes to where version 2's whole
+      // baseline takes `warm`: both tone blocks then start from one colour.
+      const [r, g, b] = rgb.map((c) => belowBaselineTone(baselineRefit(baselineTone(c))));
+      const [v1, v2] = frames(warm, { ...slider, temperature: 4000 }, floatImage(16, 16, () => [r, g, b]));
       expect(worstDifference(v1, v2)).toBeLessThan(5e-4);
     });
 

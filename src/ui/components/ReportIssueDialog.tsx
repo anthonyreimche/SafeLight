@@ -192,8 +192,8 @@ function ReportIssueWindow() {
     try {
       await navigator.clipboard.writeText(renderCopyText(input));
       setCopied(true);
-    } catch {
-      setStatus("Couldn't copy to the clipboard.");
+    } catch (e) {
+      setStatus(`Couldn't copy to the clipboard (${e instanceof Error ? e.message : String(e)}).`);
     }
   };
 

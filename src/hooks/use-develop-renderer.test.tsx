@@ -230,6 +230,8 @@ const THUMB = new Blob(["stored preview"], { type: "image/jpeg" });
 // full size.
 const PREVIEW_SIZE = { width: 640, height: 427 };
 const SOURCE_SIZE = { width: 6000, height: 4000 };
+/** The store's sourceSize for a fake worker's frame: it reports no decoded size, so the held size stands, and never a native decode. */
+const held = (size: { width: number; height: number }) => ({ ...size, fullWidth: size.width, fullHeight: size.height, native: false });
 
 /** A readable original named `name`. */
 function original(name: string): FileSystemFileHandle {
@@ -524,7 +526,7 @@ beforeEach(() => {
   useDevelopStore.setState({
     ...loaded("next", edit(0.5)),
     histogram: null,
-    sourceSize: { width: 0, height: 0 },
+    sourceSize: held({ width: 0, height: 0 }),
   });
 });
 
@@ -565,14 +567,14 @@ describe("useDevelopRenderer opening a photo", () => {
     holdSource = new Promise<void>((r) => (release = r));
     const { worker, progress } = await open(photo());
     expect(drawn).toHaveLength(1);
-    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 0, height: 0 });
+    expect(useDevelopStore.getState().sourceSize).toEqual(held({ width: 0, height: 0 }));
 
     release();
     await progress();
-    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 0, height: 0 });
+    expect(useDevelopStore.getState().sourceSize).toEqual(held({ width: 0, height: 0 }));
 
     await answerRenders(worker);
-    expect(useDevelopStore.getState().sourceSize).toEqual(SOURCE_SIZE);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(SOURCE_SIZE));
     expect(status).toMatchObject({
       sourceWidth: SOURCE_SIZE.width,
       sourceHeight: SOURCE_SIZE.height,
@@ -606,7 +608,7 @@ describe("useDevelopRenderer opening a photo", () => {
     });
     expect(drawn).not.toContain(stale);
     expect(useDevelopStore.getState().histogram).toBeNull();
-    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 0, height: 0 });
+    expect(useDevelopStore.getState().sourceSize).toEqual(held({ width: 0, height: 0 }));
     expect(status?.tier).not.toBe("final");
   });
 
@@ -657,6 +659,10 @@ describe("useDevelopRenderer opening a photo", () => {
     expect(neighbour).toBeDefined();
     expect(opened?.[1]?.background).toBeFalsy();
     expect(neighbour?.[1]).toMatchObject({ background: true });
+    // Develop's renderer keeps the native sample, so both loads ask the RAW
+    // cache for it; a neighbour bound later restores what was uploaded.
+    expect(opened?.[1]).toMatchObject({ sample: true });
+    expect(neighbour?.[1]).toMatchObject({ background: true, sample: true });
   });
 
   describe.each([
@@ -795,7 +801,7 @@ describe("useDevelopRenderer telling what it shows", () => {
   it("publishes the size of a source still resident on the GPU", async () => {
     const { worker } = await open(photo(), true);
     await answerRenders(worker);
-    expect(useDevelopStore.getState().sourceSize).toEqual(RESIDENT);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(RESIDENT));
     expect(status).toMatchObject({ sourceWidth: RESIDENT.width, sourceHeight: RESIDENT.height });
   });
 
@@ -816,7 +822,7 @@ describe("useDevelopRenderer telling what it shows", () => {
 
     await answerRenders(worker);
     expect(status?.tier).toBe("preview");
-    expect(useDevelopStore.getState().sourceSize).toEqual(CAMERA_PREVIEW);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(CAMERA_PREVIEW));
 
     await act(async () => finish());
     await progress();
@@ -824,7 +830,7 @@ describe("useDevelopRenderer telling what it shows", () => {
 
     await answerRenders(worker);
     expect(status?.tier).toBe("final");
-    expect(useDevelopStore.getState().sourceSize).toEqual(SOURCE_SIZE);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(SOURCE_SIZE));
   });
 
   it("knows a frame of the camera's preview that comes back after the decoded source went", async () => {
@@ -837,7 +843,7 @@ describe("useDevelopRenderer telling what it shows", () => {
     await progress();
     await act(async () => worker.reply(frameFor(drawingPreview)));
     expect(status?.tier).toBe("preview");
-    expect(useDevelopStore.getState().sourceSize).toEqual(CAMERA_PREVIEW);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(CAMERA_PREVIEW));
 
     await answerRenders(worker);
     expect(status?.tier).toBe("final");
@@ -864,7 +870,7 @@ describe("useDevelopRenderer telling what it shows", () => {
     });
     await act(async () => worker.reply(frameFor(late)));
     expect(status?.tier).toBeNull();
-    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 0, height: 0 });
+    expect(useDevelopStore.getState().sourceSize).toEqual(held({ width: 0, height: 0 }));
 
     await act(async () => {
       answerBinds(worker, false, answered);
@@ -872,7 +878,7 @@ describe("useDevelopRenderer telling what it shows", () => {
     });
     await answerRenders(worker);
     expect(status?.tier).toBe("preview");
-    expect(useDevelopStore.getState().sourceSize).toEqual(CAMERA_PREVIEW);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(CAMERA_PREVIEW));
 
     await act(async () => {
       finish();
@@ -880,7 +886,7 @@ describe("useDevelopRenderer telling what it shows", () => {
     });
     await answerRenders(worker);
     expect(status?.tier).toBe("final");
-    expect(useDevelopStore.getState().sourceSize).toEqual(SOURCE_SIZE);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(SOURCE_SIZE));
   });
 
   // The decode failed or was turned down, and the load settled on the camera's own
@@ -1297,7 +1303,7 @@ describe("useDevelopRenderer keeping fallbacks out of the GPU's source cache", (
 // it nothing to draw the photo from: no frame comes, and the sliders change nothing.
 describe("useDevelopRenderer when the worker can't take the photo's source", () => {
   const CAMERA_PREVIEW = { width: 1620, height: 1080 };
-  const FAILED = "Can't show this photo.";
+  const FAILED = "Can't show this photo: texImage2D failed";
 
   /** The next load hands over the camera's preview once `preview` is called, then
    *  settles on the full image once `full` is. */
@@ -3119,6 +3125,7 @@ describe("DevelopCanvas saying why it shows no edits", () => {
     render(develop);
     act(() => renderWorker().reply({ type: "initError", message: "WebGL2 not supported" }));
     expect(says("Can't show images right now. Trying again…")).toBe(true);
+    expect(says("Reason: WebGL2 not supported")).toBe(true);
   });
 
   it("once it has stopped trying", () => {
@@ -3130,6 +3137,7 @@ describe("DevelopCanvas saying why it shows no edits", () => {
       });
     }
     expect(says("Can't show images right now. Restart Safelight.")).toBe(true);
+    expect(says("Reason: WebGL2 not supported")).toBe(true);
   });
 
   it("on a computer that can't draw edits", () => {
@@ -3139,6 +3147,7 @@ describe("DevelopCanvas saying why it shows no edits", () => {
     });
     render(develop);
     expect(says("Can't show edits on this computer. Showing the unedited preview.")).toBe(true);
+    expect(says("Reason: this window has no 2D canvas to draw on.")).toBe(true);
   });
 });
 

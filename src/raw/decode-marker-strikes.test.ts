@@ -61,7 +61,7 @@ vi.mock("./cache-bridge", () => {
     },
     workerCachedKeys: async () => {
       const reply = await ask({ cmd: "keys", id: id() });
-      return reply?.type === "keys" ? reply.keys : [];
+      return reply?.type === "keys" ? reply.entries : [];
     },
   };
 });

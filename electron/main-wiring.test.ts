@@ -19,7 +19,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const MAIN = readFileSync(join(HERE, "main.cjs"), "utf8");
 const PRELOAD = readFileSync(join(HERE, "preload.cjs"), "utf8");
 
-const PRIVILEGED = /^(?:fs:.+|updates:install|diagnostics:capturePage)$/;
+const PRIVILEGED = /^(?:fs:.+|updates:install|diagnostics:capturePage|gpu:.+)$/;
 
 /** Channels registered as `<callee>("channel"`, each as "line:channel". */
 function registrations(source: string, callee: string): string[] {
@@ -55,6 +55,7 @@ describe("privileged channel wiring in main.cjs", () => {
     expect(handedOut).toContain("fs:write");
     expect(handedOut).toContain("updates:install");
     expect(handedOut).toContain("diagnostics:capturePage");
+    expect(handedOut).toContain("gpu:setSoftware");
     expect(handedOut.filter((channel) => !guarded.includes(channel))).toEqual([]);
   });
 
@@ -106,6 +107,41 @@ describe("Report an issue channels", () => {
   it("records every crash before deciding on recovery", () => {
     expect(MAIN).toMatch(/app\.on\("child-process-gone", \(_e, details\) => \{\s*crashLog\.record\(details\.type, details\);/);
     expect(MAIN).toMatch(/contents\.on\("render-process-gone", \(_ev, details\) => \{\s*crashLog\.record\("renderer", details\);/);
+  });
+});
+
+// A VirtualBox guest whose GL driver can't hold WebGL2 left Develop blank on
+// every launch: the probe had cached the hardware backend that started.
+describe("Linux GPU backend fallback", () => {
+  it("takes its backends and switches from gpu-backend.cjs", () => {
+    expect(MAIN).toMatch(/const ANGLE_BACKENDS = angleBackends\(isWayland\);/);
+    expect(MAIN).toMatch(/for \(const \[name, value\] of angleSwitches\(backend\)\)/);
+  });
+
+  it("moves the next launch to software once WebGL2 is lost", () => {
+    expect(MAIN).toMatch(
+      /app\.on\("gpu-info-update", \(\) => \{\s*if \(webgl2Lost\(app\.getGPUFeatureStatus\(\)\)\) fallBackToSoftware\(/,
+    );
+  });
+
+  it("moves the next launch to software once GPU crash recovery gives up", () => {
+    expect(MAIN).toMatch(/if \(recover\) for \(const win of windows\) win\.webContents\.reload\(\);\s*else fallBackToSoftware\(/);
+  });
+});
+
+// electron-builder ships only the files package.json lists; a local module
+// main.cjs requires but the list leaves out works in development and stops the
+// installed app at startup.
+describe("packaged electron files", () => {
+  it("lists every local module main.cjs and preload.cjs require", () => {
+    const pkg = JSON.parse(readFileSync(join(HERE, "..", "package.json"), "utf8")) as {
+      build: { files: string[] };
+    };
+    const required = [...`${MAIN}\n${PRELOAD}`.matchAll(/require\(\s*["']\.\/([\w.-]+\.cjs)["']\s*\)/g)].map(
+      (m) => `electron/${m[1]}`,
+    );
+    expect(required).toContain("electron/gpu-backend.cjs");
+    expect(required.filter((file) => !pkg.build.files.includes(file))).toEqual([]);
   });
 });
 

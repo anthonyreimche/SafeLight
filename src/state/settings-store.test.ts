@@ -123,6 +123,33 @@ describe("hydration", () => {
     const { getSettings } = await boot(JSON.stringify({ updateChannel: "all" }));
     expect(getSettings().updateChannel).toBe("all");
   });
+
+  // TIFF's depth defaults to 16; PNG's must not, or every PNG would turn 16-bit.
+  describe("the PNG bit depth", () => {
+    it("defaults to 8 beside a TIFF default of 16", async () => {
+      const { getSettings, DEFAULT_SETTINGS } = await boot();
+      expect(DEFAULT_SETTINGS.exportPngBitDepth).toBe(8);
+      expect(DEFAULT_SETTINGS.exportTiffBitDepth).toBe(16);
+      expect(getSettings().exportPngBitDepth).toBe(8);
+    });
+
+    it("reads a stored choice back after a restart", async () => {
+      const { updateSettings } = await boot();
+      updateSettings({ exportPngBitDepth: 16 });
+      expect(persisted().exportPngBitDepth).toBe(16);
+
+      const { getSettings } = await boot(localStorage.getItem(KEY) ?? "");
+      expect(getSettings().exportPngBitDepth).toBe(16);
+    });
+
+    it("gives 8 to settings stored before the field existed", async () => {
+      const { getSettings } = await boot(
+        JSON.stringify({ exportFormat: "image/png", exportTiffBitDepth: 16, exportQuality: 72 }),
+      );
+      expect(getSettings().exportPngBitDepth).toBe(8);
+      expect(getSettings().exportTiffBitDepth).toBe(16);
+    });
+  });
 });
 
 describe("updateSettings", () => {

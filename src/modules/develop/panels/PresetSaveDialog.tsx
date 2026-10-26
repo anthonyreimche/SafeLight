@@ -5,6 +5,7 @@
 
 import { useMemo, useRef, useState, useEffect } from "react";
 import type { DevelopParams } from "@/catalog/types";
+import { transformPresetField } from "@/extensions/pipelines";
 import { collectPresetStages } from "@/extensions/registry";
 import { presetFields, buildPartialParams, buildPartialBag } from "../preset-summary";
 
@@ -45,7 +46,7 @@ export function PresetSaveDialog({
   onCancel,
 }: Props) {
   const fields = useMemo(
-    () => presetFields(params, collectPresetStages(paramBag)),
+    () => presetFields(params, collectPresetStages(paramBag), transformPresetField(params.displayTransform, paramBag)),
     [params, paramBag],
   );
   const [name, setName] = useState(initialName ?? "");

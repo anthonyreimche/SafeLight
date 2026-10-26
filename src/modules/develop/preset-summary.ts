@@ -23,6 +23,7 @@ import {
   isDefaultToneCurves,
   type DevelopParams,
 } from "@/catalog/types";
+import type { TransformPresetField } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 
 type ScalarKey = {
@@ -158,9 +159,13 @@ export interface PresetField {
   changed: boolean;
   /** Short current value, shown beside scalar fields. */
   value?: string;
-  /** Qualified paramBag keys copied when checked (extension-stage fields only;
-   *  core fields leave this unset and copy `keys` from DevelopParams instead). */
+  /** Qualified paramBag keys copied when checked (extension-stage fields and
+   *  the Display transform field; core fields leave this unset and copy `keys`
+   *  from DevelopParams instead). */
   bagKeys?: string[];
+  /** The Display transform field's defaults for `bagKeys`, copied in place of
+   *  a key the bag holds no value for (see transformPresetField). */
+  bagDefaults?: Record<string, unknown>;
   /** "global" (default) is offered and pre-checked when changed; "per-image" is
    *  hidden under "Show all" and never pre-selected — spatial edits (crop,
    *  retouch, warp …) that don't transfer meaningfully to another photo. */
@@ -182,10 +187,12 @@ export interface PresetStageInfo {
 
 /** Enumerate the adjustments that can be saved from the given live params, in a
  *  stable, panel-like order. External extension stages (from the registry) are
- *  appended after the core fields when provided. */
+ *  appended after the core fields when provided; `transform` adds the display
+ *  transform's params to its field (see transformPresetField). */
 export function presetFields(
   params: DevelopParams,
   extStages: PresetStageInfo[] = [],
+  transform?: TransformPresetField,
 ): PresetField[] {
   const fields: PresetField[] = [];
 
@@ -207,8 +214,14 @@ export function presetFields(
 
   // Crop/transform and retouch are tied to one photo's framing and content, so
   // they're "per-image": offered only under "Show all" and never pre-checked.
-  const complex: { id: string; label: string; keys: (keyof DevelopParams)[]; changed: boolean; scope?: "per-image" }[] = [
-    { id: "displayTransform", label: "Display transform", keys: ["displayTransform"], changed: params.displayTransform !== null },
+  const complex: { id: string; label: string; keys: (keyof DevelopParams)[]; changed: boolean; scope?: "per-image"; bagKeys?: string[]; bagDefaults?: Record<string, unknown> }[] = [
+    {
+      id: "displayTransform",
+      label: "Display transform",
+      keys: ["displayTransform"],
+      changed: params.displayTransform !== null || (transform?.changed ?? false),
+      ...(transform && transform.bagKeys.length > 0 ? { bagKeys: transform.bagKeys, bagDefaults: transform.bagDefaults } : {}),
+    },
     { id: "toneCurve", label: "Tone curve", keys: ["toneCurve"], changed: !isDefaultToneCurves(params.toneCurve) },
     { id: "hsl", label: "HSL", keys: ["hsl"], changed: jsonDiffers(params.hsl, defaultHSL()) },
     { id: "colorGrading", label: "Color grading", keys: ["colorGrading"], changed: jsonDiffers(params.colorGrading, defaultColorGrading()) },
@@ -219,7 +232,14 @@ export function presetFields(
     { id: "retouch", label: "Retouch", keys: ["retouch"], changed: params.retouch.length > 0, scope: "per-image" },
   ];
   for (const c of complex) {
-    fields.push({ id: c.id, label: c.label, keys: c.keys, changed: c.changed, scope: c.scope });
+    fields.push({
+      id: c.id,
+      label: c.label,
+      keys: c.keys,
+      changed: c.changed,
+      scope: c.scope,
+      ...(c.bagKeys ? { bagKeys: c.bagKeys, bagDefaults: c.bagDefaults } : {}),
+    });
   }
 
   for (const s of extStages) {
@@ -257,7 +277,8 @@ export function buildPartialParams(
 
 /** Copy the extension-stage paramBag keys of the selected fields into a partial
  *  bag, so a preset carries only the chosen extension adjustments (not the whole
- *  live bag). */
+ *  live bag). A field with `bagDefaults` carries every key, the default where
+ *  the bag holds no value, so applying it leaves none of a target's own. */
 export function buildPartialBag(
   bag: Record<string, unknown>,
   fields: PresetField[],
@@ -267,7 +288,9 @@ export function buildPartialBag(
   for (const f of fields) {
     if (!f.bagKeys || !selectedIds.has(f.id)) continue;
     for (const k of f.bagKeys) {
-      if (k in bag) out[k] = structuredClone(bag[k]);
+      const fallback = f.bagDefaults?.[k];
+      if (bag[k] === undefined && fallback !== undefined) out[k] = structuredClone(fallback);
+      else if (k in bag) out[k] = structuredClone(bag[k]);
     }
   }
   return out;

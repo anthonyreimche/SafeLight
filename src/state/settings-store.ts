@@ -72,6 +72,8 @@ export interface ExportPreset {
   sharpenRadius: number;
   /** Bits per sample for TIFF export (8 or 16); absent on older presets. */
   tiffBitDepth?: 8 | 16;
+  /** Bits per sample for PNG export (8 or 16); absent on older presets. */
+  pngBitDepth?: 8 | 16;
 }
 
 export interface AppSettings {
@@ -239,6 +241,10 @@ export interface AppSettings {
   exportColorSpace: ColorSpaceId;
   /** Default bits per sample for TIFF export (8 or 16). */
   exportTiffBitDepth: 8 | 16;
+  /** Default bits per sample for PNG export (8 or 16). 8 unlike TIFF's 16: a
+   *  16-bit PNG is large and slow to encode, and most viewers show it as 8-bit,
+   *  so no PNG turns 16-bit unasked. */
+  exportPngBitDepth: 8 | 16;
   /** Carry the source photo's EXIF (camera, lens, exposure) into exports.
    *  Off by default — exports have always shipped clean, and quietly starting
    *  to embed metadata would break that privacy promise. Opt-in only. */
@@ -362,6 +368,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exportBundle: true,
   exportColorSpace: "srgb",
   exportTiffBitDepth: 16,
+  exportPngBitDepth: 8,
   exportIncludeMetadata: false,
   exportIncludeLocation: false,
   exportPresets: [],

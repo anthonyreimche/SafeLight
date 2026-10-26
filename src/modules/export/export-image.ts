@@ -22,6 +22,7 @@ import { getStageTextures } from "@/rendering/render-bridge";
 import { getExtSetting } from "@/extensions/ext-settings";
 import { resolveDefaultPipeline, resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry, type RegisteredExportProcessor } from "@/extensions/registry";
+import { bagForRender } from "@/extensions/transform-derive";
 import type { ExportFrame, ExportProcessorContext, ExportProcessorContribution } from "@/extensions/types";
 import { getSettings } from "@/state/settings-store";
 import { showsEdit } from "@/state/fallback-rules";
@@ -613,7 +614,8 @@ async function renderOne(
     if (knownTemp == null) {
       saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
     }
-    renderer.setContributedParams(bagPatch ? { ...saved.paramBag, ...bagPatch } : saved.paramBag);
+    const bag = bagPatch ? { ...saved.paramBag, ...bagPatch } : saved.paramBag;
+    renderer.setContributedParams(bagForRender(resolvePipelineFor(saved.params.displayTransform), bag));
     setPhotoParams(renderer, saved.params);
     const colorSpace = settings.colorSpace ?? "srgb";
     // Version 3 exports through the renderer's own draws. Whether a photo
@@ -779,6 +781,7 @@ export function getDefaultExportSettings(): ExportSettings {
     delivery: "files",
     colorSpace: s.exportColorSpace,
     tiffBitDepth: s.exportTiffBitDepth,
+    pngBitDepth: s.exportPngBitDepth,
     includeMetadata: s.exportIncludeMetadata,
     includeLocation: s.exportIncludeLocation,
   };

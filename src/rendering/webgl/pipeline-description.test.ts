@@ -15,12 +15,14 @@ import { defaultMaskAdjustments, type Mask } from "@/catalog/types";
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { ProcessingPhase, ProcessingStageContribution } from "@/extensions/types";
 import { fromSpaceExpr, isIdentitySpace, spaceKey, toSpaceExpr } from "../stage-space";
+import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import { isMaskInstance, maskInstances } from "./mask-stage-instances";
 import { CORE_BLOCKS, describePipeline, findFloors, type ClipWhen, type PipelineRow } from "./pipeline-description";
 import { V1_VARIANT, V2_VARIANT, V3_VARIANT, buildFragmentShader, type ShaderVariant } from "./shaders";
 import { buildStageInjection, type InjectionStep } from "./stage-injection";
 import { V2_IDENTITY_CONFIGS } from "./v2-identity.fixtures";
-import { builtinStages } from "./webgl.test-support";
+import { developedFormatFor } from "./variant-decisions";
+import { builtinStage, builtinStages } from "./webgl.test-support";
 
 type Version = "v1" | "v2" | "v3";
 const VARIANTS: [Version, ShaderVariant][] = [
@@ -262,6 +264,8 @@ const fromV2 = (phrase: string, when: ClipWhen) => ({ v2: [phrase, when], v3: [p
 const thenClip = (line: string) => `${line}\n    c = clamp(c, 0.0, 1.0);`;
 const gateClip = (gate: string) => thenClip(`${gate} > 0.001) {`);
 const RESULT_CLIP = thenClip("c = c * (newL / L);");
+const HEAL_CALL = "src = applyRetouch(srcUv, src);";
+const FALLBACK_CLIP = thenClip("if (uIsFallbackPreview) {");
 const OPENS_CLIPPED = "{\n  c = clamp(c, 0.0, 1.0);";
 const VIB_SAT_GATE = "if (abs(uVibrance) >= 0.1 || abs(uSaturation) > 0.1)\n    c = applyVibSat(";
 
@@ -269,6 +273,10 @@ const VIB_SAT_GATE = "if (abs(uVibrance) >= 0.1 || abs(uSaturation) > 0.1)\n    
 // program order (the review's clip-site list). The code phrases key each one
 // to the shader's text; the rows must follow the table.
 const CLIP_SITES: ClipSite[] = [
+  // Not a clamp in the GLSL: the patched copy a retouched frame develops from
+  // in place of this call clips in its storage. "what each version does
+  // differently" holds the times to developedFormatFor.
+  { block: "Heal", where: "result", v1: [HEAL_CALL, IN_USE], ...fromV2(HEAL_CALL, "no-float-targets") },
   {
     block: "Display transform", where: "result",
     v1: ["vec3 disp = clamp(pipelineToDisplay(lin), 0.0, 1.0);", "always"],
@@ -314,7 +322,11 @@ const CLIP_SITES: ClipSite[] = [
     v1: ["c = applyColorGrading(c);", "always"], ...fromV2("if (uColorGradingActive) c = applyColorGrading(", IN_USE),
     helper: ["applyColorGrading", "return clamp(c, 0.0, 1.0);"],
   },
-  { block: "Sharpening", where: "result", ...everywhere(thenClip("if (uIsFallbackPreview) {"), "fallback-preview") },
+  // Version 3 drops it: nothing produces a fallback preview.
+  {
+    block: "Sharpening", where: "result",
+    v1: [FALLBACK_CLIP, "fallback-preview"], v2: [FALLBACK_CLIP, "fallback-preview"],
+  },
   {
     block: "Masking (display values)", where: "input",
     ...fromV2("if (uMaskHasDisplay[mi] == 1)\n      c = mix(c, applyMaskDisplay(clamp(c, 0.0, 1.0)", "per-mask"),
@@ -392,7 +404,7 @@ const coreClips = (rows: readonly PipelineRow[]) => {
   let block = "";
   return rows.flatMap((r) => {
     if (r.kind === "core") block = r.label;
-    if (r.kind !== "clamp" || r.reason === "legacy-display-stage") return [];
+    if (r.kind !== "clamp" || (r.reason !== "core" && r.reason !== "output")) return [];
     return [{ block: r.reason === "output" ? "Output" : block, where: r.where, when: r.when }];
   });
 };
@@ -515,12 +527,48 @@ describe("what each version does differently", () => {
     expect(transformNote(V2_VARIANT, FILMIC)).toBeUndefined();
   });
 
+  it("notes the camera baseline refit after channel reconstruction on version 2 and later", () => {
+    const reconstructionNote = (variant: ShaderVariant, pipeline?: ResolvedPipeline) =>
+      rowsOf(describeBuiltin(variant, pipeline), "core").find((r) => r.label === "Channel reconstruction")?.note;
+    expect(reconstructionNote(V2_VARIANT)).toMatch(/refit.*camera maker's exposure offset/);
+    expect(reconstructionNote(V3_VARIANT)).toMatch(/refit.*camera maker's exposure offset/);
+    expect(reconstructionNote(V1_VARIANT)).toBeUndefined();
+    expect(reconstructionNote(V2_VARIANT, FILMIC)).toBeUndefined();
+  });
+
+  // Only a float16 copy keeps values outside [0, 1], and version 1 never takes one.
+  it("clips the patched copy a retouched frame develops from as developedFormatFor stores it", () => {
+    for (const [version, variant] of VARIANTS) {
+      const keeps = (float16: boolean) => developedFormatFor(variant, { float16, norm16: true }) === "float16";
+      expect(keeps(false), version).toBe(false);
+      const when: ClipWhen = keeps(true) ? "no-float-targets" : "while-active";
+      const heal = coreClips(describeBuiltin(variant)).filter((c) => c.block === "Heal");
+      expect(heal, version).toEqual([{ block: "Heal", where: "result", when }]);
+    }
+  });
+
+  // Nothing produces a fallback preview, so version 3, not yet frozen, drops
+  // the clip only one would reach.
+  it("lists the fallback-preview clip on versions 1 and 2 only", () => {
+    const fallback = (variant: ShaderVariant) =>
+      rowsOf(describeBuiltin(variant), "clamp").filter((r) => r.when === "fallback-preview");
+    expect(fallback(V1_VARIANT)).toHaveLength(1);
+    expect(fallback(V2_VARIANT)).toHaveLength(1);
+    expect(fallback(V3_VARIANT)).toEqual([]);
+  });
+
+  // The renderer runs the block in the built-in denoiser's place where the
+  // denoiser can't run, never in an extension's.
   it("notes that a noise-reduction stage replaces the core block", () => {
     const nrNote = (stages: ProcessingStageContribution[]) =>
       rowsOf(describePipeline(stages, V2_VARIANT, BUILTIN_RESOLVED), "core").find(
         (r) => r.label === "Noise Reduction",
       )?.note;
-    expect(nrNote(builtinStages())).toBeTruthy();
+    const nr: ProcessingStageContribution = { id: "acme.nr", name: "NR", phase: "noise-reduction", glsl: "", uniforms: [] };
+    expect(nrNote(builtinStages())).toBe(
+      "Skipped: the built-in denoiser replaces it. Runs where the denoiser can't (no float render targets): colour NR only on a RAW under the baseline tone",
+    );
+    expect(nrNote([...builtinStages(), nr])).toBe("Skipped: a noise-reduction stage replaces it");
     expect(nrNote([])).toBeUndefined();
   });
 });
@@ -592,6 +640,28 @@ describe("stage rows", () => {
       stageRow(describePipeline(builtinStages(), variant, BUILTIN_RESOLVED), "core.vignette")?.floors;
     expect(floors(V1_VARIANT)).toEqual(["clamp(c, 0.0, 1.0)"]);
     expect(floors(V2_VARIANT)).toEqual([]);
+  });
+
+  // findFloors reads `lin` and `c` in a stage's glsl and helpers. The denoiser
+  // floors a luma it computes, in its passes, so the core says so for it.
+  it("follow the built-in denoiser's with the floor on luma its passes make, on every version", () => {
+    const passes = (builtinStage(BUILTIN_DENOISE_ID).passes ?? []).map((p) => p.glsl).join("\n");
+    expect(passes).toContain("sqrt(max(Y * vstScale + 0.375, 0.0))");
+    expect(passes).toContain("float Y = max(");
+    for (const [version, variant] of VARIANTS) {
+      const rows = describePipeline(builtinStages(), variant, BUILTIN_RESOLVED);
+      const at = rows.findIndex((r) => r.kind === "stage" && r.id === BUILTIN_DENOISE_ID);
+      expect(rows[at + 1], version).toMatchObject({
+        kind: "clamp",
+        reason: "builtin-stage",
+        stageId: BUILTIN_DENOISE_ID,
+        where: "result",
+        when: "while-active",
+      });
+    }
+    const nr: ProcessingStageContribution = { id: "acme.nr", name: "NR", phase: "noise-reduction", glsl: "", uniforms: [] };
+    const replaced = rowsOf(describePipeline([...builtinStages(), nr], V2_VARIANT, BUILTIN_RESOLVED), "clamp");
+    expect(replaced.filter((r) => r.reason === "builtin-stage")).toEqual([]);
   });
 
   it("read the current image where the injector gives the stage a split exit", () => {

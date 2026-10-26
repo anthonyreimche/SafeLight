@@ -207,3 +207,153 @@ describe("encodePng16", () => {
     expect(chunks.some((c) => c.type === "iCCP")).toBe(false);
   });
 });
+
+// A pass-through compressor makes the file's bytes independent of the zlib
+// build, so hashes can pin them. `cut` decides how each band is handed on: a
+// real compressor's output parts needn't line up with its input.
+function stubCompressor(cut: (band: Bytes) => Bytes[] = (band) => [band]): void {
+  vi.stubGlobal("CompressionStream", class extends TransformStream<Bytes, Bytes> {
+    constructor() {
+      super({ transform: (band, out) => { for (const part of cut(band)) out.enqueue(part); } });
+    }
+  });
+}
+
+async function sha256(bytes: Bytes): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Full-entropy samples from a fixed seed, so the hashes below stay valid.
+function noise(w: number, h: number): Uint16Array {
+  const rgba = new Uint16Array(w * h * 4);
+  let s = 0x2545f491;
+  for (let i = 0; i < rgba.length; i++) {
+    s ^= s << 13;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    rgba[i] = s >>> 16;
+  }
+  return rgba;
+}
+
+async function encodeFile(w: number, h: number, icc?: Uint8Array): Promise<Bytes> {
+  return bytesOf(await encodePng16(noise(w, h), w, h, { icc }));
+}
+
+// IDAT's stored CRC, read without checking any chunk's: parseChunks would
+// reject a file whose parts a test has overwritten.
+function storedIdatCrc(png: Bytes): number {
+  const dv = new DataView(png.buffer, png.byteOffset, png.byteLength);
+  for (let at = 8; at < png.length; ) {
+    const size = dv.getUint32(at);
+    if (String.fromCharCode(...png.subarray(at + 4, at + 8)) === "IDAT") return dv.getUint32(at + 8 + size);
+    at += 12 + size;
+  }
+  throw new Error("no IDAT chunk");
+}
+
+describe("encodePng16 framing", () => {
+  // Made-up profile bytes, so the hashes don't move with the profile builder.
+  const ICC = Uint8Array.from({ length: 300 }, (_, i) => (i * 37) & 0xff);
+  // Whole-file hashes from the encoder that gathered the compressed stream and
+  // wrote it as one IDAT chunk. The sizes run from one pixel to several bands.
+  const FILES = [
+    { name: "1x1", w: 1, h: 1, icc: undefined, sha: "9602a630759ef0c3a6d5cbd1be244e529e34abe9fe3d1fcb73ce5674a40f54d0" },
+    { name: "7x5 with an ICC profile", w: 7, h: 5, icc: ICC, sha: "e0bace31d55100863952e0f6138bbe15425cd839aba7f87bb0fc6ae0c829c73b" },
+    { name: "1100x400, three bands", w: 1100, h: 400, icc: undefined, sha: "7dba0928a05cfe89b3a611f13a20995b35ddbfb008daf5e2cafc70ac905c8c6b" },
+    { name: "175x2000, three bands, with an ICC profile", w: 175, h: 2000, icc: ICC, sha: "fb3ee2278fc3c7a852923b014cdbd6618a9b0cd2faa69b229c62354a012a7b15" },
+    { name: "3000x120, three bands", w: 3000, h: 120, icc: undefined, sha: "28e077e9bae5699186803f5a63bf2949e1fdd73c82d0360846b628204f7fae5a" },
+  ];
+
+  it.each(FILES)("writes the single-chunk encoder's bytes: $name", async ({ w, h, icc, sha }) => {
+    stubCompressor();
+    try {
+      expect(await sha256(await encodeFile(w, h, icc))).toBe(sha);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("frames the same file however the compressor cuts its output", async () => {
+    const uneven = (band: Bytes): Bytes[] => [
+      band.subarray(0, 0),
+      band.subarray(0, 1),
+      band.subarray(1, 10_001),
+      band.subarray(10_001),
+    ];
+    const { w, h, sha } = FILES[2];
+    stubCompressor(uneven);
+    try {
+      expect(await sha256(await encodeFile(w, h))).toBe(sha);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("hands the compressed parts to the Blob without gathering the stream", async () => {
+    const gathered = [vi.spyOn(Response.prototype, "arrayBuffer"), vi.spyOn(Blob.prototype, "arrayBuffer")];
+    const RealBlob = Blob;
+    let parts: BlobPart[] = [];
+    vi.stubGlobal("Blob", class extends RealBlob {
+      constructor(blobParts: BlobPart[], options?: BlobPropertyBag) {
+        super(blobParts, options);
+        if (options?.type === "image/png") parts = blobParts;
+      }
+    });
+    stubCompressor();
+    const { w, h } = FILES[2];
+    let gatherCalls: number[] = [];
+    try {
+      await encodePng16(noise(w, h), w, h, {});
+      gatherCalls = gathered.map((spy) => spy.mock.calls.length);
+    } finally {
+      vi.unstubAllGlobals();
+      gathered.forEach((spy) => spy.mockRestore());
+    }
+    expect(gatherCalls, "Response and Blob arrayBuffer calls").toEqual([0, 0]);
+    const sizes = parts.map((p) => (p as Bytes).byteLength);
+    const total = sizes.reduce((sum, n) => sum + n, 0);
+    expect(Math.max(...sizes), "largest Blob part").toBeLessThan(total / 2);
+  });
+
+  // The CRC is taken as each part arrives, not once the stream ends: summing 128
+  // MB in one go is the stall this encoder avoids. A stream may reuse a buffer
+  // once its next input comes, so this stand-in overwrites the previous part
+  // then. A CRC taken at the end covers the overwritten bytes, not the ones the
+  // stream produced, and the file's checksum no longer matches them.
+  it("folds each part into IDAT's CRC as it arrives", async () => {
+    const produced: Bytes[] = [];
+    let previous: Bytes | null = null;
+    vi.stubGlobal("CompressionStream", class extends TransformStream<Bytes, Bytes> {
+      constructor() {
+        super({
+          transform: (band, out) => {
+            previous?.fill(0xa5);
+            produced.push(band.slice());
+            previous = band;
+            out.enqueue(band);
+          },
+        });
+      }
+    });
+    const { w, h } = FILES[2];
+    let stored = 0;
+    try {
+      stored = storedIdatCrc(await encodeFile(w, h));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(produced.length, "parts").toBeGreaterThanOrEqual(3);
+
+    const type = Uint8Array.from("IDAT", (c) => c.charCodeAt(0));
+    const whole = new Uint8Array(type.length + produced.reduce((sum, p) => sum + p.length, 0));
+    whole.set(type);
+    let at = type.length;
+    for (const part of produced) {
+      whole.set(part, at);
+      at += part.length;
+    }
+    expect(stored).toBe(crc32(whole));
+  });
+});

@@ -83,7 +83,9 @@ export function pathToWhite(c: readonly [number, number, number]): [number, numb
 /** GLSL twins of pathToWhite, toneHighlights and toneShadows, and the region
  *  base the version 2 tone block runs them on. Spliced after applyWhiteBalance
  *  and baselineTone; reads uImage, uLinear, uIsFallbackPreview,
- *  uApplyBaseCurve, uApplyToneShoulder and the white-balance uniforms. */
+ *  uApplyBaseCurve, uBaselineGain, uApplyToneShoulder and the white-balance
+ *  uniforms. A tap takes the camera baseline after baselineTone, as `lin`
+ *  does (shaders.ts), so a region stays in the pixel's units. */
 export const LOCAL_TONE_GLSL = `
 vec3 slPathToWhite(vec3 c) {
   float peak = max(max(c.r, c.g), c.b);
@@ -136,7 +138,7 @@ float slToneShadows(float x, float S) {
 float slLocalToneTap(vec2 uv, float lod, vec3 wb) {
   vec3 s = textureLod(uImage, uv, lod).rgb;
   if (!uLinear && !uIsFallbackPreview) s = srgbToLinear(s);
-  if (uApplyBaseCurve) s = baselineTone(s);
+  if (uApplyBaseCurve) s = slBaselineRefit(baselineTone(s)) * uBaselineGain;
   return log2(max(luma(s * wb), 1e-4));
 }
 

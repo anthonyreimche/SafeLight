@@ -464,7 +464,10 @@ export function readU32(b: Uint8Array, i: number): number {
 
 // CRC-32 (PNG polynomial) for chunk integrity.
 let CRC_TABLE: Uint32Array | null = null;
-export function crc32(buf: Uint8Array): number {
+
+// Continues a CRC over more bytes: start from 0, then pass each call's result
+// back in. A chunk too big to hold whole can be checked a part at a time.
+export function crc32Update(crc: number, buf: Uint8Array): number {
   if (!CRC_TABLE) {
     CRC_TABLE = new Uint32Array(256);
     for (let n = 0; n < 256; n++) {
@@ -473,9 +476,13 @@ export function crc32(buf: Uint8Array): number {
       CRC_TABLE[n] = c >>> 0;
     }
   }
-  let c = 0xffffffff;
+  let c = crc ^ 0xffffffff;
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
+}
+
+export function crc32(buf: Uint8Array): number {
+  return crc32Update(0, buf);
 }
 
 /** A PNG chunk: the data's length, the type, the data, then the CRC of type and data. */

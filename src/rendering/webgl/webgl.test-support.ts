@@ -142,8 +142,16 @@ function compilePassPrograms(opts: WebGLRendererOpts | undefined): void {
  *  process version the options allow; otherwise the info log the failing build
  *  threw with. The renderer compiles nothing ahead of a frame, so one frame per
  *  version builds the develop programs; a frame with an empty param bag runs no
- *  prepass, so the pass programs are compiled directly. */
+ *  prepass, so the pass programs are compiled directly. A display transform
+ *  that fails to build throws nothing: the renderer logs a "[pipeline]" error
+ *  and draws with the built-in, so that error is the build error here. */
 export function rendererBuildError(opts?: WebGLRendererOpts): string | null {
+  const logError = console.error;
+  const fallbacks: string[] = [];
+  console.error = (...args: unknown[]) => {
+    if (typeof args[0] === "string" && args[0].startsWith("[pipeline]")) fallbacks.push(args.map(String).join(" "));
+    else logError.apply(console, args);
+  };
   try {
     withRenderer(opts, (renderer) => {
       renderer.setImage(floatImage(1, 1, () => [0.18, 0.18, 0.18]));
@@ -156,10 +164,13 @@ export function rendererBuildError(opts?: WebGLRendererOpts): string | null {
         renderer.render();
       }
     });
+    if (fallbacks.length > 0) return fallbacks[0];
     compilePassPrograms(opts);
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
+  } finally {
+    console.error = logError;
   }
 }
 

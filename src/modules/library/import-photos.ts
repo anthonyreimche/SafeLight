@@ -8,6 +8,7 @@
 // buildPhoto for each new file it finds.
 
 import type { CatalogPhoto, ExifData } from "@/catalog/types";
+import { fillCacheEntry } from "@/catalog/cache-fill";
 import { parseExif, parseExifDate, parseXmp, type XmpData } from "@/catalog/exif";
 import {
   normalizeRotation,
@@ -16,7 +17,6 @@ import {
   rotateBitmap,
 } from "@/catalog/orient";
 import {
-  extractRawPreview,
   extractRawPreviewDecoded,
   getExtension,
   isRawFile,
@@ -28,20 +28,16 @@ import {
 import { decodeNetpbm, isNetpbmName } from "./netpbm";
 import { decodeTiff, isTiffName } from "./tiff-image";
 import { decodeRawToFloat, decodeRawToBitmap, type DecodeFailure } from "@/raw/decode";
-import { acceptDecode } from "@/raw/accept-decode";
 import { extractRawMetadata, type RawMetadata } from "@/raw/libraw-wasm-adapter";
 import { decodePoolSize, warmDecodePool, type DecodeRequest } from "@/raw/decode-pool";
-import { rotateFloatRGBA } from "@/catalog/orient";
 import { createThumbnail, type ThumbTaskResult } from "./import-thumb-task";
 import { processThumb } from "./import-thumb-pool";
 import {
-  cachedKeys,
+  cacheListing,
   deleteCachedPreview,
   hasDecodeMarker,
-  markDecode,
   rawCacheGeneration,
   rawCacheKey,
-  writeCachedPreview,
 } from "@/raw/raw-cache";
 import { getSettings, type PreviewSource } from "@/state/settings-store";
 import { useCatalogStore, type RebuiltChange } from "@/state/catalog-store";
@@ -1099,9 +1095,10 @@ export async function reimportPhotos(
 
 /**
  * The most photos the automatic cache pass takes on. Filling the cache costs
- * about 2.3 s of decode and 36 MB of storage per photo (measured 2026-10-18 on
- * 24 MP NEFs), so 1,000 photos is some 40 minutes and 36 GB. A project that
- * needs more than that is left to the caching Develop does as photos are opened;
+ * about 2.3 s of decode and 43 MB of storage per photo (36 MB of preview,
+ * measured 2026-10-18 on 24 MP NEFs, and 6 to 8 MB of centre sample since
+ * 3.1.0), so 1,000 photos is some 40 minutes and 43 GB. A project that needs
+ * more than that is left to the caching Develop does as photos are opened;
  * "Cache all now" still caches every photo.
  */
 export const EAGER_CACHE_LIMIT = 1000;
@@ -1117,8 +1114,9 @@ const REFUSED_WRITES_BEFORE_GIVING_UP = 3;
  *
  * Decode-once, cheaply: the cache directory is listed ONCE up front, and any
  * photo whose cache key is already present is skipped without touching its file
- * (so is one with a marker that the decoder can't use it; see raw-cache.ts).
- * The key is derived from the catalog record (relPath + fileSize), so deciding
+ * (so is one with a marker that the decoder can't use it; see raw-cache.ts). An
+ * entry from before 3.1.0 is rewritten after the photos with no entry, when the
+ * whole list fits EAGER_CACHE_LIMIT. The key is derived from the catalog record (relPath + fileSize), so deciding
  * what to skip needs no getFile — which matters because in Electron getFile()
  * reads the whole RAW off disk. So reopening a fully-cached project (this session
  * or a future one) reads one directory listing and decodes nothing. Only files
@@ -1154,7 +1152,7 @@ export async function preDecodeRawsForCache(
 
   // Writes land only in the cache folder of the project the pass began in.
   const generation = rawCacheGeneration();
-  const present = await cachedKeys(); // one directory listing
+  const { done: settled, stale } = await cacheListing(); // one directory listing
   // A cached decode is served without libraw, so Develop takes the as-shot white
   // balance from the photo's record alone: a RAW whose import left it pending, as
   // the catalog holds the photo now, waits for a later pass.
@@ -1163,20 +1161,30 @@ export async function preDecodeRawsForCache(
       .getState()
       .photos.flatMap((p) => (p.metadataPending ? [p.id] : [])),
   );
-  const todo = photos.filter(
-    (p) =>
-      p.fileHandle &&
-      !pending.has(p.id) &&
-      isRawFile({ name: p.filename } as File) &&
-      !present.has(rawCacheKey(p.relPath, p.fileSize, p.rotation ?? 0)),
+  const keyOf = (p: CatalogPhoto) => rawCacheKey(p.relPath, p.fileSize, p.rotation ?? 0);
+  const candidates = photos.filter(
+    (p) => p.fileHandle && !pending.has(p.id) && isRawFile({ name: p.filename } as File),
   );
-  if (!opts?.force && todo.length > EAGER_CACHE_LIMIT) {
+  const missing = candidates.filter((p) => !settled.has(keyOf(p)) && !stale.has(keyOf(p)));
+  if (!opts?.force && missing.length > EAGER_CACHE_LIMIT) {
     console.info(
-      `[cache] ${todo.length} photos need caching, more than the ${EAGER_CACHE_LIMIT} ` +
+      `[cache] ${missing.length} photos need caching, more than the ${EAGER_CACHE_LIMIT} ` +
         `the automatic pass takes on: they cache as they are opened`,
     );
     return;
   }
+  // Entries from before 3.1.0 still serve, so they wait behind the photos with
+  // no entry and are taken only when the whole list fits the limit; the rest
+  // complete as their photos are opened, or all at once with "Cache all now".
+  const old = candidates.filter((p) => stale.has(keyOf(p)));
+  const takeOld = opts?.force || missing.length + old.length <= EAGER_CACHE_LIMIT;
+  if (!takeOld && old.length > 0) {
+    console.info(
+      `[cache] ${old.length} entries from an earlier version are left to complete as ` +
+        `their photos are opened`,
+    );
+  }
+  const todo = takeOld ? [...missing, ...old] : missing;
   opts?.onProgress?.(0, todo.length);
   if (todo.length === 0) return;
   let done = 0;
@@ -1186,42 +1194,11 @@ export async function preDecodeRawsForCache(
   await warmDecodePool();
 
   const decodeOne = async (photo: CatalogPhoto): Promise<void> => {
-    const key = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
     try {
-      const file = await photo.fileHandle!.getFile();
-      if (signal?.aborted) return;
-      // Background: a photo opened in Develop meanwhile goes ahead of the queue.
-      const f = await decodeRawToFloat(file, { background: true, signal });
-      if (signal?.aborted) return;
-      if ("failure" in f) {
-        // Only a failure that would recur is remembered; any other is retried
-        // on a later pass.
-        if (f.failure === "unsupported") await markDecode(key, "unsupported", generation);
-        return;
-      }
-
-      let rotateDeg = photo.rotation ?? 0;
-      if (f.oriented) {
-        rotateDeg = normalizeRotation(rotateDeg - orientationToRotation(photo.exif?.orientation));
-      }
-      const r = rotateFloatRGBA(f.data, f.width, f.height, rotateDeg);
-
-      // Same ruling as Develop's open. A cached decode is served without a
-      // second look, so a marginal or wrong-colour one would show on every open.
-      // The preview is read only now, once there is a decode to judge.
-      const { use, cache } = await acceptDecode(f, r, await extractRawPreview(file));
-      if (signal?.aborted) return;
-      if (!cache) {
-        // Either verdict would come out the same on every pass. A marginal
-        // decode is still shown in Develop; a rejected one never is.
-        await markDecode(key, use ? "suspicious" : "unsupported", generation);
-        return;
-      }
-
-      const taken = await writeCachedPreview(key, r.data, r.width, r.height, generation);
-      if (taken) {
+      const result = await fillCacheEntry(photo, generation, signal);
+      if (result === "taken") {
         refusedInARow = 0;
-      } else if (++refusedInARow >= REFUSED_WRITES_BEFORE_GIVING_UP && !giveUp) {
+      } else if (result === "refused" && ++refusedInARow >= REFUSED_WRITES_BEFORE_GIVING_UP && !giveUp) {
         giveUp = true;
         console.warn(
           `[cache] ${refusedInARow} writes in a row were refused (the disk or the ` +

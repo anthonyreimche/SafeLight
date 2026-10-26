@@ -39,7 +39,7 @@ vi.mock("@/raw/cache-bridge", () => ({
   workerReadMarker: async (key: string) => h.stored.get(key) ?? null,
   workerDeleteCachedPreview: async (key: string) => void h.stored.delete(key),
   workerClearRawCache: async () => h.stored.clear(),
-  workerCachedKeys: async () => [...h.stored.keys()],
+  workerCachedKeys: async () => [...h.stored.keys()].map((key) => ({ key, complete: true })),
 }));
 
 vi.mock("@/raw/decode", () => ({

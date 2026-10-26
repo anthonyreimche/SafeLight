@@ -6,8 +6,9 @@
 // Process version 2 is frozen. Safelight 3.0.0 and 3.0.1 made every new edit
 // a version 2 edit, and those photos must keep rendering as they did. Every
 // piece of the version 2 program, and the metadata that drives it, must stay
-// the tokens 3.0.1 built (v2-reference.ts holds their SHA-256). A failure here
-// means a version 2 photo would change: fix the code, never the reference.
+// the tokens 3.0.1 built (v2-reference.ts holds their SHA-256), apart from the
+// one deliberate change recorded there. A failure here means a version 2 photo
+// would change: fix the code, never the reference.
 
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";

@@ -14,6 +14,7 @@
 import { DEFAULT_PIPELINE, type ResolvedPipeline } from "@/extensions/pipelines";
 import type { ProcessingPhase, ProcessingStageContribution, StageSpace } from "@/extensions/types";
 import { spaceKey, type StageDomain } from "../stage-space";
+import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 import { isBuiltInStage, isCoreStage } from "./builtin-stage";
 import { isMaskInstance, isMaskableStage } from "./mask-stage-instances";
 import type { ShaderVariant } from "./shaders";
@@ -30,8 +31,16 @@ import { toneShoulderOn } from "./variant-decisions";
 /** When a clip runs: on every frame; while the tool above it is in use; inside
  *  each mask that uses it, blended in by the mask's coverage; only for a
  *  fallback preview's source, which has no headroom above 1; only when the
- *  output isn't sRGB (an export to a wider space, or a monitor profile). */
-export type ClipWhen = "always" | "while-active" | "per-mask" | "fallback-preview" | "non-srgb-output";
+ *  output isn't sRGB (an export to a wider space, or a monitor profile); only
+ *  on a GPU without float render targets (or none it can mipmap), where an
+ *  intermediate is stored in a format that holds [0, 1]. */
+export type ClipWhen =
+  | "always"
+  | "while-active"
+  | "per-mask"
+  | "fallback-preview"
+  | "non-srgb-output"
+  | "no-float-targets";
 
 export type PipelineRow =
   | { kind: "core"; label: string; note?: string }
@@ -79,6 +88,17 @@ export type PipelineRow =
       detail: string;
     }
   | {
+      kind: "clamp";
+      /** A clip inside one of Safelight's own stages that findFloors can't
+       *  see, such as one in its passes. An extension stage's row shows only
+       *  what findFloors finds in its glsl and helpers. */
+      reason: "builtin-stage";
+      stageId: string;
+      where: "result";
+      when: "while-active";
+      detail: string;
+    }
+  | {
       kind: "transform";
       /** null for the built-in transform. */
       id: string | null;
@@ -95,17 +115,20 @@ type Copies = { count: number; folded: PipelineRow[] };
 interface NoteContext {
   variant: ShaderVariant;
   pipeline: ResolvedPipeline;
-  /** BuiltStageInjection.hasNoiseReduction, which sets uSkipCoreNR. */
-  replacedNR: boolean;
+  /** The noise-reduction stage the core block steps aside for, as the renderer
+   *  sets uSkipCoreNR: an extension's always, the built-in denoiser only where
+   *  it can run. */
+  replacedNR: "denoiser" | "extension" | null;
 }
 
 /** A clip a core block makes of the working colour. */
 interface CoreClip {
   readonly where: "input" | "result";
   /** When it runs on version 1, and on version 2 and later; null where that
-   *  program doesn't clip there. */
+   *  program doesn't clip there. `v3` only where version 3 differs. */
   readonly v1: ClipWhen | null;
   readonly v2: ClipWhen | null;
+  readonly v3?: ClipWhen | null;
   /** Said instead of "<block> clips …". */
   readonly detail?: string;
 }
@@ -140,13 +163,45 @@ const perMask = (where: CoreClip["where"], detail: string, on: "all" | "v1" | "v
  *  makes (pipeline-description.test.ts holds them to the shader's text). */
 export const CORE_BLOCKS: readonly CoreBlock[] = [
   { label: "Crop & Straighten", stages: "srcUv" },
-  { label: "Heal" },
+  {
+    label: "Heal",
+    // The patched copy is stored as developedFormatFor decides: only float16
+    // keeps values outside [0, 1], and version 1 never takes it.
+    clips: [
+      {
+        where: "result",
+        v1: "while-active",
+        v2: null,
+        detail: "A retouched frame develops from a patched copy of the source, stored clipped to [0, 1]",
+      },
+      {
+        where: "result",
+        v1: null,
+        v2: "no-float-targets",
+        detail:
+          "Where the GPU can't render or mipmap a float copy, a retouched frame develops from a " +
+          "patched copy of the source stored clipped to [0, 1]",
+      },
+    ],
+  },
   { label: "Linear source and baseline tone", stages: "noiseReduction" },
   {
     label: "Noise Reduction",
-    note: ({ replacedNR }) => (replacedNR ? "Skipped: a noise-reduction stage replaces it" : undefined),
+    note: ({ replacedNR }) =>
+      replacedNR === "denoiser"
+        ? "Skipped: the built-in denoiser replaces it. Runs where the denoiser can't (no float render targets): colour NR only on a RAW under the baseline tone"
+        : replacedNR === "extension"
+          ? "Skipped: a noise-reduction stage replaces it"
+          : undefined,
   },
-  { label: "Channel reconstruction" },
+  {
+    label: "Channel reconstruction",
+    // The camera baseline (baseline-tone.ts) runs right after it from version 2 on.
+    note: ({ variant, pipeline }) =>
+      variant.fullInfo && !pipeline.skipBaseCurve
+        ? "Then a RAW's baseline is refit to the camera curve and given the camera maker's exposure offset"
+        : undefined,
+  },
   { label: "White Balance" },
   { label: "Exposure, Highlights, Shadows & tone shoulder" },
   { label: "Masking (scene values)", stages: "sceneLinear" },
@@ -183,6 +238,8 @@ export const CORE_BLOCKS: readonly CoreBlock[] = [
         where: "result",
         v1: "fallback-preview",
         v2: "fallback-preview",
+        // Nothing produces a fallback preview, so version 3's program drops it.
+        v3: null,
         detail: "A fallback preview, which has no headroom above 1, is clipped to [0, 1] here",
       },
     ],
@@ -243,6 +300,16 @@ export function findFloors(stage: ProcessingStageContribution): string[] {
     }
   }
   return found;
+}
+
+// The denoiser floors a luma it computes, in its passes, where findFloors can't
+// see it (pipeline-description.test.ts holds this to builtin-denoise.ts).
+function builtinStageClips(stageId: string): PipelineRow[] {
+  if (stageId !== BUILTIN_DENOISE_ID) return [];
+  const detail =
+    "Its passes floor luma at 0 (the noise transform takes its square root): " +
+    "a colour whose luma is below 0 comes back at luma 0, its chroma kept";
+  return [{ kind: "clamp", reason: "builtin-stage", stageId, where: "result", when: "while-active", detail }];
 }
 
 function stageRow(s: Stage, variant: ShaderVariant, readsCurrent: boolean): StageRow {
@@ -386,7 +453,7 @@ export function describePipeline(
         copy.folded.push(...ahead);
         ahead = [];
       } else if (owner) {
-        rows.push(...ahead, stageRow(owner, variant, readers.has(owner.id)));
+        rows.push(...ahead, stageRow(owner, variant, readers.has(owner.id)), ...builtinStageClips(owner.id));
         ahead = [];
       }
     }
@@ -397,14 +464,17 @@ export function describePipeline(
     });
   };
 
-  const at: NoteContext = { variant, pipeline, replacedNR: hasNoiseReduction };
+  // The denoiser is in the set only while no extension's NR supersedes it.
+  const denoiserInSet = steps.some((s) => s.kind === "stage" && s.stageId === BUILTIN_DENOISE_ID);
+  const replacedNR = denoiserInSet ? "denoiser" : hasNoiseReduction ? "extension" : null;
+  const at: NoteContext = { variant, pipeline, replacedNR };
   const rows: PipelineRow[] = [];
   for (const block of CORE_BLOCKS) {
     const note = block.note?.(at);
     rows.push({ kind: "core", label: block.label, ...(note ? { note } : {}) });
     if (block.transform) rows.push(transformRow(variant, pipeline));
     for (const clip of block.clips ?? []) {
-      const when = variant.fullInfo ? clip.v2 : clip.v1;
+      const when = variant.signedOutput && clip.v3 !== undefined ? clip.v3 : variant.fullInfo ? clip.v2 : clip.v1;
       if (when) rows.push(clipRow(block.label, clip, when));
     }
     if (block.stages) rows.push(...groupRows(block.stages));

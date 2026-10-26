@@ -152,9 +152,9 @@ export function ExportPanel() {
   const [tiffBitDepth, setTiffBitDepth] = useState<8 | 16>(
     getSettings().exportTiffBitDepth,
   );
-  // Not a Preference: a PNG is 8-bit until picked otherwise, so none turns
-  // 16-bit unasked.
-  const [pngBitDepth, setPngBitDepth] = useState<8 | 16>(8);
+  const [pngBitDepth, setPngBitDepth] = useState<8 | 16>(
+    getSettings().exportPngBitDepth,
+  );
   const [colorSpace, setColorSpace] = useState<ColorSpaceId>(
     getSettings().exportColorSpace,
   );
@@ -254,6 +254,7 @@ export function ExportPanel() {
     setSharpenRadius(preset.sharpenRadius);
     setColorSpace(preset.colorSpace);
     if (preset.tiffBitDepth) setTiffBitDepth(preset.tiffBitDepth);
+    if (preset.pngBitDepth) setPngBitDepth(preset.pngBitDepth);
   };
 
   const savePreset = () => {
@@ -268,6 +269,7 @@ export function ExportPanel() {
       sharpenAmount,
       sharpenRadius,
       tiffBitDepth,
+      pngBitDepth,
     };
     const existing = presets.filter((p) => p.name !== name);
     updateSettings({ exportPresets: [...existing, preset] });

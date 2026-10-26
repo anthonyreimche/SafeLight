@@ -14,6 +14,8 @@ import {
   type DevelopParams,
   type RetouchSpot,
 } from "@/catalog/types";
+import { resolvePipelineFor } from "@/extensions/pipelines";
+import { registerPipeline, unregisterExtension } from "@/extensions/registry";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import { WebGLRenderer } from "./renderer";
 import {
@@ -226,6 +228,39 @@ describe("reads current", () => {
       expect(pixelAt(capture(r), 8, 8)[1]).toBeCloseTo(contrasted, 2);
       expect(r.renderDrawCounts.split).toBe(drawn + 1);
     });
+  });
+
+  // A display reader's input is drawn through the display transform, whose
+  // settings change no program signature.
+  it("redraws a display reader's split for a display transform setting, but not a scene reader's", () => {
+    registerPipeline("test", {
+      id: "test.tone",
+      name: "Tone",
+      glsl: "vec3 pipelineToDisplay(vec3 lin) { return gain * lin; }",
+      skipBaseCurve: true,
+      params: [{ key: "gain", glslType: "float", default: 1 }],
+    });
+    try {
+      const scene = copyStage({ id: "test.scene" });
+      const display = copyStage({
+        id: "test.display",
+        phase: "display-adjust",
+        glsl: "c = mix(c, stageResult, take);",
+      });
+      withRenderer({ stages: [scene, display], pipeline: resolvePipelineFor("test.tone") }, (r) => {
+        const takes = { "test.scene.take": 1, "test.display.take": 1 };
+        r.setImage(flat(0.2));
+        r.setParams(params());
+        r.setContributedParams({ ...takes, "test.tone.gain": 1 });
+        expect(pixelAt(capture(r), 8, 8)[1]).toBeCloseTo(0.2, 2);
+        const drawn = r.renderDrawCounts.split;
+        r.setContributedParams({ ...takes, "test.tone.gain": 2 });
+        expect(pixelAt(capture(r), 8, 8)[1]).toBeCloseTo(0.4, 2);
+        expect(r.renderDrawCounts.split).toBe(drawn + 1);
+      });
+    } finally {
+      unregisterExtension("test");
+    }
   });
 
   // The export renderer shares the main thread's stage-texture record, which a

@@ -28,8 +28,11 @@ import {
   type Frame,
   builtinStage,
   builtinStages,
+  differing,
   floatImage,
+  glHarness,
   identityParams,
+  liveFrame,
   pixelAt,
   withRenderer,
   worstDifference,
@@ -381,6 +384,197 @@ describe("the denoiser behind a decode stage", () => {
         r.render();
         expect(r.renderDrawCounts).toEqual({ split: 0, pass: 7 });
       });
+    }
+  });
+});
+
+/** The variance of red and of blue against green, away from the border: the
+ *  chroma noise Colour NR removes while it keeps luma. */
+function chromaVariance(frame: Frame): number {
+  let total = 0;
+  for (const ch of [0, 2]) {
+    const d: number[] = [];
+    for (let y = 4; y < frame.height - 4; y++) {
+      for (let x = 4; x < frame.width - 4; x++) {
+        const o = (y * frame.width + x) * 4;
+        d.push(frame.data[o + ch] - frame.data[o + 1]);
+      }
+    }
+    const m = d.reduce((a, b) => a + b, 0) / d.length;
+    total += d.reduce((a, b) => a + (b - m) ** 2, 0) / d.length;
+  }
+  return total;
+}
+
+/** An extension's noise reduction that changes nothing: it runs a pass of its
+ *  own and keeps none of the result, so a frame with it differs from one
+ *  without NR only by what the core block does. */
+const NO_OP_NR: ProcessingStageContribution = {
+  id: "test.no-op-nr",
+  name: "No-op noise reduction",
+  phase: "noise-reduction",
+  glsl: "if (amount > 0.0) lin += 0.0 * stageResult;",
+  uniforms: [{ key: "amount", glslType: "float", default: 0 }],
+  passes: [{ glsl: "c = c;" }],
+};
+
+/** The built-in denoiser under an extension's id, swapping its result in
+ *  whatever the NR sliders say, with the bag that feeds it as `p` feeds the
+ *  denoiser. With the sliders at 0 the core block has nothing to do, so its
+ *  frame is the denoiser's result with no core NR after it. */
+const TWIN_ID = "test.denoise-twin";
+const twinStages = (): ProcessingStageContribution[] =>
+  builtinStages().map((s) => (s.id === BUILTIN_DENOISE_ID ? { ...s, id: TWIN_ID, glsl: "lin = stageResult;" } : s));
+const twinBag = (p: DevelopParams): Record<string, number> =>
+  Object.fromEntries(Object.entries(denoiseBag(p)).map(([k, v]) => [k.replace(BUILTIN_DENOISE_ID, TWIN_ID), v]));
+
+// Without float render targets the prepass ping-pong is RGBA8, and the forward
+// pass's VST luma, always above 1, saturates there. Swapped in for `lin`, it
+// turned this mid grey black at the shipping Colour NR on every version, so the
+// denoiser sits out there and the core block, which reads only the source's
+// mips, does the noise reduction instead. An extension's noise reduction still
+// replaces the core block.
+describe("the denoiser on a GPU without float render targets", () => {
+  const MID_GREY = floatImage(SIZE, SIZE, () => [0.18, 0.18, 0.18]);
+  const IN_ITS_PLACE =
+    "[render] The denoiser needs float render targets; this GPU has none, so the simpler " +
+    "built-in noise reduction is used instead.";
+
+  interface Setup {
+    /** Hides EXT_color_buffer_float from the renderer, which reads it once
+     *  when it is built, as a GPU without float colour buffers would. */
+    refuseFloat: boolean;
+    stages?: ProcessingStageContribution[];
+    /** Entries beside the ones the denoiser takes from the params. */
+    bag?: Record<string, number>;
+    pipeline?: ResolvedPipeline;
+  }
+  const NO_FLOAT: Setup = { refuseFloat: true };
+  const FLOAT: Setup = { refuseFloat: false };
+
+  interface Shown {
+    /** The canvas, RGBA, top-down, with its size. */
+    frame: Frame;
+    passes: number;
+    warnings: number;
+  }
+
+  /** Two live frames of `image`, fed as Develop feeds the denoiser: the second
+   *  frame's canvas, the pass draws both took and the warnings they logged that
+   *  the core block stands in for the denoiser. */
+  function twoFrames(
+    image: FloatImage,
+    params: DevelopParams,
+    { refuseFloat, stages = builtinStages(), bag = {}, pipeline = BUILTIN_RESOLVED }: Setup,
+  ): Shown {
+    const { gl } = glHarness();
+    const getExtension = gl.getExtension.bind(gl);
+    if (refuseFloat) {
+      gl.getExtension = ((name: string) =>
+        name === "EXT_color_buffer_float" ? null : getExtension(name)) as typeof gl.getExtension;
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      return withRenderer({ stages, pipeline, processVersionCap: 3 }, (r) => {
+        r.setImage(image);
+        r.setParams(params);
+        r.setContributedParams({ ...denoiseBag(params), ...bag });
+        liveFrame(r);
+        const px = liveFrame(r);
+        return {
+          frame: { data: Float32Array.from(px), width: gl.drawingBufferWidth, height: gl.drawingBufferHeight },
+          passes: r.renderDrawCounts.pass,
+          warnings: warn.mock.calls.filter((call) => call[0] === IN_ITS_PLACE).length,
+        };
+      });
+    } finally {
+      gl.getExtension = getExtension;
+      warn.mockRestore();
+    }
+  }
+
+  const centre = ({ frame }: Shown) => pixelAt(frame, frame.width >> 1, frame.height >> 1);
+
+  for (const processVersion of [1, 2, 3]) {
+    it(`leaves a grey as it is at the default Colour NR on version ${processVersion}, warning once`, () => {
+      const off = twoFrames(MID_GREY, atVersion(processVersion, { colorNR: 0 }), NO_FLOAT);
+      const on = twoFrames(MID_GREY, atVersion(processVersion), NO_FLOAT);
+      const [r, g, b] = centre(off);
+      expect(Math.max(Math.abs(r - g), Math.abs(g - b)), "grey without NR").toBeLessThanOrEqual(1);
+      expect(g).toBeGreaterThan(100);
+      const moved = Math.max(...centre(on).map((code, ch) => Math.abs(code - centre(off)[ch])));
+      expect(moved, `${centre(on)} against ${centre(off)}`).toBeLessThanOrEqual(2);
+      expect(on.passes).toBe(0);
+      expect(on.warnings).toBe(1);
+    });
+
+    // The luminance branch measures detail against the source's mips, which
+    // never carry the RAW baseline tone, so the renderer turns it off behind the
+    // baseline (next test). It is checked where nothing tones `lin`: under a
+    // transform that skips the baseline, as a bitmap has none.
+    it(`smooths colour and luminance noise in the core block on version ${processVersion}`, () => {
+      const colour = (colorNR: number) => twoFrames(NOISY_COLOUR, atVersion(processVersion, { colorNR }), NO_FLOAT);
+      const luma = (luminanceNR: number) =>
+        twoFrames(NOISY, atVersion(processVersion, { colorNR: 0, luminanceNR }), {
+          ...NO_FLOAT,
+          pipeline: LINEAR_PROBE_PIPELINE,
+        });
+      const [colourOff, colourOn] = [colour(0), colour(25)].map((s) => chromaVariance(s.frame));
+      const [lumaOff, lumaOn] = [luma(0), luma(25)].map((s) => roughness(s.frame));
+      expect(colourOn, `chroma variance ${colourOn} against ${colourOff}`).toBeLessThan(colourOff * 0.8);
+      expect(lumaOn, `roughness ${lumaOn} against ${lumaOff}`).toBeLessThan(lumaOff * 0.5);
+    });
+
+    // Behind the baseline the branch reads the tone's lift as detail and shrinks
+    // it, shifting the shadows of a field that has no noise to remove.
+    it(`keeps Luminance NR off behind the RAW baseline on version ${processVersion}`, () => {
+      for (const level of [0.01, 0.05, 0.08, 0.2]) {
+        const grey = floatImage(SIZE, SIZE, () => [level, level, level]);
+        const off = twoFrames(grey, atVersion(processVersion), NO_FLOAT);
+        for (const luminanceNR of [25, 100]) {
+          const on = twoFrames(grey, atVersion(processVersion, { luminanceNR }), NO_FLOAT);
+          expect(differing(on.frame.data, off.frame.data), `grey ${level} at Luminance NR ${luminanceNR}`).toBe(0);
+        }
+      }
+    });
+  }
+
+  it("leaves the core block off behind an extension's noise reduction", () => {
+    const setup: Setup = {
+      refuseFloat: true,
+      stages: [...builtinStages(), NO_OP_NR],
+      bag: { [`${NO_OP_NR.id}.amount`]: 1 },
+    };
+    for (const processVersion of [1, 2, 3]) {
+      const off = twoFrames(NOISY_COLOUR, atVersion(processVersion, { colorNR: 0 }), setup);
+      const on = twoFrames(NOISY_COLOUR, atVersion(processVersion, { luminanceNR: 25 }), setup);
+      expect(on.passes, "the extension's pass").toBeGreaterThan(0);
+      expect(on.warnings).toBe(0);
+      expect(differing(on.frame.data, off.frame.data), `version ${processVersion}`).toBe(0);
+    }
+  });
+
+  it("still denoises a noisy patch where float render targets exist", () => {
+    const off = twoFrames(NOISY, atVersion(3, { colorNR: 0 }), FLOAT);
+    const on = twoFrames(NOISY, atVersion(3, { colorNR: 0, luminanceNR: 100 }), FLOAT);
+    expect(on.passes).toBeGreaterThan(0);
+    expect(on.warnings).toBe(0);
+    expect(roughness(off.frame)).toBeGreaterThan(1);
+    expect(roughness(on.frame)).toBeLessThan(roughness(off.frame) * 0.75);
+  });
+
+  it("keeps the core block out of the denoiser's result where float render targets exist", () => {
+    for (const processVersion of [1, 2, 3]) {
+      const params = atVersion(processVersion, { luminanceNR: 25 });
+      const denoised = twoFrames(NOISY_COLOUR, params, FLOAT);
+      const reference = twoFrames(
+        NOISY_COLOUR,
+        { ...params, colorNR: 0, luminanceNR: 0 },
+        { ...FLOAT, stages: twinStages(), bag: twinBag(params) },
+      );
+      expect(denoised.passes).toBeGreaterThan(0);
+      expect(reference.passes).toBeGreaterThan(0);
+      expect(differing(denoised.frame.data, reference.frame.data), `version ${processVersion}`).toBe(0);
     }
   });
 });

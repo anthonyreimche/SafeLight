@@ -664,7 +664,7 @@ describe("revealPhoto", () => {
     const env = open("D:\\Photos", true);
     await addPhoto(env, "trip/a.jpg");
 
-    await expect(revealPhoto("id:trip/a.jpg")).resolves.toBe(true);
+    await expect(revealPhoto("id:trip/a.jpg")).resolves.toEqual({ ok: true });
     expect(env.fs.revealed).toEqual(["D:\\Photos/trip/a.jpg"]);
   });
 
@@ -672,15 +672,32 @@ describe("revealPhoto", () => {
     const env = open("/home/u/photos", true);
     await addPhoto(env, "trip/a.jpg", { fileHandle: null });
 
-    await expect(revealPhoto("id:trip/a.jpg")).resolves.toBe(true);
+    await expect(revealPhoto("id:trip/a.jpg")).resolves.toEqual({ ok: true });
     expect(env.fs.revealed).toEqual(["/home/u/photos/trip/a.jpg"]);
   });
 
-  it("returns false in the browser build and for an unknown photo", async () => {
+  it("says the file may have moved when the file manager can't find it", async () => {
+    const env = open("/home/u/photos", true);
+    await addPhoto(env, "trip/a.jpg");
+    await env.fs.remove("/home/u/photos/trip/a.jpg");
+
+    await expect(revealPhoto("id:trip/a.jpg")).resolves.toEqual({
+      ok: false,
+      reason: "The file may have moved or been deleted.",
+    });
+  });
+
+  it("says why in the browser build and for an unknown photo", async () => {
     const env = open("/home/u/photos", false);
     await addPhoto(env, "a.jpg");
 
-    await expect(revealPhoto("id:a.jpg")).resolves.toBe(false);
-    await expect(revealPhoto("nope")).resolves.toBe(false);
+    await expect(revealPhoto("id:a.jpg")).resolves.toEqual({
+      ok: false,
+      reason: "Showing a file in its folder needs the desktop app.",
+    });
+    await expect(revealPhoto("nope")).resolves.toEqual({
+      ok: false,
+      reason: "The photo isn't in the open folder.",
+    });
   });
 });

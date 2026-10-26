@@ -37,6 +37,16 @@ const {
 } = require("./crash-recovery.cjs");
 const { openIssueLink } = require("./issue-link.cjs");
 const {
+  SOFTWARE_BACKEND,
+  angleBackends,
+  angleSwitches,
+  webgl2Lost,
+  softwareFallbackFor,
+  formatBackendCache,
+  parseBackendCache,
+  backendState,
+} = require("./gpu-backend.cjs");
+const {
   replacePlugin,
   settlePlugin,
   sweepPluginWork,
@@ -108,6 +118,12 @@ function appVersion() {
 // an old ANGLE backend, or SwiftShader software WebGL — all much slower than
 // the same page in Chrome. Match Chrome's fast path explicitly.
 // ---------------------------------------------------------------------------
+// Linux only, no-ops elsewhere: fallBackToSoftware sends the next launch to
+// software rendering once this one proves the GPU path unusable; the other two
+// serve Preferences ▸ Rendering ▸ Software rendering.
+let fallBackToSoftware = (_reason, _why) => {};
+let gpuBackendState = () => null;
+let setSoftwareRendering = (_on) => null;
 if (process.platform === "linux") {
   // ---------------------------------------------------------------------------
   // ANGLE backend auto-detection with persistence.
@@ -124,6 +140,11 @@ if (process.platform === "linux") {
   //   4. A runtime GPU crash (window already visible) is not the probe's
   //      business — the mid-session crash-recovery handlers reload the
   //      affected windows instead.
+  //   5. The last rung is SwiftShader software rendering. A session that loses
+  //      WebGL2, or spends its GPU crash-recovery budget, writes it to the
+  //      cache so the next launch draws in software instead of failing again
+  //      on the backend that merely started. The cache's second line says why,
+  //      and Preferences turns software on or off for the next launch.
   // ---------------------------------------------------------------------------
   // Vulkan + ozone-platform=wayland is incompatible (Chromium warns and may
   // crash). When running under a native Wayland compositor, limit the probe
@@ -131,41 +152,81 @@ if (process.platform === "linux") {
   // "vulkan" value from a prior X11 session is silently ignored (indexOf
   // returns -1, so angleIdx falls back to 0 = "gl").
   const isWayland = !!process.env.WAYLAND_DISPLAY;
-  const ANGLE_BACKENDS = isWayland ? ["gl", "gles"] : ["gl", "gles", "vulkan"];
+  const ANGLE_BACKENDS = angleBackends(isWayland);
   const configDir = path.join(
     process.env.XDG_CONFIG_HOME ||
       path.join(process.env.HOME || "", ".config"),
     "safelight"
   );
   const backendCache = path.join(configDir, "gpu-backend");
+  const readCache = () => {
+    try {
+      return parseBackendCache(fs.readFileSync(backendCache, "utf8"), ANGLE_BACKENDS);
+    } catch {
+      return { backend: null, reason: null }; // no cache yet
+    }
+  };
 
   // Prefer the cached backend; fall back to the relaunch-index argv, then "gl".
   let angleIdx = 0;
+  const startCache = readCache();
   const idxArg = process.argv.find((a) => a.startsWith("--safelight-angle-idx="));
   if (idxArg) {
     angleIdx = parseInt(idxArg.split("=")[1], 10) || 0;
-  } else {
-    try {
-      const cached = fs.readFileSync(backendCache, "utf8").trim();
-      const ci = ANGLE_BACKENDS.indexOf(cached);
-      if (ci !== -1) angleIdx = ci;
-    } catch { /* no cache yet */ }
+  } else if (startCache.backend) {
+    angleIdx = ANGLE_BACKENDS.indexOf(startCache.backend);
   }
   angleIdx = Math.max(0, Math.min(angleIdx, ANGLE_BACKENDS.length - 1));
   const backend = ANGLE_BACKENDS[angleIdx];
 
-  app.commandLine.appendSwitch("use-angle", backend);
+  for (const [name, value] of angleSwitches(backend)) {
+    if (value === undefined) app.commandLine.appendSwitch(name);
+    else app.commandLine.appendSwitch(name, value);
+  }
   app.commandLine.appendSwitch("disable-gpu-sandbox");
   app.commandLine.appendSwitch("enable-webgl");
   // Native Wayland rendering (no XWayland overhead); auto-detects X11 too.
   app.commandLine.appendSwitch("ozone-platform-hint", "auto");
 
-  // Persist the working backend once the app reaches ready (GPU confirmed OK).
-  app.whenReady().then(() => {
+  const cacheBackend = (name, reason) => {
     try {
       fs.mkdirSync(configDir, { recursive: true });
-      fs.writeFileSync(backendCache, backend, "utf8");
+      fs.writeFileSync(backendCache, formatBackendCache(name, reason), "utf8");
     } catch { /* non-fatal */ }
+  };
+
+  // Persist the working backend once the app reaches ready (GPU confirmed OK),
+  // keeping why a software launch is in software.
+  let fellBack = false;
+  app.whenReady().then(() => {
+    if (!fellBack) cacheBackend(backend, startCache.backend === backend ? startCache.reason : null);
+  });
+
+  fallBackToSoftware = (reason, why) => {
+    const next = softwareFallbackFor(backend);
+    if (!next || fellBack) return;
+    fellBack = true;
+    cacheBackend(next, reason);
+    console.error(`[safelight] ${why} on ANGLE "${backend}"; the next launch renders in software ("${next}")`);
+  };
+
+  gpuBackendState = () => backendState(backend, readCache());
+
+  // Off clears the cache, so the next launch probes the graphics card from the
+  // first rung; a machine that still fails there falls back again by itself.
+  setSoftwareRendering = (on) => {
+    if (on) cacheBackend(SOFTWARE_BACKEND, "chosen");
+    else {
+      try { fs.unlinkSync(backendCache); } catch { /* already gone */ }
+    }
+    fellBack = true;
+    return gpuBackendState();
+  };
+
+  // Chromium reports WebGL2 off once the GPU process can't provide it, or
+  // after repeated GPU crashes, and Develop can't draw at all from then on.
+  app.on("gpu-info-update", () => {
+    if (webgl2Lost(app.getGPUFeatureStatus())) fallBackToSoftware("webgl2-unavailable", "WebGL2 unavailable");
   });
 
   // On GPU process failure: clear the stale cache and relaunch with the next
@@ -1855,6 +1916,10 @@ function registerDevtoolsIpc() {
   });
 
   ipcMain.handle("diagnostics:gpuInfo", () => app.getGPUFeatureStatus());
+  // Preferences ▸ Rendering ▸ Software rendering (Linux; null elsewhere).
+  // Privileged: it sets how every later launch draws.
+  handlePrivileged("gpu:backend", () => gpuBackendState());
+  handlePrivileged("gpu:setSoftware", (_e, on) => setSoftwareRendering(on === true));
   ipcMain.handle("diagnostics:metrics", () =>
     app.getAppMetrics().map((m) => ({
       type: m.type,
@@ -2135,6 +2200,7 @@ if (!app.requestSingleInstanceLock()) {
         (recover ? `reloading ${windows.length} window(s)` : "recovery budget spent — restart the app"),
     );
     if (recover) for (const win of windows) win.webContents.reload();
+    else fallBackToSoftware("gpu-crashes", "GPU crash recovery gave up");
   });
 
   const rendererRecoveryGate = createRecoveryGate();

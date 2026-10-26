@@ -44,7 +44,7 @@ vi.mock("./cache-bridge", () => ({
     h.store.delete(key);
   },
   workerClearRawCache: async () => h.store.clear(),
-  workerCachedKeys: async () => [...h.store.keys()],
+  workerCachedKeys: async () => [...h.store.keys()].map((key) => ({ key, complete: true })),
 }));
 
 vi.mock("@/state/settings-store", () => ({

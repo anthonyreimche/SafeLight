@@ -47,6 +47,7 @@ class RenderBridge {                                     // selected members
   render(wantHistogram?, wantExtended?): void;           // one in flight; the newest request waits (histogram flags merged) until the worker answers
   computeHistogram(wantExtended?): void;                 // rides on a waiting render, else posts at once
   capture(params: DevelopParams): Promise<ImageBitmap>;   // off-screen render, pipeline resolved from params
+  readSourceSample(): Promise<SourceSample | null>;   // the native-resolution centre of the source: a live decode's, cut from the uncapped decode, or the one its RAW cache entry kept (source-sample.ts)
   uploadSource(target, key, image, maxEdge?, isFallbackPreview?, baseCurveForBitmap?, bind?): void; // budget-bounded GPU source cache
   bindSource(key): Promise<boolean>;                     // false on a cache miss (or a bind that threw): decode + uploadSource
   setOnSourceError(cb: (sourceGen: number) => void): void; // a develop source the worker couldn't take
@@ -60,6 +61,8 @@ class RenderBridge {                                     // selected members
 ```
 
 The worker answers every render: with a frame (`setOnFrame`; it carries the size and `sourceGen` of the source it was drawn from), with nothing to draw (no renderer, or no source yet for the photo the view moved to), or with an error. A render not answered in 2 s, or in 3× the slowest of the last eight answers once one of them took longer, is given up on with one console warning, and the waiting request goes; nothing more is posted until the worker answers one of the two, unless it says nothing for 30 s. A develop source the worker can't take goes to `setOnSourceError` with its number, and nothing is drawn until the next source.
+
+`setImage`'s float path cuts the centre of a live decode, up to 1024 px on each side, from the uncapped decode and keeps it as half floats (`source-sample.ts`, 8 MB) with the bound source and with each GPU source-cache entry, where it counts against the source-cache budget (8 MB per source that has a sample); only the develop renderer, the one Develop draws with, keeps it, not the thumbnail or export renderers. `readSourceSample` hands a float copy back, and frames carry the decoded size and whether the source has a sample (`sourceFullWidth`, `sourceFullHeight`, `sourceNative`). A cached preview stored with its sample (RAW cache entries from 3.1.0 on) binds with that sample and the decoded size, so `sourceNative` is true for it too.
 
 Supporting utilities: `buildRGBCurveLUT(curves)`, histogram computation (`histogram.ts`), crop/transform/upright math (`crop-transform.ts`, `transform.ts`, `upright.ts`), color-space conversion + ICC (`color-space.ts`), and retouch helpers (`heal-source.ts`, `content-aware-fill.ts`).
 
@@ -79,6 +82,8 @@ interface DecodeFailure {
 ```
 
 `request` is `{ background?, signal? }`. A background decode waits behind every interactive one and never holds every libraw instance; `signal` abandons a request still waiting for an instance (`{ failure: "aborted" }`). The time limit is a minute plus 20 s per 25 MB, extended once the frame is known to a minute plus 2 s per megapixel (that part capped at five minutes); an instance whose call outlives it, or traps, is terminated and replaced. `raw-cache.ts` reads/writes the decoded-preview cache and the decode markers that keep a RAW the decoder can't use from being decoded again.
+
+A cache entry (`cache-encode.ts`, written and read by `cache-worker.ts`) holds the preview box-averaged to `rawCacheMaxEdge` as gzip half floats, the decoded frame's size, and the frame's centre at native resolution, up to 1024 px on each side (`source-sample.ts`, the same cut `setImage` makes on a live decode), as a second gzip stream. In the project folder an entry is `.safelight/raw/<encoded key>.bin`: a 44-byte header `Uint32Array [0xFFFFFFFF, 1, width, height, fullWidth, fullHeight, sampleWidth, sampleHeight, sampleX, sampleY, previewBytes]`, the preview's stream, then the sample's. Where the folder handle can't reach the worker (Electron) the entry is an IndexedDB record carrying `fullWidth`, `fullHeight` and `sample: { blob, width, height, x, y }` beside `blob`, `width`, `height`. Entries written before 3.1.0 (`[width, height]` then one stream; a record without `fullWidth`) still read, with no size and no sample. `readCachedPreview(key, { sample })` decompresses the sample only when asked (Develop's loads ask; thumbnails, headless renders and exports don't). `cacheListing()` reports old entries as `stale` (and `cachedKeys()` leaves them out): the cache pass judges its limit on the photos with no entry, rewrites the old entries after them when the whole list fits, and otherwise leaves them to complete as their photos are opened ("Cache all now" rewrites them all), and `catalog/cache-fill.ts` (the pass's one-photo unit of work) rewrites one behind a Develop open served from an old entry, one at a time. An entry costs about 43 MB at 3072 px: 36 MB of preview and 6 to 8 MB of sample.
 
 ## Presets
 
@@ -116,6 +121,7 @@ interface ExportSettings {
   sharpenAmount?: number;       // output sharpening, 0..150 (0 = off)
   sharpenRadius?: number;       // 0.3..3.0 px
   tiffBitDepth?: 8 | 16;        // TIFF only; 16-bit falls back to 8 where float targets are unavailable
+  pngBitDepth?: 8 | 16;         // PNG only; default 8; 16-bit falls back to 8 where float targets are unavailable; needs Safelight 3.1.0 (older builds write 8-bit)
   includeMetadata?: boolean;    // carry camera, lens, exposure and capture date (off by default)
   includeLocation?: boolean;    // keep GPS when metadata is included (off by default)
   processorSettings?: Record<string, Record<string, unknown>>; // per-processor field values

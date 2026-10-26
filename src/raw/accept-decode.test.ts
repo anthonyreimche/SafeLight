@@ -9,11 +9,15 @@
 // colour, which keeps the arithmetic checkable by hand.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { baselineRefit, baselineTone } from "@/rendering/baseline-tone";
+import { toneHighlights } from "@/rendering/local-tone";
 import { acceptDecode, compareBalance } from "./accept-decode";
 
 const h = vi.hoisted(() => ({
   /** The 8-bit sRGB colour the faked preview sample reads back as. */
   previewRgb: [128, 128, 128] as [number, number, number],
+  /** When set, the colour of each sample pixel by index instead. */
+  previewPixel: null as ((i: number) => [number, number, number]) | null,
   /** Whether the image decoder can sample the preview. */
   samplable: true,
   /** Whether a WebGL2 context can be had for the readback. */
@@ -56,7 +60,7 @@ function readback(): Record<string, unknown> {
       pixels: Uint8Array,
     ) => {
       for (let i = 0; i < pixels.length; i += 4) {
-        pixels.set([...h.previewRgb, 255], i);
+        pixels.set([...(h.previewPixel?.(i / 4) ?? h.previewRgb), 255], i);
       }
     },
     getExtension: () => ({
@@ -75,6 +79,7 @@ class FakeCanvas {
 
 beforeEach(() => {
   h.previewRgb = [128, 128, 128];
+  h.previewPixel = null;
   h.samplable = true;
   h.webgl = true;
   h.samples = [];
@@ -302,5 +307,44 @@ describe("compareBalance", () => {
     expect(compareBalance(grey, { r: 0.5, g: 0.5, b: 0 }).ok).toBe(true);
     expect(compareBalance(grey, { r: Number.NaN, g: 0.5, b: 0.5 }).ok).toBe(true);
     expect(compareBalance(grey, { r: Infinity, g: 0.5, b: 0.5 }).ok).toBe(true);
+  });
+});
+
+// The preview is graded greys; the decode holds the scene levels the default
+// render (camera-match.ts) would land 0.8 EV darker than the camera did.
+describe("acceptDecode and the camera's exposure", () => {
+  const level = (i: number): number => 20 + (i % 220);
+  const rendered = (x: number): number => toneHighlights(2 ** 0.8 * baselineRefit(baselineTone(x)), 0, 0, false);
+  const sceneFor = (y: number): number => {
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (rendered(mid) < y) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  };
+  function gradedDecode(gain: [number, number, number] = [1, 1, 1]) {
+    const data = new Float32Array(64 * 64 * 4);
+    for (let i = 0; i < 64 * 64; i++) {
+      const x = sceneFor(toLinear(level(i)));
+      data.set([x * gain[0], x * gain[1], x * gain[2], 1], i * 4);
+    }
+    return { data, width: 64, height: 64 };
+  }
+
+  beforeEach(() => {
+    h.previewPixel = (i) => [level(i), level(i), level(i)];
+  });
+
+  it("reports how far the default render sits from the camera's preview", async () => {
+    const verdict = await acceptDecode({}, gradedDecode(), preview);
+    expect(verdict).toMatchObject({ use: true, cache: true });
+    expect(Math.abs((verdict.exposure ?? NaN) - 0.8)).toBeLessThan(0.05);
+  });
+
+  it("leaves it out for a decode it rejects", async () => {
+    expect(await acceptDecode({}, gradedDecode([3, 1, 1]), preview)).toEqual({ use: false, cache: false });
   });
 });
