@@ -2,129 +2,81 @@
 
 ← [Building Extensions](README.md)
 
-What an extension can register. Each is auto-tagged with the extension's id and swept when it is disabled or uninstalled. For exact signatures, see the [API Reference → Contribution Types](../api/contributions.md); this page is the at-a-glance map plus worked examples.
+Every `register*` call, one line each, with a link to its full reference. [How Safelight works](../concepts.md#where-to-find-everything) maps goals to these calls and to real extensions that use them.
 
-## What you can register
+## UI
 
-**UI** (see [UI Shell](../api/ui-shell.md) and [UI Components](../api/components.md))
-- **Modules** (`registerModule`) — a top-level module beside Library and Develop: its own tab, pop-out window and dock layout. See [UI Shell](../api/ui-shell.md#modules).
-- **Panels** (`registerPanel`) — a React component placed via `defaultDock`; dockable, tabbable, floatable like any built-in. Declare `mask` to also offer a compact copy per mask in the Masking panel's **+ Adjust** menu ([per-mask panels](../api/ui-shell.md#per-mask-panels-panelcontributionmask)).
-- **Panel header accessories** (`registerPanelHeaderAccessory`) — one control rendered on every panel's dock header, such as a preview-off eye.
-- **Slots** (`registerSlot` / `unregisterSlot`) — render into a named region of core chrome: `library-toolbar`, `library-subbar`, `develop-toolbar`, `develop-canvas-overlay`, or `develop-detail`.
-- **Cursors** (`registerCursor`) — a named canvas cursor (semantic token or custom image), driven via `api.develop.setCanvasCursor` while a tool is active.
-- **Themes** (`registerTheme`) — a named set of CSS custom properties applied to `:root`.
-- **Stylesheets** (`registerStylesheet`) — plain CSS applied in every window after the core styles, for restyling the input controls through the documented [styling hooks](../api/components.md#styling-hooks) (knob shapes, corners, checkboxes, focus effects).
-- **Layouts** (`registerLayout`) — a named dock arrangement for the Layout menu.
-- **Slider icons** (`registerSliderIcon`) — inline SVG beside a slider label.
+| Call | Adds |
+|---|---|
+| [`registerModule`](../api/ui-shell.md#modules) | A top-level module beside Library and Develop, with its own tab and dock layout |
+| [`registerPanel`](../api/ui-shell.md#panels-registerpanel) | A dockable React panel. Add `mask` to offer it [inside masks](../api/ui-shell.md#per-mask-panels-panelcontributionmask). |
+| [`registerPanelHeaderAccessory`](../api/ui-shell.md#panel-header-accessories-registerpanelheaderaccessory) | One control on every panel's header |
+| [`registerSlot`](../api/ui-shell.md#slots-registerslot) / `unregisterSlot` | A component in a named region of core chrome (toolbars, canvas overlay, Detail panel) |
+| [`registerLayout`](../api/ui-shell.md#layouts-registerlayout) | A named dock arrangement for the Layout menu |
+| [`registerTheme`](../api/contributions.md#themecontribution) | A named set of CSS custom properties |
+| [`registerStylesheet`](../api/contributions.md#stylesheetcontribution) / `unregisterStylesheet` | CSS applied after core styles, through the [styling hooks](../api/components.md#styling-hooks) |
+| [`registerCursor`](../api/contributions.md#cursorcontribution) | A named canvas cursor, set with `api.develop.setCanvasCursor` |
+| [`registerSliderIcon`](../api/contributions.md#slidericoncontribution) | An inline SVG beside a slider label |
 
-**Imaging**
-- **Render pipelines** (`registerPipeline`) — a display transform (tone mapper) picked per photo in Develop's bottom bar, with a default in **Preferences ▸ Rendering**; supply GLSL for `vec3 pipelineToDisplay(vec3 lin)`. The simplest way to ship a whole-image GPU effect.
-- **Processing stages** (`registerProcessingStage`) — a phase-ordered GPU stage compiled into the develop shader. Live: all phases, custom uniforms, multi-pass pre-passes, texture/LUT binding (`setStageTexture`), painted coverage textures (`kind: "coverage"` — a dab list in the photo's paramBag that the renderer bakes per render, for brush-confined effects), a special `geometry` phase that warps source coordinates, a declared colour [`space`](../api/contributions.md#values-a-stage-sees-space) (linear or perceptual, Rec.709 or Rec.2020), and [`reads: "current"`](../api/contributions.md#reading-the-current-image-reads) so a stage's passes start from the image as edited up to it. Reach for it when you need phase ordering, uniforms, multiple passes, or coordinate warping. Lens correction is built this way, as the optional [Lens Correction](https://github.com/anthonyreimche/Lens-Correction) extension (the old `registerLensProfile` API was removed along with core's lens database).
+## Imaging
 
-**Catalog & workflow**
-- **Catalog hooks** (`registerCatalogHooks`) — own a side concern (sidecars, metadata) by subscribing to import / metadata-change / edit-commit / photo-remove without core knowing.
-- **Grid filters** (`registerGridFilter`) — narrow the Library grid with a predicate (e.g. text/EXIF search).
-- **Library sorts** (`registerLibrarySort`) — add a sort order to the toolbar dropdown.
-- **Grid menu items** (`registerGridMenuItem`) — add an action to the Library right-click menu (e.g. "Create virtual copy").
-- **Preset importers** (`registerPresetImporter`) — teach the Presets panel to read other apps' preset files.
+| Call | Adds |
+|---|---|
+| [`registerProcessingStage`](../api/contributions.md#processingstagecontribution--gpu-stage) / `unregisterProcessingStage` | GLSL compiled into the develop program, in a phase you choose. See [How a photo is rendered](../rendering.md). |
+| [`setStageTexture`](../api/contributions.md#processingstagecontribution--gpu-stage) | Pixel data (a LUT, a table) for a texture a stage declares |
+| [`registerPipeline`](../api/contributions.md#pipelinecontribution--display-transform) | A display transform (tone mapper), picked per photo in Develop's bottom bar |
 
-Beyond `register*`, extensions can drive the app directly: render any photo headlessly (`api.export`, `api.develop.renderPhotoFrame`), add records and copy edit stacks (`api.catalog`), inspect other extensions' sliders (`api.params`), and share state with other extensions through named, cross-window variables (`api.variables`). See [State Stores & Data APIs](../api/stores.md).
+## Catalog and Library
 
-**Export**
-- **Export processors** (`registerExportProcessor`) — a step on the export's pixels before encoding, on the encoded file, or both (mat, watermark, …), with its own Export-panel settings.
-- **Filename templates** (`registerFilenameTemplate`) — a named `{variable}` template for output names.
+| Call | Adds |
+|---|---|
+| [`registerCatalogHooks`](../api/contributions.md#cataloghookscontribution) | Callbacks on photo import, metadata change, edit commit and removal |
+| [`registerGridFilter`](../api/contributions.md#gridfiltercontribution) | A predicate that narrows the Library grid |
+| [`registerLibrarySort`](../api/contributions.md#librarysortcontribution) | A sort order in the Library toolbar |
+| [`registerGridMenuItem`](../api/contributions.md#gridmenuitemcontribution) | An action in the Library right-click menu |
+| [`registerPresetImporter`](../api/contributions.md#presetimportercontribution) | A reader for other apps' preset files in the Presets panel |
 
-**Input & settings**
-- **Keyboard shortcuts** (`registerKeybinding`) — an action that appears in Preferences ▸ Shortcuts and is user-rebindable.
-- **Settings** (`registerSettings`) — a declarative settings section (`boolean`/`number`/`string`/`select` fields) or a custom component.
+## Export
 
-## Example: export processor (watermark)
+| Call | Adds |
+|---|---|
+| [`registerExportProcessor`](../api/contributions.md#exportprocessorcontribution) | A step on the export's pixels (needs Safelight 3.1.0), on the encoded file, or both, with Export-panel settings |
+| [`registerFilenameTemplate`](../api/contributions.md#filenametemplatecontribution) | A named `{variable}` template for output file names |
+
+## Input and settings
+
+| Call | Adds |
+|---|---|
+| [`registerKeybinding`](../api/contributions.md#keyactioncontribution) | An action the user can rebind in Preferences ▸ Shortcuts |
+| [`registerSettings`](../api/contributions.md#settingscontribution) | A settings section: declared fields or your own component |
+
+Beyond `register*`, the API can render photos headlessly, add records, copy edit stacks and share values between extensions. See [State Stores & Data APIs](../api/stores.md).
+
+## Example: watermark on export
 
 ```js
 export function activate(api) {
   api.registerExportProcessor({
     id: "com.example.watermark",
     label: "Watermark",
-    settings: [
-      { key: "enabled",  label: "Enable",         type: "boolean", default: true },
-      { key: "text",     label: "Watermark text", type: "string",  default: "© My Name" },
-      { key: "opacity",  label: "Opacity",        type: "number",  default: 50, min: 0, max: 100 },
-      { key: "position", label: "Position",       type: "select",  default: "bottom-right",
-        options: [
-          { value: "bottom-right", label: "Bottom right" },
-          { value: "bottom-left",  label: "Bottom left" },
-          { value: "top-right",    label: "Top right" },
-          { value: "top-left",     label: "Top left" },
-        ] },
-    ],
-    async process(blob, photo, settings) {
-      if (!settings.enabled) return blob;
+    settings: [{ key: "text", label: "Watermark text", type: "string", default: "© My Name" }],
+    async process(blob, photo, settings) {           // runs on the encoded file
       const bitmap = await createImageBitmap(blob);
       const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       const ctx = canvas.getContext("2d");
       ctx.drawImage(bitmap, 0, 0);
-      ctx.globalAlpha = settings.opacity / 100;
       ctx.font = `${Math.round(bitmap.width * 0.02)}px sans-serif`;
-      ctx.fillStyle = "#ffffff";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+      ctx.textAlign = "right";
       const pad = bitmap.width * 0.02;
-      const [vert, horiz] = settings.position.split("-");
-      const x = horiz === "right" ? bitmap.width - pad : pad;
-      const y = vert === "bottom" ? bitmap.height - pad : pad * 2;
-      ctx.textAlign = horiz === "right" ? "right" : "left";
-      ctx.fillText(settings.text, x, y);
+      ctx.fillText(settings.text, bitmap.width - pad, bitmap.height - pad);
       return canvas.convertToBlob({ type: blob.type, quality: 0.95 });
     },
   });
-
-  api.registerFilenameTemplate({
-    id: "com.example.dated",
-    label: "Date + filename",
-    template: "{year}-{month}-{day}_{filename}",
-  });
 }
 ```
 
-## Example: before/after overlay (canvas slot)
-
-The before/after pattern, as used by the Image Comparison extension, combines three pieces: a keyboard shortcut, a `develop-canvas-overlay` slot, and the [`api.develop`](../api/stores.md#apidevelop) integration.
-
-```js
-export function activate(api) {
-  const { react: React } = api;
-
-  api.registerKeybinding({
-    id: "com.example.compare.toggle",
-    label: "Show original (hold or toggle)",
-    category: "Develop",
-    defaultCombo: "\\",
-    handler: () => {/* drive previewParams from window listeners */},
-  });
-
-  function SplitOverlay() {
-    const { rect, nonce } = api.develop.useDevelopOverlay(); // image rect + change nonce
-    const before = React.useRef(null);
-    React.useEffect(() => {
-      if (!rect) return;
-      // capture an off-screen "before" frame (originalParams: the photo's params
-      // before editing) aligned to the live view, as shown on screen
-      api.develop.captureFrame(originalParams, { asShown: true }).then((bmp) => { before.current = bmp; });
-    }, [nonce]);
-    // ...draw a draggable divider that reveals `before` on one side...
-    return React.createElement("div", { /* positioned over rect, click-through */ });
-  }
-
-  api.registerSlot({
-    id: "com.example.compare.overlay",
-    slot: "develop-canvas-overlay",
-    component: SplitOverlay,
-    order: 50,
-  });
-}
-```
-
-`useDevelopOverlay()` returns the displayed image's rect (in the overlay's local coordinates) and a `nonce` that bumps whenever the view geometry changes (zoom, pan, resize, photo switch) — re-capture/re-align when it changes. `captureFrame(params)` renders the live pipeline with arbitrary params off-screen and returns an `ImageBitmap` aligned to the current view. The frame is sRGB, for measuring; pass `{ asShown: true }` when you draw it over the canvas, so that on Linux with a display profile set it is converted to the monitor like the canvas is. For brush/mask/retouch tools that paint on the canvas, see [State Stores & Tools → Brushes, masks & retouch](../api/stores.md#brushes-masks--retouch-interactive-develop-tools).
-
-## Example: catalog hooks (sidecar ownership)
+## Example: owning a sidecar with catalog hooks
 
 ```js
 export function activate(api) {
@@ -134,8 +86,8 @@ export function activate(api) {
       const xmp = await readSidecar(dir, fileName);
       return xmp ? { rating: xmp.rating, keywords: xmp.keywords } : undefined; // merged onto the record
     },
-    async onMetadataChange({ photos }) { /* write ratings/labels/keywords back out */ },
-    async onEditCommit({ photo, editState }) { /* persist develop params */ },
+    async onMetadataChange({ photos }) { /* write ratings, labels, keywords back out */ },
+    async onEditCommit({ photo, editState }) { /* persist the edit */ },
     async onPhotoRemove({ dir, fileName }) { /* delete the sidecar */ },
   });
 }

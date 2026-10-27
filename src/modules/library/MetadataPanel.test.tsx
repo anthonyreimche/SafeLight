@@ -74,6 +74,15 @@ describe("the Metadata panel", () => {
     expect(getByText("+1.53 EV")).toBeTruthy();
   });
 
+  it("shows the shadows lift beside it when the match has one", () => {
+    const a = raw("a", { exif: { baselineExposure: 1.12, baselineShadows: 55 } });
+    useCatalogStore.setState({ photos: [a.record], activePhotoId: "a" });
+
+    const { getByText } = render(<MetadataPanel />);
+
+    expect(getByText("+1.12 EV, Shadows +55")).toBeTruthy();
+  });
+
   it("shows no camera match for a photo without one", () => {
     const a = raw("a", { exif: { baselineExposure: null } });
     useCatalogStore.setState({ photos: [a.record], activePhotoId: "a" });

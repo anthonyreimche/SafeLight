@@ -111,7 +111,7 @@ export type ThumbRequest = {
 } & ({ key: string; image?: never } | { image: ThumbImage; key?: never });
 
 type SourceImage =
-  | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+  | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
   | Float16Source
   | { kind: "bitmap"; bitmap: ImageBitmap };
 

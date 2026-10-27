@@ -10,16 +10,16 @@
 // module on purpose: the importers' tests replace it wholesale, which only
 // works while it pulls in nothing from the app beyond that arithmetic.
 
-import { cameraMatchExposure, lumaSamples } from "./camera-match";
+import { cameraMatch, lumaSamples, type CameraMatch } from "./camera-match";
 
 export interface DecodeVerdict {
   /** The decode's colours agree with the camera's own preview. */
   use: boolean;
   /** `use`, and the decode is not marginal (inferred dimensions). */
   cache: boolean;
-  /** For a decode it uses: the camera match against the preview, in EV.
-   *  Absent without a preview, or with one that gives no usable match. */
-  exposure?: number;
+  /** For a decode it uses: the camera match against the preview. Absent
+   *  without a preview, or with one that gives no usable match. */
+  match?: CameraMatch;
 }
 
 interface Pixels {
@@ -41,8 +41,8 @@ export async function acceptDecode(
   const use = !sample || rawColorMatchesPreview(upright, sample);
   const verdict: DecodeVerdict = { use, cache: use && !decode.suspicious };
   if (use && sample) {
-    const exposure = cameraMatchExposure(lumaSamples(upright.data), lumaSamples(sample.data));
-    if (exposure !== undefined) verdict.exposure = exposure;
+    const match = cameraMatch(lumaSamples(upright.data), lumaSamples(sample.data));
+    if (match) verdict.match = match;
   }
   return verdict;
 }
@@ -50,9 +50,9 @@ export async function acceptDecode(
 /** The camera match between `scene`, scene-linear luminance samples of a decode
  *  (camera-match.ts lumaSamples, halfLumaSamples), and the camera's preview.
  *  Undefined when the preview can't be read or gives no usable match. */
-export async function matchCameraPreview(scene: Float32Array, preview: Blob): Promise<number | undefined> {
+export async function matchCameraPreview(scene: Float32Array, preview: Blob): Promise<CameraMatch | undefined> {
   const sample = await previewSample(preview);
-  return sample ? cameraMatchExposure(scene, lumaSamples(sample.data)) : undefined;
+  return sample ? cameraMatch(scene, lumaSamples(sample.data)) : undefined;
 }
 
 export interface ChannelMeans {

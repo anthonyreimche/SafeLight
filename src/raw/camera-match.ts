@@ -3,14 +3,16 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// How far a RAW's default render sits from its camera's own rendering, as one
-// exposure: the EV that, applied with the camera baseline (baseline-tone.ts),
-// lands the decode's tones where the camera's embedded JPEG has them. Cameras
-// place a scene in the raw very differently and push it back in their JPEG,
-// newer Nikons by over a stop and Active D-Lighting and the like shot by shot,
-// which no fixed curve or maker table can follow: on 2026-10-26 a Nikon Z 6II
-// needed +1.0 to +2.2 EV across 40 shots, and this brought each to within about
-// 0.25 EV of its camera.
+// How far a RAW's default render sits from its camera's own rendering, as an
+// exposure and a shadows lift: applied with the camera baseline
+// (baseline-tone.ts), they land the decode's tones where the camera's embedded
+// JPEG has them. Cameras place a scene in the raw very differently and push it
+// back in their JPEG, newer Nikons by over a stop and Active D-Lighting and the
+// like shot by shot, which no fixed curve or maker table can follow. Active
+// D-Lighting exposes less and lifts the shadows back up, so one exposure could
+// only meet it in the middle: on 2026-10-26 a Nikon Z 6II's 40 shots matched
+// that way came out a quarter stop too bright from the upper midtones up. With
+// the lift beside it, every tone sits within about 0.13 EV of the camera.
 //
 // The two images are compared by their luminance percentiles, so they can be
 // sampled at different points, and the preview can be smaller, cropped or not
@@ -20,7 +22,7 @@
 // per-channel result. A leaf module, as accept-decode.ts is.
 
 import { baselineRefit, baselineTone } from "@/rendering/baseline-tone";
-import { toneHighlights } from "@/rendering/local-tone";
+import { toneHighlights, toneShadows } from "@/rendering/local-tone";
 import { halfToFloat32 } from "./half-float";
 
 const PERCENTILES = [5, 10, 25, 50, 75, 90, 95, 99];
@@ -32,6 +34,11 @@ const DARKEST = 0.003;
 const LOWEST_EV = -1.5;
 const HIGHEST_EV = 3;
 const STEP_EV = 0.01;
+// The lift is searched coarsely over the whole slider, then to the step around
+// the best coarse answer: a full fine grid costs ten times the search.
+const COARSE_SHADOWS = 0.05;
+const STEP_SHADOWS = 0.01;
+const FINE_EV = 0.1;
 // Enough distinct tones for a fit: a flat frame matches any exposure at one level.
 const MIN_LEVELS = 4;
 const MIN_SPAN_EV = 1;
@@ -69,19 +76,29 @@ function percentiles(values: ArrayLike<number>): number[] {
   });
 }
 
-/** The default render's luminance for scene-linear `x` at a camera exposure of `ev`. */
-function rendered(x: number, ev: number): number {
-  return toneHighlights(2 ** ev * baselineRefit(baselineTone(x)), 0, 0, false);
+/** A RAW's camera match: the exposure in hundredths of a stop and the shadows
+ *  lift in Shadows slider steps (0 to 100) that the renderer adds to the
+ *  photo's own. */
+export interface CameraMatch {
+  exposure: number;
+  shadows: number;
+}
+
+/** The default render's luminance for `base` (the camera baseline of a
+ *  scene-linear level) at a camera exposure of `ev` and a lift of `s`
+ *  (Shadows / 100), in the render's order: shoulder, then Shadows. */
+function rendered(base: number, ev: number, s: number): number {
+  return toneShadows(toneHighlights(2 ** ev * base, 0, 0, false), s);
 }
 
 /**
- * The camera exposure, in hundredths of a stop, that brings the default render
- * of `scene` (scene-linear luminance samples of the decode) to `camera`
- * (linear luminance samples of the camera's JPEG). Undefined when the two have
- * too few tones in common to say, or the best fit lies outside any camera's
- * range.
+ * The camera match that brings the default render of `scene` (scene-linear
+ * luminance samples of the decode) to `camera` (linear luminance samples of
+ * the camera's JPEG). Undefined when the two have too few tones in common to
+ * say, or the best exposure lies outside any camera's range. The lift only
+ * goes up: no camera crushes the shadows its JPEG keeps.
  */
-export function cameraMatchExposure(scene: ArrayLike<number>, camera: ArrayLike<number>): number | undefined {
+export function cameraMatch(scene: ArrayLike<number>, camera: ArrayLike<number>): CameraMatch | undefined {
   if (scene.length === 0 || camera.length === 0) return undefined;
   const xs = percentiles(scene);
   const ys = percentiles(camera);
@@ -90,23 +107,37 @@ export function cameraMatchExposure(scene: ArrayLike<number>, camera: ArrayLike<
   const span = Math.log2(pairs[pairs.length - 1][0] / pairs[0][0]);
   if (span < MIN_SPAN_EV) return undefined;
 
+  const levels = pairs.map(([x, y]) => [baselineRefit(baselineTone(x)), Math.log2(y)]);
+
   // A robust loss on the error in stops, so the odd percentile the camera
   // rendered its own way (a clipped sky, a crushed shadow) pulls little.
-  const cost = (ev: number): number =>
-    pairs.reduce((sum, [x, y]) => {
-      const err = (Math.log2(rendered(x, ev)) - Math.log2(y)) / 0.5;
+  const cost = (ev: number, s: number): number =>
+    levels.reduce((sum, [base, logY]) => {
+      const err = (Math.log2(rendered(base, ev, s)) - logY) / 0.5;
       return sum + Math.log1p(err * err);
     }, 0);
   const steps = Math.round((HIGHEST_EV - LOWEST_EV) / STEP_EV);
-  let best = 0;
-  let bestCost = Infinity;
-  for (let k = 0; k <= steps; k++) {
-    const c = cost(LOWEST_EV + k * STEP_EV);
-    if (c < bestCost) {
-      bestCost = c;
-      best = k;
+  let best = { k: 0, s: 0, cost: Infinity };
+  const search = (kFrom: number, kTo: number, sFrom: number, sTo: number, sStep: number): void => {
+    for (let s = sFrom; s <= sTo + 1e-9; s += sStep) {
+      for (let k = kFrom; k <= kTo; k++) {
+        const c = cost(LOWEST_EV + k * STEP_EV, s);
+        if (c < best.cost) best = { k, s, cost: c };
+      }
     }
-  }
-  if (best === 0 || best === steps) return undefined;
-  return Math.round((LOWEST_EV + best * STEP_EV) * 100) / 100;
+  };
+  search(0, steps, 0, 1, COARSE_SHADOWS);
+  if (best.k === 0 || best.k === steps) return undefined;
+  const near = Math.round(FINE_EV / STEP_EV);
+  search(
+    Math.max(best.k - near, 1),
+    Math.min(best.k + near, steps - 1),
+    Math.max(best.s - COARSE_SHADOWS, 0),
+    Math.min(best.s + COARSE_SHADOWS, 1),
+    STEP_SHADOWS,
+  );
+  return {
+    exposure: Math.round((LOWEST_EV + best.k * STEP_EV) * 100) / 100,
+    shadows: Math.round(best.s * 100),
+  };
 }

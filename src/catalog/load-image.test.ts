@@ -24,7 +24,7 @@ const h = vi.hoisted(() => ({
   /** Whether each cache read asked for the centre sample, in order. */
   cacheReadSample: [] as boolean[],
   /** What matching a cache entry against its camera's preview finds. */
-  cacheMatch: undefined as number | undefined,
+  cacheMatch: undefined as { exposure: number; shadows: number } | undefined,
   /** The previews a cache entry was matched against, in order. */
   cacheMatches: [] as Blob[],
   /** The photos handed to completeCachedEntry, by id. */
@@ -161,7 +161,7 @@ vi.mock("@/state/catalog-store", () => ({
   useCatalogStore: { getState: () => ({ photos: h.catalog }) },
 }));
 
-import { loadPhotoBitmap, loadPhotoImage } from "./load-image";
+import { loadPhotoBitmap, loadPhotoImage, refreshStaleSource } from "./load-image";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -419,6 +419,17 @@ describe("loadPhotoImage with a cached develop preview", () => {
     expect(h.decodes).toHaveLength(0);
   });
 
+  // A neighbour prefetch's request would push the open photo's out of the
+  // one waiting slot (cache-fill.ts); the neighbour asks when it is shown.
+  it("does not have an old entry completed behind a background load", async () => {
+    const cached = oldEntry();
+    h.cached = cached;
+    const image = await loadPhotoImage(rawPhoto(), { sample: true, background: true });
+    expect(image).toEqual(float16(cached));
+    await settle();
+    expect(h.completions).toEqual([]);
+  });
+
   // Either verdict would only be reached again, by a decode every open repeats.
   it("does not have an entry completed whose photo the decoder marked unsupported", async () => {
     h.marked.add("unsupported");
@@ -457,8 +468,8 @@ describe("loadPhotoImage with a cached develop preview", () => {
   // In Electron getFile() reads the whole RAW over IPC; the cache key needs
   // only the catalog record.
   it("serves a cache hit without reading the original once the photo has its camera match", async () => {
-    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: 0.5 } }));
-    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: null } }));
+    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: 0.5, baselineShadows: 0 } }));
+    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: null, baselineShadows: null } }));
     expect(h.fileReads).toBe(0);
   });
 
@@ -480,6 +491,49 @@ describe("loadPhotoImage with a cached develop preview", () => {
   it("never looks in the RAW cache for a non-RAW photo", async () => {
     await loadPhotoImage(photoOf("IMG_0001.JPG"));
     expect(h.cacheReads).toBe(0);
+  });
+});
+
+// A photo Develop holds on the GPU from an entry written before 3.1.0, shown
+// again: its entry may have been rewritten meanwhile, or never asked to be.
+describe("refreshStaleSource", () => {
+  const oldEntry = (): CachedPreview => ({ data: new Uint16Array(4 * 2 * 4), width: 4, height: 2, full: null, sample: null });
+
+  it("answers a rewritten entry's decoded size and sample, and asks for no completion", async () => {
+    h.cached = { ...oldEntry(), full: { width: 6, height: 4 }, sample: STORED };
+    expect(await refreshStaleSource(rawPhoto())).toEqual({ fullWidth: 6, fullHeight: 4, sample: STORED });
+    expect(h.cacheReadSample).toEqual([true]);
+    await settle();
+    expect(h.completions).toEqual([]);
+  });
+
+  it("answers null for an entry still from before 3.1.0 and asks for its completion", async () => {
+    h.cached = oldEntry();
+    expect(await refreshStaleSource(rawPhoto())).toBeNull();
+    await settle();
+    expect(h.completions).toEqual([rawPhoto().id]);
+  });
+
+  it("asks for no completion of a photo the decoder marked unsupported", async () => {
+    h.cached = oldEntry();
+    h.marked.add("unsupported");
+    expect(await refreshStaleSource(rawPhoto())).toBeNull();
+    await settle();
+    expect(h.completions).toEqual([]);
+  });
+
+  it("asks for no completion of a photo the decoder marked suspicious", async () => {
+    h.cached = oldEntry();
+    h.marked.add("suspicious");
+    expect(await refreshStaleSource(rawPhoto())).toBeNull();
+    await settle();
+    expect(h.completions).toEqual([]);
+  });
+
+  it("answers null for a photo with no entry and asks for nothing", async () => {
+    expect(await refreshStaleSource(rawPhoto())).toBeNull();
+    await settle();
+    expect(h.completions).toEqual([]);
   });
 });
 
@@ -556,7 +610,7 @@ describe("loadPhotoImage on a cache miss", () => {
     // A full decode takes seconds; another window may change the photo meanwhile.
     // The photo has its camera match already, which a decode never relearns.
     h.decodeResult = () => Promise.resolve(floatDecode({ colorTemperature: 5200 }));
-    const photo = rawPhoto({ exif: { baselineExposure: 0 } });
+    const photo = rawPhoto({ exif: { baselineExposure: 0, baselineShadows: 0 } });
     h.catalog = [{ ...photo, rating: 4, exif: { lens: "35mm" } }];
 
     await loadPhotoImage(photo);
@@ -802,12 +856,39 @@ describe("loadPhotoImage learning the camera match", () => {
   it("learns it from a fresh decode, keeps it on the photo and renders with it", async () => {
     h.previewResult = () => Promise.resolve(embeddedJpeg);
     h.decodeResult = () => Promise.resolve(floatDecode());
-    h.verdict = { use: true, cache: true, exposure: 1.5 };
+    h.verdict = { use: true, cache: true, match: { exposure: 1.1, shadows: 55 } };
     const photo = sony();
     h.catalog = [photo];
-    expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float", baselineExposure: 1.5 });
-    expect(photo.exif.baselineExposure).toBe(1.5);
-    expect(h.saved.map((p) => p.exif.baselineExposure)).toEqual([1.5]);
+    expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float", baselineExposure: 1.1, baselineShadows: 55 });
+    expect(photo.exif).toMatchObject({ baselineExposure: 1.1, baselineShadows: 55 });
+    expect(h.saved.map((p) => [p.exif.baselineExposure, p.exif.baselineShadows])).toEqual([[1.1, 55]]);
+  });
+
+  // The match once held only an exposure, which left Active D-Lighting shots a
+  // quarter stop too bright from the upper midtones up.
+  it("matches again, on a fresh decode, a photo matched before the shadows lift was learned", async () => {
+    h.previewResult = () => Promise.resolve(embeddedJpeg);
+    h.decodeResult = () => Promise.resolve(floatDecode());
+    h.verdict = { use: true, cache: true, match: { exposure: 1.1, shadows: 55 } };
+    const photo = sony({ baselineExposure: 1.5 });
+    h.catalog = [photo];
+    expect(await loadPhotoImage(photo)).toMatchObject({ baselineExposure: 1.1, baselineShadows: 55 });
+  });
+
+  it("and on a cache hit, from the original's preview", async () => {
+    h.cached = entry();
+    h.previewResult = () => Promise.resolve(embeddedJpeg);
+    h.cacheMatch = { exposure: 1.1, shadows: 55 };
+    const photo = sony({ baselineExposure: 1.5 });
+    h.catalog = [photo];
+    expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float16", baselineExposure: 1.1, baselineShadows: 55 });
+    expect(h.cacheMatches).toEqual([embeddedJpeg]);
+  });
+
+  it("adds no lift where the match found none, nor on the maker table", async () => {
+    h.cached = entry();
+    expect(await loadPhotoImage(sony({ baselineExposure: 1.2, baselineShadows: 0 }))).not.toHaveProperty("baselineShadows");
+    expect(await loadPhotoImage(sony({ baselineExposure: null, baselineShadows: null }))).not.toHaveProperty("baselineShadows");
   });
 
   it("remembers a decode that found no usable preview, and renders it on the maker table", async () => {
@@ -815,16 +896,16 @@ describe("loadPhotoImage learning the camera match", () => {
     const photo = sony();
     h.catalog = [photo];
     expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float", baselineExposure: 0.31 });
-    expect(photo.exif.baselineExposure).toBeNull();
+    expect(photo.exif).toMatchObject({ baselineExposure: null, baselineShadows: null });
   });
 
   it("keeps the match it has when a later decode finds another", async () => {
     h.previewResult = () => Promise.resolve(embeddedJpeg);
     h.decodeResult = () => Promise.resolve(floatDecode());
-    h.verdict = { use: true, cache: true, exposure: 0.9 };
-    const photo = sony({ baselineExposure: 1.2 });
+    h.verdict = { use: true, cache: true, match: { exposure: 0.9, shadows: 10 } };
+    const photo = sony({ baselineExposure: 1.2, baselineShadows: 30 });
     h.catalog = [photo];
-    expect(await loadPhotoImage(photo)).toMatchObject({ baselineExposure: 1.2 });
+    expect(await loadPhotoImage(photo)).toMatchObject({ baselineExposure: 1.2, baselineShadows: 30 });
     expect(photo.exif.baselineExposure).toBe(1.2);
     expect(h.saved).toEqual([]);
   });
@@ -841,7 +922,11 @@ describe("loadPhotoImage learning the camera match", () => {
 
   it("serves a cache hit with the stored match", async () => {
     h.cached = entry();
-    expect(await loadPhotoImage(sony({ baselineExposure: 1.2 }))).toMatchObject({ kind: "float16", baselineExposure: 1.2 });
+    expect(await loadPhotoImage(sony({ baselineExposure: 1.2, baselineShadows: 30 }))).toMatchObject({
+      kind: "float16",
+      baselineExposure: 1.2,
+      baselineShadows: 30,
+    });
     expect(h.cacheMatches).toEqual([]);
   });
 
@@ -850,7 +935,7 @@ describe("loadPhotoImage learning the camera match", () => {
   it("learns it on a cache hit from the original's preview, once", async () => {
     h.cached = entry();
     h.previewResult = () => Promise.resolve(embeddedJpeg);
-    h.cacheMatch = 1.4;
+    h.cacheMatch = { exposure: 1.4, shadows: 0 };
     const photo = sony();
     h.catalog = [photo];
     expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float16", baselineExposure: 1.4 });
@@ -866,7 +951,7 @@ describe("loadPhotoImage learning the camera match", () => {
     const photo = sony();
     h.catalog = [photo];
     expect(await loadPhotoImage(photo)).toMatchObject({ baselineExposure: 0.31 });
-    expect(photo.exif.baselineExposure).toBeNull();
+    expect(photo.exif).toMatchObject({ baselineExposure: null, baselineShadows: null });
     await loadPhotoImage(photo);
     expect(h.fileReads).toBe(1);
   });
@@ -945,7 +1030,7 @@ describe("loadPhotoImage turning a full decode upright", () => {
 describe("loadPhotoImage keeping what the decode learned", () => {
   it("records the exposure bias a Fujifilm DR mode left in the raw", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ rawExposureBias: -1 }));
-    const photo = rawPhoto({ exif: { baselineExposure: 0 } });
+    const photo = rawPhoto({ exif: { baselineExposure: 0, baselineShadows: 0 } });
     h.catalog = [{ ...photo, exif: { lens: "35mm" } }];
 
     await loadPhotoImage(photo);
@@ -959,7 +1044,7 @@ describe("loadPhotoImage keeping what the decode learned", () => {
   it("stores a learned white balance and exposure bias in one write", async () => {
     h.decodeResult = () =>
       Promise.resolve(floatDecode({ colorTemperature: 5200, rawExposureBias: -2 }));
-    const photo = rawPhoto({ exif: { baselineExposure: 0 } });
+    const photo = rawPhoto({ exif: { baselineExposure: 0, baselineShadows: 0 } });
     h.catalog = [{ ...photo, exif: {} }];
 
     await loadPhotoImage(photo);
@@ -970,7 +1055,7 @@ describe("loadPhotoImage keeping what the decode learned", () => {
 
   it("writes nothing when the photo already has the decode's exposure bias", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ rawExposureBias: -1 }));
-    const photo = rawPhoto({ exif: { rawExposureBias: -1, baselineExposure: 0 } });
+    const photo = rawPhoto({ exif: { rawExposureBias: -1, baselineExposure: 0, baselineShadows: 0 } });
     h.catalog = [photo];
 
     await loadPhotoImage(photo);
@@ -992,7 +1077,7 @@ describe("loadPhotoImage keeping what the decode learned", () => {
 
   it("keeps an as-shot temperature the photo already has", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ colorTemperature: 5200 }));
-    const photo = rawPhoto({ exif: { colorTemperature: 4000, baselineExposure: 0 } });
+    const photo = rawPhoto({ exif: { colorTemperature: 4000, baselineExposure: 0, baselineShadows: 0 } });
     h.catalog = [photo];
 
     await loadPhotoImage(photo);

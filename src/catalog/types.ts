@@ -127,6 +127,10 @@ export interface ExifData {
   // learned from the embedded JPEG at its first decode (raw/camera-match.ts);
   // null when that preview gave no usable match, so the maker table applies.
   baselineExposure?: number | null;
+  // The Shadows the camera baseline adds with it (0 to 100), learned in the same
+  // match; null beside a null exposure. Undefined on a photo matched before the
+  // lift was learned, which is matched again.
+  baselineShadows?: number | null;
   gpsLatitude?: number;  // decimal degrees (positive = N, negative = S)
   gpsLongitude?: number; // decimal degrees (positive = E, negative = W)
   gpsAltitude?: number;  // metres above sea level
@@ -293,8 +297,12 @@ export interface BrushDab {
   radius: number;
   erase: boolean;
   feather: number; // 0..1 edge softness, captured from the brush at paint time
-  opacity?: number; // 0..1 coverage ceiling; absent = 1 (full). Captured at paint time.
+  opacity?: number; // 0..1 coverage ceiling of its stroke; absent = 1 (full). Captured at paint time.
   flow?: number; // 0..1 per-dab deposit; absent = 1 (full). Captured at paint time.
+  // First dab of a pointer stroke. Opacity caps each stroke on its own and
+  // strokes stack over each other; dabs painted before strokes were recorded
+  // carry no marker and bake as one stroke.
+  strokeStart?: boolean;
 }
 
 // Linear gradient geometry: effect ramps 0->1 from p0 to p1 (source-UV).
@@ -925,6 +933,7 @@ function normBrush(g: Partial<BrushMaskGeo> | undefined): BrushMaskGeo {
         feather: clampN(d.feather, 0, 1, 0.5),
         opacity: clampN(d.opacity, 0, 1, 1),
         flow: clampN(d.flow, 0, 1, 1),
+        ...(d.strokeStart === true ? { strokeStart: true } : {}),
       })),
   };
 }

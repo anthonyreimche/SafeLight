@@ -8,10 +8,26 @@
 // and the camera match. Develop's open and the cache pass both store it.
 
 import type { CatalogPhoto, ExifData } from "./types";
+import type { CameraMatch } from "@/raw/camera-match";
 import { catalogStorage } from "./storage";
 import { useCatalogStore } from "@/state/catalog-store";
 
-export type DecodeLearned = Partial<Pick<ExifData, "colorTemperature" | "rawExposureBias" | "baselineExposure">>;
+export type DecodeLearned = Partial<
+  Pick<ExifData, "colorTemperature" | "rawExposureBias" | "baselineExposure" | "baselineShadows">
+>;
+
+/** Whether the photo has its camera match. One learned before the match had a
+ *  shadows lift holds only the exposure, which leaves Active D-Lighting shots
+ *  too bright in the highlights, so it is learned again. */
+export function hasCameraMatch(photo: CatalogPhoto): boolean {
+  return photo.exif?.baselineShadows !== undefined;
+}
+
+/** A camera match as the photo keeps it: null for both when the decode found
+ *  no usable match, so the maker table applies and it isn't sought again. */
+export function learnedMatch(match: CameraMatch | undefined): DecodeLearned {
+  return { baselineExposure: match?.exposure ?? null, baselineShadows: match?.shadows ?? null };
+}
 
 /** Puts what the decode learned on `photo` for the load in hand, and on the
  *  catalog's record of it as the record is now: a decode takes seconds, and

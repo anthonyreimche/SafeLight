@@ -75,3 +75,11 @@ src/lens-profiles/vendor/
 # app. Install them at runtime via the Extensions window like any other.
 /extensions/
 *.png
+
+# Camera profile tables (build-scripts/camera-profiles, see its README) are
+# local research output and never ship: the tool writes to its own out/ and
+# baselines.local.json (Adobe's calibration data), and the public/ entry keeps a
+# stale local copy from being committed.
+build-scripts/camera-profiles/out/
+build-scripts/camera-profiles/baselines.local.json
+public/camera-profiles/

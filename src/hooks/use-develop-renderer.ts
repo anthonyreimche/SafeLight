@@ -19,9 +19,9 @@ import { currentDisplaySpace } from "@/rendering/display-space";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
-import type { Float16Source } from "@/rendering/source-sample";
+import type { Float16Source, StoredSample } from "@/rendering/source-sample";
 import { onCacheEntryFilled } from "@/catalog/cache-events";
-import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
+import { loadPhotoImage, photoSourceKey, refreshStaleSource } from "@/catalog/load-image";
 import type { DecodedImage, Fallback } from "@/catalog/load-image";
 import { setHealSourceImage } from "@/rendering/heal-source";
 import { useDevelopStore } from "@/state/develop-store";
@@ -117,6 +117,18 @@ function noteStaleSource(bridge: RenderBridge, key: string, image: DecodedImage)
   }
   if (image.kind === "float16" && !image.sample) keys.add(key);
   else keys.delete(key);
+}
+
+/** Hand the worker a stale source's decoded size and sample, once per key:
+ *  false when the key is not (or no longer) stale for this bridge. */
+function relayStaleSource(
+  bridge: RenderBridge,
+  key: string,
+  take: () => { fullWidth: number; fullHeight: number; sample: StoredSample },
+): boolean {
+  if (!staleSources.get(bridge)?.delete(key)) return false;
+  bridge.setSourceSample(key, take());
+  return true;
 }
 
 /** What the develop canvas shows of the open photo: "stored", its stored preview, drawn
@@ -604,14 +616,12 @@ export function useDevelopRenderer(
     // open photo turns native (sourceSize.native) without a reload. Cut only
     // for such a source, and once per key.
     const offFilled = onCacheEntryFilled((entry) => {
-      const key = photoSourceKey(entry.photo);
-      if (!staleSources.get(bridge)?.delete(key)) return;
-      bridge.setSourceSample(key, {
+      const relayed = relayStaleSource(bridge, photoSourceKey(entry.photo), () => ({
         fullWidth: entry.fullWidth,
         fullHeight: entry.fullHeight,
         sample: entry.cutSample(),
-      });
-      if (openPhotoIdRef.current === entry.photo.id) bridge.render(false);
+      }));
+      if (relayed && openPhotoIdRef.current === entry.photo.id) bridge.render(false);
     });
 
     const setHistogramRef = useDevelopStore.getState().setHistogram;
@@ -942,6 +952,18 @@ export function useDevelopRenderer(
         setSettledReason(previewReason(kept));
         syncAsShotTemp();
         drawSource();
+        // A photo held from an entry written before 3.1.0, shown again: its
+        // entry may have been rewritten while no view was listening, or never
+        // asked to be (a neighbour prefetch does not ask). Either way it takes
+        // the size and sample, or its rewrite is asked for and the event
+        // relays it.
+        if (staleSources.get(bridge)?.has(key)) {
+          void refreshStaleSource(photo).then((update) => {
+            if (update && relayStaleSource(bridge, key, () => update) && openPhotoIdRef.current === photo.id) {
+              bridge.render(false);
+            }
+          });
+        }
         setLoading(false);
         void prefetchNeighbors();
         return;

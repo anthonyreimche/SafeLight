@@ -15,7 +15,7 @@ import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
 import { acceptDecode, matchCameraPreview } from "@/raw/accept-decode";
 import { halfLumaSamples } from "@/raw/camera-match";
 import { baselineExposureFor } from "@/rendering/baseline-tone";
-import type { Float16Source } from "@/rendering/source-sample";
+import type { Float16Source, StoredSample } from "@/rendering/source-sample";
 import type { CachedPreview } from "@/raw/cache-encode";
 import { completeCachedEntry } from "./cache-fill";
 import {
@@ -36,7 +36,7 @@ import {
   type DecodeMarker,
 } from "@/raw/raw-cache";
 import { getSettings } from "@/state/settings-store";
-import { rememberLearned, type DecodeLearned } from "./decode-learned";
+import { hasCameraMatch, learnedMatch, rememberLearned, type DecodeLearned } from "./decode-learned";
 
 /** What a load settled on in place of the photo's own pixels, and why. */
 export interface Fallback {
@@ -62,7 +62,15 @@ export interface Fallback {
 // HDR-capable), the cached develop preview (the same linear scene RGBA as
 // binary16 bit patterns), or an 8-bit sRGB bitmap (a JPEG, or a fallback).
 export type DecodedImage =
-  | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+  | {
+      kind: "float";
+      data: Float32Array;
+      width: number;
+      height: number;
+      isFallbackPreview?: boolean;
+      baselineExposure?: number;
+      baselineShadows?: number;
+    }
   | Float16Source
   | { kind: "bitmap"; bitmap: ImageBitmap; cached?: boolean; fallback?: Fallback };
 
@@ -129,13 +137,14 @@ async function paintPreview(
   } catch { /* preview paint is best-effort */ }
 }
 
-/** The exposure the renderer adds with the camera baseline (baseline-tone.ts):
- *  the photo's camera match once it has one, else its maker's offset. */
-function cameraExposure(photo: CatalogPhoto): { baselineExposure?: number } {
+/** What the renderer adds with the camera baseline (baseline-tone.ts): the
+ *  photo's camera match once it has one, else its maker's exposure offset. */
+function cameraBaseline(photo: CatalogPhoto): { baselineExposure?: number; baselineShadows?: number } {
   const matched = photo.exif?.baselineExposure;
   const ev =
     typeof matched === "number" ? matched : baselineExposureFor(photo.exif?.cameraMake, photo.exif?.cameraModel);
-  return ev ? { baselineExposure: ev } : {};
+  const shadows = typeof matched === "number" ? (photo.exif?.baselineShadows ?? 0) : 0;
+  return { ...(ev ? { baselineExposure: ev } : {}), ...(shadows ? { baselineShadows: shadows } : {}) };
 }
 
 /** A cache entry written before its photo learned the camera match: read the
@@ -146,8 +155,8 @@ async function learnFromEntry(photo: CatalogPhoto, cached: CachedPreview): Promi
   if (!photo.fileHandle || !(await verifyPermission(photo.fileHandle))) return;
   try {
     const preview = await extractRawPreview(await photo.fileHandle.getFile());
-    const exposure = preview ? await matchCameraPreview(halfLumaSamples(cached.data), preview) : undefined;
-    rememberLearned(photo, { baselineExposure: exposure ?? null });
+    const match = preview ? await matchCameraPreview(halfLumaSamples(cached.data), preview) : undefined;
+    rememberLearned(photo, learnedMatch(match));
   } catch {
     // unreadable now: a later open asks again
   }
@@ -161,7 +170,7 @@ function float16Of(cached: CachedPreview, photo: CatalogPhoto): Float16Source {
     data: cached.data,
     width: cached.width,
     height: cached.height,
-    ...cameraExposure(photo),
+    ...cameraBaseline(photo),
   };
   if (cached.full) {
     image.fullWidth = cached.full.width;
@@ -169,6 +178,21 @@ function float16Of(cached: CachedPreview, photo: CatalogPhoto): Float16Source {
   }
   if (cached.sample) image.sample = cached.sample;
   return image;
+}
+
+/** Ask for the entry's rewrite unless the decoder already failed on the photo
+ *  or doubted it, which would only mark it again. Settles behind the caller. */
+function completeUnlessMarked(
+  photo: CatalogPhoto,
+  cacheKey: string,
+  generation: number,
+  unsupported: Promise<boolean> = hasDecodeMarker(cacheKey, "unsupported"),
+): void {
+  void Promise.all([unsupported, hasDecodeMarker(cacheKey, "suspicious")]).then(
+    ([isUnsupported, isSuspicious]) => {
+      if (!isUnsupported && !isSuspicious) completeCachedEntry(photo, generation);
+    },
+  );
 }
 
 // Prefer a full-precision linear RAW decode (so exposure/highlight recovery work
@@ -203,17 +227,14 @@ export async function loadPhotoImage(
   if (cached && Math.max(cached.width, cached.height) >= (opts?.minEdge ?? 0)) {
     // An entry from before 3.1.0 kept neither the decoded size nor the centre
     // sample. It serves as it is, and the photo is decoded again behind the
-    // open so a later open has both (cache-fill.ts).
-    if (opts?.sample && !cached.full) {
-      // A photo the decoder already failed on, or doubted, would only be marked
-      // again. The lookups settle behind the open, which returns at once.
-      void Promise.all([unsupportedLookup, hasDecodeMarker(cacheKey, "suspicious")]).then(
-        ([unsupported, suspicious]) => {
-          if (!unsupported && !suspicious) completeCachedEntry(photo, cacheGeneration);
-        },
-      );
+    // open so a later open has both (cache-fill.ts). A background load
+    // (Develop's neighbour prefetch) does not ask: its request would push the
+    // open photo's out of the waiting slot, and the neighbour is refreshed when
+    // it is shown (refreshStaleSource).
+    if (opts?.sample && !opts.background && !cached.full) {
+      completeUnlessMarked(photo, cacheKey, cacheGeneration, unsupportedLookup);
     }
-    if (photo.exif?.baselineExposure === undefined) await learnFromEntry(photo, cached);
+    if (!hasCameraMatch(photo)) await learnFromEntry(photo, cached);
     return float16Of(cached, photo);
   }
 
@@ -287,10 +308,10 @@ export async function loadPhotoImage(
           // is off by more than 2× vs the preview, reject the decode and fall
           // through to the JPEG-based float path below. The same ruling keeps
           // marginal decodes out of the cache (see accept-decode.ts).
-          const { use, cache, exposure } = await acceptDecode(f, r, preview);
+          const { use, cache, match } = await acceptDecode(f, r, preview);
           // A photo keeps the first match it learns, so its look doesn't move
           // between a cached open and a larger export's fresh decode.
-          if (use && photo.exif.baselineExposure === undefined) learned.baselineExposure = exposure ?? null;
+          if (use && !hasCameraMatch(photo)) Object.assign(learned, learnedMatch(match));
           rememberLearned(photo, learned);
           if (use) {
             // Write the cache when the photo has no entry yet, upgrade one
@@ -305,7 +326,7 @@ export async function loadPhotoImage(
               writeCachedPreview(cacheKey, r.data, r.width, r.height, cacheGeneration);
             }
             if (!cache) remember("suspicious");
-            return { kind: "float", data: r.data, width: r.width, height: r.height, ...cameraExposure(photo) };
+            return { kind: "float", data: r.data, width: r.width, height: r.height, ...cameraBaseline(photo) };
           }
           console.warn("[load] RAW color mismatch vs embedded JPEG — using JPEG fallback");
           remember("unsupported");
@@ -354,6 +375,25 @@ export async function loadPhotoImage(
   return fallback
     ? { kind: "bitmap", bitmap, fallback: { ...fallback, ...shortfall } }
     : { kind: "bitmap", bitmap };
+}
+
+/** For a photo Develop holds on the GPU from a RAW cache entry written before
+ *  3.1.0: the entry's decoded size and centre sample when it has been
+ *  rewritten since (by the cache pass, or a completion that landed while no
+ *  view was listening), else null, having asked for the rewrite. Costs one
+ *  read of the entry; the preview it carries is dropped. */
+export async function refreshStaleSource(
+  photo: CatalogPhoto,
+): Promise<{ fullWidth: number; fullHeight: number; sample: StoredSample } | null> {
+  const cacheKey = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
+  const generation = rawCacheGeneration();
+  const cached = await readCachedPreview(cacheKey, { sample: true });
+  if (!cached) return null;
+  if (cached.full && cached.sample) {
+    return { fullWidth: cached.full.width, fullHeight: cached.full.height, sample: cached.sample };
+  }
+  if (!cached.full) completeUnlessMarked(photo, cacheKey, generation);
+  return null;
 }
 
 interface LoadedBitmap {

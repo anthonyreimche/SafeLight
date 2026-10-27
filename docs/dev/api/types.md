@@ -6,122 +6,109 @@ The records extensions read and write. Defined in `src/catalog/types.ts`.
 
 ## CatalogPhoto
 
+One photo in the catalog, as stored in `catalog.json`.
+
 ```typescript
 interface CatalogPhoto {
   id: string;
   filename: string;
   relPath: string;           // project-relative path
-  folder: string;            // project-relative folder ("" = project root)
-  directoryHandle: FileSystemDirectoryHandle | null; // runtime-only
-  fileHandle: FileSystemFileHandle | null;           // runtime-only
-  thumbnailBlob: Blob | null;                         // runtime-only
-  thumbnailUrl: string | null;                        // runtime-only
+  folder: string;            // project-relative folder, "" = root
+  directoryHandle: FileSystemDirectoryHandle | null; // runtime-only, not saved
+  fileHandle: FileSystemFileHandle | null;           // runtime-only, not saved
+  thumbnailBlob: Blob | null;                         // runtime-only, not saved
+  thumbnailUrl: string | null;                        // runtime-only, not saved
   width: number; height: number;
   fileSize: number; mimeType: string;
-  rating: number;            // 0–5
-  colorLabel: ColorLabel;    // "none" | "red" | "yellow" | "green" | "blue" | "purple"
+  rating: number;            // 0..5
+  colorLabel: ColorLabel;    // "none" | "red" | "yellow" | ... | "purple"
   flag: FlagStatus;          // "none" | "pick" | "reject"
   rotation: number;          // 0 / 90 / 180 / 270 display rotation
   keywords: string[];
   dateCreated: number;
   dateImported: number;
   exif: ExifData;
-  decodeError?: string;      // one plain sentence on why no preview could be built (grid warning tooltip); cleared once a preview builds
-  previewEdit?: string;      // fingerprint of the edit the stored preview shows; undefined for a preview built from the file
-  previewRotation?: number;  // rotation the stored preview was made at; undefined means `rotation`
-  copyOf?: string;           // on a virtual copy: the id of the master record that owns the file
-  copyName?: string;         // on a virtual copy: its distinguisher, e.g. "copy 2"
+  decodeError?: string;      // why no preview could be built
+  previewEdit?: string;      // fingerprint of the edit the preview shows
+  previewRotation?: number;  // rotation the preview was made at
+  copyOf?: string;           // virtual copy: id of the master record
+  copyName?: string;         // virtual copy: e.g. "copy 2"
 }
 ```
 
-Handles, blobs, and URLs are runtime-only — stripped before the record is written to `catalog.json`.
+`ExifData` holds camera and lens identity, exposure, authorship, `dateTimeOriginal`, `orientation`, the as-shot `colorTemperature` (Kelvin) and GPS (decimal degrees, altitude in metres). Every field is optional.
 
-`previewEdit` and `previewRotation` describe the stored preview (`<id>.jpg`), not the photo. The edit can change without a new preview (Paste Settings, Update processing, an extension's `putEditState`), so Develop draws the stored preview first only while `previewEdit` matches the edit it opens with. A preview made at another rotation than the photo's is never shown: one is built from the file instead. Core sets both as it writes a preview. A record stored with a new `thumbnailBlob` should carry the `previewEdit` of the edit that blob shows, and none for a preview made without the edit.
+Notes:
 
-A **virtual copy** is a second record that shares another photo's source file but keeps its own id, edits and metadata. `filename` still mirrors the master's file; the displayed and exported name folds in `copyName` as `base_<copyName>.ext`. Copies of copies point at the root master. Create them with [`api.catalog.addPhotos`](stores.md#apicatalog).
-
-`ExifData` carries camera and lens identity (`cameraMake`, `cameraModel`, `lens`, `lensMake`, serials), exposure (`focalLength`, `aperture`, `shutterSpeed`, `iso`, `exposureCompensation`, …), authorship (`artist`, `copyright`, `imageDescription`), `dateTimeOriginal`, `orientation`, the as-shot white balance `colorTemperature` (Kelvin), and location (`gpsLatitude`/`gpsLongitude` in decimal degrees, `gpsAltitude` in metres). Every field is optional.
+- `previewEdit` and `previewRotation` describe the stored preview, not the photo. If you store a record with a new `thumbnailBlob`, set `previewEdit` to the edit that blob shows, or leave it unset for a preview made from the file.
+- A **virtual copy** shares its master's file but has its own id, edits and metadata. `filename` mirrors the master's. The shown and exported name is `base_<copyName>.ext`. Copies of copies point at the root master.
+- Create records, including virtual copies, with [`api.catalog.addPhotos`](stores.md#apicatalog).
 
 ## DevelopParams
 
-The complete non-destructive edit recipe for core adjustments. Slider ranges are −100..100 unless noted.
+The non-destructive recipe for the core adjustments. Sliders are −100..100 unless noted.
 
 ```typescript
 interface DevelopParams {
-  // Basic tone
-  exposure;            // -5..5 EV
+  exposure;                                    // -5..5 EV
   contrast; highlights; shadows; whites; blacks;
-  highlightDetail;     // micro-contrast in the highlight band (+ crisper, - smoother)
-  shadowDetail;        // micro-contrast in the shadow band
+  highlightDetail; shadowDetail;               // micro-contrast per tone band
   texture; clarity; dehaze; vibrance; saturation;
-  // White balance
-  temperature;         // Kelvin
-  tint;                // -150..150
-  // Detail — sharpening
-  sharpening;          // 0..100 amount
-  sharpenRadius;       // 1..3
-  sharpenDetail;       // 0..100 halo suppression
-  sharpenMasking;      // 0..100 edge masking
-  // Detail — noise reduction
+  temperature; tint;                           // Kelvin; -150..150
+  sharpening; sharpenDetail; sharpenMasking;   // 0..100 each
+  sharpenRadius;                               // 1..3
   luminanceNR; luminanceNRDetail; luminanceNRContrast;
   luminanceNRShadows; luminanceNRHighlights;
-  colorNR; colorNRDetail; colorNRSmoothness;  // 0..100 each
-  // Geometry
-  straighten;          // -45..45 degrees
-  crop;                // CropRect: x, y, width, height as 0..1 fractions
-  transform;           // perspectiveV/H, aspect, scale, offsetX/Y, flipH/V
-  uprightMode;         // "off" | "auto" | "level" | "vertical" | "full" | "guided"
-  guidedLines;         // GuidedLine[] for guided upright
-  // Color
-  toneCurve;           // ToneCurves: rgb + red/green/blue point curves
-  hsl;                 // HSLAdjustments: 8 bands × hue/saturation/luminance
-  colorGrading;        // shadows/midtones/highlights/global wheels + ranges
-  // Effects
-  vignette;            // amount, midpoint, roundness, feather, highlights
-  grain;               // amount, size, roughness, color
-  // Local
-  masks;               // Mask[], ≤ MAX_MASKS (16); ≤ MAX_MASK_COMPONENTS (24) components total
-  retouch;             // RetouchSpot[], ≤ MAX_RETOUCH (32); ≤ MAX_RETOUCH_BRUSH (4) brush-shaped
-  // Rendering
-  displayTransform;    // display transform picked for this photo, or null to follow the Preferences default
-  processVersion;      // rendering generation of this edit: 1 for edits saved before process versions, 2 for new ones
+  colorNR; colorNRDetail; colorNRSmoothness;   // 0..100 each
+  straighten;                                  // -45..45 degrees
+  crop;                                        // x, y, width, height as 0..1
+  transform; uprightMode; guidedLines;         // perspective and upright
+  toneCurve; hsl; colorGrading;
+  vignette; grain;
+  masks;                                       // ≤ 16 masks, ≤ 24 components
+  retouch;                                     // ≤ 32 spots, ≤ 4 brush-shaped
+  displayTransform;                            // null = Preferences default
+  processVersion;                              // read it, never write it
 }
 ```
 
-`processVersion` is the rendering generation an edit was made with. Edits saved before process versions existed carry none and read as version 1 (`LEGACY_PROCESS_VERSION`), so they render exactly as they always have; new edits get version 2 (`CURRENT_PROCESS_VERSION`). Presets, pasted settings and previews never change it. Reset all edits starts a photo over at the current version, and Update processing raises the version and keeps every other setting; resetting a single panel keeps it. Extensions read it and never write it. [Contribution Types → Process versions](contributions.md#process-versions) says what each version changes.
+Notes:
 
-Extension-contributed adjustments are not in `DevelopParams`: they live in a separate **param bag** keyed by qualified key (`"{stageId}.{key}"`), stored alongside the params in each history snapshot (see [EditState](#editstate)) and read through [`api.params`](stores.md#apiparams). Lens correction moved out of core into an [extension](contributions.md#processingstagecontribution--gpu-stage), so it has no field here either.
-
-`normalizeParams` upgrades older/partial params (e.g. from imported presets) so they stay compatible. The one field it doesn't fill from the defaults is `processVersion`: a missing one reads as version 1.
+- Extension adjustments are not here. They live in the **param bag** under `"{stageId}.{key}"`, saved with each history snapshot (see [EditState](#editstate)) and described by [`api.params`](stores.md#apiparams).
+- A missing `processVersion` reads as 1. New edits get 2. Presets and pasted settings never change it. See [Process versions](contributions.md#process-versions).
+- `normalizeParams` fills older or partial params (from imported presets, say) from the defaults, except `processVersion`.
 
 ## Masks and retouch
 
-A `Mask` carries one or more **components** — `radial`, `linear`, `brush`, `lumRange`, or `colorRange` — each combined in list order with mode `add` | `subtract` | `intersect`, and each optionally inverted.
+A `Mask` combines one or more components (`radial`, `linear`, `brush`, `lumRange`, `colorRange`) in list order, each with mode `add`, `subtract` or `intersect` and an optional invert.
 
 ```typescript
 interface Mask {
   id: string; name: string;
   visible: boolean;            // false = muted but still listed
-  invert: boolean;             // invert the whole combined coverage
-  opacity: number;             // 0..100 overall strength
-  adj: MaskAdjustments;        // exposure, contrast, …, temperature, tint, texture, clarity, dehaze, sharpness
-  panels: string[];            // active sub-panels, as registered panel ids ("core.basic", "my-ext.panel")
-  hsl?: HSLAdjustments;        // present only while the HSL sub-panel is added
-  toneCurve?: ToneCurves;      // present only while the Tone Curve sub-panel is added
-  bag?: Record<string, unknown>; // mask-scoped extension params by qualified key
+  invert: boolean;             // invert the combined coverage
+  opacity: number;             // 0..100
+  adj: MaskAdjustments;        // exposure, contrast, ..., sharpness
+  panels: string[];            // active sub-panels, by panel id
+  hsl?: HSLAdjustments;        // only while the HSL sub-panel is added
+  toneCurve?: ToneCurves;      // only while Tone Curve is added
+  bag?: Record<string, unknown>; // mask-scoped extension params
   components: MaskComponent[]; // at least one
 }
 ```
 
-`panels` lists [per-mask panels](ui-shell.md#per-mask-panels-panelcontributionmask) by id. Unknown ids are kept, so a disabled extension's sub-panels come back when it is re-enabled. A [maskable stage](contributions.md#processingstagecontribution--gpu-stage) with any key in `bag` runs once more inside the mask with those values, on photos at process version 2 or later.
+A `BrushDab` is `{ x, y, radius, erase, feather, opacity?, flow? }` in source UV, with `radius` in image-height units. A `RetouchSpot` is a `"circle"` or `"brush"` spot in `"heal"` or `"clone"` mode, with destination and source positions in source UV.
 
-Brush coverage shares one four-channel texture (`MAX_BRUSH_MASKS` = 4) between brush mask components and extension [coverage textures](contributions.md#processingstagecontribution--gpu-stage). A `BrushDab` is `{ x, y, radius, erase, feather, opacity?, flow? }` in source-UV, with `radius` in image-height units.
+Notes:
 
-Each `RetouchSpot` has a `shape` (`"circle"` | `"brush"`), a `mode` (`"heal"` | `"clone"`), destination and source positions in source-UV, radius, feather and opacity, plus optional auto-fit fields (`angle`, `scale`, `recolorR/G/B`) and `dabs` for brush-shaped spots. The interactive actions that build masks and spots live in [State Stores → Brushes, masks & retouch](stores.md#brushes-masks--retouch-interactive-develop-tools).
+- `panels` lists [per-mask panels](ui-shell.md#per-mask-panels-panelcontributionmask). Unknown ids are kept, so a disabled extension's sub-panels return when it is re-enabled.
+- A [maskable stage](contributions.md#processingstagecontribution--gpu-stage) with keys in `bag` runs again inside the mask with those values, on process version 2 or later.
+- Brush mask components and extension [coverage textures](contributions.md#processingstagecontribution--gpu-stage) share one four-channel texture (`MAX_BRUSH_MASKS` = 4).
+- The actions that build masks and spots are in [Brushes, masks & retouch](stores.md#brushes-masks--retouch-interactive-develop-tools).
 
 ## EditState
 
-A photo's saved edit is its undo stack:
+A photo's saved edit is its undo stack.
 
 ```typescript
 interface EditState {
@@ -132,10 +119,14 @@ interface EditState {
 
 interface EditSnapshot {
   timestamp: number;
-  label: string;               // the history entry's name, e.g. "Brush mask"
+  label: string;               // history entry name, e.g. "Brush mask"
   params: DevelopParams;
-  paramBag?: Record<string, unknown>; // extension stage params by qualified key
+  paramBag?: Record<string, unknown>; // extension params by qualified key
 }
 ```
 
-`commitEdit(label)` in the develop store records a history entry when the edit changed since the current entry; a commit that changes nothing adds no entry, keeps the redo steps, and fires no `onEditCommit`. Read and write whole stacks with [`api.catalog.getEditState` / `putEditState`](stores.md#apicatalog) (writing the stack of the photo open in Develop reloads it there), and observe commits with a [catalog hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.
+Notes:
+
+- `commitEdit(label)` in the develop store adds an entry only if the edit changed. A no-op commit adds nothing, keeps redo, and fires no `onEditCommit`.
+- Read and write whole stacks with [`api.catalog.getEditState` / `putEditState`](stores.md#apicatalog). Writing the photo open in Develop reloads it there.
+- Observe commits with a [catalog hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.

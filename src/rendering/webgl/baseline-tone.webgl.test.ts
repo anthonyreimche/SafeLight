@@ -73,12 +73,14 @@ describe("default baseline tone on the GPU", () => {
 });
 
 // Process version 2 and later: baselineTone, then after clip recovery the refit
-// and the camera maker's gain (baseline-tone.ts). Read at the scene point,
-// linear, so each value is the working colour the display transform receives.
+// and the camera maker's gain (baseline-tone.ts), and the camera match's
+// shadows lift added to the photo's Shadows. Read at the scene point, linear,
+// so each value is the working colour the display transform receives.
 const V3 = { processVersionCap: 3 } as const;
-const grey = (value: number, baselineExposure?: number) => ({
+const grey = (value: number, baselineExposure?: number, baselineShadows?: number) => ({
   ...floatImage(16, 16, () => [value, value, value]),
   ...(baselineExposure === undefined ? {} : { baselineExposure }),
+  ...(baselineShadows === undefined ? {} : { baselineShadows }),
 });
 const refitTone = (x: number): number => baselineRefit(baselineTone(x));
 
@@ -108,6 +110,10 @@ const expectGrey = (got: readonly number[], expected: number) => {
 describe("the version 1 baseline on the GPU", () => {
   it("stays on the frozen curve, whatever the camera", () => {
     expectGrey(renderScene(grey(0.09, 0.31), identityParams({ processVersion: 1 })), baselineTone(0.09));
+  });
+
+  it("adds no camera shadows lift", () => {
+    expectGrey(renderScene(grey(0.04, 1, 55), identityParams({ processVersion: 1 })), baselineTone(0.04));
   });
 });
 
@@ -150,6 +156,33 @@ for (const version of [2, 3] as const) describe(`the camera baseline on the GPU,
   it("measures Highlights and Shadows regions in the pixel's units", () => {
     const pixel = refitTone(0.04) * 2;
     expectGrey(renderScene(grey(0.04, 1), versionParams({ shadows: 100 })), toneShadows(pixel, 1));
+  });
+
+  // On a flat frame the region is the pixel, so the lift lands on the pixel's
+  // own Shadows curve.
+  it("lifts the shadows by the camera match's amount on top of the photo's own", () => {
+    const pixel = refitTone(0.04) * 2;
+    expectGrey(renderScene(grey(0.04, 1, 55), versionParams()), toneShadows(pixel, 0.55));
+    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: 20 })), toneShadows(pixel, 0.75));
+    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: 80 })), toneShadows(pixel, 1));
+  });
+
+  it("restores each resident source's own lift when it is bound again", () => {
+    const got = withRenderer(V3, (renderer) => {
+      renderer.uploadSource("nikon:0", grey(0.04, 1, 55));
+      renderer.uploadSource("canon:0", grey(0.04, 1));
+      renderer.setParams(versionParams());
+      renderer.bindSource("nikon:0");
+      const nikon = scene(renderer);
+      renderer.bindSource("canon:0");
+      return { nikon, canon: scene(renderer) };
+    });
+    expectGrey(got.nikon, toneShadows(refitTone(0.04) * 2, 0.55));
+    expectGrey(got.canon, refitTone(0.04) * 2);
+  });
+
+  it("keeps the lift out of a display transform that owns its own baseline", () => {
+    expectGrey(renderScene(grey(0.09, 0.31, 55), versionParams(), { ...V3, stages: [], pipeline: LINEAR_PROBE_PIPELINE }), 0.09);
   });
 
   // A decode stage's passes read the source through the shared pass prelude,

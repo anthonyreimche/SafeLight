@@ -36,7 +36,7 @@ export function coverageSignature(items: CoverageItem[], imageAspect: number): s
         it.dabs
           .map(
             (d) =>
-              `${d.x.toFixed(4)},${d.y.toFixed(4)},${d.radius.toFixed(4)},${d.feather.toFixed(3)},${(d.opacity ?? 1).toFixed(3)},${(d.flow ?? 1).toFixed(3)},${d.erase ? 1 : 0}`,
+              `${d.x.toFixed(4)},${d.y.toFixed(4)},${d.radius.toFixed(4)},${d.feather.toFixed(3)},${(d.opacity ?? 1).toFixed(3)},${(d.flow ?? 1).toFixed(3)},${d.erase ? 1 : 0},${d.strokeStart === true ? 1 : 0}`,
           )
           .join("|"),
     )
@@ -80,15 +80,41 @@ export class CoverageInputs {
   }
 }
 
+interface StrokeRun {
+  erase: boolean;
+  dabs: BrushDab[];
+}
+
+// Splits an item's dabs into the strokes that composite one over another. A
+// stroke starts at a strokeStart dab, and a marked stroke also splits where
+// the brush flips between paint and erase. Dabs ahead of the first marker were
+// painted before strokes were recorded, so they stay one paint run with any
+// erase dabs inside it, which is how they always baked.
+function strokeRuns(dabs: BrushDab[]): StrokeRun[] {
+  const runs: StrokeRun[] = [];
+  let legacy = true;
+  for (const dab of dabs) {
+    const start = dab.strokeStart === true;
+    if (start) legacy = false;
+    const last = runs[runs.length - 1];
+    if (last && !start && (legacy || last.erase === dab.erase)) last.dabs.push(dab);
+    else runs.push({ erase: !legacy && dab.erase, dabs: [dab] });
+  }
+  return runs;
+}
+
 // Bake up to four coverage items into an RGBA atlas. Returns null when empty.
 //
 // Two controls shape each dab, mirroring a classic paint brush:
 //   • flow — how much coverage one dab deposits. Overlapping dabs accumulate
 //     (alpha "source-over"), so a low-flow brush builds density gradually as
-//     strokes pass back over an area; erase dabs remove coverage the same way.
-//   • opacity — the ceiling that build-up can reach. Each paint dab raises a
-//     separate per-pixel ceiling (max of its own opacity); the final coverage
-//     is the accumulated flow clamped to that ceiling.
+//     it passes back over an area.
+//   • opacity — the ceiling that build-up can reach within one stroke. Each
+//     dab raises a per-pixel ceiling (max of its own opacity); the stroke's
+//     coverage is its accumulated flow clamped to that ceiling.
+// Strokes then stack: a paint stroke lays its coverage over what is there
+// ("source-over", so two 50% strokes reach 75%), and an erase stroke removes
+// that share of it.
 // At the defaults (flow 1, opacity 1) a stroke fills solidly to full coverage.
 export function bakeCoverage(
   items: CoverageItem[],
@@ -105,7 +131,8 @@ export function bakeCoverage(
       : new OffscreenCanvas(BAKE_SIZE, BAKE_SIZE);
   canvas.width = BAKE_SIZE;
   canvas.height = BAKE_SIZE;
-  const ctx = canvas.getContext("2d") as
+  // Every stroke is read back, so keep the canvas in CPU memory.
+  const ctx = canvas.getContext("2d", { willReadFrequently: true }) as
     | CanvasRenderingContext2D
     | OffscreenCanvasRenderingContext2D
     | null;
@@ -140,48 +167,86 @@ export function bakeCoverage(
     ctx.restore();
   };
 
+  // The pixel box a run's dabs can reach, or null when they reach none.
+  const runBox = (dabs: BrushDab[]) => {
+    let x0 = BAKE_SIZE;
+    let y0 = BAKE_SIZE;
+    let x1 = 0;
+    let y1 = 0;
+    for (const dab of dabs) {
+      const ry = dab.radius * BAKE_SIZE;
+      const rx = (dab.radius / aspect) * BAKE_SIZE;
+      x0 = Math.min(x0, Math.floor(dab.x * BAKE_SIZE - rx) - 1);
+      y0 = Math.min(y0, Math.floor(dab.y * BAKE_SIZE - ry) - 1);
+      x1 = Math.max(x1, Math.ceil(dab.x * BAKE_SIZE + rx) + 1);
+      y1 = Math.max(y1, Math.ceil(dab.y * BAKE_SIZE + ry) + 1);
+    }
+    x0 = Math.max(0, x0);
+    y0 = Math.max(0, y0);
+    x1 = Math.min(BAKE_SIZE, x1);
+    y1 = Math.min(BAKE_SIZE, y1);
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+  };
+
   list.forEach((item, ch) => {
     channelOf[item.id] = ch;
+    const total = new Float32Array(BAKE_SIZE * BAKE_SIZE);
 
-    // ── Pass 1: coverage with flow build-up, in the alpha channel ──
-    // Transparent base. Paint deposits `flow` alpha (source-over accumulates);
-    // erase removes it (destination-out).
-    ctx.globalCompositeOperation = "source-over";
-    ctx.clearRect(0, 0, BAKE_SIZE, BAKE_SIZE);
-    for (const dab of item.dabs) {
-      const a = clamp01(dab.flow ?? 1).toFixed(4);
-      stamp(dab, dab.erase ? "destination-out" : "source-over", (g, core) => {
-        g.addColorStop(0, `rgba(255,255,255,${a})`);
-        g.addColorStop(core, `rgba(255,255,255,${a})`);
-        g.addColorStop(1, "rgba(255,255,255,0)");
-      });
+    for (const run of strokeRuns(item.dabs)) {
+      const box = runBox(run.dabs);
+      if (!box) continue;
+
+      // ── Pass 1: coverage with flow build-up, in the alpha channel ──
+      // Transparent base. Dabs deposit `flow` alpha (source-over accumulates);
+      // erase dabs inside a paint run remove it (destination-out).
+      ctx.globalCompositeOperation = "source-over";
+      ctx.clearRect(box.x, box.y, box.w, box.h);
+      for (const dab of run.dabs) {
+        const a = clamp01(dab.flow ?? 1).toFixed(4);
+        stamp(dab, dab.erase && !run.erase ? "destination-out" : "source-over", (g, core) => {
+          g.addColorStop(0, `rgba(255,255,255,${a})`);
+          g.addColorStop(core, `rgba(255,255,255,${a})`);
+          g.addColorStop(1, "rgba(255,255,255,0)");
+        });
+      }
+      const cover = ctx.getImageData(box.x, box.y, box.w, box.h).data;
+
+      // ── Pass 2: opacity ceiling (luminance) ──
+      // Each dab of the run's own kind raises the ceiling to its opacity via
+      // max(); erase dabs inside a paint run don't cap anything.
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "#000";
+      ctx.fillRect(box.x, box.y, box.w, box.h);
+      for (const dab of run.dabs) {
+        if (dab.erase !== run.erase) continue;
+        const lvl = Math.round(clamp01(dab.opacity ?? 1) * 255);
+        const fill = `rgb(${lvl},${lvl},${lvl})`;
+        stamp(dab, "lighten", (g, core) => {
+          g.addColorStop(0, fill);
+          g.addColorStop(core, fill);
+          g.addColorStop(1, "#000");
+        });
+      }
+      ctx.globalCompositeOperation = "source-over";
+      const ceil = ctx.getImageData(box.x, box.y, box.w, box.h).data;
+
+      // The run's coverage = accumulated flow clamped to its opacity ceiling,
+      // laid over (or cut out of) the strokes before it.
+      for (let y = 0; y < box.h; y++) {
+        for (let x = 0; x < box.w; x++) {
+          const j = (y * box.w + x) * 4;
+          const a = cover[j + 3]; // accumulated flow (alpha)
+          const c = ceil[j]; // opacity ceiling (luminance)
+          const s = (a < c ? a : c) / 255;
+          if (s === 0) continue;
+          const i = (box.y + y) * BAKE_SIZE + box.x + x;
+          total[i] = run.erase ? total[i] * (1 - s) : total[i] + s * (1 - total[i]);
+        }
+      }
     }
-    const cover = ctx.getImageData(0, 0, BAKE_SIZE, BAKE_SIZE).data;
 
-    // ── Pass 2: opacity ceiling (luminance, paint dabs only) ──
-    // Each paint dab raises the ceiling to its own opacity via max(); erase
-    // dabs don't cap anything.
-    ctx.globalCompositeOperation = "source-over";
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, BAKE_SIZE, BAKE_SIZE);
-    for (const dab of item.dabs) {
-      if (dab.erase) continue;
-      const lvl = Math.round(clamp01(dab.opacity ?? 1) * 255);
-      const fill = `rgb(${lvl},${lvl},${lvl})`;
-      stamp(dab, "lighten", (g, core) => {
-        g.addColorStop(0, fill);
-        g.addColorStop(core, fill);
-        g.addColorStop(1, "#000");
-      });
-    }
-    ctx.globalCompositeOperation = "source-over";
-    const ceil = ctx.getImageData(0, 0, BAKE_SIZE, BAKE_SIZE).data;
-
-    // Final coverage = accumulated flow clamped to the per-pixel opacity ceiling.
     for (let i = 0; i < BAKE_SIZE * BAKE_SIZE; i++) {
-      const a = cover[i * 4 + 3]; // accumulated flow (alpha)
-      const c = ceil[i * 4]; // opacity ceiling (luminance)
-      out[i * 4 + ch] = a < c ? a : c;
+      out[i * 4 + ch] = Math.round(total[i] * 255);
     }
   });
 

@@ -34,7 +34,8 @@ export type StoredSample = Omit<SourceSample, "data"> & { data: Uint16Array };
 /** A cached develop preview as the renderer takes it: the stored half floats,
  *  the decoded frame's size when the entry kept it (3.1.0 and later), its
  *  centre sample when the load asked for it (load-image.ts `sample`), and the
- *  camera maker's exposure offset when it has one (baselineExposureFor). */
+ *  camera baseline's exposure and shadows lift when it has them (the photo's
+ *  camera match, else its maker's offset: baselineExposureFor). */
 export interface Float16Source {
   kind: "float16";
   data: Uint16Array;
@@ -44,6 +45,7 @@ export interface Float16Source {
   fullHeight?: number;
   sample?: StoredSample;
   baselineExposure?: number;
+  baselineShadows?: number;
 }
 
 /** The centre of the frame, up to SOURCE_SAMPLE_EDGE on each side (a side

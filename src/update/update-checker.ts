@@ -184,14 +184,14 @@ export async function checkForUpdateFull(
 }
 
 /**
- * Returns all non-draft releases sorted newest-first, for the release history
+ * Returns all non-draft releases with a version tag, sorted newest-first, for the release history
  * / downgrade UI. Rejects with why when the list can't be fetched or read.
  */
 export async function fetchAllReleases(): Promise<ReleaseEntry[]> {
   const outcome = await fetchReleases();
   if (!outcome.ok) throw new Error(outcome.detail);
   return outcome.releases
-    .filter((r) => !r.draft)
+    .filter((r) => !r.draft && isSemver(r.tag_name))
     .map((r) => ({
       version: r.tag_name.replace(/^v/, ""),
       tag: r.tag_name,

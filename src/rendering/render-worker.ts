@@ -30,7 +30,7 @@ export type WorkerRequest =
   | {
       cmd: "setImage";
       image:
-        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
         | Float16Source
         | { kind: "bitmap"; bitmap: ImageBitmap };
       maxEdge?: number;
@@ -104,7 +104,7 @@ export type WorkerRequest =
       cmd: "renderThumbnail";
       requestId: string;
       image:
-        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
         | Float16Source
         | { kind: "bitmap"; bitmap: ImageBitmap };
       params: DevelopParams;
@@ -144,7 +144,7 @@ export type WorkerRequest =
       target: "main" | "thumb";
       key: string;
       image:
-        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
         | Float16Source
         | { kind: "bitmap"; bitmap: ImageBitmap };
       maxEdge?: number;

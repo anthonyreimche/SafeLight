@@ -32,6 +32,7 @@ import { NO_FILTER } from "@/modules/library/visible-photos";
 import {
   loadPhotoImage,
   photoSourceKey,
+  refreshStaleSource,
   type DecodedImage,
   type Fallback,
 } from "@/catalog/load-image";
@@ -56,7 +57,11 @@ import type { DevelopTier } from "./use-develop-renderer";
 // Pass-through, so the options each load is asked with can be read back.
 vi.mock("@/catalog/load-image", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/catalog/load-image")>();
-  return { ...real, loadPhotoImage: vi.fn(real.loadPhotoImage) };
+  return {
+    ...real,
+    loadPhotoImage: vi.fn(real.loadPhotoImage),
+    refreshStaleSource: vi.fn(real.refreshStaleSource),
+  };
 });
 
 // The decode pool's instances are only tokens handed round here.
@@ -3633,5 +3638,139 @@ describe("a cached preview whose RAW cache entry is rewritten while it is held",
     act(() => emitCacheEntryFilled(filled(subject)));
 
     expect(updates(worker)).toEqual([]);
+  });
+
+  // A neighbour decoded ahead is held stale too; its entry's rewrite reaches it
+  // without drawing, since the canvas shows another photo.
+  it("hands a neighbour decoded ahead its entry's size and sample without drawing", async () => {
+    const shot = (id: string) => photo({ id, filename: `${id}.jpg`, relPath: `${id}.jpg` });
+    useCatalogStore.setState({ photos: [shot("a"), shot("b")] });
+    useUIStore.setState({
+      filter: NO_FILTER,
+      sortField: "filename",
+      sortDirection: "asc",
+      activeFolder: null,
+    });
+    useDevelopStore.setState({ photoId: "a" });
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+
+    const { worker } = await open(shot("a"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+      for (const m of worker.posted) {
+        if (m.cmd === "hasSource") worker.reply({ type: "hasSource", reqId: m.reqId, has: false });
+      }
+      await settle();
+    });
+    expect(sourceMessages(worker)).toContain("upload b:0 bind=false");
+    // A background load asks for no completion (load-image.ts), which would
+    // push the open photo's out of the waiting slot.
+    const neighbour = vi.mocked(loadPhotoImage).mock.calls.find(([p]) => p.id === "b");
+    expect(neighbour?.[1]).toMatchObject({ background: true });
+    const render = vi.spyOn(getRenderBridge(), "render");
+
+    act(() => emitCacheEntryFilled(filled(shot("b"))));
+
+    expect(updates(worker)).toEqual([
+      { cmd: "setSourceSample", key: photoSourceKey(shot("b")), fullWidth: 6, fullHeight: 4, sample: SAMPLE },
+    ]);
+    expect(render).not.toHaveBeenCalledWith(false);
+
+    act(() => emitCacheEntryFilled(filled(shot("a"))));
+
+    expect(updates(worker).map((m) => m.key)).toEqual([photoSourceKey(shot("b")), photoSourceKey(shot("a"))]);
+    expect(render).toHaveBeenCalledWith(false);
+    render.mockRestore();
+  });
+
+  // Bound from the GPU again, a stale photo reads its entry: the rewrite may
+  // have landed while no view was listening, or never been asked for.
+  describe("opened again from the GPU", () => {
+    type Refreshed = Awaited<ReturnType<typeof refreshStaleSource>>;
+    const rewritten = { fullWidth: 6, fullHeight: 4, sample: SAMPLE };
+
+    /** The view is closed, and the photo opened again in a new one. */
+    async function openAgain(subject: CatalogPhoto, worker: FakeWorker) {
+      const answered = new Set(
+        worker.posted.flatMap((m) => (m.cmd === "bindSource" ? [m.reqId] : [])),
+      );
+      cleanup();
+      render(<Develop subject={subject} />);
+      await act(async () => {
+        await settle();
+        answerBinds(worker, false, answered);
+        await settle();
+      });
+      await answerRenders(worker);
+    }
+
+    beforeEach(() => {
+      FakeWorker.cache = new Set();
+      vi.mocked(refreshStaleSource).mockClear();
+    });
+
+    it("asks for its entry, hands the worker the answer, then draws", async () => {
+      const subject = photo();
+      vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+      let answer = (_: Refreshed) => {};
+      vi.mocked(refreshStaleSource).mockImplementationOnce(() => new Promise<Refreshed>((r) => (answer = r)));
+      const { worker } = await open(subject);
+      await answerRenders(worker);
+
+      await openAgain(subject, worker);
+
+      expect(vi.mocked(loadPhotoImage)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(refreshStaleSource).mock.calls.map(([p]) => p.id)).toEqual([subject.id]);
+      const draw = vi.spyOn(getRenderBridge(), "render");
+      await act(async () => answer(rewritten));
+      expect(updates(worker)).toEqual([{ cmd: "setSourceSample", key: photoSourceKey(subject), ...rewritten }]);
+      expect(draw).toHaveBeenCalledWith(false);
+      draw.mockRestore();
+    });
+
+    it("posts nothing on a null answer, and the rewrite it asked for still reaches the photo", async () => {
+      const subject = photo();
+      vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+      vi.mocked(refreshStaleSource).mockResolvedValueOnce(null);
+      const { worker } = await open(subject);
+      await answerRenders(worker);
+
+      await openAgain(subject, worker);
+
+      expect(vi.mocked(refreshStaleSource)).toHaveBeenCalledTimes(1);
+      expect(updates(worker)).toEqual([]);
+      act(() => emitCacheEntryFilled(filled(subject)));
+      expect(updates(worker)).toHaveLength(1);
+    });
+
+    it("does not ask for a photo whose load had its sample", async () => {
+      const subject = photo();
+      vi.mocked(loadPhotoImage).mockImplementationOnce(async () => ({ ...stale(), fullWidth: 6, fullHeight: 4, sample: SAMPLE }));
+      const { worker } = await open(subject);
+      await answerRenders(worker);
+
+      await openAgain(subject, worker);
+
+      expect(vi.mocked(loadPhotoImage)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(refreshStaleSource)).not.toHaveBeenCalled();
+    });
+
+    // The Library is shown meanwhile: nothing hears the rewrite, and the photo
+    // still takes it when it is shown again.
+    it("takes a rewrite that landed while no view was mounted", async () => {
+      const subject = photo();
+      vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+      vi.mocked(refreshStaleSource).mockResolvedValueOnce(rewritten);
+      const { worker } = await open(subject);
+      await answerRenders(worker);
+      cleanup();
+      act(() => emitCacheEntryFilled(filled(subject)));
+      expect(updates(worker)).toEqual([]);
+
+      await openAgain(subject, worker);
+
+      expect(updates(worker)).toEqual([{ cmd: "setSourceSample", key: photoSourceKey(subject), ...rewritten }]);
+    });
   });
 });

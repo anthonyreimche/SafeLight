@@ -341,7 +341,8 @@ describe("acceptDecode and the camera's exposure", () => {
   it("reports how far the default render sits from the camera's preview", async () => {
     const verdict = await acceptDecode({}, gradedDecode(), preview);
     expect(verdict).toMatchObject({ use: true, cache: true });
-    expect(Math.abs((verdict.exposure ?? NaN) - 0.8)).toBeLessThan(0.05);
+    expect(Math.abs((verdict.match?.exposure ?? NaN) - 0.8)).toBeLessThan(0.05);
+    expect(verdict.match?.shadows).toBe(0);
   });
 
   it("leaves it out for a decode it rejects", async () => {

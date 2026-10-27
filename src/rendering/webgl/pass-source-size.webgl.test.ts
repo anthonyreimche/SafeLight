@@ -305,6 +305,11 @@ describe("setSourceSample", () => {
       expect(r.setSourceSample("missing", W, H, sampleOfSource())).toBe(false);
       expect(r.setSourceSample("live", W, H, cutSourceSample(SMALL.data, 300, 200))).toBe(false);
       expect(r.setSourceSample("a", H, W, sampleOfSource())).toBe(false);
+      // Every comparison with NaN is false, so a guard that only refuses what it
+      // can compare would let these through.
+      expect(r.setSourceSample("a", NaN, H, sampleOfSource())).toBe(false);
+      expect(r.setSourceSample("a", W, NaN, sampleOfSource())).toBe(false);
+      expect(r.setSourceSample("a", Infinity, H, sampleOfSource())).toBe(false);
 
       expect(r.sourceNative).toBe(false);
       expect(r.sourceFullSize).toEqual({ width: 275, height: 185 });

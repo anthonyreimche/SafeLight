@@ -199,6 +199,7 @@ interface SourceEntry {
   linear: boolean;
   applyBaseCurve: boolean;
   baselineGain: number;
+  baselineShadows: number;
   isFallbackPreview: boolean;
   // The decoded frame's size before the upload cap, and the native-resolution
   // centre of a live float decode or of the cache entry a float16 source came
@@ -621,6 +622,10 @@ export class WebGLRenderer {
   // The source camera maker's exposure offset as a gain, which version 2 and
   // later apply with the refit baseline (uBaselineGain); 1 for anything else.
   private baselineGain = 1;
+  // The Shadows the camera baseline adds with it, version 2 and later, on top
+  // of the photo's own (the camera match's lift for Active D-Lighting and its
+  // kin); 0 for anything else.
+  private baselineShadows = 0;
   // EXT_texture_norm16: lets the heal pass's developed target be a normalized,
   // GPU-mipmappable RGBA16 texture instead of RGBA8. 0 / false when the GPU
   // lacks it (or can't mipmap it) — the target then stays RGBA8.
@@ -1234,7 +1239,7 @@ export class WebGLRenderer {
   setImage(
     image:
       | ImageBitmap
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
       | Float16Source,
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
@@ -1300,6 +1305,7 @@ export class WebGLRenderer {
       // scene-linear and flat; add the default tone curve to match other views.
       this.applyBaseCurve = !this.isFallbackPreview;
       this.baselineGain = 2 ** (image.baselineExposure ?? 0);
+      this.baselineShadows = image.baselineShadows ?? 0;
       // The sample is the sensor's own pixels: cut here from a live decode, or
       // kept in the cache entry beside the preview (3.1.0 and later; an older
       // entry has none). The camera preview is a JPEG and has none either. Only
@@ -1346,6 +1352,7 @@ export class WebGLRenderer {
       // preview is linear-encoded RAW and needs the base curve added.
       this.applyBaseCurve = baseCurveForBitmap;
       this.baselineGain = 1;
+      this.baselineShadows = 0;
       // Orientation is handled by the vertex shader (V flip). Do NOT use
       // UNPACK_FLIP_Y_WEBGL: it is unreliable for ImageBitmap sources.
       gl.texImage2D(
@@ -1385,7 +1392,7 @@ export class WebGLRenderer {
     key: string,
     image:
       | ImageBitmap
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number }
+      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
       | Float16Source,
     maxEdge: number = MAX_EDGE,
     isFallbackPreview = false,
@@ -1410,6 +1417,7 @@ export class WebGLRenderer {
       linear: this.linear,
       applyBaseCurve: this.applyBaseCurve,
       baselineGain: this.baselineGain,
+      baselineShadows: this.baselineShadows,
       isFallbackPreview: this.isFallbackPreview,
       fullWidth: this.sourceFullWidth,
       fullHeight: this.sourceFullHeight,
@@ -1451,6 +1459,7 @@ export class WebGLRenderer {
     this.linear = e.linear;
     this.applyBaseCurve = e.applyBaseCurve;
     this.baselineGain = e.baselineGain;
+    this.baselineShadows = e.baselineShadows;
     this.isFallbackPreview = e.isFallbackPreview;
     this.sourceFullWidth = e.fullWidth;
     this.sourceFullHeight = e.fullHeight;
@@ -1477,15 +1486,15 @@ export class WebGLRenderer {
    *  completed RAW cache entry now holds (cache-events.ts). True when applied.
    *  Refused, with nothing changed, on a renderer that keeps no samples, for a
    *  key not resident, for a source that already has a sample or is not a
-   *  linear decode, and for a size whose aspect disagrees with the source's:
-   *  an entry written by an earlier build under the same key could hold the
-   *  frame turned the other way. */
+   *  linear decode, for a size that is not positive and finite, and for a size
+   *  whose aspect disagrees with the source's: an entry written by an earlier
+   *  build under the same key could hold the frame turned the other way. */
   setSourceSample(key: string, fullWidth: number, fullHeight: number, sample: StoredSample): boolean {
-    if (!this.keepSourceSample || fullWidth <= 0 || fullHeight <= 0) return false;
+    if (!this.keepSourceSample || !(fullWidth > 0 && fullHeight > 0)) return false;
     const e = this.sourceCache.get(key);
     if (!e || e.sample || !e.linear || e.isFallbackPreview) return false;
     const aspect = fullWidth / fullHeight;
-    if (Math.abs(e.width / e.height - aspect) > SAMPLE_ASPECT_TOLERANCE * aspect) return false;
+    if (!Number.isFinite(aspect) || !(Math.abs(e.width / e.height - aspect) <= SAMPLE_ASPECT_TOLERANCE * aspect)) return false;
     e.fullWidth = fullWidth;
     e.fullHeight = fullHeight;
     e.sample = sample;
@@ -2112,7 +2121,10 @@ export class WebGLRenderer {
     gl.uniform1f(u.uExposure, p.exposure);
     gl.uniform1f(u.uContrast, p.contrast);
     gl.uniform1f(u.uHighlights, p.highlights);
-    gl.uniform1f(u.uShadows, p.shadows);
+    // Version 1 is frozen and never had the camera baseline; the shader clamps
+    // the sum to the slider's range.
+    const cameraShadows = baseCurve && this.variant.version >= 2 ? this.baselineShadows : 0;
+    gl.uniform1f(u.uShadows, p.shadows + cameraShadows);
     gl.uniform1f(u.uWhites, p.whites);
     gl.uniform1f(u.uBlacks, p.blacks);
     gl.uniform1f(u.uTexture, p.texture);

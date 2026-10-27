@@ -3,55 +3,74 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The exposure that brings a RAW's default render to its camera's brightness.
-// The camera here is our own default chain at a known exposure, built from the
-// TypeScript mirrors of the shader, so the answer is known in advance.
+// The exposure and shadows lift that bring a RAW's default render to its
+// camera's tones. The camera here is our own default chain at a known exposure
+// and Shadows, built from the TypeScript mirrors of the shader, so the answer is
+// known in advance.
 
 import { describe, expect, it } from "vitest";
 import { baselineRefit, baselineTone } from "@/rendering/baseline-tone";
-import { toneHighlights } from "@/rendering/local-tone";
+import { toneHighlights, toneShadows } from "@/rendering/local-tone";
 import { encodeHalf } from "./half-float";
-import { cameraMatchExposure, halfLumaSamples, lumaSamples } from "./camera-match";
+import { cameraMatch, halfLumaSamples, lumaSamples } from "./camera-match";
 
-/** The default render's luminance for scene-linear x at a camera exposure of `ev`. */
-const rendered = (x: number, ev: number): number =>
-  toneHighlights(2 ** ev * baselineRefit(baselineTone(x)), 0, 0, false);
+/** The default render's luminance for scene-linear x at a camera exposure of
+ *  `ev` and Shadows of `shadows` (slider units). */
+const rendered = (x: number, ev: number, shadows = 0): number =>
+  toneShadows(toneHighlights(2 ** ev * baselineRefit(baselineTone(x)), 0, 0, false), shadows / 100);
 
 /** 4096 scene levels spread evenly in stops from deep shadow to near white. */
 const SCENE = Float32Array.from({ length: 4096 }, (_, i) => 0.004 * (0.9 / 0.004) ** (i / 4095));
-const cameraAt = (ev: number): Float32Array => SCENE.map((x) => rendered(x, ev));
+const cameraAt = (ev: number, shadows = 0): Float32Array => SCENE.map((x) => rendered(x, ev, shadows));
+const exposureOf = (scene: Float32Array, camera: Float32Array): number => cameraMatch(scene, camera)?.exposure ?? NaN;
 
-describe("cameraMatchExposure", () => {
+describe("cameraMatch", () => {
   for (const ev of [-0.5, 0, 0.8, 1.5]) {
     it(`finds the ${ev} EV that lands the decode's tones on a camera's`, () => {
-      expect(Math.abs((cameraMatchExposure(SCENE, cameraAt(ev)) ?? NaN) - ev)).toBeLessThan(0.011);
+      expect(Math.abs(exposureOf(SCENE, cameraAt(ev)) - ev)).toBeLessThan(0.011);
     });
   }
 
+  // Active D-Lighting and its kin expose less and lift the shadows back up. One
+  // exposure can only meet such a camera in the middle, with its highlights a
+  // quarter stop too bright, as a Nikon Z 6II's were.
+  for (const [ev, shadows] of [[1.1, 55], [0.6, 100], [1.5, 30]]) {
+    it(`finds a camera's ${ev} EV and its shadows lifted ${shadows}`, () => {
+      const match = cameraMatch(SCENE, cameraAt(ev, shadows));
+      expect(Math.abs((match?.exposure ?? NaN) - ev)).toBeLessThan(0.03);
+      expect(Math.abs((match?.shadows ?? NaN) - shadows)).toBeLessThanOrEqual(3);
+    });
+  }
+
+  it("lifts no shadows for a camera that doesn't", () => {
+    expect(cameraMatch(SCENE, cameraAt(0.8))?.shadows).toBe(0);
+  });
+
   // The decode and the preview are sampled at different points of the frame.
   it("compares the two images' tones, not their pixels one by one", () => {
-    expect(Math.abs((cameraMatchExposure(SCENE, cameraAt(0.8).reverse()) ?? NaN) - 0.8)).toBeLessThan(0.011);
+    expect(Math.abs(exposureOf(SCENE, cameraAt(0.8).reverse()) - 0.8)).toBeLessThan(0.011);
   });
 
   it("shrugs off the brightest tones the camera clipped where the render rolls them off", () => {
     const camera = cameraAt(0.8).map((y) => (y > 0.9 ? 1 : y));
-    expect(Math.abs((cameraMatchExposure(SCENE, camera) ?? NaN) - 0.8)).toBeLessThan(0.05);
+    expect(Math.abs(exposureOf(SCENE, camera) - 0.8)).toBeLessThan(0.05);
   });
 
   it("gives no answer for a frame with too few tones to compare", () => {
-    expect(cameraMatchExposure(new Float32Array(4096).fill(0.18), new Float32Array(4096).fill(0.4))).toBeUndefined();
-    expect(cameraMatchExposure(new Float32Array(4096), new Float32Array(4096))).toBeUndefined();
+    expect(cameraMatch(new Float32Array(4096).fill(0.18), new Float32Array(4096).fill(0.4))).toBeUndefined();
+    expect(cameraMatch(new Float32Array(4096), new Float32Array(4096))).toBeUndefined();
   });
 
   it("gives no answer when the camera is further off than any camera sits", () => {
-    expect(cameraMatchExposure(SCENE, SCENE.map((x) => Math.min(x * 32, 1)))).toBeUndefined();
-    expect(cameraMatchExposure(SCENE, cameraAt(-4))).toBeUndefined();
+    expect(cameraMatch(SCENE, SCENE.map((x) => Math.min(x * 32, 1)))).toBeUndefined();
+    expect(cameraMatch(SCENE, cameraAt(-4))).toBeUndefined();
   });
 
-  it("answers in hundredths of a stop", () => {
-    const ev = cameraMatchExposure(SCENE, cameraAt(0.8));
-    expect(ev).toBeDefined();
-    expect(Math.round((ev ?? 0) * 100)).toBeCloseTo((ev ?? 0) * 100, 9);
+  it("answers in hundredths of a stop and whole Shadows steps", () => {
+    const match = cameraMatch(SCENE, cameraAt(1.1, 55));
+    expect(match).toBeDefined();
+    expect(Math.round((match?.exposure ?? 0) * 100)).toBeCloseTo((match?.exposure ?? 0) * 100, 9);
+    expect(Number.isInteger(match?.shadows)).toBe(true);
   });
 });
 

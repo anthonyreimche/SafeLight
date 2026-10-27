@@ -16,6 +16,8 @@ For photographers. Installing the app, opening projects, culling, editing, expor
 
 For extension authors and contributors. The architecture, the extension authoring guide, and the full API reference.
 
+- [How Safelight works](dev/concepts.md) — the core, the extension lifecycle, and what extensions can do
+- [How a photo is rendered](dev/rendering.md) — the render steps and where extensions plug in
 - [Architecture](dev/architecture.md) — how the app is built
 - [Building Extensions](dev/extensions/README.md) — anatomy, contributions, debugging, publishing
 - [API Reference](dev/api/README.md) — the `SafelightAPI`, UI components, contribution signatures, stores, and types

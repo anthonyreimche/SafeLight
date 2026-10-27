@@ -16,8 +16,10 @@ const decoded = (): RawFloatImage => ({ data: new Float32Array(4).fill(0.5), wid
 
 const h = vi.hoisted(() => ({
   decodes: [] as { background?: boolean; signal?: AbortSignal }[],
+  /** The name of the file each decode was for, in order. */
+  decodedFiles: [] as string[],
   decodeResult: (): Promise<Decode> => Promise.resolve({ data: new Float32Array(4).fill(0.5), width: 1, height: 1, oriented: true }),
-  verdict: { use: true, cache: true } as { use: boolean; cache: boolean; exposure?: number },
+  verdict: { use: true, cache: true } as { use: boolean; cache: boolean; match?: { exposure: number; shadows: number } },
   takes: true,
   /** The cache's generation as it stands, and what happens inside a write. */
   generation: 0,
@@ -31,8 +33,9 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@/raw/decode", () => ({
-  decodeRawToFloat: (_file: Blob, request?: { background?: boolean; signal?: AbortSignal }) => {
+  decodeRawToFloat: (file: Blob, request?: { background?: boolean; signal?: AbortSignal }) => {
     h.decodes.push(request ?? {});
+    h.decodedFiles.push(file instanceof File ? file.name : "");
     return h.decodeResult();
   },
 }));
@@ -75,6 +78,7 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
   h.decodes = [];
+  h.decodedFiles = [];
   h.decodeResult = () => Promise.resolve(decoded());
   h.verdict = { use: true, cache: true };
   h.takes = true;
@@ -90,23 +94,32 @@ beforeEach(() => {
 // the camera match (camera-match.ts) as Develop's open does.
 describe("fillCacheEntry and the camera match", () => {
   it("keeps the match the decode's check found on the photo", async () => {
-    h.verdict = { use: true, cache: true, exposure: 1.1 };
+    h.verdict = { use: true, cache: true, match: { exposure: 1.1, shadows: 55 } };
     const photo = rawPhoto("a.NEF");
     h.catalog = [photo];
     await fillCacheEntry(photo, 1);
-    expect(photo.exif.baselineExposure).toBe(1.1);
-    expect(h.saved.map((p) => p.exif.baselineExposure)).toEqual([1.1]);
+    expect(photo.exif).toMatchObject({ baselineExposure: 1.1, baselineShadows: 55 });
+    expect(h.saved.map((p) => [p.exif.baselineExposure, p.exif.baselineShadows])).toEqual([[1.1, 55]]);
+  });
+
+  it("matches again a photo matched before the shadows lift was learned", async () => {
+    h.verdict = { use: true, cache: true, match: { exposure: 1.1, shadows: 55 } };
+    const photo = rawPhoto("a.NEF");
+    photo.exif.baselineExposure = 1.5;
+    h.catalog = [photo];
+    await fillCacheEntry(photo, 1);
+    expect(photo.exif).toMatchObject({ baselineExposure: 1.1, baselineShadows: 55 });
   });
 
   it("remembers a decode with no usable preview to match", async () => {
     const photo = rawPhoto("a.NEF");
     h.catalog = [photo];
     await fillCacheEntry(photo, 1);
-    expect(photo.exif.baselineExposure).toBeNull();
+    expect(photo.exif).toMatchObject({ baselineExposure: null, baselineShadows: null });
   });
 
   it("learns from a decode Develop would show but not cache", async () => {
-    h.verdict = { use: true, cache: false, exposure: 0.7 };
+    h.verdict = { use: true, cache: false, match: { exposure: 0.7, shadows: 0 } };
     const photo = rawPhoto("a.NEF");
     h.catalog = [photo];
     await fillCacheEntry(photo, 1);
@@ -117,13 +130,14 @@ describe("fillCacheEntry and the camera match", () => {
     const rejected = rawPhoto("a.NEF");
     const matched = rawPhoto("b.NEF");
     matched.exif.baselineExposure = 1.3;
+    matched.exif.baselineShadows = 20;
     h.catalog = [rejected, matched];
     h.verdict = { use: false, cache: false };
     await fillCacheEntry(rejected, 1);
-    h.verdict = { use: true, cache: true, exposure: 0.4 };
+    h.verdict = { use: true, cache: true, match: { exposure: 0.4, shadows: 0 } };
     await fillCacheEntry(matched, 1);
     expect(rejected.exif.baselineExposure).toBeUndefined();
-    expect(matched.exif.baselineExposure).toBe(1.3);
+    expect(matched.exif).toMatchObject({ baselineExposure: 1.3, baselineShadows: 20 });
     expect(h.saved).toEqual([]);
   });
 });
@@ -184,22 +198,66 @@ describe("fillCacheEntry", () => {
 });
 
 describe("completeCachedEntry", () => {
-  it("returns at once and runs one completion at a time", async () => {
-    let finish = (_: Decode) => {};
-    h.decodeResult = () => new Promise<Decode>((r) => (finish = r));
-    completeCachedEntry(rawPhoto("a.NEF"), 1);
-    completeCachedEntry(rawPhoto("b.NEF"), 1);
+  // The photo the user went to last is completed next; one asked for between
+  // gives way to it.
+  it("returns at once, runs one completion at a time and keeps only the newest request waiting", async () => {
+    const pending: ((d: Decode) => void)[] = [];
+    h.decodeResult = () => new Promise<Decode>((r) => pending.push(r));
+    const written = () => h.writes.map(([key]) => key);
+    try {
+      completeCachedEntry(rawPhoto("a.NEF"), 1);
+      completeCachedEntry(rawPhoto("b.NEF"), 1);
+      completeCachedEntry(rawPhoto("c.NEF"), 1);
+      await settle();
+      expect(h.decodedFiles).toEqual(["a.NEF"]);
+
+      pending.shift()?.(decoded());
+      await settle();
+      expect(written()).toEqual(["a.NEF:64:0"]);
+      expect(h.decodedFiles).toEqual(["a.NEF", "c.NEF"]);
+
+      pending.shift()?.(decoded());
+      await settle();
+      expect(written()).toEqual(["a.NEF:64:0", "c.NEF:64:0"]);
+      expect(h.decodedFiles).toEqual(["a.NEF", "c.NEF"]);
+    } finally {
+      // The running flag and the waiting request are module state, so every
+      // decode still pending is let finish before the next test.
+      while (pending.length > 0) {
+        pending.shift()?.(decoded());
+        await settle();
+      }
+    }
+  });
+
+  /** Request the completions in `steps` one by one while the decodes are held,
+   *  then let every decode finish; the files decoded, in order. */
+  async function decodedFor(steps: [string, number][]): Promise<string[]> {
+    const pending: ((d: Decode) => void)[] = [];
+    h.decodeResult = () => new Promise<Decode>((r) => pending.push(r));
+    for (const [name, generation] of steps) completeCachedEntry(rawPhoto(name), generation);
     await settle();
-    expect(h.decodes).toHaveLength(1);
-    finish(decoded());
-    await settle();
-    expect(h.writes).toEqual([["a.NEF:64:0", 1, 1, 1]]);
-    completeCachedEntry(rawPhoto("c.NEF"), 1);
-    await settle();
-    expect(h.decodes).toHaveLength(2);
-    // Let the last completion end: the one-at-a-time flag is module state.
-    finish(decoded());
-    await settle();
+    while (pending.length > 0) {
+      pending.shift()?.(decoded());
+      await settle();
+    }
+    return h.decodedFiles;
+  }
+
+  // Shown again while its own rewrite runs (back from the Library, or from the
+  // next photo), a photo asks again; a second decode would write the same entry
+  // and push the photo waiting out of its place.
+  it("ignores a request for the photo it is completing, and the photo waiting keeps its place", async () => {
+    expect(await decodedFor([["a.NEF", 1], ["b.NEF", 1], ["a.NEF", 1]])).toEqual(["a.NEF", "b.NEF"]);
+  });
+
+  it("completes the photo waiting once, however often it is asked for", async () => {
+    expect(await decodedFor([["a.NEF", 1], ["b.NEF", 1], ["b.NEF", 1]])).toEqual(["a.NEF", "b.NEF"]);
+  });
+
+  // The same name in another project is another photo's entry.
+  it("completes the same photo again when it is asked for in another project", async () => {
+    expect(await decodedFor([["a.NEF", 1], ["a.NEF", 2]])).toEqual(["a.NEF", "a.NEF"]);
   });
 
   it("lets a failed completion go and takes the next", async () => {

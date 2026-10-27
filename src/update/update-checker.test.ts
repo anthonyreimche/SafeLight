@@ -455,6 +455,25 @@ describe("fetchAllReleases", () => {
     ]);
   });
 
+  it("leaves the camera-profiles asset release out of the history", async () => {
+    stubNative(
+      bridge("1.0.0", [
+        release({ tag_name: "v1.1.0" }),
+        release({ tag_name: "camera-profiles", prerelease: true, body: null }),
+      ]),
+    );
+
+    await expect(fetchAllReleases()).resolves.toEqual([
+      {
+        version: "1.1.0",
+        tag: "v1.1.0",
+        releasesUrl: "https://github.com/anthonyreimche/SafeLight/releases/tag/v1.1.0",
+        body: "Release notes",
+        prerelease: false,
+      },
+    ]);
+  });
+
   it("rejects with the cause rather than an empty list when the fetch fails", async () => {
     stubNative({ releases: { fetch: () => Promise.reject(new Error("offline")) } });
 

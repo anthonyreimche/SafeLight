@@ -18,7 +18,7 @@ import { acceptDecode } from "@/raw/accept-decode";
 import { extractRawPreview } from "@/modules/library/raw-preview";
 import { markDecode, rawCacheGeneration, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
 import { cutSourceSample } from "@/rendering/source-sample";
-import { rememberLearned } from "./decode-learned";
+import { rememberLearned, hasCameraMatch, learnedMatch } from "./decode-learned";
 import { emitCacheEntryFilled } from "./cache-events";
 
 /** "refused": a write the cache could not take (the disk or the quota is full),
@@ -60,13 +60,11 @@ export async function fillCacheEntry(
   // Same ruling as Develop's open. A cached decode is served without a second
   // look, so a marginal or wrong-colour one would show on every open. The
   // preview is read only now, once there is a decode to judge.
-  const { use, cache, exposure } = await acceptDecode(f, r, await extractRawPreview(file));
+  const { use, cache, match } = await acceptDecode(f, r, await extractRawPreview(file));
   if (signal?.aborted) return "nothing";
   // The camera match, as Develop's open learns it: most RAWs are decoded here
   // before they are first opened.
-  if (use && photo.exif.baselineExposure === undefined) {
-    rememberLearned(photo, { baselineExposure: exposure ?? null });
-  }
+  if (use && !hasCameraMatch(photo)) rememberLearned(photo, learnedMatch(match));
   if (!cache) {
     // Either verdict would come out the same on every pass. A marginal decode
     // is still shown in Develop; a rejected one never is.
@@ -87,20 +85,34 @@ export async function fillCacheEntry(
   return "taken";
 }
 
-let completing = false;
+// The entry being rewritten, by cache key and the project it began in.
+let running: { key: string; generation: number } | null = null;
+let waiting: { photo: CatalogPhoto; generation: number } | null = null;
 
 /** Rewrite one entry from before 3.1.0 with the decoded size and the sample,
- *  behind the open it was served to; returns at once. One at a time: a decode
- *  holds hundreds of megabytes, and a photo opened while another completes
- *  waits for a later open or the cache pass. The write lands only in the
- *  project the open began in (the generation guard in raw-cache.ts). */
+ *  behind the open it was served to; returns at once. One runs at a time (a
+ *  decode holds hundreds of megabytes); the newest request made meanwhile
+ *  waits and runs next, so the photo the user went to last is completed next,
+ *  and any request waiting before it is dropped. A request for the entry
+ *  already being rewritten is ignored: a photo shown again during its own
+ *  rewrite asks again, and a second decode would write the same entry and
+ *  push the photo waiting out of its place. The write lands only in the
+ *  project the request began in (the generation guard in raw-cache.ts). */
 export function completeCachedEntry(photo: CatalogPhoto, generation: number): void {
-  if (completing) return;
-  completing = true;
+  const key = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
+  if (running) {
+    if (running.key === key && running.generation === generation) return;
+    waiting = { photo, generation };
+    return;
+  }
+  running = { key, generation };
   void fillCacheEntry(photo, generation)
     // The entry still serves as it is, so a failure is logged and let go.
     .catch((err: unknown) => console.warn("[cache] completion failed:", err))
     .finally(() => {
-      completing = false;
+      running = null;
+      const next = waiting;
+      waiting = null;
+      if (next) completeCachedEntry(next.photo, next.generation);
     });
 }
