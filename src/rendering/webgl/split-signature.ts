@@ -9,7 +9,8 @@
 // effect changed.
 
 import type { DevelopParams, Mask, MaskAdjustments } from "@/catalog/types";
-import type { SplitCut, StageSplit } from "./stage-injection";
+import { isUniformValue } from "@/extensions/pipeline-validation";
+import type { ContributedBinding, SplitCut, StageSplit } from "./stage-injection";
 
 export interface SplitUpstreamInputs {
   params: DevelopParams;
@@ -22,6 +23,10 @@ export interface SplitUpstreamInputs {
   upstreamStageIds: readonly string[];
   /** Stage texture versions by qualified key. */
   textureVersions: Record<string, number>;
+  /** The display transform's uniform bindings (ResolvedPipeline.bindings).
+   *  A display cut is drawn through the transform, so what they bind feeds
+   *  it; the program they bind in is part of `context`. */
+  transformBindings: readonly ContributedBinding[];
   /** Renderer-level state folded into scene and display cuts verbatim:
    *  transform, process version, HSL style, as-shot white balance, core NR on
    *  or off. None of it reaches a decode cut. */
@@ -82,6 +87,24 @@ function upstreamEntries<T>(record: Record<string, T>, ids: readonly string[]): 
     .map((k) => [k, record[k]]);
 }
 
+/** The bag entries that feed `cut`: the upstream stages', then, for a display
+ *  cut, what each transform binding binds as render() does: the bag's value
+ *  while it fits the uniform, else the binding's default. */
+function feedingEntries(
+  bag: Record<string, unknown>,
+  cut: SplitCut,
+  upstreamStageIds: readonly string[],
+  transformBindings: readonly ContributedBinding[],
+): [string, unknown][] {
+  const entries: [string, unknown][] = upstreamEntries(bag, upstreamStageIds);
+  if (cut !== "display") return entries;
+  for (const b of transformBindings) {
+    const value = bag[b.qualifiedKey];
+    entries.push([b.qualifiedKey, isUniformValue(value, b.glslType) ? value : b.default]);
+  }
+  return entries;
+}
+
 const sameEntries = <T>(a: [string, T][], b: [string, T][]): boolean =>
   a === b || (a.length === b.length && a.every(([k, v], i) => k === b[i][0] && v === b[i][1]));
 
@@ -96,7 +119,7 @@ export function splitUpstreamKey(i: SplitUpstreamInputs): string {
     i.cut,
     i.cut === "decode" ? "" : i.context,
     feedingParams(i.params, i.cut),
-    upstreamEntries(i.bag, i.upstreamStageIds),
+    feedingEntries(i.bag, i.cut, i.upstreamStageIds, i.transformBindings),
     upstreamEntries(i.textureVersions, i.upstreamStageIds),
   ]);
 }
@@ -106,6 +129,7 @@ interface SplitMemo {
   params: DevelopParams;
   paramsKey: string;
   bag: Record<string, unknown>;
+  transformBindings: readonly ContributedBinding[];
   entries: [string, unknown][];
   entriesKey: string;
   versions: [string, number][];
@@ -119,8 +143,8 @@ interface SplitMemo {
  *  object is replaced (for a decode cut, only when its retouch array is).
  *  Bag entries are compared by reference and texture versions by value, so a
  *  frame that replaced nothing, or only a param of the stage's own or a later
- *  stage's, serialises nothing. Callers replace params and the bag on change
- *  rather than mutating them. */
+ *  stage's, serialises nothing. Callers replace params, the bag and the
+ *  transform's bindings on change rather than mutating them. */
 export class SplitTokens {
   private readonly memo = new Map<string, SplitMemo>();
   private issued = 0;
@@ -132,8 +156,11 @@ export class SplitTokens {
       same && sameFeedingValues(same.params, s.params, split.cut)
         ? same.paramsKey
         : JSON.stringify(feedingParams(s.params, split.cut));
+    const sameBindings = split.cut !== "display" || same?.transformBindings === s.transformBindings;
     const entries =
-      same?.bag === s.bag ? same.entries : upstreamEntries(s.bag, split.upstreamStageIds);
+      same?.bag === s.bag && sameBindings
+        ? same.entries
+        : feedingEntries(s.bag, split.cut, split.upstreamStageIds, s.transformBindings);
     const entriesKey =
       same && sameEntries(same.entries, entries) ? same.entriesKey : JSON.stringify(entries);
     const versions = upstreamEntries(s.textureVersions, split.upstreamStageIds);
@@ -150,6 +177,7 @@ export class SplitTokens {
       params: s.params,
       paramsKey,
       bag: s.bag,
+      transformBindings: s.transformBindings,
       entries,
       entriesKey,
       versions,

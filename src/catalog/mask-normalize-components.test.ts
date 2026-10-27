@@ -29,6 +29,7 @@ interface RawDab {
   feather?: number;
   opacity?: number;
   flow?: number;
+  strokeStart?: unknown;
 }
 
 interface RawBrush {
@@ -272,6 +273,23 @@ describe("brush dabs", () => {
         { x: 0.5, y: 0.6, radius: 0.05, erase: false, feather: 0.5, opacity: 1, flow: 1 },
       ],
     });
+  });
+
+  it("keeps a stroke-start marker and drops anything but true", () => {
+    const [m] = masksOf([
+      {
+        id: "b",
+        type: "brush",
+        brush: {
+          dabs: [
+            { x: 0.1, y: 0.1, radius: 0.1, strokeStart: true },
+            { x: 0.2, y: 0.1, radius: 0.1, strokeStart: "yes" },
+            { x: 0.3, y: 0.1, radius: 0.1 },
+          ],
+        },
+      },
+    ]);
+    expect(m.components[0].brush?.dabs.map((d) => d.strokeStart)).toEqual([true, undefined, undefined]);
   });
 });
 

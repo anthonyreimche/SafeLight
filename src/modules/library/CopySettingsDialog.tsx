@@ -5,7 +5,8 @@
 
 import { useMemo, useState } from "react";
 import type { DevelopParams } from "@/catalog/types";
-import { presetFields, buildPartialParams } from "@/modules/develop/preset-summary";
+import { transformPresetField } from "@/extensions/pipelines";
+import { presetFields, buildPartialBag, buildPartialParams } from "@/modules/develop/preset-summary";
 import type { DevelopClipboard } from "@/state/develop-clipboard";
 
 /** Synthetic field id for the extension-stage param bag (not a DevelopParams key,
@@ -33,7 +34,19 @@ export function CopySettingsDialog({
   onCopy,
   onCancel,
 }: Props) {
-  const fields = useMemo(() => presetFields(params), [params]);
+  // The Display transform row is pre-checked for a photo's own pick alone: the
+  // Extension stages row already carries the settings of the transform a photo
+  // without one follows, so a pre-checked row would add only "follow the
+  // default" and reset every paste target's own pick. Ticked, it still copies
+  // the transform's settings.
+  const fields = useMemo(
+    () =>
+      presetFields(params, [], {
+        ...transformPresetField(params.displayTransform, paramBag),
+        changed: false,
+      }),
+    [params, paramBag],
+  );
   const hasBag = Object.keys(paramBag).length > 0;
   const [showAll, setShowAll] = useState(false);
   // Per-image fields (crop, retouch, spatial extension tools) describe one
@@ -64,9 +77,11 @@ export function CopySettingsDialog({
   const submit = () => {
     if (!canCopy) return;
     const partial = buildPartialParams(params, fields, selected);
+    // A ticked Display transform row adds its defaults to the whole bag too.
+    const ticked = buildPartialBag(paramBag, fields, selected);
     onCopy({
       params: partial,
-      paramBag: includeBag ? structuredClone(paramBag) : {},
+      paramBag: includeBag ? { ...structuredClone(paramBag), ...ticked } : ticked,
       sourceName,
       fieldCount: selected.size,
     });

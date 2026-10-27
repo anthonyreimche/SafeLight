@@ -491,6 +491,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, bufferRect 
             feather: st.brushFeather,
             opacity: st.brushOpacity,
             flow: st.brushFlow,
+            strokeStart: i === 1 || undefined,
           });
         }
       } else {
@@ -502,6 +503,7 @@ export function MaskOverlay({ rect, crop, inv, forward, imageAspect, bufferRect 
           feather: st.brushFeather,
           opacity: st.brushOpacity,
           flow: st.brushFlow,
+          strokeStart: true,
         });
       }
       lastBrushPt.current = down;

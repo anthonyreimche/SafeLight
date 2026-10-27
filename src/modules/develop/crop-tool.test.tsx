@@ -18,6 +18,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import type { CatalogPhoto, CropRect, DevelopParams, EditSnapshot } from "@/catalog/types";
 import { DEFAULT_CROP, DEFAULT_DEVELOP_PARAMS } from "@/catalog/types";
+import { useDevelopOverlay, type DevelopOverlayState } from "@/extensions/develop-host";
+import { registerSlot, unregisterSlot } from "@/extensions/registry";
 import { cropOutputSize } from "@/rendering/crop-transform";
 import { disposeRenderBridge } from "@/rendering/render-bridge";
 import type { WorkerRequest, WorkerResponse } from "@/rendering/render-worker";
@@ -230,7 +232,7 @@ beforeEach(() => {
     history: [original],
     historyIndex: 0,
     histogram: null,
-    sourceSize: { width: 0, height: 0 },
+    sourceSize: { width: 0, height: 0, fullWidth: 0, fullHeight: 0, native: false },
     cropping: false,
     cropAspect: -1,
     constrainCrop: true,
@@ -543,6 +545,43 @@ describe("opening crop mode on a slow GPU", () => {
     expect(got.y).toBeCloseTo(want.y, 0);
     expect(got.w).toBeCloseTo(want.w, 0);
     expect(got.h).toBeCloseTo(want.h, 0);
+  });
+});
+
+// An extension's canvas overlay maps the image to the screen through toScreen and its
+// kin. Crop mode shows the whole image past the crop, so mapping through the crop put
+// marks drawn on the photo off the picture.
+describe("extension overlays in crop mode", () => {
+  let seen: DevelopOverlayState | null = null;
+  function Marks() {
+    seen = useDevelopOverlay();
+    return null;
+  }
+
+  beforeEach(() => {
+    seen = null;
+    registerSlot("test.marks", { id: "test.marks", slot: "develop-canvas-overlay", component: Marks });
+  });
+  afterEach(() => unregisterSlot("test.marks", "test.marks"));
+
+  it("maps the image onto the picture the canvas shows", async () => {
+    const { worker, container } = await open();
+    await startCropping(worker);
+    await click("16:9");
+    await idle(worker);
+
+    const map = seen;
+    if (!map?.toScreen || !map.toImage || !map.radiusToScreen) throw new Error("no mapping");
+    const want = onPicture(container, worker, DEFAULT_CROP);
+    const corner = map.toScreen(1, 1);
+    expect(map.toScreen(0, 0).x).toBeCloseTo(want.x, 1);
+    expect(map.toScreen(0, 0).y).toBeCloseTo(want.y, 1);
+    expect(corner.x).toBeCloseTo(want.x + want.w, 1);
+    expect(corner.y).toBeCloseTo(want.y + want.h, 1);
+    expect(map.radiusToScreen(1)).toBeCloseTo(want.h, 1);
+    const back = map.toImage(corner.x, corner.y);
+    expect(back.x).toBeCloseTo(1, 4);
+    expect(back.y).toBeCloseTo(1, 4);
   });
 });
 

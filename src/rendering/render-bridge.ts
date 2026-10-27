@@ -9,6 +9,7 @@ import type { ProcessingStageContribution, StageTextureData } from "@/extensions
 import type { ResolvedPipeline } from "@/extensions/pipelines";
 import { resolvePipelineFor, usePipelineStore } from "@/extensions/pipelines";
 import { onStagesReleased, useRegistry } from "@/extensions/registry";
+import { bagForRender, derivedEntries } from "@/extensions/transform-derive";
 import type { HistogramData } from "./histogram";
 import type { WorkerRequest, WorkerResponse } from "./render-worker";
 import type { ProbePoint } from "./webgl/renderer";
@@ -20,6 +21,7 @@ import { currentDisplaySpace, subscribeDisplaySpace } from "./display-space";
 import {
   DEFAULT_CAPTURE_SPACE, captureMaxEdge, type FloatCaptureOptions, type FloatFrame, type LiveFloatCaptureOptions,
 } from "./float-frame";
+import type { Float16Source, SourceSample, StoredSample } from "./source-sample";
 
 export interface FrameResult {
   bitmap: ImageBitmap;
@@ -30,6 +32,11 @@ export interface FrameResult {
   sourceHeight: number;
   /** The number of that source; see RenderBridge.sourceGen. */
   sourceGen: number;
+  /** The decoded frame's size before the upload cap, and whether `readSourceSample`
+   *  has a sample of the source: a live float decode, or a cached preview stored with one. */
+  sourceFullWidth: number;
+  sourceFullHeight: number;
+  sourceNative: boolean;
   /** The window of the image it was drawn for (setViewport); null, the whole image. */
   roi: { x: number; y: number; w: number; h: number } | null;
   /** The size a frame of the whole image would have, which a window is part of; 0,
@@ -54,8 +61,9 @@ type HistogramCallback = (histogram: HistogramData) => void;
 type ThumbnailCallback = (result: ThumbnailResult) => void;
 type UprightCallback = (result: UprightResult) => void;
 type ErrorCallback = (message: string) => void;
-/** The number (RenderBridge.sourceGen) of a develop source the worker couldn't take. */
-type SourceErrorCallback = (sourceGen: number) => void;
+/** The number (RenderBridge.sourceGen) of a develop source the worker couldn't take,
+ *  and why. */
+type SourceErrorCallback = (sourceGen: number, message: string) => void;
 /** Whether the worker's develop renderer exists: "starting" until the first
  *  init settles, "retrying" while a failed init is being re-attempted,
  *  "failed" once the retry budget is spent. */
@@ -102,6 +110,20 @@ export type ThumbRequest = {
   contributedParams?: Record<string, unknown>;
 } & ({ key: string; image?: never } | { image: ThumbImage; key?: never });
 
+type SourceImage =
+  | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
+  | Float16Source
+  | { kind: "bitmap"; bitmap: ImageBitmap };
+
+/** What moves to the worker with a source rather than being copied: its pixels,
+ *  and the sample a cached preview carries (8 MB). */
+function transferOf(image: SourceImage): Transferable[] {
+  if (image.kind === "bitmap") return [image.bitmap];
+  const transfer: Transferable[] = [image.data.buffer];
+  if (image.kind === "float16" && image.sample) transfer.push(image.sample.data.buffer);
+  return transfer;
+}
+
 /** Where a float frame is read and the space it is converted into: pre-output
  *  in linear Rec.709 unless asked otherwise. */
 function floatRead(opts: Pick<FloatCaptureOptions, "point" | "space">): Pick<FloatFrame, "point" | "space"> {
@@ -135,6 +157,8 @@ export class RenderBridge {
   private onHealSource: HealSourceCallback | null = null;
   private onAvailability: AvailabilityCallback | null = null;
   availability: RendererAvailability = "starting";
+  // Why the last init failed, while availability is "retrying" or "failed".
+  private availabilityDetail: string | undefined;
   private initArgs: { width: number; height: number } | null = null;
   private initAttempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -147,6 +171,7 @@ export class RenderBridge {
   private hasSourceResolvers = new Map<number, (has: boolean) => void>();
   private captureResolvers = new Map<number, (bitmap: ImageBitmap) => void>();
   private floatCaptureResolvers = new Map<number, (frame: FloatFrame | null) => void>();
+  private sourceSampleResolvers = new Map<number, (sample: SourceSample | null) => void>();
   private probeResolvers = new Map<number, (rgb: [number, number, number] | null) => void>();
   private reqIdSeq = 0;
   // The live photo's display-transform pick, mirrored from the params the
@@ -160,6 +185,9 @@ export class RenderBridge {
   // The param bag last handed to the worker, whole or by patches. A fresh renderer has
   // seen none.
   private lastPostedBag: Record<string, unknown> | null = null;
+  // The live bag as the Develop view offered it, before the live transform's
+  // derived uniforms were added, so a transform switch can re-derive them.
+  private liveBag: Record<string, unknown> | null = null;
   // The render mailbox: the seq of the one render the worker is drawing, and the newest
   // request made since, which goes when that one is answered. The worker draws renders
   // in the order they come, so posting each request while it is slower than the display
@@ -251,6 +279,9 @@ export class RenderBridge {
           sourceWidth: msg.sourceWidth,
           sourceHeight: msg.sourceHeight,
           sourceGen: msg.sourceGen,
+          sourceFullWidth: msg.sourceFullWidth ?? msg.sourceWidth,
+          sourceFullHeight: msg.sourceFullHeight ?? msg.sourceHeight,
+          sourceNative: msg.sourceNative ?? false,
           roi: msg.roi ?? null,
           wholeWidth: msg.wholeWidth ?? 0,
           wholeHeight: msg.wholeHeight ?? 0,
@@ -268,7 +299,7 @@ export class RenderBridge {
         this.onError?.(`render failed: ${msg.message}`);
         break;
       case "sourceError":
-        this.onSourceError?.(msg.sourceGen);
+        this.onSourceError?.(msg.sourceGen, msg.message);
         this.onError?.(`source failed: ${msg.message}`);
         break;
       case "histogram":
@@ -321,6 +352,14 @@ export class RenderBridge {
         if (resolver) {
           this.floatCaptureResolvers.delete(msg.reqId);
           resolver(msg.frame);
+        }
+        break;
+      }
+      case "sourceSample": {
+        const resolver = this.sourceSampleResolvers.get(msg.reqId);
+        if (resolver) {
+          this.sourceSampleResolvers.delete(msg.reqId);
+          resolver(msg.sample);
         }
         break;
       }
@@ -390,6 +429,7 @@ export class RenderBridge {
 
   private setAvailability(availability: RendererAvailability, detail?: string) {
     this.availability = availability;
+    this.availabilityDetail = detail;
     this.onAvailability?.(availability, detail);
   }
 
@@ -406,7 +446,7 @@ export class RenderBridge {
     this.worker.terminate();
     // It will never answer, and an eyedropper awaits its probe, an extension
     // its float frame.
-    for (const pending of [this.probeResolvers, this.floatCaptureResolvers]) {
+    for (const pending of [this.probeResolvers, this.floatCaptureResolvers, this.sourceSampleResolvers]) {
       for (const resolve of pending.values()) resolve(null);
       pending.clear();
     }
@@ -426,7 +466,7 @@ export class RenderBridge {
   /** Reports the current availability at once, then every change. */
   setOnAvailability(cb: AvailabilityCallback | null) {
     this.onAvailability = cb;
-    cb?.(this.availability);
+    cb?.(this.availability, this.availabilityDetail);
   }
 
   // ------------------------------------------------------------------
@@ -448,15 +488,12 @@ export class RenderBridge {
   }
 
   setImage(
-    image:
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "float16"; data: Uint16Array; width: number; height: number }
-      | { kind: "bitmap"; bitmap: ImageBitmap },
+    image: SourceImage,
     maxEdge?: number,
     isFallbackPreview?: boolean,
     baseCurveForBitmap?: boolean,
   ) {
-    const transfer = [image.kind === "bitmap" ? image.bitmap : image.data.buffer];
+    const transfer = transferOf(image);
     this.post(
       { cmd: "setImage", image, maxEdge, isFallbackPreview, baseCurveForBitmap },
       transfer,
@@ -481,17 +518,14 @@ export class RenderBridge {
   uploadSource(
     target: "main" | "thumb",
     key: string,
-    image:
-      | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-      | { kind: "float16"; data: Uint16Array; width: number; height: number }
-      | { kind: "bitmap"; bitmap: ImageBitmap },
+    image: SourceImage,
     maxEdge?: number,
     isFallbackPreview?: boolean,
     baseCurveForBitmap?: boolean,
     // false = upload into the cache without changing the active source (prefetch).
     bind = true,
   ) {
-    const transfer = [image.kind === "bitmap" ? image.bitmap : image.data.buffer];
+    const transfer = transferOf(image);
     this.post(
       { cmd: "uploadSource", target, key, image, maxEdge, isFallbackPreview, baseCurveForBitmap, bind },
       transfer,
@@ -510,6 +544,16 @@ export class RenderBridge {
 
   setCacheBudget(bytes: number) {
     this.post({ cmd: "setCacheBudget", bytes });
+  }
+
+  /** A resident cached source takes the decoded size and centre sample its
+   *  completed RAW cache entry now holds; the worker ignores a key it doesn't
+   *  hold. The sample moves to the worker. */
+  setSourceSample(key: string, update: { fullWidth: number; fullHeight: number; sample: StoredSample }) {
+    this.post(
+      { cmd: "setSourceSample", key, fullWidth: update.fullWidth, fullHeight: update.fullHeight, sample: update.sample },
+      [update.sample.data.buffer],
+    );
   }
 
   setViewport(
@@ -539,11 +583,9 @@ export class RenderBridge {
   }): Promise<Blob | null> {
     return new Promise<Blob | null>((resolve) => {
       this.thumbResolvers.set(opts.requestId, (answer) => resolve(answer?.type === "thumbnail" ? answer.blob : null));
-      this.post({
-        cmd: "renderThumbnailFromSource",
-        ...opts,
-        pipeline: resolvePipelineFor(opts.params.displayTransform),
-      });
+      const pipeline = resolvePipelineFor(opts.params.displayTransform);
+      const contributedParams = this.thumbBag(pipeline, opts.contributedParams);
+      this.post({ cmd: "renderThumbnailFromSource", ...opts, pipeline, contributedParams });
     });
   }
 
@@ -582,8 +624,14 @@ export class RenderBridge {
    *  Develop view offers a bag on every change, so only the difference from the last
    *  bag posted goes: the entries that are new or not the same value, and the keys
    *  dropped. The first bag, and the first after an init, goes whole. Callers replace
-   *  the bag and the values in it on change and never mutate them. */
+   *  the bag and the values in it on change and never mutate them. The live display
+   *  transform's derived uniforms are added to it (bagForRender). */
   setContributedParams(bag: Record<string, unknown>) {
+    this.liveBag = bag;
+    this.postBag(bagForRender(resolvePipelineFor(this.liveDisplayTransform), bag));
+  }
+
+  private postBag(bag: Record<string, unknown>) {
     const last = this.lastPostedBag;
     if (!last) {
       this.post({ cmd: "setContributedParams", bag });
@@ -616,20 +664,22 @@ export class RenderBridge {
     return new Promise<ImageBitmap>((resolve) => {
       const reqId = ++this.reqIdSeq;
       this.captureResolvers.set(reqId, resolve);
+      const pipeline = resolvePipelineFor(params.displayTransform);
+      const bagPatch = this.capturePatch(pipeline, opts.paramBag);
       this.post({
         cmd: "capture",
         reqId,
         params,
-        pipeline: resolvePipelineFor(params.displayTransform),
+        pipeline,
         asShown: opts.asShown === true,
-        ...(opts.paramBag ? { bagPatch: opts.paramBag } : {}),
+        ...(bagPatch ? { bagPatch } : {}),
       });
     });
   }
 
   /** Render one frame with `params` as capture() does, for measuring, and read
    *  it as floats at `opts.point` (default "pre-output"), converted into
-   *  `opts.space` (default linear Rec.709) in the worker. It is drawn at most
+   *  `opts.space` (default linear Rec.709) on the GPU. It is read at most
    *  `opts.maxEdge` px on its long edge (default DEFAULT_CAPTURE_MAX_EDGE;
    *  Infinity for the full view). Null when the worker has no renderer, no
    *  source or no float render targets, or is disposed. */
@@ -641,16 +691,33 @@ export class RenderBridge {
     return new Promise<FloatFrame | null>((resolve) => {
       const reqId = ++this.reqIdSeq;
       this.floatCaptureResolvers.set(reqId, resolve);
+      const pipeline = resolvePipelineFor(params.displayTransform);
+      const bagPatch = this.capturePatch(pipeline, opts.paramBag);
       this.post({
         cmd: "captureFloat",
         reqId,
         params,
-        pipeline: resolvePipelineFor(params.displayTransform),
+        pipeline,
         ...floatRead(opts),
         // Not in floatRead: the thumbnails that share it are drawn small already.
         maxEdge: captureMaxEdge(opts.maxEdge),
-        ...(opts.paramBag ? { bagPatch: opts.paramBag } : {}),
+        ...(bagPatch ? { bagPatch } : {}),
       });
+    });
+  }
+
+  /** The native-resolution centre of the live photo's decode (source-sample.ts),
+   *  cut before the upload cap: a fresh copy each call. A cached preview stored
+   *  with its sample (3.1.0 and later) answers one too. Null when the worker has
+   *  no renderer or no source, between photos, when the bound source is a bitmap,
+   *  the camera preview or a cache entry written before the sample was kept, or
+   *  when disposed. */
+  readSourceSample(): Promise<SourceSample | null> {
+    if (this.disposed) return Promise.resolve(null);
+    return new Promise<SourceSample | null>((resolve) => {
+      const reqId = ++this.reqIdSeq;
+      this.sourceSampleResolvers.set(reqId, resolve);
+      this.post({ cmd: "readSourceSample", reqId });
     });
   }
 
@@ -837,10 +904,9 @@ export class RenderBridge {
   }) {
     const { image } = opts;
     const transfer = [image.kind === "bitmap" ? image.bitmap : image.data.buffer];
-    this.post(
-      { cmd: "renderThumbnail", ...opts, pipeline: resolvePipelineFor(opts.params.displayTransform) },
-      transfer,
-    );
+    const pipeline = resolvePipelineFor(opts.params.displayTransform);
+    const contributedParams = this.thumbBag(pipeline, opts.contributedParams);
+    this.post({ cmd: "renderThumbnail", ...opts, pipeline, contributedParams }, transfer);
   }
 
   renderThumbnailAsync(opts: {
@@ -862,7 +928,7 @@ export class RenderBridge {
   }
 
   /** A thumbnail read as floats rather than encoded (renderPhotoFloatFrame): at
-   *  `float.point`, converted into `float.space` in the worker, pre-output in
+   *  `float.point`, converted into `float.space` on the GPU, pre-output in
    *  linear Rec.709 unless asked otherwise. Drawn from the thumb renderer's
    *  resident source under `key`, or from `image`, which it doesn't keep. Null
    *  on a cache miss, as renderThumbnailFromSource resolves, and when the render
@@ -879,12 +945,9 @@ export class RenderBridge {
       );
       const float = floatRead(opts.float);
       if (opts.key !== undefined) {
-        this.post({
-          cmd: "renderThumbnailFromSource",
-          ...opts,
-          float,
-          pipeline: resolvePipelineFor(opts.params.displayTransform),
-        });
+        const pipeline = resolvePipelineFor(opts.params.displayTransform);
+        const contributedParams = this.thumbBag(pipeline, opts.contributedParams);
+        this.post({ cmd: "renderThumbnailFromSource", ...opts, float, pipeline, contributedParams });
       } else {
         this.renderThumbnail({ ...opts, float });
       }
@@ -960,7 +1023,34 @@ export class RenderBridge {
    *  current registry and Preferences default. */
   syncPipeline() {
     this.livePipelineSent = true;
-    this.setPipeline(resolvePipelineFor(this.liveDisplayTransform));
+    const pipeline = resolvePipelineFor(this.liveDisplayTransform);
+    this.setPipeline(pipeline);
+    // Its derived uniforms belong to the transform, so a switch re-derives the
+    // live bag. Before the first bag after an init there is nothing to update.
+    if (this.liveBag && this.lastPostedBag) {
+      this.postBag(bagForRender(pipeline, this.liveBag));
+    }
+  }
+
+  // A capture's bag patch, with the derived uniforms of the capture's
+  // transform for the live bag and the patch together.
+  private capturePatch(
+    pipeline: ResolvedPipeline,
+    patch: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
+    const derived = derivedEntries(pipeline, { ...this.liveBag, ...patch });
+    return Object.keys(derived).length === 0 ? patch : { ...patch, ...derived };
+  }
+
+  // A thumbnail's bag: its own with its transform's derived uniforms, or, for
+  // one drawn with the live bag, the live bag with them when there are any.
+  private thumbBag(
+    pipeline: ResolvedPipeline,
+    bag: Record<string, unknown> | undefined,
+  ): Record<string, unknown> | undefined {
+    if (bag) return bagForRender(pipeline, bag);
+    const derived = derivedEntries(pipeline, this.liveBag ?? {});
+    return Object.keys(derived).length === 0 ? undefined : { ...this.liveBag, ...derived };
   }
 
   // ------------------------------------------------------------------

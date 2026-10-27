@@ -114,10 +114,12 @@ export const DENOISE_STAGE: ProcessingStageContribution = {
   // Inline: swap scene-linear `lin` for the denoised prepass result. `lin` is
   // already linear here (the main shader srgbToLinear's it when the source isn't),
   // and the prepass result is linear too, so they match regardless of source bit
-  // depth. uDenoiseReady is set by the renderer to true only when the prepass
-  // actually ran and produced a real float result — so a no-float-targets fallback
-  // never corrupts the image. uDenoiseReady/uLuminanceNR/uColorNR are main-shader
-  // globals (not stage uniforms), so they pass through unrewritten.
+  // depth. uDenoiseReady is true only when the prepass ran this frame into float
+  // targets. Without float render targets the renderer keeps the denoiser out,
+  // since an RGBA8 ping-pong saturates the VST luma (always above 1), and the
+  // core shader's simpler NR block, which needs no render target, takes its
+  // place. uDenoiseReady/uLuminanceNR/uColorNR are main-shader globals (not
+  // stage uniforms), so they pass through unrewritten.
   glsl: `if (uDenoiseReady && (uLuminanceNR > 0.001 || uColorNR > 0.001)) { lin = stageResult; }`,
   uniforms: [],
   passes: [

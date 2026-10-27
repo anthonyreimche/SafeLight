@@ -30,6 +30,7 @@
 // so the main thread is never blocked.
 
 import { getSettings } from "@/state/settings-store";
+import type { CachedPreview } from "./cache-encode";
 import {
   setCacheDirOnWorker,
   workerReadCachedPreview,
@@ -145,25 +146,44 @@ export function rawCacheGeneration(): number {
 
 export async function readCachedPreview(
   key: string,
-): Promise<{ data: Uint16Array; width: number; height: number } | null> {
+  opts?: { sample?: boolean },
+): Promise<CachedPreview | null> {
   if (!getSettings().rawCacheEnabled) return null;
   try {
-    return await workerReadCachedPreview(key);
+    return await workerReadCachedPreview(key, opts?.sample ?? false);
   } catch {
     return null;
   }
 }
 
-// The keys nothing needs decoding for: each stored preview, and each photo
-// with a final marker from the current decoder.
-export async function cachedKeys(): Promise<Set<string>> {
-  if (!getSettings().rawCacheEnabled) return new Set();
+/** What the cache holds, by key. `done`: the keys nothing needs decoding for,
+ *  each photo with a final marker from the current decoder and each entry that
+ *  keeps the decoded size and the centre sample. `stale`: entries written before
+ *  3.1.0, which serve but keep neither; a photo in `done` is never in it. */
+export async function cacheListing(): Promise<{ done: Set<string>; stale: Set<string> }> {
+  const done = new Set<string>();
+  const stale = new Set<string>();
+  if (!getSettings().rawCacheEnabled) return { done, stale };
   try {
-    const keys = await workerCachedKeys();
-    return new Set(keys.map((key) => markedKey(key) ?? key));
+    for (const { key, complete } of await workerCachedKeys()) {
+      const marked = markedKey(key);
+      if (marked !== null) done.add(marked);
+      else if (complete) done.add(key);
+      else stale.add(key);
+    }
   } catch {
-    return new Set();
+    // An unreadable cache reads as empty: the pass decodes, the writes land or
+    // are refused on their own merits.
   }
+  // An old entry can outlive a later verdict on its photo, and decoding the
+  // photo again would only reach the same verdict.
+  for (const key of done) stale.delete(key);
+  return { done, stale };
+}
+
+/** The keys nothing needs decoding for; see cacheListing. */
+export async function cachedKeys(): Promise<Set<string>> {
+  return (await cacheListing()).done;
 }
 
 /**

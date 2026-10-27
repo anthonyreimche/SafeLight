@@ -15,7 +15,7 @@ import {
   type Mask,
   type RetouchSpot,
 } from "@/catalog/types";
-import type { SplitCut, StageSplit } from "./stage-injection";
+import type { ContributedBinding, SplitCut, StageSplit } from "./stage-injection";
 import {
   SplitTokens,
   splitUpstreamKey,
@@ -23,12 +23,28 @@ import {
   type SplitUpstreamInputs,
 } from "./split-signature";
 
+// The display transform's bindings: a param, and a uniform derived from it.
+const GAIN: ContributedBinding = { qualifiedKey: "look.tone.gain", glslName: "u_t_gain", glslType: "float", default: 1 };
+const CURVE: ContributedBinding = {
+  qualifiedKey: "look.tone#curve",
+  glslName: "u_t_curve",
+  glslType: "vec3",
+  default: [0, 0, 0],
+};
+
 const inputs = (over: Partial<SplitUpstreamInputs> = {}): SplitUpstreamInputs => ({
   params: freshParams(5000),
   cut: "scene",
-  bag: { "up.stage.amount": 1, "own.stage.take": 1, "down.stage.amount": 1 },
+  bag: {
+    "up.stage.amount": 1,
+    "own.stage.take": 1,
+    "down.stage.amount": 1,
+    "look.tone.gain": 1,
+    "look.tone#curve": [1, 2, 3],
+  },
   upstreamStageIds: ["up.stage"],
   textureVersions: { "up.stage.lut": 1, "down.stage.lut": 1 },
+  transformBindings: [GAIN, CURVE],
   context: "ctx",
   ...over,
 });
@@ -127,6 +143,30 @@ describe("splitUpstreamKey", () => {
     expect(key({ context: "other" })).not.toBe(key());
   });
 
+  // A display cut is drawn through the display transform; a scene or decode
+  // cut stops ahead of it.
+  it("follows the display transform's values for a display cut only", () => {
+    const bag = inputs().bag;
+    for (const moved of [{ ...bag, "look.tone.gain": 2 }, { ...bag, "look.tone#curve": [1, 2, 4] }]) {
+      expect(key({ cut: "display", bag: moved })).not.toBe(key({ cut: "display" }));
+      expect(key({ cut: "scene", bag: moved })).toBe(key({ cut: "scene" }));
+      expect(key({ cut: "decode", bag: moved })).toBe(key({ cut: "decode" }));
+    }
+  });
+
+  // The transform binds its default for a value it can't take, and a
+  // re-registration can change that default without changing the program.
+  it("keys a display cut on what the transform binds, defaults included", () => {
+    const unset = { ...inputs().bag };
+    delete unset["look.tone.gain"];
+    const display = (over: Partial<SplitUpstreamInputs>) => key({ cut: "display", ...over });
+    expect(display({ bag: { ...unset, "look.tone.gain": Number.NaN } })).toBe(display({ bag: unset }));
+    expect(display({ bag: unset })).toBe(display({}));
+    expect(display({ bag: unset, transformBindings: [{ ...GAIN, default: 2 }, CURVE] })).not.toBe(
+      display({ bag: unset }),
+    );
+  });
+
   // A decode cut sits ahead of core noise reduction, white balance, exposure
   // and the masks, and ahead of everything the renderer context describes.
   it("keys a decode cut on the upstream stages and the retouch only", () => {
@@ -156,8 +196,8 @@ describe("splitUpstreamKey", () => {
 // only when the params object is replaced.
 describe("SplitTokens", () => {
   const sources = (over: Partial<SplitSources> = {}): SplitSources => {
-    const { params, bag, textureVersions, context } = inputs();
-    return { params, bag, textureVersions, context, ...over };
+    const { params, bag, textureVersions, transformBindings, context } = inputs();
+    return { params, bag, textureVersions, transformBindings, context, ...over };
   };
   const split = (cut: SplitCut): StageSplit => ({ index: 0, cut, upstreamStageIds: ["up.stage"] });
 
@@ -172,9 +212,9 @@ describe("SplitTokens", () => {
     }
   }
 
-  it("serialises nothing while no input changes, nor for the stage's own param", () => {
+  it.each<SplitCut>(["scene", "display"])("serialises nothing for a %s cut while no input changes, nor for the stage's own param", (cut) => {
     const tokens = new SplitTokens();
-    const s = split("scene");
+    const s = split(cut);
     const base = sources();
     const first = tokens.token("own.stage", s, base);
     const own = { ...base, bag: { ...base.bag, "own.stage.take": 0 } };
@@ -195,6 +235,17 @@ describe("SplitTokens", () => {
     expect(downstream.serialised).toBe(1);
     const upstream = run(tokens, s, [exposure]);
     expect(upstream.issued[0]).not.toBe(first);
+  });
+
+  it("issues a display cut a new token for a display transform value, and a scene cut none", () => {
+    const base = sources();
+    const moved = { ...base, bag: { ...base.bag, "look.tone.gain": 2 } };
+    for (const [cut, redrawn] of [["display", true], ["scene", false], ["decode", false]] as const) {
+      const tokens = new SplitTokens();
+      const s = split(cut);
+      const first = tokens.token("own.stage", s, base);
+      expect(tokens.token("own.stage", s, moved) !== first, cut).toBe(redrawn);
+    }
   });
 
   // A slider frame replaces the params object and keeps every array in it. A decode
@@ -264,6 +315,11 @@ describe("SplitTokens", () => {
       { ...base, bag: { ...base.bag, "own.stage.take": 0 } },
       { ...base, bag: { ...base.bag, "up.stage.amount": 2 } },
       { ...base, bag: { ...base.bag, "up.stage.amount": 2 } },
+      { ...base, bag: { ...base.bag, "look.tone.gain": 2 } },
+      { ...base, bag: { ...base.bag, "look.tone#curve": [0, 0, 1] } },
+      { ...base, bag: { ...base.bag, "look.tone#curve": [0, 0, 1] } },
+      { ...base, transformBindings: [GAIN] },
+      { ...base, transformBindings: [{ ...GAIN, default: 3 }] },
       { ...base, textureVersions: { "up.stage.lut": 2, "down.stage.lut": 1 } },
       { ...base, textureVersions: { "up.stage.lut": 2, "down.stage.lut": 5 } },
       { ...base, context: "other" },

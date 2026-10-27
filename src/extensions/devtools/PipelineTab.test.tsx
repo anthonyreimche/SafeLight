@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { DEFAULT_DEVELOP_PARAMS, defaultMaskAdjustments, type DevelopParams, type Mask } from "@/catalog/types";
 import { useDisplayProfile } from "@/rendering/display-profile-store";
+import { DENOISE_STAGE } from "@/rendering/webgl/builtin-denoise";
 import { describePipeline } from "@/rendering/webgl/pipeline-description";
 import { useDevelopStore } from "@/state/develop-store";
 import { useRegistry } from "../registry";
@@ -135,6 +136,16 @@ describe("PipelineTab", () => {
     const output = item("Output");
     expect(within(output).getByText("mapped")).toBeTruthy();
     expect(output.textContent).toContain("On this screen: sRGB");
+  });
+
+  it("shows the denoiser's luma floor on its row, and the Heal copy's clip as each version makes it", () => {
+    register(DENOISE_STAGE);
+    openPhoto({ processVersion: 2 });
+    render(<PipelineTab />);
+    expect(within(item("builtin.denoise")).getByText("result · while in use")).toBeTruthy();
+    expect(within(item("Heal")).getByText("result · only without float render targets or mipmaps")).toBeTruthy();
+    pick("v1");
+    expect(within(item("Heal")).getByText("result · while in use")).toBeTruthy();
   });
 
   it("shows a floor found in a stage's GLSL", () => {

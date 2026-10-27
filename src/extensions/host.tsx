@@ -34,7 +34,13 @@ import {
   registerTheme,
 } from "./registry";
 import { initStylesheets } from "./stylesheets";
-import { applyPipeline, effectivePipelineId, initPipelines, usePipelineStore } from "./pipelines";
+import {
+  applyPipeline,
+  effectivePipelineId,
+  initPipelines,
+  transformParamKeys,
+  usePipelineStore,
+} from "./pipelines";
 import { setStageTexture } from "@/rendering/render-bridge";
 import {
   getExtSetting,
@@ -64,6 +70,7 @@ import { applyTheme, initThemes, useThemeStore } from "./themes";
 import {
   captureDevelopFloatFrame,
   captureDevelopFrame,
+  readDevelopSourceSample,
   renderDevelopPhotoFloatFrame,
   renderDevelopPhotoFrame,
   useDevelopOverlay,
@@ -186,7 +193,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     dock: { togglePanel: toggleDockPanel, usePanelPlacement: useDockPlacement },
     themes: { apply: applyTheme },
     layouts: { apply: applyDockLayout },
-    pipelines: { apply: applyPipeline, effectiveId: effectivePipelineId },
+    pipelines: { apply: applyPipeline, effectiveId: effectivePipelineId, paramKeys: transformParamKeys },
     preferences: { open: openPreferences, close: closePreferences, toggle: togglePreferences },
     navigation: { goTo: goToModule },
     keybindings: { getBinding, list: () => listBindings() },
@@ -199,6 +206,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       captureFloatFrame: captureDevelopFloatFrame,
       renderPhotoFrame: renderDevelopPhotoFrame,
       renderPhotoFloatFrame: renderDevelopPhotoFloatFrame,
+      readSourceSample: readDevelopSourceSample,
       setCanvasCursor: (cursor, opts) =>
         setCanvasCursor(
           extensionId,
@@ -218,11 +226,14 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     export: {
       getDefaultSettings: () => getDefaultExportSettings(),
       // Merge the caller's overrides over the persisted defaults, so a caller
-      // can pass just { format, longEdge, quality } and inherit the rest.
+      // can pass just { format, longEdge, quality } and inherit the rest. A PNG
+      // is 8-bit unless the caller asks: the user's PNG default is for their own
+      // exports, and a headless render that decodes the file back to 8 bits would
+      // only pay for the slow, large 16-bit path.
       renderPhotos: (photos, settings, onProgress, options) =>
         renderPhotosToBlobs(
           photos,
-          { ...getDefaultExportSettings(), ...(settings ?? {}) },
+          { ...getDefaultExportSettings(), pngBitDepth: 8, ...(settings ?? {}) },
           onProgress,
           options,
         ),

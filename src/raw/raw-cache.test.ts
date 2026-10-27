@@ -10,6 +10,10 @@ const h = vi.hoisted(() => ({
   sent: [] as string[],
   /** The worker cannot make a write: the disk or the storage quota is full. */
   refuseWrites: false,
+  /** What the worker lists. */
+  entries: [] as { key: string; complete: boolean }[],
+  /** The reads the worker was asked for: the key, and whether with the sample. */
+  reads: [] as [string, boolean][],
 }));
 
 vi.mock("./cache-bridge", () => ({
@@ -20,10 +24,13 @@ vi.mock("./cache-bridge", () => ({
     if (h.refuseWrites) throw new Error("The quota has been exceeded.");
     h.sent.push(`write ${key}`);
   },
-  workerReadCachedPreview: async () => null,
+  workerReadCachedPreview: async (key: string, sample: boolean) => {
+    h.reads.push([key, sample]);
+    return null;
+  },
   workerDeleteCachedPreview: async () => {},
   workerClearRawCache: async () => {},
-  workerCachedKeys: async () => [],
+  workerCachedKeys: async () => h.entries,
 }));
 
 vi.mock("@/state/settings-store", () => ({
@@ -31,8 +38,12 @@ vi.mock("@/state/settings-store", () => ({
 }));
 
 import {
+  cacheListing,
+  cachedKeys,
+  decodeMarkerKey,
   rawCacheGeneration,
   rawCacheKey,
+  readCachedPreview,
   setRawCacheDir,
   writeCachedPreview,
 } from "./raw-cache";
@@ -43,6 +54,8 @@ const pixels = () => new Float32Array(4);
 beforeEach(() => {
   h.sent = [];
   h.refuseWrites = false;
+  h.entries = [];
+  h.reads = [];
 });
 
 describe("rawCacheKey", () => {
@@ -131,5 +144,49 @@ describe("writeCachedPreview's answer", () => {
     const taken = await writeCachedPreview("v6:a.NEF:64:0", pixels(), 1, 1, begun);
 
     expect(taken).toBe(true);
+  });
+});
+
+describe("cachedKeys", () => {
+  // An entry from before 3.1.0 keeps neither the decoded size nor the centre
+  // sample, so the cache pass should take its photo on again.
+  it("names complete entries and marked photos, not entries from before 3.1.0", async () => {
+    h.entries = [
+      { key: "v6:a.NEF:1:0", complete: true },
+      { key: "v6:b.NEF:1:0", complete: false },
+      { key: decodeMarkerKey("v6:c.NEF:1:0", "unsupported"), complete: false },
+    ];
+    expect([...(await cachedKeys())].sort()).toEqual(["v6:a.NEF:1:0", "v6:c.NEF:1:0"]);
+  });
+
+  it("lists entries from before 3.1.0 apart from the keys nothing needs decoding for", async () => {
+    h.entries = [
+      { key: "v6:a.NEF:1:0", complete: true },
+      { key: "v6:b.NEF:1:0", complete: false },
+      { key: decodeMarkerKey("v6:c.NEF:1:0", "unsupported"), complete: false },
+    ];
+    const { done, stale } = await cacheListing();
+    expect([...done].sort()).toEqual(["v6:a.NEF:1:0", "v6:c.NEF:1:0"]);
+    expect([...stale]).toEqual(["v6:b.NEF:1:0"]);
+  });
+
+  // An entry from before 3.1.0 can outlive a later verdict on its photo; the
+  // verdict would only come out the same if the photo were decoded again.
+  it("lists a marked photo as done, not stale, beside an entry from before 3.1.0", async () => {
+    h.entries = [
+      { key: "v6:d.NEF:1:0", complete: false },
+      { key: decodeMarkerKey("v6:d.NEF:1:0", "suspicious"), complete: false },
+    ];
+    const { done, stale } = await cacheListing();
+    expect([...done]).toEqual(["v6:d.NEF:1:0"]);
+    expect([...stale]).toEqual([]);
+  });
+});
+
+describe("readCachedPreview", () => {
+  it("asks the worker for the sample only when told to", async () => {
+    await readCachedPreview("k");
+    await readCachedPreview("k", { sample: true });
+    expect(h.reads).toEqual([["k", false], ["k", true]]);
   });
 });

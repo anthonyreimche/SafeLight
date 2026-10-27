@@ -4,8 +4,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 // Privileged surface — raw filesystem by absolute path, running an update
-// installer (which fetches + executes a release asset), and capturing the
-// window for Report an issue. Extension code shares
+// installer (which fetches + executes a release asset), capturing the
+// window for Report an issue, and switching how the next launch draws (software
+// rendering). Extension code shares
 // the renderer realm, so anything left on window.safelightNative is reachable by
 // a malicious extension. These are handed out exactly once, at renderer boot, to
 // core code that captures them privately (src/native/privileged.ts); every later
@@ -54,6 +55,11 @@ const privileged = {
   },
   capture: {
     page: () => ipcRenderer.invoke("diagnostics:capturePage"),
+  },
+  // Software rendering for the next launch (Linux).
+  gpu: {
+    backend: () => ipcRenderer.invoke("gpu:backend"),
+    setSoftware: (on) => ipcRenderer.invoke("gpu:setSoftware", !!on),
   },
 };
 

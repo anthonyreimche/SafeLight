@@ -47,6 +47,7 @@ describe("coverageSignature", () => {
       { opacity: 0.5 },
       { flow: 0.5 },
       { erase: true },
+      { strokeStart: true },
     ];
     for (const patch of variants) {
       expect(coverageSignature([item("m1", [dab(patch)])], 1)).not.toBe(base);

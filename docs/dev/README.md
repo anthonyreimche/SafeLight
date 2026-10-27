@@ -2,6 +2,13 @@
 
 For extension authors and core contributors.
 
+## Start here
+
+- [How Safelight works](concepts.md): what the core is, how it runs extensions, what they get, give back and can access, and where to find everything
+- [How a photo is rendered](rendering.md): the render steps in order, where your code plugs in, and colour management
+
+`src/extensions/types.ts` is the source of truth for every API. The pages below summarise it. If you use a coding agent, point it at that file.
+
 ## Building extensions
 
 The fastest way to extend Safelight — no fork required. Ship a panel, tool, theme, or display transform as a GitHub repo and users install it from the in-app store.
@@ -28,4 +35,4 @@ The complete `SafelightAPI` surface, split by topic.
 - [Architecture](architecture.md) — the blind-orchestrator model, render path, RAW pipeline, Electron shell
 - [Contributing](contributing.md) — setup, code style, where things live, workflow
 
-New to the project? Read [Architecture](architecture.md) first — the "everything is an extension" model shapes everything else.
+New to extensions? Read [How Safelight works](concepts.md) first. Working on the core? Read [Architecture](architecture.md) first.

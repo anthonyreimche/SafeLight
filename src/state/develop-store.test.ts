@@ -882,3 +882,30 @@ describe("process versions", () => {
     });
   });
 });
+
+describe("sourceSize", () => {
+  const INITIAL = { width: 0, height: 0, fullWidth: 0, fullHeight: 0, native: false };
+
+  beforeEach(() => {
+    useDevelopStore.setState({ sourceSize: INITIAL });
+  });
+
+  it("keeps the decoded size and whether the source is native, and notifies when only that flips", () => {
+    const seen: boolean[] = [];
+    const off = useDevelopStore.subscribe((s, prev) => {
+      if (s.sourceSize !== prev.sourceSize) seen.push(s.sourceSize.native);
+    });
+    const set = useDevelopStore.getState().setSourceSize;
+    set(4096, 2731, { width: 6000, height: 4000, native: false });
+    set(4096, 2731, { width: 6000, height: 4000, native: false });
+    set(4096, 2731, { width: 6000, height: 4000, native: true });
+    off();
+    expect(seen).toEqual([false, true]);
+    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 4096, height: 2731, fullWidth: 6000, fullHeight: 4000, native: true });
+  });
+
+  it("takes the held size as the decoded size, not native, without the third argument", () => {
+    useDevelopStore.getState().setSourceSize(10, 20);
+    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 10, height: 20, fullWidth: 10, fullHeight: 20, native: false });
+  });
+});

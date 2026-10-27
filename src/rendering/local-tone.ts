@@ -83,7 +83,9 @@ export function pathToWhite(c: readonly [number, number, number]): [number, numb
 /** GLSL twins of pathToWhite, toneHighlights and toneShadows, and the region
  *  base the version 2 tone block runs them on. Spliced after applyWhiteBalance
  *  and baselineTone; reads uImage, uLinear, uIsFallbackPreview,
- *  uApplyBaseCurve, uApplyToneShoulder and the white-balance uniforms. */
+ *  uApplyBaseCurve, uBaselineGain, uApplyToneShoulder and the white-balance
+ *  uniforms. A tap takes the camera baseline after baselineTone, as `lin`
+ *  does (shaders.ts), so a region stays in the pixel's units. */
 export const LOCAL_TONE_GLSL = `
 vec3 slPathToWhite(vec3 c) {
   float peak = max(max(c.r, c.g), c.b);
@@ -136,7 +138,7 @@ float slToneShadows(float x, float S) {
 float slLocalToneTap(vec2 uv, float lod, vec3 wb) {
   vec3 s = textureLod(uImage, uv, lod).rgb;
   if (!uLinear && !uIsFallbackPreview) s = srgbToLinear(s);
-  if (uApplyBaseCurve) s = baselineTone(s);
+  if (uApplyBaseCurve) s = slBaselineRefit(baselineTone(s)) * uBaselineGain;
   return log2(max(luma(s * wb), 1e-4));
 }
 
@@ -188,7 +190,9 @@ float slLocalToneBase(vec2 uv, float L) {
  *  colourfulness boost) and after Shadows (`l2`). `L` is the pixel's linear
  *  luminance and `B` its region's, both before Exposure. Both luminances are
  *  floored at 1e-4, as the shader floors the pixel's and as its region base
- *  never goes lower. */
+ *  never goes lower. `cameraLift` is the camera match's shadows lift
+ *  (Shadows / 100), which goes on the pixel and its region by their own levels
+ *  before `s`. */
 export function localToneBlend(
   L: number,
   B: number,
@@ -196,18 +200,21 @@ export function localToneBlend(
   h: number,
   s: number,
   skipShoulder: boolean,
+  cameraLift = 0,
 ): { l1: number; l2: number } {
   const gain = 2 ** e;
   const lx = Math.max(L, 1e-4) * gain;
   let l1 = toneHighlights(lx, e, h, skipShoulder);
-  let l2 = toneShadows(l1, s);
+  let l2 = toneShadows(toneShadows(l1, cameraLift), s);
   if (Math.abs(h) > 0.001 || Math.abs(s) > 0.001) {
     // Floored after Exposure too: below the curves' own 1e-4 floor a region's
     // Shadows gain would grow as Exposure goes down and cancel it.
     const bx = Math.max(Math.max(B, 1e-4) * gain, 1e-4);
     const b1 = toneHighlights(bx, e, h, skipShoulder);
     l1 = mix(l1, (lx * b1) / bx, Math.abs(h));
-    l2 = mix(toneShadows(l1, s), (l1 * toneShadows(b1, s)) / b1, Math.abs(s));
+    const c1 = toneShadows(l1, cameraLift);
+    const cb = toneShadows(b1, cameraLift);
+    l2 = mix(toneShadows(c1, s), (c1 * toneShadows(cb, s)) / cb, Math.abs(s));
   }
   return { l1, l2 };
 }

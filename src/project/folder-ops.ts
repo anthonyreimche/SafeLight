@@ -342,18 +342,22 @@ export async function movePhotos(ids: string[], destRel: string): Promise<void> 
 
 /** Reveal a photo's file in the OS file manager (selects it inside its folder).
  *  Returns false in the plain-browser build or if the path can't be resolved. */
-export async function revealPhoto(id: string): Promise<boolean> {
+export async function revealPhoto(
+  id: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
   const rootHandle = root();
   const photo = useCatalogStore.getState().photos.find((p) => p.id === id);
-  if (!rootHandle || !photo) return false;
+  if (!rootHandle || !photo) return { ok: false, reason: "The photo isn't in the open folder." };
   // Prefer the file handle's own absolute path; fall back to root + relPath.
   let filePath = nativePathOf(photo.fileHandle);
   if (!filePath) {
     const rootPath = nativePathOf(rootHandle);
     filePath = rootPath ? `${rootPath.replace(/[/\\]+$/, "")}/${photo.relPath}` : null;
   }
-  if (!filePath) return false;
-  return revealNativePath(filePath);
+  if (!filePath) return { ok: false, reason: "Showing a file in its folder needs the desktop app." };
+  return (await revealNativePath(filePath))
+    ? { ok: true }
+    : { ok: false, reason: "The file may have moved or been deleted." };
 }
 
 export type RenamePhotoResult =

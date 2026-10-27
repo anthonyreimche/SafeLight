@@ -1,88 +1,62 @@
 # Building Extensions
 
-Safelight's extension system is inspired by modern IDE plugin architectures. The core app is a **blind orchestrator**: it doesn't know what panels, themes, display transforms, or metadata sidecars exist — it exposes contribution points, and extensions fill them. Every panel in Safelight, including the histogram, is a registered contribution, and every stock panel is a pre-installed extension that can be disabled and replaced by a community version. Anyone can publish an extension as a GitHub repo.
+An extension is a GitHub repo with a `safelight.json` manifest and a prebuilt ES module. This page covers the repo layout, the manifest, the build and the store listing. For how the core runs extensions, read [How Safelight works](../concepts.md). For GPU code, read [How a photo is rendered](../rendering.md).
 
-## In this guide
-
-| Page | Covers |
-|---|---|
-| **This page** | The orchestrator model, repo anatomy, the manifest, and the build |
-| [Contribution Types](contribution-types.md) | What an extension can register, with worked examples |
-| [Debugging](debugging.md) | The in-app Developer Tools, live-loading, and common load errors |
-| [Publishing](publishing.md) | Store listing — thumbnail, README, metadata — and releases |
-
-For exact type signatures, see the [API Reference](../api/README.md); `src/extensions/types.ts` is the source of truth. To *install and manage* extensions as a user, see [Using Extensions](../../user/using-extensions.md).
+Next: [Contribution Types](contribution-types.md) (every `register*` call), [Debugging](debugging.md) (Developer Tools, live-loading, load errors), [Publishing](publishing.md) (store page and releases). Exact signatures are in the [API Reference](../api/README.md) and `src/extensions/types.ts`. Users install extensions as described in [Using Extensions](../../user/using-extensions.md).
 
 ## Anatomy of an extension
 
-A repo needs two things: a `safelight.json` manifest at the root, and a prebuilt ESM bundle (zip it into a GitHub Release, or commit your `dist/`). Safelight installs an extension by downloading the repo or its release zip and importing `main` **as-is** — there is no build step on the user's machine.
+Safelight installs an extension by downloading the repo or its release zip and importing `main` as it is. Nothing is built on the user's machine.
 
 ### Repo layout
 
-How much structure you need depends on whether you have a build step.
-
-**No build (themes and small panels).** Hand-write a single ESM file and point `main` straight at it. This is the *entire* [Slate theme](https://github.com/anthonyreimche/Slate-Theme-for-Safelight) — three files:
+**No build** (themes, small panels). Hand-write one ESM file and point `main` at it. This is the whole [Slate theme](https://github.com/anthonyreimche/Slate-Theme):
 
 ```
 safelight-theme-slate/
-├─ safelight.json     # manifest — "main": "index.js"
-├─ index.js           # the bundle; exports activate(api)
-└─ README.md          # rendered in the store detail view
+├─ safelight.json     # "main": "index.js"
+├─ index.js           # exports activate(api)
+└─ README.md          # shown on the store page
 ```
 
 ```js
-// index.js — Slate, a cool blue-gray dark theme.
+// index.js
 export function activate(api) {
   api.registerTheme({
     id: "theme-slate.theme",
     name: "Slate",
     colorScheme: "dark",
-    vars: {
-      "--color-surface-0": "#0d1117",
-      "--color-accent": "#58a6ff",
-      // …the rest of the theme's CSS variables
-    },
+    vars: { "--color-surface-0": "#0d1117", "--color-accent": "#58a6ff" /* ... */ },
   });
 }
 ```
 
-```json
-// safelight.json
-{ "id": "theme-slate", "name": "Slate", "version": "1.0.0",
-  "description": "Cool blue-gray dark theme.", "author": "Tokyo", "main": "index.js" }
-```
-
-**With a build (anything using JSX/TypeScript or npm dependencies).** Author in `src/`, bundle to `dist/`, and ship `dist/` (zipped into a release, or committed) so installs need no toolchain:
+**With a build** (JSX, TypeScript or npm dependencies). Author in `src/`, bundle to `dist/`, ship `dist/`:
 
 ```
 my-extension/
 ├─ safelight.json       # "main": "dist/index.js"
-├─ src/
-│  └─ index.js          # your source
-├─ dist/
-│  └─ index.js          # built ESM bundle — zip it into a release, or commit it
-├─ rolldown.config.mjs  # bundler config
+├─ src/index.js         # your source
+├─ dist/index.js        # built bundle: zip it into a release, or commit it
+├─ rolldown.config.mjs
 ├─ package.json
 └─ README.md
 ```
 
-Three build invariants, regardless of bundler:
+```js
+// rolldown.config.mjs (any bundler that can mark React external works)
+export default {
+  input: "src/index.js",
+  external: ["react", "react-dom", "react/jsx-runtime"],
+  output: { file: "dist/index.js", format: "esm" },
+};
+```
 
-- **Emit one self-contained ESM file** with an `activate(api)` export (and optional `deactivate()`).
-- **Leave React external.** Safelight injects its own instance as `api.react`; a second copy breaks hooks. The example extensions build UI with `React.createElement` off `api.react` rather than JSX imports. The example extensions use [rolldown](https://rolldown.rs/), but any bundler that can mark React external works:
+Build rules, whatever the bundler:
 
-  ```js
-  // rolldown.config.mjs
-  export default {
-    input: "src/index.js",
-    external: ["react", "react-dom", "react/jsx-runtime"],
-    output: { file: "dist/index.js", format: "esm" },
-  };
-  ```
-
-- **Ship the built bundle.** Attach a zip of it to a GitHub Release (see [Releases and versions](publishing.md#releases-and-versions)) or commit `dist/`. The store downloads files; it does not run your build.
-
-Finally, **tag the GitHub repo with the `safelight-extension` topic** so it appears in the in-app store, and (optionally) add an [icon / og:image](publishing.md) for a good thumbnail.
+- **One self-contained ESM file** that exports `activate(api)` and optionally `deactivate()`.
+- **React stays external.** Use `api.react`. A second copy of React breaks hooks.
+- **Ship the built bundle.** Attach a zip to a [GitHub Release](publishing.md#releases-and-versions) or commit `dist/`. The store downloads files. It never runs your build.
 
 ### Manifest
 
@@ -102,15 +76,16 @@ Finally, **tag the GitHub repo with the `safelight-extension` topic** so it appe
 }
 ```
 
-Only `id`, `name`, `version`, and `main` are required; everything else (`description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `worksWith`, `license`, `minAppVersion`, `permissions`) is optional and enriches the store detail view. `minAppVersion` is the **minimum supported Safelight version** — the oldest build the extension works on. Installs (and updates) on an older build are refused before any files are written, and the app reports the version it needs; the extension's detail page also flags the mismatch. When a newer version raises `minAppVersion` above the user's build, the store lists it as needing that Safelight version, never offers or auto-installs it, and the installed version keeps running. An update that installs but fails to start is rolled back to the previous version and remembered, so auto-update does not retry it until you publish a newer version. Set it whenever you depend on an API or contribution point added in a specific release. Versions are compared as dotted `major.minor.patch` (a `v` prefix and missing parts are tolerated).
+`id`, `name`, `version` and `main` are required. The rest is optional: `description`, `author`, `icon`, `categories`, `keywords`, `homepage`, `repository`, `screenshots`, `worksWith`, `license`, `minAppVersion`, `permissions`.
 
-**`id`** names the extension and the folder it is installed into. It starts with a letter or a digit and holds only letters, digits, `.`, `_` and `-`. Pick one that is yours alone, such as `com.example.histogram-pro`. `core` and anything under `core.` (like `core.tools`), in any letter case, belong to Safelight's built-in extensions: installing an extension with one of those ids is refused, and the Developer Tools dev folder will not load one (its row in the Dev tab says why). `corel`, `coreutils` and `my.core` are fine.
-
-**`permissions`** declares capabilities the extension needs, shown to the user on its store page. Only `network` is **enforced**: the listed HTTPS origins are added to the app's content-security policy, so the extension can reach **only** the hosts it declares — any other host is blocked. A new declaration takes effect on the next app launch (installing a network-using extension prompts the user to restart before it can connect; an extension loaded from the Developer Tools dev folder is read the same way, and the Dev tab says which origins wait on a restart). Because extensions run in-app, ambient access to the user's catalog and files is **not** confined by this field — it is a consent/disclosure layer, not a sandbox. See [Extensions — safety & terms](../../../EXTENSIONS.md).
+- **`id`** names the extension and its install folder. It starts with a letter or digit and holds only letters, digits, `.`, `_` and `-`. `core` and anything under `core.`, in any letter case, is reserved for built-ins and refused (`corel` or `my.core` are fine). Pick one that is yours alone, such as `com.example.histogram-pro`.
+- **`minAppVersion`** is the oldest Safelight the extension works on. Set it whenever you use an API added in a specific release. Installs and updates on an older build are refused before any files are written, and the installed version keeps running. A newer version that needs a newer Safelight is shown as needing it and never auto-installed. Versions compare as `major.minor.patch` (a `v` prefix is fine).
+- **`permissions.network`** lists the HTTPS origins the extension may reach. Only this field is enforced: the origins join the app's content-security policy at the next launch, and every other host is blocked. It does not limit access to the catalog or files. See [EXTENSIONS.md](../../../EXTENSIONS.md).
+- An update that installs but fails to start is rolled back, and auto-update won't retry it until you publish a newer version.
 
 ### Store listing
 
-The store groups extensions by what they're for. Add one to three purpose topics to the repo beside `safelight-extension`:
+Tag the GitHub repo with the `safelight-extension` topic so it appears in the in-app store. The store groups extensions by purpose: add one to three of these topics beside it.
 
 | Topic | Category |
 |---|---|
@@ -125,13 +100,12 @@ The store groups extensions by what they're for. Add one to three purpose topics
 | `safelight-preset` | Presets |
 | `safelight-theme` | Themes and interface |
 
-`categories` in `safelight.json` overrides the topics when any value names a category by its slug or label, in any case (`["Detail", "Tone"]`); values that name none, such as "Develop", are ignored. `safelight-module`, `safelight-pipeline` and `safelight-panel` aren't categories: the store shows the first one present as a badge (Module, Processing, Panel). The store also searches your manifest's `keywords`. The list lives in [safelight-registry's `categories.json`](https://github.com/anthonyreimche/safelight-registry/blob/main/categories.json), so new categories appear without an app update.
-
-`screenshots` (https URLs or paths in your repo, at most 6) show as a strip on your detail page. `worksWith` lists `"owner/repo"` extensions yours pairs well with (at most 6), such as a panel that draws on another extension's module: they appear on your detail page, and yours appears on theirs when your extension is verified.
+- `categories` in `safelight.json` overrides the topics when a value names a category by slug or label, in any case. Values that name none are ignored.
+- `safelight-module`, `safelight-pipeline` and `safelight-panel` aren't categories. The store shows the first one present as a badge (Module, Processing, Panel).
+- The store also searches `keywords`. The category list lives in [safelight-registry's `categories.json`](https://github.com/anthonyreimche/safelight-registry/blob/main/categories.json).
+- `screenshots` (at most 6, https URLs or repo paths) show on your store page. `worksWith` (at most 6 `"owner/repo"`) lists extensions yours pairs with. Yours appears on theirs when it is verified.
 
 ### The entry bundle
-
-The bundle must export `activate(api)` (and optionally `deactivate()`). **Do not bundle React** — use `api.react`, the app's own instance.
 
 ```js
 export function activate(api) {
@@ -150,26 +124,17 @@ export function activate(api) {
   });
 
   api.registerSettings({
-    fields: [
-      { key: "mode", label: "Mode", type: "select", default: "parade",
-        options: [{ value: "parade", label: "RGB parade" }, { value: "wave", label: "Waveform" }] },
-      { key: "opacity", label: "Opacity", type: "number", default: 80, min: 10, max: 100 },
-    ],
+    fields: [{ key: "opacity", label: "Opacity", type: "number", default: 80, min: 10, max: 100 }],
   });
   api.settings.onChange((key, value) => {/* re-render with the new value */});
 }
 
-export function deactivate() {/* tear down listeners / side effects */}
+export function deactivate() {/* tear down listeners and side effects */}
 ```
 
-The `api` object is a scoped [`SafelightAPI`](../api/README.md). Its UI building blocks (`api.components` such as Slider and Panel, the `api.ui` primitives such as Button and Select, and theming tokens) are in [UI Components](../api/components.md); the full list of what you can register is in [Contribution Types](contribution-types.md).
+Notes:
 
-> **Styling note:** runtime-loaded bundles are not scanned by Tailwind, so arbitrary Tailwind utility classes won't have CSS generated for them. Reuse `api.ui` and `api.components` (which are already themed), or use the theme CSS variables (`api.ui.tokens`, or `var(--color-surface-1)` etc.) with inline styles. See [UI Components → Theming tokens](../api/components.md#theming-tokens).
-
-## Tips
-
-- Namespace contribution ids with your extension id (`com.example.panel-name`); `core.*` is reserved for built-ins, and the same goes for extension ids: `core` and anything under `core.` is refused, in any letter case.
-- To *replace* a stock panel, register your own and tell users to disable the built-in (e.g. "Histogram") in the Extensions panel.
-- Keep bundles dependency-light. React, the [component kit](../api/components.md), and [state](../api/stores.md) come from the API.
-- Style with `api.ui`, `api.components` and theme CSS variables, not ad-hoc Tailwind classes (they aren't compiled for runtime bundles).
-- Tag the repo with the `safelight-extension` topic so it appears in the in-app store.
+- Prefix contribution ids with your extension id (`com.example.panel-name`).
+- Arbitrary Tailwind classes have no CSS in runtime bundles. Use `api.ui`, `api.components` or theme CSS variables with inline styles. See [Theming tokens](../api/components.md#theming-tokens).
+- Keep bundles small. React, the [component kit](../api/components.md) and [app state](../api/stores.md) come from the API.
+- To replace a stock panel, register your own and tell users to disable the built-in in the Extensions panel.

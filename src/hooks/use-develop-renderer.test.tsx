@@ -16,6 +16,7 @@ import { act, cleanup, fireEvent, render, renderHook } from "@testing-library/re
 import { StrictMode, useLayoutEffect, useRef, useState } from "react";
 import type { CatalogPhoto, DevelopParams, EditSnapshot, Mask } from "@/catalog/types";
 import { DEFAULT_DEVELOP_PARAMS, defaultColorRange, defaultMaskAdjustments } from "@/catalog/types";
+import { emitCacheEntryFilled } from "@/catalog/cache-events";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
 import type { HistogramData } from "@/rendering/histogram";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
@@ -31,6 +32,7 @@ import { NO_FILTER } from "@/modules/library/visible-photos";
 import {
   loadPhotoImage,
   photoSourceKey,
+  refreshStaleSource,
   type DecodedImage,
   type Fallback,
 } from "@/catalog/load-image";
@@ -55,7 +57,11 @@ import type { DevelopTier } from "./use-develop-renderer";
 // Pass-through, so the options each load is asked with can be read back.
 vi.mock("@/catalog/load-image", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/catalog/load-image")>();
-  return { ...real, loadPhotoImage: vi.fn(real.loadPhotoImage) };
+  return {
+    ...real,
+    loadPhotoImage: vi.fn(real.loadPhotoImage),
+    refreshStaleSource: vi.fn(real.refreshStaleSource),
+  };
 });
 
 // The decode pool's instances are only tokens handed round here.
@@ -230,6 +236,8 @@ const THUMB = new Blob(["stored preview"], { type: "image/jpeg" });
 // full size.
 const PREVIEW_SIZE = { width: 640, height: 427 };
 const SOURCE_SIZE = { width: 6000, height: 4000 };
+/** The store's sourceSize for a fake worker's frame: it reports no decoded size, so the held size stands, and never a native decode. */
+const held = (size: { width: number; height: number }) => ({ ...size, fullWidth: size.width, fullHeight: size.height, native: false });
 
 /** A readable original named `name`. */
 function original(name: string): FileSystemFileHandle {
@@ -524,7 +532,7 @@ beforeEach(() => {
   useDevelopStore.setState({
     ...loaded("next", edit(0.5)),
     histogram: null,
-    sourceSize: { width: 0, height: 0 },
+    sourceSize: held({ width: 0, height: 0 }),
   });
 });
 
@@ -565,14 +573,14 @@ describe("useDevelopRenderer opening a photo", () => {
     holdSource = new Promise<void>((r) => (release = r));
     const { worker, progress } = await open(photo());
     expect(drawn).toHaveLength(1);
-    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 0, height: 0 });
+    expect(useDevelopStore.getState().sourceSize).toEqual(held({ width: 0, height: 0 }));
 
     release();
     await progress();
-    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 0, height: 0 });
+    expect(useDevelopStore.getState().sourceSize).toEqual(held({ width: 0, height: 0 }));
 
     await answerRenders(worker);
-    expect(useDevelopStore.getState().sourceSize).toEqual(SOURCE_SIZE);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(SOURCE_SIZE));
     expect(status).toMatchObject({
       sourceWidth: SOURCE_SIZE.width,
       sourceHeight: SOURCE_SIZE.height,
@@ -606,7 +614,7 @@ describe("useDevelopRenderer opening a photo", () => {
     });
     expect(drawn).not.toContain(stale);
     expect(useDevelopStore.getState().histogram).toBeNull();
-    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 0, height: 0 });
+    expect(useDevelopStore.getState().sourceSize).toEqual(held({ width: 0, height: 0 }));
     expect(status?.tier).not.toBe("final");
   });
 
@@ -657,6 +665,10 @@ describe("useDevelopRenderer opening a photo", () => {
     expect(neighbour).toBeDefined();
     expect(opened?.[1]?.background).toBeFalsy();
     expect(neighbour?.[1]).toMatchObject({ background: true });
+    // Develop's renderer keeps the native sample, so both loads ask the RAW
+    // cache for it; a neighbour bound later restores what was uploaded.
+    expect(opened?.[1]).toMatchObject({ sample: true });
+    expect(neighbour?.[1]).toMatchObject({ background: true, sample: true });
   });
 
   describe.each([
@@ -795,7 +807,7 @@ describe("useDevelopRenderer telling what it shows", () => {
   it("publishes the size of a source still resident on the GPU", async () => {
     const { worker } = await open(photo(), true);
     await answerRenders(worker);
-    expect(useDevelopStore.getState().sourceSize).toEqual(RESIDENT);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(RESIDENT));
     expect(status).toMatchObject({ sourceWidth: RESIDENT.width, sourceHeight: RESIDENT.height });
   });
 
@@ -816,7 +828,7 @@ describe("useDevelopRenderer telling what it shows", () => {
 
     await answerRenders(worker);
     expect(status?.tier).toBe("preview");
-    expect(useDevelopStore.getState().sourceSize).toEqual(CAMERA_PREVIEW);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(CAMERA_PREVIEW));
 
     await act(async () => finish());
     await progress();
@@ -824,7 +836,7 @@ describe("useDevelopRenderer telling what it shows", () => {
 
     await answerRenders(worker);
     expect(status?.tier).toBe("final");
-    expect(useDevelopStore.getState().sourceSize).toEqual(SOURCE_SIZE);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(SOURCE_SIZE));
   });
 
   it("knows a frame of the camera's preview that comes back after the decoded source went", async () => {
@@ -837,7 +849,7 @@ describe("useDevelopRenderer telling what it shows", () => {
     await progress();
     await act(async () => worker.reply(frameFor(drawingPreview)));
     expect(status?.tier).toBe("preview");
-    expect(useDevelopStore.getState().sourceSize).toEqual(CAMERA_PREVIEW);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(CAMERA_PREVIEW));
 
     await answerRenders(worker);
     expect(status?.tier).toBe("final");
@@ -864,7 +876,7 @@ describe("useDevelopRenderer telling what it shows", () => {
     });
     await act(async () => worker.reply(frameFor(late)));
     expect(status?.tier).toBeNull();
-    expect(useDevelopStore.getState().sourceSize).toEqual({ width: 0, height: 0 });
+    expect(useDevelopStore.getState().sourceSize).toEqual(held({ width: 0, height: 0 }));
 
     await act(async () => {
       answerBinds(worker, false, answered);
@@ -872,7 +884,7 @@ describe("useDevelopRenderer telling what it shows", () => {
     });
     await answerRenders(worker);
     expect(status?.tier).toBe("preview");
-    expect(useDevelopStore.getState().sourceSize).toEqual(CAMERA_PREVIEW);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(CAMERA_PREVIEW));
 
     await act(async () => {
       finish();
@@ -880,7 +892,7 @@ describe("useDevelopRenderer telling what it shows", () => {
     });
     await answerRenders(worker);
     expect(status?.tier).toBe("final");
-    expect(useDevelopStore.getState().sourceSize).toEqual(SOURCE_SIZE);
+    expect(useDevelopStore.getState().sourceSize).toEqual(held(SOURCE_SIZE));
   });
 
   // The decode failed or was turned down, and the load settled on the camera's own
@@ -1297,7 +1309,7 @@ describe("useDevelopRenderer keeping fallbacks out of the GPU's source cache", (
 // it nothing to draw the photo from: no frame comes, and the sliders change nothing.
 describe("useDevelopRenderer when the worker can't take the photo's source", () => {
   const CAMERA_PREVIEW = { width: 1620, height: 1080 };
-  const FAILED = "Can't show this photo.";
+  const FAILED = "Can't show this photo: texImage2D failed";
 
   /** The next load hands over the camera's preview once `preview` is called, then
    *  settles on the full image once `full` is. */
@@ -3119,6 +3131,7 @@ describe("DevelopCanvas saying why it shows no edits", () => {
     render(develop);
     act(() => renderWorker().reply({ type: "initError", message: "WebGL2 not supported" }));
     expect(says("Can't show images right now. Trying again…")).toBe(true);
+    expect(says("Reason: WebGL2 not supported")).toBe(true);
   });
 
   it("once it has stopped trying", () => {
@@ -3130,6 +3143,7 @@ describe("DevelopCanvas saying why it shows no edits", () => {
       });
     }
     expect(says("Can't show images right now. Restart Safelight.")).toBe(true);
+    expect(says("Reason: WebGL2 not supported")).toBe(true);
   });
 
   it("on a computer that can't draw edits", () => {
@@ -3139,6 +3153,7 @@ describe("DevelopCanvas saying why it shows no edits", () => {
     });
     render(develop);
     expect(says("Can't show edits on this computer. Showing the unedited preview.")).toBe(true);
+    expect(says("Reason: this window has no 2D canvas to draw on.")).toBe(true);
   });
 });
 
@@ -3556,6 +3571,206 @@ describe("useDevelopRenderer soft proof", () => {
 
       act(() => useDevelopStore.setState({ params: V3 }));
       expect(button()).not.toBeNull();
+    });
+  });
+});
+
+// An entry written before 3.1.0 is rewritten in the background while its photo is
+// open; the view hands the worker the decoded size and sample for the source it
+// holds, then draws, so sourceSize.native turns true without a reload.
+describe("a cached preview whose RAW cache entry is rewritten while it is held", () => {
+  const SAMPLE = { data: new Uint16Array(4), width: 1, height: 1, x: 0, y: 0, sourceWidth: 6, sourceHeight: 4 };
+  const stale = (): Extract<DecodedImage, { kind: "float16" }> => ({ kind: "float16", data: new Uint16Array(24), width: 3, height: 2 });
+  const filled = (subject: CatalogPhoto) => ({ photo: subject, fullWidth: 6, fullHeight: 4, cutSample: () => SAMPLE });
+  const updates = (worker: FakeWorker) => worker.posted.filter((m) => m.cmd === "setSourceSample");
+
+  it("hands the open view the entry's size and sample, then draws", async () => {
+    const subject = photo();
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    const { worker } = await open(subject);
+    const render = vi.spyOn(getRenderBridge(), "render");
+
+    act(() => emitCacheEntryFilled(filled(subject)));
+
+    expect(updates(worker)).toEqual([
+      { cmd: "setSourceSample", key: photoSourceKey(subject), fullWidth: 6, fullHeight: 4, sample: SAMPLE },
+    ]);
+    expect(render).toHaveBeenCalledWith(false);
+    render.mockRestore();
+  });
+
+  it("hands it over once", async () => {
+    const subject = photo();
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    const { worker } = await open(subject);
+
+    act(() => emitCacheEntryFilled(filled(subject)));
+    act(() => emitCacheEntryFilled(filled(subject)));
+
+    expect(updates(worker)).toHaveLength(1);
+  });
+
+  it("ignores an entry of a photo it does not hold", async () => {
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    const { worker } = await open(photo());
+
+    act(() => emitCacheEntryFilled(filled(photo({ id: "other" }))));
+
+    expect(updates(worker)).toEqual([]);
+  });
+
+  it("ignores an entry when the view already holds its sample", async () => {
+    const subject = photo();
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => ({ ...stale(), fullWidth: 6, fullHeight: 4, sample: SAMPLE }));
+    const { worker } = await open(subject);
+
+    act(() => emitCacheEntryFilled(filled(subject)));
+
+    expect(updates(worker)).toEqual([]);
+  });
+
+  it("hears nothing once it is unmounted", async () => {
+    const subject = photo();
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    const { worker, unmount } = await open(subject);
+    unmount();
+
+    act(() => emitCacheEntryFilled(filled(subject)));
+
+    expect(updates(worker)).toEqual([]);
+  });
+
+  // A neighbour decoded ahead is held stale too; its entry's rewrite reaches it
+  // without drawing, since the canvas shows another photo.
+  it("hands a neighbour decoded ahead its entry's size and sample without drawing", async () => {
+    const shot = (id: string) => photo({ id, filename: `${id}.jpg`, relPath: `${id}.jpg` });
+    useCatalogStore.setState({ photos: [shot("a"), shot("b")] });
+    useUIStore.setState({
+      filter: NO_FILTER,
+      sortField: "filename",
+      sortDirection: "asc",
+      activeFolder: null,
+    });
+    useDevelopStore.setState({ photoId: "a" });
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+
+    const { worker } = await open(shot("a"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+      for (const m of worker.posted) {
+        if (m.cmd === "hasSource") worker.reply({ type: "hasSource", reqId: m.reqId, has: false });
+      }
+      await settle();
+    });
+    expect(sourceMessages(worker)).toContain("upload b:0 bind=false");
+    // A background load asks for no completion (load-image.ts), which would
+    // push the open photo's out of the waiting slot.
+    const neighbour = vi.mocked(loadPhotoImage).mock.calls.find(([p]) => p.id === "b");
+    expect(neighbour?.[1]).toMatchObject({ background: true });
+    const render = vi.spyOn(getRenderBridge(), "render");
+
+    act(() => emitCacheEntryFilled(filled(shot("b"))));
+
+    expect(updates(worker)).toEqual([
+      { cmd: "setSourceSample", key: photoSourceKey(shot("b")), fullWidth: 6, fullHeight: 4, sample: SAMPLE },
+    ]);
+    expect(render).not.toHaveBeenCalledWith(false);
+
+    act(() => emitCacheEntryFilled(filled(shot("a"))));
+
+    expect(updates(worker).map((m) => m.key)).toEqual([photoSourceKey(shot("b")), photoSourceKey(shot("a"))]);
+    expect(render).toHaveBeenCalledWith(false);
+    render.mockRestore();
+  });
+
+  // Bound from the GPU again, a stale photo reads its entry: the rewrite may
+  // have landed while no view was listening, or never been asked for.
+  describe("opened again from the GPU", () => {
+    type Refreshed = Awaited<ReturnType<typeof refreshStaleSource>>;
+    const rewritten = { fullWidth: 6, fullHeight: 4, sample: SAMPLE };
+
+    /** The view is closed, and the photo opened again in a new one. */
+    async function openAgain(subject: CatalogPhoto, worker: FakeWorker) {
+      const answered = new Set(
+        worker.posted.flatMap((m) => (m.cmd === "bindSource" ? [m.reqId] : [])),
+      );
+      cleanup();
+      render(<Develop subject={subject} />);
+      await act(async () => {
+        await settle();
+        answerBinds(worker, false, answered);
+        await settle();
+      });
+      await answerRenders(worker);
+    }
+
+    beforeEach(() => {
+      FakeWorker.cache = new Set();
+      vi.mocked(refreshStaleSource).mockClear();
+    });
+
+    it("asks for its entry, hands the worker the answer, then draws", async () => {
+      const subject = photo();
+      vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+      let answer = (_: Refreshed) => {};
+      vi.mocked(refreshStaleSource).mockImplementationOnce(() => new Promise<Refreshed>((r) => (answer = r)));
+      const { worker } = await open(subject);
+      await answerRenders(worker);
+
+      await openAgain(subject, worker);
+
+      expect(vi.mocked(loadPhotoImage)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(refreshStaleSource).mock.calls.map(([p]) => p.id)).toEqual([subject.id]);
+      const draw = vi.spyOn(getRenderBridge(), "render");
+      await act(async () => answer(rewritten));
+      expect(updates(worker)).toEqual([{ cmd: "setSourceSample", key: photoSourceKey(subject), ...rewritten }]);
+      expect(draw).toHaveBeenCalledWith(false);
+      draw.mockRestore();
+    });
+
+    it("posts nothing on a null answer, and the rewrite it asked for still reaches the photo", async () => {
+      const subject = photo();
+      vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+      vi.mocked(refreshStaleSource).mockResolvedValueOnce(null);
+      const { worker } = await open(subject);
+      await answerRenders(worker);
+
+      await openAgain(subject, worker);
+
+      expect(vi.mocked(refreshStaleSource)).toHaveBeenCalledTimes(1);
+      expect(updates(worker)).toEqual([]);
+      act(() => emitCacheEntryFilled(filled(subject)));
+      expect(updates(worker)).toHaveLength(1);
+    });
+
+    it("does not ask for a photo whose load had its sample", async () => {
+      const subject = photo();
+      vi.mocked(loadPhotoImage).mockImplementationOnce(async () => ({ ...stale(), fullWidth: 6, fullHeight: 4, sample: SAMPLE }));
+      const { worker } = await open(subject);
+      await answerRenders(worker);
+
+      await openAgain(subject, worker);
+
+      expect(vi.mocked(loadPhotoImage)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(refreshStaleSource)).not.toHaveBeenCalled();
+    });
+
+    // The Library is shown meanwhile: nothing hears the rewrite, and the photo
+    // still takes it when it is shown again.
+    it("takes a rewrite that landed while no view was mounted", async () => {
+      const subject = photo();
+      vi.mocked(loadPhotoImage).mockImplementationOnce(async () => stale());
+      vi.mocked(refreshStaleSource).mockResolvedValueOnce(rewritten);
+      const { worker } = await open(subject);
+      await answerRenders(worker);
+      cleanup();
+      act(() => emitCacheEntryFilled(filled(subject)));
+      expect(updates(worker)).toEqual([]);
+
+      await openAgain(subject, worker);
+
+      expect(updates(worker)).toEqual([{ cmd: "setSourceSample", key: photoSourceKey(subject), ...rewritten }]);
     });
   });
 });

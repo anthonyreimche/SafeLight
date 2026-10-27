@@ -8,10 +8,13 @@
 // per-image rows (framing, heal spots) are the ones that would do damage if they
 // rode along uninvited.
 
-import { describe, expect, it, vi, type Mock } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { normalizeParams, type RetouchSpot } from "@/catalog/types";
+import { normalizeParamBag } from "@/extensions/param-registry";
+import { DEFAULT_PIPELINE, usePipelineStore } from "@/extensions/pipelines";
+import { registerPipeline, unregisterExtension, useRegistry } from "@/extensions/registry";
 import type { DevelopClipboard } from "@/state/develop-clipboard";
 import { CopySettingsDialog } from "./CopySettingsDialog";
 
@@ -192,5 +195,101 @@ describe("display transform", () => {
     await user.click(box(/^Display transform/));
     await user.click(copy);
     expect(copied(onCopy).params).toEqual({ exposure: 1.2, displayTransform: null });
+  });
+});
+
+describe("a display transform with settings", () => {
+  beforeEach(() => {
+    useRegistry.setState({ pipelines: {} });
+    registerPipeline("test", {
+      id: "test.tuned",
+      name: "Tuned",
+      glsl: "vec3 pipelineToDisplay(vec3 lin) { return gain * lin; }",
+      params: [{ key: "gain", glslType: "float", default: 1 }],
+    });
+  });
+
+  afterEach(() => {
+    unregisterExtension("test");
+    usePipelineStore.setState({ activeId: DEFAULT_PIPELINE });
+  });
+
+  const BAG = { "test.tuned.gain": 2, "other.stage.x": 1 };
+
+  it("copies the transform's settings with the pick, without the other extension stages", async () => {
+    const { user, copy, onCopy } = setup({ displayTransform: "test.tuned" }, BAG);
+    await user.click(box(/^Extension stages/));
+    await user.click(copy);
+    expect(copied(onCopy).params).toEqual({ displayTransform: "test.tuned" });
+    expect(copied(onCopy).paramBag).toEqual({ "test.tuned.gain": 2 });
+  });
+
+  it("copies an empty bag with both rows cleared", async () => {
+    const { user, copy, onCopy } = setup({ exposure: 1.2, displayTransform: "test.tuned" }, BAG);
+    await user.click(box(/^Display transform/));
+    await user.click(box(/^Extension stages/));
+    await user.click(copy);
+    expect(copied(onCopy).params).toEqual({ exposure: 1.2 });
+    expect(copied(onCopy).paramBag).toEqual({});
+  });
+
+  it("copies the whole bag with Extension stages ticked and the Display transform row cleared", async () => {
+    const { user, copy, onCopy } = setup({ exposure: 1.2, displayTransform: "test.tuned" }, BAG);
+    await user.click(box(/^Display transform/));
+    await user.click(copy);
+    expect(copied(onCopy).params).toEqual({ exposure: 1.2 });
+    expect(copied(onCopy).paramBag).toEqual(BAG);
+  });
+
+  // Paste merges the clipboard's bag over each target's, so a setting left out
+  // would keep a tuned target's own value.
+  describe("on a photo that never moved the transform's settings", () => {
+    const UNTOUCHED = { "other.stage.x": 1 };
+    const pasted = (onCopy: Mock<(clip: DevelopClipboard) => void>) => ({
+      "test.tuned.gain": 3,
+      "other.stage.x": 5,
+      ...normalizeParamBag(copied(onCopy).paramBag),
+    });
+
+    it("copies each setting as its default, so a paste resets a tuned target", async () => {
+      const { user, copy, onCopy } = setup({ displayTransform: "test.tuned" }, UNTOUCHED);
+      await user.click(box(/^Extension stages/));
+      await user.click(copy);
+      expect(copied(onCopy).paramBag).toEqual({ "test.tuned.gain": 1 });
+      expect(pasted(onCopy)).toEqual({ "test.tuned.gain": 1, "other.stage.x": 5 });
+    });
+
+    it("adds the defaults to the whole bag when both rows are ticked", async () => {
+      const { user, copy, onCopy } = setup({ displayTransform: "test.tuned" }, UNTOUCHED);
+      await user.click(copy);
+      expect(copied(onCopy).paramBag).toEqual({ "other.stage.x": 1, "test.tuned.gain": 1 });
+      expect(pasted(onCopy)).toEqual({ "test.tuned.gain": 1, "other.stage.x": 1 });
+    });
+  });
+
+  // The Extension stages row already carries the settings of the transform a
+  // photo without a pick follows; a ticked Display transform row would add only
+  // "follow the default", resetting every paste target's own pick.
+  describe("on a photo without a pick", () => {
+    beforeEach(() => usePipelineStore.setState({ activeId: "test.tuned" }));
+
+    it("leaves the Display transform row unticked though a setting of the default transform moved", async () => {
+      const { user, copy, onCopy } = setup({}, BAG);
+      await user.click(screen.getByRole("checkbox", { name: "Show all" }));
+      expect(box(/^Display transform/).checked).toBe(false);
+      await user.click(copy);
+      expect(copied(onCopy).params).toEqual({});
+      expect(copied(onCopy).paramBag).toEqual(BAG);
+    });
+
+    it("copies 'follow the default' and the transform's settings once ticked", async () => {
+      const { user, copy, onCopy } = setup({}, BAG);
+      await user.click(screen.getByRole("checkbox", { name: "Show all" }));
+      await user.click(box(/^Display transform/));
+      await user.click(box(/^Extension stages/));
+      await user.click(copy);
+      expect(copied(onCopy).params).toEqual({ displayTransform: null });
+      expect(copied(onCopy).paramBag).toEqual({ "test.tuned.gain": 2 });
+    });
   });
 });

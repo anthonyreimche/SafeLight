@@ -440,12 +440,16 @@ function buildPassFragment(
     helpers = h;
   }
   const body = rewriteGlsl(pass.glsl, uniforms, uPfx, hPfx, helperNames);
+  // uSourceSize is part of the pass contract (types.ts StagePass) but is declared
+  // only where named: the version 1 freeze (v1-identity.test.tsx) pins the
+  // prelude every older pass gets, and none of those name it.
   const fragmentSource = `#version 300 es
 precision highp float;
 in vec2 vUv;
 out vec4 fragColor;
 ${uniformDecls}
 ${passSharedGlsl(space)}
+${/\buSourceSize\b/.test(body + helpers) ? "uniform vec2 uSourceSize; // the decoded source's size before the upload cap" : ""}
 ${helpers}
 void main() {
   vec3 c = readPrev(vUv);

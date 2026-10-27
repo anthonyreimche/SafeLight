@@ -52,6 +52,11 @@ async function delivered(): Promise<CacheRequest[]> {
   return FakeWorker.last?.delivered ?? [];
 }
 
+/** The worker's reply to a message the bridge sent. */
+function answer(reply: CacheResponse): void {
+  FakeWorker.last?.onmessage?.(new MessageEvent("message", { data: reply }));
+}
+
 beforeEach(() => {
   FakeWorker.last = null;
   h.fs = null;
@@ -101,5 +106,39 @@ describe("setCacheDirOnWorker", () => {
     setCacheDirOnWorker(null);
 
     expect(await delivered()).toEqual([{ cmd: "setCacheDir", dir: null, scope: "" }]);
+  });
+});
+
+describe("workerReadCachedPreview", () => {
+  it("asks for the sample only when told to, and hands the entry back whole", async () => {
+    const { workerReadCachedPreview } = await load();
+    const reading = workerReadCachedPreview("k", true);
+    const [msg] = await delivered();
+    expect(msg).toEqual({ cmd: "read", id: expect.any(Number), key: "k", sample: true });
+    if (msg.cmd !== "read") throw new Error("not a read");
+    const sample = { data: new Uint16Array(4), width: 1, height: 1, x: 2, y: 3, sourceWidth: 6, sourceHeight: 4 };
+    answer({ type: "read", id: msg.id, data: new Uint16Array(8), width: 2, height: 1, full: { width: 6, height: 4 }, sample });
+    expect(await reading).toEqual({ data: new Uint16Array(8), width: 2, height: 1, full: { width: 6, height: 4 }, sample });
+  });
+
+  it("is null for a miss", async () => {
+    const { workerReadCachedPreview } = await load();
+    const reading = workerReadCachedPreview("k", false);
+    const [msg] = await delivered();
+    if (msg.cmd !== "read") throw new Error("not a read");
+    expect(msg.sample).toBe(false);
+    answer({ type: "read", id: msg.id, data: null, width: 0, height: 0, full: null, sample: null });
+    expect(await reading).toBeNull();
+  });
+});
+
+describe("workerCachedKeys", () => {
+  it("hands back each entry with whether it is complete", async () => {
+    const { workerCachedKeys } = await load();
+    const listing = workerCachedKeys();
+    const [msg] = await delivered();
+    if (msg.cmd !== "keys") throw new Error("not a listing");
+    answer({ type: "keys", id: msg.id, entries: [{ key: "a", complete: true }, { key: "b", complete: false }] });
+    expect(await listing).toEqual([{ key: "a", complete: true }, { key: "b", complete: false }]);
   });
 });

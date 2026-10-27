@@ -171,6 +171,11 @@ vi.mock("@/extensions/pipelines", () => ({
   resolvePipelineFor: (displayTransform: string | null) => `pipeline:${displayTransform}`,
   setPhotoParams: () => {},
 }));
+// Only the "t.x" transform derives anything, so the other photos' bags stay as they are.
+vi.mock("@/extensions/transform-derive", () => ({
+  bagForRender: (pipeline: string, bag: Record<string, unknown>) =>
+    pipeline === "pipeline:t.x" ? { ...bag, [`derived:${pipeline}`]: true } : bag,
+}));
 vi.mock("@/extensions/registry", () => ({
   useRegistry: {
     getState: () => ({
@@ -460,6 +465,14 @@ describe("a rendered batch", () => {
   it("renders a photo's own params without a patch", async () => {
     await renderPhotosToBlobs([photo("a")], SETTINGS);
     expect(h.FakeRenderer.instances[0].contributed).toEqual([{ "own.stage.x": 1, "own.stage.mode": 0 }]);
+  });
+
+  it("adds the derived uniforms of the photo's transform to the bag it renders with", async () => {
+    h.edits.set("a", { ...CURRENT, displayTransform: "t.x" });
+    await renderPhotosToBlobs([photo("a")], SETTINGS, undefined, { paramBag: { "own.stage.mode": 1 } });
+    expect(h.FakeRenderer.instances[0].contributed).toEqual([
+      { "own.stage.x": 1, "own.stage.mode": 1, "derived:pipeline:t.x": true },
+    ]);
   });
 
   it("runs no processors for a render a processor started", async () => {
@@ -843,23 +856,44 @@ describe("an export by process version", () => {
       }
     });
 
+    // What Preferences hold, as the store's defaults have them: TIFF at 16, PNG at 8.
+    const PREFERENCES = {
+      exportFormat: "image/tiff",
+      exportQuality: 90,
+      exportLongEdge: null,
+      exportColorSpace: "srgb",
+      exportTiffBitDepth: 16,
+      exportPngBitDepth: 8,
+      exportIncludeMetadata: false,
+      exportIncludeLocation: false,
+    };
+
     it("keeps a headless render's PNG at 8 bits with the default settings, whose TIFF depth is 16", async () => {
-      h.settings = {
-        exportFormat: "image/tiff",
-        exportQuality: 90,
-        exportLongEdge: null,
-        exportColorSpace: "srgb",
-        exportTiffBitDepth: 16,
-        exportIncludeMetadata: false,
-        exportIncludeLocation: false,
-      };
+      h.settings = PREFERENCES;
       const settings: ExportSettings = { ...getDefaultExportSettings(), format: "image/png" };
       expect(settings.tiffBitDepth).toBe(16);
+      expect(settings.pngBitDepth).toBe(8);
 
       const { blob, renderer } = await exportOne(V3, settings);
       expect(renderer.draws).toEqual(["render"]);
       expect(h.encodes).toEqual(PATH_8_BIT);
       expect(blob?.type).toBe("image/png");
+    });
+
+    it("carries the PNG Preference into the default settings", async () => {
+      for (const depth of [8, 16] as const) {
+        h.settings = { ...PREFERENCES, exportPngBitDepth: depth };
+        expect(getDefaultExportSettings().pngBitDepth).toBe(depth);
+      }
+    });
+
+    it("draws a 16-bit PNG from default settings only once the Preference says 16", async () => {
+      h.settings = { ...PREFERENCES, exportPngBitDepth: 16 };
+      const settings: ExportSettings = { ...getDefaultExportSettings(), format: "image/png" };
+
+      const { blob, renderer } = await exportOne(V3, settings);
+      expect(renderer.draws).toEqual(["exportPixels"]);
+      expect((await pngContents(blob)).bitDepth).toBe(16);
     });
 
     it("tags a 16-bit PNG with its space's profile and its EXIF ahead of the pixels", async () => {

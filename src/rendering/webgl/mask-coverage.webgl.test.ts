@@ -77,6 +77,59 @@ describe("bakeCoverage", () => {
     expect(coverageAt(bake(dabs), 0.5, 0.5)).toBeCloseTo(128, -1);
   });
 
+  it("lays each new stroke over the last, so low opacity builds up stroke by stroke", () => {
+    const one = coverageAt(bake([dab({ opacity: 0.5, strokeStart: true })]), 0.5, 0.5);
+    const two = coverageAt(
+      bake([dab({ opacity: 0.5, strokeStart: true }), dab({ opacity: 0.5, strokeStart: true })]),
+      0.5,
+      0.5,
+    );
+    const three = coverageAt(
+      bake([
+        dab({ opacity: 0.2, strokeStart: true }),
+        dab({ opacity: 0.2, strokeStart: true }),
+        dab({ opacity: 0.2, strokeStart: true }),
+      ]),
+      0.5,
+      0.5,
+    );
+    expect(one).toBeCloseTo(128, -1);
+    expect(two).toBeCloseTo(191, -1); // 0.5 over 0.5
+    expect(three).toBeCloseTo(124, -1); // 1 - 0.8³
+  });
+
+  it("caps each stroke at its own opacity, however many dabs it lays", () => {
+    const dabs = [
+      dab({ opacity: 0.5, strokeStart: true }),
+      dab({ opacity: 0.5 }),
+      dab({ opacity: 0.5 }),
+      dab({ opacity: 0.3, strokeStart: true }),
+      dab({ opacity: 0.3 }),
+    ];
+    expect(coverageAt(bake(dabs), 0.5, 0.5)).toBeCloseTo(166, -1); // 0.3 over 0.5
+  });
+
+  it("lets a stroke reach past an earlier, lower one", () => {
+    const dabs = [dab({ opacity: 0.2, strokeStart: true }), dab({ opacity: 1, strokeStart: true })];
+    expect(coverageAt(bake(dabs), 0.5, 0.5)).toBe(255);
+  });
+
+  it("erases by the erase stroke's opacity", () => {
+    const dabs = [dab({ strokeStart: true }), dab({ erase: true, opacity: 0.5, strokeStart: true })];
+    expect(coverageAt(bake(dabs), 0.5, 0.5)).toBeCloseTo(128, -1);
+  });
+
+  it("only touches what a stroke covers", () => {
+    const dabs = [
+      dab({ x: 0.25, radius: 0.1, opacity: 0.5, strokeStart: true }),
+      dab({ x: 0.75, radius: 0.1, opacity: 0.5, strokeStart: true }),
+    ];
+    const baked = bake(dabs);
+    expect(coverageAt(baked, 0.25, 0.5)).toBeCloseTo(128, -1);
+    expect(coverageAt(baked, 0.75, 0.5)).toBeCloseTo(128, -1);
+    expect(coverageAt(baked, 0.5, 0.5)).toBe(0);
+  });
+
   it("removes coverage under an erase dab", () => {
     const baked = bake([dab({ radius: 0.3 }), dab({ radius: 0.1, erase: true })]);
     expect(coverageAt(baked, 0.5, 0.5)).toBe(0);

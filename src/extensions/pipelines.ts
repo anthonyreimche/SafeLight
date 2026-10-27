@@ -12,7 +12,16 @@
 
 import { create } from "zustand";
 import type { DevelopParams } from "@/catalog/types";
-import { useRegistry, type RegisteredPipeline } from "./registry";
+import {
+  emitUniformDecl,
+  extractHelperNames,
+  helperPrefix,
+  rewriteGlsl,
+  uniformPrefix,
+} from "@/rendering/webgl/shader-compiler";
+import type { ContributedBinding } from "@/rendering/webgl/stage-injection";
+import { getParamDescriptor } from "./param-registry";
+import { bagDiffersFromDefault, useRegistry, type RegisteredPipeline } from "./registry";
 
 const PIPELINE_KEY = "sl_pipeline";
 /** The stock Safelight transform baked into the fragment shader: the last
@@ -30,6 +39,12 @@ export interface ResolvedPipeline {
   glsl: string | null;
   skipBaseCurve: boolean;
   skipToneShoulder: boolean;
+  /** The uniforms the transform's GLSL reads, declared under its namespace.
+   *  Empty ("", and `bindings` []) for a transform with helpers that declares
+   *  none; absent without glsl, or with neither declarations nor helpers. */
+  uniformDecls?: string;
+  /** The bag key each of those uniforms binds from, and its default. */
+  bindings?: readonly ContributedBinding[];
   /** Change signature the renderer caches its compiled programs and their
    *  flags by: it differs whenever the shader or either flag does. */
   sig: string;
@@ -54,14 +69,49 @@ export function effectivePipelineId(displayTransform: string | null): string {
   return reg[fallback] ? fallback : DEFAULT_PIPELINE;
 }
 
+/** The bag key a transform's derived uniform travels under to a renderer:
+ *  "#" can't appear in a param key, so it can never be stored as one. */
+export function derivedKey(transformId: string, key: string): string {
+  return `${transformId}#${key}`;
+}
+
 function build(id: string, c: RegisteredPipeline | undefined): ResolvedPipeline {
-  const glsl = c?.glsl || null;
   const skipBaseCurve = c?.skipBaseCurve ?? false;
   const skipToneShoulder = c?.skipToneShoulder ?? false;
-  if (!glsl && !skipBaseCurve && !skipToneShoulder) return BUILTIN_RESOLVED;
+  if (!c?.glsl && !skipBaseCurve && !skipToneShoulder) return BUILTIN_RESOLVED;
   const flags = `${skipBaseCurve ? "b" : "-"}${skipToneShoulder ? "s" : "-"}`;
-  const sig = `${id}\n${flags}\n${glsl ?? ""}`;
-  return { id, glsl, skipBaseCurve, skipToneShoulder, sig };
+  const declared = c?.derive?.uniforms ?? c?.params ?? [];
+  if (!c?.glsl || (declared.length === 0 && !c.helpers)) {
+    const glsl = c?.glsl || null;
+    return { id, glsl, skipBaseCurve, skipToneShoulder, sig: `${id}\n${flags}\n${glsl ?? ""}` };
+  }
+  const uPfx = uniformPrefix(id);
+  const helpers = c.helpers ?? "";
+  const glsl = rewriteGlsl(
+    helpers ? `${helpers}\n${c.glsl}` : c.glsl,
+    declared,
+    uPfx,
+    helperPrefix(id),
+    extractHelperNames(helpers),
+  );
+  const derived = c.derive !== undefined;
+  const bindings = declared.map((u) => ({
+    qualifiedKey: derived ? derivedKey(id, u.key) : `${id}.${u.key}`,
+    glslName: uPfx + u.key,
+    glslType: u.glslType,
+    default: u.default,
+  }));
+  const uniformDecls = declared.map((u) => emitUniformDecl(u, uPfx)).join("\n");
+  const mode = derived ? "derive" : "params";
+  return {
+    id,
+    glsl,
+    skipBaseCurve,
+    skipToneShoulder,
+    uniformDecls,
+    bindings,
+    sig: `${id}\n${flags}\n${mode}\n${uniformDecls}\n${glsl}`,
+  };
 }
 
 // Resolution runs per render request; cache per id so the steady state is a
@@ -88,6 +138,39 @@ export function resolvePipelineFor(displayTransform: string | null): ResolvedPip
 /** The Preferences default's pipeline — what a photo without a pick uses. */
 export function resolveDefaultPipeline(): ResolvedPipeline {
   return resolvePipelineFor(null);
+}
+
+/** The bag keys of a registered transform's params, "{id}.{key}". */
+export function transformParamKeys(id: string): string[] {
+  const c = useRegistry.getState().pipelines[id];
+  return (c?.params ?? []).map((u) => `${id}.${u.key}`);
+}
+
+/** What the Display transform preset field carries besides the pick: the
+ *  params of the transform a photo with `displayTransform` renders with. */
+export interface TransformPresetField {
+  bagKeys: string[];
+  /** Each param's default, carried for a key the bag holds no value for, so
+   *  the copy sets every one of a target's settings to the source's. */
+  bagDefaults: Record<string, unknown>;
+  /** True when one of them differs from its default in the bag. */
+  changed: boolean;
+}
+
+export function transformPresetField(
+  displayTransform: string | null,
+  bag: Readonly<Record<string, unknown>>,
+): TransformPresetField {
+  const bagKeys = transformParamKeys(effectivePipelineId(displayTransform));
+  const bagDefaults: Record<string, unknown> = {};
+  let changed = false;
+  for (const k of bagKeys) {
+    const descriptor = getParamDescriptor(k);
+    if (!descriptor) continue;
+    bagDefaults[k] = descriptor.default;
+    if (bagDiffersFromDefault(bag[k], descriptor.default)) changed = true;
+  }
+  return { bagKeys, bagDefaults, changed };
 }
 
 /** The part of a renderer that takes one photo's look. */

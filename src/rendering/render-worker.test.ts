@@ -34,7 +34,7 @@ import type { ProbePoint } from "./webgl/renderer";
 import type { MonitorTransform } from "./display-profile";
 import type { ColorSpaceId, DisplaySpace } from "./color-space";
 import type { CapturePoint, FloatFrame } from "./float-frame";
-import { decodePerceptual, toStageSpace } from "./stage-space";
+import type { SourceSample } from "./source-sample";
 
 /** What the worker hands a renderer it has just made, from the state it holds. */
 type SeedingMethod = "setCacheBudget" | "setContributedParams" | "setStageTextures" | "setParams";
@@ -59,6 +59,10 @@ const { FakeRenderer } = vi.hoisted(() => {
     /** What readFloatFrame answers (null: no float targets), and what it throws. */
     static floatFrame: { data: Float32Array; width: number; height: number } | null = null;
     static floatError: Error | null = null;
+    /** What readSourceSample answers. */
+    static sourceSample: SourceSample | null = null;
+    /** Thrown by readSourceSample, as an allocation that fails does. */
+    static sampleError: Error | null = null;
     /** Thrown by the method of that name, as a renderer that can't take what it is handed does. */
     static failing: Partial<Record<FailingMethod, Error>> = {};
 
@@ -93,17 +97,20 @@ const { FakeRenderer } = vi.hoisted(() => {
      *  the view's overlays (clipping warning, mask tint, sharpening preview) were on. */
     drawn: { params: DevelopParams | undefined; bag: Record<string, unknown> | null; overlays: boolean }[] = [];
     /** Each render and readback, in order. */
-    calls: ("render" | "computeHistogram" | "readDownscaledPixels" | "probe" | "readFloatFrame")[] = [];
-    /** What each readFloatFrame drew: its point and long-edge cap, and the
-     *  params, bag, pipeline and screen it drew with. */
+    calls: ("render" | "computeHistogram" | "readDownscaledPixels" | "probe" | "readFloatFrame" | "readSourceSample")[] = [];
+    /** What each readFloatFrame drew: its point, long-edge cap and space, and
+     *  the params, bag, pipeline and screen it drew with. */
     floatReads: {
       point: CapturePoint;
       maxEdge: number | undefined;
+      space: StageSpace | undefined;
       params: DevelopParams | undefined;
       bag: Record<string, unknown> | null;
       pipeline: ResolvedPipeline | null;
       screen: [MonitorTransform | null, DisplaySpace, ColorSpaceId | null];
     }[] = [];
+    /** The floats each readFloatFrame handed back. */
+    floatReturned: Float32Array[] = [];
     /** The arguments of each probe call. */
     probes: { u: number; v: number; point: ProbePoint }[] = [];
     /** The stages the last render left without a prepass unit. */
@@ -171,14 +178,22 @@ const { FakeRenderer } = vi.hoisted(() => {
     /** The size of the source it draws from: the image last set, uploaded and bound, or bound. */
     sourceWidth = 0;
     sourceHeight = 0;
+    sourceFullSize = { width: 0, height: 0 };
+    sourceNative = false;
+    /** Whether it keeps the native-resolution sample: the develop renderer does, the thumb renderer doesn't. */
+    keepSourceSample = false;
 
-    private holdSource(image: { width: number; height: number }) {
+    private holdSource(image: { width: number; height: number; kind?: string; isFallbackPreview?: boolean; sample?: unknown }) {
       this.sourceWidth = image.width;
       this.sourceHeight = image.height;
+      this.sourceFullSize = { width: image.width, height: image.height };
+      this.sourceNative =
+        (image.kind === "float" && !image.isFallbackPreview) ||
+        (image.kind === "float16" && !!image.sample);
     }
 
     setImage(
-      image: { width: number; height: number },
+      image: { width: number; height: number; kind?: string; isFallbackPreview?: boolean; sample?: unknown },
       _maxEdge?: number,
       _isFallbackPreview?: boolean,
       _baseCurveForBitmap?: boolean,
@@ -219,7 +234,7 @@ const { FakeRenderer } = vi.hoisted(() => {
 
     uploadSource(
       key: string,
-      image: { width: number; height: number },
+      image: { width: number; height: number; kind?: string; isFallbackPreview?: boolean; sample?: unknown },
       _maxEdge?: number,
       _isFallbackPreview?: boolean,
       _baseCurveForBitmap?: boolean,
@@ -261,11 +276,12 @@ const { FakeRenderer } = vi.hoisted(() => {
       return FakeRenderer.probed;
     }
 
-    readFloatFrame(point: CapturePoint, maxEdge?: number) {
+    readFloatFrame(point: CapturePoint, maxEdge?: number, space?: StageSpace) {
       this.calls.push("readFloatFrame");
       this.floatReads.push({
         point,
         maxEdge,
+        space,
         params: this.paramsSeen.at(-1),
         bag: this.contributedParams,
         pipeline: this.pipeline,
@@ -273,7 +289,25 @@ const { FakeRenderer } = vi.hoisted(() => {
       });
       if (FakeRenderer.floatError) throw FakeRenderer.floatError;
       const read = FakeRenderer.floatFrame;
-      return read && { ...read, data: read.data.slice() };
+      if (!read) return null;
+      const data = read.data.slice();
+      this.floatReturned.push(data);
+      return { ...read, data };
+    }
+
+    readSourceSample() {
+      this.calls.push("readSourceSample");
+      if (FakeRenderer.sampleError) throw FakeRenderer.sampleError;
+      const s = FakeRenderer.sourceSample;
+      return s ? { ...s, data: s.data.slice() } : null;
+    }
+
+    /** Each setSourceSample call, as [key, fullWidth, fullHeight, sample]. */
+    sourceSampleUpdates: [string, number, number, unknown][] = [];
+
+    setSourceSample(key: string, fullWidth: number, fullHeight: number, sample: unknown) {
+      this.sourceSampleUpdates.push([key, fullWidth, fullHeight, sample]);
+      return true;
     }
 
     render(options?: { viewOverlays?: boolean }) {
@@ -350,6 +384,8 @@ beforeEach(async () => {
   FakeRenderer.probeError = null;
   FakeRenderer.floatFrame = null;
   FakeRenderer.floatError = null;
+  FakeRenderer.sourceSample = null;
+  FakeRenderer.sampleError = null;
   FakeRenderer.failing = {};
   FakeRenderer.resident = new Set();
   FakeRenderer.residentSize = { width: 0, height: 0 };
@@ -1957,26 +1993,72 @@ describe("render-worker probe", () => {
   });
 });
 
-/** A 2×1 frame as the renderer reads it: perceptual Rec.709, one value over 1, one under 0. */
+/** A 2×1 frame as the renderer hands it back, already in the space asked for:
+ *  one value over 1, one under 0, each changed by any conversion. */
 const FLOAT_READ = { data: new Float32Array([0.5, 1.5, -0.25, 1, 0.2, 0.4, 0.8, 1]), width: 2, height: 1 };
-/** Not the default space, so a worker that converts into the default shows. */
+/** Not the default space, so a worker that asks for the default shows. */
 const WIDE: StageSpace = { encoding: "perceptual", primaries: "rec2020" };
 
-/** `frame` holds FLOAT_READ converted into `space`, each pixel as the stage conversion makes it. */
-function expectConverted(frame: FloatFrame | null, space: StageSpace) {
+/** `frame` is the floats `renderer`'s one read handed back, untouched: the
+ *  renderer converts on the GPU, so the worker only wraps them. */
+function expectHandedOn(frame: FloatFrame | null, renderer: InstanceType<typeof FakeRenderer>, space: StageSpace) {
   if (!frame) throw new Error("no frame");
   expect([frame.width, frame.height, frame.space]).toEqual([FLOAT_READ.width, FLOAT_READ.height, space]);
-  for (let i = 0; i < FLOAT_READ.data.length; i += 4) {
-    const rgb: [number, number, number] = [FLOAT_READ.data[i], FLOAT_READ.data[i + 1], FLOAT_READ.data[i + 2]];
-    const want = [...toStageSpace(rgb, space, "display"), 1];
-    want.forEach((v, ch) => expect(frame.data[i + ch], `pixel ${i / 4} ch ${ch}`).toBeCloseTo(v, 6));
-  }
+  expect(renderer.floatReturned).toHaveLength(1);
+  expect(frame.data).toBe(renderer.floatReturned[0]);
+  expect([...frame.data]).toEqual([...FLOAT_READ.data]);
 }
 
 // An extension's float capture of the live photo: drawn like a capture, with
 // its own params, pipeline and bag patch, which the live view gets back after,
-// read as floats at a capture point and converted here, before it is
-// transferred. Every way out answers by reqId.
+// read as floats at a capture point in the space asked for, and transferred.
+// A capture promises a frame aligned to the live view, which extensions draw over the
+// canvas or sample at a point on it. Crop mode draws the whole image past the crop,
+// so a capture of the photo's own params, which carry the crop, drew a smaller region
+// and showed stretched over the view.
+describe("render-worker captures in the live view's region", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const VIEW = { x: -0.03, y: -0.03, width: 1.06, height: 1.06 };
+  const EDIT = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1, crop: { x: 0, y: 0.06, width: 1, height: 0.89 } };
+  const develop = () => FakeRenderer.instances[0];
+
+  /** Crop mode's live view drawn once, then its log cleared. */
+  function cropModeView() {
+    send(INIT);
+    send({ cmd: "setParams", params: { ...EDIT, crop: VIEW } });
+    send({ cmd: "render", seq: 1 });
+    develop().drawn = [];
+  }
+
+  it("draws a capture over the region the view shows, whatever crop its params carry", () => {
+    cropModeView();
+    send({ cmd: "capture", reqId: 1, params: EDIT, pipeline: BUILTIN_RESOLVED });
+    expect(develop().drawn.map((d) => d.params)).toEqual([{ ...EDIT, crop: VIEW }]);
+  });
+
+  it("reads a float capture from the region the view shows", () => {
+    cropModeView();
+    send({
+      cmd: "captureFloat",
+      reqId: 2,
+      params: EDIT,
+      pipeline: BUILTIN_RESOLVED,
+      point: "pre-output",
+      space: { encoding: "linear", primaries: "rec709" },
+      maxEdge: 1280,
+    });
+    expect(develop().floatReads.map((r) => r.params)).toEqual([{ ...EDIT, crop: VIEW }]);
+  });
+
+  it("draws the params it is handed as they are when their crop is the view's", () => {
+    cropModeView();
+    const same = { ...EDIT, crop: { ...VIEW } };
+    send({ cmd: "capture", reqId: 3, params: same, pipeline: BUILTIN_RESOLVED });
+    expect(develop().drawn[0].params).toBe(same);
+  });
+});
+
+// Every way out answers by reqId.
 describe("render-worker float capture", () => {
   const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
   const LIVE = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1 };
@@ -2006,27 +2088,28 @@ describe("render-worker float capture", () => {
     transferred = [];
   }
 
-  it("answers with the frame converted into the space asked for, transferred, by reqId", () => {
+  it("answers with the renderer's frame in the space asked for, untouched, transferred, by reqId", () => {
     FakeRenderer.floatFrame = FLOAT_READ;
     liveView();
     send(CAPTURE);
+    expect(develop().floatReads.map((r) => r.space)).toEqual([LINEAR]);
     expect(posted).toHaveLength(1);
     const reply = posted[0];
     if (reply.type !== "capturedFloat" || !reply.frame) throw new Error(`no frame: ${JSON.stringify(reply)}`);
     expect(reply.reqId).toBe(5);
     expect(reply.frame).toMatchObject({ width: 2, height: 1, space: LINEAR, point: "pre-output" });
-    const want = [...FLOAT_READ.data].map((v, i) => (i % 4 === 3 ? 1 : decodePerceptual(v)));
-    [...reply.frame.data].forEach((v, i) => expect(v, `entry ${i}`).toBeCloseTo(want[i], 6));
+    expectHandedOn(reply.frame, develop(), LINEAR);
     expect(transferred[0]).toHaveLength(1);
     expect(transferred[0][0]).toBe(reply.frame.data.buffer);
   });
 
-  it("converts into a space other than the default, as the stage conversion does", () => {
+  it("asks the renderer for a space other than the default", () => {
     FakeRenderer.floatFrame = FLOAT_READ;
     liveView();
     send({ ...CAPTURE, space: WIDE });
+    expect(develop().floatReads.map((r) => r.space)).toEqual([WIDE]);
     expect(posted).toEqual([{ type: "capturedFloat", reqId: 5, frame: expect.anything() }]);
-    expectConverted(posted[0].type === "capturedFloat" ? posted[0].frame : null, WIDE);
+    expectHandedOn(posted[0].type === "capturedFloat" ? posted[0].frame : null, develop(), WIDE);
   });
 
   it("reads the point asked for", () => {
@@ -2114,8 +2197,8 @@ describe("render-worker float capture", () => {
 });
 
 // renderPhotoFloatFrame: a thumbnail request that carries `float` is read as
-// floats at its point and converted into its space here, as a float capture
-// is, instead of being encoded. It draws with the request's own bag and
+// floats at its point and in its space, as a float capture is, instead of
+// being encoded. It draws with the request's own bag and
 // pipeline, which the thumb renderer gives back after, and a miss or a
 // failure is answered as a blob request's is.
 describe("render-worker float thumbnails", () => {
@@ -2146,15 +2229,15 @@ describe("render-worker float thumbnails", () => {
   ];
   const thumb = () => FakeRenderer.instances[0];
 
-  it.each(REQUESTS)("answers %s with the frame read at its point, converted into its space, transferred", (_label, request) => {
+  it.each(REQUESTS)("answers %s with the frame read at its point and in its space, untouched, transferred", (_label, request) => {
     FakeRenderer.floatFrame = FLOAT_READ;
     send(request());
     expect(posted).toEqual([{ type: "thumbnailFloat", requestId: "t1", frame: expect.objectContaining({ point: "output" }) }]);
     const reply = posted[0];
     const frame = reply.type === "thumbnailFloat" ? reply.frame : null;
-    expectConverted(frame, WIDE);
+    expectHandedOn(frame, thumb(), WIDE);
     // The thumbnail is already drawn at its own measuring edge.
-    expect(thumb().floatReads.map((r) => [r.point, r.maxEdge])).toEqual([["output", undefined]]);
+    expect(thumb().floatReads.map((r) => [r.point, r.maxEdge, r.space])).toEqual([["output", Infinity, WIDE]]);
     expect(transferred[0]).toHaveLength(1);
     expect(transferred[0][0]).toBe(frame?.data.buffer);
   });
@@ -2198,5 +2281,120 @@ describe("render-worker float thumbnails", () => {
     send(fromSource());
     expect(posted).toEqual([{ type: "thumbnailMiss", requestId: "t1", key: "photo-1" }]);
     expect(thumb().floatReads).toEqual([]);
+  });
+});
+
+// Every way out answers by reqId; frames say what the source is.
+describe("render-worker source sample", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const FLOAT = { kind: "float" as const, data: new Float32Array(4 * 6), width: 3, height: 2 };
+  const SAMPLE: SourceSample = {
+    data: new Float32Array([1, 2, 3, 1]),
+    width: 1,
+    height: 1,
+    x: 10,
+    y: 20,
+    sourceWidth: 3000,
+    sourceHeight: 2000,
+  };
+  const develop = () => FakeRenderer.instances[0];
+
+  it("answers null by reqId before any renderer", () => {
+    send({ cmd: "readSourceSample", reqId: 7 });
+    expect(posted).toEqual([{ type: "sourceSample", reqId: 7, sample: null }]);
+  });
+
+  it("hands over the renderer's sample and transfers its buffer", () => {
+    send(INIT);
+    send({ cmd: "setImage", image: FLOAT });
+    FakeRenderer.sourceSample = SAMPLE;
+    posted = [];
+    transferred = [];
+    send({ cmd: "readSourceSample", reqId: 8 });
+    expect(posted).toEqual([{ type: "sourceSample", reqId: 8, sample: { ...SAMPLE, data: expect.any(Float32Array) } }]);
+    const reply = posted[0];
+    if (reply.type !== "sourceSample" || !reply.sample) throw new Error("no sample");
+    expect(transferred[0]).toEqual([reply.sample.data.buffer]);
+    expect(develop().calls).toEqual(["readSourceSample"]);
+  });
+
+  it("answers null without reading while the view awaits the next photo's source", () => {
+    send(INIT);
+    send({ cmd: "setImage", image: FLOAT });
+    FakeRenderer.sourceSample = SAMPLE;
+    send({ cmd: "clearSource" });
+    posted = [];
+    send({ cmd: "readSourceSample", reqId: 9 });
+    expect(posted).toEqual([{ type: "sourceSample", reqId: 9, sample: null }]);
+    expect(develop().calls).toEqual([]);
+  });
+
+  it("answers null by reqId, and logs it, when the read throws", () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    send(INIT);
+    send({ cmd: "setImage", image: FLOAT });
+    FakeRenderer.sampleError = new Error("Array buffer allocation failed");
+    posted = [];
+    transferred = [];
+    send({ cmd: "readSourceSample", reqId: 10 });
+    expect(posted).toEqual([{ type: "sourceSample", reqId: 10, sample: null }]);
+    expect(transferred[0]).toEqual([]);
+    expect(develop().calls).toEqual(["readSourceSample"]);
+    expect(logged).toHaveBeenCalledTimes(1);
+    expect(logged.mock.calls[0].join(" ")).toContain("Array buffer allocation failed");
+  });
+
+  it("carries the decoded size and whether the source is native on every frame", () => {
+    send(INIT);
+    send({ cmd: "setImage", image: FLOAT });
+    posted = [];
+    send({ cmd: "render", seq: 1 });
+    expect(posted[0]).toMatchObject({ type: "frame", sourceWidth: 3, sourceHeight: 2, sourceFullWidth: 3, sourceFullHeight: 2, sourceNative: true });
+    send({ cmd: "setImage", image: { ...FLOAT, isFallbackPreview: true } });
+    posted = [];
+    send({ cmd: "render", seq: 2 });
+    expect(posted[0]).toMatchObject({ type: "frame", sourceNative: false });
+  });
+
+  it("calls a cached source stored with its sample native, one stored without not", () => {
+    send(INIT);
+    const sample = { data: new Uint16Array(4), width: 1, height: 1, x: 0, y: 0, sourceWidth: 3, sourceHeight: 2 };
+    send({ cmd: "setImage", image: { kind: "float16", data: new Uint16Array(24), width: 3, height: 2, fullWidth: 3, fullHeight: 2, sample } });
+    posted = [];
+    send({ cmd: "render", seq: 1 });
+    expect(posted[0]).toMatchObject({ type: "frame", sourceNative: true });
+    send({ cmd: "setImage", image: { kind: "float16", data: new Uint16Array(24), width: 3, height: 2 } });
+    posted = [];
+    send({ cmd: "render", seq: 2 });
+    expect(posted[0]).toMatchObject({ type: "frame", sourceNative: false });
+  });
+
+  it("keeps the sample on the develop renderer only", () => {
+    send(INIT);
+    expect(develop().keepSourceSample).toBe(true);
+    send(thumbnail());
+    expect(FakeRenderer.instances).toHaveLength(2);
+    expect(FakeRenderer.instances[1].keepSourceSample).toBe(false);
+  });
+
+  const COMPLETED = { data: new Uint16Array(4), width: 1, height: 1, x: 0, y: 0, sourceWidth: 6, sourceHeight: 4 };
+
+  it("hands a completed entry's size and sample to the develop renderer only", () => {
+    send(INIT);
+    send(thumbnail());
+    posted = [];
+
+    send({ cmd: "setSourceSample", key: "p:0", fullWidth: 6, fullHeight: 4, sample: COMPLETED });
+
+    expect(develop().sourceSampleUpdates).toEqual([["p:0", 6, 4, COMPLETED]]);
+    expect(FakeRenderer.instances[1].sourceSampleUpdates).toEqual([]);
+    expect(posted).toEqual([]);
+  });
+
+  it("drops a completed entry's sample while there is no renderer", () => {
+    expect(() =>
+      send({ cmd: "setSourceSample", key: "p:0", fullWidth: 6, fullHeight: 4, sample: COMPLETED }),
+    ).not.toThrow();
+    expect(posted).toEqual([]);
   });
 });

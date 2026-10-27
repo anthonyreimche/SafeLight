@@ -157,11 +157,11 @@ export function usePhotoActions(): PhotoActions {
   // Reveal the photo's file in the OS file manager. Single-photo only (native
   // builds), mirroring the platform "show this file in its folder" action.
   const handleReveal = useCallback(async (id: string) => {
-    const ok = await revealPhoto(id);
-    if (!ok)
+    const result = await revealPhoto(id);
+    if (!result.ok)
       await alertDialog({
         title: "Show in folder",
-        message: "Couldn't open the folder. The file may have moved or been deleted.",
+        message: `Couldn't open the folder. ${result.reason}`,
       });
   }, []);
 

@@ -9,7 +9,7 @@ import {
   normalizeProcessVersion,
 } from "@/catalog/types";
 
-import { BASELINE_TONE_GLSL } from "../baseline-tone";
+import { BASELINE_REFIT_GLSL, BASELINE_TONE_GLSL } from "../baseline-tone";
 import { LOCAL_TONE_GLSL } from "../local-tone";
 import { OUTPUT_MAP_GLSL } from "../output-map";
 import { STAGE_SPACE_GLSL } from "../stage-space";
@@ -80,12 +80,16 @@ const SCENE_LUMA_DECL = "\n  float slSceneLuma = max(luma(lin), 0.0) * slShoulde
 
 // Process version 2's tone block: version 1's curves (local-tone.ts) on the
 // pixel and, while Highlights or Shadows is moved, on the pixel's region too,
-// keeping the pixel's ratio to it and blended in with the slider.
+// keeping the pixel's ratio to it and blended in with the slider. Between the
+// two, the camera match's shadows lift goes on each pixel and its region by
+// their own levels, as the match fitted it (raw/camera-match.ts): through the
+// region's ratio it would raise bright detail with its darker surroundings.
 const V2_TONE_BLOCK = `  {
     float L = max(luma(lin), 1e-4);
     float Lx = L * exp2(E);
     float L1 = slToneHighlights(Lx, E, H);
-    float L2 = slToneShadows(L1, S);
+    float cameraLift = uApplyBaseCurve ? uBaselineShadows : 0.0;
+    float L2 = slToneShadows(slToneShadows(L1, cameraLift), S);
     float curveRatio = 1.0;
     if (abs(H) > 0.001 || abs(S) > 0.001) {
       // Floored after Exposure (as localToneBlend is): under the curves' own
@@ -100,7 +104,9 @@ const V2_TONE_BLOCK = `  {
           B1 / slToneHighlights(Bx, E, 0.0), abs(H));
       }
       L1 = mix(L1, Lx * B1 / Bx, abs(H));
-      L2 = mix(slToneShadows(L1, S), L1 * slToneShadows(B1, S) / B1, abs(S));
+      float C1 = slToneShadows(L1, cameraLift);
+      float CB = slToneShadows(B1, cameraLift);
+      L2 = mix(slToneShadows(C1, S), C1 * slToneShadows(CB, S) / CB, abs(S));
     }
     // slSceneLuma undoes only the default shoulder, on the same pixel/region
     // blend the edit above used, so Highlights carries into it.
@@ -121,8 +127,9 @@ export const LINEAR_TO_SRGB_GLSL = `vec3 linearToSrgb(vec3 c) {
 }`;
 
 /** Where a probe-only program stops and hands back its working colour instead
- *  of the frame: "mask" at the scene-linear `lin` the mask components compare. */
-export type ProgramExit = "mask";
+ *  of the frame: "mask" at the scene-linear `lin` the mask components compare,
+ *  "scene" at the `lin` the display transform receives. */
+export type ProgramExit = "mask" | "scene";
 
 // Single-pass develop shader, assembled per process version. Most stages are
 // per-pixel point operations; clarity is a midtone-contrast approximation.
@@ -140,11 +147,28 @@ function fragmentShaderSource(v: ShaderVariant, splits = false, exit?: ProgramEx
   // a stage's input, which is cached for the live frames after it.
   const maskExit =
     exit === "mask" ? `\n  ${split("if (uSplitAt < 0) ")}{ fragColor = vec4(lin, 1.0); return; }` : "";
+  // A scene measurement stops where the display transform takes `lin`, and
+  // hands it over in the perceptual encoding every float frame is drawn in.
+  const sceneExit =
+    exit === "scene"
+      ? `\n  ${split("if (uSplitAt < 0) ")}{ fragColor = vec4(slEncodePerceptual(lin), 1.0); return; }`
+      : "";
   // Opens the block of a tool whose math needs [0, 1]: nothing upstream has
   // clipped its input on version 2.
   const clampInput = v2("\n    c = clamp(c, 0.0, 1.0);");
   // Version 3 maps the signed colour into the target; earlier versions clip it.
   const output = v.signedOutput ? "slOutput(c)" : "encodeOutput(clamp(c, 0.0, 1.0))";
+  // Nothing produces a fallback preview (load-image.ts declares the flag and
+  // nothing sets it), so version 3 drops the clamp only one would reach, which
+  // would clip its signed colour ahead of the output stage.
+  const fallbackClamp = v.signedOutput
+    ? ""
+    : `
+  // Fallback previews have limited dynamic range - clamp final output
+  // since there's no true sensor headroom above 1.0
+  if (uIsFallbackPreview) {
+    c = clamp(c, 0.0, 1.0);
+  }`;
   return `#version 300 es
 precision highp float;
 
@@ -184,7 +208,11 @@ uniform bool uLinear;       // true: source texture is linear float (RAW); skip 
 uniform bool uIsFallbackPreview; // true: source is pseudo-linear from 8-bit JPEG preview
 uniform bool uApplyBaseCurve; // true: scene-linear RAW source -- apply the default baseline
                               // (baselineTone); off for camera-rendered bitmaps and for
-                              // display transforms that own their own baseline
+                              // display transforms that own their own baseline${v2(`
+uniform float uBaselineGain;  // the camera maker's exposure offset as a gain, applied with
+                              // slBaselineRefit (the camera baseline)
+uniform float uBaselineShadows; // the camera match's shadows lift (Shadows / 100), on each
+                                // pixel before the photo's own Shadows`)}
 uniform bool uApplyToneShoulder; // true: the core filmic shoulder compresses highlights;
                                  // off for display transforms with their own roll-off
 uniform bool uRawHistogram;   // true: output c as the display tools leave it (display-encoded,
@@ -354,7 +382,7 @@ vec3 linearToSrgbU(vec3 c) {
   c = max(c, 0.0);
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
-${BASELINE_TONE_GLSL}
+${BASELINE_TONE_GLSL}${v2(BASELINE_REFIT_GLSL)}
 // Convert the final sRGB-encoded display pixel into the selected output color
 // space: decode to linear sRGB primaries, rotate primaries with uOutMatrix, then
 // re-encode with the target transfer function (must match the ICC TRC built in
@@ -1256,7 +1284,13 @@ void main() {
   // Channel reconstruction: recover colour from clipped highlights by estimating
   // saturated channels from their unclipped neighbours. Must run before WB/exposure
   // so the per-channel clip detection still reflects the raw sensor data.
-  if (uLinear) lin = reconstructClipped(lin, srcUv);
+  if (uLinear) lin = reconstructClipped(lin, srcUv);${v2(`
+
+  // The camera baseline (baseline-tone.ts): the refit to the camera curve and
+  // the camera maker's exposure offset. Here, not with baselineTone, so the
+  // decode stages' passes and clip recovery's threshold still see the curve
+  // they were written against.
+  if (uApplyBaseCurve) lin = slBaselineRefit(lin) * uBaselineGain;`)}
 
   lin = applyWhiteBalance(lin, uTemperature, uTint, uAsShotTemperature);
 
@@ -1382,7 +1416,7 @@ void main() {
 ${v2(`
   // The core shoulder bounds luminance; this rolls the strongest channel off
   // into white with it, so bright colours whiten instead of clipping.
-  if (uApplyToneShoulder) lin = slPathToWhite(lin);`)}
+  if (uApplyToneShoulder) lin = slPathToWhite(lin);`)}${sceneExit}
 
   // Display conversion: where the filmic shoulder applies it bounds the linear
   // values, so clamping here is safe and keeps downstream display-space
@@ -1554,12 +1588,7 @@ ${v2(`
     if (uSharpenViz == 1) sharpenViz = mask;                          // masking coverage
     else if (uSharpenViz == 2) sharpenViz = clamp(0.5 + detail * 4.0, 0.0, 1.0); // edge signal
     else if (uSharpenViz == 3) sharpenViz = luma(clamp(c, 0.0, 1.0)); // sharpened luminance
-  }
-  // Fallback previews have limited dynamic range - clamp final output
-  // since there's no true sensor headroom above 1.0
-  if (uIsFallbackPreview) {
-    c = clamp(c, 0.0, 1.0);
-  }
+  }${fallbackClamp}
 
   // Local adjustment masks, stage 2: contrast/saturation/detail plus the HSL
   // and tone-curve sub-panels, in display space (coverage from stage 1).
@@ -1653,23 +1682,27 @@ export interface StageInjection {
  *  stages parameter injects GLSL from registered ProcessingStageContributions
  *  at the appropriate markers; omit it (or pass empty strings) when no stages
  *  are registered. variant: the photo's process version (shaderVariantFor);
- *  defaults to version 1. exit: a probe's program (ProgramExit); omit it for
- *  the frame's. */
+ *  defaults to version 1. exit: a probe's or a scene measurement's program
+ *  (ProgramExit); omit it for the frame's. pipelineUniforms: the display transform's own uniform
+ *  declarations (ResolvedPipeline.uniformDecls). */
 export function buildFragmentShader(
   pipelineGlsl?: string | null,
   stages?: StageInjection,
   variant: ShaderVariant = V1_VARIANT,
   exit?: ProgramExit,
+  pipelineUniforms = "",
 ): string {
   const pipeline =
     pipelineGlsl || (variant.fullInfo ? V2_DEFAULT_PIPELINE_GLSL : DEFAULT_PIPELINE_GLSL);
   const spaceHelpers =
-    variant.fullInfo || stages?.needsSpaceHelpers ? `${STAGE_SPACE_GLSL}\n` : "";
+    variant.fullInfo || stages?.needsSpaceHelpers || exit === "scene" ? `${STAGE_SPACE_GLSL}\n` : "";
   // Replacer functions: a replacement string would read $&, $$, $' and $` in
   // contributed GLSL (comments included) as patterns.
   return fragmentShaderSource(variant, (stages?.splitCount ?? 0) > 0, exit)
     .replace("//__PIPELINE_GLSL__", () => spaceHelpers + pipeline)
-    .replace("//__CONTRIBUTED_UNIFORMS__", () => stages?.uniforms ?? "")
+    .replace("//__CONTRIBUTED_UNIFORMS__", () =>
+      pipelineUniforms ? `${pipelineUniforms}\n${stages?.uniforms ?? ""}` : stages?.uniforms ?? "",
+    )
     .replace("//__CONTRIBUTED_HELPERS__", () => stages?.helpers ?? "")
     .replace("//__CONTRIBUTED_GEOMETRY__", () => stages?.srcUv ?? "")
     .replace("//__CONTRIBUTED_NOISE_REDUCTION__", () => stages?.noiseReduction ?? "")

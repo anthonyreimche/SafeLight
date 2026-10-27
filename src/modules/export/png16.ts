@@ -8,7 +8,7 @@
 // pipeline's extra precision. Input is the same top-down RGBA16 layout
 // encodeTiff takes at 16 bits; alpha is dropped.
 
-import { iccpChunk, pngChunk } from "@/rendering/color-space";
+import { crc32Update, iccpChunk, pngChunk } from "@/rendering/color-space";
 
 // Chunk and band buffers are plain ArrayBuffer-backed, which BlobPart and
 // CompressionStream (BufferSource) require; the unparameterised Uint8Array
@@ -16,6 +16,7 @@ import { iccpChunk, pngChunk } from "@/rendering/color-space";
 type Bytes = Uint8Array<ArrayBuffer>;
 
 const SIGNATURE: Bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const IDAT: Bytes = new Uint8Array([0x49, 0x44, 0x41, 0x54]); // "IDAT"
 
 const SAMPLES = 3; // RGB
 const BYTES_PER_SAMPLE = 2;
@@ -25,6 +26,12 @@ const FILTER_UP = 2;
 // Scanlines go to the compressor in bands, so the filtered image (144 MB at
 // 24 MP) is never held whole alongside the RGBA source.
 const BAND_BYTES = 1 << 20;
+
+function bigEndian(n: number): Bytes {
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setUint32(0, n);
+  return bytes;
+}
 
 function ihdr(width: number, height: number): Bytes {
   const data = new Uint8Array(13);
@@ -96,14 +103,28 @@ export async function encodePng16(
   height: number,
   opts: { icc?: Uint8Array },
 ): Promise<Blob> {
-  const deflated = new Response(scanlineBands(rgba, width, height).pipeThrough(new CompressionStream("deflate")));
-  const idat = pngChunk("IDAT", new Uint8Array(await deflated.arrayBuffer()));
+  // The compressed stream (128 MB at 24 MP) is never gathered: each part joins
+  // the Blob and folds into IDAT's CRC as it arrives. Gathering it into one chunk
+  // and checksumming that in one go would stall the main thread ~0.25 s as each
+  // file finishes.
+  const reader = scanlineBands(rgba, width, height).pipeThrough(new CompressionStream("deflate")).getReader();
+  const parts: Bytes[] = [];
+  let size = 0;
+  let crc = crc32Update(0, IDAT);
+  for (let part = await reader.read(); !part.done; part = await reader.read()) {
+    parts.push(part.value);
+    size += part.value.length;
+    crc = crc32Update(crc, part.value);
+  }
   return new Blob(
     [
       SIGNATURE,
       ihdr(width, height),
       ...(opts.icc ? [iccpChunk(opts.icc)] : []),
-      idat,
+      bigEndian(size), // IDAT's length precedes its data, so it waits for the end
+      IDAT,
+      ...parts,
+      bigEndian(crc),
       pngChunk("IEND", new Uint8Array(0)),
     ],
     { type: "image/png" },

@@ -19,7 +19,9 @@ import { currentDisplaySpace } from "@/rendering/display-space";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
-import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
+import type { Float16Source, StoredSample } from "@/rendering/source-sample";
+import { onCacheEntryFilled } from "@/catalog/cache-events";
+import { loadPhotoImage, photoSourceKey, refreshStaleSource } from "@/catalog/load-image";
 import type { DecodedImage, Fallback } from "@/catalog/load-image";
 import { setHealSourceImage } from "@/rendering/heal-source";
 import { useDevelopStore } from "@/state/develop-store";
@@ -99,6 +101,34 @@ function notePreviewSource(bridge: RenderBridge, key: string, image: DecodedImag
   }
   if (!isPreview(image)) keys.delete(key);
   else keys.set(key, image.kind === "bitmap" ? (image.fallback ?? null) : null);
+}
+
+// The keys of the sources this view put in the GPU cache as a cached preview
+// without the centre sample (a RAW cache entry written before 3.1.0). Once that
+// entry is rewritten, such a source takes the decoded size and sample in place
+// (cache-events.ts). Kept per bridge, whose worker holds the cache.
+const staleSources = new WeakMap<RenderBridge, Set<string>>();
+
+function noteStaleSource(bridge: RenderBridge, key: string, image: DecodedImage) {
+  let keys = staleSources.get(bridge);
+  if (!keys) {
+    keys = new Set();
+    staleSources.set(bridge, keys);
+  }
+  if (image.kind === "float16" && !image.sample) keys.add(key);
+  else keys.delete(key);
+}
+
+/** Hand the worker a stale source's decoded size and sample, once per key:
+ *  false when the key is not (or no longer) stale for this bridge. */
+function relayStaleSource(
+  bridge: RenderBridge,
+  key: string,
+  take: () => { fullWidth: number; fullHeight: number; sample: StoredSample },
+): boolean {
+  if (!staleSources.get(bridge)?.delete(key)) return false;
+  bridge.setSourceSample(key, take());
+  return true;
 }
 
 /** What the develop canvas shows of the open photo: "stored", its stored preview, drawn
@@ -262,6 +292,9 @@ interface RendererStatus {
   /** Whether the worker's renderer exists (it can fail to create a WebGL2
    *  context after a GPU reset; the bridge retries). */
   availability: RendererAvailability;
+  /** Why edits can't be drawn: the last init failure while availability is
+   *  "retrying" or "failed", or the missing canvas when not supported. */
+  availabilityReason: string | null;
   width: number;
   height: number;
   // The window of the image the canvas holds, committed with its pixels and size;
@@ -307,6 +340,11 @@ export function useDevelopRenderer(
   fadeCanvasRef?: RefObject<HTMLCanvasElement | null>,
 ): RendererStatus {
   const bridgeRef = useRef<RenderBridge | null>(null);
+  // The photo this view draws, for listeners that outlive a render.
+  const openPhotoIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    openPhotoIdRef.current = photo?.id;
+  }, [photo?.id]);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const rafIdRef = useRef<number | null>(null);
   // True from the moment a photo opens until its own source is handed to the
@@ -333,6 +371,7 @@ export function useDevelopRenderer(
   const [tier, setTier] = useState<DevelopTier | null>(null);
   const [supported, setSupported] = useState(true);
   const [availability, setAvailability] = useState<RendererAvailability>("starting");
+  const [availabilityReason, setAvailabilityReason] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // The canvas's box size and what of the image it holds. Change in the same commit as
   // the pixels (see present).
@@ -564,12 +603,26 @@ export function useDevelopRenderer(
     const ctx = cv.getContext("2d", { colorSpace: currentDisplaySpace() });
     if (!ctx) {
       setSupported(false);
+      setAvailabilityReason("this window has no 2D canvas to draw on.");
       return;
     }
     ctxRef.current = ctx;
 
     const bridge = getRenderBridge();
     bridgeRef.current = bridge;
+
+    // A cached preview this view holds without its centre sample takes the
+    // decoded size and sample once its RAW cache entry is rewritten, so the
+    // open photo turns native (sourceSize.native) without a reload. Cut only
+    // for such a source, and once per key.
+    const offFilled = onCacheEntryFilled((entry) => {
+      const relayed = relayStaleSource(bridge, photoSourceKey(entry.photo), () => ({
+        fullWidth: entry.fullWidth,
+        fullHeight: entry.fullHeight,
+        sample: entry.cutSample(),
+      }));
+      if (relayed && openPhotoIdRef.current === entry.photo.id) bridge.render(false);
+    });
 
     const setHistogramRef = useDevelopStore.getState().setHistogram;
     let histTimer: ReturnType<typeof setTimeout> | null = null;
@@ -622,7 +675,7 @@ export function useDevelopRenderer(
       // The renderer's own size of the source, which the drawn transform's aspect
       // comes from, so the crop overlay agrees with the pixels on screen. A source
       // bound from the GPU cache is reported by its frames alone.
-      const { sourceWidth, sourceHeight } = frame;
+      const { sourceWidth, sourceHeight, sourceFullWidth, sourceFullHeight, sourceNative } = frame;
       if (sourceWidth > 0 && sourceHeight > 0) {
         setSourceSize((s) =>
           s.width === sourceWidth && s.height === sourceHeight
@@ -630,7 +683,9 @@ export function useDevelopRenderer(
             : { width: sourceWidth, height: sourceHeight },
         );
         // Panels (Crop/Transform) derive imageAspect from the store, not this hook.
-        useDevelopStore.getState().setSourceSize(sourceWidth, sourceHeight);
+        useDevelopStore
+          .getState()
+          .setSourceSize(sourceWidth, sourceHeight, { width: sourceFullWidth, height: sourceFullHeight, native: sourceNative });
       }
       if (frame.histogram) {
         setHistogramRef(frame.histogram);
@@ -662,10 +717,13 @@ export function useDevelopRenderer(
     bridge.setOnError((msg) => {
       console.error("[render-worker]", msg);
     });
-    bridge.setOnSourceError((gen) => {
-      if (gen === sentGenRef.current) setCantShow("Can't show this photo.");
+    bridge.setOnSourceError((gen, message) => {
+      if (gen === sentGenRef.current) setCantShow(`Can't show this photo: ${message}`);
     });
-    bridge.setOnAvailability(setAvailability);
+    bridge.setOnAvailability((next, detail) => {
+      setAvailability(next);
+      setAvailabilityReason(detail ?? null);
+    });
 
     // The worker owns the decoded source; mirror its downscaled heal-source buffer
     // into this (main-thread) module instance so the overlay's findHealSource /
@@ -684,6 +742,7 @@ export function useDevelopRenderer(
 
     setSupported(true);
     return () => {
+      offFilled();
       stopWatchingStages();
       if (histTimer) { clearTimeout(histTimer); histTimer = null; }
       if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
@@ -782,7 +841,7 @@ export function useDevelopRenderer(
       image:
         | ImageBitmap
         | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | { kind: "float16"; data: Uint16Array; width: number; height: number },
+        | Float16Source,
       isFallback = false,
       cachedRaw = false,
       settled?: { key: string; preview: boolean },
@@ -848,7 +907,9 @@ export function useDevelopRenderer(
         const nk = photoSourceKey(np);
         if (await bridge.hasSource("main", nk)) continue;
         if (cancelled) return;
-        const image = await loadPhotoImage(np, { background: true, signal: abort.signal });
+        // The develop renderer keeps the native sample (render-worker.ts), and a
+        // neighbour bound later restores what was uploaded, so ask for it now.
+        const image = await loadPhotoImage(np, { background: true, signal: abort.signal, sample: true });
         if (cancelled) {
           if (image?.kind === "bitmap") image.bitmap.close();
           return;
@@ -860,6 +921,7 @@ export function useDevelopRenderer(
           continue;
         }
         notePreviewSource(bridge, nk, image);
+        noteStaleSource(bridge, nk, image);
         if (image.kind === "bitmap") {
           bridge.uploadSource("main", nk, { kind: "bitmap", bitmap: image.bitmap }, maxEdge, false, image.cached, false);
         } else {
@@ -890,6 +952,18 @@ export function useDevelopRenderer(
         setSettledReason(previewReason(kept));
         syncAsShotTemp();
         drawSource();
+        // A photo held from an entry written before 3.1.0, shown again: its
+        // entry may have been rewritten while no view was listening, or never
+        // asked to be (a neighbour prefetch does not ask). Either way it takes
+        // the size and sample, or its rewrite is asked for and the event
+        // relays it.
+        if (staleSources.get(bridge)?.has(key)) {
+          void refreshStaleSource(photo).then((update) => {
+            if (update && relayStaleSource(bridge, key, () => update) && openPhotoIdRef.current === photo.id) {
+              bridge.render(false);
+            }
+          });
+        }
         setLoading(false);
         void prefetchNeighbors();
         return;
@@ -909,6 +983,8 @@ export function useDevelopRenderer(
           }
         },
         signal: abort.signal,
+        // For api.develop.readSourceSample on a photo served from the RAW cache.
+        sample: true,
       });
       if (cancelled) {
         if (image?.kind === "bitmap") image.bitmap.close();
@@ -933,7 +1009,10 @@ export function useDevelopRenderer(
       const settled = stands
         ? { key, preview: isPreview(image) }
         : { key: fallbackKey(key), preview: true };
-      if (stands) notePreviewSource(bridge, key, image);
+      if (stands) {
+        notePreviewSource(bridge, key, image);
+        noteStaleSource(bridge, key, image);
+      }
       if (image.kind === "bitmap") {
         sendImage(image.bitmap, isFallback, cachedRaw, settled);
       } else {
@@ -1096,6 +1175,7 @@ export function useDevelopRenderer(
   return {
     supported,
     availability,
+    availabilityReason,
     width: size.width,
     height: size.height,
     bufferWindow: size.window,

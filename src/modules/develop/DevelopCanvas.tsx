@@ -99,6 +99,7 @@ export function DevelopCanvas({
   const {
     supported,
     availability,
+    availabilityReason,
     status,
     overflowedStages,
     width,
@@ -321,27 +322,30 @@ export function DevelopCanvas({
         toScreen: null, toImage: null, radiusToScreen: null, radiusToImage: null,
       };
     }
+    // Through the region the canvas shows: crop mode shows the whole image past the
+    // crop, and a slow frame can still show the one before.
+    const shown = bufferCrop ?? crop;
     return {
       rect: overlayRect,
       imageRect: ir,
       nonce: overlayNonce,
       toScreen: (u: number, v: number) => {
         const t = mat3Apply(forwardRaw, u, v);
-        const ox = (t.x - crop.x) / crop.width;
-        const oy = (t.y - crop.y) / crop.height;
+        const ox = (t.x - shown.x) / shown.width;
+        const oy = (t.y - shown.y) / shown.height;
         return { x: ir.x + ox * ir.w, y: ir.y + oy * ir.h };
       },
       toImage: (px: number, py: number) => {
         const ox = (px - ir.x) / ir.w;
         const oy = (py - ir.y) / ir.h;
-        return mat3Apply(invRaw, crop.x + ox * crop.width, crop.y + oy * crop.height);
+        return mat3Apply(invRaw, shown.x + ox * shown.width, shown.y + oy * shown.height);
       },
-      radiusToScreen: (r: number) => (r / crop.height) * ir.h,
-      radiusToImage: (px: number) => (px / ir.h) * crop.height,
+      radiusToScreen: (r: number) => (r / shown.height) * ir.h,
+      radiusToImage: (px: number) => (px / ir.h) * shown.height,
     };
     // forwardRaw/invRaw derive from straighten/transform/imageAspect (in deps).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlayRect, overlayImageRect, overlayNonce, crop, straighten, transform, imageAspect]);
+  }, [overlayRect, overlayImageRect, overlayNonce, crop, bufferCrop, straighten, transform, imageAspect]);
 
   // Throttle crop writes to one per frame so a drag doesn't re-render the panels
   // on every pointer event.
@@ -387,6 +391,7 @@ export function DevelopCanvas({
           />
         )}
         <p className="text-xs">Can't show edits on this computer. Showing the unedited preview.</p>
+        {availabilityReason && <p className="text-[10px]">Reason: {availabilityReason}</p>}
       </div>
     );
   }
@@ -395,11 +400,16 @@ export function DevelopCanvas({
     <div className="relative h-full w-full">
     {availability !== "starting" && availability !== "ready" && (
       <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-        <p className="rounded bg-surface-2 px-3 py-2 text-xs text-text-muted">
-          {availability === "failed"
-            ? "Can't show images right now. Restart Safelight."
-            : "Can't show images right now. Trying again…"}
-        </p>
+        <div className="max-w-md rounded bg-surface-2 px-3 py-2 text-center text-xs text-text-muted">
+          <p>
+            {availability === "failed"
+              ? "Can't show images right now. Restart Safelight."
+              : "Can't show images right now. Trying again…"}
+          </p>
+          {availabilityReason && (
+            <p className="mt-1 break-words text-[10px]">Reason: {availabilityReason}</p>
+          )}
+        </div>
       </div>
     )}
     {notice && (

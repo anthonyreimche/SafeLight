@@ -11,6 +11,8 @@ import {
   COLOR_SPACES,
   OUT_SPACE_CODE,
   buildIccProfile,
+  crc32,
+  crc32Update,
   embedColorProfile,
   outMatrixColumnMajor,
 } from "./color-space";
@@ -367,5 +369,31 @@ describe("embedColorProfile", () => {
     expect((vp8x[7] | (vp8x[8] << 8) | (vp8x[9] << 16)) + 1).toBe(50);
     expect(chunks[1].data).toEqual(icc);
     expect(chunks[2].data).toEqual(src.subarray(20));
+  });
+});
+
+describe("crc32Update", () => {
+  const utf8 = (text: string) => new TextEncoder().encode(text);
+
+  it("is the PNG CRC-32: the standard check value, and 0 for no bytes", () => {
+    expect(crc32(utf8("123456789"))).toBe(0xcbf43926);
+    expect(crc32(new Uint8Array(0))).toBe(0);
+  });
+
+  it("carries a CRC across parts, wherever they are cut", () => {
+    const data = new Uint8Array(1000).map((_, i) => (i * 131 + (i >> 3)) & 0xff);
+    for (const cut of [0, 1, 7, 500, 999, 1000]) {
+      const crc = crc32Update(crc32Update(0, data.subarray(0, cut)), data.subarray(cut));
+      expect(crc, `cut at ${cut}`).toBe(crc32(data));
+    }
+  });
+
+  it("goes through three parts and an empty one as through the whole", () => {
+    const whole = utf8("IDAT0123456789abcdef");
+    let crc = 0;
+    for (const part of [whole.subarray(0, 4), whole.subarray(4, 4), whole.subarray(4, 11), whole.subarray(11)]) {
+      crc = crc32Update(crc, part);
+    }
+    expect(crc).toBe(crc32(whole));
   });
 });

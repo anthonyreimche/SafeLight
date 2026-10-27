@@ -211,7 +211,7 @@ describe("checkForUpdateFull — failure modes", () => {
       releases: { fetch: () => Promise.reject(new Error("ENOTFOUND")) },
     });
 
-    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error" });
+    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error", detail: "ENOTFOUND" });
   });
 
   it("degrades to network-error when the bridge throws synchronously", async () => {
@@ -224,14 +224,22 @@ describe("checkForUpdateFull — failure modes", () => {
       },
     });
 
-    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error" });
+    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error", detail: "bridge gone" });
   });
 
   it("degrades to parse-error when GitHub answers with something other than a list", async () => {
     // The classic case is the rate-limit body: `{ message: "API rate limit …" }`.
-    for (const payload of [{ message: "API rate limit exceeded" }, null, "", 42]) {
+    stubNative(bridge("1.0.0", { message: "API rate limit exceeded" }));
+    await expect(checkForUpdateFull()).resolves.toEqual({
+      kind: "parse-error",
+      detail: "API rate limit exceeded",
+    });
+    for (const payload of [null, "", 42]) {
       stubNative(bridge("1.0.0", payload));
-      await expect(checkForUpdateFull()).resolves.toEqual({ kind: "parse-error" });
+      await expect(checkForUpdateFull()).resolves.toEqual({
+        kind: "parse-error",
+        detail: "GitHub didn't send a list of releases",
+      });
     }
   });
 
@@ -320,18 +328,21 @@ describe("checkForUpdateFull — browser build (no Electron bridge)", () => {
   it("degrades to network-error on a non-OK response", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => Promise.resolve({ ok: false, json: () => Promise.resolve([]) })),
+      vi.fn(() => Promise.resolve({ ok: false, status: 403, json: () => Promise.resolve([]) })),
     );
     stubNative();
 
-    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error" });
+    await expect(checkForUpdateFull()).resolves.toEqual({
+      kind: "network-error",
+      detail: "GitHub answered HTTP 403",
+    });
   });
 
   it("degrades to network-error when the request itself fails", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))));
     stubNative();
 
-    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error" });
+    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error", detail: "Failed to fetch" });
   });
 
   it("degrades to network-error when the body is not JSON", async () => {
@@ -343,13 +354,16 @@ describe("checkForUpdateFull — browser build (no Electron bridge)", () => {
     );
     stubNative();
 
-    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error" });
+    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error", detail: "bad json" });
   });
 
   it("degrades to network-error when there is no window at all", async () => {
     // The worker/prerender case: touching `window` throws a ReferenceError, which
     // still has to surface as a result rather than a rejection.
-    await expect(checkForUpdateFull()).resolves.toEqual({ kind: "network-error" });
+    await expect(checkForUpdateFull()).resolves.toEqual({
+      kind: "network-error",
+      detail: expect.stringContaining("window"),
+    });
   });
 });
 
@@ -441,16 +455,35 @@ describe("fetchAllReleases", () => {
     ]);
   });
 
-  it("returns null rather than an empty list when the fetch fails", async () => {
-    stubNative({ releases: { fetch: () => Promise.reject(new Error("offline")) } });
+  it("leaves the camera-profiles asset release out of the history", async () => {
+    stubNative(
+      bridge("1.0.0", [
+        release({ tag_name: "v1.1.0" }),
+        release({ tag_name: "camera-profiles", prerelease: true, body: null }),
+      ]),
+    );
 
-    await expect(fetchAllReleases()).resolves.toBeNull();
+    await expect(fetchAllReleases()).resolves.toEqual([
+      {
+        version: "1.1.0",
+        tag: "v1.1.0",
+        releasesUrl: "https://github.com/anthonyreimche/SafeLight/releases/tag/v1.1.0",
+        body: "Release notes",
+        prerelease: false,
+      },
+    ]);
   });
 
-  it("returns null on a payload it cannot read", async () => {
+  it("rejects with the cause rather than an empty list when the fetch fails", async () => {
+    stubNative({ releases: { fetch: () => Promise.reject(new Error("offline")) } });
+
+    await expect(fetchAllReleases()).rejects.toThrow("offline");
+  });
+
+  it("rejects with GitHub's message on a payload it cannot read", async () => {
     stubNative(bridge("1.0.0", { message: "Not Found" }));
 
-    await expect(fetchAllReleases()).resolves.toBeNull();
+    await expect(fetchAllReleases()).rejects.toThrow("Not Found");
   });
 });
 

@@ -106,14 +106,14 @@ The Presets panel saves the current edit as a named preset and applies presets t
 
 Open the **Export** panel (docked in Library by default, or via **View ▸ Export** from either module):
 
-- **Format** — JPEG, PNG, WebP, or TIFF, with a quality slider for JPEG/WebP and an 8- or 16-bit depth choice for TIFF and PNG. Each keeps its own depth, and PNG starts at 8-bit each session; 16-bit falls back to 8-bit where the device can't render it. An 8-bit export in ProPhoto RGB, which can band in smooth gradients, shows a warning under the format with a **Use 16-bit TIFF** button.
+- **Format** — JPEG, PNG, WebP, or TIFF, with a quality slider for JPEG/WebP and an 8- or 16-bit depth choice for TIFF and PNG. Each keeps its own depth, set by default in **Preferences ▸ Export** (TIFF 16-bit, PNG 8-bit, since 16-bit PNGs are large and most viewers show them as 8-bit) and saved in export presets; 16-bit falls back to 8-bit where the device can't render it. An 8-bit export in ProPhoto RGB, which can band in smooth gradients, shows a warning under the format with a **Use 16-bit TIFF** button.
 - **Color space** — sRGB, Display P3, Adobe RGB, or ProPhoto RGB; the matching ICC profile is embedded so other apps read the pixels correctly.
 - **Size** — limit the long edge or keep the original size, with optional output sharpening (amount and radius).
 - **Delivery** — multiple photos as a single ZIP, separate files, or into a chosen folder.
 - **Filename** — choose a filename template; extensions can add templates.
 - **Processors** — registered export extensions (e.g. watermarking) appear as collapsible sections and run after encoding.
 
-Exports render through the same worker WebGL pipeline as the Develop view, so output matches what you see. Because output goes through a canvas, exported files carry **no EXIF or location metadata** — fitting for a privacy-first tool. Defaults are configurable in Preferences, and named export presets save full recipes.
+Exports render through the same worker WebGL pipeline as the Develop view, so output matches what you see. Exported files carry no EXIF or location metadata unless you opt in: **Include metadata** in **Preferences ▸ Export** copies the camera, lens, exposure and capture date, and **Include location (GPS)**, offered once metadata is on, keeps the GPS position too. Both are off by default, and the Export panel's **Privacy** section says which applies. Defaults are configurable in Preferences, and named export presets save full recipes.
 
 When a photo can't be exported, the panel counts it, and lists it with the reason where that is known. An edited photo is skipped with "The original isn't available." when its original can't be reached (a drive unplugged, or access not granted) and all Safelight has of it is its stored preview, which already shows the edit. Reconnect the original and export it again.
 
@@ -137,9 +137,9 @@ Preferences is organized into sections: **Interface**, **Library**, **Rendering*
 
 - **Interface** — Interface scale (80–200%, − and + buttons), reduce motion, custom UI font.
 - **Library** — default grid size, sort field/direction, confirm-before-remove, thumbnail source and resolution (320/640/960 px), preview persistence.
-- **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both. On Linux, **Display profile** takes your monitor's ICC profile and converts the Develop view to it, because most Wayland desktops leave the window unconverted. On KDE Plasma, set the monitor's Color profile in System Settings instead and leave this empty (see the FAQ on oversaturated colors).
+- **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both. On Linux, **Display profile** takes your monitor's ICC profile and converts the Develop view to it, because most Wayland desktops leave the window unconverted. On KDE Plasma, set the monitor's Color profile in System Settings instead and leave this empty (see the FAQ on oversaturated colors). Also on Linux, **Software rendering** draws on the processor instead of the graphics card. It is slower, but it works in virtual machines such as VirtualBox and with graphics drivers that can't run WebGL2. Safelight turns it on by itself when the graphics card can't run WebGL2 or its driver keeps crashing, and says which. Turn it off to try the graphics card again. Changes apply when you restart Safelight.
 - **Performance** — RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (4096/6144/8192 px); GPU source-cache budget; neighbor prefetch; high bit-depth previews; live histogram; opening zoom.
-- **Export** — default format, quality, long edge, color space, ZIP bundling, and saved export presets.
+- **Export** — default format, TIFF and PNG bit depth, quality, long edge, color space, metadata and location, and ZIP bundling. Export presets are saved from the Export panel, not here.
 - **Shortcuts** — rebind every action; single-letter shortcuts (G/D/F…) can be disabled, while Tab and Ctrl-combos always work.
 - **Extensions** — each installed extension's settings, the GitHub topic used to discover official extensions, and update preferences. This includes the built-in **Accessibility** extension (below).
 - **Updates** — check for updates and choose the patch/minor channel.

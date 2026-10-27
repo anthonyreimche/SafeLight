@@ -101,6 +101,7 @@ vi.mock("@/raw/decode-pool", () => ({ decodePoolSize: () => 3, warmDecodePool: a
 
 vi.mock("@/raw/raw-cache", () => ({
   cachedKeys: async () => new Set<string>(),
+  cacheListing: async () => ({ done: new Set<string>(), stale: new Set<string>() }),
   deleteCachedPreview: async (key: string) => void h.cacheDeletes.push(key),
   hasDecodeMarker: async () => false,
   rawCacheKey: (rel: string, size: number, rot: number) => `${rel}:${size}:${rot}`,

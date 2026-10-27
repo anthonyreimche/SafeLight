@@ -2,43 +2,43 @@
 
 ← [Building Extensions](README.md)
 
-Safelight ships an in-app **Developer Tools** extension that is **disabled by default** (it's a built-in under Extensions ▸ Installed). Enabling it installs console/error capture and unlocks the live-loading workflow below; disabling it tears all of that down so a normal user's console stays untouched. Enable it once, then reach for it whenever you build an extension.
+Safelight ships an in-app **Developer Tools** extension, **disabled by default** (a built-in under Extensions ▸ Installed). Enabling it adds console and error capture and the live-loading workflow below. Disabling it removes all of that, so a normal user's console stays untouched.
 
 ## Enable it
 
-Extensions panel (**Ctrl+Shift+X**) ▸ **Installed** ▸ toggle **Developer Tools** on. Open the panel from **View ▸ Developer Tools** or **Ctrl+Alt+I**. It docks like any panel and can be popped out into its own OS window (the ⧉ button).
+Extensions panel (**Ctrl+Shift+X**) ▸ **Installed** ▸ toggle **Developer Tools** on. Open the panel from **View ▸ Developer Tools** or **Ctrl+Alt+I**. It docks like any panel and can be popped out into its own window (the ⧉ button).
 
 The panel has seven tabs:
 
-- **Console** — captured `console.*` output with level filters, text search, and an inline **REPL** (evaluate JS against the running app; `window.safelight` is the extension API, handy for poking at stores). Note: the Electron shell ships a strict CSP without `unsafe-eval`, so the REPL's `eval` is refused there — use the **Native** tab to open Chrome DevTools instead.
-- **Issues** — warnings and errors only, with a count badge.
-- **System** — app/runtime versions, platform, cross-origin-isolation status (affects RAW decode), WebGL vendor/renderer/limits, JS heap, and (desktop) GPU feature status.
-- **Storage** — a `localStorage` browser/editor (Safelight keys are `sl_*`).
-- **Variables** — every shared variable (`api.variables`) with its writers, subscribers, value and recent history, and an editor for its value.
-- **Pipeline** — the develop program the open photo renders with, read from the same code that writes its shader. It lists Safelight's own blocks in order, each stage between them (owner, phase and priority, space, whether it reads the current image, its copies inside masks), the conversions between spaces, and every place the colour is clipped to [0, 1], with when that happens. The v1/v2/v3 picker shows what another process version runs instead. With no photo open, or in the popped-out window, which can't see the main window's photo, it shows the current process version with default settings. A stage's "found in GLSL" lines come from a text scan of its inline GLSL and helpers for constant floors (`max(lin, 0.0)`) and clips (`clamp(c, …)`) of `lin` or `c` only. A floor on a copy of the colour, or inside one of the stage's passes, isn't seen, and a helper's own scalar named `c` can show up.
-- **Native** (desktop only) — open/dock/toggle the real Chrome DevTools, reload (soft/hard), and per-process CPU/memory metrics.
+- **Console**: captured `console.*` output with level filters, search and an inline **REPL** (`window.safelight` is the extension API). The desktop app's content-security policy refuses `eval`, so there the REPL doesn't run: use the **Native** tab to open Chrome DevTools instead.
+- **Issues**: warnings and errors only, with a count badge.
+- **System**: app and runtime versions, platform, cross-origin isolation (affects RAW decode), WebGL vendor and limits, JS heap, and (desktop) GPU feature status.
+- **Storage**: a `localStorage` browser and editor (Safelight keys are `sl_*`).
+- **Variables**: every shared variable (`api.variables`) with its writers, subscribers, value and recent history, and an editor for its value.
+- **Pipeline**: the develop program the open photo renders with. It lists Safelight's blocks in order, each stage between them (owner, phase, priority, space, whether it reads the current image, its copies inside masks), the conversions between spaces, and every point where the colour is clipped to [0, 1]. The v1/v2/v3 picker shows what another process version runs. With no photo open, or in a popped-out window, it shows default settings. Its "found in GLSL" lines come from a text scan of your inline GLSL and helpers, so they can miss clamps or report false ones.
+- **Native** (desktop only): open, dock or toggle Chrome DevTools, soft or hard reload, and per-process CPU and memory.
 
 ## Live-load from a folder (the iterate loop)
 
-Reinstalling from GitHub on every change is slow. Instead, point Safelight at a **local folder of built extensions** and it loads them live — **desktop app only** (it reads bundle bytes over the native filesystem bridge).
+Reinstalling from GitHub on every change is slow. Instead, point Safelight at a **local folder of built extensions** and it loads them live. **Desktop app only**, since it reads bundles over the native filesystem bridge.
 
 1. **Extensions ▸ Dev** (or **Preferences ▸ Developer Tools**) ▸ **Choose folder…**
-2. Each immediate subfolder of that folder is treated as one extension — the *same* `safelight.json` + built-bundle layout an installed extension uses:
+2. Each immediate subfolder is one extension, in the same `safelight.json` + built-bundle layout an installed extension uses:
    ```
    my-dev-folder/
    ├─ theme-slate/        →  safelight.json + index.js
    └─ my-extension/       →  safelight.json + dist/index.js
    ```
-3. Edit and rebuild your extension, then hit **↻ Reload** on its row (or **Rescan** for the whole folder). The old instance is deactivated and its contributions swept before the new one activates — no app restart.
+3. Rebuild your extension, then hit **↻ Reload** on its row (or **Rescan** for the whole folder). The old instance is deactivated and swept before the new one activates. No app restart.
 
-The Dev tab shows each discovered extension's load status; a failed load shows the error inline. The configured path lives in the Developer Tools extension's own settings, so disabling that extension unloads every dev extension and forgets the path.
+The Dev tab shows each extension's load status, with any error inline. The folder path is stored in Developer Tools' own settings, so disabling Developer Tools unloads every dev extension and forgets the path.
 
-Network access works the same way as for an installed extension: the origins a dev extension declares in `permissions.network` are read from the folder when Safelight starts and added to the app's content-security policy, so choosing a folder or adding a declaration needs one restart. Until then those requests are refused (a failed fetch, blank map tiles) while everything else runs; the Dev tab and Preferences ▸ Developer Tools list the origins waiting on the restart.
+Network access works as for an installed extension: `permissions.network` origins are read when Safelight starts, so choosing a folder or adding a declaration needs one restart. Until then those requests fail (a failed fetch, blank map tiles). The Dev tab lists the origins waiting on a restart.
 
 ## Common load errors
 
-- **`safelight.json is missing 'id' or 'main'`** — both are required, and `id` must be text; check the manifest path and JSON validity.
-- **`<id>: extension ids under 'core' are reserved for Safelight`** — `core` and anything under `core.`, in any letter case, belong to Safelight's built-in extensions, so the dev folder will not load an extension with such an `id` (the Dev tab row shows this text and the console logs `[dev-folder] refused …`). Installing one from GitHub is refused too, and that failure reads only `Invalid safelight.json`. Pick your own id in `safelight.json`, such as `com.example.name` (see [Manifest](README.md#manifest) for the rules).
-- **`bundle has no activate(api) export`** — your bundle must `export function activate(api)`. Usually means React wasn't left external (so the bundle threw on import) or the entry file is wrong.
-- **Blank/unstyled UI** — Tailwind utility classes aren't compiled for runtime bundles. Use theme CSS variables + inline styles, or `api.components`. See [UI Components → Theming tokens](../api/components.md#theming-tokens).
-- **Hooks crash (`Invalid hook call`)** — you bundled your own React. Mark `react`/`react-dom`/`react/jsx-runtime` external and use `api.react`.
+- **`safelight.json is missing 'id' or 'main'`**: both are required, and `id` must be text. Check the manifest path and that the JSON is valid.
+- **`<id>: extension ids under 'core' are reserved for Safelight`**: pick your own id, such as `com.example.name` (see [Manifest](README.md#manifest)). Installing such an extension from GitHub fails too, with only `Invalid safelight.json`.
+- **`bundle has no activate(api) export`**: your bundle must `export function activate(api)`. Usually React wasn't left external (so the bundle threw on import) or `main` points at the wrong file.
+- **Blank or unstyled UI**: Tailwind classes aren't compiled for runtime bundles. Use theme CSS variables with inline styles, or `api.components`. See [Theming tokens](../api/components.md#theming-tokens).
+- **`Invalid hook call`**: you bundled your own React. Mark `react`, `react-dom` and `react/jsx-runtime` external and use `api.react`.

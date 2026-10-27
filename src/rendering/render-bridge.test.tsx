@@ -44,6 +44,7 @@ import type { ProcessingStageContribution, StageSpace, StageTextureData } from "
 import type { MonitorTransform } from "./display-profile";
 import { useDisplayProfile, type DisplayProfileState } from "./display-profile-store";
 import { DEFAULT_CAPTURE_SPACE, type CapturePoint, type FloatFrame } from "./float-frame";
+import type { SourceSample } from "./source-sample";
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -121,6 +122,30 @@ describe("RenderBridge init recovery", () => {
     expect(bridge.pipelineFloat).toBe(true);
     expect(bridge.availability).toBe("ready");
     expect(seen).toEqual(["starting", "retrying", "retrying", "ready"]);
+    bridge.dispose();
+  });
+
+  it("tells its availability listener why the last init failed", () => {
+    const bridge = new RenderBridge();
+    bridge.setOnError(() => undefined);
+    const seen: Array<[string, string | undefined]> = [];
+    bridge.setOnAvailability((availability, detail) => seen.push([availability, detail]));
+    bridge.init(64, 64);
+    FakeWorker.instances[0].reply(initError);
+    expect(seen.at(-1)).toEqual(["retrying", "WebGL2 not supported"]);
+    FakeWorker.instances[0].reply({ type: "ready", pipelineFloat: true });
+    expect(seen.at(-1)).toEqual(["ready", undefined]);
+    bridge.dispose();
+  });
+
+  it("tells a listener that subscribes after a failed init why it failed", () => {
+    const bridge = new RenderBridge();
+    bridge.setOnError(() => undefined);
+    bridge.init(64, 64);
+    FakeWorker.instances[0].reply(initError);
+    const onAvailability = vi.fn<(availability: string, detail?: string) => void>();
+    bridge.setOnAvailability(onAvailability);
+    expect(onAvailability).toHaveBeenCalledWith("retrying", "WebGL2 not supported");
     bridge.dispose();
   });
 
@@ -835,9 +860,53 @@ describe("RenderBridge image hand-off", () => {
       maxEdge: 256,
     });
 
-    expect(transferOf("setImage")).toEqual([shown.data.buffer]);
-    expect(transferOf("uploadSource")).toEqual([uploaded.data.buffer]);
-    expect(transferOf("renderThumbnail")).toEqual([thumb.data.buffer]);
+    const shownTransfer = transferOf("setImage");
+    expect(shownTransfer).toHaveLength(1);
+    expect(shownTransfer[0]).toBe(shown.data.buffer);
+    const uploadedTransfer = transferOf("uploadSource");
+    expect(uploadedTransfer).toHaveLength(1);
+    expect(uploadedTransfer[0]).toBe(uploaded.data.buffer);
+    const thumbTransfer = transferOf("renderThumbnail");
+    expect(thumbTransfer).toHaveLength(1);
+    expect(thumbTransfer[0]).toBe(thumb.data.buffer);
+    bridge.dispose();
+  });
+
+  it("transfers a cached preview's sample beside its pixels", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    const transferOf = (cmd: WorkerRequest["cmd"]) =>
+      worker.transfers[worker.posted.findIndex((m) => m.cmd === cmd)];
+    const sampleOf = () => ({ data: new Uint16Array(4), width: 1, height: 1, x: 0, y: 0, sourceWidth: 6, sourceHeight: 4 });
+
+    const shown = { ...cachedPreview(), fullWidth: 6, fullHeight: 4, sample: sampleOf() };
+    const uploaded = { ...cachedPreview(), fullWidth: 6, fullHeight: 4, sample: sampleOf() };
+    bridge.setImage(shown);
+    bridge.uploadSource("main", "k", uploaded);
+
+    const shownTransfer = transferOf("setImage");
+    expect(shownTransfer).toHaveLength(2);
+    expect(shownTransfer[0]).toBe(shown.data.buffer);
+    expect(shownTransfer[1]).toBe(shown.sample.data.buffer);
+    const uploadedTransfer = transferOf("uploadSource");
+    expect(uploadedTransfer).toHaveLength(2);
+    expect(uploadedTransfer[0]).toBe(uploaded.data.buffer);
+    expect(uploadedTransfer[1]).toBe(uploaded.sample.data.buffer);
+    bridge.dispose();
+  });
+
+  // The sample is 8 MB; it moves to the worker rather than being copied.
+  it("hands a completed entry's size and sample to the worker, moving the sample", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    const sample = { data: new Uint16Array(8), width: 2, height: 1, x: 0, y: 0, sourceWidth: 6, sourceHeight: 4 };
+
+    bridge.setSourceSample("p:0", { fullWidth: 6, fullHeight: 4, sample });
+
+    const at = worker.posted.findIndex((m) => m.cmd === "setSourceSample");
+    expect(worker.posted[at]).toEqual({ cmd: "setSourceSample", key: "p:0", fullWidth: 6, fullHeight: 4, sample });
+    expect(worker.transfers[at]).toHaveLength(1);
+    expect(worker.transfers[at][0]).toBe(sample.data.buffer);
     bridge.dispose();
   });
 });
@@ -1119,7 +1188,37 @@ describe("RenderBridge worker replies", () => {
       expect(frame.width).toBe(640);
       expect(frame.height).toBe(480);
       expect(frame).toMatchObject({ sourceWidth: 4096, sourceHeight: 2731, sourceGen: 3 });
+      // A frame from an older worker build names no decoded size: it is the source's,
+      // and the source is not known to be a live decode.
+      expect(frame).toMatchObject({ sourceFullWidth: 4096, sourceFullHeight: 2731, sourceNative: false });
       expect(frame.histogram).toBe(histogram);
+    });
+
+    it("hands over the decoded size and kind a frame carries as they are", () => {
+      const onFrame = vi.fn<(frame: FrameResult) => void>();
+      bridge.setOnFrame(onFrame);
+      worker.reply({
+        type: "frame",
+        seq: 1,
+        bitmap: bitmapOf(640),
+        width: 640,
+        height: 480,
+        sourceWidth: 4096,
+        sourceHeight: 2731,
+        sourceGen: 3,
+        sourceFullWidth: 6000,
+        sourceFullHeight: 4000,
+        sourceNative: true,
+      });
+
+      expect(onFrame).toHaveBeenCalledTimes(1);
+      expect(onFrame.mock.calls[0][0]).toMatchObject({
+        sourceWidth: 4096,
+        sourceHeight: 2731,
+        sourceFullWidth: 6000,
+        sourceFullHeight: 4000,
+        sourceNative: true,
+      });
     });
 
     it("hands over a frame that carries no histogram with none", () => {
@@ -1734,6 +1833,54 @@ describe("RenderBridge worker replies", () => {
     });
   });
 
+  describe("source sample", () => {
+    const sampleOf = (x: number): SourceSample => ({
+      data: new Float32Array([1, 2, 3, 1]),
+      width: 1,
+      height: 1,
+      x,
+      y: 20,
+      sourceWidth: 3000,
+      sourceHeight: 2000,
+    });
+
+    it("asks for the sample and resolves with the reply carrying its reqId", async () => {
+      const first = track(bridge.readSourceSample());
+      const second = track(bridge.readSourceSample());
+      const [one, two] = sent(worker, "readSourceSample");
+      expect(sent(worker, "readSourceSample")).toHaveLength(2);
+      expect(one.reqId).not.toBe(two.reqId);
+
+      // A reply nobody is waiting for settles nothing and throws nothing.
+      expect(() => worker.reply({ type: "sourceSample", reqId: 999, sample: sampleOf(1) })).not.toThrow();
+      await flush();
+      expect([first.state, second.state]).toEqual(["pending", "pending"]);
+
+      const sample = sampleOf(10);
+      worker.reply({ type: "sourceSample", reqId: two.reqId, sample });
+      await flush();
+      expect([first.state, second.state]).toEqual(["pending", "resolved"]);
+      expect(second.value).toBe(sample);
+
+      // The worker had nothing to cut one from.
+      worker.reply({ type: "sourceSample", reqId: one.reqId, sample: null });
+      await flush();
+      expect(first.state).toBe("resolved");
+      expect(first.value).toBeNull();
+    });
+
+    // A terminated worker never answers, and a measuring extension awaits one.
+    it("settles a read pending at dispose, and one asked after, with null", async () => {
+      const pending = track(bridge.readSourceSample());
+      bridge.dispose();
+      const late = track(bridge.readSourceSample());
+      await flush();
+      expect([pending.state, late.state]).toEqual(["resolved", "resolved"]);
+      expect([pending.value, late.value]).toEqual([null, null]);
+      expect(sent(worker, "readSourceSample")).toHaveLength(1);
+    });
+  });
+
   describe("upright", () => {
     it("resolves computeUpright with the result and calls onUpright", async () => {
       const onUpright = vi.fn<(result: UprightResult) => void>();
@@ -1802,14 +1949,14 @@ describe("RenderBridge worker replies", () => {
     });
 
     it("hands the number of a source the worker couldn't take to onSourceError, and reports it", () => {
-      const onSourceError = vi.fn<(sourceGen: number) => void>();
+      const onSourceError = vi.fn<(sourceGen: number, message: string) => void>();
       const onError = vi.fn<(message: string) => void>();
       bridge.setOnSourceError(onSourceError);
       bridge.setOnError(onError);
       worker.reply({ type: "sourceError", sourceGen: 4, message: "texImage2D failed" });
 
       expect(onSourceError).toHaveBeenCalledTimes(1);
-      expect(onSourceError).toHaveBeenCalledWith(4);
+      expect(onSourceError).toHaveBeenCalledWith(4, "texImage2D failed");
       expect(onError).toHaveBeenCalledWith("source failed: texImage2D failed");
     });
 
@@ -2629,6 +2776,143 @@ describe("RenderBridge proof", () => {
     bridge.setProof(null);
     const proofs = FakeWorker.instances[0].posted.flatMap((m) => (m.cmd === "setProof" ? [m.space] : []));
     expect(proofs).toEqual(["adobe-rgb", null]);
+    bridge.dispose();
+  });
+});
+
+describe("RenderBridge transform derived uniforms", () => {
+  const TUNED = {
+    id: "test.tuned",
+    name: "Tuned",
+    glsl: "vec3 pipelineToDisplay(vec3 lin) { return twice * lin; }",
+    params: [{ key: "gain", glslType: "float" as const, default: 1 }],
+    derive: {
+      uniforms: [{ key: "twice", glslType: "float" as const, default: 2 }],
+      fn: (v: Readonly<Record<string, number | number[] | boolean>>) => ({ twice: 2 * (v.gain as number) }),
+    },
+  };
+  const tuned = normalizeParams({ displayTransform: TUNED.id });
+
+  beforeEach(() => {
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+    useRegistry.setState({ pipelines: {} });
+    registerPipeline("core", { id: DEFAULT_PIPELINE, name: "Built-in" });
+    registerPipeline("test", TUNED);
+    usePipelineStore.setState({ activeId: DEFAULT_PIPELINE });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    unregisterExtension("test");
+    useRegistry.setState({ pipelines: {} });
+  });
+
+  type BagPost = Extract<WorkerRequest, { cmd: "setContributedParams" | "patchContributedParams" }>;
+  const bagPosts = (worker: FakeWorker) =>
+    worker.posted.filter((m): m is BagPost => m.cmd === "setContributedParams" || m.cmd === "patchContributedParams");
+
+  it("adds the live transform's derived uniforms to the live bag", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setParams(tuned);
+    bridge.setContributedParams({ "test.tuned.gain": 3 });
+    expect(bagPosts(worker)[0]).toMatchObject({
+      cmd: "setContributedParams",
+      bag: { "test.tuned.gain": 3, "test.tuned#twice": 6 },
+    });
+    bridge.dispose();
+  });
+
+  it("re-posts the bag when the photo switches transform", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setParams(tuned);
+    bridge.setContributedParams({ "test.tuned.gain": 3 });
+    bridge.setParams(normalizeParams({}));
+    expect(bagPosts(worker).at(-1)).toEqual({ cmd: "patchContributedParams", set: {}, remove: ["test.tuned#twice"] });
+    bridge.dispose();
+  });
+
+  it("captures with the derived uniforms of the capture's transform and bag", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setParams(normalizeParams({}));
+    bridge.setContributedParams({ "test.tuned.gain": 3 });
+    void bridge.capture(tuned, { paramBag: { "test.tuned.gain": 5 } });
+    void bridge.captureFloat(tuned);
+    const patches = worker.posted.flatMap((m) =>
+      m.cmd === "capture" || m.cmd === "captureFloat" ? [m.bagPatch] : [],
+    );
+    expect(patches).toEqual([
+      { "test.tuned.gain": 5, "test.tuned#twice": 10 },
+      { "test.tuned#twice": 6 },
+    ]);
+    bridge.dispose();
+  });
+
+  it("renders thumbnails with the derived uniforms of their transform and bag", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setContributedParams({ "test.tuned.gain": 3 });
+    void bridge.renderThumbnailFromSource({
+      requestId: "t1",
+      key: "k",
+      params: tuned,
+      asShotTemperature: 5000,
+      maxEdge: 256,
+      contributedParams: { "test.tuned.gain": 4 },
+    });
+    bridge.renderThumbnail({
+      requestId: "t2",
+      image: { kind: "float16", data: new Uint16Array(4), width: 1, height: 1 },
+      params: tuned,
+      asShotTemperature: 5000,
+      maxEdge: 256,
+    });
+    const bags = worker.posted.flatMap((m) =>
+      m.cmd === "renderThumbnailFromSource" || m.cmd === "renderThumbnail" ? [m.contributedParams] : [],
+    );
+    expect(bags).toEqual([
+      { "test.tuned.gain": 4, "test.tuned#twice": 8 },
+      { "test.tuned.gain": 3, "test.tuned#twice": 6 },
+    ]);
+    bridge.dispose();
+  });
+
+  it("renders a float thumbnail from a resident source with its transform's derived uniforms", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setContributedParams({ "test.tuned.gain": 3 });
+    void bridge.renderThumbnailFloat({
+      requestId: "t4",
+      key: "k",
+      params: tuned,
+      asShotTemperature: 5000,
+      maxEdge: 256,
+      float: { point: "pre-output" },
+    });
+    const sent = worker.posted.find((m) => m.cmd === "renderThumbnailFromSource");
+    expect(sent && "contributedParams" in sent ? sent.contributedParams : undefined).toEqual({
+      "test.tuned.gain": 3,
+      "test.tuned#twice": 6,
+    });
+    bridge.dispose();
+  });
+
+  it("leaves a thumbnail of a plain transform without a bag of its own", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setContributedParams({ "test.tuned.gain": 3 });
+    bridge.renderThumbnail({
+      requestId: "t3",
+      image: { kind: "float16", data: new Uint16Array(4), width: 1, height: 1 },
+      params: normalizeParams({}),
+      asShotTemperature: 5000,
+      maxEdge: 256,
+    });
+    const sent = worker.posted.find((m) => m.cmd === "renderThumbnail");
+    expect(sent && "contributedParams" in sent ? sent.contributedParams : undefined).toBeUndefined();
     bridge.dispose();
   });
 });

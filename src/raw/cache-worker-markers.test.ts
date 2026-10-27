@@ -67,7 +67,9 @@ describe("cache worker, markers in the project folder", () => {
     expect(await send({ cmd: "mark", id: 1, key: MARKER, value: "s1" })).toEqual({
       type: "mark", id: 1,
     });
-    expect(await send({ cmd: "keys", id: 2 })).toEqual({ type: "keys", id: 2, keys: [MARKER] });
+    expect(await send({ cmd: "keys", id: 2 })).toEqual({
+      type: "keys", id: 2, entries: [{ key: MARKER, complete: false }],
+    });
     expect(await send({ cmd: "peek", id: 3, key: MARKER })).toEqual({
       type: "peek", id: 3, value: "s1",
     });
@@ -100,7 +102,7 @@ describe("cache worker, markers in the project folder", () => {
 
     await send({ cmd: "clear", id: 2 });
 
-    expect(await send({ cmd: "keys", id: 3 })).toEqual({ type: "keys", id: 3, keys: [] });
+    expect(await send({ cmd: "keys", id: 3 })).toEqual({ type: "keys", id: 3, entries: [] });
   });
 });
 
@@ -112,11 +114,13 @@ describe("cache worker, markers in the shared database", () => {
 
     await send(scopeTo("D:/B"));
     expect(await send({ cmd: "peek", id: 2, key: MARKER })).toMatchObject({ value: null });
-    expect(await send({ cmd: "keys", id: 3 })).toMatchObject({ keys: [] });
+    expect(await send({ cmd: "keys", id: 3 })).toMatchObject({ entries: [] });
 
     await send(scopeTo("D:/A"));
     expect(await send({ cmd: "peek", id: 4, key: MARKER })).toMatchObject({ value: "s1" });
-    expect(await send({ cmd: "keys", id: 5 })).toMatchObject({ keys: [MARKER] });
+    expect(await send({ cmd: "keys", id: 5 })).toMatchObject({
+      entries: [{ key: MARKER, complete: false }],
+    });
   });
 
   it("clears markers with the previews", async () => {

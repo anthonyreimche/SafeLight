@@ -34,6 +34,11 @@ function formatExposureComp(v: number | undefined): string | undefined {
   return `${sign}${v} EV`;
 }
 
+function formatCameraMatch(e: { baselineExposure?: number | null; baselineShadows?: number | null }): string | undefined {
+  const exposure = formatExposureComp(e.baselineExposure ?? undefined);
+  return exposure && e.baselineShadows ? `${exposure}, Shadows +${e.baselineShadows}` : exposure;
+}
+
 function formatCoord(lat: number | undefined, lon: number | undefined): string | undefined {
   if (lat === undefined || lon === undefined) return undefined;
   const ns = lat >= 0 ? "N" : "S";
@@ -103,6 +108,7 @@ export function MetadataPanel() {
     ["Exp. mode", e.exposureMode],
     ["Exp. comp.", formatExposureComp(e.exposureCompensation)],
     ["Raw exp. bias", formatExposureComp(e.rawExposureBias)],
+    ["Camera match", formatCameraMatch(e)],
     ["Metering", e.meteringMode],
     ["White balance", e.whiteBalance],
     ["Flash", e.flash],

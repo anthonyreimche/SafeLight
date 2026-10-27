@@ -197,7 +197,8 @@ export interface PipelineContribution {
    *  default baseline tone (the camera-style lift applied to RAW sources in
    *  linear light), so the transform is the profile. It drops the baseline
    *  only: the core filmic shoulder still runs unless `skipToneShoulder` is
-   *  set. */
+   *  set. On process version 2 photos that includes the camera baseline after
+   *  channel reconstruction (the refit and the camera maker's exposure offset). */
   skipBaseCurve?: boolean;
   /** The transform brings its own highlight roll-off: the core filmic
    *  shoulder (which compresses luminance above 0.85 at Highlights 0) is
@@ -206,10 +207,47 @@ export interface PipelineContribution {
    *  negative value blends in the core recovery in proportion to the slider;
    *  a positive value lifts values up to white and leaves values above white
    *  untouched. Independent of `skipBaseCurve`; set both for true scene-linear
-   *  input. Safelight builds from before this flag ignore it and keep the
+   *  input. Photos at process version 1 ignore it and keep the shoulder.
+   *  Safelight builds from before this flag ignore it and keep the
    *  shoulder, so set the manifest's `minAppVersion` if the transform relies
    *  on it. */
   skipToneShoulder?: boolean;
+  /** Per-photo settings, stored in the photo's paramBag as "{id}.{key}", so
+   *  presets, Copy/Paste and undo carry them like stage params. Without
+   *  `derive` each is also a GLSL uniform named `key` in `glsl` and `helpers`,
+   *  bound from the bag every frame (its `default` while the bag holds no
+   *  value of its type). With `derive` they are values only. float, int and
+   *  bool only. The bag is shared with processing stages, so a transform's id
+   *  must not also be a stage's id. Without `derive`, keys are rewritten
+   *  wherever they appear as identifiers in `glsl` and `helpers`: don't reuse
+   *  one as a local name. `params`, `helpers` and `derive` need Safelight
+   *  3.1.0: older builds don't know them, so the transform fails to compile
+   *  there and renders with the built-in. Set the manifest's `minAppVersion`
+   *  to "3.1.0". */
+  params?: UniformDeclaration[];
+  /** GLSL functions `glsl` calls, namespaced like a stage's helpers. Needs
+   *  Safelight 3.1.0, like `params`. */
+  helpers?: string;
+  /** Computes the GLSL uniforms `glsl` and `helpers` read from `params`, on
+   *  the main thread, wherever a photo's bag is handed to a renderer. The
+   *  results are never stored. With `derive` the rewritten identifiers are
+   *  its uniforms' keys, and the params are values only. Needs Safelight
+   *  3.1.0, like `params`. */
+  derive?: TransformDerive;
+}
+
+export interface TransformDerive {
+  /** The uniforms `glsl` and `helpers` read: any GlslType but mat4 and
+   *  sampler2D. Their keys, not the params', are rewritten wherever they
+   *  appear as identifiers in `glsl` and `helpers`: don't reuse one as a
+   *  local name. Never stored in the bag. */
+  uniforms: UniformDeclaration[];
+  /** Pure and synchronous. `values` holds every param by key: the bag's
+   *  value when it fits the param's type, else its default. Returns a value
+   *  for each declared uniform (matrices as 9 numbers, column-major); one
+   *  that is missing or doesn't fit binds the uniform's default. A throw
+   *  binds every default and logs one warning. */
+  fn(values: Readonly<Record<string, UniformValue>>): Record<string, UniformValue>;
 }
 
 export interface SliderIconContribution {
@@ -595,6 +633,10 @@ export interface UniformDeclaration {
   label?: string;
 }
 
+/** A value a uniform binds: a number for float and int, a boolean for bool,
+ *  and an array for the vector and matrix types (matrices column-major). */
+export type UniformValue = number | number[] | boolean;
+
 /** A per-pixel value one stage hands to stages after it in the same draw (see
  *  ProcessingStageContribution.produces / `consumes`). */
 export interface InterStageVariable {
@@ -731,6 +773,15 @@ export const MASKABLE_PHASES: readonly ProcessingPhase[] = [
  *    uniform vec2 uTexel;      // 1.0 / passResolution
  *    uniform int  uPassIndex;  // current iteration, 0 .. uPassCount-1
  *    uniform int  uPassCount;  // this pass's resolved draw count (see `iterations`)
+ *    uniform vec2 uSourceSize; // the decoded source's size in pixels before Safelight
+ *                              // capped it to the Develop render resolution: a RAW's
+ *                              // frame as decoded, a bitmap's own size; for a cached
+ *                              // preview standing in for the photo, the preview's size.
+ *                              // A radius in source pixels scales to pass texels by
+ *                              // max(1.0 / uTexel.x, 1.0 / uTexel.y) / max(uSourceSize.x, uSourceSize.y).
+ *    uniform bool uSrcLinear;  // true while the source is a scene-linear float decode
+ *                              // (a RAW); false for camera-rendered bitmaps and the
+ *                              // camera preview shown before the RAW decodes
  *    vec3 readPrev(vec2 uv);   // previous pass at uv; first pass: the stage's input
  *    float luma(vec3); vec3 srgbToLinear(vec3); vec3 linearToSrgb(vec3);
  *  Pass `uniforms` share the owning stage's qualified-key namespace, so the same
@@ -743,7 +794,11 @@ export interface StagePass {
    *  1 to 1024; anything else is clamped, with a registration warning.
    *  `{ key, max }` reads it from the bag each frame; 0 skips the pass, and a
    *  stage whose passes all draw 0 times runs nothing that frame (no split
-   *  either) and reads as idle. */
+   *  either) and reads as idle. A stage runs its passes when the bag holds a
+   *  non-zero value under its id, or when a `{ key, max }` pass resolves above
+   *  0 from the bag or the uniform's default: a non-zero default draw count
+   *  makes the stage run on every photo until a bag value turns it off (since
+   *  3.1.0; earlier builds only used the bag test). */
   iterations?: number | PassDrawCount;
   uniforms?: UniformDeclaration[];
 }
@@ -819,7 +874,9 @@ export interface ProcessingStageContribution {
   presetScope?: "global" | "per-image";
 
   /** Opt into full-information values. Omitted, a stage before the display
-   *  transform gets `lin` as linear Rec.709 (signed, unclamped) and one after
+   *  transform gets `lin` as linear Rec.709 (signed, unclamped; from the
+   *  scene-linear phase on, the core shoulder has compressed its highlights
+   *  wherever that runs, see `skipToneShoulder`) and one after
    *  it gets `c` display-encoded and clamped to [0, 1], bar the offset
    *  Sharpening adds after a version 1 photo's last clamp (a mask covering a
    *  pixel in part mixes it through). Set, the stage gets its variable in this
@@ -1296,6 +1353,9 @@ export interface SafelightAPI {
   pipelines: {
     apply(id: string): void;
     effectiveId(displayTransform: string | null): string;
+    /** The bag keys of a registered transform's params, "{id}.{key}": empty
+     *  for a transform without params or an id that isn't registered. */
+    paramKeys(id: string): string[];
   };
   /** Open / close the Preferences dialog. `open` may take a section id (a core
    *  section's id or an extension id) to deep-link straight to that section. */
@@ -1347,7 +1407,9 @@ export interface SafelightAPI {
      *  `maskId` null. Lets one component serve as both a panel's `component` and
      *  its `mask.component`. */
     useParamScope(): import("@/modules/develop/mask-scope").ParamScope;
-    /** The frame is for measuring: sRGB, and without the clipping warning, the
+    /** The frame covers the region the view shows, whatever crop `params`
+     *  carry: in crop mode the whole photo and its margin, as the canvas shows
+     *  it. The frame is for measuring: sRGB, and without the clipping warning, the
      *  mask overlay and the sharpening preview the view may be showing. Pass
      *  `{ asShown: true }` for a frame drawn over the canvas: it keeps those
      *  overlays, and on Linux with a display profile set it is converted to
@@ -1367,29 +1429,38 @@ export interface SafelightAPI {
      *  output stage receives it: above 1 and below 0 where the photo goes
      *  there (version 1 photos clamp it to [0, 1] after the display
      *  transform, and hand over that). "output" is what the output stage
-     *  makes of it in sRGB, in [0, 1]. The frame is converted into `space`,
-     *  default `{ encoding: "linear", primaries: "rec709" }`. It is always a
-     *  measurement: sRGB, unproofed, without the view's overlays. As with
-     *  captureFrame, neither the params nor `paramBag` reach the live view or
-     *  the core's measurements of it. The floats are read straight from
-     *  the render target, never through an image encoder, so this supersedes
-     *  renderPhotoFrame's `lossless` for frames that carry data. Null without
-     *  float render targets (or with no photo open), so feature-detect with
-     *  it. `maxEdge` is the frame's long edge in pixels: 1280 by default
-     *  (about 17 MB of floats for a 3:2 frame), never upscaled. The frame is
-     *  the pipeline drawn at that size, not a shrunk copy of the full view:
-     *  tone and colour match the full view, but sharpening, noise reduction
-     *  and texture take their radii from the photo's own pixels, so in a
-     *  frame much smaller than the view (the default, from a 4096 px view)
-     *  their effect is lost or even reversed. Ask for `{ maxEdge: Infinity }`
-     *  to measure fine detail. `Infinity` asks for the full view, 16 bytes a
-     *  pixel: at fit at most the Develop render resolution in Preferences
-     *  (4096 px on the long edge by default, about 180 MB, up to 8192 px),
-     *  zoomed in the visible window at the screen's device pixels. Converting
-     *  that holds the render worker for around a second, during which the view
-     *  doesn't redraw, so ask for it only when you need its detail. The
-     *  perceptual space (`{ encoding: "perceptual" }`, Rec.709) skips the
-     *  conversion.
+     *  makes of it in sRGB, in [0, 1]. "scene" is the scene-linear colour the
+     *  display transform receives: after the core's linear edits, the masks
+     *  and every scene-linear and tone-map stage, signed, before any display
+     *  tool, for measuring a scene's range (a tone mapper's auto levels). The
+     *  core shoulder has already compressed its highlights wherever it runs:
+     *  always on version 1, and on version 2 and later unless the photo's
+     *  display transform sets `skipToneShoulder`; elsewhere it is unclamped.
+     *  Needs a Safelight build with the scene point; older builds don't know
+     *  it. The frame is converted into `space`, default `{ encoding:
+     *  "linear", primaries: "rec709" }`, on the GPU, pixel by pixel before
+     *  any averaging. It is always a measurement: sRGB, unproofed, without
+     *  the view's overlays. As with captureFrame, neither the params nor
+     *  `paramBag` reach the live view or the core's measurements of it. The
+     *  floats are read straight from the render target, never through an
+     *  image encoder, so this supersedes renderPhotoFrame's `lossless` for
+     *  frames that carry data. Null without float render targets, with no
+     *  photo open, or when the GPU can't hold the frame, so feature-detect
+     *  with it. `maxEdge` is the frame's long edge in pixels: 1280 by default
+     *  (about 17 MB of floats for a 3:2 frame), never upscaled. A smaller
+     *  frame is the full view's frame averaged down, each pixel the mean, in
+     *  `space`, of the area it covers: tone, colour and detail (sharpening,
+     *  noise reduction, texture) as the view shows them, at the smaller size.
+     *  In a linear `space` that is the mean of linear values, where a smaller
+     *  view averages encoded ones.
+     *  `Infinity` asks for the full view, 16 bytes a pixel: at fit at most the
+     *  Develop render resolution in Preferences (4096 px on the long edge by
+     *  default, about 180 MB, up to 8192 px), zoomed in the visible window at
+     *  the screen's device pixels. Its cost is reading that back, and in any
+     *  `space` but perceptual Rec.709 the GPU holds a second frame of that
+     *  size during the capture (about 360 MB together at 4096 px, 1.4 GB at
+     *  8192 px), so ask for it only when you need detail finer than a smaller
+     *  frame holds.
      *  While Develop still shows the camera preview, before the RAW decodes,
      *  the frame is drawn from that preview, as captureFrame's is. Needs
      *  Safelight 3.1.0; on older builds it is undefined. */
@@ -1421,7 +1492,8 @@ export interface SafelightAPI {
       options?: { lossless?: boolean },
     ): Promise<ImageBitmap | null>;
     /** renderPhotoFrame's frame as floats: captureFloatFrame's FloatFrame, with
-     *  the same `point` and `space`, for any catalog photo. Rendered small, at
+     *  the same `point` and `space`, converted on the GPU as captureFloatFrame's
+     *  is, for any catalog photo. Rendered small, at
      *  most 640 px on the long edge (about 4 MB of floats, where a default
      *  captureFloatFrame frame is about 17 MB), so it suits measuring a
      *  selection. `options.paramBag` is drawn as renderPhotoFrame draws its
@@ -1437,6 +1509,22 @@ export interface SafelightAPI {
       params: import("@/catalog/types").DevelopParams,
       options?: import("@/rendering/float-frame").FloatCaptureOptions,
     ): Promise<import("@/rendering/float-frame").FloatFrame | null>;
+    /** The centre of the open photo's decoded source at native resolution.
+     *  Safelight keeps it from the live RAW decode before capping the GPU
+     *  texture to the Develop render resolution, and in the RAW cache beside
+     *  each preview written from 3.1.0 on, so a photo opened from the cache has
+     *  it too: up to 1024 px on each side, taken from the centre (a side
+     *  shorter than that is kept whole), as RGBA floats, rows top-down, linear
+     *  Rec.709 with white balance applied and before the baseline tone and
+     *  every edit; `x` and `y` place it in the decoded frame of `sourceWidth`
+     *  × `sourceHeight`. Null while no photo is open, between photos, for a
+     *  bitmap (JPEG, TIFF, HEIF), for the camera preview shown before the RAW
+     *  decodes, for a stored preview standing in for the photo, and for a cache
+     *  entry written before 3.1.0 until its rewrite lands, a few seconds after
+     *  the open: wait for `useDevelopStore().sourceSize.native` before asking.
+     *  Each call hands over a fresh copy, about 16 MB. Needs Safelight 3.1.0;
+     *  on older builds it is undefined. */
+    readSourceSample(): Promise<import("@/rendering/source-sample").SourceSample | null>;
     /** Drive the Develop-canvas cursor while a tool is active. Pass a registered
      *  cursor id (built-in token or one from registerCursor), an inline spec, or
      *  a raw CSS value; pass null to clear. Higher `priority` wins when several
@@ -1484,11 +1572,15 @@ export interface SafelightAPI {
    *  full-resolution images instead of the low-res catalog preview. */
   export: {
     /** The persisted default export settings (Preferences ▸ Export): format,
-     *  quality (0..1), longEdge (null = original), colorSpace, tiffBitDepth. */
+     *  quality (0..1), longEdge (null = original), colorSpace, tiffBitDepth, pngBitDepth. */
     getDefaultSettings(): import("@/modules/export/export-image").ExportSettings;
     /** Render each photo to a Blob, reusing one WebGL context for the batch.
      *  `settings` is merged OVER the defaults, so pass only what you want to
      *  override (e.g. { format: "image/jpeg", longEdge: 2048, quality: 0.85 }).
+     *  One exception: a PNG renders at 8 bits whatever the user's PNG bit-depth
+     *  Preference says, unless you pass `pngBitDepth: 16`, since a frame an
+     *  extension renders for its own processing never asked for the slow,
+     *  twice-as-large 16-bit path.
      *  `options.paramBag` is merged over each photo's own extension-stage
      *  params for this render only. A render of the same photo started from
      *  inside its export processors runs none. Returns one entry per input, in
@@ -1675,12 +1767,34 @@ export interface NativeCrashRecord {
   name?: string;
 }
 
+/** How Safelight draws on Linux, where the graphics backend is picked before
+ *  the window exists and a change applies at the next start. */
+export interface NativeGpuBackendState {
+  /** This launch draws in software (SwiftShader) instead of on the graphics card. */
+  software: boolean;
+  /** The next launch will draw in software. */
+  nextSoftware: boolean;
+  /** Why the next launch draws in software: the user turned it on ("chosen"),
+   *  or the graphics card failed. Null when it uses the graphics card. */
+  reason: "chosen" | "webgl2-unavailable" | "gpu-crashes" | null;
+}
+
+/** Preferences ▸ Rendering ▸ Software rendering. Privileged so extensions
+ *  can't change how every later launch draws. */
+export interface NativeGpuBridge {
+  /** Null off Linux, where the backend isn't chosen this way. */
+  backend(): Promise<NativeGpuBackendState | null>;
+  setSoftware(on: boolean): Promise<NativeGpuBackendState | null>;
+}
+
 /** The one-shot privileged bundle returned by claimPrivileged(). */
 export interface PrivilegedBridge {
   fs: NativeFsBridge;
   updates: NativeUpdatesBridge;
   /** Optional: absent in older Electron builds. */
   capture?: NativeCaptureBridge;
+  /** Optional: absent in older Electron builds. */
+  gpu?: NativeGpuBridge;
 }
 
 declare global {

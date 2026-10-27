@@ -43,6 +43,7 @@ vi.mock("@/raw/decode", () => ({
 
 vi.mock("@/raw/raw-cache", () => ({
   cachedKeys: async () => new Set<string>(),
+  cacheListing: async () => ({ done: new Set<string>(), stale: new Set<string>() }),
   deleteCachedPreview: async () => {},
   rawCacheKey: (rel: string, size: number, rot: number) => `${rel}:${size}:${rot}`,
   rawCacheGeneration: () => 0,
