@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryFs, fsaDirectoryHandle } from "@/project/memory-fs.test-support";
-import { cutSourceSample } from "@/rendering/source-sample";
+import { type StoredSample, cutSourceSample } from "@/rendering/source-sample";
 import {
   ENTRY_HEADER_BYTES,
   ENTRY_LAYOUT,
@@ -23,6 +23,17 @@ afterEach(() => {
 
 const pixels = (w: number, h: number) =>
   new Float32Array(w * h * 4).map((_, i) => (i % 7) * 0.25 - 0.25);
+
+/** A full-size sample compared in one pass: toEqual walks its 4M half floats
+ *  one by one, which outlasts the test timeout on a CI runner. */
+function expectSample(actual: StoredSample | null, expected: StoredSample): asserts actual is StoredSample {
+  if (!actual) throw new Error("no sample");
+  const { data, ...place } = actual;
+  const { data: want, ...wantPlace } = expected;
+  expect(place).toEqual(wantPlace);
+  expect(data.length).toBe(want.length);
+  expect(data.findIndex((v, i) => v !== want[i])).toBe(-1);
+}
 
 /** gzip, as the worker writes it. */
 async function gzipped(u16: Uint16Array): Promise<Uint8Array<ArrayBuffer>> {
@@ -101,19 +112,20 @@ describe("cache worker, project folder", () => {
     await send({ cmd: "write", id: 1, key: KEY, data, width: 1026, height: 1028, maxEdge: 64 });
     const reply = await send({ cmd: "read", id: 2, key: KEY, sample: true });
 
+    if (reply?.type !== "read") throw new Error("not a read");
+    const { sample, ...rest } = reply;
     const preview = encodeCachedPreview(pixels(1026, 1028), 1026, 1028, 64);
-    expect(reply).toEqual({
+    expect(rest).toEqual({
       type: "read",
       id: 2,
       width: preview.width,
       height: preview.height,
       data: preview.data,
       full: { width: 1026, height: 1028 },
-      sample: cutSourceSample(pixels(1026, 1028), 1026, 1028),
     });
-    if (reply?.type !== "read" || !reply.sample) throw new Error("no sample");
-    expect([reply.sample.width, reply.sample.height, reply.sample.x, reply.sample.y]).toEqual([1024, 1024, 1, 2]);
-  }, 20_000);
+    expectSample(sample, cutSourceSample(pixels(1026, 1028), 1026, 1028));
+    expect([sample.width, sample.height, sample.x, sample.y]).toEqual([1024, 1024, 1, 2]);
+  });
 
   it("reads an entry written before 3.1.0 as before, without the frame's size, and lists it as incomplete", async () => {
     const KEY = "v6:DSC_0003.NEF:64:0";
@@ -339,19 +351,20 @@ describe("cache worker, no reachable folder", () => {
     await send({ cmd: "write", id: 1, key: KEY, data, width: 1026, height: 1028, maxEdge: 64 });
     const reply = await send({ cmd: "read", id: 2, key: KEY, sample: true });
 
+    if (reply?.type !== "read") throw new Error("not a read");
+    const { sample, ...rest } = reply;
     const preview = encodeCachedPreview(pixels(1026, 1028), 1026, 1028, 64);
-    expect(reply).toEqual({
+    expect(rest).toEqual({
       type: "read",
       id: 2,
       width: preview.width,
       height: preview.height,
       data: preview.data,
       full: { width: 1026, height: 1028 },
-      sample: cutSourceSample(pixels(1026, 1028), 1026, 1028),
     });
-    if (reply?.type !== "read" || !reply.sample) throw new Error("no sample");
-    expect([reply.sample.width, reply.sample.height, reply.sample.x, reply.sample.y]).toEqual([1024, 1024, 1, 2]);
-  }, 20_000);
+    expectSample(sample, cutSourceSample(pixels(1026, 1028), 1026, 1028));
+    expect([sample.width, sample.height, sample.x, sample.y]).toEqual([1024, 1024, 1, 2]);
+  });
 
   it("reads an entry stored before 3.1.0 as before, and lists it as incomplete", async () => {
     const idb = new FakeIndexedDB();
