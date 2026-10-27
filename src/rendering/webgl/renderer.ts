@@ -622,9 +622,10 @@ export class WebGLRenderer {
   // The source camera maker's exposure offset as a gain, which version 2 and
   // later apply with the refit baseline (uBaselineGain); 1 for anything else.
   private baselineGain = 1;
-  // The Shadows the camera baseline adds with it, version 2 and later, on top
-  // of the photo's own (the camera match's lift for Active D-Lighting and its
-  // kin); 0 for anything else.
+  // The camera match's shadows lift (Shadows slider units) for Active
+  // D-Lighting and its kin, which version 2 and later apply with the camera
+  // baseline, before the photo's own Shadows (uBaselineShadows); 0 for
+  // anything else.
   private baselineShadows = 0;
   // EXT_texture_norm16: lets the heal pass's developed target be a normalized,
   // GPU-mipmappable RGBA16 texture instead of RGBA8. 0 / false when the GPU
@@ -1038,6 +1039,7 @@ export class WebGLRenderer {
       "uIsFallbackPreview",
       "uApplyBaseCurve",
       "uBaselineGain",
+      "uBaselineShadows",
       "uApplyToneShoulder",
       "uRawHistogram",
       "uShowClipping",
@@ -2104,6 +2106,7 @@ export class WebGLRenderer {
     const baseCurve = this.applyBaseCurve && !this.pipelineSkipBase;
     gl.uniform1i(u.uApplyBaseCurve, baseCurve ? 1 : 0);
     gl.uniform1f(u.uBaselineGain, this.baselineGain);
+    gl.uniform1f(u.uBaselineShadows, this.baselineShadows / 100);
     gl.uniform1i(u.uApplyToneShoulder, toneShoulderOn(this.variant, this.pipelineSkipShoulder) ? 1 : 0);
     gl.uniform1i(u.uShowClipping, overlays ? this.showClipping & clippingBits(this.variant) : 0);
     gl.uniform3f(u.uOutsideColor, this.outsideColor[0], this.outsideColor[1], this.outsideColor[2]);
@@ -2121,10 +2124,7 @@ export class WebGLRenderer {
     gl.uniform1f(u.uExposure, p.exposure);
     gl.uniform1f(u.uContrast, p.contrast);
     gl.uniform1f(u.uHighlights, p.highlights);
-    // Version 1 is frozen and never had the camera baseline; the shader clamps
-    // the sum to the slider's range.
-    const cameraShadows = baseCurve && this.variant.version >= 2 ? this.baselineShadows : 0;
-    gl.uniform1f(u.uShadows, p.shadows + cameraShadows);
+    gl.uniform1f(u.uShadows, p.shadows);
     gl.uniform1f(u.uWhites, p.whites);
     gl.uniform1f(u.uBlacks, p.blacks);
     gl.uniform1f(u.uTexture, p.texture);

@@ -80,12 +80,16 @@ const SCENE_LUMA_DECL = "\n  float slSceneLuma = max(luma(lin), 0.0) * slShoulde
 
 // Process version 2's tone block: version 1's curves (local-tone.ts) on the
 // pixel and, while Highlights or Shadows is moved, on the pixel's region too,
-// keeping the pixel's ratio to it and blended in with the slider.
+// keeping the pixel's ratio to it and blended in with the slider. Between the
+// two, the camera match's shadows lift goes on each pixel and its region by
+// their own levels, as the match fitted it (raw/camera-match.ts): through the
+// region's ratio it would raise bright detail with its darker surroundings.
 const V2_TONE_BLOCK = `  {
     float L = max(luma(lin), 1e-4);
     float Lx = L * exp2(E);
     float L1 = slToneHighlights(Lx, E, H);
-    float L2 = slToneShadows(L1, S);
+    float cameraLift = uApplyBaseCurve ? uBaselineShadows : 0.0;
+    float L2 = slToneShadows(slToneShadows(L1, cameraLift), S);
     float curveRatio = 1.0;
     if (abs(H) > 0.001 || abs(S) > 0.001) {
       // Floored after Exposure (as localToneBlend is): under the curves' own
@@ -100,7 +104,9 @@ const V2_TONE_BLOCK = `  {
           B1 / slToneHighlights(Bx, E, 0.0), abs(H));
       }
       L1 = mix(L1, Lx * B1 / Bx, abs(H));
-      L2 = mix(slToneShadows(L1, S), L1 * slToneShadows(B1, S) / B1, abs(S));
+      float C1 = slToneShadows(L1, cameraLift);
+      float CB = slToneShadows(B1, cameraLift);
+      L2 = mix(slToneShadows(C1, S), C1 * slToneShadows(CB, S) / CB, abs(S));
     }
     // slSceneLuma undoes only the default shoulder, on the same pixel/region
     // blend the edit above used, so Highlights carries into it.
@@ -204,7 +210,9 @@ uniform bool uApplyBaseCurve; // true: scene-linear RAW source -- apply the defa
                               // (baselineTone); off for camera-rendered bitmaps and for
                               // display transforms that own their own baseline${v2(`
 uniform float uBaselineGain;  // the camera maker's exposure offset as a gain, applied with
-                              // slBaselineRefit (the camera baseline)`)}
+                              // slBaselineRefit (the camera baseline)
+uniform float uBaselineShadows; // the camera match's shadows lift (Shadows / 100), on each
+                                // pixel before the photo's own Shadows`)}
 uniform bool uApplyToneShoulder; // true: the core filmic shoulder compresses highlights;
                                  // off for display transforms with their own roll-off
 uniform bool uRawHistogram;   // true: output c as the display tools leave it (display-encoded,

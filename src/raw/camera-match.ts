@@ -43,26 +43,47 @@ const FINE_EV = 0.1;
 const MIN_LEVELS = 4;
 const MIN_SPAN_EV = 1;
 
-/** Rec.709 luminance of up to `count` pixels spread over an RGBA float frame. */
-export function lumaSamples(data: Float32Array, count = 4096): Float32Array {
-  const n = data.length / 4;
-  const step = Math.max(1, Math.floor(n / count));
-  const out = new Float32Array(Math.ceil(n / step));
-  for (let i = 0, k = 0; i < n; i += step, k++) {
-    const o = i * 4;
-    out[k] = 0.2126 * data[o] + 0.7152 * data[o + 1] + 0.0722 * data[o + 2];
+// The scene is read on the same grid as the camera's 64 px preview sample, one
+// pixel per cell. A flat stride through the pixels reads a frame whose width
+// is close to a multiple of the stride down a few columns.
+const GRID = 64;
+
+/** The pixel offsets (in pixels) of a side × side grid over a frame, each the
+ *  centre of its cell. */
+function gridOffsets(width: number, height: number, side: number): number[] {
+  const cols = Math.min(side, width);
+  const rows = Math.min(side, height);
+  const out: number[] = [];
+  for (let gy = 0; gy < rows; gy++) {
+    const y = Math.floor(((gy + 0.5) * height) / rows);
+    for (let gx = 0; gx < cols; gx++) out.push(y * width + Math.floor(((gx + 0.5) * width) / cols));
   }
   return out;
 }
 
+interface Frame<T> {
+  data: T;
+  width: number;
+  height: number;
+}
+
+/** Rec.709 luminance of an RGBA float frame, on a grid of `side` cells a side
+ *  (fewer where the frame is smaller). */
+export function lumaSamples(frame: Frame<Float32Array>, side = GRID): Float32Array {
+  const { data } = frame;
+  return Float32Array.from(gridOffsets(frame.width, frame.height, side), (i) => {
+    const o = i * 4;
+    return 0.2126 * data[o] + 0.7152 * data[o + 1] + 0.0722 * data[o + 2];
+  });
+}
+
 /** The same from the half floats of a RAW cache entry, converting only the
  *  pixels it reads. */
-export function halfLumaSamples(data: Uint16Array, count = 4096): Float32Array {
-  const n = data.length / 4;
-  const step = Math.max(1, Math.floor(n / count));
-  const picked = new Uint16Array(Math.ceil(n / step) * 4);
-  for (let i = 0, k = 0; i < n; i += step, k += 4) picked.set(data.subarray(i * 4, i * 4 + 4), k);
-  return lumaSamples(halfToFloat32(picked), Infinity);
+export function halfLumaSamples(frame: Frame<Uint16Array>, side = GRID): Float32Array {
+  const offsets = gridOffsets(frame.width, frame.height, side);
+  const picked = new Uint16Array(offsets.length * 4);
+  offsets.forEach((i, k) => picked.set(frame.data.subarray(i * 4, i * 4 + 4), k * 4));
+  return lumaSamples({ data: halfToFloat32(picked), width: offsets.length, height: 1 }, offsets.length);
 }
 
 function percentiles(values: ArrayLike<number>): number[] {
@@ -75,6 +96,11 @@ function percentiles(values: ArrayLike<number>): number[] {
     return sorted[lo] + (sorted[hi] - sorted[lo]) * (at - lo);
   });
 }
+
+/** Raised whenever the match would come out differently for the same RAW, so
+ *  photos matched before learn theirs again: 2 added the shadows lift and read
+ *  the scene across the whole frame. */
+export const CAMERA_MATCH_VERSION = 2;
 
 /** A RAW's camera match: the exposure in hundredths of a stop and the shadows
  *  lift in Shadows slider steps (0 to 100) that the renderer adds to the

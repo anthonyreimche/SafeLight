@@ -41,7 +41,7 @@ export async function acceptDecode(
   const use = !sample || rawColorMatchesPreview(upright, sample);
   const verdict: DecodeVerdict = { use, cache: use && !decode.suspicious };
   if (use && sample) {
-    const match = cameraMatch(lumaSamples(upright.data), lumaSamples(sample.data));
+    const match = cameraMatch(lumaSamples(upright), lumaSamples(sample));
     if (match) verdict.match = match;
   }
   return verdict;
@@ -52,7 +52,7 @@ export async function acceptDecode(
  *  Undefined when the preview can't be read or gives no usable match. */
 export async function matchCameraPreview(scene: Float32Array, preview: Blob): Promise<CameraMatch | undefined> {
   const sample = await previewSample(preview);
-  return sample ? cameraMatch(scene, lumaSamples(sample.data)) : undefined;
+  return sample ? cameraMatch(scene, lumaSamples(sample)) : undefined;
 }
 
 export interface ChannelMeans {

@@ -79,8 +79,13 @@ describe("Highlights and Shadows in the version 2 program", () => {
 
   it("runs the tone block through the shared curves", () => {
     expect(v2).toContain("float L1 = slToneHighlights(Lx, E, H);");
-    expect(v2).toContain("float L2 = slToneShadows(L1, S);");
+    expect(v2).toContain("float L2 = slToneShadows(slToneShadows(L1, cameraLift), S);");
     expect(v1).not.toContain("slToneHighlights");
+  });
+
+  it("puts the camera match's lift on the pixel before the photo's own Shadows", () => {
+    expect(v2).toContain("float cameraLift = uApplyBaseCurve ? uBaselineShadows : 0.0;");
+    expect(v1).not.toContain("uBaselineShadows");
   });
 
   it("leaves Highlight and Shadow Detail to their own sliders", () => {

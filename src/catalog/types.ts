@@ -131,6 +131,9 @@ export interface ExifData {
   // match; null beside a null exposure. Undefined on a photo matched before the
   // lift was learned, which is matched again.
   baselineShadows?: number | null;
+  // The camera match version (raw/camera-match.ts) the two above were learned
+  // by; a photo matched by an older one is matched again.
+  cameraMatchVersion?: number;
   gpsLatitude?: number;  // decimal degrees (positive = N, negative = S)
   gpsLongitude?: number; // decimal degrees (positive = E, negative = W)
   gpsAltitude?: number;  // metres above sea level

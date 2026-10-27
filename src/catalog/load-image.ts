@@ -155,7 +155,7 @@ async function learnFromEntry(photo: CatalogPhoto, cached: CachedPreview): Promi
   if (!photo.fileHandle || !(await verifyPermission(photo.fileHandle))) return;
   try {
     const preview = await extractRawPreview(await photo.fileHandle.getFile());
-    const match = preview ? await matchCameraPreview(halfLumaSamples(cached.data), preview) : undefined;
+    const match = preview ? await matchCameraPreview(halfLumaSamples(cached), preview) : undefined;
     rememberLearned(photo, learnedMatch(match));
   } catch {
     // unreadable now: a later open asks again

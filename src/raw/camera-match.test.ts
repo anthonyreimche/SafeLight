@@ -75,28 +75,40 @@ describe("cameraMatch", () => {
 });
 
 describe("lumaSamples", () => {
-  const rgba = (pixels: [number, number, number][]): Float32Array =>
-    Float32Array.from(pixels.flatMap(([r, g, b]) => [r, g, b, 1]));
+  /** A frame of width × height whose pixel at (x, y) is grey `level(x, y)`. */
+  const frame = (width: number, height: number, level: (x: number, y: number) => number) => {
+    const data = new Float32Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) data.set([level(x, y), level(x, y), level(x, y), 1], (y * width + x) * 4);
+    }
+    return { data, width, height };
+  };
 
   it("reads Rec.709 luminance", () => {
-    expect([...lumaSamples(rgba([[1, 0, 0], [0, 1, 0], [0, 0, 1]]))].map((v) => +v.toFixed(4))).toEqual([
-      0.2126, 0.7152, 0.0722,
-    ]);
+    const data = Float32Array.from([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]);
+    expect([...lumaSamples({ data, width: 3, height: 1 }, 3)].map((v) => +v.toFixed(4))).toEqual([0.2126, 0.7152, 0.0722]);
   });
 
-  it("reads at most the count it is asked for, from across the frame", () => {
-    const frame = rgba(Array.from({ length: 10_000 }, (_, i) => [i, i, i]));
-    const samples = lumaSamples(frame, 100);
-    expect(samples.length).toBeLessThanOrEqual(100);
-    expect(samples.length).toBeGreaterThan(90);
-    expect(samples[0]).toBeCloseTo(0, 3);
-    expect(samples[samples.length - 1]).toBeGreaterThan(9_800);
+  it("reads a grid of the side it is asked for, from across the frame", () => {
+    const samples = lumaSamples(frame(100, 50, (x, y) => x + 100 * y), 10);
+    expect(samples.length).toBe(100);
+    expect(samples[0]).toBe(5 + 100 * 2);
+    expect(samples[99]).toBe(95 + 100 * 47);
+  });
+
+  // A frame read at a flat stride close to half its width is read down two
+  // columns: a 3072-wide RAW cache entry gave a Nikon Z 6II's sunlit rocks a
+  // camera match of +2.46 EV and no lift, against +1.21 EV and +74 from the
+  // whole frame.
+  it("reads every column, whatever the frame's width", () => {
+    const samples = lumaSamples(frame(4, 2048, (x) => (x % 2 ? 0.4 : 0.1)));
+    expect(samples.filter((v) => v > 0.3).length / samples.length).toBeCloseTo(0.5, 2);
   });
 
   it("reads a RAW cache entry's half floats the same way", () => {
-    const frame = rgba(Array.from({ length: 5_000 }, (_, i) => [i / 5_000, (i % 7) / 7, 0.25]));
-    const fromHalf = halfLumaSamples(encodeHalf(frame), 500);
-    const fromFloat = lumaSamples(frame, 500);
+    const f = frame(300, 200, (x, y) => (x * y) / 60_000);
+    const fromHalf = halfLumaSamples({ data: encodeHalf(f.data), width: f.width, height: f.height });
+    const fromFloat = lumaSamples(f);
     expect(fromHalf.length).toBe(fromFloat.length);
     for (let i = 0; i < fromHalf.length; i++) expect(fromHalf[i]).toBeCloseTo(fromFloat[i], 2);
   });

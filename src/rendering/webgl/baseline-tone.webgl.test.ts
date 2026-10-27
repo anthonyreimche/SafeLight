@@ -74,8 +74,9 @@ describe("default baseline tone on the GPU", () => {
 
 // Process version 2 and later: baselineTone, then after clip recovery the refit
 // and the camera maker's gain (baseline-tone.ts), and the camera match's
-// shadows lift added to the photo's Shadows. Read at the scene point, linear,
-// so each value is the working colour the display transform receives.
+// shadows lift on each pixel before the photo's own Shadows. Read at the scene
+// point, linear, so each value is the working colour the display transform
+// receives.
 const V3 = { processVersionCap: 3 } as const;
 const grey = (value: number, baselineExposure?: number, baselineShadows?: number) => ({
   ...floatImage(16, 16, () => [value, value, value]),
@@ -158,13 +159,35 @@ for (const version of [2, 3] as const) describe(`the camera baseline on the GPU,
     expectGrey(renderScene(grey(0.04, 1), versionParams({ shadows: 100 })), toneShadows(pixel, 1));
   });
 
-  // On a flat frame the region is the pixel, so the lift lands on the pixel's
-  // own Shadows curve.
-  it("lifts the shadows by the camera match's amount on top of the photo's own", () => {
-    const pixel = refitTone(0.04) * 2;
-    expectGrey(renderScene(grey(0.04, 1, 55), versionParams()), toneShadows(pixel, 0.55));
-    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: 20 })), toneShadows(pixel, 0.75));
-    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: 80 })), toneShadows(pixel, 1));
+  // On a flat frame the region is the pixel, so the photo's own Shadows lands
+  // on the pixel's curve too.
+  it("lifts the shadows by the camera match's amount, then by the photo's own", () => {
+    const lifted = toneShadows(refitTone(0.04) * 2, 0.55);
+    expectGrey(renderScene(grey(0.04, 1, 55), versionParams()), lifted);
+    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: 20 })), toneShadows(lifted, 0.2));
+    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: -40 })), toneShadows(lifted, -0.4));
+  });
+
+  // The match fits the lift pixel by pixel. Taken through the region, as the
+  // Shadows slider is, it raised bright detail inside darker surroundings by the
+  // surroundings' lift: a Nikon Z 6II's sunlit rocks came out 0.3-0.4 EV over
+  // its camera's.
+  it("lifts each pixel by its own level, not its region's", () => {
+    const stripes = {
+      ...floatImage(64, 64, (x) => (x % 4 < 2 ? [0.12, 0.12, 0.12] : [0.03, 0.03, 0.03])),
+      baselineExposure: 1,
+      baselineShadows: 74,
+    };
+    const frame = withRenderer(V3, (renderer) => {
+      renderer.setImage(stripes);
+      renderer.setParams(versionParams());
+      renderer.render();
+      return renderer.readFloatFrame("scene");
+    });
+    if (!frame) throw new Error("readFloatFrame returned null");
+    for (const [x, level] of [[32, 0.12], [34, 0.03]] as const) {
+      expectGrey(pixelAt(frame, x, 32), toneShadows(refitTone(level) * 2, 0.74));
+    }
   });
 
   it("restores each resident source's own lift when it is bound again", () => {

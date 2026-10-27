@@ -12,6 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "./types";
+import { CAMERA_MATCH_VERSION } from "@/raw/camera-match";
 import type { RawFloatImage } from "@/raw/decode";
 import type { DecodeVerdict } from "@/raw/accept-decode";
 import type { DecodedImage } from "./load-image";
@@ -468,8 +469,8 @@ describe("loadPhotoImage with a cached develop preview", () => {
   // In Electron getFile() reads the whole RAW over IPC; the cache key needs
   // only the catalog record.
   it("serves a cache hit without reading the original once the photo has its camera match", async () => {
-    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: 0.5, baselineShadows: 0 } }));
-    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: null, baselineShadows: null } }));
+    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: 0.5, baselineShadows: 0, cameraMatchVersion: CAMERA_MATCH_VERSION } }));
+    await loadPhotoImage(rawPhoto({ exif: { baselineExposure: null, baselineShadows: null, cameraMatchVersion: CAMERA_MATCH_VERSION } }));
     expect(h.fileReads).toBe(0);
   });
 
@@ -610,7 +611,7 @@ describe("loadPhotoImage on a cache miss", () => {
     // A full decode takes seconds; another window may change the photo meanwhile.
     // The photo has its camera match already, which a decode never relearns.
     h.decodeResult = () => Promise.resolve(floatDecode({ colorTemperature: 5200 }));
-    const photo = rawPhoto({ exif: { baselineExposure: 0, baselineShadows: 0 } });
+    const photo = rawPhoto({ exif: { baselineExposure: 0, baselineShadows: 0, cameraMatchVersion: CAMERA_MATCH_VERSION } });
     h.catalog = [{ ...photo, rating: 4, exif: { lens: "35mm" } }];
 
     await loadPhotoImage(photo);
@@ -862,6 +863,7 @@ describe("loadPhotoImage learning the camera match", () => {
     expect(await loadPhotoImage(photo)).toMatchObject({ kind: "float", baselineExposure: 1.1, baselineShadows: 55 });
     expect(photo.exif).toMatchObject({ baselineExposure: 1.1, baselineShadows: 55 });
     expect(h.saved.map((p) => [p.exif.baselineExposure, p.exif.baselineShadows])).toEqual([[1.1, 55]]);
+    expect(photo.exif.cameraMatchVersion).toBe(CAMERA_MATCH_VERSION);
   });
 
   // The match once held only an exposure, which left Active D-Lighting shots a
@@ -885,10 +887,22 @@ describe("loadPhotoImage learning the camera match", () => {
     expect(h.cacheMatches).toEqual([embeddedJpeg]);
   });
 
+  // The match once read the scene at a flat stride, down a few columns of a
+  // frame whose width was close to a multiple of it.
+  it("matches again a photo matched before the scene was read across the whole frame", async () => {
+    h.cached = entry();
+    h.previewResult = () => Promise.resolve(embeddedJpeg);
+    h.cacheMatch = { exposure: 1.21, shadows: 74 };
+    const photo = sony({ baselineExposure: 2.46, baselineShadows: 0 });
+    h.catalog = [photo];
+    expect(await loadPhotoImage(photo)).toMatchObject({ baselineExposure: 1.21, baselineShadows: 74 });
+    expect(photo.exif.cameraMatchVersion).toBe(CAMERA_MATCH_VERSION);
+  });
+
   it("adds no lift where the match found none, nor on the maker table", async () => {
     h.cached = entry();
-    expect(await loadPhotoImage(sony({ baselineExposure: 1.2, baselineShadows: 0 }))).not.toHaveProperty("baselineShadows");
-    expect(await loadPhotoImage(sony({ baselineExposure: null, baselineShadows: null }))).not.toHaveProperty("baselineShadows");
+    expect(await loadPhotoImage(sony({ baselineExposure: 1.2, baselineShadows: 0, cameraMatchVersion: CAMERA_MATCH_VERSION }))).not.toHaveProperty("baselineShadows");
+    expect(await loadPhotoImage(sony({ baselineExposure: null, baselineShadows: null, cameraMatchVersion: CAMERA_MATCH_VERSION }))).not.toHaveProperty("baselineShadows");
   });
 
   it("remembers a decode that found no usable preview, and renders it on the maker table", async () => {
@@ -903,7 +917,7 @@ describe("loadPhotoImage learning the camera match", () => {
     h.previewResult = () => Promise.resolve(embeddedJpeg);
     h.decodeResult = () => Promise.resolve(floatDecode());
     h.verdict = { use: true, cache: true, match: { exposure: 0.9, shadows: 10 } };
-    const photo = sony({ baselineExposure: 1.2, baselineShadows: 30 });
+    const photo = sony({ baselineExposure: 1.2, baselineShadows: 30, cameraMatchVersion: CAMERA_MATCH_VERSION });
     h.catalog = [photo];
     expect(await loadPhotoImage(photo)).toMatchObject({ baselineExposure: 1.2, baselineShadows: 30 });
     expect(photo.exif.baselineExposure).toBe(1.2);
@@ -922,7 +936,7 @@ describe("loadPhotoImage learning the camera match", () => {
 
   it("serves a cache hit with the stored match", async () => {
     h.cached = entry();
-    expect(await loadPhotoImage(sony({ baselineExposure: 1.2, baselineShadows: 30 }))).toMatchObject({
+    expect(await loadPhotoImage(sony({ baselineExposure: 1.2, baselineShadows: 30, cameraMatchVersion: CAMERA_MATCH_VERSION }))).toMatchObject({
       kind: "float16",
       baselineExposure: 1.2,
       baselineShadows: 30,
@@ -1030,7 +1044,7 @@ describe("loadPhotoImage turning a full decode upright", () => {
 describe("loadPhotoImage keeping what the decode learned", () => {
   it("records the exposure bias a Fujifilm DR mode left in the raw", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ rawExposureBias: -1 }));
-    const photo = rawPhoto({ exif: { baselineExposure: 0, baselineShadows: 0 } });
+    const photo = rawPhoto({ exif: { baselineExposure: 0, baselineShadows: 0, cameraMatchVersion: CAMERA_MATCH_VERSION } });
     h.catalog = [{ ...photo, exif: { lens: "35mm" } }];
 
     await loadPhotoImage(photo);
@@ -1044,7 +1058,7 @@ describe("loadPhotoImage keeping what the decode learned", () => {
   it("stores a learned white balance and exposure bias in one write", async () => {
     h.decodeResult = () =>
       Promise.resolve(floatDecode({ colorTemperature: 5200, rawExposureBias: -2 }));
-    const photo = rawPhoto({ exif: { baselineExposure: 0, baselineShadows: 0 } });
+    const photo = rawPhoto({ exif: { baselineExposure: 0, baselineShadows: 0, cameraMatchVersion: CAMERA_MATCH_VERSION } });
     h.catalog = [{ ...photo, exif: {} }];
 
     await loadPhotoImage(photo);
@@ -1055,7 +1069,7 @@ describe("loadPhotoImage keeping what the decode learned", () => {
 
   it("writes nothing when the photo already has the decode's exposure bias", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ rawExposureBias: -1 }));
-    const photo = rawPhoto({ exif: { rawExposureBias: -1, baselineExposure: 0, baselineShadows: 0 } });
+    const photo = rawPhoto({ exif: { rawExposureBias: -1, baselineExposure: 0, baselineShadows: 0, cameraMatchVersion: CAMERA_MATCH_VERSION } });
     h.catalog = [photo];
 
     await loadPhotoImage(photo);
@@ -1077,7 +1091,7 @@ describe("loadPhotoImage keeping what the decode learned", () => {
 
   it("keeps an as-shot temperature the photo already has", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ colorTemperature: 5200 }));
-    const photo = rawPhoto({ exif: { colorTemperature: 4000, baselineExposure: 0, baselineShadows: 0 } });
+    const photo = rawPhoto({ exif: { colorTemperature: 4000, baselineExposure: 0, baselineShadows: 0, cameraMatchVersion: CAMERA_MATCH_VERSION } });
     h.catalog = [photo];
 
     await loadPhotoImage(photo);

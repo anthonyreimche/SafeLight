@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RawFloatImage } from "@/raw/decode";
+import { CAMERA_MATCH_VERSION } from "@/raw/camera-match";
 import type { CatalogPhoto } from "./types";
 
 type Decode = RawFloatImage | { failure: "unsupported" | "transient" };
@@ -108,7 +109,17 @@ describe("fillCacheEntry and the camera match", () => {
     photo.exif.baselineExposure = 1.5;
     h.catalog = [photo];
     await fillCacheEntry(photo, 1);
-    expect(photo.exif).toMatchObject({ baselineExposure: 1.1, baselineShadows: 55 });
+    expect(photo.exif).toMatchObject({ baselineExposure: 1.1, baselineShadows: 55, cameraMatchVersion: CAMERA_MATCH_VERSION });
+  });
+
+  it("matches again a photo matched before the scene was read across the whole frame", async () => {
+    h.verdict = { use: true, cache: true, match: { exposure: 1.21, shadows: 74 } };
+    const photo = rawPhoto("a.NEF");
+    photo.exif.baselineExposure = 2.46;
+    photo.exif.baselineShadows = 0;
+    h.catalog = [photo];
+    await fillCacheEntry(photo, 1);
+    expect(photo.exif).toMatchObject({ baselineExposure: 1.21, baselineShadows: 74, cameraMatchVersion: CAMERA_MATCH_VERSION });
   });
 
   it("remembers a decode with no usable preview to match", async () => {
@@ -131,6 +142,7 @@ describe("fillCacheEntry and the camera match", () => {
     const matched = rawPhoto("b.NEF");
     matched.exif.baselineExposure = 1.3;
     matched.exif.baselineShadows = 20;
+    matched.exif.cameraMatchVersion = CAMERA_MATCH_VERSION;
     h.catalog = [rejected, matched];
     h.verdict = { use: false, cache: false };
     await fillCacheEntry(rejected, 1);
