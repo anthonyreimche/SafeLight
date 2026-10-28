@@ -80,6 +80,15 @@ describe("normalizeRegistryEntry", () => {
     expect(e?.worksWith).toEqual(["acme/ok"]);
   });
 
+  it("keeps the manifest name, trimmed", () => {
+    expect(normalizeRegistryEntry(row({ name: "  Colour Harmony " }))?.name).toBe("Colour Harmony");
+  });
+
+  it("drops a missing, blank, non-string or over-long name", () => {
+    for (const name of [undefined, "  ", 7, "x".repeat(61)])
+      expect(normalizeRegistryEntry(row({ name }))).not.toHaveProperty("name");
+  });
+
   it("falls back to the owner avatar for a missing thumbnail", () => {
     expect(normalizeRegistryEntry(row())?.thumbnail).toEqual({
       url: "https://github.com/acme.png?size=120",
@@ -183,6 +192,11 @@ describe("filterRegistry", () => {
 
   it("matches keywords", () => {
     expect(names(filterRegistry(items, "liquify", null))).toEqual(["acme/warp"]);
+  });
+
+  it("matches the manifest name", () => {
+    const named = [...items, { fullName: "acme/Colour-Harmonizer", name: "Colour Harmony", description: null }];
+    expect(names(filterRegistry(named, "colour harmony", null))).toEqual(["acme/Colour-Harmonizer"]);
   });
 
   it("matches category labels when it has a vocabulary", () => {

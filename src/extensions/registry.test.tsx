@@ -12,14 +12,16 @@ import {
   collectPresetStages,
   moduleLabel,
   moduleTabs,
+  panelTitle,
   registerExportProcessor,
   registerModule,
+  registerPanel,
   registerProcessingStage,
   unregisterExtension,
   unregisterProcessingStage,
   useRegistry,
 } from "./registry";
-import { getParamDescriptor, unregisterStageParams } from "./param-registry";
+import { getParamDescriptor, setExtensionName, unregisterStageParams } from "./param-registry";
 import { BUILTIN_DENOISE_ID } from "@/rendering/webgl/builtin-denoise";
 import { BUILTIN_EXTENSIONS } from "./builtin";
 import { CORE_EXTENSION_ID } from "./core-extension";
@@ -84,6 +86,32 @@ describe("registerModule", () => {
     registerModule("other", { id: "book", label: "Book", component: View });
     unregisterExtension("ext");
     expect(moduleTabs().map((m) => m.id)).toEqual(["library", "develop", "book"]);
+  });
+});
+
+describe("panelTitle", () => {
+  beforeEach(() => useRegistry.setState({ panels: {} }));
+
+  it("names an extension's only panel after the extension", () => {
+    setExtensionName("vectorscope", "Vectorscope");
+    registerPanel("vectorscope", { id: "vectorscope.panel", title: "Scopes", component: View });
+    expect(panelTitle(useRegistry.getState().panels, "vectorscope.panel")).toBe("Vectorscope");
+  });
+
+  it("keeps each panel's own title when the extension has several", () => {
+    setExtensionName("acme", "Acme Tools");
+    registerPanel("acme", { id: "acme.one", title: "One", component: View });
+    registerPanel("acme", { id: "acme.two", title: "Two", component: View });
+    const panels = useRegistry.getState().panels;
+    expect(panelTitle(panels, "acme.one")).toBe("One");
+    expect(panelTitle(panels, "acme.two")).toBe("Two");
+  });
+
+  it("keeps the panel's title when the extension's name is unknown, and the id for no panel", () => {
+    registerPanel("nameless", { id: "nameless.panel", title: "Nameless", component: View });
+    const panels = useRegistry.getState().panels;
+    expect(panelTitle(panels, "nameless.panel")).toBe("Nameless");
+    expect(panelTitle(panels, "gone")).toBe("gone");
   });
 });
 

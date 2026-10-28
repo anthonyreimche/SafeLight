@@ -315,6 +315,9 @@ export interface SettingsContribution {
 export interface ExtensionSearchResult {
   /** "owner/repo" — also the install spec. */
   fullName: string;
+  /** The extension's manifest name, from the registry index. Absent on live
+   *  search results, where the store shows the repo name instead. */
+  name?: string;
   description: string | null;
   stars: number;
   /** Repo creation time (ISO). Drives the store's "New" shelf. Present from the

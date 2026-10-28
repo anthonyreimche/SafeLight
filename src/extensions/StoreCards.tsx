@@ -96,7 +96,7 @@ export function ExtensionCard({
 }) {
   const vocabulary = useExtStoreUI((s) => s.vocabulary);
   const tag = cardTag(result, vocabulary);
-  const short = result.fullName.split("/")[1] ?? result.fullName;
+  const name = result.name ?? result.fullName.split("/")[1] ?? result.fullName;
   const verified = useIsVerified(result.fullName);
   const banned = useBannedReason(result.fullName);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -195,7 +195,7 @@ export function ExtensionCard({
         <div className="p-2">
           <div className="flex items-center gap-1.5">
             <span className="min-w-0 truncate font-medium text-text-primary">
-              {short}
+              {name}
             </span>
             {verified && <VerifiedBadge iconOnly />}
             <div className="flex-1" />

@@ -58,6 +58,22 @@ describe("ExtensionCard", () => {
     screen.getByText("warp");
   });
 
+  it("shows the extension's own name over the repo name", () => {
+    render(
+      <ExtensionCard
+        index={0}
+        result={result({ fullName: "acme/Colour-Harmonizer", name: "Colour Harmony" })}
+        thumb={null}
+        installing={false}
+        disabled={false}
+        onOpen={() => {}}
+        onInstall={() => {}}
+      />,
+    );
+    screen.getByText("Colour Harmony");
+    expect(screen.queryByText("Colour-Harmonizer")).toBeNull();
+  });
+
   it("gives a truncated tag its full text on hover", () => {
     render(
       <ExtensionCard

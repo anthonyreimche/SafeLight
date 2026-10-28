@@ -34,6 +34,7 @@ import type {
 } from "./types";
 import {
   getAllDescriptors,
+  getExtensionName,
   registerStageParams,
   unregisterExtensionParams,
   unregisterStageParams,
@@ -162,6 +163,20 @@ export function registerPanel(extensionId: string, c: PanelContribution): void {
     panels: { ...s.panels, [c.id]: { ...c, extensionId } },
   }));
 }
+
+/** The name a panel goes by in the View menu and its dock header. An
+ *  extension's only panel takes the extension's name, so the panel matches what
+ *  the user installed; panels of an extension with several keep their titles. */
+export function panelTitle(panels: Record<string, RegisteredPanel>, id: string): string {
+  const panel = panels[id];
+  if (!panel) return id;
+  const own = Object.values(panels).filter((p) => p.extensionId === panel.extensionId);
+  if (own.length > 1) return panel.title;
+  return getExtensionName(panel.extensionId, panel.title);
+}
+
+export const usePanelTitle = (id: string): string =>
+  useRegistry((s) => panelTitle(s.panels, id));
 
 export function registerTheme(extensionId: string, c: ThemeContribution): void {
   useRegistry.setState((s) => ({

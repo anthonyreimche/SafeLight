@@ -9,7 +9,7 @@ import { Slider } from "@/ui/components/Slider";
 import { useDevelopStore } from "@/state/develop-store";
 import { isMaskBagKey } from "@/state/develop-slices/mask-slice";
 import { useKeyboardCanvasEditing } from "@/state/accessibility";
-import { useRegistry, type RegisteredPanel } from "@/extensions/registry";
+import { panelTitle, useRegistry, type RegisteredPanel } from "@/extensions/registry";
 import type { MaskPanelContribution } from "@/extensions/types";
 import { MaskScopeProvider } from "@/modules/develop/mask-scope";
 import type {
@@ -80,6 +80,7 @@ type MaskPanelDef = RegisteredPanel & { mask: MaskPanelContribution };
 function maskPanelDefs(panels: Record<string, RegisteredPanel>): MaskPanelDef[] {
   return Object.values(panels)
     .filter((p): p is MaskPanelDef => !!p.mask)
+    .map((p) => ({ ...p, title: panelTitle(panels, p.id) }))
     .sort(
       (a, b) =>
         (a.mask.order ?? 100) - (b.mask.order ?? 100) ||

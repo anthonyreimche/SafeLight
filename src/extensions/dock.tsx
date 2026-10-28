@@ -29,8 +29,10 @@ import { create } from "zustand";
 import {
   useRegistry,
   usePanelHeaderAccessories,
+  usePanelTitle,
   moduleEntry,
   moduleTabs,
+  panelTitle,
 } from "./registry";
 import { panelIsPreviewable } from "@/modules/develop/panel-bypass";
 import { frameLocalPoint } from "@/ui/frame-point";
@@ -1153,7 +1155,7 @@ function PanelBody({ id }: { id: string }) {
 
 function PanelHeader({ id }: { id: string }) {
   const containerRef = useContext(ContainerCtx);
-  const title = useRegistry((s) => s.panels[id]?.title ?? id);
+  const title = usePanelTitle(id);
   const onReset = useRegistry((s) => s.panels[id]?.onReset);
   const Accessory = useRegistry((s) => s.panels[id]?.headerAccessory);
   // Controls an extension contributes to EVERY panel header (e.g. a preview-off
@@ -1371,7 +1373,7 @@ function FloatingPanel({ id }: { id: string }) {
 function DragOverlay() {
   const drag = useDockStore((s) => s.drag);
   const target = useDockStore((s) => s.target);
-  const title = useRegistry((s) => (drag ? (s.panels[drag.id]?.title ?? drag.id) : ""));
+  const title = useRegistry((s) => (drag ? panelTitle(s.panels, drag.id) : ""));
   if (!drag) return null;
   // These coords are visual px (client coords / getBoundingClientRect from
   // hitTest); the fixed elements are <body>-zoom descendants whose CSS left/top
