@@ -12,7 +12,7 @@ import { useUIStore } from "@/state/ui-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { usesSignedOutput } from "@/catalog/types";
-import { toggleDockVisibility } from "@/extensions/dock";
+import { toggleDockSide, toggleDockVisibility } from "@/extensions/dock";
 import { getSettings, stepCanvasSurround } from "@/state/settings-store";
 import { detachedModule } from "@/state/detach";
 import {
@@ -228,6 +228,15 @@ export function useKeyboardShortcuts() {
         case "panels.toggle":
           // Hide/show every dock panel; positions are restored exactly.
           toggleDockVisibility();
+          break;
+        case "panels.toggleLeft":
+          toggleDockSide("left");
+          break;
+        case "panels.toggleRight":
+          toggleDockSide("right");
+          break;
+        case "panels.toggleBottom":
+          toggleDockSide("bottom");
           break;
         case "view.fullscreen":
           document.documentElement.requestFullscreen?.();

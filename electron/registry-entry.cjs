@@ -22,6 +22,7 @@ const MAX_KEYWORDS = 20;
 const MAX_KEYWORD_LENGTH = 40;
 const MAX_SCREENSHOTS = 6;
 const MAX_WORKS_WITH = 6;
+const MAX_NAME = 60;
 const MAX_LABEL = 24;
 const MAX_DESCRIPTION = 140;
 
@@ -39,6 +40,8 @@ const uniqueWhere = (list, ok, max) =>
 // while [] means the registry found no category.
 function storeFields(e) {
   const out = {};
+  const name = typeof e.name === "string" ? e.name.trim() : "";
+  if (name && name.length <= MAX_NAME) out.name = name;
   if (Array.isArray(e.categories))
     out.categories = uniqueWhere(e.categories, (s) => SLUG.test(s), MAX_CATEGORIES);
   if (e.type !== undefined)
@@ -120,8 +123,8 @@ function readIndexCache(raw) {
 }
 
 // Client-side query filter over the registry index: substring match on
-// "owner/repo", description, topics, keywords and the labels of the entry's
-// categories. Instant and offline: the index is already the whole catalog.
+// "owner/repo", name, description, topics, keywords and the labels of the
+// entry's categories. Instant and offline: the index is already the whole catalog.
 function filterRegistry(items, query, vocabulary) {
   const q = String(query || "").trim().toLowerCase();
   if (!q) return items;
@@ -130,6 +133,7 @@ function filterRegistry(items, query, vocabulary) {
   return items.filter(
     (it) =>
       has(it.fullName) ||
+      (it.name && has(it.name)) ||
       (it.description && has(it.description)) ||
       (it.topics || []).some(has) ||
       (it.keywords || []).some(has) ||

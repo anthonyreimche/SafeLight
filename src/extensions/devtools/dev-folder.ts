@@ -26,6 +26,7 @@ import type { ExtensionManifest, ExtensionModule } from "../types";
 import { makeScopedAPI } from "../host";
 import { isReservedExtensionId, reservedIdReason } from "../core-extension";
 import { unregisterExtension } from "../registry";
+import { setExtensionName } from "../param-registry";
 import { privilegedFs } from "@/native/privileged";
 import {
   getExtSetting,
@@ -156,6 +157,7 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
     URL.revokeObjectURL(url);
     throw new Error("bundle has no activate(api) export");
   }
+  if (manifest.name) setExtensionName(manifest.id, manifest.name);
   try {
     mod.activate(makeScopedAPI(manifest.id));
   } catch (e) {

@@ -18,6 +18,7 @@ import { useKeyboardShortcuts } from "./use-keyboard-shortcuts";
 import { NO_FILTER } from "@/modules/library/visible-photos";
 import { useCullingShortcuts } from "@/modules/library/use-culling-shortcuts";
 import { useCatalogStore } from "@/state/catalog-store";
+import { useDockStore } from "@/extensions/dock";
 import { useDevelopStore, type DevelopState } from "@/state/develop-store";
 import {
   KEY_ACTIONS,
@@ -584,6 +585,53 @@ describe("mask.delete in Develop", () => {
     expect(fire(window, bound("mask.delete"))).toBe(false);
     expect(removeComponent).not.toHaveBeenCalled();
     expect(commitEdit).not.toHaveBeenCalled();
+  });
+});
+
+describe("hiding one side of panels", () => {
+  const SIDES = [
+    ["panels.toggleLeft", "left"],
+    ["panels.toggleRight", "right"],
+    ["panels.toggleBottom", "bottom"],
+  ] as const;
+
+  beforeEach(() => {
+    useDockStore.setState({
+      hidden: { left: false, right: false, bottom: false, floating: false },
+    });
+  });
+  afterEach(() => {
+    for (const [id] of SIDES) resetBinding(id);
+  });
+
+  it.each(SIDES)("%s ships unbound", (id) => {
+    expect(bound(id)).toBe("");
+  });
+
+  it.each(SIDES)("%s hides and shows the %s side once bound", (id, side) => {
+    setBinding(id, "F7");
+    render(<Harness />);
+    expect(fire(window, "F7")).toBe(true);
+    expect(useDockStore.getState().hidden).toEqual({
+      left: false,
+      right: false,
+      bottom: false,
+      floating: false,
+      [side]: true,
+    });
+    expect(fire(window, "F7")).toBe(true);
+    expect(useDockStore.getState().hidden[side]).toBe(false);
+  });
+
+  it("leaves Tab hiding every panel", () => {
+    render(<Harness />);
+    expect(fire(window, bound("panels.toggle"))).toBe(true);
+    expect(useDockStore.getState().hidden).toEqual({
+      left: true,
+      right: true,
+      bottom: true,
+      floating: true,
+    });
   });
 });
 

@@ -29,8 +29,10 @@ import { create } from "zustand";
 import {
   useRegistry,
   usePanelHeaderAccessories,
+  usePanelTitle,
   moduleEntry,
   moduleTabs,
+  panelTitle,
 } from "./registry";
 import { panelIsPreviewable } from "@/modules/develop/panel-bypass";
 import { frameLocalPoint } from "@/ui/frame-point";
@@ -100,7 +102,8 @@ interface DockState {
   /** Floating z-order, back→front. */
   zOrder: string[];
   collapsed: Record<string, boolean>;
-  hidden: boolean;
+  /** Off-screen without leaving the layout; a module switch shows them all. */
+  hidden: Record<DockSide, boolean>;
   /** Every panel open in the dock (rails + floating) — drives View-menu checks. */
   open: string[];
   /** Live drag, rendered as a ghost chip + drop indicator. */
@@ -121,13 +124,22 @@ type DropTarget =
   | { kind: "newRail"; side: RailState["side"]; index: number; line: DropLine }
   | { kind: "float" };
 
+type DockSide = RailState["side"] | "floating";
+
+const ALL_SHOWN: Record<DockSide, boolean> = {
+  left: false,
+  right: false,
+  bottom: false,
+  floating: false,
+};
+
 export const useDockStore = create<DockState>(() => ({
   module: null,
   rails: [],
   floating: {},
   zOrder: [],
   collapsed: {},
-  hidden: false,
+  hidden: ALL_SHOWN,
   open: [],
   drag: null,
   target: null,
@@ -562,7 +574,7 @@ function loadModuleLayout(module: AppModule) {
     floating,
     zOrder,
     collapsed,
-    hidden: false,
+    hidden: ALL_SHOWN,
     open: openList(rails, floating),
     drag: null,
     target: null,
@@ -804,8 +816,16 @@ export function toggleDockPanelFloating(id: string): void {
   });
 }
 
+/** Hides every panel while any side is showing, else shows them all. */
 export function toggleDockVisibility(): void {
-  useDockStore.setState((s) => ({ hidden: !s.hidden }));
+  useDockStore.setState((s) => {
+    const hide = Object.values(s.hidden).some((h) => !h);
+    return { hidden: { left: hide, right: hide, bottom: hide, floating: hide } };
+  });
+}
+
+export function toggleDockSide(side: RailState["side"]): void {
+  useDockStore.setState((s) => ({ hidden: { ...s.hidden, [side]: !s.hidden[side] } }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1135,7 +1155,7 @@ function PanelBody({ id }: { id: string }) {
 
 function PanelHeader({ id }: { id: string }) {
   const containerRef = useContext(ContainerCtx);
-  const title = useRegistry((s) => s.panels[id]?.title ?? id);
+  const title = usePanelTitle(id);
   const onReset = useRegistry((s) => s.panels[id]?.onReset);
   const Accessory = useRegistry((s) => s.panels[id]?.headerAccessory);
   // Controls an extension contributes to EVERY panel header (e.g. a preview-off
@@ -1353,7 +1373,7 @@ function FloatingPanel({ id }: { id: string }) {
 function DragOverlay() {
   const drag = useDockStore((s) => s.drag);
   const target = useDockStore((s) => s.target);
-  const title = useRegistry((s) => (drag ? (s.panels[drag.id]?.title ?? drag.id) : ""));
+  const title = useRegistry((s) => (drag ? panelTitle(s.panels, drag.id) : ""));
   if (!drag) return null;
   // These coords are visual px (client coords / getBoundingClientRect from
   // hitTest); the fixed elements are <body>-zoom descendants whose CSS left/top
@@ -1401,10 +1421,10 @@ export function DockHost({
     initModule(module);
   }, [module]);
 
-  const show = ready && !hidden;
-  const left = show ? rails.filter((r) => r.side === "left") : [];
-  const right = show ? rails.filter((r) => r.side === "right") : [];
-  const bottom = show ? rails.filter((r) => r.side === "bottom") : [];
+  const shown = (side: DockSide) => ready && !hidden[side];
+  const left = shown("left") ? rails.filter((r) => r.side === "left") : [];
+  const right = shown("right") ? rails.filter((r) => r.side === "right") : [];
+  const bottom = shown("bottom") ? rails.filter((r) => r.side === "bottom") : [];
 
   return (
     <ContainerCtx.Provider value={containerRef}>
@@ -1423,7 +1443,7 @@ export function DockHost({
         {bottom.map((r) => (
           <BottomRail key={r.id} rail={r} />
         ))}
-        {show && floatIds.map((id) => <FloatingPanel key={id} id={id} />)}
+        {shown("floating") && floatIds.map((id) => <FloatingPanel key={id} id={id} />)}
         <DragOverlay />
       </div>
     </ContainerCtx.Provider>

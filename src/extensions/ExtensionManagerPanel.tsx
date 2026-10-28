@@ -511,7 +511,7 @@ export function ExtensionManagerPanel() {
       // A live search can match a repo past the catalog's first page.
       const matches = (r: ExtensionSearchResult) => r.fullName.toLowerCase() === lower;
       const search = catalog?.find(matches) ?? results?.find(matches);
-      const name = manifest?.name ?? sel.split("/")[1] ?? sel;
+      const name = manifest?.name ?? search?.name ?? sel.split("/")[1] ?? sel;
       return {
         repo: sel, // sel is the "owner/repo" we opened the detail with
         name,

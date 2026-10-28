@@ -30,8 +30,8 @@ const extensionNames = new Map<string, string>();
 export function setExtensionName(id: string, name: string): void {
   extensionNames.set(id, name);
 }
-export function getExtensionName(id: string): string {
-  return extensionNames.get(id) ?? id;
+export function getExtensionName(id: string, fallback = id): string {
+  return extensionNames.get(id) ?? fallback;
 }
 
 export function registerStageParams(

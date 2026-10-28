@@ -7,7 +7,7 @@
 // floating windows centered over the workspace (drag one into a rail to dock
 // it). Everything listed here comes from the extension registry.
 
-import { useRegistry } from "@/extensions/registry";
+import { panelTitle, useRegistry } from "@/extensions/registry";
 import { toggleDockPanelFloating, useDockStore } from "@/extensions/dock";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import { MenuItem, MenuLabel, TopBarMenu } from "./TopBarMenu";
@@ -18,9 +18,9 @@ export function ViewMenu() {
   const openPanels = useDockStore((s) => s.open);
   const activeTheme = useThemeStore((s) => s.activeId);
 
-  const panelList = Object.values(panels).sort((a, b) =>
-    a.title.localeCompare(b.title),
-  );
+  const panelList = Object.values(panels)
+    .map((p) => ({ id: p.id, title: panelTitle(panels, p.id) }))
+    .sort((a, b) => a.title.localeCompare(b.title));
   const themeList = Object.values(themes).sort((a, b) =>
     a.name.localeCompare(b.name),
   );
