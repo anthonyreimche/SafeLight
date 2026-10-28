@@ -58,6 +58,27 @@ describe("webgl2Lost", () => {
     expect(webgl2Lost(null)).toBe(false);
     expect(webgl2Lost({ webgl2: 1 })).toBe(false);
   });
+
+  // Chromium 148 reports no webgl2 entry at all. This is the status from the
+  // MX Linux VirtualBox guest (#180) after its GPU process gave up.
+  it("reads WebGL off as WebGL2 lost when there is no webgl2 entry", () => {
+    expect(
+      webgl2Lost({
+        "2d_canvas": "disabled_software",
+        gpu_compositing: "disabled_software",
+        opengl: "disabled_off",
+        rasterization: "disabled_software",
+        webgl: "disabled_off",
+        webgpu: "disabled_off",
+      }),
+    ).toBe(true);
+    expect(webgl2Lost({ webgl: "enabled", gpu_compositing: "enabled" })).toBe(false);
+  });
+
+  it("is true when either WebGL entry is off", () => {
+    expect(webgl2Lost({ webgl: "enabled", webgl2: "unavailable_off" })).toBe(true);
+    expect(webgl2Lost({ webgl: "unavailable_off", webgl2: "enabled" })).toBe(true);
+  });
 });
 
 describe("softwareFallbackFor", () => {

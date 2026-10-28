@@ -103,7 +103,8 @@ describe("a layout's Extensions list", () => {
     render(<LayoutExtensionsEditor layoutId={LAYOUT} />);
     const held = await screen.findByRole("group", { name: "Not switched by layouts" });
 
-    expect(within(held).getByText("Film Stocks")).toBeTruthy();
+    // The group shows the built-in panels before the installed list loads.
+    expect(await within(held).findByText("Film Stocks")).toBeTruthy();
     expect(within(held).getByText("Changes how photos look")).toBeTruthy();
     expect(within(held).getByText("Accessibility")).toBeTruthy();
     expect(checkbox("Film Stocks")).toBeNull();

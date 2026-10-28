@@ -26,11 +26,12 @@ function angleSwitches(backend) {
   return [["use-gl", "angle"], ["use-angle", SOFTWARE_BACKEND], ["enable-unsafe-swiftshader"]];
 }
 
-/** Whether app.getGPUFeatureStatus() says WebGL2 is off or unavailable. A
+/** Whether app.getGPUFeatureStatus() says WebGL2 is off or unavailable. WebGL
+ *  off means WebGL2 off too, and Chromium 148 reports only the webgl entry. A
  *  status it can't read counts as fine, so an odd value never forces software. */
 function webgl2Lost(status) {
-  const webgl2 = status && status.webgl2;
-  return typeof webgl2 === "string" && /^(?:unavailable|disabled)_/.test(webgl2);
+  const off = (value) => typeof value === "string" && /^(?:unavailable|disabled)_/.test(value);
+  return !!status && (off(status.webgl) || off(status.webgl2));
 }
 
 /** Where the next launch goes once `backend` proved unusable mid-session, or
