@@ -22,6 +22,8 @@ import {
   initDockLayouts,
   toggleDockPanel,
   toggleDockPanelFloating,
+  toggleDockSide,
+  toggleDockVisibility,
   updateUserLayout,
   useDockStore,
   useUserLayouts,
@@ -106,7 +108,7 @@ beforeEach(() => {
     floating: {},
     zOrder: [],
     collapsed: {},
-    hidden: false,
+    hidden: { left: false, right: false, bottom: false, floating: false },
     open: [],
     drag: null,
     target: null,
@@ -1307,5 +1309,93 @@ describe("a panel that replaces an old one", () => {
       expect(localStorage.getItem(LAYOUT_KEY)).toBe(raw);
       session.close();
     });
+  });
+});
+
+describe("hiding panels", () => {
+  function setup() {
+    panel("x.left", { defaultDock: { module: "develop", direction: "left" } });
+    panel("x.right", { defaultDock: { module: "develop", direction: "right" } });
+    panel("x.strip", {
+      allowBottomDock: true,
+      defaultDock: { module: "develop", direction: "bottom" },
+    });
+    panel("x.notes");
+    const session = boot();
+    act(() => toggleDockPanelFloating("x.notes"));
+    return session;
+  }
+
+  // Docked and floating headers alike carry the title, which is the id here.
+  const shown = (view: { container: HTMLElement }) =>
+    [...view.container.querySelectorAll("span")]
+      .map((el) => el.textContent ?? "")
+      .filter((t) => t.startsWith("x."))
+      .sort();
+
+  it("hides one side and leaves the rest on screen", () => {
+    const { close, view } = setup();
+    act(() => toggleDockSide("left"));
+    expect(shown(view)).toEqual(["x.notes", "x.right", "x.strip"]);
+    act(() => toggleDockSide("right"));
+    act(() => toggleDockSide("bottom"));
+    expect(shown(view)).toEqual(["x.notes"]);
+    close();
+  });
+
+  it("brings a side back exactly where it was", () => {
+    const { close, view } = setup();
+    const before = rails();
+    act(() => toggleDockSide("right"));
+    act(() => toggleDockSide("right"));
+    expect(rails()).toEqual(before);
+    expect(shown(view)).toEqual(["x.left", "x.notes", "x.right", "x.strip"]);
+    close();
+  });
+
+  it("keeps the picked layout and the saved arrangement", async () => {
+    const { close } = setup();
+    await flushSave();
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    act(() => toggleDockSide("left"));
+    await flushSave();
+    expect(localStorage.getItem(LAYOUT_KEY)).toBe(raw);
+    close();
+  });
+
+  it("hides everything with the all-panels toggle while any side is showing", () => {
+    const { close, view } = setup();
+    act(() => toggleDockSide("left"));
+    act(() => toggleDockVisibility());
+    expect(shown(view)).toEqual([]);
+    act(() => toggleDockVisibility());
+    expect(shown(view)).toEqual(["x.left", "x.notes", "x.right", "x.strip"]);
+    close();
+  });
+
+  it("shows everything with the all-panels toggle once every side is hidden", () => {
+    const { close, view } = setup();
+    act(() => toggleDockSide("left"));
+    act(() => toggleDockSide("right"));
+    act(() => toggleDockSide("bottom"));
+    act(() => toggleDockVisibility());
+    expect(shown(view)).toEqual([]);
+    act(() => toggleDockVisibility());
+    expect(shown(view)).toEqual(["x.left", "x.notes", "x.right", "x.strip"]);
+    close();
+  });
+
+  it("shows every side again on the next module", () => {
+    const { close } = setup();
+    act(() => toggleDockSide("left"));
+    close();
+    const next = boot("library");
+    expect(useDockStore.getState().hidden).toEqual({
+      left: false,
+      right: false,
+      bottom: false,
+      floating: false,
+    });
+    next.close();
   });
 });
