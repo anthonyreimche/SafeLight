@@ -8,8 +8,10 @@
 // hidden; the chevron only shows or hides it, while the Browse label opens the
 // home page and shows it, so a category is always one click away.
 
+import { useContext } from "react";
 import { useExtStoreUI } from "./store-ui";
 import { OTHER } from "./store-categories";
+import { StoreExpanded } from "./StoreCards";
 
 export type StoreSection = "Updates" | "Browse" | "Installed" | "Dev";
 
@@ -36,6 +38,7 @@ export function StoreRail({
   showOther: boolean;
 }) {
   const browse = useExtStoreUI((s) => s.browse);
+  const wide = useContext(StoreExpanded);
   const expanded = useExtStoreUI((s) => s.railExpanded);
   const vocabulary = useExtStoreUI((s) => s.vocabulary);
   const onBrowse = section === "Browse";
@@ -65,7 +68,10 @@ export function StoreRail({
   };
 
   return (
-    <nav aria-label="Extensions" className="w-36 shrink-0 overflow-y-auto border-r border-border bg-surface-0/40 py-2">
+    <nav
+      aria-label="Extensions"
+      className={`${wide ? "w-48" : "w-36"} shrink-0 overflow-y-auto border-r border-border bg-surface-0/40 py-2`}
+    >
       {sections.map((s) =>
         s === "Browse" ? (
           <div key={s}>

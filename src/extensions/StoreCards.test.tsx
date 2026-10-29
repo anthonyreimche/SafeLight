@@ -8,7 +8,7 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ExtensionCard, cardTag } from "./StoreCards";
+import { ExtensionCard, Shelf, StoreExpanded, cardTag } from "./StoreCards";
 import { useExtStoreUI } from "./store-ui";
 import { FALLBACK_VOCABULARY as V } from "./store-categories";
 import type { ExtensionSearchResult } from "./types";
@@ -104,5 +104,23 @@ describe("ExtensionCard", () => {
       />,
     );
     expect(container.firstElementChild?.classList.contains("text-[11px]")).toBe(true);
+  });
+});
+
+describe("Shelf", () => {
+  const items = [result({ fullName: "acme/a" }), result({ fullName: "acme/b" })];
+  const shelf = () => (
+    <Shelf title="Popular" items={items} thumbs={{}} busy={null} onOpen={() => {}} onInstall={() => {}} />
+  );
+
+  it("scrolls sideways in the pop-up", () => {
+    const { container } = render(shelf());
+    expect(container.querySelector(".overflow-x-auto")).not.toBeNull();
+  });
+
+  it("wraps into a grid in the expanded store", () => {
+    const { container } = render(<StoreExpanded.Provider value>{shelf()}</StoreExpanded.Provider>);
+    expect(container.querySelector(".overflow-x-auto")).toBeNull();
+    expect(container.querySelector(".grid")).not.toBeNull();
   });
 });

@@ -18,7 +18,7 @@
 // uninstall / search / update need the Electron bridge; the plain browser build
 // manages built-ins only.
 
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import type {
   ExtensionManifest,
   ExtensionSearchResult,
@@ -72,7 +72,14 @@ import { keepAfterInstall } from "./release-picks";
 import { UpdateNotes } from "./ReleaseNotes";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { ExtensionDetail, type DetailTarget } from "./ExtensionDetail";
-import { ExtensionCard, SectionLabel, SHELF_LIMIT, Shelf } from "./StoreCards";
+import {
+  EXPANDED_GRID,
+  ExtensionCard,
+  SectionLabel,
+  SHELF_LIMIT,
+  Shelf,
+  StoreExpanded,
+} from "./StoreCards";
 import { loadStoreKits, shelfKits } from "./store-kits";
 import { KitShelf } from "./KitShelf";
 import { KitPage } from "./KitPage";
@@ -105,6 +112,12 @@ export function ExtensionManagerPanel() {
   const openDetail = useExtStoreUI((s) => s.openDetail);
   const back = useExtStoreUI((s) => s.back);
   const pins = usePins((s) => s.pins);
+  const expanded = useContext(StoreExpanded);
+  // Installed and update rows: one column in the pop-up, as many as fit when
+  // the window is maximized.
+  const rows = expanded
+    ? "grid grid-cols-[repeat(auto-fill,minmax(22rem,1fr))] gap-1.5"
+    : "flex flex-col gap-1.5";
 
   const [list, setList] = useState<ExtensionManifest[]>([]);
   const [results, setResults] = useState<ExtensionSearchResult[] | null>(null);
@@ -560,7 +573,10 @@ export function ExtensionManagerPanel() {
   // ── Detail view ────────────────────────────────────────────────────────────
   if (target) {
     return (
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div
+        className="flex min-h-0 min-w-0 flex-1 flex-col"
+        data-store-expanded={expanded || undefined}
+      >
         <button
           onClick={back}
           className="flex h-7 shrink-0 items-center gap-1 border-b border-border-subtle px-3 text-[11px] text-text-secondary hover:text-text-primary"
@@ -598,7 +614,7 @@ export function ExtensionManagerPanel() {
 
   // ── List view ──────────────────────────────────────────────────────────────
   return (
-    <div className="flex min-h-0 min-w-0 flex-1">
+    <div className="flex min-h-0 min-w-0 flex-1" data-store-expanded={expanded || undefined}>
       <StoreRail
         sections={[
           ...(native ? (["Updates"] as StoreSection[]) : []),
@@ -613,7 +629,7 @@ export function ExtensionManagerPanel() {
         showOther={showOther || browse === OTHER.slug}
       />
 
-      <div className="min-w-0 flex-1 overflow-y-auto p-3 text-[11px]">
+      <div className={`min-w-0 flex-1 overflow-y-auto text-[11px] ${expanded ? "px-6 py-4" : "p-3"}`}>
         {section === "Dev" && devtoolsEnabled ? (
           <DevExtensionsTab />
         ) : section === "Updates" ? (
@@ -645,7 +661,7 @@ export function ExtensionManagerPanel() {
                 settings are kept.
               </div>
             ) : (
-              <div className="flex flex-col gap-1.5">
+              <div className={rows}>
                 {pending.map((m) => {
                   const upd = updates[m.id]!;
                   const repo = repoFor(m)!;
@@ -779,7 +795,7 @@ export function ExtensionManagerPanel() {
                   )}
                 </div>
               ) : (
-                <div className="grid grid-cols-4 gap-2">
+                <div className={expanded ? EXPANDED_GRID : "grid grid-cols-4 gap-2"}>
                   {browsable?.map((r, i) => (
                     <ExtensionCard
                       key={r.fullName}
@@ -872,7 +888,7 @@ export function ExtensionManagerPanel() {
                     ) : installed.length === 0 ? (
                       <div className="mt-1 text-text-muted">No matches.</div>
                     ) : (
-                      <div className="mt-1 flex flex-col gap-1.5">
+                      <div className={`mt-1 ${rows}`}>
                         {installed.map((m) => {
                           const upd = updates[m.id];
                           const repo = repoFor(m);
@@ -910,7 +926,7 @@ export function ExtensionManagerPanel() {
                   {builtins.length === 0 ? (
                     <div className="mt-1 text-text-muted">No matches.</div>
                   ) : (
-                    <div className="mt-1 flex flex-col gap-1.5">
+                    <div className={`mt-1 ${rows}`}>
                       {builtins.map((b) => (
                         <ExtensionRow
                           key={b.id}
