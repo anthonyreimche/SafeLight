@@ -203,6 +203,18 @@ describe("ModalWindow dragging", () => {
     expect(dialog().style.transform).toBe("");
   });
 
+  it("stays put while maximized", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModalWindow title="Preferences" onClose={vi.fn()} maximized onToggleMaximize={vi.fn()}>
+        <p>Body</p>
+      </ModalWindow>,
+    );
+
+    await drag(user, titlebar("Preferences"), { x: 100, y: 50 }, { x: 130, y: 90 });
+    expect(dialog().style.transform).toBe("");
+  });
+
   it("stops tracking a cancelled pointer", async () => {
     const user = userEvent.setup();
     renderDraggable();
@@ -218,5 +230,117 @@ describe("ModalWindow dragging", () => {
     fireEvent.pointerMove(bar, { pointerId: 1, clientX: 400, clientY: 400 });
 
     expect(dialog().style.transform).toBe("translate(30px, 40px)");
+  });
+});
+
+describe("ModalWindow maximize", () => {
+  it("has no maximize control unless the caller can toggle it", () => {
+    render(
+      <ModalWindow title="Preferences" onClose={vi.fn()}>
+        <p>Body</p>
+      </ModalWindow>,
+    );
+    expect(screen.queryByRole("button", { name: "Maximize" })).toBeNull();
+  });
+
+  it("offers Maximize beside the close button while windowed", async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn();
+    render(
+      <ModalWindow title="Extensions" onClose={vi.fn()} maximized={false} onToggleMaximize={onToggle}>
+        <p>Body</p>
+      </ModalWindow>,
+    );
+    const button = screen.getByRole("button", { name: "Maximize" });
+    expect(button.nextElementSibling).toBe(screen.getByRole("button", { name: "Close" }));
+    expect(dialog().dataset.maximized).toBeUndefined();
+
+    await user.click(button);
+    expect(onToggle).toHaveBeenCalledOnce();
+  });
+
+  it("offers Restore and fills the window while maximized", () => {
+    render(
+      <ModalWindow title="Extensions" onClose={vi.fn()} maximized onToggleMaximize={vi.fn()}>
+        <p>Body</p>
+      </ModalWindow>,
+    );
+    expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
+    expect(dialog().dataset.maximized).toBe("true");
+  });
+
+  // Maximized, the titlebar sits where Electron draws the OS title bar: it must
+  // leave room for the native min/max/close overlay (Windows/Linux) or that
+  // overlay covers Restore and ×, and it takes over the overlay's colour.
+  it("clears the native window controls only while maximized", () => {
+    const { rerender } = render(
+      <ModalWindow title="Extensions" onClose={vi.fn()} maximized={false} onToggleMaximize={vi.fn()}>
+        <p>Body</p>
+      </ModalWindow>,
+    );
+    expect(titlebar("Extensions").style.paddingRight).toBe("");
+
+    rerender(
+      <ModalWindow title="Extensions" onClose={vi.fn()} maximized onToggleMaximize={vi.fn()}>
+        <p>Body</p>
+      </ModalWindow>,
+    );
+    expect(titlebar("Extensions").style.paddingRight).toBe("138px");
+  });
+
+  it("colours the native window controls to match while maximized", () => {
+    const setOverlay = vi.fn(async () => {});
+    vi.stubGlobal("safelightNative", { titlebar: { setOverlay } });
+    const root = document.documentElement.style;
+    root.setProperty("--color-surface-2", "#303030");
+    root.setProperty("--color-text-secondary", "#c0c0c0");
+    try {
+      const { rerender } = render(
+        <ModalWindow title="Extensions" onClose={vi.fn()} maximized={false} onToggleMaximize={vi.fn()}>
+          <p>Body</p>
+        </ModalWindow>,
+      );
+      expect(setOverlay).not.toHaveBeenCalled();
+
+      rerender(
+        <ModalWindow title="Extensions" onClose={vi.fn()} maximized onToggleMaximize={vi.fn()}>
+          <p>Body</p>
+        </ModalWindow>,
+      );
+      expect(setOverlay).toHaveBeenLastCalledWith("#303030", "#c0c0c0");
+    } finally {
+      vi.unstubAllGlobals();
+      document.documentElement.removeAttribute("style");
+    }
+  });
+
+  it("toggles on a titlebar double-click", async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn();
+    render(
+      <ModalWindow title="Extensions" onClose={vi.fn()} maximized={false} onToggleMaximize={onToggle}>
+        <p>Body</p>
+      </ModalWindow>,
+    );
+    await user.dblClick(titlebar("Extensions"));
+    expect(onToggle).toHaveBeenCalledOnce();
+  });
+
+  it("leaves double-clicks on titlebar controls alone", async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn();
+    render(
+      <ModalWindow
+        title="Extensions"
+        onClose={vi.fn()}
+        maximized={false}
+        onToggleMaximize={onToggle}
+        titlebar={<input aria-label="Search" />}
+      >
+        <p>Body</p>
+      </ModalWindow>,
+    );
+    await user.dblClick(screen.getByLabelText("Search"));
+    expect(onToggle).not.toHaveBeenCalled();
   });
 });

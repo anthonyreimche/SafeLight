@@ -7,13 +7,20 @@
 // scrolling row), the preview card itself, and the small section label. Shared
 // by the Browse pages and the detail page's related shelves.
 
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ExtensionSearchResult, ExtensionThumbnail, StoreVocabulary } from "./types";
 import { reducedMotion } from "@/ui/reduced-motion";
 import { useBannedReason, useIsVerified } from "./trust";
 import { FlaggedBadge, VerifiedBadge } from "./TrustBadges";
 import { useExtStoreUI } from "./store-ui";
 import { categoriesOf, typeOf } from "./store-categories";
+
+/** True while the Extensions window is maximized: the store spreads out, with
+ *  wrapping card grids in place of sideways-scrolling rows. */
+export const StoreExpanded = createContext(false);
+
+/** Card grid for the expanded store: as many columns as fit the window. */
+export const EXPANDED_GRID = "grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-2";
 
 /** How many cards a shelf shows. */
 export const SHELF_LIMIT = 12;
@@ -27,7 +34,8 @@ export function cardTag(result: ExtensionSearchResult, vocab: StoreVocabulary): 
 
 // One App-Store-style "shelf": a labelled, horizontally-scrolling row of cards
 // (Featured / New / Popular / Recently updated). Each card keeps a fixed width so
-// the row scrolls sideways instead of wrapping. Reuses ExtensionCard, so install /
+// the row scrolls sideways instead of wrapping; the expanded store has room to
+// wrap them into a grid instead. Reuses ExtensionCard, so install /
 // open / thumbnail behaviour matches the flat grid exactly.
 export function Shelf({
   title,
@@ -47,12 +55,13 @@ export function Shelf({
   /** Cards of installed extensions show "Installed" in place of Install. */
   isInstalled?: (r: ExtensionSearchResult) => boolean;
 }) {
+  const expanded = useContext(StoreExpanded);
   return (
     <div>
       <SectionLabel>{title}</SectionLabel>
-      <div className="mt-1 flex gap-2 overflow-x-auto pb-1">
+      <div className={expanded ? `mt-1 ${EXPANDED_GRID}` : "mt-1 flex gap-2 overflow-x-auto pb-1"}>
         {items.map((r, i) => (
-          <div key={r.fullName} className="w-44 shrink-0">
+          <div key={r.fullName} className={expanded ? "grid" : "w-44 shrink-0"}>
             <ExtensionCard
               index={i}
               result={r}

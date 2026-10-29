@@ -111,7 +111,7 @@ Treat it as read-only. Core writes through its own `updateSettings`, which saves
 | Previews, cache | `previewSource`, `thumbMaxEdge`, `persistPreviews`, `rawCacheEnabled`, `rawCachePrefetch`, `rawCacheMaxEdge` |
 | Develop | `developMaxEdge`, `gpuSourceCacheBytes`, `developPrefetchNeighbors`, `highBitDepth`, `liveHistogram`, `developOpenZoom` |
 | Export | `exportFormat`, `exportQuality`, `exportLongEdge`, `exportBundle`, `exportColorSpace`, `exportTiffBitDepth`, `exportPngBitDepth`, `exportIncludeMetadata`, `exportIncludeLocation`, `exportPresets` |
-| Other | `singleKeyShortcuts`, `extensionTopic`, `checkExtensionUpdates`, `autoUpdateExtensions`, `onlyVerifiedExtensions`, `checkForUpdates`, `updateChannel` |
+| Other | `singleKeyShortcuts`, `extensionTopic`, `checkExtensionUpdates`, `autoUpdateExtensions`, `onlyVerifiedExtensions`, `extensionsMaximized`, `checkForUpdates`, `updateChannel` |
 
 ## Brushes, masks & retouch (interactive Develop tools)
 

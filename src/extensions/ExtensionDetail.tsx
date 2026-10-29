@@ -10,7 +10,7 @@
 // free Markdown component. Built-in extensions have no repo, so they show a
 // local-only page (no README fetch, no install/uninstall).
 
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import type { ExtensionManifest, ExtensionSearchResult } from "./types";
 import { useExtStoreUI, loadRepoMeta, loadReadme, loadReleases, updateNote } from "./store-ui";
 import {
@@ -29,7 +29,7 @@ import { useSettings } from "@/state/settings-store";
 import { useVerificationStatus, useReviewedFor, useBannedReason, useTrust, isVerifiedIn } from "./trust";
 import { VerifiedBadge, FlaggedBadge } from "./TrustBadges";
 import { categoriesOf, moreFromAuthor, moreInCategory, typeOf, worksWithOf } from "./store-categories";
-import { SHELF_LIMIT, Shelf } from "./StoreCards";
+import { SHELF_LIMIT, Shelf, StoreExpanded } from "./StoreCards";
 import { Screenshots } from "./Screenshots";
 import { Markdown } from "./Markdown";
 import { openUrl } from "@/update/update-checker";
@@ -220,6 +220,7 @@ export function ExtensionDetail({
         : [];
 
   const kept = usePins((s) => (id ? (s.pins[id] ?? null) : null));
+  const expanded = useContext(StoreExpanded);
 
   // The version picker: LATEST follows new releases, any other value is a
   // version to install. A chosen version's manifest is read at its tag first,
@@ -269,6 +270,71 @@ export function ExtensionDetail({
     >
       ↻
     </button>
+  );
+
+  // README, Works with and the More shelves, placed by the layout below.
+  const worksWith = related && companions.length > 0 && (
+    <Shelf
+      title="Works with"
+      items={companions}
+      thumbs={{}}
+      busy={busy}
+      onOpen={related.onOpen}
+      onInstall={related.onInstall}
+      isInstalled={related.isInstalled}
+    />
+  );
+  const body =
+    !repo ? (
+      <div className="text-[11px] text-text-muted">
+        {target.locked
+          ? "A built-in extension — part of SafeLight core."
+          : "No repository linked for this extension."}
+      </div>
+    ) : !hasGithubBridge ? (
+      <div className="text-[11px] text-text-muted">
+        No repository details available in this build.
+      </div>
+    ) : meta?.status === "error" ? (
+      <div className="text-[11px] text-text-muted">
+        Couldn’t load details: {meta.error}
+      </div>
+    ) : !readme || readme.status === "loading" || meta?.status === "loading" ? (
+      <div className="text-[11px] text-text-muted">Loading…</div>
+    ) : readme.status === "error" ? (
+      <div className="text-[11px] text-text-muted">
+        Couldn’t load README: {readme.error}
+      </div>
+    ) : readme.data ? (
+      <Markdown source={readme.data} repo={repo} branch={branch} />
+    ) : (
+      <div className="text-[11px] text-text-muted">
+        This extension has no README.
+      </div>
+    );
+  const moreShelves = related && repo && (fromAuthor.length > 0 || inPrimary.length > 0) && (
+    <>
+      {fromAuthor.length > 0 && (
+        <Shelf
+          title={`More from ${repo.split("/")[0]}`}
+          items={fromAuthor}
+          thumbs={{}}
+          busy={busy}
+          onOpen={related.onOpen}
+          onInstall={related.onInstall}
+        />
+      )}
+      {primary && inPrimary.length > 0 && (
+        <Shelf
+          title={`More in ${primary.label}`}
+          items={inPrimary}
+          thumbs={{}}
+          busy={busy}
+          onOpen={related.onOpen}
+          onInstall={related.onInstall}
+        />
+      )}
+    </>
   );
 
   return (
@@ -522,74 +588,33 @@ export function ExtensionDetail({
           </div>
         )}
 
-        {related && companions.length > 0 && (
-          <div className="border-b border-border-subtle px-3 py-2">
-            <Shelf
-              title="Works with"
-              items={companions}
-              thumbs={{}}
-              busy={busy}
-              onOpen={related.onOpen}
-              onInstall={related.onInstall}
-              isInstalled={related.isInstalled}
-            />
+        {expanded ? (
+          // Maximized: the README keeps a readable measure, and the related
+          // shelves stack in a column beside it instead of above and below.
+          <div className="flex items-start gap-6 px-6 py-4">
+            <div className="min-w-0 max-w-[60rem] flex-1">{body}</div>
+            {(worksWith || moreShelves) && (
+              <aside className="flex w-[23rem] shrink-0 flex-col gap-4">
+                {worksWith}
+                {moreShelves}
+              </aside>
+            )}
           </div>
-        )}
+        ) : (
+          <>
+            {worksWith && <div className="border-b border-border-subtle px-3 py-2">{worksWith}</div>}
 
-        {/* README / body */}
-        <div className="p-3">
-          {!repo ? (
-            <div className="text-[11px] text-text-muted">
-              {target.locked
-                ? "A built-in extension — part of SafeLight core."
-                : "No repository linked for this extension."}
-            </div>
-          ) : !hasGithubBridge ? (
-            <div className="text-[11px] text-text-muted">
-              No repository details available in this build.
-            </div>
-          ) : meta?.status === "error" ? (
-            <div className="text-[11px] text-text-muted">
-              Couldn’t load details: {meta.error}
-            </div>
-          ) : !readme || readme.status === "loading" || meta?.status === "loading" ? (
-            <div className="text-[11px] text-text-muted">Loading…</div>
-          ) : readme.status === "error" ? (
-            <div className="text-[11px] text-text-muted">
-              Couldn’t load README: {readme.error}
-            </div>
-          ) : readme.data ? (
-            <Markdown source={readme.data} repo={repo} branch={branch} />
-          ) : (
-            <div className="text-[11px] text-text-muted">
-              This extension has no README.
-            </div>
-          )}
-          {related && repo && (fromAuthor.length > 0 || inPrimary.length > 0) && (
-            <div className="mt-4 flex flex-col gap-4 border-t border-border-subtle pt-3">
-              {fromAuthor.length > 0 && (
-                <Shelf
-                  title={`More from ${repo.split("/")[0]}`}
-                  items={fromAuthor}
-                  thumbs={{}}
-                  busy={busy}
-                  onOpen={related.onOpen}
-                  onInstall={related.onInstall}
-                />
-              )}
-              {primary && inPrimary.length > 0 && (
-                <Shelf
-                  title={`More in ${primary.label}`}
-                  items={inPrimary}
-                  thumbs={{}}
-                  busy={busy}
-                  onOpen={related.onOpen}
-                  onInstall={related.onInstall}
-                />
+            {/* README / body */}
+            <div className="p-3">
+              {body}
+              {moreShelves && (
+                <div className="mt-4 flex flex-col gap-4 border-t border-border-subtle pt-3">
+                  {moreShelves}
+                </div>
               )}
             </div>
-          )}
-        </div>
+          </>
+        )}
       </div>
     </div>
   );

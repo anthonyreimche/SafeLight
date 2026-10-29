@@ -269,6 +269,9 @@ export interface AppSettings {
   /** Only allow installing extensions on the verified allowlist. Off by default;
    *  a strict gate for cautious users / managed deployments. */
   onlyVerifiedExtensions: boolean;
+  /** The Extensions window opens maximized, filling the app window like a
+   *  module, instead of as the centred pop-up. Set by its titlebar button. */
+  extensionsMaximized: boolean;
 
   // ── Updates ────────────────────────────────────────────────────────────
   /** Check GitHub for a newer release on startup and show a banner. */
@@ -377,6 +380,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   checkExtensionUpdates: true,
   autoUpdateExtensions: false,
   onlyVerifiedExtensions: false,
+  extensionsMaximized: false,
   checkForUpdates: true,
   updateChannel: "stable",
 };
