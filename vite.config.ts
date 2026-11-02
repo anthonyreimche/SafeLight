@@ -21,7 +21,7 @@ const crossOriginIsolation = {
   // `credentialless` keeps the page cross-origin-isolated (SharedArrayBuffer
   // stays enabled) while still loading no-cors cross-origin images without a
   // CORP header — the Extensions store's GitHub thumbnails, avatars, and remote
-  // README images. Kept in sync with electron/main.cjs ISOLATION_HEADERS.
+  // README images. Kept in sync with electron/app-protocol.cjs ISOLATION_HEADERS.
   "Cross-Origin-Embedder-Policy": "credentialless",
 };
 

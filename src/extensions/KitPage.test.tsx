@@ -24,6 +24,7 @@ const KIT: StarterKit = {
   name: "Film looks",
   description: "Film stock simulation.",
   icon: "film",
+  default: false,
   extensions: [
     { repo: "acme/spektra", name: "Spektrafilm", summary: "Film stocks." },
     { repo: "acme/render", name: "Advanced Rendering", summary: "More renderers." },

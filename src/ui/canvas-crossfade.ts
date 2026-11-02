@@ -25,7 +25,7 @@ export function snapshotCrossfade(
   overlay.width = from.width;
   overlay.height = from.height;
   // The display's space, so a P3 frame isn't squeezed to sRGB. The first call fixes it:
-  // DevelopView builds the overlay again when the screen's space changes.
+  // DevelopStage builds the overlay again when the screen's space changes.
   const ctx = overlay.getContext("2d", { colorSpace: currentDisplaySpace() });
   if (!ctx) {
     letGo(overlay);

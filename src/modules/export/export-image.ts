@@ -12,25 +12,29 @@
 
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoExportBase } from "@/catalog/copy-name";
-import { loadPhotoImage } from "@/catalog/load-image";
-import { loadSavedEdit } from "@/catalog/edit-params";
+import { loadPhotoImage, type DecodedImage } from "@/catalog/load-image";
+import { loadSavedEdit, type SavedEdit } from "@/catalog/edit-params";
 import { readExifEntries, type RawExifIfds } from "@/catalog/exif";
 import { WebGLRenderer } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { quantise16, type Sharpen } from "@/rendering/webgl/export-draw";
 import { getStageTextures } from "@/rendering/render-bridge";
-import { getExtSetting } from "@/extensions/ext-settings";
+import { windowFrameBag } from "@/rendering/stage-bag";
+import { windowDerived } from "@/rendering/window-derive";
 import { resolveDefaultPipeline, resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
 import { useRegistry, type RegisteredExportProcessor } from "@/extensions/registry";
-import { bagForRender } from "@/extensions/transform-derive";
 import type { ExportFrame, ExportProcessorContext, ExportProcessorContribution } from "@/extensions/types";
 import { getSettings } from "@/state/settings-store";
 import { showsEdit } from "@/state/fallback-rules";
+import { GRAPHICS_UNAVAILABLE, probeGraphics } from "@/state/graphics-store";
 import { buildExportIfds, embedExif, serializeExifTiff, type ExportIfds } from "./exif-write";
 import { encodePng16 } from "./png16";
 import { applyOutputSharpening } from "./sharpen";
 import { encodeTiff } from "./tiff";
+import { photoGeometry } from "@/rendering/photo-geometry";
 import { ZipWriter } from "./zip";
+import { failsEveryWrite, fsErrorText, mayFailEveryWrite } from "@/project/fs-errors";
+import { readFileSlice } from "@/project/native-fs";
 
 export type ExportFormat = "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
 
@@ -97,15 +101,28 @@ export interface ExportResult {
   /** True when a requested ZIP overflowed the ZIP32 limits and the batch was
    *  delivered as individual files instead. */
   zipFellBack?: boolean;
+  /** True when the caller's signal ended the batch before every photo was
+   *  tried. `exported` counts what was done by then. */
+  cancelled?: true;
+  /** Why the batch ended early on a failure that every later write would meet
+   *  too (a full disk, a read-only folder), worded for the user. */
+  stopped?: string;
+}
+
+function errorReason(e: unknown): string {
+  return fsErrorText(e);
 }
 
 /** The Export panel's line on a finished batch: how many photos it exported,
  *  and any that fell short of what was asked. */
 export function exportStatus(result: ExportResult): string {
-  let msg =
-    result.failed.length === 0
-      ? `Exported ${result.exported} photo${result.exported === 1 ? "" : "s"}.`
-      : `Exported ${result.exported}; ${result.failed.length} could not be exported.`;
+  const photos = `${result.exported} photo${result.exported === 1 ? "" : "s"}`;
+  const when = result.exported === 0 ? "before exporting any photos" : `after exporting ${photos}`;
+  let msg: string;
+  if (result.stopped) msg = `Stopped: ${result.stopped}, ${when}.`;
+  else if (result.cancelled) msg = `Cancelled ${when}.`;
+  else if (result.failed.length === 0) msg = `Exported ${photos}.`;
+  else msg = `Exported ${result.exported}; ${result.failed.length} could not be exported.`;
   if (result.degradedTo8Bit > 0) {
     msg += ` ${result.degradedTo8Bit} exported as 8-bit (device can't render 16-bit).`;
   }
@@ -138,6 +155,16 @@ export interface RenderPhotosOptions {
    *  only, e.g. a stage's switch to render an auxiliary image (a gain map, a
    *  mask) at export size with the photo's exact geometry. */
   paramBag?: Record<string, unknown>;
+  /** Stop before the next photo once this fires. The photos not reached are
+   *  left out of the result. */
+  signal?: AbortSignal;
+}
+
+/** What a batch export takes beyond the photos and settings. */
+export interface ExportPhotosOptions {
+  /** Stop before the next photo once this fires. The result says how many were
+   *  exported and `cancelled`. A ZIP in progress is delivered with what it holds. */
+  signal?: AbortSignal;
 }
 
 const EXTENSION: Record<ExportFormat, string> = {
@@ -515,42 +542,52 @@ interface RenderOneResult {
   failure?: string;
 }
 
+// Where the EXIF reader stops looking; reading more of the original, over the
+// desktop bridge, would only carry bytes it never parses.
+const EXIF_HEAD_BYTES = 1 << 20;
+
 // Source EXIF for re-embedding. A virtual copy shares its master's live file
 // handle; a photo without one (or an unreadable file) harvests nothing, and
 // the export carries catalog-held edits alone.
 async function harvestPhotoExif(photo: CatalogPhoto): Promise<RawExifIfds | null> {
   if (!photo.fileHandle) return null;
   try {
-    return await readExifEntries(await photo.fileHandle.getFile());
+    const { data } = await readFileSlice(photo.fileHandle, 0, EXIF_HEAD_BYTES);
+    return await readExifEntries(new Blob([data]));
   } catch {
     return null;
   }
 }
 
-async function renderOne(
-  renderer: WebGLRenderer,
-  canvas: HTMLCanvasElement,
+/** What a photo needs from storage and the decoder before it can be drawn. It
+ *  touches no renderer, so the next photo's can be made while this one renders. */
+interface PreparedPhoto {
+  saved: SavedEdit;
+  /** Null when the photo can't be decoded. */
+  image: DecodedImage | null;
+  /** The source file's EXIF, when the export carries metadata. */
+  sourceExif: RawExifIfds | null;
+}
+
+function discardImage(image: DecodedImage | null): void {
+  if (image?.kind === "bitmap") image.bitmap.close();
+}
+
+async function preparePhoto(
   photo: CatalogPhoto,
   settings: ExportSettings,
-  processorSettings: ProcessorSettings,
-  bagPatch?: Record<string, unknown>,
-): Promise<RenderOneResult> {
+  signal: AbortSignal,
+): Promise<PreparedPhoto> {
   // The saved crop determines how many source pixels the requested long edge
   // needs: exporting a half-width crop at 2048 px must render from a 4096 px
   // source. Read the edit before decoding; when the as-shot temperature is
   // still unknown (never-decoded photo) the decode backfills it and the edit
   // is re-read below so default WB resolves correctly.
   const knownTemp = photo.exif.colorTemperature;
-  // The request, not the delivered size: a crop makes the file smaller than
-  // the long edge asked for, and a processor that renders the photo again
-  // needs the request to land on the same pixel grid.
-  const run: ProcessorRun = {
-    photo,
-    processorSettings,
-    context: { longEdge: settings.longEdge ?? null },
-  };
   let saved = await loadSavedEdit(photo.id, knownTemp);
-  const crop = saved.params.crop;
+  // The region the export draws: the geometry stage's crop (photo-geometry.ts),
+  // the whole image without Crop & Straighten.
+  const crop = photoGeometry(saved.params, 1).region;
   // Source aspect is unknown before decoding, so this estimate uses the
   // smaller crop fraction — it can over-ask (costing a decode where the cache
   // would have sufficed) but never under-asks. Exact math follows the decode.
@@ -560,7 +597,102 @@ async function renderOne(
 
   // Same decode as Develop: full-res RAW float when available (gets the
   // base tone curve), else the 8-bit bitmap — so exports match what's on screen.
-  const image = await loadPhotoImage(photo, { minEdge });
+  const image = await loadPhotoImage(photo, { minEdge, signal });
+  if (!image) return { saved, image, sourceExif: null };
+  try {
+    if (knownTemp == null) saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
+    // Opt-in only: harvest the source file's EXIF once per photo — the canvas
+    // render strips every metadata segment, so the export re-embeds it,
+    // layered with catalog-held edits (RAW caption/copyright/GPS edits never
+    // reach the source bytes, so the harvest alone would drop them).
+    const sourceExif = settings.includeMetadata ? await harvestPhotoExif(photo) : null;
+    return { saved, image, sourceExif };
+  } catch (err) {
+    discardImage(image);
+    throw err;
+  }
+}
+
+// What a float decode holds, per source pixel: four 32-bit channels.
+const DECODED_BYTES_PER_PIXEL = 16;
+// A source whose size the catalog doesn't know yet is counted as a 24 MP one.
+const UNKNOWN_SOURCE_PIXELS = 24_000_000;
+// Decoded sources held at once, the photo being drawn included, before another
+// one is read ahead of it.
+const DECODE_AHEAD_BUDGET_BYTES = 800 * 1024 * 1024;
+const DECODE_AHEAD_MAX = 2;
+
+function decodedBytes(photo: CatalogPhoto): number {
+  const pixels = photo.width > 0 && photo.height > 0 ? photo.width * photo.height : UNKNOWN_SOURCE_PIXELS;
+  return pixels * DECODED_BYTES_PER_PIXEL;
+}
+
+/** Prepares a batch's photos a step ahead of the one being drawn, so the decoder
+ *  works while the renderer, encoder and disk do. A photo is read ahead only
+ *  while the decoded sources together stay inside the byte budget. Drawing, encoding and writing stay with the caller, in order. */
+class DecodeAhead {
+  private readonly pending = new Map<number, Promise<PreparedPhoto>>();
+  private readonly abort = new AbortController();
+
+  private readonly photos: CatalogPhoto[];
+  private readonly settings: ExportSettings;
+
+  constructor(photos: CatalogPhoto[], settings: ExportSettings) {
+    this.photos = photos;
+    this.settings = settings;
+  }
+
+  /** Photo `index`'s preparation, which the caller then owns: it throws what
+   *  preparing did, and the caller discards the image it doesn't draw. */
+  take(index: number): Promise<PreparedPhoto> {
+    const taken = this.start(index);
+    this.pending.delete(index);
+    let bytes = decodedBytes(this.photos[index]);
+    for (let ahead = 1; ahead <= DECODE_AHEAD_MAX && index + ahead < this.photos.length; ahead++) {
+      bytes += decodedBytes(this.photos[index + ahead]);
+      if (bytes > DECODE_AHEAD_BUDGET_BYTES) break;
+      this.start(index + ahead);
+    }
+    return taken;
+  }
+
+  /** Drops what was read ahead and wasn't taken: the batch ended first. */
+  release(): void {
+    this.abort.abort();
+    for (const prepared of this.pending.values()) prepared.then(({ image }) => discardImage(image), () => undefined);
+    this.pending.clear();
+  }
+
+  private start(index: number): Promise<PreparedPhoto> {
+    let prepared = this.pending.get(index);
+    if (!prepared) {
+      prepared = preparePhoto(this.photos[index], this.settings, this.abort.signal);
+      // A failure belongs to the photo's own turn; until then it must not read as unhandled.
+      prepared.catch(() => undefined);
+      this.pending.set(index, prepared);
+    }
+    return prepared;
+  }
+}
+
+async function renderOne(
+  renderer: WebGLRenderer,
+  canvas: HTMLCanvasElement,
+  photo: CatalogPhoto,
+  prepared: PreparedPhoto,
+  settings: ExportSettings,
+  processorSettings: ProcessorSettings,
+  bagPatch?: Record<string, unknown>,
+): Promise<RenderOneResult> {
+  // The request, not the delivered size: a crop makes the file smaller than
+  // the long edge asked for, and a processor that renders the photo again
+  // needs the request to land on the same pixel grid.
+  const run: ProcessorRun = {
+    photo,
+    processorSettings,
+    context: { longEdge: settings.longEdge ?? null },
+  };
+  const { saved, image, sourceExif } = prepared;
   if (!image) return { blob: null, width: 0, height: 0, degradedTo8Bit: false, reducedPrecision: false };
   // The stored preview, rendered with the edit, stands in for an original out of
   // reach: the edit rendered over it would apply twice.
@@ -573,6 +705,7 @@ async function renderOne(
   }
   const bitmap = image.kind === "bitmap" ? image.bitmap : null;
   try {
+    const crop = photoGeometry(saved.params, 1).region;
     const w = image.kind === "bitmap" ? image.bitmap.width : image.width;
     const h = image.kind === "bitmap" ? image.bitmap.height : image.height;
     // Long-edge fraction the crop keeps of this source, exactly as the
@@ -597,25 +730,14 @@ async function renderOne(
         : requestEdge;
     const isFallback =
       image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
-    // Cached develop preview is linear-encoded RAW; it needs the base tone curve.
-    const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
     renderer.setAsShotTemperature(photo.exif.colorTemperature ?? 6500);
-    // Match Develop's HSL band shaping so exports look like the edited view.
-    renderer.setHslStyle(
-      getExtSetting("core.hsl", "hueRange", 100) / 100,
-      getExtSetting("core.hsl", "smoothness", 100) / 100,
-    );
     renderer.setImage(
       image.kind === "bitmap" ? image.bitmap : image,
       maxEdge,
       isFallback,
-      cachedRaw,
     );
-    if (knownTemp == null) {
-      saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
-    }
     const bag = bagPatch ? { ...saved.paramBag, ...bagPatch } : saved.paramBag;
-    renderer.setContributedParams(bagForRender(resolvePipelineFor(saved.params.displayTransform), bag));
+    renderer.setContributedParams(windowFrameBag(saved.params, bag));
     setPhotoParams(renderer, saved.params);
     const colorSpace = settings.colorSpace ?? "srgb";
     // Version 3 exports through the renderer's own draws. Whether a photo
@@ -625,11 +747,6 @@ async function renderOne(
     const amount = settings.sharpenAmount ?? 0;
     const sharpen = amount > 0 ? { amount, radius: settings.sharpenRadius ?? 1 } : undefined;
 
-    // Opt-in only: harvest the source file's EXIF once per photo — the canvas
-    // render below strips every metadata segment, so the export re-embeds it,
-    // layered with catalog-held edits (RAW caption/copyright/GPS edits never
-    // reach the source bytes, so the harvest alone would drop them).
-    const sourceExif = settings.includeMetadata ? await harvestPhotoExif(photo) : null;
     const exifFor = (exportW: number, exportH: number): ExportIfds | null =>
       settings.includeMetadata
         ? buildExportIfds(sourceExif, {
@@ -637,7 +754,7 @@ async function renderOne(
             height: exportH,
             srgb: colorSpace === "srgb",
             includeLocation: settings.includeLocation ?? false,
-            edited: photo.exif,
+            catalog: photo.exif,
           })
         : null;
 
@@ -717,13 +834,15 @@ async function renderOne(
 async function makeBatchRenderer(
   settings: ExportSettings,
   first: CatalogPhoto | undefined,
-): Promise<{ renderer: WebGLRenderer; canvas: HTMLCanvasElement } | null> {
+): Promise<{ renderer: WebGLRenderer; canvas: HTMLCanvasElement } | { unavailable: string }> {
   const canvas = document.createElement("canvas");
   let renderer: WebGLRenderer | null = null;
   try {
     renderer = new WebGLRenderer(canvas, {
+      highBitDepth: getSettings().highBitDepth,
       stages: Object.values(useRegistry.getState().processingStages),
       pipeline: resolveDefaultPipeline(),
+      derive: windowDerived,
     });
     const saved = first
       ? await loadSavedEdit(first.id, first.exif.colorTemperature).catch(() => null)
@@ -748,7 +867,12 @@ async function makeBatchRenderer(
     console.error("[export] the renderer is unavailable:", err);
     renderer?.dispose();
     loseContext(canvas);
-    return null;
+    // Only a renderer that couldn't be made at all can be the graphics' fault.
+    const graphics = renderer ? null : probeGraphics();
+    return {
+      unavailable:
+        graphics?.webgl2 === "no" ? GRAPHICS_UNAVAILABLE : errorReason(err),
+    };
   }
   return { renderer, canvas };
 }
@@ -810,19 +934,22 @@ export async function renderPhotosToBlobs(
   options?: RenderPhotosOptions,
 ): Promise<RenderedPhoto[]> {
   const made = await makeBatchRenderer(settings, photos[0]);
-  if (!made)
+  if ("unavailable" in made)
     return photos.map((photo) => ({ photo, blob: null, width: 0, height: 0 }));
   const { renderer, canvas } = made;
   const procSettings = settings.processorSettings ?? {};
   const out: RenderedPhoto[] = [];
+  const ahead = new DecodeAhead(photos, settings);
   try {
     for (let i = 0; i < photos.length; i++) {
+      if (options?.signal?.aborted) break;
       const photo = photos[i];
       let blob: Blob | null = null;
       let width = 0;
       let height = 0;
       try {
-        ({ blob, width, height } = await renderOne(renderer, canvas, photo, settings, procSettings, options?.paramBag));
+        const prepared = await ahead.take(i);
+        ({ blob, width, height } = await renderOne(renderer, canvas, photo, prepared, settings, procSettings, options?.paramBag));
       } catch {
         blob = null;
       }
@@ -835,6 +962,7 @@ export async function renderPhotosToBlobs(
       onProgress?.({ done: i + 1, total: photos.length, filename: photo.filename });
     }
   } finally {
+    ahead.release();
     releaseBatch(made);
   }
   return out;
@@ -848,10 +976,17 @@ export async function exportPhotos(
   settings: ExportSettings,
   onProgress?: (p: ExportProgress) => void,
   destDir?: FileSystemDirectoryHandle,
+  options?: ExportPhotosOptions,
 ): Promise<ExportResult> {
   const made = await makeBatchRenderer(settings, photos[0]);
-  if (!made)
-    return { exported: 0, failed: photos.map((p) => p.filename), degradedTo8Bit: 0, reducedPrecision: 0 };
+  if ("unavailable" in made)
+    return {
+      exported: 0,
+      failed: photos.map((p) => p.filename),
+      failures: photos.map((p) => ({ filename: p.filename, reason: made.unavailable })),
+      degradedTo8Bit: 0,
+      reducedPrecision: 0,
+    };
   const { renderer, canvas } = made;
 
   const delivery = settings.delivery ?? (settings.bundle ? "zip" : "files");
@@ -859,14 +994,20 @@ export async function exportPhotos(
   // Mutable so it can be dropped mid-batch when the archive overflows ZIP32 and
   // we fall back to per-file delivery.
   let zip = useZip ? new ZipWriter() : null;
-  // Blobs already handed to the ZIP, kept so an overflow can re-deliver them as
-  // individual downloads instead of shipping a corrupt partial archive.
-  const zipBuffered: { name: string; blob: Blob }[] = [];
+  // The bytes already handed to the ZIP, kept so an overflow can re-deliver them
+  // as individual downloads instead of shipping a corrupt partial archive. They
+  // are the arrays the archive holds, so each output is in memory once.
+  const zipBuffered: { name: string; bytes: Uint8Array<ArrayBuffer>; type: string }[] = [];
   let zipFellBack = false;
   const usedNames = new Set<string>();
   const failed: string[] = [];
   const failures: { filename: string; reason: string }[] = [];
   let exported = 0;
+  let cancelled = false;
+  // The reason of the last write refused the way one locked file also is, until a
+  // write succeeds: the same refusal twice in a row is the folder's, not a file's.
+  let lastRefusal: string | undefined;
+  let stopped: string | undefined;
   let degradedTo8Bit = 0;
   let reducedPrecision = 0;
 
@@ -876,18 +1017,26 @@ export async function exportPhotos(
     ? useRegistry.getState().filenameTemplates[settings.filenameTemplateId]
     : undefined;
 
+  const ahead = new DecodeAhead(photos, settings);
   try {
     for (let i = 0; i < photos.length; i++) {
+      if (options?.signal?.aborted) {
+        cancelled = true;
+        break;
+      }
       const photo = photos[i];
       let blob: Blob | null = null;
+      let renderReason: string | undefined;
       try {
-        const r = await renderOne(renderer, canvas, photo, settings, procSettings);
+        const prepared = await ahead.take(i);
+        const r = await renderOne(renderer, canvas, photo, prepared, settings, procSettings);
         blob = r.blob;
         if (r.degradedTo8Bit) degradedTo8Bit++;
         if (r.reducedPrecision) reducedPrecision++;
-        if (r.failure) failures.push({ filename: photo.filename, reason: r.failure });
-      } catch {
+        renderReason = r.failure;
+      } catch (e) {
         blob = null;
+        renderReason = errorReason(e);
       }
       if (blob) {
         const ext = exportExtension(settings.format, blob.type);
@@ -898,8 +1047,9 @@ export async function exportPhotos(
         try {
           if (zip) {
             try {
-              zip.add(name, new Uint8Array(await blob.arrayBuffer()));
-              zipBuffered.push({ name, blob });
+              const bytes = new Uint8Array(await blob.arrayBuffer());
+              zip.add(name, bytes);
+              zipBuffered.push({ name, bytes, type: blob.type });
             } catch (e) {
               if (!(e instanceof RangeError)) throw e;
               // Archive would exceed ZIP32 limits: deliver everything buffered so
@@ -907,27 +1057,50 @@ export async function exportPhotos(
               // downloads rather than a truncated, unreadable ZIP.
               zip = null;
               zipFellBack = true;
-              for (const b of zipBuffered) downloadBlob(b.blob, b.name);
+              for (const b of zipBuffered) downloadBlob(new Blob([b.bytes], { type: b.type }), b.name);
+              zipBuffered.length = 0;
               downloadBlob(blob, name);
             }
           } else if (delivery === "folder" && destDir) {
+            const existed = await destDir.getFileHandle(name).then(
+              () => true,
+              (e: unknown) => !(e instanceof DOMException && e.name === "NotFoundError"),
+            );
             const fh = await destDir.getFileHandle(name, { create: true });
-            const w = await fh.createWritable();
-            await w.write(blob);
-            await w.close();
+            let w: FileSystemWritableFileStream | undefined;
+            try {
+              w = await fh.createWritable();
+              await w.write(blob);
+              await w.close();
+            } catch (e) {
+              await w?.abort().catch(() => undefined);
+              if (!existed) await destDir.removeEntry(name).catch(() => undefined);
+              throw e;
+            }
           } else {
             downloadBlob(blob, name);
           }
           exported++;
-        } catch {
+          lastRefusal = undefined;
+        } catch (e) {
           failed.push(photo.filename);
+          failures.push({ filename: photo.filename, reason: errorReason(e) });
+          const reason = errorReason(e);
+          if (failsEveryWrite(e)) stopped = reason;
+          else if (mayFailEveryWrite(e)) {
+            if (lastRefusal === reason) stopped = reason;
+            lastRefusal = reason;
+          } else lastRefusal = undefined;
         }
       } else {
         failed.push(photo.filename);
+        failures.push({ filename: photo.filename, reason: renderReason ?? "render failed" });
       }
       onProgress?.({ done: i + 1, total: photos.length, filename: photo.filename });
+      if (stopped) break;
     }
   } finally {
+    ahead.release();
     releaseBatch(made);
   }
 
@@ -941,6 +1114,8 @@ export async function exportPhotos(
     degradedTo8Bit,
     reducedPrecision,
     zipFellBack,
+    ...(cancelled ? { cancelled: true as const } : {}),
+    ...(stopped ? { stopped } : {}),
     ...(failures.length > 0 ? { failures } : {}),
   };
 }

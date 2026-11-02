@@ -111,52 +111,48 @@ export function WelcomeView() {
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
             {cards.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => void openRecent(c)}
-                disabled={opening}
-                title={c.path ?? c.name}
-                className="group relative flex flex-col overflow-hidden rounded-lg border border-border bg-surface-1 text-left transition hover:border-slider-fill disabled:opacity-60"
-              >
-                <div className="aspect-[4/3] w-full overflow-hidden bg-surface-2">
-                  {c.coverUrl ? (
-                    <img
-                      src={c.coverUrl}
-                      alt=""
-                      draggable={false}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-text-muted">
-                      <FolderIcon />
-                    </div>
-                  )}
-                </div>
-                <div className="flex flex-col gap-0.5 px-3 py-2">
-                  <span className="truncate text-sm font-medium text-text-primary">
-                    {c.name}
-                  </span>
-                  <span className="truncate text-[11px] text-text-muted">
-                    {c.path ?? "Browser folder"}
-                  </span>
-                  <span className="text-[10px] text-text-muted">
-                    {timeAgo(c.openedAt)}
-                  </span>
-                </div>
-                <span
-                  role="button"
-                  tabIndex={-1}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void remove(c.id);
-                  }}
+              <div key={c.id} className="group relative">
+                <button
+                  onClick={() => void openRecent(c)}
+                  disabled={opening}
+                  title={c.path ?? c.name}
+                  className="flex w-full flex-col overflow-hidden rounded-lg border border-border bg-surface-1 text-left transition hover:border-slider-fill disabled:opacity-60"
+                >
+                  <div className="aspect-[4/3] w-full overflow-hidden bg-surface-2">
+                    {c.coverUrl ? (
+                      <img
+                        src={c.coverUrl}
+                        alt=""
+                        draggable={false}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-text-muted">
+                        <FolderIcon />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-0.5 px-3 py-2">
+                    <span className="truncate text-sm font-medium text-text-primary">
+                      {c.name}
+                    </span>
+                    <span className="truncate text-[11px] text-text-muted">
+                      {c.path ?? "Browser folder"}
+                    </span>
+                    <span className="text-[10px] text-text-muted">
+                      {timeAgo(c.openedAt)}
+                    </span>
+                  </div>
+                </button>
+                <button
+                  onClick={() => void remove(c.id)}
                   title="Remove from recents"
                   aria-label={`Remove ${c.name} from recents`}
-                  className="absolute right-1.5 top-1.5 hidden h-6 w-6 items-center justify-center rounded bg-black/60 text-sm text-text-secondary hover:text-white group-hover:flex"
+                  className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded bg-black/60 text-sm text-text-secondary opacity-0 hover:text-white focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
                 >
                   <span aria-hidden="true">×</span>
-                </span>
-              </button>
+                </button>
+              </div>
             ))}
           </div>
         )}

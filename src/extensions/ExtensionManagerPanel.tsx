@@ -31,14 +31,16 @@ import {
   uninstallPlugin,
   updateExtension,
   useDisabledExtensions,
+  usePluginRunning,
 } from "./loader";
+import { DEVTOOLS_EXTENSION_ID } from "./official-extensions";
 import { BUILTIN_EXTENSIONS } from "./builtin";
 import { useRegistry } from "./registry";
 import { useSettings } from "@/state/settings-store";
 import { Select } from "@/ui/components/Select";
 import { Switch } from "@/ui/components/Switch";
-import { openPreferences } from "@/ui/components/PreferencesDialog";
-import { closeExtensions } from "@/ui/components/ExtensionsDialog";
+import { openPreferences } from "@/ui/preferences/preferences-store";
+import { closeExtensions } from "@/ui/components/extensions-dialog-store";
 import { visibleKits } from "@/modules/welcome/setup/selection";
 import { confirmDialog } from "@/ui/components/ConfirmDialog";
 import {
@@ -84,12 +86,48 @@ import { loadStoreKits, shelfKits } from "./store-kits";
 import { KitShelf } from "./KitShelf";
 import { KitPage } from "./KitPage";
 import { DevExtensionsTab } from "./devtools/DevExtensionsTab";
+import { firstLogLine, useStageFailuresOf } from "@/rendering/render-bridge/stage-failures";
+import { useCallbackFailures } from "./guard";
+import { useStartFailures } from "./start-failures";
+import { getParamDescriptor } from "./param-registry";
+import { loadSavedEdit } from "@/catalog/edit-params";
+import { useCatalogStore } from "@/state/catalog-store";
 
 const SORTS: { id: StoreSort; label: string }[] = [
   { id: "popular", label: "Popular" },
   { id: "updated", label: "Recent" },
   { id: "name", label: "Name" },
 ];
+
+/** How many photos in the open catalog set one of `extensionId`'s stage params,
+ *  on the whole photo or inside a mask. A running extension's params count when
+ *  away from their defaults. One that isn't running has no descriptors left, so
+ *  any stored value under its id counts: stage ids, and so their param keys,
+ *  start with the extension's id. */
+async function photosUsing(extensionId: string): Promise<number> {
+  const usesIt = (bag: Record<string, unknown>) =>
+    Object.entries(bag).some(([key, value]) => {
+      const d = getParamDescriptor(key);
+      if (!d) return key.startsWith(`${extensionId}.`) && value != null;
+      return d.extensionId === extensionId && JSON.stringify(value) !== JSON.stringify(d.default);
+    });
+  const edits = await Promise.all(useCatalogStore.getState().photos.map((p) => loadSavedEdit(p.id)));
+  return edits.filter((e) => usesIt(e.paramBag) || e.params.masks.some((m) => m.bag && usesIt(m.bag))).length;
+}
+
+/** Photos that use an extension render and export without its stages while
+ *  it is off or gone, so ask first. True at once when no photo uses it. */
+async function confirmPhotosUsing(id: string, name: string, removing: boolean): Promise<boolean> {
+  const count = await photosUsing(id);
+  if (count === 0) return true;
+  const uses = count === 1 ? `1 photo uses ${name}. It'll` : `${count} photos use ${name}. They'll`;
+  return confirmDialog({
+    title: removing ? `Uninstall ${name}` : `Disable ${name}`,
+    message: `${uses} render and export without it until it's ${removing ? "installed" : "enabled"} again.`,
+    confirmLabel: removing ? "Uninstall" : "Disable",
+    variant: removing ? "danger" : "default",
+  });
+}
 
 export function ExtensionManagerPanel() {
   const native = window.safelightNative;
@@ -98,8 +136,8 @@ export function ExtensionManagerPanel() {
   const onlyVerified = useSettings((s) => s.onlyVerifiedExtensions);
   const disabledIds = useDisabledExtensions((s) => s.ids);
   // The Dev tab rides along with the Developer Tools extension: it only exists
-  // while that extension is enabled, mirroring its top-bar bug button.
-  const devtoolsEnabled = !disabledIds.includes("core.devtools");
+  // while that extension is running, mirroring its top-bar bug button.
+  const devtoolsEnabled = usePluginRunning(DEVTOOLS_EXTENSION_ID);
   const extSettings = useRegistry((s) => s.settings);
   const view = useExtStoreUI((s) => s.view);
   const selected = useExtStoreUI((s) => s.selected);
@@ -140,7 +178,21 @@ export function ExtensionManagerPanel() {
   // until that run ends.
   const kitRunning = useExtStoreUI((s) => s.kitRunning);
   const busy = localBusy ?? (kitRunning ? `kit:${kitRunning}` : null);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [note, setNote] = useState<{ text: string; error: boolean } | null>(null);
+  const setMsg = (text: string | null, error = false) =>
+    setNote(text === null ? null : { text, error });
+  const failMsg = (e: unknown) => setMsg(e instanceof Error ? e.message : String(e), true);
+  const statusFooter = note && (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`shrink-0 border-t border-border-subtle px-3 py-1.5 text-[11px] ${
+        note.error ? "text-danger" : "text-text-secondary"
+      }`}
+    >
+      {note.text}
+    </div>
+  );
   // The settings button deep-links into Preferences ▸ Extensions.
   const openSettings = (id: string) => {
     closeExtensions();
@@ -156,8 +208,14 @@ export function ExtensionManagerPanel() {
   // the icon/og caches) so a recently changed thumbnail isn't served stale.
   const lastThumbNonce = useRef(0);
 
-  // Always open to the list, not a stale detail page from a previous session.
-  useEffect(() => back(), [back]);
+  // Open to the list, not a stale detail page from a previous session, or to
+  // the page the window was opened on (openExtensionsOn).
+  useEffect(() => {
+    const { pendingDetail, openDetail: open } = useExtStoreUI.getState();
+    if (pendingDetail === null) return back();
+    useExtStoreUI.setState({ pendingDetail: null });
+    open(pendingDetail);
+  }, [back]);
 
   // Pull the verified/banned lists so badges and install gating work even if the
   // window is opened before the boot-time load sweep. Non-forced: loadTrustList
@@ -252,7 +310,7 @@ export function ExtensionManagerPanel() {
         .catch((e) => {
           if (searchSeq.current !== seq) return;
           setResults([]);
-          setMsg(e instanceof Error ? e.message : String(e));
+          failMsg(e);
         })
         .finally(() => {
           if (searchSeq.current === seq) setSearching(false);
@@ -306,7 +364,7 @@ export function ExtensionManagerPanel() {
     // clearer path so the user never watches a doomed download spin.
     const banned = repo ? bannedReason(repo) : null;
     if (banned) {
-      setMsg(`Blocked — this extension is flagged as unsafe: ${banned}.`);
+      setMsg(`Blocked — this extension is flagged as unsafe: ${banned}.`, true);
       return;
     }
     // A pinned "verified" entry only covers the version that was reviewed. If the
@@ -326,6 +384,7 @@ export function ExtensionManagerPanel() {
               reviewedVersion ? ` (${reviewedVersion})` : ""
             }, so it isn't covered by verification.`
           : "Blocked — “Only verified extensions” is on and this one isn't on the verified allowlist (Preferences ▸ Extensions).",
+        true,
       );
       return;
     }
@@ -358,10 +417,11 @@ export function ExtensionManagerPanel() {
       // A repo that's already installed is reinstalled in place, so its settings
       // and enabled/disabled state survive a version switch; only a fresh install
       // starts enabled.
-      const installedHere =
-        !!repo && list.some((m) => repoFor(m)?.toLowerCase() === repo.toLowerCase());
+      const installedHere = repo
+        ? list.find((m) => repoFor(m)?.toLowerCase() === repo.toLowerCase())
+        : undefined;
       const manifest = installedHere
-        ? await updateExtension(installSpec, version)
+        ? await updateExtension(installSpec, version, installedHere.id)
         : await installFromGitHub(installSpec, version);
       if (fromSearch) rememberSource(manifest.id, fromSearch.fullName);
       else setSpec("");
@@ -379,13 +439,17 @@ export function ExtensionManagerPanel() {
       );
       refresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      failMsg(e);
     } finally {
       setBusy(null);
     }
   };
 
+  const nameOf = (id: string) =>
+    list.find((m) => m.id === id)?.name ?? BUILTIN_EXTENSIONS.find((b) => b.id === id)?.name ?? id;
+
   const remove = async (id: string) => {
+    if (!(await confirmPhotosUsing(id, nameOf(id), true))) return;
     setBusy(id);
     setMsg(null);
     try {
@@ -395,7 +459,7 @@ export function ExtensionManagerPanel() {
       if (view === "detail") back(); // leave the now-removed extension's page
       refresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      failMsg(e);
     } finally {
       setBusy(null);
     }
@@ -405,11 +469,11 @@ export function ExtensionManagerPanel() {
     setBusy(id);
     setMsg(null);
     try {
-      const manifest = await updateExtension(repo, updates[id]?.latestTag ?? undefined);
+      const manifest = await updateExtension(repo, updates[id]?.latestTag ?? undefined, id);
       setMsg(`Updated ${manifest.name} to ${manifest.version}.`);
       refresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      failMsg(e);
     } finally {
       setBusy(null);
     }
@@ -417,9 +481,10 @@ export function ExtensionManagerPanel() {
 
   const toggle = (id: string, enable: boolean) => {
     setMsg(null);
-    void setExtensionEnabled(id, enable).catch((e) =>
-      setMsg(e instanceof Error ? e.message : String(e)),
-    );
+    void (async () => {
+      if (!enable && !(await confirmPhotosUsing(id, nameOf(id), false))) return;
+      await setExtensionEnabled(id, enable);
+    })().catch(failMsg);
   };
 
   const installedIds = new Set(list.map((m) => m.id));
@@ -603,11 +668,7 @@ export function ExtensionManagerPanel() {
             },
           }}
         />
-        {msg && (
-          <div className="shrink-0 border-t border-border-subtle px-3 py-1.5 text-[11px] text-text-secondary">
-            {msg}
-          </div>
-        )}
+        {statusFooter}
       </div>
     );
   }
@@ -629,328 +690,329 @@ export function ExtensionManagerPanel() {
         showOther={showOther || browse === OTHER.slug}
       />
 
-      <div className={`min-w-0 flex-1 overflow-y-auto text-[11px] ${expanded ? "px-6 py-4" : "p-3"}`}>
-        {section === "Dev" && devtoolsEnabled ? (
-          <DevExtensionsTab />
-        ) : section === "Updates" ? (
-          // ── Updates: installed extensions with a newer release ──
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-2">
-              <SectionLabel>
-                {installable.length > 0
-                  ? `${installable.length} update${installable.length > 1 ? "s" : ""} available`
-                  : "Updates"}
-              </SectionLabel>
-              <button
-                onClick={() => {
-                  setMsg(null);
-                  for (const m of list) void checkExtensionUpdate(m, true);
-                }}
-                disabled={busy !== null}
-                title="Check all installed extensions for new releases"
-                className="rounded px-1.5 text-[12px] leading-none text-text-muted hover:text-text-primary disabled:opacity-40"
-              >
-                ↻
-              </button>
-            </div>
-
-            {pending.length === 0 ? (
-              <div className="text-text-muted">
-                All installed extensions are up to date. Updating downloads the
-                latest release and reinstalls the extension in place; your
-                settings are kept.
-              </div>
-            ) : (
-              <div className={rows}>
-                {pending.map((m) => {
-                  const upd = updates[m.id]!;
-                  const repo = repoFor(m)!;
-                  const keptHere = !!pins[m.id] && !upd.requiresApp && !upd.failed;
-                  return (
-                    <div key={m.id} className="flex flex-col gap-0.5">
-                      <ExtensionRow
-                        name={m.name}
-                        version={m.version}
-                        repo={repo}
-                        description={
-                          keptHere
-                            ? `Kept at ${m.version} · ${upd.latestTag} is available`
-                            : updateNote(m.version, upd)
-                        }
-                        enabled={enabled(m.id)}
-                        busy={busy !== null}
-                        hasSettings={!!extSettings[m.id]}
-                        onOpen={() => openDetail(repo)}
-                        onUpdate={upd.requiresApp ? undefined : () => void update(m.id, repo)}
-                        onSettings={() => openSettings(m.id)}
-                        onToggle={() => toggle(m.id, !enabled(m.id))}
-                        onUninstall={() => void remove(m.id)}
-                      />
-                      {upd.latestTag && <UpdateNotes repo={repo} version={upd.latestTag} />}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {msg && <div className="text-text-secondary">{msg}</div>}
-          </div>
-        ) : section === "Browse" ? (
-          native && openKit ? (
-            <KitPage
-              kit={openKit}
-              installed={installedLower}
-              busy={busy}
-              onBusy={setBusy}
-              onOpen={openDetail}
-              onDone={refresh}
-            />
-          ) : native ? (
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className={`min-h-0 min-w-0 flex-1 overflow-y-auto text-[11px] ${expanded ? "px-6 py-4" : "p-3"}`}>
+          {section === "Dev" && devtoolsEnabled ? (
+            <DevExtensionsTab />
+          ) : section === "Updates" ? (
+            // ── Updates: installed extensions with a newer release ──
             <div className="flex flex-col gap-3">
-              {/* Search + sort */}
-              <div className="flex items-center gap-1.5">
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search official extensions…"
-                  aria-label="Search official extensions"
-                  spellCheck={false}
-                  className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
-                />
-                {/* Sort only applies to a flat grid: search results here, or the
-                    category page's header. */}
-                {!shelfView && !openInfo && (
-                  <Select
-                    value={sort}
-                    onChange={(v) =>
-                      useExtStoreUI.getState().setSort(v as StoreSort)
-                    }
-                    options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
-                    title="Sort"
-                  />
-                )}
+              <div className="flex items-center justify-between gap-2">
+                <SectionLabel>
+                  {installable.length > 0
+                    ? `${installable.length} update${installable.length > 1 ? "s" : ""} available`
+                    : "Updates"}
+                </SectionLabel>
                 <button
-                  onClick={reload}
-                  disabled={searching}
-                  title="Reload the extension list and search results"
+                  onClick={() => {
+                    setMsg(null);
+                    for (const m of list) void checkExtensionUpdate(m, true);
+                  }}
+                  disabled={busy !== null}
+                  title="Check all installed extensions for new releases"
                   className="rounded px-1.5 text-[12px] leading-none text-text-muted hover:text-text-primary disabled:opacity-40"
                 >
                   ↻
                 </button>
               </div>
 
-              {openInfo && (
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <h2 className="text-[13px] font-semibold text-text-primary">{openInfo.label}</h2>
-                    {openInfo.description && (
-                      <p className="mt-0.5 text-text-secondary">{openInfo.description}</p>
-                    )}
-                  </div>
-                  <Select
-                    value={sort}
-                    onChange={(v) => useExtStoreUI.getState().setSort(v as StoreSort)}
-                    options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
-                    title="Sort"
-                  />
-                </div>
-              )}
-
-              {/* Result cards: ranked shelves for the unfiltered browse, a flat
-                  sorted grid once a search query or category narrows it. */}
-              {searching && browsable === null ? (
-                <div className="text-text-muted">Searching…</div>
-              ) : browsable && browsable.length === 0 ? (
+              {pending.length === 0 ? (
                 <div className="text-text-muted">
-                  {query.trim() || !openInfo
-                    ? `No new extensions found${query ? ` for “${query}”` : ""}${
-                        openInfo ? ` in ${openInfo.label}` : ""
-                      } (topic: ${topic}).`
-                    : everyInstalled
-                      ? `You have every ${openInfo.label} extension installed.`
-                      : categoryMembers.length === 0
-                        ? `No ${openInfo.label} extensions yet.`
-                        : null}
-                </div>
-              ) : shelves ? (
-                <div className="flex flex-col gap-4">
-                  {[
-                    ...shelves.filter((sh) => sh.id === "featured"),
-                    "kits" as const,
-                    ...shelves.filter((sh) => sh.id !== "featured"),
-                  ].map((sh) =>
-                    sh === "kits" ? (
-                      <KitShelf key="kits" kits={homeKits} onOpen={(id) => useExtStoreUI.getState().openKit(id)} />
-                    ) : (
-                      <Shelf
-                        key={sh.id}
-                        title={sh.title}
-                        items={sh.items}
-                        thumbs={thumbs}
-                        busy={busy}
-                        onOpen={openDetail}
-                        onInstall={install}
-                      />
-                    ),
-                  )}
+                  All installed extensions are up to date. Updating downloads the
+                  latest release and reinstalls the extension in place; your
+                  settings are kept.
                 </div>
               ) : (
-                <div className={expanded ? EXPANDED_GRID : "grid grid-cols-4 gap-2"}>
-                  {browsable?.map((r, i) => (
-                    <ExtensionCard
-                      key={r.fullName}
-                      index={i}
-                      result={r}
-                      thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
-                      installing={busy === r.fullName}
-                      disabled={busy !== null}
-                      onOpen={() => openDetail(r.fullName)}
-                      onInstall={() => void install(r.fullName, r)}
-                    />
-                  ))}
+                <div className={rows}>
+                  {pending.map((m) => {
+                    const upd = updates[m.id]!;
+                    const repo = repoFor(m)!;
+                    const keptHere = !!pins[m.id] && !upd.requiresApp && !upd.failed;
+                    return (
+                      <div key={m.id} className="flex flex-col gap-0.5">
+                        <ExtensionRow
+                          id={m.id}
+                          name={m.name}
+                          version={m.version}
+                          repo={repo}
+                          description={
+                            keptHere
+                              ? `Kept at ${m.version} · ${upd.latestTag} is available`
+                              : updateNote(m.version, upd)
+                          }
+                          enabled={enabled(m.id)}
+                          busy={busy !== null}
+                          hasSettings={!!extSettings[m.id]}
+                          onOpen={() => openDetail(repo)}
+                          onUpdate={upd.requiresApp ? undefined : () => void update(m.id, repo)}
+                          onSettings={() => openSettings(m.id)}
+                          onToggle={() => toggle(m.id, !enabled(m.id))}
+                          onUninstall={() => void remove(m.id)}
+                        />
+                        {upd.latestTag && <UpdateNotes repo={repo} version={upd.latestTag} />}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
-              {hiddenUnverified > 0 && (
-                <div className="text-text-muted">
-                  {`${hiddenUnverified} unverified ${
-                    hiddenUnverified === 1 ? "extension" : "extensions"
-                  } hidden — “Only verified extensions” is on (Preferences ▸ Extensions).`}
-                </div>
-              )}
-
-              {msg && <div className="text-text-secondary">{msg}</div>}
-
-              {/* Import custom extension */}
-              <div className="border-t border-border-subtle pt-3">
-                <SectionLabel>Import custom extension</SectionLabel>
-                <div className="mt-1 flex gap-1.5">
+            </div>
+          ) : section === "Browse" ? (
+            native && openKit ? (
+              <KitPage
+                kit={openKit}
+                installed={installedLower}
+                busy={busy}
+                onBusy={setBusy}
+                onOpen={openDetail}
+                onDone={refresh}
+              />
+            ) : native ? (
+              <div className="flex flex-col gap-3">
+                {/* Search + sort */}
+                <div className="flex items-center gap-1.5">
                   <input
-                    value={spec}
-                    onChange={(e) => setSpec(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && spec.trim() && busy === null)
-                        void install(spec.trim());
-                    }}
-                    placeholder="owner/repo, owner/repo#branch, or GitHub URL"
-                    aria-label="Install extension from GitHub (owner/repo, branch, or URL)"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search official extensions…"
+                    aria-label="Search official extensions"
                     spellCheck={false}
                     className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
                   />
+                  {/* Sort only applies to a flat grid: search results here, or the
+                      category page's header. */}
+                  {!shelfView && !openInfo && (
+                    <Select
+                      value={sort}
+                      onChange={(v) =>
+                        useExtStoreUI.getState().setSort(v as StoreSort)
+                      }
+                      options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
+                      title="Sort"
+                    />
+                  )}
                   <button
-                    disabled={busy !== null || !spec.trim()}
-                    onClick={() => void install(spec.trim())}
-                    className="rounded bg-surface-3 px-2.5 py-1 font-medium text-text-secondary hover:bg-surface-4 hover:text-text-primary disabled:opacity-40"
+                    onClick={reload}
+                    disabled={searching}
+                    title="Reload the extension list and search results"
+                    className="rounded px-1.5 text-[12px] leading-none text-text-muted hover:text-text-primary disabled:opacity-40"
                   >
-                    {busy === spec.trim() ? "…" : "Import"}
+                    ↻
                   </button>
                 </div>
-              </div>
-            </div>
-          ) : (
-            <div className="text-text-muted">
-              Installing extensions requires the desktop app. Built-in extensions
-              can still be managed under Installed.
-            </div>
-          )
-        ) : (
-          // ── Installed: external installs first, then the built-ins ──
-          (() => {
-            const iq = installedQuery.trim().toLowerCase();
-            const match = (name: string, desc?: string) =>
-              !iq ||
-              name.toLowerCase().includes(iq) ||
-              (desc ?? "").toLowerCase().includes(iq);
-            const installed = list.filter((m) => match(m.name, m.description));
-            const builtins = BUILTIN_EXTENSIONS.filter((b) =>
-              match(b.name, b.description),
-            );
-            return (
-              <div className="flex flex-col gap-3">
-                <input
-                  value={installedQuery}
-                  onChange={(e) => setInstalledQuery(e.target.value)}
-                  placeholder="Filter installed extensions…"
-                  aria-label="Filter installed extensions"
-                  spellCheck={false}
-                  className="rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
-                />
 
-                {native && (
-                  <div>
-                    <SectionLabel>Installed</SectionLabel>
-                    {list.length === 0 ? (
-                      <div className="mt-1 text-text-muted">
-                        No extensions installed. Extensions register panels,
-                        themes and layouts that appear in the View menu and
-                        Preferences.
-                      </div>
-                    ) : installed.length === 0 ? (
-                      <div className="mt-1 text-text-muted">No matches.</div>
-                    ) : (
-                      <div className={`mt-1 ${rows}`}>
-                        {installed.map((m) => {
-                          const upd = updates[m.id];
-                          const repo = repoFor(m);
-                          const canUpdate =
-                            !!upd?.hasUpdate && !!upd.latestTag && !!repo && !upd.requiresApp;
-                          return (
-                            <ExtensionRow
-                              key={m.id}
-                              name={m.name}
-                              version={m.version}
-                              repo={repo}
-                              description={m.description}
-                              enabled={enabled(m.id)}
-                              busy={busy !== null}
-                              hasSettings={!!extSettings[m.id]}
-                              onOpen={() => openDetail(repo ?? m.id)}
-                              onUpdate={
-                                canUpdate
-                                  ? () => void update(m.id, repo!)
-                                  : undefined
-                              }
-                              onSettings={() => openSettings(m.id)}
-                              onToggle={() => toggle(m.id, !enabled(m.id))}
-                              onUninstall={() => void remove(m.id)}
-                            />
-                          );
-                        })}
-                      </div>
-                    )}
+                {openInfo && (
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <h2 className="text-[13px] font-semibold text-text-primary">{openInfo.label}</h2>
+                      {openInfo.description && (
+                        <p className="mt-0.5 text-text-secondary">{openInfo.description}</p>
+                      )}
+                    </div>
+                    <Select
+                      value={sort}
+                      onChange={(v) => useExtStoreUI.getState().setSort(v as StoreSort)}
+                      options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
+                      title="Sort"
+                    />
                   </div>
                 )}
 
-                <div>
-                  <SectionLabel>Built-in</SectionLabel>
-                  {builtins.length === 0 ? (
-                    <div className="mt-1 text-text-muted">No matches.</div>
-                  ) : (
-                    <div className={`mt-1 ${rows}`}>
-                      {builtins.map((b) => (
-                        <ExtensionRow
-                          key={b.id}
-                          name={b.name}
-                          version={b.version}
-                          description={b.description}
-                          enabled={b.locked || enabled(b.id)}
-                          locked={b.locked}
-                          busy={busy !== null}
-                          hasSettings={!!extSettings[b.id]}
-                          onOpen={() => openDetail(b.id)}
-                          onSettings={() => openSettings(b.id)}
-                          onToggle={() => toggle(b.id, !enabled(b.id))}
+                {/* Result cards: ranked shelves for the unfiltered browse, a flat
+                    sorted grid once a search query or category narrows it. */}
+                {searching && browsable === null ? (
+                  <div className="text-text-muted">Searching…</div>
+                ) : browsable && browsable.length === 0 ? (
+                  <div className="text-text-muted">
+                    {query.trim() || !openInfo
+                      ? `No new extensions found${query ? ` for “${query}”` : ""}${
+                          openInfo ? ` in ${openInfo.label}` : ""
+                        } (topic: ${topic}).`
+                      : everyInstalled
+                        ? `You have every ${openInfo.label} extension installed.`
+                        : categoryMembers.length === 0
+                          ? `No ${openInfo.label} extensions yet.`
+                          : null}
+                  </div>
+                ) : shelves ? (
+                  <div className="flex flex-col gap-4">
+                    {[
+                      ...shelves.filter((sh) => sh.id === "featured"),
+                      "kits" as const,
+                      ...shelves.filter((sh) => sh.id !== "featured"),
+                    ].map((sh) =>
+                      sh === "kits" ? (
+                        <KitShelf key="kits" kits={homeKits} onOpen={(id) => useExtStoreUI.getState().openKit(id)} />
+                      ) : (
+                        <Shelf
+                          key={sh.id}
+                          title={sh.title}
+                          items={sh.items}
+                          thumbs={thumbs}
+                          busy={busy}
+                          onOpen={openDetail}
+                          onInstall={install}
                         />
-                      ))}
+                      ),
+                    )}
+                  </div>
+                ) : (
+                  <div className={expanded ? EXPANDED_GRID : "grid grid-cols-4 gap-2"}>
+                    {browsable?.map((r, i) => (
+                      <ExtensionCard
+                        key={r.fullName}
+                        index={i}
+                        result={r}
+                        thumb={thumbs[r.fullName] ?? r.thumbnail ?? null}
+                        installing={busy === r.fullName}
+                        disabled={busy !== null}
+                        onOpen={() => openDetail(r.fullName)}
+                        onInstall={() => void install(r.fullName, r)}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {hiddenUnverified > 0 && (
+                  <div className="text-text-muted">
+                    {`${hiddenUnverified} unverified ${
+                      hiddenUnverified === 1 ? "extension" : "extensions"
+                    } hidden — “Only verified extensions” is on (Preferences ▸ Extensions).`}
+                  </div>
+                )}
+
+                {/* Import custom extension */}
+                <div className="border-t border-border-subtle pt-3">
+                  <SectionLabel>Import custom extension</SectionLabel>
+                  <div className="mt-1 flex gap-1.5">
+                    <input
+                      value={spec}
+                      onChange={(e) => setSpec(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && spec.trim() && busy === null)
+                          void install(spec.trim());
+                      }}
+                      placeholder="owner/repo, owner/repo#branch, or GitHub URL"
+                      aria-label="Install extension from GitHub (owner/repo, branch, or URL)"
+                      spellCheck={false}
+                      className="min-w-0 flex-1 rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
+                    />
+                    <button
+                      disabled={busy !== null || !spec.trim()}
+                      onClick={() => void install(spec.trim())}
+                      className="rounded bg-surface-3 px-2.5 py-1 font-medium text-text-secondary hover:bg-surface-4 hover:text-text-primary disabled:opacity-40"
+                    >
+                      {busy === spec.trim() ? "…" : "Import"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-text-muted">
+                Installing extensions requires the desktop app. Built-in extensions
+                can still be managed under Installed.
+              </div>
+            )
+          ) : (
+            // ── Installed: external installs first, then the built-ins ──
+            (() => {
+              const iq = installedQuery.trim().toLowerCase();
+              const match = (name: string, desc?: string) =>
+                !iq ||
+                name.toLowerCase().includes(iq) ||
+                (desc ?? "").toLowerCase().includes(iq);
+              const installed = list.filter((m) => match(m.name, m.description));
+              const builtins = BUILTIN_EXTENSIONS.filter((b) =>
+                match(b.name, b.description),
+              );
+              return (
+                <div className="flex flex-col gap-3">
+                  <input
+                    value={installedQuery}
+                    onChange={(e) => setInstalledQuery(e.target.value)}
+                    placeholder="Filter installed extensions…"
+                    aria-label="Filter installed extensions"
+                    spellCheck={false}
+                    className="rounded bg-surface-2 px-2 py-1 text-text-primary outline-none placeholder:text-text-muted focus:bg-surface-3"
+                  />
+
+                  {native && (
+                    <div>
+                      <SectionLabel>Installed</SectionLabel>
+                      {list.length === 0 ? (
+                        <div className="mt-1 text-text-muted">
+                          No extensions installed. Extensions register panels,
+                          themes and layouts that appear in the View menu and
+                          Preferences.
+                        </div>
+                      ) : installed.length === 0 ? (
+                        <div className="mt-1 text-text-muted">No matches.</div>
+                      ) : (
+                        <div className={`mt-1 ${rows}`}>
+                          {installed.map((m) => {
+                            const upd = updates[m.id];
+                            const repo = repoFor(m);
+                            const canUpdate =
+                              !!upd?.hasUpdate && !!upd.latestTag && !!repo && !upd.requiresApp;
+                            return (
+                              <ExtensionRow
+                                key={m.id}
+                                id={m.id}
+                                name={m.name}
+                                version={m.version}
+                                repo={repo}
+                                description={m.description}
+                                enabled={enabled(m.id)}
+                                busy={busy !== null}
+                                hasSettings={!!extSettings[m.id]}
+                                onOpen={() => openDetail(repo ?? m.id)}
+                                onUpdate={
+                                  canUpdate
+                                    ? () => void update(m.id, repo!)
+                                    : undefined
+                                }
+                                onSettings={() => openSettings(m.id)}
+                                onToggle={() => toggle(m.id, !enabled(m.id))}
+                                onUninstall={() => void remove(m.id)}
+                              />
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   )}
-                </div>
 
-                {msg && <div className="text-text-secondary">{msg}</div>}
-              </div>
-            );
-          })()
-        )}
+                  <div>
+                    <SectionLabel>Built-in</SectionLabel>
+                    {builtins.length === 0 ? (
+                      <div className="mt-1 text-text-muted">No matches.</div>
+                    ) : (
+                      <div className={`mt-1 ${rows}`}>
+                        {builtins.map((b) => (
+                          <ExtensionRow
+                            key={b.id}
+                            id={b.id}
+                            name={b.name}
+                            version={b.version}
+                            description={b.description}
+                            enabled={b.locked || enabled(b.id)}
+                            locked={b.locked}
+                            busy={busy !== null}
+                            hasSettings={!!extSettings[b.id]}
+                            onOpen={() => openDetail(b.id)}
+                            onSettings={() => openSettings(b.id)}
+                            onToggle={() => toggle(b.id, !enabled(b.id))}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()
+          )}
+        </div>
+        {statusFooter}
       </div>
     </div>
   );
@@ -961,6 +1023,7 @@ export function ExtensionManagerPanel() {
 // (hidden for locked core), and Uninstall (external only). Clicking the
 // name/description opens the detail page.
 function ExtensionRow({
+  id,
   name,
   version,
   description,
@@ -975,6 +1038,7 @@ function ExtensionRow({
   onToggle,
   onUninstall,
 }: {
+  id: string;
   name: string;
   version: string;
   description?: string;
@@ -993,6 +1057,9 @@ function ExtensionRow({
   const vstatus = useVerificationStatus(repo, version);
   const reviewed = useReviewedFor(repo);
   const banned = useBannedReason(repo);
+  const stageFailures = useStageFailuresOf(id);
+  const callbackFailure = useCallbackFailures((s) => s[id]);
+  const startFailure = useStartFailures((s) => s[id]);
   return (
     <div
       className={`flex items-start justify-between gap-2 rounded bg-surface-2 px-2 py-1.5 ${
@@ -1022,6 +1089,23 @@ function ExtensionRow({
         </div>
         {description && (
           <div className="truncate text-text-muted">{description}</div>
+        )}
+        {startFailure && (
+          <div className="whitespace-normal break-words text-danger" title={startFailure.message}>
+            {startFailure.reason === "timed out"
+              ? "Didn't start: it took too long to start."
+              : `Didn't start: ${startFailure.message}`}
+          </div>
+        )}
+        {stageFailures.map((f) => (
+          <div key={f.stageId} className="truncate text-danger" title={f.log}>
+            {`Stage "${f.stageId}" failed to compile and is off: ${firstLogLine(f.log)}`}
+          </div>
+        ))}
+        {callbackFailure && (
+          <div className="truncate text-danger" title={callbackFailure.error}>
+            {`Its ${callbackFailure.kind} kept failing and is off: ${callbackFailure.error}`}
+          </div>
         )}
       </button>
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
@@ -1059,7 +1143,7 @@ function ExtensionRow({
             disabled={busy}
             onClick={onUninstall}
             title="Remove the extension and delete its files"
-            className="rounded px-1.5 py-0.5 text-text-muted hover:bg-surface-4 hover:text-text-primary"
+            className="ml-2 rounded px-1.5 py-0.5 text-text-muted hover:bg-surface-4 hover:text-text-primary"
           >
             Uninstall
           </button>

@@ -18,11 +18,12 @@ import type { ResolvedPipeline } from "@/extensions/pipelines";
 import type { ProcessingStageContribution, SafelightAPI } from "@/extensions/types";
 import { BUILTIN_EXTENSIONS } from "@/extensions/builtin";
 import { CORE_EXTENSION_ID } from "@/extensions/core-extension";
-import { useRegistry } from "@/extensions/registry";
 import { buildIccProfile } from "@/rendering/color-space";
 import { parseDisplayProfile, type MonitorTransform } from "@/rendering/display-profile";
 import type { Vec3 } from "@/rendering/stage-space";
-import { WebGLRenderer, type WebGLRendererOpts } from "./renderer";
+import { deriveStageValues } from "../stage-derive";
+import { WebGLRenderer, type StageDerive, type WebGLRendererOpts } from "./renderer";
+import { BASIC_EXTENSION_ID, CROP_EXTENSION_ID, DETAIL_EXTENSION_ID, HEAL_EXTENSION_ID, MASKS_EXTENSION_ID, essentialStages, type EssentialLine } from "./essential-stages.fixtures";
 import { V2_VARIANT } from "./shaders";
 import { PASS_VERTEX_SHADER, buildStageInjection } from "./stage-injection";
 
@@ -109,12 +110,21 @@ export function releaseProgram(gl: WebGL2RenderingContext, build: ProgramBuild):
   if (build.program) gl.deleteProgram(build.program);
 }
 
-/** Build a renderer on the shared canvas, hand it to `fn`, and dispose it. */
+const NO_SETTINGS: Readonly<Record<string, unknown>> = {};
+
+/** What the stages derive from the params as they are, with no extension
+ *  settings stored: the window's derive with nothing set and every essential
+ *  running. */
+export const deriveWithoutSettings: StageDerive = (params, stages) =>
+  deriveStageValues(params, stages, { settingsFor: () => NO_SETTINGS });
+
+/** Build a renderer on the shared canvas, hand it to `fn`, and dispose it.
+ *  It derives with deriveWithoutSettings unless `opts` says otherwise. */
 export function withRenderer<T>(
   opts: WebGLRendererOpts | undefined,
   fn: (renderer: WebGLRenderer) => T,
 ): T {
-  const renderer = new WebGLRenderer(glHarness().canvas, opts);
+  const renderer = new WebGLRenderer(glHarness().canvas, { derive: deriveWithoutSettings, ...opts });
   try {
     return fn(renderer);
   } finally {
@@ -128,7 +138,9 @@ export function withRenderer<T>(
  *  both. Throws with the info log of the first pass that fails. */
 function compilePassPrograms(opts: WebGLRendererOpts | undefined): void {
   const { gl } = glHarness();
-  const stages = opts?.stages ?? Object.values(useRegistry.getState().processingStages);
+  const given = opts?.stages ?? [];
+  const set = typeof given === "function" ? given() : given;
+  const stages = Array.isArray(set) ? set : Object.values(set);
   for (const stage of buildStageInjection(stages, V2_VARIANT).prepass) {
     stage.passes.forEach((pass, index) => {
       const build = buildProgram(gl, PASS_VERTEX_SHADER, pass.fragmentSource);
@@ -144,16 +156,25 @@ function compilePassPrograms(opts: WebGLRendererOpts | undefined): void {
  *  version builds the develop programs; a frame with an empty param bag runs no
  *  prepass, so the pass programs are compiled directly. A display transform
  *  that fails to build throws nothing: the renderer logs a "[pipeline]" error
- *  and draws with the built-in, so that error is the build error here. */
+ *  and draws with the built-in, so that error is the build error here. Nor does
+ *  an extension stage that fails: the renderer quarantines it and draws without
+ *  it, so the log it reports is. */
 export function rendererBuildError(opts?: WebGLRendererOpts): string | null {
   const logError = console.error;
   const fallbacks: string[] = [];
   console.error = (...args: unknown[]) => {
-    if (typeof args[0] === "string" && args[0].startsWith("[pipeline]")) fallbacks.push(args.map(String).join(" "));
-    else logError.apply(console, args);
+    const first = typeof args[0] === "string" ? args[0] : "";
+    if (first.startsWith("[pipeline]")) fallbacks.push(args.map(String).join(" "));
+    // The quarantine's own log: reported through onStageQuarantined.
+    else if (!first.startsWith('[renderer] stage "')) logError.apply(console, args);
+  };
+  const quarantined: string[] = [];
+  const reporting: WebGLRendererOpts = {
+    ...opts,
+    onStageQuarantined: (q) => quarantined.push(`${q.stageId}: ${q.log}`),
   };
   try {
-    withRenderer(opts, (renderer) => {
+    withRenderer(reporting, (renderer) => {
       renderer.setImage(floatImage(1, 1, () => [0.18, 0.18, 0.18]));
       // The newest version first, version 2 unless the options raise the cap:
       // with the stock transform and no stages, a fresh renderer's signatures
@@ -164,6 +185,7 @@ export function rendererBuildError(opts?: WebGLRendererOpts): string | null {
         renderer.render();
       }
     });
+    if (quarantined.length > 0) return quarantined[0];
     if (fallbacks.length > 0) return fallbacks[0];
     compilePassPrograms(opts);
     return null;
@@ -174,11 +196,53 @@ export function rendererBuildError(opts?: WebGLRendererOpts): string | null {
   }
 }
 
-/** The processing stages the shipped app registers (vignette, grain and the
- *  built-in denoiser). They live inside the "core" built-in extension's
- *  activate(), so the only way to reach the real GLSL is to run it against a
- *  recording API — the alternative, a hand-copied duplicate, would drift. */
-export function builtinStages(): ProcessingStageContribution[] {
+/** The processing stages the shipped app runs with every Essential installed:
+ *  the "core" built-in extension's (the core tools and the built-in denoiser),
+ *  read by running its activate() against a recording API, then the Essentials'
+ *  at release line `line` (core's vendored copies, essential-stages.fixtures.ts). */
+export function builtinStages(
+  line: EssentialLine = 3,
+): (ProcessingStageContribution & { extensionId?: string })[] {
+  return [...coreStages(), ...essentialStages(line)];
+}
+
+/** Basic's stages at release line `line`: its tone block (which carries the
+ *  default highlight shoulder) and display blocks, which the program had as
+ *  core's own until Basic left core. Line N is what a version N photo
+ *  rendered with then. */
+export function basicStages(line: EssentialLine = 3): (ProcessingStageContribution & { extensionId: string })[] {
+  return essentialStages(line).filter((s) => s.extensionId === BASIC_EXTENSION_ID);
+}
+
+/** Crop & Straighten's geometry stage, the same on every line: the crop and
+ *  the straighten/transform matrix the program had as core's own until Crop
+ *  left core. */
+export function cropStages(): (ProcessingStageContribution & { extensionId: string })[] {
+  return essentialStages().filter((s) => s.extensionId === CROP_EXTENSION_ID);
+}
+
+/** Detail's sharpening stage, the same on every line, which the program had as
+ *  core's own until Detail left core. */
+export function detailStages(): (ProcessingStageContribution & { extensionId: string })[] {
+  return essentialStages().filter((s) => s.extensionId === DETAIL_EXTENSION_ID);
+}
+
+/** Heal's spot stage at release line `line`, which the program had as core's
+ *  own until Heal left core. */
+export function healStages(line: EssentialLine = 3): (ProcessingStageContribution & { extensionId: string })[] {
+  return essentialStages(line).filter((s) => s.extensionId === HEAL_EXTENSION_ID);
+}
+
+/** basicStages at the line a `processVersion` photo had (identityParams'
+ *  default, version 1, when unset). */
+export function basicStagesFor(
+  processVersion: number = LEGACY_PROCESS_VERSION,
+): (ProcessingStageContribution & { extensionId: string })[] {
+  return basicStages(Math.min(Math.max(processVersion, 1), 3) as EssentialLine);
+}
+
+/** The stages the "core" built-in extension registers. */
+function coreStages(): ProcessingStageContribution[] {
   const core = BUILTIN_EXTENSIONS.find((e) => e.id === CORE_EXTENSION_ID);
   if (!core) throw new Error("no core built-in extension");
   const stages: ProcessingStageContribution[] = [];
@@ -638,4 +702,26 @@ export function measurementViews(): [string, (r: WebGLRenderer) => void][] {
       r.setProofSpace("adobe-rgb");
     }],
   ];
+}
+
+/** healStages at the line a `processVersion` photo had (identityParams'
+ *  default, version 1, when unset). */
+export function healStagesFor(
+  processVersion: number = LEGACY_PROCESS_VERSION,
+): (ProcessingStageContribution & { extensionId: string })[] {
+  return healStages(Math.min(Math.max(processVersion, 1), 3) as EssentialLine);
+}
+
+/** Masking's stage at release line `line`: the mask and component uniforms
+ *  and compCoverage the program had as core's own until Masking left core. */
+export function masksStages(line: EssentialLine = 3): (ProcessingStageContribution & { extensionId: string })[] {
+  return essentialStages(line).filter((s) => s.extensionId === MASKS_EXTENSION_ID);
+}
+
+/** masksStages at the line a `processVersion` photo had (identityParams'
+ *  default, version 1, when unset). */
+export function masksStagesFor(
+  processVersion: number = LEGACY_PROCESS_VERSION,
+): (ProcessingStageContribution & { extensionId: string })[] {
+  return masksStages(Math.min(Math.max(processVersion, 1), 3) as EssentialLine);
 }

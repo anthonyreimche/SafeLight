@@ -37,7 +37,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useCatalogStore } from "@/state/catalog-store";
 import { usePhotoActions } from "./photo-actions";
-import { rawPhoto } from "./raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
 // A surface that lists photos: right-clicking its one cell targets `cell`.
 function Surface({ cell }: { cell: string }) {

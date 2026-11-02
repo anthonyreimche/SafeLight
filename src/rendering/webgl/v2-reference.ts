@@ -17,65 +17,83 @@
 // shadows lift for Active D-Lighting (uBaselineShadows), which the tone block
 // applies to each pixel and its region before the photo's own Shadows.
 
+// Re-baselined as the core tools move onto the stage path (#178), each time
+// with the programs in program-reference.ts unchanged:
+// - 2026-10-30, Effects: the six `*/meta` hashes, for Vignette's and Grain's
+//   bindings from the frame's bag.
+// - 2026-10-30, Color Grading: `*/uniforms`, `*/helpers` and `*/meta` (its
+//   bindings and anchor), as its block moved from the template to its stage.
+// - 2026-10-30, HSL: the same three per config, for applyHSL and its bands.
+// - 2026-10-30, Tone Curve: the same three, for applyToneCurve and its table.
+// - 2026-10-30, White Balance: `*/uniforms` and `*/meta`, for its sliders.
+// - 2026-10-30, Basic and Sharpening: `*/uniforms` and `*/meta`, for their
+//   sliders and anchors.
+// - 2026-10-31, Effects left core (Phase 4): the six `*/meta` hashes, for
+//   Vignette's and Grain's bindings under the Effects extension's stage ids.
+// - 2026-10-31, Color Grading left core: the six `*/meta` hashes, for its
+//   bindings under the Color Grading extension's stage id.
+// - 2026-10-31, HSL left core: `*/uniforms` and `*/meta`, as its stage took
+//   over uHslRange and uHslSmooth from the program and its id changed.
+// - 2026-10-31, Tone Curve left core: the six `*/meta` hashes, for its table's
+//   texture binding under the Tone Curve extension's stage id.
+// - 2026-10-31, White Balance left core: the six `*/meta` hashes, for its two
+//   sliders' bindings under the White Balance extension's stage id.
+// - 2026-11-01, Basic left core: the six `*/meta` hashes, for its thirteen
+//   sliders' bindings under the Basic extension's five stage ids.
+// - 2026-11-01, Detail left core: the six `*/meta` hashes, for its four
+//   sharpening sliders' bindings under the Detail extension's stage id.
+// - 2026-11-01, Crop & Straighten left core: `*/uniforms`, `*/helpers` and
+//   `*/meta`, for its geometry uniforms, cropTransformUV and their bindings.
+// - 2026-11-01, Heal left core: `*/uniforms`, `*/helpers` and `*/meta`, for
+//   its spot uniforms and constants, its helpers and their bindings.
+// - 2026-11-01, Masking left core: `*/uniforms`, `*/helpers` and `*/meta`,
+//   for its mask and component uniforms, compCoverage and their bindings.
+//
+// From 2026-10-30 the assembled programs (the `*/shader/*` hashes) are frozen
+// with every version's in program-reference.ts, which took them over while
+// these still passed.
+
 export const V2_REFERENCE: Readonly<Record<string, string>> = {
   "builtin/effects": "6039aff0794c47e3a45fcdee57dfcafe301ce1c9f06fd36d4f844422615789d5",
-  "builtin/helpers": "8dcbd66ab5f26c9d1d944ead85b6014c3e789ea89a04521d451af6e40404448d",
-  "builtin/meta": "310fdb2ce9eb5865b81f1acf0dbe7e090b01d90db03fe5d9d0bf848b6a536ad9",
+  "builtin/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "builtin/meta": "ebde3148edee7a7c59b1200dc483ad08647a0b8342e35f5daa81cb0adfbd37ce",
   "builtin/noiseReduction": "eef65e49a5de2300be39305d91aa23064dbd08364090027345a4ccf7113261a3",
   "builtin/sceneLinear": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "builtin/shader/builtin": "2683974498c6572604c5d2228c1f59e891e78d1af57b78f9c29f2779081735c4",
-  "builtin/shader/custom": "8344f4a4854a84c44096b2c0dcf769e83158169d9c2f540162945042f3bfe46f",
-  "builtin/shader/rec2020": "b5fd69b38cffa5b18e2220ecd3e19211713908e0fc5cf8cb3d326ad06baf4c8f",
   "builtin/srcUv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "builtin/uniforms": "963f2e5c47dcd11d937e8a8c3677f11c2ca9fa4bcd8819c33ab5c7d81a07372b",
+  "builtin/uniforms": "d567f6382b6baedd5a2cb880f40d5ae8dd764f0b13f19e9b5c976aead119a6dc",
   "layered/effects": "6039aff0794c47e3a45fcdee57dfcafe301ce1c9f06fd36d4f844422615789d5",
-  "layered/helpers": "8dcbd66ab5f26c9d1d944ead85b6014c3e789ea89a04521d451af6e40404448d",
-  "layered/meta": "a1098359b8c6bc72166804afa984864780dc11a421dbc5be1102135d3a79c3c6",
+  "layered/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "layered/meta": "80864346df45535cf6aabb386ec8e53a7961006d5eeb2ad5a5fe4bc51996904d",
   "layered/noiseReduction": "609911b73568fd5e28d594956b1e799d374018ddc337b4b82ca8f2a1deb1fffe",
   "layered/sceneLinear": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "layered/shader/builtin": "882d56be3fa66e13e4b8c37ebd3ab4cbcf92b3576c3c0302d17709052f27d81d",
-  "layered/shader/custom": "98e19d7f3317a8ee09930229f2d77d4c86c428ab3a1e6f9e2a0dd0b6fd8444ca",
-  "layered/shader/rec2020": "44803b275699f04e243c453bedeb8d1c0d67897535f7532157467013ce2dcfa3",
   "layered/srcUv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "layered/uniforms": "b7a6ce8d58ae742412e85a985ca5131f7baf39745a3533838acece34c232ae8a",
+  "layered/uniforms": "1975c3a97280bfe1d88051cbdbc086e8fd1d7975658adab06f50a03287cca877",
   "legacyExtensions/effects": "c04e12b8aace174150d0d78fa27f7bab7d042777c191c05027c419b873de3753",
-  "legacyExtensions/helpers": "bddbc707f779b26e33fa0829d60de08f63a1cc47c7910a596b4d1f596abd5760",
-  "legacyExtensions/meta": "8043617941009d276738bc60b8fc944e2b6379599f2bd32f9fa26c030f5797ed",
+  "legacyExtensions/helpers": "c972cd6ced350b161be748ac13c083d3903419ef7afd3b1608d92e89533c380b",
+  "legacyExtensions/meta": "2216d55ab0ccac61011ef307bccdf5df69bc1c6f2b54466dbc3a65a53a191319",
   "legacyExtensions/noiseReduction": "ed6a9fc5191520336c0b703811bcae7117d3f5093ab55db6940162d6c99ff784",
   "legacyExtensions/sceneLinear": "8dbffc7a5b765c59116c415438cbfb600a99d0d49255ed2d928af732383310b6",
-  "legacyExtensions/shader/builtin": "9ab26cdc56db587579334a31d7345fd66e9803c26ff82e9eaa194814fc5aa063",
-  "legacyExtensions/shader/custom": "a92a1c0a24629510aff6c97cb93d9bfe662dafde4729fb3d1788e2042ca562b2",
-  "legacyExtensions/shader/rec2020": "06b5939ad75eda0cc587ce42b44a1dd08de3992782068214a9a42700ab96e169",
   "legacyExtensions/srcUv": "5e65c39113bf763c3c3ad5eecc1cbe34b202d939b2876d2800c25d85c2750bf5",
-  "legacyExtensions/uniforms": "58df837a027b3ac12d15f2437700a19a162f32ee8f59d8d268d0aaba13ad9c95",
+  "legacyExtensions/uniforms": "a3818e0295e86345e4c5f11c9bf80967fb4534fc83f5afdcf6295b5b3af6a1c6",
   "sceneLuma/effects": "d81c06c341905e950a23c9ec6f85be2e9c971a2795ff4ee36c898b73f5941778",
-  "sceneLuma/helpers": "8dcbd66ab5f26c9d1d944ead85b6014c3e789ea89a04521d451af6e40404448d",
-  "sceneLuma/meta": "995db2ec1f007777ae7d7df1e25b3bf973c583982d0eeecf02d1e710e5f3e471",
+  "sceneLuma/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "sceneLuma/meta": "85941a8a2355959061c6bf28ed31b09a2257596487f22a87fed2fd36d941fdae",
   "sceneLuma/noiseReduction": "eef65e49a5de2300be39305d91aa23064dbd08364090027345a4ccf7113261a3",
   "sceneLuma/sceneLinear": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "sceneLuma/shader/builtin": "b81423d090e0c025b215e89faed0b310633273bd685a44aeccbbda4d699cfb6e",
-  "sceneLuma/shader/custom": "207ff8ddae1a16954dcd046952e2e61a01db24de307142e0075e62d74cba93db",
-  "sceneLuma/shader/rec2020": "d0e36f08ea24fd53e9f78e0aa77cf1a76b60fda555611671380f497813a7bcd1",
   "sceneLuma/srcUv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "sceneLuma/uniforms": "540724077a43b52d6a61bd1e4c603ac7f405eedcdc43f6c50b15beb5fe9dc242",
+  "sceneLuma/uniforms": "0376c1be48d560d7ab609cdbbc6fb95e402bdffb87eb4e6a6cbf7aefcb0f2bfb",
   "spaced/effects": "1fc9966285706d38b2b3d6dd03d49b51feb6cac495a670c3615351fb9cc303b1",
-  "spaced/helpers": "8dcbd66ab5f26c9d1d944ead85b6014c3e789ea89a04521d451af6e40404448d",
-  "spaced/meta": "99fc9e35de955e21402b11bb3d04cd039b1b6f4ba47c4a0e96aa48989e46ef08",
+  "spaced/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "spaced/meta": "59be795f2a45f5ceadf1fd3b3394f33156642b15575c766caf9a1f72eba2a9a3",
   "spaced/noiseReduction": "eef65e49a5de2300be39305d91aa23064dbd08364090027345a4ccf7113261a3",
   "spaced/sceneLinear": "60b28a243584743c6c534cbb4c8765070d878edae953c00987daf8e374ddc1b9",
-  "spaced/shader/builtin": "f06a1984e45fe9c5eedbe1298764272e81918ccdb93983142e45cb96ef51f9d0",
-  "spaced/shader/custom": "63c3bf0a04b36eff12dfc6edfb92fd21788a00219d6cd07edfa0bac2a4dbed34",
-  "spaced/shader/rec2020": "ca3be113ced024959b8c6e4af7a564b3ec04228e043871ba51512287d08ca604",
   "spaced/srcUv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "spaced/uniforms": "d6d2f4daa56b2c8c8b6b2259380319c9b055356b9b419a4e700f31599fae18c3",
+  "spaced/uniforms": "2a0f80e5adb11c995e4d980763278ba59769c5f5edb01140f7d273fac10c7135",
   "splits/effects": "58db012f651270c0649bc0999f84139b6ef5503f4140991bf9dbb776b97253be",
-  "splits/helpers": "8dcbd66ab5f26c9d1d944ead85b6014c3e789ea89a04521d451af6e40404448d",
-  "splits/meta": "e56ec8f41ac6c90d14fa6459eb498d0378b485f6b1bcf7c092de93601a2b89e0",
+  "splits/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "splits/meta": "97587ed523cd9e173826496f82a34b06f56b7b91a8ffc5e5987ee434c59819cd",
   "splits/noiseReduction": "eb150c7463d7ed266799e45b9bd42b9337ace137b4aa311fb1ba90661e364838",
   "splits/sceneLinear": "9f469ec2d54f78f2fac6fa6a543f84bf799dfd190301c453dac30c4989c0a502",
-  "splits/shader/builtin": "4a5f76be0f993194ffc8c3250d5d48337d0f7d6b9d4e256820e95eb9d3e10706",
-  "splits/shader/custom": "bcc78872838c5d259d5e934dce0c1ccfdc47b6d09045fda970442c325f4c6436",
-  "splits/shader/rec2020": "515e5f8c55567111e35e63b8f5f14928f84963fe5ac6e93a3411ba16dcac19fa",
   "splits/srcUv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "splits/uniforms": "c206fd988ec12052c2b61ba707d3447699ca97f62b95273198f927996b67f2e5",
+  "splits/uniforms": "47a8b5650577e934dff977a7846ade0069e96d366905b41de9fe0111b8c88b0e",
 };

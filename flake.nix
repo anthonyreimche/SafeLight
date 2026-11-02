@@ -79,7 +79,7 @@
           desktopItems = [
             (pkgs.makeDesktopItem {
               name = "safelight";
-              exec = "safelight %U";
+              exec = "safelight %F";
               icon = "safelight";
               desktopName = "Safelight";
               comment = pkg.description or "Fast RAW photo editor";

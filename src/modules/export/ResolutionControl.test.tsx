@@ -21,7 +21,6 @@ import {
 describe("parseLongEdge", () => {
   it("parses and rounds positive numbers", () => {
     expect(parseLongEdge("3000")).toBe(3000);
-    expect(parseLongEdge("2048.6")).toBe(2049);
     expect(parseLongEdge(" 1500 ")).toBe(1500);
   });
 
@@ -35,6 +34,12 @@ describe("parseLongEdge", () => {
     expect(parseLongEdge("abc")).toBeNull();
     expect(parseLongEdge("0")).toBeNull();
     expect(parseLongEdge("-500")).toBeNull();
+  });
+
+  it("rejects a separator rather than truncating it", () => {
+    expect(parseLongEdge("2.048")).toBeNull();
+    expect(parseLongEdge("2,048")).toBeNull();
+    expect(parseLongEdge("2048.6")).toBeNull();
   });
 });
 

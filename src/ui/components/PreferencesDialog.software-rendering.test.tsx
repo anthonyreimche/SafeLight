@@ -3,8 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Preferences ▸ Rendering ▸ Software rendering: Linux only. Safelight turns it
-// on by itself when the graphics card can't run WebGL2 (a VirtualBox guest);
+// Preferences ▸ Rendering ▸ Software rendering: wherever the GPU bridge reports a
+// backend. Safelight turns it on by itself when the graphics card can't run
+// WebGL2 (a VirtualBox guest);
 // the switch says so and is the way back. The backend is picked before the
 // window exists, so a change applies at the next start.
 
@@ -18,10 +19,15 @@ import type { NativeGpuBackendState } from "@/extensions/types";
 // Claimed once, at the first privileged call, so it's in place before any import.
 const native = vi.hoisted(() => {
   const gpu = { backend: vi.fn(), setSoftware: vi.fn() };
-  const bridge = { platform: "linux", claimPrivileged: () => ({ fs: {}, updates: {}, gpu }) };
+  const claim = vi.fn(() => ({ fs: {}, updates: {}, gpu }));
+  const bridge = { platform: "linux", claimPrivileged: claim };
   (globalThis as { safelightNative?: unknown }).safelightNative = bridge;
-  return { gpu, bridge };
+  return { gpu, bridge, claim };
 });
+
+// Boot claims the privileged bridge after the app's modules load; Preferences must
+// not claim it first, while it builds its search index.
+const claimedAtImport = native.claim.mock.calls.length;
 
 class SilentChannel {
   postMessage(): void {}
@@ -54,8 +60,18 @@ const showRendering = () => {
 const softwareSwitch = () => screen.findByRole("switch", { name: "Software rendering" });
 
 describe("Preferences ▸ Rendering ▸ Software rendering", () => {
-  it("isn't offered outside Linux", async () => {
-    native.bridge.platform = "win32";
+  it("leaves the privileged bridge unclaimed while Preferences loads", () => {
+    expect(claimedAtImport).toBe(0);
+  });
+
+  it.each(["win32", "darwin", "linux"])("is offered on %s", async (platform) => {
+    native.bridge.platform = platform;
+    showRendering();
+    expect(await softwareSwitch()).toBeTruthy();
+  });
+
+  it("isn't offered when the bridge reports no backend", async () => {
+    native.gpu.backend.mockImplementation(() => Promise.resolve(null));
     showRendering();
     await act(async () => {});
     expect(screen.queryByRole("switch", { name: "Software rendering" })).toBeNull();

@@ -125,21 +125,21 @@ vi.mock("@/raw/accept-decode", async (importOriginal) => {
   };
 });
 
-vi.mock("@/modules/library/raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: () => h.previewResult(),
 }));
 
-vi.mock("@/modules/library/netpbm", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/netpbm")>()),
+vi.mock("@/raw/netpbm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/netpbm")>()),
   decodeNetpbm: () => {
     h.plainDecoders.push("netpbm");
     return h.plainResult();
   },
 }));
 
-vi.mock("@/modules/library/tiff-image", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/tiff-image")>()),
+vi.mock("@/raw/tiff-image", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/tiff-image")>()),
   decodeTiff: () => {
     h.plainDecoders.push("tiff");
     return h.plainResult();

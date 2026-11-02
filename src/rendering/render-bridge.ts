@@ -3,25 +3,34 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import type { CropRect, DevelopParams, UprightMode } from "@/catalog/types";
-import type { UprightResult } from "./upright";
+import type { CropRect, DevelopParams } from "@/catalog/types";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import type { ResolvedPipeline } from "@/extensions/pipelines";
-import { resolvePipelineFor, usePipelineStore } from "@/extensions/pipelines";
-import { onStagesReleased, useRegistry } from "@/extensions/registry";
-import { bagForRender, derivedEntries } from "@/extensions/transform-derive";
+import { resolvePipelineFor } from "@/extensions/pipelines";
 import type { HistogramData } from "./histogram";
-import type { WorkerRequest, WorkerResponse } from "./render-worker";
+import type {
+  DevelopedPixels, SourceImage, ThumbEncodeOptions, ThumbRequest, WorkerRequest,
+} from "./render-protocol";
 import type { ProbePoint } from "./webgl/renderer";
-import { getSettings, useSettings } from "@/state/settings-store";
 import type { MonitorTransform } from "./display-profile";
-import { activeMonitorTransform, useDisplayProfile } from "./display-profile-store";
 import type { ColorSpaceId, DisplaySpace } from "./color-space";
-import { currentDisplaySpace, subscribeDisplaySpace } from "./display-space";
 import {
   DEFAULT_CAPTURE_SPACE, captureMaxEdge, type FloatCaptureOptions, type FloatFrame, type LiveFloatCaptureOptions,
 } from "./float-frame";
-import type { Float16Source, SourceSample, StoredSample } from "./source-sample";
+import type { SourceSample, StoredSample } from "./source-sample";
+import { setSourcePixels } from "./source-pixels";
+import {
+  RenderTransport, type AvailabilityCallback, type RendererAvailability, type WorkerAnswer,
+} from "./render-bridge/transport";
+import { RenderRequests, blankBitmap } from "./render-bridge/requests";
+import { RenderMailbox } from "./render-bridge/mailbox";
+import { ParamSync, derivedFor } from "./render-bridge/param-sync";
+import { stagesForWorker, unwireBridge, wireBridge } from "./render-bridge/wiring";
+import { forgetStageFailures, recordStageFailure, stageFailureText } from "./render-bridge/stage-failures";
+import { useRegistry } from "@/extensions/registry";
+
+export type { RendererAvailability } from "./render-bridge/transport";
+export { getStageTextures, setStageTexture, stagesForWorker } from "./render-bridge/wiring";
 
 export interface FrameResult {
   bitmap: ImageBitmap;
@@ -51,69 +60,13 @@ export interface FrameResult {
   overflowedStages: readonly string[];
 }
 
-export interface ThumbnailResult {
-  requestId: string;
-  blob: Blob;
-}
-
 type FrameCallback = (frame: FrameResult) => void;
 type HistogramCallback = (histogram: HistogramData) => void;
-type ThumbnailCallback = (result: ThumbnailResult) => void;
-type UprightCallback = (result: UprightResult) => void;
 type ErrorCallback = (message: string) => void;
 /** The number (RenderBridge.sourceGen) of a develop source the worker couldn't take,
  *  and why. */
 type SourceErrorCallback = (sourceGen: number, message: string) => void;
-/** Whether the worker's develop renderer exists: "starting" until the first
- *  init settles, "retrying" while a failed init is being re-attempted,
- *  "failed" once the retry budget is spent. */
-export type RendererAvailability = "starting" | "ready" | "retrying" | "failed";
-type AvailabilityCallback = (availability: RendererAvailability, detail?: string) => void;
-
-// Retry ladder for a worker whose WebGL2 context could not be created. After a
-// GPU reset Chromium refuses 3D contexts to the page for a while — up to two
-// minutes once resets repeat — and the crash-recovery reload lands inside that
-// window, so the first init after a recovery fails although the GPU is back.
-// About 2½ minutes of retries outlasts the block; a GPU that never comes back
-// ends in "failed" instead of a silent, permanently grey Develop view.
-const INIT_RETRY_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 30_000, 30_000, 30_000];
-// A render the worker hasn't answered in this long is given up on, so a reply that
-// never comes can't hold the next render back for good. A worker drawing a heavy photo
-// says nothing until each render is done, as one that stopped does, so once one of its
-// last RENDER_TIMES_KEPT answers took longer, it gets SLOW_RENDER_ALLOWANCE times the
-// slowest of them instead.
-const RENDER_WATCHDOG_MS = 2_000;
-const RENDER_TIMES_KEPT = 8;
-const SLOW_RENDER_ALLOWANCE = 3;
-// While a render given up on may still be answered, the one sent after it isn't timed:
-// the worker may only be slow. One that says nothing at all for this long has stopped,
-// or lost both answers, and gets the newest request anyway.
-const RENDER_BACKSTOP_MS = 30_000;
-type HealSourceCallback = (src: { data: Uint8ClampedArray; width: number; height: number }) => void;
-/** What the render waiting in the mailbox asks for besides the frame. */
-interface WaitingRender {
-  wantHistogram: boolean;
-  wantExtended: boolean;
-}
-/** What a thumbnail request is answered with: its blob, or its frame as floats. */
-type ThumbAnswer = Extract<WorkerResponse, { type: "thumbnail" | "thumbnailFloat" }>;
-/** A thumbnail's source when the request carries it rather than naming a resident one. */
-export type ThumbImage = Extract<WorkerRequest, { cmd: "renderThumbnail" }>["image"];
-/** One thumbnail render, from the thumb renderer's resident source under `key` or
- *  from `image`, which it doesn't keep. Exclusive: given both, `key` would win and
- *  the image be cloned into a post that ignores it. */
-export type ThumbRequest = {
-  requestId: string;
-  params: DevelopParams;
-  asShotTemperature: number;
-  maxEdge: number;
-  contributedParams?: Record<string, unknown>;
-} & ({ key: string; image?: never } | { image: ThumbImage; key?: never });
-
-type SourceImage =
-  | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean; baselineExposure?: number; baselineShadows?: number }
-  | Float16Source
-  | { kind: "bitmap"; bitmap: ImageBitmap };
+type SourcePixelsCallback = (src: { data: Uint8ClampedArray; width: number; height: number }) => void;
 
 /** What moves to the worker with a source rather than being copied: its pixels,
  *  and the sample a cached preview carries (8 MB). */
@@ -130,139 +83,69 @@ function floatRead(opts: Pick<FloatCaptureOptions, "point" | "space">): Pick<Flo
   return { point: opts.point ?? "pre-output", space: opts.space ?? DEFAULT_CAPTURE_SPACE };
 }
 
-/** The top-level fields of `next` that `last` lacks or holds another value in, each the
- *  very value `next` holds. */
-function changedFields<T extends object>(last: T, next: T): Partial<T> {
-  const set: Partial<T> = {};
-  for (const key in next) {
-    if (!Object.hasOwn(last, key) || !Object.is(last[key], next[key])) set[key] = next[key];
-  }
-  return set;
-}
-
 export class RenderBridge {
-  private worker: Worker;
-  private readyResolve: (() => void) | null = null;
+  private readonly transport: RenderTransport;
+  private readonly requests: RenderRequests;
+  private readonly mailbox: RenderMailbox;
+  private readonly paramSync: ParamSync;
+  /** Settles once the worker's renderer is ready, or once the bridge gives up on it
+   *  (availability "failed") or is disposed: it never rejects, so read `availability`
+   *  or `pipelineFloat` after it. */
   readonly ready: Promise<void>;
-  // Whether the worker's WebGL2 context has renderable float color buffers. Set
-  // from the "ready" message; governs the pipeline's working precision (see
-  // WebGLRenderer.colorBufferFloat). Undefined until ready resolves.
-  pipelineFloat: boolean | undefined;
   private onFrame: FrameCallback | null = null;
   private onHistogram: HistogramCallback | null = null;
-  private onThumbnail: ThumbnailCallback | null = null;
-  private onUpright: UprightCallback | null = null;
   private onError: ErrorCallback | null = null;
   private onSourceError: SourceErrorCallback | null = null;
-  private onHealSource: HealSourceCallback | null = null;
-  private onAvailability: AvailabilityCallback | null = null;
-  availability: RendererAvailability = "starting";
-  // Why the last init failed, while availability is "retrying" or "failed".
-  private availabilityDetail: string | undefined;
-  private initArgs: { width: number; height: number } | null = null;
-  private initAttempt = 0;
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  private disposed = false;
-  // Settled with the request's answer, or with null when the worker reports a cache
-  // miss (the caller then decodes + uploads + retries) or a failure.
-  private thumbResolvers = new Map<string, (answer: ThumbAnswer | null) => void>();
-  private uprightResolvers = new Map<number, (result: UprightResult) => void>();
-  private sourceBoundResolvers = new Map<number, (hit: boolean) => void>();
-  private hasSourceResolvers = new Map<number, (has: boolean) => void>();
-  private captureResolvers = new Map<number, (bitmap: ImageBitmap) => void>();
-  private floatCaptureResolvers = new Map<number, (frame: FloatFrame | null) => void>();
-  private sourceSampleResolvers = new Map<number, (sample: SourceSample | null) => void>();
-  private probeResolvers = new Map<number, (rgb: [number, number, number] | null) => void>();
-  private reqIdSeq = 0;
-  // The live photo's display-transform pick, mirrored from the params the
-  // develop view sends, so the live pipeline follows the photo and can be
-  // re-resolved when the registry or the Preferences default changes.
-  private liveDisplayTransform: string | null = null;
-  private livePipelineSent = false;
-  // The params last handed to the worker, whole or by patches. A fresh renderer has seen
-  // none.
-  private lastPostedParams: DevelopParams | null = null;
-  // The param bag last handed to the worker, whole or by patches. A fresh renderer has
-  // seen none.
-  private lastPostedBag: Record<string, unknown> | null = null;
-  // The live bag as the Develop view offered it, before the live transform's
-  // derived uniforms were added, so a transform switch can re-derive them.
-  private liveBag: Record<string, unknown> | null = null;
-  // The render mailbox: the seq of the one render the worker is drawing, and the newest
-  // request made since, which goes when that one is answered. The worker draws renders
-  // in the order they come, so posting each request while it is slower than the display
-  // queues a backlog the view plays back after the user lets go.
-  private renderSeq = 0;
-  private renderInFlight: number | null = null;
-  // What the render in flight asked for besides the frame.
-  private renderInFlightWants: WaitingRender | null = null;
-  // When the render in flight started to be timed: its post, or `ready` for one posted
-  // before it. null while it isn't timed.
-  private renderSince: number | null = null;
-  private renderWatchdog: ReturnType<typeof setTimeout> | null = null;
-  private renderWaiting: WaitingRender | null = null;
-  // The render last given up on while its answer may still come. The worker draws renders
-  // in order, so until it answers that one or the one sent after it, another render sent
-  // would only queue behind them.
-  private renderOverdue: { seq: number; since: number } | null = null;
-  // How long, in ms, the worker took over each of its last answers.
-  private renderTimes: number[] = [];
-  private renderBackstop: ReturnType<typeof setTimeout> | null = null;
-  // When the worker last said anything, or the backstop last sent a render.
-  private quietSince = 0;
+  private onSourcePixels: SourcePixelsCallback | null = null;
   private sourcesBound = 0;
+  // The source number clearSource was called at: its pixels may still be on their way.
+  private pixelsClearedGen: number | null = null;
+  // The ids of the stages last posted, to tell when the set loses one.
+  private postedStageIds: ReadonlySet<string> = new Set();
 
   constructor() {
-    this.worker = new Worker(
-      new URL("./render-worker.ts", import.meta.url),
-      { type: "module" },
-    );
-    this.ready = new Promise<void>((resolve) => {
-      this.readyResolve = resolve;
+    this.transport = new RenderTransport({
+      message: (msg) => this.handleMessage(msg),
+      beforeInit: () => {
+        this.paramSync.reset();
+        this.mailbox.clear();
+        forgetStageFailures();
+        // The worker builds its first develop program while it handles init, from the
+        // stages and pipeline it holds by then, so the current ones go first: on a
+        // retry too, since either may have changed while the last init was failing.
+        this.syncStages();
+        this.syncPipeline();
+      },
+      ready: () => this.mailbox.armWatchdog(),
+      stopped: () => this.mailbox.clear(),
+      settlePending: () => this.requests.settleAll(),
+      error: (message) => this.onError?.(message),
     });
-    this.worker.onmessage = this.handleMessage;
-    this.worker.onerror = (e) => {
-      this.onError?.(e.message ?? "Worker error");
-    };
+    this.ready = this.transport.ready;
+    this.requests = new RenderRequests(this.transport);
+    this.mailbox = new RenderMailbox(
+      this.transport,
+      () => this.transport.unresponsive(),
+      () => this.requests.longRunning,
+    );
+    this.paramSync = new ParamSync(this.transport);
   }
 
-  private handleMessage = (e: MessageEvent<WorkerResponse>) => {
-    const msg = e.data;
-    this.quietSince = performance.now();
+  /** Whether the worker's WebGL2 context has renderable float color buffers;
+   *  undefined until the worker reports ready. */
+  get pipelineFloat(): boolean | undefined {
+    return this.transport.pipelineFloat;
+  }
+
+  get availability(): RendererAvailability {
+    return this.transport.availability;
+  }
+
+  private handleMessage(msg: WorkerAnswer) {
+    const requests = this.requests;
     switch (msg.type) {
-      case "ready":
-        this.pipelineFloat = msg.pipelineFloat;
-        this.setAvailability("ready");
-        this.armRenderWatchdog();
-        this.readyResolve?.();
-        this.readyResolve = null;
-        break;
-      case "initError": {
-        this.clearRenderMailbox();
-        const delay = this.initArgs ? INIT_RETRY_MS[this.initAttempt] : undefined;
-        if (delay === undefined) {
-          this.setAvailability("failed", msg.message);
-          this.onError?.(`renderer unavailable: ${msg.message}`);
-          break;
-        }
-        this.initAttempt++;
-        this.setAvailability("retrying", msg.message);
-        this.onError?.(`renderer init failed (${msg.message}); retrying in ${delay / 1000}s`);
-        this.retryTimer = setTimeout(() => {
-          this.retryTimer = null;
-          this.postInit();
-        }, delay);
-        break;
-      }
       case "frame": {
-        // A frame that put off mask copies' prepasses is followed by a render of
-        // the same state, asking what it asked, unless a render already waits to
-        // be that one.
-        const again =
-          msg.prepassPending && msg.seq === this.renderInFlight && !this.renderWaiting
-            ? this.renderInFlightWants
-            : null;
-        this.renderAnswered(msg.seq);
+        const again = this.mailbox.answered(msg.seq, msg.prepassPending);
         if (again) this.render(again.wantHistogram, again.wantExtended);
         // No view listens (Develop closed, or between one photo's view and the
         // next's): nothing will close the bitmap, which holds a decoded image.
@@ -292,10 +175,10 @@ export class RenderBridge {
         break;
       }
       case "frameSkipped":
-        this.renderAnswered(msg.seq);
+        this.mailbox.answered(msg.seq);
         break;
       case "renderError":
-        this.renderAnswered(msg.seq);
+        this.mailbox.answered(msg.seq);
         this.onError?.(`render failed: ${msg.message}`);
         break;
       case "sourceError":
@@ -305,151 +188,84 @@ export class RenderBridge {
       case "histogram":
         this.onHistogram?.(msg.histogram);
         break;
+      // A thumbnail request settles once, by its requestId: with its answer, or with
+      // null for a miss or a failure.
       case "thumbnail":
-        this.settleThumbnail(msg.requestId, msg);
-        this.onThumbnail?.({ requestId: msg.requestId, blob: msg.blob });
-        break;
       case "thumbnailFloat":
-        this.settleThumbnail(msg.requestId, msg);
+        requests.answer(requests.thumbs, msg.requestId, msg);
         break;
       case "thumbnailMiss":
-        this.settleThumbnail(msg.requestId, null);
+        requests.answer(requests.thumbs, msg.requestId, null);
         break;
       case "thumbnailError":
         // Reject the pending request (null -> renderThumbnailAsync rejects) so the
         // caller stops awaiting and can retry on the next edit, then surface the
         // underlying cause for diagnosis.
-        this.settleThumbnail(msg.requestId, null);
+        requests.answer(requests.thumbs, msg.requestId, null);
         this.onError?.(`thumbnail render failed: ${msg.message}`);
         break;
-      case "sourceBound": {
+      case "sourceBound":
         if (msg.hit) this.sourcesBound++;
-        const resolver = this.sourceBoundResolvers.get(msg.reqId);
-        if (resolver) {
-          this.sourceBoundResolvers.delete(msg.reqId);
-          resolver(msg.hit);
-        }
+        requests.answer(requests.sourceBound, msg.reqId, msg.hit);
+        break;
+      case "hasSource":
+        requests.answer(requests.hasSource, msg.reqId, msg.has);
+        break;
+      case "captured":
+        // Given up on, or never asked: nothing will close it otherwise.
+        if (!requests.answer(requests.captures, msg.reqId, msg.bitmap)) msg.bitmap.close();
+        break;
+      case "capturedFloat":
+        requests.answer(requests.floatCaptures, msg.reqId, msg.frame);
+        break;
+      case "sourceSample":
+        requests.answer(requests.sourceSamples, msg.reqId, msg.sample);
+        break;
+      case "probed":
+        requests.answer(requests.probes, msg.reqId, msg.rgb);
+        break;
+      case "developedPixels":
+        requests.answer(requests.pixels, msg.reqId, msg.pixels);
+        break;
+      case "developedPixelsError":
+        // Settle the pending read with nothing so the awaiting caller unblocks
+        // instead of hanging, then surface the cause.
+        requests.answer(requests.pixels, msg.reqId, null);
+        this.onError?.(`reading the developed frame failed: ${msg.message}`);
+        break;
+      case "sourcePixels":
+        // Pixels sent before the last source was handed over, or before it was cleared,
+        // are another photo's.
+        if (msg.sourceGen !== this.sourcesBound || msg.sourceGen === this.pixelsClearedGen) break;
+        this.onSourcePixels?.({ data: msg.data, width: msg.width, height: msg.height });
+        break;
+      case "stageQuarantined": {
+        const stage = { stageId: msg.stageId, signature: msg.signature, log: msg.log };
+        recordStageFailure(stage);
+        this.onError?.(stageFailureText(stage, useRegistry.getState().processingStages));
         break;
       }
-      case "hasSource": {
-        const resolver = this.hasSourceResolvers.get(msg.reqId);
-        if (resolver) {
-          this.hasSourceResolvers.delete(msg.reqId);
-          resolver(msg.has);
-        }
-        break;
-      }
-      case "captured": {
-        const resolver = this.captureResolvers.get(msg.reqId);
-        if (resolver) {
-          this.captureResolvers.delete(msg.reqId);
-          resolver(msg.bitmap);
-        }
-        break;
-      }
-      case "capturedFloat": {
-        const resolver = this.floatCaptureResolvers.get(msg.reqId);
-        if (resolver) {
-          this.floatCaptureResolvers.delete(msg.reqId);
-          resolver(msg.frame);
-        }
-        break;
-      }
-      case "sourceSample": {
-        const resolver = this.sourceSampleResolvers.get(msg.reqId);
-        if (resolver) {
-          this.sourceSampleResolvers.delete(msg.reqId);
-          resolver(msg.sample);
-        }
-        break;
-      }
-      case "probed": {
-        const resolver = this.probeResolvers.get(msg.reqId);
-        if (resolver) {
-          this.probeResolvers.delete(msg.reqId);
-          resolver(msg.rgb);
-        }
-        break;
-      }
-      case "upright": {
-        const resolver = this.uprightResolvers.get(msg.reqId);
-        if (resolver) {
-          this.uprightResolvers.delete(msg.reqId);
-          resolver(msg.result);
-        }
-        this.onUpright?.(msg.result);
-        break;
-      }
-      case "uprightError": {
-        // Settle the pending computeUpright with a zero (no-op) result so the
-        // awaiting caller unblocks instead of hanging, then surface the cause.
-        const resolver = this.uprightResolvers.get(msg.reqId);
-        if (resolver) {
-          this.uprightResolvers.delete(msg.reqId);
-          resolver({ straighten: 0, perspectiveV: 0, perspectiveH: 0 });
-        }
-        this.onError?.(`upright analysis failed: ${msg.message}`);
-        break;
-      }
-      case "healSource":
-        this.onHealSource?.({ data: msg.data, width: msg.width, height: msg.height });
-        break;
       case "error":
         // Not tied to a request, so per-request resolvers can't be settled from
         // here; each request path posts its own settling response on failure.
         this.onError?.(msg.message);
         break;
     }
-  };
+  }
 
   // ------------------------------------------------------------------
   // Lifecycle
   // ------------------------------------------------------------------
 
   init(width: number, height: number) {
-    this.initArgs = { width, height };
-    this.initAttempt = 0;
-    this.postInit();
-  }
-
-  private postInit() {
-    if (!this.initArgs) return;
-    this.lastPostedParams = null;
-    this.lastPostedBag = null;
-    this.clearRenderMailbox();
-    // The worker builds its first develop program while it handles init, from the
-    // stages and pipeline it holds by then, so the current ones go first: on a
-    // retry too, since either may have changed while the last init was failing.
-    this.syncStages();
-    this.syncPipeline();
-    // The worker's settings-store can't reach localStorage, so read the
-    // High-bit-depth preference here (main thread) and hand it across.
-    this.post({ cmd: "init", ...this.initArgs, highBitDepth: getSettings().highBitDepth });
-  }
-
-  private setAvailability(availability: RendererAvailability, detail?: string) {
-    this.availability = availability;
-    this.availabilityDetail = detail;
-    this.onAvailability?.(availability, detail);
+    this.transport.init(width, height);
   }
 
   dispose() {
-    if (this.disposed) return;
-    this.disposed = true;
-    if (this.retryTimer) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-    }
-    this.clearRenderMailbox();
-    // terminate() tears down the worker (and its GL context) synchronously; a
-    // "dispose" message would be preempted by it, so don't bother sending one.
-    this.worker.terminate();
-    // It will never answer, and an eyedropper awaits its probe, an extension
-    // its float frame.
-    for (const pending of [this.probeResolvers, this.floatCaptureResolvers, this.sourceSampleResolvers]) {
-      for (const resolve of pending.values()) resolve(null);
-      pending.clear();
-    }
+    if (this.transport.disposed) return;
+    this.paramSync.dispose();
+    this.mailbox.clear();
+    this.transport.dispose();
   }
 
   // ------------------------------------------------------------------
@@ -458,15 +274,12 @@ export class RenderBridge {
 
   setOnFrame(cb: FrameCallback | null) { this.onFrame = cb; }
   setOnHistogram(cb: HistogramCallback | null) { this.onHistogram = cb; }
-  setOnThumbnail(cb: ThumbnailCallback | null) { this.onThumbnail = cb; }
-  setOnUpright(cb: UprightCallback | null) { this.onUpright = cb; }
   setOnError(cb: ErrorCallback | null) { this.onError = cb; }
   setOnSourceError(cb: SourceErrorCallback | null) { this.onSourceError = cb; }
-  setOnHealSource(cb: HealSourceCallback | null) { this.onHealSource = cb; }
+  setOnSourcePixels(cb: SourcePixelsCallback | null) { this.onSourcePixels = cb; }
   /** Reports the current availability at once, then every change. */
   setOnAvailability(cb: AvailabilityCallback | null) {
-    this.onAvailability = cb;
-    cb?.(this.availability, this.availabilityDetail);
+    this.transport.setOnAvailability(cb);
   }
 
   // ------------------------------------------------------------------
@@ -476,6 +289,8 @@ export class RenderBridge {
   /** The develop view moved to another photo: the worker draws no frame and measures
    *  no histogram until that photo's source is set or bound. */
   clearSource() {
+    this.pixelsClearedGen = this.sourcesBound;
+    setSourcePixels(new Uint8ClampedArray(0), 0, 0);
     this.post({ cmd: "clearSource" });
   }
 
@@ -491,11 +306,10 @@ export class RenderBridge {
     image: SourceImage,
     maxEdge?: number,
     isFallbackPreview?: boolean,
-    baseCurveForBitmap?: boolean,
   ) {
     const transfer = transferOf(image);
     this.post(
-      { cmd: "setImage", image, maxEdge, isFallbackPreview, baseCurveForBitmap },
+      { cmd: "setImage", image, maxEdge, isFallbackPreview },
       transfer,
     );
     this.sourcesBound++;
@@ -509,8 +323,8 @@ export class RenderBridge {
    *  true on a cache hit, false if the caller must decode + uploadSource. */
   bindSource(key: string): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      const reqId = ++this.reqIdSeq;
-      this.sourceBoundResolvers.set(reqId, resolve);
+      const reqId = this.requests.nextId();
+      this.requests.expect(this.requests.sourceBound, reqId, resolve, () => false);
       this.post({ cmd: "bindSource", reqId, key });
     });
   }
@@ -521,13 +335,12 @@ export class RenderBridge {
     image: SourceImage,
     maxEdge?: number,
     isFallbackPreview?: boolean,
-    baseCurveForBitmap?: boolean,
     // false = upload into the cache without changing the active source (prefetch).
     bind = true,
   ) {
     const transfer = transferOf(image);
     this.post(
-      { cmd: "uploadSource", target, key, image, maxEdge, isFallbackPreview, baseCurveForBitmap, bind },
+      { cmd: "uploadSource", target, key, image, maxEdge, isFallbackPreview, bind },
       transfer,
     );
     if (bind && target === "main") this.sourcesBound++;
@@ -536,8 +349,8 @@ export class RenderBridge {
   /** Is a source already resident in the given renderer's cache? */
   hasSource(target: "main" | "thumb", key: string): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      const reqId = ++this.reqIdSeq;
-      this.hasSourceResolvers.set(reqId, resolve);
+      const reqId = this.requests.nextId();
+      this.requests.expect(this.requests.hasSource, reqId, resolve, () => false);
       this.post({ cmd: "hasSource", reqId, target, key });
     });
   }
@@ -566,26 +379,24 @@ export class RenderBridge {
 
   // Render a thumbnail from a resident source. Resolves null on a cache miss so
   // the caller can decode + uploadSource("thumb", …) and retry.
-  renderThumbnailFromSource(opts: {
-    requestId: string;
-    key: string;
-    params: DevelopParams;
-    asShotTemperature: number;
-    maxEdge: number;
-    quality?: number;
-    // Encode the blob as a PNG instead of a JPEG, for a frame whose channel bytes
-    // carry data. Wins over `quality`.
-    lossless?: boolean;
-    // Per-render extension-stage params; the thumb renderer applies these for
-    // this render only, so a photo other than the live develop one renders with
-    // its own stage params rather than the active photo's.
-    contributedParams?: Record<string, unknown>;
-  }): Promise<Blob | null> {
+  // `lossless` wins over `quality`.
+  renderThumbnailFromSource(opts: ThumbEncodeOptions & { key: string }): Promise<Blob | null> {
     return new Promise<Blob | null>((resolve) => {
-      this.thumbResolvers.set(opts.requestId, (answer) => resolve(answer?.type === "thumbnail" ? answer.blob : null));
+      this.requests.expect(
+        this.requests.thumbs,
+        opts.requestId,
+        (answer) => resolve(answer?.type === "thumbnail" ? answer.blob : null),
+        () => null,
+      );
       const pipeline = resolvePipelineFor(opts.params.displayTransform);
-      const contributedParams = this.thumbBag(pipeline, opts.contributedParams);
-      this.post({ cmd: "renderThumbnailFromSource", ...opts, pipeline, contributedParams });
+      const contributedParams = this.paramSync.thumbBag(pipeline, opts.contributedParams);
+      this.post({
+        cmd: "renderThumbnailFromSource",
+        ...opts,
+        pipeline,
+        contributedParams,
+        derived: derivedFor(opts.params),
+      });
     });
   }
 
@@ -600,21 +411,7 @@ export class RenderBridge {
    *  first params, and the first after an init, go whole. Callers replace `params`,
    *  and each field in it, on change and never mutate one in place. */
   setParams(params: DevelopParams) {
-    if (!this.livePipelineSent || params.displayTransform !== this.liveDisplayTransform) {
-      this.liveDisplayTransform = params.displayTransform;
-      this.syncPipeline();
-    }
-    const last = this.lastPostedParams;
-    if (params === last) return;
-    if (!last) {
-      this.post({ cmd: "setParams", params });
-    } else {
-      const set = changedFields(last, params);
-      const remove = Object.keys(last).filter((key) => !Object.hasOwn(params, key));
-      if (remove.length === 0 && Object.keys(set).length === 0) return;
-      this.post({ cmd: "patchParams", set, remove });
-    }
-    this.lastPostedParams = params;
+    this.paramSync.setParams(params);
   }
 
   /** Generic param bag for extension-contributed processing-stage uniforms,
@@ -627,21 +424,7 @@ export class RenderBridge {
    *  the bag and the values in it on change and never mutate them. The live display
    *  transform's derived uniforms are added to it (bagForRender). */
   setContributedParams(bag: Record<string, unknown>) {
-    this.liveBag = bag;
-    this.postBag(bagForRender(resolvePipelineFor(this.liveDisplayTransform), bag));
-  }
-
-  private postBag(bag: Record<string, unknown>) {
-    const last = this.lastPostedBag;
-    if (!last) {
-      this.post({ cmd: "setContributedParams", bag });
-    } else {
-      const set = changedFields(last, bag);
-      const remove = Object.keys(last).filter((key) => !Object.hasOwn(bag, key));
-      if (remove.length === 0 && Object.keys(set).length === 0) return;
-      this.post({ cmd: "patchContributedParams", set, remove });
-    }
-    this.lastPostedBag = bag;
+    this.paramSync.setLiveBag(bag);
   }
 
   /** Pixel data (baked LUT atlases, etc.) for processing-stage textures, keyed
@@ -649,6 +432,12 @@ export class RenderBridge {
    *  transferred) so the caller keeps its buffers and can re-push on a swap. */
   setStageTextures(bag: Record<string, StageTextureData>) {
     this.post({ cmd: "setStageTextures", bag });
+  }
+
+  /** The stage textures set and the keys cleared since the bag last posted, whole
+   *  or by patches; the worker merges them into the bag it holds. */
+  patchStageTextures(set: Record<string, StageTextureData>, remove: string[]) {
+    this.post({ cmd: "patchStageTextures", set, remove });
   }
 
   /** Render one frame with `params` (at the current source + viewport) to an
@@ -662,14 +451,15 @@ export class RenderBridge {
     opts: { asShown?: boolean; paramBag?: Record<string, unknown> } = {},
   ): Promise<ImageBitmap> {
     return new Promise<ImageBitmap>((resolve) => {
-      const reqId = ++this.reqIdSeq;
-      this.captureResolvers.set(reqId, resolve);
+      const reqId = this.requests.nextId();
+      this.requests.expect(this.requests.captures, reqId, resolve, blankBitmap);
       const pipeline = resolvePipelineFor(params.displayTransform);
-      const bagPatch = this.capturePatch(pipeline, opts.paramBag);
+      const bagPatch = this.paramSync.capturePatch(pipeline, opts.paramBag);
       this.post({
         cmd: "capture",
         reqId,
         params,
+        derived: derivedFor(params),
         pipeline,
         asShown: opts.asShown === true,
         ...(bagPatch ? { bagPatch } : {}),
@@ -687,16 +477,17 @@ export class RenderBridge {
     params: DevelopParams,
     opts: LiveFloatCaptureOptions = {},
   ): Promise<FloatFrame | null> {
-    if (this.disposed) return Promise.resolve(null);
+    if (this.transport.disposed) return Promise.resolve(null);
     return new Promise<FloatFrame | null>((resolve) => {
-      const reqId = ++this.reqIdSeq;
-      this.floatCaptureResolvers.set(reqId, resolve);
+      const reqId = this.requests.nextId();
+      this.requests.expect(this.requests.floatCaptures, reqId, resolve, () => null, { long: true });
       const pipeline = resolvePipelineFor(params.displayTransform);
-      const bagPatch = this.capturePatch(pipeline, opts.paramBag);
+      const bagPatch = this.paramSync.capturePatch(pipeline, opts.paramBag);
       this.post({
         cmd: "captureFloat",
         reqId,
         params,
+        derived: derivedFor(params),
         pipeline,
         ...floatRead(opts),
         // Not in floatRead: the thumbnails that share it are drawn small already.
@@ -713,10 +504,10 @@ export class RenderBridge {
    *  the camera preview or a cache entry written before the sample was kept, or
    *  when disposed. */
   readSourceSample(): Promise<SourceSample | null> {
-    if (this.disposed) return Promise.resolve(null);
+    if (this.transport.disposed) return Promise.resolve(null);
     return new Promise<SourceSample | null>((resolve) => {
-      const reqId = ++this.reqIdSeq;
-      this.sourceSampleResolvers.set(reqId, resolve);
+      const reqId = this.requests.nextId();
+      this.requests.expect(this.requests.sourceSamples, reqId, resolve, () => null);
       this.post({ cmd: "readSourceSample", reqId });
     });
   }
@@ -728,10 +519,10 @@ export class RenderBridge {
    *  arrives, so it follows params posted before it. Null when the worker has
    *  nothing to read it from, or is disposed. */
   probe(u: number, v: number, point: ProbePoint): Promise<[number, number, number] | null> {
-    if (this.disposed) return Promise.resolve(null);
+    if (this.transport.disposed) return Promise.resolve(null);
     return new Promise<[number, number, number] | null>((resolve) => {
-      const reqId = ++this.reqIdSeq;
-      this.probeResolvers.set(reqId, resolve);
+      const reqId = this.requests.nextId();
+      this.requests.expect(this.requests.probes, reqId, resolve, () => null);
       this.post({ cmd: "probe", reqId, u, v, point });
     });
   }
@@ -756,12 +547,6 @@ export class RenderBridge {
     this.post({ cmd: "setAsShotTemperature", kelvin });
   }
 
-  /** Global HSL band shaping (Preferences ▸ HSL): range scales band widths,
-   *  smooth blends the falloff. Applies to the live develop renderer. */
-  setHslStyle(range: number, smooth: number) {
-    this.post({ cmd: "setHslStyle", range, smooth });
-  }
-
   // ------------------------------------------------------------------
   // Rendering
   // ------------------------------------------------------------------
@@ -771,157 +556,31 @@ export class RenderBridge {
    *  for, and goes once the worker answers. Messages that set state still go at once,
    *  so the worker has them before the render that waits. */
   render(wantHistogram = false, wantExtended = false) {
-    if (this.disposed) return;
-    if (this.renderInFlight === null) {
-      this.postRender({ wantHistogram, wantExtended });
-      return;
-    }
-    const waiting = this.renderWaiting;
-    this.renderWaiting = {
-      wantHistogram: wantHistogram || (waiting?.wantHistogram ?? false),
-      wantExtended: wantExtended || (waiting?.wantExtended ?? false),
-    };
+    this.mailbox.render(wantHistogram, wantExtended);
   }
 
-  private postRender(request: WaitingRender) {
-    const seq = ++this.renderSeq;
-    this.renderInFlight = seq;
-    this.renderInFlightWants = request;
-    this.renderSince = null;
-    this.armRenderWatchdog();
-    this.post({ cmd: "render", seq, ...request });
-  }
-
-  // Until `ready` the worker is creating its renderer and building the first program,
-  // which can take longer than the watchdog allows, and draws nothing before that is
-  // done. A render sent meanwhile holds the slot untimed and is timed from `ready`. One
-  // sent while a render given up on may still be answered waits behind it in the worker,
-  // so it is timed from its post, but only once that answer has come.
-  private armRenderWatchdog() {
-    const seq = this.renderInFlight;
-    if (seq === null || this.renderWatchdog || this.availability !== "ready") return;
-    const now = performance.now();
-    const since = (this.renderSince ??= now);
-    if (this.renderOverdue) {
-      this.armRenderBackstop();
-      return;
-    }
-    const giveUpMs = this.renderGiveUpMs();
-    this.renderWatchdog = setTimeout(() => {
-      this.renderWatchdog = null;
-      console.warn(`[render-bridge] render ${seq} not answered in ${Math.round(giveUpMs)} ms`);
-      this.renderOverdue = { seq, since };
-      this.sendWaitingRender();
-    }, Math.max(0, since + giveUpMs - now));
-  }
-
-  // The render in flight, untimed behind one given up on, becomes the one given up on
-  // once the worker has said nothing for RENDER_BACKSTOP_MS, and the newest request goes.
-  private armRenderBackstop() {
-    if (this.renderBackstop) return;
-    const check = () => {
-      const quiet = performance.now() - this.quietSince;
-      if (quiet < RENDER_BACKSTOP_MS) {
-        this.renderBackstop = setTimeout(check, RENDER_BACKSTOP_MS - quiet);
-        return;
-      }
-      this.renderBackstop = null;
-      const seq = this.renderInFlight;
-      if (seq === null) return;
-      console.warn(`[render-bridge] no word from the worker in ${RENDER_BACKSTOP_MS} ms`);
-      this.quietSince = performance.now();
-      this.renderOverdue = { seq, since: this.renderSince ?? this.quietSince };
-      this.sendWaitingRender();
-    };
-    const due = this.quietSince + RENDER_BACKSTOP_MS - performance.now();
-    this.renderBackstop = setTimeout(check, Math.max(0, due));
-  }
-
-  private renderGiveUpMs(): number {
-    const slowest = Math.max(0, ...this.renderTimes);
-    return slowest > RENDER_WATCHDOG_MS ? SLOW_RENDER_ALLOWANCE * slowest : RENDER_WATCHDOG_MS;
-  }
-
-  private noteRenderTime(since: number) {
-    this.renderTimes.push(performance.now() - since);
-    if (this.renderTimes.length > RENDER_TIMES_KEPT) this.renderTimes.shift();
-  }
-
-  // A seq neither in flight nor overdue belongs to a render the mailbox cleared, so its
-  // answer frees nothing. The worker answers renders in order: the answer to the one in
-  // flight means the one given up on before it will never be answered.
-  private renderAnswered(seq: number) {
-    const overdue = this.renderOverdue;
-    if (overdue?.seq === seq) {
-      this.noteRenderTime(overdue.since);
-      this.renderOverdue = null;
-      this.clearRenderBackstop();
-      this.armRenderWatchdog();
-      return;
-    }
-    if (seq !== this.renderInFlight) return;
-    if (this.renderSince !== null) this.noteRenderTime(this.renderSince);
-    this.renderOverdue = null;
-    this.sendWaitingRender();
-  }
-
-  private sendWaitingRender() {
-    const next = this.renderWaiting;
-    this.clearRenderSlot();
-    if (next) this.postRender(next);
-  }
-
-  private clearRenderSlot() {
-    if (this.renderWatchdog) clearTimeout(this.renderWatchdog);
-    this.renderWatchdog = null;
-    this.clearRenderBackstop();
-    this.renderInFlight = null;
-    this.renderSince = null;
-    this.renderWaiting = null;
-  }
-
-  private clearRenderBackstop() {
-    if (this.renderBackstop) clearTimeout(this.renderBackstop);
-    this.renderBackstop = null;
-  }
-
-  // Seqs keep counting, so an answer to a render from before can't free a later one.
-  private clearRenderMailbox() {
-    this.clearRenderSlot();
-    this.renderOverdue = null;
-  }
-
-  renderThumbnail(opts: {
-    requestId: string;
-    image: ThumbImage;
-    params: DevelopParams;
-    asShotTemperature: number;
-    maxEdge: number;
-    quality?: number;
-    lossless?: boolean;
-    contributedParams?: Record<string, unknown>;
+  renderThumbnail(opts: ThumbEncodeOptions & {
+    image: SourceImage;
     float?: Pick<FloatFrame, "point" | "space">;
   }) {
     const { image } = opts;
     const transfer = [image.kind === "bitmap" ? image.bitmap : image.data.buffer];
     const pipeline = resolvePipelineFor(opts.params.displayTransform);
-    const contributedParams = this.thumbBag(pipeline, opts.contributedParams);
-    this.post({ cmd: "renderThumbnail", ...opts, pipeline, contributedParams }, transfer);
+    const contributedParams = this.paramSync.thumbBag(pipeline, opts.contributedParams);
+    this.post(
+      { cmd: "renderThumbnail", ...opts, pipeline, contributedParams, derived: derivedFor(opts.params) },
+      transfer,
+    );
   }
 
-  renderThumbnailAsync(opts: {
-    requestId: string;
-    image: ThumbImage;
-    params: DevelopParams;
-    asShotTemperature: number;
-    maxEdge: number;
-    quality?: number;
-    lossless?: boolean;
-    contributedParams?: Record<string, unknown>;
-  }): Promise<Blob> {
+  renderThumbnailAsync(opts: ThumbEncodeOptions & { image: SourceImage }): Promise<Blob> {
     return new Promise<Blob>((resolve, reject) => {
-      this.thumbResolvers.set(opts.requestId, (answer) =>
-        answer?.type === "thumbnail" ? resolve(answer.blob) : reject(new Error("thumbnail render failed")),
+      this.requests.expect(
+        this.requests.thumbs,
+        opts.requestId,
+        (answer) =>
+          answer?.type === "thumbnail" ? resolve(answer.blob) : reject(new Error("thumbnail render failed")),
+        () => null,
       );
       this.renderThumbnail(opts);
     });
@@ -932,22 +591,31 @@ export class RenderBridge {
    *  linear Rec.709 unless asked otherwise. Drawn from the thumb renderer's
    *  resident source under `key`, or from `image`, which it doesn't keep. Null
    *  on a cache miss, as renderThumbnailFromSource resolves, and when the render
-   *  fails or the worker has no float render targets. A request made after
-   *  dispose resolves null; one in flight at dispose is never settled, like the
-   *  blob thumbnails. */
+   *  fails, the worker has no float render targets or doesn't answer, or the
+   *  bridge is disposed. */
   renderThumbnailFloat(
     opts: ThumbRequest & { float: Pick<FloatCaptureOptions, "point" | "space"> },
   ): Promise<FloatFrame | null> {
-    if (this.disposed) return Promise.resolve(null);
+    if (this.transport.disposed) return Promise.resolve(null);
     return new Promise<FloatFrame | null>((resolve) => {
-      this.thumbResolvers.set(opts.requestId, (answer) =>
-        resolve(answer?.type === "thumbnailFloat" ? answer.frame : null),
+      this.requests.expect(
+        this.requests.thumbs,
+        opts.requestId,
+        (answer) => resolve(answer?.type === "thumbnailFloat" ? answer.frame : null),
+        () => null,
       );
       const float = floatRead(opts.float);
       if (opts.key !== undefined) {
         const pipeline = resolvePipelineFor(opts.params.displayTransform);
-        const contributedParams = this.thumbBag(pipeline, opts.contributedParams);
-        this.post({ cmd: "renderThumbnailFromSource", ...opts, float, pipeline, contributedParams });
+        const contributedParams = this.paramSync.thumbBag(pipeline, opts.contributedParams);
+        this.post({
+          cmd: "renderThumbnailFromSource",
+          ...opts,
+          float,
+          pipeline,
+          contributedParams,
+          derived: derivedFor(opts.params),
+        });
       } else {
         this.renderThumbnail({ ...opts, float });
       }
@@ -983,22 +651,16 @@ export class RenderBridge {
    *  measurement rides on it: sent on its own, the worker would measure the render in
    *  flight, and the newer one waiting would go unmeasured. */
   computeHistogram(wantExtended?: boolean) {
-    const waiting = this.renderWaiting;
-    if (waiting) {
-      this.renderWaiting = {
-        wantHistogram: true,
-        wantExtended: waiting.wantExtended || !!wantExtended,
-      };
-      return;
-    }
-    this.post({ cmd: "computeHistogram", wantExtended });
+    this.mailbox.computeHistogram(wantExtended);
   }
 
-  computeUpright(mode: UprightMode): Promise<UprightResult> {
-    return new Promise<UprightResult>((resolve) => {
-      const reqId = ++this.reqIdSeq;
-      this.uprightResolvers.set(reqId, resolve);
-      this.post({ cmd: "analyzeUpright", reqId, mode });
+  /** The live photo's developed frame of the whole image, untransformed and
+   *  uncropped, with its long edge at `edge` px; null without a frame. */
+  readDevelopedPixels(edge: number): Promise<DevelopedPixels | null> {
+    return new Promise<DevelopedPixels | null>((resolve) => {
+      const reqId = this.requests.nextId();
+      this.requests.expect(this.requests.pixels, reqId, resolve, () => null, { long: true });
+      this.post({ cmd: "readDevelopedPixels", reqId, edge });
     });
   }
 
@@ -1007,12 +669,17 @@ export class RenderBridge {
   // ------------------------------------------------------------------
 
   setStages(stages: ProcessingStageContribution[]) {
+    const ids = new Set(stages.map((s) => s.id));
+    if ([...this.postedStageIds].some((id) => !ids.has(id))) forgetStageFailures();
+    this.postedStageIds = ids;
     this.post({ cmd: "setStages", stages });
   }
 
-  /** Re-send the processing stages the registry holds now. */
+  /** Re-send the processing stages the registry holds now, and the live
+   *  params' values they derive. */
   syncStages() {
-    this.setStages(Object.values(useRegistry.getState().processingStages));
+    this.setStages(stagesForWorker());
+    this.paramSync.refreshDerived();
   }
 
   setPipeline(pipeline: ResolvedPipeline) {
@@ -1022,215 +689,29 @@ export class RenderBridge {
   /** Re-send the live pipeline: the live photo's pick resolved against the
    *  current registry and Preferences default. */
   syncPipeline() {
-    this.livePipelineSent = true;
-    const pipeline = resolvePipelineFor(this.liveDisplayTransform);
-    this.setPipeline(pipeline);
-    // Its derived uniforms belong to the transform, so a switch re-derives the
-    // live bag. Before the first bag after an init there is nothing to update.
-    if (this.liveBag && this.lastPostedBag) {
-      this.postBag(bagForRender(pipeline, this.liveBag));
-    }
-  }
-
-  // A capture's bag patch, with the derived uniforms of the capture's
-  // transform for the live bag and the patch together.
-  private capturePatch(
-    pipeline: ResolvedPipeline,
-    patch: Record<string, unknown> | undefined,
-  ): Record<string, unknown> | undefined {
-    const derived = derivedEntries(pipeline, { ...this.liveBag, ...patch });
-    return Object.keys(derived).length === 0 ? patch : { ...patch, ...derived };
-  }
-
-  // A thumbnail's bag: its own with its transform's derived uniforms, or, for
-  // one drawn with the live bag, the live bag with them when there are any.
-  private thumbBag(
-    pipeline: ResolvedPipeline,
-    bag: Record<string, unknown> | undefined,
-  ): Record<string, unknown> | undefined {
-    if (bag) return bagForRender(pipeline, bag);
-    const derived = derivedEntries(pipeline, this.liveBag ?? {});
-    return Object.keys(derived).length === 0 ? undefined : { ...this.liveBag, ...derived };
-  }
-
-  // ------------------------------------------------------------------
-  // Internal
-  // ------------------------------------------------------------------
-
-  // A thumbnail request settles once, by its requestId: with its answer, or with
-  // null for a miss or a failure.
-  private settleThumbnail(requestId: string, answer: ThumbAnswer | null) {
-    const resolve = this.thumbResolvers.get(requestId);
-    if (!resolve) return;
-    this.thumbResolvers.delete(requestId);
-    resolve(answer);
+    this.paramSync.syncPipeline();
   }
 
   private post(msg: WorkerRequest, transfer?: Transferable[]) {
-    if (this.disposed) return;
-    if (transfer) {
-      this.worker.postMessage(msg, transfer);
-    } else {
-      this.worker.postMessage(msg);
-    }
+    this.transport.post(msg, transfer);
   }
 }
 
 // Singleton bridge — shared across all hooks that need rendering.
 let singleton: RenderBridge | null = null;
-let unsubStages: (() => void) | null = null;
-let unsubPipeline: (() => void) | null = null;
-let unsubSettings: (() => void) | null = null;
-let unsubMonitor: (() => void) | null = null;
-let unsubDisplaySpace: (() => void) | null = null;
-
-// Stage textures live here (not in the per-photo param bag — they're bulk static
-// data tied to the stage, not the edit). Extensions push via api.setStageTexture;
-// the bag is replayed when the bridge (re)initialises.
-const stageTextures: Record<string, StageTextureData> = {};
-
-// Stage and stage-texture changes don't flow through the param-driven develop
-// render effect, so an extension swapping a stage or its textures (e.g. picking
-// a film stock) wouldn't repaint until the next interaction. Redraw here,
-// rAF-debounced so a swap (re-register + N texture uploads) coalesces into one.
-let stageRenderRaf: number | null = null;
-function requestStageRender(): void {
-  if (!singleton || stageRenderRaf != null) return;
-  stageRenderRaf = requestAnimationFrame(() => {
-    stageRenderRaf = null;
-    singleton?.render(false);
-  });
-}
-
-/** Set or clear (null) a processing stage's texture by qualified key
- *  "{stageId}.{key}". Forwards the full bag to the worker. */
-export function setStageTexture(
-  qualifiedKey: string,
-  tex: StageTextureData | null,
-): void {
-  if (tex) stageTextures[qualifiedKey] = tex;
-  else delete stageTextures[qualifiedKey];
-  singleton?.setStageTextures(stageTextures);
-  requestStageRender();
-}
-
-/** Drop the textures of the stages a swept extension owned, so turning it off
- *  frees them here and, through the smaller bag, in the worker. A key belongs
- *  to the longest stage id it extends: a stage whose id extends a dropped one
- *  keeps its own. */
-function releaseStageTextures(stageIds: readonly string[]): void {
-  const released = new Set(stageIds);
-  const stages = [...stageIds, ...Object.keys(useRegistry.getState().processingStages)];
-  const ownerOf = (key: string): string => {
-    let owner = "";
-    for (const id of stages)
-      if (key.startsWith(`${id}.`) && id.length > owner.length) owner = id;
-    return owner;
-  };
-  const dropped = Object.keys(stageTextures).filter((key) => released.has(ownerOf(key)));
-  if (dropped.length === 0) return;
-  for (const key of dropped) delete stageTextures[key];
-  singleton?.setStageTextures(stageTextures);
-}
-onStagesReleased(releaseStageTextures);
-
-/** The current stage-texture bag (qualified key → data). Returned by reference;
- *  callers must not mutate. Used by the export pipeline to seed its own renderer
- *  with the same film LUTs / spectral tables the live renderer has, so stages
- *  that depend on uploaded textures (e.g. Spektrafilm) don't render black. */
-export function getStageTextures(): Record<string, StageTextureData> {
-  return stageTextures;
-}
-
-function syncStages() {
-  singleton?.syncStages();
-}
-
-function syncPipeline() {
-  singleton?.syncPipeline();
-}
 
 export function getRenderBridge(): RenderBridge {
   if (!singleton) {
     singleton = new RenderBridge();
     // init posts the current stages and pipeline ahead of itself.
     singleton.init(2560, 2560);
-
-    // Replay any stage textures registered before the bridge existed.
-    if (Object.keys(stageTextures).length > 0) singleton.setStageTextures(stageTextures);
-
-    // Push the GPU source-cache budget now and whenever the preference changes.
-    singleton.setCacheBudget(getSettings().gpuSourceCacheBytes);
-    let prevBudget = getSettings().gpuSourceCacheBytes;
-    unsubSettings = useSettings.subscribe((s) => {
-      if (s.gpuSourceCacheBytes !== prevBudget) {
-        prevBudget = s.gpuSourceCacheBytes;
-        singleton?.setCacheBudget(prevBudget);
-      }
-    });
-
-    // The display profile, now and whenever it changes; the worker starts
-    // without one.
-    let prevMonitor = activeMonitorTransform();
-    if (prevMonitor) singleton.setMonitorTransform(prevMonitor);
-    unsubMonitor = useDisplayProfile.subscribe(() => {
-      const next = activeMonitorTransform();
-      if (next === prevMonitor) return;
-      prevMonitor = next;
-      singleton?.setMonitorTransform(next);
-      requestStageRender();
-    });
-
-    // The space the screen shows, likewise; the worker starts in sRGB.
-    const startSpace = currentDisplaySpace();
-    if (startSpace !== "srgb") singleton.setDisplaySpace(startSpace);
-    unsubDisplaySpace = subscribeDisplaySpace((space) => {
-      singleton?.setDisplaySpace(space);
-      requestStageRender();
-    });
-
-    let prevStages = useRegistry.getState().processingStages;
-    let prevPipelines = useRegistry.getState().pipelines;
-    unsubStages = useRegistry.subscribe((s) => {
-      if (s.processingStages !== prevStages) {
-        prevStages = s.processingStages;
-        syncStages();
-        requestStageRender();
-      }
-      if (s.pipelines !== prevPipelines) {
-        prevPipelines = s.pipelines;
-        syncPipeline();
-        // A pipeline (display-transform) swap is silent like a stage swap:
-        // it updates renderer state but isn't param-driven, so force a redraw.
-        requestStageRender();
-      }
-    });
-    unsubPipeline = usePipelineStore.subscribe(() => {
-      syncPipeline();
-      // A new Preferences default changes what a photo without its own pick
-      // renders with; repaint, else the canvas keeps the previous transform
-      // until the next interaction.
-      requestStageRender();
-    });
+    wireBridge(singleton);
   }
   return singleton;
 }
 
 export function disposeRenderBridge() {
-  unsubStages?.();
-  unsubStages = null;
-  unsubPipeline?.();
-  unsubPipeline = null;
-  unsubSettings?.();
-  unsubSettings = null;
-  unsubMonitor?.();
-  unsubMonitor = null;
-  unsubDisplaySpace?.();
-  unsubDisplaySpace = null;
-  // A frame that hasn't run would hold back the next bridge's redraws until
-  // it does, and one that never runs (a hidden page) would hold them for good.
-  if (stageRenderRaf != null) cancelAnimationFrame(stageRenderRaf);
-  stageRenderRaf = null;
+  unwireBridge();
   singleton?.dispose();
   singleton = null;
 }

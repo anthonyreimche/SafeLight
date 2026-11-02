@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { RAW_EXTENSIONS } from "@/modules/library/raw-preview";
+import { RAW_EXTENSIONS } from "@/raw/raw-preview";
 
 // Best-effort scrubbing of text bound for a public issue: the folders of any
 // absolute path (the project's become <folder>, a home folder ~, the rest …),

@@ -5,17 +5,19 @@
 
 // slSceneLuma is the scene luminance the display transform would receive if
 // the core shoulder hadn't compressed it. Version 2's program records it;
-// version 1's text is frozen, so it doesn't.
+// version 1's text is frozen, so it doesn't. Basic's tone block, an
+// extension, records what the shoulder took off.
 
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PIPELINE_GLSL, V1_VARIANT, V2_VARIANT, buildFragmentShader } from "./shaders";
+import { shippedProgram, stockProgram } from "./stock-program.test-support";
+import { DEFAULT_PIPELINE_GLSL, V1_VARIANT, V2_VARIANT } from "./shaders";
 
 // Whitespace doesn't matter to GLSL, and the tone block wraps its long lines.
 const squeeze = (glsl: string): string => glsl.replace(/\s+/g, "");
 
 describe("slSceneLuma in the develop program", () => {
   it("is declared on version 2 after the scene-linear stages, before path-to-white and the transform", () => {
-    const src = squeeze(buildFragmentShader(DEFAULT_PIPELINE_GLSL, undefined, V2_VARIANT));
+    const src = squeeze(shippedProgram(V2_VARIANT, DEFAULT_PIPELINE_GLSL));
     const at = (glsl: string): number => src.indexOf(squeeze(glsl));
     const decl = at("float slSceneLuma = max(luma(lin), 0.0) * slShoulderGain;");
     expect(decl).toBeGreaterThan(0);
@@ -25,7 +27,7 @@ describe("slSceneLuma in the develop program", () => {
   });
 
   it("undoes the default shoulder on the pixel/region blend the tone block uses", () => {
-    const src = squeeze(buildFragmentShader(DEFAULT_PIPELINE_GLSL, undefined, V2_VARIANT));
+    const src = squeeze(shippedProgram(V2_VARIANT, DEFAULT_PIPELINE_GLSL));
     const at = (glsl: string): number => src.indexOf(squeeze(glsl));
     const declared = at("float curveRatio = 1.0;");
     const ratio = at(
@@ -42,9 +44,16 @@ describe("slSceneLuma in the develop program", () => {
   });
 
   it("is absent from version 1, whose text is frozen", () => {
-    const src = buildFragmentShader(DEFAULT_PIPELINE_GLSL, undefined, V1_VARIANT);
+    const src = shippedProgram(V1_VARIANT, DEFAULT_PIPELINE_GLSL);
     expect(src).not.toContain("slSceneLuma");
     expect(src).not.toContain("slShoulderGain");
     expect(src).not.toContain("curveRatio");
+  });
+
+  it("puts nothing back while Basic is away: its shoulder gain stands in as 1", () => {
+    const src = stockProgram(V2_VARIANT, DEFAULT_PIPELINE_GLSL);
+    expect(src).toContain("#define slShoulderGain 1.0");
+    expect(src).not.toContain("float slShoulderGain");
+    expect(src).toContain("float slSceneLuma = max(luma(lin), 0.0) * slShoulderGain;");
   });
 });

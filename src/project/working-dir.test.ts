@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Hoisted mock state so the vi.mock factories (hoisted above imports) can
 // reference it without a temporal-dead-zone error.
@@ -27,7 +27,13 @@ vi.mock("./native-fs", () => ({
 }));
 
 import { resolveWorkingDir, ReadOnlyProjectError } from "./working-dir";
-import { CatalogTooNewError, CatalogUnreadableError } from "./catalog-errors";
+import { ascii, buildTiff } from "@/catalog/tiff-fixture";
+import {
+  CatalogTooNewError,
+  CatalogUnreadableError,
+  FolderAccessDeniedError,
+  FolderUnavailableError,
+} from "./catalog-errors";
 
 // A .safelight handle that accepts the write-probe and the catalog-exists check.
 function writeableSl() {
@@ -82,7 +88,12 @@ function nativeBridge(opts: {
   pointers?: Record<string, string>;
   /** Files another program holds: reading them fails with EBUSY. */
   busy?: string[];
-  ext: (p: string, base: string | null, create: boolean) => Promise<string | null>;
+  /** The project folder isn't there (its drive was unplugged): the bridge lists it
+   *  as empty, as it lists any missing folder. */
+  rootGone?: boolean;
+  /** What listing the project folder fails with. */
+  rootListError?: Error;
+  ext: (p: string, base: string | null, create: boolean, variant?: number) => Promise<string | null>;
 }) {
   let clock = 1;
   const files = new Map<string, { data: Uint8Array; mtimeMs: number }>();
@@ -94,7 +105,7 @@ function nativeBridge(opts: {
   const under = (prefix: string, p: string) =>
     p === prefix || p.startsWith(prefix + "/") || p.startsWith(prefix + "\\");
   const bridge = {
-    exists: vi.fn(async (p: string) => files.has(p)),
+    exists: vi.fn(async (p: string) => (p === "/card" ? !opts.rootGone : files.has(p))),
     read: vi.fn(async (p: string) => {
       if (opts.busy?.includes(p)) throw new Error(`EBUSY: resource busy or locked, open '${p}'`);
       const f = files.get(p);
@@ -106,6 +117,16 @@ function nativeBridge(opts: {
     ),
     remove: vi.fn(async (p: string) => {
       for (const k of [...files.keys()]) if (under(p, k)) files.delete(k);
+    }),
+    list: vi.fn(async (dir: string) => {
+      if (dir === "/card" && opts.rootListError) throw opts.rootListError;
+      const kids = new Map<string, "file" | "directory">();
+      for (const p of files.keys()) {
+        if (!p.startsWith(`${dir}/`)) continue;
+        const [name, ...deeper] = p.slice(dir.length + 1).split("/");
+        kids.set(name, deeper.length > 0 ? "directory" : "file");
+      }
+      return [...kids].map(([name, kind]) => ({ name, kind }));
     }),
     externalCatalogDir: vi.fn(opts.ext),
     setSpilloverPointer: vi.fn(async (rp: string, dir: string) => void pointers.set(rp, dir)),
@@ -126,6 +147,9 @@ function nativeBridge(opts: {
   );
   return bridge;
 }
+
+/** The EXIF tag of the moment a photo was taken. */
+const DATE_TIME_ORIGINAL = 0x9003;
 
 const EROFS = () => new Error("EROFS: read-only file system, mkdir '/card/.safelight'");
 
@@ -375,6 +399,48 @@ describe("resolveWorkingDir", () => {
     expect(b._files.has("/data/card-abc/.safelight/catalog.json")).toBe(false); // spillover retired
   });
 
+  it("keeps only the newest copies of the catalogs earlier folds replaced", async () => {
+    const stamp = (n: number) => `2026-01-0${n}T00-00-00-000Z`;
+    const old = Object.fromEntries(
+      [1, 2, 3].map((n) => [`/card/.safelight/catalog.before-merge-${stamp(n)}.json`, `fold ${n}`]),
+    );
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: {
+        ...old,
+        "/card/.safelight/catalog.json.note": "not a copy",
+        "/data/card-abc/.safelight/catalog.json": '{"v":"read-only-edits"}',
+        "/data/card-abc/.safelight/.seeded": "/card",
+      },
+      ext: async () => "/data/card-abc/.safelight",
+    });
+
+    await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(b._files.has(`/card/.safelight/catalog.before-merge-${stamp(1)}.json`)).toBe(false);
+    expect(keptBeforeMerge(b).sort()).toEqual(['{"v":"in-folder"}', "fold 2", "fold 3"].sort());
+    expect(b._text("/card/.safelight/catalog.json.note")).toBe("not a copy");
+  });
+
+  it("still folds when the old copies can't be listed", async () => {
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: {
+        "/data/card-abc/.safelight/catalog.json": '{"v":"read-only-edits"}',
+        "/data/card-abc/.safelight/.seeded": "/card",
+      },
+      ext: async () => "/data/card-abc/.safelight",
+    });
+    b.list.mockImplementation(async (dir: string) => {
+      if (dir === "/card") return [{ name: ".safelight", kind: "directory" }];
+      throw new Error("EPERM");
+    });
+
+    await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"read-only-edits"}');
+  });
+
   it("changes nothing, and stops the open, when a newer version saved the spillover", async () => {
     const newer = '{"version":2,"photos":[],"edits":[]}';
     const b = nativeBridge({
@@ -602,5 +668,595 @@ describe("resolveWorkingDir", () => {
     // No redirect attempted: the separate location is never *created* (a read-only
     // promote-probe is harmless and doesn't count).
     expect(ext).not.toHaveBeenCalledWith("/card", null, true);
+  });
+});
+
+describe("resolveWorkingDir with a project folder that isn't there", () => {
+  const SAVED = '{"v":"spillover"}';
+
+  it("stops before a seeded spillover is touched, leaving it and its marker as they are", async () => {
+    const b = nativeBridge({
+      rootGone: true,
+      files: { [`${SPILL}/catalog.json`]: SAVED, ...SEEDED },
+      ext: async () => SPILL,
+    });
+    const before = new Map(b._files);
+
+    await expect(resolveWorkingDir(rootReturning(writeableSl()))).rejects.toBeInstanceOf(
+      FolderUnavailableError,
+    );
+
+    expect(b.externalCatalogDir).not.toHaveBeenCalled();
+    expect(b._files).toEqual(before);
+    expect(b._text(`${SPILL}/catalog.json`)).toBe(SAVED);
+    expect(b._text(`${SPILL}/.seeded`)).toBe("/card");
+  });
+
+  it("stops before an external-mode catalog is opened", async () => {
+    h.settings.catalogLocation = "external";
+    const b = nativeBridge({
+      rootGone: true,
+      files: { [`${SPILL}/catalog.json`]: SAVED },
+      ext: async () => SPILL,
+    });
+
+    await expect(resolveWorkingDir(rootReturning(writeableSl()))).rejects.toBeInstanceOf(
+      FolderUnavailableError,
+    );
+
+    expect(b.externalCatalogDir).not.toHaveBeenCalled();
+    expect(b._text(`${SPILL}/catalog.json`)).toBe(SAVED);
+  });
+
+  it("stops as a folder that can't be reached, and creates no catalog anywhere", async () => {
+    const b = nativeBridge({ rootGone: true, ext: async () => SPILL });
+    const root = rootReturning(writeableSl());
+
+    const error = await resolveWorkingDir(root).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(FolderUnavailableError);
+    expect((error as FolderUnavailableError).reason).toBe("ENOENT");
+    expect(root.getDirectoryHandle).not.toHaveBeenCalled();
+    expect(b.externalCatalogDir).not.toHaveBeenCalled();
+    expect(b.write).not.toHaveBeenCalled();
+  });
+
+  it.each(["ENODEV", "EIO", "ENOTCONN", "ESTALE"])(
+    "stops the same way when listing the folder fails with %s",
+    async (errno) => {
+      const b = nativeBridge({
+        rootListError: new Error(`${errno}: gone, scandir '/card'`),
+        ext: async () => SPILL,
+      });
+
+      await expect(resolveWorkingDir(rootReturning(writeableSl()))).rejects.toBeInstanceOf(
+        FolderUnavailableError,
+      );
+      expect(b.externalCatalogDir).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("resolveWorkingDir on macOS with the folder's volume not allowed", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("stops as a folder macOS keeps Safelight out of, and creates no separate catalog", async () => {
+    vi.stubGlobal("window", { safelightNative: { platform: "darwin" } });
+    const denied = () => new Error("EPERM: operation not permitted, scandir '/card'");
+    const b = nativeBridge({ rootListError: denied(), ext: async () => SPILL });
+    const root = rootThrowing(new Error("EPERM: operation not permitted, mkdir '/card/.safelight'"));
+
+    const error = await resolveWorkingDir(root).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(FolderAccessDeniedError);
+    expect((error as FolderAccessDeniedError).reason).toBe("EPERM");
+    expect(b.externalCatalogDir).not.toHaveBeenCalledWith("/card", null, true);
+    expect(root.getDirectoryHandle).not.toHaveBeenCalled();
+  });
+});
+
+const SPILL = "/data/card-abc/.safelight";
+const SEEDED = { [`${SPILL}/.seeded`]: "/card" };
+const editFile = (photoId: string, stamp?: [number, string], label = "edit") =>
+  JSON.stringify({
+    format: 1,
+    photoId,
+    ...(stamp ? { stamp } : {}),
+    stack: [{ timestamp: 1, label, params: {} }],
+    currentIndex: 0,
+  });
+const keptEdits = (b: ReturnType<typeof nativeBridge>): string[] =>
+  [...b._files.keys()].filter((path) =>
+    /^\/card\/\.safelight\/before-merge-[^/]+\/edits\//.test(path),
+  );
+const spilloverEdits = (b: ReturnType<typeof nativeBridge>): string[] =>
+  [...b._files.keys()].filter((path) => path.startsWith(`${SPILL}/edits/`));
+
+describe("resolveWorkingDir with per-photo edit files", () => {
+  it("hands a read-only session the in-folder .safelight to read edits from", async () => {
+    nativeBridge({
+      inFolderCatalog: true,
+      ext: async (_p, _b, create) => (create ? SPILL : null),
+    });
+
+    const wd = await resolveWorkingDir(rootReturning(readOnlySl(EROFS())));
+
+    expect(wd.location).toBe("external");
+    expect(wd.editsFallback?.path).toBe("/card/.safelight");
+    expect(wd.editsFallback?.sl).toEqual({ __ext: "/card/.safelight" });
+  });
+
+  it("has no edits fallback when the working dir is the in-folder one", async () => {
+    nativeBridge({ inFolderCatalog: true, ext: async () => null });
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+    expect(wd.editsFallback).toBeUndefined();
+  });
+
+  it("has no edits fallback for a separate catalog with no in-folder one", async () => {
+    nativeBridge({ inFolderCatalog: false, ext: async (_p, _b, create) => (create ? null : SPILL) });
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+    expect(wd.location).toBe("external");
+    expect(wd.editsFallback).toBeUndefined();
+  });
+
+  it("folds a spillover that holds only edit files, its catalog.json identical", async () => {
+    const b = nativeBridge({
+      files: {
+        "/card/.safelight/catalog.json": '{"v":"same"}',
+        [`${SPILL}/catalog.json`]: '{"v":"same"}',
+        [`${SPILL}/edits/ab/p1.json`]: editFile("p1", [5, "w"], "read-only"),
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.promotedFromExternal).toBe(SPILL);
+    expect(b._text("/card/.safelight/edits/ab/p1.json")).toBe(editFile("p1", [5, "w"], "read-only"));
+    expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"same"}');
+    expect(keptBeforeMerge(b)).toEqual([]);
+    expect(keptEdits(b)).toEqual([]); // nothing was replaced
+    expect(spilloverEdits(b)).toEqual([]);
+    expect(b._files.has(`${SPILL}/.seeded`)).toBe(false);
+    expect(b._pointers.has("/card")).toBe(false);
+  });
+
+  it("keeps an in-folder edit whose stamp is newer than the spillover's", async () => {
+    const mine = editFile("p1", [9, "a"], "in-folder");
+    const b = nativeBridge({
+      files: {
+        "/card/.safelight/catalog.json": '{"v":"same"}',
+        "/card/.safelight/edits/ab/p1.json": mine,
+        [`${SPILL}/catalog.json`]: '{"v":"same"}',
+        [`${SPILL}/edits/ab/p1.json`]: editFile("p1", [5, "z"], "older"),
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(b._text("/card/.safelight/edits/ab/p1.json")).toBe(mine);
+    expect(keptEdits(b)).toEqual([]);
+    expect(wd.promotedFromExternal ?? null).toBeNull(); // nothing taken, nothing to tell
+    expect(spilloverEdits(b)).toEqual([]);
+  });
+
+  it("takes the spillover edit when its stamp is newer, keeping the file it replaced", async () => {
+    const replaced = editFile("p1", [3, "a"], "in-folder");
+    const taken = editFile("p1", [4, "a"], "spillover");
+    const b = nativeBridge({
+      files: {
+        "/card/.safelight/catalog.json": '{"v":"same"}',
+        "/card/.safelight/edits/ab/p1.json": replaced,
+        "/card/.safelight/edits/ab/p2.json": editFile("p2", [1, "a"]),
+        [`${SPILL}/catalog.json`]: '{"v":"same"}',
+        [`${SPILL}/edits/ab/p1.json`]: taken,
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(b._text("/card/.safelight/edits/ab/p1.json")).toBe(taken);
+    const kept = keptEdits(b);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatch(/\/before-merge-\d{4}-\d\d-\d\dT[\d-]+Z\/edits\/ab\/p1\.json$/);
+    expect(b._text(kept[0])).toBe(replaced);
+  });
+
+  it("breaks a tie on the origin in the stamp, as the change stamps do", async () => {
+    const b = nativeBridge({
+      files: {
+        "/card/.safelight/catalog.json": '{"v":"same"}',
+        "/card/.safelight/edits/ab/p1.json": editFile("p1", [4, "a"], "in-folder"),
+        [`${SPILL}/catalog.json`]: '{"v":"same"}',
+        [`${SPILL}/edits/ab/p1.json`]: editFile("p1", [4, "b"], "spillover"),
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(b._text("/card/.safelight/edits/ab/p1.json")).toBe(editFile("p1", [4, "b"], "spillover"));
+  });
+
+  it("counts an unstamped edit as older than a stamped one but newer than none", async () => {
+    const stamped = editFile("p1", [1, "a"], "stamped");
+    const unstamped = editFile("p2", undefined, "unstamped");
+    const b = nativeBridge({
+      files: {
+        "/card/.safelight/catalog.json": '{"v":"same"}',
+        "/card/.safelight/edits/ab/p1.json": stamped,
+        [`${SPILL}/catalog.json`]: '{"v":"same"}',
+        [`${SPILL}/edits/ab/p1.json`]: editFile("p1", undefined, "unstamped"),
+        [`${SPILL}/edits/cd/p2.json`]: unstamped,
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(b._text("/card/.safelight/edits/ab/p1.json")).toBe(stamped);
+    expect(b._text("/card/.safelight/edits/cd/p2.json")).toBe(unstamped);
+    expect(keptEdits(b)).toEqual([]);
+  });
+
+  it("never replaces a readable edit with a spillover file that isn't one", async () => {
+    const mine = editFile("p1", [1, "a"]);
+    const b = nativeBridge({
+      files: {
+        "/card/.safelight/catalog.json": '{"v":"same"}',
+        "/card/.safelight/edits/ab/p1.json": mine,
+        [`${SPILL}/catalog.json`]: '{"v":"same"}',
+        [`${SPILL}/edits/ab/p1.json`]: '{"format":1,"photoId"',
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(b._text("/card/.safelight/edits/ab/p1.json")).toBe(mine);
+  });
+
+  it("folds only the edit files, not the backups and kept-aside copies beside them", async () => {
+    const mineBak = editFile("p1", [1, "a"], "in-folder backup");
+    const b = nativeBridge({
+      files: {
+        "/card/.safelight/catalog.json": '{"v":"same"}',
+        "/card/.safelight/edits/ab/p1.bak.json": mineBak,
+        [`${SPILL}/catalog.json`]: '{"v":"same"}',
+        [`${SPILL}/edits/ab/p1.json`]: editFile("p1", [5, "w"]),
+        [`${SPILL}/edits/ab/p1.bak.json`]: editFile("p1", [9, "w"], "spillover backup"),
+        [`${SPILL}/edits/ab/p1.corrupt-2026-01-01T00-00-00-000Z.json`]: "{",
+        [`${SPILL}/edits/ab/p1.conflict-2026-01-01T00-00-00-000Z.json`]: editFile("p1", [2, "w"]),
+        [`${SPILL}/edits/notes.json`]: "{}",
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(b._files.has("/card/.safelight/edits/ab/p1.json")).toBe(true);
+    expect(b._text("/card/.safelight/edits/ab/p1.bak.json")).toBe(mineBak);
+    const inFolder = [...b._files.keys()].filter((p) => p.startsWith("/card/.safelight/edits/"));
+    expect(inFolder.sort()).toEqual([
+      "/card/.safelight/edits/ab/p1.bak.json",
+      "/card/.safelight/edits/ab/p1.json",
+    ]);
+    expect(keptEdits(b)).toEqual([]);
+  });
+
+  it("writes the edits first and catalog.json last, then retires the spillover edits", async () => {
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: {
+        [`${SPILL}/catalog.json`]: '{"v":"read-only-edits"}',
+        [`${SPILL}/edits/ab/p1.json`]: editFile("p1", [5, "w"]),
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    await resolveWorkingDir(rootReturning(writeableSl()));
+
+    const written = b.write.mock.calls.map(([path]) => path);
+    expect(written).toContain("/card/.safelight/edits/ab/p1.json");
+    expect(written.at(-1)).toBe("/card/.safelight/catalog.json");
+    expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"read-only-edits"}');
+    expect(keptBeforeMerge(b)).toEqual(['{"v":"in-folder"}']);
+    expect(spilloverEdits(b)).toEqual([]);
+  });
+
+  it("writes nothing in-folder when a newer version saved the spillover catalog", async () => {
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: {
+        [`${SPILL}/catalog.json`]: '{"version":99,"photos":[]}',
+        [`${SPILL}/edits/ab/p1.json`]: editFile("p1", [5, "w"]),
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    await expect(resolveWorkingDir(rootReturning(writeableSl()))).rejects.toBeInstanceOf(
+      CatalogTooNewError,
+    );
+
+    expect(b._files.has("/card/.safelight/edits/ab/p1.json")).toBe(false);
+    expect(spilloverEdits(b)).toHaveLength(1);
+  });
+
+  it("keeps the spillover edits when one can't be written in-folder", async () => {
+    const b = nativeBridge({
+      files: {
+        "/card/.safelight/catalog.json": '{"v":"same"}',
+        [`${SPILL}/catalog.json`]: '{"v":"same"}',
+        [`${SPILL}/edits/ab/p1.json`]: editFile("p1", [5, "w"]),
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+    b.write.mockRejectedValue(new Error("EROFS: read-only file system"));
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.promotedFromExternal ?? null).toBeNull();
+    expect(spilloverEdits(b)).toHaveLength(1);
+    expect(b._files.has(`${SPILL}/.seeded`)).toBe(true); // still to fold
+  });
+
+  it("keeps only the newest three before-merge directories of replaced edits", async () => {
+    const stamp = (n: number) => `2026-01-0${n}T00-00-00-000Z`;
+    const old = Object.fromEntries(
+      [1, 2, 3].map((n) => [
+        `/card/.safelight/before-merge-${stamp(n)}/edits/ab/p${n}.json`,
+        `old ${n}`,
+      ]),
+    );
+    const b = nativeBridge({
+      files: {
+        ...old,
+        "/card/.safelight/catalog.json": '{"v":"same"}',
+        "/card/.safelight/edits/ab/p1.json": editFile("p1", [1, "a"]),
+        [`${SPILL}/catalog.json`]: '{"v":"same"}',
+        [`${SPILL}/edits/ab/p1.json`]: editFile("p1", [2, "a"]),
+        ...SEEDED,
+      },
+      ext: async () => SPILL,
+    });
+
+    await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect([...b._files.keys()].some((p) => p.includes(`before-merge-${stamp(1)}`))).toBe(false);
+    expect(b._files.has(`/card/.safelight/before-merge-${stamp(2)}/edits/ab/p2.json`)).toBe(true);
+    expect(b._files.has(`/card/.safelight/before-merge-${stamp(3)}/edits/ab/p3.json`)).toBe(true);
+    expect(keptEdits(b)).toHaveLength(3); // the two old directories left, and this fold's
+  });
+
+  it("changes nothing more than today for a spillover with no edits directory", async () => {
+    const b = nativeBridge({
+      inFolderCatalog: true,
+      files: { [`${SPILL}/catalog.json`]: '{"v":"read-only-edits"}', ...SEEDED },
+      ext: async () => SPILL,
+    });
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.promotedFromExternal).toBe(SPILL);
+    expect(keptBeforeMerge(b)).toEqual(['{"v":"in-folder"}']);
+    expect(keptEdits(b)).toEqual([]);
+    expect(b.write).toHaveBeenCalledTimes(2); // the catalog copy, then the catalog
+    expect(b.remove).not.toHaveBeenCalledWith(`${SPILL}/edits`);
+  });
+});
+
+describe("resolveWorkingDir with another card at the same mount point", () => {
+  // Every card a camera formats mounts at one path (E:\, /Volumes/EOS_DIGITAL), and
+  // names its photos alike; their separate catalogs must stay apart.
+  const CARD_A = { "DCIM/IMG_0001.CR3": "a1", "DCIM/IMG_0002.CR3": "a22", "DCIM/IMG_0003.CR3": "a333" };
+  const CARD_B = { "DCIM/IMG_0001.CR3": "b-one", "DCIM/IMG_0002.CR3": "b-two!", "DCIM/IMG_0003.CR3": "b-3!!!!" };
+  type Card = Record<string, string>;
+
+  const dirOf = (variant: number) =>
+    variant > 1 ? `/data/card-0123abcd-${variant}/.safelight` : "/data/card-0123abcd/.safelight";
+  const catalogOf = (card: Card) =>
+    JSON.stringify({
+      version: 1,
+      photos: Object.entries(card).map(([relPath, body]) => ({
+        id: body,
+        relPath,
+        fileSize: body.length,
+        exif: { dateTimeOriginal: shotOf(body) },
+      })),
+      edits: [],
+    });
+  const printOf = (card: Card) =>
+    JSON.stringify({
+      source: "/card",
+      createdAt: 1,
+      volume: Object.entries(card).map(([relPath, body]) => ({ relPath, size: body.length, shot: shotOf(body) })),
+    });
+  const mounted = (card: Card) =>
+    Object.fromEntries(Object.entries(card).map(([rel, body]) => [`/card/${rel}`, body]));
+  /** The separate catalog `card` keeps as `variant`, its print recorded or not. */
+  const keptFor = (card: Card, variant: number, printed = true) => ({
+    [`${dirOf(variant)}/catalog.json`]: catalogOf(card),
+    ...(printed ? { [`${dirOf(variant).replace(/\/\.safelight$/, "")}/source.json`]: printOf(card) } : {}),
+  });
+
+  function cardBridge(
+    card: Card,
+    files: Record<string, string>,
+    inFolderCatalog = false,
+    busy: string[] = [],
+  ) {
+    const held: { files?: Map<string, unknown> } = {};
+    const saved = (variant: number) => held.files!.has(`${dirOf(variant)}/catalog.json`);
+    const b = nativeBridge({
+      inFolderCatalog,
+      busy,
+      files: { ...mounted(card), ...files },
+      ext: async (_p, _base, create, variant = 1) => (create || saved(variant) ? dirOf(variant) : null),
+    });
+    held.files = b._files;
+    return Object.assign(b, {
+      externalCatalogVariants: vi.fn(async () => [1, 2, 3, 4, 5].filter(saved)),
+    });
+  }
+
+  /** Card `card`'s photos, each a RAW whose EXIF says it was taken at `shot`
+   *  and padded by `pad` bytes, as a geotagging tool leaves them. */
+  function rewrite(b: ReturnType<typeof cardBridge>, card: Card, pad: number): void {
+    for (const [rel, body] of Object.entries(card)) {
+      const raw = buildTiff({ le: true, exif: [[DATE_TIME_ORIGINAL, ascii(shotOf(body))]] });
+      b._files.set(`/card/${rel}`, { data: new Uint8Array([...raw, ...new Uint8Array(pad)]), mtimeMs: 1 });
+    }
+  }
+  const cardRoot = (card: Card, files: Record<string, string>) => {
+    cardBridge(card, files);
+    return rootReturning(writeableSl());
+  };
+  const shotOf = (body: string) => `2024:05:01 10:00:${String(body.length).padStart(2, "0")}`;
+
+  it.each([
+    ["external mode", "external", () => rootReturning(writeableSl())],
+    ["a read-only card", "in-folder", () => rootThrowing(EROFS())],
+  ] as const)("opens a fresh catalog for card B in %s, leaving card A's as it was", async (_, mode, root) => {
+    h.settings.catalogLocation = mode;
+    const b = cardBridge(CARD_B, keptFor(CARD_A, 1));
+
+    const wd = await resolveWorkingDir(root());
+
+    expect(wd).toMatchObject({ location: "external", externalPath: dirOf(2) });
+    expect(b._text(`${dirOf(1)}/catalog.json`)).toBe(catalogOf(CARD_A));
+  });
+
+  it.each([
+    ["card A", CARD_A, 1],
+    ["card B", CARD_B, 2],
+  ] as const)("goes back to %s's own catalog when it is mounted again", async (_, card, variant) => {
+    h.settings.catalogLocation = "external";
+    cardBridge(card, { ...keptFor(CARD_A, 1), ...keptFor(CARD_B, 2) });
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.externalPath).toBe(dirOf(variant));
+  });
+
+  it("tells the cards apart by a catalog's photos when it has no print yet", async () => {
+    h.settings.catalogLocation = "external";
+    cardBridge(CARD_B, keptFor(CARD_A, 1, false));
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.externalPath).toBe(dirOf(2));
+  });
+
+  it("keeps a card's catalog when most of its photos are still on it", async () => {
+    h.settings.catalogLocation = "external";
+    const { "DCIM/IMG_0003.CR3": _gone, ...twoLeft } = CARD_A;
+    cardBridge({ ...twoLeft, "DCIM/IMG_0004.CR3": "new" }, keptFor(CARD_A, 1));
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.externalPath).toBe(dirOf(1));
+  });
+
+  it("spills card B's read-only session into a catalog of its own, seeded from card B", async () => {
+    const b = cardBridge(CARD_B, { ...keptFor(CARD_A, 1), [`${dirOf(1)}/.seeded`]: "/card" }, true);
+
+    const wd = await resolveWorkingDir(rootReturning(readOnlySl(EROFS())));
+
+    expect(wd.externalPath).toBe(dirOf(2));
+    expect(b._text(`${dirOf(2)}/catalog.json`)).toBe('{"v":"in-folder"}');
+    expect(b._text(`${dirOf(1)}/catalog.json`)).toBe(catalogOf(CARD_A));
+  });
+
+  it("never folds card B's spillover into card A, though the pointer names it", async () => {
+    const b = cardBridge(
+      CARD_A,
+      {
+        ...keptFor(CARD_A, 1),
+        [`${dirOf(1)}/.seeded`]: "/card",
+        ...keptFor(CARD_B, 2),
+        [`${dirOf(2)}/.seeded`]: "/card",
+      },
+      true,
+    );
+    b._pointers.set("/card", dirOf(2));
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.promotedFromExternal).toBe(dirOf(1));
+    expect(b._text("/card/.safelight/catalog.json")).toBe(catalogOf(CARD_A));
+    expect(b._text(`${dirOf(2)}/catalog.json`)).toBe(catalogOf(CARD_B));
+    expect(b._files.has(`${dirOf(2)}/.seeded`)).toBe(true);
+  });
+  it.each([
+    ["in place, by a geotagging tool", true],
+    ["in place, a catalog from before prints were kept", false],
+  ] as const)("keeps card A's catalog when all its photos were rewritten %s", async (_, printed) => {
+    h.settings.catalogLocation = "external";
+    const b = cardBridge(CARD_A, keptFor(CARD_A, 1, printed));
+    rewrite(b, CARD_A, 100);
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.externalPath).toBe(dirOf(1));
+  });
+
+  it("keeps card A's catalog when most of its photos were erased in camera", async () => {
+    h.settings.catalogLocation = "external";
+    const many = Object.fromEntries(
+      Array.from({ length: 40 }, (_, i) => [`DCIM/IMG_${String(i + 1).padStart(4, "0")}.CR3`, "a".repeat(i + 1)]),
+    );
+    const left = { "DCIM/IMG_0040.CR3": many["DCIM/IMG_0040.CR3"], "DCIM/IMG_0100.CR3": "new shot" };
+    cardBridge(left, keptFor(many, 1));
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.externalPath).toBe(dirOf(1));
+  });
+
+  it("opens a fresh catalog for a card none of whose photos card A's names", async () => {
+    h.settings.catalogLocation = "external";
+    cardBridge({ "DCIM/100MSDCF/DSC00001.ARW": "sony" }, keptFor(CARD_A, 1));
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.externalPath).toBe(dirOf(2));
+  });
+
+  it("counts a photo it can't read right now as no sign of another card", async () => {
+    h.settings.catalogLocation = "external";
+    cardBridge(CARD_B, keptFor(CARD_A, 1), false, Object.keys(mounted(CARD_B)));
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.externalPath).toBe(dirOf(1));
+  });
+
+  it("finds the card's catalog past one deleted before it, and makes a new one after the last", async () => {
+    h.settings.catalogLocation = "external";
+    const files = { ...keptFor(CARD_A, 2), ...keptFor(CARD_B, 3) };
+    expect((await resolveWorkingDir(cardRoot(CARD_A, files))).externalPath).toBe(dirOf(2));
+    expect((await resolveWorkingDir(cardRoot({ "DCIM/C.CR3": "card C" }, files))).externalPath).toBe(dirOf(4));
+  });
+
+  it("takes the card's own catalog over one that holds no photos", async () => {
+    h.settings.catalogLocation = "external";
+    const empty = { [`${dirOf(1)}/catalog.json`]: JSON.stringify({ version: 1, photos: [], edits: [] }) };
+    cardBridge(CARD_A, { ...empty, ...keptFor(CARD_A, 2) });
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.externalPath).toBe(dirOf(2));
   });
 });

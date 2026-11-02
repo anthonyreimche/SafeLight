@@ -16,6 +16,7 @@ import {
   variantKey,
   type StageInjection,
 } from "./shaders";
+import { shippedProgram, stockProgram } from "./stock-program.test-support";
 
 describe("shaderVariantFor", () => {
   it("renders anything that isn't a stored version 2 or later as version 1", () => {
@@ -48,8 +49,8 @@ describe("variants", () => {
 });
 
 describe("the version 2 program", () => {
-  const v2 = buildFragmentShader(null, undefined, V2_VARIANT);
-  const v1 = buildFragmentShader(null, undefined, V1_VARIANT);
+  const v2 = stockProgram(V2_VARIANT);
+  const v1 = stockProgram(V1_VARIANT);
 
   it("no longer clips everything the display transform hands on", () => {
     expect(v2).not.toContain("clamp(pipelineToDisplay(lin), 0.0, 1.0)");
@@ -60,12 +61,8 @@ describe("the version 2 program", () => {
     expect(v2).toContain("return slEncodePerceptual(lin);");
   });
 
-  it("skips the tone curve, HSL, vibrance/saturation and grading at identity", () => {
-    expect(v2).toContain("if (uCurveActive) c = applyToneCurve(c);");
-    expect(v2).toContain("if (uHslActive) c = applyHSL(clamp(c, 0.0, 1.0));");
-    expect(v2).toContain("if (abs(uVibrance) >= 0.1 || abs(uSaturation) > 0.1)");
-    expect(v2).toContain("if (uColorGradingActive) c = applyColorGrading(clamp(c, 0.0, 1.0));");
-  });
+  // Basic's, the Tone Curve's, HSL's and Color Grading's guards are their
+  // extensions' text (essential-stages.fixtures.ts).
 
   it("leaves version 1 without any of it", () => {
     for (const token of ["uCurveActive", "slEncodePerceptual", "uMaskHasDisplay"])
@@ -73,9 +70,10 @@ describe("the version 2 program", () => {
   });
 });
 
+// Basic's tone and band-detail blocks, as the shipped app installs them.
 describe("Highlights and Shadows in the version 2 program", () => {
-  const v2 = buildFragmentShader(null, undefined, V2_VARIANT);
-  const v1 = buildFragmentShader(null, undefined, V1_VARIANT);
+  const v2 = shippedProgram(V2_VARIANT);
+  const v1 = shippedProgram(V1_VARIANT);
 
   it("runs the tone block through the shared curves", () => {
     expect(v2).toContain("float L1 = slToneHighlights(Lx, E, H);");
@@ -104,7 +102,7 @@ describe("the camera baseline", () => {
   // the source through baselineTone alone. Refitting after them, and after clip
   // recovery (whose 0.98 threshold assumes that curve), keeps both agreeing.
   for (const variant of [V2_VARIANT, V3_VARIANT]) {
-    const src = buildFragmentShader(null, undefined, variant);
+    const src = shippedProgram(variant);
 
     it(`is refit after channel reconstruction and before white balance on version ${variant.version}`, () => {
       const body = main(src);

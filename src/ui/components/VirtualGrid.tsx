@@ -32,6 +32,13 @@ interface VirtualGridProps<T> {
   className?: string;
 }
 
+function visibleRows(scrollTop: number, viewportHeight: number, padding: number, rowHeight: number) {
+  return {
+    first: Math.floor((scrollTop - padding) / rowHeight),
+    last: Math.floor((scrollTop + viewportHeight - padding) / rowHeight),
+  };
+}
+
 export function VirtualGrid<T>({
   items,
   cellWidth = 0,
@@ -49,7 +56,6 @@ export function VirtualGrid<T>({
 }: VirtualGridProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
-  const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
 
   // Measure container width with ResizeObserver.
@@ -64,11 +70,6 @@ export function VirtualGrid<T>({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
-
-  const handleScroll = useCallback(() => {
-    const el = containerRef.current;
-    if (el) setScrollTop(el.scrollTop);
   }, []);
 
   // Column count: fixed, or auto-fit from container width.
@@ -88,12 +89,20 @@ export function VirtualGrid<T>({
   const rowHeight = cellHeight + gap;
   const totalHeight = totalRows > 0 ? totalRows * rowHeight - gap + 2 * padding : 0;
 
-  // Visible row range (clamped with overscan buffer).
-  const startRow = Math.max(0, Math.floor((scrollTop - padding) / rowHeight) - overscan);
-  const endRow = Math.min(
-    totalRows - 1,
-    Math.floor((scrollTop + viewportHeight - padding) / rowHeight) + overscan,
-  );
+  // The rows the viewport touches. Held as state in place of the scroll offset so a
+  // scroll event that stays within the same rows renders nothing.
+  const [visible, setVisible] = useState(() => visibleRows(0, 0, padding, rowHeight));
+  const syncVisible = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const next = visibleRows(el.scrollTop, viewportHeight, padding, rowHeight);
+    setVisible((prev) => (prev.first === next.first && prev.last === next.last ? prev : next));
+  }, [viewportHeight, padding, rowHeight]);
+
+  useEffect(syncVisible, [syncVisible]);
+
+  const startRow = Math.max(0, visible.first - overscan);
+  const endRow = Math.min(totalRows - 1, visible.last + overscan);
 
   // Scroll active item into view.
   useEffect(() => {
@@ -141,7 +150,7 @@ export function VirtualGrid<T>({
       ref={containerRef}
       className={className}
       style={{ overflow: "auto", position: "relative" }}
-      onScroll={handleScroll}
+      onScroll={syncVisible}
       onClick={onClick}
     >
       <div style={{ height: totalHeight, position: "relative" }}>

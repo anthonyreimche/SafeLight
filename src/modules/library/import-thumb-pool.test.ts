@@ -58,7 +58,8 @@ async function bootPool(withWorkers: boolean): Promise<Pool> {
 }
 
 beforeEach(() => {
-  h.runThumbTask.mockClear();
+  h.runThumbTask.mockReset();
+  h.runThumbTask.mockImplementation(async () => ({ ok: false }));
 });
 
 afterEach(() => {
@@ -113,7 +114,7 @@ describe("processThumb", () => {
     await expect(Promise.all(promises)).resolves.toBeDefined();
   });
 
-  it("degrades to inline for everything once a worker errors", async () => {
+  it("fails the in-flight tasks when a worker errors and finishes the queued one inline", async () => {
     const { processThumb, importPoolSize } = await bootPool(true);
     const size = importPoolSize();
     const promises = Array.from({ length: size + 1 }, (_, i) =>
@@ -128,9 +129,145 @@ describe("processThumb", () => {
       Array.from({ length: size }, () => ({ ok: false })),
     );
     expect(h.runThumbTask).toHaveBeenCalledTimes(1);
+  });
 
-    await processThumb(input("later.NEF"));
-    expect(h.runThumbTask).toHaveBeenCalledTimes(2);
-    expect(FakeWorker.spawned).toHaveLength(size); // no respawn attempts
+  it("finishes queued tasks inline one at a time", async () => {
+    const { processThumb, importPoolSize } = await bootPool(true);
+    const size = importPoolSize();
+    const finish: (() => void)[] = [];
+    h.runThumbTask.mockImplementation(
+      () => new Promise<ThumbTaskResult>((r) => finish.push(() => r({ ok: false }))),
+    );
+    const promises = Array.from({ length: size + 3 }, (_, i) =>
+      processThumb(input(`p${i}.NEF`)),
+    );
+
+    FakeWorker.spawned[0].onerror?.(new Event("error"));
+    await Promise.resolve();
+    expect(h.runThumbTask).toHaveBeenCalledTimes(1);
+
+    for (let done = 1; done <= 3; done++) {
+      finish[done - 1]();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(h.runThumbTask).toHaveBeenCalledTimes(Math.min(done + 1, 3));
+    }
+    await expect(Promise.all(promises)).resolves.toHaveLength(size + 3);
+  });
+
+  describe("after worker errors", () => {
+    async function failOnce(pool: Pool, name: string): Promise<void> {
+      const p = pool.processThumb(input(name));
+      FakeWorker.spawned[FakeWorker.spawned.length - 1].onerror?.(new Event("error"));
+      await p;
+    }
+
+    it("goes back to fresh workers after a single error", async () => {
+      const pool = await bootPool(true);
+      await failOnce(pool, "a.NEF");
+
+      void pool.processThumb(input("b.NEF"));
+      expect(FakeWorker.spawned).toHaveLength(2);
+      expect(FakeWorker.spawned[1].posted).toHaveLength(1);
+      expect(h.runThumbTask).not.toHaveBeenCalled();
+    });
+
+    it("degrades to inline once the errors keep coming", async () => {
+      const pool = await bootPool(true);
+      for (let i = 0; i < 3; i++) await failOnce(pool, `bad${i}.NEF`);
+
+      await pool.processThumb(input("later.NEF"));
+      expect(h.runThumbTask).toHaveBeenCalledTimes(1);
+      expect(FakeWorker.spawned).toHaveLength(3); // no respawn attempts
+    });
+
+    it("counts only consecutive errors: a reply in between starts the count over", async () => {
+      const pool = await bootPool(true);
+      await failOnce(pool, "bad0.NEF");
+      await failOnce(pool, "bad1.NEF");
+      const ok = pool.processThumb(input("good.NEF"));
+      FakeWorker.spawned[FakeWorker.spawned.length - 1].respond({ ok: false });
+      await ok;
+      await failOnce(pool, "bad2.NEF");
+      await failOnce(pool, "bad3.NEF");
+
+      void pool.processThumb(input("later.NEF"));
+      expect(h.runThumbTask).not.toHaveBeenCalled();
+      expect(FakeWorker.spawned[FakeWorker.spawned.length - 1].posted).toHaveLength(1);
+    });
+  });
+
+  describe("a worker that never answers", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("resolves ok:false after the time limit and terminates that worker", async () => {
+      const { processThumb } = await bootPool(true);
+      const p = processThumb(input());
+      const [stalled] = FakeWorker.spawned;
+      const terminate = vi.spyOn(stalled, "terminate");
+
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(terminate).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(p).resolves.toEqual({ ok: false });
+      expect(terminate).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores a reply from a worker it already gave up on", async () => {
+      const { processThumb } = await bootPool(true);
+      for (let i = 0; i < 2; i++) {
+        const p = processThumb(input(`stalled${i}.NEF`));
+        await vi.advanceTimersByTimeAsync(60_000);
+        await p;
+      }
+
+      FakeWorker.spawned[0].respond({ ok: false });
+      expect(vi.getTimerCount()).toBe(0);
+
+      const p = processThumb(input("stalled2.NEF"));
+      await vi.advanceTimersByTimeAsync(60_000);
+      await p;
+      await processThumb(input("later.NEF"));
+      expect(h.runThumbTask).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps no timer once the worker has answered", async () => {
+      const { processThumb } = await bootPool(true);
+      const p = processThumb(input());
+      FakeWorker.spawned[0].respond({ ok: false });
+      await p;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("replaces the stalled worker, which then serves the next task", async () => {
+      const { processThumb } = await bootPool(true);
+      const p = processThumb(input());
+      await vi.advanceTimersByTimeAsync(60_000);
+      await p;
+
+      void processThumb(input("next.NEF"));
+      expect(FakeWorker.spawned).toHaveLength(2);
+      expect(FakeWorker.spawned[1].posted).toHaveLength(1);
+      expect(h.runThumbTask).not.toHaveBeenCalled();
+    });
+
+    it("hands a queued task to the replacement instead of leaving it waiting", async () => {
+      const { processThumb, importPoolSize } = await bootPool(true);
+      const size = importPoolSize();
+      const promises = Array.from({ length: size + 1 }, (_, i) =>
+        processThumb(input(`p${i}.NEF`)),
+      );
+      expect(postedCount()).toBe(size);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(postedCount()).toBe(size + 1);
+      FakeWorker.spawned[FakeWorker.spawned.length - 1].respond({ ok: false });
+      await expect(Promise.all(promises)).resolves.toHaveLength(size + 1);
+    });
   });
 });

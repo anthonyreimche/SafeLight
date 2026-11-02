@@ -47,6 +47,7 @@ vi.mock("@/state/thumbnail-loader", () => ({
 }));
 vi.mock("@/state/settings-store", () => ({ getSettings: () => ({}) }));
 vi.mock("@/state/catalog-store", () => ({
+  setLastProjectOpener: () => {},
   useCatalogStore: {
     getState: () => ({
       replaceCatalog: () => {},
@@ -57,6 +58,7 @@ vi.mock("@/state/catalog-store", () => ({
     }),
   },
 }));
+vi.mock("@/modules/library/photo-navigation", () => ({ visibleList: () => [] }));
 vi.mock("@/state/ui-store", () => ({
   useUIStore: {
     subscribe: () => () => {},
@@ -83,12 +85,14 @@ beforeEach(async () => {
   h.open.mockReset();
   h.warm.mockResolvedValue(undefined);
   h.preDecode.mockResolvedValue(undefined);
-  h.open.mockImplementation(async (_h, _onPhoto, onSkeletons) => {
+  h.open.mockImplementation(async (_h, _deps, _onPhoto, onSkeletons) => {
     onSkeletons({}, {}, []);
     return {
       storage: { readPreview: async () => null, close: () => {} },
       rawCacheDir: {},
       tree: null,
+      unreadable: [],
+      skipped: {},
       photos: [],
       storageLocation: "project",
     };
@@ -165,6 +169,8 @@ describe("project-store decode warm-up", () => {
       storage: { readPreview: async () => null, close: () => {} },
       rawCacheDir: {},
       tree: null,
+      unreadable: [],
+      skipped: {},
       photos: [],
       storageLocation: "project",
     }));

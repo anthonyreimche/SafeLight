@@ -22,6 +22,9 @@ const h = vi.hoisted(() => ({
   metadataGate: null as Promise<void> | null,
   rotateGate: null as Promise<void> | null,
   storageGate: null as Promise<void> | null,
+  /** Previews being turned right now, and the most turned at once. */
+  turning: 0,
+  peakTurning: 0,
 }));
 
 // Cross-window fan-out is a side effect here; capture the messages instead so the
@@ -30,12 +33,6 @@ vi.mock("./broadcast", () => ({
   broadcast: (message: BroadcastMessage) => void h.broadcasts.push(message),
   onBroadcast: () => () => {},
   WINDOW_ID: "test-window",
-}));
-
-vi.mock("@/project/project-store", () => ({
-  useProjectStore: {
-    getState: () => ({ openLast: h.openLast, reconnectLast: h.reconnectLast }),
-  },
 }));
 
 vi.mock("@/extensions/registry", () => ({
@@ -53,21 +50,27 @@ vi.mock("@/extensions/registry", () => ({
 vi.mock("@/catalog/orient", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/catalog/orient")>()),
   rotateBlob: async (blob: Blob, deg: number) => {
-    if (h.rotateGate) await h.rotateGate;
-    return new Blob([`${await blob.text()}+${deg}`]);
+    h.peakTurning = Math.max(h.peakTurning, ++h.turning);
+    try {
+      if (h.rotateGate) await h.rotateGate;
+      return new Blob([`${await blob.text()}+${deg}`]);
+    } finally {
+      h.turning--;
+    }
   },
 }));
 
 import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { installMemoryStorage } from "@/catalog/stored-edit.fixtures";
 import { storedPhoto } from "@/catalog/types";
-import { useCatalogStore } from "./catalog-store";
+import { fieldChanges, setLastProjectOpener, structureVersion, useCatalogStore } from "./catalog-store";
+
+setLastProjectOpener({ openLast: () => h.openLast(), reconnectLast: () => h.reconnectLast() });
 
 function memoryCatalogStorage() {
   const rows = new Map<string, CatalogPhoto>();
   const edits = new Map<string, EditState>();
   const storage: CatalogStorage = {
-    getAllPhotos: async () => [...rows.values()],
     putPhoto: async (p) => void rows.set(p.id, p),
     putPhotos: async (list) => {
       for (const p of list) rows.set(p.id, p);
@@ -75,7 +78,6 @@ function memoryCatalogStorage() {
     },
     deletePhoto: async (id) => void rows.delete(id),
     getEditState: async (id) => edits.get(id),
-    getAllEditStates: async () => [...edits.values()],
     putEditState: async (e) => void edits.set(e.photoId, e),
     putEditStates: async (list) => {
       for (const e of list) edits.set(e.photoId, e);
@@ -149,6 +151,8 @@ beforeEach(() => {
   h.metadataGate = null;
   h.rotateGate = null;
   h.storageGate = null;
+  h.turning = 0;
+  h.peakTurning = 0;
   h.openLast.mockReset();
   h.reconnectLast.mockReset();
 
@@ -219,6 +223,32 @@ describe("opening a project", () => {
     expect(state().photos[0].thumbnailUrl).toBe(skeleton.thumbnailUrl);
     expect(state().photos[0].thumbnailBlob).toBe(skeleton.thumbnailBlob);
     expect(liveUrls.has(skeleton.thumbnailUrl)).toBe(true);
+  });
+
+  it("reconcileCatalog keeps the structure when it only attaches handles", () => {
+    const record = { exif: {}, keywords: [] };
+    useCatalogStore.setState({
+      photos: [photo("a", { ...record, directoryHandle: null, fileHandle: null }), photo("b", record)],
+    });
+    const before = state().photos;
+
+    state().reconcileCatalog([photo("a", record), photo("b", record)]);
+
+    expect(structureVersion(state().photos)).toBe(structureVersion(before));
+    expect(fieldChanges(state().photos, null)).toBe(fieldChanges(before, null));
+  });
+
+  it("reconcileCatalog counts a field the rescan changed, and starts anew when photos came or went", () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    const before = state().photos;
+
+    state().reconcileCatalog([photo("a", { rating: 3 }), photo("b")]);
+    expect(structureVersion(state().photos)).toBe(structureVersion(before));
+    expect(fieldChanges(state().photos, ["rating"])).toBe(1);
+    expect(fieldChanges(state().photos, ["flag"])).toBe(0);
+
+    state().reconcileCatalog([photo("b"), photo("a")]);
+    expect(structureVersion(state().photos)).not.toBe(structureVersion(before));
   });
 
   it("reconcileCatalog forgets photos that vanished from disk", () => {
@@ -814,6 +844,38 @@ describe("rating, label and flag", () => {
     expect(h.broadcasts).toEqual([]);
   });
 
+  it("stores both changes when a second lands while extensions hear of the first", async () => {
+    const hooks = gate();
+    h.metadataGate = hooks.promise;
+
+    const rating = state().setRating("a", 3);
+    await vi.waitFor(() => expect(h.metadata).toHaveLength(1));
+    const flag = state().setFlag("a", "pick");
+    hooks.open();
+    await Promise.all([rating, flag]);
+
+    expect(store.rows.get("a")).toMatchObject({ rating: 3, flag: "pick" });
+    expect(state().photos[0]).toMatchObject({ rating: 3, flag: "pick" });
+    expect(h.metadata.map((ctx) => [ctx.photos[0].rating, ctx.photos[0].flag])).toEqual([
+      [3, "none"],
+      [3, "pick"],
+    ]);
+  });
+
+  it("stores a selection's rating and a label that follows it while extensions hear of the rating", async () => {
+    const hooks = gate();
+    h.metadataGate = hooks.promise;
+
+    const rating = state().applyRating(["a", "b", "c"], 5);
+    await vi.waitFor(() => expect(h.metadata).toHaveLength(1));
+    const label = state().setColorLabel("b", "red");
+    hooks.open();
+    await Promise.all([rating, label]);
+
+    expect(["a", "b", "c"].map((id) => store.rows.get(id)?.rating)).toEqual([5, 5, 5]);
+    expect(store.rows.get("b")).toMatchObject({ rating: 5, colorLabel: "red" });
+  });
+
   it("hands extensions the post-mutation records and a null edit state when none is stored", async () => {
     await state().setRating("a", 2);
 
@@ -945,6 +1007,26 @@ describe("rotatePhotos", () => {
     ]);
   });
 
+  it("turns a big selection a few previews at a time, then shows and stores it at once", async () => {
+    const turnIds = Array.from({ length: 500 }, (_, i) => `p${i}`);
+    const rest = Array.from({ length: 19_500 }, (_, i) => photo(`q${i}`));
+    useCatalogStore.setState({ photos: [...turnIds.map((id) => previewed(id)), ...rest] });
+    const puts = vi.spyOn(store.storage, "putPhotos");
+    const single = vi.spyOn(store.storage, "putPhoto");
+    let updates = 0;
+    const unsubscribe = useCatalogStore.subscribe(() => void updates++);
+
+    await state().rotatePhotos(turnIds, 90);
+    unsubscribe();
+
+    expect(h.peakTurning).toBeLessThanOrEqual(4);
+    expect(updates).toBe(1);
+    expect(puts.mock.calls.length + single.mock.calls.length).toBe(1);
+    expect(state().photos.slice(0, 500).every((p) => p.rotation === 90)).toBe(true);
+    expect(state().photos[500]).toBe(rest[0]);
+    expect(turnIds.every((id) => store.rows.get(id)?.rotation === 90)).toBe(true);
+  });
+
   /** An edit's preview landing on "a", as edited-thumbnail stores it. */
   const editLands = () => {
     const thumbnailBlob = new Blob(["edited"]);
@@ -956,9 +1038,9 @@ describe("rotatePhotos", () => {
   it("shows the turn before writing it, so an edit's preview rendered meanwhile is turned", async () => {
     useCatalogStore.setState({ photos: [previewed("a", { previewEdit: "edit-1" })] });
     let shownWhileWritten: CatalogPhoto | undefined;
-    vi.spyOn(store.storage, "putPhoto").mockImplementation(async (p) => {
+    vi.spyOn(store.storage, "putPhotos").mockImplementation(async (list) => {
       shownWhileWritten = state().photos[0];
-      store.rows.set(p.id, p);
+      for (const p of list) store.rows.set(p.id, p);
     });
 
     await state().rotatePhotos(["a"], 90);

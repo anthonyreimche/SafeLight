@@ -37,12 +37,14 @@ export interface StarterKit {
   description: string;
   /** null when the file names an icon this build doesn't draw. */
   icon: KitIcon | null;
+  /** Picked for the person on a first run. */
+  default: boolean;
   extensions: KitExtension[];
 }
 
 export const KIT_LIMITS = {
   kits: 8,
-  extensionsPerKit: 12,
+  extensionsPerKit: 24,
   kitName: 40,
   kitDescription: 160,
   extensionName: 48,
@@ -89,6 +91,7 @@ function parseKit(raw: unknown, appVersion: string): StarterKit | null {
     name,
     description: text(raw.description, KIT_LIMITS.kitDescription),
     icon: KIT_ICONS.find((icon) => icon === raw.icon) ?? null,
+    default: raw.default === true,
     extensions,
   };
 }

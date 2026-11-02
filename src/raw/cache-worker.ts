@@ -9,22 +9,26 @@
 
 import {
   ENTRY_HEADER_BYTES,
-  ENTRY_LAYOUT,
   ENTRY_MAGIC,
-  LEGACY_HEADER_BYTES,
+  HASHED_FILE_NAME,
+  cacheFileName,
   decodeEntryHeader,
   encodeCacheEntry,
   encodeEntryHeader,
   type CachedPreview,
   type EncodedEntry,
+  type EntryHeader,
 } from "./cache-encode";
 import { scopeBounds, scopedKey, unscopedKey } from "./cache-keys";
 
 const DB_NAME = "safelight-raw-cache";
 // v6: keys are scoped to their project. The upgrade drops the unscoped entries,
 // any of which could be another project's picture under the same name and size.
-const DB_VERSION = 6;
+// v7: a small bookkeeping record per entry in its own store, so eviction never
+// has to read the pictures.
+const DB_VERSION = 7;
 const STORE = "previews";
+const META = "meta";
 
 // ---------------------------------------------------------------------------
 // Message types
@@ -88,6 +92,24 @@ interface CacheEntry {
   sample?: { blob: Blob; width: number; height: number; x: number; y: number };
 }
 
+/** What eviction needs to know about an entry, kept apart from its pixels. */
+interface CacheMeta {
+  key: string; // the entry's key in STORE
+  bytes: number; // 0 when unknown
+  usedAt: number; // last written or read (day granularity on reads); 0 when unknown
+  marker: boolean; // a marker weighs nothing and is never evicted
+}
+
+// Entries are keyed by absolute path, so a moved project or a changed drive
+// letter strands its old ones; the oldest-used go once the store passes this.
+const IDB_CAP_BYTES = 10 * 1024 ** 3;
+// Listing the store costs a pass over every row, so it runs on the first write
+// and then once per this many.
+const EVICT_EVERY_WRITES = 25;
+// A read rewrites the entry's meta to stamp it; skip that while the stamp is this fresh.
+const TOUCH_AFTER_MS = 24 * 60 * 60 * 1000;
+let writesSinceEvict = EVICT_EVERY_WRITES;
+
 let _db: IDBDatabase | null = null;
 // IndexedDB queues opens per database and tells only the first that it is
 // blocked; a later open waits silently behind it. So one open at a time, shared
@@ -109,10 +131,13 @@ function adopt(db: IDBDatabase): IDBDatabase {
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (e) => {
       const db = req.result;
-      if (db.objectStoreNames.contains(STORE)) db.deleteObjectStore(STORE);
-      db.createObjectStore(STORE, { keyPath: "key" });
+      if (e.oldVersion < 6) {
+        if (db.objectStoreNames.contains(STORE)) db.deleteObjectStore(STORE);
+        db.createObjectStore(STORE, { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains(META)) db.createObjectStore(META, { keyPath: "key" });
     };
     // Another window still holds an older version open. Until it lets go,
     // every request fails as a miss rather than waiting on it; the open stays
@@ -151,13 +176,81 @@ function idbReq<T>(req: IDBRequest<T>): Promise<T> {
 // IndexedDB answers a put before its transaction commits, and an exhausted
 // storage quota fails the commit. So an entry counts as written only when the
 // transaction completes.
-function putCommitted(db: IDBDatabase, entry: CacheEntry): Promise<void> {
+function committed(db: IDBDatabase, run: (tx: IDBTransaction) => void): Promise<void> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
+    const tx = db.transaction([STORE, META], "readwrite");
     tx.oncomplete = () => resolve();
     tx.onabort = () => reject(tx.error ?? new Error("the cache write was aborted"));
-    tx.objectStore(STORE).put(entry);
+    run(tx);
   });
+}
+
+const putEntry = (db: IDBDatabase, entry: CacheEntry, meta: CacheMeta) =>
+  committed(db, (tx) => {
+    tx.objectStore(STORE).put(entry);
+    tx.objectStore(META).put(meta);
+  });
+
+const entryBytes = (row: CacheEntry) => row.blob.size + (row.sample?.blob.size ?? 0);
+
+/** Meta for entries written before v7. Reading their rows gets the blobs by
+ *  reference, not their bytes; each is dated 0 so it sorts oldest. */
+async function measure(db: IDBDatabase, keys: string[]): Promise<CacheMeta[]> {
+  if (!keys.length) return [];
+  const store = db.transaction(STORE, "readonly").objectStore(STORE);
+  const rows: (CacheEntry | undefined)[] = await Promise.all(keys.map((key) => idbReq(store.get(key))));
+  return keys.flatMap((key, i) => {
+    const row = rows[i];
+    return row ? [{ key, bytes: entryBytes(row), usedAt: 0, marker: row.width === 0 }] : [];
+  });
+}
+
+/** Delete the least recently used pictures until the store holds `limitBytes`
+ *  or less. Only the meta records are read, never the pictures: they can total
+ *  gigabytes. An entry with no meta (written before v7) is measured once and given one
+ *  that sorts oldest, and a meta with no entry is dropped. */
+export async function evictLeastRecentlyUsed(db: IDBDatabase, limitBytes: number): Promise<void> {
+  const reader = db.transaction([STORE, META], "readonly");
+  const [entryKeys, metas] = await Promise.all([
+    idbReq(reader.objectStore(STORE).getAllKeys()),
+    idbReq<CacheMeta[]>(reader.objectStore(META).getAll()),
+  ]);
+  const have = new Set(entryKeys as string[]);
+  const known = new Set(metas.map((m) => m.key));
+  const orphaned = metas.filter((m) => !have.has(m.key));
+  const live = metas.filter((m) => have.has(m.key));
+  const unmeasured = await measure(db, (entryKeys as string[]).filter((key) => !known.has(key)));
+  const pictures = [...unmeasured, ...live].filter((m) => !m.marker);
+  let total = pictures.reduce((sum, m) => sum + m.bytes, 0);
+  const doomed: string[] = [];
+  if (total > limitBytes) {
+    pictures.sort((a, b) => a.usedAt - b.usedAt);
+    for (const m of pictures) {
+      if (total <= limitBytes) break;
+      doomed.push(m.key);
+      total -= m.bytes;
+    }
+  }
+  const adopted = unmeasured.filter((m) => !doomed.includes(m.key));
+  if (!doomed.length && !orphaned.length && !adopted.length) return;
+  await committed(db, (tx) => {
+    const entries = tx.objectStore(STORE);
+    const metaStore = tx.objectStore(META);
+    for (const key of doomed) {
+      entries.delete(key);
+      metaStore.delete(key);
+    }
+    for (const m of orphaned) metaStore.delete(m.key);
+    for (const m of adopted) metaStore.put(m);
+  });
+}
+
+/** Stamp an entry as used now, unless it was stamped within the day. */
+async function touch(db: IDBDatabase, key: string): Promise<void> {
+  const store = db.transaction(META, "readwrite").objectStore(META);
+  const meta: CacheMeta | undefined = await idbReq(store.get(key));
+  if (!meta || meta.marker || Date.now() - meta.usedAt < TOUCH_AFTER_MS) return;
+  store.put({ ...meta, usedAt: Date.now() });
 }
 
 // ---------------------------------------------------------------------------
@@ -178,11 +271,16 @@ async function gunzip(blob: Blob): Promise<ArrayBuffer> {
 // File helpers
 // ---------------------------------------------------------------------------
 
-function cacheFileName(key: string): string {
-  return `${encodeURIComponent(key)}.bin`;
-}
-
 const miss = (): ReadReply => ({ data: null, width: 0, height: 0, full: null, sample: null });
+
+// A marker's file holds its key, a NUL (which no path contains), then its text.
+const MARKER_SEPARATOR = "\u0000";
+
+/** The key an entry keeps after its header; null when the file is cut short of it. */
+async function entryKey(file: File, header: EntryHeader): Promise<string | null> {
+  const bytes = await file.slice(ENTRY_HEADER_BYTES, ENTRY_HEADER_BYTES + header.keyBytes).arrayBuffer();
+  return bytes.byteLength === header.keyBytes ? new TextDecoder().decode(bytes) : null;
+}
 
 async function readFromDir(
   dir: FileSystemDirectoryHandle,
@@ -190,22 +288,20 @@ async function readFromDir(
   wantSample: boolean,
 ): Promise<CachedPreview | null> {
   try {
-    const name = cacheFileName(key);
+    const name = await cacheFileName(key);
     const file = await (await dir.getFileHandle(name)).getFile();
     const header = decodeEntryHeader(await file.slice(0, ENTRY_HEADER_BYTES).arrayBuffer());
     if (!header) {
-      // Too short for its header (a write that never closed left it; see
-      // entryState) or a layout this build doesn't know: a miss either way.
+      // Too short for its header (a write that never closed left it) or a
+      // layout this build doesn't know: a miss either way.
       await dir.removeEntry(name);
       return null;
     }
-    if ("legacy" in header) {
-      const body = await gunzip(file.slice(LEGACY_HEADER_BYTES));
-      return { data: new Uint16Array(body), ...header.legacy, full: null, sample: null };
-    }
-    const previewEnd = ENTRY_HEADER_BYTES + header.previewBytes;
+    // The name is only a hash of the key.
+    if ((await entryKey(file, header)) !== key) return null;
+    const previewEnd = ENTRY_HEADER_BYTES + header.keyBytes + header.previewBytes;
     const full = { width: header.fullWidth, height: header.fullHeight };
-    const preview = await gunzip(file.slice(ENTRY_HEADER_BYTES, previewEnd));
+    const preview = await gunzip(file.slice(previewEnd - header.previewBytes, previewEnd));
     const sample = wantSample
       ? {
           data: new Uint16Array(await gunzip(file.slice(previewEnd))),
@@ -225,6 +321,7 @@ async function writeToDir(dir: FileSystemDirectoryHandle, key: string, entry: En
     gzip(entry.preview.data as unknown as ArrayBuffer),
     gzip(entry.sample.data as unknown as ArrayBuffer),
   ]);
+  const keyBytes = new TextEncoder().encode(key);
   const header = encodeEntryHeader({
     width: entry.preview.width,
     height: entry.preview.height,
@@ -232,10 +329,11 @@ async function writeToDir(dir: FileSystemDirectoryHandle, key: string, entry: En
     fullHeight: entry.fullHeight,
     sample: { width: entry.sample.width, height: entry.sample.height, x: entry.sample.x, y: entry.sample.y },
     previewBytes: preview.size,
+    keyBytes: keyBytes.length,
   });
-  const fh = await dir.getFileHandle(cacheFileName(key), { create: true });
+  const fh = await dir.getFileHandle(await cacheFileName(key), { create: true });
   const w = await fh.createWritable();
-  await w.write(new Blob([header, preview, sample]));
+  await w.write(new Blob([header, keyBytes, preview, sample]));
   await w.close();
 }
 
@@ -252,6 +350,7 @@ async function handleRead(key: string, wantSample: boolean): Promise<ReadReply> 
     db.transaction(STORE, "readonly").objectStore(STORE).get(scopedKey(s, key)),
   );
   if (!entry) return miss();
+  if (entry.width > 0) touch(db, entry.key).catch(() => {});
   const full =
     entry.fullWidth !== undefined && entry.fullHeight !== undefined
       ? { width: entry.fullWidth, height: entry.fullHeight }
@@ -312,16 +411,21 @@ async function handleWrite(
       y: entry.sample.y,
     },
   };
-  await putCommitted(await getDB(), row);
+  const db = await getDB();
+  await putEntry(db, row, { key: row.key, bytes: entryBytes(row), usedAt: Date.now(), marker: false });
+  if (++writesSinceEvict >= EVICT_EVERY_WRITES) {
+    writesSinceEvict = 0;
+    await evictLeastRecentlyUsed(db, IDB_CAP_BYTES).catch(() => {});
+  }
 }
 
 async function handleMark(key: string, value: string): Promise<void> {
   const dir = cacheDir;
   const s = scope;
   if (dir) {
-    const fh = await dir.getFileHandle(cacheFileName(key), { create: true });
+    const fh = await dir.getFileHandle(await cacheFileName(key), { create: true });
     const w = await fh.createWritable();
-    await w.write(new Blob([value]));
+    await w.write(new Blob([key, MARKER_SEPARATOR, value]));
     await w.close();
     return;
   }
@@ -329,7 +433,7 @@ async function handleMark(key: string, value: string): Promise<void> {
   const blob = new Blob([value]);
   const entry: CacheEntry = { key: scopedKey(s, key), blob, width: 0, height: 0 };
   const db = await getDB();
-  await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).put(entry));
+  await putEntry(db, entry, { key: entry.key, bytes: 0, usedAt: 0, marker: true });
 }
 
 async function handlePeek(key: string): Promise<string | null> {
@@ -337,11 +441,13 @@ async function handlePeek(key: string): Promise<string | null> {
   const s = scope;
   if (dir) {
     try {
-      const fh = await dir.getFileHandle(cacheFileName(key));
+      const fh = await dir.getFileHandle(await cacheFileName(key));
       // A folder marker is created empty and gets its text as its file
       // closes. Until then it isn't one: read as a marker, its empty text
       // would pass for another session's strike.
-      return (await (await fh.getFile()).text()) || null;
+      const text = await (await fh.getFile()).text();
+      const at = text.indexOf(MARKER_SEPARATOR);
+      return at < 0 || text.slice(0, at) !== key ? null : text.slice(at + 1) || null;
     } catch {
       return null;
     }
@@ -356,13 +462,17 @@ async function handlePeek(key: string): Promise<string | null> {
 
 async function handleDelete(key: string): Promise<void> {
   if (cacheDir) {
-    try { await cacheDir.removeEntry(cacheFileName(key)); } catch {}
+    try { await cacheDir.removeEntry(await cacheFileName(key)); } catch {}
     return;
   }
   const s = scope;
   if (s === null) return;
   const db = await getDB();
-  await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).delete(scopedKey(s, key)));
+  const scoped = scopedKey(s, key);
+  await committed(db, (tx) => {
+    tx.objectStore(STORE).delete(scoped);
+    tx.objectStore(META).delete(scoped);
+  });
 }
 
 async function handleClear(): Promise<void> {
@@ -377,7 +487,10 @@ async function handleClear(): Promise<void> {
   }
   try {
     const db = await getDB();
-    await idbReq(db.transaction(STORE, "readwrite").objectStore(STORE).clear());
+    await committed(db, (tx) => {
+      tx.objectStore(STORE).clear();
+      tx.objectStore(META).clear();
+    });
   } catch {}
 }
 
@@ -407,41 +520,47 @@ async function handleKeys(): Promise<CacheListing[]> {
   const dir = cacheDir;
   const out: CacheListing[] = [];
   try {
+    const names: string[] = [];
     for await (const name of (dir as unknown as { keys(): AsyncIterable<string> }).keys()) {
-      if (!name.endsWith(".bin")) continue;
-      const state = await entryState(dir, name);
-      if (state === "unlanded") continue;
-      try {
-        out.push({ key: decodeURIComponent(name.slice(0, -4)), complete: state === "complete" });
-      } catch {}
+      if (name.endsWith(".bin")) names.push(name);
+    }
+    for (const name of names) {
+      // A file named by its key, as earlier builds wrote them, can't be told
+      // from another key's or read back: it goes, and its photo is filled again.
+      if (!HASHED_FILE_NAME.test(name)) {
+        try { await dir.removeEntry(name); } catch {}
+        continue;
+      }
+      const listed = await listFolderEntry(dir, name);
+      if (listed) out.push(listed);
     }
   } catch {}
   return out;
 }
 
-type EntryState = "unlanded" | "incomplete" | "complete";
-
-// A folder entry is created empty and gets its bytes as its file closes, so an
+// A folder file is created empty and gets its bytes as its file closes, so an
 // empty one is a write that hasn't landed: a quit or a failed close leaves it
-// so for good. A landed entry's first word tells its layout (cache-encode.ts):
-// the magic word with the whole header marks one that keeps the decoded size
-// and the sample; the magic word without it is another write that never
-// landed; anything else is an entry from before 3.1.0, or a marker's text.
-// The magic word with a layout this build doesn't know (a later build's) is
-// left unlisted: this build can only miss it, so its photo counts as having no
-// entry, and a read removes it.
-async function entryState(dir: FileSystemDirectoryHandle, name: string): Promise<EntryState> {
+// so for good. A landed preview entry opens with the magic word and keeps its
+// key after the header (cache-encode.ts); anything else is a marker's text,
+// which holds its key ahead of a NUL. A header cut short, a layout this build
+// doesn't know (a later build's) or text with no NUL is left unlisted: this
+// build can only miss it, so its photo counts as having no entry, and a read
+// removes what it can't use.
+async function listFolderEntry(dir: FileSystemDirectoryHandle, name: string): Promise<CacheListing | null> {
   try {
     const file = await (await dir.getFileHandle(name)).getFile();
-    if (file.size === 0) return "unlanded";
-    if (file.size < 4) return "incomplete";
-    const [magic] = new Uint32Array(await file.slice(0, 4).arrayBuffer());
-    if (magic !== ENTRY_MAGIC) return "incomplete";
-    if (file.size < ENTRY_HEADER_BYTES) return "unlanded";
-    const [layout] = new Uint32Array(await file.slice(4, 8).arrayBuffer());
-    return layout === ENTRY_LAYOUT ? "complete" : "unlanded";
+    if (file.size === 0) return null;
+    const first = await file.slice(0, 4).arrayBuffer();
+    if (first.byteLength === 4 && new Uint32Array(first)[0] === ENTRY_MAGIC) {
+      const header = decodeEntryHeader(await file.slice(0, ENTRY_HEADER_BYTES).arrayBuffer());
+      const key = header ? await entryKey(file, header) : null;
+      return key ? { key, complete: true } : null;
+    }
+    const text = await file.text();
+    const at = text.indexOf(MARKER_SEPARATOR);
+    return at < 0 ? null : { key: text.slice(0, at), complete: false };
   } catch {
-    return "unlanded";
+    return null;
   }
 }
 

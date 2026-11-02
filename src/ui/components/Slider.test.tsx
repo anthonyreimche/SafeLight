@@ -6,10 +6,14 @@
 // The Develop slider's styling hooks: the `sl-slider-*` classes an
 // input-styling extension targets, and the knob element that exists only so
 // such a stylesheet can show it (index.css hides it by default). Drag/scrub
-// behaviour is pointer-geometry driven and stays manually verified.
+// behaviour is pointer-geometry driven and stays manually verified. Then the
+// typed value field (select on focus, Enter keeps, Escape reverts) and
+// Shift+wheel stepping.
 
-import { describe, expect, it } from "vitest";
-import { render } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
+import { useDevelopStore } from "@/state/develop-store";
 import { Slider } from "./Slider.tsx";
 
 const noop = () => {};
@@ -51,5 +55,193 @@ describe("Slider styling hooks", () => {
   it("omits the value field with hideValue", () => {
     const { container } = render(<Slider label="Amount" {...at25} hideValue onChange={noop} />);
     expect(container.querySelector(".sl-slider-value")).toBeNull();
+  });
+});
+
+/** A slider over real state, recording its changes and commits. */
+function Harness({
+  initial,
+  step,
+  min,
+  max,
+  onChange,
+  onCommit,
+}: {
+  initial: number;
+  step?: number;
+  min?: number;
+  max?: number;
+  onChange: (v: number) => void;
+  onCommit: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  return (
+    <Slider
+      label="Exposure"
+      value={value}
+      step={step}
+      min={min}
+      max={max}
+      onChange={(v) => {
+        setValue(v);
+        onChange(v);
+      }}
+      onCommit={onCommit}
+    />
+  );
+}
+
+const field = () => screen.getByRole("textbox", { name: "Exposure value" }) as HTMLInputElement;
+
+describe("the typed value", () => {
+  it("selects the whole value on focus, so typing replaces it", () => {
+    render(<Harness initial={25} onChange={noop} onCommit={noop} />);
+    act(() => field().focus());
+    expect(field().value).toBe("25");
+    expect([field().selectionStart, field().selectionEnd]).toEqual([0, 2]);
+  });
+
+  it("keeps the typed value and leaves the field on Enter", () => {
+    const onCommit = vi.fn();
+    const onChange = vi.fn();
+    render(<Harness initial={25} onChange={onChange} onCommit={onCommit} />);
+    act(() => field().focus());
+    fireEvent.change(field(), { target: { value: "40" } });
+    fireEvent.keyDown(field(), { key: "Enter" });
+    expect(document.activeElement).not.toBe(field());
+    expect(onChange).toHaveBeenLastCalledWith(40);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(field().value).toBe("+40");
+  });
+
+  it("reads a decimal comma as the decimal separator", () => {
+    const onChange = vi.fn();
+    render(<Harness initial={25} onChange={onChange} onCommit={noop} />);
+    act(() => field().focus());
+    fireEvent.change(field(), { target: { value: "1,5" } });
+    fireEvent.blur(field());
+    expect(onChange).toHaveBeenLastCalledWith(1.5);
+  });
+
+  it("puts the value back and commits nothing on Escape", () => {
+    const onCommit = vi.fn();
+    const onChange = vi.fn();
+    render(<Harness initial={25} onChange={onChange} onCommit={onCommit} />);
+    act(() => field().focus());
+    fireEvent.change(field(), { target: { value: "40" } });
+    fireEvent.keyDown(field(), { key: "Escape" });
+    expect(document.activeElement).not.toBe(field());
+    expect(onChange).toHaveBeenLastCalledWith(25);
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(field().value).toBe("+25");
+  });
+});
+
+describe("Shift+wheel over the slider", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const track = () => screen.getByRole("slider", { name: "Exposure" }).parentElement!;
+
+  it("steps a hundredth of the range per notch, up raising the value", () => {
+    const onChange = vi.fn();
+    render(<Harness initial={25} onChange={onChange} onCommit={noop} />);
+    fireEvent.wheel(track(), { deltaY: -100, shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith(27);
+    fireEvent.wheel(track(), { deltaY: 100, shiftKey: true });
+    fireEvent.wheel(track(), { deltaY: 100, shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith(23);
+  });
+
+  it("reads the horizontal delta some systems turn Shift+wheel into", () => {
+    const onChange = vi.fn();
+    render(<Harness initial={25} onChange={onChange} onCommit={noop} />);
+    fireEvent.wheel(track(), { deltaX: -100, deltaY: 0, shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith(27);
+  });
+
+  it("snaps to the slider's step and stops at its ends", () => {
+    const onChange = vi.fn();
+    render(<Harness initial={4.98} min={-5} max={5} step={0.01} onChange={onChange} onCommit={noop} />);
+    fireEvent.wheel(track(), { deltaY: -100, shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith(5);
+    fireEvent.wheel(track(), { deltaY: 100, shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith(4.9);
+  });
+
+  it("commits once after the notches settle", () => {
+    const onCommit = vi.fn();
+    render(<Harness initial={25} onChange={noop} onCommit={onCommit} />);
+    fireEvent.wheel(track(), { deltaY: -100, shiftKey: true });
+    fireEvent.wheel(track(), { deltaY: -100, shiftKey: true });
+    expect(onCommit).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(500));
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops its waiting commit when Develop moves to another photo", () => {
+    useDevelopStore.setState({ photoId: "a" });
+    const onCommit = vi.fn();
+    render(<Harness initial={25} onChange={noop} onCommit={onCommit} />);
+    fireEvent.wheel(track(), { deltaY: -100, shiftKey: true });
+
+    act(() => useDevelopStore.setState({ photoId: "b" }));
+    act(() => vi.advanceTimersByTime(500));
+
+    expect(onCommit).not.toHaveBeenCalled();
+    useDevelopStore.setState({ photoId: null });
+  });
+
+  it("leaves a plain wheel to scroll the panel", () => {
+    const onChange = vi.fn();
+    render(<Harness initial={25} onChange={onChange} onCommit={noop} />);
+    const plain = fireEvent.wheel(track(), { deltaY: -100 });
+    expect(plain).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(fireEvent.wheel(track(), { deltaY: -100, shiftKey: true })).toBe(false);
+  });
+});
+
+describe("a drag when Develop moves to another photo", () => {
+  afterEach(() => useDevelopStore.setState({ photoId: null }));
+
+  /** The range input over a 200 px track, so 1 px is one unit of -100..100. */
+  const rangeInput = () => {
+    const input = screen.getByRole("slider", { name: "Exposure" });
+    vi.spyOn(input, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 0, y: 0, width: 200, height: 16 }),
+    );
+    return input;
+  };
+
+  it("drags and commits on the photo it started on", () => {
+    useDevelopStore.setState({ photoId: "a" });
+    const onChange = vi.fn();
+    const onCommit = vi.fn();
+    render(<Harness initial={25} onChange={onChange} onCommit={onCommit} />);
+    const input = rangeInput();
+
+    fireEvent.pointerDown(input, { button: 0, clientX: 100, pointerId: 1 });
+    fireEvent.pointerMove(input, { clientX: 110, pointerId: 1 });
+    fireEvent.pointerUp(input, { pointerId: 1 });
+
+    expect(onChange).toHaveBeenLastCalledWith(35);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the next photo nothing from a drag begun on the last one", () => {
+    useDevelopStore.setState({ photoId: "a" });
+    const onChange = vi.fn();
+    const onCommit = vi.fn();
+    render(<Harness initial={25} onChange={onChange} onCommit={onCommit} />);
+    const input = rangeInput();
+
+    fireEvent.pointerDown(input, { button: 0, clientX: 100, pointerId: 1 });
+    act(() => useDevelopStore.setState({ photoId: "b" }));
+    fireEvent.pointerMove(input, { clientX: 110, pointerId: 1 });
+    fireEvent.pointerUp(input, { pointerId: 1 });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onCommit).not.toHaveBeenCalled();
   });
 });

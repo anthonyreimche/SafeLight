@@ -5,60 +5,53 @@
 
 import type { DevelopParams } from "@/catalog/types";
 import { applyPanelBypass } from "@/modules/develop/panel-bypass";
-import { transformedViewCrop } from "@/rendering/crop-transform";
-import { buildForwardTransform } from "@/rendering/transform";
+
+/** The params a held canvas tool has the live view draw (CanvasTool.viewParams). */
+export type ViewParams = (params: DevelopParams) => DevelopParams;
 
 export type RenderParamsFor = (
   params: DevelopParams,
-  cropping: boolean,
+  view: ViewParams | null,
   aspect: number,
   bypassed: Record<string, boolean>,
 ) => DevelopParams;
 
 /** Makes the function that returns the params the live view draws: the edit with its
- *  bypassed panels neutralised and, in crop mode, the crop widened to enclose the whole
- *  transformed image. View-only; the stored edit is untouched. Either step builds a new
- *  object whenever it applies, and the bridge posts each object it is handed once, so the
- *  last result is kept and returned again while `params` and `bypassed` are the same
- *  objects (callers replace them on change, never mutate them) and `cropping` and
- *  `aspect` the same values. In crop mode the crop itself is never drawn, so params that
- *  differ from the last only in their crop get the last result too: a drag of the crop
- *  box then asks the renderer for nothing. */
+ *  bypassed panels neutralised, passed through the held canvas tool's view (crop mode
+ *  widens the crop to enclose the whole transformed image). View-only; the stored edit is
+ *  untouched. Either step builds a new object whenever it applies, and the bridge posts
+ *  each object it is handed once, so the last result is kept and returned again while
+ *  `params` and `bypassed` are the same objects (callers replace them on change, never
+ *  mutate them) and `view` and `aspect` the same. With a view, params that draw the same
+ *  values as the last get the last result too: a drag of the crop box, which crop mode
+ *  doesn't draw, then asks the renderer for nothing. */
 export function createRenderParams(): RenderParamsFor {
   let last: {
     params: DevelopParams;
-    cropping: boolean;
+    view: ViewParams | null;
     aspect: number;
     bypassed: Record<string, boolean>;
     drawn: DevelopParams;
   } | null = null;
 
-  return (params, cropping, aspect, bypassed) => {
-    if (
-      last &&
-      (last.params === params || (cropping && sameButCrop(last.params, params))) &&
-      last.cropping === cropping &&
-      last.aspect === aspect &&
-      last.bypassed === bypassed
-    ) {
-      last.params = params;
-      return last.drawn;
-    }
+  return (params, view, aspect, bypassed) => {
+    const same = last && last.view === view && last.aspect === aspect && last.bypassed === bypassed;
+    if (same && last!.params === params) return last!.drawn;
     const bp = applyPanelBypass(params, bypassed);
-    const drawn = cropping
-      ? {
-          ...bp,
-          crop: transformedViewCrop(buildForwardTransform(bp.straighten, bp.transform, aspect)),
-        }
-      : bp;
-    last = { params, cropping, aspect, bypassed, drawn };
+    const drawn = view ? view(bp) : bp;
+    if (same && view && sameValues(drawn, last!.drawn)) {
+      last!.params = params;
+      return last!.drawn;
+    }
+    last = { params, view, aspect, bypassed, drawn };
     return drawn;
   };
 }
 
-/** Whether every top-level field but `crop` is the same value in both. */
-function sameButCrop(a: DevelopParams, b: DevelopParams): boolean {
+/** Whether every top-level field holds the same value in both, by identity or,
+ *  for a field rebuilt as a new object, by its contents. */
+function sameValues(a: DevelopParams, b: DevelopParams): boolean {
   const ka = Object.keys(a) as (keyof DevelopParams)[];
-  const kb = Object.keys(b) as (keyof DevelopParams)[];
-  return ka.length === kb.length && kb.every((k) => k === "crop" || a[k] === b[k]);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every((k) => a[k] === b[k] || JSON.stringify(a[k]) === JSON.stringify(b[k]));
 }

@@ -20,8 +20,9 @@ import {
   resetAllBindings,
   resetBinding,
   setBinding,
-  setShortcutsSuspended,
+  resetShortcutHoldsForTests,
   shortcutsSuspended,
+  suspendShortcuts,
   unregisterExtensionActions,
   useExtensionActions,
   useKeybindings,
@@ -46,18 +47,27 @@ interface Mods {
   shift?: boolean;
   alt?: boolean;
   meta?: boolean;
+  /** Physical key (e.code); "" when the test doesn't care where the key sits. */
+  code?: string;
+  /** What getModifierState("AltGraph") reports: Windows AltGr arrives as Ctrl+Alt. */
+  altGraph?: boolean;
 }
 
-// Only the five fields comboFromEvent reads; a real KeyboardEvent needs a DOM.
+// Only the fields comboFromEvent reads; a real KeyboardEvent needs a DOM.
 function key(k: string, mods: Mods = {}): KeyboardEvent {
   return {
     key: k,
+    code: mods.code ?? "",
     ctrlKey: !!mods.ctrl,
     shiftKey: !!mods.shift,
     altKey: !!mods.alt,
     metaKey: !!mods.meta,
+    getModifierState: (m: string) => m === "AltGraph" && !!mods.altGraph,
   } as unknown as KeyboardEvent;
 }
+
+const onPlatform = (platform: string) =>
+  vi.stubGlobal("window", { safelightNative: { platform } });
 
 const overrides = () => useKeybindings.getState().overrides;
 
@@ -65,7 +75,7 @@ beforeEach(() => {
   vi.stubGlobal("localStorage", memoryStorage());
   useKeybindings.setState({ overrides: {} });
   useExtensionActions.setState({ actions: new Map() });
-  setShortcutsSuspended(false);
+  resetShortcutHoldsForTests();
 });
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -93,6 +103,94 @@ describe("comboFromEvent", () => {
 
   it("folds Cmd into Ctrl so macOS bindings match the stored combos", () => {
     expect(comboFromEvent(key("z", { meta: true }))).toBe("Ctrl+Z");
+  });
+});
+
+describe("keyboard layouts", () => {
+  it("records a macOS Option combo by the physical key, not the composed character", () => {
+    onPlatform("darwin");
+    expect(comboFromEvent(key("“", { alt: true, code: "BracketLeft" }))).toBe("Alt+[");
+    expect(comboFromEvent(key("©", { alt: true, code: "KeyG" }))).toBe("Alt+G");
+  });
+
+  it("rotates with Option+[ and Option+] on a US Mac", () => {
+    onPlatform("darwin");
+    expect(matchAction(key("“", { alt: true, code: "BracketLeft" }), ["Library"])).toBe("photo.rotateCCW");
+    expect(matchAction(key("‘", { alt: true, code: "BracketRight" }), ["Library"])).toBe("photo.rotateCW");
+  });
+
+  it("takes German Mac Option+5 (which types [) as the bracket, not as rotate", () => {
+    onPlatform("darwin");
+    const optionFive = key("[", { alt: true, code: "Digit5" });
+    expect(matchAction(optionFive, ["Library"])).toBeNull();
+    expect(matchAction(optionFive, ["Develop"])).toBe("brush.smaller");
+    expect(matchAction(key("•", { alt: true, code: "BracketLeft" }), ["Library"])).toBe("photo.rotateCCW");
+  });
+
+  it("leaves a typed Alt+[ alone off macOS", () => {
+    onPlatform("win32");
+    expect(matchAction(key("[", { alt: true, code: "BracketLeft" }), ["Library"])).toBe("photo.rotateCCW");
+  });
+
+  it("treats a Windows AltGr character as the bare key it types", () => {
+    onPlatform("win32");
+    const altGr = { ctrl: true, alt: true, altGraph: true };
+    expect(matchAction(key("[", { ...altGr, code: "Digit8" }), ["Develop"])).toBe("brush.smaller");
+    expect(matchAction(key("]", { ...altGr, code: "Digit9" }), ["Develop"])).toBe("brush.larger");
+    expect(comboFromEvent(key("[", { ...altGr, code: "Digit8" }))).toBe("[");
+  });
+
+  it("keeps Ctrl+Alt when AltGraph is reported but the key types nothing extra", () => {
+    onPlatform("win32");
+    registerExtensionAction("ext.a", { id: "ext.a.run", label: "Run", defaultCombo: "Ctrl+Alt+1", handler: () => {} });
+    expect(matchExtensionAction(key("1", { ctrl: true, alt: true, altGraph: true, code: "Digit1" }))?.id).toBe("ext.a.run");
+  });
+
+  it("still fires a Mac Option binding recorded as the composed character", () => {
+    onPlatform("darwin");
+    registerExtensionAction("ext.a", { id: "ext.a.run", label: "Run", defaultCombo: "", handler: () => {} });
+    setBinding("ext.a.run", "Alt+©");
+    expect(matchExtensionAction(key("©", { alt: true, code: "KeyG" }))?.id).toBe("ext.a.run");
+  });
+
+  it("keeps a deliberate Ctrl+Alt+letter on a layout with AltGr", () => {
+    onPlatform("win32");
+    const ctrlAltK = key("k", { ctrl: true, alt: true, altGraph: true, code: "KeyK" });
+    expect(comboFromEvent(ctrlAltK)).toBe("Ctrl+Alt+K");
+    expect(matchAction(ctrlAltK, ["General"])).toBeNull();
+    registerExtensionAction("ext.a", { id: "ext.a.run", label: "Run", defaultCombo: "Ctrl+Alt+K", handler: () => {} });
+    expect(matchExtensionAction(ctrlAltK)?.id).toBe("ext.a.run");
+  });
+
+  it("falls back to the digit row's position on AZERTY", () => {
+    expect(matchAction(key("&", { code: "Digit1" }), ["Library"])).toBe("rate.1");
+    expect(matchAction(key("à", { code: "Digit0" }), ["Library"])).toBe("rate.0");
+    expect(matchAction(key("(", { code: "Digit5" }), ["Library"])).toBe("rate.5");
+    expect(matchAction(key("ç", { code: "Digit9" }), ["Library"])).toBe("label.blue");
+    expect(matchAction(key("&", { ctrl: true, code: "Digit1" }), ["Develop"])).toBe("develop.zoom100");
+    expect(matchAction(key("à", { ctrl: true, code: "Digit0" }), ["Develop"])).toBe("develop.zoomFit");
+  });
+
+  it("matches an extension action by position too", () => {
+    registerExtensionAction("ext.a", { id: "ext.a.run", label: "Run", defaultCombo: "Ctrl+Alt+1", handler: () => {} });
+    expect(matchExtensionAction(key("&", { ctrl: true, alt: true, code: "Digit1" }))?.id).toBe("ext.a.run");
+  });
+
+  it("lets the typed key win over its position", () => {
+    // AZERTY's 6 key types "-", which is a binding of its own.
+    expect(matchAction(key("-", { code: "Digit6" }), ["Library"])).toBe("grid.smaller");
+    // QWERTZ swaps Y and Z: the letters follow the label, not the position.
+    expect(matchAction(key("z", { ctrl: true, code: "KeyY" }), ["Develop"])).toBe("develop.undo");
+    expect(matchAction(key("y", { ctrl: true, code: "KeyZ" }), ["Develop"])).toBe("develop.redo");
+  });
+
+  it("falls back to the bracket position on QWERTZ", () => {
+    expect(matchAction(key("ü", { code: "BracketLeft" }), ["Develop"])).toBe("brush.smaller");
+  });
+
+  it("falls back to letter positions only for non-Latin layouts", () => {
+    expect(matchAction(key("п", { code: "KeyG" }), ["General"])).toBe("module.library");
+    expect(matchAction(key("a", { code: "KeyG" }), ["General"])).toBeNull();
   });
 });
 
@@ -212,7 +310,7 @@ describe("bindings", () => {
       category: "General",
       combo: "L",
     });
-    expect(list.find((b) => b.id === "photo.flipH")?.combo).toBe("");
+    expect(list.find((b) => b.id === "photo.deleteDisk")?.combo).toBe("");
   });
 });
 
@@ -269,7 +367,7 @@ describe("matchAction", () => {
 
   it("ignores a bare modifier and an unbound action", () => {
     expect(matchAction(key("Shift", { shift: true }), ["Develop"])).toBeNull();
-    // photo.flipH/flipV ship unbound (combo ""), which no keypress can produce.
+    // photo.deleteDisk ships unbound (combo ""), which no keypress can produce.
     expect(matchAction(key(""), ["Develop"])).toBeNull();
   });
 });
@@ -332,6 +430,26 @@ describe("extension actions", () => {
     expect([...useExtensionActions.getState().actions.keys()]).toEqual(["ext.b.run"]);
   });
 
+  it("keeps the first extension's action against another extension, and names both", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mine = { id: "shared.run", label: "A", defaultCombo: "Ctrl+Alt+1", handler: noop };
+    registerExtensionAction("ext.a", mine);
+    registerExtensionAction("ext.b", { ...mine, label: "B", defaultCombo: "Ctrl+Alt+2" });
+    const held = useExtensionActions.getState().actions.get("shared.run");
+    expect(held).toMatchObject({ extensionId: "ext.a", label: "A" });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/ext\.b.*"shared\.run".*ext\.a.*registerKeybinding ignored/));
+    unregisterExtensionActions("ext.a");
+    warn.mockRestore();
+  });
+
+  it("refuses an id that names one of Safelight's own actions", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    registerExtensionAction("ext.a", { id: "photo.deleteDisk", label: "Hijack", defaultCombo: "Ctrl+Alt+1", handler: noop });
+    expect(useExtensionActions.getState().actions.has("photo.deleteDisk")).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it("replaces an action re-registered under the same id (extension reload)", () => {
     registerExtensionAction("ext.a", {
       id: "ext.a.run",
@@ -357,8 +475,8 @@ describe("findConflicts", () => {
   });
 
   it("flags two actions in the same module sharing a combo", () => {
-    expect(findConflicts({ "develop.toggleClipping": "O" })).toEqual(
-      new Set(["develop.toggleClipping", "crop.cycleGuide"]),
+    expect(findConflicts({ "develop.toggleClipping": "S" })).toEqual(
+      new Set(["develop.toggleClipping", "develop.toggleProof"]),
     );
   });
 
@@ -369,12 +487,12 @@ describe("findConflicts", () => {
   });
 
   it("allows the same combo in Develop and Library (scopes never overlap)", () => {
-    expect(findConflicts({ "crop.cycleGuide": "P" })).toEqual(new Set());
+    expect(findConflicts({ "develop.toggleProof": "P" })).toEqual(new Set());
   });
 
   it("never flags the unbound actions against each other", () => {
-    // photo.flipH and photo.flipV both ship with "" and must stay quiet.
-    expect(findConflicts({}).has("photo.flipH")).toBe(false);
+    // photo.deleteDisk ships with "" and must stay quiet.
+    expect(findConflicts({}).has("photo.deleteDisk")).toBe(false);
   });
 
   it("counts a built-in alias that is still live", () => {
@@ -402,11 +520,33 @@ describe("findConflicts", () => {
 });
 
 describe("shortcut suspension", () => {
-  it("is a plain latch the combo recorder holds while capturing", () => {
-    expect(shortcutsSuspended()).toBe(false);
-    setShortcutsSuspended(true);
+  it("stays suspended until every hold is released, in any order", () => {
+    const outer = suspendShortcuts();
+    const inner = suspendShortcuts();
+    outer();
     expect(shortcutsSuspended()).toBe(true);
-    setShortcutsSuspended(false);
+    inner();
+    expect(shortcutsSuspended()).toBe(false);
+  });
+
+  it("counts a release only once", () => {
+    const first = suspendShortcuts();
+    const second = suspendShortcuts();
+    first();
+    first();
+    expect(shortcutsSuspended()).toBe(true);
+    second();
+    expect(shortcutsSuspended()).toBe(false);
+  });
+
+  it("a release left over from before a test reset doesn't lift a later hold", () => {
+    const stale = suspendShortcuts();
+    resetShortcutHoldsForTests();
+    expect(shortcutsSuspended()).toBe(false);
+    const live = suspendShortcuts();
+    stale();
+    expect(shortcutsSuspended()).toBe(true);
+    live();
     expect(shortcutsSuspended()).toBe(false);
   });
 });

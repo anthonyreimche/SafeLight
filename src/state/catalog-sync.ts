@@ -19,11 +19,11 @@ export function followCatalogRecords(): () => void {
     // A storage this window doesn't show (one still opening) has no say here.
     if (storage !== catalogStorage()) return;
     useCatalogStore.getState().mergeRemoteRecords(records.photos, records.deletedIds);
-    // Develop's next commit writes back its in-memory history, which would drop
-    // the other window's step, so the open photo reloads from the catalog.
+    // The open photo takes the other window's steps on: reloaded, or with a
+    // change still in progress, its history renewed under that change.
     const develop = useDevelopStore.getState();
     const open = develop.photoId;
     if (open && records.edits.some((editState) => editState.photoId === open))
-      void develop.loadEdit(open, develop.asShotTemperature);
+      void develop.reloadEdit();
   });
 }

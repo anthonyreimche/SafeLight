@@ -23,6 +23,7 @@ import {
 } from "@/catalog/types";
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import { DENOISE_STAGE, denoiseBag } from "./builtin-denoise";
+import { essentialStages, type EssentialLine } from "./essential-stages.fixtures";
 import type { WebGLRenderer } from "./renderer";
 import {
   LINEAR_PROBE_PIPELINE,
@@ -85,8 +86,14 @@ function capture(renderer: WebGLRenderer): Frame {
   return frame;
 }
 
+// The Essentials' current line, as the shipped app runs them.
+const ESSENTIALS = essentialStages();
+
+/** A frame of `params` with the Essentials' line for its process version
+ *  installed, as the freeze holds each version's program. */
 function frameOf(pipeline: ResolvedPipeline, source: FloatImage, params: DevelopParams): Frame {
-  return withRenderer({ stages: [], pipeline }, (renderer) => {
+  const line = Math.min(3, Math.max(1, params.processVersion ?? 1)) as EssentialLine;
+  return withRenderer({ stages: essentialStages(line), pipeline }, (renderer) => {
     renderer.setImage(source);
     renderer.setParams(params);
     return capture(renderer);
@@ -147,17 +154,20 @@ describe("process version 2", () => {
     }
   });
 
+  // Sharpening over white, which version 1 clips first (core's own pieces).
   it("switches programs per photo without disturbing either", () => {
-    const flat = floatImage(16, 16, () => [0.3, 0.25, 0.2]);
-    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
-      renderer.setImage(flat);
-      renderer.setParams(identityParams(V1));
+    const edge = floatImage(32, 32, (x) => (x < 16 ? [0.6, 0.6, 0.6] : [0.9, 0.9, 0.9]));
+    const params = (version: typeof V1) =>
+      identityParams({ ...version, sharpening: 100, sharpenDetail: 100 });
+    withRenderer({ stages: ESSENTIALS, pipeline: DOUBLING_PIPELINE }, (renderer) => {
+      renderer.setImage(edge);
+      renderer.setParams(params(V1));
       const first = capture(renderer);
-      renderer.setParams(identityParams(V2));
+      renderer.setParams(params(V2));
       const other = capture(renderer);
-      renderer.setParams(identityParams(V1));
+      renderer.setParams(params(V1));
       const again = capture(renderer);
-      renderer.setParams(identityParams(V2));
+      renderer.setParams(params(V2));
       const otherAgain = capture(renderer);
       expect(Array.from(again.data)).toEqual(Array.from(first.data));
       expect(Array.from(otherAgain.data)).toEqual(Array.from(other.data));
@@ -200,10 +210,10 @@ describe("process version 2", () => {
 // A renderer compiles the develop program of the version it is asked to draw and
 // none ahead of time: a version 1 photo must not pay for the version 2 program
 // first, a full compile (slow on ANGLE) on every export batch and worker start.
-// No stages keeps prepass programs out of the counts.
+// The core tools alone keep prepass programs out of the counts.
 describe("the develop program a renderer compiles", () => {
   const FLAT = floatImage(16, 16, () => [0.3, 0.25, 0.2]);
-  const OPTS = { stages: [], pipeline: BUILTIN_RESOLVED };
+  const OPTS = { stages: ESSENTIALS, pipeline: BUILTIN_RESOLVED };
 
   it("builds one program per version drawn, and none at construction", () => {
     const { gl } = glHarness();
@@ -359,7 +369,7 @@ describe("a mask's Clarity, Sharpness and Texture", () => {
   // mask reading level 0 instead would drift from its global counterpart.
   it("matches the global Texture on version 2 in a view smaller than the source", () => {
     const view = (over: Partial<DevelopParams>) =>
-      withRenderer({ stages: [], pipeline: BUILTIN_RESOLVED }, (renderer) => {
+      withRenderer({ stages: ESSENTIALS, pipeline: BUILTIN_RESOLVED }, (renderer) => {
         renderer.setImage(STRIPES);
         renderer.setViewport({ x: 0, y: 0, w: 1, h: 1 }, 12, 12);
         renderer.setParams(identityParams({ ...V2, ...over }));

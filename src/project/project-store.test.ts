@@ -10,8 +10,9 @@
 // are stubs; project-store.ts and the installed storage (@/catalog/storage) are real.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CatalogPhoto } from "@/catalog/types";
+import type { CatalogPhoto, EditState } from "@/catalog/types";
 import { photo } from "@/catalog/stored-edit.fixtures";
+import type { CatalogHooksContribution, NativeOsOpenBridge } from "@/extensions/types";
 import { CatalogUnreadableError } from "./catalog-errors";
 
 const h = vi.hoisted(() => ({
@@ -28,8 +29,28 @@ const h = vi.hoisted(() => ({
         storage: object,
       ) => void),
   flushLeftCopies: vi.fn(),
+  /** The grid's display order, as the shared derive hands it out. */
+  visible: [] as CatalogPhoto[],
+  /** The catalog the window shows, and the selection call. */
+  photos: [] as CatalogPhoto[],
+  select: vi.fn(),
+  /** What the preload offers for opening what the OS hands the app. */
+  osOpen: null as null | NativeOsOpenBridge,
+  /** How the catalog store reaches the last project, as project-store set it. */
+  lastProject: null as null | { openLast(): Promise<void>; reconnectLast(): Promise<boolean> },
+  /** The grid-preview requests the idle prefill makes, and the loaders installed. */
+  requestThumbnail: vi.fn<(id: string) => void>(),
+  setThumbnailLoader: vi.fn<(read: unknown, opts?: { onEvict?: (ids: string[]) => void }) => number>(() => 1),
+  /** The recent projects' paths, newest first. */
+  recents: [] as string[],
 }));
 
+vi.mock("@/native/privileged", () => ({ privilegedOsOpen: () => h.osOpen }));
+vi.mock("./native-fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./native-fs")>()),
+  nativeDirectoryHandle: (path: string) => ({ name: path.split("/").pop(), path }),
+  nativePathOf: (handle: { path?: string } | null) => handle?.path ?? null,
+}));
 vi.mock("@/state/detach", () => ({ detachedModule: () => null }));
 vi.mock("@/raw/decode-pool", () => ({ warmDecodePool: async () => {} }));
 vi.mock("@/modules/library/import-photos", () => ({
@@ -49,26 +70,32 @@ vi.mock("./recent", () => ({
   addRecentProject: async () => {},
   getLastProject: async () => null,
   recentHandle: () => null,
+  listRecentProjects: async () =>
+    h.recents.map((path, i) => ({ id: path, name: path, path, handle: null, openedAt: -i, cover: null })),
 }));
 vi.mock("@/raw/raw-cache", () => ({ setRawCacheDir: () => {} }));
 vi.mock("@/state/thumbnail-loader", () => ({
-  requestThumbnail: () => {},
-  setThumbnailLoader: () => 1,
+  requestThumbnail: h.requestThumbnail,
+  setThumbnailLoader: h.setThumbnailLoader,
   thumbnailGen: () => 1,
 }));
 vi.mock("@/state/settings-store", () => ({ getSettings: () => ({}) }));
 vi.mock("@/state/catalog-store", () => ({
   useCatalogStore: {
     getState: () => ({
-      replaceCatalog: () => {},
+      replaceCatalog: (photos: CatalogPhoto[]) => void (h.photos = photos),
       finalizeCatalog: h.finalizeCatalog,
       reconcileCatalog: h.reconcileCatalog,
       appendPhotos: () => {},
       mergeRebuiltPhoto: () => {},
+      photos: h.photos,
+      select: h.select,
     }),
     setState: () => {},
   },
+  setLastProjectOpener: (opener: NonNullable<typeof h.lastProject>) => void (h.lastProject = opener),
 }));
+vi.mock("@/modules/library/photo-navigation", () => ({ visibleList: () => h.visible }));
 vi.mock("@/state/ui-store", () => ({
   useUIStore: {
     subscribe: () => () => {},
@@ -86,6 +113,7 @@ vi.mock("@/state/ui-store", () => ({
 function projectStorage() {
   return {
     readPreview: async () => null,
+    forgetPreviews: vi.fn(),
     flush: vi.fn(async (_options?: { unloading?: boolean }) => {}),
     close: vi.fn(),
   };
@@ -100,6 +128,8 @@ function opened(storage: FakeStorage, photos: CatalogPhoto[] = []) {
     storage,
     rawCacheDir: {},
     tree: null,
+    unreadable: [],
+    skipped: {},
     photos,
     newPhotos: [],
     storageLocation: "in-folder",
@@ -129,7 +159,7 @@ const openProject = (name: string) => useProjectStore.getState().openProject(fol
 /** Open project A, saved before, to the end of its walk. */
 async function openA(): Promise<FakeStorage> {
   const a = projectStorage();
-  h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+  h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
     paint(a, {}, [photo("a")]);
     return opened(a, [photo("a")]);
   });
@@ -145,6 +175,14 @@ beforeEach(async () => {
   h.unload = [];
   h.saveStatus = null;
   h.flushLeftCopies.mockReset();
+  h.photos = [];
+  h.visible = [];
+  h.select.mockReset();
+  h.osOpen = null;
+  h.lastProject = null;
+  h.requestThumbnail.mockClear();
+  h.setThumbnailLoader.mockClear();
+  h.recents = [];
   vi.stubGlobal("window", {
     addEventListener: (type: string, listener: () => void) => {
       if (type === "beforeunload") h.unload.push(listener);
@@ -157,11 +195,26 @@ beforeEach(async () => {
   ({ catalogStorage } = await import("@/catalog/storage"));
 });
 
+describe("the catalog store's startup load and reconnect", () => {
+  it("reopen and re-grant the last project through this store", async () => {
+    const openLast = vi.fn(async () => {});
+    const reconnectLast = vi.fn(async () => true);
+    useProjectStore.setState({ openLast, reconnectLast });
+
+    await h.lastProject?.openLast();
+    const reconnected = await h.lastProject?.reconnectLast();
+
+    expect(openLast).toHaveBeenCalledOnce();
+    expect(reconnectLast).toHaveBeenCalledOnce();
+    expect(reconnected).toBe(true);
+  });
+});
+
 describe("the catalog a change goes into while a project opens", () => {
   it("is the new project's while its first import runs", async () => {
     const s = projectStorage();
     let during: unknown = null;
-    h.open.mockImplementation(async (_root: unknown, onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementation(async (_root: unknown, _deps: unknown, onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(s, {}, []); // the catalog was read: there is none yet
       onPhoto(photo("new"));
       during = catalogStorage();
@@ -179,7 +232,7 @@ describe("the catalog a change goes into while a project opens", () => {
     const flushesOfA = a.flush.mock.calls.length;
     let reading: unknown = null;
     let aWhileReading = { flushed: false, closed: false };
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       reading = catalogStorage();
       aWhileReading = {
         flushed: a.flush.mock.calls.length > flushesOfA,
@@ -199,7 +252,7 @@ describe("the catalog a change goes into while a project opens", () => {
   it("reaches the importing project's catalog when the window closes mid-import", async () => {
     const s = projectStorage();
     const { done, finish } = walk();
-    h.open.mockImplementation(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementation(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(s, {}, []);
       await done;
       return opened(s);
@@ -228,7 +281,7 @@ describe("the catalog a change goes into while a project opens", () => {
 
   it("paints a first import from the photos found, with no saved photos to reconcile", async () => {
     const s = projectStorage();
-    h.open.mockImplementation(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementation(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(s, {}, []);
       return opened(s, [photo("new")]);
     });
@@ -248,12 +301,12 @@ describe("the catalog a change goes into after an open fails", () => {
     await openProject("B");
 
     expect(catalogStorage()).not.toBe(a);
-    await expect(catalogStorage().getAllPhotos()).resolves.toEqual([]);
+    await expect(catalogStorage().getEditState("any")).resolves.toBeUndefined();
   });
 
   it("is no project's when the walk failed after the saved photos were painted", async () => {
     const b = projectStorage();
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(b, {}, [photo("b")]);
       throw new Error("the folder is gone");
     });
@@ -280,7 +333,7 @@ describe("the catalog a change goes into once a project is closed", () => {
   it("is no project's when the project closes mid-walk, and the walk's end closes it", async () => {
     const b = projectStorage();
     const { done, finish } = walk();
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(b, {}, [photo("b")]);
       await done;
       return opened(b, [photo("b")]);
@@ -299,7 +352,7 @@ describe("the catalog a change goes into once a project is closed", () => {
   it("is no project's when the project closes before its catalog was read", async () => {
     const b = projectStorage();
     const { done, finish } = walk();
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       await done;
       paint(b, {}, []);
       return opened(b);
@@ -321,7 +374,7 @@ describe("the folder tree while a project opens", () => {
     // Folder actions resolve the tree's paths against the open project's folder.
     const a = projectStorage();
     const treeOfA = { name: "A", path: "", children: [], count: 1 };
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(a, {}, [photo("a")]);
       return { ...opened(a, [photo("a")]), tree: treeOfA };
     });
@@ -329,7 +382,7 @@ describe("the folder tree while a project opens", () => {
     expect(useProjectStore.getState().tree).toBe(treeOfA);
     const b = projectStorage();
     const { done, finish } = walk();
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(b, {}, []); // a first import names B at once
       await done;
       return opened(b);
@@ -355,7 +408,7 @@ describe("reading the catalog of the next project", () => {
 
   function nextOpen() {
     const b = projectStorage();
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(b, {}, [photo("a")]);
       return opened(b, [photo("a")]);
     });
@@ -421,7 +474,9 @@ describe("a save of the catalog that failed", () => {
 
     saveEnded(failed("the disk is full"), a);
 
-    expect(saveError()).toBe("Couldn't save the catalog: the disk is full");
+    expect(saveError()).toBe(
+      "Couldn't save the catalog: the disk is full. Your latest changes aren't saved yet.",
+    );
   });
 
   it("isn't shown for a catalog the window doesn't have open", async () => {
@@ -446,7 +501,7 @@ describe("a save of the catalog that failed", () => {
     saveEnded(failed("the disk is full"), a);
     const b = projectStorage();
     let whileOpening: string | null | undefined;
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       whileOpening = saveError();
       paint(b, {}, []);
       return opened(b);
@@ -469,7 +524,7 @@ describe("a save of the catalog that failed", () => {
   it("is told in this window when a catalog it left gives up saving a change", async () => {
     const a = await openA();
     const b = projectStorage();
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(b, {}, []);
       return opened(b);
     });
@@ -487,7 +542,7 @@ describe("a save of the catalog that failed", () => {
   it("goes when the open fails after the project's catalog failed to save", async () => {
     // No project is left open to save, so the message could never go by itself.
     const b = projectStorage();
-    h.open.mockImplementationOnce(async (_root: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
       paint(b, {}, [photo("b")]);
       saveEnded(failed("the disk is full"), b);
       throw new Error("the folder is gone");
@@ -496,5 +551,442 @@ describe("a save of the catalog that failed", () => {
     await openProject("B");
 
     expect(saveError()).toBeNull();
+  });
+});
+
+// "Open with Safelight" from the file manager: a folder opens as the project, a
+// photo opens its folder and is selected once the catalog has it.
+describe("opening what the OS hands the app", () => {
+  /** An open that finds `photos` in the folder. */
+  function openFinds(...photos: CatalogPhoto[]) {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      const s = projectStorage();
+      paint(s, {}, photos);
+      h.photos = photos;
+      return opened(s, photos);
+    });
+  }
+
+  const openFromOs = (target: { folder: string; file: string | null }) =>
+    useProjectStore.getState().openFromOs(target);
+
+  it("opens the folder as the project and selects the named photo", async () => {
+    openFinds(photo("a"), photo("b"));
+
+    await openFromOs({ folder: "/photos/trip", file: "b.NEF" });
+
+    expect(useProjectStore.getState().name).toBe("trip");
+    expect(h.select).toHaveBeenCalledTimes(1);
+    expect(h.select).toHaveBeenCalledWith("b");
+  });
+
+  it("matches the file name whatever its case where names fold case", async () => {
+    onPlatform("win32");
+    openFinds(photo("b"));
+
+    await openFromOs({ folder: "/photos/trip", file: "B.nef" });
+
+    expect(h.select).toHaveBeenCalledWith("b");
+  });
+
+  it("selects nothing when given a folder", async () => {
+    openFinds(photo("a"));
+
+    await openFromOs({ folder: "/photos/trip", file: null });
+
+    expect(useProjectStore.getState().name).toBe("trip");
+    expect(h.select).not.toHaveBeenCalled();
+  });
+
+  it("opens the folder and selects nothing when the photo is not in the catalog", async () => {
+    openFinds(photo("a"));
+
+    await openFromOs({ folder: "/photos/trip", file: "missing.NEF" });
+
+    expect(useProjectStore.getState().name).toBe("trip");
+    expect(h.select).not.toHaveBeenCalled();
+  });
+
+  it("selects nothing when the folder fails to open", async () => {
+    h.open.mockImplementationOnce(async () => {
+      throw new Error("the folder is gone");
+    });
+    h.photos = [photo("a")];
+
+    await openFromOs({ folder: "/photos/trip", file: "a.NEF" });
+
+    expect(h.select).not.toHaveBeenCalled();
+  });
+
+  it("keeps the project that is already open and selects in it", async () => {
+    openFinds(photo("a"), photo("b"));
+    await openFromOs({ folder: "/photos/trip", file: null });
+
+    await openFromOs({ folder: "/photos/trip", file: "a.NEF" });
+
+    expect(h.open).toHaveBeenCalledTimes(1);
+    expect(h.select).toHaveBeenCalledWith("a");
+  });
+
+  /** A photo at `relPath` in the project. */
+  const photoAt = (id: string, relPath: string): CatalogPhoto => ({ ...photo(id), relPath });
+
+  /** The window on `platform`, as beforeEach stubs it otherwise. */
+  const onPlatform = (platform: string) =>
+    vi.stubGlobal("window", { addEventListener: () => {}, requestIdleCallback: () => {}, safelightNative: { platform } });
+
+  it("keeps the open project for a photo in one of its subfolders and selects it there", async () => {
+    openFinds(photoAt("a", "a.NEF"), photoAt("x", "trip/day 1/x.NEF"));
+    await openFromOs({ folder: "/photos", file: null });
+
+    await openFromOs({ folder: "/photos/trip/day 1", file: "x.NEF" });
+
+    expect(h.open).toHaveBeenCalledTimes(1);
+    expect(useProjectStore.getState().name).toBe("photos");
+    expect(h.select).toHaveBeenCalledWith("x");
+  });
+
+  it("matches the subfolder whatever its case and separators on Windows", async () => {
+    onPlatform("win32");
+    openFinds(photoAt("x", "Trip/x.NEF"));
+    await openFromOs({ folder: "D:/Photos", file: null });
+
+    await openFromOs({ folder: "d:\\photos\\TRIP", file: "X.nef" });
+
+    expect(h.open).toHaveBeenCalledTimes(1);
+    expect(h.select).toHaveBeenCalledWith("x");
+  });
+
+  it("opens a subfolder that differs in case as its own project on Linux", async () => {
+    onPlatform("linux");
+    openFinds(photoAt("x", "Trip/x.NEF"));
+    await openFromOs({ folder: "/photos", file: null });
+    openFinds(photoAt("x", "x.NEF"));
+
+    await openFromOs({ folder: "/Photos/Trip", file: "x.NEF" });
+
+    expect(h.open).toHaveBeenCalledTimes(2);
+    expect(useProjectStore.getState().name).toBe("Trip");
+  });
+
+  it("does not take a sibling folder sharing the project's name as a prefix for a subfolder", async () => {
+    openFinds(photoAt("x", "x.NEF"));
+    await openFromOs({ folder: "/photos", file: null });
+    openFinds(photoAt("y", "y.NEF"));
+
+    await openFromOs({ folder: "/photos-2024", file: "y.NEF" });
+
+    expect(h.open).toHaveBeenCalledTimes(2);
+    expect(useProjectStore.getState().name).toBe("photos-2024");
+    expect(h.select).toHaveBeenCalledWith("y");
+  });
+
+  it("opens the recent project that holds the photo's folder rather than a project of its own", async () => {
+    h.recents = ["/elsewhere", "/photos", "/photos/trip"];
+    openFinds(photoAt("x", "day 1/x.NEF"));
+
+    await openFromOs({ folder: "/photos/trip/day 1", file: "x.NEF" });
+
+    expect(h.open).toHaveBeenCalledTimes(1);
+    expect(useProjectStore.getState().name).toBe("trip");
+    expect(h.select).toHaveBeenCalledWith("x");
+  });
+
+  it("selects by the photo's exact case where names keep their case", async () => {
+    onPlatform("linux");
+    openFinds(photoAt("upper", "trip/X.NEF"), photoAt("lower", "trip/x.nef"));
+    await openFromOs({ folder: "/photos", file: null });
+
+    await openFromOs({ folder: "/photos/trip", file: "x.nef" });
+
+    expect(h.select).toHaveBeenCalledWith("lower");
+  });
+
+  it("does not take a recent drive root or home folder as the project for a photo in it", async () => {
+    onPlatform("win32");
+    h.recents = ["D:\\", "C:\\Users\\anthony", "/home/anthony"];
+    openFinds(photoAt("x", "x.NEF"));
+
+    await openFromOs({ folder: "D:\\Trip", file: "x.NEF" });
+    expect(useProjectStore.getState().name).toBe("D:\\Trip");
+
+    openFinds(photoAt("y", "y.NEF"));
+    await openFromOs({ folder: "C:\\Users\\anthony\\Pictures", file: "y.NEF" });
+    expect(h.open).toHaveBeenCalledTimes(2);
+    expect(h.select).toHaveBeenLastCalledWith("y");
+  });
+
+  it("does not take a recent home folder as the project on Linux either", async () => {
+    onPlatform("linux");
+    h.recents = ["/home/anthony", "/"];
+    openFinds(photoAt("x", "x.NEF"));
+
+    await openFromOs({ folder: "/home/anthony/trip", file: "x.NEF" });
+
+    expect(useProjectStore.getState().name).toBe("trip");
+    expect(h.select).toHaveBeenCalledWith("x");
+  });
+
+  it("waits for the project that is opening, then opens its own", async () => {
+    const { done, finish } = walk();
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      const s = projectStorage();
+      paint(s, {}, []);
+      await done;
+      return opened(s);
+    });
+    const last = openProject("last");
+    await settle();
+    openFinds(photo("a"));
+
+    const requested = openFromOs({ folder: "/photos/trip", file: "a.NEF" });
+    await settle();
+    expect(h.open).toHaveBeenCalledTimes(1);
+    finish();
+    await Promise.all([last, requested]);
+
+    expect(h.open).toHaveBeenCalledTimes(2);
+    expect(useProjectStore.getState().name).toBe("trip");
+    expect(h.select).toHaveBeenCalledWith("a");
+  });
+});
+
+describe("two requests from the OS during an open", () => {
+  it("opens only the latest once the open in progress ends", async () => {
+    const { done, finish } = walk();
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      const s = projectStorage();
+      paint(s, {}, []);
+      await done;
+      return opened(s);
+    });
+    const last = openProject("last");
+    await settle();
+    const photos = [photo("a")];
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      const s = projectStorage();
+      paint(s, {}, photos);
+      h.photos = photos;
+      return opened(s, photos);
+    });
+
+    const first = useProjectStore.getState().openFromOs({ folder: "/photos/first", file: null });
+    const second = useProjectStore.getState().openFromOs({ folder: "/photos/second", file: "a.NEF" });
+    await settle();
+    finish();
+    await Promise.all([last, first, second]);
+
+    expect(h.open).toHaveBeenCalledTimes(2);
+    expect(useProjectStore.getState().name).toBe("second");
+    expect(h.select).toHaveBeenCalledWith("a");
+  });
+});
+
+describe("watching for what the OS hands the app", () => {
+  function bridge(waiting: Array<{ folder: string; file: string | null } | null>) {
+    let request: () => void = () => {};
+    const osOpen: NativeOsOpenBridge = {
+      take: vi.fn(async () => waiting.shift() ?? null),
+      onRequest: (listener) => {
+        request = listener;
+        return () => {};
+      },
+    };
+    return { osOpen, request: () => request() };
+  }
+
+  it("opens what was waiting when the window came up", async () => {
+    const { osOpen } = bridge([{ folder: "/photos/trip", file: null }]);
+    h.osOpen = osOpen;
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      const s = projectStorage();
+      paint(s, {}, []);
+      return opened(s);
+    });
+
+    const { watchOsOpen } = await import("./project-store");
+    watchOsOpen();
+    await settle();
+
+    expect(useProjectStore.getState().name).toBe("trip");
+  });
+
+  it("opens what the OS asks for while the app runs", async () => {
+    const { osOpen, request } = bridge([null, { folder: "/photos/later", file: null }]);
+    h.osOpen = osOpen;
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      const s = projectStorage();
+      paint(s, {}, []);
+      return opened(s);
+    });
+    const { watchOsOpen } = await import("./project-store");
+    watchOsOpen();
+    await settle();
+    expect(h.open).not.toHaveBeenCalled();
+
+    request();
+    await settle();
+
+    expect(useProjectStore.getState().name).toBe("later");
+  });
+
+  it("does nothing outside the desktop app", async () => {
+    const { watchOsOpen } = await import("./project-store");
+
+    expect(() => watchOsOpen()).not.toThrow();
+  });
+});
+
+describe("the grid previews an open reads ahead", () => {
+  const photosNamed = (count: number) => Array.from({ length: count }, (_, i) => photo(`p${i}`));
+
+  async function openWith(skeletons: CatalogPhoto[]): Promise<FakeStorage> {
+    const s = projectStorage();
+    vi.stubGlobal("window", {
+      addEventListener: () => {},
+      requestIdleCallback: (cb: () => void) => cb(),
+    });
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      paint(s, {}, skeletons);
+      return opened(s, skeletons);
+    });
+    await openProject("Big");
+    return s;
+  }
+
+  it("are the first 2000 photos of a big catalog; the grid reads the rest as they scroll into view", async () => {
+    await openWith(photosNamed(5000));
+
+    const requested = h.requestThumbnail.mock.calls.map(([id]) => id);
+    expect(requested).toHaveLength(2000);
+    expect(new Set(requested).size).toBe(2000);
+  });
+
+  it("start with the photos the grid shows, in its order, ahead of the rest", async () => {
+    const photos = photosNamed(5);
+    h.visible = [photos[3], photos[1]];
+
+    await openWith(photos);
+
+    expect(h.requestThumbnail.mock.calls.map(([id]) => id)).toEqual(["p3", "p1", "p0", "p2", "p4"]);
+  });
+
+  it("are every photo of a small catalog", async () => {
+    await openWith(photosNamed(300));
+
+    expect(h.requestThumbnail).toHaveBeenCalledTimes(300);
+  });
+
+  it("are forgotten by the project's storage once the grid lets them go", async () => {
+    const s = await openWith(photosNamed(3));
+
+    const [, opts] = h.setThumbnailLoader.mock.calls[0];
+    opts?.onEvict?.(["p0", "p2"]);
+
+    expect(s.forgetPreviews).toHaveBeenCalledWith(["p0", "p2"]);
+  });
+});
+
+describe("the photo open in Develop when its project is left", () => {
+  /** A project storage that holds edits, and what it was asked to store. */
+  function editable() {
+    const putEditState = vi.fn(async (_state: unknown) => {});
+    return Object.assign(projectStorage(), {
+      getEditState: async () => undefined,
+      putEditState,
+      putEditStates: async () => {},
+      putPhoto: async () => {},
+      putPhotos: async () => {},
+      deletePhoto: async () => {},
+    });
+  }
+  type Editable = ReturnType<typeof editable>;
+
+  async function open(storage: Editable, name: string): Promise<void> {
+    h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
+      paint(storage, {}, [photo("p")]);
+      return opened(storage, [photo("p")]);
+    });
+    await openProject(name);
+  }
+
+  const stored = (storage: Editable) => storage.putEditState.mock.calls.map(([state]) => state as EditState);
+
+  it("has its uncommitted change committed to the project being left", async () => {
+    const { useDevelopStore } = await import("@/state/develop-store");
+    const a = editable();
+    await open(a, "A");
+    await useDevelopStore.getState().loadEdit("p", 5000);
+    useDevelopStore.getState().setParam("exposure", 1);
+
+    useProjectStore.getState().closeProject();
+
+    await vi.waitFor(() => expect(stored(a)).toHaveLength(1));
+    expect(stored(a)[0].photoId).toBe("p");
+    expect(stored(a)[0].stack.at(-1)?.params.exposure).toBe(1);
+    expect(useDevelopStore.getState()).toMatchObject({ photoId: null, history: [] });
+    await vi.waitFor(() => expect(a.flush.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("reaches the catalog hooks with the photo, though the grid is already cleared", async () => {
+    const { useDevelopStore } = await import("@/state/develop-store");
+    const { registerCatalogHooks } = await import("@/extensions/registry");
+    const onEditCommit = vi.fn<NonNullable<CatalogHooksContribution["onEditCommit"]>>();
+    registerCatalogHooks("test.sidecar", { id: "test.sidecar", onEditCommit });
+    const a = editable();
+    await open(a, "A");
+    h.photos = [photo("p")];
+    await useDevelopStore.getState().loadEdit("p", 5000);
+    useDevelopStore.getState().setParam("exposure", 1);
+
+    useProjectStore.getState().closeProject();
+
+    await vi.waitFor(() => expect(onEditCommit).toHaveBeenCalledOnce());
+    expect(onEditCommit.mock.calls[0][0].photo.id).toBe("p");
+    expect(onEditCommit.mock.calls[0][0].editState.photoId).toBe("p");
+  });
+
+  it("is not written into the next project when a photo opens there", async () => {
+    const { useDevelopStore } = await import("@/state/develop-store");
+    const a = editable();
+    await open(a, "A");
+    await useDevelopStore.getState().loadEdit("p", 5000);
+    useDevelopStore.getState().setParam("exposure", 1);
+    const b = editable();
+
+    await open(b, "B");
+    await useDevelopStore.getState().loadEdit("q", 5000);
+
+    expect(stored(b)).toEqual([]);
+    expect(stored(a).map((state) => state.photoId)).toEqual(["p"]);
+    expect(useDevelopStore.getState().photoId).toBe("q");
+  });
+
+  it("commits nothing anywhere for an Auto run cut short by closing the project", async () => {
+    vi.useFakeTimers();
+    try {
+      const { useDevelopStore } = await import("@/state/develop-store");
+      const { autoAdjust } = await import("@/hooks/use-auto-adjust");
+      const a = editable();
+      await open(a, "A");
+      await useDevelopStore.getState().loadEdit("p", 5000);
+      const luma = new Uint32Array(256);
+      luma[30] = 1000;
+      useDevelopStore.getState().setHistogram({ r: luma.slice(), g: luma.slice(), b: luma.slice(), luma });
+
+      const running = autoAdjust.tone();
+      useProjectStore.getState().closeProject();
+      await vi.advanceTimersByTimeAsync(5000);
+      await running;
+      expect(useDevelopStore.getState()).toMatchObject({ photoId: null, history: [] });
+      const b = editable();
+      await open(b, "B");
+      await useDevelopStore.getState().loadEdit("q", 5000);
+
+      expect(stored(a)).toEqual([]);
+      expect(stored(b)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

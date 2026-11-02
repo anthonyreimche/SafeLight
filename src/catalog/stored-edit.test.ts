@@ -244,6 +244,36 @@ describe("appendStoredSnapshot — the photo open in Develop", () => {
     ]);
   });
 
+  it("lands both steps when Develop commits while the step is being worked out", async () => {
+    const { written } = installMemoryStorage(edit([snapshot("Original", {})], 0));
+    await openInDevelop();
+    // The step's read of the stored edit is answered only after Develop commits.
+    const storage = catalogStorage();
+    const read = storage.getEditState.bind(storage);
+    let answer = (): void => {};
+    const answered = new Promise<void>((resolve) => (answer = resolve));
+    vi.spyOn(storage, "getEditState").mockImplementationOnce(async (photoId) => {
+      const stored = await read(photoId);
+      await answered;
+      return stored;
+    });
+
+    const appending = appendStoredSnapshot(PHOTO, 5200, "Test step", brighter);
+    useDevelopStore.getState().setParam("contrast", 20);
+    const committing = useDevelopStore.getState().commitEdit("Contrast");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    answer();
+    await Promise.all([appending, committing]);
+
+    const { stack } = written[written.length - 1];
+    expect(labelsOf(stack)).toEqual(["Original", "Test step", "Contrast"]);
+    expect(labelsOf(useDevelopStore.getState().history)).toEqual([
+      "Original",
+      "Test step",
+      "Contrast",
+    ]);
+  });
+
   it("is reloaded with the as-shot temperature it was given", async () => {
     installMemoryStorage(edit([snapshot("Original", { temperature: 4300 })], 0));
     await openInDevelop();

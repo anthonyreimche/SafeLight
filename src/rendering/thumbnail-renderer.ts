@@ -7,8 +7,12 @@ import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import type { DecodedImage } from "@/catalog/load-image";
 import { loadPhotoImage } from "@/catalog/load-image";
 import { computeHistogram, type HistogramData } from "@/rendering/histogram";
-import { setPhotoParams } from "@/extensions/pipelines";
+import { resolvePipelineFor, setPhotoParams } from "@/extensions/pipelines";
+import { useRegistry } from "@/extensions/registry";
+import { getSettings } from "@/state/settings-store";
+import { windowFrameBag } from "./stage-bag";
 import { WebGLRenderer } from "./webgl/renderer";
+import { windowDerived } from "./window-derive";
 
 // The histogram renderer still runs on the main thread — it's lightweight
 // (256px) and uses thumbnail bitmaps that are already in memory.
@@ -81,7 +85,15 @@ function getHistCtx(processVersion: number): Ctx | null {
   if (!ctx) {
     try {
       const canvas = document.createElement("canvas");
-      const created: Ctx = { canvas, renderer: new WebGLRenderer(canvas) };
+      // The stages are read from the registry every frame: this renderer lives for
+      // the session, across extensions turning on and off.
+      const renderer = new WebGLRenderer(canvas, {
+        highBitDepth: getSettings().highBitDepth,
+        stages: () => useRegistry.getState().processingStages,
+        pipeline: resolvePipelineFor(null),
+        derive: windowDerived,
+      });
+      const created: Ctx = { canvas, renderer };
       // A GPU reset kills the singleton's context; drop it so the next call
       // rebuilds instead of rendering into a dead renderer (histDead stays a
       // latch for what won't recover on retry: see endHistogram).
@@ -101,7 +113,8 @@ function getHistCtx(processVersion: number): Ctx | null {
 const MAX_HIST_EDGE = 256;
 
 // Compute the histogram of a photo rendered through the develop pipeline with the
-// given params, so the Library histogram reflects the saved edits.
+// given params and stage bag, drawn as Develop draws them, so the Library
+// histogram reflects the saved edits.
 //
 // Lightweight by design: the Library Info histogram fires on every photo
 // selection, so it renders the already-decoded grid thumbnail (≤768px, in
@@ -114,6 +127,7 @@ const MAX_HIST_EDGE = 256;
 export async function renderPhotoHistogram(
   photo: CatalogPhoto,
   params: DevelopParams,
+  paramBag: Record<string, unknown> = {},
   maxEdge: number = MAX_HIST_EDGE,
 ): Promise<HistogramData | null> {
   const ctx = getHistCtx(params.processVersion);
@@ -135,7 +149,6 @@ export async function renderPhotoHistogram(
   try {
     const asShotTemp = photo.exif.colorTemperature ?? 6500;
     const isFallback = image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
-    const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
     ctx.renderer.setAsShotTemperature(asShotTemp);
     // A cached RAW (float16) is capped to the histogram edge like a thumbnail:
     // this renderer runs on the main thread, and a 256 px render needs no more.
@@ -143,9 +156,9 @@ export async function renderPhotoHistogram(
       image.kind === "bitmap" ? image.bitmap : image,
       maxEdge,
       isFallback,
-      cachedRaw,
       true,
     );
+    ctx.renderer.setContributedParams(windowFrameBag(params, paramBag));
     setPhotoParams(ctx.renderer, params);
     // The program for this photo's display transform and version, unless an earlier
     // photo built it. Left to render(), a build failure would throw out of this async

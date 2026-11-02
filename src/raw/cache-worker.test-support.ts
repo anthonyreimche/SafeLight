@@ -21,7 +21,7 @@ interface Transaction {
   error: Error | null;
   /** Requests answered so far; the commit waits for the last one. */
   answered: number;
-  objectStore: () => ReturnType<typeof storeOf>;
+  objectStore: (name?: string) => ReturnType<typeof storeOf>;
 }
 
 function request<T>(run: () => T, tx: Transaction, commit: () => void) {
@@ -42,9 +42,9 @@ function request<T>(run: () => T, tx: Transaction, commit: () => void) {
 
 const FakeKeyRange = { bound: (lower: string, upper: string): KeyRange => ({ lower, upper }) };
 
-function storeOf(rows: Map<string, Row>, tx: Transaction, commit: () => void) {
+function storeOf(rows: Map<string, Row>, tx: Transaction, commit: () => void, read: (what: string) => void) {
   return {
-    get: (key: string) => request(() => rows.get(key), tx, commit),
+    get: (key: string) => request(() => (read("get"), rows.get(key)), tx, commit),
     put: (row: Row) => request(() => void rows.set(row.key, row), tx, commit),
     delete: (key: string) => request(() => void rows.delete(key), tx, commit),
     clear: () => request(() => rows.clear(), tx, commit),
@@ -57,32 +57,39 @@ function storeOf(rows: Map<string, Row>, tx: Transaction, commit: () => void) {
     getAll: (r?: KeyRange) =>
       request(
         () =>
-          [...rows.entries()]
+          (read("getAll"), [...rows.entries()]
             .filter(([k]) => !r || (k >= r.lower && k <= r.upper))
-            .map(([, row]) => row),
+            .map(([, row]) => row)),
         tx,
         commit,
       ),
   };
 }
 
-function connection(rows: Map<string, Row>, commitError: () => Error | null) {
+function connection(
+  stores: Map<string, Map<string, Row>>,
+  commitError: () => Error | null,
+  readLog: string[],
+) {
   const db = {
     closed: false,
     onversionchange: null as Handler,
-    objectStoreNames: { contains: () => true },
-    deleteObjectStore: () => rows.clear(),
-    createObjectStore: () => {},
+    objectStoreNames: { contains: (name: string) => stores.has(name) },
+    deleteObjectStore: (name: string) => stores.get(name)?.clear(),
+    createObjectStore: (name: string) => void (stores.has(name) || stores.set(name, new Map())),
     close: () => void (db.closed = true),
     transaction: (): Transaction => {
       if (db.closed) throw new DOMException("The connection is closed.", "InvalidStateError");
-      const before = new Map(rows);
+      const before = new Map([...stores].map(([name, map]) => [name, new Map(map)]));
       const commit = () => {
         const error = commitError();
         if (!error) return tx.oncomplete?.();
         // The transaction rolls back and aborts.
-        rows.clear();
-        before.forEach((row, key) => rows.set(key, row));
+        before.forEach((saved, name) => {
+          const map = stores.get(name)!;
+          map.clear();
+          saved.forEach((row, key) => map.set(key, row));
+        });
         tx.error = error;
         tx.onabort?.();
       };
@@ -91,7 +98,8 @@ function connection(rows: Map<string, Row>, commitError: () => Error | null) {
         onabort: null,
         error: null,
         answered: 0,
-        objectStore: () => storeOf(rows, tx, commit),
+        objectStore: (name = "previews") =>
+          storeOf(stores.get(name)!, tx, commit, (what) => readLog.push(`${name}.${what}`)),
       };
       return tx;
     },
@@ -104,6 +112,10 @@ function connection(rows: Map<string, Row>, commitError: () => Error | null) {
  *  database: only the head hears "blocked"; later ones wait silently behind it. */
 export class FakeIndexedDB {
   readonly rows = new Map<string, Row>();
+  /** The per-entry bookkeeping store (version 7 on). */
+  readonly meta = new Map<string, Row>();
+  /** Every whole-value read made, as "store.method". */
+  readonly readLog: string[] = [];
   readonly connections: ReturnType<typeof connection>[] = [];
   private readonly queue: (() => void)[] = [];
   opens = 0;
@@ -117,12 +129,13 @@ export class FakeIndexedDB {
 
   open(_name: string, version: number) {
     this.opens++;
-    const req = { result: connection(this.rows, () => this.commitError), onupgradeneeded: null as Handler,
+    const req = { result: connection(new Map([["previews", this.rows], ["meta", this.meta]]), () => this.commitError, this.readLog), onupgradeneeded: null as ((e: { oldVersion: number }) => void) | null,
       onsuccess: null as Handler, onerror: null as Handler, onblocked: null as Handler };
     const finish = () => {
       if (version > this.version) {
+        const oldVersion = this.version;
         this.version = version;
-        req.onupgradeneeded?.();
+        req.onupgradeneeded?.({ oldVersion });
       }
       this.connections.push(req.result);
       req.onsuccess?.();

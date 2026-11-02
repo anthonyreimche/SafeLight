@@ -9,15 +9,20 @@
 // prepass targets go then, not when the renderer is disposed at restart. Counted
 // through a wrapped context against the same renderer before the stage arrived.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ProcessingStageContribution, StageTextureData } from "@/extensions/types";
 import { WebGLRenderer } from "./renderer";
 import {
   type GlObjectTally,
+  deriveWithoutSettings,
+  differing,
   floatImage,
+  glErrorsDuring,
   glHarness,
   identityParams,
+  liveFrame,
   trackGlObjects,
+  withRenderer,
 } from "./webgl.test-support";
 
 /** An extension stage reading a LUT the extension supplies. */
@@ -52,7 +57,7 @@ const PREPASS_STAGE: ProcessingStageContribution = {
 function withTally(fn: (renderer: WebGLRenderer, tally: GlObjectTally) => void): void {
   const { canvas, gl } = glHarness();
   const tally = trackGlObjects(gl);
-  const renderer = new WebGLRenderer(canvas, { stages: [] });
+  const renderer = new WebGLRenderer(canvas, { stages: [], derive: deriveWithoutSettings });
   try {
     renderer.setImage(floatImage(16, 16, () => [0.2, 0.2, 0.2]));
     renderer.setParams(identityParams());
@@ -120,5 +125,34 @@ describe("an extension's stages leaving the renderer", () => {
 
       expect(tally.live).toEqual(before);
     });
+  });
+});
+
+// The bridge can't know the GPU's texture limit; a texture past it would upload as a
+// GL error and the stage would read black with no word of why.
+describe("a stage texture larger than the GPU's texture limit", () => {
+  it("draws as if not supplied, without a GL error, and says which", () => {
+    const { gl } = glHarness();
+    const { getParameter } = gl;
+    gl.getParameter = (pname: number): unknown =>
+      pname === gl.MAX_TEXTURE_SIZE ? 8 : getParameter.call(gl, pname);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      withRenderer({ stages: [LUT_STAGE] }, (renderer) => {
+        renderer.setImage(floatImage(16, 16, () => [0.2, 0.2, 0.2]));
+        renderer.setParams(identityParams());
+        const unsupplied = liveFrame(renderer);
+        const wide: StageTextureData = { ...RAMP, data: new Uint8Array(16 * 4).fill(255), width: 16 };
+        renderer.setStageTextures({ "acme.film.ramp": wide });
+
+        expect(glErrorsDuring(gl, () => renderer.render())).toEqual([]);
+        expect(differing(liveFrame(renderer), unsupplied)).toBe(0);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0][0]).toMatch(/"acme\.film\.ramp".*16×1.*8/);
+      });
+    } finally {
+      gl.getParameter = getParameter;
+      warn.mockRestore();
+    }
   });
 });

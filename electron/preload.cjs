@@ -4,9 +4,10 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 // Privileged surface — raw filesystem by absolute path, running an update
-// installer (which fetches + executes a release asset), capturing the
-// window for Report an issue, and switching how the next launch draws (software
-// rendering). Extension code shares
+// installer (which fetches + executes a release asset), installing and removing
+// extensions (which puts code on disk that later runs), capturing the
+// window for Report an issue, switching how the next launch draws (software
+// rendering), and opening the folder the OS asked for. Extension code shares
 // the renderer realm, so anything left on window.safelightNative is reachable by
 // a malicious extension. These are handed out exactly once, at renderer boot, to
 // core code that captures them privately (src/native/privileged.ts); every later
@@ -18,6 +19,12 @@ const privileged = {
   updates: {
     install: (repo, tag) =>
       ipcRenderer.invoke("updates:install", String(repo), String(tag)),
+    // What this copy can offer for a release with these assets.
+    support: (assetNames) =>
+      ipcRenderer.invoke(
+        "updates:support",
+        Array.isArray(assetNames) ? assetNames.map(String) : [],
+      ),
   },
   fs: {
     read: (p, range) =>
@@ -27,15 +34,18 @@ const privileged = {
         range ? { start: Number(range.start), end: Number(range.end) } : undefined,
       ),
     write: (p, data) => ipcRenderer.invoke("fs:write", String(p), data),
-    list: (p) => ipcRenderer.invoke("fs:list", String(p)),
+    list: (p, root) => ipcRenderer.invoke("fs:list", String(p), root ? String(root) : undefined),
     mkdir: (p) => ipcRenderer.invoke("fs:mkdir", String(p)),
-    externalCatalogDir: (p, base, create) =>
+    externalCatalogDir: (p, base, create, variant) =>
       ipcRenderer.invoke(
         "fs:externalCatalogDir",
         String(p),
         base ? String(base) : null,
         create !== false,
+        Number(variant) || 1,
       ),
+    externalCatalogVariants: (p, base) =>
+      ipcRenderer.invoke("fs:externalCatalogVariants", String(p), base ? String(base) : null),
     listExternalCatalogs: (base) =>
       ipcRenderer.invoke("fs:listExternalCatalogs", base ? String(base) : null),
     setSpilloverPointer: (rp, dir) =>
@@ -53,13 +63,35 @@ const privileged = {
       ipcRenderer.invoke("fs:pickFile", Array.isArray(filters) ? filters : []),
     reveal: (p) => ipcRenderer.invoke("fs:reveal", String(p)),
   },
+  // Putting extension code on disk and taking it off again.
+  plugins: {
+    install: (spec, version) =>
+      version == null
+        ? ipcRenderer.invoke("plugins:install", String(spec))
+        : ipcRenderer.invoke("plugins:install", String(spec), String(version)),
+    uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
+    // Finish an install/update: "keep" drops the previous copy, "rollback"
+    // restores it (and returns its manifest).
+    settleUpdate: (id, outcome) =>
+      ipcRenderer.invoke("plugins:settle-update", String(id), String(outcome)),
+  },
   capture: {
     page: () => ipcRenderer.invoke("diagnostics:capturePage"),
   },
-  // Software rendering for the next launch (Linux).
+  // Software rendering for the next launch.
   gpu: {
     backend: () => ipcRenderer.invoke("gpu:backend"),
     setSoftware: (on) => ipcRenderer.invoke("gpu:setSoftware", !!on),
+  },
+  // A photo or folder the OS asked Safelight to open. Privileged: the target
+  // is opened as the project, a folder on disk the page chose nothing about.
+  osOpen: {
+    take: () => ipcRenderer.invoke("os-open:take"),
+    onRequest: (cb) => {
+      const handler = () => cb();
+      ipcRenderer.on("os-open:request", handler);
+      return () => ipcRenderer.removeListener("os-open:request", handler);
+    },
   },
 };
 
@@ -88,7 +120,6 @@ contextBridge.exposeInMainWorld("safelightNative", {
     repoMeta: (repo) => ipcRenderer.invoke("github:repoMeta", String(repo)),
     readme: (repo, ref) =>
       ipcRenderer.invoke("github:readme", String(repo), String(ref ?? "HEAD")),
-    iconUrl: (repo) => ipcRenderer.invoke("github:iconUrl", String(repo)),
     thumbnails: (items, force) =>
       ipcRenderer.invoke(
         "github:thumbnails",
@@ -105,10 +136,6 @@ contextBridge.exposeInMainWorld("safelightNative", {
   },
   plugins: {
     list: () => ipcRenderer.invoke("plugins:list"),
-    install: (spec, version) =>
-      version == null
-        ? ipcRenderer.invoke("plugins:install", String(spec))
-        : ipcRenderer.invoke("plugins:install", String(spec), String(version)),
     search: (query, topic, force) =>
       ipcRenderer.invoke(
         "plugins:search",
@@ -116,7 +143,6 @@ contextBridge.exposeInMainWorld("safelightNative", {
         String(topic ?? ""),
         !!force,
       ),
-    uninstall: (id) => ipcRenderer.invoke("plugins:uninstall", String(id)),
     remoteManifest: (repo, opts) =>
       ipcRenderer.invoke("plugins:remote-manifest", String(repo), {
         prerelease: !!(opts && opts.prerelease),
@@ -127,10 +153,6 @@ contextBridge.exposeInMainWorld("safelightNative", {
     // safelight.json at one release's tag (its version and minAppVersion).
     manifestAt: (repo, version) =>
       ipcRenderer.invoke("plugins:manifest-at", String(repo), String(version)),
-    // Finish an install/update: "keep" drops the previous copy, "rollback"
-    // restores it (and returns its manifest).
-    settleUpdate: (id, outcome) =>
-      ipcRenderer.invoke("plugins:settle-update", String(id), String(outcome)),
     // Verified-allowlist + banned-kill-switch lists from the trust registry.
     trustList: (force) => ipcRenderer.invoke("plugins:trust-list", !!force),
     // The welcome setup's starter kits (kits.json in the trust registry).
@@ -163,7 +185,12 @@ contextBridge.exposeInMainWorld("safelightNative", {
   // Recolor the native window-controls overlay (Windows/Linux) to match the
   // active theme; no-op on macOS.
   titlebar: {
-    setOverlay: (color, symbolColor) =>
-      ipcRenderer.invoke("window:setTitleBarOverlay", String(color), String(symbolColor)),
+    setOverlay: (color, symbolColor, uiScale) =>
+      ipcRenderer.invoke(
+        "window:setTitleBarOverlay",
+        String(color),
+        String(symbolColor),
+        Number(uiScale),
+      ),
   },
 });

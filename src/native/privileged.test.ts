@@ -150,6 +150,24 @@ describe("builds without the privileged bridge", () => {
   });
 });
 
+describe("privilegedPlugins", () => {
+  it("hands core the extension install bridge from the bundle", async () => {
+    const plugins = {
+      install: () => Promise.reject(new Error("unused")),
+      uninstall: () => Promise.resolve(),
+      settleUpdate: () => Promise.resolve(null),
+    };
+    const mod = await boot(() => ({ ...bundle("core"), plugins }));
+    mod.claimPrivileged();
+    expect(mod.privilegedPlugins()).toBe(plugins);
+  });
+
+  it("is null for an older preload without it, and in the browser build", async () => {
+    expect((await boot(preloadOneShot("core"))).privilegedPlugins()).toBeNull();
+    expect((await boot()).privilegedPlugins()).toBeNull();
+  });
+});
+
 describe("privilegedCapture", () => {
   it("hands core the window capture from the bundle", async () => {
     const page = () => Promise.resolve(new Uint8Array([1]));
@@ -161,5 +179,19 @@ describe("privilegedCapture", () => {
   it("is null for an older preload without capture, and in the browser build", async () => {
     expect((await boot(preloadOneShot("core"))).privilegedCapture()).toBeNull();
     expect((await boot()).privilegedCapture()).toBeNull();
+  });
+});
+
+describe("privilegedOsOpen", () => {
+  it("hands core the open bridge from the bundle", async () => {
+    const osOpen = { take: () => Promise.resolve(null), onRequest: () => () => {} };
+    const mod = await boot(() => ({ ...bundle("core"), osOpen }));
+    mod.claimPrivileged();
+    expect(mod.privilegedOsOpen()).toBe(osOpen);
+  });
+
+  it("is null for an older preload without it, and in the browser build", async () => {
+    expect((await boot(preloadOneShot("core"))).privilegedOsOpen()).toBeNull();
+    expect((await boot()).privilegedOsOpen()).toBeNull();
   });
 });

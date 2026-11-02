@@ -19,11 +19,13 @@ import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines"
 import type { ProcessingStageContribution, StageSpace } from "@/extensions/types";
 import { fromStageSpace, toStageSpace, type Vec3 } from "../stage-space";
 import type { WebGLRenderer } from "./renderer";
+import { essentialStages } from "./essential-stages.fixtures";
 import { PASS_VERTEX_SHADER, buildStageInjection } from "./stage-injection";
 import {
   LINEAR_PROBE_PIPELINE,
+  basicStages,
+  detailStages,
   buildProgram,
-  builtinStage,
   floatImage,
   glHarness,
   identityParams,
@@ -124,7 +126,7 @@ describe("a stage that declares a space", () => {
 
   it("sees clipped values once a tool that needs [0, 1] is in use", () => {
     const params = identityParams({ ...V2, contrast: 40 });
-    const px = pixelAt(render([probe()], DOUBLING_PIPELINE, flat(0.8), params), 8, 8);
+    const px = pixelAt(render([...basicStages(), probe()], DOUBLING_PIPELINE, flat(0.8), params), 8, 8);
     expect(recover(px[0])).toBeLessThan(1.01);
   });
 
@@ -141,7 +143,7 @@ describe("a stage that declares a space", () => {
     const edge = floatImage(32, 32, (x) => (x < 16 ? [0.1, 0.1, 0.1] : [0.6, 0.6, 0.6]));
     const sharpened = (over: Partial<DevelopParams>) =>
       identityParams({ sharpening: 100, sharpenDetail: 100, ...over });
-    withRenderer({ stages: [probe({ space: undefined })], pipeline: DOUBLING_PIPELINE }, (r) => {
+    withRenderer({ stages: [...detailStages(), probe({ space: undefined })], pipeline: DOUBLING_PIPELINE }, (r) => {
       r.setImage(edge);
       const at = (params: DevelopParams) => {
         r.setParams(params);
@@ -212,23 +214,25 @@ describe("a stage that declares a space", () => {
   });
 });
 
-// The core Vignette and Grain clamped their output to [0, 1]. They still do on
-// version 1. On version 2 they hand on what they make, so a stage that declares a
-// space after them sees values over white. 0.55 doubles to 1.1 at the display
-// stage on version 2 (1.0 on version 1). The probe takes 0.5 off: a pixel left at
-// 1.1 reads 0.6, one the effect lifts further reads higher, and a clipped one 0.5.
-describe("the core Vignette and Grain, ahead of a stage that declares a space", () => {
+// Core's Vignette and Grain clamped their output to [0, 1]. Effects of line 1
+// still does. Line 3 hands on what they make, so a stage that declares a space
+// after them sees values over white. 0.55 doubles to 1.1 at the display stage on
+// version 2. The probe takes 0.5 off: a pixel left at 1.1 reads 0.6, one the
+// effect lifts further reads higher, and a clipped one 0.5.
+describe("Effects' Vignette and Grain, ahead of a stage that declares a space", () => {
   const SOURCE = flat(0.55);
   const takeHalf = probe({ phase: "output-encode", glsl: "c = c - 0.5;" });
   const TOOLS: [string, string, Partial<DevelopParams>][] = [
-    ["Vignette", "core.vignette", { vignette: { ...DEFAULT_VIGNETTE, amount: 20 } }],
-    ["Grain", "core.grain", { grain: { ...DEFAULT_GRAIN, amount: 100 } }],
+    ["Vignette", "safelight.effects.vignette", { vignette: { ...DEFAULT_VIGNETTE, amount: 20 } }],
+    ["Grain", "safelight.effects.grain", { grain: { ...DEFAULT_GRAIN, amount: 100 } }],
   ];
 
   // Grain lifts some pixels and lowers others, so no single pixel is the one to
   // ask about; the frame's brightest red channel is.
-  function brightest(id: string, over: Partial<DevelopParams>): number {
-    const stages = [builtinStage(id), takeHalf];
+  function brightest(line: 1 | 3, id: string, over: Partial<DevelopParams>): number {
+    const stage = essentialStages(line).find((s) => s.id === id);
+    if (!stage) throw new Error(`no essential stage ${id}`);
+    const stages = [stage, takeHalf];
     const frame = render(stages, DOUBLING_PIPELINE, SOURCE, identityParams(over));
     let top = -Infinity;
     for (let i = 0; i < frame.data.length; i += 4) top = Math.max(top, frame.data[i]);
@@ -236,12 +240,12 @@ describe("the core Vignette and Grain, ahead of a stage that declares a space", 
   }
 
   for (const [tool, id, params] of TOOLS) {
-    it(`keeps what ${tool} makes past white on version 2`, () => {
-      expect(brightest(id, { ...V2, ...params })).toBeGreaterThan(0.6);
+    it(`keeps what ${tool} makes past white on line 3`, () => {
+      expect(brightest(3, id, { ...V2, ...params })).toBeGreaterThan(0.6);
     });
 
-    it(`still clips ${tool} at white on version 1`, () => {
-      expect(brightest(id, { ...V1, ...params })).toBeCloseTo(0.5, 3);
+    it(`still clips ${tool} at white on line 1`, () => {
+      expect(brightest(1, id, { ...V2, ...params })).toBeCloseTo(0.5, 3);
     });
   }
 });

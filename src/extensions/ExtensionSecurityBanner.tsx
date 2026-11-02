@@ -7,43 +7,47 @@
 // installed extension this session (it was banned after the user installed it).
 // The extension's files stay on disk but it isn't activated; this tells the user
 // why it stopped working and offers to open the Extensions window to remove it.
-// Sits just above the update banner (which is fixed to the very bottom).
+// One line per extension, each its own alert and dismissed on its own, so a
+// dismissal doesn't announce the others again.
 
 import { useTrust, dismissFlag } from "./trust";
-import { openExtensions } from "@/ui/components/ExtensionsDialog";
+import { openExtensions } from "@/ui/components/extensions-dialog-store";
 
 export function ExtensionSecurityBanner() {
-  const flagged = useTrust((s) => s.flagged);
+  const allFlagged = useTrust((s) => s.flagged);
+  const dismissed = useTrust((s) => s.dismissedFlags);
+  const flagged = allFlagged.filter((f) => !dismissed.includes(f.id));
   if (flagged.length === 0) return null;
-
-  const first = flagged[0];
-  const more = flagged.length - 1;
 
   return (
     <div
-      role="alert"
-      aria-live="polite"
-      className="fixed bottom-10 left-0 right-0 z-[201] flex items-center justify-center gap-3 border-t border-border px-4 py-2 text-[11px] shadow-lg"
-      style={{ background: "color-mix(in srgb, var(--color-label-red) 12%, var(--color-surface-2))" }}
+      data-extension-security
+      className="flex items-start justify-center gap-3 border-t border-danger/40 px-4 py-2 text-[11px] shadow-lg"
+      style={{ background: "color-mix(in srgb, var(--color-danger) 12%, var(--color-surface-2))" }}
     >
-      <span className="font-medium text-label-red">⚠ Extension blocked</span>
-      <span className="text-text-secondary">
-        “{first.name}” was disabled by the Safelight extension registry — {first.reason}.
-        {more > 0 && ` (+${more} more)`}
-      </span>
+      <span className="font-medium text-danger">⚠ Extension blocked</span>
+      <div className="flex min-w-0 flex-col gap-1">
+        {flagged.map((f) => (
+          <div key={f.id} role="alert" className="flex items-center gap-2 text-text-secondary">
+            <span className="min-w-0 break-words">
+              “{f.name}” was turned off because the extension registry flagged it: {f.reason}.
+            </span>
+            <button
+              onClick={() => dismissFlag(f.id)}
+              title="Dismiss"
+              aria-label="Dismiss"
+              className="shrink-0 rounded px-1.5 py-0.5 text-text-muted hover:text-text-primary"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
       <button
         onClick={() => openExtensions()}
-        className="rounded border border-border px-2.5 py-1 text-[11px] text-text-primary hover:bg-surface-3"
+        className="shrink-0 rounded border border-border px-2.5 py-1 text-[11px] text-text-primary hover:bg-surface-3"
       >
         Manage extensions
-      </button>
-      <button
-        onClick={() => dismissFlag(first.id)}
-        title="Dismiss"
-        aria-label="Dismiss"
-        className="rounded px-1.5 py-1 text-text-muted hover:text-text-primary"
-      >
-        ×
       </button>
     </div>
   );

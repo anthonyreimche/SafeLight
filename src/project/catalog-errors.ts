@@ -49,6 +49,47 @@ export class CatalogDamagedError extends Error {
   }
 }
 
+/** What listing a folder fails with when its drive or network share is gone:
+ *  unplugged, unmounted, offline. */
+const UNREACHABLE = new Set(["ENOENT", "ENODEV", "EIO", "ENOTCONN", "ESTALE", "NotFoundError"]);
+
+/** True when a failure says the folder's drive or share isn't there. */
+export function isUnreachable(error: unknown): boolean {
+  return UNREACHABLE.has(failureReason(error));
+}
+
+/** The project folder isn't there: its drive was unplugged, its card taken out, or
+ *  its network share unmounted. A folder that isn't there would read as one
+ *  emptied, and the open would drop every photo from the catalog. */
+export class FolderUnavailableError extends Error {
+  readonly reason: string;
+  readonly cause?: unknown;
+
+  constructor(cause: unknown) {
+    const reason = failureReason(cause);
+    super(`The project folder can't be reached (${reason}).`);
+    this.name = "FolderUnavailableError";
+    this.reason = reason;
+    this.cause = cause;
+  }
+}
+
+/** macOS hasn't allowed Safelight into the volume the project folder is on (a
+ *  removable or network volume, under Files and Folders), so the folder can't be
+ *  listed. That refusal is EPERM, which a read-only folder gives too. */
+export class FolderAccessDeniedError extends Error {
+  readonly reason: string;
+  readonly cause?: unknown;
+
+  constructor(cause: unknown) {
+    const reason = failureReason(cause);
+    super(`macOS hasn't allowed Safelight to read the project folder (${reason}).`);
+    this.name = "FolderAccessDeniedError";
+    this.reason = reason;
+    this.cause = cause;
+  }
+}
+
 /** The newest catalog version this build opens: a newer one is refused, as this
  *  build's next save would drop whatever that version added. */
 export const CATALOG_VERSION = 1;

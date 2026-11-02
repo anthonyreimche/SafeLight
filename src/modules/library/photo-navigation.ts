@@ -9,22 +9,128 @@
 // two modules stay in sync.
 
 import { useMemo } from "react";
-import { useCatalogStore } from "@/state/catalog-store";
+import { fieldChanges, structureVersion, useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
-import { useSettings } from "@/state/settings-store";
-import { visiblePhotos } from "./visible-photos";
+import { getSettings, useSettings } from "@/state/settings-store";
+import { orderFieldsRead, visibleOrder, type LibraryFilter } from "./visible-photos";
 import {
-  gridFilterPredicates,
-  librarySortCompare,
   useGridFilters,
   useLibrarySorts,
+  useRegistry,
+  type RegisteredGridFilter,
+  type RegisteredLibrarySort,
 } from "@/extensions/registry";
-import type { CatalogPhoto } from "@/catalog/types";
+import { guardCallback } from "@/extensions/guard";
+import type { CatalogPhoto, SortDirection } from "@/catalog/types";
 
 export interface VisiblePhotosOptions {
   /** Grid-filter contribution ids to leave out — for a surface that registers
    *  a filter and must not narrow itself by it. */
   without?: readonly string[];
+}
+
+interface Derived {
+  structure: number;
+  filter: LibraryFilter;
+  sortField: string;
+  sortDirection: SortDirection;
+  folder: string | null;
+  subfolders: boolean;
+  // The registry's entries, not the functions they hold: registering anew makes
+  // a new entry, so an extension that re-registers the same test or compare to
+  // say its outside state changed still re-derives.
+  filters: readonly RegisteredGridFilter[];
+  sort: RegisteredLibrarySort | undefined;
+  /** The fields the order was derived from, or null when an extension filter or
+   *  sort may have read any of them. */
+  reads: readonly string[] | null;
+  /** fieldChanges(photos, reads) when `order` was derived. */
+  changes: number;
+  order: number[];
+  /** The photos `list` holds: `order` read against them. */
+  photos: CatalogPhoto[];
+  list: CatalogPhoto[];
+  positions: Map<string, number> | null;
+}
+
+// One derive shared by the grid, the filmstrip, the counts, extensions and
+// keyboard navigation, so the filter + sort runs once per change to what it
+// reads, not once per surface or per key press. Entries all share one catalog
+// structure; an update to fields the entry doesn't read (a preview, or a rating
+// while sorting by name) re-reads the order against the new photos.
+let derived: Derived[] = [];
+
+function sameFilters(
+  a: readonly RegisteredGridFilter[],
+  b: readonly RegisteredGridFilter[],
+): boolean {
+  return a.length === b.length && a.every((g, i) => g === b[i]);
+}
+
+function deriveVisible(
+  photos: CatalogPhoto[],
+  filter: LibraryFilter,
+  sortField: string,
+  sortDirection: SortDirection,
+  folder: string | null,
+  filters: readonly RegisteredGridFilter[],
+  sort: RegisteredLibrarySort | undefined,
+): Derived {
+  const structure = structureVersion(photos);
+  const subfolders = getSettings().showSubfolderPhotos;
+  if (derived[0]?.structure !== structure) derived = [];
+  let entry = derived.find(
+    (e) =>
+      e.filter === filter &&
+      e.sortField === sortField &&
+      e.sortDirection === sortDirection &&
+      e.folder === folder &&
+      e.subfolders === subfolders &&
+      e.sort === sort &&
+      sameFilters(e.filters, filters),
+  );
+  const reads = filters.length > 0 || sort ? null : orderFieldsRead(filter, sortField, folder);
+  const changes = fieldChanges(photos, reads);
+  if (entry && entry.changes !== changes) {
+    const stale = entry;
+    derived = derived.filter((e) => e !== stale);
+    entry = undefined;
+  }
+  if (!entry) {
+    const order = visibleOrder(
+      photos,
+      filter,
+      sortField,
+      sortDirection,
+      folder,
+      // A filter that throws shows the photo; a sort that throws leaves the pair
+      // to the date tiebreak.
+      filters.map((g) => guardCallback(g.extensionId, "grid filter", g.test, true)),
+      sort && guardCallback(sort.extensionId, "library sort", sort.compare, 0),
+    );
+    entry = {
+      structure,
+      filter,
+      sortField,
+      sortDirection,
+      folder,
+      subfolders,
+      filters,
+      sort,
+      reads,
+      changes,
+      order,
+      photos,
+      list: order.map((i) => photos[i]),
+      positions: null,
+    };
+    // A handful of filter variants at most (a surface leaving out its own filter).
+    derived = [entry, ...derived.slice(0, 3)];
+  } else if (entry.photos !== photos) {
+    entry.photos = photos;
+    entry.list = entry.order.map((i) => photos[i]);
+  }
+  return entry;
 }
 
 /** Reactive `visibleList`: the grid's display order as a hook, re-derived when
@@ -37,43 +143,54 @@ export function useVisiblePhotos(options?: VisiblePhotosOptions): CatalogPhoto[]
   const sortDirection = useUIStore((s) => s.sortDirection);
   const activeFolder = useUIStore((s) => s.activeFolder);
   // Subscribe so the list re-derives when the subfolder preference toggles;
-  // visiblePhotos reads the value itself (see inFolder).
+  // the derive reads the value itself (see inFolder).
   const showSubfolderPhotos = useSettings((s) => s.showSubfolderPhotos);
   const gridFilters = useGridFilters();
   const librarySorts = useLibrarySorts();
-  const customCompare = librarySorts.find((s) => s.id === sortField)?.compare;
+  const sort = librarySorts.find((s) => s.id === sortField);
   // Callers pass `without` as a literal; key the memo on its contents, not its identity.
   const without = options?.without;
   const withoutKey = without?.join("\0") ?? "";
   return useMemo(
     () =>
-      visiblePhotos(
+      deriveVisible(
         photos,
         filter,
         sortField,
         sortDirection,
         activeFolder,
-        gridFilters.filter((g) => !without?.includes(g.id)).map((g) => g.test),
-        customCompare,
-      ),
+        gridFilters.filter((g) => !without?.includes(g.id)),
+        sort,
+      ).list,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [photos, filter, sortField, sortDirection, activeFolder, showSubfolderPhotos, gridFilters, customCompare, withoutKey],
+    [photos, filter, sortField, sortDirection, activeFolder, showSubfolderPhotos, gridFilters, sort, withoutKey],
   );
 }
 
-/** The photos the grid is currently showing, in display order. */
-export function visibleList() {
-  const catalog = useCatalogStore.getState();
+function currentVisible(): Derived {
   const ui = useUIStore.getState();
-  return visiblePhotos(
-    catalog.photos,
+  const registry = useRegistry.getState();
+  return deriveVisible(
+    useCatalogStore.getState().photos,
     ui.filter,
     ui.sortField,
     ui.sortDirection,
     ui.activeFolder,
-    gridFilterPredicates(),
-    librarySortCompare(ui.sortField),
+    Object.values(registry.gridFilters),
+    registry.librarySorts[ui.sortField],
   );
+}
+
+/** The photos the grid is currently showing, in display order. */
+export function visibleList(): CatalogPhoto[] {
+  return currentVisible().list;
+}
+
+/** Where photo `id` sits in visibleList(), or -1 when the grid isn't showing it. */
+export function visibleIndex(id: string): number {
+  const entry = currentVisible();
+  entry.positions ??= new Map(entry.list.map((p, i) => [p.id, i]));
+  return entry.positions.get(id) ?? -1;
 }
 
 /**
@@ -85,9 +202,7 @@ export function moveActivePhoto(step: number): void {
   const catalog = useCatalogStore.getState();
   const list = visibleList();
   if (list.length === 0) return;
-  const curIdx = catalog.activePhotoId
-    ? list.findIndex((p) => p.id === catalog.activePhotoId)
-    : -1;
+  const curIdx = catalog.activePhotoId ? visibleIndex(catalog.activePhotoId) : -1;
   const nextIdx =
     curIdx === -1
       ? step < 0

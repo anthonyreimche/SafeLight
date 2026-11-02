@@ -58,12 +58,12 @@ paramBag;                        // extension stage values, see api.params
 previewParams; previewParamBag;  // transient preset-hover preview
 history; historyIndex; histogram; asShotTemperature;
 sourceSize;                      // size of the drawn source, upright
-cropping; constrainCrop; cropAspect; cropGuide; cropGuideFlip;
+editError;                       // why the photo's edit couldn't be read, or null
 showClipping;                    // bits: 1 shadows, 2 highlights, 4 gamut (v3)
-colorAssessment; bypassedPanels; selectedHslBand;
-activeTool; wbPicking; hslPicking; maskColorPicking; // + brush fields
+colorAssessment; bypassedPanels;
 
 loadEdit(photoId, asShotTemperature?);
+reloadEdit();                    // take on the open photo's stored edit
 setParam(key, value);            // live, no history entry
 setDynParam(qualifiedKey, value); setDynParams(patch);
 setToneCurve; setHslValue;
@@ -80,6 +80,10 @@ setShowClipping(mode); setPanelBypass(panelId, on);
 - Never edit an array or object in place. Pass a new one whenever it changes (`masks` and `retouch` included), or the change never reaches the renderer.
 - `applyPreset` takes full params. Merge a partial preset over the current params first, or every omitted adjustment resets.
 - `commitEdit` does nothing when nothing changed: no history entry, and the redo steps stay.
+- Opening another photo commits a live change you haven't committed yet to the photo you left, labelled "Edit". Commit with your own label before then if the label matters.
+- `reloadEdit` reads the open photo's edit back from the catalog after something else wrote it. If a live change is still uncommitted, the change stays and only the history behind it is renewed.
+- If the open photo's stored edit can't be read, `loadEdit` still opens the photo, but with no history and `editError` set to the reason. Commits, undo and redo do nothing for it until it opens again (`reloadEdit` retries) or another photo opens.
+- Commits build on the edit the catalog holds, one at a time per photo, so steps another window stored are kept under yours.
 - Derive image aspect from `sourceSize`, not `photo.width/height`. It is `{0, 0}` until a frame is drawn. `fullWidth`/`fullHeight` are the decoded size before the upload cap; `native` is true while `api.develop.readSourceSample` has a sample (3.1.0).
 
 ### useUIStore
@@ -103,7 +107,7 @@ Treat it as read-only. Core writes through its own `updateSettings`, which saves
 
 | Group | Keys |
 |---|---|
-| Interface | `uiScale`, `reduceMotion`, `uiFont`, `sliderJumpToCursor`, `basicDetailSliders`, `editingHighlights`, `colorOverrides` |
+| Interface | `uiScale`, `reduceMotion`, `uiFont`, `sliderJumpToCursor`, `editingHighlights`, `colorOverrides` |
 | Canvas | `canvasSurroundOverride`, `canvasSurround`, `assessBorderPct`, `windowDim` |
 | Accessibility | `highContrast`, `strongFocus`, `largerText`, `largerControls`, `lowercaseHeadings`, `reduceTransparency`, `keyboardCanvasEditing`, `colorVisionFilter`, `syncOSAccessibility` |
 | Startup, Library | `restoreLastProject`, `defaultGridSize`, `defaultSortField`, `defaultSortDirection`, `confirmRemovePhotos`, `showSubfolderPhotos` |
@@ -113,37 +117,23 @@ Treat it as read-only. Core writes through its own `updateSettings`, which saves
 | Export | `exportFormat`, `exportQuality`, `exportLongEdge`, `exportBundle`, `exportColorSpace`, `exportTiffBitDepth`, `exportPngBitDepth`, `exportIncludeMetadata`, `exportIncludeLocation`, `exportPresets` |
 | Other | `singleKeyShortcuts`, `extensionTopic`, `checkExtensionUpdates`, `autoUpdateExtensions`, `onlyVerifiedExtensions`, `extensionsMaximized`, `checkForUpdates`, `updateChannel` |
 
-## Brushes, masks & retouch (interactive Develop tools)
+## Masks (the develop store's mask edits)
 
-A brush is a pattern over `useDevelopStore`'s tool state, not a component. A tool claims the canvas with `setActiveTool`, reads the shared brush settings, appends dabs or spots as the pointer moves, and commits once at the end. Draw the ring in a `develop-canvas-overlay` [slot](ui-shell.md#slots-registerslot) with `api.develop.useDevelopOverlay` and `setCanvasCursor`.
+The masks, the tools that draw them and their selection are the Masking extension's (3.2.0); an on-image tool takes the canvas with [`api.develop.setCanvasTool`](#apidevelop). Core keeps the edits its mask scope makes:
 
 ```ts
-activeTool; setActiveTool(t);     // "none" | "mask" | "retouch" | "hsl-picker"
-brushSize; setBrushSize(n);       // radius, fraction of image height (0.08)
-brushFeather; setBrushFeather(n); // 0..1 edge softness (0.5)
-brushOpacity; setBrushOpacity(n); // 0..1 coverage ceiling (1)
-brushFlow; setBrushFlow(n);       // 0..1 deposit per dab (1)
-brushErase; setBrushErase(b);     // paint erasing dabs
-wbPicking; hslPicking; maskColorPicking; // eyedroppers, setWbPicking(b) etc.
-
-// Mask components: radial, linear, brush, lumRange, colorRange
-addMask(mask); updateMask(id, patch); removeMask(id);
+updateMask(id, patch);            // a field of the mask; undefined drops it
 updateMaskAdj(id, patch);         // the mask's core adjustments
 updateMaskBag(id, patch);         // the mask's extension param bag
-addComponent(maskId, comp);       // mode add, subtract or intersect
-updateComponent(maskId, compId, patch); removeComponent(maskId, compId);
-addRangeComponent(kind);          // "lumRange" | "colorRange", active mask
-addBrushDab(maskId, compId, dab); // one dab per pointer move
-
-// RetouchSpot: shape "circle" | "brush", mode "heal" | "clone"
-addSpot(spot); updateSpot(id, patch); removeSpot(id);
+seedMaskPanelValues(maskId, owns); clearMaskPanelValues(maskId, owns);
 ```
 
 **Notes**
 
-- Mutate with these actions during the gesture for a live preview, then call `commitEdit(label)` once on pointer-up for a single undo step.
-- Limits: `MAX_MASKS` 16, `MAX_MASK_COMPONENTS` 24 in total, `MAX_BRUSH_MASKS` 4, `MAX_RETOUCH` 32 of which `MAX_RETOUCH_BRUSH` 4 may be brushes. See [Core Data Types](types.md).
+- Write the masks themselves with `setParam("masks", next)`, a new array each time, and call `commitEdit(label)` once at the end of a gesture for a single undo step.
+- Limits: `MAX_MASKS` 16, `MAX_MASK_COMPONENTS` 24 in total, `MAX_BRUSH_MASKS` 4. See [Core Data Types](types.md).
 - Per-mask sub-panels edit through [`useMaskScope` or `useParamScope`](ui-shell.md#per-mask-panels-panelcontributionmask), not `updateMaskAdj`/`updateMaskBag`.
+- `seedMaskPanelValues` sets a sub-panel's owned values to their defaults when it is added to a mask (or the mask is reset); `clearMaskPanelValues` clears them when it is taken off.
 
 ## `api.develop`
 
@@ -166,6 +156,19 @@ renderPhotoFrame(photoId, params, paramBag?, opts?: { lossless? }): Promise<Imag
 renderPhotoFloatFrame(photoId, params, opts?: { space?; point?; paramBag? }): Promise<FloatFrame | null>; // 3.1.0
 putPhotoData(key, data: Uint8Array | null): void;  // null deletes
 getPhotoData(key): Promise<Uint8Array | null>;
+setPickDrag(tool: PickDragTool | null): void;      // 3.2.0
+usePickDragHeld(): boolean;                        // 3.2.0
+probe(point): Promise<[r, g, b] | null>;            // 3.2.0
+setCanvasTool(tool: CanvasTool | null): void;      // 3.2.0
+useCanvasToolHeld(): boolean;                      // 3.2.0
+readDevelopedPixels(edge: number): Promise<{ data: Uint8Array; width; height } | null>; // 3.2.0
+sourcePixels(): { data: Uint8ClampedArray; width; height } | null; // 3.2.0
+onSourcePixels(listener): () => void;              // 3.2.0
+probeMaskColour(u, v): Promise<[r, g, b] | null>;  // 3.2.0
+showMaskCoverage(maskId: string | null): void;     // 3.2.0
+useMaskPanels(): MaskPanelEntry[];                 // 3.2.0: { id, title, owns, component, extensionParams }
+useOlderProcessing(): boolean;                     // 3.2.0
+autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a Promise<void>
 ```
 
 **Overlays and tools**
@@ -173,6 +176,15 @@ getPhotoData(key): Promise<Uint8Array | null>;
 - Call `useDevelopOverlay` from a `develop-canvas-overlay` component. `rect` is the image in the overlay's local coordinates; `nonce` changes on zoom, pan, resize and photo switch, so re-align then.
 - `useParamScope` lets one component serve as a panel's `component` and its `mask.component` (`maskId` is null outside a mask). Call `commit(label)` at the end of a gesture.
 - `setCanvasCursor` takes a cursor id, a [`CursorContribution`](contributions.md#cursorcontribution) or raw CSS. The highest `priority` wins (default 10). Call the returned release function when your tool deactivates.
+- `setPickDrag` holds the canvas's pick-drag tool, an on-image drag that starts from a colour (HSL's target tool). While you hold it, a press on the image calls `onPress(point)` at once, with the point in the canvas's pixels. If your tool has `onDown`, it then gets `onDown(rgb, point)` with the colour the view shows there (sRGB, 0 to 1) once that is read, then `onMove(point)` and `onUp()`; a press released before the colour is read starts no drag. Every handler is optional. Holding Ctrl, Cmd or Space pans instead, and Escape lets go of the tool. The last extension to set a tool holds it; `setPickDrag(null)` lets go of yours only, and stopping your extension lets go too. `usePickDragHeld` re-renders when yours is taken or dropped, for a pressed button.
+- `setCanvasTool` hands the canvas to an on-image tool (crop mode, Guided Upright's lines, the heal brush). While it is held, its `overlay` component draws over the image inside the view and reads the mapping with `useDevelopOverlay` (`region`, `imageAspect`). Core's own canvas gestures stand aside, zoom and pan too unless `zoomable`, and the live view draws `viewParams(params)` when given; the edit is untouched. Escape calls `onEscape` and lets the tool go. `onAction(action)` gets the Develop shortcuts pressed while it is held (`"brush.larger"` and so on) and returns whether it took one; core acts on those it didn't. As with `setPickDrag`, the last extension to set a tool holds it, and `useCanvasToolHeld` re-renders when yours is taken or dropped.
+- `readDevelopedPixels` reads the open photo's developed frame of the whole image, before the crop and transform, as RGBA8 rows from the top with its long edge at `edge` px (Upright detects lines in it).
+- `sourcePixels` is a small 8-bit sRGB copy of the open photo's source (RGBA8 rows from the top, about 1024 px on its long edge), for searches of the image itself (Heal's source pick). It is `null` before the first frame. `onSourcePixels` calls you with each new one: another photo, or a new decode.
+- `probeMaskColour` reads the colour a mask's colour range compares at a point of the live frame buffer (0 to 1 across `useDevelopOverlay` `rect`): scene-linear, before the display transform.
+- `showMaskCoverage` tints a mask's coverage over the image, fading in and out, or with `null` none: the mask a masking panel points at.
+- `useMaskPanels` lists the panels that can be added to a mask (`PanelContribution.mask`), in their `order` then by title. `extensionParams` is true for one that owns an extension's params, which run inside the mask only at the current processing. Draw one inside `components.MaskScope`; the develop store's `seedMaskPanelValues` and `clearMaskPanelValues` set or clear its values when it is added or removed.
+- `probe` reads the colour the canvas shows at a point in its pixels (sRGB, 0 to 1) from the live frame, or `null` with no frame.
+- `autoAdjust` runs core's Auto White Balance, the white-balance eyedropper at a canvas point, or Auto Tone to convergence, then commits one undo step. Each needs the frame's histogram (`useDevelopStore` `histogram`) and does nothing without one, and only one runs at a time. Pair `whiteBalanceAt` with `setPickDrag`: call it from `onPress` with the point.
 - `adjustments` reaches core values inside structured params (`"vignette.amount"`, `"grain.size"`) that `setParam` can't set alone. `set` is live with no history entry: call `commitEdit` yourself.
 
 **Captures of the live view**
@@ -231,8 +243,15 @@ renderPhotos(
   photos: CatalogPhoto[],
   settings?: Partial<ExportSettings>,  // merged over the defaults
   onProgress?: (p: { done; total; filename }) => void,
-  options?: { paramBag? },             // this render only
+  options?: { paramBag?; signal? },    // this render only
 ): Promise<RenderedPhoto[]>;           // { photo; blob; width; height }
+exportPhotos(
+  photos: CatalogPhoto[],
+  settings: ExportSettings,            // the whole of them, not merged
+  onProgress?: (p: { done; total; filename }) => void,
+  destDir?: FileSystemDirectoryHandle, // for delivery "folder"
+  options?: { signal? },
+): Promise<ExportResult>;
 ```
 
 **Notes**
@@ -241,6 +260,9 @@ renderPhotos(
 - `blob` is `null` for a photo that couldn't be decoded, or an edited photo whose original is out of reach.
 - `width` and `height` include a `processPixels` mat. If a `process(blob)` resizes the file, read the size from the blob.
 - Export processors don't run for a render started from inside them, or for a photo another batch is rendering at the same time.
+- Pass `signal` to stop a batch. It is checked before each photo, so the photo in flight finishes. `renderPhotos` then returns only the photos it reached. `exportPhotos` returns `cancelled: true` and the count it exported; a ZIP in progress is delivered with what it holds.
+- `exportPhotos` also stops on its own, with `stopped` set to the reason (`"the disk is full"`), when a write fails in a way every later write would too: a full disk or a read-only folder. A refusal that one locked file also gives (`EPERM`, `EACCES`, a withdrawn folder grant) stops it only when the same refusal comes twice in a row; a successful write in between starts the count again. Photos after that are not rendered. A failure that belongs to one file is listed in `failures` and the batch goes on. `exportStatus(result)` words either ending for the user.
+- `delivery: "files"` hands each file to the browser's download, which can't report a cancelled Save dialog. Those files count as exported once handed over.
 
 ## `api.catalog`
 
@@ -255,6 +277,7 @@ useVisiblePhotos(opts?: { without?: string[] }): CatalogPhoto[]; // grid order
 usePhotoActions(): { onContextMenu; overlays };    // Library menu
 useCullingShortcuts(opts?: { sizeSteps?: boolean }): void;
 requestThumbnail(photoId): void;                   // queue a grid preview
+readPreview(photoId): Promise<Blob | null>;        // read a grid preview, keep nothing
 ```
 
 **Notes**
@@ -262,6 +285,8 @@ requestThumbnail(photoId): void;                   // queue a grid preview
 - Writing the photo open in Develop with `putEditState` reloads it there, which clears the active tool and the mask and spot selection.
 - `renamePhoto` takes the name without its extension and keeps the sidecar, virtual copies, ratings and edits. It returns `{ ok: false, reason }` rather than throwing. To shuffle a numbering range, rename through temporary names first.
 - `useVisiblePhotos`'s `without` names grid filters to ignore, for a surface that registers a filter of its own.
+- A photo's `thumbnailBlob` and `thumbnailUrl` are a cache, not a promise. In a big project core keeps the previews it loaded last (a few thousand) and releases the rest, so a photo far from view has both set to `null` until its cell scrolls back. A surface that draws a photo calls `requestThumbnail`. Code that walks the whole catalog (a duplicate scan, a contact sheet) should not read the record at all.
+- `readPreview` reads the preview from the project for one photo and hands you the blob. Nothing else changes: the record, the memory core holds and the grid are as they were, so a loop over every photo does not fill memory, and the blob is yours to drop. It resolves to `null` for a photo with no preview, or when no project is open. Photos far from view are slower to read than loaded ones, so read a few at a time.
 - Hook examples: [UI Components: Photo surfaces](components.md#photo-surfaces-menu-and-shortcuts).
 
 ## `api.variables` (shared variables)

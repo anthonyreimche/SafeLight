@@ -14,6 +14,7 @@ import type { ProcessingStageContribution } from "@/extensions/types";
 import { maskInstances } from "./mask-stage-instances";
 import { uniformPrefix } from "./shader-compiler";
 import { V2_VARIANT } from "./shaders";
+import { isStandIn } from "./core-reads";
 import { buildStageInjection } from "./stage-injection";
 
 const GAIN: ProcessingStageContribution = {
@@ -122,7 +123,8 @@ describe("a stage's mask copy", () => {
     };
     const built = one(lut);
     const parentRamp = `${uniformPrefix(lut.id)}ramp`;
-    expect(count(built.injection.uniforms, "uniform sampler2D")).toBe(1);
+    const own = built.injection.uniforms.split("\n").filter((l) => !isStandIn(l)).join("\n");
+    expect(count(own, "uniform sampler2D")).toBe(1);
     expect(built.injection.sceneLinear).toContain(`texture(${parentRamp}, lin.rg).rgb * ${copyPfx(lut)}amount`);
     expect(built.textureBindings.map((t) => t.qualifiedKey)).toEqual([`${lut.id}.ramp`]);
   });

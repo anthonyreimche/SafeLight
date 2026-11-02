@@ -9,7 +9,7 @@
 // confirmDialog() and ConfirmDialogHost renders the card in-page. These tests
 // pin the promise contract, keyboard/focus behavior, and FIFO queueing.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { popEscapeHandler } from "@/ui/escape-stack";
@@ -94,6 +94,65 @@ describe("confirmDialog", () => {
     expect(document.activeElement).toBe(outside);
   });
 
+  it("focuses Cancel for a danger confirm, so Enter cancels", async () => {
+    const user = userEvent.setup();
+    render(<ConfirmDialogHost />);
+    let decision!: Promise<boolean>;
+    act(() => {
+      decision = confirmDialog({
+        title: "Delete from disk",
+        message: "Move 1 photo to the Trash?",
+        confirmLabel: "Move to Trash",
+        variant: "danger",
+      });
+    });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+    await user.keyboard("{Enter}");
+    await expect(decision).resolves.toBe(false);
+  });
+
+  it("describes the dialog by its message", () => {
+    render(<ConfirmDialogHost />);
+    act(() => {
+      void confirmDialog({ title: "Close project", message: "Photos are still being imported." });
+    });
+    expect(
+      screen.getByRole("dialog", { name: "Close project" }).getAttribute("aria-describedby"),
+    ).toBeTruthy();
+    expect(screen.getByRole("dialog", { description: "Photos are still being imported." })).toBeTruthy();
+    act(() => void popEscapeHandler());
+  });
+
+  it("keeps Tab inside the card", async () => {
+    // jsdom has no layout, so every element reports zero client rects.
+    const layout = vi
+      .spyOn(Element.prototype, "getClientRects")
+      .mockReturnValue([{} as DOMRect] as unknown as DOMRectList);
+    const user = userEvent.setup();
+    render(
+      <>
+        <button type="button">outside</button>
+        <ConfirmDialogHost />
+      </>,
+    );
+    let decision!: Promise<boolean>;
+    act(() => {
+      decision = confirmDialog({ title: "Reset edits", message: "Sure?" });
+    });
+    const ok = screen.getByRole("button", { name: "OK" });
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(document.activeElement).toBe(ok);
+    await user.tab();
+    expect(document.activeElement).toBe(cancel);
+    await user.tab();
+    expect(document.activeElement).toBe(ok);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(cancel);
+    await user.click(cancel);
+    await decision;
+    layout.mockRestore();
+  });
+
   it("renders blank-line-separated message text as separate paragraphs", async () => {
     const user = userEvent.setup();
     render(<ConfirmDialogHost />);
@@ -123,7 +182,9 @@ describe("confirmDialog", () => {
       });
     });
     const dangerButton = screen.getByRole("button", { name: "Move to Trash" });
-    expect(dangerButton.className).toContain("var(--color-label-red)");
+    expect(dangerButton.className).toContain("bg-danger");
+    expect(dangerButton.className).toContain("text-on-danger");
+    expect(dangerButton.className).not.toContain("text-white");
     expect(dangerButton.className).not.toContain("var(--color-accent)");
     await user.click(dangerButton);
     await danger;

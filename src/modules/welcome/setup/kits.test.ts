@@ -48,6 +48,7 @@ describe("parseKits", () => {
         name: "Kit film",
         description: "A kit.",
         icon: "film",
+        default: false,
         extensions: [
           { repo: "acme/film-sim", name: "Film-Sim", summary: "Does a thing." },
         ],
@@ -57,6 +58,7 @@ describe("parseKits", () => {
         name: "Kit colour",
         description: "A kit.",
         icon: "palette",
+        default: false,
         extensions: [
           { repo: "acme/scopes", name: "scopes", summary: "Does a thing." },
         ],
@@ -168,13 +170,23 @@ describe("parseKits", () => {
   });
 
   it("caps the kits and the extensions per kit", () => {
-    const many = Array.from({ length: 15 }, (_, i) => ext(`acme/e${i}`));
+    expect([KIT_LIMITS.kits, KIT_LIMITS.extensionsPerKit]).toEqual([8, 24]);
+    const many = Array.from({ length: 30 }, (_, i) => ext(`acme/e${i}`));
     const kits = parseKits(
       doc(Array.from({ length: 10 }, (_, i) => kit(`k${i}`, many))),
       APP,
     )!;
     expect(kits).toHaveLength(KIT_LIMITS.kits);
     expect(kits[0].extensions).toHaveLength(KIT_LIMITS.extensionsPerKit);
+  });
+
+  it.each([
+    [true, true],
+    [undefined, false],
+    ["yes", false],
+    [1, false],
+  ])("reads default %j as %j", (value, expected) => {
+    expect(parseKits(doc([kit("a", [ext("a/b")], { default: value })]), APP)?.[0].default).toBe(expected);
   });
 
   it("maps an icon this build doesn't draw to null", () => {

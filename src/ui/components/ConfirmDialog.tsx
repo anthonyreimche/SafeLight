@@ -9,7 +9,7 @@
 // the window is refocused or the app restarts (electron#31917) — so nothing in
 // the renderer may call them. Callers await confirmDialog() or alertDialog();
 // ConfirmDialogHost, mounted once per window, renders the oldest pending
-// request as a lightweight card (the PresetRenameDialog pattern). Requests
+// request as a lightweight card (the preset rename dialog's pattern). Requests
 // queue FIFO and the promise always resolves — for confirms, cancel, backdrop
 // click, and Esc (via the shared escape stack) all resolve false; an alert is
 // a one-button notice that resolves however it's dismissed.
@@ -17,14 +17,16 @@
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
 import { pushEscapeHandler } from "@/ui/escape-stack";
+import { trapTab } from "@/ui/focus-trap";
 
 export interface ConfirmDialogOptions {
   title: string;
   message: string;
   confirmLabel?: string;
   cancelLabel?: string;
-  /** "danger" paints the confirm button in the destructive red — reserve it
-   *  for actions that destroy data (deleting files, irreversible removals). */
+  /** "danger" paints the confirm button in the destructive red and opens with
+   *  Cancel focused — reserve it for actions that destroy data (deleting files,
+   *  irreversible removals). */
   variant?: "default" | "danger";
 }
 
@@ -85,11 +87,13 @@ export function ConfirmDialogHost() {
 
 function ConfirmCard({ request }: { request: PendingConfirm }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
-  // Focus the affirmative button (Enter confirms, like native confirm) and hand
-  // focus back to wherever it was once the card closes.
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  // Focus the affirmative button (Enter confirms, like native confirm), or Cancel
+  // for a destructive one so a stray Enter destroys nothing, and hand focus back
+  // to wherever it was once the card closes.
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
-    confirmRef.current?.focus();
+    (cancelRef.current ?? confirmRef.current)?.focus();
     const off = pushEscapeHandler(() => settle(request, false));
     return () => {
       off();
@@ -97,7 +101,9 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
     };
   }, [request]);
 
+  const cardRef = useRef<HTMLDivElement>(null);
   const titleId = `confirm-title-${request.id}`;
+  const messageId = `confirm-message-${request.id}`;
   const isAlert = request.kind === "alert";
   return (
     // z above ModalWindow's z-[100] backdrop: confirms may open over the
@@ -109,32 +115,38 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
       }}
     >
       <div
+        ref={cardRef}
+        onKeyDown={(e) => trapTab(e, cardRef.current)}
         role={isAlert ? "alertdialog" : "dialog"}
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={messageId}
         className="w-[400px] max-w-[90vw] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-1)] shadow-xl"
       >
         <div className="space-y-2 p-3">
           <div
             id={titleId}
-            className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]"
+            className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]"
           >
             {request.title}
           </div>
           {/* pre-line: single newlines carry list structure (e.g. per-file
               failure reports); blank lines still split real paragraphs. */}
-          {request.message.split(/\n{2,}/).map((paragraph, i) => (
-            <p
-              key={i}
-              className="whitespace-pre-line text-[12px] leading-relaxed text-[var(--color-text)]"
-            >
-              {paragraph}
-            </p>
-          ))}
+          <div id={messageId} className="space-y-2">
+            {request.message.split(/\n{2,}/).map((paragraph, i) => (
+              <p
+                key={i}
+                className="whitespace-pre-line text-[12px] leading-relaxed text-[var(--color-text-primary)]"
+              >
+                {paragraph}
+              </p>
+            ))}
+          </div>
         </div>
         <div className="flex justify-end gap-2 border-t border-[var(--color-border)] p-3">
           {!isAlert && (
             <button
+              ref={request.variant === "danger" ? cancelRef : undefined}
               className="rounded bg-[var(--color-surface-2)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
               onClick={() => settle(request, false)}
             >
@@ -143,10 +155,10 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
           )}
           <button
             ref={confirmRef}
-            className={`rounded px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 ${
+            className={`rounded px-3 py-1 text-[11px] font-medium hover:opacity-90 ${
               request.variant === "danger"
-                ? "bg-[var(--color-label-red)]"
-                : "bg-[var(--color-accent)]"
+                ? "bg-danger text-on-danger"
+                : "bg-[var(--color-accent)] text-white"
             }`}
             onClick={() => settle(request, true)}
           >

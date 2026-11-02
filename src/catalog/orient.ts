@@ -27,6 +27,38 @@ export function orientationToRotation(orientation: number | undefined): number {
   }
 }
 
+// The manual 90° turns a photo's canonical `rotation` (EXIF + manual) holds on
+// top of its EXIF orientation.
+export function manualRotation(rotation: number, orientation: number | undefined): number {
+  return normalizeRotation(rotation - orientationToRotation(orientation));
+}
+
+// What a decode's pixels still need turned to reach `rotation`: only the manual
+// portion when the decoder already applied the EXIF orientation, else all of it.
+export function bakeRotation(
+  rotation: number,
+  orientation: number | undefined,
+  oriented: boolean,
+): number {
+  return oriented ? manualRotation(rotation, orientation) : rotation;
+}
+
+// A photo's canonical rotation (its EXIF orientation until a manual turn is
+// stored), the manual portion of it, and what a decode with the given
+// orientedness still needs baked.
+export function bakeFor(
+  photo: { rotation?: number; exif: { orientation?: number } },
+  oriented: boolean,
+): { rotation: number; manual: number; bake: number } {
+  const { orientation } = photo.exif;
+  const rotation = photo.rotation ?? orientationToRotation(orientation);
+  return {
+    rotation,
+    manual: manualRotation(rotation, orientation),
+    bake: bakeRotation(rotation, orientation, oriented),
+  };
+}
+
 // How much to rotate a camera's EMBEDDED preview JPEG (decoded sensor-native,
 // imageOrientation:"none") to bring it upright. Embedded previews are usually
 // stored sensor-native — they carry NO orientation tag of their own, so the
@@ -46,7 +78,7 @@ export function previewUprightRotation(
   orientation: number | undefined,
 ): number {
   const exifRot = orientationToRotation(orientation);
-  const manual = normalizeRotation(rotation - exifRot);
+  const manual = manualRotation(rotation, orientation);
   const quarter = exifRot === 90 || exifRot === 270;
   const alreadyUpright = quarter && previewH > previewW;
   return normalizeRotation((alreadyUpright ? 0 : exifRot) + manual);

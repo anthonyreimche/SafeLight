@@ -77,6 +77,7 @@ vi.mock("@/modules/library/import-photos", () => ({
 }));
 
 import { ProjectStorage } from "@/project/project-storage";
+import { storageDeps } from "@/project/storage-deps";
 import { useCatalogStore } from "./catalog-store";
 import { reloadThumbnail, requestThumbnail, setThumbnailLoader } from "./thumbnail-loader";
 
@@ -121,7 +122,7 @@ async function savedWithEditedPreview(): Promise<FileSystemDirectoryHandle> {
     promotedFromExternal: null,
   };
   const root = fsaDirectoryHandle(fs, ROOT);
-  const first = await ProjectStorage.open(root);
+  const first = await ProjectStorage.open(root, storageDeps);
   await first.storage.putPhoto({
     ...first.photos[0],
     thumbnailBlob: new Blob(["stored:a.jpg"]),
@@ -135,7 +136,7 @@ async function savedWithEditedPreview(): Promise<FileSystemDirectoryHandle> {
 /** Open the project again and install its preview reader and photos, as opening a
  *  project does. */
 async function reopen(root: FileSystemDirectoryHandle): Promise<ProjectStorage> {
-  const { storage, photos } = await ProjectStorage.open(root);
+  const { storage, photos } = await ProjectStorage.open(root, storageDeps);
   opened.push(storage);
   setThumbnailLoader((id) => storage.readPreview(id));
   useCatalogStore.setState({ photos });

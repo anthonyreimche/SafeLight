@@ -94,6 +94,7 @@ vi.mock("@/state/broadcast", () => ({
 import { photo } from "@/catalog/stored-edit.fixtures";
 import { MemoryFs, fsaDirectoryHandle } from "./memory-fs.test-support";
 import { ProjectStorage } from "./project-storage";
+import { storageDeps } from "./storage-deps";
 
 const ROOT = "/home/u/photos";
 
@@ -143,7 +144,7 @@ async function open(
   onPhoto?: (photo: CatalogPhoto) => void,
   onSkeletons?: (storage: ProjectStorage) => void,
 ): Promise<ProjectStorage> {
-  const opened = await ProjectStorage.open(root, onPhoto, onSkeletons);
+  const opened = await ProjectStorage.open(root, storageDeps, onPhoto, onSkeletons);
   storages.push(opened.storage);
   return opened.storage;
 }

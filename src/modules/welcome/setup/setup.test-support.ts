@@ -8,7 +8,7 @@
 // whose methods are spies each test can re-program.
 
 import { vi, type Mock } from "vitest";
-import type { ExtensionManifest, TrustList } from "@/extensions/types";
+import type { ExtensionManifest, NativePluginsBridge, TrustList } from "@/extensions/types";
 
 export const ONE = "acme/one";
 export const TWO = "acme/two";
@@ -75,6 +75,12 @@ export interface FakeBridge {
   remoteManifest: Mock<(repo: string) => Promise<{ version: string } | null>>;
 }
 
+let privilegedStub: NativePluginsBridge | null = null;
+
+/** What a test file's `@/native/privileged` mock answers privilegedPlugins()
+ *  with: the install half of the bridge stubBridge() last built. */
+export const stubbedPrivilegedPlugins = (): NativePluginsBridge | null => privilegedStub;
+
 export function stubBridge(): FakeBridge {
   const bridge: FakeBridge = {
     list: vi.fn<() => Promise<ExtensionManifest[]>>(async () => []),
@@ -93,6 +99,8 @@ export function stubBridge(): FakeBridge {
       async () => ({ version: "1.0.0" }),
     ),
   };
-  vi.stubGlobal("safelightNative", { plugins: bridge });
+  privilegedStub = bridge;
+  const { install, uninstall, settleUpdate, ...open } = bridge;
+  vi.stubGlobal("safelightNative", { plugins: open });
   return bridge;
 }

@@ -9,10 +9,10 @@
 // controls that shape a dab — flow builds coverage up, opacity caps how far it
 // can build — and the RGBA packing the shader reads every mask through.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BrushDab } from "@/catalog/types";
 import { MAX_BRUSH_MASKS } from "@/catalog/types";
-import { bakeCoverage, type CoverageItem, type CoverageResult } from "./mask-coverage";
+import { CoverageBaker, bakeCoverage, type CoverageItem, type CoverageResult } from "./mask-coverage";
 
 function dab(over: Partial<BrushDab> = {}): BrushDab {
   return { x: 0.5, y: 0.5, radius: 0.2, erase: false, feather: 0, ...over };
@@ -156,6 +156,95 @@ describe("bakeCoverage", () => {
     for (let channel = 0; channel < MAX_BRUSH_MASKS; channel++) {
       expect(coverageAt(baked, 0.1 + channel * 0.15, 0.5, channel)).toBe(255);
     }
+  });
+});
+
+// A brush stroke grows by a few dabs a frame, and each frame's params hand the
+// renderer the whole stroke history again, cloned. CoverageBaker keeps what it
+// baked, so a frame rasterises only the stroke still being painted, and an item
+// whose dabs didn't change not at all, and comes out byte for byte as a full bake.
+describe("CoverageBaker", () => {
+  /** A soft, low-flow stroke of `n` dabs along a line, so overlaps build up. */
+  function stroke(n: number, over: Partial<BrushDab> = {}, y = 0.5): BrushDab[] {
+    return Array.from({ length: n }, (_, i) =>
+      dab({ x: 0.2 + i * 0.03, y, radius: 0.08, feather: 0.6, flow: 0.4, opacity: 0.8, strokeStart: i === 0, ...over }),
+    );
+  }
+
+  function expectSameAsFullBake(baked: CoverageResult | null, items: CoverageItem[], aspect = 1) {
+    const full = bakeCoverage(items, aspect);
+    if (!baked || !full) throw new Error("a bake returned null");
+    expect(baked.channelOf).toEqual(full.channelOf);
+    let differing = 0;
+    for (let i = 0; i < full.data.length; i++) if (baked.data[i] !== full.data[i]) differing++;
+    expect(differing).toBe(0);
+  }
+
+  /** The radial gradients a call creates: two for every dab it rasterises. */
+  function gradientsDuring(run: () => void): number {
+    const spy = vi.spyOn(CanvasRenderingContext2D.prototype, "createRadialGradient");
+    try {
+      run();
+      return spy.mock.calls.length;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("matches a full bake as a stroke grows, new strokes start and an erase stroke cuts in", () => {
+    const baker = new CoverageBaker();
+    let dabs: BrushDab[] = [];
+    const steps = [
+      stroke(3),
+      stroke(4).slice(1).map((d) => ({ ...d, x: d.x + 0.01 })),
+      stroke(5, { opacity: 0.5 }, 0.55),
+      stroke(2, { erase: true, opacity: 0.6 }, 0.5),
+      stroke(3, { erase: true, opacity: 0.6, strokeStart: false }, 0.52),
+      stroke(4, { flow: 1, opacity: 1 }, 0.45),
+    ];
+    for (const added of steps) {
+      dabs = structuredClone([...dabs, ...added]);
+      const items = [{ id: "a", dabs }];
+      expectSameAsFullBake(baker.bake(items, 1), items);
+    }
+  });
+
+  it("matches a full bake for dabs painted before strokes were recorded", () => {
+    const baker = new CoverageBaker();
+    const legacy = stroke(6, { strokeStart: undefined });
+    for (const dabs of [legacy.slice(0, 2), legacy.slice(0, 4), [...legacy.slice(0, 4), dab({ x: 0.3, erase: true, radius: 0.05 })], legacy]) {
+      const items = [{ id: "a", dabs: structuredClone(dabs) }];
+      expectSameAsFullBake(baker.bake(items, 1.5), items, 1.5);
+    }
+  });
+
+  it("matches a full bake after an undo, an edited dab, or a new aspect", () => {
+    const baker = new CoverageBaker();
+    const two = [...stroke(4), ...stroke(4, {}, 0.6)];
+    const bake = (dabs: BrushDab[], aspect = 1) => {
+      const items = [{ id: "a", dabs: structuredClone(dabs) }];
+      expectSameAsFullBake(baker.bake(items, aspect), items, aspect);
+    };
+    bake(two);
+    bake(stroke(4));
+    bake([{ ...two[0], x: 0.25 }, ...two.slice(1)]);
+    bake(two, 2);
+  });
+
+  it("rasterises only the stroke still being painted, and nothing for an unchanged item", () => {
+    const baker = new CoverageBaker();
+    const other = { id: "b", dabs: stroke(10, {}, 0.3) };
+    const history = stroke(20);
+    baker.bake([{ id: "a", dabs: history }, other], 1);
+
+    const next = structuredClone([...history, ...stroke(2, {}, 0.7)]);
+    expect(gradientsDuring(() => baker.bake([{ id: "a", dabs: next }, other], 1))).toBe(4);
+
+    const grown = structuredClone([...next, dab({ x: 0.5, y: 0.7, radius: 0.08 })]);
+    const items = [{ id: "a", dabs: grown }, structuredClone(other)];
+    let baked: CoverageResult | null = null;
+    expect(gradientsDuring(() => (baked = baker.bake(items, 1)))).toBe(6);
+    expectSameAsFullBake(baked, items);
   });
 });
 

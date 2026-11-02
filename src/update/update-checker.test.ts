@@ -12,7 +12,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  updates: null as { install: (repo: string, tag: string) => Promise<void> } | null,
+  updates: null as {
+    install: (repo: string, tag: string) => Promise<void>;
+    support?: (assetNames: string[]) => Promise<"install" | "release-page">;
+  } | null,
 }));
 
 // installVersion() reaches for the one-shot privileged bridge, which is captured
@@ -32,6 +35,7 @@ import {
   getDismissedVersion,
   installVersion,
   openUrl,
+  updateSupportFor,
 } from "./update-checker.ts";
 
 const DISMISS_KEY = "sl_update_dismissed_v1";
@@ -42,6 +46,7 @@ interface GHRelease {
   body: string | null;
   draft: boolean;
   prerelease: boolean;
+  assets?: { name: string }[];
 }
 
 const release = (over: Partial<GHRelease> & Pick<GHRelease, "tag_name">): GHRelease => ({
@@ -111,7 +116,20 @@ describe("checkForUpdateFull — the update decision", () => {
         version: "1.1.0",
         tag: "v1.1.0",
         releasesUrl: "https://github.com/anthonyreimche/SafeLight/releases/tag/v1.1.0",
+        assetNames: [],
       },
+    });
+  });
+
+  it("carries the release's asset names for the install offer", async () => {
+    stubNative(
+      bridge("1.0.0", [
+        release({ tag_name: "v1.1.0", assets: [{ name: "Safelight.Setup.1.1.0.exe" }, { name: "Safelight-1.1.0.dmg" }] }),
+      ]),
+    );
+
+    await expect(checkForUpdateFull()).resolves.toMatchObject({
+      info: { assetNames: ["Safelight.Setup.1.1.0.exe", "Safelight-1.1.0.dmg"] },
     });
   });
 
@@ -430,7 +448,7 @@ describe("fetchAllReleases", () => {
   it("returns every non-draft release, pre-releases included", async () => {
     stubNative(
       bridge("1.0.0", [
-        release({ tag_name: "v1.1.0" }),
+        release({ tag_name: "v1.1.0", assets: [{ name: "Safelight.Setup.1.1.0.exe" }] }),
         release({ tag_name: "v2.0.0-beta.1", prerelease: true, body: null }),
         release({ tag_name: "v9.0.0", draft: true }),
       ]),
@@ -443,6 +461,7 @@ describe("fetchAllReleases", () => {
         releasesUrl: "https://github.com/anthonyreimche/SafeLight/releases/tag/v1.1.0",
         body: "Release notes",
         prerelease: false,
+        assetNames: ["Safelight.Setup.1.1.0.exe"],
       },
       {
         version: "2.0.0-beta.1",
@@ -451,6 +470,7 @@ describe("fetchAllReleases", () => {
           "https://github.com/anthonyreimche/SafeLight/releases/tag/v2.0.0-beta.1",
         body: "",
         prerelease: true,
+        assetNames: [],
       },
     ]);
   });
@@ -470,6 +490,7 @@ describe("fetchAllReleases", () => {
         releasesUrl: "https://github.com/anthonyreimche/SafeLight/releases/tag/v1.1.0",
         body: "Release notes",
         prerelease: false,
+        assetNames: [],
       },
     ]);
   });
@@ -504,6 +525,35 @@ describe("installVersion", () => {
     await installVersion("v1.1.0");
 
     expect(install).toHaveBeenCalledWith("anthonyreimche/SafeLight", "v1.1.0");
+  });
+});
+
+describe("updateSupportFor", () => {
+  const info = {
+    version: "1.1.0",
+    tag: "v1.1.0",
+    releasesUrl: "https://github.com/anthonyreimche/SafeLight/releases/tag/v1.1.0",
+    assetNames: ["Safelight.Setup.1.1.0.exe"],
+  };
+
+  it("sends the browser build to the release page", async () => {
+    await expect(updateSupportFor(info)).resolves.toBe("release-page");
+  });
+
+  it("asks the desktop app about this release's assets", async () => {
+    const support = vi.fn(() => Promise.resolve("install" as const));
+    mocks.updates = { install: () => Promise.resolve(), support };
+
+    await expect(updateSupportFor(info)).resolves.toBe("install");
+    expect(support).toHaveBeenCalledWith(["Safelight.Setup.1.1.0.exe"]);
+  });
+
+  it("falls back to the release page when the desktop app can't say", async () => {
+    mocks.updates = { install: () => Promise.resolve(), support: () => Promise.reject(new Error("gone")) };
+    await expect(updateSupportFor(info)).resolves.toBe("release-page");
+
+    mocks.updates = { install: () => Promise.resolve() };
+    await expect(updateSupportFor(info)).resolves.toBe("release-page");
   });
 });
 

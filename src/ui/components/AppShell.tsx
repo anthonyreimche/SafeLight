@@ -25,7 +25,7 @@ export function AppShell({ module, children, statusBar }: AppShellProps) {
         <DockHost module={module}>{children}</DockHost>
       </main>
       {statusBar && (
-        <div className="flex h-6 items-center border-t border-border bg-surface-1 px-3 text-[10px] text-text-muted">
+        <div className="flex h-6 items-center border-t border-border bg-surface-1 px-3 text-[10px] text-text-muted empty:hidden">
           {statusBar}
         </div>
       )}

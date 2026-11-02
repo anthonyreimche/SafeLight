@@ -91,6 +91,9 @@ export class MemoryFs implements NativeFsBridge {
   private readonly readTally = new Map<string, number>();
   /** What pickDirectory() resolves to. */
   picked: string | null = null;
+  /** Look names up as NTFS and APFS do by default: exists() and remove() find
+   *  an entry whatever the case it is named in. */
+  foldCase = false;
 
   constructor(...dirs: string[]) {
     for (const d of dirs) this.mkdirp(d);
@@ -218,16 +221,15 @@ export class MemoryFs implements NativeFsBridge {
     }
   }
 
-  async list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]> {
+  async list(path: string): Promise<{ name: string; kind: "file" | "directory"; size?: number }[]> {
     const n = norm(path);
     if (!this.dirs.has(n)) throw new FsError("ENOENT", "scandir", path);
-    const kids = new Map<string, "file" | "directory">();
-    for (const f of this.files.keys()) if (parentOf(f) === n) kids.set(baseOf(f), "file");
+    const kids = new Map<string, { name: string; kind: "file" | "directory"; size?: number }>();
+    for (const [f, { data }] of this.files)
+      if (parentOf(f) === n) kids.set(baseOf(f), { name: baseOf(f), kind: "file", size: data.length });
     for (const d of this.dirs)
-      if (d !== n && parentOf(d) === n) kids.set(baseOf(d), "directory");
-    return [...kids]
-      .map(([name, kind]) => ({ name, kind }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      if (d !== n && parentOf(d) === n) kids.set(baseOf(d), { name: baseOf(d), kind: "directory" });
+    return [...kids.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async mkdir(path: string): Promise<void> {
@@ -237,9 +239,10 @@ export class MemoryFs implements NativeFsBridge {
 
   async remove(path: string): Promise<void> {
     this.guard("unlink", path);
-    const n = norm(path);
-    for (const f of [...this.files.keys()]) if (under(n, f)) this.files.delete(f);
-    for (const d of [...this.dirs]) if (under(n, d)) this.dirs.delete(d);
+    const fold = (p: string) => (this.foldCase ? p.toLowerCase() : p);
+    const n = fold(norm(path));
+    for (const f of [...this.files.keys()]) if (under(n, fold(f))) this.files.delete(f);
+    for (const d of [...this.dirs]) if (under(n, fold(d))) this.dirs.delete(d);
   }
 
   async move(src: string, dest: string): Promise<void> {
@@ -264,7 +267,9 @@ export class MemoryFs implements NativeFsBridge {
   }
 
   async exists(path: string): Promise<boolean> {
-    return this.has(path);
+    if (!this.foldCase) return this.has(path);
+    const n = norm(path).toLowerCase();
+    return [...this.files.keys(), ...this.dirs].some((p) => p.toLowerCase() === n);
   }
 
   async pickDirectory(): Promise<string | null> {

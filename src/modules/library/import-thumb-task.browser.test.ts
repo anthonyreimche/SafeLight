@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 import { runThumbTask, type ThumbTaskInput } from "./import-thumb-task";
-import { corners, taggedJpeg } from "./tagged-jpeg.test-support";
+import { corners, taggedJpeg } from "@/raw/tagged-jpeg.test-support";
 
 /** A 64×32 red|blue frame tagged Orientation 6, brought upright: 16×32 at
  *  thumbMaxEdge 32, red on top. */

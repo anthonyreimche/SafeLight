@@ -209,6 +209,39 @@ describe("extractRawMetadata", () => {
     expect(h.opened[0].buffer).not.toBe(buffer);
     expect(h.opened[0].byteLength).toBe(buffer.byteLength);
   });
+
+  it("hands libraw the caller's buffer itself when the caller is done with it", async () => {
+    const buffer = rawBytes();
+    h.metadata = { width: 1, height: 1 };
+
+    await extractRawMetadata(buffer, undefined, true);
+
+    expect(h.opened[0].buffer).toBe(buffer);
+  });
+});
+
+describe("decodeRawFloatViaLibRaw and the caller's buffer", () => {
+  beforeEach(() => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
+    h.pixels = litPixelFrame(code(0.18));
+  });
+
+  it("hands libraw a copy so the caller's buffer survives the transfer", async () => {
+    const buffer = rawBytes();
+
+    await decodeRawFloatViaLibRaw(buffer);
+
+    expect(h.opened[0].buffer).not.toBe(buffer);
+    expect(h.opened[0].byteLength).toBe(buffer.byteLength);
+  });
+
+  it("hands libraw the caller's buffer itself when the caller is done with it", async () => {
+    const buffer = rawBytes();
+
+    await decodeRawFloatViaLibRaw(buffer, undefined, true);
+
+    expect(h.opened[0].buffer).toBe(buffer);
+  });
 });
 
 describe("decodeRawFloatViaLibRaw", () => {

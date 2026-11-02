@@ -22,8 +22,7 @@ export function readWebGLInfo(): WebGLInfo | null {
   if (webGLInfo !== undefined) return webGLInfo;
   try {
     const canvas = document.createElement("canvas");
-    const gl = (canvas.getContext("webgl2") ||
-      canvas.getContext("webgl")) as WebGLRenderingContext | null;
+    const gl = canvas.getContext("webgl2");
     if (!gl) return (webGLInfo = null);
     const dbg = gl.getExtension("WEBGL_debug_renderer_info");
     const vendor = dbg
@@ -37,6 +36,7 @@ export function readWebGLInfo(): WebGLInfo | null {
       renderer,
       glsl: String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION)),
       maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+      colorBufferFloat: !!gl.getExtension("EXT_color_buffer_float"),
     };
     gl.getExtension("WEBGL_lose_context")?.loseContext();
     return webGLInfo;

@@ -8,9 +8,11 @@ import type {
   InterStageVariable,
   ProcessingPhase,
   ProcessingStageContribution,
+  StageAnchor,
   StagePass,
   StageSpace,
   TextureRequirement,
+  UniformDeclaration,
 } from "@/extensions/types";
 import { MAX_PASS_DRAWS } from "@/extensions/stage-validation";
 import { BASELINE_TONE_GLSL } from "../baseline-tone";
@@ -23,7 +25,7 @@ import {
   type StageDomain,
 } from "../stage-space";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
-import { isCoreStage } from "./builtin-stage";
+import { isCoreStage, writesRawNames } from "./builtin-stage";
 import { isMaskInstance, type MaskInstanceStage } from "./mask-stage-instances";
 import {
   uniformPrefix,
@@ -33,10 +35,12 @@ import {
   mentionsIdentifier,
   rewriteGlsl,
   replaceIdentifiers,
-  simpleHash,
 } from "./shader-compiler";
+import { simpleHash } from "./hash";
 import { V1_VARIANT, type ShaderVariant, type StageInjection } from "./shaders";
 import { sortStages } from "./stage-order";
+import { STAGE_ANCHORS, anchorOf } from "./stage-anchors";
+import { laterLineReads, standIns } from "./core-reads";
 
 // ---------------------------------------------------------------------------
 // Stage injection: build the GLSL strings that buildFragmentShader splices
@@ -51,6 +55,11 @@ export interface ContributedBinding {
   /** Namespaced GLSL identifier, e.g. "u_ab12_lumaAmount". */
   glslName: string;
   glslType: GlslType;
+  /** An array uniform's length (UniformDeclaration.length). */
+  length?: number;
+  /** A mat3 whose value is an ImageSpaceMatrix, finished for the image's
+   *  aspect at bind time (UniformDeclaration.space). */
+  space?: "image";
   default: number | number[] | boolean;
 }
 
@@ -90,7 +99,7 @@ export type ColourGroup = Exclude<InjectionGroup, "srcUv">;
  *  from one space into another (`elided` where it already held that space and
  *  nothing was written); a clip inserted ahead of a stage; a split exit. */
 export type InjectionStep =
-  | { kind: "stage"; group: InjectionGroup; stageId: string }
+  | { kind: "stage"; group: InjectionGroup; stageId: string; anchor?: StageAnchor }
   | {
       kind: "convert";
       group: ColourGroup;
@@ -388,13 +397,15 @@ export const RESULT_ARRAY_UNIFORM = "uStageResults";
 
 /** The samplers the stages add to the develop program while each keeps its own:
  *  one per prepass result, and one per lut or dynamic texture (coverage rides
- *  the brush atlas). A core stage declares neither. */
+ *  the brush atlas; an official stage's per-photo textures take units the
+ *  develop program counts as its own, DEVELOP_SAMPLERS). A core stage declares
+ *  neither. */
 function stageSamplers(ordered: readonly ProcessingStageContribution[]): number {
   let samplers = 0;
   for (const s of ordered) {
     if (isCoreStage(s)) continue;
     if ((s.passes?.length ?? 0) > 0) samplers++;
-    samplers += (s.textures ?? []).filter((t) => t.kind !== "coverage").length;
+    samplers += (s.textures ?? []).filter((t) => t.kind === "lut" || t.kind === "dynamic").length;
   }
   return samplers;
 }
@@ -425,12 +436,7 @@ function buildPassFragment(
   const uPfx = uniformPrefix(prefixId);
   const hPfx = helperPrefix(prefixId);
   const uniforms = pass.uniforms ?? [];
-  const bindings: ContributedBinding[] = uniforms.map((u) => ({
-    qualifiedKey: `${stageId}.${u.key}`,
-    glslName: uPfx + u.key,
-    glslType: u.glslType,
-    default: u.default,
-  }));
+  const bindings: ContributedBinding[] = uniforms.map((u) => bindingOf({ id: stageId }, u, uPfx));
   const uniformDecls = uniforms.map((u) => emitUniformDecl(u, uPfx)).join("\n");
   const helperNames = pass.helpers ? extractHelperNames(pass.helpers) : [];
   let helpers = "";
@@ -663,7 +669,7 @@ function prepareInput(
   domain: StageDomain,
   variant: ShaderVariant,
 ): void {
-  const core = isCoreStage(s);
+  const core = writesRawNames(s);
   if (!core && needsClippedInput(s, domain, variant)) {
     // Written for display values in [0, 1]: on a version 2 photo nothing
     // upstream clipped them, so this stage gets them clipped here. A mask
@@ -691,30 +697,43 @@ interface Declared {
   readsArray: boolean;
 }
 
-/** The line that ends the core Vignette and Grain helpers; builtin.tsx writes it
- *  through this constant. Version 1 compiles it as written. Version 2 swaps it
- *  for `return c;`, so what these effects make reaches the stages after them with
- *  its full range. It is found as text: a helper that spells the line another
- *  way keeps its clamp. */
-export const CORE_DISPLAY_CLAMP = "return clamp(c, 0.0, 1.0);";
+/** Core stages and official extensions' stages keep raw
+ *  uniform names, bound from the frame's bag under their qualified keys: the
+ *  values they derive from the photo's params (stage-derive.ts), or what the
+ *  photo's paramBag holds. Declares them as written, with `helpers` as the
+ *  program compiles them. */
+function declareRawStage(s: ProcessingStageContribution, declared: Declared, helpers: string | undefined): void {
+  for (const [name, value] of Object.entries(s.defines ?? {})) declared.uniforms.push(`#define ${name} ${value}`);
+  for (const u of s.uniforms) {
+    declared.uniforms.push(emitUniformDecl(u, ""));
+    declared.bindings.push(bindingOf(s, u, ""));
+  }
+  declareTextures(s, "", declared);
+  if (helpers) declared.helpers.push(helpers);
+}
 
-/** Core stages (vignette/grain) keep raw uniform names: their values are bound
- *  by hand in render() from typed DevelopParams, not the param bag. Declares
- *  them as written and returns the stage's block. Under a full-information
- *  variant their helpers lose the closing clamp (CORE_DISPLAY_CLAMP). */
-function emitCoreStage(
-  s: ProcessingStageContribution,
-  declared: Declared,
-  variant: ShaderVariant,
-): string {
-  for (const u of s.uniforms) declared.uniforms.push(`uniform ${u.glslType} ${u.key};`);
-  if (s.helpers) declared.helpers.push(coreStageHelpers(s.helpers, variant));
+/** How render() binds one of a stage's uniforms from the bag. */
+const bindingOf = (s: Pick<ProcessingStageContribution, "id">, u: UniformDeclaration, uPfx: string): ContributedBinding => ({
+  qualifiedKey: `${s.id}.${u.key}`,
+  glslName: uPfx + u.key,
+  glslType: u.glslType,
+  ...(u.length === undefined ? {} : { length: u.length }),
+  ...(u.space === "image" && u.glslType === "mat3" ? { space: "image" as const } : {}),
+  default: u.default,
+});
+
+/** A raw-name stage in its phase's group: its block, braced. */
+function emitCoreStage(s: ProcessingStageContribution, declared: Declared): string {
+  declareRawStage(s, declared, s.helpers);
   return `{\n${s.glsl}\n}`;
 }
 
-/** A core stage's helpers as `variant` compiles them. */
-export const coreStageHelpers = (helpers: string, variant: ShaderVariant): string =>
-  variant.fullInfo ? helpers.replaceAll(CORE_DISPLAY_CLAMP, "return c;") : helpers;
+/** A stage at an anchor: declared as a raw-name stage is, its block and
+ *  helpers written as they read so the program around them keeps its text. */
+function emitAnchoredStage(s: ProcessingStageContribution, declared: Declared): string {
+  declareRawStage(s, declared, s.helpers);
+  return s.glsl;
+}
 
 /** Version 1's frozen tone block can't record the scene's headroom, so a
  *  display stage that names slSceneLuma gets the luminance it does have. */
@@ -820,12 +839,7 @@ function emitMaskCopy(
 function declareUniforms(s: ProcessingStageContribution, uPfx: string, declared: Declared): void {
   for (const u of s.uniforms) {
     declared.uniforms.push(emitUniformDecl(u, uPfx));
-    declared.bindings.push({
-      qualifiedKey: `${s.id}.${u.key}`,
-      glslName: uPfx + u.key,
-      glslType: u.glslType,
-      default: u.default,
-    });
+    declared.bindings.push(bindingOf(s, u, uPfx));
   }
 }
 
@@ -949,11 +963,22 @@ function declarePrepass(
   );
 }
 
+const ANCHOR_RANK = new Map(Object.keys(STAGE_ANCHORS).map((a, i) => [a, i]));
+const anchorRank = (s: ProcessingStageContribution): number => ANCHOR_RANK.get(anchorOf(s) ?? "") ?? -1;
+
+/** `ordered` with its anchored stages, in the places they hold, put in the
+ *  order their anchors have in main(): an official extension's stage registers
+ *  after core's, but runs where its anchor is. */
+function inAnchorOrder(ordered: ProcessingStageContribution[]): ProcessingStageContribution[] {
+  const anchored = ordered.filter((s) => anchorRank(s) >= 0).sort((a, b) => anchorRank(a) - anchorRank(b));
+  let next = 0;
+  return ordered.map((s) => (anchorRank(s) >= 0 ? anchored[next++] : s));
+}
+
 /** The injection, bindings and prepass programs for the stages passed in. It
  *  never consults the registry: the caller decides which stages are active.
  *  `variant` must be the one the program is assembled with: version 2 clips
- *  display values ahead of extension stages that declared no space, its core
- *  Vignette and Grain no longer clip their own output, and its built-in denoiser
+ *  display values ahead of extension stages that declared no space, and its built-in denoiser
  *  reads the image as the decode stages ahead of it left it. `samplerBudget` is
  *  how many samplers the shader's limit leaves the stages; a version 2 set that
  *  would pass it reads its results from one array (layersResults). */
@@ -962,7 +987,8 @@ export function buildStageInjection(
   variant: ShaderVariant = V1_VARIANT,
   samplerBudget = Infinity,
 ): BuiltStageInjection {
-  const ordered = sortStages(withoutSupersededDenoiser(withoutOrphanConsumers(stages)));
+  const registered = new Map(stages.map((s) => [s.id, s]));
+  const ordered = inAnchorOrder(sortStages(withoutSupersededDenoiser(withoutOrphanConsumers(stages))));
   warnConsumersAhead(ordered);
   const layered = layersResults(ordered, variant, samplerBudget);
   const writer = new GroupWriter();
@@ -977,31 +1003,53 @@ export function buildStageInjection(
     readsArray: false,
   };
 
+  const anchored: Partial<Record<StageAnchor, string[]>> = {};
+
   for (const stage of ordered) {
+    const anchor = anchorOf(stage);
+    if (anchor) {
+      (anchored[anchor] ??= []).push(emitAnchoredStage(stage, declared));
+      const { domain, group: listed } = STAGE_ANCHORS[anchor];
+      const group = listed ?? (domain === "scene" ? "sceneLinear" : "effects");
+      writer.steps.push({ kind: "stage", group, stageId: stage.id, anchor });
+      continue;
+    }
     const { group, domain } = phaseInfo(stage.phase);
     exits.beforeStage(stage);
     if (group !== "srcUv" && domain) prepareInput(writer, stage, group, domain, variant);
-    const block = isCoreStage(stage)
-      ? emitCoreStage(stage, declared, variant)
+    const block = writesRawNames(stage)
+      ? emitCoreStage(stage, declared)
       : emitExtensionStage(stage, declared, exits.splitOf(stage.id), layered, variant, domain);
     writer.push(group, block);
     writer.steps.push({ kind: "stage", group, stageId: stage.id });
     exits.afterStage(stage);
   }
   if (exits.count > 0) declared.uniforms.push("uniform int uSplitAt;");
+  const blocks = [
+    ...ordered.filter((s) => anchorOf(s)).map((s) => s.glsl),
+    ...ordered.filter((s) => writesRawNames(s)).map((s) => s.helpers ?? ""),
+  ];
+  const bound = new Set([...declared.bindings, ...declared.textureBindings].map((b) => b.glslName));
+  declared.uniforms.push(...standIns(bound, blocks, variant));
+  const later = laterLineReads(blocks, variant);
+  declared.uniforms.push(...later.defines);
   if (declared.readsArray) {
     declared.uniforms.push(`uniform highp sampler2DArray ${RESULT_ARRAY_UNIFORM};`);
   }
   const written = writer.finish();
+  const anchors = Object.entries(anchored).map(([a, blocks]) => [a, blocks.join("\n")]);
 
   return {
     injection: {
       uniforms: declared.uniforms.join("\n"),
-      helpers: [...isvDeclarations(ordered), ...declared.helpers].join("\n\n"),
+      helpers: [...later.helpers, ...isvDeclarations(ordered), ...declared.helpers].join("\n\n"),
       ...written,
       splitCount: exits.count,
+      ...(anchors.length > 0 ? { anchors: Object.fromEntries(anchors) } : {}),
     },
-    sig: ordered.map((s) => `${s.id}:${stageSignature(s)}`).join("|"),
+    // Signed as registered, not as this version's text, so the sig is the
+    // same for every variant.
+    sig: ordered.map((s) => `${s.id}:${stageSignature(registered.get(s.id) ?? s)}`).join("|"),
     bindings: declared.bindings,
     textureBindings: declared.textureBindings,
     prepass: declared.prepass,

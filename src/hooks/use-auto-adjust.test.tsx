@@ -7,13 +7,12 @@
 // result belongs to the photo it started on and must never land on another.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook } from "@testing-library/react";
 import { useDevelopStore } from "@/state/develop-store";
 import { setCatalogStorage } from "@/catalog/storage";
 import { installMemoryStorage, type MemoryEdits } from "@/catalog/stored-edit.fixtures";
 import { whiteBalanceStepFromLinear } from "@/rendering/auto-adjust";
 import type { HistogramData } from "@/rendering/histogram";
-import { useAutoAdjust } from "./use-auto-adjust";
+import { autoAdjust, whiteBalanceFromSample } from "./use-auto-adjust";
 
 class SilentChannel {
   postMessage(): void {}
@@ -53,9 +52,8 @@ describe("Auto after a photo switch", () => {
   it("commits nothing to the photo it ends on, or the one it started on", async () => {
     await s().loadEdit("A", 5000);
     s().setHistogram(darkHistogram());
-    const { result } = renderHook(() => useAutoAdjust());
 
-    const running = result.current.autoTone();
+    const running = autoAdjust.tone();
     await s().loadEdit("B", 5000);
     await vi.advanceTimersByTimeAsync(5000);
     await running;
@@ -79,9 +77,8 @@ describe("White-balance eyedropper", () => {
     const want = whiteBalanceStepFromLinear(...WARM, s().params, s().asShotTemperature);
     const replies: (Rgb | null)[] = [WARM, null];
     const sample = vi.fn(async () => replies.shift() ?? null);
-    const { result } = renderHook(() => useAutoAdjust());
 
-    const running = result.current.whiteBalanceFromSample(sample);
+    const running = whiteBalanceFromSample(sample);
     await vi.advanceTimersByTimeAsync(5000);
     await running;
 
@@ -97,9 +94,8 @@ describe("White-balance eyedropper", () => {
     const before = s().params;
     let arrive: (rgb: Rgb) => void = () => {};
     const sample = () => new Promise<Rgb | null>((resolve) => (arrive = resolve));
-    const { result } = renderHook(() => useAutoAdjust());
 
-    const running = result.current.whiteBalanceFromSample(sample);
+    const running = whiteBalanceFromSample(sample);
     await s().loadEdit("B", 5000);
     arrive(WARM);
     await vi.advanceTimersByTimeAsync(5000);

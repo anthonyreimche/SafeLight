@@ -55,8 +55,8 @@ vi.mock("@/catalog/exif", () => ({
   parseExifDate: () => undefined,
 }));
 
-vi.mock("./raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => null,
   extractRawPreviewDecoded: async () =>
     h.smallPreview
@@ -64,8 +64,8 @@ vi.mock("./raw-preview", async (importOriginal) => ({
       : null,
 }));
 
-vi.mock("./netpbm", () => ({ isNetpbmName: () => false, decodeNetpbm: async () => null }));
-vi.mock("./tiff-image", () => ({ isTiffName: () => false, decodeTiff: async () => null }));
+vi.mock("@/raw/netpbm", () => ({ isNetpbmName: () => false, decodeNetpbm: async () => null }));
+vi.mock("@/raw/tiff-image", () => ({ isTiffName: () => false, decodeTiff: async () => null }));
 vi.mock("./import-thumb-task", () => ({
   createThumbnail: async () => {
     h.thumbnails++;
@@ -144,7 +144,7 @@ import {
   reimportPhotos,
   repairMissingPreviews,
 } from "./import-photos";
-import { rawPhoto } from "./raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
 /** A RAW in the catalog, read through its file handle. */
 function rawRecord(index: number, extra: Partial<CatalogPhoto> = {}): CatalogPhoto {

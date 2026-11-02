@@ -17,10 +17,13 @@ export function Rating({ value, onChange, size = "sm" }: RatingProps) {
       {[1, 2, 3, 4, 5].map((star) => (
         <button
           key={star}
-          onClick={() => onChange?.(value === star ? 0 : star)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onChange?.(value === star ? 0 : star);
+          }}
           aria-label={`${star} star${star === 1 ? "" : "s"}`}
           aria-pressed={star <= value}
-          className={`${starSize} ${
+          className={`flex h-5 w-5 items-center justify-center ${starSize} ${
             star <= value ? "text-rating" : "text-text-muted"
           } ${onChange ? "cursor-pointer hover:text-rating" : "cursor-default"}`}
           disabled={!onChange}

@@ -12,7 +12,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { normalizeParams } from "@/catalog/types";
 import { useDevelopStore } from "@/state/develop-store";
-import { ProofToggle } from "./DevelopView";
+import { ProofToggle } from "./view-toggles";
 
 // zustand keeps the actions in state, so the pristine object doubles as the
 // reset baseline.

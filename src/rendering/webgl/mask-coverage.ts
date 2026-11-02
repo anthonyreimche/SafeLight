@@ -6,10 +6,10 @@
 import type { BrushDab } from "@/catalog/types";
 import { MAX_BRUSH_MASKS } from "@/catalog/types";
 
-// Freehand coverage (brush masks and brush-shaped retouch) is rasterised into
-// the four channels (R,G,B,A) of one RGBA texture, so the shader can read every
-// item's coverage with a single sample. MAX_BRUSH_MASKS is that channel count —
-// the same cap the retouch atlas uses (MAX_RETOUCH_BRUSH), both bounded by RGBA.
+// Freehand coverage (brush masks, and an official stage's atlas texture such
+// as Heal's brush strokes) is rasterised into the four channels (R,G,B,A) of
+// one RGBA texture, so the shader can read every item's coverage with a single
+// sample. MAX_BRUSH_MASKS is that channel count, bounded by RGBA.
 
 const BAKE_SIZE = 768; // coverage resolution; soft shapes tolerate downscaling
 
@@ -103,8 +103,23 @@ function strokeRuns(dabs: BrushDab[]): StrokeRun[] {
   return runs;
 }
 
-// Bake up to four coverage items into an RGBA atlas. Returns null when empty.
-//
+type BakeContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+function createBakeContext(): BakeContext | null {
+  // The renderer runs in a Web Worker (no `document`), so fall back to an
+  // OffscreenCanvas there; the main thread can still use a DOM canvas.
+  const canvas: HTMLCanvasElement | OffscreenCanvas =
+    typeof document !== "undefined"
+      ? document.createElement("canvas")
+      : new OffscreenCanvas(BAKE_SIZE, BAKE_SIZE);
+  canvas.width = BAKE_SIZE;
+  canvas.height = BAKE_SIZE;
+  // Every stroke is read back, so keep the canvas in CPU memory.
+  return canvas.getContext("2d", { willReadFrequently: true }) as BakeContext | null;
+}
+
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
 // Two controls shape each dab, mirroring a classic paint brush:
 //   • flow — how much coverage one dab deposits. Overlapping dabs accumulate
 //     (alpha "source-over"), so a low-flow brush builds density gradually as
@@ -116,33 +131,10 @@ function strokeRuns(dabs: BrushDab[]): StrokeRun[] {
 // ("source-over", so two 50% strokes reach 75%), and an erase stroke removes
 // that share of it.
 // At the defaults (flow 1, opacity 1) a stroke fills solidly to full coverage.
-export function bakeCoverage(
-  items: CoverageItem[],
-  imageAspect: number,
-): CoverageResult | null {
-  const list = items.slice(0, MAX_BRUSH_MASKS);
-  if (list.length === 0) return null;
-
-  // The renderer runs in a Web Worker (no `document`), so fall back to an
-  // OffscreenCanvas there; the main thread can still use a DOM canvas.
-  const canvas: HTMLCanvasElement | OffscreenCanvas =
-    typeof document !== "undefined"
-      ? document.createElement("canvas")
-      : new OffscreenCanvas(BAKE_SIZE, BAKE_SIZE);
-  canvas.width = BAKE_SIZE;
-  canvas.height = BAKE_SIZE;
-  // Every stroke is read back, so keep the canvas in CPU memory.
-  const ctx = canvas.getContext("2d", { willReadFrequently: true }) as
-    | CanvasRenderingContext2D
-    | OffscreenCanvasRenderingContext2D
-    | null;
-  if (!ctx) return null;
-
-  const out = new Uint8Array(BAKE_SIZE * BAKE_SIZE * 4);
-  const channelOf: Record<string, number> = {};
-  const aspect = imageAspect > 0 ? imageAspect : 1;
-  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-
+//
+// A run reads back only the pixels it cleared first, so what earlier runs left
+// on the canvas never reaches it: each run's coverage depends on its own dabs.
+function layRun(ctx: BakeContext, run: StrokeRun, aspect: number, total: Float32Array): void {
   // Stamp one dab's unit disc with the given composite op; addStops fills in the
   // radial gradient (the solid centre runs out to `core`, then falls off).
   const stamp = (
@@ -167,88 +159,172 @@ export function bakeCoverage(
     ctx.restore();
   };
 
-  // The pixel box a run's dabs can reach, or null when they reach none.
-  const runBox = (dabs: BrushDab[]) => {
-    let x0 = BAKE_SIZE;
-    let y0 = BAKE_SIZE;
-    let x1 = 0;
-    let y1 = 0;
-    for (const dab of dabs) {
-      const ry = dab.radius * BAKE_SIZE;
-      const rx = (dab.radius / aspect) * BAKE_SIZE;
-      x0 = Math.min(x0, Math.floor(dab.x * BAKE_SIZE - rx) - 1);
-      y0 = Math.min(y0, Math.floor(dab.y * BAKE_SIZE - ry) - 1);
-      x1 = Math.max(x1, Math.ceil(dab.x * BAKE_SIZE + rx) + 1);
-      y1 = Math.max(y1, Math.ceil(dab.y * BAKE_SIZE + ry) + 1);
+  // The pixel box the run's dabs can reach.
+  let x0 = BAKE_SIZE;
+  let y0 = BAKE_SIZE;
+  let x1 = 0;
+  let y1 = 0;
+  for (const dab of run.dabs) {
+    const ry = dab.radius * BAKE_SIZE;
+    const rx = (dab.radius / aspect) * BAKE_SIZE;
+    x0 = Math.min(x0, Math.floor(dab.x * BAKE_SIZE - rx) - 1);
+    y0 = Math.min(y0, Math.floor(dab.y * BAKE_SIZE - ry) - 1);
+    x1 = Math.max(x1, Math.ceil(dab.x * BAKE_SIZE + rx) + 1);
+    y1 = Math.max(y1, Math.ceil(dab.y * BAKE_SIZE + ry) + 1);
+  }
+  x0 = Math.max(0, x0);
+  y0 = Math.max(0, y0);
+  x1 = Math.min(BAKE_SIZE, x1);
+  y1 = Math.min(BAKE_SIZE, y1);
+  if (x1 <= x0 || y1 <= y0) return;
+  const box = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+
+  // ── Pass 1: coverage with flow build-up, in the alpha channel ──
+  // Transparent base. Dabs deposit `flow` alpha (source-over accumulates);
+  // erase dabs inside a paint run remove it (destination-out).
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(box.x, box.y, box.w, box.h);
+  for (const dab of run.dabs) {
+    const a = clamp01(dab.flow ?? 1).toFixed(4);
+    stamp(dab, dab.erase && !run.erase ? "destination-out" : "source-over", (g, core) => {
+      g.addColorStop(0, `rgba(255,255,255,${a})`);
+      g.addColorStop(core, `rgba(255,255,255,${a})`);
+      g.addColorStop(1, "rgba(255,255,255,0)");
+    });
+  }
+  const cover = ctx.getImageData(box.x, box.y, box.w, box.h).data;
+
+  // ── Pass 2: opacity ceiling (luminance) ──
+  // Each dab of the run's own kind raises the ceiling to its opacity via
+  // max(); erase dabs inside a paint run don't cap anything.
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "#000";
+  ctx.fillRect(box.x, box.y, box.w, box.h);
+  for (const dab of run.dabs) {
+    if (dab.erase !== run.erase) continue;
+    const lvl = Math.round(clamp01(dab.opacity ?? 1) * 255);
+    const fill = `rgb(${lvl},${lvl},${lvl})`;
+    stamp(dab, "lighten", (g, core) => {
+      g.addColorStop(0, fill);
+      g.addColorStop(core, fill);
+      g.addColorStop(1, "#000");
+    });
+  }
+  ctx.globalCompositeOperation = "source-over";
+  const ceil = ctx.getImageData(box.x, box.y, box.w, box.h).data;
+
+  // The run's coverage = accumulated flow clamped to its opacity ceiling,
+  // laid over (or cut out of) the strokes before it.
+  for (let y = 0; y < box.h; y++) {
+    for (let x = 0; x < box.w; x++) {
+      const j = (y * box.w + x) * 4;
+      const a = cover[j + 3]; // accumulated flow (alpha)
+      const c = ceil[j]; // opacity ceiling (luminance)
+      const s = (a < c ? a : c) / 255;
+      if (s === 0) continue;
+      const i = (box.y + y) * BAKE_SIZE + box.x + x;
+      total[i] = run.erase ? total[i] * (1 - s) : total[i] + s * (1 - total[i]);
     }
-    x0 = Math.max(0, x0);
-    y0 = Math.max(0, y0);
-    x1 = Math.min(BAKE_SIZE, x1);
-    y1 = Math.min(BAKE_SIZE, y1);
-    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
-  };
+  }
+}
 
-  list.forEach((item, ch) => {
-    channelOf[item.id] = ch;
-    const total = new Float32Array(BAKE_SIZE * BAKE_SIZE);
+function sameDab(a: BrushDab, b: BrushDab): boolean {
+  return (
+    a.x === b.x &&
+    a.y === b.y &&
+    a.radius === b.radius &&
+    a.feather === b.feather &&
+    a.erase === b.erase &&
+    a.opacity === b.opacity &&
+    a.flow === b.flow &&
+    a.strokeStart === b.strokeStart
+  );
+}
 
-    for (const run of strokeRuns(item.dabs)) {
-      const box = runBox(run.dabs);
-      if (!box) continue;
+/** One item's coverage as last baked: `before` holds every stroke run but the
+ *  last, which more dabs of the same stroke replace. Never written once kept. */
+interface ItemBake {
+  dabs: BrushDab[];
+  runs: number;
+  before: Float32Array;
+  total: Float32Array;
+}
 
-      // ── Pass 1: coverage with flow build-up, in the alpha channel ──
-      // Transparent base. Dabs deposit `flow` alpha (source-over accumulates);
-      // erase dabs inside a paint run remove it (destination-out).
-      ctx.globalCompositeOperation = "source-over";
-      ctx.clearRect(box.x, box.y, box.w, box.h);
-      for (const dab of run.dabs) {
-        const a = clamp01(dab.flow ?? 1).toFixed(4);
-        stamp(dab, dab.erase && !run.erase ? "destination-out" : "source-over", (g, core) => {
-          g.addColorStop(0, `rgba(255,255,255,${a})`);
-          g.addColorStop(core, `rgba(255,255,255,${a})`);
-          g.addColorStop(1, "rgba(255,255,255,0)");
-        });
-      }
-      const cover = ctx.getImageData(box.x, box.y, box.w, box.h).data;
+/** Bakes coverage items like `bakeCoverage`, byte for byte, keeping each item's
+ *  last bake: dabs added after those baked rasterise only the stroke they
+ *  continue and the ones they start, and an item whose dabs are unchanged is not
+ *  rasterised at all. Dabs are compared by value, so a structured clone of the
+ *  same history still counts as unchanged. */
+export class CoverageBaker {
+  private aspect = Number.NaN;
+  private baked = new Map<string, ItemBake>();
 
-      // ── Pass 2: opacity ceiling (luminance) ──
-      // Each dab of the run's own kind raises the ceiling to its opacity via
-      // max(); erase dabs inside a paint run don't cap anything.
-      ctx.globalCompositeOperation = "source-over";
-      ctx.fillStyle = "#000";
-      ctx.fillRect(box.x, box.y, box.w, box.h);
-      for (const dab of run.dabs) {
-        if (dab.erase !== run.erase) continue;
-        const lvl = Math.round(clamp01(dab.opacity ?? 1) * 255);
-        const fill = `rgb(${lvl},${lvl},${lvl})`;
-        stamp(dab, "lighten", (g, core) => {
-          g.addColorStop(0, fill);
-          g.addColorStop(core, fill);
-          g.addColorStop(1, "#000");
-        });
-      }
-      ctx.globalCompositeOperation = "source-over";
-      const ceil = ctx.getImageData(box.x, box.y, box.w, box.h).data;
+  bake(items: CoverageItem[], imageAspect: number): CoverageResult | null {
+    const list = items.slice(0, MAX_BRUSH_MASKS);
+    if (list.length === 0) return null;
+    const aspect = imageAspect > 0 ? imageAspect : 1;
+    if (aspect !== this.aspect) this.baked.clear();
 
-      // The run's coverage = accumulated flow clamped to its opacity ceiling,
-      // laid over (or cut out of) the strokes before it.
-      for (let y = 0; y < box.h; y++) {
-        for (let x = 0; x < box.w; x++) {
-          const j = (y * box.w + x) * 4;
-          const a = cover[j + 3]; // accumulated flow (alpha)
-          const c = ceil[j]; // opacity ceiling (luminance)
-          const s = (a < c ? a : c) / 255;
-          if (s === 0) continue;
-          const i = (box.y + y) * BAKE_SIZE + box.x + x;
-          total[i] = run.erase ? total[i] * (1 - s) : total[i] + s * (1 - total[i]);
-        }
+    let ctx: BakeContext | null | undefined;
+    const context = () => (ctx === undefined ? (ctx = createBakeContext()) : ctx);
+    const kept = new Map<string, ItemBake>();
+    const out = new Uint8Array(BAKE_SIZE * BAKE_SIZE * 4);
+    const channelOf: Record<string, number> = {};
+    for (const [ch, item] of list.entries()) {
+      const bake = this.bakeItem(item.dabs, this.baked.get(item.id), aspect, context);
+      if (!bake) return null;
+      kept.set(item.id, bake);
+      channelOf[item.id] = ch;
+      for (let i = 0; i < BAKE_SIZE * BAKE_SIZE; i++) {
+        out[i * 4 + ch] = Math.round(bake.total[i] * 255);
       }
     }
+    // Only a bake that finished is kept, so one that threw leaves the last.
+    this.baked = kept;
+    this.aspect = aspect;
+    return { data: out, size: BAKE_SIZE, channelOf };
+  }
 
-    for (let i = 0; i < BAKE_SIZE * BAKE_SIZE; i++) {
-      out[i * 4 + ch] = Math.round(total[i] * 255);
+  private bakeItem(
+    dabs: BrushDab[],
+    prev: ItemBake | undefined,
+    aspect: number,
+    context: () => BakeContext | null,
+  ): ItemBake | null {
+    if (prev?.dabs === dabs) return prev;
+    const grows =
+      prev !== undefined &&
+      prev.dabs.length <= dabs.length &&
+      prev.dabs.every((d, i) => sameDab(d, dabs[i]));
+    if (grows && prev.dabs.length === dabs.length) return { ...prev, dabs };
+
+    const ctx = context();
+    if (!ctx) return null;
+    const runs = strokeRuns(dabs);
+    // Added dabs only extend the last baked run or start new ones, so the runs
+    // before it stand as baked, and so does that run when they took none of it.
+    let from = 0;
+    let total: Float32Array;
+    if (grows) {
+      const extended = runs.slice(0, prev.runs).reduce((n, run) => n + run.dabs.length, 0) > prev.dabs.length;
+      from = extended ? prev.runs - 1 : prev.runs;
+      total = (extended ? prev.before : prev.total).slice();
+    } else {
+      total = new Float32Array(BAKE_SIZE * BAKE_SIZE);
     }
-  });
+    let before = total;
+    for (let r = from; r < runs.length; r++) {
+      if (r === runs.length - 1) before = total.slice();
+      layRun(ctx, runs[r], aspect, total);
+    }
+    return { dabs, runs: runs.length, before, total };
+  }
+}
 
-  return { data: out, size: BAKE_SIZE, channelOf };
+// Bake up to four coverage items into an RGBA atlas. Returns null when empty.
+export function bakeCoverage(
+  items: CoverageItem[],
+  imageAspect: number,
+): CoverageResult | null {
+  return new CoverageBaker().bake(items, imageAspect);
 }

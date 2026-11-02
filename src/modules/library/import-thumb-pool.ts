@@ -9,9 +9,9 @@
 // and stay for the session (imports recur: open, re-import, repair).
 //
 // Degradation, not failure: with no Worker support the task runs inline, and
-// any worker-level error resolves as { ok: false } — the caller's inline
-// decode chain takes over, so a broken worker bundle can slow imports but
-// never lose photos.
+// any worker-level error or stall resolves as { ok: false } — the caller's
+// inline decode chain takes over, so a broken worker bundle can slow imports
+// but never lose photos.
 
 import {
   runThumbTask,
@@ -23,11 +23,21 @@ interface WorkerSlot {
   worker: Worker;
   busy: boolean;
   currentResolve: ((r: ThumbTaskResult) => void) | null;
+  timer: ReturnType<typeof setTimeout> | null;
 }
+
+// A thumbnail comes from the head of the file, so even a large RAW answers in
+// well under a second; only a worker that will never answer reaches this.
+const TASK_TIMEOUT_MS = 60_000;
+// Consecutive worker failures before the session gives up on workers: one bad
+// file or hiccup must not slow every later import, but a bundle that crashes
+// on load must not respawn forever.
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 const slots: WorkerSlot[] = [];
 const queue: { input: ThumbTaskInput; resolve: (r: ThumbTaskResult) => void }[] = [];
 let broken = false;
+let failures = 0;
 
 /** Leaves headroom for the main thread, the libraw pool and the cache worker. */
 export function importPoolSize(): number {
@@ -44,11 +54,15 @@ function spawnSlot(): WorkerSlot | null {
     const worker = new Worker(new URL("./import-thumb.worker.ts", import.meta.url), {
       type: "module",
     });
-    const slot: WorkerSlot = { worker, busy: false, currentResolve: null };
+    const slot: WorkerSlot = { worker, busy: false, currentResolve: null, timer: null };
     worker.onmessage = (e: MessageEvent<ThumbTaskResult>) => {
+      if (!slots.includes(slot)) return;
       const resolve = slot.currentResolve;
+      clearTimeout(slot.timer ?? undefined);
+      slot.timer = null;
       slot.currentResolve = null;
       slot.busy = false;
+      failures = 0;
       resolve?.(e.data);
       drain(slot);
     };
@@ -61,18 +75,48 @@ function spawnSlot(): WorkerSlot | null {
   }
 }
 
+function noteFailure(): void {
+  if (++failures >= MAX_CONSECUTIVE_FAILURES) broken = true;
+}
+
+// One at a time: each inline decode holds a whole file on the main thread.
+async function flushQueueInline(): Promise<void> {
+  for (let t = queue.shift(); t; t = queue.shift()) t.resolve(await inline(t.input));
+}
+
 // One worker failing to load usually means the worker bundle is broken for all
 // of them. In-flight tasks resolve { ok: false } (their buffers were
 // transferred away); queued tasks still own their buffers and finish inline.
 function failAll(): void {
-  broken = true;
+  noteFailure();
   for (const s of slots) {
+    clearTimeout(s.timer ?? undefined);
+    s.timer = null;
     s.currentResolve?.({ ok: false });
     s.currentResolve = null;
     s.worker.terminate();
   }
   slots.length = 0;
-  for (const t of queue.splice(0)) void inline(t.input).then(t.resolve);
+  flushQueueInline();
+}
+
+// A stalled worker holds a transferred buffer it will never return, so only
+// that worker goes; its task resolves { ok: false } and a fresh worker takes
+// over the queue.
+function timeOut(slot: WorkerSlot): void {
+  if (!slots.includes(slot)) return;
+  const resolve = slot.currentResolve;
+  slot.currentResolve = null;
+  slot.timer = null;
+  slot.worker.terminate();
+  slots.splice(slots.indexOf(slot), 1);
+  noteFailure();
+  resolve?.({ ok: false });
+  if (!broken && queue.length > 0) {
+    const replacement = spawnSlot();
+    if (replacement) drain(replacement);
+  }
+  if (broken) flushQueueInline();
 }
 
 function dispatch(
@@ -82,6 +126,7 @@ function dispatch(
 ): void {
   slot.busy = true;
   slot.currentResolve = resolve;
+  slot.timer = setTimeout(() => timeOut(slot), TASK_TIMEOUT_MS);
   slot.worker.postMessage(input, [input.buffer]);
 }
 

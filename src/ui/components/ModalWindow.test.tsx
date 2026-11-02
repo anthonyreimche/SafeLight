@@ -285,7 +285,7 @@ describe("ModalWindow maximize", () => {
         <p>Body</p>
       </ModalWindow>,
     );
-    expect(titlebar("Extensions").style.paddingRight).toBe("138px");
+    expect(titlebar("Extensions").style.paddingRight).toBe("calc(138px / var(--ui-scale, 1))");
   });
 
   it("colours the native window controls to match while maximized", () => {
@@ -307,7 +307,7 @@ describe("ModalWindow maximize", () => {
           <p>Body</p>
         </ModalWindow>,
       );
-      expect(setOverlay).toHaveBeenLastCalledWith("#303030", "#c0c0c0");
+      expect(setOverlay).toHaveBeenLastCalledWith("#303030", "#c0c0c0", 1);
     } finally {
       vi.unstubAllGlobals();
       document.documentElement.removeAttribute("style");

@@ -130,6 +130,13 @@ describe("dismissing", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("cancels on Escape from the buttons too, not only the field", async () => {
+    const { user, onCancel } = setup();
+    screen.getByRole("button", { name: "Cancel" }).focus();
+    await user.keyboard("{Escape}");
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels from the Cancel button", async () => {
     const { user, onCancel } = setup();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -145,5 +152,14 @@ describe("dismissing", () => {
 
     await user.click(container.firstElementChild as HTMLElement);
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("as a modal", () => {
+  it("is a named modal dialog that opens with the field focused", () => {
+    const { field } = setup();
+    const dialog = screen.getByRole("dialog", { name: TITLE });
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(document.activeElement).toBe(field);
   });
 });

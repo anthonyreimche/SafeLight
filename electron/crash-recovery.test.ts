@@ -14,6 +14,9 @@ import {
   isRendererCrash,
   createRecoveryGate,
   createCrashLog,
+  isMainFrameLoadFailure,
+  restartPrompt,
+  RESTART,
 } from "./crash-recovery.cjs";
 
 describe("isRuntimeGpuCrash", () => {
@@ -53,25 +56,77 @@ describe("createRecoveryGate", () => {
     let t = 0;
     const gate = createRecoveryGate({ max: 3, minIntervalMs: 10_000, now: () => t });
 
-    expect(gate.tryRecover()).toBe(true); // first crash recovers immediately
+    expect(gate.tryRecover()).toBe("ok"); // first crash recovers immediately
     t += 5_000;
-    expect(gate.tryRecover()).toBe(false); // too soon — no reload storm
+    expect(gate.tryRecover()).toBe("debounced"); // too soon — no reload storm
     t += 5_000;
-    expect(gate.tryRecover()).toBe(true);
+    expect(gate.tryRecover()).toBe("ok");
     t += 10_000;
-    expect(gate.tryRecover()).toBe(true);
+    expect(gate.tryRecover()).toBe("ok");
     t += 10_000;
-    expect(gate.tryRecover()).toBe(false); // session budget of 3 spent
+    expect(gate.tryRecover()).toBe("spent"); // session budget of 3 spent
   });
 
   it("denied attempts consume neither budget nor the debounce clock", () => {
     let t = 0;
     const gate = createRecoveryGate({ max: 2, minIntervalMs: 10_000, now: () => t });
-    expect(gate.tryRecover()).toBe(true);
+    expect(gate.tryRecover()).toBe("ok");
     t += 1_000;
-    expect(gate.tryRecover()).toBe(false);
+    expect(gate.tryRecover()).toBe("debounced");
     t += 9_000; // 10s after the successful recovery, not the denied one
-    expect(gate.tryRecover()).toBe(true);
+    expect(gate.tryRecover()).toBe("ok");
+  });
+
+  // Two crashes in quick succession, or two windows dying together, are one
+  // event, not a spent budget.
+  it("tells a debounced attempt from a spent budget", () => {
+    let t = 0;
+    const gate = createRecoveryGate({ max: 1, minIntervalMs: 10_000, now: () => t });
+    expect(gate.tryRecover()).toBe("ok");
+    expect(gate.tryRecover()).toBe("spent");
+    t += 20_000;
+    expect(gate.tryRecover()).toBe("spent");
+  });
+});
+
+describe("isMainFrameLoadFailure", () => {
+  it("is a failed load of the window's own page", () => {
+    expect(isMainFrameLoadFailure(-6, true)).toBe(true); // ERR_FILE_NOT_FOUND
+    expect(isMainFrameLoadFailure(-2, true)).toBe(true); // ERR_FAILED
+  });
+
+  // ERR_ABORTED is a load another navigation replaced, such as the redirect
+  // back to the app's index.
+  it("ignores frames inside the page and replaced loads", () => {
+    expect(isMainFrameLoadFailure(-6, false)).toBe(false);
+    expect(isMainFrameLoadFailure(-3, true)).toBe(false);
+  });
+});
+
+// Once reloading stops helping, the window would otherwise sit black or blank
+// with nothing to say why and no way out but the task manager.
+describe("restartPrompt", () => {
+  it.each(["renderer", "gpu", "load"] as const)("offers Restart or Quit for %s", (kind) => {
+    const prompt = restartPrompt(kind);
+    expect(prompt.buttons).toEqual(["Restart", "Quit"]);
+    expect(prompt.buttons[RESTART]).toBe("Restart");
+    expect(prompt.defaultId).toBe(RESTART);
+    expect(prompt.cancelId).toBe(1);
+    expect(prompt.message).toMatch(/\S/);
+    expect(prompt.detail).toMatch(/\S/);
+  });
+
+  // Only promise software when the next launch really draws in software.
+  it("says the restart draws in software only when it will", () => {
+    expect(restartPrompt("gpu", true).detail).toMatch(/software/);
+    expect(restartPrompt("gpu", false).detail).not.toMatch(/software/);
+    expect(restartPrompt("gpu").detail).not.toMatch(/software/);
+  });
+
+  it("says what went wrong", () => {
+    expect(restartPrompt("renderer").message).toMatch(/keeps crashing/);
+    expect(restartPrompt("gpu").message).toMatch(/graphics/i);
+    expect(restartPrompt("load").message).toMatch(/load/);
   });
 });
 

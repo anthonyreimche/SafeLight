@@ -34,6 +34,7 @@ import { setCatalogStorage } from "@/catalog/storage";
 import { photo } from "@/catalog/stored-edit.fixtures";
 import { MemoryFs, fsaDirectoryHandle } from "@/project/memory-fs.test-support";
 import { ProjectStorage } from "@/project/project-storage";
+import { storageDeps } from "@/project/storage-deps";
 import { useCatalogStore } from "./catalog-store";
 import { useSettings } from "./settings-store";
 
@@ -79,7 +80,7 @@ async function opened(): Promise<FullFs> {
   const x = photo("x");
   fs.put(`${ROOT}/${x.relPath}`, "raw");
   fs.put(`${ROOT}/.safelight/catalog.json`, JSON.stringify({ version: 1, photos: [x], edits: [] }));
-  const { storage, photos } = await ProjectStorage.open(fsaDirectoryHandle(fs, ROOT));
+  const { storage, photos } = await ProjectStorage.open(fsaDirectoryHandle(fs, ROOT), storageDeps);
   storages.push(storage);
   setCatalogStorage(storage);
   useCatalogStore.setState({

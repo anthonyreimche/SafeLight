@@ -20,11 +20,11 @@ import { RenamePhotoDialog } from "./RenamePhotoDialog";
 import { useGridMenuItems } from "@/extensions/registry";
 import { exportPhotoData, renamePhoto, revealPhoto } from "@/project/folder-ops";
 import { confirmAndDeleteFromDisk, diskTrashAvailable } from "./delete-from-disk";
-import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
+import { removeFromCatalog } from "./use-culling-shortcuts";
+import { alertDialog } from "@/ui/components/ConfirmDialog";
 import { isNativeFS } from "@/project/native-fs";
 import { projectPassSignal } from "@/project/project-store";
 import { reimportPhotos } from "./import-photos";
-import { getSettings } from "@/state/settings-store";
 import { copySettingsSource, pasteSettings } from "@/catalog/paste-settings";
 import { updateProcessing } from "@/catalog/update-processing";
 import { useDevelopClipboard } from "@/state/develop-clipboard";
@@ -47,7 +47,6 @@ export function usePhotoActions(): PhotoActions {
   const photos = useCatalogStore((s) => s.photos);
   const select = useCatalogStore((s) => s.select);
   const rotatePhotos = useCatalogStore((s) => s.rotatePhotos);
-  const removePhotos = useCatalogStore((s) => s.removePhotos);
   const setActivePhoto = useCatalogStore((s) => s.setActivePhoto);
   const setActiveModule = useUIStore((s) => s.setActiveModule);
   const clipboard = useDevelopClipboard((s) => s.clipboard);
@@ -55,8 +54,14 @@ export function usePhotoActions(): PhotoActions {
   const gridMenuItems = useGridMenuItems();
 
   // The targeted ids are captured when the menu opens so later actions don't
-  // depend on the live selection.
-  const [menu, setMenu] = useState<{ x: number; y: number; ids: string[] } | null>(null);
+  // depend on the live selection. `target` is the photo that was right-clicked:
+  // the single-photo items act on it, whatever else is selected.
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    ids: string[];
+    target: string;
+  } | null>(null);
   const onContextMenu = useCallback(
     (id: string, e: React.MouseEvent) => {
       e.preventDefault();
@@ -68,7 +73,7 @@ export function usePhotoActions(): PhotoActions {
         select(id);
         ids = [id];
       }
-      setMenu({ x: e.clientX, y: e.clientY, ids });
+      setMenu({ x: e.clientX, y: e.clientY, ids, target: id });
     },
     [select],
   );
@@ -83,7 +88,7 @@ export function usePhotoActions(): PhotoActions {
   }, []);
 
   // Rename the targeted photo's file on disk (in place, extension preserved).
-  // Only offered for a single photo; opens a small dialog, then renames.
+  // Acts on the right-clicked photo; opens a small dialog, then renames.
   const [renameTarget, setRenameTarget] = useState<{
     id: string;
     filename: string;
@@ -154,7 +159,7 @@ export function usePhotoActions(): PhotoActions {
     };
   }, [openRename]);
 
-  // Reveal the photo's file in the OS file manager. Single-photo only (native
+  // Reveal the right-clicked photo's file in the OS file manager (native
   // builds), mirroring the platform "show this file in its folder" action.
   const handleReveal = useCallback(async (id: string) => {
     const result = await revealPhoto(id);
@@ -186,21 +191,9 @@ export function usePhotoActions(): PhotoActions {
     }
   }, []);
 
-  const handleRemove = useCallback(
-    async (ids: string[]) => {
-      if (ids.length === 0) return;
-      if (getSettings().confirmRemovePhotos) {
-        const ok = await confirmDialog({
-          title: "Remove from catalog",
-          message: `Remove ${ids.length} photo${ids.length === 1 ? "" : "s"} from the catalog? The original file${ids.length === 1 ? "" : "s"} on disk won't be deleted (they'll reappear on the next folder scan).`,
-          confirmLabel: "Remove",
-        });
-        if (!ok) return;
-      }
-      removePhotos(ids);
-    },
-    [removePhotos],
-  );
+  const handleRemove = useCallback(async (ids: string[]) => {
+    if (ids.length > 0) await removeFromCatalog(ids);
+  }, []);
 
   // Copy/paste develop settings. Copy reads one photo's saved edit and opens the
   // checklist dialog; paste merges the clipboard's chosen adjustments onto every
@@ -231,33 +224,30 @@ export function usePhotoActions(): PhotoActions {
 
   const menuItems = useMemo<ContextMenuEntry[]>(() => {
     if (!menu) return [];
-    const { ids } = menu;
+    const { ids, target } = menu;
     const n = ids.length;
     const suffix = n > 1 ? ` (${n})` : "";
     return [
       {
         label: "Open in Develop",
-        disabled: n !== 1,
         onClick: () => {
-          setActivePhoto(ids[0]);
+          setActivePhoto(target);
           setActiveModule("develop");
         },
       },
       {
         label: "Rename…",
-        disabled: n !== 1,
-        onClick: () => openRename(ids[0]),
+        onClick: () => openRename(target),
       },
       {
         label: "Show in folder",
-        disabled: n !== 1 || !isNativeFS(),
-        onClick: () => void handleReveal(ids[0]),
+        disabled: !isNativeFS(),
+        onClick: () => void handleReveal(target),
       },
       "separator",
       {
         label: "Copy settings…",
-        disabled: n !== 1,
-        onClick: () => void handleCopySettings(ids[0]),
+        onClick: () => void handleCopySettings(target),
       },
       {
         label: clipboard

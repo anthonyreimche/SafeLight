@@ -4,6 +4,7 @@
 // be preserved in derived versions.
 
 import type { ProcessingStageContribution } from "@/extensions/types";
+import { officialExtension } from "@/extensions/official-extensions";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 
 // Which processing stages are Safelight's own. The id set is decided here and
@@ -12,16 +13,20 @@ import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
 // core extension.
 //
 // The two predicates differ by one id, on purpose. A core stage (an id under
-// "core.": Vignette, Grain) keeps raw uniform names that render() binds by hand
-// from typed DevelopParams. The built-in denoiser is namespaced like an
+// "core.") keeps raw uniform names, bound from the values it
+// derives from the photo's DevelopParams. The built-in denoiser is namespaced like an
 // extension's stage: its uniforms are prefixed and its params ride the param bag
 // (denoiseBag). The injection therefore asks isCoreStage; the stock program,
 // which wants every stage Safelight ships, and the reserved ids ask
 // isBuiltInStage.
 //
+// The official extensions' stages (writesRawNames) are written like core
+// stages, raw names and all, but take their values from the param bag.
+//
 // A leaf module: stage-injection.ts, renderer.ts and the extensions' stage check
-// all import it, so it imports no more than the denoiser's id. The extension
-// that owns these stages is named in extensions/core-extension.ts.
+// all import it, so it imports no more than the denoiser's id and the official
+// list. The extension that owns these stages is named in
+// extensions/core-extension.ts.
 
 const CORE_STAGE_PREFIX = "core.";
 
@@ -36,3 +41,10 @@ export const isBuiltInStage = (s: StageRef): boolean =>
  *  and no param-bag bindings. Every built-in stage but the denoiser. */
 export const isCoreStage = (s: StageRef): boolean =>
   isBuiltInStage(s) && s.id !== BUILTIN_DENOISE_ID;
+
+/** A stage written with the names it declares: a core stage, or one an
+ *  official extension registered (the registry sets `extensionId`). Such a
+ *  stage may run at an anchor, and the registry refuses it a name the develop
+ *  program or another such stage already has (raw-names.ts). */
+export const writesRawNames = (s: StageRef & { extensionId?: unknown }): boolean =>
+  isCoreStage(s) || (typeof s.extensionId === "string" && officialExtension(s.extensionId) !== undefined);

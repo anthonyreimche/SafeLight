@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Always-on record of recent warnings, errors and crashes for Report an issue.
-// Unlike the Developer Tools console (log-capture.ts, opt-in and in-memory),
+// Unlike the Developer Tools console (an extension, opt-in and in-memory),
 // this keeps only what a bug report needs and survives a restart, so a
 // crash-then-relaunch report still has the crash. It never leaves the machine
 // on its own: the report dialog shows it and the user chooses to include it.

@@ -22,6 +22,7 @@ import { installMemoryStorage, photo, snapshot } from "@/catalog/stored-edit.fix
 import { setCatalogStorage } from "@/catalog/storage";
 import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
+import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { usePhotoActions } from "./photo-actions";
 
 // A surface that lists photos: right-clicking its one cell targets `cell`.
@@ -91,5 +92,54 @@ describe("photo menu: Update processing", () => {
 
     await waitFor(() => expect(written).toHaveLength(1));
     expect(written[0].photoId).toBe("c");
+  });
+});
+
+describe("photo menu: single-photo items with several photos selected", () => {
+  it("stay enabled and act on the right-clicked photo", async () => {
+    const user = userEvent.setup();
+    openMenu("b");
+
+    for (const name of ["Open in Develop", "Rename…", "Copy settings…"]) {
+      expect((screen.getByRole("menuitem", { name }) as HTMLButtonElement).disabled).toBe(false);
+    }
+    await user.click(screen.getByRole("menuitem", { name: "Open in Develop" }));
+    expect(useCatalogStore.getState().activePhotoId).toBe("b");
+  });
+
+  it("rename opens for the right-clicked photo", async () => {
+    useCatalogStore.setState({
+      photos: ["a", "b", "c"].map((id) => ({ ...photo(id), filename: `${id}-shot.NEF` })),
+    });
+    const user = userEvent.setup();
+    openMenu("b");
+
+    await user.click(screen.getByRole("menuitem", { name: "Rename…" }));
+
+    expect((screen.getByRole("textbox", { name: "Rename photo" }) as HTMLInputElement).value).toBe("b-shot");
+  });
+
+  it("leave the multi-photo items on the whole selection", () => {
+    openMenu("b");
+    expect(menuLabels()).toContain("Update processing (2)");
+  });
+});
+
+describe("photo menu: Remove", () => {
+  it("says the files stay on disk while the photos and their edits leave the catalog", async () => {
+    const removePhotos = vi.fn(async (_ids: string[]): Promise<void> => {});
+    useCatalogStore.setState({ removePhotos });
+    const user = userEvent.setup();
+    render(<ConfirmDialogHost />);
+    openMenu("a");
+
+    await user.click(screen.getByRole("menuitem", { name: "Remove (2)" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Remove from catalog" });
+    expect(dialog.textContent).toMatch(/original files on disk won't be deleted/);
+    expect(dialog.textContent).toMatch(/edits, ratings and labels/);
+    expect(dialog.textContent).not.toMatch(/reappear/);
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(removePhotos).toHaveBeenCalledWith(["a", "b"]);
   });
 });

@@ -24,6 +24,8 @@ export interface LibRawDecoded {
 }
 
 export interface LibRawModule {
+  /** Must leave `buffer` as it is, neither transferring nor detaching it: the
+   *  caller's other decoders read the same bytes after it. */
   decode(buffer: ArrayBuffer): Promise<LibRawDecoded | null>;
 }
 

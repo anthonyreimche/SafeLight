@@ -5,7 +5,7 @@
 
 // Non-intrusive update notification banner. Mounts once on startup (or when
 // the detached-window check runs), checks the GitHub releases API, and shows
-// a slim bar at the bottom of the viewport if a newer version is available.
+// a slim bar in the bottom stack (BottomBanners) if a newer version is available.
 // The user can dismiss it; it won't reappear for the same version.
 
 import { useEffect, useRef, useState } from "react";
@@ -15,8 +15,10 @@ import {
   dismissVersion,
   installVersion,
   openUrl,
+  updateSupportFor,
   type UpdateInfo,
 } from "./update-checker";
+import type { UpdateSupport } from "@/extensions/types";
 
 
 // Re-check cadence while the app stays open. Matches the extension poll.
@@ -74,46 +76,74 @@ function BannerInstall({
   update: UpdateInfo;
   onDismiss: (skip: boolean) => void;
 }) {
-  const [dlState, setDlState] = useState<"idle" | "downloading" | "error">("idle");
-  const [errMsg, setErrMsg] = useState("");
+  const [dlState, setDlState] = useState<"idle" | "downloading" | "opened" | "error">("idle");
+  const [support, setSupport] = useState<UpdateSupport | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setSupport(null);
+    void updateSupportFor(update).then((s) => {
+      if (alive) setSupport(s);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [update]);
 
   const handleDownload = () => {
     setDlState("downloading");
-    setErrMsg("");
-    installVersion(update.tag).catch((e: unknown) => {
-      setDlState("error");
-      setErrMsg(e instanceof Error ? e.message : String(e));
-    });
+    // An installer quits the app; a Linux package resolves and Safelight stays open.
+    installVersion(update.tag).then(
+      () => setDlState("opened"),
+      (e: unknown) => {
+        console.error("[update] couldn't install the update:", e);
+        setDlState("error");
+      },
+    );
   };
 
   return (
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-0 left-0 right-0 z-[200] flex items-center justify-center gap-3 border-t border-border bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
+      className="flex items-center justify-center gap-3 border-t border-border bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
     >
       <span className="text-text-primary font-medium">
         Safelight v{update.version} is available.
       </span>
       {dlState === "error" && (
-        <span className="text-red-400" title={errMsg}>{errMsg}</span>
+        <span role="alert" className="text-danger">
+          Couldn't download the update. Try again, or use View release.
+        </span>
       )}
-      <button
-        onClick={() => openUrl(update.releasesUrl)}
-        className="rounded border border-border px-2.5 py-1 text-[11px] text-text-primary hover:bg-surface-3"
-      >
-        View release
-      </button>
-      {dlState === "downloading" ? (
-        <span className="text-[11px] text-text-muted">Downloading…</span>
-      ) : (
+      {support === "release-page" ? (
         <button
-          onClick={handleDownload}
+          onClick={() => openUrl(update.releasesUrl)}
           className="rounded bg-slider-fill px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
         >
-          Download
+          Open release page
+        </button>
+      ) : (
+        <button
+          onClick={() => openUrl(update.releasesUrl)}
+          className="rounded border border-border px-2.5 py-1 text-[11px] text-text-primary hover:bg-surface-3"
+        >
+          View release
         </button>
       )}
+      {support === "install" &&
+        (dlState === "downloading" ? (
+          <span className="text-[11px] text-text-muted">Downloading…</span>
+        ) : dlState === "opened" ? (
+          <span className="text-[11px] text-text-muted">Opened in your software installer</span>
+        ) : (
+          <button
+            onClick={handleDownload}
+            className="rounded bg-slider-fill px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+          >
+            Download
+          </button>
+        ))}
       <button
         onClick={() => onDismiss(false)}
         title="Close — will remind you again next launch"

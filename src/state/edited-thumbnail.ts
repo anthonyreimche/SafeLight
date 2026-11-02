@@ -22,9 +22,10 @@
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
 import { getRenderBridge } from "@/rendering/render-bridge";
+import { frameStageBag } from "@/rendering/stage-bag";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
 import { getSettings } from "@/state/settings-store";
-import { catalogStorage } from "@/catalog/storage";
+import { catalogStorage, type CatalogStorage } from "@/catalog/storage";
 import { useCatalogStore } from "./catalog-store";
 import { isStoredPreview, standsForPhoto } from "./fallback-rules";
 
@@ -39,42 +40,62 @@ let reqSeq = 0;
 const inFlight = new Set<string>();
 const pending = new Map<
   string,
-  { params: DevelopParams; asShotTemperature: number; paramBag?: Record<string, unknown> }
+  {
+    params: DevelopParams;
+    asShotTemperature: number;
+    paramBag?: Record<string, unknown>;
+    leaving?: LeftPhoto;
+    waiters: (() => void)[];
+  }
 >();
+
+/** A photo committed as its project is left: the photo as it stood and the
+ *  catalog it was in, both gone from the stores by the time the render ends. */
+export interface LeftPhoto {
+  photo: CatalogPhoto;
+  storage: CatalogStorage;
+}
 
 /** Re-render and persist the grid thumbnail for a just-committed edit. The
  *  worker's thumb renderer carries the live stages / pipeline / param bag for the
  *  ACTIVE photo, so a commit to a different photo (batch sync/reset/auto) must
  *  pass that photo's own `paramBag` — otherwise the active photo's extension
  *  stage params bleed into the rendered thumbnail. `params` is the freshly
- *  committed look. Fire and forget — never blocks the commit. */
+ *  committed look. `leaving` names the photo and catalog of a project being left;
+ *  the preview is then stored there and shown nowhere. Fire and forget — never
+ *  blocks the commit; the promise, which never rejects, is for the caller that
+ *  must wait for the preview to be stored. */
 export function regenerateEditedThumbnail(
   photoId: string,
   params: DevelopParams,
   asShotTemperature: number,
   paramBag?: Record<string, unknown>,
-): void {
+  leaving?: LeftPhoto,
+): Promise<void> {
   if (inFlight.has(photoId)) {
-    pending.set(photoId, { params, asShotTemperature, paramBag });
-    return;
+    return new Promise((resolve) => {
+      const waiters = pending.get(photoId)?.waiters ?? [];
+      pending.set(photoId, { params, asShotTemperature, paramBag, leaving, waiters: [...waiters, resolve] });
+    });
   }
   inFlight.add(photoId);
   // Fire and forget means *contained*: a failed render (worker gone, disk write
   // refused) must not escape as an unhandled rejection, and must still release
   // the photo so the next commit regenerates.
-  void run(photoId, params, asShotTemperature, paramBag)
+  return run(photoId, params, asShotTemperature, paramBag, leaving)
     .catch(() => {})
     .finally(() => {
       inFlight.delete(photoId);
       const next = pending.get(photoId);
       if (next) {
         pending.delete(photoId);
-        regenerateEditedThumbnail(
+        void regenerateEditedThumbnail(
           photoId,
           next.params,
           next.asShotTemperature,
           next.paramBag,
-        );
+          next.leaving,
+        ).then(() => next.waiters.forEach((resolve) => resolve()));
       }
     });
 }
@@ -84,22 +105,28 @@ async function run(
   params: DevelopParams,
   asShotTemperature: number,
   paramBag?: Record<string, unknown>,
+  leaving?: LeftPhoto,
 ): Promise<void> {
-  const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);
+  const photo = leaving?.photo ?? useCatalogStore.getState().photos.find((p) => p.id === photoId);
   if (!photo) return;
   // The project this render belongs to: one opened meanwhile takes none of it.
-  const storage = catalogStorage();
+  const storage = leaving?.storage ?? catalogStorage();
 
   const bridge = getRenderBridge();
   await bridge.ready;
+  // No renderer to draw it: the grid keeps the preview it has.
+  if (bridge.availability === "failed") return;
 
   const maxEdge = getSettings().thumbMaxEdge;
   const key = photoSourceKey(photo);
+  // The thumb renderer draws a bag it is handed in place of its own, so it is the
+  // whole bag the edit draws with, as Develop draws it.
+  const bag = paramBag && frameStageBag(params, paramBag);
 
   // 1) Render from the viewport's scene-linear source if it's already resident in
   //    the thumb renderer (every commit after the first). Matches the viewport
   //    tone exactly (base curve applied via the cached source's render state).
-  let blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, paramBag);
+  let blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, bag);
 
   // 2) First commit for this photo: decode (warm cache while editing, so the RAW
   //    fast path returns the float16 preview in ~50ms — no libraw), upload a capped
@@ -125,13 +152,10 @@ async function run(
           image,
           THUMB_SOURCE_MAX_EDGE,
           decoded.kind === "float" ? decoded.isFallbackPreview : false,
-          // float16/float carry their own base-curve handling; a JPEG-fallback bitmap
-          // is camera-toned and needs none, matching what the viewport shows.
-          false,
         );
-        blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, paramBag);
+        blob = await renderFromSource(bridge, key, params, asShotTemperature, maxEdge, bag);
       } else {
-        blob = await renderOnce(bridge, image, params, asShotTemperature, maxEdge, paramBag);
+        blob = await renderOnce(bridge, image, params, asShotTemperature, maxEdge, bag);
       }
     }
   }
@@ -143,13 +167,27 @@ async function run(
     try {
       const bitmap = await createImageBitmap(photo.thumbnailBlob);
       const image = { kind: "bitmap" as const, bitmap };
-      blob = await renderOnce(bridge, image, params, asShotTemperature, maxEdge, paramBag);
+      blob = await renderOnce(bridge, image, params, asShotTemperature, maxEdge, bag);
     } catch {
       // A preview that can't be decoded must not lose the existing one.
     }
   }
 
   if (!blob) return;
+
+  // No store shows a left project's photo: its preview goes to the catalog alone.
+  // Built on the record the catalog holds now: the snapshot taken at close would
+  // revert what another window changed since.
+  if (leaving) {
+    const held = storage.heldPhoto ? storage.heldPhoto(photoId) : photo;
+    if (!held) return;
+    await storage.putPhoto({
+      ...held,
+      thumbnailBlob: blob,
+      previewEdit: editFingerprint(params, paramBag ?? {}),
+    });
+    return;
+  }
 
   // The photo may have been removed (or the project closed) while rendering.
   const current = useCatalogStore.getState().photos.find((p) => p.id === photoId);

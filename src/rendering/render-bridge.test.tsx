@@ -17,11 +17,9 @@ import {
   getStageTextures,
   setStageTexture,
   type FrameResult,
-  type ThumbnailResult,
 } from "./render-bridge";
 import type { HistogramData } from "./histogram";
-import type { UprightResult } from "./upright";
-import type { WorkerRequest, WorkerResponse } from "./render-worker";
+import type { WorkerRequest, WorkerResponse } from "./render-protocol";
 import {
   defaultMaskAdjustments,
   normalizeParams,
@@ -38,6 +36,7 @@ import {
 } from "@/extensions/registry";
 import { DEFAULT_PIPELINE, usePipelineStore } from "@/extensions/pipelines";
 import { makeScopedAPI } from "@/extensions/host";
+import { setExtSetting } from "@/extensions/ext-settings";
 import { useCatalogStore } from "@/state/catalog-store";
 import { photo as photoFixture } from "@/catalog/stored-edit.fixtures";
 import type { ProcessingStageContribution, StageSpace, StageTextureData } from "@/extensions/types";
@@ -45,6 +44,10 @@ import type { MonitorTransform } from "./display-profile";
 import { useDisplayProfile, type DisplayProfileState } from "./display-profile-store";
 import { DEFAULT_CAPTURE_SPACE, type CapturePoint, type FloatFrame } from "./float-frame";
 import type { SourceSample } from "./source-sample";
+import { setSourcePixels, sourcePixels } from "./source-pixels";
+import { stageSignature } from "./webgl/stage-injection";
+import { stageFailuresOf, useStageFailures } from "./render-bridge/stage-failures";
+import { setExtensionName } from "@/extensions/param-registry";
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -71,6 +74,23 @@ class FakeWorker {
     this.onmessage?.({ data: msg } as MessageEvent<WorkerResponse>);
   }
 }
+
+// The bridge answers a capture it gives up on with a blank bitmap, as the worker
+// does, and jsdom has no OffscreenCanvas to draw one.
+class FakeOffscreenCanvas {
+  readonly width: number;
+  readonly height: number;
+
+  constructor(width: number, height: number) {
+    this.width = width;
+    this.height = height;
+  }
+
+  transferToImageBitmap(): ImageBitmap {
+    return { width: this.width, height: this.height, close: () => undefined };
+  }
+}
+Object.assign(globalThis, { OffscreenCanvas: FakeOffscreenCanvas });
 
 const inits = (worker: FakeWorker) => worker.posted.filter((m) => m.cmd === "init");
 const initError: WorkerResponse = { type: "initError", message: "WebGL2 not supported" };
@@ -185,6 +205,31 @@ describe("RenderBridge init recovery", () => {
       }
     }
     expect(elapsed).toBeGreaterThanOrEqual(150_000);
+    bridge.dispose();
+  });
+
+  // A restored graphics context that can't make a renderer is answered like a first init,
+  // whatever the boot's retries spent.
+  it("gives a restore that fails the whole retry budget again", () => {
+    const bridge = new RenderBridge();
+    bridge.setOnError(() => undefined);
+    bridge.init(64, 64);
+    const worker = FakeWorker.instances[0];
+    for (let i = 0; i < 5; i++) {
+      worker.reply(initError);
+      vi.advanceTimersByTime(60_000);
+    }
+    worker.reply({ type: "ready", pipelineFloat: true });
+    worker.reply({ type: "contextLost" });
+    const before = inits(worker).length;
+    for (let i = 0; i < 9; i++) {
+      worker.reply(initError);
+      vi.advanceTimersByTime(60_000);
+    }
+    expect(bridge.availability).toBe("retrying");
+    expect(inits(worker).length - before).toBe(9);
+    worker.reply(initError);
+    expect(bridge.availability).toBe("failed");
     bridge.dispose();
   });
 
@@ -480,14 +525,87 @@ describe("RenderBridge params patches", () => {
     const bridge = new RenderBridge();
     const worker = FakeWorker.instances[0];
     const base = painted();
-    const masks = [mask("m1"), mask("m2")];
+    const retouch = [spot("s1"), spot("s2")];
     bridge.setParams(base);
-    bridge.setParams({ ...base, masks });
+    bridge.setParams({ ...base, retouch });
 
     const [patch] = patches(worker);
-    expect(Object.keys(patch.set)).toEqual(["masks"]);
-    expect(patch.set.masks).toBe(masks);
+    expect(Object.keys(patch.set)).toEqual(["retouch"]);
+    expect(patch.set.retouch).toBe(retouch);
     bridge.dispose();
+  });
+
+  // Posted whole, a mask slider tick cloned every brush dab of every mask, and the worker
+  // held new dab arrays the renderer had to sign again.
+  describe("masks", () => {
+    const brushed = (id: string): Mask => ({
+      ...mask(id),
+      components: [
+        {
+          id: `${id}-c`,
+          kind: "brush",
+          mode: "add",
+          invert: false,
+          brush: { dabs: [{ x: 0.5, y: 0.5, radius: 0.1, erase: false, feather: 0 }], feather: 0 },
+        },
+      ],
+    });
+    const withMasks = (masks: Mask[]): DevelopParams => ({ ...painted(), masks });
+
+    it("posts a mask slider tick as that mask's changed field alone", () => {
+      const bridge = new RenderBridge();
+      const worker = FakeWorker.instances[0];
+      const [m1, m2] = [brushed("m1"), brushed("m2")];
+      const base = withMasks([m1, m2]);
+      bridge.setParams(base);
+      const adj = { ...m1.adj, exposure: 40 };
+      bridge.setParams({ ...base, masks: [{ ...m1, adj }, m2] });
+
+      expect(patches(worker)).toStrictEqual([
+        {
+          cmd: "patchParams",
+          set: {},
+          remove: [],
+          masks: [
+            { id: "m1", set: { adj }, remove: [] },
+            { id: "m2", set: {}, remove: [] },
+          ],
+        },
+      ]);
+      bridge.dispose();
+    });
+
+    it("posts a new mask whole and a dropped mask field as a removal, in the masks' order", () => {
+      const bridge = new RenderBridge();
+      const worker = FakeWorker.instances[0];
+      const m1 = { ...brushed("m1"), bag: { "a.gain": 1 } };
+      const base = withMasks([m1]);
+      bridge.setParams(base);
+      const added = brushed("m2");
+      const withoutBag: Mask = { ...m1 };
+      delete withoutBag.bag;
+      bridge.setParams({ ...base, masks: [added, withoutBag] });
+
+      const [patch] = patches(worker);
+      expect(patch.set).toStrictEqual({});
+      expect(patch.masks).toStrictEqual([{ mask: added }, { id: "m1", set: {}, remove: ["bag"] }]);
+      expect(patch.masks?.[0]).toHaveProperty("mask", added);
+      bridge.dispose();
+    });
+
+    it("posts the masks whole when their ids don't name one mask each", () => {
+      const bridge = new RenderBridge();
+      const worker = FakeWorker.instances[0];
+      const base = withMasks([brushed("m1")]);
+      bridge.setParams(base);
+      const twins = [brushed("m1"), brushed("m1")];
+      bridge.setParams({ ...base, masks: twins });
+
+      const [patch] = patches(worker);
+      expect(patch.set.masks).toBe(twins);
+      expect(patch).not.toHaveProperty("masks");
+      bridge.dispose();
+    });
   });
 
   it("posts nothing for another object holding the same values", () => {
@@ -530,7 +648,7 @@ describe("RenderBridge params patches", () => {
     bridge.setParams({ ...after, contrast: 5 });
 
     expect(cmds(worker)).toEqual(["setParams", "patchParams", "setParams", "patchParams"]);
-    expect(paramsPosts(worker)[2]).toStrictEqual({ cmd: "setParams", params: after });
+    expect(paramsPosts(worker)[2]).toStrictEqual({ cmd: "setParams", params: after, derived: {} });
     expect(patches(worker)[1].set).toStrictEqual({ contrast: 5 });
     bridge.dispose();
   });
@@ -550,7 +668,7 @@ describe("RenderBridge params patches", () => {
     const after = { ...base, exposure: 2 };
     bridge.setParams(after);
     expect(cmds(worker)).toEqual(["setParams", "patchParams", "setParams"]);
-    expect(paramsPosts(worker)[2]).toStrictEqual({ cmd: "setParams", params: after });
+    expect(paramsPosts(worker)[2]).toStrictEqual({ cmd: "setParams", params: after, derived: {} });
     bridge.dispose();
   });
 
@@ -567,7 +685,7 @@ describe("RenderBridge params patches", () => {
     const next = { ...base, exposure: 1 };
     bridge.setParams(next);
     expect(cmds(worker)).toEqual(["setParams"]);
-    expect(paramsPosts(worker)[0]).toStrictEqual({ cmd: "setParams", params: next });
+    expect(paramsPosts(worker)[0]).toStrictEqual({ cmd: "setParams", params: next, derived: {} });
     bridge.dispose();
   });
 
@@ -1031,10 +1149,11 @@ describe("stage textures of an extension that is turned off", () => {
     format: "rgba8",
     version,
   });
-  const lastBag = (worker: FakeWorker) =>
-    worker.posted.filter((m) => m.cmd === "setStageTextures").at(-1);
+  const lastPatch = (worker: FakeWorker) =>
+    worker.posted.filter((m) => m.cmd === "patchStageTextures").at(-1);
 
   beforeEach(() => {
+    vi.useFakeTimers();
     FakeWorker.instances = [];
     vi.stubGlobal("Worker", FakeWorker);
     useRegistry.setState({ processingStages: {} });
@@ -1044,10 +1163,11 @@ describe("stage textures of an extension that is turned off", () => {
     for (const key of Object.keys(getStageTextures())) setStageTexture(key, null);
     disposeRenderBridge();
     useRegistry.setState({ processingStages: {} });
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
-  it("drops them from the bag and sends the worker the smaller bag", () => {
+  it("drops them from the bag and tells the worker which went", () => {
     getRenderBridge();
     const worker = FakeWorker.instances[0];
     registerProcessingStage("acme.film", stage("acme.film.grade"));
@@ -1055,13 +1175,16 @@ describe("stage textures of an extension that is turned off", () => {
     setStageTexture("acme.film.grade.lut", texture(1));
     setStageTexture("acme.film.grade.spectra", texture(1));
     setStageTexture("acme.tone.curve.lut", texture(1));
+    vi.advanceTimersToNextFrame();
 
     unregisterExtension("acme.film");
+    vi.advanceTimersToNextFrame();
 
     expect(Object.keys(getStageTextures())).toEqual(["acme.tone.curve.lut"]);
-    expect(lastBag(worker)).toEqual({
-      cmd: "setStageTextures",
-      bag: { "acme.tone.curve.lut": texture(1) },
+    expect(lastPatch(worker)).toEqual({
+      cmd: "patchStageTextures",
+      set: {},
+      remove: ["acme.film.grade.lut", "acme.film.grade.spectra"],
     });
   });
 
@@ -1074,6 +1197,167 @@ describe("stage textures of an extension that is turned off", () => {
     unregisterExtension("acme.film");
 
     expect(Object.keys(getStageTextures())).toEqual(["acme.film.extra.lut"]);
+  });
+});
+
+// Posting clones every texture it carries, and an extension may upload many in a burst
+// (a film stock's LUTs and spectral tables), so only what changed goes, once a frame.
+// A texture the renderer can't upload as described would draw black without a word, so
+// it is refused here, by name.
+describe("stage textures sent to the worker", () => {
+  const stage = (id: string): ProcessingStageContribution => ({
+    id,
+    name: id,
+    phase: "effects",
+    glsl: "c = c;",
+    uniforms: [],
+  });
+  const texture = (version: number, over: Partial<StageTextureData> = {}): StageTextureData => ({
+    data: new Uint8Array([0, 0, 0, 255]),
+    width: 1,
+    height: 1,
+    format: "rgba8",
+    version,
+    ...over,
+  });
+  const MB = 1024 * 1024;
+  // One buffer behind every big texture: each view counts at its full size.
+  const big = new ArrayBuffer(64 * MB);
+  const bigTexture = (): StageTextureData =>
+    texture(1, { data: new Uint8Array(big), width: 8192, height: 8192, format: "r8" });
+  const posts = (worker: FakeWorker) =>
+    worker.posted.filter((m) => m.cmd === "setStageTextures" || m.cmd === "patchStageTextures");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+    useRegistry.setState({ processingStages: {} });
+    registerProcessingStage("acme.film", stage("acme.film"));
+    registerProcessingStage("acme.tone", stage("acme.tone"));
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(getStageTextures())) setStageTexture(key, null);
+    disposeRenderBridge();
+    useRegistry.setState({ processingStages: {} });
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the textures set and cleared in a frame once, each at its last value", () => {
+    getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    setStageTexture("acme.film.lut", texture(1));
+    setStageTexture("acme.film.spectra", texture(1));
+    setStageTexture("acme.film.lut", texture(2));
+    expect(posts(worker)).toEqual([]);
+
+    vi.advanceTimersToNextFrame();
+    expect(posts(worker)).toEqual([
+      {
+        cmd: "patchStageTextures",
+        set: { "acme.film.lut": texture(2), "acme.film.spectra": texture(1) },
+        remove: [],
+      },
+    ]);
+
+    setStageTexture("acme.film.lut", texture(3));
+    setStageTexture("acme.film.spectra", null);
+    setStageTexture("acme.film.grain", texture(1));
+    setStageTexture("acme.film.grain", null);
+    vi.advanceTimersToNextFrame();
+    expect(posts(worker).slice(1)).toEqual([
+      {
+        cmd: "patchStageTextures",
+        set: { "acme.film.lut": texture(3) },
+        remove: ["acme.film.spectra", "acme.film.grain"],
+      },
+    ]);
+
+    vi.advanceTimersToNextFrame();
+    expect(posts(worker)).toHaveLength(2);
+  });
+
+  it("posts the textures ahead of the redraw they call for", () => {
+    getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    registerProcessingStage("acme.grain", stage("acme.grain"));
+    setStageTexture("acme.film.lut", texture(1));
+    vi.advanceTimersToNextFrame();
+    const cmds = worker.posted.map((m) => m.cmd);
+    const patched = cmds.lastIndexOf("patchStageTextures");
+    expect(patched).toBeGreaterThan(-1);
+    expect(patched).toBeLessThan(cmds.lastIndexOf("render"));
+  });
+
+  it("hands a new bridge the whole bag, and nothing it held back for the last one", () => {
+    getRenderBridge();
+    setStageTexture("acme.film.lut", texture(1));
+    disposeRenderBridge();
+    setStageTexture("acme.tone.lut", texture(1));
+
+    getRenderBridge();
+    const worker = FakeWorker.instances[1];
+    vi.advanceTimersToNextFrame();
+    expect(posts(worker)).toEqual([
+      { cmd: "setStageTextures", bag: { "acme.film.lut": texture(1), "acme.tone.lut": texture(1) } },
+    ]);
+    expect(posts(FakeWorker.instances[0])).toEqual([]);
+  });
+
+  it.each<[string, StageTextureData, RegExp]>([
+    ["an unknown format", texture(1, { format: "rgb8" as StageTextureData["format"] }), /unknown format "rgb8"/],
+    ["a zero width", texture(1, { width: 0 }), /width and height/],
+    ["a fractional height", texture(1, { height: 1.5 }), /width and height/],
+    ["too few values", texture(1, { width: 2 }), /holds 4 values.*takes 8/],
+    ["the wrong array for its format", texture(1, { format: "rgba16f" }), /Float32Array/],
+    ["more than 64 MB", texture(1, { data: new Uint8Array(8193 * 8192), width: 8193, height: 8192, format: "r8" }), /64 MB/],
+  ])("refuses a texture with %s, by extension and key", (_what, tex, reason) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    getRenderBridge();
+    const worker = FakeWorker.instances[0];
+    setStageTexture("acme.film.lut", texture(1));
+    setStageTexture("acme.film.lut", tex);
+    vi.advanceTimersToNextFrame();
+
+    expect(getStageTextures()["acme.film.lut"]).toEqual(texture(1));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(/acme\.film.*"acme\.film\.lut"/);
+    expect(warn.mock.calls[0][0]).toMatch(reason);
+    expect(posts(worker)).toEqual([
+      { cmd: "patchStageTextures", set: { "acme.film.lut": texture(1) }, remove: [] },
+    ]);
+  });
+
+  it("refuses a texture that takes an extension past 256 MB, and keeps the rest", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const key of ["a", "b", "c", "d"]) setStageTexture(`acme.film.${key}`, bigTexture());
+    setStageTexture("acme.film.d", bigTexture());
+    expect(warn).not.toHaveBeenCalled();
+
+    setStageTexture("acme.film.e", bigTexture());
+    expect(getStageTextures()["acme.film.e"]).toBeUndefined();
+    expect(warn.mock.calls[0][0]).toMatch(/acme\.film.*"acme\.film\.e".*256 MB/);
+
+    setStageTexture("acme.tone.lut", bigTexture());
+    expect(getStageTextures()["acme.tone.lut"]).toBeDefined();
+  });
+
+  // Canvas ImageData hands its pixels over as a Uint8ClampedArray, which uploads as bytes.
+  it("takes an 8-bit texture in a Uint8ClampedArray", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const clamped = texture(1, { data: new Uint8ClampedArray(4) as unknown as Uint8Array });
+    setStageTexture("acme.film.lut", clamped);
+    expect(warn).not.toHaveBeenCalled();
+    expect(getStageTextures()["acme.film.lut"]).toBe(clamped);
+  });
+
+  it("lets a clear through for a key it never held", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setStageTexture("acme.gone.lut", null);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
@@ -1118,13 +1402,7 @@ describe("RenderBridge worker replies", () => {
     };
     return { r: bins(), g: bins(), b: bins(), luma: bins() };
   };
-  const levelled: UprightResult = {
-    straighten: -1.5,
-    perspectiveV: 12,
-    perspectiveH: -7,
-    aspect: 1.4,
-  };
-  const noop: UprightResult = { straighten: 0, perspectiveV: 0, perspectiveH: 0 };
+  const pixels = (width: number, height: number) => ({ data: new Uint8Array(width * height * 4).fill(7), width, height });
   const params = normalizeParams({});
   const thumbRequest = (requestId: string) => ({
     requestId,
@@ -1316,8 +1594,8 @@ describe("RenderBridge worker replies", () => {
         });
         worker.reply({ type: "histogram", histogram: histogramOf(1) });
         worker.reply({ type: "thumbnail", requestId: "none", blob: new Blob(["x"]) });
-        worker.reply({ type: "upright", reqId: 999, result: levelled });
-        worker.reply({ type: "healSource", data: new Uint8ClampedArray(4), width: 1, height: 1 });
+        worker.reply({ type: "developedPixels", reqId: 999, pixels: pixels(1, 1) });
+        worker.reply({ type: "sourcePixels", sourceGen: 0, data: new Uint8ClampedArray(4), width: 1, height: 1 });
         worker.reply({ type: "error", message: "nobody listens" });
       }).not.toThrow();
       expect(onFrame).not.toHaveBeenCalled();
@@ -1359,9 +1637,7 @@ describe("RenderBridge worker replies", () => {
   });
 
   describe("thumbnails", () => {
-    it("resolves renderThumbnailAsync with the blob and calls onThumbnail", async () => {
-      const onThumbnail = vi.fn<(result: ThumbnailResult) => void>();
-      bridge.setOnThumbnail(onThumbnail);
+    it("resolves renderThumbnailAsync with the blob", async () => {
       const blob = new Blob(["jpeg"]);
       const outcome = track(bridge.renderThumbnailAsync(thumbRequest("t1")));
       expect(sent(worker, "renderThumbnail").map((m) => m.requestId)).toEqual(["t1"]);
@@ -1372,14 +1648,9 @@ describe("RenderBridge worker replies", () => {
 
       expect(outcome.state).toBe("resolved");
       expect(outcome.value).toBe(blob);
-      expect(onThumbnail).toHaveBeenCalledTimes(1);
-      expect(onThumbnail.mock.calls[0][0].requestId).toBe("t1");
-      expect(onThumbnail.mock.calls[0][0].blob).toBe(blob);
     });
 
-    it("resolves renderThumbnailFromSource with the blob and calls onThumbnail", async () => {
-      const onThumbnail = vi.fn<(result: ThumbnailResult) => void>();
-      bridge.setOnThumbnail(onThumbnail);
+    it("resolves renderThumbnailFromSource with the blob", async () => {
       const blob = new Blob(["jpeg"]);
       const outcome = track(bridge.renderThumbnailFromSource(sourceRequest("s1")));
       worker.reply({ type: "thumbnail", requestId: "s1", blob });
@@ -1387,8 +1658,6 @@ describe("RenderBridge worker replies", () => {
 
       expect(outcome.state).toBe("resolved");
       expect(outcome.value).toBe(blob);
-      expect(onThumbnail).toHaveBeenCalledTimes(1);
-      expect(onThumbnail.mock.calls[0][0].requestId).toBe("s1");
     });
 
     it("forwards a lossless request to the worker on both thumbnail calls", () => {
@@ -1433,10 +1702,8 @@ describe("RenderBridge worker replies", () => {
       expect(a.value).toBe(first);
     });
 
-    it("resolves a cache miss with null, without a thumbnail or an error", async () => {
-      const onThumbnail = vi.fn<(result: ThumbnailResult) => void>();
+    it("resolves a cache miss with null, without an error", async () => {
       const onError = vi.fn<(message: string) => void>();
-      bridge.setOnThumbnail(onThumbnail);
       bridge.setOnError(onError);
       const other = track(bridge.renderThumbnailFromSource(sourceRequest("other")));
       const outcome = track(bridge.renderThumbnailFromSource(sourceRequest("s1")));
@@ -1447,14 +1714,11 @@ describe("RenderBridge worker replies", () => {
       expect(outcome.state).toBe("resolved");
       expect(outcome.value).toBeNull();
       expect(other.state).toBe("pending");
-      expect(onThumbnail).not.toHaveBeenCalled();
       expect(onError).not.toHaveBeenCalled();
     });
 
     it("rejects renderThumbnailAsync and reports the cause on a thumbnailError", async () => {
-      const onThumbnail = vi.fn<(result: ThumbnailResult) => void>();
       const onError = vi.fn<(message: string) => void>();
-      bridge.setOnThumbnail(onThumbnail);
       bridge.setOnError(onError);
       const other = track(bridge.renderThumbnailAsync(thumbRequest("other")));
       const outcome = track(bridge.renderThumbnailAsync(thumbRequest("t1")));
@@ -1467,7 +1731,6 @@ describe("RenderBridge worker replies", () => {
       expect(other.state).toBe("pending");
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError).toHaveBeenCalledWith("thumbnail render failed: convertToBlob rejected");
-      expect(onThumbnail).not.toHaveBeenCalled();
     });
 
     it("resolves a from-source thumbnail with null on a thumbnailError", async () => {
@@ -1505,9 +1768,7 @@ describe("RenderBridge worker replies", () => {
         expect(worker.transfers[worker.posted.indexOf(fromImage[0])]).toEqual([image.image.data.buffer]);
       });
 
-      it("resolves each with its frame, or null, by requestId, without calling onThumbnail", async () => {
-        const onThumbnail = vi.fn<(result: ThumbnailResult) => void>();
-        bridge.setOnThumbnail(onThumbnail);
+      it("resolves each with its frame, or null, by requestId", async () => {
         const blob = track(bridge.renderThumbnailFromSource(sourceRequest("b")));
         const first = track(bridge.renderThumbnailFloat({ ...sourceRequest("f1"), float: {} }));
         const second = track(bridge.renderThumbnailFloat({ ...thumbRequest("f2"), float: {} }));
@@ -1522,7 +1783,6 @@ describe("RenderBridge worker replies", () => {
         await flush();
         expect([first.state, first.value]).toEqual(["resolved", null]);
         expect(blob.state).toBe("pending");
-        expect(onThumbnail).not.toHaveBeenCalled();
       });
 
       it("resolves null on a cache miss and on a thumbnailError, reporting the error", async () => {
@@ -1643,7 +1903,7 @@ describe("RenderBridge worker replies", () => {
       expect(bridge.sourceGen).toBe(1);
       bridge.uploadSource("main", "a", image());
       expect(bridge.sourceGen).toBe(2);
-      bridge.uploadSource("main", "b", image(), undefined, false, false, false);
+      bridge.uploadSource("main", "b", image(), undefined, false, false);
       bridge.uploadSource("thumb", "c", image());
       expect(bridge.sourceGen).toBe(2);
 
@@ -1881,71 +2141,108 @@ describe("RenderBridge worker replies", () => {
     });
   });
 
-  describe("upright", () => {
-    it("resolves computeUpright with the result and calls onUpright", async () => {
-      const onUpright = vi.fn<(result: UprightResult) => void>();
-      bridge.setOnUpright(onUpright);
-      const outcome = track(bridge.computeUpright("full"));
-      const [request] = sent(worker, "analyzeUpright");
-      expect(request.mode).toBe("full");
+  // The developed frame of the whole image, untransformed and uncropped, at a
+  // small size: what Transform's Upright detects lines in.
+  describe("the developed pixels", () => {
+    it("resolves with the pixels the worker read, at the edge asked for", async () => {
+      const outcome = track(bridge.readDevelopedPixels(256));
+      const [request] = sent(worker, "readDevelopedPixels");
+      expect(request.edge).toBe(256);
 
-      worker.reply({ type: "upright", reqId: request.reqId, result: levelled });
+      const read = pixels(256, 171);
+      worker.reply({ type: "developedPixels", reqId: request.reqId, pixels: read });
       await flush();
 
       expect(outcome.state).toBe("resolved");
-      expect(outcome.value).toBe(levelled);
-      expect(onUpright).toHaveBeenCalledTimes(1);
-      expect(onUpright.mock.calls[0][0]).toBe(levelled);
+      expect(outcome.value).toBe(read);
     });
 
-    it("settles each analysis by its reqId, whatever order the replies come in", async () => {
-      const level = track(bridge.computeUpright("level"));
-      const vertical = track(bridge.computeUpright("vertical"));
-      const [levelRequest, verticalRequest] = sent(worker, "analyzeUpright");
-      const verticalResult: UprightResult = { straighten: 0, perspectiveV: 30, perspectiveH: 0 };
+    it("settles each read by its reqId, whatever order the replies come in", async () => {
+      const first = track(bridge.readDevelopedPixels(256));
+      const second = track(bridge.readDevelopedPixels(128));
+      const [firstRequest, secondRequest] = sent(worker, "readDevelopedPixels");
 
-      worker.reply({ type: "upright", reqId: verticalRequest.reqId, result: verticalResult });
+      worker.reply({ type: "developedPixels", reqId: secondRequest.reqId, pixels: null });
       await flush();
-      expect([level.state, vertical.state]).toEqual(["pending", "resolved"]);
-      expect(vertical.value).toBe(verticalResult);
+      expect([first.state, second.state]).toEqual(["pending", "resolved"]);
+      expect(second.value).toBeNull();
 
-      worker.reply({ type: "upright", reqId: levelRequest.reqId, result: levelled });
+      const read = pixels(4, 2);
+      worker.reply({ type: "developedPixels", reqId: firstRequest.reqId, pixels: read });
       await flush();
-      expect(level.state).toBe("resolved");
-      expect(level.value).toBe(levelled);
+      expect(first.value).toBe(read);
     });
 
-    it("settles computeUpright with a no-op result on an uprightError, and reports it", async () => {
+    it("settles a read with null when it fails, and reports it", async () => {
       const onError = vi.fn<(message: string) => void>();
       bridge.setOnError(onError);
-      const other = track(bridge.computeUpright("level"));
-      const outcome = track(bridge.computeUpright("auto"));
-      const [, request] = sent(worker, "analyzeUpright");
+      const other = track(bridge.readDevelopedPixels(256));
+      const outcome = track(bridge.readDevelopedPixels(256));
+      const [, request] = sent(worker, "readDevelopedPixels");
 
-      worker.reply({ type: "uprightError", reqId: request.reqId, message: "no edges found" });
+      worker.reply({ type: "developedPixelsError", reqId: request.reqId, message: "context lost" });
       await flush();
 
       expect(outcome.state).toBe("resolved");
-      expect(outcome.value).toStrictEqual(noop);
+      expect(outcome.value).toBeNull();
       expect(other.state).toBe("pending");
-      expect(onError).toHaveBeenCalledTimes(1);
-      expect(onError).toHaveBeenCalledWith("upright analysis failed: no edges found");
+      expect(onError).toHaveBeenCalledWith("reading the developed frame failed: context lost");
     });
   });
 
-  describe("heal source, errors and the worker's own failure", () => {
-    it("hands the heal source's pixels and size to onHealSource", () => {
-      const onHealSource =
+  describe("source pixels, errors and the worker's own failure", () => {
+    it("hands the source pixels and their size to onSourcePixels", () => {
+      const onSourcePixels =
         vi.fn<(src: { data: Uint8ClampedArray; width: number; height: number }) => void>();
-      bridge.setOnHealSource(onHealSource);
+      bridge.setOnSourcePixels(onSourcePixels);
       const data = new Uint8ClampedArray([1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255]);
-      worker.reply({ type: "healSource", data, width: 3, height: 1 });
+      worker.reply({ type: "sourcePixels", sourceGen: 0, data, width: 3, height: 1 });
 
-      expect(onHealSource).toHaveBeenCalledTimes(1);
-      const [src] = onHealSource.mock.calls[0];
+      expect(onSourcePixels).toHaveBeenCalledTimes(1);
+      const [src] = onSourcePixels.mock.calls[0];
       expect(src.data).toBe(data);
       expect(src.width).toBe(3);
       expect(src.height).toBe(1);
+    });
+
+    // Between photos, a search of the source pixels would find the photo before.
+    it("clears the window's source pixels when the source is cleared", () => {
+      setSourcePixels(new Uint8ClampedArray([1, 2, 3, 255]), 1, 1);
+      bridge.clearSource();
+      expect(sourcePixels()).toBeNull();
+    });
+
+    const tinySource = () => ({ kind: "float16" as const, data: new Uint16Array(4), width: 1, height: 1 });
+    const pixelsOf = (sourceGen: number): WorkerResponse => ({
+      type: "sourcePixels",
+      sourceGen,
+      data: new Uint8ClampedArray([sourceGen, 0, 0, 255]),
+      width: 1,
+      height: 1,
+    });
+
+    it("hands over only the source pixels of the source handed over last", () => {
+      const onSourcePixels = vi.fn<(src: { data: Uint8ClampedArray; width: number; height: number }) => void>();
+      bridge.setOnSourcePixels(onSourcePixels);
+      bridge.setImage(tinySource());
+      worker.reply(pixelsOf(0));
+      expect(onSourcePixels).not.toHaveBeenCalled();
+
+      worker.reply(pixelsOf(1));
+      expect(onSourcePixels.mock.calls.map(([src]) => src.data[0])).toEqual([1]);
+    });
+
+    it("drops source pixels still on their way when the source was cleared", () => {
+      const onSourcePixels = vi.fn<(src: { data: Uint8ClampedArray; width: number; height: number }) => void>();
+      bridge.setOnSourcePixels(onSourcePixels);
+      bridge.setImage(tinySource());
+      bridge.clearSource();
+      worker.reply(pixelsOf(1));
+      expect(onSourcePixels).not.toHaveBeenCalled();
+
+      bridge.setImage(tinySource());
+      worker.reply(pixelsOf(2));
+      expect(onSourcePixels.mock.calls.map(([src]) => src.data[0])).toEqual([2]);
     });
 
     it("hands the number of a source the worker couldn't take to onSourceError, and reports it", () => {
@@ -1984,12 +2281,12 @@ describe("RenderBridge worker replies", () => {
       const bind = track(bridge.bindSource("k"));
       const has = track(bridge.hasSource("main", "k"));
       const capture = track(bridge.capture(params));
-      const upright = track(bridge.computeUpright("auto"));
+      const upright = track(bridge.readDevelopedPixels(256));
       const ids = {
         bind: sent(worker, "bindSource")[0].reqId,
         has: sent(worker, "hasSource")[0].reqId,
         capture: sent(worker, "capture")[0].reqId,
-        upright: sent(worker, "analyzeUpright")[0].reqId,
+        upright: sent(worker, "readDevelopedPixels")[0].reqId,
       };
       expect(new Set(Object.values(ids)).size).toBe(4);
       const pending = () => [bind.state, has.state, capture.state, upright.state];
@@ -1999,11 +2296,11 @@ describe("RenderBridge worker replies", () => {
         worker.reply({ type: "sourceBound", reqId: 999, hit: true });
         worker.reply({ type: "hasSource", reqId: 999, has: true });
         worker.reply({ type: "captured", reqId: 999, bitmap: bitmapOf(1) });
-        worker.reply({ type: "upright", reqId: 999, result: levelled });
+        worker.reply({ type: "developedPixels", reqId: 999, pixels: null });
         worker.reply({ type: "sourceBound", reqId: ids.has, hit: true });
         worker.reply({ type: "hasSource", reqId: ids.capture, has: true });
         worker.reply({ type: "captured", reqId: ids.upright, bitmap: bitmapOf(1) });
-        worker.reply({ type: "upright", reqId: ids.bind, result: levelled });
+        worker.reply({ type: "developedPixels", reqId: ids.bind, pixels: null });
       }).not.toThrow();
       await flush();
       expect(pending()).toEqual(["pending", "pending", "pending", "pending"]);
@@ -2011,7 +2308,7 @@ describe("RenderBridge worker replies", () => {
       worker.reply({ type: "sourceBound", reqId: ids.bind, hit: true });
       worker.reply({ type: "hasSource", reqId: ids.has, has: true });
       worker.reply({ type: "captured", reqId: ids.capture, bitmap: bitmapOf(1) });
-      worker.reply({ type: "upright", reqId: ids.upright, result: levelled });
+      worker.reply({ type: "developedPixels", reqId: ids.upright, pixels: null });
       await flush();
       expect(pending()).toEqual(["resolved", "resolved", "resolved", "resolved"]);
     });
@@ -2037,22 +2334,244 @@ describe("RenderBridge worker replies", () => {
       expect([direct.state, fromSource.state]).toEqual(["resolved", "resolved"]);
     });
 
-    it("settles no pending analysis for another reqId, and still reports a failure", async () => {
+    it("settles no pending read of the developed pixels for another reqId, and still reports a failure", async () => {
       const onError = vi.fn<(message: string) => void>();
       bridge.setOnError(onError);
-      const outcome = track(bridge.computeUpright("auto"));
-      const [request] = sent(worker, "analyzeUpright");
+      const outcome = track(bridge.readDevelopedPixels(256));
+      const [request] = sent(worker, "readDevelopedPixels");
 
-      worker.reply({ type: "uprightError", reqId: request.reqId + 100, message: "stale" });
+      worker.reply({ type: "developedPixelsError", reqId: request.reqId + 100, message: "stale" });
       await flush();
 
       expect(outcome.state).toBe("pending");
       expect(onError).toHaveBeenCalledTimes(1);
-      expect(onError).toHaveBeenCalledWith("upright analysis failed: stale");
+      expect(onError).toHaveBeenCalledWith("reading the developed frame failed: stale");
 
-      worker.reply({ type: "upright", reqId: request.reqId, result: levelled });
+      worker.reply({ type: "developedPixels", reqId: request.reqId, pixels: null });
       await flush();
       expect(outcome.state).toBe("resolved");
+    });
+  });
+
+  // On a machine where WebGL2 can't start, or a worker that is gone, nothing that
+  // waits on the bridge may wait for good: it goes on with what a failure answers.
+  describe("when the worker can't answer", () => {
+    const askEverything = () => ({
+      fromSource: track(bridge.renderThumbnailFromSource(sourceRequest("s1"))),
+      direct: track(bridge.renderThumbnailAsync(thumbRequest("t1"))),
+      float: track(bridge.renderThumbnailFloat({ ...sourceRequest("f1"), float: {} })),
+      bound: track(bridge.bindSource("k")),
+      has: track(bridge.hasSource("main", "k")),
+      capture: track(bridge.capture(params)),
+      floatCapture: track(bridge.captureFloat(params)),
+      sample: track(bridge.readSourceSample()),
+      probe: track(bridge.probe(0.5, 0.5, "output")),
+      pixels: track(bridge.readDevelopedPixels(256)),
+    });
+    type Asked = ReturnType<typeof askEverything>;
+    const states = (asked: Asked) => Object.values(asked).map((outcome) => outcome.state);
+    const expectNoResults = (asked: Asked) => {
+      expect(asked.direct.state).toBe("rejected");
+      const { direct, capture, ...rest } = asked;
+      expect(Object.values(rest).map((outcome) => outcome.state)).not.toContain("pending");
+      expect(Object.values(rest).map((outcome) => outcome.value)).toEqual([
+        null, null, false, false, null, null, null, null,
+      ]);
+      expect([capture.state, capture.value?.width, capture.value?.height]).toEqual(["resolved", 1, 1]);
+      expect(direct.reason).toMatchObject({ message: "thumbnail render failed" });
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      bridge.setOnError(() => undefined);
+    });
+
+    afterEach(() => {
+      bridge.dispose();
+      vi.useRealTimers();
+    });
+
+    it("settles ready, and every request waiting, once the retry budget is spent", async () => {
+      const ready = track(bridge.ready);
+      bridge.init(64, 64);
+      while (inits(worker).length < 10) {
+        worker.reply(initError);
+        vi.advanceTimersByTime(30_000);
+      }
+      const asked = askEverything();
+      await flush();
+      expect(ready.state).toBe("pending");
+      expect(states(asked)).toEqual(Array(10).fill("pending"));
+
+      worker.reply(initError);
+      await flush();
+
+      expect(bridge.availability).toBe("failed");
+      expect(ready.state).toBe("resolved");
+      expect(bridge.pipelineFloat).toBeUndefined();
+      expectNoResults(asked);
+    });
+
+    it("fails on the worker's own error event, settling ready and every request waiting", async () => {
+      const onError = vi.fn<(message: string) => void>();
+      bridge.setOnError(onError);
+      const seen: Array<[string, string | undefined]> = [];
+      bridge.setOnAvailability((availability, detail) => seen.push([availability, detail]));
+      const ready = track(bridge.ready);
+      bridge.init(64, 64);
+      const asked = askEverything();
+
+      worker.onerror?.(new ErrorEvent("error", { message: "Failed to fetch module" }));
+      await flush();
+
+      expect(seen.at(-1)).toEqual(["failed", "Failed to fetch module"]);
+      expect(onError).toHaveBeenCalledWith("Failed to fetch module");
+      expect(ready.state).toBe("resolved");
+      expectNoResults(asked);
+    });
+
+    it("stops retrying a failing init on the worker's error event", () => {
+      bridge.init(64, 64);
+      worker.reply(initError);
+      worker.onerror?.(new ErrorEvent("error", { message: "gone" }));
+      vi.advanceTimersByTime(600_000);
+      expect(inits(worker)).toHaveLength(1);
+      expect(bridge.availability).toBe("failed");
+    });
+
+    it("settles ready, every request waiting at dispose, and every one asked after", async () => {
+      const ready = track(bridge.ready);
+      const asked = askEverything();
+      bridge.dispose();
+      const late = askEverything();
+      await flush();
+
+      expect(ready.state).toBe("resolved");
+      expectNoResults(asked);
+      expectNoResults(late);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("answers a request asked once the bridge has failed at once, and posts nothing to the worker", async () => {
+      bridge.init(64, 64);
+      worker.onerror?.(new ErrorEvent("error", { message: "gone" }));
+      const before = worker.posted.length;
+      const asked = askEverything();
+      bridge.setParams(params);
+      bridge.render();
+      await flush();
+
+      expectNoResults(asked);
+      expect(worker.posted).toHaveLength(before);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("gives up on a request once the worker has said nothing for 30 s", async () => {
+      const asked = askEverything();
+      // A full-view float capture, or a large read of the developed frame, is one long
+      // job on a software renderer, during which the worker says nothing: not timed by it.
+      const { floatCapture, pixels, ...timed } = asked;
+      const frame = frameOf("pre-output");
+      worker.reply({ type: "capturedFloat", reqId: sent(worker, "captureFloat")[0].reqId, frame });
+      worker.reply({ type: "developedPixels", reqId: sent(worker, "readDevelopedPixels")[0].reqId, pixels: null });
+      vi.advanceTimersByTime(29_999);
+      await flush();
+      expect([floatCapture.value, pixels.state]).toEqual([frame, "resolved"]);
+      expect(Object.values(timed).map((outcome) => outcome.state)).toEqual(Array(8).fill("pending"));
+
+      vi.advanceTimersByTime(1);
+      await flush();
+      expect(Object.values(timed).map((outcome) => outcome.state)).not.toContain("pending");
+      expect([timed.probe.value, timed.sample.value, timed.fromSource.value]).toEqual([null, null, null]);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("doesn't count the worker's silence while it works on a request that isn't timed", async () => {
+      const long = track(bridge.captureFloat(params, { maxEdge: Infinity }));
+      const queued = track(bridge.probe(0.5, 0.5, "output"));
+      vi.advanceTimersByTime(90_000);
+      await flush();
+      expect([long.state, queued.state]).toEqual(["pending", "pending"]);
+
+      worker.reply({ type: "capturedFloat", reqId: sent(worker, "captureFloat")[0].reqId, frame: null });
+      vi.advanceTimersByTime(29_999);
+      await flush();
+      expect(queued.state).toBe("pending");
+      vi.advanceTimersByTime(1);
+      await flush();
+      expect([queued.state, queued.value]).toEqual(["resolved", null]);
+    });
+
+    it("counts the silence again once a long request has run for 5 minutes, and gives up on it too", async () => {
+      const long = track(bridge.captureFloat(params, { maxEdge: Infinity }));
+      const queued = track(bridge.probe(0.5, 0.5, "output"));
+      vi.advanceTimersByTime(290_000);
+      await flush();
+      expect([long.state, queued.state]).toEqual(["pending", "pending"]);
+
+      vi.advanceTimersByTime(40_000);
+      await flush();
+      expect([long.state, long.value, queued.state, queued.value]).toEqual(["resolved", null, "resolved", null]);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("only reports an error event once the worker is ready, and goes on rendering", async () => {
+      const onError = vi.fn<(message: string) => void>();
+      bridge.setOnError(onError);
+      bridge.init(64, 64);
+      worker.reply({ type: "ready", pipelineFloat: true });
+      const waiting = track(bridge.probe(0.5, 0.5, "output"));
+
+      worker.onerror?.(new ErrorEvent("error", { message: "Uncaught TypeError in a timer" }));
+      await flush();
+
+      expect(onError).toHaveBeenCalledWith("Uncaught TypeError in a timer");
+      expect(bridge.availability).toBe("ready");
+      expect(waiting.state).toBe("pending");
+      const asked = track(bridge.probe(0.25, 0.25, "output"));
+      expect(sent(worker, "probe")).toHaveLength(2);
+      worker.reply({ type: "probed", reqId: sent(worker, "probe")[1].reqId, rgb: [1, 1, 1] });
+      await flush();
+      expect(asked.value).toEqual([1, 1, 1]);
+    });
+
+    it("closes the bitmap of a capture answered after it was given up on, or never asked", async () => {
+      const close = vi.fn();
+      const late = { width: 4, height: 3, close };
+      const stray = { width: 4, height: 3, close: vi.fn() };
+      const given = track(bridge.capture(params));
+      vi.advanceTimersByTime(30_000);
+      await flush();
+      expect(given.value).toMatchObject({ width: 1, height: 1 });
+
+      worker.reply({ type: "captured", reqId: sent(worker, "capture")[0].reqId, bitmap: late });
+      worker.reply({ type: "captured", reqId: 999, bitmap: stray });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(stray.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps waiting while the worker answers other requests, as a long queue of thumbnails does", async () => {
+      const waiting = track(bridge.probe(0.5, 0.5, "output"));
+      for (let i = 0; i < 6; i++) {
+        vi.advanceTimersByTime(10_000);
+        worker.reply({ type: "thumbnailMiss", requestId: `other-${i}`, key: "k" });
+      }
+      await flush();
+      expect(waiting.state).toBe("pending");
+
+      vi.advanceTimersByTime(30_000);
+      await flush();
+      expect([waiting.state, waiting.value]).toEqual(["resolved", null]);
+    });
+
+    it("leaves no timer behind for a request answered in time, and settles it with the answer", async () => {
+      const answered = track(bridge.probe(0.5, 0.5, "output"));
+      const [request] = sent(worker, "probe");
+      worker.reply({ type: "probed", reqId: request.reqId, rgb: [1, 2, 3] });
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(60_000);
+      await flush();
+      expect(answered.value).toEqual([1, 2, 3]);
     });
   });
 });
@@ -2467,12 +2986,30 @@ describe("RenderBridge render mailbox", () => {
       vi.advanceTimersByTime(2_000);
       bridge.render();
       vi.advanceTimersByTime(18_000);
-      worker.reply({ type: "healSource", data: new Uint8ClampedArray(4), width: 1, height: 1 });
+      worker.reply({ type: "sourcePixels", sourceGen: 0, data: new Uint8ClampedArray(4), width: 1, height: 1 });
 
       vi.advanceTimersByTime(29_999);
       expect(renders(worker)).toHaveLength(2);
       vi.advanceTimersByTime(1);
       expect(renders(worker)).toHaveLength(3);
+    });
+
+    // The backstop sending a render is not the worker speaking: a hung worker that keeps
+    // being asked for renders still lets its other requests go.
+    it("settles a request 30 s after the worker last spoke, while renders keep being asked for", async () => {
+      bridge.render();
+      bridge.render();
+      vi.advanceTimersByTime(2_000);
+      let probed: [number, number, number] | null | "pending" = "pending";
+      void bridge.probe(0.5, 0.5, "output").then((rgb) => (probed = rgb));
+      const asking = setInterval(() => bridge.render(), 1_000);
+
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(probed).toBe("pending");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(renders(worker).length).toBeGreaterThan(2);
+      expect(probed).toBeNull();
+      clearInterval(asking);
     });
 
     it("gives a render the slow worker's own time once the one given up on is answered", () => {
@@ -2522,6 +3059,151 @@ describe("RenderBridge render mailbox", () => {
       vi.advanceTimersByTime(2_000);
       expect(renders(worker)).toHaveLength(4);
       expect(warn).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // A worker that has hung, or died without a word, says nothing while renders wait for
+  // it. Past two backstops in a row with no word from it, a minute, Develop says it can't
+  // show images, and whoever waits is let go; the worker's next word makes it ready again.
+  describe("when the worker stops answering", () => {
+    let seen: [string, string | undefined][];
+
+    beforeEach(() => {
+      ready(worker);
+      seen = [];
+      bridge.setOnAvailability((availability, detail) => seen.push([availability, detail]));
+    });
+
+    /** Renders asked for through `ms` of the worker saying nothing, one a second. */
+    async function askThrough(ms: number) {
+      for (let t = 0; t < ms; t += 1_000) {
+        bridge.render();
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+    }
+
+    it("calls it unresponsive after a minute of silence with renders waiting, and settles what waits", async () => {
+      await askThrough(45_000);
+      let probed: [number, number, number] | null | "pending" = "pending";
+      void bridge.probe(0.5, 0.5, "output").then((rgb) => (probed = rgb));
+      await askThrough(14_000);
+      expect(bridge.availability).toBe("ready");
+      expect(probed).toBe("pending");
+
+      await askThrough(1_000);
+      expect(bridge.availability).toBe("unresponsive");
+      expect(seen.at(-1)).toEqual(["unresponsive", "the renderer stopped responding"]);
+      expect(probed).toBeNull();
+    });
+
+    // A full-view float read on a software renderer is one long job the worker says
+    // nothing during, and the renders asked for meanwhile queue behind it.
+    it("stays ready through a long request's silence, and counts it once the request's 5 minutes are up", async () => {
+      let read: FloatFrame | null | "pending" = "pending";
+      void bridge.captureFloat(normalizeParams({}), { maxEdge: Infinity }).then((frame) => (read = frame));
+
+      await askThrough(90_000);
+      expect(bridge.availability).toBe("ready");
+      await askThrough(209_000);
+      expect(bridge.availability).toBe("ready");
+      expect(read).toBe("pending");
+
+      await askThrough(70_000);
+      expect(bridge.availability).toBe("unresponsive");
+      expect(read).toBeNull();
+    });
+
+    it("is ready again once the worker speaks, and sends the next render once it answers", async () => {
+      await askThrough(60_000);
+      expect(bridge.availability).toBe("unresponsive");
+      const posted = renders(worker).length;
+
+      worker.reply(frameFor(renders(worker)[0].seq));
+      expect(bridge.availability).toBe("ready");
+      expect(seen.at(-1)).toEqual(["ready", undefined]);
+      bridge.render();
+      expect(renders(worker)).toHaveLength(posted);
+      worker.reply(frameFor(inFlight(worker)));
+      expect(renders(worker)).toHaveLength(posted + 1);
+    });
+
+    it("does not call a worker unresponsive that spoke between the backstops", async () => {
+      await askThrough(40_000);
+      worker.reply({ type: "sourcePixels", sourceGen: 0, data: new Uint8ClampedArray(4), width: 1, height: 1 });
+      await askThrough(59_000);
+      expect(bridge.availability).toBe("ready");
+      await askThrough(1_000);
+      expect(bridge.availability).toBe("unresponsive");
+    });
+
+    it("does not call a slow worker unresponsive that answers each render within 30 s", async () => {
+      for (let i = 0; i < 6; i++) {
+        bridge.render();
+        bridge.render();
+        await vi.advanceTimersByTimeAsync(25_000);
+        worker.reply(frameFor(renders(worker).at(-2)!.seq));
+        worker.reply(frameFor(inFlight(worker)));
+      }
+      expect(seen).toEqual([["ready", undefined]]);
+    });
+
+    it("only logs an error event while it is unresponsive, and recovers all the same", async () => {
+      const onError = vi.fn<(message: string) => void>();
+      bridge.setOnError(onError);
+      await askThrough(60_000);
+      worker.onerror?.(new ErrorEvent("error", { message: "Uncaught TypeError in a timer" }));
+      expect(onError).toHaveBeenCalledWith("Uncaught TypeError in a timer");
+      expect(bridge.availability).toBe("unresponsive");
+      worker.reply(frameFor(inFlight(worker)));
+      expect(bridge.availability).toBe("ready");
+    });
+  });
+
+  // A GPU reset loses the worker's graphics context. The worker says so, draws nothing
+  // until the context is restored, and says ready again once its renderer is rebuilt.
+  describe("when the worker's graphics context is lost", () => {
+    let seen: [string, string | undefined][];
+
+    beforeEach(() => {
+      ready(worker);
+      seen = [];
+      bridge.setOnAvailability((availability, detail) => seen.push([availability, detail]));
+    });
+
+    it("says so, and posts no render until the worker is ready again", () => {
+      bridge.render();
+      worker.reply({ type: "contextLost" });
+      expect(bridge.availability).toBe("lost");
+      expect(seen.at(-1)).toEqual(["lost", "the graphics context was lost"]);
+
+      bridge.render();
+      vi.advanceTimersByTime(120_000);
+      expect(renders(worker)).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+      bridge.setParams(normalizeParams({}));
+      expect(worker.posted.at(-1)).toMatchObject({ cmd: "setParams" });
+
+      ready(worker);
+      expect(bridge.availability).toBe("ready");
+      bridge.render();
+      expect(renders(worker)).toHaveLength(2);
+    });
+
+    it("stays lost, not ready, while the worker answers what it was asked before", () => {
+      bridge.render();
+      const seq = inFlight(worker);
+      worker.reply({ type: "contextLost" });
+      worker.reply({ type: "frameSkipped", seq });
+      expect(bridge.availability).toBe("lost");
+    });
+
+    it("only logs an error event while lost", () => {
+      const onError = vi.fn<(message: string) => void>();
+      bridge.setOnError(onError);
+      worker.reply({ type: "contextLost" });
+      worker.onerror?.(new ErrorEvent("error", { message: "Uncaught TypeError in a timer" }));
+      expect(onError).toHaveBeenCalledWith("Uncaught TypeError in a timer");
+      expect(bridge.availability).toBe("lost");
     });
   });
 
@@ -2913,6 +3595,213 @@ describe("RenderBridge transform derived uniforms", () => {
     });
     const sent = worker.posted.find((m) => m.cmd === "renderThumbnail");
     expect(sent && "contributedParams" in sent ? sent.contributedParams : undefined).toBeUndefined();
+    bridge.dispose();
+  });
+});
+
+// The values the official and core stages derive from params go with the
+// params they came from (stage-derive.ts): the live photo's with every params
+// post, a capture's or a thumbnail's with its own request, so a draw of other
+// params never reads the live photo's values.
+describe("RenderBridge derived stage values", () => {
+  const TONE: ProcessingStageContribution = {
+    id: "safelight.basic.tone",
+    name: "Tone",
+    phase: "scene-linear",
+    glsl: "lin *= exp2(uToneExposure);",
+    uniforms: [{ key: "uToneExposure", glslType: "float", default: 0 }],
+    derive: (p) => ({ uToneExposure: p.exposure }),
+  };
+  const KEY = "safelight.basic.tone.uToneExposure";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+    registerProcessingStage("safelight.basic", TONE);
+  });
+
+  afterEach(() => {
+    unregisterExtension("safelight.basic");
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const lastOf = <C extends WorkerRequest["cmd"]>(worker: FakeWorker, cmd: C) =>
+    worker.posted.filter((m): m is Extract<WorkerRequest, { cmd: C }> => m.cmd === cmd).at(-1);
+
+  it("sends the live photo's values with its params", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setParams(normalizeParams({ exposure: 1.5 }));
+    expect(lastOf(worker, "setParams")?.derived).toEqual({ [KEY]: 1.5 });
+  });
+
+  it("sends them with a patch when they change, and leaves them out when they don't", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    const base = normalizeParams({ exposure: 1 });
+    bridge.setParams(base);
+    bridge.setParams({ ...base, contrast: 20 });
+    expect("derived" in (lastOf(worker, "patchParams") ?? {})).toBe(false);
+    bridge.setParams({ ...base, exposure: 2 });
+    expect(lastOf(worker, "patchParams")?.derived).toEqual({ [KEY]: 2 });
+  });
+
+  it("patches only the values that changed, and the keys dropped", () => {
+    const CURVE: ProcessingStageContribution = {
+      id: "safelight.tone-curve.curve",
+      name: "Curve",
+      phase: "display-adjust",
+      glsl: "c *= uLift[0];",
+      uniforms: [{ key: "uLift", glslType: "float", length: 1, default: [1] }],
+      derive: (p) => ({ uLift: [1 + p.contrast / 100] }),
+    };
+    registerProcessingStage("safelight.tone-curve", CURVE);
+    try {
+      const bridge = new RenderBridge();
+      const worker = FakeWorker.instances[0];
+      const base = normalizeParams({ exposure: 1 });
+      bridge.setParams(base);
+      bridge.setParams({ ...base, contrast: 20 });
+      expect(lastOf(worker, "patchParams")?.derived).toEqual({ "safelight.tone-curve.curve.uLift": [1.2] });
+      unregisterExtension("safelight.tone-curve");
+      bridge.setParams({ ...base, contrast: 20, exposure: 3 });
+      expect(lastOf(worker, "patchParams")).toMatchObject({
+        derived: { [KEY]: 3 },
+        derivedRemove: ["safelight.tone-curve.curve.uLift"],
+      });
+    } finally {
+      unregisterExtension("safelight.tone-curve");
+    }
+  });
+
+  it("sends a capture's and a thumbnail's own values, not the live photo's", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setParams(normalizeParams({ exposure: 1 }));
+    void bridge.capture(normalizeParams({ exposure: -1 }));
+    void bridge.captureFloat(normalizeParams({ exposure: -2 }));
+    void bridge.renderThumbnailFromSource({
+      requestId: "t",
+      key: "k",
+      params: normalizeParams({ exposure: 3 }),
+      asShotTemperature: 6500,
+      maxEdge: 64,
+    });
+    expect(lastOf(worker, "capture")?.derived).toEqual({ [KEY]: -1 });
+    expect(lastOf(worker, "captureFloat")?.derived).toEqual({ [KEY]: -2 });
+    expect(lastOf(worker, "renderThumbnailFromSource")?.derived).toEqual({ [KEY]: 3 });
+  });
+
+  it("sends the live photo's values again when a stage that derives them registers", () => {
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    unregisterExtension("safelight.basic");
+    bridge.setParams(normalizeParams({ exposure: 1 }));
+    expect(lastOf(worker, "setParams")?.derived).toEqual({});
+    registerProcessingStage("safelight.basic", TONE);
+    bridge.syncStages();
+    expect(lastOf(worker, "setDerived")?.derived).toEqual({ [KEY]: 1 });
+  });
+
+  it("sends them again when the stage's extension changes a setting", () => {
+    unregisterExtension("safelight.basic");
+    registerProcessingStage("safelight.basic", {
+      ...TONE,
+      derive: (_, ctx) => ({ uToneExposure: ctx.settings("gain", 1) }),
+    });
+    const bridge = new RenderBridge();
+    const worker = FakeWorker.instances[0];
+    bridge.setParams(normalizeParams({}));
+    setExtSetting("safelight.basic", "gain", 4);
+    expect(lastOf(worker, "setDerived")?.derived).toEqual({ [KEY]: 4 });
+  });
+});
+
+// A stage the worker's renderer couldn't build with is drawn without; the bridge
+// keeps what it was told for the Extensions window, and its error names the
+// extension rather than handing on the shader log alone.
+describe("RenderBridge stage quarantine", () => {
+  const BROKEN: ProcessingStageContribution = {
+    id: "acme.film",
+    name: "Film",
+    phase: "effects",
+    glsl: "c = c *;",
+    uniforms: [],
+  };
+  const quarantined = (stage: ProcessingStageContribution): WorkerResponse => ({
+    type: "stageQuarantined",
+    stageId: stage.id,
+    signature: stageSignature(stage),
+    log: "Shader compile failed: ERROR: 0:823: ';' : syntax error\nERROR: 1 compilation errors.",
+  });
+  const failuresOfAcme = () =>
+    stageFailuresOf("acme", useStageFailures.getState(), useRegistry.getState().processingStages);
+
+  beforeEach(() => {
+    FakeWorker.instances = [];
+    vi.stubGlobal("Worker", FakeWorker);
+    setExtensionName("acme", "Acme Film");
+    registerProcessingStage("acme", BROKEN);
+  });
+
+  afterEach(() => {
+    unregisterExtension("acme");
+    useStageFailures.setState({}, true);
+    vi.unstubAllGlobals();
+  });
+
+  it("records the stage against its extension and names the extension in the error", () => {
+    const bridge = new RenderBridge();
+    const errors: string[] = [];
+    bridge.setOnError((message) => errors.push(message));
+    FakeWorker.instances[0].reply(quarantined(BROKEN));
+
+    expect(failuresOfAcme().map((f) => f.stageId)).toEqual(["acme.film"]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Acme Film");
+    expect(errors[0]).toContain("acme.film");
+    expect(errors[0]).toContain("syntax error");
+    expect(errors[0]).not.toContain("compilation errors");
+    bridge.dispose();
+  });
+
+  it("forgets the failures when the worker's renderer is made again", () => {
+    const bridge = new RenderBridge();
+    bridge.setOnError(() => undefined);
+    FakeWorker.instances[0].reply(quarantined(BROKEN));
+    bridge.init(16, 16);
+
+    expect(failuresOfAcme()).toEqual([]);
+    bridge.dispose();
+  });
+
+  // The renderers try every quarantined stage again then, and report again
+  // those that still fail.
+  it("forgets the failures when the stage set loses a stage", () => {
+    const other: ProcessingStageContribution = { ...BROKEN, id: "acme.grain", glsl: "c *= 0.9;" };
+    registerProcessingStage("acme", other);
+    const bridge = new RenderBridge();
+    bridge.setOnError(() => undefined);
+    bridge.syncStages();
+    FakeWorker.instances[0].reply(quarantined(BROKEN));
+    bridge.syncStages();
+    expect(failuresOfAcme()).toHaveLength(1);
+
+    unregisterProcessingStage("acme", other.id);
+    bridge.syncStages();
+    expect(failuresOfAcme()).toEqual([]);
+    bridge.dispose();
+  });
+
+  it("lets the failure go once the stage is registered again changed", () => {
+    const bridge = new RenderBridge();
+    bridge.setOnError(() => undefined);
+    FakeWorker.instances[0].reply(quarantined(BROKEN));
+    registerProcessingStage("acme", { ...BROKEN, glsl: "c *= 0.5;" });
+
+    expect(failuresOfAcme()).toEqual([]);
     bridge.dispose();
   });
 });

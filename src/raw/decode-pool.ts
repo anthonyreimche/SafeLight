@@ -56,7 +56,8 @@ export interface DecodeRequest extends DecodePriority {
   signal?: AbortSignal;
 }
 
-type Waiter = (inst: LibRawInstance) => void;
+// null: the pool was disposed while this request waited.
+type Waiter = (inst: LibRawInstance | null) => void;
 
 let pool: LibRawInstance[] = [];
 let free: LibRawInstance[] = [];
@@ -178,8 +179,10 @@ export function decodePoolSize(): number {
 }
 
 export function disposeDecodePool(): void {
+  const stranded = [...waitingInteractive, ...waitingBackground];
   waitingInteractive = [];
   waitingBackground = [];
+  for (const wake of stranded) wake(null);
   heldByBackground.clear();
   for (const inst of pool) {
     try { inst.worker?.terminate(); } catch {}

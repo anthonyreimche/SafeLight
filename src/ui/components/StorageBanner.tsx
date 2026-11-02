@@ -15,10 +15,10 @@
 //                   was redirected to a writeable location, so the user knows
 //                   where their edits/ratings actually land, or that a catalog
 //                   was restored from its backup or rebuilt.
-// A slim dismissible bar at the bottom of the viewport, matching UpdateBanner.
+// A slim dismissible bar in the bottom stack (BottomBanners), matching UpdateBanner.
 
 import { useProjectStore } from "@/project/project-store";
-import { openPreferences } from "./PreferencesDialog";
+import { openPreferences } from "@/ui/preferences/preferences-store";
 
 export function StorageBanner() {
   const openError = useProjectStore((s) => s.openError);
@@ -34,9 +34,9 @@ export function StorageBanner() {
       <div
         role="alert"
         aria-live="assertive"
-        className="fixed bottom-0 left-0 right-0 z-[210] flex items-center justify-center gap-3 border-t border-red-500/40 bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
+        className="flex items-center justify-center gap-3 border-t border-danger/40 bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
       >
-        <span className="text-red-400" aria-hidden="true">
+        <span className="text-danger" aria-hidden="true">
           ⚠
         </span>
         <span className="text-text-primary">{openError}</span>
@@ -64,9 +64,9 @@ export function StorageBanner() {
       <div
         role="alert"
         aria-live="assertive"
-        className="fixed bottom-0 left-0 right-0 z-[210] flex items-center justify-center gap-3 border-t border-red-500/40 bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
+        className="flex items-center justify-center gap-3 border-t border-danger/40 bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
       >
-        <span className="text-red-400" aria-hidden="true">
+        <span className="text-danger" aria-hidden="true">
           ⚠
         </span>
         <span className="text-text-primary">{saveError}</span>
@@ -79,7 +79,7 @@ export function StorageBanner() {
       <div
         role="status"
         aria-live="polite"
-        className="fixed bottom-0 left-0 right-0 z-[210] flex items-center justify-center gap-3 border-t border-border bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
+        className="flex items-center justify-center gap-3 border-t border-border bg-surface-2 px-4 py-2 text-[11px] text-text-secondary shadow-lg"
       >
         <span className="text-text-primary">{storageNotice}</span>
         <button

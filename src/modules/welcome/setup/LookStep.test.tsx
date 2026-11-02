@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useDisabledExtensions } from "@/extensions/loader";
+import { ACCESSIBILITY_EXTENSION_ID } from "@/extensions/official-extensions";
 import { registerTheme, unregisterExtension } from "@/extensions/registry";
 import { useThemeStore } from "@/extensions/themes";
 import {
@@ -169,7 +170,7 @@ describe("LookStep", () => {
   });
 
   it("keeps only Reduce motion while the accessibility extension is off", () => {
-    useDisabledExtensions.setState({ ids: ["core.accessibility"] });
+    useDisabledExtensions.setState({ ids: [ACCESSIBILITY_EXTENSION_ID] });
     renderLook();
     const switches = within(group("Accessibility")).getAllByRole("switch");
     expect(switches.map((s) => s.textContent)).toEqual(["Reduce motion"]);

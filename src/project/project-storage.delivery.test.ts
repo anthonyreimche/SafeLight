@@ -51,6 +51,7 @@ vi.mock("@/state/broadcast", () => ({
 import { photo } from "@/catalog/stored-edit.fixtures";
 import { MemoryFs, fsaDirectoryHandle } from "./memory-fs.test-support";
 import { ProjectStorage } from "./project-storage";
+import { storageDeps } from "./storage-deps";
 
 /** A file system whose catalog.json writes land after a delay: the next delays
  *  in `queued`, then whatever `delay` returns. */
@@ -106,8 +107,8 @@ async function twoWindows() {
   for (const p of photos) fs.put(`${ROOT}/${p.relPath}`, p.id);
   fs.put(`${ROOT}/.safelight/catalog.json`, JSON.stringify({ version: 1, photos, edits: [] }));
   const root = fsaDirectoryHandle(fs, ROOT);
-  const a = await ProjectStorage.open(root);
-  const b = await ProjectStorage.open(root);
+  const a = await ProjectStorage.open(root, storageDeps);
+  const b = await ProjectStorage.open(root, storageDeps);
   storages.push(a.storage, b.storage);
   await vi.advanceTimersByTimeAsync(5000);
   const disk = () => JSON.parse(fs.text(`${ROOT}/.safelight/catalog.json`) ?? "null") as Disk;

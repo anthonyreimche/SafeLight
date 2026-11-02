@@ -62,6 +62,7 @@ const T = {
   ExposureProgram: 0x8822,
   ISO: 0x8827,
   DateTimeOriginal: 0x9003,
+  SubSecTimeOriginal: 0x9291,
   ExposureBias: 0x9204,
   MaxAperture: 0x9205,
   SubjectDistance: 0x9206,
@@ -173,6 +174,18 @@ describe.each([
     expect(exif.lensMake).toBe("Canon");
     expect(exif.lensSerial).toBe("LS-0001");
     expect(exif.bodySerial).toBe("BS-0002");
+  });
+
+  it("reads SubSecTimeOriginal as trimmed digits", async () => {
+    const exif = await fromTiff({
+      le,
+      exif: [
+        [T.DateTimeOriginal, ascii("2026:07:26 14:30:05")],
+        [T.SubSecTimeOriginal, ascii("87 ")],
+      ],
+    });
+    expect(exif.subSecTimeOriginal).toBe("87");
+    expect((await fromTiff({ le, exif: [[T.SubSecTimeOriginal, ascii("  ")]] })).subSecTimeOriginal).toBeUndefined();
   });
 
   it("reads the GPS sub-IFD and applies the hemisphere and altitude refs", async () => {
@@ -697,7 +710,14 @@ describe("parseExifDate", () => {
     expect(parseExifDate("")).toBeUndefined();
     expect(parseExifDate("2026-07-26 14:30:05")).toBeUndefined(); // dashes, not colons
     expect(parseExifDate("2026:07:26")).toBeUndefined(); // no time part
-    expect(parseExifDate("0000:00:00 00:00:00 ")).not.toBeUndefined();
+  });
+
+  it("rejects an unset camera clock so the file date can stand in", () => {
+    expect(parseExifDate("0000:00:00 00:00:00")).toBeUndefined();
+    expect(parseExifDate("0000:00:00 00:00:00 ")).toBeUndefined();
+    expect(parseExifDate("2026:00:15 10:00:00")).toBeUndefined();
+    expect(parseExifDate("2026:06:00 10:00:00")).toBeUndefined();
+    expect(parseExifDate("1799:12:31 10:00:00")).toBeUndefined();
   });
 
   it("does not range-check the components — out-of-range values roll over", () => {

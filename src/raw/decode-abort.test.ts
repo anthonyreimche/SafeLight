@@ -47,6 +47,10 @@ vi.mock("./tiff", async (importOriginal) => {
 
 import { decodeRawToFloat } from "./decode";
 
+/** A TIFF stream's header and nothing more: a file the in-house decoder
+ *  starts parsing once libraw has no image for it. */
+const tiffHeader = () => new Blob([new Uint8Array([0x49, 0x49, 42, 0, 8, 0, 0, 0])]);
+
 beforeEach(() => {
   h.requests = [];
   h.whileWaiting = () => {};
@@ -86,12 +90,12 @@ describe("decodeRawToFloat for a request the user abandoned", () => {
     "answers aborted, skipping the in-house decoder, once libraw %s as it was abandoned",
     async (_, answer) => {
       h.answerOnceAbandoned = answer;
-      await decodeRawToFloat(new Blob(["raw"]));
+      await decodeRawToFloat(tiffHeader());
       expect(h.inHouse).toBe(1);
 
       const opened = new AbortController();
       h.whileWaiting = () => opened.abort();
-      const image = await decodeRawToFloat(new Blob(["raw"]), { signal: opened.signal });
+      const image = await decodeRawToFloat(tiffHeader(), { signal: opened.signal });
 
       expect(image).toEqual({ failure: "aborted" });
       expect(h.inHouse).toBe(1);

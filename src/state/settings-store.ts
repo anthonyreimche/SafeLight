@@ -108,11 +108,6 @@ export interface AppSettings {
    *  as a drag from there. Off (the default) keeps the relative drag-to-adjust
    *  model: a click grabs the current value and only movement changes it. */
   sliderJumpToCursor: boolean;
-  /** Show the per-band Highlight Detail / Shadow Detail sliders in the Develop
-   *  Basic panel. Off by default to keep the panel compact: tone recovery/lift
-   *  already preserves micro-contrast on its own, so these are opt-in controls
-   *  for users who want to tune (or reverse) that per band. */
-  basicDetailSliders: boolean;
   /** Collapsing or expanding a dock panel while a saved layout is picked writes
    *  the change into that layout. Off = the edit turns the layout into Custom,
    *  like any other dock edit, until it is saved with ↻. */
@@ -331,7 +326,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   assessBorderPct: 4.5,
   windowDim: 0.6,
   sliderJumpToCursor: false,
-  basicDetailSliders: false,
   autoSaveCollapsedPanels: true,
   highContrast: false,
   strongFocus: false,

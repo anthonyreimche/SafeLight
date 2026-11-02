@@ -11,6 +11,7 @@
 // extension, so they show only while it is on.
 
 import { useDisabledExtensions } from "@/extensions/loader";
+import { ACCESSIBILITY_EXTENSION_ID } from "@/extensions/official-extensions";
 import { useRegistry } from "@/extensions/registry";
 import { applyTheme, useThemeStore } from "@/extensions/themes";
 import type { ThemeContribution } from "@/extensions/types";
@@ -93,7 +94,7 @@ export function LookStep({ headingId }: StepProps) {
   const uiFont = useSettings((s) => s.uiFont);
   const uiScale = useSettings((s) => s.uiScale);
   const accessibilityOn = useDisabledExtensions(
-    (s) => !s.ids.includes("core.accessibility"),
+    (s) => !s.ids.includes(ACCESSIBILITY_EXTENSION_ID),
   );
   const sorted = Object.values(themes).sort((a, b) =>
     a.name.localeCompare(b.name),

@@ -243,6 +243,79 @@ describe("createAtomicWriter", () => {
     expect(writer.activePaths()).toBe(0);
   });
 
+  describe("orphaned temp files", () => {
+    const MINUTE = 60_000;
+    const orphan = async (name: string, ageMs: number) => {
+      const p = path.join(dir, name);
+      await fsp.writeFile(p, "x");
+      const when = new Date(Date.now() - ageMs);
+      await fsp.utimes(p, when, when);
+      return p;
+    };
+
+    it("sweeps temp files older than ten minutes from a directory on its first write", async () => {
+      const stale = await orphan("catalog.json.tmp-0123456789abcdef", 11 * MINUTE);
+      const fresh = await orphan("catalog.json.tmp-fedcba9876543210", MINUTE);
+      const other = await orphan("notes.txt", 60 * MINUTE);
+      const writer = createAtomicWriter({ fsp, randomId, retry: fastRetry });
+
+      await writer.write(path.join(dir, "catalog.json"), bytes("{}"));
+
+      expect(fs.existsSync(stale)).toBe(false);
+      expect(fs.existsSync(fresh)).toBe(true);
+      expect(fs.existsSync(other)).toBe(true);
+    });
+
+    it("sweeps a directory once per writer, not on every write", async () => {
+      const writer = createAtomicWriter({ fsp, randomId, retry: fastRetry });
+      await writer.write(path.join(dir, "catalog.json"), bytes("1"));
+      const late = await orphan("catalog.json.tmp-0123456789abcdef", 30 * MINUTE);
+
+      await writer.write(path.join(dir, "catalog.json"), bytes("2"));
+
+      expect(fs.existsSync(late)).toBe(true);
+    });
+
+    it("never deletes the temp file of a write still in flight, however old it looks", async () => {
+      const target = path.join(dir, "catalog.json");
+      const held = gate();
+      const opened: string[] = [];
+      const tracked = {
+        ...fsp,
+        async open(p: string, flags: string) {
+          opened.push(p);
+          return fsp.open(p, flags);
+        },
+        async rename(from: string, to: string) {
+          await held.opened;
+          return fsp.rename(from, to);
+        },
+      };
+      const writer = createAtomicWriter({ fsp: tracked, randomId, retry: fastRetry });
+
+      const first = writer.write(target, bytes("big"));
+      await vi.waitFor(() => expect(opened.length).toBe(1));
+      const old = new Date(Date.now() - 60 * MINUTE);
+      await fsp.utimes(opened[0], old, old);
+      // A second writer in the same process sweeps the same directory.
+      const second = createAtomicWriter({ fsp: tracked, randomId, retry: fastRetry });
+      const sweeping = second.write(path.join(dir, "other.json"), bytes("o"));
+      held.open();
+      await Promise.all([first, sweeping]);
+
+      expect(await read(target)).toBe("big");
+    });
+
+    it("keeps writing when the sweep itself fails", async () => {
+      const broken = { ...fsp, readdir: () => Promise.reject(new Error("EPERM")) };
+      const writer = createAtomicWriter({ fsp: broken, randomId, retry: fastRetry });
+
+      await writer.write(path.join(dir, "catalog.json"), bytes("ok"));
+
+      expect(await read(path.join(dir, "catalog.json"))).toBe("ok");
+    });
+  });
+
   it.runIf(process.platform === "win32")("treats two spellings of one path as one file", async () => {
     const writer = createAtomicWriter({ fsp, randomId, retry: fastRetry });
 

@@ -8,7 +8,7 @@
 // restart (and sometimes it self-clears). Static analysis can't pin it because
 // it's transient in-memory state, so this watches for the failure live.
 //
-// It installs ONLY when the "Developer Tools" extension (core.devtools) is
+// It installs ONLY when the "Developer Tools" extension (safelight.devtools) is
 // enabled at launch, so normal users get nothing. While active it's silent
 // until it actually catches one of the two failure modes:
 //   • a keystroke meant for a text field is preventDefault()'d  → interception
@@ -20,6 +20,8 @@
 
 import { isEditableTarget } from "@/state/keybindings-store";
 import { useDisabledExtensions } from "@/extensions/loader";
+import { extensionKinds } from "@/extensions/extension-kinds";
+import { DEVTOOLS_EXTENSION_ID } from "@/extensions/official-extensions";
 
 interface KeyListenerRecord {
   type: "keydown" | "keyup";
@@ -35,21 +37,17 @@ function captureFlag(options?: boolean | AddEventListenerOptions): boolean {
   return typeof options === "boolean" ? options : !!options?.capture;
 }
 
-/** Only run while Developer Tools (core.devtools) is enabled. Read straight from
- *  localStorage so there's no store dependency before init. core.devtools ships
- *  default-off and is seeded into the disabled list exactly once; until that
- *  seeding has recorded it (fresh profile, or one predating seeding) its absence
- *  from the disabled list means "not yet decided", not "enabled". */
-function diagActive(): boolean {
+/** Only run while Developer Tools (safelight.devtools) is installed and on.
+ *  Read straight from localStorage so there's no store dependency before init:
+ *  an installed extension is in the kinds record from its first run until it
+ *  is uninstalled, and a turned-off one is in the disabled list. */
+export function keyDiagActive(): boolean {
+  if (!Object.hasOwn(extensionKinds(), DEVTOOLS_EXTENSION_ID)) return false;
   try {
-    const seeded: unknown = JSON.parse(
-      localStorage.getItem("sl_ext_default_seeded") ?? "[]",
-    );
-    if (!Array.isArray(seeded) || !seeded.includes("core.devtools")) return false;
     const disabled: unknown = JSON.parse(
       localStorage.getItem("sl_ext_disabled") ?? "[]",
     );
-    return Array.isArray(disabled) && !disabled.includes("core.devtools");
+    return Array.isArray(disabled) && !disabled.includes(DEVTOOLS_EXTENSION_ID);
   } catch {
     return false;
   }
@@ -72,7 +70,7 @@ function dumpListeners(): void {
 }
 
 export function installKeyDiag(): void {
-  if (installed || !diagActive()) return;
+  if (installed || !keyDiagActive()) return;
   installed = true;
   console.warn("[key-diag] active — watching for swallowed input. Toggle some extensions to repro.");
 

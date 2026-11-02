@@ -15,7 +15,7 @@ import {
   useLayoutStore,
   useUserLayouts,
 } from "@/extensions/dock";
-import { openPreferences } from "./PreferencesDialog";
+import { openPreferences } from "@/ui/preferences/preferences-store";
 import { MenuItem, TopBarMenu } from "./TopBarMenu";
 
 export function LayoutMenu() {

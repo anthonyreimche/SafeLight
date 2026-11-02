@@ -34,6 +34,7 @@ import { freshParams } from "@/catalog/types";
 import { previewShowsEdit as developDrawsStoredPreview } from "@/hooks/preview-shows-edit";
 import { MemoryFs, fsaDirectoryHandle } from "@/project/memory-fs.test-support";
 import { ProjectStorage } from "@/project/project-storage";
+import { storageDeps } from "@/project/storage-deps";
 import { useCatalogStore } from "./catalog-store";
 import { followCatalogRecords } from "./catalog-sync";
 import { useSettings } from "./settings-store";
@@ -86,7 +87,7 @@ function project(previewEdit?: string): FileSystemDirectoryHandle {
 /** Open the project in this window: its storage, preview reader and photos, and
  *  the following of other windows' records. */
 async function thisWindow(root: FileSystemDirectoryHandle): Promise<ProjectStorage> {
-  const { storage, photos } = await ProjectStorage.open(root);
+  const { storage, photos } = await ProjectStorage.open(root, storageDeps);
   storages.push(storage);
   setCatalogStorage(storage);
   setThumbnailLoader((id) => storage.readPreview(id));
@@ -97,7 +98,7 @@ async function thisWindow(root: FileSystemDirectoryHandle): Promise<ProjectStora
 }
 
 async function otherWindow(root: FileSystemDirectoryHandle): Promise<ProjectStorage> {
-  const { storage } = await ProjectStorage.open(root);
+  const { storage } = await ProjectStorage.open(root, storageDeps);
   storages.push(storage);
   return storage;
 }

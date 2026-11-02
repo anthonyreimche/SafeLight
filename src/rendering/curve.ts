@@ -86,30 +86,6 @@ export function buildCurveLUT(points: CurvePoint[]): Uint8Array {
   return lut;
 }
 
-// Compose the master (RGB) curve with each per-channel curve into one 256×1
-// RGBA LUT. Order matches LR: the user's master curve, then the channel's own
-// curve, so finalChannel[i] = channelCurve(rgbCurve(i)). The shader samples
-// .r/.g/.b. The default baseline look is not in here — it is baselineTone in
-// the shader, applied in linear light and gated to RAW sources. Float
-// evaluators compose continuously and quantize ONCE at the end — chaining 8-bit
-// LUT lookups compounds rounding into visible posterization.
-export function buildRGBCurveLUT(curves: ToneCurves): Uint8Array {
-  const rgbEval = makeCurveEvaluator(curves.rgb);
-  const redEval = makeCurveEvaluator(curves.red);
-  const greenEval = makeCurveEvaluator(curves.green);
-  const blueEval = makeCurveEvaluator(curves.blue);
-
-  const out = new Uint8Array(256 * 4);
-  for (let i = 0; i < 256; i++) {
-    const base = rgbEval(i / 255);
-    out[i * 4] = Math.round(redEval(base) * 255);
-    out[i * 4 + 1] = Math.round(greenEval(base) * 255);
-    out[i * 4 + 2] = Math.round(blueEval(base) * 255);
-    out[i * 4 + 3] = 255;
-  }
-  return out;
-}
-
 // Per-mask curve LUT: master + per-channel curves composed, starting from the
 // already-developed display colour. Layout matches buildRGBCurveLUT (256 RGBA).
 export function buildMaskCurveLUT(curves: ToneCurves, out?: Uint8Array, offset = 0): Uint8Array {

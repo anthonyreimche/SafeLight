@@ -102,6 +102,92 @@ describe("hydration", () => {
   });
 });
 
+describe("unreadable stored library", () => {
+  it("copies the raw value to a backup key at boot and leaves the original alone", async () => {
+    const memory = memoryStorage({ [KEY]: "{bad" });
+    vi.stubGlobal("localStorage", memory);
+    vi.resetModules();
+    await import("./presets-store");
+
+    expect(memory.getItem(KEY)).toBe("{bad");
+    const keys = Array.from({ length: memory.length }, (_, i) => memory.key(i) ?? "");
+    const backup = keys.find((k) => k.startsWith(`${KEY}.unreadable-`));
+    expect(backup).toBeDefined();
+    expect(memory.getItem(backup!)).toBe("{bad");
+  });
+
+  it("keeps the backup after the first add overwrites the original key", async () => {
+    const memory = memoryStorage({ [KEY]: "{bad" });
+    vi.stubGlobal("localStorage", memory);
+    vi.resetModules();
+    const { usePresetsStore } = await import("./presets-store");
+
+    expect(usePresetsStore.getState().add("Punchy", {})).toBe(true);
+
+    expect(JSON.parse(memory.getItem(KEY) ?? "null")).toHaveLength(1);
+    const keys = Array.from({ length: memory.length }, (_, i) => memory.key(i) ?? "");
+    const backup = keys.find((k) => k.startsWith(`${KEY}.unreadable-`));
+    expect(memory.getItem(backup!)).toBe("{bad");
+  });
+
+  it("writes no backup for a healthy or absent library", async () => {
+    for (const seed of [stored({ id: "a", name: "Punchy" }), undefined]) {
+      const memory = memoryStorage(seed === undefined ? {} : { [KEY]: seed });
+      vi.stubGlobal("localStorage", memory);
+      vi.resetModules();
+      await import("./presets-store");
+      expect(memory.length).toBe(seed === undefined ? 0 : 1);
+    }
+  });
+});
+
+describe("failed writes", () => {
+  /** Storage that throws QuotaExceededError on writes to the presets key. */
+  async function bootFull(seed?: string) {
+    const base = memoryStorage(seed === undefined ? {} : { [KEY]: seed });
+    vi.stubGlobal("localStorage", {
+      ...base,
+      getItem: base.getItem,
+      setItem: (k: string, v: string) => {
+        if (k === KEY) throw new DOMException("full", "QuotaExceededError");
+        base.setItem(k, v);
+      },
+    });
+    vi.resetModules();
+    return import("./presets-store");
+  }
+
+  it("add reports failure and leaves no phantom preset", async () => {
+    const { usePresetsStore } = await bootFull();
+
+    expect(usePresetsStore.getState().add("Big", punch())).toBe(false);
+
+    expect(usePresetsStore.getState().presets).toEqual([]);
+  });
+
+  it("update reports failure and keeps the previous params", async () => {
+    const { usePresetsStore } = await bootFull(
+      stored({ id: "a", name: "Punchy", params: { exposure: 0.1 } }),
+    );
+
+    expect(usePresetsStore.getState().update("a", { exposure: 2 })).toBe(false);
+
+    expect(usePresetsStore.getState().presets[0].params).toEqual({ exposure: 0.1 });
+  });
+
+  it("rename, setGroup and remove roll back too", async () => {
+    const { usePresetsStore } = await bootFull(stored({ id: "a", name: "Punchy" }));
+
+    usePresetsStore.getState().rename("a", "Other");
+    usePresetsStore.getState().setGroup("a", "G");
+    usePresetsStore.getState().remove("a");
+
+    expect(usePresetsStore.getState().presets).toEqual([
+      { id: "a", name: "Punchy", params: {} },
+    ]);
+  });
+});
+
 describe("add", () => {
   it("appends a preset with its own id and persists the list", async () => {
     const { usePresetsStore } = await boot();

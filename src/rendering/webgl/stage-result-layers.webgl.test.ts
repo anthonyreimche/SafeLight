@@ -18,6 +18,7 @@ import { uniformPrefix } from "./shader-compiler";
 import { StageResultLayers } from "./stage-result-layers";
 import {
   LINEAR_PROBE_PIPELINE,
+  deriveWithoutSettings,
   drainGlErrors,
   floatImage,
   glHarness,
@@ -485,7 +486,7 @@ describe("version 2 stage results on the renderer", () => {
     const { canvas, gl } = glHarness();
     const tally = trackGlObjects(gl);
     try {
-      const r = new WebGLRenderer(canvas, { stages: [], pipeline: LINEAR_PROBE_PIPELINE });
+      const r = new WebGLRenderer(canvas, { stages: [], pipeline: LINEAR_PROBE_PIPELINE, derive: deriveWithoutSettings });
       r.setImage(SOURCE);
       r.setParams(V2);
       r.render();

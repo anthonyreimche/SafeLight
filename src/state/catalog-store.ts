@@ -9,13 +9,14 @@ import {
   type CatalogPhoto,
   type ColorLabel,
   type FlagStatus,
+  type LoadedPreview,
   type StoredPhoto,
 } from "@/catalog/types";
 import { catalogStorage } from "@/catalog/storage";
 import { rotateBlob, normalizeRotation } from "@/catalog/orient";
-import { useProjectStore } from "@/project/project-store";
+import { mapLimit } from "@/project/fs";
 import { broadcast, WINDOW_ID } from "./broadcast";
-import type { LoadedPreview } from "./thumbnail-loader";
+import { revokePreviewUrl } from "./preview-urls";
 import { emitMetadataChange, emitPhotoRemove } from "@/extensions/registry";
 
 /** What a background rebuild of a photo changed (see mergeRebuiltPhoto): an
@@ -46,6 +47,87 @@ function changesFrom<T extends object>(before: T, after: T): Partial<T> {
   for (const key in after) if (after[key] !== before[key]) changes[key] = after[key];
   for (const key in before) if (!(key in after)) changes[key] = undefined;
   return changes;
+}
+
+// Fields that only say how a photo's preview looks. Nothing that filters, sorts
+// or scopes the grid reads them, extension filters and sorts included.
+const PREVIEW_FIELDS = new Set<string>(["thumbnailBlob", "thumbnailUrl", "previewEdit"]);
+
+// Previews turned at once: each decodes and re-encodes a bitmap.
+const ROTATE_CONCURRENCY = 4;
+
+// Fields the open attaches without saying anything about the photo itself.
+const HANDLE_FIELDS = new Set<string>(["directoryHandle", "fileHandle"]);
+
+interface Structure {
+  version: number;
+  /** How many times each field has changed since the structure began. */
+  changes: ReadonlyMap<string, number>;
+  total: number;
+}
+
+const structures = new WeakMap<CatalogPhoto[], Structure>();
+let structureCount = 0;
+
+function structureOf(photos: CatalogPhoto[]): Structure {
+  let structure = structures.get(photos);
+  if (!structure) {
+    structure = { version: ++structureCount, changes: new Map(), total: 0 };
+    structures.set(photos, structure);
+  }
+  return structure;
+}
+
+/** The catalog's structure version: the same number for two photos arrays only
+ *  when one came from the other with each photo at the same index, changing
+ *  nothing but the fields keepStructure was told of (see fieldChanges). Any other
+ *  new array (a store update, or a setState from outside) gets a new number. Lets
+ *  the grid's filter + sort skip the preview flushes of a big catalog's open. */
+export function structureVersion(photos: CatalogPhoto[]): number {
+  return structureOf(photos).version;
+}
+
+/** How often the fields named have changed over the life of `photos`' structure
+ *  (every field, when `fields` is null): a count that differs between two arrays of
+ *  one structure when something that reads those fields has to read again. Previews
+ *  and handles never count. */
+export function fieldChanges(photos: CatalogPhoto[], fields: readonly string[] | null): number {
+  const { changes, total } = structureOf(photos);
+  if (!fields) return total;
+  let count = 0;
+  for (const field of fields) count += changes.get(field) ?? 0;
+  return count;
+}
+
+/** `to` as the next array of `from`'s structure, with `changed` the fields of its
+ *  photos that differ from `from`'s. */
+function keepStructure(
+  from: CatalogPhoto[],
+  to: CatalogPhoto[],
+  changed: Iterable<string> = [],
+): CatalogPhoto[] {
+  const base = structureOf(from);
+  const tracked = [...changed].filter((f) => !PREVIEW_FIELDS.has(f) && !HANDLE_FIELDS.has(f));
+  if (tracked.length === 0) {
+    structures.set(to, base);
+    return to;
+  }
+  const changes = new Map(base.changes);
+  for (const field of tracked) changes.set(field, (changes.get(field) ?? 0) + 1);
+  structures.set(to, { version: base.version, changes, total: base.total + tracked.length });
+  return to;
+}
+
+/** The fields that differ between two photos arrays that hold the same ids in the
+ *  same order, or null when they don't. */
+function changedFields(before: CatalogPhoto[], after: CatalogPhoto[]): Set<string> | null {
+  if (before.length !== after.length) return null;
+  const fields = new Set<string>();
+  for (let i = 0; i < before.length; i++) {
+    if (before[i].id !== after[i].id) return null;
+    if (before[i] !== after[i]) for (const key in changesFrom(before[i], after[i])) fields.add(key);
+  }
+  return fields;
 }
 
 /** Expand a removal set to also include virtual copies of any master in it — a
@@ -102,8 +184,8 @@ interface CatalogState {
   /** Attach freshly-read grid previews to existing photos (the open-time block
    *  loader). One batched update per block; photos that already have a preview
    *  are left untouched. A photo that takes a preview takes the edit it shows
-   *  (previewEdit) with it. */
-  mergeThumbnails: (updates: { id: string; blob: LoadedPreview }[]) => void;
+   *  (previewEdit) with it. Returns the ids that took one. */
+  mergeThumbnails: (updates: { id: string; blob: LoadedPreview }[]) => string[];
   /** Replace one photo record in place (same id) with `photo` as given. Revokes
    *  the old object URL. Persistence is the caller's job. */
   updatePhoto: (photo: CatalogPhoto) => void;
@@ -118,6 +200,11 @@ interface CatalogState {
    *  another window edited it and we reloaded its <id>.jpg from disk. The photo
    *  takes the edit the preview shows (previewEdit) with it. */
   replaceThumbnail: (id: string, blob: LoadedPreview) => void;
+  /** Let go of previews the loader read, revoking their URLs: the photos fall back
+   *  to the skeleton and read theirs again when their cell is in view. A photo whose
+   *  preview is no longer the blob named (an edit or another read replaced it) keeps
+   *  it. Returns the ids that were let go. */
+  dropThumbnails: (entries: { id: string; blob: LoadedPreview }[]) => string[];
   /** Take on what another window wrote to the catalog (see state/catalog-sync):
    *  each photo here gets the stored fields of its record in `photos` and keeps
    *  its own handles, preview, URL and the edit that preview shows (previewEdit),
@@ -168,6 +255,19 @@ interface CatalogState {
   setActivePhoto: (id: string | null, options?: { broadcast?: boolean }) => void;
 }
 
+/** How loadCatalog and reconnectFiles reach the last project. project-store sets
+ *  it as it loads: it imports this store, so this store doesn't import it. */
+export interface LastProjectOpener {
+  openLast(): Promise<void>;
+  reconnectLast(): Promise<boolean>;
+}
+
+let lastProject: LastProjectOpener | null = null;
+
+export function setLastProjectOpener(opener: LastProjectOpener): void {
+  lastProject = opener;
+}
+
 export const useCatalogStore = create<CatalogState>((set, get) => {
   // Tell the windows (this one's own listeners included) the catalog changed. The
   // stamp lets a window tell its own echo from another's change. Name a photo
@@ -182,16 +282,23 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     mutate: (p: CatalogPhoto) => CatalogPhoto,
   ): Promise<void> => {
     const idSet = new Set(ids);
-    const updated = get().photos.filter((p) => idSet.has(p.id)).map(mutate);
-    if (updated.length === 0) return;
+    const photos = get().photos;
+    if (!photos.some((p) => idSet.has(p.id))) return;
+    // Shown before anything is awaited, so a change made while extensions hear of
+    // this one is made on top of it, and the records stored are the ones shown.
+    const updated: CatalogPhoto[] = [];
+    const shown = photos.map((p) => {
+      if (!idSet.has(p.id)) return p;
+      const next = mutate(p);
+      updated.push(next);
+      return next;
+    });
+    set({ photos: keepStructure(photos, shown, changedFields(photos, shown) ?? []) });
     await catalogStorage().putPhotos(updated);
     await emitMetadataChange({
       photos: updated,
       getEditState: (id) => catalogStorage().getEditState(id).then((e) => e ?? null),
     });
-    // Another window's records may have landed during the awaits: change the
-    // photos as they are now, not the copies read before them.
-    set((s) => ({ photos: s.photos.map((p) => (idSet.has(p.id) ? mutate(p) : p)) }));
     // Metadata leaves every preview as it is: no photo is named. The other
     // windows get the records through catalog-records.
     announce("update");
@@ -201,16 +308,18 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
   // photo makes other windows reload its preview from disk (see use-window-sync)
   // while this window, which already holds the new blob, ignores its own echo.
   const swapPhoto = (id: string, next: (p: CatalogPhoto) => CatalogPhoto): void => {
-    set((s) => ({
-      photos: s.photos.map((p) => {
+    set((s) => {
+      const photos = s.photos.map((p) => {
         if (p.id !== id) return p;
         const swapped = next(p);
         if (p.thumbnailUrl && p.thumbnailUrl !== swapped.thumbnailUrl) {
-          URL.revokeObjectURL(p.thumbnailUrl);
+          revokePreviewUrl(p.thumbnailUrl);
         }
         return swapped;
-      }),
-    }));
+      });
+      const changed = changedFields(s.photos, photos);
+      return { photos: changed ? keepStructure(s.photos, photos, changed) : photos };
+    });
     announce("update", id);
   };
 
@@ -228,7 +337,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     async loadCatalog() {
       set({ loading: true });
       try {
-        await useProjectStore.getState().openLast();
+        await lastProject?.openLast();
       } finally {
         set({ loading: false });
       }
@@ -238,7 +347,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       if (get().reconnecting) return;
       set({ reconnecting: true });
       try {
-        const ok = await useProjectStore.getState().reconnectLast();
+        const ok = (await lastProject?.reconnectLast()) ?? false;
         set((s) => ({
           needsReconnect: !ok,
           fileAccessNonce: s.fileAccessNonce + 1,
@@ -251,7 +360,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     replaceCatalog(photos) {
       // Old object URLs would dangle once their photos are replaced.
       for (const p of get().photos) {
-        if (p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
+        if (p.thumbnailUrl) revokePreviewUrl(p.thumbnailUrl);
       }
       set({
         photos,
@@ -286,17 +395,23 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     },
 
     mergeThumbnails(updates) {
-      if (updates.length === 0) return;
+      if (updates.length === 0) return [];
       const byId = new Map(updates.map((u) => [u.id, u.blob] as const));
+      const taken: string[] = [];
       set((s) => ({
-        photos: s.photos.map((p) => {
-          const blob = byId.get(p.id);
-          // Skip if no blob for this photo, or it already has a preview (avoids
-          // leaking an object URL by overwriting a live one).
-          if (!blob || p.thumbnailUrl) return p;
-          return withPreview(p, blob);
-        }),
+        photos: keepStructure(
+          s.photos,
+          s.photos.map((p) => {
+            const blob = byId.get(p.id);
+            // Skip if no blob for this photo, or it already has a preview (avoids
+            // leaking an object URL by overwriting a live one).
+            if (!blob || p.thumbnailUrl) return p;
+            taken.push(p.id);
+            return withPreview(p, blob);
+          }),
+        ),
       }));
+      return taken;
     },
 
     updatePhoto(photo) {
@@ -316,12 +431,29 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     // is a reaction to one, and re-broadcasting would loop.
     replaceThumbnail(id, blob) {
       set((s) => ({
-        photos: s.photos.map((p) => {
-          if (p.id !== id) return p;
-          if (p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
-          return withPreview(p, blob);
-        }),
+        photos: keepStructure(
+          s.photos,
+          s.photos.map((p) => {
+            if (p.id !== id) return p;
+            if (p.thumbnailUrl) revokePreviewUrl(p.thumbnailUrl);
+            return withPreview(p, blob);
+          }),
+        ),
       }));
+    },
+
+    dropThumbnails(entries) {
+      const byId = new Map(entries.map((e) => [e.id, e.blob] as const));
+      const dropped: string[] = [];
+      const current = get().photos;
+      const photos = current.map((p) => {
+        if (!p.thumbnailBlob || byId.get(p.id) !== p.thumbnailBlob) return p;
+        if (p.thumbnailUrl) revokePreviewUrl(p.thumbnailUrl);
+        dropped.push(p.id);
+        return { ...p, thumbnailBlob: null, thumbnailUrl: null };
+      });
+      if (dropped.length > 0) set({ photos: keepStructure(current, photos) });
+      return dropped;
     },
 
     mergeRemoteRecords(photos, deletedIds) {
@@ -331,7 +463,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       if (!current.some((p) => byId.has(p.id) || gone.has(p.id))) return;
       // Previews of removed photos would dangle for the life of the window.
       for (const p of current) {
-        if (gone.has(p.id) && p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
+        if (gone.has(p.id) && p.thumbnailUrl) revokePreviewUrl(p.thumbnailUrl);
       }
       set((s) => {
         const merged = s.photos.flatMap((p) => {
@@ -379,12 +511,15 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       // Revoke previews of photos that vanished on the rescan.
       const keep = new Set(photos.map((p) => p.id));
       for (const p of get().photos) {
-        if (!keep.has(p.id) && p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
+        if (!keep.has(p.id) && p.thumbnailUrl) revokePreviewUrl(p.thumbnailUrl);
       }
       set((s) => {
         const selectedIds = new Set([...s.selectedIds].filter((id) => keep.has(id)));
+        // A rescan that finds the same photos in the same order mostly attaches
+        // handles: what reads only fields it left alone needn't derive again.
+        const changed = changedFields(s.photos, merged);
         return {
-          photos: merged,
+          photos: changed ? keepStructure(s.photos, merged, changed) : merged,
           selectedIds,
           activePhotoId:
             s.activePhotoId && keep.has(s.activePhotoId) ? s.activePhotoId : null,
@@ -406,9 +541,10 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       const idSet = new Set(ids);
       // The project the photos belong to: once another is open, none is removed.
       const storage = catalogStorage();
+      const byId = new Map(get().photos.map((p) => [p.id, p] as const));
       // Let extensions react to removal (e.g. delete XMP sidecars).
       for (const id of ids) {
-        const photo = get().photos.find((p) => p.id === id);
+        const photo = byId.get(id);
         if (photo?.directoryHandle && photo?.fileHandle) {
           await emitPhotoRemove({
             photo,
@@ -424,7 +560,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       if (catalogStorage() !== storage) return;
       // Previews of removed photos would dangle for the life of the window.
       for (const p of get().photos) {
-        if (idSet.has(p.id) && p.thumbnailUrl) URL.revokeObjectURL(p.thumbnailUrl);
+        if (idSet.has(p.id) && p.thumbnailUrl) revokePreviewUrl(p.thumbnailUrl);
       }
       set((s) => {
         const selectedIds = new Set(s.selectedIds);
@@ -476,55 +612,60 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
     async rotatePhotos(ids, deg) {
       const d = normalizeRotation(deg);
       if (d === 0 || ids.length === 0) return;
-      const idSet = new Set(ids);
       const swap = d === 90 || d === 270;
       const turnBlob = (blob: Blob | null) => (blob ? rotateBlob(blob, d) : Promise.resolve(null));
       const updates = new Map<string, CatalogPhoto>();
 
-      await Promise.all(
-        get()
-          .photos.filter((p) => idSet.has(p.id))
-          .map(async (p) => {
-            // The photo may have changed, or left the catalog, while its preview
-            // turned: turn it as it is now, and only if it's still here. A preview
-            // stored meanwhile (an edit's) is turned in place of the one it began
-            // with, and the turn keeps the edit its source shows.
-            let from = p;
-            let turned = await turnBlob(from.thumbnailBlob);
-            let current = get().photos.find((photo) => photo.id === p.id);
-            while (current && current.thumbnailBlob !== from.thumbnailBlob) {
-              from = current;
-              turned = await turnBlob(from.thumbnailBlob);
-              current = get().photos.find((photo) => photo.id === p.id);
-            }
-            if (!current) return;
-            const turn = {
-              rotation: normalizeRotation((current.rotation ?? 0) + d),
-              width: swap ? current.height : current.width,
-              height: swap ? current.width : current.height,
-              thumbnailBlob: turned ?? current.thumbnailBlob,
-              thumbnailUrl: turned ? URL.createObjectURL(turned) : current.thumbnailUrl,
-              previewEdit: from.previewEdit,
-            };
-            // Shown before it is written, onto the photo as it is now: an edit's
-            // preview rendered from here on is made at the new rotation, and one
-            // stored later replaces this one.
-            set((s) => ({
-              photos: s.photos.map((photo) => (photo.id === p.id ? { ...photo, ...turn } : photo)),
-            }));
-            if (current.thumbnailUrl && current.thumbnailUrl !== turn.thumbnailUrl)
-              URL.revokeObjectURL(current.thumbnailUrl);
-            const updated: CatalogPhoto = { ...current, ...turn };
-            await catalogStorage().putPhoto(updated);
-            updates.set(p.id, updated);
-          }),
-      );
+      // The photos may change, or leave the catalog, while their previews turn:
+      // each is turned as it is now, and only if it's still here. A preview stored
+      // meanwhile (an edit's) is turned again in place of the one it began with,
+      // and the turn keeps the edit its source shows.
+      let pending = new Set(ids);
+      while (pending.size > 0) {
+        const sources = get().photos.filter((p) => pending.has(p.id));
+        const turned = new Map(
+          await mapLimit(
+            sources,
+            ROTATE_CONCURRENCY,
+            async (from) => [from.id, { from, blob: await turnBlob(from.thumbnailBlob) }] as const,
+          ),
+        );
+        pending = new Set();
+        const round: CatalogPhoto[] = [];
+        const photos = get().photos.map((current) => {
+          const t = turned.get(current.id);
+          if (!t) return current;
+          if (current.thumbnailBlob !== t.from.thumbnailBlob) {
+            pending.add(current.id);
+            return current;
+          }
+          const turn = {
+            rotation: normalizeRotation((current.rotation ?? 0) + d),
+            width: swap ? current.height : current.width,
+            height: swap ? current.width : current.height,
+            thumbnailBlob: t.blob ?? current.thumbnailBlob,
+            thumbnailUrl: t.blob ? URL.createObjectURL(t.blob) : current.thumbnailUrl,
+            previewEdit: t.from.previewEdit,
+          };
+          if (current.thumbnailUrl && current.thumbnailUrl !== turn.thumbnailUrl)
+            revokePreviewUrl(current.thumbnailUrl);
+          const updated: CatalogPhoto = { ...current, ...turn };
+          round.push(updated);
+          updates.set(updated.id, updated);
+          return updated;
+        });
+        if (round.length === 0) continue;
+        // Shown before it is written: an edit's preview rendered from here on is
+        // made at the new rotation, and one stored later replaces this one.
+        set({ photos });
+        await catalogStorage().putPhotos(round);
+      }
 
       await emitMetadataChange({
         photos: [...updates.values()],
         getEditState: (id) => catalogStorage().getEditState(id).then((e) => e ?? null),
       });
-      // putPhoto waited for each turned preview to be stored, so the other windows
+      // putPhotos waited for each turned preview to be stored, so the other windows
       // can reload them now; this one already holds them and ignores its echo.
       for (const id of updates.keys()) announce("update", id);
     },

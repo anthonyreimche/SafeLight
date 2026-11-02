@@ -5,6 +5,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { pushEscapeHandler } from "@/ui/escape-stack";
 import { uiZoom } from "@/ui/frame-point";
 
 export interface ContextMenuItem {
@@ -18,6 +19,11 @@ export interface ContextMenuItem {
 /** A horizontal divider between groups of items. */
 export type ContextMenuEntry = ContextMenuItem | "separator";
 
+const enabledItems = (menu: HTMLElement | null): HTMLButtonElement[] =>
+  Array.from(
+    menu?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [],
+  );
+
 interface Props {
   x: number;
   y: number;
@@ -26,7 +32,9 @@ interface Props {
 }
 
 /** Generic right-click menu positioned at the cursor and clamped to the
- *  viewport. Closes on outside click, Escape, scroll, or selecting an item. */
+ *  viewport. Closes on outside click, Escape, scroll, or selecting an item.
+ *  Focus moves to the first item on open; the arrow keys, Home and End walk
+ *  the enabled items, Enter or Space runs one, and closing hands focus back. */
 export function ContextMenu({ x, y, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
@@ -46,22 +54,50 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     });
   }, [x, y]);
 
+  // Pushed once: re-pushing on a new inline onClose would lift the menu above a
+  // dialog opened after it and steal that dialog's Escape.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => pushEscapeHandler(() => onCloseRef.current()), []);
+
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
     // Capture phase: close even when the scroll happens inside a nested scroller.
     window.addEventListener("scroll", onClose, true);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("scroll", onClose, true);
-    };
+    return () => window.removeEventListener("scroll", onClose, true);
   }, [onClose]);
+
+  useEffect(() => {
+    const prev = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    enabledItems(ref.current)[0]?.focus();
+    // An item's action may have sent focus somewhere on purpose (a dialog, a
+    // field); only focus stranded on the body by the menu's removal goes back.
+    return () => {
+      if (document.activeElement === document.body || !document.activeElement) prev?.focus();
+    };
+  }, []);
+
+  const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const list = enabledItems(ref.current);
+    if (list.length === 0) return;
+    const at = list.indexOf(document.activeElement as HTMLButtonElement);
+    const target =
+      e.key === "ArrowDown"
+        ? list[(at + 1) % list.length]
+        : e.key === "ArrowUp"
+          ? list[at <= 0 ? list.length - 1 : at - 1]
+          : e.key === "Home"
+            ? list[0]
+            : e.key === "End"
+              ? list[list.length - 1]
+              : null;
+    if (!target) return;
+    e.preventDefault();
+    target.focus();
+  };
 
   return (
     <div
-      className="fixed inset-0 z-50"
+      className="fixed inset-0 z-[160]"
       onMouseDown={onClose}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -71,6 +107,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         className="absolute min-w-[180px] overflow-hidden rounded-md border border-[var(--color-border)] bg-[var(--color-surface-1)] py-1 text-[11px] shadow-xl"
         style={{ left: pos.x, top: pos.y }}
         onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={onMenuKeyDown}
       >
         {items.map((item, i) =>
           item === "separator" ? (
@@ -83,11 +120,14 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
             <button
               key={item.label}
               role="menuitem"
+              // The menu owns its bare keys: the culling shortcuts' ↑/↓ would
+              // otherwise also step the active photo behind it.
+              data-keyboard-capture=""
               disabled={item.disabled}
               className={`block w-full px-3 py-1.5 text-left disabled:cursor-not-allowed disabled:opacity-40 ${
                 item.danger
                   ? "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-label-red)]"
-                  : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]"
+                  : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text-primary)]"
               }`}
               onClick={() => {
                 item.onClick();

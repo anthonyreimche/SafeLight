@@ -15,14 +15,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, renderHook } from "@testing-library/react";
 import { StrictMode, useLayoutEffect, useRef, useState } from "react";
 import type { CatalogPhoto, DevelopParams, EditSnapshot, Mask } from "@/catalog/types";
-import { DEFAULT_DEVELOP_PARAMS, defaultColorRange, defaultMaskAdjustments } from "@/catalog/types";
+import { DEFAULT_DEVELOP_PARAMS, defaultMaskAdjustments } from "@/catalog/types";
 import { emitCacheEntryFilled } from "@/catalog/cache-events";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
 import type { HistogramData } from "@/rendering/histogram";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
 import { disposeRenderBridge, getRenderBridge } from "@/rendering/render-bridge";
-import type { WorkerRequest, WorkerResponse } from "@/rendering/render-worker";
+import type { WorkerRequest, WorkerResponse } from "@/rendering/render-protocol";
 import { useDevelopStore } from "@/state/develop-store";
+import { useMaskCoverageView } from "@/modules/develop/mask-coverage-view";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useSettings } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
@@ -44,17 +45,32 @@ import {
   warmDecodePool,
 } from "@/raw/decode-pool";
 import { whiteBalanceStepFromLinear } from "@/rendering/auto-adjust";
-import { transformedViewCrop } from "@/rendering/crop-transform";
-import { buildForwardTransform } from "@/rendering/transform";
+import { setCanvasTool } from "@/modules/develop/canvas-tool";
 import { ViewportImage, assessMatPx } from "@/ui/ViewportImage";
 import type { ImageWindow } from "@/ui/viewport-view";
 import { endHandover } from "@/ui/canvas-handover";
 import { DevelopCanvas } from "@/modules/develop/DevelopCanvas";
-import { DevelopView } from "@/modules/develop/DevelopView";
+import { GRAPHICS_STILL_WORKS, GRAPHICS_UNAVAILABLE, useGraphics } from "@/state/graphics-store";
+import { DevelopStage } from "@/modules/develop/DevelopStage";
+import { ProofToggle } from "@/modules/develop/view-toggles";
+import { setPickDrag, usePickDragStore, type PickDragTool } from "@/modules/develop/pick-drag";
+import { autoAdjust } from "@/hooks/use-auto-adjust";
 import { useDevelopRenderer, useTierLabel } from "./use-develop-renderer";
 import type { DevelopTier } from "./use-develop-renderer";
 
 // Pass-through, so the options each load is asked with can be read back.
+/** The Develop module's view as its extension draws it: core's stage holding
+ *  the zoom, and the status bar's Proof toggle. */
+function DevelopModule() {
+  const [zoom, setZoom] = useState<number | null>(null);
+  return (
+    <>
+      <DevelopStage zoom={zoom} onZoomChange={setZoom} />
+      <ProofToggle />
+    </>
+  );
+}
+
 vi.mock("@/catalog/load-image", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/catalog/load-image")>();
   return {
@@ -1305,6 +1321,28 @@ describe("useDevelopRenderer keeping fallbacks out of the GPU's source cache", (
   });
 });
 
+describe("useDevelopRenderer when the photo won't decode", () => {
+  const undecodable = (over: Partial<CatalogPhoto>) => {
+    vi.mocked(loadPhotoImage).mockImplementationOnce(async () => null);
+    return open(photo({ previewEdit: undefined, thumbnailBlob: undefined, ...over }));
+  };
+
+  it("says why, from the reason import recorded", async () => {
+    await undecodable({ decodeError: "Unsupported camera model" });
+    expect(status?.status).toBe("Can't show this photo: Unsupported camera model");
+  });
+
+  it("says the file can't be read when no reason was recorded", async () => {
+    await undecodable({});
+    expect(status?.status).toBe("Can't read this file.");
+  });
+
+  it("says the original isn't available when there is no file to read", async () => {
+    await undecodable({ fileHandle: null });
+    expect(status?.status).toBe("The original isn't available.");
+  });
+});
+
 // A source the worker can't take (an upload that throws for want of memory, say) leaves
 // it nothing to draw the photo from: no frame comes, and the sliders change nothing.
 describe("useDevelopRenderer when the worker can't take the photo's source", () => {
@@ -1386,6 +1424,66 @@ describe("useDevelopRenderer when the worker can't take the photo's source", () 
   });
 });
 
+// On a machine where WebGL2 can't start, the bridge gives up and `ready` settles: the
+// photo would be decoded for a renderer that isn't there.
+describe("useDevelopRenderer once the renderer has failed", () => {
+  it("decodes nothing and hands the worker no source, showing the stored preview", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      render(<Develop subject={photo()} />);
+      const worker = renderWorker();
+      await act(async () => {
+        worker.onerror?.(new ErrorEvent("error", { message: "Failed to fetch module" }));
+        await settle();
+      });
+
+      expect(status?.availability).toBe("failed");
+      expect(vi.mocked(loadPhotoImage)).not.toHaveBeenCalled();
+      expect(worker.posted.map((m) => m.cmd)).not.toContain("bindSource");
+      expect(drawn[0]).toBe(decoded[0]);
+    } finally {
+      vi.mocked(console.error).mockRestore();
+    }
+  });
+});
+
+// A lost graphics context takes every source the worker held with it: once the worker
+// has rebuilt its renderer the photo is handed over again, which it otherwise draws
+// nothing of.
+describe("useDevelopRenderer after the graphics context is restored", () => {
+  it("hands the worker the photo again", async () => {
+    const { worker, progress } = await open(photo(), true);
+    const binds = () => worker.posted.filter((m) => m.cmd === "bindSource").length;
+    const before = binds();
+
+    await act(async () => {
+      worker.reply({ type: "contextLost" });
+      await settle();
+    });
+    expect(status?.availability).toBe("lost");
+    expect(binds()).toBe(before);
+
+    await act(async () => {
+      worker.reply({ type: "ready", pipelineFloat: true });
+      await settle();
+    });
+    await progress();
+    expect(status?.availability).toBe("ready");
+    expect(binds()).toBe(before + 1);
+  });
+
+  it("hands nothing over again when the worker was only quiet", async () => {
+    const { worker } = await open(photo(), true);
+    const binds = () => worker.posted.filter((m) => m.cmd === "bindSource").length;
+    const before = binds();
+    await act(async () => {
+      worker.reply({ type: "ready", pipelineFloat: true });
+      await settle();
+    });
+    expect(binds()).toBe(before);
+  });
+});
+
 // Every render and every histogram costs the worker a full pass over the
 // source, so one edit asks for one of each. Animation frames are run by hand
 // here, so what an edit posts doesn't depend on when jsdom's clock ticks.
@@ -1407,7 +1505,7 @@ describe("useDevelopRenderer during an edit", () => {
   afterEach(() => {
     status = null;
     useSettings.setState({ liveHistogram: LIVE_HISTOGRAM });
-    useDevelopStore.setState({ hoveredMaskId: null, selectedMaskId: null });
+    useMaskCoverageView.setState({ maskId: null });
   });
 
   /** Runs the animation frames queued so far; the ones they queue wait. */
@@ -1527,7 +1625,7 @@ describe("useDevelopRenderer during an edit", () => {
     it("posts one render while the edited mask's overlay shows", async () => {
       useDevelopStore.setState({ params: withMasks("a") });
       const worker = await opened();
-      await act(async () => useDevelopStore.setState({ hoveredMaskId: "a" }));
+      await act(async () => useMaskCoverageView.setState({ maskId: "a" }));
       await answeredFrames(worker, 40);
       const from = worker.posted.length;
 
@@ -1542,7 +1640,7 @@ describe("useDevelopRenderer during an edit", () => {
     it("moves the overlay with its mask when one ahead of it is removed", async () => {
       useDevelopStore.setState({ params: withMasks("a", "b") });
       const worker = await opened();
-      await act(async () => useDevelopStore.setState({ hoveredMaskId: "b" }));
+      await act(async () => useMaskCoverageView.setState({ maskId: "b" }));
       await answeredFrames(worker, 40);
       expect(vizPosts(worker, 0).at(-1)).toEqual({ index: 1, strength: 0.5 });
       const from = worker.posted.length;
@@ -1562,7 +1660,7 @@ describe("useDevelopRenderer during an edit", () => {
       const worker = await opened();
       const from = worker.posted.length;
 
-      await act(async () => useDevelopStore.setState({ hoveredMaskId: "a" }));
+      await act(async () => useMaskCoverageView.setState({ maskId: "a" }));
       await answeredFrames(worker, 40);
       const fadeIn = vizPosts(worker, from);
       expect(fadeIn.length).toBeGreaterThan(3);
@@ -1577,7 +1675,7 @@ describe("useDevelopRenderer during an edit", () => {
       await frames(5);
       expect(worker.posted.length).toBe(shown);
 
-      await act(async () => useDevelopStore.setState({ hoveredMaskId: null }));
+      await act(async () => useMaskCoverageView.setState({ maskId: null }));
       await answeredFrames(worker, 40);
       const fadeOut = vizPosts(worker, shown);
       expect(fadeOut.length).toBeGreaterThan(3);
@@ -1595,12 +1693,12 @@ describe("useDevelopRenderer during an edit", () => {
     it("clears an overlay the view left showing when it closed", async () => {
       useDevelopStore.setState({ params: withMasks("a") });
       const worker = await opened();
-      await act(async () => useDevelopStore.setState({ hoveredMaskId: "a" }));
+      await act(async () => useMaskCoverageView.setState({ maskId: "a" }));
       await frames(40);
       expect(vizPosts(worker, 0).at(-1)).toEqual({ index: 0, strength: 0.5 });
 
       cleanup();
-      useDevelopStore.setState({ hoveredMaskId: null });
+      useMaskCoverageView.setState({ maskId: null });
       const from = worker.posted.length;
       render(<Develop subject={photo()} />);
       await nextFrame();
@@ -1635,7 +1733,7 @@ describe("useDevelopRenderer during an edit", () => {
       return { worker, source };
     }
 
-    it("renders and measures it once outside crop mode", async () => {
+    it("renders and measures it once while no tool's view is held", async () => {
       const { worker, source } = await openDecodedAt({ width: 4096, height: 2731 });
 
       expect(status?.sourceWidth).toBe(4096);
@@ -1643,22 +1741,51 @@ describe("useDevelopRenderer during an edit", () => {
       expect(posts(worker, "computeHistogram", source)).toEqual([]);
     });
 
-    it("draws the crop again for the source's own aspect in crop mode", async () => {
-      useDevelopStore.setState({ cropping: true, params: { ...edit(0.5), straighten: 5 } });
+    it("draws the source with the panel bypass held when it lands, not when the photo opened", async () => {
+      useDevelopStore.setState({ params: edit(0.5) });
+      let finish = () => {};
+      const finished = new Promise<void>((r) => (finish = r));
+      vi.mocked(loadPhotoImage).mockImplementationOnce(async () => {
+        await finished;
+        return { kind: "bitmap", bitmap: new FakeBitmap(SOURCE_SIZE.width, SOURCE_SIZE.height) };
+      });
+      try {
+        const { worker, progress } = await open(photo());
+        await nextFrame();
+        await act(async () => useDevelopStore.setState({ bypassedPanels: { "core.basic": true } }));
+        await nextFrame();
+        await act(async () => finish());
+        await progress();
+
+        const source = sourceIndex(worker, false);
+        expect(source).toBeGreaterThanOrEqual(0);
+        const [render] = posts(worker, "render", source);
+        expect(paramsAt(worker, worker.posted.indexOf(render))?.exposure).toBe(
+          DEFAULT_DEVELOP_PARAMS.exposure,
+        );
+      } finally {
+        useDevelopStore.setState({ bypassedPanels: {} });
+      }
+    });
+
+    // Crop mode's view widens the crop by the image's aspect, which the source's
+    // first frame gives.
+    it("draws a held tool's view again for the source's own aspect", async () => {
+      const byAspect = (p: DevelopParams): DevelopParams => {
+        const { width, height } = useDevelopStore.getState().sourceSize;
+        return { ...p, crop: { x: 0, y: 0, width: width > 0 ? width / height : 1, height: 1 } };
+      };
+      useDevelopStore.setState({ params: { ...edit(0.5), straighten: 5 } });
+      setCanvasTool("safelight.crop", { overlay: () => null, viewParams: byAspect });
       try {
         const upright = { width: 4000, height: 6000 };
         const { worker, source } = await openDecodedAt(upright);
 
         const renders = posts(worker, "render", source);
         expect(renders).toHaveLength(2);
-        const { straighten, transform } = useDevelopStore.getState().params;
-        const aspect = upright.width / upright.height;
-        const forward = buildForwardTransform(straighten, transform, aspect);
-        expect(paramsAt(worker, worker.posted.indexOf(renders[1]))?.crop).toEqual(
-          transformedViewCrop(forward),
-        );
+        expect(paramsAt(worker, worker.posted.indexOf(renders[1]))?.crop).toEqual({ x: 0, y: 0, width: 4000 / 6000, height: 1 });
       } finally {
-        useDevelopStore.setState({ cropping: false });
+        setCanvasTool("safelight.crop", null);
       }
     });
   });
@@ -1715,7 +1842,7 @@ describe("useDevelopRenderer during an edit", () => {
       await editAndSettle(worker, 1);
       const from = worker.posted.length;
 
-      await act(async () => useDevelopStore.setState({ hoveredMaskId: "a" }));
+      await act(async () => useMaskCoverageView.setState({ maskId: "a" }));
       for (let i = 0; i < 40; i++) {
         await nextFrame();
         await act(async () => worker.reply(frame()));
@@ -2441,7 +2568,7 @@ describe("useDevelopRenderer easing between what it shows of a photo", () => {
   });
 });
 
-// DevelopView builds a new view per photo, and canvas-handover holds the photo before
+// DevelopStage builds a new view per photo, and canvas-handover holds the photo before
 // over the new view's blank canvas for a moment (see "DevelopCanvas handing its
 // picture" below). A view keeps its picture only while its own photo loads again.
 describe("useDevelopRenderer leaving the photo before", () => {
@@ -2734,7 +2861,7 @@ describe("useDevelopRenderer sizing the canvas", () => {
   });
 });
 
-// DevelopView builds a new DevelopCanvas, with a new display canvas, for every photo.
+// DevelopStage builds a new DevelopCanvas, with a new display canvas, for every photo.
 // The picture the view before showed stays where it was until the next photo's first
 // picture, for at most 150 ms, so a switch never shows the bare surround between.
 describe("DevelopCanvas handing its picture to the next photo's view", () => {
@@ -3146,6 +3273,39 @@ describe("DevelopCanvas saying why it shows no edits", () => {
     expect(says("Reason: WebGL2 not supported")).toBe(true);
   });
 
+  // The words Export and the main window's notice use too.
+  it("on a computer whose graphics can't run WebGL2", () => {
+    useGraphics.setState({ webgl2: "no", reason: "Could not create a WebGL2 context" });
+    try {
+      render(develop);
+      act(() => renderWorker().reply({ type: "initError", message: "WebGL2 not supported" }));
+      expect(says(GRAPHICS_UNAVAILABLE)).toBe(true);
+      expect(says(GRAPHICS_STILL_WORKS)).toBe(true);
+      expect(says("Can't show images right now")).toBe(false);
+    } finally {
+      useGraphics.setState({ webgl2: "unknown", reason: null });
+    }
+  });
+
+  it("on a computer that lost WebGL2 after it had started", () => {
+    useGraphics.setState({ webgl2: "yes", reason: null });
+    const twoD = HTMLCanvasElement.prototype.getContext;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: function getContext(this: HTMLCanvasElement, type: string, options?: unknown) {
+        return type === "webgl2" ? null : twoD.call(this, type as "2d", options);
+      },
+    });
+    try {
+      render(develop);
+      act(() => renderWorker().reply({ type: "initError", message: "WebGL2 not supported" }));
+      expect(says(GRAPHICS_UNAVAILABLE)).toBe(true);
+      expect(says("Can't show images right now")).toBe(false);
+    } finally {
+      useGraphics.setState({ webgl2: "unknown", reason: null });
+    }
+  });
+
   it("on a computer that can't draw edits", () => {
     Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
       configurable: true,
@@ -3263,14 +3423,26 @@ describe("DevelopCanvas eyedroppers", () => {
     return worker;
   }
 
-  describe("white balance", () => {
+  // White Balance's eyedropper: a pick tool that takes the press itself, at
+  // once (a quick click releases before any probe answers), and hands its point
+  // to core's auto-adjust loop, which probes the point after each step.
+  describe("white balance at a canvas point", () => {
     afterEach(() => {
       vi.useRealTimers();
+      setPickDrag("acme", null);
     });
 
     it("asks for the output colour where it was clicked, and sets Temp and Tint from the answer", async () => {
       const worker = await openDevelop();
-      act(() => useDevelopStore.setState({ histogram: histogram(), wbPicking: true }));
+      act(() => useDevelopStore.setState({ histogram: histogram() }));
+      act(() =>
+        setPickDrag("acme", {
+          onPress: (point) => {
+            setPickDrag("acme", null);
+            void autoAdjust.whiteBalanceAt(point);
+          },
+        }),
+      );
       const want = whiteBalanceStepFromLinear(...WARM, store().params, store().asShotTemperature);
       FakeWorker.probed = [WARM];
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -3281,27 +3453,42 @@ describe("DevelopCanvas eyedroppers", () => {
         await vi.advanceTimersByTimeAsync(1000);
       });
 
-      const [first] = probes(worker);
-      expect(first.point).toBe("output");
-      expect(first.u).toBeCloseTo(0.25);
-      expect(first.v).toBeCloseTo(0.75);
+      const asked = probes(worker);
+      expect(asked.length).toBeGreaterThan(0);
+      for (const probe of asked) {
+        expect(probe.point).toBe("output");
+        expect(probe.u).toBeCloseTo(0.25);
+        expect(probe.v).toBeCloseTo(0.75);
+      }
       expect(store().params.temperature).toBe(want.temperature);
       expect(store().params.tint).toBe(want.tint);
       expect(store().history.at(-1)?.label).toBe("White Balance");
-      expect(store().wbPicking).toBe(false);
+      expect(usePickDragStore.getState().held).toBeNull();
     });
   });
 
-  describe("the HSL picker", () => {
-    const hue = () => store().params.hsl.hue;
+  // An extension's on-image drag tool (HSL's target tool): core probes the
+  // colour the view shows under the press and hands it on, with the drag.
+  describe("the pick-drag tool", () => {
+    const calls: unknown[] = [];
+    const tool: PickDragTool = {
+      onDown: (rgb, point) => void calls.push({ down: [...rgb], point }),
+      onMove: (point) => void calls.push({ move: point }),
+      onUp: () => void calls.push("up"),
+    };
 
     beforeEach(() => {
+      calls.length = 0;
       FakeWorker.probed = [GREEN, GREEN];
     });
 
-    it("asks for the output colour where it was pressed, and drags from the hue it gets", async () => {
+    afterEach(() => {
+      setPickDrag("acme", null);
+    });
+
+    it("asks for the output colour where it was pressed, and drags from what it gets", async () => {
       const worker = await openDevelop();
-      act(() => useDevelopStore.setState({ hslPicking: true }));
+      act(() => setPickDrag("acme", tool));
       worker.holding = true;
 
       await act(async () => {
@@ -3310,7 +3497,7 @@ describe("DevelopCanvas eyedroppers", () => {
       await act(async () => {
         fireEvent.pointerMove(frame(), at(0.25, 0.5));
       });
-      expect(hue().green).toBe(0);
+      expect(calls).toEqual([]);
 
       await act(async () => {
         worker.release();
@@ -3324,18 +3511,32 @@ describe("DevelopCanvas eyedroppers", () => {
       expect(probe.point).toBe("output");
       expect(probe.u).toBeCloseTo(0.25);
       expect(probe.v).toBeCloseTo(0.75);
-      expect(hue().green).toBeGreaterThan(0);
-      expect(hue().red).toBe(0);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]).toMatchObject({ down: [...GREEN] });
+      expect(calls[1]).toMatchObject({ move: {} });
 
       await act(async () => {
         fireEvent.pointerUp(frame(), at(0.25, 0.5));
       });
-      expect(store().history.at(-1)?.label).toBe("HSL Picker");
+      expect(calls.at(-1)).toBe("up");
+    });
+
+    it("hands a tool that takes presses the point at once, and probes nothing for it", async () => {
+      const worker = await openDevelop();
+      const pressed: unknown[] = [];
+      act(() => setPickDrag("acme", { onPress: (point) => void pressed.push(point) }));
+      worker.holding = true;
+      await act(async () => {
+        fireEvent.pointerDown(frame(), at(0.25, 0.75));
+        fireEvent.pointerUp(frame(), at(0.25, 0.75));
+      });
+      expect(pressed).toHaveLength(1);
+      expect(probes(worker)).toEqual([]);
     });
 
     it("starts no drag from a colour that comes back after the press was released", async () => {
       const worker = await openDevelop();
-      act(() => useDevelopStore.setState({ hslPicking: true }));
+      act(() => setPickDrag("acme", tool));
       worker.holding = true;
 
       await act(async () => {
@@ -3347,66 +3548,16 @@ describe("DevelopCanvas eyedroppers", () => {
         await settle();
       });
       await act(async () => {
-        fireEvent.pointerDown(frame(), at(0.25, 0.75));
-      });
-      await act(async () => {
         fireEvent.pointerMove(frame(), at(0.25, 0.5));
       });
 
-      expect(hue().green).toBe(0);
+      expect(calls).toEqual([]);
     });
   });
 
   // A frame of the image's middle half shows over the middle of the picture, and the
   // mask overlay's own rect still spans the whole image: the click maps through the
   // first, the rect the viewport places the buffer in.
-  it("maps a Colour Range pick through where the viewport places the frame", async () => {
-    const worker = await openDevelop();
-    act(() => getRenderBridge().render(false));
-    const next = worker.inFlight();
-    if (!next) throw new Error("no render in flight");
-    await act(async () => {
-      worker.reply(frameFor(next, LANDSCAPE, { x: 0.25, y: 0.25, w: 0.5, h: 0.5 }));
-    });
-    const picker: Mask = {
-      id: "picker",
-      name: "Colour",
-      visible: true,
-      invert: false,
-      opacity: 100,
-      adj: defaultMaskAdjustments(),
-      panels: [],
-      components: [
-        { id: "c", kind: "colorRange", mode: "add", invert: false, colorRange: defaultColorRange() },
-      ],
-    };
-    act(() =>
-      useDevelopStore.setState({
-        activeTool: "mask",
-        maskColorPicking: true,
-        params: { ...store().params, masks: [picker] },
-        selectedMaskId: picker.id,
-        selectedComponentId: "c",
-      }),
-    );
-    const overlay = document.querySelector("svg.pointer-events-none")?.parentElement;
-    if (!overlay) throw new Error("no mask overlay");
-    const placed = { x: 250, y: SHOWN.y + SHOWN.h / 4, w: 500, h: SHOWN.h / 2 };
-
-    await act(async () => {
-      fireEvent.pointerDown(overlay, {
-        pointerId: 1,
-        button: 0,
-        clientX: placed.x + 0.25 * placed.w,
-        clientY: placed.y + 0.75 * placed.h,
-      });
-    });
-
-    const [probe] = probes(worker);
-    expect(probe.point).toBe("mask");
-    expect(probe.u).toBeCloseTo(0.25);
-    expect(probe.v).toBeCloseTo(0.75);
-  });
 });
 
 // A 2D context's colour space is fixed by its first getContext, so Develop's canvases
@@ -3460,7 +3611,7 @@ describe("Develop's canvases in the screen's colour space", () => {
 
     it("builds the view again, with a new display canvas in the new space", () => {
       const screen = stubScreen(true);
-      render(<DevelopView />);
+      render(<DevelopModule />);
       const first = displayCanvas();
       expect(asked(first)).toEqual([{ colorSpace: "display-p3" }]);
 
@@ -3563,7 +3714,7 @@ describe("useDevelopRenderer soft proof", () => {
     });
 
     it("offers the Proof button on a photo stored as version 3 only", async () => {
-      render(<DevelopView />);
+      render(<DevelopModule />);
       await act(async () => {
         await settle();
       });

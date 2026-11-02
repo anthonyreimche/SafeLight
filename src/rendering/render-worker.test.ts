@@ -28,9 +28,9 @@ import {
 } from "@/catalog/types";
 import type { ProcessingStageContribution, StageSpace, StageTextureData } from "@/extensions/types";
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
-import type { WorkerRequest, WorkerResponse } from "./render-worker";
+import type { MaskPatch, WorkerRequest, WorkerResponse } from "./render-protocol";
 import { LIVE_MASK_COPY_PREPASSES } from "./webgl/mask-stage-instances";
-import type { ProbePoint } from "./webgl/renderer";
+import type { ProbePoint, WebGLRendererOpts } from "./webgl/renderer";
 import type { MonitorTransform } from "./display-profile";
 import type { ColorSpaceId, DisplaySpace } from "./color-space";
 import type { CapturePoint, FloatFrame } from "./float-frame";
@@ -95,7 +95,7 @@ const { FakeRenderer } = vi.hoisted(() => {
     renderedProof: (ColorSpaceId | null)[] = [];
     /** What each render drew with: the last params and bag set, and whether
      *  the view's overlays (clipping warning, mask tint, sharpening preview) were on. */
-    drawn: { params: DevelopParams | undefined; bag: Record<string, unknown> | null; overlays: boolean }[] = [];
+    drawn: { params: DevelopParams | undefined; derived?: Record<string, unknown>; bag: Record<string, unknown> | null; overlays: boolean }[] = [];
     /** Each render and readback, in order. */
     calls: ("render" | "computeHistogram" | "readDownscaledPixels" | "probe" | "readFloatFrame" | "readSourceSample")[] = [];
     /** What each readFloatFrame drew: its point, long-edge cap and space, and
@@ -105,6 +105,7 @@ const { FakeRenderer } = vi.hoisted(() => {
       maxEdge: number | undefined;
       space: StageSpace | undefined;
       params: DevelopParams | undefined;
+      derived?: Record<string, unknown>;
       bag: Record<string, unknown> | null;
       pipeline: ResolvedPipeline | null;
       screen: [MonitorTransform | null, DisplaySpace, ColorSpaceId | null];
@@ -182,6 +183,8 @@ const { FakeRenderer } = vi.hoisted(() => {
     sourceNative = false;
     /** Whether it keeps the native-resolution sample: the develop renderer does, the thumb renderer doesn't. */
     keepSourceSample = false;
+    /** Whether it keeps the 8-bit search image: the develop renderer does, the thumb renderer doesn't. */
+    keepSourcePixels = false;
 
     private holdSource(image: { width: number; height: number; kind?: string; isFallbackPreview?: boolean; sample?: unknown }) {
       this.sourceWidth = image.width;
@@ -196,7 +199,6 @@ const { FakeRenderer } = vi.hoisted(() => {
       image: { width: number; height: number; kind?: string; isFallbackPreview?: boolean; sample?: unknown },
       _maxEdge?: number,
       _isFallbackPreview?: boolean,
-      _baseCurveForBitmap?: boolean,
       capFloat16 = false,
     ) {
       this.failIfAsked("setImage");
@@ -218,7 +220,7 @@ const { FakeRenderer } = vi.hoisted(() => {
       return hit;
     }
 
-    healSourceData() {
+    sourcePixelsData() {
       return null;
     }
 
@@ -237,7 +239,6 @@ const { FakeRenderer } = vi.hoisted(() => {
       image: { width: number; height: number; kind?: string; isFallbackPreview?: boolean; sample?: unknown },
       _maxEdge?: number,
       _isFallbackPreview?: boolean,
-      _baseCurveForBitmap?: boolean,
       bind = true,
     ) {
       this.failIfAsked("uploadSource");
@@ -245,9 +246,19 @@ const { FakeRenderer } = vi.hoisted(() => {
       if (bind) this.holdSource(image);
     }
 
-    setParams(params: DevelopParams) {
+    setParams(params: DevelopParams, derived?: Record<string, unknown>) {
       this.failIfAsked("setParams");
       this.paramsSeen.push(params);
+      this.derivedSeen.push(derived ?? {});
+    }
+
+    /** What each setParams was handed to derive with, in order. */
+    derivedSeen: Record<string, unknown>[] = [];
+
+    /** The geometry stage's keys (geometry.ts), as a renderer with one has them. */
+    static geometry: { region: string; inverse: string } | null = null;
+    get geometryKeys() {
+      return FakeRenderer.geometry;
     }
 
     setMonitorTransform(transform: MonitorTransform | null) {
@@ -283,6 +294,7 @@ const { FakeRenderer } = vi.hoisted(() => {
         maxEdge,
         space,
         params: this.paramsSeen.at(-1),
+        derived: this.derivedSeen.at(-1),
         bag: this.contributedParams,
         pipeline: this.pipeline,
         screen: [this.monitorTransform, this.displaySpace, this.proofSpace],
@@ -317,6 +329,7 @@ const { FakeRenderer } = vi.hoisted(() => {
       this.renderedProof.push(this.proofSpace);
       this.drawn.push({
         params: this.paramsSeen.at(-1),
+        derived: this.derivedSeen.at(-1),
         bag: this.contributedParams,
         overlays: options?.viewOverlays ?? true,
       });
@@ -329,11 +342,33 @@ const { FakeRenderer } = vi.hoisted(() => {
 vi.mock("./webgl/renderer", () => ({ WebGLRenderer: FakeRenderer }));
 
 class FakeOffscreenCanvas {
+  static made: FakeOffscreenCanvas[] = [];
   width: number;
   height: number;
+  private readonly listeners = new Map<string, ((e: Event) => void)[]>();
   constructor(width: number, height: number) {
     this.width = width;
     this.height = height;
+    FakeOffscreenCanvas.made.push(this);
+  }
+
+  addEventListener(type: string, listener: (e: Event) => void) {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+
+  /** Dispatches `type` as the browser does, and says whether a listener prevented its default. */
+  fire(type: string): boolean {
+    if (type === "webglcontextlost") this.lost = true;
+    const event = new Event(type, { cancelable: true });
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+    return event.defaultPrevented;
+  }
+
+  /** Whether the context is lost, as a canvas whose event hasn't been delivered yet shows. */
+  lost = false;
+
+  getContext(): { isContextLost(): boolean } {
+    return { isContextLost: () => this.lost };
   }
 
   convertToBlob(options?: ImageEncodeOptions): Promise<Blob> {
@@ -389,6 +424,7 @@ beforeEach(async () => {
   FakeRenderer.failing = {};
   FakeRenderer.resident = new Set();
   FakeRenderer.residentSize = { width: 0, height: 0 };
+  FakeOffscreenCanvas.made = [];
   handedOut = [];
   encodings = [];
   encodeError = null;
@@ -479,8 +515,8 @@ describe("render-worker init recovery", () => {
 
     const earlier = { ...DEFAULT_DEVELOP_PARAMS, exposure: 0.5 };
     const latest = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1 };
-    send({ cmd: "setParams", params: earlier });
-    send({ cmd: "setParams", params: latest });
+    send({ cmd: "setParams", derived: {}, params: earlier });
+    send({ cmd: "setParams", derived: {}, params: latest });
 
     FakeRenderer.throwOnConstruct = false;
     send({ cmd: "init", width: 64, height: 64, highBitDepth: false });
@@ -499,7 +535,7 @@ describe("render-worker init recovery", () => {
   it("applies params sent after the renderer exists straight to it", () => {
     send({ cmd: "init", width: 64, height: 64, highBitDepth: false });
     const params = { ...DEFAULT_DEVELOP_PARAMS, exposure: 2 };
-    send({ cmd: "setParams", params });
+    send({ cmd: "setParams", derived: {}, params });
     expect(FakeRenderer.instances[0].paramsSeen).toEqual([params]);
   });
 });
@@ -521,7 +557,7 @@ describe("render-worker init seeding", () => {
     send({ cmd: "setCacheBudget", bytes: 1_000_000 });
     send({ cmd: "setContributedParams", bag: { "ext.stage.amount": 0.5 } });
     send({ cmd: "setStageTextures", bag: {} });
-    send({ cmd: "setParams", params: DEFAULT_DEVELOP_PARAMS });
+    send({ cmd: "setParams", derived: {}, params: DEFAULT_DEVELOP_PARAMS });
   }
 
   /** The seeding methods whose call reached the renderer: one that throws records nothing. */
@@ -569,7 +605,7 @@ describe("render-worker init seeding", () => {
     const params = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1 };
     send({ cmd: "setContributedParams", bag: { "ext.stage.amount": 0.5 } });
     send({ cmd: "setStageTextures", bag: textures });
-    send({ cmd: "setParams", params });
+    send({ cmd: "setParams", derived: {}, params });
     FakeRenderer.failing.setContributedParams = new Error("setContributedParams failed");
 
     send(INIT);
@@ -628,7 +664,7 @@ describe("render-worker develop program warm-up", () => {
   });
 
   it("builds it at the version of the params that arrived before init", () => {
-    send({ cmd: "setParams", params: { ...DEFAULT_DEVELOP_PARAMS, processVersion: 1 } });
+    send({ cmd: "setParams", derived: {}, params: { ...DEFAULT_DEVELOP_PARAMS, processVersion: 1 } });
     send(INIT);
     expect(FakeRenderer.instances[0].prepared.map((call) => call.version)).toEqual([1]);
   });
@@ -670,6 +706,25 @@ describe("render-worker develop program warm-up", () => {
     expect(posted.map((msg) => msg.type)).toEqual(["initError", "ready"]);
   });
 
+  it("tells the window of each stage the develop renderer quarantines", () => {
+    send(INIT);
+    const { onStageQuarantined } = FakeRenderer.instances[0].opts as WebGLRendererOpts;
+    onStageQuarantined?.({ stageId: "ext.film", signature: "abc", log: "syntax error" });
+    expect(posted.at(-1)).toEqual({ type: "stageQuarantined", stageId: "ext.film", signature: "abc", log: "syntax error" });
+  });
+
+  it("tells the window of each stage the thumbnail renderer quarantines", () => {
+    send({
+      cmd: "uploadSource",
+      target: "thumb",
+      key: "t",
+      image: { kind: "float", data: new Float32Array(4), width: 1, height: 1 },
+    });
+    const { onStageQuarantined } = FakeRenderer.instances[0].opts as WebGLRendererOpts;
+    onStageQuarantined?.({ stageId: "ext.film", signature: "abc", log: "syntax error" });
+    expect(posted.at(-1)).toEqual({ type: "stageQuarantined", stageId: "ext.film", signature: "abc", log: "syntax error" });
+  });
+
   // Stages or a transform that can't be built fail frames, not the renderer: the
   // stock program is built to tell the two apart, the error is logged once, and the
   // renderer stays, so it can recover when the stages or transform change.
@@ -691,7 +746,7 @@ describe("render-worker develop program warm-up", () => {
       send(INIT);
       expect(FakeRenderer.instances[0].stockPrepared).toEqual([CURRENT_PROCESS_VERSION]);
 
-      send({ cmd: "setParams", params: { ...DEFAULT_DEVELOP_PARAMS, processVersion: 1 } });
+      send({ cmd: "setParams", derived: {}, params: { ...DEFAULT_DEVELOP_PARAMS, processVersion: 1 } });
       send(INIT);
       expect(FakeRenderer.instances[1].prepared.map((call) => call.version)).toEqual([1]);
       expect(FakeRenderer.instances[1].stockPrepared).toEqual([1]);
@@ -868,14 +923,6 @@ describe("render-worker frames", () => {
     expect(posted).toEqual([{ type: "frameSkipped", seq: 2 }]);
   });
 
-  it("answers frameSkipped once the renderer is disposed", () => {
-    send(INIT);
-    send({ cmd: "dispose" });
-    posted = [];
-    send({ cmd: "render", seq: 3 });
-    expect(posted).toEqual([{ type: "frameSkipped", seq: 3 }]);
-  });
-
   it("answers frameSkipped between photos, and the frame once the next source is set", () => {
     send(INIT);
     send({ cmd: "clearSource" });
@@ -1002,6 +1049,75 @@ describe("render-worker between photos", () => {
     send({ cmd: "bindSource", reqId: 2, key: "next" });
     send({ cmd: "render", seq: 7 });
     expect(answers().map((msg) => msg.type)).toEqual(["frame"]);
+  });
+});
+
+// A GPU reset loses the develop canvas's context, and every texture and program with it.
+// The worker tells the window, draws nothing until the context is restored, then builds
+// its renderer again as init last did, with what it holds, and says ready. The sources
+// went with the context, so it draws nothing until the window hands the photo over again.
+describe("render-worker graphics context loss", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: true };
+  const params = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1.5 };
+  const canvas = () => FakeOffscreenCanvas.made[0];
+
+  beforeEach(() => {
+    send(INIT);
+    send({ cmd: "setParams", derived: {}, params });
+    send({ cmd: "setImage", image: CACHED, maxEdge: 4096 });
+    posted = [];
+  });
+
+  it("tells the window, lets go of its renderers, and asks for the context back", () => {
+    send({ cmd: "uploadSource", target: "thumb", key: "k", image: CACHED });
+    const [develop, thumb] = FakeRenderer.instances;
+    expect(canvas().fire("webglcontextlost")).toBe(true);
+    expect(posted).toEqual([{ type: "contextLost" }]);
+    expect([develop.disposed, thumb.disposed]).toEqual([true, true]);
+
+    send({ cmd: "render", seq: 1 });
+    expect(posted.at(-1)).toEqual({ type: "frameSkipped", seq: 1 });
+  });
+
+  it("builds the renderer again on restore, from the last init and params, and says ready", () => {
+    canvas().fire("webglcontextlost");
+    posted = [];
+    canvas().fire("webglcontextrestored");
+
+    expect(FakeRenderer.instances).toHaveLength(2);
+    const rebuilt = FakeRenderer.instances[1];
+    expect(rebuilt.opts).toMatchObject({ highBitDepth: true });
+    expect(rebuilt.paramsSeen).toEqual([params]);
+    expect(posted).toEqual([{ type: "ready", pipelineFloat: true }]);
+  });
+
+  it("draws nothing after the restore until the photo is handed over again", () => {
+    canvas().fire("webglcontextlost");
+    canvas().fire("webglcontextrestored");
+    posted = [];
+    send({ cmd: "render", seq: 2 });
+    expect(posted).toEqual([{ type: "frameSkipped", seq: 2 }]);
+
+    send({ cmd: "setImage", image: CACHED, maxEdge: 4096 });
+    send({ cmd: "render", seq: 3 });
+    expect(posted.at(-1)).toMatchObject({ type: "frame", seq: 3 });
+  });
+
+  it("answers initError when the restored context can't make a renderer", () => {
+    canvas().fire("webglcontextlost");
+    FakeRenderer.throwOnConstruct = true;
+    canvas().fire("webglcontextrestored");
+    expect(posted.at(-1)).toMatchObject({ type: "initError" });
+  });
+
+  it("pays no heed to a canvas it has replaced", () => {
+    canvas().fire("webglcontextlost");
+    canvas().fire("webglcontextrestored");
+    posted = [];
+    canvas().fire("webglcontextlost");
+    canvas().fire("webglcontextrestored");
+    expect(posted).toEqual([]);
+    expect(FakeRenderer.instances).toHaveLength(2);
   });
 });
 
@@ -1143,7 +1259,7 @@ describe("render-worker frame source", () => {
 
 function thumbnail(over: Partial<Extract<WorkerRequest, { cmd: "renderThumbnail" }>> = {}) {
   const request: WorkerRequest = {
-    cmd: "renderThumbnail",
+    cmd: "renderThumbnail", derived: {},
     requestId: "t1",
     image: CACHED,
     params: DEFAULT_DEVELOP_PARAMS,
@@ -1294,7 +1410,7 @@ describe("render-worker contributed params", () => {
       send(INIT);
       whole({ "a.gain": 1, "b.take": 2 });
       patch({ "a.gain": 3 });
-      send({ cmd: "capture", reqId: 7, params: PARAMS, pipeline: BUILTIN_RESOLVED, bagPatch: { "a.mode": 1 } });
+      send({ cmd: "capture", derived: {}, reqId: 7, params: PARAMS, pipeline: BUILTIN_RESOLVED, bagPatch: { "a.mode": 1 } });
 
       const live = develop();
       const merged = { "a.gain": 3, "b.take": 2 };
@@ -1307,7 +1423,7 @@ describe("render-worker contributed params", () => {
       send(INIT);
       whole({ "a.gain": 1 });
       const seen = develop().contributedSeen.length;
-      send({ cmd: "capture", reqId: 8, params: PARAMS, pipeline: BUILTIN_RESOLVED });
+      send({ cmd: "capture", derived: {}, reqId: 8, params: PARAMS, pipeline: BUILTIN_RESOLVED });
       expect(develop().contributedSeen.length).toBe(seen);
     });
 
@@ -1315,11 +1431,53 @@ describe("render-worker contributed params", () => {
       send(INIT);
       whole({ "a.gain": 1 });
       FakeRenderer.renderError = new Error("Shader compile failed: boom");
-      send({ cmd: "capture", reqId: 9, params: PARAMS, pipeline: BUILTIN_RESOLVED, bagPatch: { "a.mode": 1 } });
+      send({ cmd: "capture", derived: {}, reqId: 9, params: PARAMS, pipeline: BUILTIN_RESOLVED, bagPatch: { "a.mode": 1 } });
       FakeRenderer.renderError = null;
       expect(posted.at(-1)).toMatchObject({ type: "captured", reqId: 9 });
       expect(develop().contributedParams).toEqual({ "a.gain": 1 });
     });
+  });
+});
+
+// The bridge posts the stage textures whole when it starts, then only the textures set
+// or cleared since. A patch is merged as a new bag, and the textures it doesn't name stay
+// the very objects the renderers hold, so their uploads stay keyed by version.
+describe("render-worker stage texture patches", () => {
+  const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
+  const tex = (version: number): StageTextureData => ({
+    data: new Uint8Array(4),
+    width: 1,
+    height: 1,
+    format: "rgba8",
+    version,
+  });
+  const patch = (set: Record<string, StageTextureData>, remove: string[] = []) =>
+    send({ cmd: "patchStageTextures", set, remove });
+
+  it("merges a patch as a new bag, keeping the textures it doesn't name", () => {
+    send(INIT);
+    const kept = tex(1);
+    const bag = { "a.lut": kept, "b.lut": tex(1), "c.lut": tex(1) };
+    send({ cmd: "setStageTextures", bag });
+    patch({ "b.lut": tex(2), "d.lut": tex(1) }, ["c.lut"]);
+
+    const held = FakeRenderer.instances[0].stageTextures;
+    expect(held).toEqual({ "a.lut": kept, "b.lut": tex(2), "d.lut": tex(1) });
+    expect(held?.["a.lut"]).toBe(kept);
+    expect(held).not.toBe(bag);
+    expect(Object.keys(bag)).toEqual(["a.lut", "b.lut", "c.lut"]);
+  });
+
+  it("builds on an empty bag, and hands a renderer created later what the patches made", () => {
+    patch({ "a.lut": tex(1) });
+    patch({ "b.lut": tex(1) }, ["a.lut"]);
+    send(INIT);
+    expect(FakeRenderer.instances[0].stageTextures).toEqual({ "b.lut": tex(1) });
+
+    send({ cmd: "uploadSource", target: "thumb", key: "k", image: CACHED });
+    expect(FakeRenderer.instances[1].stageTextures).toEqual({ "b.lut": tex(1) });
+    patch({ "c.lut": tex(1) });
+    expect(FakeRenderer.instances[1].stageTextures).toBe(FakeRenderer.instances[0].stageTextures);
   });
 });
 
@@ -1358,7 +1516,7 @@ describe("render-worker params patches", () => {
     masks: [mask("m1")],
     retouch: [spot("s1")],
   });
-  const whole = (params: DevelopParams) => send({ cmd: "setParams", params });
+  const whole = (params: DevelopParams) => send({ cmd: "setParams", derived: {}, params });
   const patch = (set: Partial<DevelopParams>, remove: string[] = []) =>
     send({ cmd: "patchParams", set, remove });
   const develop = () => FakeRenderer.instances[0];
@@ -1399,6 +1557,86 @@ describe("render-worker params patches", () => {
     const [, merged] = develop().paramsSeen;
     expect(merged.masks).toBe(masks);
     expect(merged.retouch).toBe(base.retouch);
+  });
+
+  // A structured clone hands the worker new objects for everything a message carries, so
+  // the masks come per mask: the ones a patch leaves alone, and the fields of a mask it
+  // leaves alone, stay the very objects the renderer signed.
+  describe("by mask", () => {
+    const brushed = (id: string): Mask => ({
+      ...mask(id),
+      components: [
+        {
+          id: `${id}-c`,
+          kind: "brush",
+          mode: "add",
+          invert: false,
+          brush: { dabs: [{ x: 0.5, y: 0.5, radius: 0.1, erase: false, feather: 0 }], feather: 0 },
+        },
+      ],
+    });
+    const patchMasks = (masks: MaskPatch[]) => send({ cmd: "patchParams", set: {}, remove: [], masks });
+
+    it("keeps the masks a patch leaves alone and the fields it doesn't name", () => {
+      send(INIT);
+      whole({ ...painted(), masks: [brushed("m1"), brushed("m2")] });
+      const [held1, held2] = develop().paramsSeen[0].masks;
+      const adj = { ...defaultMaskAdjustments(), exposure: 40 };
+      patchMasks([
+        { id: "m1", set: { adj }, remove: [] },
+        { id: "m2", set: {}, remove: [] },
+      ]);
+
+      const [m1, m2] = develop().paramsSeen[1].masks;
+      expect(m2).toBe(held2);
+      expect(m1).not.toBe(held1);
+      expect(m1.adj).toBe(adj);
+      expect(m1.components).toBe(held1.components);
+      expect(held1.adj.exposure).toBe(0);
+    });
+
+    it("takes a new mask whole, drops the ones left out, and follows the patch's order", () => {
+      send(INIT);
+      whole({ ...painted(), masks: [brushed("m1"), brushed("m2"), brushed("m3")] });
+      const [, held2, held3] = develop().paramsSeen[0].masks;
+      const added = brushed("m4");
+      patchMasks([{ id: "m3", set: {}, remove: [] }, { mask: added }, { id: "m2", set: {}, remove: [] }]);
+
+      const masks = develop().paramsSeen[1].masks;
+      expect(masks).toHaveLength(3);
+      expect(masks[0]).toBe(held3);
+      expect(masks[1]).toBe(added);
+      expect(masks[2]).toBe(held2);
+    });
+
+    it("drops the fields a mask patch removes", () => {
+      send(INIT);
+      const withBag = { ...brushed("m1"), bag: { "a.gain": 1 } };
+      whole({ ...painted(), masks: [withBag] });
+      patchMasks([{ id: "m1", set: {}, remove: ["bag"] }]);
+      const [merged] = develop().paramsSeen[1].masks;
+      expect(merged).not.toHaveProperty("bag");
+      expect(merged).toEqual(brushed("m1"));
+    });
+
+    it("refuses a mask patch for a mask the worker doesn't hold", () => {
+      send(INIT);
+      whole(painted());
+      posted = [];
+      patchMasks([{ id: "elsewhere", set: {}, remove: [] }]);
+      expect(posted).toEqual([{ type: "error", message: expect.stringContaining("elsewhere") }]);
+      expect(develop().paramsSeen).toHaveLength(1);
+    });
+  });
+
+  it("merges a patch's derived values into those held, keeping the rest the very objects", () => {
+    send(INIT);
+    const atlas = [{ id: "s1", dabs: [] }];
+    send({ cmd: "setParams", params: painted(), derived: { "a.atlas": atlas, "a.gain": 1, "b.gone": 2 } });
+    send({ cmd: "patchParams", set: { exposure: 1 }, remove: [], derived: { "a.gain": 3 }, derivedRemove: ["b.gone"] });
+    const merged = develop().derivedSeen.at(-1);
+    expect(merged).toEqual({ "a.atlas": atlas, "a.gain": 3 });
+    expect(merged?.["a.atlas"]).toBe(atlas);
   });
 
   it("drops the keys a patch removes", () => {
@@ -1454,7 +1692,7 @@ describe("render-worker params patches", () => {
     whole(painted());
     patch({ exposure: 1 });
     const before = { ...painted(), exposure: -1 };
-    send({ cmd: "capture", reqId: 1, params: before, pipeline: BUILTIN_RESOLVED });
+    send({ cmd: "capture", derived: {}, reqId: 1, params: before, pipeline: BUILTIN_RESOLVED });
 
     const seen = develop().paramsSeen;
     expect(seen).toHaveLength(4);
@@ -1492,6 +1730,41 @@ describe("render-worker thumbnails", () => {
     expect(FakeRenderer.instances[0].capFloat16).toEqual([true]);
   });
 
+  describe("when its own graphics context is lost", () => {
+    it("lets go of the renderer and builds a new one for the next request", async () => {
+      send(thumbnail());
+      const [first] = FakeRenderer.instances;
+      FakeOffscreenCanvas.made[0].fire("webglcontextlost");
+      expect(first.disposed).toBe(true);
+
+      send(thumbnail({ requestId: "t2" }));
+      expect(FakeRenderer.instances).toHaveLength(2);
+      expect(FakeOffscreenCanvas.made).toHaveLength(2);
+      await Promise.resolve();
+      expect(posted.at(-1)).toMatchObject({ type: "thumbnail", requestId: "t2" });
+    });
+
+    it("answers thumbnailError, not a blank frame, when the loss hasn't been announced yet", () => {
+      send(thumbnail());
+      posted = [];
+      encodings = [];
+      FakeOffscreenCanvas.made[0].lost = true;
+
+      send(thumbnail({ requestId: "t2" }));
+      expect(encodings).toEqual([]);
+      expect(posted).toEqual([expect.objectContaining({ type: "thumbnailError", requestId: "t2" })]);
+    });
+
+    it("pays no heed to a canvas it has replaced", () => {
+      send(thumbnail());
+      const old = FakeOffscreenCanvas.made[0];
+      old.fire("webglcontextlost");
+      send(thumbnail({ requestId: "t2" }));
+      old.fire("webglcontextlost");
+      expect(FakeRenderer.instances[1].disposed).toBe(false);
+    });
+  });
+
   it("builds its program for the requested photo's version and display transform", () => {
     send(thumbnail({ params: { ...DEFAULT_DEVELOP_PARAMS, processVersion: 1 }, pipeline: PICK }));
     expect(FakeRenderer.instances[0].prepared).toEqual([{ version: 1, pipeline: PICK }]);
@@ -1499,7 +1772,7 @@ describe("render-worker thumbnails", () => {
 
   it("builds it the same way when the render starts from a resident source", () => {
     send({
-      cmd: "renderThumbnailFromSource",
+      cmd: "renderThumbnailFromSource", derived: {},
       requestId: "t1",
       key: "photo-1",
       params: { ...DEFAULT_DEVELOP_PARAMS, processVersion: 1 },
@@ -1517,7 +1790,7 @@ describe("render-worker thumbnails", () => {
     const fromSource = (over: Partial<Extract<WorkerRequest, { cmd: "renderThumbnailFromSource" }>> = {}) => {
       FakeRenderer.resident.add("photo-1");
       const request: WorkerRequest = {
-        cmd: "renderThumbnailFromSource",
+        cmd: "renderThumbnailFromSource", derived: {},
         requestId: "t1",
         key: "photo-1",
         params: DEFAULT_DEVELOP_PARAMS,
@@ -1677,7 +1950,7 @@ describe("render-worker display profile", () => {
     curve: "gamma22",
   };
   const capture = (asShown?: boolean): WorkerRequest => ({
-    cmd: "capture",
+    cmd: "capture", derived: {},
     reqId: 1,
     params: DEFAULT_DEVELOP_PARAMS,
     pipeline: BUILTIN_RESOLVED,
@@ -1729,7 +2002,7 @@ describe("render-worker display space", () => {
   const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
   const P3: WorkerRequest = { cmd: "setDisplaySpace", space: "display-p3" };
   const capture = (asShown?: boolean): WorkerRequest => ({
-    cmd: "capture",
+    cmd: "capture", derived: {},
     reqId: 1,
     params: DEFAULT_DEVELOP_PARAMS,
     pipeline: BUILTIN_RESOLVED,
@@ -1782,7 +2055,7 @@ describe("render-worker proof", () => {
   const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
   const PROOF: WorkerRequest = { cmd: "setProof", space: "adobe-rgb" };
   const capture = (asShown?: boolean): WorkerRequest => ({
-    cmd: "capture",
+    cmd: "capture", derived: {},
     reqId: 1,
     params: DEFAULT_DEVELOP_PARAMS,
     pipeline: BUILTIN_RESOLVED,
@@ -1840,7 +2113,7 @@ describe("render-worker measuring after a capture", () => {
   const BEFORE = { ...DEFAULT_DEVELOP_PARAMS, exposure: -1 };
   const BAG = { "a.gain": 2 };
   const PATCHED: WorkerRequest = {
-    cmd: "capture",
+    cmd: "capture", derived: {},
     reqId: 1,
     params: BEFORE,
     pipeline: BUILTIN_RESOLVED,
@@ -1848,14 +2121,14 @@ describe("render-worker measuring after a capture", () => {
   };
   const MEASURES: [string, WorkerRequest, "computeHistogram" | "readDownscaledPixels"][] = [
     ["a histogram", { cmd: "computeHistogram", wantExtended: true }, "computeHistogram"],
-    ["an Upright analysis", { cmd: "analyzeUpright", reqId: 2, mode: "auto" }, "readDownscaledPixels"],
+    ["a read of the developed pixels", { cmd: "readDevelopedPixels", reqId: 2, edge: 256 }, "readDownscaledPixels"],
   ];
   const develop = () => FakeRenderer.instances[0];
 
   /** The live view drawn once, then its log cleared. */
   function liveView() {
     send(INIT);
-    send({ cmd: "setParams", params: LIVE });
+    send({ cmd: "setParams", derived: {}, params: LIVE });
     send({ cmd: "setContributedParams", bag: BAG });
     send({ cmd: "render", seq: 1 });
     develop().calls = [];
@@ -1922,7 +2195,7 @@ describe("render-worker measuring after a capture", () => {
 describe("render-worker view overlays in captures", () => {
   const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
   const capture = (asShown?: boolean): WorkerRequest => ({
-    cmd: "capture",
+    cmd: "capture", derived: {},
     reqId: 1,
     params: DEFAULT_DEVELOP_PARAMS,
     pipeline: BUILTIN_RESOLVED,
@@ -2015,31 +2288,40 @@ function expectHandedOn(frame: FloatFrame | null, renderer: InstanceType<typeof 
 // A capture promises a frame aligned to the live view, which extensions draw over the
 // canvas or sample at a point on it. Crop mode draws the whole image past the crop,
 // so a capture of the photo's own params, which carry the crop, drew a smaller region
-// and showed stretched over the view.
+// and showed stretched over the view. The region is the geometry stage's derived value.
 describe("render-worker captures in the live view's region", () => {
   const INIT: WorkerRequest = { cmd: "init", width: 64, height: 64, highBitDepth: false };
-  const VIEW = { x: -0.03, y: -0.03, width: 1.06, height: 1.06 };
-  const EDIT = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1, crop: { x: 0, y: 0.06, width: 1, height: 0.89 } };
+  const REGION = "safelight.crop.geometry.uCrop";
+  const VIEW = [-0.03, -0.03, 1.06, 1.06];
+  const EDIT = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1 };
+  const OWN = { [REGION]: [0, 0.06, 1, 0.89], "acme.look.gain": 2 };
   const develop = () => FakeRenderer.instances[0];
+
+  beforeEach(() => {
+    FakeRenderer.geometry = { region: REGION, inverse: "safelight.crop.geometry.uInvTransform" };
+  });
+  afterEach(() => {
+    FakeRenderer.geometry = null;
+  });
 
   /** Crop mode's live view drawn once, then its log cleared. */
   function cropModeView() {
     send(INIT);
-    send({ cmd: "setParams", params: { ...EDIT, crop: VIEW } });
+    send({ cmd: "setParams", derived: { [REGION]: VIEW }, params: EDIT });
     send({ cmd: "render", seq: 1 });
     develop().drawn = [];
   }
 
-  it("draws a capture over the region the view shows, whatever crop its params carry", () => {
+  it("draws a capture over the region the view shows, whatever region its values carry", () => {
     cropModeView();
-    send({ cmd: "capture", reqId: 1, params: EDIT, pipeline: BUILTIN_RESOLVED });
-    expect(develop().drawn.map((d) => d.params)).toEqual([{ ...EDIT, crop: VIEW }]);
+    send({ cmd: "capture", derived: OWN, reqId: 1, params: EDIT, pipeline: BUILTIN_RESOLVED });
+    expect(develop().drawn.map((d) => d.derived)).toEqual([{ ...OWN, [REGION]: VIEW }]);
   });
 
   it("reads a float capture from the region the view shows", () => {
     cropModeView();
     send({
-      cmd: "captureFloat",
+      cmd: "captureFloat", derived: OWN,
       reqId: 2,
       params: EDIT,
       pipeline: BUILTIN_RESOLVED,
@@ -2047,14 +2329,14 @@ describe("render-worker captures in the live view's region", () => {
       space: { encoding: "linear", primaries: "rec709" },
       maxEdge: 1280,
     });
-    expect(develop().floatReads.map((r) => r.params)).toEqual([{ ...EDIT, crop: VIEW }]);
+    expect(develop().floatReads.map((r) => r.derived)).toEqual([{ ...OWN, [REGION]: VIEW }]);
   });
 
-  it("draws the params it is handed as they are when their crop is the view's", () => {
+  it("draws a capture's own values without a geometry stage", () => {
+    FakeRenderer.geometry = null;
     cropModeView();
-    const same = { ...EDIT, crop: { ...VIEW } };
-    send({ cmd: "capture", reqId: 3, params: same, pipeline: BUILTIN_RESOLVED });
-    expect(develop().drawn[0].params).toBe(same);
+    send({ cmd: "capture", derived: OWN, reqId: 3, params: EDIT, pipeline: BUILTIN_RESOLVED });
+    expect(develop().drawn[0].derived).toBe(OWN);
   });
 });
 
@@ -2066,7 +2348,7 @@ describe("render-worker float capture", () => {
   const BAG = { "a.gain": 2 };
   const LINEAR = { encoding: "linear", primaries: "rec709" } as const;
   const CAPTURE: WorkerRequest = {
-    cmd: "captureFloat",
+    cmd: "captureFloat", derived: {},
     reqId: 5,
     params: BEFORE,
     pipeline: PICK,
@@ -2080,7 +2362,7 @@ describe("render-worker float capture", () => {
   /** The live view drawn once, then its log cleared. */
   function liveView() {
     send(INIT);
-    send({ cmd: "setParams", params: LIVE });
+    send({ cmd: "setParams", derived: {}, params: LIVE });
     send({ cmd: "setContributedParams", bag: BAG });
     send({ cmd: "render", seq: 1 });
     develop().calls = [];
@@ -2207,7 +2489,7 @@ describe("render-worker float thumbnails", () => {
   const OWN_BAG = { "a.gain": 9 };
   type Over = { contributedParams?: Record<string, unknown> };
   const fromSource = (over: Over = {}): WorkerRequest => ({
-    cmd: "renderThumbnailFromSource",
+    cmd: "renderThumbnailFromSource", derived: {},
     requestId: "t1",
     key: "photo-1",
     params: DEFAULT_DEVELOP_PARAMS,
@@ -2375,6 +2657,14 @@ describe("render-worker source sample", () => {
     send(thumbnail());
     expect(FakeRenderer.instances).toHaveLength(2);
     expect(FakeRenderer.instances[1].keepSourceSample).toBe(false);
+  });
+
+  it("keeps the search image on the develop renderer only", () => {
+    send(INIT);
+    expect(develop().keepSourcePixels).toBe(true);
+    send(thumbnail());
+    expect(FakeRenderer.instances).toHaveLength(2);
+    expect(FakeRenderer.instances[1].keepSourcePixels).toBe(false);
   });
 
   const COMPLETED = { data: new Uint16Array(4), width: 1, height: 1, x: 0, y: 0, sourceWidth: 6, sourceHeight: 4 };

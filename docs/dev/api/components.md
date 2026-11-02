@@ -91,6 +91,18 @@ interface RatingProps {
 }
 ```
 
+## `PickerIcon`
+
+The eyedropper icon core's pickers show (3.2.0). It draws in the current text colour; `size` is in pixels (default 11).
+
+## `AutoButton`
+
+The small Auto button of the develop panels (3.2.0): `onClick`, `disabled` and a `title` for its tooltip. Pair it with `api.develop.autoAdjust`.
+
+## `MaskScope`
+
+Binds its children to one mask (3.2.0): `<MaskScope maskId={id}>`. A mask sub-panel's component (`PanelContribution.mask`) drawn inside reads and writes that mask through `useMaskScope` and `useParamScope`. A masking panel draws each of a mask's sub-panels inside one; `api.develop.useMaskPanels` lists them.
+
 ## `Thumbnail`
 
 The Library grid cell. It shows the stored import preview, never an edited render. Callbacks take the photo id first and the cell is memoised, so pass one stable function to every cell.
@@ -139,7 +151,8 @@ Notes:
 - `useVisiblePhotos` returns the grid's photos in grid order. `without` leaves out your own grid filter.
 - `onContextMenu` acts on the selection when the clicked photo is in it, else on that photo alone.
 - `useCullingShortcuts` acts once per press however many surfaces are mounted. Pass `sizeSteps: false` when cells size to their container, so `-`/`=` stay with the grid.
-- Call `requestThumbnail` only for photos you draw yourself that have no `thumbnailUrl` yet. A call for a photo that has one still reads from disk.
+- Call `requestThumbnail` only for photos you draw yourself that have no `thumbnailUrl` yet. A call for a photo that has one still reads from disk. Core releases the `thumbnailUrl` of photos far from view in a big project, so a surface that scrolls should ask again when a photo it draws has none.
+- To read previews of many photos at once without loading them, use `api.catalog.readPreview(photoId)` (see [Stores: `api.catalog`](stores.md#apicatalog)).
 
 ## `api.ui` primitives
 

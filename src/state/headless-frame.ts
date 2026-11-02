@@ -15,7 +15,8 @@
 // build a per-photo histogram for batch Auto Tone / Auto WB across a selection.
 
 import type { DevelopParams } from "@/catalog/types";
-import { getRenderBridge, type RenderBridge, type ThumbImage, type ThumbRequest } from "@/rendering/render-bridge";
+import { getRenderBridge, type RenderBridge } from "@/rendering/render-bridge";
+import type { SourceImage, ThumbRequest } from "@/rendering/render-protocol";
 import type { FloatCaptureOptions, FloatFrame } from "@/rendering/float-frame";
 import { frameStageBag } from "@/rendering/stage-bag";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
@@ -110,7 +111,7 @@ async function measure<T>(
   await bridge.ready;
 
   const key = photoSourceKey(photo);
-  const request = (source: { key: string } | { image: ThumbImage }): ThumbRequest => ({
+  const request = (source: { key: string } | { image: SourceImage }): ThumbRequest => ({
     requestId: "key" in source ? `measure-${source.key}-${++reqSeq}` : `measure-once-${++reqSeq}`,
     params,
     // Read at each render: a first decode stores the as-shot white balance it
@@ -149,7 +150,6 @@ async function measure<T>(
           image,
           THUMB_SOURCE_MAX_EDGE,
           decoded.kind === "float" ? decoded.isFallbackPreview : false,
-          false,
         );
         frame = await render(bridge, request({ key }));
       } else {

@@ -12,6 +12,8 @@ import {
   CatalogDamagedError,
   CatalogTooNewError,
   CatalogUnreadableError,
+  FolderAccessDeniedError,
+  FolderUnavailableError,
 } from "./catalog-errors";
 import type { CatalogRecovery } from "./project-storage";
 import { useProjectStore } from "./project-store";
@@ -51,6 +53,7 @@ vi.mock("@/state/settings-store", () => ({
   getSettings: () => ({ catalogLocation: "in-folder", externalCatalogDir: "" }),
 }));
 vi.mock("@/state/catalog-store", () => ({
+  setLastProjectOpener: () => {},
   useCatalogStore: {
     getState: () => ({
       replaceCatalog: () => {},
@@ -61,6 +64,7 @@ vi.mock("@/state/catalog-store", () => ({
     }),
   },
 }));
+vi.mock("@/modules/library/photo-navigation", () => ({ visibleList: () => [] }));
 vi.mock("@/state/ui-store", () => ({
   useUIStore: {
     subscribe: () => () => {},
@@ -84,12 +88,16 @@ function opened(
     storageLocation?: WorkingDirLocation;
     externalPath?: string | null;
     promotedFromExternal?: string | null;
+    unreadable?: string[];
+    skipped?: Record<string, number>;
   } = {},
 ) {
   return {
     storage: { readPreview: async () => null, close: () => {} },
     rawCacheDir: {},
     tree,
+    unreadable: [],
+    skipped: {},
     photos: [],
     newPhotos: [],
     storageLocation: "in-folder",
@@ -160,6 +168,45 @@ describe("an open that fails on its catalog", () => {
   });
 });
 
+describe("an open that fails on its folder", () => {
+  it("says a folder that isn't there may be on a drive to reconnect, without its errno", async () => {
+    h.open.mockRejectedValue(
+      new FolderUnavailableError(new Error("ENOENT: no such file or directory, scandir 'E:\\Shoot'")),
+    );
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().openError).toBe(
+      "“Shoot” isn't available. If it's on an external drive or network share, reconnect " +
+        "it and open the project again. If the folder was moved or deleted, open it from " +
+        "its new location.",
+    );
+  });
+
+  it("says where macOS allows Safelight into the folder, without its errno", async () => {
+    h.open.mockRejectedValue(
+      new FolderAccessDeniedError(new Error("EPERM: operation not permitted, scandir '/Volumes/Card'")),
+    );
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().openError).toBe(
+      "macOS hasn't allowed Safelight to read “Shoot”. Allow it under System Settings ▸ " +
+        "Privacy & Security ▸ Files and Folders, then open the project again.",
+    );
+  });
+
+  it("words any other failure in a sentence of its own, without the bridge's prefix", async () => {
+    h.open.mockRejectedValue(
+      new Error("Error invoking remote method 'fs:list': Error: the share went away"),
+    );
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().openError).toBe("Couldn't open “Shoot” (the share went away).");
+  });
+});
+
 describe("a catalog the open recovered", () => {
   it.each<[string, CatalogRecovery, string]>([
     [
@@ -204,8 +251,46 @@ describe("a catalog the open recovered", () => {
     );
   });
 
+  it.each([
+    [["locked"], "The folder “locked” couldn't be read, so it was skipped."],
+    [["a", "b/c"], "2 folders couldn't be read, so they were skipped."],
+  ])("says which folders it skipped (%j)", async (unreadable, notice) => {
+    h.open.mockResolvedValue(opened({ unreadable }));
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().storageNotice).toBe(
+      `${notice} Photos already catalogued there are kept.`,
+    );
+    expect(useProjectStore.getState().openError).toBeNull();
+  });
+
   it("says nothing of a catalog opened as saved", async () => {
     h.open.mockResolvedValue(opened());
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().storageNotice).toBeNull();
+  });
+
+  it.each([
+    [{ ".heic": 12 }, "12 HEIC files were skipped — HEIC isn't supported yet."],
+    [{ ".heic": 1 }, "1 HEIC file was skipped — HEIC isn't supported yet."],
+    [{ ".heic": 7, ".heif": 5 }, "12 HEIC files were skipped — HEIC isn't supported yet."],
+    [
+      { ".heic": 3, ".gif": 2 },
+      "3 HEIC files were skipped — HEIC isn't supported yet. 2 GIF files were skipped — GIF isn't supported yet.",
+    ],
+  ])("says which unsupported image formats it skipped (%j)", async (skipped, notice) => {
+    h.open.mockResolvedValue(opened({ skipped }));
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().storageNotice).toBe(notice);
+  });
+
+  it("stays quiet about files that were never photos", async () => {
+    h.open.mockResolvedValue(opened({ skipped: { ".txt": 4, ".xmp": 9, "(none)": 1 } }));
 
     await useProjectStore.getState().openProject(shoot);
 

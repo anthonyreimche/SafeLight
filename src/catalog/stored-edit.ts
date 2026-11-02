@@ -17,6 +17,7 @@ import type { DevelopParams, EditSnapshot, EditState } from "./types";
 import { NEUTRAL_TEMPERATURE_K, freshParams, normalizeParams } from "./types";
 import { catalogStorage, type CatalogStorage } from "./storage";
 import { historyCursor } from "./history-cursor";
+import { writeInTurn } from "./edit-writes";
 import { normalizeParamBag } from "@/extensions/param-registry";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
@@ -109,9 +110,8 @@ async function appendedEdit(
 /** Append a snapshot labelled `label` to the photo's stored edit, and make it the
  *  current step. `next` receives the photo's current look and returns the look to
  *  append, or null to change nothing: then nothing is written or announced and the
- *  result is false. A photo that is open in Develop is reloaded from storage, since
- *  Develop's next commit writes back its own in-memory history and would otherwise
- *  drop the appended step. */
+ *  result is false. A photo that is open in Develop is reloaded from storage, so it
+ *  shows the appended step. */
 export async function appendStoredSnapshot(
   photoId: string,
   asShot: number,
@@ -135,21 +135,27 @@ export async function appendStoredSnapshots(
 ): Promise<number> {
   const storage = catalogStorage();
 
-  const appended: AppendedEdit[] = [];
-  const seen = new Set<string>();
-  for (const target of targets) {
-    if (seen.has(target.photoId)) continue;
-    seen.add(target.photoId);
-    const edit = await appendedEdit(storage, target, label, next);
-    if (edit) appended.push(edit);
-  }
-  if (appended.length === 0) return 0;
+  const { appended, stored } = await writeInTurn(
+    targets.map((target) => target.photoId),
+    async () => {
+      const appended: AppendedEdit[] = [];
+      const seen = new Set<string>();
+      for (const target of targets) {
+        if (seen.has(target.photoId)) continue;
+        seen.add(target.photoId);
+        const edit = await appendedEdit(storage, target, label, next);
+        if (edit) appended.push(edit);
+      }
+      const stored =
+        appended.length > 0 ? storage.putEditStates(appended.map((edit) => edit.editState)) : undefined;
+      return { appended, stored };
+    },
+  );
+  if (!stored) return 0;
 
-  const stored = storage.putEditStates(appended.map((edit) => edit.editState));
-
-  // Develop's next commit or undo writes back its own in-memory history, which would
-  // erase the new step. The storage holds the new states once the call returns, so
-  // reload the open photo now, not after the save, and before the awaited hooks below.
+  // Develop shows the new step on the open photo. The storage holds the new states
+  // once the call returns, so reload it now, not after the save, and before the
+  // awaited hooks below.
   const develop = useDevelopStore.getState();
   const open = appended.find(({ target }) => target.photoId === develop.photoId);
   await Promise.all([stored, open && develop.loadEdit(open.target.photoId, open.target.asShot)]);

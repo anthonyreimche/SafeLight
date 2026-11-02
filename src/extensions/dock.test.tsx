@@ -36,9 +36,11 @@ import {
   registerLayout,
   registerModule,
   registerPanel,
+  registerPanelHeaderAccessory,
   unregisterExtension,
   useRegistry,
 } from "./registry";
+import { registerEssentialModules } from "@/test/essential-modules.test-support";
 import type { ModuleLayoutDef } from "./types";
 import { DEFAULT_SETTINGS, useSettings } from "@/state/settings-store";
 
@@ -100,6 +102,7 @@ function rails() {
 beforeEach(() => {
   localStorage.clear();
   useRegistry.setState({ panels: {}, modules: {}, layouts: {} });
+  registerEssentialModules();
   useUserLayouts.setState({ layouts: {} });
   useSettings.setState({ ...DEFAULT_SETTINGS });
   useDockStore.setState({
@@ -672,6 +675,39 @@ describe("a panel that throws while rendering", () => {
     );
     expect(view.getByText("still here")).toBeTruthy();
     close();
+    error.mockRestore();
+  });
+
+  it("shows a header control that throws as crashed and keeps the panel", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const Broken = () => {
+      throw new Error("boom");
+    };
+    panel("ext.panel", {
+      component: () => <p>panel body</p>,
+      headerAccessory: Broken,
+      defaultDock: { module: "develop", direction: "left", order: 1 },
+    });
+    registerPanelHeaderAccessory("ext.eye", { id: "ext.eye", component: Broken });
+    const { close, view } = boot();
+    expect(view.getByText('Panel "ext.panel" header crashed: boom')).toBeTruthy();
+    expect(view.getByText('Header control "ext.eye" crashed: boom')).toBeTruthy();
+    expect(view.getByText("panel body")).toBeTruthy();
+    expect(view.getByText("ext.panel")).toBeTruthy();
+
+    // Fixed components registered under the same ids start afresh.
+    act(() => {
+      panel("ext.panel", {
+        component: () => <p>panel body</p>,
+        headerAccessory: () => <span>fixed header</span>,
+        defaultDock: { module: "develop", direction: "left", order: 1 },
+      });
+      registerPanelHeaderAccessory("ext.eye", { id: "ext.eye", component: () => <span>fixed eye</span> });
+    });
+    expect(view.getByText("fixed header")).toBeTruthy();
+    expect(view.getByText("fixed eye")).toBeTruthy();
+    close();
+    act(() => unregisterExtension("ext.eye"));
     error.mockRestore();
   });
 });

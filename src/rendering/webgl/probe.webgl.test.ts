@@ -22,6 +22,7 @@ import { V2_DEFAULT_PIPELINE_GLSL } from "./shaders";
 import {
   OPEN_PROBE, each, expectColour, floatImage, identityParams, pixelAt, toHalf, withRenderer, worstDifference,
   type FloatImage, type Frame,
+  masksStagesFor,
 } from "./webgl.test-support";
 
 /** OPEN_PROBE with the stock version 2 encode, so `c` at the output stage is
@@ -62,7 +63,8 @@ interface Scene {
 }
 
 function onScene<T>(processVersion: number, fn: (r: WebGLRenderer) => T, scene: Scene = {}): T {
-  return withRenderer({ stages: scene.stages ?? [], pipeline: PERCEPTUAL_PROBE, processVersionCap: 3 }, (r) => {
+  const stages = [...masksStagesFor(processVersion), ...(scene.stages ?? [])];
+  return withRenderer({ stages, pipeline: PERCEPTUAL_PROBE, processVersionCap: 3 }, (r) => {
     r.setImage(scene.image ?? SCENE);
     r.setParams(identityParams({ processVersion, masks: scene.masks ?? [] }));
     return fn(r);

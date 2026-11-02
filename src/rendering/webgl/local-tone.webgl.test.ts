@@ -19,6 +19,7 @@ import { baselineRefit, baselineTone } from "../baseline-tone";
 import { toneHighlights, toneShadows } from "../local-tone";
 import {
   PIXEL_TOLERANCE,
+  basicStagesFor,
   floatImage,
   identityParams,
   pixelAt,
@@ -56,7 +57,7 @@ const luma = ([r, g, b]: readonly number[]) => 0.2126 * r + 0.7152 * g + 0.0722 
 /** A frame per source through one renderer, so a sweep compiles its program
  *  once: SwiftShader takes most of CI's per-test budget to build it. */
 function renderEach(pipeline: ResolvedPipeline, sources: FloatImage[], over: Partial<DevelopParams>): Frame[] {
-  return withRenderer({ stages: [], pipeline }, (renderer) =>
+  return withRenderer({ stages: basicStagesFor(over.processVersion), pipeline }, (renderer) =>
     sources.map((source) => {
       renderer.setImage(source);
       renderer.setParams(identityParams(over));
@@ -156,7 +157,7 @@ describe("version 2 Highlights and Shadows on a flat field under the built-in tr
     v1Source = source,
   ): [Frame, Frame] {
     const draw = (image: FloatImage | ImageBitmap, version: Partial<DevelopParams>) =>
-      withRenderer({ stages: [], pipeline: BUILTIN_RESOLVED }, (renderer) => {
+      withRenderer({ stages: basicStagesFor(version.processVersion), pipeline: BUILTIN_RESOLVED }, (renderer) => {
         renderer.setAsShotTemperature(6500);
         renderer.setImage(image);
         renderer.setParams(identityParams({ ...version, toneCurve: USER_IDENTITY_CURVE, ...over }));

@@ -14,6 +14,7 @@ import type { DecodedImage, Fallback, LoadImageOptions } from "@/catalog/load-im
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { normalizeParams } from "@/catalog/types";
 import type { RebuiltChange } from "./catalog-store";
+import type { RendererAvailability } from "@/rendering/render-bridge";
 
 interface ThumbRenderOpts {
   requestId: string;
@@ -27,6 +28,7 @@ interface ThumbRenderOpts {
 
 const bridge = vi.hoisted(() => ({
   ready: Promise.resolve(),
+  availability: "ready" as RendererAvailability,
   renderThumbnailFromSource:
     vi.fn<(opts: ThumbRenderOpts) => Promise<Blob | null>>(),
   renderThumbnailAsync: vi.fn<(opts: unknown) => Promise<Blob | null>>(),
@@ -37,7 +39,6 @@ const bridge = vi.hoisted(() => ({
       image: DecodedImage,
       maxEdge?: number,
       isFallbackPreview?: boolean,
-      baseCurveForBitmap?: boolean,
     ) => void
   >(),
 }));
@@ -66,6 +67,7 @@ import { regenerateEditedThumbnail } from "./edited-thumbnail";
 import { setCatalogStorage, type CatalogStorage } from "@/catalog/storage";
 import { editFingerprint } from "@/catalog/edit-fingerprint";
 import { installMemoryStorage } from "@/catalog/stored-edit.fixtures";
+import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
 
 const PHOTO_ID = "photo-1";
 const THUMB_MAX_EDGE = 640;
@@ -119,12 +121,10 @@ let written: CatalogPhoto[];
 let putPhoto: (p: CatalogPhoto) => Promise<void>;
 
 const storage: CatalogStorage = {
-  getAllPhotos: async () => [],
   putPhoto: (p) => putPhoto(p),
   putPhotos: async () => {},
   deletePhoto: async () => {},
   getEditState: async () => undefined,
-  getAllEditStates: async () => [],
   putEditState: async () => {},
   putEditStates: async () => {},
 };
@@ -135,6 +135,7 @@ beforeEach(() => {
   setCatalogStorage(storage);
   catalog.photos = [photo()];
   catalog.mergeRebuiltPhoto.mockClear();
+  bridge.availability = "ready";
   bridge.renderThumbnailFromSource.mockReset();
   bridge.renderThumbnailAsync.mockReset();
   bridge.uploadSource.mockReset();
@@ -146,6 +147,20 @@ beforeEach(() => {
 afterEach(() => {
   setCatalogStorage(null);
   vi.unstubAllGlobals();
+});
+
+// On a machine where WebGL2 can't start, every rung would decode the photo for a
+// render that can't happen.
+it("neither renders nor decodes once the renderer has failed, and keeps the preview", async () => {
+  bridge.availability = "failed";
+  catalog.photos = [photo({ thumbnailBlob: new Blob(["camera"]) })];
+  regenerateEditedThumbnail(PHOTO_ID, params(1), 5000);
+  await settle();
+
+  expect(bridge.renderThumbnailFromSource).not.toHaveBeenCalled();
+  expect(bridge.renderThumbnailAsync).not.toHaveBeenCalled();
+  expect(decode).not.toHaveBeenCalled();
+  expect(written).toEqual([]);
 });
 
 describe("rendering from the resident source", () => {
@@ -163,7 +178,7 @@ describe("rendering from the resident source", () => {
     expect(opts.params.exposure).toBe(1);
     expect(opts.asShotTemperature).toBe(5000);
     expect(opts.maxEdge).toBe(THUMB_MAX_EDGE);
-    expect(opts.contributedParams).toEqual({ "ext.stage.k": 3 });
+    expect(opts.contributedParams).toEqual({ "ext.stage.k": 3, ...denoiseBag(params(1)) });
 
     expect(written).toHaveLength(1);
     expect(written[0].thumbnailBlob).toBe(rendered);
@@ -175,6 +190,18 @@ describe("rendering from the resident source", () => {
       thumbnailUrl: "blob:thumb",
       previewEdit: editFingerprint(params(1), { "ext.stage.k": 3 }),
     });
+  });
+
+  // The thumb renderer draws the bag it is handed in place of its own, so the
+  // built-in denoiser's entries, which come from the Detail panel's params, go in it.
+  it("draws the photo's bag with the built-in denoiser's entries, as Develop does", async () => {
+    const nr = normalizeParams({ luminanceNR: 40 });
+    regenerateEditedThumbnail(PHOTO_ID, nr, 5000, { "ext.stage.k": 3 });
+    await settle();
+    const opts = bridge.renderThumbnailFromSource.mock.calls[0][0];
+    expect(opts.contributedParams).toEqual({ "ext.stage.k": 3, ...denoiseBag(nr) });
+    expect(opts.contributedParams).toHaveProperty("builtin.denoise.lumAmount", 40);
+    expect(written[0].previewEdit).toBe(editFingerprint(nr, { "ext.stage.k": 3 }));
   });
 
   // Develop draws the stored preview first only while it shows the edit it opens with.
@@ -314,6 +341,62 @@ describe("rendering from the resident source", () => {
     expect(catalog.mergeRebuiltPhoto).not.toHaveBeenCalled();
   });
 
+  // The edit committed as a project closes: the catalog is gone by the time it renders.
+  it("stores the preview of a photo whose project was left, in the catalog it was left", async () => {
+    const left = photo({ rating: 2 });
+    catalog.photos = [];
+    installMemoryStorage(); // the next project
+    regenerateEditedThumbnail(PHOTO_ID, params(1), 5000, undefined, { photo: left, storage });
+    await settle();
+
+    expect(written).toHaveLength(1);
+    expect(written[0].rating).toBe(2);
+    expect(written[0].thumbnailBlob).toBe(rendered);
+    expect(written[0].previewEdit).toBe(editFingerprint(params(1), {}));
+    expect(catalog.mergeRebuiltPhoto).not.toHaveBeenCalled();
+  });
+
+  it("keeps what the catalog holds of a left photo, changing only its preview", async () => {
+    const left = photo({ rating: 2 });
+    catalog.photos = [];
+    const held = photo({ rating: 5, flag: "pick" });
+    const holding: CatalogStorage = { ...storage, heldPhoto: () => held };
+    await regenerateEditedThumbnail(PHOTO_ID, params(1), 5000, undefined, { photo: left, storage: holding });
+
+    expect(written).toHaveLength(1);
+    expect(written[0].rating).toBe(5);
+    expect(written[0].flag).toBe("pick");
+    expect(written[0].thumbnailBlob).toBe(rendered);
+  });
+
+  it("writes nothing for a left photo the catalog no longer holds", async () => {
+    catalog.photos = [];
+    const holding: CatalogStorage = { ...storage, heldPhoto: () => undefined };
+    await regenerateEditedThumbnail(PHOTO_ID, params(1), 5000, undefined, { photo: photo(), storage: holding });
+    expect(written).toHaveLength(0);
+  });
+
+  it("resolves once the preview is stored, also for a commit coalesced into a running one", async () => {
+    const g = gate();
+    putPhoto = async (p) => {
+      await g.wait;
+      written.push(p);
+    };
+    let first = false;
+    let second = false;
+    void regenerateEditedThumbnail(PHOTO_ID, params(1), 5000).then(() => (first = true));
+    await settle();
+    void regenerateEditedThumbnail(PHOTO_ID, params(2), 5000).then(() => (second = true));
+    await settle();
+    expect([first, second, written.length]).toEqual([false, false, 0]);
+
+    g.open();
+    await settle();
+    expect(first).toBe(true);
+    expect(second).toBe(true);
+    expect(written).toHaveLength(2);
+  });
+
   it("abandons the write when the photo disappears mid-render", async () => {
     const g = gate();
     bridge.renderThumbnailFromSource.mockImplementation(async () => {
@@ -354,15 +437,14 @@ describe("source ladder", () => {
       image,
       1280,
       true, // a fallback preview stays flagged so the renderer tones it right
-      false,
     );
     expect(bridge.renderThumbnailFromSource).toHaveBeenCalledTimes(2);
     expect(written[0].thumbnailBlob).toBe(rendered);
   });
 
-  it("uploads a decoded bitmap without a base curve", async () => {
+  it("uploads a decoded bitmap on its own", async () => {
     const bitmap = { width: 2, height: 2 } as unknown as ImageBitmap;
-    decode.mockResolvedValue({ kind: "bitmap", bitmap, cached: true });
+    decode.mockResolvedValue({ kind: "bitmap", bitmap });
     bridge.renderThumbnailFromSource
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(rendered);
@@ -373,9 +455,8 @@ describe("source ladder", () => {
     expect(bridge.uploadSource).toHaveBeenCalledWith(
       "thumb",
       `${PHOTO_ID}:0`,
-      { kind: "bitmap", bitmap }, // re-wrapped: the cache flag is not the renderer's
+      { kind: "bitmap", bitmap },
       1280,
-      false,
       false,
     );
   });
@@ -395,8 +476,23 @@ describe("source ladder", () => {
       image: { kind: string; bitmap: ImageBitmap };
     };
     expect(opts.image).toEqual({ kind: "bitmap", bitmap });
-    expect(opts.contributedParams).toEqual({ "ext.stage.k": 3 });
+    expect(opts.contributedParams).toEqual({ "ext.stage.k": 3, ...denoiseBag(params(1)) });
     expect(written[0].thumbnailBlob).toBe(rendered);
+  });
+
+  it("draws the camera JPEG with the built-in denoiser's entries too", async () => {
+    catalog.photos = [photo({ thumbnailBlob: new Blob(["jpeg"]) })];
+    bridge.renderThumbnailFromSource.mockResolvedValue(null);
+    bridge.renderThumbnailAsync.mockResolvedValue(rendered);
+    vi.stubGlobal("createImageBitmap", async () => ({ width: 2, height: 2 }) as unknown as ImageBitmap);
+    const nr = normalizeParams({ colorNR: 30 });
+
+    regenerateEditedThumbnail(PHOTO_ID, nr, 5000, { "ext.stage.k": 3 });
+    await settle();
+
+    const opts = bridge.renderThumbnailAsync.mock.calls[0][0] as ThumbRenderOpts;
+    expect(opts.contributedParams).toEqual({ "ext.stage.k": 3, ...denoiseBag(nr) });
+    expect(opts.contributedParams).toHaveProperty("builtin.denoise.colAmount", 30);
   });
 
   it("keeps the existing preview when every path fails", async () => {

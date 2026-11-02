@@ -177,7 +177,14 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
+
+/** A disk that takes names in any case for one name, as NTFS does on Windows. */
+function foldingCase(env: Env): void {
+  vi.stubGlobal("window", { safelightNative: { platform: "win32" } });
+  env.fs.foldCase = true;
+}
 
 describe("uniqueFolderName", () => {
   it("keeps the base name when it's free", () => {
@@ -279,6 +286,18 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(env.fs.text(at(env, "trip/a.jpg"))).toBe("pixels:trip/a.jpg");
     expect(env.fs.text(at(env, "Iceland/b.jpg"))).toBe("pixels:Iceland/b.jpg");
     expect(find("id:trip/a.jpg").relPath).toBe("trip/a.jpg");
+  });
+
+  it("renames a folder to its own name in another case on a case-insensitive disk", async () => {
+    const env = start();
+    foldingCase(env);
+    await addPhoto(env, "trip/a.jpg");
+
+    await renameFolder("trip", "Trip");
+
+    expect(env.fs.tree()).toEqual([at(env, "Trip/a.jpg")]);
+    expect(env.fs.text(at(env, "Trip/a.jpg"))).toBe("pixels:trip/a.jpg");
+    expect(find("id:trip/a.jpg")).toMatchObject({ folder: "Trip", relPath: "Trip/a.jpg" });
   });
 
   it("keeps a rename in place when the typed name contains separators", async () => {
@@ -495,6 +514,43 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(res.ok).toBe(false);
     expect(env.fs.text(at(env, "a.jpg"))).toBe("pixels:a.jpg");
     expect(env.fs.text(at(env, "b.jpg"))).toBe("pixels:b.jpg");
+  });
+
+  it("renames a photo to its own name in another case on a case-insensitive disk", async () => {
+    const env = start();
+    foldingCase(env);
+    await addPhoto(env, "trip/a.jpg");
+    env.fs.put(at(env, `trip/a.jpg${SIDECAR_SUFFIX}`), '{"safelightSidecar":1}');
+
+    await expect(renamePhoto("id:trip/a.jpg", "A")).resolves.toEqual({ ok: true, filename: "A.jpg" });
+
+    expect(env.fs.tree()).toEqual([at(env, "trip/A.jpg"), at(env, `trip/A.jpg${SIDECAR_SUFFIX}`)]);
+    expect(env.fs.text(at(env, "trip/A.jpg"))).toBe("pixels:trip/a.jpg");
+    expect(find("id:trip/a.jpg")).toMatchObject({ filename: "A.jpg", relPath: "trip/A.jpg" });
+  });
+
+  it("still refuses a name another file holds in another case on a case-insensitive disk", async () => {
+    const env = start();
+    foldingCase(env);
+    await addPhoto(env, "a.jpg");
+    await addPhoto(env, "B.jpg");
+
+    await expect(renamePhoto("id:a.jpg", "b")).resolves.toMatchObject({ ok: false });
+    expect(env.fs.text(at(env, "a.jpg"))).toBe("pixels:a.jpg");
+  });
+
+  it("refuses a case-only rename onto another photo where names keep their case", async () => {
+    vi.stubGlobal("window", { safelightNative: { platform: "linux" } });
+    const env = start();
+    await addPhoto(env, "IMG_1.jpg");
+    await addPhoto(env, "img_1.jpg");
+
+    await expect(renamePhoto("id:IMG_1.jpg", "img_1")).resolves.toEqual({
+      ok: false,
+      reason: "“img_1.jpg” already exists in this folder.",
+    });
+    expect(env.fs.text(at(env, "img_1.jpg"))).toBe("pixels:img_1.jpg");
+    expect(env.fs.text(at(env, "IMG_1.jpg"))).toBe("pixels:IMG_1.jpg");
   });
 
   it("treats renaming to the current name as a no-op success", async () => {

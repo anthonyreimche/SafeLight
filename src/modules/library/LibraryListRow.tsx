@@ -6,6 +6,7 @@
 import { memo, useEffect, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
+import { usePreviewRequest } from "@/ui/components/use-preview-request";
 
 const colorDot: Record<string, string> = {
   red: "bg-label-red",
@@ -54,6 +55,7 @@ function LibraryListRowImpl({
     return () => URL.revokeObjectURL(url);
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
   const thumbUrl = photo.thumbnailUrl ?? blobUrl;
+  const rowRef = usePreviewRequest<HTMLDivElement>(photo.id, !thumbUrl);
 
   const rowClass = active
     ? "bg-surface-4 text-text-primary"
@@ -63,6 +65,7 @@ function LibraryListRowImpl({
 
   return (
     <div
+      ref={rowRef}
       data-photo-id={photo.id}
       draggable={!!onDragStart}
       onDragStart={onDragStart ? (e) => onDragStart(photo.id, e) : undefined}

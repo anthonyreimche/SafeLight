@@ -45,8 +45,8 @@ vi.mock("@/catalog/exif", () => ({
   parseExifDate: () => undefined,
 }));
 
-vi.mock("./raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => null,
   extractRawPreviewDecoded: async () => null,
 }));
@@ -74,7 +74,7 @@ vi.mock("@/state/catalog-store", () => ({ useCatalogStore: { getState: () => ({ 
 import { preDecodeRawsForCache } from "./import-photos";
 import { decodeTimeLimit } from "@/raw/libraw-wasm-adapter";
 import { disposeDecodePool } from "@/raw/decode-pool";
-import { rawPhoto } from "./raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
 function raw(name: string, firstByte: number): CatalogPhoto {
   const bytes = new Uint8Array(SIZE);

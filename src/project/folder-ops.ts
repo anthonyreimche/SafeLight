@@ -15,6 +15,7 @@ import { useUIStore } from "@/state/ui-store";
 import { catalogStorage } from "@/catalog/storage";
 import { nativeFs, nativePathOf, revealNativePath } from "./native-fs";
 import { writeJSON } from "./fs";
+import { namesFoldCase } from "./reattach";
 import type { CatalogPhoto } from "@/catalog/types";
 
 /** Per-photo sidecar travelling next to the image file. Lets ratings/labels and
@@ -64,6 +65,13 @@ function splitExt(name: string): [string, string] {
  *  trailing dots or spaces, which Windows can't keep. "" if nothing is left. */
 function cleanEntryName(raw: string): string {
   return raw.trim().replace(/[/\\]/g, "").replace(/[. ]+$/, "");
+}
+
+/** Whether two paths name one entry spelled in another case: on NTFS and APFS
+ *  the "existing" entry at the new path is the one being renamed. Where names
+ *  keep their case they are two entries, and the new one may be another photo. */
+function caseOnlyChange(fromRel: string, toRel: string): boolean {
+  return fromRel !== toRel && namesFoldCase() && fromRel.toLowerCase() === toRel.toLowerCase();
 }
 
 /** Does a project-relative path exist on disk? Works in both the native and FSA
@@ -137,7 +145,15 @@ async function moveOnDisk(
     await fs.move(abs(srcRel), abs(destRel));
     return;
   }
-  // FSA fallback.
+  // FSA fallback. A copy onto the same name in another case would land on the
+  // source itself where the disk ignores case, and the delete would then take
+  // both, so that goes through a temporary name.
+  if (caseOnlyChange(srcRel, destRel)) {
+    const temp = `${destRel}.${Date.now().toString(36)}.renaming`;
+    await moveOnDisk(rootHandle, srcRel, temp, kind);
+    await moveOnDisk(rootHandle, temp, destRel, kind);
+    return;
+  }
   const srcParent = await resolveDir(rootHandle, dirnameRel(srcRel));
   const destParent = await resolveDir(rootHandle, dirnameRel(destRel), true);
   if (kind === "file") {
@@ -264,7 +280,7 @@ export async function renameFolder(rel: string, newName: string): Promise<void> 
   if (!rootHandle || !rel || !clean || clean === basename(rel)) return;
   const newRel = joinRel(dirnameRel(rel), clean);
   // Bail on collision rather than merge into / overwrite an existing folder.
-  if (await dirExistsRel(rootHandle, newRel)) {
+  if (!caseOnlyChange(rel, newRel) && (await dirExistsRel(rootHandle, newRel))) {
     console.warn(`[folder-ops] rename ${rel} → ${newRel} skipped: name in use`);
     return;
   }
@@ -393,7 +409,7 @@ export async function renamePhoto(
   if (newFilename === photo.filename) return { ok: true, filename: photo.filename };
 
   const newRel = joinRel(photo.folder, newFilename);
-  if (await existsRel(rootHandle, newRel)) {
+  if (!caseOnlyChange(photo.relPath, newRel) && (await existsRel(rootHandle, newRel))) {
     return { ok: false, reason: `“${newFilename}” already exists in this folder.` };
   }
 

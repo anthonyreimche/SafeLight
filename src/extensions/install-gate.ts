@@ -44,7 +44,7 @@ export async function confirmExtensionRisk(): Promise<boolean> {
   const ok = await confirmDialog({
     title: "Before installing extensions",
     message: EXTENSION_RISK_NOTICE,
-    confirmLabel: "Continue",
+    confirmLabel: "I understand",
   });
   if (ok) setAckedExtensionRisk();
   return ok;

@@ -72,8 +72,6 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "brush.flowDown", label: "Less brush flow", category: "Develop", def: "Shift+,", altDef: "Shift+<" },
   { id: "brush.flowUp", label: "More brush flow", category: "Develop", def: "Shift+.", altDef: "Shift+>" },
   { id: "mask.delete", label: "Delete mask component", category: "Develop", def: "Delete", altDef: "Backspace" },
-  { id: "crop.cycleGuide", label: "Cycle crop guide", category: "Develop", def: "O" },
-  { id: "crop.flipGuide", label: "Flip crop guide", category: "Develop", def: "Shift+O" },
   // ── Library ──
   { id: "rate.0", label: "Clear rating", category: "Library", def: "0" },
   { id: "rate.1", label: "Rating ★", category: "Library", def: "1" },
@@ -92,8 +90,6 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "photo.next", label: "Next photo", category: "Library", def: "ArrowRight" },
   { id: "photo.rotateCCW", label: "Rotate left", category: "Library", def: "Alt+[" },
   { id: "photo.rotateCW", label: "Rotate right", category: "Library", def: "Alt+]" },
-  { id: "photo.flipH", label: "Flip horizontal", category: "Develop", def: "" },
-  { id: "photo.flipV", label: "Flip vertical", category: "Develop", def: "" },
   { id: "photo.remove", label: "Remove from catalog", category: "Library", def: "Delete", altDef: "Backspace" },
   // Ships unbound: deleting files from disk is opt-in even as a shortcut.
   { id: "photo.deleteDisk", label: "Delete from disk", category: "Library", def: "" },
@@ -192,6 +188,11 @@ export function registerExtensionAction(
   extensionId: string,
   c: { id: string; label: string; category?: ActionCategory; defaultCombo: string; handler: () => void },
 ): void {
+  const holder = Object.hasOwn(DEFAULTS, c.id) ? "Safelight" : useExtensionActions.getState().actions.get(c.id)?.extensionId;
+  if (holder !== undefined && holder !== extensionId) {
+    console.warn(`[extensions] ${extensionId}: "${c.id}" is already registered by ${holder}; registerKeybinding ignored`);
+    return;
+  }
   useExtensionActions.setState((s) => {
     const next = new Map(s.actions);
     next.set(c.id, {
@@ -218,11 +219,11 @@ export function unregisterExtensionActions(extensionId: string): void {
 
 /** Match the first extension action whose (possibly rebound) combo matches. */
 export function matchExtensionAction(e: KeyboardEvent): ExtensionActionEntry | null {
-  const combo = comboFromEvent(e);
-  if (!combo) return null;
   const { overrides } = useKeybindings.getState();
-  for (const ea of useExtensionActions.getState().actions.values()) {
-    if ((overrides[ea.id] ?? ea.def) === combo) return ea;
+  for (const combo of comboCandidates(e)) {
+    for (const ea of useExtensionActions.getState().actions.values()) {
+      if ((overrides[ea.id] ?? ea.def) === combo) return ea;
+    }
   }
   return null;
 }
@@ -237,14 +238,27 @@ export function initKeybindings(): void {
   });
 }
 
-// While the Preferences shortcut editor is capturing a new combo, the global
-// handlers must stand down (they listen in the capture phase too and would
-// otherwise execute the very key being recorded).
-let suspended = false;
-export const setShortcutsSuspended = (v: boolean): void => {
-  suspended = v;
-};
-export const shortcutsSuspended = (): boolean => suspended;
+// The global handlers stand down while something owns the keyboard: the
+// Preferences combo recorder (they listen in the capture phase too and would
+// otherwise execute the very key being recorded), the welcome setup, core
+// dialogs. Each holder takes a hold and releases it, so overlapping holders
+// can close in any order without lifting the suspension under another.
+const holds = new Set<symbol>();
+
+/** Suspend the app's shortcuts until the returned release is called. A
+ *  release counts once, however often it's called. */
+export function suspendShortcuts(): () => void {
+  const hold = Symbol("shortcut-hold");
+  holds.add(hold);
+  return () => void holds.delete(hold);
+}
+
+export const shortcutsSuspended = (): boolean => holds.size > 0;
+
+/** Drop every hold, for test teardown when a spec leaves one behind. */
+export function resetShortcutHoldsForTests(): void {
+  holds.clear();
+}
 
 /** True when the key comes from inside an open native <dialog>. Core's own
  *  dialogs close through the escape stack; an extension's modal <dialog> (the
@@ -282,16 +296,79 @@ export function isEditableTarget(t: EventTarget | null): boolean {
   return t.isContentEditable;
 }
 
+// The US-layout character of each physical punctuation key, which the default
+// combos are written in.
+const CODE_KEYS: Record<string, string> = {
+  Minus: "-",
+  Equal: "=",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Backslash: "\\",
+  Semicolon: ";",
+  Quote: "'",
+  Backquote: "`",
+  Comma: ",",
+  Period: ".",
+  Slash: "/",
+};
+
+/** The combo key of the physical key `code`, or null for keys without one. A
+ *  letter key only stands in for a typed character that isn't a Latin letter
+ *  (Cyrillic, Option's ©): on QWERTZ or AZERTY the letter follows the label. */
+function keyFromCode(code: string, typed: string): string | null {
+  const digit = /^Digit(\d)$/.exec(code);
+  if (digit) return digit[1];
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) return /^[a-z]$/i.test(typed) ? null : letter[1];
+  return CODE_KEYS[code] ?? null;
+}
+
+const onMac = (): boolean => globalThis.window?.safelightNative?.platform === "darwin";
+
+function joinCombo(ctrl: boolean, shift: boolean, alt: boolean, k: string): string {
+  const parts: string[] = [];
+  if (ctrl) parts.push("Ctrl");
+  if (shift) parts.push("Shift");
+  if (alt) parts.push("Alt");
+  parts.push(k);
+  return parts.join("+");
+}
+
+/** The combos a keydown may mean, best first; empty for bare modifier presses.
+ *  The typed key comes first, then the key at its position on a US layout, so
+ *  digit and bracket shortcuts still reach layouts that type other characters
+ *  there (AZERTY's "&" on the 1 key). macOS Option composes a character
+ *  (Option+[ types "“"), so an Option combo is the physical key, and failing
+ *  that the composed character bare: a German Mac types "[" as Option+5.
+ *  Windows reports AltGr as Ctrl+Alt; the symbol it types is the key. */
+function comboCandidates(e: KeyboardEvent): string[] {
+  const k = e.key;
+  if (k === "Control" || k === "Shift" || k === "Alt" || k === "Meta") return [];
+  const ctrl = e.ctrlKey || e.metaKey;
+  const typed = k.length === 1 ? k.toUpperCase() : k;
+  const physical = k.length === 1 ? keyFromCode(e.code ?? "", k) : null;
+  const asTyped = joinCombo(ctrl, e.shiftKey, e.altKey, typed);
+  if (e.altKey && onMac()) {
+    if (!physical) return [asTyped];
+    const byPosition = [joinCombo(ctrl, e.shiftKey, true, physical), joinCombo(ctrl, e.shiftKey, false, typed)];
+    // Bindings recorded before Option combos went by position hold the
+    // composed character ("Alt+©"), so it is still tried last. An ASCII one
+    // is a key of its own (German Option+5 is "["), which "Alt+[" means.
+    return /^[\x20-\x7e]$/.test(k) ? byPosition : [...byPosition, asTyped];
+  }
+  // A letter or digit under Ctrl+Alt is a deliberate combo even where the
+  // layout has AltGr; only a symbol is AltGr typing.
+  if (e.ctrlKey && e.altKey && /^[^A-Za-z0-9]$/.test(k) && e.getModifierState?.("AltGraph")) {
+    return [joinCombo(e.metaKey, e.shiftKey, false, typed), asTyped];
+  }
+  return physical && physical !== typed
+    ? [asTyped, joinCombo(ctrl, e.shiftKey, e.altKey, physical)]
+    : [asTyped];
+}
+
 /** Normalized combo from a keydown event; null for bare modifier presses. */
 export function comboFromEvent(e: KeyboardEvent): string | null {
-  const k = e.key;
-  if (k === "Control" || k === "Shift" || k === "Alt" || k === "Meta") return null;
-  const parts: string[] = [];
-  if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
-  if (e.shiftKey) parts.push("Shift");
-  if (e.altKey) parts.push("Alt");
-  parts.push(k.length === 1 ? k.toUpperCase() : k);
-  return parts.join("+");
+  return comboCandidates(e)[0] ?? null;
 }
 
 /** Normalized combo from a wheel event — the same grammar as comboFromEvent
@@ -316,15 +393,15 @@ export function matchAction(
   e: KeyboardEvent,
   categories: ActionCategory[],
 ): string | null {
-  const combo = comboFromEvent(e);
-  if (!combo) return null;
   const { overrides } = useKeybindings.getState();
-  for (const a of KEY_ACTIONS) {
-    if (!categories.includes(a.category)) continue;
-    const override = overrides[a.id];
-    if ((override ?? a.def) === combo) return a.id;
-    // Built-in aliases (e.g. Ctrl+Y for redo) apply until the user rebinds.
-    if (override === undefined && a.altDef === combo) return a.id;
+  for (const combo of comboCandidates(e)) {
+    for (const a of KEY_ACTIONS) {
+      if (!categories.includes(a.category)) continue;
+      const override = overrides[a.id];
+      if ((override ?? a.def) === combo) return a.id;
+      // Built-in aliases (e.g. Ctrl+Y for redo) apply until the user rebinds.
+      if (override === undefined && a.altDef === combo) return a.id;
+    }
   }
   return null;
 }

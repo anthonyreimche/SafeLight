@@ -10,7 +10,6 @@ import { describe, it, expect } from "vitest";
 import {
   buildCurveLUT,
   buildMaskCurveLUT,
-  buildRGBCurveLUT,
   makeCurveEvaluator,
 } from "./curve";
 import { defaultToneCurves } from "@/catalog/types";
@@ -157,24 +156,12 @@ describe("buildCurveLUT", () => {
   });
 });
 
-describe("buildRGBCurveLUT", () => {
-  // The baseline look lives in the shader (baselineTone), so the LUT carries
-  // only what the user drew: default curves must leave every level alone.
-  it("composes the default curves to the identity", () => {
-    const lut = buildRGBCurveLUT(curves());
-    expect(lut).toHaveLength(256 * 4);
-    for (let i = 0; i < 256; i++) {
-      expect(lut[i * 4]).toBe(i);
-      expect(lut[i * 4 + 1]).toBe(i);
-      expect(lut[i * 4 + 2]).toBe(i);
-      expect(lut[i * 4 + 3]).toBe(255);
-    }
-  });
-
+// The Tone Curve extension builds its table the same way (safelight.tone-curve).
+describe("buildMaskCurveLUT's order", () => {
   it("applies the master curve before the per-channel curve", () => {
     // master halves, red then maps 0..1 onto 0.5..1 — so red = 0.5 + 0.25·x.
     // The reverse order would give 0.25 + 0.25·x, which the endpoints separate.
-    const lut = buildRGBCurveLUT(
+    const lut = buildMaskCurveLUT(
       curves({
         rgb: [
           { x: 0, y: 0 },

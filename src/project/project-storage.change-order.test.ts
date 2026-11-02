@@ -67,6 +67,7 @@ vi.mock("@/modules/library/import-photos", () => ({
 }));
 
 import { ProjectStorage, type OpenedProject } from "./project-storage";
+import { storageDeps } from "./storage-deps";
 import { nativeDirectoryHandle } from "./native-fs";
 import type { CatalogStorage } from "@/catalog/storage";
 import { onBroadcast, type SentCatalogRecords } from "@/state/broadcast";
@@ -173,7 +174,7 @@ async function open(
     onPhoto?: (photo: CatalogPhoto) => void;
   } = {},
 ): Promise<OpenedProject> {
-  const o = await ProjectStorage.open(p.root, opts.onPhoto, opts.onSkeletons);
+  const o = await ProjectStorage.open(p.root, storageDeps, opts.onPhoto, opts.onSkeletons);
   opened.push(o.storage);
   return o;
 }
@@ -518,7 +519,7 @@ describe.each(BUILDS)("a change another window gave up saving ($label)", (cfg) =
 });
 
 describe.each(BUILDS)("the order of changes to one record ($label)", (cfg) => {
-  const ratingIn = async (storage: CatalogStorage, id: string) =>
+  const ratingIn = async (storage: ProjectStorage, id: string) =>
     (await storage.getAllPhotos()).find((x) => x.id === id)?.rating;
 
   it("puts a change made after taking in another window's after it, in the same millisecond too", async () => {

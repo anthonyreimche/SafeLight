@@ -15,6 +15,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const OFFICIAL_EXTENSIONS = require("./official-extensions.json").extensions;
 
 // A well-formed HTTPS origin, optionally with a single leading-label wildcard
 // and a port. Nothing else may reach the policy, so a manifest can't inject
@@ -35,14 +36,36 @@ function isReservedExtensionId(id) {
   return lower === CORE_EXTENSION_ID || lower.startsWith(`${CORE_EXTENSION_ID}.`);
 }
 
+const OFFICIAL_ID_PREFIX = "safelight";
+
+/** An id only the official extensions may hold: "safelight" and everything
+ *  under "safelight.", compared without case like the reserved ids. The
+ *  renderer states the same rule in src/extensions/official-extensions.ts. */
+function isOfficialOnlyId(id) {
+  const lower = id.toLowerCase();
+  return lower === OFFICIAL_ID_PREFIX || lower.startsWith(`${OFFICIAL_ID_PREFIX}.`);
+}
+
+/** Whether `m` is an official extension: official-extensions.json lists its id
+ *  and it names that row's repository. */
+function isOfficialManifest(m) {
+  const row = OFFICIAL_EXTENSIONS.find((e) => e.id === m.id);
+  return (
+    !!row &&
+    typeof m.repository === "string" &&
+    m.repository.toLowerCase() === row.repo.toLowerCase()
+  );
+}
+
 /** Whether `m` is a manifest an extension may be installed, listed or read from:
- *  well formed, and not under a reserved id. */
+ *  well formed, not under a reserved id, and official when its id says so. */
 function validManifest(m) {
   return (
     m &&
     typeof m.id === "string" &&
     VALID_ID.test(m.id) &&
     !isReservedExtensionId(m.id) &&
+    (!isOfficialOnlyId(m.id) || isOfficialManifest(m)) &&
     typeof m.name === "string" &&
     typeof m.version === "string" &&
     typeof m.main === "string" &&
@@ -137,6 +160,7 @@ function writeDevFolder(file, folder) {
 module.exports = {
   VALID_CONNECT_ORIGIN,
   isReservedExtensionId,
+  isOfficialOnlyId,
   validManifest,
   listInstalledManifests,
   listDevManifests,

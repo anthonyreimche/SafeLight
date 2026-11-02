@@ -10,7 +10,6 @@
 // used to keep running the first program it compiled.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useRegistry } from "@/extensions/registry";
 import {
   PROCESSING_PHASE_ORDER,
   type ProcessingPhase,
@@ -20,10 +19,12 @@ import {
   type UniformDeclaration,
 } from "@/extensions/types";
 import { BUILTIN_DENOISE_ID, DENOISE_STAGE } from "./builtin-denoise";
-import { compileShaderSource, getActiveStages, simpleHash, uniformPrefix } from "./shader-compiler";
-import { V1_VARIANT, V2_VARIANT, type ShaderVariant } from "./shaders";
-import { CORE_DISPLAY_CLAMP, PHASES, buildStageInjection, stageSignature } from "./stage-injection";
-import { builtinStage } from "./webgl.test-support";
+import { uniformPrefix } from "./shader-compiler";
+import { simpleHash } from "./hash";
+import { V1_VARIANT, V2_VARIANT, V3_VARIANT, type ShaderVariant } from "./shaders";
+import { PHASES, buildStageInjection, stageSignature } from "./stage-injection";
+import { essentialStages } from "./essential-stages.fixtures";
+import { LOCAL_TONE_GLSL } from "../local-tone";
 
 const AMOUNT: UniformDeclaration = { key: "amount", glslType: "float", default: 0 };
 const PASS: StagePass = { glsl: "c = readPrev(vUv);", helpers: "float passWeight() { return 1.0; }" };
@@ -233,9 +234,10 @@ describe("space wrappers", () => {
     expect(buildStageInjection([declared], V2_VARIANT).injection.effects).not.toContain(clip);
   });
 
-  it("never clips ahead of core vignette and grain", () => {
+  it("never clips ahead of a core or official stage", () => {
     const core = flagged({ id: "core.vignette", phase: "effects", glsl: "c = c;" });
     expect(buildStageInjection([core], V2_VARIANT).injection.effects).not.toContain("clamp");
+    expect(buildStageInjection(essentialStages(3), V2_VARIANT).injection.effects).not.toContain("clamp");
   });
 
   it("feeds a declaring stage's passes the source in its space", () => {
@@ -248,74 +250,113 @@ describe("space wrappers", () => {
   });
 });
 
-// The shipped Vignette and Grain end in the clamp the old core always applied.
-// Version 1 compiles their helpers as written. Version 2 drops that line, so what
-// they make reaches the stages after them with its full range. The line is found
-// as text, so the helpers and the builder have to agree on it.
-describe("the clamp that closes the core Vignette and Grain helpers", () => {
-  const SHIPPED = ["core.vignette", "core.grain"].map(builtinStage);
+// Names core's own program reads that a tool's stage declares (local tone reads
+// White Balance's sliders, main() Basic's presence sliders and Detail's
+// sharpening preview, version 2's scene luma the tone block's shoulder gain). While no stage declares one, the
+// injection stands in its neutral value, so the program compiles and reads the
+// tool as off.
+describe("name fallbacks", () => {
+  const FALLBACKS = ["#define uTemperature uAsShotTemperature", "#define uTint 0.0"];
+  const PRESENCE = ["#define uTexture 0.0", "#define uClarity 0.0", "#define uDehaze 0.0"];
+  const SHOULDER = "#define slShoulderGain 1.0";
+  const VIZ = "#define sharpenViz 0.0";
+  const GEOMETRY = "#define cropTransformUV(o) (o)";
+  const VARIANT_OF: Record<1 | 2 | 3, ShaderVariant> = { 1: V1_VARIANT, 2: V2_VARIANT, 3: V3_VARIANT };
+  const uniformsOf = (stages: ProcessingStageContribution[], variant = V3_VARIANT) =>
+    buildStageInjection(stages, variant).injection.uniforms;
+
+  it("stand in White Balance's, Basic's, Detail's and Crop's names while no stage declares them", () => {
+    const uniforms = uniformsOf([]);
+    for (const line of [...FALLBACKS, ...PRESENCE, SHOULDER, VIZ, GEOMETRY]) expect(uniforms).toContain(line);
+  });
+
+  it("leave the shoulder gain out of a version 1 program, which never reads it", () => {
+    const uniforms = uniformsOf([], V1_VARIANT);
+    expect(uniforms).not.toContain(SHOULDER);
+    for (const line of [...PRESENCE, VIZ]) expect(uniforms).toContain(line);
+  });
+
+  it.each([1, 2, 3] as const)("stand aside for the stages of line %i that declare them", (line) => {
+    const uniforms = uniformsOf(essentialStages(line), VARIANT_OF[line]);
+    for (const l of [...FALLBACKS, ...PRESENCE, SHOULDER, VIZ, GEOMETRY]) expect(uniforms).not.toContain(l);
+    expect(uniforms).toContain("uniform float uTemperature;");
+    expect(uniforms).toContain("uniform float uTexture;");
+  });
+
+  // Crop's geometry function is a helper of its stage: the official stage's
+  // helpers declare it, an extension's (namespaced) helpers don't.
+  it("count an official stage's helpers as declaring a function, not an extension's", () => {
+    const helper = "vec2 cropTransformUV(vec2 o) { return o; }";
+    const official = { ...flagged({ id: "safelight.crop.geometry", glsl: "", helpers: helper, anchor: "geometry" }), extensionId: "safelight.crop" };
+    expect(uniformsOf([official])).not.toContain(GEOMETRY);
+    expect(uniformsOf([flagged({ helpers: helper })])).toContain(GEOMETRY);
+  });
+
+  it("stand in for a name an extension's stage only prefixes, or declares in its own scope", () => {
+    const own = flagged({
+      id: "acme.warm",
+      phase: "scene-linear",
+      glsl: "float slShoulderGain = 2.0;",
+      uniforms: [{ key: "uTemperature", glslType: "float", default: 0 }],
+    });
+    const uniforms = uniformsOf([own]);
+    expect(uniforms).toContain(FALLBACKS[0]);
+    expect(uniforms).toContain(SHOULDER);
+  });
+});
+
+// An installed release renders every photo with its one text, so a later line
+// runs in a version 1 program too. Basic's line 2 and 3 tone block calls the
+// local tone curves only version 2's template declares: a version 1 program
+// that carries it gets them, with no camera refit, gain or shadows lift, as
+// version 1 has none.
+describe("version 2 helpers in a version 1 program", () => {
+  const V1_DEFINES = ["#define slBaselineRefit(x) (x)", "#define uBaselineGain 1.0", "#define uBaselineShadows 0.0"];
+  const built = (line: 1 | 2 | 3, variant: ShaderVariant) => buildStageInjection(essentialStages(line), variant).injection;
+
+  it.each([2, 3] as const)("come with line %i's tone block", (line) => {
+    const { uniforms, helpers } = built(line, V1_VARIANT);
+    for (const define of V1_DEFINES) expect(uniforms).toContain(define);
+    expect(helpers).toContain(LOCAL_TONE_GLSL);
+  });
+
+  it("stay out of a version 1 program with line 1, whose text is frozen", () => {
+    const { uniforms, helpers } = built(1, V1_VARIANT);
+    for (const define of V1_DEFINES) expect(uniforms).not.toContain(define);
+    expect(helpers).not.toContain("slToneHighlights");
+  });
+
+  it("stay out of a version 2 or 3 program, whose template has them", () => {
+    for (const variant of [V2_VARIANT, V3_VARIANT]) {
+      const { uniforms, helpers } = built(3, variant);
+      for (const define of V1_DEFINES) expect(uniforms).not.toContain(define);
+      expect(helpers).not.toContain("slToneHighlights");
+    }
+  });
+});
+
+// A release carries one text (one per process version it was written for), so
+// the injection emits an official stage's helpers as written under every
+// version: Effects of line 1 keeps the clamp that closes its helpers, line 3
+// ends them in `return c;`.
+
+describe("an official stage's helpers", () => {
   const CLAMP = "return clamp(c, 0.0, 1.0);";
-  const occurrences = (text: string, snippet: string): number => text.split(snippet).length - 1;
   const helpersOf = (stages: ProcessingStageContribution[], variant: ShaderVariant): string =>
     buildStageInjection(stages, variant).injection.helpers;
 
-  it("is the line version 1 compiles", () => {
-    expect(CORE_DISPLAY_CLAMP).toBe(CLAMP);
-  });
-
-  for (const stage of SHIPPED) {
-    it(`closes ${stage.id} once`, () => {
-      expect(occurrences(stage.helpers ?? "", CORE_DISPLAY_CLAMP)).toBe(1);
-    });
-  }
-
-  it("stays under version 1, which emits the helpers as written", () => {
-    const helpers = helpersOf(SHIPPED, V1_VARIANT);
-    for (const stage of SHIPPED) expect(helpers).toContain(stage.helpers);
-    expect(occurrences(helpers, CORE_DISPLAY_CLAMP)).toBe(SHIPPED.length);
-  });
-
-  it("goes under version 2, and nothing else changes", () => {
-    const helpers = helpersOf(SHIPPED, V2_VARIANT);
-    expect(helpers).not.toMatch(/return\s+clamp\(c,/);
-    for (const stage of SHIPPED) {
-      const unclamped = (stage.helpers ?? "").replace(CORE_DISPLAY_CLAMP, "return c;");
-      expect(helpers).toContain(unclamped);
+  it.each([1, 3] as const)("are emitted as written, line %i under every version", (line) => {
+    const stages = essentialStages(line);
+    for (const variant of [V1_VARIANT, V2_VARIANT, V3_VARIANT]) {
+      const helpers = helpersOf(stages, variant);
+      for (const stage of stages) if (stage.helpers) expect(helpers).toContain(stage.helpers);
     }
   });
 
-  it("goes from every place a core stage has it", () => {
-    const twice = flagged({
-      id: "core.twice",
-      phase: "effects",
-      glsl: "c = both(c);",
-      helpers: `vec3 both(vec3 c) {\n  if (c.r > 2.0) ${CLAMP}\n  c *= 0.5;\n  ${CLAMP}\n}`,
-    });
-    expect(occurrences(helpersOf([twice], V1_VARIANT), CLAMP)).toBe(2);
-    const v2 = helpersOf([twice], V2_VARIANT);
-    expect(occurrences(v2, CLAMP)).toBe(0);
-    expect(occurrences(v2, "return c;")).toBe(2);
-  });
-
-  it("stays in an extension stage's helpers under both versions", () => {
-    const clipper = flagged({
-      id: "acme.clipper",
-      phase: "effects",
-      glsl: "c = clipToWhite(c);",
-      helpers: `vec3 clipToWhite(vec3 c) {\n  ${CLAMP}\n}`,
-    });
-    for (const variant of [V1_VARIANT, V2_VARIANT]) {
-      expect(helpersOf([clipper], variant)).toContain(CLAMP);
-    }
-  });
-
-  // Pass programs are keyed on the signature, so it can't see the version: the
-  // line goes when the helpers are emitted, and the stage itself never changes.
-  it("doesn't change the signature", () => {
-    const v1 = buildStageInjection(SHIPPED, V1_VARIANT);
-    const v2 = buildStageInjection(SHIPPED, V2_VARIANT);
-    expect(v2.injection.helpers).not.toBe(v1.injection.helpers);
-    expect(v2.sig).toBe(v1.sig);
+  it("keep Effects' closing clamp on line 1 only", () => {
+    const effects = (line: 1 | 3) => essentialStages(line).filter((s) => s.extensionId === "safelight.effects");
+    expect(effects(1).every((s) => s.helpers?.includes(CLAMP))).toBe(true);
+    expect(effects(3).some((s) => s.helpers?.includes(CLAMP))).toBe(false);
   });
 });
 
@@ -816,40 +857,6 @@ describe("pipeline order", () => {
       expect(orderOf(stages)).toEqual(["acme.nr"]);
       expect(warn).not.toHaveBeenCalled();
     });
-
-    // compileShaderSource and getActiveStages are the other two places that order
-    // stages, and they order through the same sort, so the three cannot disagree.
-    describe("in the test-only compiler and the registry bridge", () => {
-      const stages = [
-        flagged({ id: "acme.late", priority: 10, after: ["acme.base"] }),
-        flagged({ id: "acme.base" }),
-        flagged({ id: "acme.loop.a", priority: 20, after: ["acme.loop.b"] }),
-        flagged({ id: "acme.loop.b", priority: 30, after: ["acme.loop.a"] }),
-        flagged({ id: "acme.fx", phase: "effects", priority: 1 }),
-      ];
-      const expected = ["acme.loop.a", "acme.loop.b", "acme.base", "acme.late", "acme.fx"];
-
-      it("gives the order the injection gives", () => {
-        quietWarn();
-        expect(orderOf(stages)).toEqual(expected);
-        expect(compileShaderSource(stages).stageIds).toEqual(expected);
-      });
-
-      it("hands the registry's stages over in that order", () => {
-        quietWarn();
-        const before = useRegistry.getState().processingStages;
-        try {
-          useRegistry.setState({
-            processingStages: Object.fromEntries(
-              stages.map((s) => [s.id, { ...s, extensionId: "acme" }]),
-            ),
-          });
-          expect(getActiveStages().map((s) => s.id)).toEqual(expected);
-        } finally {
-          useRegistry.setState({ processingStages: before });
-        }
-      });
-    });
   });
 });
 
@@ -1184,5 +1191,37 @@ describe("pass draw counts", () => {
     };
     const [prepass] = buildStageInjection([stage]).prepass;
     expect(prepass.passes[0].drawCount?.fallback).toBe(0);
+  });
+});
+
+// Heal's spot arrays are sized by constants the program names (MAX_SPOTS): an
+// official stage may define them, and size an array uniform by one.
+describe("an official stage's constants", () => {
+  const healish = (): ProcessingStageContribution & { extensionId: string } => ({
+    id: "safelight.heal.retouch",
+    name: "Heal",
+    phase: "scene-linear",
+    anchor: "white-balance",
+    glsl: "",
+    defines: { MAX_SPOTS: 32 },
+    uniforms: [{ key: "uSpotA", glslType: "vec4", length: 32, size: "MAX_SPOTS", default: new Array(128).fill(0) }],
+    extensionId: "safelight.heal",
+  });
+
+  it("are defined ahead of the uniforms they size", () => {
+    const { uniforms } = buildStageInjection([healish()], V3_VARIANT).injection;
+    const define = uniforms.indexOf("#define MAX_SPOTS 32");
+    expect(define).toBeGreaterThanOrEqual(0);
+    expect(uniforms.indexOf("uniform vec4 uSpotA[MAX_SPOTS];")).toBeGreaterThan(define);
+  });
+
+  it("bind the array by its length", () => {
+    const built = buildStageInjection([healish()], V3_VARIANT);
+    expect(built.bindings.find((b) => b.qualifiedKey === "safelight.heal.retouch.uSpotA")).toMatchObject({ length: 32 });
+  });
+
+  it("are an extension's own constants only when it is official", () => {
+    const { uniforms } = buildStageInjection([{ ...healish(), extensionId: "acme.heal", id: "acme.heal" } as ProcessingStageContribution], V3_VARIANT).injection;
+    expect(uniforms).not.toContain("#define MAX_SPOTS 32");
   });
 });

@@ -10,7 +10,7 @@
 // useCanvasCursor, so those cases drive the real hook — that is the contract the
 // Develop canvas depends on, including re-resolving when a request is released.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
   BUILTIN_CURSORS,
@@ -153,6 +153,20 @@ describe("extension cursor registry", () => {
 
     clearExtensionCursors("theme-ext");
     expect(resolveCursorCss("pick")).toBe(builtin);
+  });
+
+  it("keeps the first extension's token against another extension, and names both", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    registerCursor("ext-a", { id: "shared.tool", css: "cell" });
+    registerCursor("ext-b", { id: "shared.tool", css: "text" });
+    expect(resolveCursorCss("shared.tool")).toBe("cell");
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/ext-b.*"shared\.tool".*ext-a.*registerCursor ignored/));
+
+    registerCursor("ext-a", { id: "shared.tool", css: "wait" });
+    expect(resolveCursorCss("shared.tool")).toBe("wait");
+    expect(warn).toHaveBeenCalledTimes(1);
+    clearExtensionCursors("ext-a");
+    warn.mockRestore();
   });
 
   it("leaves other extensions' cursors alone", () => {

@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Boot-time capture of the privileged native bridge — raw filesystem by absolute
-// path, and the in-app update installer. Extensions run as ESM in the *same*
+// path, the in-app update installer, and installing and removing extensions. Extensions run as ESM in the *same*
 // renderer realm as core, so anything reachable on window.safelightNative is also
 // reachable by a malicious extension; the scoped SafelightAPI they're handed is
 // not a security boundary. The window capture behind Report an issue is held the
@@ -12,7 +12,7 @@
 // through a one-shot claimPrivileged() that returns the bundle on its first call
 // and null thereafter. We claim it once, as early as possible at boot (before any
 // extension — builtin or external — loads), and keep the reference module-private.
-// Core reads it through privilegedFs()/privilegedUpdates()/privilegedCapture()/privilegedGpu();
+// Core reads it through privilegedFs()/privilegedUpdates()/privilegedPlugins()/privilegedCapture()/privilegedGpu()/privilegedOsOpen();
 // extension code, which
 // loads later, finds claimPrivileged() already spent and so can never reach it.
 
@@ -20,14 +20,18 @@ import type {
   NativeCaptureBridge,
   NativeFsBridge,
   NativeGpuBridge,
+  NativeOsOpenBridge,
+  NativePluginsBridge,
   NativeUpdatesBridge,
 } from "@/extensions/types";
 
 let claimed = false;
 let fsBridge: NativeFsBridge | null = null;
 let updatesBridge: NativeUpdatesBridge | null = null;
+let pluginsBridge: NativePluginsBridge | null = null;
 let captureBridge: NativeCaptureBridge | null = null;
 let gpuBridge: NativeGpuBridge | null = null;
+let osOpenBridge: NativeOsOpenBridge | null = null;
 
 /** Claim the privileged bridge into module scope. Idempotent. Must run before
  *  the first extension loads — call it at the very top of renderer boot. */
@@ -37,8 +41,10 @@ export function claimPrivileged(): void {
   const priv = window.safelightNative?.claimPrivileged?.() ?? null;
   fsBridge = priv?.fs ?? null;
   updatesBridge = priv?.updates ?? null;
+  pluginsBridge = priv?.plugins ?? null;
   captureBridge = priv?.capture ?? null;
   gpuBridge = priv?.gpu ?? null;
+  osOpenBridge = priv?.osOpen ?? null;
 }
 
 /** The privileged fs bridge, or null in the plain-browser build. Lazily claims
@@ -54,6 +60,12 @@ export function privilegedUpdates(): NativeUpdatesBridge | null {
   return updatesBridge;
 }
 
+/** The extension install/uninstall/settle bridge, or null outside Electron. */
+export function privilegedPlugins(): NativePluginsBridge | null {
+  if (!claimed) claimPrivileged();
+  return pluginsBridge;
+}
+
 /** The window capture for Report an issue, or null outside Electron. */
 export function privilegedCapture(): NativeCaptureBridge | null {
   if (!claimed) claimPrivileged();
@@ -64,4 +76,10 @@ export function privilegedCapture(): NativeCaptureBridge | null {
 export function privilegedGpu(): NativeGpuBridge | null {
   if (!claimed) claimPrivileged();
   return gpuBridge;
+}
+
+/** The photo or folder the OS asked to open, or null outside Electron. */
+export function privilegedOsOpen(): NativeOsOpenBridge | null {
+  if (!claimed) claimPrivileged();
+  return osOpenBridge;
 }

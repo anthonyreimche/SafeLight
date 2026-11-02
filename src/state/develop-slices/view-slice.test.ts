@@ -165,32 +165,3 @@ describe("panel bypass", () => {
   });
 });
 
-describe("ephemeral picker and overlay state", () => {
-  it("defaults to every picker off", () => {
-    const s = store.getState();
-    expect([s.guidedEditing, s.wbPicking, s.hslPicking, s.maskColorPicking]).toEqual([
-      false,
-      false,
-      false,
-      false,
-    ]);
-    expect(s.selectedHslBand).toBe("hue");
-  });
-
-  it("sets each flag without persisting it", () => {
-    store.getState().setGuidedEditing(true);
-    store.getState().setWbPicking(true);
-    store.getState().setHslPicking(true);
-    store.getState().setMaskColorPicking(true);
-    store.getState().setSelectedHslBand("saturation");
-    const s = store.getState();
-    expect([s.guidedEditing, s.wbPicking, s.hslPicking, s.maskColorPicking]).toEqual([
-      true,
-      true,
-      true,
-      true,
-    ]);
-    expect(s.selectedHslBand).toBe("saturation");
-    expect(localStorage.length).toBe(0);
-  });
-});

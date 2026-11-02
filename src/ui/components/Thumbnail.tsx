@@ -6,8 +6,9 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
-import { requestThumbnail } from "@/state/thumbnail-loader";
+import { hasPreviewLoaded, markPreviewLoaded, revokePreviewUrl } from "@/state/preview-urls";
 import { Rating } from "./Rating";
+import { usePreviewRequest } from "./use-preview-request";
 
 // Callbacks take the photo id so the parent can pass ONE stable function to every
 // cell (instead of a fresh per-cell closure). Combined with the memo() below, a
@@ -25,11 +26,8 @@ interface ThumbnailProps {
   onDragStart?: (id: string, e: React.DragEvent) => void;
 }
 
-// Object URLs whose <img> has fired `load`. The grid remounts on every module
-// switch, so a preview it already showed must not fade in a second time. Cells
-// on the thumbnailBlob fallback mint a new URL per mount and still fade.
-const loadedUrls = new Set<string>();
-const hasLoaded = (url: string | null): boolean => url !== null && loadedUrls.has(url);
+// Cells on the thumbnailBlob fallback mint a new URL per mount and still fade in
+// (see state/preview-urls for the previews that do not).
 
 function ThumbnailImpl({
   photo,
@@ -84,40 +82,23 @@ function ThumbnailImpl({
     }
     const url = URL.createObjectURL(photo.thumbnailBlob);
     setBlobUrl(url);
-    return () => URL.revokeObjectURL(url);
+    return () => revokePreviewUrl(url);
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
   const thumbUrl = photo.thumbnailUrl ?? blobUrl;
-  const [loaded, setLoaded] = useState(() => hasLoaded(thumbUrl));
+  const [loaded, setLoaded] = useState(() => hasPreviewLoaded(thumbUrl));
   const prevUrl = useRef(thumbUrl);
   if (prevUrl.current !== thumbUrl) {
     prevUrl.current = thumbUrl;
-    setLoaded(hasLoaded(thumbUrl));
+    setLoaded(hasPreviewLoaded(thumbUrl));
   }
   const onLoad = useCallback(() => {
-    if (thumbUrl) loadedUrls.add(thumbUrl);
+    if (thumbUrl) markPreviewLoaded(thumbUrl);
     setLoaded(true);
   }, [thumbUrl]);
 
   // Lazily pull the cached preview when this cell nears the viewport, so a freshly
   // opened folder loads on-screen thumbnails first instead of all of them up front.
-  const cellRef = useRef<HTMLDivElement>(null);
-  const needsLoad = !thumbUrl;
-  useEffect(() => {
-    if (!needsLoad) return;
-    const el = cellRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          requestThumbnail(photo.id, { visible: true });
-          io.disconnect();
-        }
-      },
-      { rootMargin: "300px" },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [needsLoad, photo.id]);
+  const cellRef = usePreviewRequest<HTMLDivElement>(photo.id, !thumbUrl);
 
   return (
     <div
@@ -148,7 +129,7 @@ function ThumbnailImpl({
           title={`${photo.filename}: ${photo.decodeError}`}
         >
           <span className="text-lg leading-none">{"⚠"}</span>
-          <span className="px-1 text-center text-[9px] leading-tight">no preview</span>
+          <span className="line-clamp-3 px-1 text-center text-[10px] leading-tight">{photo.decodeError}</span>
         </div>
       ) : (
         // Skeleton while the cached preview is still loading.

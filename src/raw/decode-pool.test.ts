@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("libraw-wasm", () => ({ default: class {} }));
 
-import { acquireInstance, releaseInstance } from "./decode-pool";
+import { acquireInstance, disposeDecodePool, releaseInstance } from "./decode-pool";
 import {
   exhaustPool,
   freshPoolForEachTest,
@@ -75,5 +75,23 @@ describe("acquireInstance when every instance is busy", () => {
     releaseInstance(held[0]);
     await settle();
     expect(served).toEqual(["opened"]);
+  });
+});
+
+describe("disposeDecodePool with requests still waiting", () => {
+  it("answers every waiter, interactive and background, with no instance", async () => {
+    await exhaustPool();
+    const answers: Record<string, Instance | null | "pending"> = {
+      opened: "pending",
+      prefetch: "pending",
+    };
+    void acquireInstance().then((inst) => (answers.opened = inst));
+    void acquireInstance({ background: true }).then((inst) => (answers.prefetch = inst));
+    await settle();
+    expect(answers).toEqual({ opened: "pending", prefetch: "pending" });
+
+    disposeDecodePool();
+    await settle();
+    expect(answers).toEqual({ opened: null, prefetch: null });
   });
 });

@@ -25,6 +25,7 @@ import { registerViewportZoomCommands } from "@/state/viewport-zoom-commands";
 import { snapshotCrossfade } from "@/ui/canvas-crossfade";
 import { frameLocalPoint } from "@/ui/frame-point";
 import { reducedMotion } from "@/ui/reduced-motion";
+import { useDevicePixelRatio } from "@/ui/use-device-pixel-ratio";
 import {
   clampView,
   easeOutCubic,
@@ -71,7 +72,7 @@ interface ViewportImageProps {
   // When set, a click samples instead of zooming: receives the clicked point in
   // canvas buffer pixels (the WB eyedropper). Cursor becomes a crosshair.
   onPick?: (bufferX: number, bufferY: number) => void;
-  // For HSL picker: drag-based picking that receives pointer events.
+  // For an extension's pick-drag tool (HSL's target tool): drag-based picking that receives pointer events.
   // Called on pointer down, move (while dragging), and up.
   onPickDrag?: {
     onDown: (bufferX: number, bufferY: number) => void;
@@ -321,7 +322,7 @@ export function ViewportImage({
   // Emit the visible window (normalized image coords) + device-pixel output size
   // whenever the zoomed view moves, so the renderer can draw it crisply at 1:1.
   // In fit mode (or without a handler) clear the ROI so the whole frame renders.
-  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  const dpr = useDevicePixelRatio();
   useEffect(() => {
     if (!onViewport || holdWindow) return;
     if (!windowed || !hasImage) {
@@ -604,7 +605,7 @@ export function ViewportImage({
   const pickDragRef = useRef<{ active: boolean }>({ active: false });
 
   const onPointerDown = (e: ReactPointerEvent) => {
-    // Drag picking mode (HSL picker). A held gesture key (Ctrl/⌘/Space) hands the
+    // Drag picking mode (an extension's pick-drag tool). A held gesture key (Ctrl/⌘/Space) hands the
     // drag back to pan/zoom, so the picker no longer locks you out of panning a
     // zoomed image — it falls through to the pan path below.
     if (onPickDrag && !overlay && e.button === 0 && !zoomGesture) {

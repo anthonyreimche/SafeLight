@@ -11,7 +11,10 @@
 // to a culling surface, the single-key preference, and tool-scoped mask.delete.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, renderHook, screen } from "@testing-library/react";
+import { useState } from "react";
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { Slider } from "@/ui/components/Slider";
+import { ContextMenu } from "@/ui/components/ContextMenu";
 import { normalizeParams, type CatalogPhoto } from "@/catalog/types";
 import { photo } from "@/catalog/stored-edit.fixtures";
 import { useKeyboardShortcuts } from "./use-keyboard-shortcuts";
@@ -19,13 +22,21 @@ import { NO_FILTER } from "@/modules/library/visible-photos";
 import { useCullingShortcuts } from "@/modules/library/use-culling-shortcuts";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDockStore } from "@/extensions/dock";
+import { registerEssentialModules, unregisterEssentialModules } from "@/test/essential-modules.test-support";
 import { useDevelopStore, type DevelopState } from "@/state/develop-store";
+import { setPickDrag, usePickDragStore } from "@/modules/develop/pick-drag";
+import { setCanvasTool, useCanvasToolStore } from "@/modules/develop/canvas-tool";
+
+/** An extension's on-image tool holding the canvas, as crop mode does. */
+const holdCanvas = () => setCanvasTool("acme.crop", { overlay: () => null });
+const canvasHeld = () => useCanvasToolStore.getState().held !== null;
 import {
   KEY_ACTIONS,
   getBinding,
   resetBinding,
   setBinding,
-  setShortcutsSuspended,
+  resetShortcutHoldsForTests,
+  suspendShortcuts,
 } from "@/state/keybindings-store";
 import { useSettings } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
@@ -164,13 +175,8 @@ describe("Esc exits one layer at a time", () => {
   let unregister: (() => void) | null = null;
 
   const layers = () => ({
-    cropping: dev().cropping,
-    wbPicking: dev().wbPicking,
-    guidedEditing: dev().guidedEditing,
-    activeTool: dev().activeTool,
-    selectedSpotId: dev().selectedSpotId,
-    selectedMaskId: dev().selectedMaskId,
-    selectedComponentId: dev().selectedComponentId,
+    canvasTool: canvasHeld(),
+    picking: usePickDragStore.getState().held !== null,
   });
 
   beforeEach(() => {
@@ -180,142 +186,51 @@ describe("Esc exits one layer at a time", () => {
   afterEach(() => {
     unregister?.();
     unregister = null;
-    setShortcutsSuspended(false);
+    resetShortcutHoldsForTests();
+    usePickDragStore.setState({ held: null });
+    useCanvasToolStore.setState({ held: null });
     resetStores();
   });
 
-  it("works down the chain: modal, crop, WB picker, guided overlay, tool, mask selection", () => {
+  it("works down the chain: modal, canvas tool, pick tool", () => {
     const modal = vi.fn();
     unregister = pushEscapeHandler(modal);
-    useDevelopStore.setState({
-      cropping: true,
-      wbPicking: true,
-      params: { ...dev().params, uprightMode: "guided" },
-      guidedEditing: true,
-      activeTool: "mask",
-      selectedSpotId: "s1",
-      selectedMaskId: "m1",
-      selectedComponentId: "c1",
-      hoveredMaskId: "m1",
-    });
+    holdCanvas();
+    setPickDrag("acme", { onDown: () => {}, onMove: () => {}, onUp: () => {} });
 
     expect(fire(window, "Escape"), "modal").toBe(true);
     expect(modal).toHaveBeenCalledTimes(1);
     expect(layers()).toEqual({
-      cropping: true,
-      wbPicking: true,
-      guidedEditing: true,
-      activeTool: "mask",
-      selectedSpotId: "s1",
-      selectedMaskId: "m1",
-      selectedComponentId: "c1",
+      canvasTool: true,
+      picking: true,
     });
 
     unregister();
     unregister = null;
-    expect(fire(window, "Escape"), "crop").toBe(true);
+    expect(fire(window, "Escape"), "canvas tool").toBe(true);
     expect(layers()).toEqual({
-      cropping: false,
-      wbPicking: true,
-      guidedEditing: true,
-      activeTool: "mask",
-      selectedSpotId: "s1",
-      selectedMaskId: "m1",
-      selectedComponentId: "c1",
+      canvasTool: false,
+      picking: true,
     });
 
-    expect(fire(window, "Escape"), "WB picker").toBe(true);
+    expect(fire(window, "Escape"), "pick tool").toBe(true);
     expect(layers()).toEqual({
-      cropping: false,
-      wbPicking: false,
-      guidedEditing: true,
-      activeTool: "mask",
-      selectedSpotId: "s1",
-      selectedMaskId: "m1",
-      selectedComponentId: "c1",
+      canvasTool: false,
+      picking: false,
     });
-
-    expect(fire(window, "Escape"), "guided overlay").toBe(true);
-    expect(dev().params.uprightMode).toBe("guided");
-    expect(layers()).toEqual({
-      cropping: false,
-      wbPicking: false,
-      guidedEditing: false,
-      activeTool: "mask",
-      selectedSpotId: "s1",
-      selectedMaskId: "m1",
-      selectedComponentId: "c1",
-    });
-
-    expect(fire(window, "Escape"), "tool").toBe(true);
-    expect(layers()).toEqual({
-      cropping: false,
-      wbPicking: false,
-      guidedEditing: false,
-      activeTool: "none",
-      selectedSpotId: null,
-      selectedMaskId: "m1",
-      selectedComponentId: "c1",
-    });
-
-    expect(fire(window, "Escape"), "mask selection").toBe(true);
-    expect(layers()).toEqual({
-      cropping: false,
-      wbPicking: false,
-      guidedEditing: false,
-      activeTool: "none",
-      selectedSpotId: null,
-      selectedMaskId: null,
-      selectedComponentId: null,
-    });
-    expect(dev().hoveredMaskId).toBeNull();
 
     expect(fire(window, "Escape"), "nothing left").toBe(false);
-  });
-
-  it("closes the guided overlay only while guided is the upright mode", () => {
-    useDevelopStore.setState({
-      params: { ...dev().params, uprightMode: "auto" },
-      guidedEditing: true,
-    });
-    expect(fire(window, "Escape")).toBe(false);
-    expect(dev().guidedEditing).toBe(true);
-
-    useDevelopStore.setState({ params: { ...dev().params, uprightMode: "guided" } });
-    expect(fire(window, "Escape")).toBe(true);
-    expect(dev().guidedEditing).toBe(false);
-    expect(dev().params.uprightMode).toBe("guided");
-  });
-
-  it.each([
-    ["only a mask", "m1", null],
-    ["only a component", null, "c1"],
-  ])("clears the selection when %s is selected", (_case, maskId, componentId) => {
-    useDevelopStore.setState({
-      selectedMaskId: maskId,
-      selectedComponentId: componentId,
-      hoveredMaskId: "m1",
-    });
-    expect(fire(window, "Escape")).toBe(true);
-    expect(layers().selectedMaskId).toBeNull();
-    expect(layers().selectedComponentId).toBeNull();
-    expect(dev().hoveredMaskId).toBeNull();
   });
 
   it("does not consume Esc when there is nothing to exit", () => {
     expect(fire(window, "Escape")).toBe(false);
     expect(layers()).toEqual({
-      cropping: false,
-      wbPicking: false,
-      guidedEditing: false,
-      activeTool: "none",
-      selectedSpotId: null,
-      selectedMaskId: null,
-      selectedComponentId: null,
+      canvasTool: false,
+      picking: false,
     });
   });
 
-  it("closes a modal and exits crop from a focused text field", () => {
+  it("closes a modal and lets go of the canvas tool from a focused text field", () => {
     render(<input aria-label="Caption" />);
     const field = screen.getByLabelText("Caption");
     const modal = vi.fn();
@@ -325,14 +240,51 @@ describe("Esc exits one layer at a time", () => {
 
     unregister();
     unregister = null;
-    useDevelopStore.setState({ cropping: true });
+    holdCanvas();
     expect(fire(field, "Escape")).toBe(true);
-    expect(dev().cropping).toBe(false);
+    expect(canvasHeld()).toBe(false);
   });
 
   it("leaves Esc to a focused text field when there is nothing to exit", () => {
     render(<input aria-label="Caption" />);
     expect(fire(screen.getByLabelText("Caption"), "Escape")).toBe(false);
+  });
+
+  it("leaves Esc to a Slider's value field, which reverts the value and keeps the tool", () => {
+    function Held() {
+      const [value, setValue] = useState(25);
+      return <Slider label="Exposure" value={value} min={-100} max={100} onChange={setValue} />;
+    }
+    render(<Held />);
+    const field = screen.getByLabelText<HTMLInputElement>("Exposure value");
+    const modal = vi.fn();
+    unregister = pushEscapeHandler(modal);
+    holdCanvas();
+    act(() => field.focus());
+    fireEvent.change(field, { target: { value: "40" } });
+
+    expect(fire(field, "Escape")).toBe(false);
+
+    expect(field.value).toBe("+25");
+    expect(canvasHeld()).toBe(true);
+    expect(modal).not.toHaveBeenCalled();
+  });
+
+  it("closes an open context menu before leaving the canvas tool", () => {
+    const onClose = vi.fn();
+    render(<ContextMenu x={0} y={0} items={[{ label: "Open", onClick: () => {} }]} onClose={onClose} />);
+    holdCanvas();
+
+    expect(fire(window, "Escape")).toBe(true);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(canvasHeld()).toBe(true);
+  });
+
+  it("leaves Esc to any editable field that opts in with data-own-escape", () => {
+    render(<input aria-label="Caption" data-own-escape="" />);
+    holdCanvas();
+    expect(fire(screen.getByLabelText("Caption"), "Escape")).toBe(false);
+    expect(canvasHeld()).toBe(true);
   });
 
   it("leaves Esc to an extension's open native dialog, which closes itself", () => {
@@ -342,17 +294,17 @@ describe("Esc exits one layer at a time", () => {
         <button type="button">Cancel</button>
       </dialog>,
     );
-    useDevelopStore.setState({ cropping: true });
+    holdCanvas();
     expect(fire(screen.getByLabelText("Coordinates"), "Escape")).toBe(false);
     expect(fire(screen.getByRole("button", { name: "Cancel" }), "Escape")).toBe(false);
-    expect(dev().cropping).toBe(true);
+    expect(canvasHeld()).toBe(true);
   });
 
   it("stands down while the shortcut editor is capturing a combo", () => {
-    useDevelopStore.setState({ cropping: true });
-    setShortcutsSuspended(true);
+    holdCanvas();
+    suspendShortcuts();
     expect(fire(window, "Escape")).toBe(false);
-    expect(dev().cropping).toBe(true);
+    expect(canvasHeld()).toBe(true);
   });
 });
 
@@ -435,6 +387,7 @@ describe("the single-key shortcuts preference", () => {
   beforeEach(() => {
     requestFullscreen.mockClear();
     document.documentElement.requestFullscreen = requestFullscreen;
+    registerEssentialModules();
     useUIStore.setState({ activeModule: "develop" });
     useDevelopStore.setState({ showClipping: 0 });
     render(<Harness />);
@@ -453,6 +406,15 @@ describe("the single-key shortcuts preference", () => {
     expect(useUIStore.getState().activeModule).toBe("develop");
     expect(fire(window, bound("view.fullscreen"))).toBe(true);
     expect(requestFullscreen).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the module as it is when the one a key names isn't there", () => {
+    useSettings.setState({ singleKeyShortcuts: true });
+    unregisterEssentialModules();
+    useUIStore.setState({ activeModule: "map" });
+    fire(window, bound("module.library"));
+    fire(window, bound("module.develop"));
+    expect(useUIStore.getState().activeModule).toBe("map");
   });
 
   it("ignores the Library key while it is off", () => {
@@ -527,64 +489,29 @@ describe("develop.toggleProof", () => {
   });
 });
 
-describe("mask.delete in Develop", () => {
-  type MaskSelection = Pick<
-    DevelopState,
-    "activeTool" | "selectedMaskId" | "selectedComponentId"
-  >;
-  const removeComponent = vi.fn((_maskId: string, _componentId: string): void => {});
-  const commitEdit = vi.fn(async (_label: string): Promise<void> => {});
-
+describe("a held canvas tool's shortcut actions", () => {
   beforeEach(() => {
-    removeComponent.mockClear();
-    commitEdit.mockClear();
     useUIStore.setState({ activeModule: "develop" });
-    useDevelopStore.setState({ removeComponent, commitEdit });
     render(<Harness />);
   });
-  afterEach(resetStores);
+  afterEach(() => {
+    useCanvasToolStore.setState({ held: null });
+    resetStores();
+  });
 
-  it("removes the selected component and commits once the mask tool has both", () => {
-    useDevelopStore.setState({
-      activeTool: "mask",
-      selectedMaskId: "m1",
-      selectedComponentId: "c1",
-    });
+  it("go to the tool", () => {
+    const onAction = vi.fn(() => true);
+    setCanvasTool("acme.heal", { overlay: () => null, onAction });
+    expect(fire(window, bound("brush.larger"))).toBe(true);
     expect(fire(window, bound("mask.delete"))).toBe(true);
-    expect(removeComponent).toHaveBeenCalledTimes(1);
-    expect(removeComponent).toHaveBeenCalledWith("m1", "c1");
-    expect(commitEdit).toHaveBeenCalledTimes(1);
-    expect(commitEdit).toHaveBeenCalledWith("Delete Component");
+    expect(onAction.mock.calls).toEqual([["brush.larger"], ["mask.delete"]]);
   });
 
-  it("answers the Backspace alias too", () => {
-    useDevelopStore.setState({
-      activeTool: "mask",
-      selectedMaskId: "m1",
-      selectedComponentId: "c1",
-    });
-    expect(fire(window, "Backspace")).toBe(true);
-    expect(removeComponent).toHaveBeenCalledWith("m1", "c1");
-  });
-
-  it.each<[string, MaskSelection]>([
-    [
-      "the mask tool has no component selected",
-      { activeTool: "mask", selectedMaskId: "m1", selectedComponentId: null },
-    ],
-    [
-      "the mask tool has no mask selected",
-      { activeTool: "mask", selectedMaskId: null, selectedComponentId: "c1" },
-    ],
-    [
-      "a component is selected but the tool is not the mask tool",
-      { activeTool: "none", selectedMaskId: "m1", selectedComponentId: "c1" },
-    ],
-  ])("lets the key through untouched when %s", (_case, selection) => {
-    useDevelopStore.setState(selection);
+  it("let the key through when the tool doesn't take them, or none is held", () => {
+    expect(fire(window, bound("brush.larger"))).toBe(false);
+    expect(fire(window, "Backspace")).toBe(false);
+    setCanvasTool("acme.crop", { overlay: () => null, onAction: () => false });
     expect(fire(window, bound("mask.delete"))).toBe(false);
-    expect(removeComponent).not.toHaveBeenCalled();
-    expect(commitEdit).not.toHaveBeenCalled();
   });
 });
 

@@ -12,10 +12,8 @@ import {
   CURRENT_PROCESS_VERSION,
   DEFAULT_DEVELOP_PARAMS,
   LEGACY_PROCESS_VERSION,
-  defaultColorGrading,
   defaultMaskAdjustments,
   freshParams,
-  isNeutralColorGrading,
   maskHasDisplayAdjustments,
   normalizeParams,
   usesOlderProcessing,
@@ -104,16 +102,6 @@ describe("usesSignedOutput", () => {
 });
 
 describe("activity predicates the version 2 shader skips on", () => {
-  it("sees neutral grading only when every wheel offset and luma lift is zero", () => {
-    const cg = defaultColorGrading();
-    expect(isNeutralColorGrading(cg)).toBe(true);
-    expect(
-      isNeutralColorGrading({ ...cg, shadowRange: 10, highlights: { hue: 40, sat: 0, luma: 0 } }),
-    ).toBe(true);
-    expect(isNeutralColorGrading({ ...cg, midtones: { hue: 40, sat: 5, luma: 0 } })).toBe(false);
-    expect(isNeutralColorGrading({ ...cg, global: { hue: 0, sat: 0, luma: -3 } })).toBe(false);
-  });
-
   it("sees a mask's display adjustments, not its linear ones", () => {
     const adj = defaultMaskAdjustments();
     expect(

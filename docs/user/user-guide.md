@@ -64,7 +64,7 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 - **Zoom and pan** — loupe-style 1:1 inspection with the zoom controls or scroll/drag (smooth drag, no momentum). Opening zoom (fit or 100%) is configurable.
 - **Undo / redo / reset** — undo (**Ctrl+Z**), redo (**Ctrl+Shift+Z** or **Ctrl+Y**), reset all edits (**Ctrl+Shift+R**).
 - **Older edits.** Photos you edited in an earlier version of Safelight keep their look. **Update processing** in Develop's status bar (or in the Library right-click menu, for many photos at once) moves a photo to the new processing, which keeps bright, very saturated colors. Undo puts it back.
-- **Sliders** — hold **Shift** while dragging for fine adjustment (or widen the panel); double-click to reset.
+- **Sliders** — hold **Shift** while dragging for fine adjustment (or widen the panel); double-click to reset. **Shift+scroll** over a slider steps it, and **Shift+scroll** over a closed dropdown picks the next or previous choice. Click a slider's number to type a value: it's selected so typing replaces it, **Enter** keeps it and **Esc** puts the old value back.
 - **Clipping indicators** — toggle shadow/highlight clipping warnings on the canvas.
 - **Preview and Full quality.** While a photo's full image loads, Develop shows its stored preview or the camera's preview. If that takes a moment, the corner of the image says **Preview**, then **Full quality** for a moment once the full image arrives. The previews ease into the full image unless Reduce motion is on. Moving to another photo keeps the one before on screen until the next one appears.
 - **Photos that only show a preview.** When Develop can only show a preview, the corner says why: Safelight can't open this RAW yet, the RAW took too long to open, or the original isn't available (a drive unplugged, or access not granted). A RAW Safelight can't decode opens on the camera's preview. Once two launches have failed on it, it opens that way straight away. **Re-import** (Library right-click menu) or **Preferences ▸ Previews ▸ Clear preview cache** tries it again. If Develop can't show a photo at all, the corner says "Can't show this photo."
@@ -89,7 +89,7 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 
 ### Geometry
 
-- **Crop & Straighten** — drag handles to crop, cycle guide overlays (**O**) and flip them (**Shift+O**), lock an aspect ratio, **Ctrl+drag** to level the horizon, and optionally constrain the crop to the image bounds.
+- **Crop & Straighten** — drag handles to crop, cycle guide overlays (**O**) and flip them (**Shift+O**), lock an aspect ratio, **Ctrl+drag** a line along the horizon to level it (the angle shows as you draw; **Preferences ▸ Extensions ▸ Crop & Straighten** can make it a right-drag instead), and optionally constrain the crop to the image bounds.
 - **Transform** — vertical/horizontal perspective, aspect, scale, offset, and flips.
 - **Upright** — automatic perspective correction with modes Off, Auto, Level, Vertical, and Full, plus **Guided**, where you draw reference lines on the image and the solver levels to them.
 

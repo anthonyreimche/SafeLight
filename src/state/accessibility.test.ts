@@ -14,11 +14,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import {
+  ACCESSIBILITY_ACTIVE_KEY,
   activateAccessibility,
   applyAccessibility,
   deactivateAccessibility,
   isKeyboardCanvasEditingActive,
   OVERRIDABLE_KEYS,
+  restoreAccessibility,
+  settleAccessibility,
   useKeyboardCanvasEditing,
 } from "./accessibility";
 import { resetSettings, updateSettings } from "./settings-store";
@@ -314,6 +317,57 @@ describe("extension lifecycle", () => {
     const before = root().getAttribute("style");
     deactivateAccessibility();
     expect(root().getAttribute("style")).toBe(before);
+  });
+});
+
+// The overlays belong to the Accessibility extension, which an installed copy
+// activates only once the installed extensions load, after the theme is on
+// screen. So the app turns them on at launch when they were on at the end of
+// the last session, and hands them back once the extensions have loaded: kept
+// when the extension took them, removed when it never came.
+describe("startup before the extension loads", () => {
+  beforeEach(() => updateSettings({ strongFocus: true }));
+
+  it("turns the overlays on at launch and keeps them once the extension takes them", () => {
+    localStorage.setItem(ACCESSIBILITY_ACTIVE_KEY, "true");
+    restoreAccessibility();
+    expect(classes()).toContain("sl-focus-ring");
+    activateAccessibility();
+    settleAccessibility();
+    expect(classes()).toContain("sl-focus-ring");
+    expect(localStorage.getItem(ACCESSIBILITY_ACTIVE_KEY)).toBe("true");
+  });
+
+  it("removes them once the extensions have loaded without it", () => {
+    localStorage.setItem(ACCESSIBILITY_ACTIVE_KEY, "true");
+    restoreAccessibility();
+    expect(classes()).toContain("sl-focus-ring");
+    settleAccessibility();
+    expect(classes()).not.toContain("sl-focus-ring");
+    expect(document.getElementById("sl-cvd-defs")).toBeNull();
+    expect(localStorage.getItem(ACCESSIBILITY_ACTIVE_KEY)).toBe("false");
+  });
+
+  it("leaves them off when they were off at the end of the last session", () => {
+    localStorage.setItem(ACCESSIBILITY_ACTIVE_KEY, "false");
+    restoreAccessibility();
+    expect(classes()).not.toContain("sl-focus-ring");
+    settleAccessibility();
+    expect(classes()).not.toContain("sl-focus-ring");
+  });
+
+  it("leaves them off on a first launch", () => {
+    restoreAccessibility();
+    settleAccessibility();
+    expect(classes()).not.toContain("sl-focus-ring");
+  });
+
+  it("keeps overlays an extension turned on before the launch restore ran", () => {
+    localStorage.setItem(ACCESSIBILITY_ACTIVE_KEY, "true");
+    activateAccessibility();
+    restoreAccessibility();
+    settleAccessibility();
+    expect(classes()).toContain("sl-focus-ring");
   });
 });
 

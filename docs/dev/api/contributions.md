@@ -2,7 +2,7 @@
 
 ← [API Reference](README.md)
 
-Signatures for every `register*` call except the UI-mount ones (modules, panels, header accessories, slots, layouts), which are in [UI Shell](ui-shell.md). `src/extensions/types.ts` is the source of truth. Every contribution is tagged with your extension's id and removed when it is disabled or uninstalled. Re-registering the same `id` replaces a contribution.
+Signatures for every `register*` call except the UI-mount ones (modules, panels, header accessories, slots, layouts), which are in [UI Shell](ui-shell.md). `src/extensions/types.ts` is the source of truth. Every contribution is tagged with your extension's id and removed when it is disabled or uninstalled. Re-registering the same `id` replaces a contribution. An `id` belongs to the extension that registered it first: if another extension registers the same `id`, the call is ignored and a warning names both extensions. Pick ids with your extension's prefix, as the examples do.
 
 For where GPU code runs and what values it sees, read [How a photo is rendered](../rendering.md) first.
 
@@ -50,6 +50,7 @@ interface PipelineContribution {
 - **Input and output.** `lin` is scene-linear, Rec.709 primaries, and can be above 1 or below 0. Guard channels before `log`, `pow` or `sqrt`. Return sRGB-encoded values. Don't convert to the output colour space: the core does that once at the end.
 - **The two flags.** `skipBaseCurve` drops the default RAW tone baseline, so your transform is the whole look. `skipToneShoulder` drops the core's highlight roll-off, so you get the full headroom and must bound your own output. Set both for untouched scene-linear input. `skipToneShoulder` only affects [process version](#process-versions) 2 photos.
 - **Helpers.** `luma()`, `srgbToLinear()`, `linearToSrgb()` and `linearToSrgbU()` are always there. The `sl*` space helpers exist on version 2 photos only, so a transform that must also work on version 1 copies the maths under its own names (not starting with `sl` or `SL_`).
+- **Encoding out-of-range values.** `linearToSrgb()` is a display encode that clips: it clamps its input to 0..1 first, so highlights above 1.0 and anything below 0 are lost. Use it only for a final, display-bound value. To keep HDR highlights, use `linearToSrgbU()`, which clamps at 0 but lets values above 1.0 through (the curve continues past 1.0). To keep negative values too, which wide-gamut and noise-reduced pixels can have, use `slEncodePerceptual()` (version 2 photos only), which encodes the magnitude and keeps the sign. There is no signed variant that also works on version 1; copy the maths under your own name if you need one there.
 - **`params`** are float, int or bool settings stored per photo under `"{id}.{key}"`. Without `derive`, each is a uniform named by its key. Changing one never recompiles. Presets and copy/paste carry all of them. `api.pipelines.paramKeys(id)` lists them. Don't give a stage and a transform the same id: they share the bag.
 - **`derive`** computes uniforms from the params in JavaScript, for coefficients or matrices that are costly or precision-sensitive to compute in GLSL. It runs on the main thread, memoised. A throw or a bad result binds the uniforms' defaults.
 - Omit `glsl` to reuse the built-in transform with different flags. A transform that fails to compile renders with the built-in one and logs the error. Invalid fields refuse the registration, with the reason in the console. `params`, `helpers` and `derive` need Safelight 3.1.0.
@@ -90,6 +91,7 @@ interface ProcessingStageContribution {
 interface UniformDeclaration {
   key: string;                // GLSL name; bag key "{stageId}.{key}"
   glslType: GlslType;         // float, int, bool, vec2..4, mat3, mat4, ...
+  length?: number;            // an array of 1 to 64 (not mats or samplers)
   default: number | number[] | boolean;
   range?: { min: number; max: number; step?: number };
   label?: string;
@@ -127,6 +129,7 @@ interface StagePass {
 - Passes run at a capped resolution. Scale a radius given in source pixels by `max(1.0 / uTexel.x, 1.0 / uTexel.y) / max(uSourceSize.x, uSourceSize.y)`.
 - `iterations: { key, max }` reads the draw count from the bag each frame (3.0.1). 0 skips the pass. A stage whose passes all draw 0 times runs no passes that frame, so gate your inline `glsl` on the same condition.
 - Passes run while the bag holds a non-zero value for the stage, or a `{ key, max }` count resolves above 0. A non-zero default count therefore runs on every photo.
+- An array uniform's value and default are all its numbers, flattened: `float uGain[8]` takes 8, `vec2 uPairs[3]` takes 6. A bag value of the wrong count binds the default. A `mat3` or `mat4` value is column-major.
 - Passes can't read inter-stage variables. A pass that fails to compile disables the stage's passes for the session; the inline `glsl` still runs.
 
 ### Textures
@@ -134,13 +137,15 @@ interface StagePass {
 ```typescript
 interface TextureRequirement {
   key: string;
-  kind: "lut" | "coverage" | "dynamic";
+  kind: "lut" | "coverage" | "dynamic" | "photo" | "atlas";
   width?: number; height?: number;
   format?: "rgba8" | "rgba16f" | "r8";
 }
 ```
 
-- **`lut` and `dynamic`** take pixels from `api.setStageTexture(stageId, key, data)`. There is one global copy, not one per photo, so they suit film LUTs, not per-photo data. Supply them from `activate`: they are dropped when the extension is disabled, updated or reloaded.
+- **`lut` and `dynamic`** take pixels from `api.setStageTexture(stageId, key, data)`. There is one global copy, not one per photo, so they suit film LUTs, not per-photo data. Supply them from `activate`: they are dropped when the extension is disabled, updated or reloaded. Only the extension that registered the stage can set its textures; the call is ignored with a warning otherwise. A texture is also refused with a warning, keeping the previous one, if its format is unknown, its size isn't positive whole numbers, its data doesn't match width × height × channels, or it is over 64 MB (256 MB across all of an extension's textures). One larger than the GPU's maximum texture size draws as blank.
+- **`photo`** is for Safelight's own stages: their `derive` fills it per photo from the photo's params (the tone curve's table). Any other stage that declares one is refused.
+- **`atlas`** is for Safelight's own stages too (3.2.0): `derive` returns up to four `{ id, dabs }` brush strokes under the texture's key, and core bakes them into the texture's four channels in order (Heal's brush spots).
 - **`coverage`** is painted. The photo's bag value at `"{stageId}.{key}"` is a `BrushDab[]`, the same shape core brush masks use, and your inline `glsl` reads it as `float key(vec2 uv)` (0 to 1). It persists, undoes and exports like any edit. Replace the array when it changes (`[...dabs, dab]`); an array edited in place doesn't reach the renderer. Not readable inside passes.
 
 ### Values a stage sees: `space`
@@ -164,7 +169,7 @@ interface StageSpace {
 
 ### Scene luminance after the transform: `slSceneLuma`
 
-Stages in `display-adjust`, `effects` and `output-encode` can read `float slSceneLuma`: the pixel's scene luminance before the core shoulder compressed it, for HDR or highlight-aware effects. It exists only in the inline `glsl` (pass it to helpers as an argument). On version 1 photos it carries no headroom. Needs Safelight 3.0.0.
+Stages in `display-adjust`, `effects` and `output-encode` can read `float slSceneLuma`: the pixel's scene luminance before the core shoulder compressed it, for HDR or highlight-aware effects. It exists only in the inline `glsl` (pass it to helpers as an argument). On version 1 photos it carries no headroom. The shoulder is part of the Basic extension's tone block: while Basic is off, nothing compresses the luminance and `slSceneLuma` is what the transform receives. Needs Safelight 3.0.0.
 
 ### Process versions
 
@@ -243,7 +248,7 @@ type SettingsField =
   | { key; label; hint?; type: "select";  default: string; options: { value; label }[] };
 ```
 
-Your section in **Preferences ▸ Extensions**. Read and write values with `api.settings.get/set`, watch them with `api.settings.onChange`.
+Your section in **Preferences ▸ Extensions**. There is one per extension, so a second `registerSettings` call replaces the first. Read and write values with `api.settings.get/set`, watch them with `api.settings.onChange`.
 
 ## `ExportProcessorContribution`
 
@@ -304,7 +309,7 @@ interface CatalogHooksContribution {
 }
 ```
 
-Handlers are awaited. One that throws is logged and skipped, so it can't break an import or a save. When several `onPhotoImport` handlers return fields, the later ones win.
+Handlers are awaited, one after another. One that throws, or doesn't finish within 60 seconds, is logged and skipped, so it can't break or stall an import or a save. When several `onPhotoImport` handlers return fields, the later ones win.
 
 ## `PresetImporterContribution`
 

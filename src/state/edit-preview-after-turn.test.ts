@@ -73,14 +73,15 @@ describe("an edit's preview rendered while a turn is being written", () => {
     const storage = catalogStorage();
     let written = (): void => {};
     const writing = new Promise<void>((resolve) => (written = resolve));
-    const turnWritten = vi.spyOn(storage, "putPhoto").mockImplementationOnce(async () => {
+    const turnWritten = vi.spyOn(storage, "putPhotos").mockImplementationOnce(async () => {
       await writing;
     });
+    const editWritten = vi.spyOn(storage, "putPhoto");
 
     const turning = useCatalogStore.getState().rotatePhotos([ID], 90);
     await vi.waitFor(() => expect(turnWritten).toHaveBeenCalled());
     regenerateEditedThumbnail(ID, normalizeParams({ exposure: 1 }), 5000);
-    await vi.waitFor(() => expect(storage.putPhoto).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(editWritten).toHaveBeenCalled());
     written();
     await turning;
     await new Promise((resolve) => setTimeout(resolve, 0));

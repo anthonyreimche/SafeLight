@@ -59,12 +59,16 @@ interface TrustState {
   loadedAt: number;
   /** Banned extensions skipped at load — surfaced by the security banner. */
   flagged: FlaggedExtension[];
+  /** Flagged ids whose banner line was dismissed. They stay in `flagged`, which
+   *  the diagnostics report lists as blocked. */
+  dismissedFlags: string[];
 }
 
 export const useTrust = create<TrustState>(() => ({
   list: readLsTrust() ?? EMPTY, // synchronous seed — boot checks need no fetch
   loadedAt: 0,
   flagged: [],
+  dismissedFlags: [],
 }));
 
 /** Record that a banned installed extension was skipped at load (deduped by id). */
@@ -78,7 +82,11 @@ export function flagBannedExtension(f: FlaggedExtension): void {
 
 /** Dismiss the security banner's notice for one extension. */
 export function dismissFlag(id: string): void {
-  useTrust.setState((s) => ({ flagged: s.flagged.filter((x) => x.id !== id) }));
+  useTrust.setState((s) =>
+    s.flagged.some((x) => x.id === id) && !s.dismissedFlags.includes(id)
+      ? { dismissedFlags: [...s.dismissedFlags, id] }
+      : s,
+  );
 }
 
 let inflight: Promise<void> | null = null;

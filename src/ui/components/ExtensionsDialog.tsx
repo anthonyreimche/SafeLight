@@ -10,24 +10,26 @@
 // store to its expanded layout; the choice is remembered in settings.
 
 import { useEffect } from "react";
-import { create } from "zustand";
 import { ExtensionManagerPanel } from "@/extensions/ExtensionManagerPanel";
 import { StoreExpanded } from "@/extensions/StoreCards";
 import { getSettings, updateSettings, useSettings } from "@/state/settings-store";
 import { ModalWindow } from "@/ui/components/ModalWindow";
 import { pushEscapeHandler } from "@/ui/escape-stack";
+import { closeExtensions, useExtensionsOpen } from "./extensions-dialog-store";
 
-const useOpen = create<{ open: boolean }>(() => ({ open: false }));
-export const openExtensions = () => useOpen.setState({ open: true });
-export const closeExtensions = () => useOpen.setState({ open: false });
-export const toggleExtensions = () =>
-  useOpen.setState((s) => ({ open: !s.open }));
+export {
+  closeExtensions,
+  openExtensions,
+  openExtensionsOn,
+  openExtensionsOnKit,
+  toggleExtensions,
+} from "./extensions-dialog-store";
 
 const toggleMaximized = () =>
   updateSettings({ extensionsMaximized: !getSettings().extensionsMaximized });
 
 export function ExtensionsDialog() {
-  const open = useOpen((s) => s.open);
+  const open = useExtensionsOpen((s) => s.open);
   const maximized = useSettings((s) => s.extensionsMaximized);
   // Esc closes the dialog, via the shared modal stack (topmost first).
   useEffect(() => {

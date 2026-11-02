@@ -20,10 +20,11 @@ import { outputPixel } from "../output-map";
 import { toStageSpace, type Vec3 } from "../stage-space";
 import { WebGLRenderer } from "./renderer";
 import {
-  OPEN_PROBE, changedState, differing, drainGlErrors, each, expectColour, floatImage, glErrorsDuring, glHarness,
+  OPEN_PROBE, basicStages, changedState, deriveWithoutSettings, detailStages, differing, drainGlErrors, each, expectColour, floatImage, glErrorsDuring, glHarness,
   glState, identityParams, liveFrame, measurementViews, outOfMemoryAtFirstDraw, pixelAt, toHalf, trackGlObjects,
   withRenderer, worstDifference, type FloatImage, type Frame,
 } from "./webgl.test-support";
+import type { EssentialLine } from "./essential-stages.fixtures";
 
 // Over range in every channel, a saturated green whose red and blue fall below
 // zero in Rec.709, and two colours in range, as 4 px patches along the top
@@ -44,7 +45,7 @@ function onScene<T>(processVersion: number, fn: (r: WebGLRenderer) => T): T {
 }
 
 function onImage<T>(image: FloatImage, processVersion: number, fn: (r: WebGLRenderer) => T): T {
-  return withRenderer({ stages: [], pipeline: OPEN_PROBE, processVersionCap: 3 }, (r) => {
+  return withRenderer({ stages: [...basicStages(processVersion as EssentialLine), ...detailStages()], pipeline: OPEN_PROBE, processVersionCap: 3 }, (r) => {
     r.setImage(image);
     r.setParams(identityParams({ processVersion }));
     return fn(r);
@@ -313,7 +314,7 @@ describe("float capture of the live photo", () => {
     const stripe = 400;
     const photo = floatImage(PATCHES.length * stripe, 64, (x, y) => (y < 32 ? PATCHES[Math.floor(x / stripe)] : GREY));
     withRenderer({ stages: [], pipeline: OPEN_PROBE, processVersionCap: 3, highBitDepth: false }, (r) => {
-      r.uploadSource("photo:0", photo, 1280, false, false, true, true);
+      r.uploadSource("photo:0", photo, 1280, false, true, true);
       expect(r.bindSource("photo:0", 640)).toBe(true);
       r.setParams(identityParams({ processVersion: 3 }));
       const f = read(r, "pre-output");
@@ -337,7 +338,7 @@ describe("float capture of the live photo", () => {
     gl.getExtension = ((name: string) =>
       name === "EXT_color_buffer_float" ? null : getExtension(name)) as typeof gl.getExtension;
     try {
-      const r = new WebGLRenderer(canvas, { stages: [], pipeline: OPEN_PROBE, processVersionCap: 3 });
+      const r = new WebGLRenderer(canvas, { stages: [], pipeline: OPEN_PROBE, processVersionCap: 3, derive: deriveWithoutSettings });
       try {
         r.setImage(SCENE);
         r.setParams(identityParams({ processVersion: 3 }));
@@ -551,7 +552,7 @@ describe("float capture of the live photo", () => {
       });
     });
 
-    // Smoothed noise, detail a few pixels across. The core's capture
+    // Smoothed noise, detail a few pixels across. Detail's capture
     // sharpening samples the source's mips at fixed levels, so in a frame drawn
     // at a third or a quarter of the view's size it would read a coarser base
     // level than its blur and work against the detail. At a quarter such a

@@ -62,6 +62,7 @@ vi.mock("@/modules/library/import-photos", () => ({
 }));
 
 import { ProjectStorage, type OpenedProject } from "./project-storage";
+import { storageDeps } from "./storage-deps";
 import { nativeDirectoryHandle } from "./native-fs";
 
 const CARD = "E:\\DCIM";
@@ -88,7 +89,7 @@ class FakeChannel {
 
 const opened: OpenedProject[] = [];
 async function open(): Promise<OpenedProject> {
-  const project = await ProjectStorage.open(nativeDirectoryHandle(CARD));
+  const project = await ProjectStorage.open(nativeDirectoryHandle(CARD), storageDeps);
   opened.push(project);
   return project;
 }

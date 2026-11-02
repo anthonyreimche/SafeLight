@@ -181,6 +181,14 @@ export function resolveCursorCss(input: string | CursorSpec): string {
 // ─── Registry (extension-facing) ────────────────────────────────────────────
 
 export function registerCursor(extensionId: string, c: CursorContribution): void {
+  // Built-in tokens carry no extensionId: an extension may override those.
+  const holder = Object.hasOwn(useCursorStore.getState().cursors, c.id)
+    ? useCursorStore.getState().cursors[c.id].extensionId
+    : undefined;
+  if (holder !== undefined && holder !== extensionId) {
+    console.warn(`[extensions] ${extensionId}: "${c.id}" is already registered by ${holder}; registerCursor ignored`);
+    return;
+  }
   useCursorStore.setState((s) => ({
     cursors: {
       ...s.cursors,

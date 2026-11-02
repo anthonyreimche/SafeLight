@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { StrictMode } from "react";
+import { Component, StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { claimPrivileged } from "./native/privileged";
@@ -11,6 +11,7 @@ import { initExtensionHost } from "./extensions/host";
 import { installKeyDiag } from "./dev/key-diag";
 import { installErrorLog, syncNativeCrashes } from "./diagnostics/error-log";
 import { windowRole } from "./diagnostics/environment";
+import { watchOsOpen } from "./project/project-store";
 import "./index.css";
 
 // Record warnings, errors and crashes for Report an issue from the start, so
@@ -34,8 +35,42 @@ void syncNativeCrashes();
 // so sidebars/View menu populate without a flash of empty UI.
 initExtensionHost();
 
+// A photo or folder opened from the OS opens as the project. Only the main
+// window has a project to open; pop-outs show its.
+if (windowRole() === "main") watchOsOpen();
+
+// The last resort for a render error nothing closer contained, which would
+// otherwise leave the window blank. React logs the error, so it reaches the
+// error log through console.error.
+class RootErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div
+        role="alert"
+        className="flex h-screen flex-col items-center justify-center gap-3 bg-surface-0 text-sm text-text-secondary"
+      >
+        <p>This window hit an error.</p>
+        <button
+          type="button"
+          onClick={() => location.reload()}
+          className="rounded bg-surface-3 px-3 py-1 text-text-primary hover:bg-surface-4"
+        >
+          Reload
+        </button>
+      </div>
+    );
+  }
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <RootErrorBoundary>
+      <App />
+    </RootErrorBoundary>
   </StrictMode>,
 );

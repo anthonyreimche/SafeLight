@@ -8,9 +8,9 @@ import {
   extractRawPreview,
   isRawFile,
   sensorNativeImage,
-} from "@/modules/library/raw-preview";
-import { decodeNetpbm, isNetpbmName } from "@/modules/library/netpbm";
-import { decodeTiff, isTiffName } from "@/modules/library/tiff-image";
+} from "@/raw/raw-preview";
+import { decodeNetpbm, isNetpbmName } from "@/raw/netpbm";
+import { decodeTiff, isTiffName } from "@/raw/tiff-image";
 import { decodeRawToBitmap, decodeRawToFloat } from "@/raw/decode";
 import { acceptDecode, matchCameraPreview } from "@/raw/accept-decode";
 import { halfLumaSamples } from "@/raw/camera-match";
@@ -19,8 +19,8 @@ import type { Float16Source, StoredSample } from "@/rendering/source-sample";
 import type { CachedPreview } from "@/raw/cache-encode";
 import { completeCachedEntry } from "./cache-fill";
 import {
-  normalizeRotation,
-  orientationToRotation,
+  bakeRotation,
+  manualRotation,
   previewUprightRotation,
   rotateBitmap,
   rotateFloatRGBA,
@@ -72,7 +72,7 @@ export type DecodedImage =
       baselineShadows?: number;
     }
   | Float16Source
-  | { kind: "bitmap"; bitmap: ImageBitmap; cached?: boolean; fallback?: Fallback };
+  | { kind: "bitmap"; bitmap: ImageBitmap; fallback?: Fallback };
 
 /** What the decode of a RAW said, for a fallback served after it. */
 type Shortfall = Omit<Fallback, "from" | "offline">;
@@ -264,7 +264,9 @@ export async function loadPhotoImage(
             if (blob && opts?.onPreview) await paintPreview(blob, photo, opts.onPreview);
             return blob;
           }),
-          unsupported ? null : decodeRawToFloat(file, { background: opts?.background, signal }),
+          unsupported
+            ? null
+            : decodeRawToFloat(file, { background: opts?.background, signal }, photo.relPath),
         ]);
         // Kept for later opens and the background pass; an abandoned open
         // settles nothing about the file.
@@ -296,10 +298,11 @@ export async function loadPhotoImage(
           // photo.rotation = EXIF orientation + manual user rotation (from import).
           // When the decoder already oriented the pixels, subtract the EXIF portion
           // so only manual rotation remains — otherwise we'd double-rotate.
-          let rotateDeg = photo.rotation ?? 0;
-          if (f.oriented) {
-            rotateDeg = normalizeRotation(rotateDeg - orientationToRotation(photo.exif?.orientation));
-          }
+          const rotateDeg = bakeRotation(
+            photo.rotation ?? 0,
+            photo.exif?.orientation,
+            f.oriented ?? false,
+          );
           const r = rotateFloatRGBA(f.data, f.width, f.height, rotateDeg);
 
           // Validate the decode's color against the embedded JPEG preview.
@@ -455,7 +458,7 @@ async function loadBitmap(photo: CatalogPhoto): Promise<LoadedBitmap | null> {
       if (raw) {
         let rotateDeg = photo.rotation ?? 0;
         if (decoderOriented) {
-          rotateDeg = normalizeRotation(rotateDeg - orientationToRotation(photo.exif?.orientation));
+          rotateDeg = manualRotation(rotateDeg, photo.exif?.orientation);
         } else if (fromPreview) {
           rotateDeg = previewUprightRotation(
             raw.width, raw.height, rotateDeg, photo.exif?.orientation,

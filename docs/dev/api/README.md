@@ -1,6 +1,6 @@
 # API Reference
 
-Every extension's `activate(api)` receives a scoped `SafelightAPI`. These pages summarise it. The full definition is `src/extensions/types.ts`, which is the source of truth. New here? Read [How Safelight works](../concepts.md) and [Building Extensions](../extensions/README.md) first.
+Every extension's `activate(api)` receives a scoped `SafelightAPI`. These pages summarise it. The full definition is `src/extensions/types.ts`, which is the source of truth. It re-exports the files in `src/extensions/api/`: `contributions.ts`, `scoped-api.ts` (the `SafelightAPI` itself), `store-types.ts`, `native-bridge.ts` and `variables.ts`. New here? Read [How Safelight works](../concepts.md) and [Building Extensions](../extensions/README.md) first.
 
 ## Pages
 
@@ -46,6 +46,7 @@ interface ExtensionModule {        // what your bundle exports
 
 Notes:
 
+- If `activate` throws, or returns a promise that rejects, the extension counts as failed to start: what it registered is swept and the error is logged. One that hasn't finished starting within 15 seconds counts as failed too, so Safelight can go on to the next extension.
 - Everything you register is swept when the extension is disabled, uninstalled or updated. You don't need to unregister in `deactivate`.
 - Registering the same id again replaces the earlier contribution.
 - Call `setStageTexture` from `activate`, not from module top-level code. Disabling or updating drops stage textures, and a re-enabled extension's module is not re-run. Bump the texture's `version` to swap its data without a recompile.

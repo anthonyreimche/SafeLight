@@ -543,9 +543,9 @@ describe("ids that belong to Safelight's own stages", () => {
     expect(checkStageContract(withFields({ id }), CORE_EXTENSION_ID)).toEqual(ACCEPTED);
   });
 
-  // The other built-in extensions (core.hsl, core.devtools) register panels, not stages.
+  // The other built-in extensions (core.masks, core.retouch) register panels, not stages.
   it("refuses them from another extension in the core. namespace", () => {
-    const check = checkStageContract(withFields({ id: "core.vignette" }), "core.hsl");
+    const check = checkStageContract(withFields({ id: "core.vignette" }), "core.masks");
     expect(check.error).not.toBeNull();
   });
 

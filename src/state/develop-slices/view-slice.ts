@@ -11,19 +11,12 @@
 // Composed into the store in develop-store.ts; `DevelopState extends ViewSlice`.
 
 import type { StateCreator } from "zustand";
-import type { DevelopState } from "../develop-store";
 
 /** Clipping overlay bits: 1 shadows, 2 highlights, 4 the gamut warning, which
  *  only version 3 photos show. */
 export type ClippingMask = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 export interface ViewSlice {
-  // Whether the guided-upright drawing overlay is open. Transient: guided can be
-  // the selected upright mode without the line-drawing overlay capturing the
-  // canvas, so this is separate from params.uprightMode and not persisted.
-  guidedEditing: boolean;
-  setGuidedEditing: (v: boolean) => void;
-
   // Per-panel preview-off (view-only, momentary): keyed by panel id. While a
   // panel is bypassed the renderer neutralizes its contribution (see
   // applyPanelBypass / bypassParamBag) without touching the stored edit, so the
@@ -54,30 +47,12 @@ export interface ViewSlice {
   colorAssessment: boolean;
   toggleColorAssessment: () => void;
 
-  // White-balance eyedropper: when true, the next click on the image samples a
-  // neutral target and solves Temp/Tint. Ephemeral UI state, not persisted.
-  wbPicking: boolean;
-  setWbPicking: (v: boolean) => void;
-
-  // HSL color picker: when true, click+drag on image adjusts HSL for sampled color.
-  hslPicking: boolean;
-  setHslPicking: (v: boolean) => void;
-
-  // Mask colour-range eyedropper: when true, the next image click samples a
-  // target colour into the selected colour-range component. Ephemeral.
-  maskColorPicking: boolean;
-  setMaskColorPicking: (v: boolean) => void;
-  selectedHslBand: "hue" | "saturation" | "luminance";
-  setSelectedHslBand: (band: "hue" | "saturation" | "luminance") => void;
 }
 
-export const createViewSlice: StateCreator<DevelopState, [], [], ViewSlice> = (
+export const createViewSlice: StateCreator<ViewSlice, [], [], ViewSlice> = (
   set,
   get,
 ) => ({
-  guidedEditing: false,
-  setGuidedEditing: (guidedEditing) => set({ guidedEditing }),
-
   bypassedPanels: {},
   setPanelBypass: (panelId, on) => {
     set((s) => {
@@ -122,13 +97,5 @@ export const createViewSlice: StateCreator<DevelopState, [], [], ViewSlice> = (
     try { localStorage.setItem("sl_color_assessment", next ? "1" : "0"); } catch {}
   },
 
-  wbPicking: false,
-  setWbPicking: (wbPicking) => set({ wbPicking }),
 
-  hslPicking: false,
-  setHslPicking: (hslPicking) => set({ hslPicking }),
-  maskColorPicking: false,
-  setMaskColorPicking: (maskColorPicking) => set({ maskColorPicking }),
-  selectedHslBand: "hue",
-  setSelectedHslBand: (selectedHslBand) => set({ selectedHslBand }),
 });

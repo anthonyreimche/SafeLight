@@ -94,10 +94,11 @@ export const LEGACY_EXTENSION_STAGES: ProcessingStageContribution[] = [
   },
 ];
 
+// Version 1 photos with the Essentials of line 1 installed.
 export const V1_IDENTITY_CONFIGS = {
-  builtin: (): ProcessingStageContribution[] => builtinStages(),
+  builtin: (): ProcessingStageContribution[] => builtinStages(1),
   legacyExtensions: (): ProcessingStageContribution[] => [
-    ...builtinStages(),
+    ...builtinStages(1),
     ...LEGACY_EXTENSION_STAGES,
   ],
 };

@@ -21,6 +21,7 @@
 // readable" branch) — exactly what we want for a path we already trust.
 
 import type { NativeFsBridge } from "@/extensions/types";
+import photoTypes from "../../electron/photo-types.json";
 import { privilegedFs } from "@/native/privileged";
 
 type Bridge = NativeFsBridge;
@@ -60,9 +61,12 @@ function entryName(name: string): string {
 // Brand: lets the recent-projects store recognise a native handle and pull its
 // absolute path back out.
 const PATH = Symbol("safelight.nativePath");
+/** The size the folder listing gave a native file handle. */
+const SIZE = Symbol("safelight.nativeSize");
 
 interface Pathed {
   [PATH]: string;
+  [SIZE]?: number;
 }
 
 /** Absolute path behind a native handle, or null if it isn't one. */
@@ -70,24 +74,27 @@ export function nativePathOf(handle: unknown): string | null {
   return (handle as Partial<Pathed> | null)?.[PATH] ?? null;
 }
 
-function mimeFromName(name: string): string {
-  const ext = name.toLowerCase().split(".").pop() || "";
-  const map: Record<string, string> = {
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    png: "image/png",
-    webp: "image/webp",
-    gif: "image/gif",
-    tif: "image/tiff",
-    tiff: "image/tiff",
-    bmp: "image/bmp",
-  };
-  return map[ext] ?? "";
+/** The size in bytes the listing gave a native file handle's file, or undefined
+ *  (a browser handle, or a handle not reached through a listing). */
+export function nativeSizeOf(handle: unknown): number | undefined {
+  return (handle as Partial<Pathed> | null)?.[SIZE];
 }
 
-function makeFileHandle(fs: Bridge, p: string): FileSystemFileHandle {
+const MIME_BY_EXTENSION: Record<string, string> = {
+  ...photoTypes.standard,
+  ".gif": "image/gif",
+  ".bmp": "image/bmp",
+};
+
+function mimeFromName(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot === -1 ? "" : (MIME_BY_EXTENSION[name.slice(dot).toLowerCase()] ?? "");
+}
+
+function makeFileHandle(fs: Bridge, p: string, size?: number): FileSystemFileHandle {
   const handle = {
     [PATH]: p,
+    [SIZE]: size,
     kind: "file" as const,
     name: basename(p),
     async getFile(): Promise<File> {
@@ -128,7 +135,9 @@ function makeFileHandle(fs: Bridge, p: string): FileSystemFileHandle {
   return handle as unknown as FileSystemFileHandle;
 }
 
-function makeDirHandle(fs: Bridge, p: string): FileSystemDirectoryHandle {
+/** `root` is the folder the handle tree was opened at, named to each listing so
+ *  the bridge leaves out folder links back into it. */
+function makeDirHandle(fs: Bridge, p: string, root = p): FileSystemDirectoryHandle {
   const handle = {
     [PATH]: p,
     kind: "directory" as const,
@@ -141,16 +150,16 @@ function makeDirHandle(fs: Bridge, p: string): FileSystemDirectoryHandle {
     async getDirectoryHandle(name: string, opts?: { create?: boolean }) {
       const child = join(p, entryName(name));
       if (opts?.create) await fs.mkdir(child);
-      return makeDirHandle(fs, child);
+      return makeDirHandle(fs, child, root);
     },
     async removeEntry(name: string, _opts?: { recursive?: boolean }) {
       await fs.remove(join(p, entryName(name)));
     },
     async *values() {
-      for (const e of await fs.list(p)) {
+      for (const e of await fs.list(p, root)) {
         yield e.kind === "directory"
-          ? makeDirHandle(fs, join(p, e.name))
-          : makeFileHandle(fs, join(p, e.name));
+          ? makeDirHandle(fs, join(p, e.name), root)
+          : makeFileHandle(fs, join(p, e.name), e.size);
       }
     },
     // Used by raw-cache clearRawCache() via a structural cast.
@@ -209,6 +218,22 @@ export async function pickNativeDirectory(): Promise<string | null> {
   const fs = nativeFs();
   if (!fs) return null;
   return fs.pickDirectory();
+}
+
+/** Ask the person for a folder to write into: the native picker on the
+ *  desktop, whose handle carries the absolute path, else the File System
+ *  Access picker, which remembers its last folder per `id`. Null when they
+ *  cancel. */
+export async function pickDirectoryHandle(id: string): Promise<FileSystemDirectoryHandle | null> {
+  if (isNativeFS()) {
+    const path = await pickNativeDirectory();
+    return path ? nativeDirectoryHandle(path) : null;
+  }
+  try {
+    return await window.showDirectoryPicker({ mode: "readwrite", id });
+  } catch {
+    return null;
+  }
 }
 
 /** Reveal an absolute path in the OS file manager (open a directory, or select

@@ -162,7 +162,7 @@ export async function collectReportSections(prefill: ReportPrefill | null): Prom
       `Safelight ${environment.appVersion} · ${environment.electron ? os : "browser build"}`,
       environmentText(environment),
     ),
-    section("graphics", "Graphics", graphics.webgl?.renderer ?? "WebGL unavailable", graphicsText(graphics)),
+    section("graphics", "Graphics", graphics.webgl?.renderer ?? "WebGL2 unavailable", graphicsText(graphics)),
     section(
       "extensions",
       "Extensions",

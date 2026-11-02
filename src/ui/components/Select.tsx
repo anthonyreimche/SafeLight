@@ -12,7 +12,8 @@
 // wide as the trigger and grows to fit its longest label up to twice that; a
 // label that still doesn't fit shows in full on hover. Keyboard: open with
 // Enter/Space/↑/↓, navigate with ↑/↓/Home/End, type to jump, Enter to choose,
-// Esc to close.
+// Esc to close. Shift+wheel over the closed trigger picks the next or previous
+// option.
 
 import {
   useCallback,
@@ -182,6 +183,32 @@ export function Select({
       document.removeEventListener("mousedown", onDown, true);
     };
   }, [open, place]);
+
+  // Shift+wheel over the closed trigger steps through the options, stopping at
+  // the ends. Non-passive and ref-read for the same reasons as Slider's.
+  const wheelRef = useRef<(e: WheelEvent) => void>(() => {});
+  wheelRef.current = (e: WheelEvent) => {
+    if (!e.shiftKey || open || disabled) return;
+    // Shift turns the wheel horizontal on some systems.
+    const delta = e.deltaY || e.deltaX;
+    if (delta === 0) return;
+    e.preventDefault();
+    const dir = delta > 0 ? 1 : -1;
+    for (let i = selectedIndex + dir; i >= 0 && i < flat.length; i += dir) {
+      if (!flat[i].disabled) {
+        onChange(flat[i].value);
+        return;
+      }
+    }
+  };
+
+  useEffect(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => wheelRef.current(e);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   useEffect(() => {
     if (!open) return;

@@ -13,7 +13,7 @@
 // (z-200 and up), which never open over it but must win if they do.
 
 import { useEffect, useId, useRef, type KeyboardEvent } from "react";
-import { setShortcutsSuspended } from "@/state/keybindings-store";
+import { suspendShortcuts } from "@/state/keybindings-store";
 import { trapTab } from "@/ui/focus-trap";
 import {
   dragBarStyle,
@@ -51,9 +51,9 @@ function SetupLayer() {
   useEffect(() => {
     const previous =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setShortcutsSuspended(true);
+    const releaseShortcuts = suspendShortcuts();
     return () => {
-      setShortcutsSuspended(false);
+      releaseShortcuts();
       previous?.focus();
     };
   }, []);

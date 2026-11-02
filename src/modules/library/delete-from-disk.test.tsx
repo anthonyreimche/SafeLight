@@ -83,7 +83,7 @@ describe("confirmAndDeleteFromDisk", () => {
     const confirmButton = within(dialog).getByRole("button", {
       name: `Move to ${trashLabel()}`,
     });
-    expect(confirmButton.className).toContain("var(--color-label-red)");
+    expect(confirmButton.className).toContain("bg-danger");
 
     await user.click(confirmButton);
     await flow;
@@ -155,7 +155,9 @@ describe("confirmAndDeleteFromDisk", () => {
       name: "Delete from disk",
     });
     expect(report.textContent).toContain("a.NEF");
-    expect(report.textContent).toContain("EBUSY: locked");
+    expect(report.textContent).toContain("a.NEF: the file is locked or not writable");
+    expect(report.textContent).not.toContain("EBUSY");
+    expect(report.textContent).toContain("This photo stays in the catalog.");
     await user.click(within(report).getByRole("button", { name: "OK" }));
     await flow;
     expect(removePhotos).not.toHaveBeenCalled();

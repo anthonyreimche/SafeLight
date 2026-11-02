@@ -10,6 +10,7 @@
 // simply yields the source size.
 
 import { useEffect, useRef, useState } from "react";
+import { parseDecimal } from "@/ui/parse-decimal";
 
 export const MIN_LONG_EDGE = 16;
 export const MAX_LONG_EDGE = 65536;
@@ -29,12 +30,14 @@ export function isPresetLongEdge(value: number | null): boolean {
   return RESOLUTION_PRESETS.some((p) => p.value === value);
 }
 
-/** Parse a typed long-edge value: positive numbers round and clamp to the
- *  supported range; anything else (empty, zero, garbage) is null. */
+/** Parse a typed long-edge value: positive whole numbers clamp to the
+ *  supported range; anything else (empty, zero, garbage, a "." or "," that
+ *  could be grouping as in "2.048") is null. */
 export function parseLongEdge(text: string): number | null {
-  const n = Number(text);
+  if (/[.,]/.test(text)) return null;
+  const n = parseDecimal(text);
   if (!Number.isFinite(n) || n <= 0) return null;
-  return Math.min(MAX_LONG_EDGE, Math.max(MIN_LONG_EDGE, Math.round(n)));
+  return Math.min(MAX_LONG_EDGE, Math.max(MIN_LONG_EDGE, n));
 }
 
 // The two host surfaces style their option chips differently (the Export

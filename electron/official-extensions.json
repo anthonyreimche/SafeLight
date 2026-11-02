@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "extensions": [
+    { "id": "safelight.library", "repo": "anthonyreimche/library", "replaces": null, "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.develop", "repo": "anthonyreimche/develop", "replaces": null, "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.edit", "repo": "anthonyreimche/edit-history", "replaces": "core.edit", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.histogram", "repo": "anthonyreimche/histogram", "replaces": "core.histogram", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.transform", "repo": "anthonyreimche/transform", "replaces": "core.transform", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.crop", "repo": "anthonyreimche/crop-and-straighten", "replaces": "core.crop", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.white-balance", "repo": "anthonyreimche/white-balance", "replaces": "core.white-balance", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.basic", "repo": "anthonyreimche/basic-adjustments", "replaces": "core.basic", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.tone-curve", "repo": "anthonyreimche/tone-curve", "replaces": "core.tone-curve", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.color-grading", "repo": "anthonyreimche/color-grading", "replaces": "core.color-grading", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.detail", "repo": "anthonyreimche/detail", "replaces": "core.detail", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.effects", "repo": "anthonyreimche/effects", "replaces": "core.effects", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.hsl", "repo": "anthonyreimche/hsl", "replaces": "core.hsl", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.masks", "repo": "anthonyreimche/masking", "replaces": "core.masks", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.heal", "repo": "anthonyreimche/heal", "replaces": "core.retouch", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.presets", "repo": "anthonyreimche/presets", "replaces": "core.presets", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.folders", "repo": "anthonyreimche/folders", "replaces": "core.folders", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.filters", "repo": "anthonyreimche/library-filters", "replaces": "core.filters", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.keywords", "repo": "anthonyreimche/keywords", "replaces": "core.keywords", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.info", "repo": "anthonyreimche/info", "replaces": "core.info", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.export", "repo": "anthonyreimche/export", "replaces": "core.export", "essential": true, "keepAcrossLayouts": false },
+    { "id": "safelight.accessibility", "repo": "anthonyreimche/accessibility", "replaces": "core.accessibility", "essential": true, "keepAcrossLayouts": true },
+    { "id": "safelight.devtools", "repo": "anthonyreimche/developer-tools", "replaces": "core.devtools", "essential": false, "keepAcrossLayouts": true }
+  ]
+}

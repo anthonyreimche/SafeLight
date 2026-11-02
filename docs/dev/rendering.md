@@ -93,7 +93,7 @@ Things to know when writing the GLSL:
 - **The variable depends on the phase.** It's `vec2 srcUv` (the position in the source image) in `geometry`, `vec3 lin` before the display transform, and `vec3 c` after it.
 - **Uniforms are referred to by their `key`**, as `amount` is above. Safelight renames them behind the scenes, so two extensions can both use a uniform called `amount` without clashing.
 - **Your code runs in its own block**, so local variables stay local. Shared functions go in `helpers`.
-- **Built-in helpers** you can call: `luma()`, `srgbToLinear()` and `linearToSrgb()`.
+- **Built-in helpers** you can call: `luma()`, `srgbToLinear()` and `linearToSrgb()`. Note that `linearToSrgb()` clips to 0..1; `linearToSrgbU()` keeps values above 1.0 (see the API contributions doc).
 
 ## Per-photo settings: the param bag
 

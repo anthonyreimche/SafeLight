@@ -34,7 +34,7 @@ const trustList = (over: Partial<TrustList> = {}): TrustList => ({
 });
 
 const seed = (list: TrustList): void =>
-  useTrust.setState({ list, loadedAt: 0, flagged: [] });
+  useTrust.setState({ list, loadedAt: 0, flagged: [], dismissedFlags: [] });
 
 const manifest = (over: Partial<ExtensionManifest> = {}): ExtensionManifest => ({
   id: "acme.tool",
@@ -381,16 +381,18 @@ describe("flagged extensions", () => {
     expect(useTrust.getState().flagged).toEqual([flag, other]);
   });
 
-  it("dismisses only the named extension", () => {
+  it("dismisses only the named extension from the banner, still listing it as blocked", () => {
     flagBannedExtension(flag);
     flagBannedExtension(other);
     dismissFlag("acme.tool");
-    expect(useTrust.getState().flagged).toEqual([other]);
+    expect(useTrust.getState().dismissedFlags).toEqual(["acme.tool"]);
+    expect(useTrust.getState().flagged).toEqual([flag, other]);
   });
 
   it("ignores a dismissal for an id that was never flagged", () => {
     flagBannedExtension(flag);
     dismissFlag("nobody");
+    expect(useTrust.getState().dismissedFlags).toEqual([]);
     expect(useTrust.getState().flagged).toEqual([flag]);
   });
 });

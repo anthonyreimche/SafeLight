@@ -36,18 +36,33 @@ function parsePresets(raw: string): Preset[] | null {
   }
 }
 
+/** An unreadable library is kept under a side key so the empty list we fall back
+ *  to can't destroy it when the first preset is saved over the original key. */
+function backUpUnreadable(raw: string): void {
+  try {
+    localStorage.setItem(`${STORAGE_KEY}.unreadable-${Date.now()}`, raw);
+  } catch {}
+}
+
 function loadFromStorage(): Preset[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return parsePresets(raw) ?? [];
+    if (!raw) return [];
+    const presets = parsePresets(raw);
+    if (presets) return presets;
+    backUpUnreadable(raw);
   } catch {}
   return [];
 }
 
-function saveToStorage(presets: Preset[]) {
+/** True when the list reached storage. A full quota is the usual failure. */
+function saveToStorage(presets: Preset[]): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Return `base` if no preset uses it, else the first free "`base` N" suffix.
@@ -63,19 +78,22 @@ export function nextAvailableName(presets: Preset[], base: string): string {
 
 interface PresetsState {
   presets: Preset[];
+  /** Returns false, leaving the list unchanged, when the preset couldn't be saved
+   *  (storage full): it would otherwise vanish on the next launch. */
   add: (
     name: string,
     params: Partial<DevelopParams>,
     group?: string,
     paramBag?: Record<string, unknown>,
-  ) => void;
-  /** Replace an existing preset's params/group in place (keeps id, name, position). */
+  ) => boolean;
+  /** Replace an existing preset's params/group in place (keeps id, name, position).
+   *  Returns false, leaving the preset as it was, when the change couldn't be saved. */
   update: (
     id: string,
     params: Partial<DevelopParams>,
     group?: string,
     paramBag?: Record<string, unknown>,
-  ) => void;
+  ) => boolean;
   /** Rename a preset, leaving its params/group/position untouched. */
   rename: (id: string, name: string) => void;
   /** Move a preset to another group (empty/undefined clears it to ungrouped). */
@@ -83,11 +101,18 @@ interface PresetsState {
   remove: (id: string) => void;
 }
 
-export const usePresetsStore = create<PresetsState>((set) => ({
-  presets: loadFromStorage(),
+export const usePresetsStore = create<PresetsState>((set, get) => {
+  /** Adopt `presets` only if they could be saved, so memory never runs ahead of disk. */
+  const commit = (presets: Preset[]): boolean => {
+    if (!saveToStorage(presets)) return false;
+    set({ presets });
+    return true;
+  };
 
-  add(name, params, group, paramBag) {
-    set((s) => {
+  return {
+    presets: loadFromStorage(),
+
+    add(name, params, group, paramBag) {
       const hasBag = paramBag && Object.keys(paramBag).length > 0;
       const preset: Preset = {
         id: crypto.randomUUID(),
@@ -96,57 +121,41 @@ export const usePresetsStore = create<PresetsState>((set) => ({
         params: structuredClone(params),
         ...(hasBag ? { paramBag: structuredClone(paramBag) } : {}),
       };
-      const presets = [...s.presets, preset];
-      saveToStorage(presets);
-      return { presets };
-    });
-  },
+      return commit([...get().presets, preset]);
+    },
 
-  update(id, params, group, paramBag) {
-    set((s) => {
+    update(id, params, group, paramBag) {
       const hasBag = paramBag && Object.keys(paramBag).length > 0;
-      const presets = s.presets.map((p) =>
-        p.id === id
-          ? {
-              ...p,
-              group: group?.trim() || undefined,
-              params: structuredClone(params),
-              paramBag: hasBag ? structuredClone(paramBag) : undefined,
-            }
-          : p,
+      return commit(
+        get().presets.map((p) =>
+          p.id === id
+            ? {
+                ...p,
+                group: group?.trim() || undefined,
+                params: structuredClone(params),
+                paramBag: hasBag ? structuredClone(paramBag) : undefined,
+              }
+            : p,
+        ),
       );
-      saveToStorage(presets);
-      return { presets };
-    });
-  },
+    },
 
-  rename(id, name) {
-    set((s) => {
+    rename(id, name) {
       const trimmed = name.trim();
-      if (!trimmed) return s;
-      const presets = s.presets.map((p) => (p.id === id ? { ...p, name: trimmed } : p));
-      saveToStorage(presets);
-      return { presets };
-    });
-  },
+      if (!trimmed) return;
+      commit(get().presets.map((p) => (p.id === id ? { ...p, name: trimmed } : p)));
+    },
 
-  setGroup(id, group) {
-    set((s) => {
+    setGroup(id, group) {
       const next = group?.trim() || undefined;
-      const presets = s.presets.map((p) => (p.id === id ? { ...p, group: next } : p));
-      saveToStorage(presets);
-      return { presets };
-    });
-  },
+      commit(get().presets.map((p) => (p.id === id ? { ...p, group: next } : p)));
+    },
 
-  remove(id) {
-    set((s) => {
-      const presets = s.presets.filter((p) => p.id !== id);
-      saveToStorage(presets);
-      return { presets };
-    });
-  },
-}));
+    remove(id) {
+      commit(get().presets.filter((p) => p.id !== id));
+    },
+  };
+});
 
 /** Follow preset changes made in other windows. Call once at boot. */
 export function initPresets(): void {

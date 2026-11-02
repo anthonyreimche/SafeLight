@@ -16,15 +16,18 @@ import { getAllDescriptors } from "@/extensions/param-registry";
 // momentary — it never touches the stored edit or history, so values survive.
 //
 // Two mechanisms cover every panel:
-//  • Core panels — keyed by panel id below. The listed DevelopParams keys are
-//    reset to their factory defaults. Nested params (vignette, grain, hsl, …)
-//    reset as whole sub-objects; arrays (masks, retouch) reset to []. The
-//    renderer re-derives all of its uniforms/textures from these each frame, so
-//    clearing them is a complete, side-effect-free bypass (no shader change).
-//  • Extension panels — not listed here. Their effect comes from GPU processing
-//    stage(s); `bypassParamBag` drops the owning extension's stage params from
-//    the contributed bag, so the renderer binds each uniform's declared default
-//    (renderer.ts: `?? b.default`) — the stage's neutral state. No worker change.
+//  • Owned params — the DevelopParams keys the panel declares
+//    (PanelContribution.owns), or for an Essential's panel that doesn't declare
+//    them yet, the keys listed below by panel id. They are reset to their
+//    factory defaults. Nested params (vignette, grain, hsl, …) reset as whole
+//    sub-objects; arrays (masks, retouch) reset to []. The renderer re-derives
+//    all of its uniforms/textures from these each frame, so clearing them is a
+//    complete, side-effect-free bypass (no shader change).
+//  • Stage params — for every panel that owns no params. Its effect
+//    comes from GPU processing stage(s); `bypassParamBag` drops the owning
+//    extension's stage params from the contributed bag, so the renderer binds
+//    each uniform's declared default (renderer.ts: `?? b.default`) — the
+//    stage's neutral state. No worker change.
 //
 // Crop & Straighten and Transform ARE included (people want to see the framed
 // vs unframed image). Bypassing Crop shows the full frame; bypassing Transform
@@ -58,39 +61,46 @@ export const PANEL_BYPASS_PARAM_KEYS: Record<string, (keyof DevelopParams)[]> = 
 
 type RegistryState = ReturnType<typeof useRegistry.getState>;
 
-// Return a copy of `params` with every bypassed core panel's keys reset to
-// factory defaults. Returns the same object when nothing core is bypassed
+/** The DevelopParams keys previewing `panelId` off resets: its `owns`, else
+ *  the list's. */
+const panelOwnedParams = (
+  panelId: string,
+  state: RegistryState,
+): readonly (keyof DevelopParams)[] | undefined =>
+  state.panels[panelId]?.owns ?? PANEL_BYPASS_PARAM_KEYS[panelId];
+
+// Return a copy of `params` with every bypassed panel's owned keys reset to
+// factory defaults. Returns the same object when no bypassed panel owns any
 // (cheap no-op for the common case).
 export function applyPanelBypass(
   params: DevelopParams,
   bypassed: Record<string, boolean>,
+  state: RegistryState = useRegistry.getState(),
 ): DevelopParams {
-  const ids = Object.keys(bypassed).filter(
-    (id) => bypassed[id] && PANEL_BYPASS_PARAM_KEYS[id],
-  );
-  if (ids.length === 0) return params;
+  const keys = Object.keys(bypassed)
+    .filter((id) => bypassed[id])
+    .flatMap((id) => panelOwnedParams(id, state) ?? []);
+  if (keys.length === 0) return params;
   const next = { ...params };
-  for (const id of ids) {
-    for (const k of PANEL_BYPASS_PARAM_KEYS[id]) {
-      assignDevelopParam(next, k, structuredClone(DEFAULT_DEVELOP_PARAMS[k]));
-    }
+  for (const k of keys) {
+    assignDevelopParam(next, k, structuredClone(DEFAULT_DEVELOP_PARAMS[k]));
   }
   return next;
 }
 
-// Return a copy of the contributed (extension stage) param bag with every
-// bypassed *extension* panel's stage params removed, so the renderer falls back
-// to each uniform's declared default. Bypassing any panel an extension owns
-// neutralizes all of that extension's stages — the contribution model has no
+// Return a copy of the contributed (extension stage) param bag with the stage
+// params of every bypassed panel that owns no DevelopParams removed, so the
+// renderer falls back to each uniform's declared default. Bypassing such a panel
+// neutralizes all of its extension's stages — the contribution model has no
 // panel↔stage link, so the owning extension is the finest grain available.
-// Returns the same object when no extension panel is bypassed.
+// Returns the same object when no such panel is bypassed.
 export function bypassParamBag(
   bag: Record<string, unknown>,
   bypassed: Record<string, boolean>,
   state: RegistryState = useRegistry.getState(),
 ): Record<string, unknown> {
   const ids = Object.keys(bypassed).filter(
-    (id) => bypassed[id] && !PANEL_BYPASS_PARAM_KEYS[id],
+    (id) => bypassed[id] && !panelOwnedParams(id, state)?.length,
   );
   if (ids.length === 0) return bag;
   const owners = new Set<string>();
@@ -113,15 +123,15 @@ export function bypassParamBag(
   return changed ? next : bag;
 }
 
-// Whether a panel has something the renderer can preview off: a core entry
-// above, or (for an extension panel) an owning extension that registers at
-// least one GPU processing stage. Panels with no previewable effect (Histogram,
-// Edit, Presets) return false so the eye is hidden there.
+// Whether a panel has something the renderer can preview off: owned params, or
+// an owning extension that registers at least one GPU processing stage. Panels
+// with no previewable effect (Histogram, Edit, Presets) return false so the eye
+// is hidden there.
 export function panelIsPreviewable(
   panelId: string,
   state: RegistryState,
 ): boolean {
-  if (PANEL_BYPASS_PARAM_KEYS[panelId]) return true;
+  if (panelOwnedParams(panelId, state)?.length) return true;
   const ext = state.panels[panelId]?.extensionId;
   if (!ext) return false;
   return Object.values(state.processingStages).some(

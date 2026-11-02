@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Culling shortcuts, live while a photo surface is mounted: LibraryView mounts
+// Culling shortcuts, live while a photo surface is mounted: the Library module mounts
 // them for the grid, and an extension photo browser (the Filmstrip) can mount
 // them in Develop through api.catalog.useCullingShortcuts, so a shoot can be
 // culled without leaving the editor. All combos are rebindable in
@@ -21,7 +21,7 @@
 import { useEffect } from "react";
 import type { ColorLabel, FlagStatus } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
-import { useDevelopStore } from "@/state/develop-store";
+import { canvasToolWants } from "@/modules/develop/canvas-tool";
 import { useUIStore } from "@/state/ui-store";
 import {
   inNativeDialog,
@@ -49,6 +49,10 @@ const FLAGS: Record<string, FlagStatus> = {
   "flag.unflag": "none",
 };
 
+/** The window event the Focus keyword input shortcut (K) dispatches. The
+ *  keyword field listens for it and takes focus. */
+export const FOCUS_KEYWORD_INPUT_EVENT = "sl-focus-keyword-input";
+
 export interface CullingShortcutOptions {
   /** Handle the thumbnail-size actions (- / =), which step the Library grid's
    *  cell size. Surfaces whose cells are sized by their container (a filmstrip
@@ -69,28 +73,30 @@ export function cullingShortcutsMounted(): boolean {
   return surfaces > 0;
 }
 
-/** True while a Develop mask component is selected — Delete/Backspace then
- *  belongs to mask.delete, not to removing photos from the catalog. */
-function maskOwnsDelete(): boolean {
-  const d = useDevelopStore.getState();
-  return d.activeTool === "mask" && !!d.selectedMaskId && !!d.selectedComponentId;
-}
+/** True while Develop's canvas tool would take mask.delete (Masking's, with a
+ *  component selected): Delete/Backspace then belongs to it, not to removing
+ *  photos from the catalog. */
+const maskOwnsDelete = (): boolean => canvasToolWants("mask.delete");
 
 let removeConfirmOpen = false;
 
-// The in-app confirm is async, so the keydown handler fires and forgets this.
-// The ids are the selection at keydown; only the store's removePhotos is read
-// after the user answers. At most one confirmation is pending: a second
-// request while it's open (a held or repeated key) is dropped, not queued.
-async function removeFromCatalog(ids: string[]): Promise<void> {
+/** Remove photos from the catalog, after the confirmation when it's turned on.
+ *  Shared by the Delete key and the photo menu's Remove, so both say the same.
+ *  The ids are the selection when it was asked; only the store's removePhotos
+ *  is read after the user answers. At most one
+ *  confirmation is pending: a second request while it's open (a held or
+ *  repeated key) is dropped, not queued. */
+export async function removeFromCatalog(ids: string[]): Promise<void> {
   if (getSettings().confirmRemovePhotos) {
     if (removeConfirmOpen) return;
     removeConfirmOpen = true;
     const n = ids.length;
+    const s = n === 1 ? "" : "s";
     const ok = await confirmDialog({
       title: "Remove from catalog",
-      message: `Remove ${n} photo${n === 1 ? "" : "s"} from the catalog? The original file${n === 1 ? "" : "s"} on disk won't be deleted.`,
+      message: `Remove ${n} photo${s} from the catalog? ${n === 1 ? "Its" : "Their"} edits, ratings and labels are discarded. The original file${s} on disk won't be deleted.`,
       confirmLabel: "Remove",
+      variant: "danger",
     }).finally(() => {
       removeConfirmOpen = false;
     });
@@ -206,7 +212,7 @@ function handleCullingKey(e: KeyboardEvent): void {
 
   if (action === "keyword.focus") {
     e.preventDefault();
-    window.dispatchEvent(new CustomEvent("sl-focus-keyword-input"));
+    window.dispatchEvent(new CustomEvent(FOCUS_KEYWORD_INPUT_EVENT));
     return;
   }
 

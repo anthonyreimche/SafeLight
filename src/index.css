@@ -37,6 +37,9 @@
   --color-flag-pick: #ffffff;
   --color-flag-reject: #444444;
   --color-label-red: #e74c3c;
+  --color-danger: var(--color-label-red);
+  /* Text on a danger fill: white on this red is 3.8:1, under AA for small text. */
+  --color-on-danger: #111111;
   --color-label-yellow: #f39c12;
   --color-label-green: #27ae60;
   --color-label-blue: #3498db;

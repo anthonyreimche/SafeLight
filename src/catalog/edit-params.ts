@@ -9,13 +9,6 @@ import { catalogStorage } from "./storage";
 import { historyCursor } from "./history-cursor";
 import { normalizeParamBag } from "@/extensions/param-registry";
 
-// The saved develop params for a photo — the current point in its edit history,
-// or fresh defaults at the current process version if it was never edited.
-// The Library histogram uses this; Export reads the same edit through loadSavedEdit.
-export async function loadSavedParams(photoId: string, asShotTemperature?: number): Promise<DevelopParams> {
-  return (await loadSavedEdit(photoId, asShotTemperature)).params;
-}
-
 export interface SavedEdit {
   params: DevelopParams;
   /** Extension-contributed processing-stage params (e.g. denoise). */

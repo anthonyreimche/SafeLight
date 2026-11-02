@@ -14,25 +14,21 @@
 // Uninstalling (external only) deletes both.
 
 import { create } from "zustand";
-import type {
-  ExtensionManifest,
-  ExtensionModule,
-  ModuleId,
-  RemoteManifest,
-} from "./types";
-import { moduleEntry, unregisterExtension, useRegistry } from "./registry";
+import type { ExtensionManifest, ExtensionModule, ModuleId, RemoteManifest } from "./types";
+import { fallbackModule, moduleEntry, useRegistry } from "./registry";
 import { useUIStore } from "@/state/ui-store";
 import { applySavedTheme } from "./themes";
-import { makeScopedAPI } from "./host";
 import { deleteExtensionSettings } from "./ext-settings";
 import { setExtensionName } from "./param-registry";
-import { BUILTIN_EXTENSIONS, type BuiltinExtension } from "./builtin";
-import { isReservedExtensionId, reservedIdReason } from "./core-extension";
+import { BUILTIN_EXTENSIONS } from "./builtin";
+import { isReservedExtensionId } from "./core-extension";
+import { manifestIdRefusal, officialExtension } from "./official-extensions";
 import { isNewer, isPrerelease } from "@/update/semver";
-import { repoFor } from "./sources";
+import { updateRepoFor } from "./sources";
 import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
 import { importPluginModule } from "./plugin-module";
 import { getSettings } from "@/state/settings-store";
+import { privilegedPlugins } from "@/native/privileged";
 import {
   loadTrustList,
   bannedReasonForManifest,
@@ -44,13 +40,28 @@ import {
   forgetExtension,
   noteExtensionRunning,
 } from "./extension-kinds";
+import {
+  builtinExtension,
+  isBuiltinActive,
+  isInstanceLive,
+  startBuiltin,
+  startInstance,
+  stopBuiltin,
+  stopInstance,
+  takeDisplaced,
+} from "./instance";
 import { keptVersion, setKept } from "./pins";
-import { recordActiveLayoutExtension } from "./dock";
+import { useRunningPlugins } from "./running-plugins";
 
-const loaded = new Map<string, ExtensionModule>();
+export { useRunningPlugins };
 
 /** Whether an installed extension is running in this window. */
-export const isPluginRunning = (id: string): boolean => loaded.has(id);
+export const isPluginRunning = (id: string): boolean => isInstanceLive(id);
+
+/** React hook: whether an installed extension is running in this window, that
+ *  is installed, turned on and started. */
+export const usePluginRunning = (id: string): boolean =>
+  useRunningPlugins((s) => s.ids.includes(id));
 
 // ─── Enable / disable state (persisted, synced across windows) ──────────────
 
@@ -90,45 +101,34 @@ function persistDisabled(ids: string[]): void {
   } catch {}
 }
 
-// Built-ins running in this window. A built-in's activate() isn't safe to run
-// twice, so turning on one that is already running leaves it alone.
-const activeBuiltins = new Set<string>();
-
-function activateBuiltin(ext: BuiltinExtension): void {
-  ext.activate(makeScopedAPI(ext.id));
-  activeBuiltins.add(ext.id);
-  noteExtensionRunning(ext.id);
+/** A manifest the trust list bans is flagged, logged as `verdict` and refused;
+ *  true when it is. */
+function refuseIfBanned(manifest: ExtensionManifest, verdict: string): boolean {
+  const banned = bannedReasonForManifest(manifest);
+  if (!banned) return false;
+  flagBannedExtension({ id: manifest.id, name: manifest.name, reason: banned });
+  console.warn(`[extensions] ${verdict} ${manifest.id}: ${banned}`);
+  return true;
 }
 
 /** Activate/deactivate in this window (state is already persisted). An
  *  extension already in the requested state is left as it is. */
 async function applyEnablement(id: string, enabled: boolean): Promise<void> {
-  const builtin = BUILTIN_EXTENSIONS.find((b) => b.id === id);
+  const builtin = builtinExtension(id);
   if (!enabled) {
-    if (builtin) {
-      // tear down side effects (e.g. console patches)
-      if (activeBuiltins.delete(id)) builtin.deactivate?.();
-    } else {
-      loaded.get(id)?.deactivate?.();
-      loaded.delete(id);
-    }
-    unregisterExtension(id);
+    if (builtin) stopBuiltin(builtin);
+    else stopInstance(id, "installed");
     return;
   }
   if (builtin) {
-    if (activeBuiltins.has(id)) return;
-    activateBuiltin(builtin);
+    if (isBuiltinActive(id)) return;
+    startBuiltin(builtin);
   } else {
     const native = window.safelightNative;
     if (!native) return;
     const manifest = (await native.plugins.list()).find((m) => m.id === id);
     if (!manifest) return;
-    const banned = bannedReasonForManifest(manifest);
-    if (banned) {
-      flagBannedExtension({ id: manifest.id, name: manifest.name, reason: banned });
-      console.warn(`[extensions] blocked ${manifest.id}: ${banned}`);
-      return;
-    }
+    if (refuseIfBanned(manifest, "blocked")) return;
     await loadPlugin(manifest);
   }
   applySavedTheme(); // the saved theme may belong to the re-enabled extension
@@ -156,15 +156,23 @@ function queueEnablement<T>(change: () => Promise<T>): Promise<T> {
  *  may not yet say what extensions will end up on. */
 export const enablementPending = (): boolean => queuedChanges > 0;
 
+let recordLayoutExtension: ((id: string, enabled: boolean) => void) | null = null;
+
+/** The dock sets how a layout showing remembers a change made to an extension
+ *  outside it. The dock imports this module, so it supplies the call. */
+export function onLayoutExtensionToggled(record: (id: string, enabled: boolean) => void): void {
+  recordLayoutExtension = record;
+}
+
 export async function setExtensionEnabled(
   id: string,
   enabled: boolean,
 ): Promise<void> {
-  if (BUILTIN_EXTENSIONS.find((b) => b.id === id)?.locked) return;
+  if (builtinExtension(id)?.locked) return;
   const ids = useDisabledExtensions.getState().ids.filter((x) => x !== id);
   if (!enabled) ids.push(id);
   persistDisabled(ids);
-  if (layoutSwitches(id, extensionKinds())) recordActiveLayoutExtension(id, enabled);
+  if (layoutSwitches(id, extensionKinds())) recordLayoutExtension?.(id, enabled);
   await queueEnablement(() => applyEnablement(id, enabled));
 }
 
@@ -192,14 +200,21 @@ export function initEnablement(): void {
 /** Why a saved layout never switches an extension. */
 export type LayoutExtensionHold = "pixels" | "unseen" | "kept";
 
+/** Whether saved layouts leave `id` as the user set it: a built-in that says
+ *  so, or an official extension whose list row does. A manifest can't claim it. */
+export function keepsAcrossLayouts(id: string): boolean {
+  const builtin = builtinExtension(id);
+  if (builtin) return !!builtin.keepAcrossLayouts;
+  return officialExtension(id)?.keepAcrossLayouts ?? false;
+}
+
 /** Why a saved layout never switches `id`, given what each extension has been
  *  seen doing, or null when it may. */
 function layoutHold(
   id: string,
   kinds: Record<string, ExtensionKind>,
 ): LayoutExtensionHold | null {
-  const builtin = BUILTIN_EXTENSIONS.find((b) => b.id === id);
-  if (builtin?.locked || builtin?.keepAcrossLayouts) return "kept";
+  if (builtinExtension(id)?.locked || keepsAcrossLayouts(id)) return "kept";
   if (!Object.hasOwn(kinds, id)) return "unseen";
   return kinds[id] === "pixels" ? "pixels" : null;
 }
@@ -226,7 +241,7 @@ export function layoutExtensionChoices(
     hold: layoutHold(id, kinds),
   });
   const external = installed.filter(
-    (m) => !bannedReasonForManifest(m) && !BUILTIN_EXTENSIONS.some((b) => b.id === m.id),
+    (m) => !bannedReasonForManifest(m) && !builtinExtension(m.id),
   );
   return [
     ...BUILTIN_EXTENSIONS.filter((b) => !b.locked).map((b) => choice(b.id, b.name)),
@@ -273,7 +288,7 @@ export function applyLayoutExtensions(states: Record<string, boolean>): Promise<
       installed = (await window.safelightNative?.plugins.list()) ?? [];
     } catch {}
     const switchable = changes.filter(([id]) => {
-      if (BUILTIN_EXTENSIONS.some((b) => b.id === id)) return true;
+      if (builtinExtension(id)) return true;
       const m = installed.find((x) => x.id === id);
       return !!m && !bannedReasonForManifest(m);
     });
@@ -298,9 +313,9 @@ export function applyLayoutExtensions(states: Record<string, boolean>): Promise<
 }
 
 // ─── Disabled-by-default seeding ───────────────────────────────────────────
-// Some built-ins (e.g. Developer Tools) ship inactive. They can't simply be
-// added to the disabled list at build time — that would re-disable them every
-// launch even after the user enables them. Instead we seed each such id into
+// A built-in can ship inactive (disabledByDefault). It can't simply be added
+// to the disabled list at build time: that would disable it again every launch
+// after the user enables it. Instead we seed each such id into
 // the disabled list exactly once and remember that we did, so the user's later
 // choice is what sticks. New default-off built-ins added in future versions are
 // seeded on the first launch that includes them.
@@ -341,43 +356,119 @@ export function loadBuiltins(): void {
   for (const ext of BUILTIN_EXTENSIONS) {
     if (ext.locked || !isExtensionDisabled(ext.id)) {
       setExtensionName(ext.id, ext.name);
-      activateBuiltin(ext);
+      startBuiltin(ext);
     }
   }
 }
 
 /** Import and activate an installed extension. Every caller goes through here, so
- *  the refusal of a reserved id (core-extension.ts) comes before the bundle is
- *  even imported. */
-async function loadPlugin(manifest: ExtensionManifest): Promise<void> {
-  if (isReservedExtensionId(manifest.id)) throw new Error(reservedIdReason(manifest.id));
-  if (loaded.has(manifest.id)) return;
-  // Cache-bust by version: the renderer caches a dynamic import() by URL, so
-  // without a per-version query an updated bundle keeps running the module that
-  // was imported at launch. Bumping the manifest version now re-imports it.
-  const url = `${location.origin}/__plugins__/${manifest.id}/${manifest.main}?v=${encodeURIComponent(manifest.version)}`;
-  const mod = await importPluginModule(url);
-  if (typeof mod.activate !== "function")
-    throw new Error(`${manifest.id}: bundle has no activate(api) export`);
-  setExtensionName(manifest.id, manifest.name);
-  try {
-    mod.activate(makeScopedAPI(manifest.id));
-  } catch (e) {
-    unregisterExtension(manifest.id); // whatever it registered before throwing
-    throw e;
-  }
-  loaded.set(manifest.id, mod as ExtensionModule);
-  noteExtensionRunning(manifest.id);
+ *  the refusal of a reserved or unofficial official-only id
+ *  (official-extensions.ts) comes before the bundle is even imported. */
+async function loadPlugin(manifest: ExtensionManifest, ahead?: BundleAhead): Promise<void> {
+  const refusal = manifestIdRefusal(manifest);
+  if (refusal) throw new Error(refusal);
+  const { id } = manifest;
+  if (isInstanceLive(id)) return;
+  const url = bundleUrl(manifest);
+  await startInstance({
+    id,
+    source: "installed",
+    name: manifest.name,
+    bundle: url,
+    read: async () => ({ load: ahead?.load ?? (() => importPluginModule(url)) }),
+    // The user may turn the extension off while its bundle is still on the way.
+    stillWanted: ahead && (() => !isExtensionDisabled(id)),
+  });
+  if (isInstanceLive(id)) noteExtensionRunning(id);
 }
 
-/** Stop a running external extension and sweep its contributions. A reserved id
- *  is never one: it is Safelight's own, so sweeping it would take Safelight's
- *  contributions with it. */
+// Cache-bust by version: the renderer caches a dynamic import() by URL, so
+// without a per-version query an updated bundle keeps running the module that
+// was imported at launch. Bumping the manifest version now re-imports it.
+const bundleUrl = (manifest: ExtensionManifest): string =>
+  `${location.origin}/__plugins__/${manifest.id}/${manifest.main}?v=${encodeURIComponent(manifest.version)}`;
+
+/** How many bundles are imported at once while the installed extensions start. */
+const IMPORT_CONCURRENCY = 6;
+
+/** A bundle already being imported for a start that comes later. */
+interface BundleAhead {
+  /** Its import. A bundle still waiting its turn to import starts now, so one
+   *  that never finishes can't keep those after it from starting. */
+  load(): Promise<Partial<ExtensionModule>>;
+}
+
+/** Begin importing `manifests`' bundles, up to IMPORT_CONCURRENCY at a time and
+ *  in list order, ahead of the starts that wait on them. A failed import is
+ *  reported when its extension's turn comes, not before. */
+function importAhead(manifests: ExtensionManifest[]): Map<ExtensionManifest, BundleAhead> {
+  const ahead = new Map<ExtensionManifest, BundleAhead>();
+  const waiting: (() => void)[] = [];
+  let importing = 0;
+  const startWaiting = () => {
+    while (importing < IMPORT_CONCURRENCY && waiting.length > 0) waiting.shift()?.();
+  };
+  for (const manifest of manifests) {
+    let begin = () => {};
+    const imported = new Promise<Partial<ExtensionModule>>((resolve, reject) => {
+      let begun = false;
+      begin = () => {
+        if (begun) return;
+        begun = true;
+        importing++;
+        new Promise<Partial<ExtensionModule>>((started) => started(importPluginModule(bundleUrl(manifest))))
+          .then(resolve, reject)
+          .finally(() => {
+            importing--;
+            startWaiting();
+          });
+      };
+    });
+    imported.catch(() => {});
+    waiting.push(begin);
+    ahead.set(manifest, {
+      load: () => {
+        begin();
+        return imported;
+      },
+    });
+  }
+  startWaiting();
+  return ahead;
+}
+
+/** Stop a running installed extension and sweep its contributions; a copy of the
+ *  id loaded from the dev folder keeps running. A reserved id is never one: it
+ *  is Safelight's own, so sweeping it would take Safelight's contributions with
+ *  it. */
 function teardown(id: string): void {
   if (isReservedExtensionId(id)) return;
-  loaded.get(id)?.deactivate?.();
-  loaded.delete(id);
-  unregisterExtension(id);
+  stopInstance(id, "installed");
+}
+
+/** Start again the installed extensions a dev-folder copy stopped, now that the
+ *  copy has unloaded. One the user turned off meanwhile stays off. */
+export function restoreDisplacedPlugins(): Promise<void> {
+  const ids = takeDisplaced().filter((id) => !isExtensionDisabled(id));
+  if (ids.length === 0) return Promise.resolve();
+  return queueEnablement(async () => {
+    let list: ExtensionManifest[];
+    try {
+      list = (await window.safelightNative?.plugins.list()) ?? [];
+    } catch {
+      return;
+    }
+    for (const manifest of list) {
+      if (!ids.includes(manifest.id) || isExtensionDisabled(manifest.id)) continue;
+      if (refuseIfBanned(manifest, "blocked")) continue;
+      try {
+        await loadPlugin(manifest);
+      } catch (e) {
+        console.error(`[extensions] failed to restore ${manifest.id}:`, e);
+      }
+    }
+    applySavedTheme();
+  });
 }
 
 /** After a background trust refresh, retire any loaded external extension the
@@ -393,12 +484,8 @@ async function enforceBansOnLoaded(): Promise<void> {
     return;
   }
   for (const m of list) {
-    if (!loaded.has(m.id)) continue;
-    const banned = bannedReasonForManifest(m);
-    if (!banned) continue;
-    flagBannedExtension({ id: m.id, name: m.name, reason: banned });
-    console.warn(`[extensions] disabling now-banned ${m.id}: ${banned}`);
-    teardown(m.id);
+    if (isInstanceLive(m.id, "installed") && refuseIfBanned(m, "disabling now-banned"))
+      teardown(m.id);
   }
 }
 
@@ -419,20 +506,26 @@ async function loadExternalPluginsOnce(): Promise<void> {
   } catch {
     return;
   }
+  // Bundles import side by side; the extensions still activate one at a time in
+  // list order, so what they register lands in the same order on every launch.
+  const ahead = importAhead(
+    list.filter(
+      (m) =>
+        !isExtensionDisabled(m.id) &&
+        !bannedReasonForManifest(m) &&
+        !manifestIdRefusal(m) &&
+        !isInstanceLive(m.id),
+    ),
+  );
   for (const manifest of list) {
     if (isExtensionDisabled(manifest.id)) continue;
     // Kill-switch check against the cached trust list (seeded synchronously from
     // localStorage) — no fetch to await, so themes and panels activate at once.
     // A banned extension is never activated; we flag it (banner + console) rather
     // than silently dropping it, so the user knows why it stopped working.
-    const banned = bannedReasonForManifest(manifest);
-    if (banned) {
-      flagBannedExtension({ id: manifest.id, name: manifest.name, reason: banned });
-      console.warn(`[extensions] blocked ${manifest.id}: ${banned}`);
-      continue;
-    }
+    if (refuseIfBanned(manifest, "blocked")) continue;
     try {
-      await loadPlugin(manifest);
+      await loadPlugin(manifest, ahead.get(manifest));
     } catch (e) {
       console.error(`[extensions] failed to load ${manifest.id}:`, e);
     }
@@ -462,7 +555,7 @@ const settle = (
   id: string,
   outcome: "keep" | "rollback",
 ): Promise<ExtensionManifest | null> =>
-  window.safelightNative?.plugins?.settleUpdate?.(id, outcome) ?? Promise.resolve(null);
+  privilegedPlugins()?.settleUpdate(id, outcome) ?? Promise.resolve(null);
 
 /** The record for an installed version with nothing newer known. */
 const upToDate = (version: string): ExtUpdateInfo => ({
@@ -481,16 +574,15 @@ function shownModuleOf(extensionId: string): ModuleId | null {
     : null;
 }
 
-/** Tearing an extension down sends the main window from its module to Library
- *  (ModuleView). Once a version of the extension has registered the module
- *  again, go back to it, unless the user has moved on from Library since. */
+/** Tearing an extension down sends the main window from its module to the
+ *  first other tab (ModuleView), or leaves it there when there is none. Once a
+ *  version of the extension has registered the module again, go back to it,
+ *  unless the user has moved on from that tab since. */
 function returnToModule(module: ModuleId | null): void {
+  if (!module) return;
   const ui = useUIStore.getState();
-  if (
-    module &&
-    ui.activeModule === "library" &&
-    moduleEntry(useRegistry.getState().modules, module)
-  )
+  const fellBackTo = fallbackModule(module) ?? module;
+  if (ui.activeModule === fellBackTo && moduleEntry(useRegistry.getState().modules, module))
     ui.setActiveModule(module);
 }
 
@@ -505,45 +597,146 @@ async function keepSettled(id: string): Promise<void> {
   }
 }
 
-/** The latest install requested for each repo, with the version it asked for. */
-const inflight = new Map<string, { version?: string; run: Promise<ExtensionManifest> }>();
+/** When an install was asked for, and the id it installs once that is known. */
+interface InstallTicket {
+  asked: number;
+  id?: string;
+}
+
+interface InflightInstall {
+  version?: string;
+  ticket: InstallTicket;
+  /** Settles once this request's own download and swap have. */
+  done: Promise<ExtensionManifest>;
+  /** What its callers get: its own outcome, or that of a newer install of the
+   *  repo that superseded it. */
+  result: Promise<ExtensionManifest>;
+}
+
+/** The latest install requested for each repo. */
+const inflight = new Map<string, InflightInstall>();
+
+/** Orders install and uninstall requests, so an install can tell whether its
+ *  extension was uninstalled after it was asked for. */
+let changeRequests = 0;
+const uninstalledAt = new Map<string, number>();
+
+const uninstalledSince = ({ asked, id }: InstallTicket): boolean =>
+  id !== undefined && (uninstalledAt.get(id) ?? 0) > asked;
+
+/** Why a downloaded install no longer goes live. */
+type Superseded = "uninstalled" | "newer";
+
+/** An install that downloaded but was not started: the extension was
+ *  uninstalled, or a newer install of it asked for, while it downloaded. Its
+ *  callers see "uninstalled" only; one superseded by a newer install answers
+ *  with that install's outcome instead. */
+export class InstallSupersededError extends Error {
+  readonly reason: Superseded;
+  constructor(manifest: ExtensionManifest, reason: Superseded) {
+    super(
+      `${manifest.name} ${manifest.version} was not started: ` +
+        (reason === "uninstalled"
+          ? "it was uninstalled while it downloaded"
+          : "a newer install of it was asked for"),
+    );
+    this.name = "InstallSupersededError";
+    this.reason = reason;
+  }
+}
 
 /** Download `spec` and put it live. `enable` clears the disabled flag first (a
  *  fresh install always starts enabled); an update leaves the user's choice
  *  alone, so a disabled extension gets the new files and stays off. One install
  *  per repo at a time, since they write the same folder: a request for the
- *  version already in flight (or queued) joins it, and a different version waits
- *  until the install ahead of it settles, success or failure. */
+ *  version already in flight (or queued) joins it, unless the extension was
+ *  uninstalled since, and a different version waits until the install ahead of
+ *  it settles, success or failure, then supersedes it. The download runs beside
+ *  other changes; the swap waits its turn on the enablement queue. */
 function installAndActivate(
   spec: string,
   enable: boolean,
   version?: string,
+  expectedId?: string,
 ): Promise<ExtensionManifest> {
   const key = spec.trim().toLowerCase();
   const prior = inflight.get(key);
-  if (prior && prior.version === version) return prior.run;
-  const run = prior
-    ? prior.run.catch(() => undefined).then(() => performInstall(spec, enable, version))
-    : performInstall(spec, enable, version);
-  const entry = { version, run };
+  if (prior && prior.version === version && !uninstalledSince(prior.ticket)) return prior.result;
+  const ticket: InstallTicket = { asked: ++changeRequests, id: expectedId };
+  const isLatest = () => inflight.get(key) === entry;
+  const perform = () => performInstall(spec, enable, ticket, isLatest, version, expectedId);
+  const done = prior ? prior.done.catch(() => undefined).then(perform) : perform();
+  const result = done.catch((e: unknown) => {
+    const newer = inflight.get(key);
+    if (e instanceof InstallSupersededError && e.reason === "newer" && newer && newer !== entry)
+      return newer.result;
+    throw e;
+  });
+  const entry: InflightInstall = { version, ticket, done, result };
   inflight.set(key, entry);
   const forget = () => {
     if (inflight.get(key) === entry) inflight.delete(key);
   };
-  run.then(forget, forget);
-  return run;
+  done.then(forget, forget);
+  return result;
+}
+
+/** Drop a download that won't go live. An uninstalled extension keeps no files;
+ *  otherwise the copy from before the download is put back (or, for a first
+ *  install, nothing is), for the newer install to replace. */
+async function discardDownload(id: string, reason: Superseded): Promise<void> {
+  try {
+    if (reason === "uninstalled") {
+      await settle(id, "keep");
+      await privilegedPlugins()?.uninstall(id);
+    } else {
+      await settle(id, "rollback");
+    }
+  } catch (e) {
+    console.warn(`[extensions] could not discard the download of ${id}:`, e);
+  }
 }
 
 async function performInstall(
   spec: string,
   enable: boolean,
+  ticket: InstallTicket,
+  isLatest: () => boolean,
   version?: string,
+  expectedId?: string,
 ): Promise<ExtensionManifest> {
-  const native = window.safelightNative;
-  if (!native) throw new Error("Requires the desktop app.");
-  const manifest = await (version
-    ? native.plugins.install(spec, version)
-    : native.plugins.install(spec));
+  const plugins = privilegedPlugins();
+  if (!plugins) throw new Error("Requires the desktop app.");
+  const manifest = await (version ? plugins.install(spec, version) : plugins.install(spec));
+  const { id } = manifest;
+  ticket.id = id;
+  if (expectedId !== undefined && id !== expectedId) {
+    // The files landed under the other id: put back what that id had.
+    let message = `${spec} holds ${id}, not ${expectedId}`;
+    try {
+      await settle(id, "rollback");
+    } catch (settleError) {
+      message += `; rollback failed (${errorText(settleError)})`;
+    }
+    throw new Error(message);
+  }
+  return queueEnablement(async () => {
+    const reason: Superseded | null = uninstalledSince(ticket)
+      ? "uninstalled"
+      : isLatest()
+        ? null
+        : "newer";
+    if (reason) {
+      await discardDownload(id, reason);
+      throw new InstallSupersededError(manifest, reason);
+    }
+    return swapIn(manifest, enable);
+  });
+}
+
+/** Put a downloaded version live in place of the running one, rolling back to
+ *  the previous version when it fails to start. */
+async function swapIn(manifest: ExtensionManifest, enable: boolean): Promise<ExtensionManifest> {
   const { id } = manifest;
   if (enable)
     persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
@@ -599,31 +792,42 @@ async function performInstall(
 }
 
 /** Install `spec` from GitHub: its latest release (or its branch when it
- *  publishes no releases), or the release `version` when given. */
-export const installFromGitHub = (spec: string, version?: string): Promise<ExtensionManifest> =>
-  installAndActivate(spec, true, version);
+ *  publishes no releases), or the release `version` when given. `enable: false`
+ *  keeps a disabled id disabled: the files land, the extension stays off. */
+export const installFromGitHub = (
+  spec: string,
+  version?: string,
+  options: { enable?: boolean } = {},
+): Promise<ExtensionManifest> => installAndActivate(spec, options.enable ?? true, version);
 
 /** Reinstall an installed extension at `version` (the one its update check
  *  offered), keeping its settings and its enabled/disabled state. Updating
- *  stops keeping an older version. */
+ *  stops keeping an older version. Given `id`, a download that holds another
+ *  extension is rolled back instead of started. */
 export async function updateExtension(
   fullName: string,
   version?: string,
+  id?: string,
 ): Promise<ExtensionManifest> {
-  const manifest = await installAndActivate(fullName, false, version);
+  const manifest = await installAndActivate(fullName, false, version, id);
   setKept(manifest.id, null);
   return manifest;
 }
 
-export async function uninstallPlugin(id: string): Promise<void> {
-  const native = window.safelightNative;
-  teardown(id);
-  deleteExtensionSettings(id); // forget its persisted settings too
-  useExtStoreUI.getState().clearUpdate(id); // and its cached update check
-  setKept(id, null); // and any version it was kept at
-  forgetExtension(id); // and what it was seen doing, for saved layouts
-  persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
-  await native?.plugins.uninstall(id); // deletes <userData>/plugins/<id>/
+/** Stop and delete an installed extension, after any change already under way:
+ *  a start of it still importing would otherwise go live once it is gone. */
+export function uninstallPlugin(id: string): Promise<void> {
+  uninstalledAt.set(id, ++changeRequests);
+  return queueEnablement(async () => {
+    teardown(id);
+    // A dev-folder copy of the id, still running, keeps the settings it shares.
+    if (!isInstanceLive(id)) deleteExtensionSettings(id); // forget its persisted settings too
+    useExtStoreUI.getState().clearUpdate(id); // and its cached update check
+    setKept(id, null); // and any version it was kept at
+    forgetExtension(id); // and what it was seen doing, for saved layouts
+    persistDisabled(useDisabledExtensions.getState().ids.filter((x) => x !== id));
+    await privilegedPlugins()?.uninstall(id); // deletes <userData>/plugins/<id>/
+  });
 }
 
 // ─── Updates ───────────────────────────────────────────────────────────────
@@ -672,8 +876,13 @@ export async function checkExtensionUpdate(
   manifest: ExtensionManifest,
   force = false,
 ): Promise<ExtUpdateInfo | null> {
-  const repo = repoFor(manifest);
-  if (!repo) return null; // built-in / custom import with no known repo
+  const repo = updateRepoFor(manifest);
+  if (!repo) {
+    // Built-in, custom import with no known repo, or a remembered source that
+    // disagrees with the manifest: nothing to offer, so drop any older offer.
+    useExtStoreUI.getState().clearUpdate(manifest.id);
+    return null;
+  }
   const cached = useExtStoreUI.getState().updates[manifest.id];
   if (!force && cached && Date.now() - cached.checkedAt < UPDATE_CHECK_TTL)
     return cached;
@@ -729,10 +938,10 @@ export async function checkAllExtensionUpdates(force = false): Promise<void> {
       const m = list[next++];
       const info = await checkExtensionUpdate(m, force);
       if (!settings.autoUpdateExtensions || !info || !autoInstallable(m, info)) continue;
-      const repo = repoFor(m);
+      const repo = updateRepoFor(m);
       if (!repo) continue;
       try {
-        await updateExtension(repo, info.latestTag ?? undefined);
+        await updateExtension(repo, info.latestTag ?? undefined, m.id);
       } catch (e) {
         console.error(`[extensions] auto-update failed for ${m.id}:`, e);
       }

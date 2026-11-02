@@ -13,7 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";
-import { rawPhoto } from "@/modules/library/raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
 const HANG = 1;
 const SIZE = 128 * 1024;
@@ -50,8 +50,8 @@ vi.mock("@/raw/raw-cache", () => ({
 
 vi.mock("@/raw/accept-decode", () => ({ acceptDecode: async () => ({ use: true, cache: true }) }));
 
-vi.mock("@/modules/library/raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => new Blob(["jpeg"], { type: "image/jpeg" }),
 }));
 

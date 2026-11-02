@@ -18,6 +18,7 @@ import { photo, snapshot } from "@/catalog/stored-edit.fixtures";
 import type { EditSnapshot, EditState } from "@/catalog/types";
 import { MemoryFs, fsaDirectoryHandle } from "@/project/memory-fs.test-support";
 import { ProjectStorage } from "@/project/project-storage";
+import { storageDeps } from "@/project/storage-deps";
 import { useCatalogStore } from "./catalog-store";
 import { followCatalogRecords } from "./catalog-sync";
 import { useDevelopStore } from "./develop-store";
@@ -76,8 +77,8 @@ async function twoWindows(): Promise<{ a: ProjectStorage; b: ProjectStorage }> {
   const photos = [photo(OPEN), photo(OTHER)];
   for (const p of photos) fs.put(`${ROOT}/${p.relPath}`, p.id);
   fs.put(`${ROOT}/.safelight/catalog.json`, JSON.stringify({ version: 1, photos, edits: [] }));
-  const a = await ProjectStorage.open(fsaDirectoryHandle(fs, ROOT));
-  const b = await ProjectStorage.open(fsaDirectoryHandle(fs, ROOT));
+  const a = await ProjectStorage.open(fsaDirectoryHandle(fs, ROOT), storageDeps);
+  const b = await ProjectStorage.open(fsaDirectoryHandle(fs, ROOT), storageDeps);
   storages.push(a.storage, b.storage);
 
   setCatalogStorage(b.storage);
@@ -96,6 +97,19 @@ describe("Develop", () => {
     await vi.waitFor(() => expect(labels()).toEqual(["Original", "Exposure"]));
     expect(develop().params.exposure).toBe(1);
     expect(develop().asShotTemperature).toBe(5200);
+  });
+
+  it("keeps a slider change in progress, landing it on top of the other window's edit", async () => {
+    const { a } = await twoWindows();
+    develop().setParam("contrast", 30);
+
+    await a.putEditState(brighter(OPEN));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(develop().params.contrast).toBe(30);
+
+    await develop().commitEdit("Contrast");
+    expect(labels()).toEqual(["Original", "Exposure", "Contrast"]);
+    expect(develop().params.contrast).toBe(30);
   });
 
   it("doesn't reload for an edit this window wrote", async () => {

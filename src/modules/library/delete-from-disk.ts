@@ -14,6 +14,7 @@ import { nativeFs, nativePathOf } from "@/project/native-fs";
 import { deleteCachedPreview, rawCacheKey } from "@/raw/raw-cache";
 import { SIDECAR_SUFFIX } from "@/project/folder-ops";
 import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
+import { fsErrorText } from "@/project/fs-errors";
 
 export interface DeleteFromDiskResult {
   /** Photos whose file went to the OS trash (and left the catalog). */
@@ -70,9 +71,10 @@ export async function deletePhotosFromDisk(
     try {
       await fs.trash(path);
     } catch (e) {
+      console.error("[library] couldn't move to trash:", photo.filename, e);
       result.failed.push({
         filename: photo.filename,
-        message: e instanceof Error ? e.message : String(e),
+        message: fsErrorText(e, { target: "file" }),
       });
       continue;
     }
@@ -126,7 +128,8 @@ export async function confirmAndDeleteFromDisk(ids: string[]): Promise<void> {
   if (r.failed.length > 0)
     notes.push(
       `Couldn't delete ${r.failed.length} file${r.failed.length === 1 ? "" : "s"}:\n` +
-        r.failed.map((f) => `• ${f.filename}: ${f.message}`).join("\n"),
+        r.failed.map((f) => `• ${f.filename}: ${f.message}`).join("\n") +
+        `\n${r.failed.length === 1 ? "This photo stays" : "These photos stay"} in the catalog.`,
     );
   if (notes.length > 0)
     await alertDialog({ title: "Delete from disk", message: notes.join("\n\n") });

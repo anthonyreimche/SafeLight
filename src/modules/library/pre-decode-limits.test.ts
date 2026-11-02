@@ -46,8 +46,8 @@ vi.mock("@/raw/accept-decode", () => ({
   acceptDecode: async () => ({ use: true, cache: true }),
 }));
 
-vi.mock("./raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => null,
 }));
 
@@ -75,7 +75,7 @@ vi.mock("@/catalog/storage", () => ({
 }));
 
 import { preDecodeRawsForCache } from "./import-photos";
-import { rawPhoto } from "./raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
 const name = (i: number) => `DSC_${i}.NEF`;
 const photos = (count: number): CatalogPhoto[] =>

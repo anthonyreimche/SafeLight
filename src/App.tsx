@@ -11,17 +11,15 @@ import { useProjectStore } from "@/project/project-store";
 import { getSettings } from "@/state/settings-store";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useWindowSync } from "@/hooks/use-window-sync";
-import { detachedModule } from "@/state/detach";
+import { attachModule, detachedModule } from "@/state/detach";
 import { moduleLabel } from "@/extensions/registry";
 import { isDevtoolsWindow } from "@/extensions/devtools/detach";
-import { DevToolsWindow } from "@/extensions/devtools/DevToolsPanel";
+import { DevToolsWindowHost } from "@/extensions/devtools/DevToolsWindowHost";
 import { AppShell } from "@/ui/components/AppShell";
 import { PreferencesDialog } from "@/ui/components/PreferencesDialog";
 import { ExtensionsDialog } from "@/ui/components/ExtensionsDialog";
 import { ReportIssueDialog } from "@/ui/components/ReportIssueDialog";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
-import { LibraryView } from "@/modules/library/LibraryView";
-import { DevelopView } from "@/modules/develop/DevelopView";
 import { ModuleView } from "@/ui/components/ModuleView";
 import { WelcomeView } from "@/modules/welcome/WelcomeView";
 import { SetupFlow } from "@/modules/welcome/setup/SetupFlow";
@@ -29,19 +27,10 @@ import {
   initFirstRun,
   useSetupStore,
 } from "@/modules/welcome/setup/setup-store";
-import { UpdateBanner } from "@/update/UpdateBanner";
-import { StorageBanner } from "@/ui/components/StorageBanner";
-import { ExtensionSecurityBanner } from "@/extensions/ExtensionSecurityBanner";
+import { BottomBanners } from "@/ui/components/BottomBanners";
 
 function renderModule(module: AppModule) {
-  switch (module) {
-    case "library":
-      return <LibraryView />;
-    case "develop":
-      return <DevelopView />;
-    default:
-      return <ModuleView id={module} />;
-  }
+  return <ModuleView id={module} />;
 }
 
 export function App() {
@@ -86,7 +75,7 @@ export function App() {
   }, []);
 
   // The Developer Tools window renders only the panel — no module, no project.
-  if (devtoolsWindow) return <DevToolsWindow />;
+  if (devtoolsWindow) return <DevToolsWindowHost />;
 
   if (dm)
     return (
@@ -96,9 +85,7 @@ export function App() {
         <ExtensionsDialog />
         <ReportIssueDialog />
         <ConfirmDialogHost />
-        <ExtensionSecurityBanner />
-        <StorageBanner />
-        <UpdateBanner />
+        <BottomBanners />
       </>
     );
 
@@ -107,10 +94,16 @@ export function App() {
     return (
       <>
         <AppShell module={activeModule}>
-          <div className="flex flex-1 items-center justify-center text-center text-text-muted">
+          <div className="flex flex-1 flex-col items-center justify-center text-center text-text-muted">
             <p className="text-sm">
               {moduleLabel(activeModule)} is open in a separate window.
             </p>
+            <button
+              onClick={() => attachModule(activeModule)}
+              className="mt-3 rounded bg-surface-3 px-3 py-1 text-[11px] text-text-secondary hover:bg-surface-4 hover:text-text-primary"
+            >
+              Bring it back
+            </button>
           </div>
         </AppShell>
         <SetupFlow />
@@ -118,9 +111,7 @@ export function App() {
         <ExtensionsDialog />
         <ReportIssueDialog />
         <ConfirmDialogHost />
-        <ExtensionSecurityBanner />
-        <StorageBanner />
-        <UpdateBanner />
+        <BottomBanners />
       </>
     );
   }
@@ -142,9 +133,7 @@ export function App() {
         <ExtensionsDialog />
         <ReportIssueDialog />
         <ConfirmDialogHost />
-        <ExtensionSecurityBanner />
-        <StorageBanner />
-        <UpdateBanner />
+        <BottomBanners />
       </>
     );
   }
@@ -157,8 +146,7 @@ export function App() {
       <ExtensionsDialog />
       <ReportIssueDialog />
       <ConfirmDialogHost />
-      <StorageBanner />
-      <UpdateBanner />
+      <BottomBanners />
     </>
   );
 }

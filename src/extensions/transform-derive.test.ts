@@ -224,6 +224,7 @@ describe("render entry points", () => {
       "hooks/use-develop-renderer.ts",
       "modules/export/export-image.ts",
       "rendering/render-worker.ts",
+      "rendering/thumbnail-renderer.ts",
     ]);
   });
 });

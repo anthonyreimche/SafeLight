@@ -8,10 +8,11 @@
 // thread. It must stay DOM-free and must not import anything with module-level
 // side effects (settings, stores): everything it needs arrives in the input.
 //
-// The task covers the fast path only: RAW embedded previews and plain
-// browser-decodable images. Anything else — TIFF, NetPBM, rendered-mode RAW,
-// libraw fallbacks — answers { ok: false } and the caller runs the full inline
-// decode chain (import-photos.ts).
+// The task covers RAW embedded previews, TIFF and Netpbm (whose pure-JS
+// decoders would otherwise hold the main thread through a whole 16-bit scan),
+// and plain browser-decodable images. Anything else — rendered-mode RAW,
+// libraw fallbacks — answers { ok: false }, as does a file it can't decode, and
+// the caller runs the full inline decode chain (import-photos.ts).
 
 import {
   distrustsEmbeddedPreview,
@@ -20,12 +21,14 @@ import {
   jpegDimensions,
   prefersEmbeddedPreview,
   sensorNativeJpeg,
-} from "./raw-preview";
+} from "@/raw/raw-preview";
 import {
   orientationToRotation,
   previewUprightRotation,
   rotateBitmap,
 } from "@/catalog/orient";
+import { decodeNetpbm, isNetpbmName } from "@/raw/netpbm";
+import { decodeTiffBuffer, isTiffName } from "@/raw/tiff-image";
 import type { PreviewSource } from "@/state/settings-store";
 
 export interface ThumbTaskInput {
@@ -69,6 +72,27 @@ export async function createThumbnail(
   ctx.drawImage(bitmap, -drawW / 2, -drawH / 2, drawW, drawH);
 
   return canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 });
+}
+
+// A sensor-native bitmap baked upright from the EXIF orientation. `width` and
+// `height` are the true size it stands for, which a downscaled decode is under.
+async function bakedThumb(
+  bitmap: ImageBitmap,
+  width: number,
+  height: number,
+  orientation: number | undefined,
+  thumbMaxEdge: number,
+): Promise<ThumbTaskResult> {
+  const bake = orientationToRotation(orientation);
+  const thumb = await createThumbnail(bitmap, bake, thumbMaxEdge);
+  bitmap.close();
+  const swap = bake === 90 || bake === 270;
+  return {
+    ok: true,
+    thumb,
+    width: swap ? height : width,
+    height: swap ? width : height,
+  };
 }
 
 export async function runThumbTask(input: ThumbTaskInput): Promise<ThumbTaskResult> {
@@ -115,6 +139,18 @@ export async function runThumbTask(input: ThumbTaskInput): Promise<ThumbTaskResu
     };
   }
 
+  // TIFF from a reduced-resolution copy when the file carries one big enough.
+  if (isTiffName(name)) {
+    const tiff = await decodeTiffBuffer(buffer, thumbMaxEdge);
+    if (!tiff) return { ok: false };
+    return bakedThumb(tiff.bitmap, tiff.width, tiff.height, orientation, thumbMaxEdge);
+  }
+  if (isNetpbmName(name)) {
+    const bitmap = await decodeNetpbm(file);
+    if (!bitmap) return { ok: false };
+    return bakedThumb(bitmap, bitmap.width, bitmap.height, orientation, thumbMaxEdge);
+  }
+
   // Plain browser-decodable image. JPEG bytes get the same decode-at-thumbnail-
   // scale shortcut via their SOF header, and shed their Exif segment so the
   // decode is sensor-native (see sensorNativeJpeg); other formats decode at
@@ -141,16 +177,11 @@ export async function runThumbTask(input: ThumbTaskInput): Promise<ThumbTaskResu
   } catch {
     return { ok: false };
   }
-  const bake = orientationToRotation(orientation);
-  const thumb = await createThumbnail(bitmap, bake, thumbMaxEdge);
-  const srcW = dims?.width ?? bitmap.width;
-  const srcH = dims?.height ?? bitmap.height;
-  bitmap.close();
-  const swap = bake === 90 || bake === 270;
-  return {
-    ok: true,
-    thumb,
-    width: swap ? srcH : srcW,
-    height: swap ? srcW : srcH,
-  };
+  return bakedThumb(
+    bitmap,
+    dims?.width ?? bitmap.width,
+    dims?.height ?? bitmap.height,
+    orientation,
+    thumbMaxEdge,
+  );
 }

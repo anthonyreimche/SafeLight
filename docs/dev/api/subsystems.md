@@ -116,7 +116,7 @@ Present only in the desktop app. Feature-detect it, and its optional members, be
 |---|---|
 | `platform`, `versions`, `appVersion()` | Host OS, Electron and Chrome versions, the app version |
 | `releases.fetch(repo)` | GitHub Releases, fetched outside the app's content-security policy |
-| `github.{repoMeta, readme, iconUrl, thumbnails, onThumbnail}` | Store metadata, READMEs and thumbnails |
+| `github.{repoMeta, readme, thumbnails, onThumbnail}` | Store metadata, READMEs and thumbnails |
 | `plugins.{list, install, uninstall, search}` | The extension host's install folder |
 | `devtools.{open, close, toggle, isOpen, reload, syncDevFolder}` | Chrome DevTools, for the Developer Tools extension |
 | `diagnostics.{gpuInfo, metrics}` | GPU feature status and per-process metrics |

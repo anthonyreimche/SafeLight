@@ -28,7 +28,7 @@ vi.mock("@/project/project-store", async (importOriginal) => ({
 
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { rawPhoto } from "@/modules/library/raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 import { useCatalogStore } from "@/state/catalog-store";
 import { updateSettings } from "@/state/settings-store";
 import { openPreferences, PreferencesDialog } from "./PreferencesDialog";

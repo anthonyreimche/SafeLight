@@ -96,8 +96,11 @@ export function updateNote(installedVersion: string, upd: ExtUpdateInfo): string
 
 interface ExtStoreUI {
   view: "list" | "detail";
-  /** Selected extension: a repo "owner/repo" or a built-in id like "core.histogram". */
+  /** Selected extension: a repo "owner/repo" or a built-in id like "core.hsl". */
   selected: string | null;
+  /** The extension page the Extensions window opens on next, instead of the
+   *  list (openExtensionsOn); null for the list. */
+  pendingDetail: string | null;
   sort: StoreSort;
   /** What Browse shows: "home" (shelves), "other" (no category) or a
    *  category slug. */
@@ -139,6 +142,7 @@ interface ExtStoreUI {
 export const useExtStoreUI = create<ExtStoreUI>((set) => ({
   view: "list",
   selected: null,
+  pendingDetail: null,
   sort: "popular",
   browse: "home",
   railExpanded: false,

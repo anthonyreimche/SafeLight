@@ -179,6 +179,48 @@ describe("dismissing", () => {
     await user.click(container.firstElementChild as HTMLElement);
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it("cancels on Escape, also after a checkbox took focus", async () => {
+    const { user, onCancel, onCopy } = setup({ exposure: 1.2 });
+    await user.click(box(/^Exposure/));
+    await user.keyboard("{Escape}");
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onCopy).not.toHaveBeenCalled();
+  });
+});
+
+describe("as a modal", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("is a named modal dialog that takes focus on open", () => {
+    setup({ exposure: 1.2 });
+    const dialog = screen.getByRole("dialog", { name: "Copy settings" });
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it("keeps Tab inside the dialog", async () => {
+    vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([
+      {} as DOMRect,
+    ] as unknown as DOMRectList);
+    const { user, copy } = setup({ exposure: 1.2 });
+    copy.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(box(/^Show all/));
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(copy);
+  });
+
+  it("hands focus back to the trigger when it closes", () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    trigger.focus();
+    const { unmount } = setup({ exposure: 1.2 });
+    expect(document.activeElement).not.toBe(trigger);
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
 });
 
 describe("display transform", () => {

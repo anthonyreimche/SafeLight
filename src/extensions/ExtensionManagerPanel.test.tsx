@@ -8,8 +8,9 @@
 // refocus/restart — electron#31917), so the trust gates must run through the
 // in-app confirmDialog. These tests drive the custom-repo import journey and
 // pin that window.confirm is never invoked along the way. The seam is the
-// Electron bridge (window.safelightNative): the real loader runs, and reaching
-// plugins.install is the "install proceeded" signal. The bundle activation
+// Electron bridge (window.safelightNative and the privileged install bridge):
+// the real loader runs, and reaching the privileged install is the "install
+// proceeded" signal. The bundle activation
 // that follows needs the app:// protocol and is out of jsdom's reach.
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from "vitest";
@@ -18,14 +19,36 @@ import userEvent from "@testing-library/user-event";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { ExtensionManagerPanel } from "@/extensions/ExtensionManagerPanel";
 import { useExtStoreUI } from "@/extensions/store-ui";
+import { useDisabledExtensions, useRunningPlugins } from "@/extensions/loader";
 import { FALLBACK_VOCABULARY } from "@/extensions/store-categories";
 import { usePins } from "@/extensions/pins";
 import { useTrust } from "@/extensions/trust";
-import type { ExtensionManifest, ExtensionSearchResult, TrustList } from "@/extensions/types";
+import type {
+  ExtensionManifest,
+  ExtensionSearchResult,
+  NativePluginsBridge,
+  ProcessingStageContribution,
+  TrustList,
+} from "@/extensions/types";
+import { registerProcessingStage, unregisterExtension } from "@/extensions/registry";
+import { recordStageFailure, useStageFailures } from "@/rendering/render-bridge/stage-failures";
+import { useCallbackFailures } from "./guard";
+import { useStartFailures } from "./start-failures";
+import { stageSignature } from "@/rendering/webgl/stage-injection";
 import { useSettings } from "@/state/settings-store";
 import { resetSetupForTests } from "@/modules/welcome/setup/setup-store";
+import { useCatalogStore } from "@/state/catalog-store";
+import { setCatalogStorage } from "@/catalog/storage";
+import { defaultMaskAdjustments, type EditState, type Mask } from "@/catalog/types";
+import { installMemoryStorage, photo, snapshot } from "@/catalog/stored-edit.fixtures";
 
 const RISK_ACK_KEY = "sl_ext_risk_ack_v1";
+
+let privilegedBridge: NativePluginsBridge | null = null;
+vi.mock("@/native/privileged", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/native/privileged")>()),
+  privilegedPlugins: () => privilegedBridge,
+}));
 
 let installBridge: Mock;
 let confirmSpy: MockInstance<Window["confirm"]>;
@@ -41,8 +64,13 @@ beforeEach(() => {
     version: "1.0.0",
     main: "index.js",
   }));
+  privilegedBridge = {
+    install: installBridge,
+    uninstall: async () => {},
+    settleUpdate: async () => null,
+  };
   vi.stubGlobal("safelightNative", {
-    plugins: { list: async () => [], install: installBridge },
+    plugins: { list: async () => [] },
   });
   // Answering "yes" keeps the legacy native path observable rather than crashing
   // on jsdom's unimplemented confirm — the assertion is that it never runs.
@@ -78,7 +106,7 @@ describe("ExtensionManagerPanel install trust prompts", () => {
 
     const ack = await screen.findByRole("dialog");
     within(ack).getByText(/third-party software/);
-    await user.click(within(ack).getByRole("button", { name: "Continue" }));
+    await user.click(within(ack).getByRole("button", { name: "I understand" }));
 
     const unreviewed = await screen.findByRole("dialog");
     within(unreviewed).getByText(/hasn't been reviewed/);
@@ -118,6 +146,25 @@ describe("ExtensionManagerPanel install trust prompts", () => {
   });
 });
 
+describe("ExtensionManagerPanel status footer", () => {
+  it("shows a failed Browse install in a pinned status region outside the scroller", async () => {
+    localStorage.setItem(RISK_ACK_KEY, "1");
+    installBridge.mockRejectedValue(new Error("GitHub said no"));
+    const user = userEvent.setup();
+    mountStore();
+    await importRepo(user);
+    await user.click(
+      await within(await screen.findByRole("dialog")).findByRole("button", { name: "Install anyway" }),
+    );
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("GitHub said no");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.className).toContain("text-danger");
+    expect(status.closest(".overflow-y-auto")).toBeNull();
+  });
+});
+
 // The Updates tab must tell the user about a newer version this build can't run
 // without offering a doomed Update button or a badge they cannot clear.
 describe("ExtensionManagerPanel Updates tab", () => {
@@ -134,7 +181,6 @@ describe("ExtensionManagerPanel Updates tab", () => {
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: async () => [installed],
-        install: installBridge,
         remoteManifest: async () => ({ version: "2.1.0", minAppVersion: "99.0.0" }),
       },
     });
@@ -183,7 +229,6 @@ describe("ExtensionManagerPanel verified-only browse", () => {
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: async () => [],
-        install: installBridge,
         search: async () => results,
       },
     });
@@ -231,7 +276,6 @@ describe("ExtensionManagerPanel verified-only browse", () => {
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: async () => [],
-        install: installBridge,
         search: async () => results,
         trustList: () =>
           new Promise<TrustList>((resolve) => {
@@ -303,7 +347,6 @@ describe("ExtensionManagerPanel starter kits", () => {
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: async () => [{ id: "acme.installed", name: "Installed Tool", version: "1.0.0", main: "index.js" }],
-        install: installBridge,
         search: async () => [listing("acme/reviewed-tool"), listing("acme/installed-tool")],
         kits: async () => kitsJson,
       },
@@ -336,7 +379,7 @@ describe("ExtensionManagerPanel starter kits", () => {
     screen.getByRole("heading", { name: "Film looks" });
     await user.click(screen.getByRole("button", { name: "Install all (1)" }));
     const ack = await screen.findByRole("dialog");
-    await user.click(within(ack).getByRole("button", { name: "Continue" }));
+    await user.click(within(ack).getByRole("button", { name: "I understand" }));
     await waitFor(() => expect(installBridge).toHaveBeenCalledWith("acme/reviewed-tool"));
     expect(localStorage.getItem(RISK_ACK_KEY)).toBe("1");
   });
@@ -351,10 +394,10 @@ describe("ExtensionManagerPanel starter kits", () => {
         }),
     );
     const listed: ExtensionManifest[] = [{ id: "acme.installed", name: "Installed Tool", version: "1.0.0", main: "index.js" }];
+    privilegedBridge = { install, uninstall: async () => {}, settleUpdate: async () => null };
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: async () => [...listed],
-        install,
         search: async () => [listing("acme/reviewed-tool"), listing("acme/installed-tool")],
         kits: async () => kitsJson,
       },
@@ -414,7 +457,6 @@ describe("ExtensionManagerPanel kept versions and release notes", () => {
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: async () => [installed],
-        install: installBridge,
         remoteManifest: async () => ({ version: "2.1.0" }),
         releases,
       },
@@ -489,7 +531,6 @@ describe("ExtensionManagerPanel categories", () => {
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: () => list(),
-        install: installBridge,
         search: async (q: string) => (q ? catalog.filter((x) => x.fullName.includes(q)) : catalog),
         vocabulary: async () => FALLBACK_VOCABULARY,
       },
@@ -609,7 +650,6 @@ describe("ExtensionManagerPanel detail page store sections", () => {
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: () => list(),
-        install: installBridge,
         search: async (q: string) => (q ? catalog.filter((x) => x.fullName.includes(q)) : catalog),
         vocabulary: async () => FALLBACK_VOCABULARY,
       },
@@ -653,7 +693,6 @@ describe("ExtensionManagerPanel detail page store sections", () => {
     vi.stubGlobal("safelightNative", {
       plugins: {
         list: () => list(),
-        install: installBridge,
         search: async (q: string) => (q ? served.filter((x) => x.fullName.includes(q)) : served),
         vocabulary: async () => FALLBACK_VOCABULARY,
       },
@@ -703,5 +742,296 @@ describe("ExtensionManagerPanel detail page store sections", () => {
       screen.getByRole("button", { name: "Detail and repair" }).getAttribute("aria-current"),
     ).toBe("page");
     screen.getByText("denoise");
+  });
+});
+
+// Extensions ▸ Dev stays in core, beside the store, and shows while the
+// Developer Tools extension is installed and on.
+describe("ExtensionManagerPanel Dev tab", () => {
+  afterEach(() => {
+    useRunningPlugins.setState({ ids: [] });
+    useDisabledExtensions.setState({ ids: [] });
+  });
+
+  it("shows while Developer Tools is running", () => {
+    useRunningPlugins.setState({ ids: ["safelight.devtools"] });
+    mountStore();
+    screen.getByRole("button", { name: "Dev" });
+  });
+
+  it("is hidden while Developer Tools isn't running", () => {
+    useDisabledExtensions.setState({ ids: [] });
+    useRunningPlugins.setState({ ids: ["acme.widget"] });
+    mountStore();
+    expect(screen.queryByRole("button", { name: "Dev" })).toBeNull();
+  });
+});
+
+// A stage the renderer quarantined (its GLSL wouldn't build) is named on its
+// extension's row, with the first line of the log, until it is registered again.
+describe("ExtensionManagerPanel stage failures", () => {
+  const installed = {
+    id: "acme.widget",
+    name: "Widget",
+    version: "1.0.0",
+    main: "index.js",
+    repository: "acme/widget",
+  };
+  const STAGE: ProcessingStageContribution = {
+    id: "acme.widget.film",
+    name: "Film",
+    phase: "effects",
+    glsl: "c = c *;",
+    uniforms: [],
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("safelightNative", { plugins: { list: async () => [installed] } });
+    registerProcessingStage(installed.id, STAGE);
+    recordStageFailure({
+      stageId: STAGE.id,
+      signature: stageSignature(STAGE),
+      log: "Shader compile failed: ERROR: 0:823: ';' : syntax error\nERROR: 1 compilation errors.",
+    });
+  });
+
+  afterEach(() => {
+    unregisterExtension(installed.id);
+    useStageFailures.setState({}, true);
+  });
+
+  it("names the stage that failed to compile on its extension's row", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+
+    const note = await screen.findByText(/acme\.widget\.film/);
+    expect(note.textContent).toContain("failed to compile");
+    expect(note.textContent).toContain("syntax error");
+    expect(note.textContent).not.toContain("compilation errors");
+  });
+
+  it("drops the note once the stage is registered again changed", async () => {
+    registerProcessingStage(installed.id, { ...STAGE, glsl: "c *= 0.5;" });
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+
+    await screen.findByText("Widget", { exact: false });
+    expect(screen.queryByText(/acme\.widget\.film/)).toBeNull();
+  });
+});
+
+// A grid filter or sort that kept throwing is switched off and named on its
+// extension's row; unloading the extension forgets it.
+describe("ExtensionManagerPanel callback failures", () => {
+  const installed = {
+    id: "acme.search",
+    name: "Search",
+    version: "1.0.0",
+    main: "index.js",
+    repository: "acme/search",
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("safelightNative", { plugins: { list: async () => [installed] } });
+    useCallbackFailures.setState({ [installed.id]: { kind: "grid filter", error: "photo.exif is undefined" } }, true);
+  });
+
+  afterEach(() => {
+    useCallbackFailures.setState({}, true);
+  });
+
+  it("names the callback that was switched off on its extension's row", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+
+    const note = await screen.findByText(/grid filter/);
+    expect(note.textContent).toContain("photo.exif is undefined");
+  });
+
+  it("forgets the failure once the extension is unloaded", () => {
+    unregisterExtension(installed.id);
+    expect(useCallbackFailures.getState()[installed.id]).toBeUndefined();
+  });
+});
+
+// An extension whose activate threw or timed out is named on its row, with why.
+describe("ExtensionManagerPanel start failures", () => {
+  const installed = {
+    id: "acme.broken",
+    name: "Broken",
+    version: "1.0.0",
+    main: "index.js",
+    repository: "acme/broken",
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("safelightNative", { plugins: { list: async () => [installed] } });
+    useStartFailures.setState({ [installed.id]: { reason: "threw", message: "activate blew up" } }, true);
+  });
+
+  afterEach(() => {
+    useStartFailures.setState({}, true);
+  });
+
+  it("says on its row that the extension didn't start, and why", async () => {
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+
+    const note = await screen.findByText(/Didn't start/);
+    expect(note.textContent).toBe("Didn't start: activate blew up");
+    expect(note.className).toContain("text-danger");
+    expect(note.className).not.toContain("truncate");
+  });
+
+  it("says plainly that one which timed out took too long, without its id", async () => {
+    useStartFailures.setState(
+      { [installed.id]: { reason: "timed out", message: "acme.broken activate timed out after 10000 ms" } },
+      true,
+    );
+    const user = userEvent.setup();
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+
+    const note = await screen.findByText(/Didn't start/);
+    expect(note.textContent).toBe("Didn't start: it took too long to start.");
+  });
+
+  it("forgets the failure once the extension is unloaded", () => {
+    unregisterExtension(installed.id);
+    expect(useStartFailures.getState()[installed.id]).toBeUndefined();
+  });
+});
+
+// Turning off or removing an extension changes how the photos that use its
+// stages render and export, so the panel says how many before it goes ahead.
+describe("ExtensionManagerPanel photos that use an extension", () => {
+  const installed = {
+    id: "acme.grain",
+    name: "Grain",
+    version: "1.0.0",
+    main: "index.js",
+    repository: "acme/grain",
+  };
+  const STAGE: ProcessingStageContribution = {
+    id: "acme.grain.film",
+    name: "Film",
+    phase: "effects",
+    glsl: "c *= u_amount;",
+    uniforms: [{ key: "amount", glslType: "float", default: 0 }],
+  };
+  const uses = (id: string, amount: number): EditState => ({
+    photoId: id,
+    currentIndex: 0,
+    stack: [snapshot("Edit", {}, { "acme.grain.film.amount": amount })],
+  });
+
+  beforeEach(() => {
+    vi.stubGlobal("safelightNative", { plugins: { list: async () => [installed] } });
+    registerProcessingStage(installed.id, STAGE);
+    useDisabledExtensions.setState({ ids: [] });
+  });
+
+  afterEach(() => {
+    unregisterExtension(installed.id);
+    useCatalogStore.setState({ photos: [] });
+    setCatalogStorage(null);
+  });
+
+  const openInstalled = async (user: ReturnType<typeof userEvent.setup>) => {
+    mountStore();
+    await user.click(screen.getByRole("button", { name: "Installed" }));
+    return screen.findByRole("switch", { name: "Enable Grain" });
+  };
+
+  it("asks before disabling, with the count of photos that use it", async () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b"), photo("c")] });
+    installMemoryStorage(uses("a", 0.5), uses("b", 0.2), uses("c", 0));
+    const user = userEvent.setup();
+    await user.click(await openInstalled(user));
+
+    const ask = await screen.findByRole("dialog", { name: "Disable Grain" });
+    within(ask).getByText("2 photos use Grain. They'll render and export without it until it's enabled again.");
+    await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+    expect(useDisabledExtensions.getState().ids).not.toContain(installed.id);
+
+    await user.click(screen.getByRole("switch", { name: "Enable Grain" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Disable" }));
+    await waitFor(() => expect(useDisabledExtensions.getState().ids).toContain(installed.id));
+  });
+
+  it("counts a photo that uses it only inside a mask", async () => {
+    const masked: Mask = {
+      id: "m1",
+      name: "Sky",
+      visible: true,
+      invert: false,
+      opacity: 100,
+      adj: defaultMaskAdjustments(),
+      panels: [],
+      components: [{ id: "m1-c0", kind: "brush", mode: "add", invert: false, brush: { feather: 0.4, dabs: [] } }],
+      bag: { "acme.grain.film.amount": 0.5 },
+    };
+    useCatalogStore.setState({ photos: [photo("a")] });
+    installMemoryStorage({ photoId: "a", currentIndex: 0, stack: [snapshot("Edit", { masks: [masked] })] });
+    const user = userEvent.setup();
+    await user.click(await openInstalled(user));
+
+    const ask = await screen.findByRole("dialog");
+    within(ask).getByText("1 photo uses Grain. It'll render and export without it until it's enabled again.");
+    await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+  });
+
+  it("disables without asking when no photo uses it", async () => {
+    useCatalogStore.setState({ photos: [photo("c")] });
+    installMemoryStorage(uses("c", 0));
+    const user = userEvent.setup();
+    await user.click(await openInstalled(user));
+
+    await waitFor(() => expect(useDisabledExtensions.getState().ids).toContain(installed.id));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("asks before uninstalling, and keeps it when cancelled", async () => {
+    const uninstall = vi.fn(async () => {});
+    privilegedBridge = { ...privilegedBridge!, uninstall };
+    useCatalogStore.setState({ photos: [photo("a")] });
+    installMemoryStorage(uses("a", 0.5));
+    const user = userEvent.setup();
+    await openInstalled(user);
+    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+
+    const ask = await screen.findByRole("dialog", { name: "Uninstall Grain" });
+    within(ask).getByText("1 photo uses Grain. It'll render and export without it until it's installed again.");
+    expect(within(ask).getByRole("button", { name: "Uninstall" }).className).toContain("bg-danger");
+    await user.click(within(ask).getByRole("button", { name: "Cancel" }));
+    expect(uninstall).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Uninstall" }));
+    await waitFor(() => expect(uninstall).toHaveBeenCalledWith(installed.id));
+  });
+
+  it("asks before uninstalling one that is off, from the keys its stages left", async () => {
+    unregisterExtension(installed.id);
+    useDisabledExtensions.setState({ ids: [installed.id] });
+    const uninstall = vi.fn(async () => {});
+    privilegedBridge = { ...privilegedBridge!, uninstall };
+    useCatalogStore.setState({ photos: [photo("a"), photo("b"), photo("c")] });
+    installMemoryStorage(uses("a", 0.5), uses("b", 0), {
+      photoId: "c",
+      currentIndex: 0,
+      stack: [snapshot("Edit", {}, { "acme.grainy.film.amount": 0.5 })],
+    });
+    const user = userEvent.setup();
+    await openInstalled(user);
+    await user.click(screen.getByRole("button", { name: "Uninstall" }));
+
+    const ask = await screen.findByRole("dialog");
+    within(ask).getByText("2 photos use Grain. They'll render and export without it until it's installed again.");
+    await user.click(within(ask).getByRole("button", { name: "Cancel" }));
   });
 });

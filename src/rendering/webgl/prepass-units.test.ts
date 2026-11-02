@@ -22,8 +22,10 @@ describe("prepassUnits", () => {
     expect(prepassUnits(32, 4)).toEqual([8, 9, 10, 11, 5, ...from16To31]);
   });
 
-  it("counts no more stage textures than the four units the renderer binds them to", () => {
-    expect(prepassUnits(32, 6)).toEqual([8, 9, 10, 11, 5, ...from16To31]);
+  // The renderer binds at most four lut or dynamic textures, and the photo
+  // textures past PHOTO_TEX_UNITS right after them, so six units can be taken.
+  it("starts after every unit the stage textures took, past the first four too", () => {
+    expect(prepassUnits(32, 6)).toEqual([8, 9, 10, 11, 5, ...from16To31.slice(2)]);
   });
 
   it("stops below the context's combined unit count", () => {

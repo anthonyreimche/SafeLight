@@ -8,7 +8,6 @@ Where extension UI mounts in the app shell. For what goes inside, see [UI Compon
 |---|---|---|
 | Module | `registerModule` | A tab beside Library and Develop |
 | Panel | `registerPanel` | A dock rail in any module, or floating |
-| Stack panel | `registerPanel` with `slot` | The `develop-right` / `develop-left` stack |
 | Per-mask panel | `registerPanel` with `mask` | The Masking panel's **+ Adjust** menu |
 | Header accessory | `registerPanelHeaderAccessory` | Every panel's dock header |
 | Slot | `registerSlot` | A fixed region of core chrome |
@@ -48,8 +47,8 @@ interface PanelContribution {
   id: string;                 // globally unique, e.g. "my-ext.waveform"
   title: string;
   component: ComponentType;
-  slot?: "develop-right" | "develop-left" | "none"; // default "none"
-  order?: number;             // sort within slot (default 100)
+  slot?: "develop-right" | "develop-left" | "none"; // deprecated: ignored, panels live in the dock
+  order?: number;             // sort order (default 100)
   defaultDock?: {             // first placement; the View menu reopens it here
     module: ModuleId;         // "library", "develop" or a registered module
     direction: "left" | "right" | "bottom";
@@ -61,6 +60,7 @@ interface PanelContribution {
   allowBottomDock?: boolean;  // allow the bottom rail
   replaces?: readonly string[]; // old panel ids this one takes over
   onReset?: () => void;       // adds "Reset to defaults" to the header
+  owns?: readonly (keyof DevelopParams)[]; // what the preview-off eye hides
   headerAccessory?: ComponentType; // a control left of the title
   mask?: MaskPanelContribution;    // per-mask variant, see below
 }
@@ -75,6 +75,7 @@ Notes:
 - `onReset` should be one undoable action.
 - `replaces` is for a panel that moved, e.g. into another extension. Saved layouts naming an old id show this panel there once nothing else uses that id. Older builds ignore it, so no `minAppVersion` is needed.
 - A `headerAccessory` handles its own clicks. Clicks on a button in the header don't start a drag.
+- `owns` names the develop params your panel's effect is made of. While its preview-off eye is held, Develop draws the photo with them at their defaults, and the stored edit stays as it is. List every key the eye should hide, including another tool's that means nothing without yours: Transform lists the crop, since the crop is drawn in the transformed frame. A panel with `owns` gets the eye even without a stage of its own, and holding it leaves your extension's stage params alone; a panel without `owns` previews off by dropping all of them. Keys that aren't develop params are left out at registration, with a warning. Older builds ignore it.
 
 To replace a stock panel, register your own and ask users to disable the built-in one in the Extensions dialog.
 
@@ -166,6 +167,8 @@ interface SlotContribution {
 | `develop-detail` | The Detail panel's Noise Reduction area. **Replaces** the built-in sliders |
 
 `api.unregisterSlot(id)` removes a slot contribution, e.g. a denoiser's `develop-detail` controls when it is off, so the built-in sliders return.
+
+`components.Slot` draws a slot's components wherever your own UI puts it. Its `fallback` (3.2.0) shows while the slot is empty: the Detail extension draws the built-in noise sliders as the `develop-detail` fallback.
 
 ## Layouts (`registerLayout`)
 

@@ -9,6 +9,7 @@
 
 import { isSemver, isNewer, compareSemver } from "./semver";
 import { privilegedUpdates } from "@/native/privileged";
+import type { UpdateSupport } from "@/extensions/types";
 
 export const REPO = "anthonyreimche/SafeLight";
 const API_URL = `https://api.github.com/repos/${REPO}/releases?per_page=20`;
@@ -27,6 +28,8 @@ export interface UpdateInfo {
   tag: string;
   /** URL to the specific release page on GitHub. */
   releasesUrl: string;
+  /** The release's asset file names, for deciding what install to offer. */
+  assetNames: string[];
 }
 
 /** A single release entry for display in the release history list. */
@@ -37,6 +40,8 @@ export interface ReleaseEntry {
   releasesUrl: string;
   body: string;
   prerelease: boolean;
+  /** The release's asset file names, for deciding what install to offer. */
+  assetNames: string[];
 }
 
 /**
@@ -66,6 +71,7 @@ interface GHRelease {
   body: string | null;
   draft: boolean;
   prerelease: boolean;
+  assets?: { name?: unknown }[];
 }
 
 /**
@@ -75,6 +81,9 @@ interface GHRelease {
 function matchesChannel(release: GHRelease, channel: UpdateChannel): boolean {
   return channel === "all" || !release.prerelease;
 }
+
+const assetNames = (release: GHRelease): string[] =>
+  (release.assets ?? []).flatMap((a) => (typeof a?.name === "string" ? [a.name] : []));
 
 type FetchOutcome =
   | { ok: true; releases: GHRelease[] }
@@ -179,7 +188,12 @@ export async function checkForUpdateFull(
   return {
     kind: "update-available",
     currentVersion,
-    info: { version: latestVersion, tag: best.tag_name, releasesUrl: best.html_url },
+    info: {
+      version: latestVersion,
+      tag: best.tag_name,
+      releasesUrl: best.html_url,
+      assetNames: assetNames(best),
+    },
   };
 }
 
@@ -198,6 +212,7 @@ export async function fetchAllReleases(): Promise<ReleaseEntry[]> {
       releasesUrl: r.html_url,
       body: r.body ?? "",
       prerelease: r.prerelease,
+      assetNames: assetNames(r),
     }));
 }
 
@@ -210,6 +225,20 @@ export async function installVersion(tag: string): Promise<void> {
   const updates = privilegedUpdates();
   if (!updates) throw new Error("In-app install is only available in the desktop app.");
   await updates.install(REPO, tag);
+}
+
+/**
+ * What the banner can offer for `info` here: an in-app install or its release
+ * page. Anything that can't answer falls back to the release page.
+ */
+export async function updateSupportFor(info: Pick<UpdateInfo, "assetNames">): Promise<UpdateSupport> {
+  const support = privilegedUpdates()?.support;
+  if (!support) return "release-page";
+  try {
+    return await support(info.assetNames);
+  } catch {
+    return "release-page";
+  }
 }
 
 /**

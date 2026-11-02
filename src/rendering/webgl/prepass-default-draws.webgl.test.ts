@@ -63,3 +63,31 @@ describe("a { key, max } pass whose count defaults above 0", () => {
     expect(worstDifference(frameOf([counted(2)], { [`${ID}.n`]: 0 }), frameOf([], {}))).toBe(0);
   });
 });
+
+// A pass draws with a value the bag holds only when it fits the binding, else
+// with the default; its cached result is keyed by the same, so a bag value it
+// can't take changing to another it can't take redraws nothing.
+describe("a pass uniform the bag holds a value it can't take", () => {
+  const IDENTITY = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const MATRIX: ProcessingStageContribution = {
+    id: "unfit-matrix.test",
+    name: "Unfit matrix",
+    phase: "decode",
+    uniforms: [{ key: "on", glslType: "float", default: 0 }],
+    passes: [{ glsl: "c = m * vec3(0.25);", uniforms: [{ key: "m", glslType: "mat3", default: IDENTITY }] }],
+    glsl: "if (on > 0.5) lin = stageResult;",
+  };
+
+  it("keeps the result drawn with the default", () => {
+    withRenderer({ stages: [MATRIX], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+      renderer.setImage(SOURCE);
+      renderer.setParams(identityParams());
+      renderer.setContributedParams({ "unfit-matrix.test.on": 1, "unfit-matrix.test.m": [1, 2] });
+      renderer.render();
+      const before = renderer.renderDrawCounts.pass;
+      renderer.setContributedParams({ "unfit-matrix.test.on": 1, "unfit-matrix.test.m": [3, 4] });
+      renderer.render();
+      expect(renderer.renderDrawCounts.pass - before).toBe(0);
+    });
+  });
+});

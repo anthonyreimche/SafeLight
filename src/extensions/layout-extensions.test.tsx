@@ -10,12 +10,13 @@
 // the bundle import — an app:// URL jsdom cannot fetch — substituted, as in
 // loader.test.tsx.
 
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi, type Mock } from "vitest";
+import "./host";
+import { PROBE_BUILTIN_ID, installProbeBuiltin } from "./builtin.test-support";
 import type { ExtensionManifest, ExtensionModule, SafelightAPI } from "./types";
 import { useRegistry } from "./registry";
 import { useTrust } from "./trust";
 import { importPluginModule } from "./plugin-module";
-import { BUILTIN_EXTENSIONS } from "./builtin";
 import { noteExtensionRunning } from "./extension-kinds";
 import {
   initEnablement,
@@ -224,8 +225,8 @@ describe("a layout's extension switch", () => {
     await setExtensionEnabled("acme.tool", false);
     await setExtensionEnabled("acme.film", false);
     // Safelight's own that a layout never switches, seen running earlier.
-    for (const id of ["core", "core.accessibility", "core.devtools"]) noteExtensionRunning(id);
-    await setExtensionEnabled("core.devtools", false);
+    for (const id of ["core", "safelight.accessibility", "safelight.devtools"]) noteExtensionRunning(id);
+    await setExtensionEnabled("safelight.devtools", false);
     const id = addUserLayout("Culling");
     const disabledWrites = countDisabledWrites();
 
@@ -513,19 +514,37 @@ describe("turning an extension on and off", () => {
     expect(bundle.deactivate).toHaveBeenCalledTimes(bundle.activate.mock.calls.length);
   });
 
+  it("ends stopped when uninstalled while it is still starting", async () => {
+    const bundle = panelBundle("acme.tool");
+    const start = held(bundle);
+    install("acme.tool", start.mod);
+    useDisabledExtensions.setState({ ids: ["acme.tool"] });
+
+    const on = setExtensionEnabled("acme.tool", true);
+    await vi.waitFor(() => expect(importer).toHaveBeenCalled());
+    const gone = uninstallPlugin("acme.tool");
+    removeFromDisk("acme.tool");
+    start.open();
+    await Promise.all([on, gone]);
+
+    expect(running("acme.tool")).toBe(false);
+    expect(bundle.deactivate).toHaveBeenCalledTimes(bundle.activate.mock.calls.length);
+  });
+
   it("starts a built-in once when it is turned on twice", async () => {
-    const hsl = BUILTIN_EXTENSIONS.find((b) => b.id === "core.hsl")!;
-    const activate = vi.spyOn(hsl, "activate");
+    const probe = installProbeBuiltin();
+    const activate = vi.spyOn(probe.builtin, "activate");
     try {
-      useDisabledExtensions.setState({ ids: ["core.hsl"] });
+      useDisabledExtensions.setState({ ids: [PROBE_BUILTIN_ID] });
       await Promise.all([
-        setExtensionEnabled("core.hsl", true),
-        setExtensionEnabled("core.hsl", true),
+        setExtensionEnabled(PROBE_BUILTIN_ID, true),
+        setExtensionEnabled(PROBE_BUILTIN_ID, true),
       ]);
       expect(activate).toHaveBeenCalledTimes(1);
     } finally {
-      await setExtensionEnabled("core.hsl", false);
+      await setExtensionEnabled(PROBE_BUILTIN_ID, false);
       activate.mockRestore();
+      probe.remove();
     }
   });
 });
@@ -576,23 +595,24 @@ describe("turning an extension on or off elsewhere", () => {
 
 describe("the extensions a layout lists", () => {
   it("lists built-ins but the core and installed ones but banned, saying why a layout won't switch some", async () => {
+    const probe = installProbeBuiltin();
+    onTestFinished(probe.remove);
     install("acme.panel", panelBundle("acme.panel"));
     install("acme.film", stageBundle("acme.film"));
     install("acme.idle", panelBundle("acme.idle"));
     install("acme.banned", panelBundle("acme.banned"));
     useDisabledExtensions.setState({ ids: ["acme.idle"] });
     await loadExternalPlugins();
-    noteExtensionRunning("core.hsl");
+    noteExtensionRunning(PROBE_BUILTIN_ID);
     useTrust.setState({ list: { ...trustBefore, repos: ["acme/banned"] } });
 
     const choices = layoutExtensionChoices(installed);
     const hold = (id: string) => choices.find((c) => c.id === id)?.hold;
 
     expect(hold("acme.panel")).toBeNull();
-    expect(hold("core.hsl")).toBeNull();
+    expect(hold(PROBE_BUILTIN_ID)).toBeNull();
     expect(hold("acme.film")).toBe("pixels");
     expect(hold("acme.idle")).toBe("unseen");
-    expect(hold("core.accessibility")).toBe("kept");
     expect(choices.some((c) => c.id === "core" || c.id === "acme.banned")).toBe(false);
     const names = choices.map((c) => c.name);
     expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));

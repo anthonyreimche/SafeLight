@@ -27,6 +27,7 @@ import type {
 import { inputCls, labelCls } from "./SettingsFieldList";
 import { Select as CoreSelect, type SelectGroup, type SelectOption } from "@/ui/components/Select";
 import { Switch } from "@/ui/components/Switch";
+import { parseDecimal } from "@/ui/parse-decimal";
 
 // ── Buttons ──────────────────────────────────────────────────────────────────
 
@@ -132,8 +133,7 @@ export function NumberInput({
       type="number"
       value={value}
       onChange={(e) => {
-        if (e.target.value === "") return;
-        const n = Number(e.target.value);
+        const n = parseDecimal(e.target.value);
         if (Number.isFinite(n)) onChange(n);
       }}
       style={{ width, ...style }}
@@ -368,6 +368,12 @@ export const tokens = {
   accentHover: "var(--color-accent-hover)",
   sliderFill: "var(--color-slider-fill)",
   rating: "var(--color-rating)",
+  labelRed: "var(--color-label-red)",
+  labelYellow: "var(--color-label-yellow)",
+  labelGreen: "var(--color-label-green)",
+  labelBlue: "var(--color-label-blue)",
+  labelPurple: "var(--color-label-purple)",
+  white: "var(--color-white)",
   fontMono: "var(--font-mono)",
   fontCode: "var(--font-code)",
 } as const;

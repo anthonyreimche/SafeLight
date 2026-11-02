@@ -14,7 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";
 import type { DecodeFailure, RawFloatImage } from "@/raw/decode";
-import { rawPhoto } from "./raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
 const h = vi.hoisted(() => ({
   /** Every key the cache worker holds, previews and markers alike. */
@@ -58,8 +58,8 @@ vi.mock("@/raw/accept-decode", () => ({
     h.verdict ?? { use: true, cache: !decode.suspicious },
 }));
 
-vi.mock("@/modules/library/raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => h.preview,
   extractRawPreviewDecoded: async () => null,
 }));

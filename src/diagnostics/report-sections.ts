@@ -10,7 +10,7 @@
 
 import type { CatalogPhoto } from "@/catalog/types";
 import type { AppSettings } from "@/state/settings-store";
-import { getExtension } from "@/modules/library/raw-preview";
+import { getExtension } from "@/raw/raw-preview";
 import type { ErrorLogEntry } from "./error-log";
 
 export interface ReportCrash {
@@ -31,6 +31,8 @@ export interface WebGLInfo {
   renderer: string;
   glsl: string;
   maxTexture: number;
+  /** EXT_color_buffer_float: without it the render pipeline's intermediates are 8-bit. */
+  colorBufferFloat: boolean;
 }
 
 export interface EnvironmentFacts {
@@ -191,8 +193,11 @@ export function graphicsText(f: GraphicsFacts): string {
     lines.push(f.webgl.renderer);
     lines.push(`Vendor: ${f.webgl.vendor}`);
     lines.push(`${f.webgl.glsl} · max texture ${f.webgl.maxTexture}`);
+    if (!f.webgl.colorBufferFloat) {
+      lines.push("No float render targets: edits on this GPU are limited to 8-bit, 0–1 intermediates");
+    }
   } else {
-    lines.push("WebGL unavailable");
+    lines.push("WebGL2 unavailable");
   }
   if (f.gpuFeatures) {
     const off = Object.entries(f.gpuFeatures).filter(

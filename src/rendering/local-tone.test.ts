@@ -7,6 +7,7 @@
 // keeps a pixel's ratio to its surroundings.
 
 import { describe, expect, it } from "vitest";
+import { shippedProgram } from "./webgl/stock-program.test-support";
 import {
   LOCAL_TONE_GLSL,
   localToneBlend,
@@ -160,7 +161,7 @@ describe("the cost of the region base", () => {
     expect(LOCAL_TONE_GLSL).toContain("for (int i = 0; i < 4; i++)");
     expect(LOCAL_TONE_GLSL).toContain("for (int ring = 0; ring < 2; ring++)");
     expect(LOCAL_TONE_GLSL).toContain("for (int i = 0; i < 8; i++)");
-    const v2 = buildFragmentShader(null, undefined, V2_VARIANT);
+    const v2 = shippedProgram(V2_VARIANT);
     expect(v2.match(/\bslLocalToneBase\(/g)).toHaveLength(2);
   });
 });

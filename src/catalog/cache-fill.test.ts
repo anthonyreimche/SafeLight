@@ -31,19 +31,38 @@ const h = vi.hoisted(() => ({
   /** Writes, as [key, width, height, generation]. */
   writes: [] as [string, number, number, number][],
   marks: [] as [string, string, number][],
+  /** Whether the decode passes the photo over, as background work does one
+   *  being decoded already. */
+  passOver: false,
 }));
 
+// The decoder and the preview read the file whole unless handed its bytes, as
+// the real ones do; the decoder calls a reader it is handed only once it goes
+// ahead with the decode.
 vi.mock("@/raw/decode", () => ({
-  decodeRawToFloat: (file: Blob, request?: { background?: boolean; signal?: AbortSignal }) => {
+  decodeRawToFloat: async (
+    file: Blob,
+    request?: { background?: boolean; signal?: AbortSignal },
+    _path?: string,
+    bytes?: ArrayBuffer | (() => Promise<ArrayBuffer>),
+  ) => {
     h.decodes.push(request ?? {});
     h.decodedFiles.push(file instanceof File ? file.name : "");
+    if (h.passOver) return { failure: "transient", passedOver: true };
+    if (typeof bytes === "function") await bytes();
+    else if (!bytes) await file.arrayBuffer();
     return h.decodeResult();
   },
 }));
 
 vi.mock("@/raw/accept-decode", () => ({ acceptDecode: async () => h.verdict }));
 
-vi.mock("@/modules/library/raw-preview", () => ({ extractRawPreview: async () => null }));
+vi.mock("@/raw/raw-preview", () => ({
+  extractRawPreview: async (file: File, bytes?: ArrayBuffer) => {
+    if (!bytes) await file.arrayBuffer();
+    return null;
+  },
+}));
 
 vi.mock("@/raw/raw-cache", () => ({
   rawCacheKey: (rel: string, size: number, rot: number) => `${rel}:${size}:${rot}`,
@@ -71,7 +90,7 @@ vi.mock("@/state/catalog-store", () => ({
 }));
 
 import { completeCachedEntry, fillCacheEntry } from "./cache-fill";
-import { rawPhoto } from "@/modules/library/raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 import { onCacheEntryFilled, type FilledEntry } from "./cache-events";
 import { cutSourceSample } from "@/rendering/source-sample";
 
@@ -81,6 +100,7 @@ beforeEach(() => {
   h.decodes = [];
   h.decodedFiles = [];
   h.decodeResult = () => Promise.resolve(decoded());
+  h.passOver = false;
   h.verdict = { use: true, cache: true };
   h.takes = true;
   h.generation = 0;
@@ -189,6 +209,23 @@ describe("fillCacheEntry", () => {
     expect(await fillCacheEntry(rawPhoto("b.NEF"), 1)).toBe("nothing");
     expect(h.marks).toEqual([["a.NEF:64:0", "unsupported", 1], ["b.NEF:64:0", "suspicious", 1]]);
     expect(h.writes).toEqual([]);
+  });
+
+  // In Electron each arrayBuffer() copies the whole file, in the browser it
+  // reads it off the disk again.
+  it("reads the file whole once for the decode and the preview it is judged against", async () => {
+    const photo = rawPhoto("a.NEF");
+    const reads = vi.spyOn(await photo.fileHandle!.getFile(), "arrayBuffer");
+    expect(await fillCacheEntry(photo, 1)).toBe("taken");
+    expect(reads).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads nothing of a photo the decode passes over", async () => {
+    h.passOver = true;
+    const photo = rawPhoto("a.NEF");
+    const reads = vi.spyOn(await photo.fileHandle!.getFile(), "arrayBuffer");
+    expect(await fillCacheEntry(photo, 1)).toBe("nothing");
+    expect(reads).not.toHaveBeenCalled();
   });
 
   it("does nothing for a photo without a file", async () => {

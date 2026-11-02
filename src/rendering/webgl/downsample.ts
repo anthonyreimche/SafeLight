@@ -14,16 +14,8 @@
 
 import type { StageSpace } from "@/extensions/types";
 import { STAGE_SPACE_GLSL } from "../stage-space";
-import {
-  PASS_PRELUDE,
-  SCRATCH_UNIT,
-  allocateChecked,
-  createProgramPair,
-  ranOutOfMemory,
-  releaseTarget,
-  targetFormat,
-  type ColourTarget,
-} from "./export-draw";
+import { PASS_PRELUDE, createProgramPair, targetFormat } from "./export-draw";
+import { SCRATCH_UNIT, allocateChecked, ranOutOfMemory, releaseTarget, type ColourTarget } from "./gl-resources";
 
 interface Size {
   w: number;

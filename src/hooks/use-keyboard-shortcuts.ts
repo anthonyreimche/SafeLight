@@ -5,7 +5,7 @@
 
 // Global shortcut handler. All combos come from the rebindable keybindings
 // store (Preferences ▸ Shortcuts). Library-scoped culling shortcuts live in
-// use-culling-shortcuts.ts, mounted only by LibraryView.
+// use-culling-shortcuts.ts, mounted by the Library module's view.
 
 import { useEffect } from "react";
 import { useUIStore } from "@/state/ui-store";
@@ -13,6 +13,7 @@ import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { usesSignedOutput } from "@/catalog/types";
 import { toggleDockSide, toggleDockVisibility } from "@/extensions/dock";
+import { hasModule } from "@/extensions/registry";
 import { getSettings, stepCanvasSurround } from "@/state/settings-store";
 import { detachedModule } from "@/state/detach";
 import {
@@ -28,13 +29,25 @@ import { moveActivePhoto } from "@/modules/library/photo-navigation";
 import { cullingShortcutsMounted } from "@/modules/library/use-culling-shortcuts";
 import { viewportZoomCommands } from "@/state/viewport-zoom-commands";
 import { useProjectStore } from "@/project/project-store";
-import { togglePreferences } from "@/ui/components/PreferencesDialog";
-import { toggleExtensions } from "@/ui/components/ExtensionsDialog";
+import { togglePreferences } from "@/ui/preferences/preferences-store";
+import { toggleExtensions } from "@/ui/components/extensions-dialog-store";
 import { toggleReportIssue } from "@/ui/components/report-issue-store";
 import { popEscapeHandler } from "@/ui/escape-stack";
+import { usePickDragStore } from "@/modules/develop/pick-drag";
+import { canvasToolAction, escapeCanvasTool } from "@/modules/develop/canvas-tool";
 
-const clampSize = (v: number, lo: number, hi: number) =>
-  Math.max(lo, Math.min(hi, Number(v.toFixed(3))));
+/** Actions only the held canvas tool acts on (canvas-tool.ts onAction). */
+const CANVAS_TOOL_ACTIONS: ReadonlySet<string> = new Set([
+  "brush.smaller",
+  "brush.larger",
+  "brush.featherDown",
+  "brush.featherUp",
+  "brush.opacityDown",
+  "brush.opacityUp",
+  "brush.flowDown",
+  "brush.flowUp",
+  "mask.delete",
+]);
 
 // Single-letter bindings for these are gated by the singleKeyShortcuts pref.
 const GATED = new Set(["module.library", "module.develop", "view.fullscreen"]);
@@ -50,36 +63,23 @@ export function useKeyboardShortcuts() {
       // develop tool mode (the panel "Done" buttons). Runs before the editable-
       // target gate so it still closes a dialog from a focused field; when there
       // is nothing to exit it doesn't consume the key (so a rename input's own
-      // Esc-to-cancel still works).
+      // Esc-to-cancel still works). A field that marks itself data-own-escape
+      // (the slider's value field) keeps Esc for its own revert, even when
+      // something is open to exit.
       if (e.key === "Escape") {
+        if (e.target instanceof Element && e.target.closest("[data-own-escape]")) return;
         if (popEscapeHandler()) {
           e.preventDefault();
           return;
         }
-        const d = useDevelopStore.getState();
-        if (d.cropping) {
+        if (escapeCanvasTool()) {
+          // An extension's on-image tool (crop mode, Guided Upright's lines, the
+          // heal and mask tools).
           e.preventDefault();
-          d.setCropping(false);
-        } else if (d.wbPicking) {
+        } else if (usePickDragStore.getState().held) {
+          // An extension's on-image pick tool (White Balance's eyedropper, HSL's target).
           e.preventDefault();
-          d.setWbPicking(false);
-        } else if (d.params.uprightMode === "guided" && d.guidedEditing) {
-          // Close the guided drawing overlay but keep guided as the active mode.
-          e.preventDefault();
-          d.setGuidedEditing(false);
-        } else if (d.activeTool !== "none") {
-          e.preventDefault();
-          d.setActiveTool("none");
-          // Leaving the Heal tool also drops the selected spot, mirroring the
-          // panel's "Done" button (which deselects so the list collapses).
-          d.selectSpot(null);
-        } else if (d.selectedMaskId || d.selectedComponentId) {
-          // Tool already exited but a mask is still selected: a second Esc clears
-          // the selection, collapsing the mask editor and coverage overlay.
-          e.preventDefault();
-          d.selectMask(null);
-          d.selectComponent(null);
-          d.setHoveredMaskId(null);
+          usePickDragStore.setState({ held: null });
         }
         return;
       }
@@ -135,19 +135,6 @@ export function useKeyboardShortcuts() {
           }
           return;
         }
-
-        const flip = matchAction(e, ["Develop"]);
-        if (flip === "photo.flipH" || flip === "photo.flipV") {
-          e.preventDefault();
-          const dev = useDevelopStore.getState();
-          const axis = flip === "photo.flipH" ? "flipH" : "flipV";
-          dev.setParam("transform", {
-            ...dev.params.transform,
-            [axis]: !dev.params.transform[axis],
-          });
-          dev.commitEdit(flip === "photo.flipH" ? "Flip horizontal" : "Flip vertical");
-          return;
-        }
       }
 
       const action =
@@ -168,22 +155,19 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // The canvas tool an extension holds (the heal and mask brushes) takes the
+      // actions it handles ahead of core. The brush and mask actions are only
+      // ever a tool's: with none to take one, the key goes through.
+      if (inDevelop && canvasToolAction(action)) {
+        e.preventDefault();
+        return;
+      }
+      if (CANVAS_TOOL_ACTIONS.has(action)) return;
+
       const ds = useDevelopStore.getState();
       // Tool-scoped Develop actions only fire while their mode is active; when
       // it isn't, let the key through instead of swallowing it.
       const modeActive: Record<string, boolean> = {
-        "mask.delete":
-          ds.activeTool === "mask" &&
-          !!ds.selectedMaskId &&
-          !!ds.selectedComponentId,
-        "brush.featherDown": ds.activeTool === "mask",
-        "brush.featherUp": ds.activeTool === "mask",
-        "brush.opacityDown": ds.activeTool === "mask",
-        "brush.opacityUp": ds.activeTool === "mask",
-        "brush.flowDown": ds.activeTool === "mask",
-        "brush.flowUp": ds.activeTool === "mask",
-        "crop.cycleGuide": ds.cropping,
-        "crop.flipGuide": ds.cropping,
         // Only a photo with the version 3 output stage has a proof, as with the
         // Proof button; on any other the key stays untouched and so does the flag.
         "develop.toggleProof": usesSignedOutput(ds.params),
@@ -220,10 +204,10 @@ export function useKeyboardShortcuts() {
           break;
         }
         case "module.library":
-          setActiveModule("library");
+          if (hasModule("library")) setActiveModule("library");
           break;
         case "module.develop":
-          setActiveModule("develop");
+          if (hasModule("develop")) setActiveModule("develop");
           break;
         case "panels.toggle":
           // Hide/show every dock panel; positions are restored exactly.
@@ -261,51 +245,6 @@ export function useKeyboardShortcuts() {
           break;
         case "develop.zoom100":
           viewportZoomCommands()?.zoom100();
-          break;
-        case "brush.smaller":
-        case "brush.larger": {
-          // Shrink/grow the active brush, Lightroom-style.
-          const dir = action === "brush.larger" ? 1 : -1;
-          if (ds.activeTool === "mask" && ds.maskToolType === "brush") {
-            ds.setBrushSize(clampSize(ds.brushSize + dir * 0.01, 0.01, 0.5));
-          } else if (ds.activeTool === "retouch") {
-            ds.setRetouchSize(clampSize(ds.retouchSize + dir * 0.005, 0.01, 0.3));
-          }
-          break;
-        }
-        case "brush.featherDown":
-        case "brush.featherUp": {
-          // Adjust the mask brush's feather in 0.05 steps (0..1).
-          const dir = action === "brush.featherUp" ? 1 : -1;
-          const next = Math.round((ds.brushFeather + dir * 0.05) * 100) / 100;
-          ds.setBrushFeather(Math.max(0, Math.min(1, next)));
-          break;
-        }
-        case "brush.opacityDown":
-        case "brush.opacityUp": {
-          // Adjust the mask brush's coverage ceiling in 0.1 steps (0.01..1).
-          const dir = action === "brush.opacityUp" ? 1 : -1;
-          const next = Math.round((ds.brushOpacity + dir * 0.1) * 100) / 100;
-          ds.setBrushOpacity(Math.max(0.01, Math.min(1, next)));
-          break;
-        }
-        case "brush.flowDown":
-        case "brush.flowUp": {
-          // Adjust the mask brush's per-dab flow in 0.1 steps (0.01..1).
-          const dir = action === "brush.flowUp" ? 1 : -1;
-          const next = Math.round((ds.brushFlow + dir * 0.1) * 100) / 100;
-          ds.setBrushFlow(Math.max(0.01, Math.min(1, next)));
-          break;
-        }
-        case "mask.delete":
-          ds.removeComponent(ds.selectedMaskId!, ds.selectedComponentId!);
-          ds.commitEdit("Delete Component");
-          break;
-        case "crop.cycleGuide":
-          ds.cycleCropGuide();
-          break;
-        case "crop.flipGuide":
-          ds.cycleCropGuideFlip();
           break;
         case "develop.toggleClipping":
           ds.toggleClipping();

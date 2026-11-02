@@ -8,6 +8,7 @@ import type { HistogramData } from "@/rendering/histogram";
 import type { ClippingMask } from "@/state/develop-slices/view-slice";
 import { channelHex, channelRgba } from "./channel-colors";
 import { reducedMotion } from "@/ui/reduced-motion";
+import { useDevicePixelRatio } from "@/ui/use-device-pixel-ratio";
 
 type Mode = "luma" | "rgb" | "red" | "green" | "blue";
 
@@ -109,18 +110,19 @@ export function Histogram({
   } | null>(null);
   const targetRef = useRef<HistogramData | null>(null);
   const animRef = useRef<number | null>(null);
-  const prevSizeRef = useRef({ w: 0, h: 0 });
+  const prevSizeRef = useRef({ w: 0, h: 0, dpr: 0 });
+  const dpr = useDevicePixelRatio();
 
   const LERP_RATE = 0.35;
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    if (prevSizeRef.current.w !== width || prevSizeRef.current.h !== H) {
+    const prev = prevSizeRef.current;
+    if (prev.w !== width || prev.h !== H || prev.dpr !== dpr) {
       canvas.width = width * dpr;
       canvas.height = H * dpr;
-      prevSizeRef.current = { w: width, h: H };
+      prevSizeRef.current = { w: width, h: H, dpr };
     }
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -138,7 +140,7 @@ export function Histogram({
     };
     drawHistogram(ctx, width, H, snap, mode, interactive, hoverZone, showClipping,
       clip?.clipLow, clip?.clipHigh);
-  }, [width, mode, interactive, hoverZone, showClipping]);
+  }, [width, dpr, mode, interactive, hoverZone, showClipping]);
 
   // When new data arrives, set it as the animation target.
   useEffect(() => {

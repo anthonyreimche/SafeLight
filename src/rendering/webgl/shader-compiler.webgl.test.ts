@@ -3,30 +3,19 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The compiler that turns extension contributions into GLSL. Its whole job is
-// to let mutually unaware extensions share one program, so the assertions here
-// are about namespacing, ordering, and what happens when a contribution is
-// wrong — each checked against a driver, not against expected source text.
+// The namespacing that lets mutually unaware extensions share one program, and
+// what the renderer does when a contribution is wrong, checked against a driver.
 
 import { describe, expect, it } from "vitest";
 import type { ProcessingStageContribution } from "@/extensions/types";
 import {
-  compileShaderSource,
-  compilerSignature,
   emitUniformDecl,
   extractHelperNames,
   helperPrefix,
   replaceIdentifiers,
-  simpleHash,
   uniformPrefix,
 } from "./shader-compiler";
-import {
-  buildProgram,
-  builtinStages,
-  glHarness,
-  releaseProgram,
-  rendererBuildError,
-} from "./webgl.test-support";
+import { builtinStages, rendererBuildError } from "./webgl.test-support";
 
 const GLOW: ProcessingStageContribution = {
   id: "acme.glow",
@@ -57,14 +46,6 @@ const MALFORMED: ProcessingStageContribution = {
   glsl: `color = neverDeclared(color) * missingUniform;`,
   uniforms: [],
 };
-
-function compiles(stages: ProcessingStageContribution[]): string | null {
-  const { gl } = glHarness();
-  const source = compileShaderSource(stages);
-  const build = buildProgram(gl, source.vertexSource, source.fragmentSource);
-  releaseProgram(gl, build);
-  return build.error;
-}
 
 describe("identifier rewriting", () => {
   it("rewrites whole identifiers only", () => {
@@ -101,97 +82,7 @@ mat3 three() { return mat3(1.0); }`),
   });
 });
 
-describe("compileShaderSource", () => {
-  it("compiles with no stages", () => {
-    expect(compiles([])).toBeNull();
-  });
-
-  it("compiles a stage's uniforms, helpers and body", () => {
-    expect(compiles([GLOW])).toBeNull();
-  });
-
-  it("compiles two stages that share a uniform key and a helper name", () => {
-    expect(compiles([GLOW, FADE])).toBeNull();
-  });
-
-  it("maps each qualified key to its namespaced uniform", () => {
-    const source = compileShaderSource([GLOW, FADE]);
-    const glow = source.uniformNameMap.get("acme.glow.amount");
-    const fade = source.uniformNameMap.get("other.fade.amount");
-    expect(glow).toBe(`${uniformPrefix(GLOW.id)}amount`);
-    expect(fade).toBe(`${uniformPrefix(FADE.id)}amount`);
-    expect(glow).not.toBe(fade);
-    expect(source.uniformTypes.get(glow!)).toBe("float");
-    expect(source.defaults.get("other.fade.amount")).toBe(0.25);
-  });
-
-  it("orders stages by phase, then by priority", () => {
-    const late: ProcessingStageContribution = { ...GLOW, id: "acme.late", priority: 90 };
-    // FADE is scene-linear (earlier phase) despite GLOW's lower priority number.
-    expect(compileShaderSource([GLOW, late, FADE]).stageIds).toEqual([
-      "other.fade",
-      "acme.glow",
-      "acme.late",
-    ]);
-  });
-
-  // The same sort the injection orders by, so the two can't disagree
-  // (stage-injection.test.tsx pins that, and stage-order.test.ts the sort).
-  it("places a stage after the stage it names, against its priority", () => {
-    const base: ProcessingStageContribution = { ...GLOW, id: "acme.base", priority: 90 };
-    const late: ProcessingStageContribution = {
-      ...GLOW,
-      id: "acme.late",
-      priority: 10,
-      after: ["acme.base"],
-    };
-    expect(compileShaderSource([late, base]).stageIds).toEqual(["acme.base", "acme.late"]);
-    expect(compiles([late, base])).toBeNull();
-  });
-
-  it("compiles a produced inter-stage variable read by a later stage", () => {
-    const producer: ProcessingStageContribution = {
-      id: "acme.producer",
-      name: "Producer",
-      phase: "scene-linear",
-      glsl: `color = max(color, 0.0);`,
-      uniforms: [],
-      produces: [{ name: "sceneLuma", glslType: "float", producer: "luma(color)" }],
-    };
-    const consumer: ProcessingStageContribution = {
-      id: "acme.consumer",
-      name: "Consumer",
-      phase: "effects",
-      glsl: `color *= 1.0 + sceneLuma * 0.0;`,
-      uniforms: [],
-      consumes: ["sceneLuma"],
-    };
-    const source = compileShaderSource([producer, consumer]);
-    expect(source.fragmentSource).toContain("isv_sceneLuma");
-    expect(compiles([producer, consumer])).toBeNull();
-  });
-
-  it("keys the signature on the stage set and its GLSL", () => {
-    expect(compilerSignature([GLOW, FADE])).toBe(compilerSignature([GLOW, FADE]));
-    expect(compilerSignature([GLOW])).not.toBe(
-      compilerSignature([{ ...GLOW, glsl: `${GLOW.glsl} // edited` }]),
-    );
-    expect(simpleHash("a")).not.toBe(simpleHash("b"));
-  });
-});
-
 describe("a malformed contribution", () => {
-  it("fails to compile, with the driver's diagnostic", () => {
-    const error = compiles([MALFORMED]);
-    expect(error).not.toBeNull();
-    expect(error).toContain("neverDeclared");
-  });
-
-  it("leaves the stage-free program compiling afterwards", () => {
-    compiles([MALFORMED]);
-    expect(compiles([])).toBeNull();
-  });
-
   it("is reported by the renderer rather than swallowed", () => {
     expect(rendererBuildError({ stages: [{ ...MALFORMED, glsl: `c = neverDeclared(c);` }] }))
       .toContain("neverDeclared");
