@@ -6,7 +6,7 @@
 // The zoom quartet routes through the central rebindable-shortcut handler to
 // whichever viewport is currently registered; with no viewport mounted the
 // combos must fall through untouched (no preventDefault) so nothing swallows
-// keys in modules without an image on screen. The later blocks characterise
+// keys in modules without an image on screen. The later blocks characterize
 // the rest of the handler: the Esc chain, Develop's arrow keys and rotate next
 // to a culling surface, the single-key preference, and tool-scoped mask.delete.
 

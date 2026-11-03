@@ -90,7 +90,7 @@ export function Select({
   ariaLabel,
   title,
 }: SelectProps) {
-  // Normalise once, defensively: a caller (often an extension's `select`
+  // Normalize once, defensively: a caller (often an extension's `select`
   // settings field) can hand us a group with missing `items` or a nullish
   // option. A single bad entry must never throw here — a crash during render
   // tears down the subtree and can strand a global listener's effect cleanup,

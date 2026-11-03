@@ -127,7 +127,7 @@ export type UpdateSupport = "install" | "release-page";
  *  can't take silent captures of the whole window. */
 export interface NativeCaptureBridge {
   /** The sender window as PNG bytes, long edge at most 1920 px; null when the
-   *  window can't be captured (minimised, some Wayland setups). */
+   *  window can't be captured (minimized, some Wayland setups). */
   page(): Promise<Uint8Array<ArrayBuffer> | null>;
 }
 
@@ -142,24 +142,34 @@ export interface NativeCrashRecord {
   name?: string;
 }
 
-/** How Safelight draws on Linux, where the graphics backend is picked before
- *  the window exists and a change applies at the next start. */
+/** How Safelight draws. The graphics backend is picked before the window
+ *  exists, so a change applies at the next start. */
 export interface NativeGpuBackendState {
   /** This launch draws in software (SwiftShader) instead of on the graphics card. */
   software: boolean;
   /** The next launch will draw in software. */
   nextSoftware: boolean;
-  /** Why the next launch draws in software: the user turned it on ("chosen"),
+  /** Why the next launch draws in software: the user picked it ("chosen"),
    *  or the graphics card failed. Null when it uses the graphics card. */
   reason: "chosen" | "webgl2-unavailable" | "gpu-crashes" | "renderer-failed" | null;
+  /** The ANGLE backend this launch draws with ("gl", "d3d11", "swiftshader", …). */
+  backend: string;
+  /** The backend the next launch starts on. */
+  next: string;
+  /** The backend the user picked, or null for Automatic. */
+  choice: string | null;
+  /** This platform's backends, in the order Automatic tries them. */
+  backends: string[];
 }
 
-/** Preferences ▸ Rendering ▸ Software rendering. Privileged so extensions
+/** Preferences ▸ Rendering ▸ Graphics backend. Privileged so extensions
  *  can't change how every later launch draws. */
 export interface NativeGpuBridge {
   /** Null when the main process reports no backend (a build without the GPU ladder). */
   backend(): Promise<NativeGpuBackendState | null>;
   setSoftware(on: boolean): Promise<NativeGpuBackendState | null>;
+  /** Pins one of `backends` for later launches; null goes back to Automatic. */
+  setBackend(choice: string | null): Promise<NativeGpuBackendState | null>;
   /** The develop renderer couldn't start on this launch's graphics backend
    *  however often it tried: the next launch draws in software. */
   rendererFailed(detail: string): Promise<NativeGpuBackendState | null>;
@@ -226,7 +236,7 @@ declare global {
       /** GitHub repo metadata + README proxy for the Extensions store detail view.
        *  Optional: absent in the plain-browser build and older Electron builds. */
       github?: {
-        /** Normalised repo metadata for "owner/repo". */
+        /** Normalized repo metadata for "owner/repo". */
         repoMeta(repo: string): Promise<ExtensionRepoMeta>;
         /** Raw README text for "owner/repo" at `ref`, or null if none exists. */
         readme(repo: string, ref?: string): Promise<string | null>;

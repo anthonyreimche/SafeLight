@@ -65,7 +65,7 @@ async function pageBitmap(buffer: ArrayBuffer, page: UTIF.IFD): Promise<ImageBit
   const height = page.height;
   if (!width || !height) return null;
 
-  // toRGBA8 normalises any bit-depth/photometric (incl. 16-bit, CMYK, YCbCr)
+  // toRGBA8 normalizes any bit-depth/photometric (incl. 16-bit, CMYK, YCbCr)
   // down to 8-bit RGBA, ready for ImageData.
   const rgba = UTIF.toRGBA8(page);
   const expected = width * height * 4;

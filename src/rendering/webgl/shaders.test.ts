@@ -61,7 +61,7 @@ describe("the version 2 program", () => {
     expect(v2).toContain("return slEncodePerceptual(lin);");
   });
 
-  // Basic's, the Tone Curve's, HSL's and Color Grading's guards are their
+  // Basic's, the Tone Curve's, HSL's and Colour Grading's guards are their
   // extensions' text (essential-stages.fixtures.ts).
 
   it("leaves version 1 without any of it", () => {

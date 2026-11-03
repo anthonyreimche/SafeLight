@@ -230,7 +230,7 @@ const readIfThere = (fs: Bridge, path: string) =>
  *  missing), so writeable edits made since the last spell aren't shadowed by a
  *  stale copy; always (re)writes the `.seeded` marker so the next writeable open
  *  knows to promote. Best-effort: on any failure the separate just starts empty
- *  (the pre-seed behavior), except that a catalog that can't be read right now
+ *  (the pre-seed behaviour), except that a catalog that can't be read right now
  *  fails the open (CatalogUnreadableError, see readIfThere). */
 async function seedExternalCatalog(
   fs: Bridge,

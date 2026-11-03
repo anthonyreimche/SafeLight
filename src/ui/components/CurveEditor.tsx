@@ -100,7 +100,7 @@ export function CurveEditor({
     return () => ro.disconnect();
   }, []);
 
-  // Redraw whenever the active curve, channel color, size, selection or focus change.
+  // Redraw whenever the active curve, channel colour, size, selection or focus change.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -452,7 +452,7 @@ function draw(
   ctx.lineTo(PAD + plot, PAD);
   ctx.stroke();
 
-  // Curve, in the channel's color.
+  // Curve, in the channel's colour.
   const evaluate = makeCurveEvaluator(points);
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
@@ -490,7 +490,7 @@ function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-// Points stay between their neighbors; an endpoint's outer bound is the plot
+// Points stay between their neighbours; an endpoint's outer bound is the plot
 // edge, so the black point can slide right and the white point left.
 function clampPointX(points: CurvePoint[], i: number, x: number): number {
   const lo = i === 0 ? 0 : points[i - 1].x + 0.001;

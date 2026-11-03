@@ -75,14 +75,14 @@ store/registry. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 ## For extension authors
 
 - Publish your extension in your own repository, tagged `safelight-extension`, with a
-  valid `safelight.json`. It is your work under your own license.
+  valid `safelight.json`. It is your work under your own licence.
 - Shared variables (`api.variables`) can be read and written by every installed extension
   and by Developer Tools, so keep secrets and anything private out of them.
 - To request a Verified badge, or to report or **appeal** a ban, see the
   [registry README](https://github.com/anthonyreimche/safelight-registry).
 - Listing, verification, and removal are at the maintainer's discretion. The store
   surfaces public GitHub repos; Safelight may decline or remove a listing, and ban
-  reasons reflect the registry's good-faith assessment of observed behavior.
+  reasons reflect the registry's good-faith assessment of observed behaviour.
 
 ## Reporting a malicious extension
 

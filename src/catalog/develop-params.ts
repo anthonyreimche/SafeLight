@@ -155,7 +155,7 @@ export interface LinearMaskGeo {
   y1: number;
 }
 
-// Radial geometry in source-UV: center + per-axis radii (so it stays round on
+// Radial geometry in source-UV: centre + per-axis radii (so it stays round on
 // screen regardless of image aspect) + edge feather (0..1 of the radius).
 export interface RadialMaskGeo {
   cx: number;
@@ -241,9 +241,9 @@ export interface RetouchSpot {
   shape: "circle" | "brush";
   mode: "heal" | "clone";
   visible: boolean;
-  dstX: number; // destination center / anchor (source-UV)
+  dstX: number; // destination centre / anchor (source-UV)
   dstY: number;
-  srcX: number; // sample source center / anchor (source-UV)
+  srcX: number; // sample source centre / anchor (source-UV)
   srcY: number;
   radius: number; // image-height units (circle radius; brush draw radius)
   feather: number; // 0..100
@@ -279,9 +279,9 @@ export interface DevelopParams {
   luminanceNRContrast: number; // 0..100 luminance contrast preservation
   luminanceNRShadows: number;    // 0..100 extra NR weight in shadows
   luminanceNRHighlights: number; // 0..100 reduce NR weight in highlights
-  colorNR: number;           // 0..100 color (chroma) noise reduction
-  colorNRDetail: number;     // 0..100 color detail preservation
-  colorNRSmoothness: number; // 0..100 color smoothness
+  colorNR: number;           // 0..100 colour (chroma) noise reduction
+  colorNRDetail: number;     // 0..100 colour detail preservation
+  colorNRSmoothness: number; // 0..100 colour smoothness
   vibrance: number;
   saturation: number;
   temperature: number;

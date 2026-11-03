@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Repo metadata and README text for the Extensions detail view. Runs in the
-// main process to bypass the renderer CSP, and returns a normalised subset so
+// main process to bypass the renderer CSP, and returns a normalized subset so
 // the raw GitHub payload (or its many embedded URLs) never reaches the renderer.
 
 const { validRepo } = require("../window-policy.cjs");

@@ -114,7 +114,7 @@ Treat it as read-only. Core writes through its own `updateSettings`, which saves
 | Catalog | `catalogLocation` (`"in-folder"` or `"external"`), `externalCatalogDir` |
 | Previews, cache | `previewSource`, `thumbMaxEdge`, `persistPreviews`, `rawCacheEnabled`, `rawCachePrefetch`, `rawCacheMaxEdge` |
 | Develop | `developMaxEdge`, `gpuSourceCacheBytes`, `developPrefetchNeighbors`, `highBitDepth`, `liveHistogram`, `developOpenZoom` |
-| Export | `exportFormat`, `exportQuality`, `exportLongEdge`, `exportBundle`, `exportColorSpace`, `exportTiffBitDepth`, `exportPngBitDepth`, `exportIncludeMetadata`, `exportIncludeLocation`, `exportPresets` |
+| Export | `exportFormat`, `exportQuality`, `exportLongEdge`, `exportBundle`, `exportColorSpace`, `exportTiffBitDepth`, `exportPngBitDepth`, `exportIncludeMetadata`, `exportIncludeLocation`, `exportIfExists` (`"number"` or `"replace"`), `exportPresets` |
 | Other | `singleKeyShortcuts`, `extensionTopic`, `checkExtensionUpdates`, `autoUpdateExtensions`, `onlyVerifiedExtensions`, `extensionsMaximized`, `checkForUpdates`, `updateChannel` |
 
 ## Masks (the develop store's mask edits)
@@ -262,6 +262,8 @@ exportPhotos(
 - Export processors don't run for a render started from inside them, or for a photo another batch is rendering at the same time.
 - Pass `signal` to stop a batch. It is checked before each photo, so the photo in flight finishes. `renderPhotos` then returns only the photos it reached. `exportPhotos` returns `cancelled: true` and the count it exported; a ZIP in progress is delivered with what it holds.
 - `exportPhotos` also stops on its own, with `stopped` set to the reason (`"the disk is full"`), when a write fails in a way every later write would too: a full disk or a read-only folder. A refusal that one locked file also gives (`EPERM`, `EACCES`, a withdrawn folder grant) stops it only when the same refusal comes twice in a row; a successful write in between starts the count again. Photos after that are not rendered. A failure that belongs to one file is listed in `failures` and the batch goes on. `exportStatus(result)` words either ending for the user.
+- `delivery: "folder"` never writes over a file without being asked. With `ifExists: "number"` (the default), a name already in the folder, in any case or Unicode form, gets the next free `"name (2).ext"`. Each name is checked again right before its write, so a file another batch or app wrote since is safe too. `ifExists: "replace"` writes over a file of the same name, but never the original of a photo in the catalog: that one still gets a number. Leave `ifExists` out and the user's Preference decides (3.2.0).
+- `withoutStages` counts the exported photos drawn without an extension stage whose shader failed to build during the batch, so its effect is missing from them. `exportStatus(result)` says so (3.2.0).
 - `delivery: "files"` hands each file to the browser's download, which can't report a cancelled Save dialog. Those files count as exported once handed over.
 
 ## `api.catalog`

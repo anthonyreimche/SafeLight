@@ -5,7 +5,7 @@
 
 // Layout presets (the Layout menu) and the user's own saved layouts. The active
 // choice is a global preference: "custom" = the user's own saved per-module
-// arrangement (historic behavior); any other id = a registered
+// arrangement (historic behaviour); any other id = a registered
 // LayoutContribution applied on top of the registry defaults. Editing the dock
 // while a preset is active flips back to Custom, with the edited state becoming
 // the new custom layout.

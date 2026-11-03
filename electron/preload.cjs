@@ -83,6 +83,7 @@ const privileged = {
   gpu: {
     backend: () => ipcRenderer.invoke("gpu:backend"),
     setSoftware: (on) => ipcRenderer.invoke("gpu:setSoftware", !!on),
+    setBackend: (choice) => ipcRenderer.invoke("gpu:setBackend", typeof choice === "string" ? choice : null),
     rendererFailed: (detail) => ipcRenderer.invoke("gpu:rendererFailed", String(detail)),
   },
   // A photo or folder the OS asked Safelight to open. Privileged: the target

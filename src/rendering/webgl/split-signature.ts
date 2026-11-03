@@ -92,9 +92,9 @@ function feedingParams(params: DevelopParams, cut: SplitCut): [string, unknown][
   return feedingFields(params, cut).map(([k, v]) => [k, k === "masks" ? masks : v]);
 }
 
-// Serialised text by value. Callers replace a field, and each mask, on change and
+// Serialized text by value. Callers replace a field, and each mask, on change and
 // never mutate one in place, so a slider tick that replaced the params object
-// serialises only the fields it replaced, and a mask edit only that mask.
+// serializes only the fields it replaced, and a mask edit only that mask.
 const keyTexts = new Map<string, string>();
 const entryTexts = new Map<string, WeakMap<object, string>>();
 const maskTexts: Record<StageDomain, WeakMap<Mask, string>> = { scene: new WeakMap(), display: new WeakMap() };
@@ -205,13 +205,13 @@ interface SplitMemo {
 }
 
 /** Per-stage stand-ins for splitUpstreamKey in the prepass cache: a token
- *  changes exactly when the stage's key does. Serialising the develop params,
+ *  changes exactly when the stage's key does. Serializing the develop params,
  *  brush dabs included, is the costly part, so it runs only when the params
  *  object is replaced (for a decode cut, only when its retouch array is), and
  *  then only for the fields and masks that were replaced.
  *  Bag entries are compared by reference and texture versions by value, so a
  *  frame that replaced nothing, or only a param of the stage's own or a later
- *  stage's, serialises nothing. Callers replace params, the bag and the
+ *  stage's, serializes nothing. Callers replace params, the bag and the
  *  transform's bindings on change rather than mutating them. */
 export class SplitTokens {
   private readonly memo = new Map<string, SplitMemo>();

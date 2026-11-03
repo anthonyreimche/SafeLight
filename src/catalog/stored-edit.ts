@@ -71,7 +71,7 @@ async function appendedEdit(
   const { photoId, asShot } = target;
   const existing = await storage.getEditState(photoId);
 
-  // Baseline = the photo's current committed look (honoring a prior undo), or its
+  // Baseline = the photo's current committed look (honouring a prior undo), or its
   // as-shot defaults if it was never edited. A never-edited photo gets a seeded
   // "Original" snapshot so the new step stays undoable back to the untouched state.
   let stack: EditSnapshot[];

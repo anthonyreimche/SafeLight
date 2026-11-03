@@ -40,7 +40,8 @@ export function sourceHandlers(ctx: WorkerContext): HandlersFor<SourceCmd> {
         if (img.kind === "bitmap") {
           renderer.setImage(img.bitmap, msg.maxEdge, msg.isFallbackPreview);
         } else {
-          renderer.setImage(img, msg.maxEdge, msg.isFallbackPreview);
+          // Capped like uploadSource below.
+          renderer.setImage(img, msg.maxEdge, msg.isFallbackPreview, true);
         }
       } catch (err) {
         sourceFailed(ctx, err);
@@ -77,9 +78,11 @@ export function sourceHandlers(ctx: WorkerContext): HandlersFor<SourceCmd> {
       const target = msg.target === "thumb" ? ensureThumbRenderer(ctx) : state.renderer;
       if (!target) return;
       const img = msg.image;
-      // Cap a cached float16 source to maxEdge for the thumb renderer so it doesn't
-      // hold a full-res source; the main renderer keeps full resolution for zoom.
-      const capFloat16 = msg.target === "thumb";
+      // Cap a cached float16 source to maxEdge: neither renderer draws larger.
+      // The develop cap (2560 px and up) is at least the cache's own edge
+      // except at the integrated graphics setting, where a bigger source would
+      // only hold memory.
+      const capFloat16 = true;
       try {
         if (img.kind === "bitmap") {
           target.uploadSource(msg.key, img.bitmap, msg.maxEdge, msg.isFallbackPreview, bind, capFloat16);

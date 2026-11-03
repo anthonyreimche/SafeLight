@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // The patch-source signature is asked for on every draw. With the edit unchanged it
-// answers from the last frame instead of serialising every uniform of the stages that
+// answers from the last frame instead of serializing every uniform of the stages that
 // patch the source again.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -42,7 +42,7 @@ const OPTS = { stages: healStages(), pipeline: LINEAR_PROBE_PIPELINE };
 afterEach(() => vi.restoreAllMocks());
 
 describe("the signature of the stages that patch the source", () => {
-  it("reads the same on every draw of one edit, without serialising the stages' values again", () => {
+  it("reads the same on every draw of one edit, without serializing the stages' values again", () => {
     withRenderer(OPTS, (renderer) => {
       renderer.setImage(floatImage(8, 8, () => [0.5, 0.5, 0.5]));
       renderer.setParams(identityParams({ retouch: [stroke(200)] }));

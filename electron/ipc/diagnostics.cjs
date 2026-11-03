@@ -29,6 +29,7 @@ const DEVTOOLS_MODES = new Set(["right", "bottom", "undocked", "detach"]);
  *   extensionConnectHosts: () => string[],
  *   gpuBackendState: () => unknown,
  *   setSoftwareRendering: (on: boolean) => unknown,
+ *   setGraphicsBackend: (choice: string | null) => unknown,
  *   rendererFailed: (detail: string) => unknown,
  * }} deps
  */
@@ -41,6 +42,7 @@ function diagnosticsChannels({
   extensionConnectHosts,
   gpuBackendState,
   setSoftwareRendering,
+  setGraphicsBackend,
   rendererFailed,
 }) {
   const senderWindow = (e) => BrowserWindow.fromWebContents(e.sender);
@@ -107,7 +109,8 @@ function diagnosticsChannels({
       privileged: false,
       handler: () => app.getGPUFeatureStatus(),
     },
-    // Preferences ▸ Rendering ▸ Software rendering.
+    // Preferences ▸ Rendering ▸ Graphics backend, and the graphics notice's
+    // switch to software.
     // Privileged: it sets how every later launch draws.
     {
       channel: "gpu:backend",
@@ -118,6 +121,11 @@ function diagnosticsChannels({
       channel: "gpu:setSoftware",
       privileged: true,
       handler: (_e, on) => setSoftwareRendering(on === true),
+    },
+    {
+      channel: "gpu:setBackend",
+      privileged: true,
+      handler: (_e, choice) => setGraphicsBackend(typeof choice === "string" ? choice : null),
     },
     {
       channel: "gpu:rendererFailed",

@@ -51,6 +51,7 @@ const {
   startRung,
   readyCache,
   fallbackCache,
+  chosenCache,
   relaunchRung,
   relaunchOptions,
 } = require("./gpu-backend.cjs");
@@ -207,10 +208,13 @@ if (process.platform === "linux") {
 // Persists the working backend once the app reaches ready (GPU confirmed OK),
 // keeping why a software launch is in software. Called from the instance that
 // holds the single-instance lock, so a second copy that only hands off and
-// quits leaves the cache alone.
+// quits leaves the cache alone. A change made in Preferences this session is
+// the next launch's to read, and a pick this session type doesn't offer waits
+// for the next session that does.
 let fellBack = false;
+let userChose = false;
 const cacheWorkingBackend = () => {
-  if (!fellBack) writeCache(readyCache(backend, startCache, Date.now()));
+  if (!fellBack && !userChose && !startCache.elsewhere) writeCache(readyCache(backend, startCache, Date.now()));
 };
 
 // Sends the next launch to software once this one proves the GPU path
@@ -227,15 +231,25 @@ const fallBackToSoftware = (reason, why) => {
   return true;
 };
 
-// Preferences ▸ Rendering ▸ Software rendering.
-const gpuBackendState = () => backendState(backend, readCache());
+// Preferences ▸ Rendering ▸ Graphics backend.
+const gpuBackendState = () => backendState(backend, readCache(), ANGLE_BACKENDS, Date.now(), app.getVersion());
 
 // Off clears the cache, so the next launch probes the graphics card from the
 // first rung; a machine that still fails there falls back again by itself.
 const setSoftwareRendering = (on) => {
   if (on) writeCache(fallbackCache("chosen", Date.now()));
   else clearCache();
-  fellBack = true;
+  userChose = true;
+  return gpuBackendState();
+};
+
+// Null is Automatic: clearing the cache sends the next launch through the probe
+// from the first rung. A pick stays until the user changes it or it fails.
+const setGraphicsBackend = (choice) => {
+  if (choice === null) clearCache();
+  else if (ANGLE_BACKENDS.includes(choice)) writeCache(chosenCache(choice, Date.now(), app.getVersion()));
+  else return gpuBackendState();
+  userChose = true;
   return gpuBackendState();
 };
 
@@ -292,7 +306,7 @@ app.commandLine.appendSwitch("force_high_performance_gpu"); // discrete GPU on d
 app.commandLine.appendSwitch("enable-gpu-rasterization");
 app.commandLine.appendSwitch("enable-zero-copy");
 // SharedArrayBuffer: Chromium only grants crossOriginIsolated on http(s)
-// origins, so the COOP/COEP headers on app:// are not honored and libraw-wasm
+// origins, so the COOP/COEP headers on app:// are not honoured and libraw-wasm
 // would fall back to the slow CPU decoder / embedded JPEG preview. This flag
 // re-enables SAB unconditionally (safe here — we only load our own bundle).
 app.commandLine.appendSwitch(
@@ -496,6 +510,7 @@ function registerIpcChannels() {
     extensionConnectHosts,
     gpuBackendState,
     setSoftwareRendering,
+    setGraphicsBackend,
     rendererFailed,
   });
   registerIpc(channels, { ipcMain, handlePrivileged });
@@ -505,9 +520,9 @@ function registerIpcChannels() {
 // as the window title bar via titleBarStyle:'hidden'. On Windows/Linux the
 // native min/max/close buttons are drawn as an overlay on the right (keeps
 // Windows snap-layout-on-hover); on macOS the traffic lights stay on the left as
-// Mac users expect — we only nudge them to vertically center within the bar.
+// Mac users expect — we only nudge them to vertically centre within the bar.
 // The overlay is kept 2px shorter than the bar so the bar's bottom border line
-// stays visible beneath the buttons. Overlay colors are recolored per-surface at
+// stays visible beneath the buttons. Overlay colours are recoloured per-surface at
 // runtime by useTitleBarOverlay (src/ui/window-chrome.ts); these are first-paint
 // defaults matching the neutral theme's surface-1.
 const titleBarOpts =
@@ -578,7 +593,7 @@ function readWindowState() {
 
 function trackWindowState(win) {
   let timer = null;
-  // getNormalBounds, not getBounds: maximising or entering full screen must not
+  // getNormalBounds, not getBounds: maximizing or entering full screen must not
   // overwrite the restored-down geometry that has to come back on the next launch.
   const write = () => {
     const state = {
@@ -691,7 +706,7 @@ function createWindow() {
     const { workArea } = screen.getDisplayMatching(win.getBounds());
     const min = effectiveMinimum(MIN_WINDOW, workArea);
     win.setMinimumSize(min.width, min.height);
-    // A maximised or full-screen window covers the display by design.
+    // A maximized or full-screen window covers the display by design.
     if (win.isMaximized() || win.isFullScreen()) return;
     const { width, height } = win.getBounds();
     if (width > workArea.width || height > workArea.height) {
@@ -705,7 +720,7 @@ function createWindow() {
     screen.removeListener("display-removed", refitMinimum);
   });
 
-  // Restore maximise/full screen here rather than via constructor options:
+  // Restore maximize/full screen here rather than via constructor options:
   // acting on a still-hidden window makes some platforms surface it early,
   // which is the black first frame `show: false` exists to avoid.
   win.once("ready-to-show", () => {

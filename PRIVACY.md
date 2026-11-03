@@ -1,12 +1,12 @@
 # Privacy
 
 Safelight is built to keep your work on your machine. There are no accounts, no
-analytics, no behavioral telemetry, and no automatic crash reporting. Your photos, edits,
+analytics, no behavioural telemetry, and no automatic crash reporting. Your photos, edits,
 ratings, and catalog stay in the project folder you open (in a hidden
 `.safelight/` directory) and are never uploaded by the core app.
 
 This document describes **every** network request the app can make, so the
-description matches the behavior. It is written to be accurate rather than
+description matches the behaviour. It is written to be accurate rather than
 reassuring; where the app contacts the network, it says so plainly.
 
 ## What the core app sends over the network
@@ -48,8 +48,8 @@ control or guarantee; only install extensions you trust. See
 
 Exported images **do not** carry your camera EXIF, GPS/location, or XMP metadata
 — those are stripped. Wide-gamut exports (Display P3, Adobe RGB, ProPhoto) embed
-a standard **ICC color profile** so colors render correctly in other software;
-that profile is a technical color description and contains no personal or
+a standard **ICC colour profile** so colours render correctly in other software;
+that profile is a technical colour description and contains no personal or
 device-identifying information.
 
 ## Error log and issue reports
@@ -64,7 +64,7 @@ together with your Safelight, system and graphics versions, your installed
 extensions, and the kind of photo you have open (file type, size, camera and
 lens). Everything is shown as plain text you can read, edit, clear or leave out
 before anything is sent. GPS positions and serial numbers are never included,
-and folder names and photo file names are hidden wherever Safelight recognises
+and folder names and photo file names are hidden wherever Safelight recognizes
 them, so check the text before you send it. **Open on GitHub**
 opens a new GitHub issue in your browser with that text filled in: Safelight
 itself sends nothing, you submit the issue on GitHub (where issues are public),
@@ -90,5 +90,5 @@ it lives in the app's own storage, not in a project folder.
 
 For privacy questions or data requests, contact **anthonyreimche@gmail.com**.
 
-*This document describes the app's behavior and is not a contract. It may change
+*This document describes the app's behaviour and is not a contract. It may change
 as the app changes; the version in your installed build describes that build.*

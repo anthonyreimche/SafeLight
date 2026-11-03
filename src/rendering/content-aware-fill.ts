@@ -5,7 +5,7 @@
 
 // Content-aware fill (PatchMatch-based texture synthesis).
 //
-// Removes a masked region by synthesising it from real texture taken elsewhere
+// Removes a masked region by synthesizing it from real texture taken elsewhere
 // in the same image, rather than smoothly interpolating from the boundary (which
 // only yields a blurry blob). This is the approach Photoshop/Lightroom heal use:
 // for every hole patch find the most similar patch in the known area, then vote
@@ -66,7 +66,7 @@ export function contentAwareFill(
   rgba: Uint8ClampedArray,
   W: number,
   H: number,
-  hole: Uint8Array, // 1 = synthesise this pixel
+  hole: Uint8Array, // 1 = synthesize this pixel
   opts: FillOptions = {},
 ): Uint8ClampedArray {
   const out = new Uint8ClampedArray(rgba);

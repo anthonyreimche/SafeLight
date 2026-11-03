@@ -8,15 +8,15 @@ import { usesSignedOutput } from "@/catalog/types";
 
 // Develop's status-bar view toggles, handed to the Develop module.
 
-/** Toggle for ISO 12646 color assessment (also bound to a shortcut). */
+/** Toggle for ISO 12646 colour assessment (also bound to a shortcut). */
 export function AssessmentToggle() {
   const on = useDevelopStore((s) => s.colorAssessment);
   const toggle = useDevelopStore((s) => s.toggleColorAssessment);
   return (
     <button
       onClick={toggle}
-      title="Color assessment (ISO 12646): white frame + middle-grey surround"
-      aria-label="Toggle color assessment"
+      title="Colour assessment (ISO 12646): white frame + middle-grey surround"
+      aria-label="Toggle colour assessment"
       aria-pressed={on}
       className={`text-[10px] ${on ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`}
     >
@@ -35,7 +35,7 @@ export function ProofToggle() {
   return (
     <button
       onClick={toggle}
-      title="Soft proof (S): preview the export color space"
+      title="Soft proof (S): preview the export colour space"
       aria-label="Toggle soft proof"
       aria-pressed={on}
       className={`text-[10px] ${on ? "text-text-primary" : "text-text-muted hover:text-text-primary"}`}

@@ -129,7 +129,7 @@ export function parseExifDate(s: string | undefined): number | undefined {
 // raster — strips, tiles, sub-IFDs, thumbnails), the Exif IFD by blocklist
 // (MakerNotes and the Interop pointer embed source-file offsets; colour space
 // and pixel dimensions are rewritten by the export), the GPS IFD wholesale.
-// Value bytes are normalised to little-endian so the writer needs no
+// Value bytes are normalized to little-endian so the writer needs no
 // byte-order handling.
 // ---------------------------------------------------------------------------
 
@@ -301,7 +301,7 @@ function parseXmpText(xmp: string): XmpData {
   return out;
 }
 
-// An XMP property is serialised either as an element (<xmp:Rating>1</xmp:Rating>)
+// An XMP property is serialized either as an element (<xmp:Rating>1</xmp:Rating>)
 // or as an attribute on rdf:Description (xmp:Rating="1") — handle both forms. The
 // `(?:\s[^>]*)?>` opener requires the tag to end at a space or '>', so a name
 // that's a prefix of another (xmp:Rating vs xmp:RatingPercent) doesn't collide.
@@ -555,7 +555,7 @@ type Matrix3 = readonly number[];
 
 interface Calibration {
   matrix: Matrix3; // XYZ (D50) -> camera raw
-  kelvin: number; // calibration illuminant, 0 when unrecognised
+  kelvin: number; // calibration illuminant, 0 when unrecognized
 }
 
 // EXIF LightSource codes -> Kelvin, following dng_sdk's
@@ -639,7 +639,7 @@ function apply3(m: Matrix3, v: Vec3): Vec3 {
 
 // The XYZ->camera matrix for a given white point. Two calibrations are blended
 // in reciprocal-Kelvin space (the DNG spec's rule); anything else — one matrix,
-// an unrecognised illuminant, or two calibrations sharing a temperature — uses
+// an unrecognized illuminant, or two calibrations sharing a temperature — uses
 // the first matrix as written.
 function xyzToCamera(calibrations: readonly Calibration[], kelvin: number): Matrix3 {
   if (calibrations.length < 2) return calibrations[0].matrix;

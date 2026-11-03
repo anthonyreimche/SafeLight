@@ -40,7 +40,7 @@ function getWorker(): Worker {
         handleMessage(e);
       };
       w.onerror = (e) => fail(new Error(e.message || "cache worker failed"));
-      w.onmessageerror = () => fail(new Error("cache worker message deserialisation failed"));
+      w.onmessageerror = () => fail(new Error("cache worker message deserialization failed"));
     });
   }
   return worker;
@@ -91,7 +91,7 @@ export function setCacheDirOnWorker(dir: FileSystemDirectoryHandle | null): void
       } catch {
         // Some environments (notably an Electron File System Access polyfill)
         // expose directory handles as plain objects that structuredClone can't
-        // serialise, so postMessage throws DataCloneError. Fall back to the
+        // serialize, so postMessage throws DataCloneError. Fall back to the
         // worker's IndexedDB cache rather than crashing folder open. Every
         // project shares that cache, so scope it by the folder's absolute path;
         // never by dir.name, which is "raw" for every project.

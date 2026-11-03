@@ -114,7 +114,7 @@ function createTrustList({ net, userData, fileWriter }) {
     fileWriter.write(trustCacheFile(), JSON.stringify(cache)).catch(() => {});
   }
 
-  // Fetch both list files and normalise. Throws if either errors (network/5xx) so
+  // Fetch both list files and normalize. Throws if either errors (network/5xx) so
   // the caller can keep the last-good copy.
   async function fetchTrustNetwork() {
     const [verified, banned] = await Promise.all([

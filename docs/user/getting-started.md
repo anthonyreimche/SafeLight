@@ -34,7 +34,7 @@ Supported formats: JPEG, PNG, WebP, AVIF, TIFF, and RAW (NEF, CR2, CR3, ARW, DNG
 In the Library grid (sensible defaults below; everything is rebindable in Preferences ▸ Shortcuts):
 
 - **1–5** rate, **0** clear rating
-- **6–9** color labels (red, yellow, green, blue)
+- **6–9** colour labels (red, yellow, green, blue)
 - **P** pick, **X** reject, **U** unflag
 - **← →** previous/next photo, **Alt+[ ]** rotate, **K** focus keywords
 - **- =** smaller/larger thumbnails
@@ -44,7 +44,7 @@ In the Library grid (sensible defaults below; everything is rebindable in Prefer
 
 Double-click a photo (or press **D**) to open it in the **Develop** module. Tool panels stack in rails on either side of the canvas:
 
-- White Balance, Basic, Tone Curve, HSL, and Color Grading for tone and color
+- White Balance, Basic, Tone Curve, HSL, and Colour Grading for tone and colour
 - Detail for sharpening and noise reduction; Lens Correction and Effects for optics and finishing
 - Crop & Straighten, Transform, and Upright for geometry
 - Masking (radial / linear / brush / range components) and Heal/Clone for local adjustments and retouching
@@ -53,7 +53,7 @@ Tips: hold **Shift** while dragging a slider for fine control, double-click to r
 
 ## Export
 
-Open the **Export** panel (View ▸ Export, docked in Library by default), select photos, choose JPEG/PNG/WebP/TIFF, quality, an output color space, and an optional long-edge limit, then export — multiple photos can be bundled into a single ZIP.
+Open the **Export** panel (View ▸ Export, docked in Library by default), select photos, choose JPEG/PNG/WebP/TIFF, quality, an output colour space, and an optional long-edge limit, then export — multiple photos can be bundled into a single ZIP.
 
 ## Make It Yours
 

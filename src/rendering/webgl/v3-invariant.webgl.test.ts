@@ -315,7 +315,7 @@ describe("the signed colour reaching the output stage", () => {
       { tool: "Saturation", over: { saturation: 30 }, clips: "everything" },
       { tool: "HSL", over: { hsl }, clips: "everything" },
       { tool: "Color Grading", over: { colorGrading }, clips: "everything" },
-      { tool: "Tone Curve", over: { toneCurve }, clips: "everything" },
+      { tool: "Tone Curve", over: { toneCurve }, clips: "nothing" },
       { tool: "A legacy display stage without a space", stages: [...builtinStages(), LEGACY_DISPLAY], clips: "everything" },
       { tool: "A mask display adjustment", over: { masks: [bottomMask({ contrast: 10 })] }, clips: "the masked row" },
       { tool: "A mask's HSL", over: { masks: [{ ...bottomMask(), hsl }] }, clips: "the masked row" },

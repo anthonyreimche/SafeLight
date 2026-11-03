@@ -6,7 +6,7 @@
 // The culling keys are a capture-phase window listener, so unlike the native
 // confirm they replaced, an open in-app dialog does not stop them: the first
 // block pins that the shortcuts stand down while one is showing. The later
-// blocks characterise the rest of the handler: which photos a key acts on, the
+// blocks characterize the rest of the handler: which photos a key acts on, the
 // grid-row stride, text-field and mask-tool deference, and the ref-counted
 // listener shared by every mounted photo surface.
 

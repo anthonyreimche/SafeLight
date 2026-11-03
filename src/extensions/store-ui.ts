@@ -192,7 +192,7 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
     }),
 }));
 
-/** Fetch and cache normalised repo metadata for "owner/repo". No-op without the
+/** Fetch and cache normalized repo metadata for "owner/repo". No-op without the
  *  native github bridge (plain-browser / older Electron). */
 export async function loadRepoMeta(fullName: string): Promise<void> {
   const gh = window.safelightNative?.github;

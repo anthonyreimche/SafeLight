@@ -61,7 +61,7 @@ function dng(extra: Field[], pixels: Uint8Array): Blob {
 const plane = (code: number): Uint8Array => new Uint8Array(SIDE * SIDE).fill(code);
 
 // A flat plane demosaics to itself, so every channel of every pixel carries
-// the one normalised value.
+// the one normalized value.
 async function flatValue(file: Blob): Promise<number> {
   const image = await decodeRawToFloat(file);
   if ("failure" in image) throw new Error(`no image: ${image.failure}`);

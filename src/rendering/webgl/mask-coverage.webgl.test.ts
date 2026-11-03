@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// bakeCoverage rasterises brush strokes through a 2D canvas, so in node it can
+// bakeCoverage rasterizes brush strokes through a 2D canvas, so in node it can
 // only be checked as far as its empty-list guard (see mask-coverage.test.ts,
 // which also owns the pure coverageSignature). Here it runs for real: the two
 // controls that shape a dab — flow builds coverage up, opacity caps how far it
@@ -161,7 +161,7 @@ describe("bakeCoverage", () => {
 
 // A brush stroke grows by a few dabs a frame, and each frame's params hand the
 // renderer the whole stroke history again, cloned. CoverageBaker keeps what it
-// baked, so a frame rasterises only the stroke still being painted, and an item
+// baked, so a frame rasterizes only the stroke still being painted, and an item
 // whose dabs didn't change not at all, and comes out byte for byte as a full bake.
 describe("CoverageBaker", () => {
   /** A soft, low-flow stroke of `n` dabs along a line, so overlaps build up. */
@@ -180,7 +180,7 @@ describe("CoverageBaker", () => {
     expect(differing).toBe(0);
   }
 
-  /** The radial gradients a call creates: two for every dab it rasterises. */
+  /** The radial gradients a call creates: two for every dab it rasterizes. */
   function gradientsDuring(run: () => void): number {
     const spy = vi.spyOn(CanvasRenderingContext2D.prototype, "createRadialGradient");
     try {
@@ -231,7 +231,7 @@ describe("CoverageBaker", () => {
     bake(two, 2);
   });
 
-  it("rasterises only the stroke still being painted, and nothing for an unchanged item", () => {
+  it("rasterizes only the stroke still being painted, and nothing for an unchanged item", () => {
     const baker = new CoverageBaker();
     const other = { id: "b", dabs: stroke(10, {}, 0.3) };
     const history = stroke(20);

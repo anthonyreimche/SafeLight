@@ -43,7 +43,7 @@ export function photo(id: string): CatalogPhoto {
   };
 }
 
-/** A snapshot as a current build writes it: params normalised, at the current
+/** A snapshot as a current build writes it: params normalized, at the current
  *  process version unless `params` names another. */
 export function snapshot(
   label: string,

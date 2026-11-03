@@ -5,7 +5,7 @@
 
 // Round-trip tests for the export EXIF writer (issue #93). Sources are built
 // with the shared TIFF fixture builder — big-endian, like most camera files,
-// so the little-endian normalisation is exercised — then harvested with the
+// so the little-endian normalization is exercised — then harvested with the
 // catalog reader, serialized, embedded, and read back through parseExif, the
 // same reader the app trusts for camera bytes. Run with `npm test`.
 

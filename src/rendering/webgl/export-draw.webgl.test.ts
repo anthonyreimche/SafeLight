@@ -135,7 +135,7 @@ function cpuSharpened({ amount, radius }: Sharpen): Uint8ClampedArray {
 }
 
 /** A w×h frame sharpened by the unsharp mask in float, top-down: Gaussian taps
- *  out to ceil(3σ), normalised, along x and then y, with the border pixel
+ *  out to ceil(3σ), normalized, along x and then y, with the border pixel
  *  repeated past the edge. */
 function sharpenedFrame(w: number, h: number, colourAt: (x: number, y: number) => Vec3, { amount, radius }: Sharpen): Vec3[] {
   const reach = Math.ceil(3 * radius);
@@ -193,7 +193,7 @@ describe("version 3's 16-bit export target", () => {
   });
 
   // The positive control: the same frame through today's target.
-  it("keeps no more than RGBA16F's steps in a float16 target, quantised as today's capture is", () => {
+  it("keeps no more than RGBA16F's steps in a float16 target, quantized as today's capture is", () => {
     onRamp(3, (r) => {
       const p = exported(r, { targets: ["float16"] });
       expect(p.target).toBe("float16");

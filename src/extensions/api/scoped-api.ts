@@ -209,11 +209,11 @@ export interface SafelightAPI {
      *  (PanelContribution.mask) drawn inside reads and writes that mask through
      *  useMaskScope / useParamScope. Needs Safelight 3.2.0. */
     MaskScope: (props: MaskScopeProps) => JSX.Element | null;
-    /** The virtualised grid the Library draws its cells with: fixed-size
+    /** The virtualized grid the Library draws its cells with: fixed-size
      *  cells, only the visible rows mounted, `scrollToIndex` kept in view. */
     VirtualGrid: typeof import("@/ui/components/VirtualGrid").VirtualGrid;
     /** Develop's canvas area: the surround (theme shade, or the ISO grey under
-     *  color assessment), the active photo's canvas with every core overlay
+     *  colour assessment), the active photo's canvas with every core overlay
      *  (the held canvas tool, extension overlays) and the photo's
      *  edit loaded as it opens. `empty` shows while no photo is open. Fills
      *  its container. */
@@ -230,7 +230,7 @@ export interface SafelightAPI {
     ProcessingUpdateControl: () => JSX.Element | null;
     /** The soft-proof toggle; nothing on a photo without the version 3 output. */
     ProofToggle: () => JSX.Element | null;
-    /** The ISO 12646 color-assessment toggle. */
+    /** The ISO 12646 colour-assessment toggle. */
     AssessmentToggle: () => JSX.Element;
     /** The eyedropper icon core's pickers show. */
     PickerIcon: typeof import("@/ui/components/PickerIcon").PickerIcon;
@@ -572,7 +572,7 @@ export interface SafelightAPI {
      *  extension's values in a mask don't run. Needs Safelight 3.2.0. */
     useOlderProcessing(): boolean;
     /** Core's auto adjustments, each run to convergence and committed as one
-     *  undo step: `whiteBalance` (gray-world, "Auto White Balance"),
+     *  undo step: `whiteBalance` (grey-world, "Auto White Balance"),
      *  `whiteBalanceAt(point)` (the eyedropper: makes the canvas point neutral,
      *  probing it again after each step; "White Balance") and `tone` ("Auto
      *  Tone"). Each needs a rendered frame's histogram and does nothing
@@ -607,7 +607,7 @@ export interface SafelightAPI {
     normalizeParams: typeof import("@/catalog/types").normalizeParams;
   };
   /** Headless export: render catalog photos through the full develop pipeline to
-   *  in-memory blobs, honoring the user's export settings. Unlike
+   *  in-memory blobs, honouring the user's export settings. Unlike
    *  develop.captureFrame (current photo, view-sized), this renders ANY photos at
    *  export resolution — so an extension (e.g. a web-gallery publisher) can ship
    *  full-resolution images instead of the low-res catalog preview. */
@@ -712,7 +712,7 @@ export interface SafelightAPI {
      *  every registerGridMenuItem contribution, with the grid's dialogs. React
      *  hook. */
     usePhotoActions(): PhotoActions;
-    /** Mount the Library's culling shortcuts (ratings, flags, color labels,
+    /** Mount the Library's culling shortcuts (ratings, flags, colour labels,
      *  rotate, remove/delete, rename, reveal, select-all, prev/next) for as
      *  long as the calling component is mounted — so a photo surface docked in
      *  Develop culls exactly like the grid. Combos stay rebindable in

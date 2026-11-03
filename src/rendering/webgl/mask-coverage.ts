@@ -7,7 +7,7 @@ import type { BrushDab } from "@/catalog/types";
 import { MAX_BRUSH_MASKS } from "@/catalog/types";
 
 // Freehand coverage (brush masks, and an official stage's atlas texture such
-// as Heal's brush strokes) is rasterised into the four channels (R,G,B,A) of
+// as Heal's brush strokes) is rasterized into the four channels (R,G,B,A) of
 // one RGBA texture, so the shader can read every item's coverage with a single
 // sample. MAX_BRUSH_MASKS is that channel count, bounded by RGBA.
 
@@ -251,9 +251,9 @@ interface ItemBake {
 }
 
 /** Bakes coverage items like `bakeCoverage`, byte for byte, keeping each item's
- *  last bake: dabs added after those baked rasterise only the stroke they
+ *  last bake: dabs added after those baked rasterize only the stroke they
  *  continue and the ones they start, and an item whose dabs are unchanged is not
- *  rasterised at all. Dabs are compared by value, so a structured clone of the
+ *  rasterized at all. Dabs are compared by value, so a structured clone of the
  *  same history still counts as unchanged. */
 export class CoverageBaker {
   private aspect = Number.NaN;

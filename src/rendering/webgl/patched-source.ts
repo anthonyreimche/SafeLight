@@ -93,7 +93,7 @@ export class PatchedSource {
     const gl = this.gl;
     const tex = (this.tex ??= gl.createTexture());
     const fbo = (this.fbo ??= gl.createFramebuffer());
-    // An RGBA8 patched-source copy quantises a 16-bit/float linear source to 8 bits,
+    // An RGBA8 patched-source copy quantizes a 16-bit/float linear source to 8 bits,
     // so any heal spot bands smooth gradients. RGBA16 (norm16) is colour-renderable,
     // filterable AND GPU-mipmappable, so it removes the banding while keeping the
     // per-frame generateMipmap and the same linear/[0,1] semantics. RGBA16F is all

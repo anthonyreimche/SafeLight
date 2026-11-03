@@ -7,7 +7,7 @@ For extension authors and core contributors.
 - [How Safelight works](concepts.md): what the core is, how it runs extensions, what they get, give back and can access, and where to find everything
 - [How a photo is rendered](rendering.md): the render steps in order, where your code plugs in, and colour management
 
-`src/extensions/types.ts` is the source of truth for every API. The pages below summarise it. If you use a coding agent, point it at that file.
+`src/extensions/types.ts` is the source of truth for every API. The pages below summarize it. If you use a coding agent, point it at that file.
 
 ## Building extensions
 

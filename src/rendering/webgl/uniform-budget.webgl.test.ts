@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 import { CURRENT_PROCESS_VERSION } from "@/catalog/types";
+import { withProcessVersion } from "./program-cache";
 import { VERTEX_SHADER, shaderVariantFor } from "./shaders";
 import { shippedProgram } from "./stock-program.test-support";
 import { buildProgram, glHarness, releaseProgram } from "./webgl.test-support";
@@ -55,7 +56,8 @@ describe("the shipped develop program's uniform budget", () => {
   // of MAX_MASKS whatever the photo holds, so this is the most masks there are.
   it(`fits in ${COMMON_DRIVER_VECTORS} fragment uniform vectors`, () => {
     const { gl } = glHarness();
-    const build = buildProgram(gl, VERTEX_SHADER, shippedProgram(shaderVariantFor(CURRENT_PROCESS_VERSION)));
+    const fragment = withProcessVersion(shippedProgram(shaderVariantFor(CURRENT_PROCESS_VERSION)), CURRENT_PROCESS_VERSION);
+    const build = buildProgram(gl, VERTEX_SHADER, fragment);
     expect(build.error).toBeNull();
     const rows = activeUniformRows(gl, build.program!);
     releaseProgram(gl, build);

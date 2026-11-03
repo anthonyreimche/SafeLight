@@ -523,7 +523,7 @@ export class ProjectStorage implements CatalogStorage {
           return photo;
         }
         // Tombstoned: the user removed this photo from the catalog while its file
-        // stayed on disk. Honor that removal instead of re-importing it as new,
+        // stayed on disk. Honour that removal instead of re-importing it as new,
         // one another window's answer told of after the count too.
         if (storage.removed.has(f.path)) {
           if (counted.has(f)) onProgress?.(++newDone, newTotal);

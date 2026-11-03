@@ -130,6 +130,23 @@ const TONE_CURVE_HELPERS = `vec3 applyToneCurve(vec3 c) {
   return c;
 }`;
 
+/** Lines 2 and 3: from process version 2 a colour past either end of the
+ *  table keeps its own excess; version 1 photos keep line 1's clip. */
+const RANGED_TONE_CURVE_HELPERS = `vec3 applyToneCurve(vec3 c) {
+#if SL_PROCESS_VERSION >= 2
+  vec3 s = clamp(c, 0.0, 1.0);
+  vec3 t = vec3(texture(uCurve, vec2(s.r, 0.5)).r, texture(uCurve, vec2(s.g, 0.5)).g, texture(uCurve, vec2(s.b, 0.5)).b);
+  return t + (c - s);
+#else
+  c = clamp(c, 0.0, 1.0);
+  // Per-channel LUTs packed into RGBA (master curve already composed in).
+  c.r = texture(uCurve, vec2(c.r, 0.5)).r;
+  c.g = texture(uCurve, vec2(c.g, 0.5)).g;
+  c.b = texture(uCurve, vec2(c.b, 0.5)).b;
+  return c;
+#endif
+}`;
+
 /** Bumped for every table derived, so the renderer uploads each new one. */
 let curveVersion = 0;
 
@@ -145,7 +162,7 @@ const toneCurve = (line: EssentialLine): ProcessingStageContribution => ({
     ? { glsl: "c = applyToneCurve(c);", helpers: TONE_CURVE_HELPERS, uniforms: [] }
     : {
         glsl: "if (uCurveActive) c = applyToneCurve(c);",
-        helpers: TONE_CURVE_HELPERS,
+        helpers: RANGED_TONE_CURVE_HELPERS,
         uniforms: [{ key: "uCurveActive", glslType: "bool", default: false }],
       }),
   derive: ({ toneCurve: curves }) => ({

@@ -7,7 +7,7 @@
 // neither libraw nor the browser's createImageBitmap, so we parse them here and
 // hand back an ImageBitmap that flows through the normal 8-bit (JPEG-like) path.
 //
-// Supported magics: P1/P4 (bitmap), P2/P5 (grayscale), P3/P6 (RGB). 16-bit
+// Supported magics: P1/P4 (bitmap), P2/P5 (greyscale), P3/P6 (RGB). 16-bit
 // samples (maxval > 255) are scaled down to 8-bit for display. ImageData and
 // createImageBitmap are available on both the main thread and in workers, so
 // this needs no DOM.

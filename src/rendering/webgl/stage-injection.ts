@@ -113,7 +113,7 @@ export type InjectionStep =
 
 interface PhaseInfo {
   /** The injection group the phase's blocks join. Linear-space phases operate on
-   *  `lin` (the scene-linear working color); display-space phases operate on `c`. */
+   *  `lin` (the scene-linear working colour); display-space phases operate on `c`. */
   readonly group: InjectionGroup;
   /** Which values the phase's stages see: scene-linear `lin` before the display
    *  transform, its display-encoded output `c` after it. Geometry sees neither. */
@@ -154,8 +154,11 @@ const colourVariable = (domain: StageDomain): "lin" | "c" => (domain === "scene"
 // to go. Whether a stage is a core stage is decided in builtin-stage.ts, which
 // says how the built-in denoiser differs. Everything else (space, passes,
 // textures, helpers) is read straight off the declaration where used.
-const readsCurrent = (s: ProcessingStageContribution): boolean =>
-  s.reads === "current" && (s.passes?.length ?? 0) > 0 && s.phase !== "geometry";
+const readsCurrent = (s: ProcessingStageContribution, variant: ShaderVariant): boolean =>
+  s.reads === "current" &&
+  variant.version >= (s.readsCurrentFrom ?? 1) &&
+  (s.passes?.length ?? 0) > 0 &&
+  s.phase !== "geometry";
 
 /** The built-in denoiser swaps `lin` for its own result. Made from the source,
  *  as on version 1, that result drops whatever a decode stage did to `lin`, so
@@ -199,7 +202,7 @@ function withoutSupersededDenoiser(
 // Inter-stage variables
 // ---------------------------------------------------------------------------
 
-/** Each inter-stage variable type's zero, its global's initialiser. */
+/** Each inter-stage variable type's zero, its global's initializer. */
 const ISV_ZERO: Readonly<Record<InterStageVariable["glslType"], string>> = {
   float: "0.0",
   vec2: "vec2(0.0)",
@@ -252,7 +255,7 @@ function withoutOrphanConsumers(
   }
 }
 
-/** A consumer ordered ahead of its producer reads the zero initialiser. */
+/** A consumer ordered ahead of its producer reads the zero initializer. */
 function warnConsumersAhead(ordered: readonly ProcessingStageContribution[]): void {
   const seen = new Set<string>();
   for (const s of ordered) {
@@ -300,7 +303,7 @@ void main() {
 // (v1-identity.test.tsx).
 function passSharedGlsl(space: StageSpace | undefined): string {
   const converts = !isIdentitySpace(space, "scene");
-  const firstRead = converts ? toSpaceExpr(space, "scene", "toLin(s)") : "toLin(s)";
+  const firstRead = sourceRead(space, "s");
   return `
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 vec3 srgbToLinear(vec3 c) {
@@ -333,6 +336,16 @@ vec3 readPrev(vec2 uv) {
 }
 `;
 }
+
+/** A source texel `texel` as a pass's first read hands it over: linearized,
+ *  base-curved, in the stage's space. */
+function sourceRead(space: StageSpace | undefined, texel: string): string {
+  return isIdentitySpace(space, "scene") ? `toLin(${texel})` : toSpaceExpr(space, "scene", `toLin(${texel})`);
+}
+
+/** The sampler a pass's readSource reads: the decoded source, which the
+ *  runner binds at the scratch unit. */
+export const SOURCE_IMAGE_UNIFORM = "uSourceImage";
 
 /** A pass whose draw count comes from the bag (StagePass.iterations `{ key, max }`). */
 export interface DrawCountBinding {
@@ -446,16 +459,22 @@ function buildPassFragment(
     helpers = h;
   }
   const body = rewriteGlsl(pass.glsl, uniforms, uPfx, hPfx, helperNames);
-  // uSourceSize is part of the pass contract (types.ts StagePass) but is declared
-  // only where named: the version 1 freeze (v1-identity.test.tsx) pins the
-  // prelude every older pass gets, and none of those name it.
+  // uSourceSize and readSource are part of the pass contract (types.ts
+  // StagePass) but are declared only where named: the version 1 freeze
+  // (v1-identity.test.tsx) pins the prelude every older pass gets, and none of
+  // those name them.
+  const named = body + helpers;
+  const readSource = /\breadSource\b/.test(named)
+    ? `\nuniform sampler2D ${SOURCE_IMAGE_UNIFORM}; // the decoded source, whatever the stage reads\n` +
+      `vec3 readSource(vec2 uv) { return ${sourceRead(space, `texture(${SOURCE_IMAGE_UNIFORM}, uv).rgb`)}; }`
+    : "";
   const fragmentSource = `#version 300 es
 precision highp float;
 in vec2 vUv;
 out vec4 fragColor;
 ${uniformDecls}
 ${passSharedGlsl(space)}
-${/\buSourceSize\b/.test(body + helpers) ? "uniform vec2 uSourceSize; // the decoded source's size before the upload cap" : ""}
+${/\buSourceSize\b/.test(named) ? "uniform vec2 uSourceSize; // the decoded source's size before the upload cap" : ""}${readSource}
 ${helpers}
 void main() {
   vec3 c = readPrev(vUv);
@@ -470,9 +489,9 @@ ${body}
 
 export interface BuiltStageInjection {
   injection: StageInjection;
-  /** The same for every variant: pass programs are keyed on it and don't
-   *  depend on the variant, so photos of both versions share them. The
-   *  renderer keys the develop program on the variant separately. */
+  /** The same for every variant: a pass's source doesn't depend on it. Pass
+   *  programs are keyed on it and on the process version, which they are
+   *  compiled with (SL_PROCESS_VERSION), as the develop program is. */
   sig: string;
   bindings: ContributedBinding[];
   textureBindings: StageTextureBinding[];
@@ -503,6 +522,7 @@ export function stageSignature(s: ProcessingStageContribution): string {
       s.space ?? null,
       s.reads ?? "source",
       ...handoff,
+      ...(s.readsCurrentFrom === undefined ? [] : [{ readsCurrentFrom: s.readsCurrentFrom }]),
     ]),
   );
 }
@@ -598,7 +618,7 @@ class SplitExits {
   ) {
     this.variant = variant;
     this.writer = writer;
-    this.readers = ordered.filter((s) => readsCurrent(s) || keepsDecodeStages(s, ordered, variant));
+    this.readers = ordered.filter((s) => readsCurrent(s, variant) || keepsDecodeStages(s, ordered, variant));
     this.deferred = this.readers.filter((s) => phaseInfo(s.phase).outputFrame);
   }
 

@@ -110,7 +110,7 @@ export function targetFormat(gl: WebGL2RenderingContext, target: ExportTarget): 
 const BAND_ROWS = 64;
 
 // The bound w×h target as 16-bit codes, top-down: readPixels hands the rows
-// back bottom-up. A float target is quantised with quantise16.
+// back bottom-up. A float target is quantized with quantise16.
 function readCodes(gl: WebGL2RenderingContext, read: number, w: number, h: number): Uint16Array {
   const stride = w * 4;
   const codes = new Uint16Array(stride * h);
@@ -186,7 +186,7 @@ const MAX_RADIUS = 3;
 const MAX_REACH = Math.ceil(3 * MAX_RADIUS);
 
 // σ = `radius` px, capped at MAX_RADIUS: the centre tap, then one per pixel out
-// to ceil(3σ), normalised, then zeros to MAX_REACH. CSS blur() takes its radius
+// to ceil(3σ), normalized, then zeros to MAX_REACH. CSS blur() takes its radius
 // as σ the same way. A radius of 0 or less blurs nothing.
 function gaussianTaps(radius: number): Float32Array {
   const taps = new Float32Array(MAX_REACH + 1);

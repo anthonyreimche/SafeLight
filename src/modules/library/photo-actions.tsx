@@ -33,7 +33,7 @@ import { useDevelopClipboard } from "@/state/develop-clipboard";
 export interface PhotoActions {
   /** Right-click handler for a photo cell. Right-clicking a photo that's part
    *  of the current selection targets the whole selection; right-clicking an
-   *  unselected one selects just it first (mirrors the drag behavior). */
+   *  unselected one selects just it first (mirrors the drag behaviour). */
   onContextMenu: (id: string, e: React.MouseEvent) => void;
   /** The menu and its dialogs. Render them inside the surface. */
   overlays: ReactNode;

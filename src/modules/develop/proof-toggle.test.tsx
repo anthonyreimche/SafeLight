@@ -36,7 +36,7 @@ describe("ProofToggle", () => {
   it("is there on a photo stored as version 3, with its tooltip", () => {
     seedPhoto(3);
     render(<ProofToggle />);
-    expect(proof().getAttribute("title")).toBe("Soft proof (S): preview the export color space");
+    expect(proof().getAttribute("title")).toBe("Soft proof (S): preview the export colour space");
     expect(proof().textContent).toBe("Proof");
   });
 

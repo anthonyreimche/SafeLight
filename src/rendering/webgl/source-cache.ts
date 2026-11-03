@@ -186,7 +186,7 @@ export function createSourceTexture(gl: WebGL2RenderingContext): WebGLTexture {
 // but it can sample manually supplied float mip levels with trilinear filtering,
 // which the local-contrast taps (Texture/Clarity/Dehaze/Sharpen) need. Working in
 // 16-bit float keeps real precision and HDR headroom so a big exposure push
-// doesn't posterise into bands.
+// doesn't posterize into bands.
 function halveRGBAF(src: Float32Array, w: number, h: number) {
   const nw = Math.max(1, w >> 1);
   const nh = Math.max(1, h >> 1);

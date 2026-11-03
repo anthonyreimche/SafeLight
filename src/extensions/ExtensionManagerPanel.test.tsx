@@ -566,7 +566,7 @@ describe("ExtensionManagerPanel categories", () => {
     screen.getByText("Detail and repair · Processing");
   });
 
-  it("lists uncategorised extensions under Other", async () => {
+  it("lists uncategorized extensions under Other", async () => {
     const user = userEvent.setup();
     mountStore();
     await openCategory(user, "Other");
@@ -606,7 +606,7 @@ describe("ExtensionManagerPanel categories", () => {
     screen.getAllByText("Popular");
   });
 
-  it("keeps the Other row while a search on Other matches nothing uncategorised", async () => {
+  it("keeps the Other row while a search on Other matches nothing uncategorized", async () => {
     const user = userEvent.setup();
     mountStore();
     await openCategory(user, "Other");

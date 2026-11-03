@@ -9,7 +9,14 @@
 import type { ResolvedPipeline } from "@/rendering/webgl/resolved-pipeline";
 import { BUILTIN_RESOLVED } from "./builtin-pipeline";
 import { created } from "./gl-resources";
-import { buildFragmentShader, variantKey, VERTEX_SHADER, type ProgramExit, type ShaderVariant } from "./shaders";
+import {
+  buildFragmentShader,
+  variantKey,
+  VERTEX_SHADER,
+  type ProcessVersion,
+  type ProgramExit,
+  type ShaderVariant,
+} from "./shaders";
 import { RESULT_ARRAY_UNIFORM, type BuiltStageInjection, type ContributedBinding } from "./stage-injection";
 
 // Fixed attribute locations (bound before link), so every pipeline variant of
@@ -150,7 +157,7 @@ export class ProgramCache {
       const program = createProgram(
         this.gl,
         VERTEX_SHADER,
-        buildFragmentShader(p.glsl, built.injection, variant, exit, p.uniformDecls),
+        withProcessVersion(buildFragmentShader(p.glsl, built.injection, variant, exit, p.uniformDecls), variant.version),
       );
       return {
         program,
@@ -298,6 +305,13 @@ export function createProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: 
 function withHighpSamplers(src: string): string {
   if (/\bprecision\s+\w+\s+sampler2D\s*;/.test(src)) return src;
   return src.replace(/^(#version[^\n]*\n)/, "$1precision highp sampler2D;\n");
+}
+
+/** `src` defining SL_PROCESS_VERSION, the process version it renders, which an
+ *  extension stage's glsl, helpers and passes test with `#if` (contributions.md).
+ *  Added at compile time for the same reason as withHighpSamplers. */
+export function withProcessVersion(src: string, version: ProcessVersion): string {
+  return src.replace(/^(#version[^\n]*\n)/, `$1#define SL_PROCESS_VERSION ${version}\n`);
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {

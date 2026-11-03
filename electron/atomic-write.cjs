@@ -22,7 +22,7 @@ const TEMP_NAME = /\.tmp-[0-9a-f]+$/i;
 const inFlight = new Set();
 
 function createAtomicWriter({ fsp, randomId, retry }) {
-  const slots = new Map(); // normalised path -> { next: job | null }
+  const slots = new Map(); // normalized path -> { next: job | null }
   const swept = new Set(); // directories already swept by this writer
   let idle = [];
 

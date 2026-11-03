@@ -41,7 +41,7 @@ export interface FloatState {
   x: number;
   y: number;
   width: number;
-  /** Pinned to the workspace center — x/y become offsets from it — until the
+  /** Pinned to the workspace centre — x/y become offsets from it — until the
    *  user drags the window somewhere concrete. */
   centered?: boolean;
 }

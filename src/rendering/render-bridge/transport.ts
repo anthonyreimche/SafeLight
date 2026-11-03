@@ -62,7 +62,7 @@ export class RenderTransport implements WorkerLink {
   /** Settles once the worker's renderer is ready, or once the transport gives up
    *  on it (availability "failed") or is disposed: it never rejects. */
   readonly ready: Promise<void>;
-  // Whether the worker's WebGL2 context has renderable float color buffers. Set
+  // Whether the worker's WebGL2 context has renderable float colour buffers. Set
   // from the "ready" message; governs the pipeline's working precision (see
   // WebGLRenderer.colorBufferFloat). Undefined until the worker reports ready.
   pipelineFloat: boolean | undefined;

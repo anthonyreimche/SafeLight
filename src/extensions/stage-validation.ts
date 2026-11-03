@@ -284,6 +284,13 @@ export function checkStageContract(
   const reads: unknown = c.reads;
   if (reads !== undefined && (typeof reads !== "string" || !Object.hasOwn(READS, reads)))
     return fail(`reads must be "source" or "current", got ${formatValue(reads)}`);
+  const readsCurrentFrom: unknown = c.readsCurrentFrom;
+  if (readsCurrentFrom !== undefined) {
+    if (typeof readsCurrentFrom !== "number" || !Number.isInteger(readsCurrentFrom) || readsCurrentFrom < 1)
+      return fail(`readsCurrentFrom must be a whole process version from 1, got ${formatValue(readsCurrentFrom)}`);
+    if (reads !== "current")
+      warnings.push(`${stagePrefix}: readsCurrentFrom only applies with reads "current", so it is ignored`);
+  }
   const interStage = interStageError(c);
   if (interStage) return fail(interStage);
   const isvReference = isvReferenceError(c);

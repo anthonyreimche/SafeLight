@@ -33,7 +33,7 @@ export const TIFF_TAG = {
   AsShotNeutral: 0xc628,
 } as const;
 
-// PhotometricInterpretation value that flags a Color Filter Array (raw Bayer).
+// PhotometricInterpretation value that flags a Colour Filter Array (raw Bayer).
 export const PHOTOMETRIC_CFA = 32803;
 
 export const COMPRESSION = {

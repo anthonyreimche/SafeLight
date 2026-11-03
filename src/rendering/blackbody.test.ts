@@ -211,7 +211,7 @@ describe("blackbody — Kelvin inversion", () => {
     expect(kelvinFromWhiteBalanceGains(1, 1, Number.NaN)).toBeUndefined();
   });
 
-  it("quantises to the 10 K the temperature slider steps in", () => {
+  it("quantizes to the 10 K the temperature slider steps in", () => {
     for (const [r, g, b] of [
       [2.1, 1, 1.35],
       [1.6, 1, 2.2],

@@ -16,7 +16,7 @@
 //
 // Format: scene-linear RGBA as IEEE 754 half floats, gzip-compressed. The first
 // cache stored an 8-bit JPEG, which only has ~256 levels/channel — a +5 exposure
-// push (×32) then stretched the bright sky into visible posterising bands (and
+// push (×32) then stretched the bright sky into visible posterizing bands (and
 // JPEG's lossy chroma made it rainbow). The next stored 16-bit sRGB: smooth
 // under a push, but clamped to [0, 1], so a reopened RAW lost the highlight
 // headroom and the camera matrix's small negatives its first open rendered
@@ -46,7 +46,7 @@ import {
 
 // The version prefix is the cache contract: bump it whenever the float decode
 // or the stored encoding changes (v6: half-float entries that keep headroom and
-// negatives; v5: libraw output linearised, white point restored, Fujifilm
+// negatives; v5: libraw output linearized, white point restored, Fujifilm
 // exposure bias applied).
 export function rawCacheKey(
   relPath: string,

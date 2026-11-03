@@ -54,7 +54,7 @@ const CATALOG_IFD0_FIELDS: [number, CatalogText][] = [
 const SRGB = 1;
 const UNCALIBRATED = 0xffff; // the embedded ICC carries the real profile
 
-/** The finalised IFD entry sets an export will carry. */
+/** The finalized IFD entry sets an export will carry. */
 export interface ExportIfds {
   ifd0: RawExifEntry[];
   exif: RawExifEntry[];

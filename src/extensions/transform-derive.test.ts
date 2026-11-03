@@ -80,7 +80,7 @@ describe("derivedEntries", () => {
     expect(derivedEntries(pipeline(), { "test.d.gain": 3 })).toEqual({ "test.d#twice": 1, "test.d#on": false });
   });
 
-  // The bridge diffs the bags it posts by reference, so a memoised array that
+  // The bridge diffs the bags it posts by reference, so a memoized array that
   // derive.fn mutates on its next call would never be posted again.
   it("keeps the arrays it hands out apart from the ones derive.fn returns", () => {
     const scale = [1, 0, 0, 0, 1, 0, 0, 0, 1];

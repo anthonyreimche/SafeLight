@@ -90,7 +90,7 @@ describe("decodeNetpbm bitmaps", () => {
   });
 });
 
-describe("decodeNetpbm grayscale", () => {
+describe("decodeNetpbm greyscale", () => {
   it("decodes P2 and rescales from the declared maxval", async () => {
     const image = await decode("P2\n2 2\n15\n0 5 10 15\n");
     expect(image).not.toBeNull();

@@ -36,7 +36,7 @@ export function AboutSection() {
         </p>
         <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
           Free software under the GNU GPL v3 (with a §7(b) attribution term).
-          Includes third-party components under their own licenses. Product
+          Includes third-party components under their own licences. Product
           names and trademarks are the property of their respective owners.
         </p>
       </div>
@@ -81,7 +81,7 @@ export function AboutSection() {
       <Field label="Legal">
         <div className="flex flex-col gap-0.5">
           {[
-            ["License (GNU GPL v3)", "LICENSE"],
+            ["Licence (GNU GPL v3)", "LICENSE"],
             ["Third-party notices", "THIRD-PARTY-NOTICES.md"],
             ["Privacy", "PRIVACY.md"],
             ["Trademarks", "TRADEMARKS.md"],
@@ -114,6 +114,6 @@ export const aboutSection: PrefSection = {
   label: "About",
   group: "General",
   items: settings("Version", "Project"),
-  keywords: ["Electron", "Chromium", "Platform", "license"],
+  keywords: ["Electron", "Chromium", "Platform", "license", "licence"],
   render: () => <AboutSection />,
 };

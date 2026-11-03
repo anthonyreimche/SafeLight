@@ -229,7 +229,7 @@ export async function decodeImportBitmap(
   if (isRawFile(file)) {
     const whole = bytes ?? (await rawBytesOf(file));
     // CRW & friends: the JPEG byte-scan can't find their real thumbnail and
-    // returns a gray-noise false match, but libraw decodes them correctly — so
+    // returns a grey-noise false match, but libraw decodes them correctly — so
     // ignore the embedded preview entirely and render (as if "rendered" mode).
     const renderOnly = distrustsEmbeddedPreview(file);
     const effectiveSource: PreviewSource = renderOnly ? "rendered" : source;
@@ -295,7 +295,7 @@ export async function decodeImportBitmap(
 
     // Every decode failed. Fall back to the embedded JPEG (the one we set aside in
     // "auto", or a fresh extract in "rendered") rather than drop the file. Skip
-    // this for renderOnly formats (CRW) — their byte-scan preview is gray noise,
+    // this for renderOnly formats (CRW) — their byte-scan preview is grey noise,
     // so a ⚠ "no preview" tile is more honest than a garbage thumbnail.
     const passedOver = "failure" in f && f.passedOver === true;
     if (embedded) return { ...embedded, passedOver };

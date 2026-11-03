@@ -1067,7 +1067,7 @@ describe("rotatePhotos", () => {
     expect(state().photos[0].rotation).toBe(90);
   });
 
-  it("normalises a negative turn into its positive equivalent", async () => {
+  it("normalizes a negative turn into its positive equivalent", async () => {
     useCatalogStore.setState({ photos: [photo("a")] });
 
     await state().rotatePhotos(["a"], -90);

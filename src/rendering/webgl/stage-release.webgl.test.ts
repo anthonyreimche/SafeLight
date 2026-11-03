@@ -128,6 +128,83 @@ describe("an extension's stages leaving the renderer", () => {
   });
 });
 
+// A prepass result is a full-size float texture (about 90 MB at the 4096 px
+// develop cap), and so is each half of the ping-pong pair. A stage that goes
+// idle keeps its result while it is still the right answer for this photo, so
+// turning it back on, or dragging a slider through zero, costs nothing. Once
+// the photo changes that result can never be reused, and an integrated GPU
+// with a dozen prepass extensions would otherwise hold over a gigabyte of
+// results nothing reads.
+describe("an idle stage's prepass memory", () => {
+  const OTHER_PHOTO = floatImage(16, 16, () => [0.6, 0.4, 0.3]);
+
+  it("allocates no prepass targets while no stage has run", () => {
+    withTally((renderer, tally) => {
+      renderer.render();
+      const before = tally.live.texture;
+      renderer.setStages([PREPASS_STAGE]);
+      renderer.render();
+
+      expect(tally.live.texture).toBe(before);
+    });
+  });
+
+  it("keeps an idle stage's result for the same photo, so turning it back on draws no passes", () => {
+    withTally((renderer, tally) => {
+      renderer.setStages([PREPASS_STAGE]);
+      renderer.setContributedParams({ "acme.smooth.amount": 1 });
+      renderer.render();
+      const textures = tally.live.texture;
+      const made = tally.created.texture;
+      const passes = renderer.renderDrawCounts.pass;
+
+      renderer.setContributedParams({ "acme.smooth.amount": 0 });
+      renderer.render();
+      expect(tally.live.texture).toBe(textures);
+
+      renderer.setContributedParams({ "acme.smooth.amount": 1 });
+      renderer.render();
+      expect(renderer.renderDrawCounts.pass).toBe(passes);
+      expect(tally.created.texture).toBe(made);
+    });
+  });
+
+  it("frees an idle stage's result and the ping-pong pair once the photo changes", () => {
+    withTally((renderer, tally) => {
+      renderer.setStages([PREPASS_STAGE]);
+      renderer.render();
+      const idle = tally.live.texture;
+      renderer.setContributedParams({ "acme.smooth.amount": 1 });
+      renderer.render();
+      expect(tally.live.texture).toBeGreaterThan(idle);
+
+      renderer.setContributedParams({ "acme.smooth.amount": 0 });
+      renderer.render();
+      renderer.setImage(OTHER_PHOTO);
+      renderer.render();
+
+      expect(tally.live.texture).toBe(idle);
+    });
+  });
+
+  it("keeps the targets of a stage still running on the new photo", () => {
+    withTally((renderer, tally) => {
+      renderer.setStages([PREPASS_STAGE]);
+      renderer.setContributedParams({ "acme.smooth.amount": 1 });
+      renderer.render();
+      const running = tally.live.texture;
+      const made = tally.created.texture;
+
+      renderer.setImage(OTHER_PHOTO);
+      renderer.render();
+
+      expect(tally.live.texture).toBe(running);
+      // setImage makes the new photo's own texture; the prepass makes nothing new.
+      expect(tally.created.texture - made).toBeLessThanOrEqual(1);
+    });
+  });
+});
+
 // The bridge can't know the GPU's texture limit; a texture past it would upload as a
 // GL error and the stage would read black with no word of why.
 describe("a stage texture larger than the GPU's texture limit", () => {

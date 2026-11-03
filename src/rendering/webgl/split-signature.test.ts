@@ -195,7 +195,7 @@ describe("splitUpstreamKey", () => {
   });
 });
 
-// The renderer asks for a token on every frame. Serialising the develop
+// The renderer asks for a token on every frame. Serializing the develop
 // params (brush dabs included) is the cost worth avoiding, so it must happen
 // only when the params object is replaced.
 describe("SplitTokens", () => {
@@ -216,7 +216,7 @@ describe("SplitTokens", () => {
     }
   }
 
-  it.each<SplitCut>(["scene", "display"])("serialises nothing for a %s cut while no input changes, nor for the stage's own param", (cut) => {
+  it.each<SplitCut>(["scene", "display"])("serializes nothing for a %s cut while no input changes, nor for the stage's own param", (cut) => {
     const tokens = new SplitTokens();
     const s = split(cut);
     const base = sources();
@@ -227,7 +227,7 @@ describe("SplitTokens", () => {
     expect(serialised).toBe(0);
   });
 
-  it("serialises replaced params once and keeps the token if nothing upstream moved", () => {
+  it("serializes replaced params once and keeps the token if nothing upstream moved", () => {
     const tokens = new SplitTokens();
     const s = split("scene");
     const base = sources();
@@ -256,7 +256,7 @@ describe("SplitTokens", () => {
 
   // A slider frame replaces the params object and keeps every array in it. A decode
   // cut reads the retouch alone, so a frame that kept the retouch has nothing to
-  // serialise, however many dabs it holds.
+  // serialize, however many dabs it holds.
   describe("for a decode cut", () => {
     const retouched = () => sources({ params: { ...freshParams(5000), retouch: [SPOT] } });
     const frame = (s: SplitSources, over: Partial<DevelopParams>): SplitSources => ({
@@ -264,7 +264,7 @@ describe("SplitTokens", () => {
       params: { ...s.params, ...over },
     });
 
-    it("serialises nothing for slider frames that keep the retouch array", () => {
+    it("serializes nothing for slider frames that keep the retouch array", () => {
       const tokens = new SplitTokens();
       const s = split("decode");
       const base = retouched();
@@ -275,7 +275,7 @@ describe("SplitTokens", () => {
       expect(serialised).toBe(0);
     });
 
-    it("serialises a replaced retouch array once, and issues a token only if it differs", () => {
+    it("serializes a replaced retouch array once, and issues a token only if it differs", () => {
       const tokens = new SplitTokens();
       const s = split("decode");
       const base = retouched();
@@ -388,7 +388,7 @@ describe("SplitTokens", () => {
 
     // The text is the params part of splitUpstreamKey, unchanged, so prepass
     // reuse keys on exactly what it keyed on before it was cached.
-    it("keys the params as splitUpstreamKey serialises them", () => {
+    it("keys the params as splitUpstreamKey serializes them", () => {
       const base = heavy();
       const masked: Mask = {
         ...brushMask(99),
@@ -414,7 +414,7 @@ describe("SplitTokens", () => {
             );
     });
 
-    it("serialises only the fields a slider tick replaced", () => {
+    it("serializes only the fields a slider tick replaced", () => {
       const tokens = new SplitTokens();
       let params = heavy();
       for (const [id, s] of stages) tokens.token(id, s, sources({ params }));

@@ -10,7 +10,7 @@ import { Select } from "@/ui/components/Select";
 import { Field } from "@/ui/preferences/fields";
 import { settings, type PrefSection } from "@/ui/preferences/section-model";
 import { DisplayProfileField } from "./DisplayProfileField";
-import { SoftwareRenderingField, SOFTWARE_RENDERING, softwareRenderingListed } from "./SoftwareRenderingField";
+import { GraphicsBackendField, GRAPHICS_BACKEND, graphicsBackendListed } from "./GraphicsBackendField";
 
 export function RenderingSection() {
   const pipelines = useRegistry((s) => s.pipelines);
@@ -42,7 +42,7 @@ export function RenderingSection() {
         differently between transforms by design.
       </p>
       <DisplayProfileField />
-      <SoftwareRenderingField />
+      <GraphicsBackendField />
     </div>
   );
 }
@@ -54,7 +54,7 @@ export const renderingSection: PrefSection = {
   items: settings(
     "Default display transform",
     ...(displayProfileSupported() ? ["Display profile"] : []),
-    ...(softwareRenderingListed() ? [SOFTWARE_RENDERING] : []),
+    ...(graphicsBackendListed() ? [GRAPHICS_BACKEND] : []),
   ),
   keywords: [
     "tone map",
@@ -64,11 +64,18 @@ export const renderingSection: PrefSection = {
     "monitor",
     "wayland",
     "wide gamut",
+    "colour management",
     "color management",
     "gpu",
     "graphics card",
     "webgl",
     "virtual machine",
+    "software rendering",
+    "backend",
+    "opengl",
+    "vulkan",
+    "direct3d",
+    "swiftshader",
   ],
   render: () => <RenderingSection />,
 };

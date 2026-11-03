@@ -7,7 +7,7 @@
 // Electron's renderer and can desync window focus (keystrokes stop reaching
 // inputs until refocus/restart — electron#31917), so callers await
 // confirmDialog() and ConfirmDialogHost renders the card in-page. These tests
-// pin the promise contract, keyboard/focus behavior, and FIFO queueing.
+// pin the promise contract, keyboard/focus behaviour, and FIFO queueing.
 
 import { describe, expect, it, vi } from "vitest";
 import { act, render, screen, within } from "@testing-library/react";

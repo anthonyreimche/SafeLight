@@ -11,7 +11,7 @@
 import { crc32Update, iccpChunk, pngChunk } from "@/rendering/color-space";
 
 // Chunk and band buffers are plain ArrayBuffer-backed, which BlobPart and
-// CompressionStream (BufferSource) require; the unparameterised Uint8Array
+// CompressionStream (BufferSource) require; the unparameterized Uint8Array
 // widens to ArrayBufferLike and no longer fits either.
 type Bytes = Uint8Array<ArrayBuffer>;
 

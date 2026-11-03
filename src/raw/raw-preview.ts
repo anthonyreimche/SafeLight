@@ -31,7 +31,7 @@ export function prefersEmbeddedPreview(file: File): boolean {
 }
 
 // The mirror case: formats whose embedded preview can't be located by the JPEG
-// byte-scan (it returns a gray-noise false match) but whose libraw decode is
+// byte-scan (it returns a grey-noise false match) but whose libraw decode is
 // sound. Canon CRW is CIFF — not a clean JPEG container — so its real thumbnail
 // lives in a CIFF record the byte-scan misses; render it instead of trusting the
 // bogus preview.

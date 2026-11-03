@@ -58,7 +58,7 @@ interface ViewportImageProps {
   status?: string | null;
   resetKey?: string; // changing this snaps back to the initial zoom (e.g. a new photo)
   // Zoom a fresh photo (resetKey change) opens at. null = fit (default); a number
-  // = that scale (1 = 100%). Lets the Develop loupe honor the user's preference.
+  // = that scale (1 = 100%). Lets the Develop loupe honour the user's preference.
   initialZoom?: number | null;
   // When provided, the viewport renders this overlay on top, given the displayed
   // image rect in frame coordinates. By default an overlay forces a static fit
@@ -105,10 +105,10 @@ interface ViewportImageProps {
     image: { x: number; y: number; w: number; h: number },
     frame: { w: number; h: number },
   ) => void;
-  // ISO 12646 color-assessment mode: frame the displayed image in brilliant
+  // ISO 12646 colour-assessment mode: frame the displayed image in brilliant
   // white (a paper-white reference). The surround grey is set by the parent.
   colorAssessment?: boolean;
-  // Width of the color-assessment mat as a fraction of the smaller viewport
+  // Width of the colour-assessment mat as a fraction of the smaller viewport
   // dimension (resolution-independent). Defaults to 0.045 (4.5%).
   assessBorder?: number;
 }
@@ -187,7 +187,7 @@ export function ViewportImage({
   const drawnRef = useRef<View | null>(null);
   const [, setTick] = useState(0);
 
-  // A new image starts at the initial zoom (fit by default), centered, without
+  // A new image starts at the initial zoom (fit by default), centred, without
   // easing there from the image before.
   useEffect(() => {
     setOffset({ x: 0, y: 0 });

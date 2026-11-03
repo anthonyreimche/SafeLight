@@ -44,7 +44,7 @@ function ThumbnailImpl({
   // Active (the photo open in Develop) gets the brightest ring; other
   // members of a multi-selection get a clearly visible accent ring too.
   // Light-grey selection border. Uses `border` (not `ring`) so it relies on the
-  // same color tokens the rest of the UI does and isn't clipped by the cell's
+  // same colour tokens the rest of the UI does and isn't clipped by the cell's
   // overflow-hidden. box-border keeps the cell size constant across states.
   const borderClass = active
     ? "border-2 border-text-secondary"
@@ -52,7 +52,7 @@ function ThumbnailImpl({
       ? "border-2 border-text-secondary/60"
       : "border-2 border-transparent hover:border-surface-4";
 
-  // Color label drives a solid bottom bar + a faint cell tint so a labelled photo
+  // Colour label drives a solid bottom bar + a faint cell tint so a labelled photo
   // reads at a glance while scanning, instead of a single 2px corner dot.
   const labelBar = photo.colorLabel !== "none" ? colorLabelClasses[photo.colorLabel] : null;
   const labelTint =

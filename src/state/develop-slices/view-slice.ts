@@ -41,9 +41,9 @@ export interface ViewSlice {
   proof: boolean;
   toggleProof: () => void;
 
-  // Color assessment (ISO 12646 proofing): frames the image in brilliant white
+  // Colour assessment (ISO 12646 proofing): frames the image in brilliant white
   // on a fixed middle-grey surround, giving the eye a white + neutral reference
-  // for judging tone and color (as darktable's Ctrl+B mode). Persisted.
+  // for judging tone and colour (as darktable's Ctrl+B mode). Persisted.
   colorAssessment: boolean;
   toggleColorAssessment: () => void;
 

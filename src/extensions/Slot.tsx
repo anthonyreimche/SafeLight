@@ -15,7 +15,7 @@ import { boundaryKey } from "./guard";
 import { useSlot } from "./registry";
 import type { SlotName } from "./types";
 
-// Memoised: a slot draws again when its own contents change, not with every
+// Memoized: a slot draws again when its own contents change, not with every
 // render of the view it sits in (Develop's canvas renders on each slider tick).
 export const Slot = memo(function Slot({ name, fallback = null }: { name: SlotName; fallback?: ReactNode }) {
   const items = useSlot(name);

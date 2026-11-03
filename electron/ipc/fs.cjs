@@ -401,7 +401,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
         await shell.trashItem(path.normalize(p));
       },
     },
-    // Move/rename a file or directory. Used by folder-ops for drag-to-reorganise
+    // Move/rename a file or directory. Used by folder-ops for drag-to-reorganize
     // and folder rename; one rename handles a whole subtree atomically.
     {
       channel: "fs:move",

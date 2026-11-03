@@ -29,7 +29,7 @@ export const TEMPERATURE_MAX_K = 50000;
 export const TINT_RANGE = 150;
 export const TINT_GAIN_SPAN = 0.6;
 
-// Channel floor before linearisation. Below ~2000 K the fit takes blue to zero,
+// Channel floor before linearization. Below ~2000 K the fit takes blue to zero,
 // which would make the red/blue gain ratio infinite and the inversion useless.
 export const BLACKBODY_CHANNEL_FLOOR = 0.0008;
 
@@ -58,7 +58,7 @@ export function blackbodyLinear(kelvin: number): LinearRgb {
 }
 
 /**
- * Green-normalised white-balance gain for a slider temperature, given the
+ * Green-normalized white-balance gain for a slider temperature, given the
  * as-shot Kelvin already baked into the decoded pixels. Unity when the two
  * agree — the shader's `applyWhiteBalance`, minus the tint term.
  */
@@ -85,7 +85,7 @@ const SEARCH_STEPS = 240;
  * The temperature whose white-balance gains reproduce a target red/blue ratio,
  * expressed as `Math.log(gainR / gainB)` and measured against `asShotKelvin`.
  * The fit has no closed-form inverse, so scan log-Kelvin space; the grid is an
- * order of magnitude finer than the 10 K the UI quantises to.
+ * order of magnitude finer than the 10 K the UI quantizes to.
  */
 export function kelvinForGainRatio(
   logRedOverBlue: number,

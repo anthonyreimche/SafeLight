@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // What the Develop view hands the renderer: the edit with its bypassed panels
-// neutralised and, while a canvas tool asks for it, passed through the tool's
+// neutralized and, while a canvas tool asks for it, passed through the tool's
 // view params (crop mode widens the crop to the transformed view). Either builds
 // a new object whenever it applies, and the bridge posts each object once, so a
 // view that asks again for the same inputs (every extension-slider frame does)

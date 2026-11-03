@@ -30,7 +30,7 @@ let unsubscribers: (() => void)[] = [];
 
 // Stage textures live here (not in the per-photo param bag — they're bulk static
 // data tied to the stage, not the edit). Extensions push via api.setStageTexture;
-// the bag is replayed when the bridge (re)initialises.
+// the bag is replayed when the bridge (re)initializes.
 const stageTextures: Record<string, StageTextureData> = {};
 
 // Stage and stage-texture changes don't flow through the param-driven develop

@@ -58,7 +58,7 @@ function entryName(name: string): string {
   return name;
 }
 
-// Brand: lets the recent-projects store recognise a native handle and pull its
+// Brand: lets the recent-projects store recognize a native handle and pull its
 // absolute path back out.
 const PATH = Symbol("safelight.nativePath");
 /** The size the folder listing gave a native file handle. */

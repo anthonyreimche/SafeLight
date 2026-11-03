@@ -5,8 +5,8 @@
 
 // Shared chrome for the app's window-style pop-ups (Preferences, Extensions,
 // and any future "window" dialog): a dimmed backdrop that closes on outside
-// click, a centered surface, and a titlebar you can drag the whole window by.
-// Centralised so every such window behaves identically — drag, sizing, close,
+// click, a centred surface, and a titlebar you can drag the whole window by.
+// Centralized so every such window behaves identically — drag, sizing, close,
 // and (for callers that opt in) maximize/restore.
 // (The small single-purpose confirm dialogs — preset rename/delete, lens picker
 // — are a separate lightweight pattern and intentionally don't use this.)
@@ -81,9 +81,9 @@ export function ModalWindow({
   onToggleMaximize,
   children,
 }: ModalWindowProps) {
-  // Drag-to-move by the titlebar. `pos` is an offset from the centered resting
+  // Drag-to-move by the titlebar. `pos` is an offset from the centred resting
   // position. The component mounts fresh each time it opens (callers render it
-  // only while open), so it always starts centered — no reset needed. clientX/Y
+  // only while open), so it always starts centred — no reset needed. clientX/Y
   // are visual px under the <body> UI-scale zoom while `transform: translate` is
   // layout px, so divide deltas by uiScale to track the pointer 1:1 (mirrors
   // frame-point.ts).

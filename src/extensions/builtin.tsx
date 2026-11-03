@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Built-in contributions, modeled as a pre-installed extension: the core
+// Built-in contributions, modelled as a pre-installed extension: the core
 // extension (the Extensions manager, the stock themes, the Classic layout and
 // the built-in denoiser). Every panel and module is an extension of its own
 // (the Essentials). Registration still flows through the same scoped API
@@ -55,7 +55,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
       // "Safelight Neutral" (the default) mirrors the index.css defaults so
       // switching back is a clean reset; vars listed here are the full themable
       // surface. It follows darktable's rule of an achromatic, mid-grey UI — no
-      // pure black/white and no color cast — so the chrome and the image
+      // pure black/white and no colour cast — so the chrome and the image
       // surround don't perceptually skew the brightness/contrast/saturation of
       // the photo being edited.
       // Built-in display transform: always present so Preferences ▸ Rendering
@@ -71,7 +71,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
         name: "Safelight Neutral",
         colorScheme: "dark",
         vars: {
-          // Achromatic (R=G=B) throughout — no color cast. A bright mid-grey
+          // Achromatic (R=G=B) throughout — no colour cast. A bright mid-grey
           // chrome modelled on darktable/Ansel: the whole field of view sits
           // near middle grey so it doesn't perceptually skew the image's
           // brightness/contrast/saturation while editing. Surfaces ascend from
@@ -151,7 +151,7 @@ export const BUILTIN_EXTENSIONS: BuiltinExtension[] = [
       // denoise extension that registers its own noise-reduction stage replaces
       // this one — buildStageInjection drops builtin.denoise when another exists.
       api.registerProcessingStage(DENOISE_STAGE);
-      // Clipping / color-assessment / surround shortcuts are core actions, so
+      // Clipping / colour-assessment / surround shortcuts are core actions, so
       // they live in the central KEY_ACTIONS registry (conflict-checked,
       // Develop-scoped) rather than the extension-action path — see
       // keybindings-store.ts and use-keyboard-shortcuts.ts.

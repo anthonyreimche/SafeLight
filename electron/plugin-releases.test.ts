@@ -642,7 +642,7 @@ describe("downloadReleaseFiles", () => {
     expect(readTarball).not.toHaveBeenCalled();
   });
 
-  it("still drops a .. entry once its backslashes are normalised", async () => {
+  it("still drops a .. entry once its backslashes are normalized", async () => {
     const out = await downloadReleaseFiles({
       release: { version: "1.3.0", tag: "v1.3.0", zips: [{ name: "w.zip", url: "u" }] },
       fetchBuffer: async () => Buffer.from(""),

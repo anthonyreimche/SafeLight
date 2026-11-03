@@ -360,6 +360,60 @@ describe("an official stage's helpers", () => {
   });
 });
 
+// A pass reads the decoded source with readSource whatever the stage reads,
+// converted as a source reader's first read is. Only a pass that names it gets
+// the sampler, so every other pass program keeps its text.
+describe("readSource in a pass", () => {
+  it("is declared only where a pass names it", () => {
+    const { prepass } = buildStageInjection([
+      flagged({ reads: "current", passes: [{ glsl: "c = readPrev(vUv);" }, { glsl: "c = readSource(vUv);" }] }),
+    ]);
+    const [plain, reader] = prepass[0].passes.map((p) => p.fragmentSource);
+    expect(plain).not.toContain("uSourceImage");
+    expect(plain).not.toContain("readSource");
+    expect(reader).toContain("uniform sampler2D uSourceImage;");
+    expect(reader).toContain("vec3 readSource(vec2 uv) {");
+  });
+
+  it("is declared for a helper that names it", () => {
+    const { prepass } = buildStageInjection([
+      flagged({ passes: [{ glsl: "c = srcAt(vUv);", helpers: "vec3 srcAt(vec2 uv) { return readSource(uv); }" }] }),
+    ]);
+    expect(prepass[0].passes[0].fragmentSource).toContain("uniform sampler2D uSourceImage;");
+  });
+
+  it("converts the source into the stage's space, as the first read does", () => {
+    const { prepass } = buildStageInjection([
+      flagged({ reads: "current", space: { encoding: "perceptual" }, passes: [{ glsl: "c = readSource(vUv);" }] }),
+    ]);
+    expect(prepass[0].passes[0].fragmentSource).toContain("return slEncodePerceptual(toLin(texture(uSourceImage, uv).rgb));");
+  });
+});
+
+// A stage that reads the current image from a later process version reads the
+// source on older ones: no exit, no split, and a prepass keyed on the source.
+describe("readsCurrentFrom", () => {
+  const fromV2 = flagged({ reads: "current", readsCurrentFrom: 2, passes: [{ glsl: "c = readPrev(vUv);" }] });
+
+  it("reads the source on an older version", () => {
+    const { injection, prepass } = buildStageInjection([fromV2], V1_VARIANT);
+    expect(injection.uniforms).not.toContain("uSplitAt");
+    expect(injection.splitCount ?? 0).toBe(0);
+    expect(prepass[0].split).toBeUndefined();
+  });
+
+  it("reads the current image from that version on", () => {
+    for (const variant of [V2_VARIANT, V3_VARIANT]) {
+      const { prepass } = buildStageInjection([fromV2], variant);
+      expect(prepass[0].split).toEqual({ index: 0, cut: "scene", upstreamStageIds: [] });
+    }
+  });
+
+  it("is part of the stage's signature", () => {
+    expect(sig(fromV2)).not.toBe(sig({ ...fromV2, readsCurrentFrom: undefined }));
+  });
+});
+
 describe("split exits", () => {
   const current = (over: Partial<ProcessingStageContribution>): ProcessingStageContribution =>
     flagged({ reads: "current", passes: [{ glsl: "c = readPrev(vUv);" }], ...over });
@@ -1030,7 +1084,7 @@ describe("inter-stage variables", () => {
     ["vec2", "vec2(0.0)"],
     ["vec3", "vec3(0.0)"],
     ["vec4", "vec4(0.0)"],
-  ] as const)("zero-initialises a %s", (glslType, zero) => {
+  ] as const)("zero-initializes a %s", (glslType, zero) => {
     const stage = { ...PRODUCER, produces: [{ name: "acmeMade", glslType, producer: `${glslType}(1.0)` }] };
     expect(buildStageInjection([stage]).injection.helpers).toContain(`${glslType} isv_acmeMade = ${zero};`);
   });

@@ -60,7 +60,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "develop.zoom100", label: "Zoom to 100%", category: "Develop", def: "Ctrl+1" },
   { id: "develop.toggleClipping", label: "Toggle clipping overlay", category: "Develop", def: "J" },
   { id: "develop.toggleProof", label: "Toggle soft proof", category: "Develop", def: "S" },
-  { id: "develop.colorAssessment", label: "Toggle color assessment", category: "Develop", def: "Ctrl+B" },
+  { id: "develop.colorAssessment", label: "Toggle colour assessment", category: "Develop", def: "Ctrl+B" },
   { id: "develop.surroundDarker", label: "Surround darker", category: "Develop", def: "Ctrl+Shift+[", altDef: "Ctrl+Shift+{" },
   { id: "develop.surroundLighter", label: "Surround lighter", category: "Develop", def: "Ctrl+Shift+]", altDef: "Ctrl+Shift+}" },
   { id: "brush.smaller", label: "Shrink brush", category: "Develop", def: "[" },

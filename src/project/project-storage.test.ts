@@ -830,7 +830,7 @@ describe.each(BUILDS)("ProjectStorage ($label)", (cfg) => {
 
   it("saves a batch of edit states as one catalog write, without the debounce", async () => {
     // A bulk Library action stores one history per photo. A write each would
-    // re-serialise the whole catalog once per photo.
+    // re-serialize the whole catalog once per photo.
     const p = mount(cfg, THREE);
     const opened = await open(p);
     await opened.storage.flush(); // the file exists from here, so a save is one write

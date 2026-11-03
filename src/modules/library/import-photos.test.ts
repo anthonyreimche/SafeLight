@@ -544,7 +544,7 @@ describe("buildPhoto", () => {
     expect(photo.exif.imageDescription).toBe("Sunrise");
   });
 
-  it("leaves an unrecognised XMP colour label unset", async () => {
+  it("leaves an unrecognized XMP colour label unset", async () => {
     h.xmp = { colorLabel: "Chartreuse" };
     const photo = (await buildPhoto(file("a.jpg", "image/jpeg"), null, null))!;
     expect(photo.colorLabel).toBe("none");

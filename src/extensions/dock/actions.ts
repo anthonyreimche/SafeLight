@@ -51,7 +51,7 @@ export function toggleDockPanel(id: string): void {
   // A closed panel with a default dock in the current module reopens there —
   // appended to the first rail on its side, or in a fresh rail — instead of
   // floating, so extension togglePanel calls land panels where they belong.
-  // (The View menu opens panels centered instead: toggleDockPanelFloating.)
+  // (The View menu opens panels centred instead: toggleDockPanelFloating.)
   const def = useRegistry.getState().panels[id]?.defaultDock;
   if (def && def.module === s.module) {
     const rail = s.rails.find((r) => r.side === def.direction);
@@ -70,7 +70,7 @@ export function toggleDockPanel(id: string): void {
 }
 
 /** View-menu toggle. Closing matches toggleDockPanel, but opening always
- *  floats the panel centered over the workspace — never into a rail, where it
+ *  floats the panel centred over the workspace — never into a rail, where it
  *  could land scrolled out of sight. Consecutive opens stagger so each new
  *  window leaves the previous one visible. */
 export function toggleDockPanelFloating(id: string): void {

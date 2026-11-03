@@ -339,7 +339,7 @@ describe("importPresetFile", () => {
     });
   });
 
-  it("reports no settings when the importer doesn't recognise the file", async () => {
+  it("reports no settings when the importer doesn't recognize the file", async () => {
     const outcome = await importPresetFile(xmpFile(), [importer(async () => null)]);
     expect(outcome).toEqual({ status: "no-settings" });
   });

@@ -78,15 +78,15 @@ export function ExportSection() {
         />
       </Field>
       <Field
-        label="Color space"
-        hint="Output profile. Pixels are converted and the matching ICC profile is embedded so other apps read the colors correctly. sRGB suits the web; Adobe RGB / ProPhoto keep a wider gamut for print."
+        label="Colour space"
+        hint="Output profile. Pixels are converted and the matching ICC profile is embedded so other apps read the colours correctly. sRGB suits the web; Adobe RGB / ProPhoto keep a wider gamut for print."
       >
         <Select
           value={s.exportColorSpace}
           onChange={(v) =>
             updateSettings({ exportColorSpace: v as typeof s.exportColorSpace })
           }
-          ariaLabel="Color space"
+          ariaLabel="Colour space"
           className="w-full"
           options={COLOR_SPACES.map((c) => ({ value: c.value, label: c.label }))}
         />
@@ -110,6 +110,19 @@ export function ExportSection() {
         checked={s.exportBundle}
         onChange={(v) => updateSettings({ exportBundle: v })}
       />
+      <Field
+        label="If a file exists"
+        hint="When exporting to a folder that already has a file of the same name. A photo's original is never replaced: it gets a number either way."
+      >
+        <OptionRow
+          value={s.exportIfExists}
+          options={[
+            { value: "number", label: "Add a number" },
+            { value: "replace", label: "Replace" },
+          ]}
+          onChange={(v) => updateSettings({ exportIfExists: v as typeof s.exportIfExists })}
+        />
+      </Field>
       <p className="text-[10px] leading-relaxed text-text-muted">
         These set the Export panel's starting values; you can still change them
         per export.
@@ -128,9 +141,10 @@ export const exportSection: PrefSection = {
     "PNG bit depth",
     "Default quality",
     "Default resolution",
-    "Color space",
+    "Colour space",
     "Bundle multiple photos as ZIP",
+    "If a file exists",
   ),
-  keywords: ["tiff", "png"],
+  keywords: ["tiff", "png", "overwrite"],
   render: () => <ExportSection />,
 };

@@ -229,7 +229,7 @@ describe("sorting", () => {
     ]);
   });
 
-  it("falls back to dateImported for an unrecognised sort id", () => {
+  it("falls back to dateImported for an unrecognized sort id", () => {
     const photos = [
       photo({ id: "second", dateImported: 20 }),
       photo({ id: "first", dateImported: 10 }),

@@ -172,7 +172,7 @@ html.sl-larger-text .tracking-wider {
 }
 
 /* Preferences ▸ Accessibility ▸ Lowercase headings. Render the all-caps section
-   labels in Title Case (capitalise the first letter of each word) instead of
+   labels in Title Case (capitalize the first letter of each word) instead of
    UPPERCASE — all-caps slows word recognition. The label text is authored
    mixed-case and only displayed uppercase via .uppercase, so `capitalize` yields
    proper Title Case. Placed after the larger-text rule so it wins when both are

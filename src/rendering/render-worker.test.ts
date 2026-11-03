@@ -233,6 +233,8 @@ const { FakeRenderer } = vi.hoisted(() => {
 
     /** The key of each uploadSource call. */
     uploads: string[] = [];
+    /** capFloat16 of each uploadSource call. */
+    uploadCaps: boolean[] = [];
 
     uploadSource(
       key: string,
@@ -240,9 +242,11 @@ const { FakeRenderer } = vi.hoisted(() => {
       _maxEdge?: number,
       _isFallbackPreview?: boolean,
       bind = true,
+      capFloat16 = false,
     ) {
       this.failIfAsked("uploadSource");
       this.uploads.push(key);
+      this.uploadCaps.push(capFloat16);
       if (bind) this.holdSource(image);
     }
 
@@ -1718,6 +1722,22 @@ describe("render-worker params patches", () => {
 
     send(INIT);
     expect(FakeRenderer.instances[1].paramsSeen).toEqual([]);
+  });
+});
+
+// Develop draws no larger than its render cap, so a cached source larger than
+// the cap (a 3072 px preview at the 2560 px integrated graphics setting) would
+// only hold memory. At the larger caps the cache is never bigger, so nothing
+// changes there.
+describe("render-worker develop sources", () => {
+  it("caps a cached float16 source to the develop render cap", () => {
+    send({ cmd: "init", width: 64, height: 64, highBitDepth: false });
+    send({ cmd: "setImage", image: CACHED, maxEdge: 2560 });
+    send({ cmd: "uploadSource", target: "main", key: "next", image: CACHED, maxEdge: 2560 });
+    send({ cmd: "uploadSource", target: "main", key: "neighbour", image: CACHED, maxEdge: 2560, bind: false });
+    const [develop] = FakeRenderer.instances;
+    expect(develop.capFloat16).toEqual([true]);
+    expect(develop.uploadCaps).toEqual([true, true]);
   });
 });
 

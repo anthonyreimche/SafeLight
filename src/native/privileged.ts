@@ -72,7 +72,7 @@ export function privilegedCapture(): NativeCaptureBridge | null {
   return captureBridge;
 }
 
-/** Software rendering for the next launch (Linux), or null outside Electron. */
+/** The graphics backend for the next launch, or null outside Electron. */
 export function privilegedGpu(): NativeGpuBridge | null {
   if (!claimed) claimPrivileged();
   return gpuBridge;

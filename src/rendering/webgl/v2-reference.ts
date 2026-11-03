@@ -48,6 +48,10 @@
 //   its spot uniforms and constants, its helpers and their bindings.
 // - 2026-11-01, Masking left core: `*/uniforms`, `*/helpers` and `*/meta`,
 //   for its mask and component uniforms, compCoverage and their bindings.
+// - 2026-11-03, Tone Curve range fix (Anthony approved range fixes on version
+//   2 and later; version 1 frozen): the six `*/helpers` hashes. Lines 2 and 3
+//   read the table at the clipped colour and add back what the clip took,
+//   under SL_PROCESS_VERSION >= 2.
 //
 // From 2026-10-30 the assembled programs (the `*/shader/*` hashes) are frozen
 // with every version's in program-reference.ts, which took them over while
@@ -55,42 +59,42 @@
 
 export const V2_REFERENCE: Readonly<Record<string, string>> = {
   "builtin/effects": "6039aff0794c47e3a45fcdee57dfcafe301ce1c9f06fd36d4f844422615789d5",
-  "builtin/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "builtin/helpers": "7a32db40135151ff6a60101230c1ddeb42ccafcdb47da05c28874971adfdb0f2",
   "builtin/meta": "ebde3148edee7a7c59b1200dc483ad08647a0b8342e35f5daa81cb0adfbd37ce",
   "builtin/noiseReduction": "eef65e49a5de2300be39305d91aa23064dbd08364090027345a4ccf7113261a3",
   "builtin/sceneLinear": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "builtin/srcUv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "builtin/uniforms": "d567f6382b6baedd5a2cb880f40d5ae8dd764f0b13f19e9b5c976aead119a6dc",
   "layered/effects": "6039aff0794c47e3a45fcdee57dfcafe301ce1c9f06fd36d4f844422615789d5",
-  "layered/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "layered/helpers": "7a32db40135151ff6a60101230c1ddeb42ccafcdb47da05c28874971adfdb0f2",
   "layered/meta": "80864346df45535cf6aabb386ec8e53a7961006d5eeb2ad5a5fe4bc51996904d",
   "layered/noiseReduction": "609911b73568fd5e28d594956b1e799d374018ddc337b4b82ca8f2a1deb1fffe",
   "layered/sceneLinear": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "layered/srcUv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "layered/uniforms": "1975c3a97280bfe1d88051cbdbc086e8fd1d7975658adab06f50a03287cca877",
   "legacyExtensions/effects": "c04e12b8aace174150d0d78fa27f7bab7d042777c191c05027c419b873de3753",
-  "legacyExtensions/helpers": "c972cd6ced350b161be748ac13c083d3903419ef7afd3b1608d92e89533c380b",
+  "legacyExtensions/helpers": "eac4cdc9cd8a0bf01dbbce28a028e152f88962587faf8e7b3bba54893f65ff6e",
   "legacyExtensions/meta": "2216d55ab0ccac61011ef307bccdf5df69bc1c6f2b54466dbc3a65a53a191319",
   "legacyExtensions/noiseReduction": "ed6a9fc5191520336c0b703811bcae7117d3f5093ab55db6940162d6c99ff784",
   "legacyExtensions/sceneLinear": "8dbffc7a5b765c59116c415438cbfb600a99d0d49255ed2d928af732383310b6",
   "legacyExtensions/srcUv": "5e65c39113bf763c3c3ad5eecc1cbe34b202d939b2876d2800c25d85c2750bf5",
   "legacyExtensions/uniforms": "a3818e0295e86345e4c5f11c9bf80967fb4534fc83f5afdcf6295b5b3af6a1c6",
   "sceneLuma/effects": "d81c06c341905e950a23c9ec6f85be2e9c971a2795ff4ee36c898b73f5941778",
-  "sceneLuma/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "sceneLuma/helpers": "7a32db40135151ff6a60101230c1ddeb42ccafcdb47da05c28874971adfdb0f2",
   "sceneLuma/meta": "85941a8a2355959061c6bf28ed31b09a2257596487f22a87fed2fd36d941fdae",
   "sceneLuma/noiseReduction": "eef65e49a5de2300be39305d91aa23064dbd08364090027345a4ccf7113261a3",
   "sceneLuma/sceneLinear": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "sceneLuma/srcUv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "sceneLuma/uniforms": "0376c1be48d560d7ab609cdbbc6fb95e402bdffb87eb4e6a6cbf7aefcb0f2bfb",
   "spaced/effects": "1fc9966285706d38b2b3d6dd03d49b51feb6cac495a670c3615351fb9cc303b1",
-  "spaced/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "spaced/helpers": "7a32db40135151ff6a60101230c1ddeb42ccafcdb47da05c28874971adfdb0f2",
   "spaced/meta": "59be795f2a45f5ceadf1fd3b3394f33156642b15575c766caf9a1f72eba2a9a3",
   "spaced/noiseReduction": "eef65e49a5de2300be39305d91aa23064dbd08364090027345a4ccf7113261a3",
   "spaced/sceneLinear": "60b28a243584743c6c534cbb4c8765070d878edae953c00987daf8e374ddc1b9",
   "spaced/srcUv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "spaced/uniforms": "2a0f80e5adb11c995e4d980763278ba59769c5f5edb01140f7d273fac10c7135",
   "splits/effects": "58db012f651270c0649bc0999f84139b6ef5503f4140991bf9dbb776b97253be",
-  "splits/helpers": "15b92b22503bd890d381f02a19563cdbc3dc3a780817591ea6ea8b44d079cafc",
+  "splits/helpers": "7a32db40135151ff6a60101230c1ddeb42ccafcdb47da05c28874971adfdb0f2",
   "splits/meta": "97587ed523cd9e173826496f82a34b06f56b7b91a8ffc5e5987ee434c59819cd",
   "splits/noiseReduction": "eb150c7463d7ed266799e45b9bd42b9337ace137b4aa311fb1ba90661e364838",
   "splits/sceneLinear": "9f469ec2d54f78f2fac6fa6a543f84bf799dfd190301c453dac30c4989c0a502",

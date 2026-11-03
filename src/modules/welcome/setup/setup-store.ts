@@ -307,7 +307,7 @@ async function decideAndOpen(
 let firstRun: Promise<void> | null = null;
 
 /** Decide once per launch, in the main window, whether setup opens by itself.
- *  Memoised: StrictMode mounts effects twice. */
+ *  Memoized: StrictMode mounts effects twice. */
 export function initFirstRun(
   sources: SignalSources = defaultSources(),
   budgetMs = FIRST_RUN_BUDGET_MS,

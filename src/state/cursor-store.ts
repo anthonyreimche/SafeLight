@@ -153,7 +153,7 @@ function specToCss(spec: CursorSpec): string {
   return `url("${imageToUrl(image)}") ${hotspotX} ${hotspotY}, ${fallback}`;
 }
 
-/** Normalise a public CursorContribution into a CursorSpec, preferring `css`. */
+/** Normalize a public CursorContribution into a CursorSpec, preferring `css`. */
 export function contributionToSpec(c: CursorContribution): CursorSpec {
   if (c.css != null) return { css: c.css };
   if (c.image != null)

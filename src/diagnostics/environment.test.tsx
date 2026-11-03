@@ -62,3 +62,18 @@ describe("readWebGLInfo", () => {
     expect((await freshReadWebGLInfo())()).toBeNull();
   });
 });
+
+// Chromium refuses WebGL for a couple of minutes after a GPU reset. A probe that
+// lands in that window must not stand for the whole session.
+describe("readWebGLInfo after a refused context", () => {
+  it("asks again once WebGL is back", async () => {
+    stubProbeContext([]);
+    const probe = vi.mocked(HTMLCanvasElement.prototype.getContext);
+    const working = probe.getMockImplementation()!;
+    probe.mockImplementation(() => null);
+    const read = await freshReadWebGLInfo();
+    expect(read()).toBeNull();
+    probe.mockImplementation(working);
+    expect(read()?.renderer).toBe("renderer");
+  });
+});

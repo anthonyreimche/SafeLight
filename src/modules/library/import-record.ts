@@ -98,7 +98,7 @@ export function mimeTypeFromName(name: string): string {
   return RAW_MIME[getExtension(name)] ?? "";
 }
 
-// XMP colour labels are free-text (Adobe/Nikon write capitalised colour names).
+// XMP colour labels are free-text (Adobe/Nikon write capitalized colour names).
 // Map the ones SafeLight understands; anything else leaves the label unset.
 function mapColorLabel(
   label: string | undefined,

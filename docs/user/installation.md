@@ -314,7 +314,7 @@ sudo apt --fix-broken install
 sudo dnf install libXScrnSaver libappindicator-gtk3
 ```
 
-**Colors look oversaturated on a wide-gamut monitor (Wayland)** — under Wayland, Chromium applies no display color management, so sRGB values reach the panel unconverted unless the desktop converts them (KDE Plasma does once a Color profile is set). The cause and the fixes, KDE's Color profile, **Preferences ▸ Rendering ▸ Display profile** and the XWayland workaround (`--ozone-platform=x11`), are in the [FAQ](faq.md#colors-look-oversaturated-on-linux-with-a-wide-gamut-monitor).
+**Colours look oversaturated on a wide-gamut monitor (Wayland)** — under Wayland, Chromium applies no display colour management, so sRGB values reach the panel unconverted unless the desktop converts them (KDE Plasma does once a Colour profile is set). The cause and the fixes, KDE's Colour profile, **Preferences ▸ Rendering ▸ Display profile** and the XWayland workaround (`--ozone-platform=x11`), are in the [FAQ](faq.md#colors-look-oversaturated-on-linux-with-a-wide-gamut-monitor).
 
 ### RAW and image quality
 
@@ -322,7 +322,7 @@ sudo dnf install libXScrnSaver libappindicator-gtk3
 
 **Unsupported RAW format / file shows as grey tile** — Safelight falls back to the embedded JPEG preview if libraw-wasm can't decode the file, and Develop's corner says "Preview (Safelight can't open this RAW yet)". A file with no usable preview at all shows a warning tile; hover it for the reason. Once two launches have failed on a file, Safelight stops trying it on every open. After updating Safelight, **Re-import** the photo or use **Preferences ▸ Previews ▸ Clear preview cache** to try it again. Very new camera models may need a newer LibRaw. Check the [libraw supported cameras list](https://www.libraw.org/supported-cameras) and open a GitHub issue if your camera is listed but fails.
 
-**Colors look wrong after decoding** — check that the correct camera profile is applied (Preferences ▸ Color). Some cameras benefit from a DCP profile; export the photo with the "Use embedded profile" option and compare.
+**Colours look wrong after decoding** — check that the correct camera profile is applied (Preferences ▸ Colour). Some cameras benefit from a DCP profile; export the photo with the "Use embedded profile" option and compare.
 
 ### Projects and files
 

@@ -119,7 +119,7 @@ function scaleMultipliers(colorData: unknown): number[] | undefined {
   return mul.length >= 2 ? mul : undefined;
 }
 
-// Under any highlight mode but clip, scale_colors() normalises the multipliers
+// Under any highlight mode but clip, scale_colors() normalizes the multipliers
 // to their LARGEST so no channel can exceed 65535 — which parks the least-
 // amplified channel's sensor white at 65535 / max(mul): about a stop down, and
 // varying with white balance. Auto-bright used to hide that. Undo it here in
@@ -354,7 +354,7 @@ export async function decodeRawFloatViaLibRaw(
       // SRGB_FROM_ACES rotates the samples to linear sRGB below.
       outputColor: 6,
       // No `gamm`: the wrapper ignores it and always encodes Rec.709 (see
-      // LINEAR_OF_CODE), which is linearised below.
+      // LINEAR_OF_CODE), which is linearized below.
       // No content-driven auto-brighten: it scaled each image so ~1% of pixels
       // clipped to white, destroying exactly the data Highlights recovery needs
       // (and made baseline brightness vary per image). LR uses a fixed baseline.
@@ -475,7 +475,7 @@ export async function decodeRawFloatViaLibRaw(
 
     // Sanity-check: reject a decode where all channels are simultaneously
     // near-clipped AND strongly colour-imbalanced — the hallmark of a bad
-    // WB/colour-matrix for an unrecognised camera, not a legitimately bright
+    // WB/colour-matrix for an unrecognized camera, not a legitimately bright
     // scene (which would have balanced channels near 1.0).
     {
       let sumR = 0, sumG = 0, sumB = 0;

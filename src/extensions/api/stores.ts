@@ -122,7 +122,7 @@ export interface DevelopState {
   /** Soft proof of the export colour space, on photos that have one (version 3). */
   proof: boolean;
   toggleProof: () => void;
-  /** ISO 12646 color assessment: the image framed in white on a middle-grey
+  /** ISO 12646 colour assessment: the image framed in white on a middle-grey
    *  surround. */
   colorAssessment: boolean;
   toggleColorAssessment: () => void;
@@ -336,7 +336,7 @@ export interface AppSettings {
    *  theme's surface. */
   canvasSurroundOverride: boolean;
   canvasSurround: string;
-  /** Width of the color-assessment mat, as a percentage of the smaller
+  /** Width of the colour-assessment mat, as a percentage of the smaller
    *  viewport dimension. */
   assessBorderPct: number;
   /** How much the app behind a window-style pop-up is dimmed, 0–0.8. */
@@ -389,7 +389,7 @@ export interface AppSettings {
   rawCacheMaxEdge: 2048 | 3072 | 4096;
 
   // Render pipeline
-  developMaxEdge: 4096 | 6144 | 8192;
+  developMaxEdge: 2560 | 3072 | 4096 | 6144 | 8192;
   /** GPU memory budget (bytes) for resident decoded RAW sources. */
   gpuSourceCacheBytes: number;
   developPrefetchNeighbors: boolean;
@@ -411,6 +411,7 @@ export interface AppSettings {
   exportPngBitDepth: 8 | 16;
   exportIncludeMetadata: boolean;
   exportIncludeLocation: boolean;
+  exportIfExists: "number" | "replace";
   exportPresets: ExportPreset[];
 
   // Shortcuts

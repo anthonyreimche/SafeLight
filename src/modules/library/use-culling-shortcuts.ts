@@ -10,7 +10,7 @@
 // Preferences ▸ Shortcuts; the defaults match Lightroom:
 //
 //   1-5 rating   0 clear   P pick   X reject   U unflag
-//   6-9 color label        [ ] rotate
+//   6-9 colour label        [ ] rotate
 //   ← → prev / next         ↑ ↓ up / down a grid row
 //   - = thumbnail size
 //
@@ -169,7 +169,7 @@ function handleCullingKey(e: KeyboardEvent): void {
     if (targetIds.length === 0) return;
     e.preventDefault();
     const color = LABELS[action];
-    // Pressing the same color again clears it (toggle off).
+    // Pressing the same colour again clears it (toggle off).
     const ids = new Set(targetIds);
     const allHaveColor = catalog.photos
       .filter((p) => ids.has(p.id))

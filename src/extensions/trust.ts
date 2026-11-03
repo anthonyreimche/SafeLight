@@ -6,7 +6,7 @@
 // Renderer-side view of the extension trust registry: a verified allowlist (a
 // human reviewed the repo) and a banned kill-switch (repos/owners that turned
 // malicious — refused at install and skipped at load, even once installed). The
-// lists are fetched + normalised in the Electron main process (the renderer CSP
+// lists are fetched + normalized in the Electron main process (the renderer CSP
 // blocks the raw.githubusercontent fetch); here we cache the one payload and
 // expose synchronous isVerified/isBanned lookups so the store UI and loader can
 // decide without awaiting per-extension. Mirrors the cache shape of store-ui.ts.

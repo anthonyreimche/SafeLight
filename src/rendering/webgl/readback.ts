@@ -215,7 +215,7 @@ export class Readback {
 
   // Preferred path: the display-encoded output in an RGBA16F target, read back
   // as float. The values are still display-space in [0,1] (same axis and
-  // color space as the 8-bit path, so the tonal zones line up), but continuous
+  // colour space as the 8-bit path, so the tonal zones line up), but continuous
   // rather than quantized to 256 codes. This removes the comb / banding the
   // 8-bit readback shows after any tonal stretch (curves, exposure,
   // per-channel white-balance gains spread the 256 codes apart).
@@ -235,7 +235,7 @@ export class Readback {
     return result;
   }
 
-  // Fallback when float color buffers aren't renderable: RGBA8 readback.
+  // Fallback when float colour buffers aren't renderable: RGBA8 readback.
   // 256 source codes into 256 bins, so a tonal stretch will comb — but this
   // only runs on GPUs without EXT_color_buffer_float.
   private histogram8(): HistogramData {

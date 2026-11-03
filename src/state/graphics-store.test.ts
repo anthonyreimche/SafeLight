@@ -141,7 +141,7 @@ describe("the words for a missing WebGL2", () => {
 
   it("says what still works", () => {
     expect(GRAPHICS_STILL_WORKS).toBe(
-      "You can still browse, rate and organise photos; editing and export need graphics support.",
+      "You can still browse, rate and organize photos; editing and export need graphics support.",
     );
   });
 });

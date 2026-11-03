@@ -38,7 +38,7 @@ export type { DevelopTier };
 // linear-display RGB in 0..1, by reading the surround element's computed
 // background. Reading the DOM rather than re-deriving from settings keeps the
 // crop-mode margin matching every case at once — theme surface, the fixed
-// surround override, and color-assessment grey. Falls back to the legacy dark.
+// surround override, and colour-assessment grey. Falls back to the legacy dark.
 function surroundRGB(): [number, number, number] {
   if (typeof document !== "undefined") {
     const el = document.querySelector("[data-canvas-surround]");
@@ -516,7 +516,7 @@ export function useDevelopRenderer(
   }, [shownMaskId, params.masks]);
 
   // Sharpening preview: while Alt/Ctrl-dragging a Detail-panel sharpening slider,
-  // the shader renders a grayscale visualization of that sub-signal. Push the mode
+  // the shader renders a greyscale visualization of that sub-signal. Push the mode
   // straight through and re-render; releasing the key/drag sets it back to 0.
   useEffect(() => {
     const bridge = bridgeRef.current;

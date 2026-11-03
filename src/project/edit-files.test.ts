@@ -81,7 +81,7 @@ describe("fileOf", () => {
     expect(hashes.size).toBe(50_000);
   });
 
-  it("gives ids that one sanitiser would collapse together names of their own", () => {
+  it("gives ids that one sanitizer would collapse together names of their own", () => {
     const names = ["a:b", "a/b", "a_b", "a.b", "a b", "A-B", "a-B"].map((id) => fileOf(id).name);
     expect(new Set(names).size).toBe(names.length);
     expect(names).not.toContain("a-b");

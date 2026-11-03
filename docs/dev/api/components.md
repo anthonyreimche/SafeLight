@@ -5,7 +5,7 @@
 Two kits keep extension UI matching the app. Render them with `api.react` (`React.createElement(api.components.Slider, props)`), never a bundled React.
 
 - **`api.components`**: the app's own `Panel`, `Slider`, `Histogram`, `CurveEditor`, `Rating`, `Thumbnail` and `PhotoListRow`.
-- **`api.ui`**: themed form and layout primitives, plus `tokens`. Use these over hand-rolled controls.
+- **`api.ui`**: themed form and layout primitives, `tokens`, and the app's dialogs. Use these over hand-rolled controls.
 
 ## `Panel`
 
@@ -105,7 +105,7 @@ Binds its children to one mask (3.2.0): `<MaskScope maskId={id}>`. A mask sub-pa
 
 ## `Thumbnail`
 
-The Library grid cell. It shows the stored import preview, never an edited render. Callbacks take the photo id first and the cell is memoised, so pass one stable function to every cell.
+The Library grid cell. It shows the stored import preview, never an edited render. Callbacks take the photo id first and the cell is memoized, so pass one stable function to every cell.
 
 ```typescript
 interface ThumbnailProps {
@@ -183,6 +183,43 @@ h(Stack, { gap: 8 },
     h(Select, { value: size, onChange: setSize,
       options: [{ value: "2048", label: "2048 px" }, { value: "4096", label: "4096 px" }] })),
   h(Button, { variant: "primary", full: true, onClick: run }, "Export"));
+```
+
+## `api.ui` dialogs
+
+Ask or tell the person something in the app's own dialog card (3.2.0). Never call `window.confirm` or `window.alert`: in Electron a native dialog can leave the window unaware it has focus again, and every key stops reaching the app until it is refocused or restarted.
+
+```ts
+confirmDialog(options: {
+  title: string;
+  message: string;
+  confirmLabel?: string;            // default "OK"
+  cancelLabel?: string;             // default "Cancel"
+  variant?: "default" | "danger";
+}): Promise<boolean>;
+
+alertDialog(options: {
+  title: string;
+  message: string;
+  confirmLabel?: string;            // default "OK"
+}): Promise<void>;
+```
+
+- `confirmDialog` resolves `true` on confirm. Cancel, Esc and a click outside the card all resolve `false`.
+- `alertDialog` resolves however the card is closed.
+- `variant: "danger"` paints the confirm button red and opens with Cancel focused. Keep it for actions that destroy data.
+- A blank line in `message` starts a new paragraph; a single line break stays a line break.
+- Dialogs queue: a second one waits until the first is answered. While one is open the app's own shortcuts stand down.
+- A start of your extension that no longer counts (it timed out, or a newer copy took over) can't open one: the call throws, like a `register` call would.
+
+```js
+const ok = await api.ui.confirmDialog({
+  title: "Clear the cache",
+  message: "This deletes every rendered preview. They are made again as you browse.",
+  confirmLabel: "Clear",
+  variant: "danger",
+});
+if (ok) clearCache();
 ```
 
 ## Theming tokens

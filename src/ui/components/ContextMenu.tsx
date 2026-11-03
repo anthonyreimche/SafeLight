@@ -11,7 +11,7 @@ import { uiZoom } from "@/ui/frame-point";
 export interface ContextMenuItem {
   label: string;
   onClick: () => void;
-  /** Render in the red danger color (e.g. Remove). */
+  /** Render in the red danger colour (e.g. Remove). */
   danger?: boolean;
   disabled?: boolean;
 }

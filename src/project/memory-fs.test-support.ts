@@ -77,7 +77,7 @@ export class MemoryFs implements NativeFsBridge {
 
   /** Paths handed to reveal(), in call order. */
   readonly revealed: string[] = [];
-  /** Every path write() reached, normalised, in call order. put() is test setup
+  /** Every path write() reached, normalized, in call order. put() is test setup
    *  and isn't logged. */
   private readonly written: string[] = [];
   /** While holdWrites() holds writes: how to land each held write, oldest first. */

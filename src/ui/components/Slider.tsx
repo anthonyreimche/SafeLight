@@ -23,7 +23,7 @@ interface SliderProps {
   step?: number;
   defaultValue?: number; // double-clicking the track resets to this
   hideValue?: boolean; // hide the editable numeric field
-  compact?: boolean; // narrow label + value, for tight columns (e.g. color wheels)
+  compact?: boolean; // narrow label + value, for tight columns (e.g. colour wheels)
   // CSS background for the track (e.g. a hue/lightness gradient). When set, the
   // filled bar is replaced by a thumb marker so the gradient stays visible —
   // the Lightroom-style coloured HSL tracks. Plain sliders ignore this.
