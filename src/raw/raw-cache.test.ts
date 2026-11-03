@@ -14,6 +14,10 @@ const h = vi.hoisted(() => ({
   entries: [] as { key: string; complete: boolean }[],
   /** The reads the worker was asked for: the key, and whether with the sample. */
   reads: [] as [string, boolean][],
+  /** What the worker reports it could not clear, or why it was unreachable. */
+  /** The worker has no folder or project scope to write to. */
+  stores: true,
+  clear: { failed: 0 } as { failed: number } | Error,
 }));
 
 vi.mock("./cache-bridge", () => ({
@@ -23,13 +27,17 @@ vi.mock("./cache-bridge", () => ({
   workerWriteCachedPreview: async (key: string) => {
     if (h.refuseWrites) throw new Error("The quota has been exceeded.");
     h.sent.push(`write ${key}`);
+    return h.stores;
   },
   workerReadCachedPreview: async (key: string, sample: boolean) => {
     h.reads.push([key, sample]);
     return null;
   },
   workerDeleteCachedPreview: async () => {},
-  workerClearRawCache: async () => {},
+  workerClearRawCache: async () => {
+    if (h.clear instanceof Error) throw h.clear;
+    return h.clear;
+  },
   workerCachedKeys: async () => h.entries,
 }));
 
@@ -40,6 +48,7 @@ vi.mock("@/state/settings-store", () => ({
 import {
   cacheListing,
   cachedKeys,
+  clearRawCache,
   decodeMarkerKey,
   rawCacheGeneration,
   rawCacheKey,
@@ -56,6 +65,8 @@ beforeEach(() => {
   h.refuseWrites = false;
   h.entries = [];
   h.reads = [];
+  h.clear = { failed: 0 };
+  h.stores = true;
 });
 
 describe("rawCacheKey", () => {
@@ -188,5 +199,28 @@ describe("readCachedPreview", () => {
     await readCachedPreview("k");
     await readCachedPreview("k", { sample: true });
     expect(h.reads).toEqual([["k", false], ["k", true]]);
+  });
+});
+
+describe("writeCachedPreview", () => {
+  it("reports a write the worker had nowhere to put", async () => {
+    h.stores = false;
+    expect(await writeCachedPreview("k", pixels(), 1, 1, rawCacheGeneration())).toBe(false);
+  });
+});
+
+describe("clearRawCache", () => {
+  it("reports how many parts the worker could not clear", async () => {
+    h.clear = { failed: 2 };
+    expect(await clearRawCache()).toEqual({ failed: 2 });
+  });
+
+  it("reports a clear that went through as no failures", async () => {
+    expect(await clearRawCache()).toEqual({ failed: 0 });
+  });
+
+  it("does not hide an unreachable worker", async () => {
+    h.clear = new Error("worker gone");
+    await expect(clearRawCache()).rejects.toThrow("worker gone");
   });
 });

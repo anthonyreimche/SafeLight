@@ -123,7 +123,7 @@ function tempDir(name: string): string {
   return dir;
 }
 
-function put(root: string, rel: string, body: string): void {
+function put(root: string, rel: string, body: string | Uint8Array): void {
   fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
   fs.writeFileSync(path.join(root, rel), body);
 }
@@ -256,10 +256,11 @@ describe("smoke: the same card, changed while the app was closed", () => {
 
 describe("smoke: cards swapped at one mount point", () => {
   // Every card a camera formats names its photos alike and mounts at one path.
-  const CARD_A = { "DCIM/100CANON/IMG_0001.CR3": "card A one", "DCIM/100CANON/IMG_0002.CR3": "card A two" };
-  const CARD_B = { "DCIM/100CANON/IMG_0001.CR3": "card B: one", "DCIM/100CANON/IMG_0002.CR3": "card B: two!" };
+  // Real cards are told apart by what their photos say: a capture time and a size.
+  const CARD_A = { "DCIM/100CANON/IMG_0001.CR3": shot(1), "DCIM/100CANON/IMG_0002.CR3": shot(2) };
+  const CARD_B = { "DCIM/100CANON/IMG_0001.CR3": shot(41, 7), "DCIM/100CANON/IMG_0002.CR3": shot(42, 9) };
 
-  function insert(mount: string, card: Record<string, string>): void {
+  function insert(mount: string, card: Record<string, Uint8Array>): void {
     for (const entry of fs.readdirSync(mount)) fs.rmSync(path.join(mount, entry), { recursive: true });
     for (const [rel, body] of Object.entries(card)) put(mount, rel, body);
   }

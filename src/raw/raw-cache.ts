@@ -205,11 +205,11 @@ export async function writeCachedPreview(
   if (begunIn !== generation) return true;
   try {
     // An accepted decode outranks any verdict struck against the photo before.
-    await Promise.all([
+    const [stored] = await Promise.all([
       workerWriteCachedPreview(key, data, width, height, getSettings().rawCacheMaxEdge),
       ...markerKeysOf(key).map((k) => workerDeleteCachedPreview(k)),
     ]);
-    return true;
+    return stored;
   } catch {
     // Cache write failure is non-fatal — the next load will just re-decode.
     return false;
@@ -267,8 +267,7 @@ export async function deleteCachedPreview(key: string): Promise<void> {
   await Promise.all(keys.map((k) => workerDeleteCachedPreview(k).catch(() => {})));
 }
 
-export async function clearRawCache(): Promise<void> {
-  try {
-    await workerClearRawCache();
-  } catch {}
+/** Rejects when the cache worker can't be reached at all. */
+export function clearRawCache(): Promise<{ failed: number }> {
+  return workerClearRawCache();
 }

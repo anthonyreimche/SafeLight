@@ -37,10 +37,12 @@ const {
   RESTART,
 } = require("./crash-recovery.cjs");
 const {
+  SOFTWARE_BACKEND,
   gpuLadder,
   angleSwitches,
   webgl2Lost,
   softwareFallbackFor,
+  rendererFallbackFor,
   formatBackendCache,
   parseBackendCache,
   backendState,
@@ -185,9 +187,9 @@ const clearCache = () => {
 const startCache = readCache();
 const startedAt = Date.now();
 const relaunchIdx = relaunchRung(process.argv);
-const angleIdx = startRung(ANGLE_BACKENDS, startCache, relaunchIdx, startedAt);
+const angleIdx = startRung(ANGLE_BACKENDS, startCache, relaunchIdx, startedAt, app.getVersion());
 const backend = ANGLE_BACKENDS[angleIdx];
-if (relaunchIdx === null && retriesHardware(startCache, startedAt)) {
+if (relaunchIdx === null && retriesHardware(startCache, startedAt, app.getVersion())) {
   console.warn(`[safelight] software rendering (${startCache.reason || "probe"}) is due a retry; trying ANGLE "${backend}"`);
 }
 
@@ -212,13 +214,16 @@ const cacheWorkingBackend = () => {
 };
 
 // Sends the next launch to software once this one proves the GPU path
-// unusable. True when that changed where the next launch goes.
+// unusable. True when that changed where the next launch goes. A renderer that
+// couldn't start steps to the next hardware rung first, since another backend
+// may link what this one couldn't.
 const fallBackToSoftware = (reason, why) => {
-  const next = softwareFallbackFor(backend);
+  const next = reason === "renderer-failed" ? rendererFallbackFor(ANGLE_BACKENDS, backend) : softwareFallbackFor(backend);
   if (!next || fellBack) return false;
   fellBack = true;
-  writeCache(fallbackCache(reason, Date.now()));
-  console.error(`[safelight] ${why} on ANGLE "${backend}"; the next launch renders in software ("${next}")`);
+  const software = next === SOFTWARE_BACKEND;
+  writeCache(software ? fallbackCache(reason, Date.now(), app.getVersion()) : readyCache(next, startCache, Date.now()));
+  console.error(`[safelight] ${why} on ANGLE "${backend}"; the next launch renders ${software ? "in software " : "on "}("${next}")`);
   return true;
 };
 
@@ -231,6 +236,15 @@ const setSoftwareRendering = (on) => {
   if (on) writeCache(fallbackCache("chosen", Date.now()));
   else clearCache();
   fellBack = true;
+  return gpuBackendState();
+};
+
+// WebGL2 started but the develop renderer couldn't be built on it, every retry
+// (a driver that can't link Safelight's own shader): no GPU process crashes and
+// Chromium keeps reporting WebGL2, so only the renderer can say so. Already in
+// software there is nowhere further to go, and no restart is offered.
+const rendererFailed = (detail) => {
+  if (fallBackToSoftware("renderer-failed", `Develop renderer couldn't start (${detail})`)) offerRestart("gpu");
   return gpuBackendState();
 };
 
@@ -482,6 +496,7 @@ function registerIpcChannels() {
     extensionConnectHosts,
     gpuBackendState,
     setSoftwareRendering,
+    rendererFailed,
   });
   registerIpc(channels, { ipcMain, handlePrivileged });
 }

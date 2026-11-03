@@ -30,6 +30,9 @@ interface VirtualGridProps<T> {
   /** Click on the scroll container (e.g. empty space between/around cells). */
   onClick?: (e: React.MouseEvent) => void;
   className?: string;
+  /** ARIA role of the scroll container, e.g. "listbox" when cells render as options. */
+  role?: "listbox";
+  "aria-label"?: string;
 }
 
 function visibleRows(scrollTop: number, viewportHeight: number, padding: number, rowHeight: number) {
@@ -53,6 +56,8 @@ export function VirtualGrid<T>({
   onColumnsChange,
   onClick,
   className,
+  role,
+  "aria-label": ariaLabel,
 }: VirtualGridProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -131,6 +136,7 @@ export function VirtualGrid<T>({
       cells.push(
         <div
           key={getKey(item)}
+          role="presentation"
           style={{
             position: "absolute",
             top,
@@ -149,6 +155,9 @@ export function VirtualGrid<T>({
     <div
       ref={containerRef}
       className={className}
+      role={role}
+      aria-label={ariaLabel}
+      aria-multiselectable={role === "listbox" ? true : undefined}
       style={{ overflow: "auto", position: "relative" }}
       onScroll={syncVisible}
       onClick={onClick}

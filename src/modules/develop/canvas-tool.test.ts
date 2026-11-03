@@ -7,14 +7,17 @@
 // own back; Escape tells the tool, then lets it go.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DevelopParams } from "@/catalog/types";
 import {
   canvasToolAction,
+  canvasToolView,
   canvasToolWants,
   escapeCanvasTool,
   setCanvasTool,
   useCanvasToolStore,
   type CanvasTool,
 } from "./canvas-tool";
+import { CALLBACK_FAILURE_LIMIT, forgetCallbackFailures, useCallbackFailures } from "@/extensions/guard";
 
 const tool = (over: Partial<CanvasTool> = {}): CanvasTool => ({ overlay: () => null, ...over });
 const held = () => useCanvasToolStore.getState().held;
@@ -77,5 +80,67 @@ describe("whether the canvas tool wants an action", () => {
     expect(canvasToolWants("mask.delete")).toBe(false);
     setCanvasTool("safelight.crop", tool());
     expect(canvasToolWants("mask.delete")).toBe(false);
+  });
+});
+
+describe("the held tool's view of the edit", () => {
+  it("is none with no tool held, or one with no view", () => {
+    expect(canvasToolView(held())).toBeNull();
+    setCanvasTool("safelight.crop", tool());
+    expect(canvasToolView(held())).toBeNull();
+  });
+
+  it("calls the tool's viewParams on the tool, through one function per tool", () => {
+    const crop = {
+      overlay: () => null,
+      wide: { x: 0, y: 0, width: 1, height: 1 },
+      viewParams(this: { wide: DevelopParams["crop"] }, p: DevelopParams): DevelopParams {
+        return { ...p, crop: this.wide };
+      },
+    };
+    setCanvasTool("safelight.crop", crop);
+    const view = canvasToolView(held());
+    expect(view?.({ exposure: 0 } as DevelopParams).crop).toBe(crop.wide);
+    expect(canvasToolView(held())).toBe(view);
+  });
+});
+
+describe("a canvas tool that throws", () => {
+  const boom = () => {
+    throw new Error("broken tool");
+  };
+
+  it("is still let go on Escape", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    setCanvasTool("acme.broken", tool({ onEscape: boom }));
+    expect(escapeCanvasTool()).toBe(true);
+    expect(held()).toBeNull();
+  });
+
+  it("leaves a shortcut's action to core", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    setCanvasTool("acme.broken", tool({ onAction: boom, wants: boom }));
+    expect(canvasToolAction("brush.larger")).toBe(false);
+    expect(canvasToolWants("brush.larger")).toBe(false);
+  });
+
+  it("leaves the live view drawing the edit as it is", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    setCanvasTool("acme.broken", tool({ viewParams: boom }));
+    const params = { exposure: 1 } as DevelopParams;
+    expect(canvasToolView(held())?.(params)).toBe(params);
+  });
+
+  it("is switched off after repeated throws and listed against its extension", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const onAction = vi.fn(boom);
+    setCanvasTool("acme.broken", tool({ onAction }));
+    try {
+      for (let i = 0; i <= CALLBACK_FAILURE_LIMIT; i++) canvasToolAction("brush.larger");
+      expect(onAction).toHaveBeenCalledTimes(CALLBACK_FAILURE_LIMIT);
+      expect(useCallbackFailures.getState()["acme.broken"]?.kind).toBe("canvas tool action");
+    } finally {
+      forgetCallbackFailures("acme.broken");
+    }
   });
 });

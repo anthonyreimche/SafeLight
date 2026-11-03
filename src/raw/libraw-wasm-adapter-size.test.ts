@@ -37,6 +37,7 @@ vi.mock("./decode-pool", () => {
   };
   return {
     acquireInstance: async () => instance,
+    decodePoolFailure: () => undefined,
     releaseInstance: () => {},
     discardInstance: () => {},
   };

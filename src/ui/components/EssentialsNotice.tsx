@@ -24,7 +24,7 @@ export function EssentialsNotice() {
       <span className="text-text-primary">Some essentials couldn't be installed.</span>
       <button
         onClick={() => void retryEssentials()}
-        className="rounded bg-slider-fill px-2.5 py-1 text-[11px] font-medium text-white hover:opacity-90"
+        className="rounded bg-slider-fill px-2.5 py-1 text-[11px] font-medium text-on-accent hover:opacity-90"
       >
         Retry
       </button>

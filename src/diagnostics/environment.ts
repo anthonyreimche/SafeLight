@@ -36,6 +36,7 @@ export function readWebGLInfo(): WebGLInfo | null {
       renderer,
       glsl: String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION)),
       maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+      fragmentUniformVectors: gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) as number,
       colorBufferFloat: !!gl.getExtension("EXT_color_buffer_float"),
     };
     gl.getExtension("WEBGL_lose_context")?.loseContext();

@@ -21,17 +21,29 @@ type LibRawCtor = new () => LibRawInstance;
 let ctorPromise: Promise<LibRawCtor | null> | null = null;
 // Kept once loaded, so a discarded instance can be replaced without waiting.
 let ctor: LibRawCtor | null = null;
+let loadFailure: string | undefined;
 
 function getCtor(): Promise<LibRawCtor | null> {
   if (!ctorPromise) {
     ctorPromise = import("libraw-wasm")
-      .then((m) => (m.default ?? null) as LibRawCtor | null)
-      .catch((e) => {
+      .then((m) => {
+        loadFailure = undefined;
+        return (m.default ?? null) as LibRawCtor | null;
+      })
+      .catch((e: unknown) => {
         console.warn("[decode-pool] libraw-wasm import failed", e);
+        loadFailure = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+        // A later request loads it again; one failed import must not last the session.
+        ctorPromise = null;
         return null;
       });
   }
   return ctorPromise;
+}
+
+/** Why libraw-wasm could not be loaded on the latest attempt, if it could not. */
+export function decodePoolFailure(): string | undefined {
+  return loadFailure;
 }
 
 const DEFAULT_SIZE = 3;
@@ -92,7 +104,12 @@ function takeFree(): LibRawInstance | undefined {
 }
 
 export function warmDecodePool(): Promise<void> {
-  warming ??= ensurePool();
+  if (!warming) {
+    const attempt: Promise<void> = ensurePool().finally(() => {
+      if (warming === attempt && poolSize === 0) warming = null;
+    });
+    warming = attempt;
+  }
   return warming;
 }
 
@@ -192,4 +209,6 @@ export function disposeDecodePool(): void {
   poolSize = 0;
   warming = null;
   ctor = null;
+  ctorPromise = null;
+  loadFailure = undefined;
 }

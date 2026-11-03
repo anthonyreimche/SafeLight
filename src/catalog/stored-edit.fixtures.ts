@@ -84,7 +84,7 @@ export function installMemoryStorage(...seed: EditState[]): MemoryEdits {
   const storage: CatalogStorage = {
     putPhoto: async () => {},
     putPhotos: async () => {},
-    deletePhoto: async () => {},
+    deletePhotos: async () => {},
     getEditState: async (id) => states.get(id),
     putEditState: async (editState) => {
       states.set(editState.photoId, editState);

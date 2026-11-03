@@ -233,6 +233,38 @@ describe("GPU backend fallback", () => {
     expect(MAIN).toMatch(/clearCache\(\);\s*relaunchOn\(angleIdx \+ 1\);/);
   });
 
+  // WebGL2 starts, but Safelight's own shader can't be built on it: no GPU
+  // process crashes and Chromium keeps reporting WebGL2, so only the renderer knows.
+  it("moves the next launch to software when the renderer says it can't start, through a guarded channel", () => {
+    const rendererFailed = vi.fn(() => ({ software: false, nextSoftware: true, reason: "renderer-failed" }));
+    const { privileged, handler } = entry("gpu:rendererFailed", { rendererFailed });
+    expect(privileged).toBe(true);
+    expect(handler(NO_EVENT, "stock program failed to link")).toEqual({
+      software: false,
+      nextSoftware: true,
+      reason: "renderer-failed",
+    });
+    expect(rendererFailed.mock.calls).toEqual([["stock program failed to link"]]);
+    expect(registrations(PRELOAD, "ipcRenderer\\s*\\.\\s*invoke").map(channelOf)).toContain("gpu:rendererFailed");
+    expect(MAIN).toMatch(/ipcChannels\(\{[^}]*\brendererFailed,/);
+  });
+
+  // The renderer failing steps down the ladder and keeps the app version beside a
+  // software fallback, so the launch-count retry can't walk back into the failure.
+  it("steps a renderer failure down the ladder and starts with the app version", () => {
+    expect(MAIN).toMatch(/reason === "renderer-failed" \? rendererFallbackFor\(ANGLE_BACKENDS, backend\)/);
+    expect(MAIN).toMatch(/fallbackCache\(reason, Date\.now\(\), app\.getVersion\(\)\)/);
+    expect(MAIN).toMatch(/startRung\(ANGLE_BACKENDS, startCache, relaunchIdx, startedAt, app\.getVersion\(\)\)/);
+    expect(MAIN).toMatch(/retriesHardware\(startCache, startedAt, app\.getVersion\(\)\)/);
+  });
+
+  // Already in software, fallBackToSoftware changes nothing and no restart is offered.
+  it("falls back and offers a restart only when that changes where the next launch goes", () => {
+    expect(MAIN).toMatch(
+      /const rendererFailed = \(detail\) => \{\s*if \(fallBackToSoftware\("renderer-failed", [^;]*\)\) offerRestart\("gpu"\);\s*return gpuBackendState\(\);\s*\};/,
+    );
+  });
+
   it("moves the next launch to software once GPU crash recovery gives up", () => {
     expect(MAIN).toMatch(
       /if \(recover === "ok"\) for \(const win of windows\) win\.webContents\.reload\(\);\s*else if \(recover === "spent"\) \{\s*fallBackToSoftware\(/,

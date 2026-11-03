@@ -14,16 +14,17 @@ import { useCatalogStore } from "@/state/catalog-store";
 import { usesSignedOutput } from "@/catalog/types";
 import { toggleDockSide, toggleDockVisibility } from "@/extensions/dock";
 import { hasModule } from "@/extensions/registry";
+import { guardCallback } from "@/extensions/guard";
 import { getSettings, stepCanvasSurround } from "@/state/settings-store";
 import { detachedModule } from "@/state/detach";
 import {
   getBinding,
   inNativeDialog,
   isBareKey,
-  isEditableTarget,
   matchAction,
   matchExtensionAction,
   shortcutsSuspended,
+  typesIntoField,
 } from "@/state/keybindings-store";
 import { moveActivePhoto } from "@/modules/library/photo-navigation";
 import { cullingShortcutsMounted } from "@/modules/library/use-culling-shortcuts";
@@ -84,11 +85,10 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Shortcuts take priority everywhere. Only bare keys defer to true
-      // text-entry targets (so typing still works); Ctrl/Alt combos fire even
-      // while an input has focus, and a focused slider never blocks anything.
-      const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
-      if (!hasModifier && isEditableTarget(e.target)) return;
+      // Shortcuts take priority everywhere except over typing into a text
+      // field: Ctrl/Cmd combos fire even while an input has focus, and a
+      // focused slider never blocks anything.
+      if (typesIntoField(e)) return;
 
       const inDevelop =
         useUIStore.getState().activeModule === "develop" ||
@@ -143,7 +143,10 @@ export function useKeyboardShortcuts() {
       if (!action) {
         // Extension-registered shortcuts fire after built-ins.
         const ext = matchExtensionAction(e);
-        if (ext) { e.preventDefault(); ext.handler(); }
+        if (ext) {
+          e.preventDefault();
+          guardCallback(ext.extensionId, "keyboard shortcut", ext.handler, undefined)();
+        }
         return;
       }
 

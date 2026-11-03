@@ -153,6 +153,14 @@ describe("keyboard layouts", () => {
     expect(matchExtensionAction(key("©", { alt: true, code: "KeyG" }))?.id).toBe("ext.a.run");
   });
 
+  it("takes a dead key by its physical key", () => {
+    onPlatform("darwin");
+    expect(comboFromEvent(key("Dead", { alt: true, code: "KeyE" }))).toBe("Alt+E");
+    onPlatform("win32");
+    expect(comboFromEvent(key("Dead", { code: "Quote" }))).toBe("'");
+    expect(matchAction(key("Dead", { alt: true, code: "BracketLeft" }), ["Library"])).toBe("photo.rotateCCW");
+  });
+
   it("keeps a deliberate Ctrl+Alt+letter on a layout with AltGr", () => {
     onPlatform("win32");
     const ctrlAltK = key("k", { ctrl: true, alt: true, altGraph: true, code: "KeyK" });

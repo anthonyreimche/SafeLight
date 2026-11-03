@@ -72,3 +72,22 @@ describe("VirtualGrid scrolling", () => {
     expect(calls.all).toBeLessThanOrEqual(2 * rowsCrossed * rowsPerPass * COLUMNS);
   });
 });
+
+describe("VirtualGrid semantics", () => {
+  it("is a labelled multi-select listbox whose positioning wrappers are transparent", () => {
+    const view = render(
+      <VirtualGrid
+        items={[1, 2]}
+        cellWidth={CELL}
+        cellHeight={CELL}
+        renderCell={(i) => <span role="option" aria-selected={false}>{i}</span>}
+        getKey={String}
+        role="listbox"
+        aria-label="Photos"
+      />,
+    );
+    const box = view.getByRole("listbox", { name: "Photos" });
+    expect(box.getAttribute("aria-multiselectable")).toBe("true");
+    expect(view.getAllByRole("option")).toHaveLength(2);
+  });
+});

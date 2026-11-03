@@ -35,6 +35,17 @@ interface PassProgress {
 
 const STOPPED_NOTE = "Stopped.";
 
+// failed: how many cached previews could not be cleared; null when the cache
+// could not be reached at all.
+interface ClearOutcome {
+  failed: number | null;
+}
+
+const clearFailureNote = (failed: number | null): string =>
+  failed === null
+    ? "Couldn't clear the preview cache."
+    : `Couldn't clear ${failed} cached ${failed === 1 ? "preview" : "previews"}.`;
+
 const passRunning = (p: PassProgress | null): boolean =>
   p !== null && !p.stopped && p.done < p.total;
 
@@ -62,7 +73,7 @@ export function PreviewsSection() {
       ? "eager"
       : "ondemand";
 
-  const [cleared, setCleared] = useState(false);
+  const [cleared, setCleared] = useState<ClearOutcome | null>(null);
   const [rebuild, setRebuild] = useState<PassProgress | null>(null);
   const rebuilding = passRunning(rebuild);
   const handleRebuild = () => {
@@ -190,7 +201,7 @@ export function PreviewsSection() {
       </Field>
       <Field
         label="Cache storage"
-        hint="Cache all photos in the open project now, or clear the cache to reclaim disk space."
+        hint="Cache all photos in the open project now, or clear the cached previews for all projects to reclaim disk space."
       >
         <div className="flex items-center gap-1.5">
           <button
@@ -202,8 +213,11 @@ export function PreviewsSection() {
           </button>
           <button
             onClick={() => {
-              setCleared(false);
-              void clearRawCache().then(() => setCleared(true));
+              setCleared(null);
+              void clearRawCache().then(
+                ({ failed }) => setCleared({ failed }),
+                () => setCleared({ failed: null }),
+              );
             }}
             className={btnCls}
           >
@@ -221,9 +235,12 @@ export function PreviewsSection() {
                   : `Cached ${cacheAll.total}.`}
           </span>
         )}
-        {cleared && (
-          <span className="ml-2 text-[10px] text-text-muted">Cleared.</span>
-        )}
+        {cleared !== null &&
+          (cleared.failed === 0 ? (
+            <span className="ml-2 text-[10px] text-text-muted">Cleared.</span>
+          ) : (
+            <span className="ml-2 text-[10px] text-danger">{clearFailureNote(cleared.failed)}</span>
+          ))}
       </Field>
 
       {isNativeFS() && (
@@ -233,7 +250,7 @@ export function PreviewsSection() {
           </div>
           <Field
             label="Catalog location"
-            hint="Where each project's working data (catalog, previews, cache) lives. In photo folder keeps it beside the photos; a read-only source like a memory card falls back to the separate location automatically. Separate folder always stores it there — keeps photo folders clean and is handy on a fast SSD."
+            hint="Where each project's working data (catalog, previews, cache) lives. In photo folder keeps it beside the photos; a read-only source like a memory card falls back to the separate location automatically. Separate folder always stores it there — keeps photo folders clean and is handy on a fast SSD. Applies to folders opened for the first time. Existing catalogs stay where they are."
           >
             <OptionRow
               value={s.catalogLocation}

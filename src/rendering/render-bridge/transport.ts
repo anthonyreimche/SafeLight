@@ -50,6 +50,9 @@ export interface TransportEvents {
    *  waiting is settled with what a failure is answered with. */
   settlePending(): void;
   error(message: string): void;
+  /** Every init failed, none of them after a lost context: this launch's
+   *  graphics backend can't run Safelight's renderer, and retrying won't change that. */
+  unusable(detail: string): void;
 }
 
 export class RenderTransport implements WorkerLink {
@@ -70,6 +73,8 @@ export class RenderTransport implements WorkerLink {
   private initArgs: { width: number; height: number } | null = null;
   private initAttempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  // The inits failing now answer a restore after a lost context.
+  private restoring = false;
   disposed = false;
   heardAt = 0;
 
@@ -111,6 +116,7 @@ export class RenderTransport implements WorkerLink {
         this.initFailed(msg.message);
         break;
       case "contextLost":
+        this.restoring = true;
         this.events.stopped();
         this.setAvailability("lost", "the graphics context was lost");
         break;
@@ -123,6 +129,7 @@ export class RenderTransport implements WorkerLink {
   // A restored context's init that fails is retried as a first one would be.
   private becomeReady() {
     this.initAttempt = 0;
+    this.restoring = false;
     this.setAvailability("ready");
     this.events.ready();
     this.readyResolve?.();
@@ -140,6 +147,7 @@ export class RenderTransport implements WorkerLink {
   init(width: number, height: number) {
     this.initArgs = { width, height };
     this.initAttempt = 0;
+    this.restoring = false;
     this.postInit();
   }
 
@@ -155,8 +163,10 @@ export class RenderTransport implements WorkerLink {
     this.events.stopped();
     const delay = this.initArgs ? INIT_RETRY_MS[this.initAttempt] : undefined;
     if (delay === undefined) {
+      const first = this.availability !== "failed";
       this.giveUp(message);
       this.events.error(`renderer unavailable: ${message}`);
+      if (first && !this.restoring) this.events.unusable(message);
       return;
     }
     this.initAttempt++;

@@ -7,6 +7,7 @@ import type { ComponentType } from "react";
 import { create } from "zustand";
 import type { DevelopParams } from "@/catalog/types";
 import type { OverlayRect } from "@/extensions/api/develop";
+import { guardCallback } from "@/extensions/guard";
 
 // The canvas tool: an extension's on-image tool that takes the canvas over
 // while it is held (Crop & Straighten's crop mode, Guided Upright's lines, the
@@ -35,7 +36,7 @@ export interface CanvasTool {
   wants?(action: string): boolean;
 }
 
-interface Held {
+export interface Held {
   owner: string;
   tool: CanvasTool;
 }
@@ -49,21 +50,66 @@ export function setCanvasTool(owner: string, tool: CanvasTool | null): void {
   else if (useCanvasToolStore.getState().held?.owner === owner) useCanvasToolStore.setState({ held: null });
 }
 
-/** A shortcut's action for the held tool: whether it took it. */
+interface GuardedTool {
+  onAction(action: string): boolean;
+  wants(action: string): boolean;
+  onEscape(): void;
+  viewParams: ((params: DevelopParams) => DevelopParams) | null;
+}
+
+// One guarded set per tool: guardCallback counts throws per function, so a
+// fresh wrapper per call would never switch a failing tool off.
+const guardedTools = new WeakMap<CanvasTool, GuardedTool>();
+
+function guarded({ owner, tool }: Held): GuardedTool {
+  let g = guardedTools.get(tool);
+  if (!g) {
+    g = {
+      onAction: guardCallback(owner, "canvas tool action", (action: string) => tool.onAction?.(action) ?? false, false),
+      wants: guardCallback(owner, "canvas tool wants", (action: string) => tool.wants?.(action) ?? false, false),
+      onEscape: guardCallback(owner, "canvas tool escape", () => tool.onEscape?.(), undefined),
+      viewParams: null,
+    };
+    if (tool.viewParams) {
+      const view = guardCallback(
+        owner,
+        "canvas tool view",
+        (params: DevelopParams): DevelopParams | null => tool.viewParams?.(params) ?? null,
+        null,
+      );
+      g.viewParams = (params) => view(params) ?? params;
+    }
+    guardedTools.set(tool, g);
+  }
+  return g;
+}
+
+/** A shortcut's action for the held tool: whether it took it. A tool that
+ *  throws took nothing. */
 export function canvasToolAction(action: string): boolean {
-  return useCanvasToolStore.getState().held?.tool.onAction?.(action) ?? false;
+  const held = useCanvasToolStore.getState().held;
+  return held ? guarded(held).onAction(action) : false;
 }
 
 /** Whether the held tool would take a shortcut's action now. */
 export function canvasToolWants(action: string): boolean {
-  return useCanvasToolStore.getState().held?.tool.wants?.(action) ?? false;
+  const held = useCanvasToolStore.getState().held;
+  return held ? guarded(held).wants(action) : false;
 }
 
-/** Escape: tell the held tool, then let it go. Whether there was one. */
+/** The params `held`'s tool has the live view draw (CanvasTool.viewParams), or
+ *  null when it has no view. One function per tool, so a renderer memo keyed
+ *  on it holds. A tool that throws has the edit drawn as it is. */
+export function canvasToolView(held: Held | null): ((params: DevelopParams) => DevelopParams) | null {
+  return held ? guarded(held).viewParams : null;
+}
+
+/** Escape: tell the held tool, then let it go, whatever the tool does. Whether
+ *  there was one. */
 export function escapeCanvasTool(): boolean {
   const held = useCanvasToolStore.getState().held;
   if (!held) return false;
-  held.tool.onEscape?.();
+  guarded(held).onEscape();
   setCanvasTool(held.owner, null);
   return true;
 }

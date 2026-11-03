@@ -132,6 +132,7 @@ export function createLoadTracker<T>() {
 // a listener or change state, by name, and the writers whose names don't say
 // so. Others there are components, hooks and readers, left as they are.
 const FENCED_CALL = /^(on|register|set|subscribe)([A-Z]|$)/;
+const SUBSCRIBE_CALL = /^(on|subscribe)([A-Z]|$)/;
 const FENCED_WRITERS = new Set([
   "putEditState",
   "putPhotoData",
@@ -144,11 +145,18 @@ const FENCED_WRITERS = new Set([
 /** `api` with the calls a stale start could change the live copy with refused
  *  once `signal` aborts: every top-level call (all register, unregister and
  *  setStageTexture) and, one namespace down, FENCED_CALL names and
- *  FENCED_WRITERS. A refused call throws, ending the stale activate, except
+ *  FENCED_WRITERS, and a store hook's setState and subscribe. A refused call throws, ending the stale activate, except
  *  while the stale copy is being stopped: then it does nothing, so the rest of
  *  its deactivate (timers, listeners, workers) still runs. Each wrapper is
- *  made once, so a call reads the same function every time. */
-export function fenceAPI(api: SafelightAPI, signal: AbortSignal): SafelightAPI {
+ *  made once, so a call reads the same function every time. Given
+ *  `subscriptions`, the unsubscribe each onX or subscribeX call hands back is added
+ *  to it, so the start's listeners can be dropped without waiting for its id to
+ *  unload. */
+export function fenceAPI(
+  api: SafelightAPI,
+  signal: AbortSignal,
+  subscriptions?: Set<() => void>,
+): SafelightAPI {
   const refused = (): boolean => {
     if (!signal.aborted) return false;
     if (stopping > 0) return true;
@@ -166,9 +174,19 @@ export function fenceAPI(api: SafelightAPI, signal: AbortSignal): SafelightAPI {
         let wrapper: unknown;
         if (typeof key === "string" && !frozen) {
           if (typeof value === "function" && fenced(key)) {
-            wrapper = (...args: unknown[]) => (refused() ? undefined : Reflect.apply(value, t, args));
+            const subscribes = subscriptions !== undefined && SUBSCRIBE_CALL.test(key);
+            wrapper = (...args: unknown[]) => {
+              if (refused()) return undefined;
+              const result: unknown = Reflect.apply(value, t, args);
+              if (subscribes && typeof result === "function") subscriptions.add(result as () => void);
+              return result;
+            };
           } else if (nested && typeof value === "object" && value !== null) {
             wrapper = fence(value, (k) => FENCED_CALL.test(k) || FENCED_WRITERS.has(k), false);
+          } else if (!nested && typeof value === "function" && isStoreHook(value)) {
+            // A proxy over the hook calls it as it is; only its setState and
+            // subscribe are fenced.
+            wrapper = fence(value, (k) => FENCED_CALL.test(k), false);
           }
         }
         if (wrapper === undefined) return value;
@@ -180,6 +198,10 @@ export function fenceAPI(api: SafelightAPI, signal: AbortSignal): SafelightAPI {
   return fence(api, () => true, true);
 }
 
+/** A zustand store hook, such as api.stores.useDevelopStore. */
+const isStoreHook = (value: object): boolean =>
+  "setState" in value && typeof value.setState === "function" && "subscribe" in value;
+
 /** Activate `mod` with `api` fenced by `signal`. A failure once the start no
  *  longer counts, such as a refused call, isn't rethrown: the tracker then
  *  stops the module instead of reporting it. */
@@ -187,9 +209,10 @@ export async function activateFenced(
   mod: ExtensionModule,
   api: SafelightAPI,
   signal: AbortSignal,
+  subscriptions?: Set<() => void>,
 ): Promise<void> {
   try {
-    await mod.activate(fenceAPI(api, signal));
+    await mod.activate(fenceAPI(api, signal, subscriptions));
   } catch (e) {
     if (!signal.aborted) throw e;
   }
@@ -216,19 +239,21 @@ const loggedCallbacks = new Set<string>();
 /** `fn`, for the core to call on `extensionId`'s behalf where nothing else
  *  would catch it (a grid filter, a sort). A throw answers `fallback` and is
  *  logged once per extension and kind; after CALLBACK_FAILURE_LIMIT throws `fn`
- *  isn't called again and the extension goes into useCallbackFailures. */
+ *  isn't called again and the extension goes into useCallbackFailures. Given
+ *  `self`, `fn` is called on it, as a method of the contribution it came from. */
 export function guardCallback<A extends unknown[], R>(
   extensionId: string,
   kind: string,
   fn: (...args: A) => R,
   fallback: R,
+  self?: object,
 ): (...args: A) => R {
   return (...args) => {
     const counts = callbackThrows.get(extensionId);
     const throws = counts?.get(fn) ?? 0;
     if (throws >= CALLBACK_FAILURE_LIMIT) return fallback;
     try {
-      return fn(...args);
+      return Reflect.apply(fn, self, args);
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       const logKey = `${extensionId}\0${kind}`;

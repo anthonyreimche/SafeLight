@@ -12,7 +12,7 @@ import { useMemo } from "react";
 import { fieldChanges, structureVersion, useCatalogStore } from "@/state/catalog-store";
 import { useUIStore } from "@/state/ui-store";
 import { getSettings, useSettings } from "@/state/settings-store";
-import { orderFieldsRead, visibleOrder, type LibraryFilter } from "./visible-photos";
+import { NO_FILTER, orderFieldsRead, visibleOrder, type LibraryFilter } from "./visible-photos";
 import {
   useGridFilters,
   useLibrarySorts,
@@ -105,8 +105,8 @@ function deriveVisible(
       folder,
       // A filter that throws shows the photo; a sort that throws leaves the pair
       // to the date tiebreak.
-      filters.map((g) => guardCallback(g.extensionId, "grid filter", g.test, true)),
-      sort && guardCallback(sort.extensionId, "library sort", sort.compare, 0),
+      filters.map((g) => guardCallback(g.extensionId, "grid filter", g.test, true, g)),
+      sort && guardCallback(sort.extensionId, "library sort", sort.compare, 0, sort),
     );
     entry = {
       structure,
@@ -193,21 +193,50 @@ export function visibleIndex(id: string): number {
   return entry.positions.get(id) ?? -1;
 }
 
+/** How many visible photos sort before `id` when the filter is ignored: where a
+ *  photo the filter just dropped (rated, rejected) would sit in the visible list. */
+function visibleBefore(id: string): number {
+  const ui = useUIStore.getState();
+  const photos = useCatalogStore.getState().photos;
+  const sort = useRegistry.getState().librarySorts[ui.sortField];
+  const order = visibleOrder(
+    photos,
+    NO_FILTER,
+    ui.sortField,
+    ui.sortDirection,
+    ui.activeFolder,
+    [],
+    sort && guardCallback(sort.extensionId, "library sort", sort.compare, 0, sort),
+  );
+  let before = 0;
+  for (const i of order) {
+    if (photos[i].id === id) return before;
+    if (visibleIndex(photos[i].id) !== -1) before++;
+  }
+  return -1;
+}
+
 /**
  * Move the active photo by `step` positions within the visible list (negative =
  * earlier, e.g. -columns to jump up a grid row). Clamps to the ends; with no
  * active photo it lands on the last (stepping back) or first (stepping forward).
+ * An active photo the filter has dropped counts as sitting between its visible
+ * neighbours, so stepping forward lands on the one that took its place.
  */
 export function moveActivePhoto(step: number): void {
   const catalog = useCatalogStore.getState();
   const list = visibleList();
   if (list.length === 0) return;
-  const curIdx = catalog.activePhotoId ? visibleIndex(catalog.activePhotoId) : -1;
+  const id = catalog.activePhotoId;
+  const curIdx = id ? visibleIndex(id) : -1;
+  const hiddenAt = id && curIdx === -1 ? visibleBefore(id) : -1;
   const nextIdx =
-    curIdx === -1
-      ? step < 0
-        ? list.length - 1
-        : 0
-      : Math.max(0, Math.min(list.length - 1, curIdx + step));
+    curIdx !== -1
+      ? Math.max(0, Math.min(list.length - 1, curIdx + step))
+      : hiddenAt !== -1
+        ? Math.max(0, Math.min(list.length - 1, hiddenAt + (step > 0 ? step - 1 : step)))
+        : step < 0
+          ? list.length - 1
+          : 0;
   catalog.select(list[nextIdx].id);
 }

@@ -43,6 +43,9 @@ const h = vi.hoisted(() => ({
   setThumbnailLoader: vi.fn<(read: unknown, opts?: { onEvict?: (ids: string[]) => void }) => number>(() => 1),
   /** The recent projects' paths, newest first. */
   recents: [] as string[],
+  /** The handle a recent card resolves to, and the removals asked of the list. */
+  recentHandle: null as null | { name: string },
+  removeRecent: vi.fn(async (_id: string) => {}),
 }));
 
 vi.mock("@/native/privileged", () => ({ privilegedOsOpen: () => h.osOpen }));
@@ -69,7 +72,8 @@ vi.mock("./project-storage", () => ({
 vi.mock("./recent", () => ({
   addRecentProject: async () => {},
   getLastProject: async () => null,
-  recentHandle: () => null,
+  recentHandle: () => h.recentHandle,
+  removeRecentProject: (id: string) => h.removeRecent(id),
   listRecentProjects: async () =>
     h.recents.map((path, i) => ({ id: path, name: path, path, handle: null, openedAt: -i, cover: null })),
 }));
@@ -183,6 +187,8 @@ beforeEach(async () => {
   h.requestThumbnail.mockClear();
   h.setThumbnailLoader.mockClear();
   h.recents = [];
+  h.recentHandle = null;
+  h.removeRecent.mockClear();
   vi.stubGlobal("window", {
     addEventListener: (type: string, listener: () => void) => {
       if (type === "beforeunload") h.unload.push(listener);
@@ -290,6 +296,57 @@ describe("the catalog a change goes into while a project opens", () => {
 
     expect(h.reconcileCatalog).not.toHaveBeenCalled();
     expect(h.finalizeCatalog).toHaveBeenLastCalledWith([photo("new")]);
+  });
+});
+
+describe("a recent project whose drive is gone", () => {
+  const entry = { id: "/gone/shoot", name: "shoot", path: "/gone/shoot", handle: null, openedAt: 0, cover: null };
+  // The store is re-imported per spec (resetModules), so its error classes are too.
+  let FolderUnavailableError: typeof import("./catalog-errors").FolderUnavailableError;
+  beforeEach(async () => {
+    ({ FolderUnavailableError } = await import("./catalog-errors"));
+  });
+
+  it("remembers which recent failed, so the banner can offer to remove it", async () => {
+    h.recentHandle = folder("shoot");
+    h.open.mockRejectedValueOnce(new FolderUnavailableError("ENOENT"));
+
+    await useProjectStore.getState().openRecent(entry);
+
+    expect(useProjectStore.getState()).toMatchObject({
+      openError: expect.stringContaining("isn't available"),
+      openErrorRecentId: "/gone/shoot",
+    });
+  });
+
+  it("offers no removal for a folder opened some other way", async () => {
+    h.open.mockRejectedValueOnce(new FolderUnavailableError("ENOENT"));
+
+    await openProject("shoot");
+
+    expect(useProjectStore.getState().openErrorRecentId).toBeNull();
+  });
+
+  it("offers no removal when the recent failed for another reason", async () => {
+    h.recentHandle = folder("shoot");
+    h.open.mockRejectedValueOnce(new CatalogUnreadableError(new Error("EBUSY")));
+
+    await useProjectStore.getState().openRecent(entry);
+
+    expect(useProjectStore.getState().openErrorRecentId).toBeNull();
+  });
+
+  it("removeFailedRecent drops it from the recents and clears the banner", async () => {
+    h.recentHandle = folder("shoot");
+    h.open.mockRejectedValueOnce(new FolderUnavailableError("ENOENT"));
+    await useProjectStore.getState().openRecent(entry);
+    const revision = useProjectStore.getState().recentsRevision;
+
+    await useProjectStore.getState().removeFailedRecent();
+
+    expect(h.removeRecent).toHaveBeenCalledWith("/gone/shoot");
+    expect(useProjectStore.getState()).toMatchObject({ openError: null, openErrorRecentId: null });
+    expect(useProjectStore.getState().recentsRevision).toBe(revision + 1);
   });
 });
 
@@ -716,6 +773,28 @@ describe("opening what the OS hands the app", () => {
     expect(h.select).toHaveBeenLastCalledWith("y");
   });
 
+  it("does not take a recent network share root as the project for a photo in it", async () => {
+    onPlatform("win32");
+    h.recents = ["\\\\nas\\photos"];
+    openFinds(photoAt("x", "x.NEF"));
+
+    await openFromOs({ folder: "\\\\nas\\photos\\trip", file: "x.NEF" });
+
+    expect(useProjectStore.getState().name).not.toBe("photos");
+    expect(h.select).toHaveBeenCalledWith("x");
+  });
+
+  it("does not take a recent removable drive as the project on Linux", async () => {
+    onPlatform("linux");
+    h.recents = ["/run/media/anthony/EOS_DIGITAL"];
+    openFinds(photoAt("x", "x.NEF"));
+
+    await openFromOs({ folder: "/run/media/anthony/EOS_DIGITAL/DCIM", file: "x.NEF" });
+
+    expect(useProjectStore.getState().name).toBe("DCIM");
+    expect(h.select).toHaveBeenCalledWith("x");
+  });
+
   it("does not take a recent home folder as the project on Linux either", async () => {
     onPlatform("linux");
     h.recents = ["/home/anthony", "/"];
@@ -897,7 +976,7 @@ describe("the photo open in Develop when its project is left", () => {
       putEditStates: async () => {},
       putPhoto: async () => {},
       putPhotos: async () => {},
-      deletePhoto: async () => {},
+      deletePhotos: async () => {},
     });
   }
   type Editable = ReturnType<typeof editable>;

@@ -413,6 +413,12 @@ export class WebGLRenderer {
   private vao: WebGLVertexArrayObject | null = null;
   private quadBuf: WebGLBuffer | null = null;
   private stageSource: () => StageSet = () => NO_STAGES;
+  // The stages that patch the source and the last text of each one's values (patchOf).
+  private patchMemo: {
+    source: StageSet;
+    stages: readonly ProcessingStageContribution[];
+    sigs: Map<string, { values: unknown[]; sig: string }>;
+  } | null = null;
   private pipeline: ResolvedPipeline = BUILTIN_RESOLVED;
   private derive: StageDerive | null = null;
   // syncPipeline runs every frame. Rebuilding the injection re-namespaces every
@@ -616,15 +622,29 @@ export class WebGLRenderer {
    *  whether one does this frame, any of its `active` counts above zero, and
    *  a signature of every value they bind, their atlases by their bakes. */
   private patchOf(bag: Record<string, unknown>): { active: boolean; sig: string } {
-    const stages = this.currentStages().filter((s) => s.patch && writesRawNames(s));
+    const source = this.stageSource();
+    let memo = this.patchMemo;
+    if (memo?.source !== source) {
+      memo = { source, stages: this.currentStages().filter((s) => s.patch && writesRawNames(s)), sigs: new Map() };
+      this.patchMemo = memo;
+    }
     let active = false;
     const parts: string[] = [];
-    for (const s of stages) {
+    for (const s of memo.stages) {
       for (const key of s.patch!.active) {
         const v = bag[`${s.id}.${key}`];
         if (typeof v === "number" && v > 0) active = true;
       }
-      for (const u of s.uniforms) parts.push(JSON.stringify(bag[`${s.id}.${u.key}`] ?? null));
+      // A bag value is replaced, never edited, so the same value is the same text.
+      const values = s.uniforms.map((u) => bag[`${s.id}.${u.key}`]);
+      const held = memo.sigs.get(s.id);
+      if (held && held.values.length === values.length && held.values.every((v, i) => Object.is(v, values[i]))) {
+        parts.push(held.sig);
+      } else {
+        const sig = values.map((v) => JSON.stringify(v ?? null)).join("|");
+        memo.sigs.set(s.id, { values, sig });
+        parts.push(sig);
+      }
       for (const t of s.textures ?? []) {
         if (t.kind === "atlas") parts.push(this.atlas(`${s.id}.${t.key}`, bag[`${s.id}.${t.key}`]).sig);
       }
@@ -1192,6 +1212,7 @@ export class WebGLRenderer {
   setStages(stages: ProcessingStageContribution[]) {
     this.stageSource = () => stages;
     this.injectionMemo = null;
+    this.patchMemo = null;
     // Copies taken from the set would miss an edit made to this array in place.
     this.copiesMemo = null;
   }

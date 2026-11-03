@@ -29,6 +29,7 @@ import { useSettings } from "@/state/settings-store";
 import { useUIStore } from "@/state/ui-store";
 import { registerGridFilter, useRegistry, type RegisteredProcessingStage } from "@/extensions/registry";
 import { setExtensionName } from "@/extensions/param-registry";
+import { forgetCallbackFailures } from "@/extensions/guard";
 import { NO_FILTER } from "@/modules/library/visible-photos";
 import {
   loadPhotoImage,
@@ -1786,6 +1787,27 @@ describe("useDevelopRenderer during an edit", () => {
         expect(paramsAt(worker, worker.posted.indexOf(renders[1]))?.crop).toEqual({ x: 0, y: 0, width: 4000 / 6000, height: 1 });
       } finally {
         setCanvasTool("safelight.crop", null);
+      }
+    });
+
+    it("draws the edit as it is while a held tool's view throws", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      useDevelopStore.setState({ params: edit(0.5) });
+      setCanvasTool("acme.broken", {
+        overlay: () => null,
+        viewParams: () => {
+          throw new Error("broken view");
+        },
+      });
+      try {
+        const { worker, source } = await openDecodedAt({ width: 4000, height: 6000 });
+        const renders = posts(worker, "render", source);
+        expect(renders.length).toBeGreaterThan(0);
+        expect(paramsAt(worker, worker.posted.indexOf(renders[0]))?.exposure).toBe(0.5);
+      } finally {
+        setCanvasTool("acme.broken", null);
+        forgetCallbackFailures("acme.broken");
+        error.mockRestore();
       }
     });
   });

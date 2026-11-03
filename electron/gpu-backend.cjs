@@ -66,23 +66,31 @@ function softwareFallbackFor(backend) {
   return backend === SOFTWARE_BACKEND ? null : SOFTWARE_BACKEND;
 }
 
-// Why the next launch draws in software: the user turned it on in Preferences,
-// or this machine failed on the graphics card.
-const SOFTWARE_REASONS = new Set(["chosen", "webgl2-unavailable", "gpu-crashes"]);
-
-/** The cache file's text: the backend on the first line; for software the
- *  reason on the second, and on the third when software began (epoch ms) and
- *  how many launches have used it since. Earlier versions read only the first
- *  two lines. */
-function formatBackendCache({ backend, reason, since, launches }) {
-  if (since === null) return reason ? `${backend}\n${reason}\n` : `${backend}\n`;
-  return `${backend}\n${reason || ""}\n${since} ${launches}\n`;
+/** Where the next launch goes once the develop renderer couldn't start on
+ *  `backend`: the next rung down `ladder`, since another hardware backend may
+ *  link the shader that this one couldn't. Null when it is already software. */
+function rendererFallbackFor(ladder, backend) {
+  if (backend === SOFTWARE_BACKEND) return null;
+  return ladder[ladder.indexOf(backend) + 1] ?? SOFTWARE_BACKEND;
 }
 
-/** The backend the cache names, if `backends` has it, a known reason, and the
- *  software clock. */
+// Why the next launch draws in software: the user turned it on in Preferences,
+// or this machine failed on the graphics card.
+const SOFTWARE_REASONS = new Set(["chosen", "webgl2-unavailable", "gpu-crashes", "renderer-failed"]);
+
+/** The cache file's text: the backend on the first line; for software the
+ *  reason on the second, on the third when software began (epoch ms) and how
+ *  many launches have used it since, and on the fourth the app version that
+ *  put it there. Earlier versions read only the first three lines. */
+function formatBackendCache({ backend, reason, since, launches, version }) {
+  if (since === null) return reason ? `${backend}\n${reason}\n` : `${backend}\n`;
+  return `${backend}\n${reason || ""}\n${since} ${launches}\n${version ? `${version}\n` : ""}`;
+}
+
+/** The backend the cache names, if `backends` has it, a known reason, the
+ *  software clock, and the app version when one was stored. */
 function parseBackendCache(text, backends) {
-  const [first = "", second = "", third = ""] = String(text).split(/\r?\n/).map((line) => line.trim());
+  const [first = "", second = "", third = "", fourth = ""] = String(text).split(/\r?\n/).map((line) => line.trim());
   const backend = backends.includes(first) ? first : null;
   const reason = backend && SOFTWARE_REASONS.has(second) ? second : null;
   const clock = backend ? /^(\d+) (\d+)$/.exec(third) : null;
@@ -91,6 +99,7 @@ function parseBackendCache(text, backends) {
     reason,
     since: clock ? Number(clock[1]) : null,
     launches: clock ? Number(clock[2]) : 0,
+    ...(clock && fourth ? { version: fourth } : {}),
   };
 }
 
@@ -126,18 +135,21 @@ function backendCacheFiles(userData, platform, env) {
 }
 
 /** Whether a software cache is due a try on the graphics card. Software the
- *  user chose never is; one with no start date predates the clock, so it is. */
-function retriesHardware(cache, now) {
+ *  user chose never is; one with no start date predates the clock, so it is.
+ *  A renderer that couldn't start would fail the same way again, so that waits
+ *  for a different app version. */
+function retriesHardware(cache, now, version) {
   if (cache.backend !== SOFTWARE_BACKEND || cache.reason === "chosen") return false;
+  if (cache.reason === "renderer-failed" && cache.version === version) return false;
   if (cache.since === null) return true;
   return cache.launches >= RETRY_AFTER_LAUNCHES || now - cache.since >= RETRY_AFTER_MS;
 }
 
 /** The ladder index this launch starts on: the rung a probe relaunch asked
  *  for, else the cached backend unless it is due a retry, else the first. */
-function startRung(ladder, cache, relaunchIdx, now) {
+function startRung(ladder, cache, relaunchIdx, now, version) {
   if (relaunchIdx !== null) return Math.max(0, Math.min(relaunchIdx, ladder.length - 1));
-  if (!cache.backend || retriesHardware(cache, now)) return 0;
+  if (!cache.backend || retriesHardware(cache, now, version)) return 0;
   return Math.max(0, ladder.indexOf(cache.backend));
 }
 
@@ -155,8 +167,8 @@ function readyCache(backend, cache, now) {
 
 /** The software cache written when a session finds the graphics card unusable,
  *  or the user turns software on. */
-function fallbackCache(reason, now) {
-  return { backend: SOFTWARE_BACKEND, reason, since: now, launches: 0 };
+function fallbackCache(reason, now, version) {
+  return { backend: SOFTWARE_BACKEND, reason, since: now, launches: 0, ...(version ? { version } : {}) };
 }
 
 /** The rung a probe relaunch passed on the command line, or null. */
@@ -190,6 +202,7 @@ module.exports = {
   angleSwitches,
   webgl2Lost,
   softwareFallbackFor,
+  rendererFallbackFor,
   formatBackendCache,
   parseBackendCache,
   backendState,

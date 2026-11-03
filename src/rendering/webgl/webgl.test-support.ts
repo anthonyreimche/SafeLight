@@ -53,6 +53,39 @@ export function glHarness(): GlHarness {
   return harness;
 }
 
+/** The extensions that make float colour buffers renderable or blendable. */
+const FLOAT_TARGET_EXTENSIONS = new Set([
+  "EXT_color_buffer_float",
+  "EXT_color_buffer_half_float",
+  "EXT_float_blend",
+]);
+
+export interface FreshContext extends GlHarness {
+  /** Loses the context, so it doesn't count toward the page's limit. */
+  release(): void;
+}
+
+/** A context of its own, on its own canvas, asked for as glHarness asks. With
+ *  `noFloat` it hides the float colour-buffer extensions before anything can
+ *  enable them, so RGBA16F and RGBA32F targets never complete, as on a GPU or
+ *  VM without them: hiding them on the shared context comes too late once any
+ *  test there has enabled them. Release it when done. */
+export function freshContext({ noFloat = false }: { noFloat?: boolean } = {}): FreshContext {
+  const canvas = document.createElement("canvas");
+  const gl = canvas.getContext("webgl2", { premultipliedAlpha: false, preserveDrawingBuffer: true });
+  if (!gl) throw new Error("WebGL2 unavailable");
+  if (noFloat) {
+    const getExtension = gl.getExtension.bind(gl);
+    const getSupportedExtensions = gl.getSupportedExtensions.bind(gl);
+    gl.getExtension = ((name: string) =>
+      FLOAT_TARGET_EXTENSIONS.has(name) ? null : getExtension(name)) as typeof gl.getExtension;
+    gl.getSupportedExtensions = () =>
+      getSupportedExtensions()?.filter((name) => !FLOAT_TARGET_EXTENSIONS.has(name)) ?? null;
+  }
+  const lose = gl.getExtension("WEBGL_lose_context");
+  return { canvas, gl, release: () => lose?.loseContext() };
+}
+
 export interface ProgramBuild {
   program: WebGLProgram | null;
   /** The failing stage's info log, or null when the program compiled and
@@ -118,13 +151,15 @@ const NO_SETTINGS: Readonly<Record<string, unknown>> = {};
 export const deriveWithoutSettings: StageDerive = (params, stages) =>
   deriveStageValues(params, stages, { settingsFor: () => NO_SETTINGS });
 
-/** Build a renderer on the shared canvas, hand it to `fn`, and dispose it.
- *  It derives with deriveWithoutSettings unless `opts` says otherwise. */
+/** Build a renderer on the shared canvas, or on `canvas`, hand it to `fn`, and
+ *  dispose it. It derives with deriveWithoutSettings unless `opts` says
+ *  otherwise. */
 export function withRenderer<T>(
   opts: WebGLRendererOpts | undefined,
   fn: (renderer: WebGLRenderer) => T,
+  canvas: HTMLCanvasElement = glHarness().canvas,
 ): T {
-  const renderer = new WebGLRenderer(glHarness().canvas, { derive: deriveWithoutSettings, ...opts });
+  const renderer = new WebGLRenderer(canvas, { derive: deriveWithoutSettings, ...opts });
   try {
     return fn(renderer);
   } finally {

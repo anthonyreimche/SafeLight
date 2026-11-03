@@ -208,6 +208,7 @@ vi.mock("@/catalog/storage", () => ({
 }));
 
 vi.mock("@/state/catalog-store", () => ({
+  photoById: (photos: CatalogPhoto[], id: string) => photos.find((p) => p.id === id),
   useCatalogStore: {
     getState: () => ({
       photos: h.catalog,

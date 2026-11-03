@@ -108,8 +108,8 @@ async function decodeFloat(
   let buffer: ArrayBuffer;
   try {
     buffer = typeof bytes === "function" ? await bytes() : (bytes ?? (await file.arrayBuffer()));
-  } catch {
-    return { failure: "transient", reason: "couldn't read the file" };
+  } catch (e) {
+    return { failure: "transient", reason: `couldn't read the file (${describeError(e)})` };
   }
 
   // Prefer libraw: it decodes every compression (incl. Nikon NEF), applies
@@ -136,10 +136,13 @@ async function decodeFloat(
     if (!plane) return viaLib;
     const data = developRawPlaneFloat(plane.samples, plane.options);
     return { data, width: info.width, height: info.height, oriented: false };
-  } catch {
-    return viaLib;
+  } catch (e) {
+    return { ...viaLib, reason: `${viaLib.reason ?? "no decoder took the file"} (in-house decode: ${describeError(e)})` };
   }
 }
+
+const describeError = (e: unknown): string =>
+  e instanceof Error ? `${e.name}: ${e.message}` : String(e);
 
 /** Whether `buffer` opens as TiffReader reads it: a byte-order mark, then 42. */
 function isTiffStream(buffer: ArrayBuffer): boolean {

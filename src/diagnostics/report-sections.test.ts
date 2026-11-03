@@ -60,7 +60,7 @@ describe("environmentText", () => {
 });
 
 describe("graphicsText", () => {
-  const webgl = { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA GeForce RTX 3070)", glsl: "WebGL GLSL ES 3.00", maxTexture: 16384, colorBufferFloat: true };
+  const webgl = { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA GeForce RTX 3070)", glsl: "WebGL GLSL ES 3.00", maxTexture: 16384, fragmentUniformVectors: 1024, colorBufferFloat: true };
 
   it("lists only the GPU features that are off", () => {
     const text = graphicsText({
@@ -72,7 +72,7 @@ describe("graphicsText", () => {
       [
         "ANGLE (NVIDIA GeForce RTX 3070)",
         "Vendor: Google Inc. (NVIDIA)",
-        "WebGL GLSL ES 3.00 · max texture 16384",
+        "WebGL GLSL ES 3.00 · max texture 16384 · fragment uniform vectors 1024",
         "GPU features off: rasterization (disabled_software)",
       ].join("\n"),
     );

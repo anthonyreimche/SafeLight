@@ -26,6 +26,7 @@ import { registerEssentialModules, unregisterEssentialModules } from "@/test/ess
 import { useDevelopStore, type DevelopState } from "@/state/develop-store";
 import { setPickDrag, usePickDragStore } from "@/modules/develop/pick-drag";
 import { setCanvasTool, useCanvasToolStore } from "@/modules/develop/canvas-tool";
+import { CALLBACK_FAILURE_LIMIT, forgetCallbackFailures, useCallbackFailures } from "@/extensions/guard";
 
 /** An extension's on-image tool holding the canvas, as crop mode does. */
 const holdCanvas = () => setCanvasTool("acme.crop", { overlay: () => null });
@@ -33,6 +34,8 @@ const canvasHeld = () => useCanvasToolStore.getState().held !== null;
 import {
   KEY_ACTIONS,
   getBinding,
+  registerExtensionAction,
+  unregisterExtensionActions,
   resetBinding,
   setBinding,
   resetShortcutHoldsForTests,
@@ -109,6 +112,39 @@ describe("zoom shortcut dispatch", () => {
     });
     expect(e.defaultPrevented).toBe(false);
     expect(commands.zoomStep).not.toHaveBeenCalled();
+  });
+});
+
+describe("an extension shortcut whose handler throws", () => {
+  it("is caught, and after repeated throws is switched off and listed against the extension", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const uncaught = vi.fn();
+    window.addEventListener("error", uncaught);
+    const second = vi.fn();
+    const broken = vi.fn(() => {
+      throw new Error("broken handler");
+    });
+    registerExtensionAction("acme.broken", { id: "acme.broken.run", label: "Run", defaultCombo: "Ctrl+Alt+K", handler: broken });
+    registerExtensionAction("acme.ok", { id: "acme.ok.run", label: "Run", defaultCombo: "Ctrl+Alt+J", handler: second });
+    render(<Harness />);
+    const send = (key: string) => {
+      const e = new KeyboardEvent("keydown", { key, ctrlKey: true, altKey: true, cancelable: true });
+      window.dispatchEvent(e);
+      return e;
+    };
+    try {
+      for (let i = 0; i <= CALLBACK_FAILURE_LIMIT; i++) send("k");
+      send("j");
+      expect(uncaught).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledTimes(1);
+      expect(broken).toHaveBeenCalledTimes(CALLBACK_FAILURE_LIMIT);
+      expect(useCallbackFailures.getState()["acme.broken"]?.kind).toBe("keyboard shortcut");
+    } finally {
+      window.removeEventListener("error", uncaught);
+      unregisterExtensionActions("acme.broken");
+      unregisterExtensionActions("acme.ok");
+      forgetCallbackFailures("acme.broken");
+    }
   });
 });
 
@@ -378,6 +414,122 @@ describe("Develop arrow keys and rotate next to a culling surface", () => {
     render(<input type="range" aria-label="Exposure" />);
     expect(fire(screen.getByLabelText("Exposure"), bound("photo.next"))).toBe(false);
     expect(active()).toBe("a");
+  });
+
+  it("leaves Option+[ to a text field on a Mac, where it types a quote", () => {
+    Object.defineProperty(window, "safelightNative", { value: { platform: "darwin" }, configurable: true });
+    try {
+      render(<input aria-label="Keywords" />);
+      const e = new KeyboardEvent("keydown", { key: "“", code: "BracketLeft", altKey: true, bubbles: true, cancelable: true });
+      act(() => {
+        screen.getByLabelText("Keywords").dispatchEvent(e);
+      });
+      expect(e.defaultPrevented).toBe(false);
+      expect(rotatePhotos).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(window, "safelightNative");
+    }
+  });
+});
+
+describe("modifier combos in a text field", () => {
+  const undo = vi.fn();
+  const onAction = vi.fn(() => true);
+
+  beforeEach(() => {
+    undo.mockClear();
+    onAction.mockClear();
+    useUIStore.setState({ activeModule: "develop" });
+    useDevelopStore.setState({ undo });
+    render(<Harness />);
+    render(<input aria-label="Caption" />);
+  });
+  afterEach(() => {
+    useCanvasToolStore.setState({ held: null });
+    resetStores();
+  });
+
+  it("leave Ctrl+Z and Cmd+Z to the field's own undo", () => {
+    const field = screen.getByLabelText("Caption");
+    expect(fire(field, "Ctrl+z")).toBe(false);
+    const cmdZ = new KeyboardEvent("keydown", { key: "z", metaKey: true, bubbles: true, cancelable: true });
+    act(() => {
+      field.dispatchEvent(cmdZ);
+    });
+    expect(cmdZ.defaultPrevented).toBe(false);
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  it("still undo with Ctrl+Z outside a field", () => {
+    expect(fire(document.body, "Ctrl+z")).toBe(true);
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("leave Ctrl+Z to the field on a non-Latin layout, where the key is not a Latin letter", () => {
+    const russianCtrlZ = (): KeyboardEvent =>
+      new KeyboardEvent("keydown", { key: "я", code: "KeyZ", ctrlKey: true, bubbles: true, cancelable: true });
+    const inField = russianCtrlZ();
+    act(() => {
+      screen.getByLabelText("Caption").dispatchEvent(inField);
+    });
+    expect(inField.defaultPrevented).toBe(false);
+    expect(undo).not.toHaveBeenCalled();
+
+    const outside = russianCtrlZ();
+    act(() => {
+      document.body.dispatchEvent(outside);
+    });
+    expect(outside.defaultPrevented).toBe(true);
+    expect(undo).toHaveBeenCalledTimes(1);
+  });
+
+  it("leave a Windows AltGr character to the field rather than its bare binding", () => {
+    setCanvasTool("acme.heal", { overlay: () => null, onAction });
+    const altGr = new KeyboardEvent("keydown", { key: "[", code: "Digit8", ctrlKey: true, altKey: true, modifierAltGraph: true, bubbles: true, cancelable: true });
+    act(() => {
+      screen.getByLabelText("Caption").dispatchEvent(altGr);
+    });
+    expect(altGr.defaultPrevented).toBe(false);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  describe("an extension's Ctrl+Alt+letter", () => {
+    const run = vi.fn();
+    beforeEach(() => {
+      run.mockClear();
+      registerExtensionAction("acme.tool", { id: "acme.tool.run", label: "Run", defaultCombo: "Ctrl+Alt+K", handler: run });
+    });
+    afterEach(() => unregisterExtensionActions("acme.tool"));
+
+    const inField = (init: KeyboardEventInit): KeyboardEvent => {
+      const e = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+      act(() => {
+        screen.getByLabelText("Caption").dispatchEvent(e);
+      });
+      return e;
+    };
+
+    it("fires on Windows, also on a layout that reports AltGr for Ctrl+Alt", () => {
+      expect(inField({ key: "k", code: "KeyK", ctrlKey: true, altKey: true }).defaultPrevented).toBe(true);
+      expect(inField({ key: "k", code: "KeyK", ctrlKey: true, altKey: true, modifierAltGraph: true }).defaultPrevented).toBe(true);
+      expect(run).toHaveBeenCalledTimes(2);
+    });
+
+    it("fires on Linux, where AltGr is a key of its own", () => {
+      expect(inField({ key: "k", code: "KeyK", ctrlKey: true, altKey: true }).defaultPrevented).toBe(true);
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a letter typed with Windows AltGr (Polish ą) to the field", () => {
+      const e = inField({ key: "ą", code: "KeyA", ctrlKey: true, altKey: true, modifierAltGraph: true });
+      expect(e.defaultPrevented).toBe(false);
+    });
+
+    it("leaves a letter typed with Linux AltGr (Polish ł) to the field", () => {
+      const e = inField({ key: "ł", code: "KeyL", modifierAltGraph: true });
+      expect(e.defaultPrevented).toBe(false);
+      expect(run).not.toHaveBeenCalled();
+    });
   });
 });
 

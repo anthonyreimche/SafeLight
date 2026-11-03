@@ -28,7 +28,7 @@ function install(edit: EditState | undefined): void {
   const storage: CatalogStorage = {
     putPhoto: async () => {},
     putPhotos: async () => {},
-    deletePhoto: async () => {},
+    deletePhotos: async () => {},
     getEditState: async (photoId) => (photoId === edit?.photoId ? edit : undefined),
     putEditState: async () => {},
     putEditStates: async () => {},

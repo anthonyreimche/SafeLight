@@ -109,6 +109,34 @@ describe("setCacheDirOnWorker", () => {
   });
 });
 
+describe("setCacheDirOnWorker when the worker is gone", () => {
+  it("warns once, not once per folder", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { setCacheDirOnWorker } = await load();
+
+    setCacheDirOnWorker(null);
+    FakeWorker.last?.onerror?.({ message: "boom" } as ErrorEvent);
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    expect(warn.mock.calls[0].join(" ")).toContain("boom");
+
+    setCacheDirOnWorker(null);
+    FakeWorker.last?.onerror?.({ message: "boom" } as ErrorEvent);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("workerWriteCachedPreview", () => {
+  it("says whether the worker stored the entry", async () => {
+    const { workerWriteCachedPreview } = await load();
+    const writing = workerWriteCachedPreview("k", new Float32Array(4), 1, 1, 3072);
+    const [msg] = await delivered();
+    if (msg.cmd !== "write") throw new Error("not a write");
+    answer({ type: "write", id: msg.id, ok: false });
+    expect(await writing).toBe(false);
+  });
+});
+
 describe("workerReadCachedPreview", () => {
   it("asks for the sample only when told to, and hands the entry back whole", async () => {
     const { workerReadCachedPreview } = await load();

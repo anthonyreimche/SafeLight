@@ -158,7 +158,7 @@ function ConfirmCard({ request }: { request: PendingConfirm }) {
             className={`rounded px-3 py-1 text-[11px] font-medium hover:opacity-90 ${
               request.variant === "danger"
                 ? "bg-danger text-on-danger"
-                : "bg-[var(--color-accent)] text-white"
+                : "bg-[var(--color-accent)] text-on-accent"
             }`}
             onClick={() => settle(request, true)}
           >

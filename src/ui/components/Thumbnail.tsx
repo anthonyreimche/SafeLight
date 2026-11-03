@@ -8,6 +8,7 @@ import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
 import { hasPreviewLoaded, markPreviewLoaded, revokePreviewUrl } from "@/state/preview-urls";
 import { Rating } from "./Rating";
+import { usePhotoOption } from "./use-photo-option";
 import { usePreviewRequest } from "./use-preview-request";
 
 // Callbacks take the photo id so the parent can pass ONE stable function to every
@@ -99,10 +100,12 @@ function ThumbnailImpl({
   // Lazily pull the cached preview when this cell nears the viewport, so a freshly
   // opened folder loads on-screen thumbnails first instead of all of them up front.
   const cellRef = usePreviewRequest<HTMLDivElement>(photo.id, !thumbUrl);
+  const optionProps = usePhotoOption(cellRef, photo.id, selected, active, onDoubleClick);
 
   return (
     <div
       ref={cellRef}
+      {...optionProps}
       data-photo-id={photo.id}
       className={`group relative cursor-pointer overflow-hidden rounded ${labelTint} ${borderClass}`}
       style={{ width: size, height: size }}
@@ -128,7 +131,7 @@ function ThumbnailImpl({
           className="flex h-full w-full flex-col items-center justify-center gap-1 bg-surface-2 text-text-secondary"
           title={`${photo.filename}: ${photo.decodeError}`}
         >
-          <span className="text-lg leading-none">{"⚠"}</span>
+          <span aria-hidden="true" className="text-lg leading-none">{"⚠"}</span>
           <span className="line-clamp-3 px-1 text-center text-[10px] leading-tight">{photo.decodeError}</span>
         </div>
       ) : (
@@ -138,11 +141,13 @@ function ThumbnailImpl({
 
       {(photo.flag === "pick" || photo.flag === "reject") && (
         <div
+          role="img"
+          aria-label={isReject ? "Rejected" : "Pick"}
           className={`absolute top-1 right-1 rounded bg-black/50 px-1 text-[10px] leading-tight ${
-            photo.flag === "pick" ? "text-flag-pick" : "text-label-red"
+            isReject ? "text-label-red" : "text-flag-pick"
           }`}
         >
-          {"⚑"}
+          {isReject ? "✕" : "⚑"}
         </div>
       )}
 
@@ -151,7 +156,7 @@ function ThumbnailImpl({
           className="absolute top-1 left-1 flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight text-text-secondary transition-opacity group-hover:opacity-0"
           title={photo.keywords.join(", ")}
         >
-          <span>{"🏷"}</span>
+          <span aria-hidden="true">{"🏷"}</span>
           {photo.keywords.length > 1 && <span>{photo.keywords.length}</span>}
         </div>
       )}

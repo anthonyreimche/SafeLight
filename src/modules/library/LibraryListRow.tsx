@@ -6,6 +6,7 @@
 import { memo, useEffect, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
+import { usePhotoOption } from "@/ui/components/use-photo-option";
 import { usePreviewRequest } from "@/ui/components/use-preview-request";
 
 const colorDot: Record<string, string> = {
@@ -56,6 +57,7 @@ function LibraryListRowImpl({
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
   const thumbUrl = photo.thumbnailUrl ?? blobUrl;
   const rowRef = usePreviewRequest<HTMLDivElement>(photo.id, !thumbUrl);
+  const optionProps = usePhotoOption(rowRef, photo.id, selected, active, onDoubleClick);
 
   const rowClass = active
     ? "bg-surface-4 text-text-primary"
@@ -66,6 +68,7 @@ function LibraryListRowImpl({
   return (
     <div
       ref={rowRef}
+      {...optionProps}
       data-photo-id={photo.id}
       draggable={!!onDragStart}
       onDragStart={onDragStart ? (e) => onDragStart(photo.id, e) : undefined}
@@ -90,7 +93,10 @@ function LibraryListRowImpl({
           loading="lazy"
         />
       ) : (
-        <div className="flex h-10 w-14 shrink-0 items-center justify-center rounded bg-surface-2 text-text-muted">
+        <div
+          aria-hidden="true"
+          className="flex h-10 w-14 shrink-0 items-center justify-center rounded bg-surface-2 text-text-muted"
+        >
           {"🖼"}
         </div>
       )}
@@ -102,19 +108,27 @@ function LibraryListRowImpl({
           className="shrink-0 text-[10px] text-text-muted"
           title={photo.keywords.join(", ")}
         >
-          {"🏷"}
+          <span aria-hidden="true">{"🏷"}</span>
           {photo.keywords.length > 1 ? ` ${photo.keywords.length}` : ""}
         </span>
       )}
 
       {photo.flag === "pick" && (
-        <span className="shrink-0 rounded bg-black/40 px-1 text-[10px] text-flag-pick">
+        <span
+          role="img"
+          aria-label="Pick"
+          className="shrink-0 rounded bg-black/40 px-1 text-[10px] text-flag-pick"
+        >
           {"⚑"}
         </span>
       )}
       {photo.flag === "reject" && (
-        <span className="shrink-0 rounded bg-black/40 px-1 text-[10px] text-label-red">
-          {"⚑"}
+        <span
+          role="img"
+          aria-label="Rejected"
+          className="shrink-0 rounded bg-black/40 px-1 text-[10px] text-label-red"
+        >
+          {"✕"}
         </span>
       )}
 

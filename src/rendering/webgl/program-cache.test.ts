@@ -8,7 +8,11 @@
 // much as the answer.
 
 import { describe, expect, it } from "vitest";
-import { isolateFailingStages } from "./program-cache";
+import type { ProcessingStageContribution } from "@/extensions/types";
+import { PASS_PRELUDE } from "./export-draw";
+import { createProgram, isolateFailingStages } from "./program-cache";
+import { FRAGMENT_SHADER, V2_VARIANT, VERTEX_SHADER } from "./shaders";
+import { buildStageInjection, PASS_VERTEX_SHADER } from "./stage-injection";
 
 const STAGES = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
@@ -72,5 +76,65 @@ describe("isolateFailingStages", () => {
     expect(subsets.length).toBe(6);
     expect(failing.length).toBeGreaterThan(0);
     expect(failing.length).toBeLessThan(4);
+  });
+});
+
+/** The fragment source createProgram hands the driver for `fsSrc`. */
+function compiledFragment(vsSrc: string, fsSrc: string): string {
+  const sources = new Map<object, string>();
+  const types = new Map<object, number>();
+  const gl = {
+    VERTEX_SHADER: 0x8b31,
+    FRAGMENT_SHADER: 0x8b30,
+    createShader: (type: number) => {
+      const shader = {};
+      types.set(shader, type);
+      return shader;
+    },
+    shaderSource: (shader: object, src: string) => sources.set(shader, src),
+    compileShader: () => {},
+    getShaderParameter: () => true,
+    createProgram: () => ({}),
+    attachShader: () => {},
+    bindAttribLocation: () => {},
+    linkProgram: () => {},
+    deleteShader: () => {},
+    getProgramParameter: () => true,
+  } as unknown as WebGL2RenderingContext;
+  createProgram(gl, vsSrc, fsSrc);
+  const fragment = [...sources].find(([shader]) => types.get(shader) === gl.FRAGMENT_SHADER);
+  if (!fragment) throw new Error("no fragment shader compiled");
+  return fragment[1];
+}
+
+const count = (text: string, part: string) => text.split(part).length - 1;
+
+const BLURRED: ProcessingStageContribution = {
+  id: "acme.blur",
+  name: "Blur",
+  phase: "scene-linear",
+  glsl: "lin = mix(lin, stageResult, amount);",
+  uniforms: [{ key: "amount", glslType: "float", default: 1 }],
+  passes: [{ glsl: "c = readPrev(vUv);" }],
+};
+
+// A sampler2D is lowp unless declared otherwise, and drivers that lower lowp to
+// fp16 clip HDR values read through it.
+describe("createProgram's fragment precision", () => {
+  it("declares highp sampler2D for the develop program, right after #version", () => {
+    const src = compiledFragment(VERTEX_SHADER, FRAGMENT_SHADER);
+    expect(count(src, "precision highp sampler2D;")).toBe(1);
+    expect(src.split("\n").slice(0, 2)).toEqual(["#version 300 es", "precision highp sampler2D;"]);
+    expect(src.replace("precision highp sampler2D;\n", "")).toBe(FRAGMENT_SHADER);
+  });
+
+  it("declares it for a stage's pass program", () => {
+    const pass = buildStageInjection([BLURRED], V2_VARIANT).prepass[0].passes[0].fragmentSource;
+    expect(count(compiledFragment(PASS_VERTEX_SHADER, pass), "precision highp sampler2D;")).toBe(1);
+  });
+
+  it("leaves a source that declares its sampler precision as it is", () => {
+    const src = `${PASS_PRELUDE}uniform sampler2D uSrc;\nvoid main() { fragColor = texture(uSrc, vec2(0.0)); }\n`;
+    expect(compiledFragment(PASS_VERTEX_SHADER, src)).toBe(src);
   });
 });

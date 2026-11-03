@@ -24,6 +24,9 @@ export interface Caps {
   readonly textureUnits: number;
   /** MAX_COMBINED_TEXTURE_IMAGE_UNITS: the units a sampler may read. */
   readonly combinedTextureUnits: number;
+  /** MAX_FRAGMENT_UNIFORM_VECTORS: the vec4 rows a fragment shader's uniforms
+   *  may fill; the develop program grows with masks and stages. */
+  readonly fragmentUniformVectors: number;
 }
 
 /** The context's caps. `norm16` asks for the RGBA16 probe, which only High
@@ -36,6 +39,7 @@ export function readCaps(gl: WebGL2RenderingContext, opts: { norm16: boolean }):
     maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
     textureUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS),
     combinedTextureUnits: gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS),
+    fragmentUniformVectors: gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS),
   };
 }
 

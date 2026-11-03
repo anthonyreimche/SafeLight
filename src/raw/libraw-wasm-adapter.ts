@@ -28,6 +28,7 @@ import { kelvinFromWhiteBalanceGains } from "@/rendering/blackbody";
 import type { DecodeFailure, RawFloatImage } from "./decode-result";
 import {
   acquireInstance,
+  decodePoolFailure,
   discardInstance,
   releaseInstance,
   type DecodeRequest,
@@ -330,7 +331,11 @@ export async function decodeRawFloatViaLibRaw(
   if (!raw) {
     // An abandoned request is no failure: nobody is waiting to learn why.
     if (request?.signal?.aborted) return { failure: "aborted" };
-    return { failure: "transient", reason: "decode pool unavailable" };
+    const cause = decodePoolFailure();
+    return {
+      failure: "transient",
+      reason: cause ? `decode pool unavailable (${cause})` : "decode pool unavailable",
+    };
   }
 
   const fileBytes = buffer.byteLength;

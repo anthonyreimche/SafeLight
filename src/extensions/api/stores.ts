@@ -465,6 +465,12 @@ export interface ProjectState {
   openError: string | null;
   /** Whether openError is about a folder Safelight can't write to. */
   openErrorReadOnly: boolean;
+  /** The recent project whose folder openError says is unavailable; null otherwise. */
+  openErrorRecentId: string | null;
+  /** Bumped when the recent projects list changes, so a view can re-read it. */
+  recentsRevision: number;
+  /** Removes openErrorRecentId from the recent projects and dismisses openError. */
+  removeFailedRecent: () => Promise<void>;
   /** Notice that a read-only folder's catalog was redirected elsewhere. */
   storageNotice: string | null;
   /** Why the last catalog save failed, while saves keep failing; null = saved. */

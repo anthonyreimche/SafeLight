@@ -1587,6 +1587,35 @@ describe("removal tombstones", () => {
     expect(p.fs.tree(`${p.slPath}/blobs`)).toEqual([]);
   });
 
+  it("removes many photos with one message, one blobs listing and one save", async () => {
+    const files = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`p${i}.jpg`, `P${i}`]));
+    const p = mount(cfg, files);
+    const opened = await open(p);
+    const gone = opened.photos.slice(0, 150).map((photo) => photo.id);
+    await opened.storage.putPhotoBlob(gone[0], "warp", new Uint8Array([1]));
+    await opened.storage.putPhotoBlob(opened.photos[199].id, "warp", new Uint8Array([2]));
+    await opened.storage.flush();
+    const sent: CatalogRecords[] = [];
+    const stop = onBroadcast((message) => {
+      if (message.type === "catalog-records") sent.push(message.payload);
+    });
+    const listings = vi.spyOn(p.fs, "list");
+    const writes = catalogWrites(p);
+
+    await opened.storage.deletePhotos(gone);
+    await opened.storage.flush();
+
+    expect(sent.map((records) => records.deletedIds)).toEqual([gone]);
+    expect(listings.mock.calls.filter(([path]) => /\/blobs$/.test(key(String(path))))).toHaveLength(1);
+    expect(catalogWrites(p)).toBe(writes + 1);
+    expect(catalog(p)!.removed).toHaveLength(150);
+    expect(ids(catalog(p)!.photos).sort()).toEqual(
+      ids(opened.photos.slice(150)).sort(),
+    );
+    expect(p.fs.tree(`${p.slPath}/blobs`)).toHaveLength(1);
+    stop();
+  });
+
   it("does not tombstone a virtual copy — the master still owns the file", async () => {
     const p = mount(cfg, { "a.jpg": "A" });
     const opened = await open(p);
@@ -2036,6 +2065,18 @@ describe("previews", () => {
 
     await opened.storage.putPhoto({ ...edited, rating: 3 });
     expect(p.fs.text(`${p.slPath}/previews/${edited.id}.jpg`)).toBe("edited");
+  });
+
+  it("keeps a newly imported photo whose preview can't be written", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    p.fs.failWrites(/[\\/]previews[\\/]/, "ENOSPC", 1);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const opened = await open(p);
+    await opened.storage.flush();
+
+    expect(rels(opened.photos)).toEqual(["a.jpg"]);
+    expect(p.fs.text(`${p.slPath}/catalog.json`)).toContain("a.jpg");
   });
 });
 
@@ -2817,6 +2858,15 @@ describe("opaque per-photo blobs", () => {
     await expect(opened.storage.getPhotoBlob(id, "warp")).resolves.toBeNull();
     await expect(opened.storage.getPhotoBlob(id, "never-written")).resolves.toBeNull();
   });
+
+  it("creates no blobs folder by reading one", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    const opened = await open(p);
+
+    await expect(opened.storage.getPhotoBlob(opened.photos[0].id, "warp")).resolves.toBeNull();
+
+    expect(p.fs.has(`${p.slPath}/blobs`)).toBe(false);
+  });
 });
 
 describe("open-time callbacks", () => {
@@ -2923,6 +2973,26 @@ describe("sidecar adoption", () => {
     const opened = await open(p);
 
     expect(opened.photos.map((x) => x.rating)).toEqual([0, 0]);
+  });
+
+  it("drops sidecar values outside what the catalog holds", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    p.fs.put(
+      `${p.rootPath}/a.jpg.safelight.json`,
+      JSON.stringify({
+        safelightSidecar: 1,
+        info: { rating: 99, colorLabel: "teal", flag: "x", keywords: [1, null, "a", ""] },
+      }),
+    );
+
+    const opened = await open(p);
+
+    expect(opened.photos[0]).toMatchObject({
+      rating: 0,
+      colorLabel: "none",
+      flag: "none",
+      keywords: ["a"],
+    });
   });
 
   it("lets an extension's import metadata win over the sidecar", async () => {
@@ -3593,12 +3663,15 @@ describe("catalogKey", () => {
   // Names the catalog file a storage writes: the windows that share one take on
   // each other's records.
   const native = (path: string) => nativeDirectoryHandle(path);
+  const onPlatform = (platform: string) => vi.stubGlobal("window", { safelightNative: { platform } });
 
   beforeEach(() => {
     h.fs = new MemoryFs();
   });
+  afterEach(() => vi.stubGlobal("window", undefined));
 
   it("names a desktop catalog by its working folder, in any case or slash on Windows", () => {
+    onPlatform("win32");
     const root = native("D:\\Photos");
     expect(catalogKey(root, native("D:\\Photos\\.safelight"), "one")).toBe(
       catalogKey(root, native("d:/photos/.safelight/"), "another"),
@@ -3608,7 +3681,16 @@ describe("catalogKey", () => {
     );
   });
 
+  it("names a desktop catalog by its working folder in any case on macOS", () => {
+    onPlatform("darwin");
+    const root = native("/Users/u/Photos");
+    expect(catalogKey(root, native("/Users/u/Photos/.safelight"), "one")).toBe(
+      catalogKey(root, native("/Users/u/photos/.safelight"), "one"),
+    );
+  });
+
   it("keeps the case of other systems' paths", () => {
+    onPlatform("linux");
     const root = native("/home/u/Photos");
     expect(catalogKey(root, native("/home/u/Photos/.safelight"), "one")).not.toBe(
       catalogKey(root, native("/home/u/photos/.safelight"), "one"),
@@ -3756,6 +3838,18 @@ describe("windows sharing a catalog", () => {
     expect(ids(await b.getAllPhotos())).toEqual(ids(inA));
     expect(ids(catalog(p)?.photos ?? [])).toContain("copy-1");
     expect(labelsOnDisk(p)).toEqual({ "copy-1": "Copy look" });
+  });
+
+  it("removes the preview and blobs of a virtual copy B doesn't show when B removes its master", async () => {
+    const { p, a, b, inA } = await twoWindows();
+    await a.putPhotos([{ ...inA[0], id: "copy-1", copyOf: inA[0].id, copyName: "copy" }]);
+    await a.putPhotoBlob("copy-1", "warp", new Uint8Array([1]));
+    p.fs.put(`${p.slPath}/previews/copy-1.jpg`, "copy preview");
+
+    await b.deletePhoto(inA[0].id);
+
+    expect(p.fs.has(`${p.slPath}/previews/copy-1.jpg`)).toBe(false);
+    expect(p.fs.tree(`${p.slPath}/blobs`)).toEqual([]);
   });
 
   it("shows a photo another window added once the project is opened again", async () => {

@@ -3,18 +3,19 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import type { HistogramData } from "@/rendering/histogram";
 import type { ClippingMask } from "@/state/develop-slices/view-slice";
 import { channelHex, channelRgba } from "./channel-colors";
+import { useThemeStore } from "@/extensions/themes";
 import { reducedMotion } from "@/ui/reduced-motion";
 import { useDevicePixelRatio } from "@/ui/use-device-pixel-ratio";
 
 type Mode = "luma" | "rgb" | "red" | "green" | "blue";
 
 const MODES: { key: Mode; label: string; active: string }[] = [
-  { key: "luma", label: "Lum", active: "#d0d0d0" },
-  { key: "rgb", label: "RGB", active: "#d0d0d0" },
+  { key: "luma", label: "Lum", active: "var(--color-text-secondary)" },
+  { key: "rgb", label: "RGB", active: "var(--color-text-secondary)" },
   { key: "red", label: "R", active: channelHex("red") },
   { key: "green", label: "G", active: channelHex("green") },
   { key: "blue", label: "B", active: channelHex("blue") },
@@ -60,6 +61,46 @@ function zoneAt(frac: number) {
 }
 
 const H = 76;
+
+// Canvas colours a theme can override through custom properties; the values
+// here are what the histogram has always drawn.
+const PALETTE_DEFAULTS = {
+  curve: "rgba(208,208,208,0.85)",
+  grid: "rgba(255,255,255,0.06)",
+  zone: "rgba(255,255,255,0.07)",
+  label: "rgba(224,224,224,0.85)",
+  clipShadow: "rgba(50,77,255,0.9)",
+  clipHighlight: "rgba(255,50,50,0.9)",
+  clipShadowActive: "rgba(100,140,255,1)",
+  clipHighlightActive: "rgba(255,120,120,1)",
+  clipShadowBg: "rgba(50,77,255,0.35)",
+  clipHighlightBg: "rgba(255,50,50,0.35)",
+};
+
+type Palette = typeof PALETTE_DEFAULTS;
+
+const PALETTE_VARS: Record<keyof Palette, string> = {
+  curve: "--histogram-curve",
+  grid: "--histogram-grid",
+  zone: "--histogram-zone",
+  label: "--histogram-label",
+  clipShadow: "--histogram-clip-shadow",
+  clipHighlight: "--histogram-clip-highlight",
+  clipShadowActive: "--histogram-clip-shadow-active",
+  clipHighlightActive: "--histogram-clip-highlight-active",
+  clipShadowBg: "--histogram-clip-shadow-bg",
+  clipHighlightBg: "--histogram-clip-highlight-bg",
+};
+
+function readPalette(): Palette {
+  const style = getComputedStyle(document.documentElement);
+  const out = { ...PALETTE_DEFAULTS };
+  for (const key of Object.keys(PALETTE_VARS) as (keyof Palette)[]) {
+    const v = style.getPropertyValue(PALETTE_VARS[key]).trim();
+    if (v) out[key] = v;
+  }
+  return out;
+}
 
 /** The mask after a triangle flips its bit. The gamut warning (bit 2) rides along,
  *  but with both triangles off a version 1/2 photo draws nothing for it, so the
@@ -112,6 +153,8 @@ export function Histogram({
   const animRef = useRef<number | null>(null);
   const prevSizeRef = useRef({ w: 0, h: 0, dpr: 0 });
   const dpr = useDevicePixelRatio();
+  const themeId = useThemeStore((s) => s.activeId);
+  const palette = useMemo(() => readPalette(), [themeId]);
 
   const LERP_RATE = 0.35;
 
@@ -131,16 +174,16 @@ export function Histogram({
     const d = displayRef.current;
     const clip = targetRef.current?.extended;
     if (!d) {
-      drawHistogram(ctx, width, H, null, mode, interactive, hoverZone, showClipping);
+      drawHistogram(ctx, width, H, null, mode, interactive, hoverZone, palette, showClipping);
       return;
     }
 
     const snap: HistogramData = {
       r: u32From(d.r), g: u32From(d.g), b: u32From(d.b), luma: u32From(d.luma),
     };
-    drawHistogram(ctx, width, H, snap, mode, interactive, hoverZone, showClipping,
+    drawHistogram(ctx, width, H, snap, mode, interactive, hoverZone, palette, showClipping,
       clip?.clipLow, clip?.clipHigh);
-  }, [width, dpr, mode, interactive, hoverZone, showClipping]);
+  }, [width, dpr, mode, interactive, hoverZone, showClipping, palette]);
 
   // When new data arrives, set it as the animation target.
   useEffect(() => {
@@ -276,7 +319,8 @@ export function Histogram({
           <button
             key={m.key}
             onClick={() => { setMode(m.key); writeHistMode(m.key); }}
-            className={`flex-1 rounded py-0.5 text-[9px] font-medium uppercase tracking-wider ${
+            aria-pressed={mode === m.key}
+            className={`min-h-6 flex-1 rounded py-0.5 text-[9px] font-medium uppercase tracking-wider ${
               mode === m.key
                 ? "bg-surface-3"
                 : "text-text-muted hover:text-text-secondary"
@@ -289,12 +333,13 @@ export function Histogram({
         {onToggleClipping && (
           <button
             onClick={onToggleClipping}
-            className={`flex-1 rounded py-0.5 text-[9px] font-medium uppercase tracking-wider ${
+            aria-pressed={showClipping !== 0}
+            className={`min-h-6 flex-1 rounded py-0.5 text-[9px] font-medium uppercase tracking-wider ${
               showClipping
                 ? "bg-surface-3"
                 : "text-text-muted hover:text-text-secondary"
             }`}
-            style={showClipping ? { color: "#ff6b6b" } : undefined}
+            style={showClipping ? { color: "var(--color-danger)" } : undefined}
             title="Toggle clipping overlay (J)"
           >
             Clip
@@ -370,14 +415,6 @@ function fillCurve(
   ctx.globalCompositeOperation = "source-over";
 }
 
-// Clipping overlay colors (matching the shader).
-const CLIP_SHADOW = "rgba(50,77,255,0.9)";
-const CLIP_HIGHLIGHT = "rgba(255,50,50,0.9)";
-const CLIP_SHADOW_ACTIVE = "rgba(100,140,255,1)";
-const CLIP_HIGHLIGHT_ACTIVE = "rgba(255,120,120,1)";
-const CLIP_SHADOW_BG = "rgba(50,77,255,0.35)";
-const CLIP_HIGHLIGHT_BG = "rgba(255,50,50,0.35)";
-
 function drawHistogram(
   ctx: CanvasRenderingContext2D,
   w: number,
@@ -386,6 +423,7 @@ function drawHistogram(
   mode: Mode,
   interactive: boolean,
   hoverZone: HistogramZone | null,
+  palette: Palette,
   showClipping = 0,
   clipLow?: number,
   clipHigh?: number,
@@ -397,7 +435,7 @@ function drawHistogram(
     let from = 0;
     for (const z of ZONES) {
       if (z.zone === hoverZone) {
-        ctx.fillStyle = "rgba(255,255,255,0.07)";
+        ctx.fillStyle = palette.zone;
         ctx.fillRect(from * w, 0, (z.to - from) * w, h);
         break;
       }
@@ -416,7 +454,7 @@ function drawHistogram(
       fillCurve(ctx, w, h, data.g, max, channelRgba("green", 0.7), true);
       fillCurve(ctx, w, h, data.b, max, channelRgba("blue", 0.7), true);
     } else if (mode === "luma") {
-      fillCurve(ctx, w, h, data.luma, robustMax(data.luma), "rgba(208,208,208,0.85)", false);
+      fillCurve(ctx, w, h, data.luma, robustMax(data.luma), palette.curve, false);
     } else if (mode === "red") {
       fillCurve(ctx, w, h, data.r, robustMax(data.r), channelRgba("red", 0.85), false);
     } else if (mode === "green") {
@@ -428,7 +466,7 @@ function drawHistogram(
 
   // Zone dividers + label for the interactive control.
   if (interactive) {
-    ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.strokeStyle = palette.grid;
     ctx.lineWidth = 1;
     for (const z of ZONES) {
       if (z.to >= 1) continue;
@@ -440,7 +478,7 @@ function drawHistogram(
     if (hoverZone) {
       const z = ZONES.find((x) => x.zone === hoverZone);
       if (z) {
-        ctx.fillStyle = "rgba(224,224,224,0.85)";
+        ctx.fillStyle = palette.label;
         ctx.font = "9px system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
@@ -459,10 +497,10 @@ function drawHistogram(
     const text = `${(clipLow * 100).toFixed(1)}%`;
     if (shadowActive) {
       const tw = ctx.measureText(text).width;
-      ctx.fillStyle = CLIP_SHADOW_BG;
+      ctx.fillStyle = palette.clipShadowBg;
       ctx.fillRect(0, 0, tw + 6, 13);
     }
-    ctx.fillStyle = shadowActive ? CLIP_SHADOW_ACTIVE : CLIP_SHADOW;
+    ctx.fillStyle = shadowActive ? palette.clipShadowActive : palette.clipShadow;
     ctx.textAlign = "left";
     ctx.fillText(text, 2, 2);
   }
@@ -470,10 +508,10 @@ function drawHistogram(
     const text = `${(clipHigh * 100).toFixed(1)}%`;
     if (highlightActive) {
       const tw = ctx.measureText(text).width;
-      ctx.fillStyle = CLIP_HIGHLIGHT_BG;
+      ctx.fillStyle = palette.clipHighlightBg;
       ctx.fillRect(w - tw - 6, 0, tw + 6, 13);
     }
-    ctx.fillStyle = highlightActive ? CLIP_HIGHLIGHT_ACTIVE : CLIP_HIGHLIGHT;
+    ctx.fillStyle = highlightActive ? palette.clipHighlightActive : palette.clipHighlight;
     ctx.textAlign = "right";
     ctx.fillText(text, w - 2, 2);
   }

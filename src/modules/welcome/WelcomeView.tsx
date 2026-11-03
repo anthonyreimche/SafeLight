@@ -47,6 +47,7 @@ export function WelcomeView() {
   const openProjectPicker = useProjectStore((s) => s.openProjectPicker);
   const openRecent = useProjectStore((s) => s.openRecent);
   const opening = useProjectStore((s) => s.opening);
+  const recentsRevision = useProjectStore((s) => s.recentsRevision);
   const [cards, setCards] = useState<Card[] | null>(null);
 
   useEffect(() => {
@@ -66,7 +67,7 @@ export function WelcomeView() {
       alive = false;
       for (const u of urls) URL.revokeObjectURL(u);
     };
-  }, []);
+  }, [recentsRevision]);
 
   const remove = async (id: string) => {
     await removeRecentProject(id);
@@ -148,7 +149,7 @@ export function WelcomeView() {
                   onClick={() => void remove(c.id)}
                   title="Remove from recents"
                   aria-label={`Remove ${c.name} from recents`}
-                  className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded bg-black/60 text-sm text-text-secondary opacity-0 hover:text-white focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+                  className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded bg-black/60 text-sm text-text-secondary opacity-50 hover:text-white focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
                 >
                   <span aria-hidden="true">×</span>
                 </button>

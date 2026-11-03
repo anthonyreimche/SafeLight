@@ -487,8 +487,18 @@ describe("cache worker, no reachable folder", () => {
     await send(scopeTo(B));
     await send(write(2, pixels(1, 1)));
 
-    expect(await send({ cmd: "clear", id: 3 })).toEqual({ type: "clear", id: 3 });
+    expect(await send({ cmd: "clear", id: 3 })).toEqual({ type: "clear", id: 3, failed: 0 });
     expect(idb.rows.size).toBe(0);
+  });
+
+  it("counts what it could not clear", async () => {
+    const idb = new FakeIndexedDB();
+    const { send } = await startCacheWorker(idb);
+    await send(scopeTo(A));
+    await send(write(1, pixels(1, 1)));
+    idb.commitError = new Error("quota");
+
+    expect(await send({ cmd: "clear", id: 3 })).toEqual({ type: "clear", id: 3, failed: 1 });
   });
 
   it("caches nothing when the project has no scope", async () => {
@@ -500,7 +510,7 @@ describe("cache worker, no reachable folder", () => {
 
     expect(await send({ cmd: "read", id: 2, key: KEY, sample: false })).toMatchObject({ data: null });
     expect(await send({ cmd: "keys", id: 3 })).toMatchObject({ entries: [] });
-    expect(await send(write(4, pixels(1, 1)))).toEqual({ type: "write", id: 4, ok: true });
+    expect(await send(write(4, pixels(1, 1)))).toEqual({ type: "write", id: 4, ok: false });
     expect(await send({ cmd: "delete", id: 5, key: KEY })).toEqual({ type: "delete", id: 5 });
     expect(idb.rows.size).toBe(1);
   });

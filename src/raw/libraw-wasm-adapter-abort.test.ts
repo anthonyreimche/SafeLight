@@ -34,6 +34,7 @@ vi.mock("./decode-pool", () => {
       h.requests.push(request);
       return h.available && !request?.signal?.aborted ? instance : null;
     },
+    decodePoolFailure: () => undefined,
     releaseInstance: () => {},
   };
 });

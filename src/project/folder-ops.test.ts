@@ -553,6 +553,43 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(env.fs.text(at(env, "IMG_1.jpg"))).toBe("pixels:IMG_1.jpg");
   });
 
+  it("refuses a case-only rename onto another photo on a case-sensitive volume of a folding platform", async () => {
+    vi.stubGlobal("window", { safelightNative: { platform: "darwin" } });
+    const env = start();
+    await addPhoto(env, "a.jpg");
+    await addPhoto(env, "A.jpg");
+    const move = vi.spyOn(env.fs, "move");
+
+    await expect(renamePhoto("id:a.jpg", "A")).resolves.toMatchObject({ ok: false });
+
+    expect(move).not.toHaveBeenCalled();
+    expect(env.fs.text(at(env, "A.jpg"))).toBe("pixels:A.jpg");
+    expect(env.fs.text(at(env, "a.jpg"))).toBe("pixels:a.jpg");
+  });
+
+  it("renames a photo's case on a folding volume mounted on a platform that keeps case", async () => {
+    vi.stubGlobal("window", { safelightNative: { platform: "linux" } });
+    const env = start();
+    env.fs.foldCase = true;
+    await addPhoto(env, "a.jpg");
+
+    await expect(renamePhoto("id:a.jpg", "A")).resolves.toEqual({ ok: true, filename: "A.jpg" });
+
+    expect(env.fs.tree()).toEqual([at(env, "A.jpg")]);
+  });
+
+  it("refuses a case-only folder rename onto another folder on a case-sensitive volume of a folding platform", async () => {
+    vi.stubGlobal("window", { safelightNative: { platform: "darwin" } });
+    const env = start();
+    await addPhoto(env, "trip/a.jpg");
+    await addPhoto(env, "Trip/b.jpg");
+    const before = env.fs.tree();
+
+    await renameFolder("trip", "Trip");
+
+    expect(env.fs.tree()).toEqual(before);
+  });
+
   it("treats renaming to the current name as a no-op success", async () => {
     const env = start();
     await addPhoto(env, "a.jpg");

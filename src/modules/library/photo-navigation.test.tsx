@@ -19,7 +19,8 @@ import {
   useRegistry,
 } from "@/extensions/registry";
 import { CALLBACK_FAILURE_LIMIT, useCallbackFailures } from "@/extensions/guard";
-import { useVisiblePhotos, visibleList } from "./photo-navigation";
+import { moveActivePhoto, useVisiblePhotos, visibleList } from "./photo-navigation";
+import { NO_FILTER } from "./visible-photos";
 
 function photo(over: Partial<CatalogPhoto> & { id: string }): CatalogPhoto {
   return {
@@ -52,12 +53,51 @@ const initialSort = useUIStore.getState().sortField;
 
 beforeEach(() => {
   useRegistry.setState({ gridFilters: {} });
-  useUIStore.setState({ sortField: initialSort });
+  useUIStore.setState({ sortField: initialSort, filter: NO_FILTER });
   useCatalogStore.setState({
     photos: [photo({ id: "a", rating: 5 }), photo({ id: "b", rating: 3 }), photo({ id: "c" })],
   });
   registerGridFilter("map", { id: "map.in-view", test: (p) => p.rating === 5 });
   registerGridFilter("search", { id: "search.text", test: (p) => p.id !== "c" });
+});
+
+describe("moveActivePhoto when the active photo has left the filtered list", () => {
+  beforeEach(() => {
+    useRegistry.setState({ gridFilters: {} });
+    useUIStore.setState({
+      sortField: "filename",
+      sortDirection: "asc",
+      filter: { ...NO_FILTER, rating: 0, ratingOp: "eq" },
+    });
+    useCatalogStore.setState({
+      photos: [photo({ id: "a" }), photo({ id: "b" }), photo({ id: "c" })],
+      activePhotoId: "b",
+    });
+  });
+
+  const rate = (id: string) =>
+    useCatalogStore.setState((s) => ({
+      photos: s.photos.map((p) => (p.id === id ? { ...p, rating: 5 } : p)),
+    }));
+
+  it("Next lands on the photo that took its place", () => {
+    rate("b");
+    moveActivePhoto(1);
+    expect(useCatalogStore.getState().activePhotoId).toBe("c");
+  });
+
+  it("Previous lands on the photo before it", () => {
+    rate("b");
+    moveActivePhoto(-1);
+    expect(useCatalogStore.getState().activePhotoId).toBe("a");
+  });
+
+  it("Next stays on the last photo when the last one left", () => {
+    useCatalogStore.setState({ activePhotoId: "c" });
+    rate("c");
+    moveActivePhoto(1);
+    expect(useCatalogStore.getState().activePhotoId).toBe("b");
+  });
 });
 
 describe("useVisiblePhotos", () => {
@@ -101,6 +141,27 @@ describe("useVisiblePhotos", () => {
     rank = { a: 2, b: 1, c: 0 };
     registerLibrarySort("ext", { id: "ext.order", label: "Order", compare });
     expect(order()).toEqual(["c", "b", "a"]);
+  });
+
+  it("calls a grid filter's test and a sort's compare on their contributions", () => {
+    useRegistry.setState({ gridFilters: {}, librarySorts: {} });
+    useUIStore.setState({ sortField: "ext.order", sortDirection: "asc" });
+    registerGridFilter("ext", {
+      id: "ext.filter",
+      hidden: "c",
+      test(this: { hidden: string }, p: CatalogPhoto) {
+        return p.id !== this.hidden;
+      },
+    } as Parameters<typeof registerGridFilter>[1]);
+    registerLibrarySort("ext", {
+      id: "ext.order",
+      label: "Order",
+      rank: { a: 1, b: 0, c: 2 },
+      compare(this: { rank: Record<string, number> }, x: CatalogPhoto, y: CatalogPhoto) {
+        return this.rank[x.id] - this.rank[y.id];
+      },
+    } as Parameters<typeof registerLibrarySort>[1]);
+    expect(visibleList().map((p) => p.id)).toEqual(["b", "a"]);
   });
 
   it("shows the photos a throwing grid filter was asked about, and keeps the other filters", () => {

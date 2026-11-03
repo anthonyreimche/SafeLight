@@ -240,7 +240,7 @@ describe("api.catalog.readPreview", () => {
   const storageReading = (readPreview: CatalogStorage["readPreview"]): CatalogStorage => ({
     putPhoto: async () => {},
     putPhotos: async () => {},
-    deletePhoto: async () => {},
+    deletePhotos: async () => {},
     getEditState: async () => undefined,
     putEditState: async () => {},
     putEditStates: async () => {},

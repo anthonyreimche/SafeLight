@@ -93,19 +93,22 @@ function nativeBridge(opts: {
   rootGone?: boolean;
   /** What listing the project folder fails with. */
   rootListError?: Error;
-  ext: (p: string, base: string | null, create: boolean, variant?: number) => Promise<string | null>;
+  /** Where the project folder is; /card unless given. */
+  mount?: string;
+  ext:(p: string, base: string | null, create: boolean, variant?: number) => Promise<string | null>;
 }) {
   let clock = 1;
+  const mount = opts.mount ?? "/card";
   const files = new Map<string, { data: Uint8Array; mtimeMs: number }>();
   const pointers = new Map<string, string>(Object.entries(opts.pointers ?? {}));
   const put = (p: string, content: string) =>
     files.set(p, { data: new TextEncoder().encode(content), mtimeMs: clock++ });
-  if (opts.inFolderCatalog) put("/card/.safelight/catalog.json", '{"v":"in-folder"}');
+  if (opts.inFolderCatalog) put(`${mount}/.safelight/catalog.json`, '{"v":"in-folder"}');
   for (const [p, c] of Object.entries(opts.files ?? {})) put(p, c);
   const under = (prefix: string, p: string) =>
     p === prefix || p.startsWith(prefix + "/") || p.startsWith(prefix + "\\");
   const bridge = {
-    exists: vi.fn(async (p: string) => (p === "/card" ? !opts.rootGone : files.has(p))),
+    exists: vi.fn(async (p: string) => (p === mount ? !opts.rootGone : files.has(p))),
     read: vi.fn(async (p: string) => {
       if (opts.busy?.includes(p)) throw new Error(`EBUSY: resource busy or locked, open '${p}'`);
       const f = files.get(p);
@@ -119,7 +122,7 @@ function nativeBridge(opts: {
       for (const k of [...files.keys()]) if (under(p, k)) files.delete(k);
     }),
     list: vi.fn(async (dir: string) => {
-      if (dir === "/card" && opts.rootListError) throw opts.rootListError;
+      if (dir === mount && opts.rootListError) throw opts.rootListError;
       const kids = new Map<string, "file" | "directory">();
       for (const p of files.keys()) {
         if (!p.startsWith(`${dir}/`)) continue;
@@ -141,7 +144,7 @@ function nativeBridge(opts: {
   };
   h.isNativeFS.mockReturnValue(true);
   h.nativeFs.mockReturnValue(bridge);
-  h.nativePathOf.mockReturnValue("/card");
+  h.nativePathOf.mockReturnValue(mount);
   h.nativeDirectoryHandle.mockImplementation(
     (p: string) => ({ __ext: p }) as unknown as FileSystemDirectoryHandle,
   );
@@ -1060,6 +1063,7 @@ describe("resolveWorkingDir with per-photo edit files", () => {
 describe("resolveWorkingDir with another card at the same mount point", () => {
   // Every card a camera formats mounts at one path (E:\, /Volumes/EOS_DIGITAL), and
   // names its photos alike; their separate catalogs must stay apart.
+  const MOUNT = "/Volumes/EOS_DIGITAL";
   const CARD_A = { "DCIM/IMG_0001.CR3": "a1", "DCIM/IMG_0002.CR3": "a22", "DCIM/IMG_0003.CR3": "a333" };
   const CARD_B = { "DCIM/IMG_0001.CR3": "b-one", "DCIM/IMG_0002.CR3": "b-two!", "DCIM/IMG_0003.CR3": "b-3!!!!" };
   type Card = Record<string, string>;
@@ -1079,12 +1083,12 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     });
   const printOf = (card: Card) =>
     JSON.stringify({
-      source: "/card",
+      source: MOUNT,
       createdAt: 1,
       volume: Object.entries(card).map(([relPath, body]) => ({ relPath, size: body.length, shot: shotOf(body) })),
     });
   const mounted = (card: Card) =>
-    Object.fromEntries(Object.entries(card).map(([rel, body]) => [`/card/${rel}`, body]));
+    Object.fromEntries(Object.entries(card).map(([rel, body]) => [`${MOUNT}/${rel}`, body]));
   /** The separate catalog `card` keeps as `variant`, its print recorded or not. */
   const keptFor = (card: Card, variant: number, printed = true) => ({
     [`${dirOf(variant)}/catalog.json`]: catalogOf(card),
@@ -1102,6 +1106,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     const b = nativeBridge({
       inFolderCatalog,
       busy,
+      mount: MOUNT,
       files: { ...mounted(card), ...files },
       ext: async (_p, _base, create, variant = 1) => (create || saved(variant) ? dirOf(variant) : null),
     });
@@ -1116,7 +1121,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
   function rewrite(b: ReturnType<typeof cardBridge>, card: Card, pad: number): void {
     for (const [rel, body] of Object.entries(card)) {
       const raw = buildTiff({ le: true, exif: [[DATE_TIME_ORIGINAL, ascii(shotOf(body))]] });
-      b._files.set(`/card/${rel}`, { data: new Uint8Array([...raw, ...new Uint8Array(pad)]), mtimeMs: 1 });
+      b._files.set(`${MOUNT}/${rel}`, { data: new Uint8Array([...raw, ...new Uint8Array(pad)]), mtimeMs: 1 });
     }
   }
   const cardRoot = (card: Card, files: Record<string, string>) => {
@@ -1170,7 +1175,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
   });
 
   it("spills card B's read-only session into a catalog of its own, seeded from card B", async () => {
-    const b = cardBridge(CARD_B, { ...keptFor(CARD_A, 1), [`${dirOf(1)}/.seeded`]: "/card" }, true);
+    const b = cardBridge(CARD_B, { ...keptFor(CARD_A, 1), [`${dirOf(1)}/.seeded`]: MOUNT }, true);
 
     const wd = await resolveWorkingDir(rootReturning(readOnlySl(EROFS())));
 
@@ -1184,18 +1189,18 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
       CARD_A,
       {
         ...keptFor(CARD_A, 1),
-        [`${dirOf(1)}/.seeded`]: "/card",
+        [`${dirOf(1)}/.seeded`]: MOUNT,
         ...keptFor(CARD_B, 2),
-        [`${dirOf(2)}/.seeded`]: "/card",
+        [`${dirOf(2)}/.seeded`]: MOUNT,
       },
       true,
     );
-    b._pointers.set("/card", dirOf(2));
+    b._pointers.set(MOUNT, dirOf(2));
 
     const wd = await resolveWorkingDir(rootReturning(writeableSl()));
 
     expect(wd.promotedFromExternal).toBe(dirOf(1));
-    expect(b._text("/card/.safelight/catalog.json")).toBe(catalogOf(CARD_A));
+    expect(b._text(`${MOUNT}/.safelight/catalog.json`)).toBe(catalogOf(CARD_A));
     expect(b._text(`${dirOf(2)}/catalog.json`)).toBe(catalogOf(CARD_B));
     expect(b._files.has(`${dirOf(2)}/.seeded`)).toBe(true);
   });
@@ -1258,5 +1263,19 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     const wd = await resolveWorkingDir(rootReturning(writeableSl()));
 
     expect(wd.externalPath).toBe(dirOf(2));
+  });
+
+  it("keeps an ordinary folder's catalog when its photos were sorted into subfolders", async () => {
+    h.settings.catalogLocation = "external";
+    const sorted = { "/card/Day1/IMG_0001.CR3": "a1", "/card/Day2/IMG_0002.CR3": "a22" };
+    const b = nativeBridge({
+      files: { ...sorted, ...keptFor(CARD_A, 1) },
+      ext: async (_p, _base, create, variant = 1) => (create || variant === 1 ? dirOf(variant) : null),
+    });
+
+    const wd = await resolveWorkingDir(rootReturning(writeableSl()));
+
+    expect(wd.externalPath).toBe(dirOf(1));
+    expect(b.externalCatalogDir).not.toHaveBeenCalledWith("/card", null, true, 2);
   });
 });

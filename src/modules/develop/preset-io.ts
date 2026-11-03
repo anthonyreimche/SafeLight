@@ -4,6 +4,7 @@
 // be preserved in derived versions.
 
 import { withoutProcessVersion, type DevelopParams } from "@/catalog/types";
+import { guardExtension } from "@/extensions/guard";
 import type { PresetImporterContribution } from "@/extensions/types";
 
 const PRESET_FORMAT = "safelight-preset";
@@ -148,26 +149,20 @@ export type PresetImportOutcome =
   | { status: "no-importer"; extension: string }
   /** An importer claimed the file but found no develop settings in it. */
   | { status: "no-settings" }
+  /** An importer claimed the file but threw or ran out of time reading it. */
+  | { status: "failed"; reason: string }
   /** A .json file that isn't a Safelight preset this build can read. */
   | { status: "unreadable" };
-
-// Other apps' preset formats an extension can teach the importer. They stay
-// selectable in the picker with no importer installed, so choosing one explains
-// what's missing instead of the folder looking empty.
-const FOREIGN_PRESET_EXTENSIONS = [".xmp", ".lrtemplate"];
 
 export function presetPickerAccept(
   importers: readonly PresetImporterContribution[],
 ): string {
-  const extensions = new Set([
-    ".json",
-    ...FOREIGN_PRESET_EXTENSIONS,
-    ...importers.flatMap((i) => i.extensions),
-  ]);
+  const extensions = new Set([".json", ...importers.flatMap((i) => i.extensions)]);
   return [...extensions].join(",");
 }
 
-// Safelight's own JSON first, then the importer claiming the file's extension.
+// Safelight's own JSON first, then each importer claiming the file's extension
+// in turn, until one finds settings.
 export async function importPresetFile(
   file: File,
   importers: readonly PresetImporterContribution[],
@@ -176,25 +171,31 @@ export async function importPresetFile(
   if (native) return { status: "imported", preset: native };
 
   const lower = file.name.toLowerCase();
-  const importer = importers.find((i) => i.extensions.some((e) => lower.endsWith(e)));
-  if (!importer) {
+  const claiming = importers.filter((i) => i.extensions.some((e) => lower.endsWith(e)));
+  if (claiming.length === 0) {
     const extension = lower.match(/\.[^.]+$/)?.[0] ?? "";
     return extension === ".json"
       ? { status: "unreadable" }
       : { status: "no-importer", extension };
   }
 
-  try {
-    const result = await importer.parse(file);
-    const params = withoutProcessVersion(result?.params ?? {});
-    if (!result || Object.keys(params).length === 0) {
-      return { status: "no-settings" };
+  let failure: string | null = null;
+  for (const importer of claiming) {
+    try {
+      // The registry's importers carry their extension's id; a bare contribution
+      // has only its own.
+      const owner = "extensionId" in importer && typeof importer.extensionId === "string" ? importer.extensionId : importer.id;
+      const result = await guardExtension(owner, () => importer.parse(file));
+      const params = withoutProcessVersion(result?.params ?? {});
+      if (result && Object.keys(params).length > 0) {
+        return { status: "imported", preset: { name: result.name, params } };
+      }
+    } catch (e) {
+      console.warn(`[presets] importer "${importer.id}" failed on ${file.name}:`, e);
+      failure ??= e instanceof Error ? e.message : String(e);
     }
-    return { status: "imported", preset: { name: result.name, params } };
-  } catch (e) {
-    console.warn(`[presets] importer "${importer.id}" failed on ${file.name}:`, e);
-    return { status: "no-settings" };
   }
+  return failure === null ? { status: "no-settings" } : { status: "failed", reason: failure };
 }
 
 // Parse a SafeLight preset JSON file. Returns name + group + the partial params

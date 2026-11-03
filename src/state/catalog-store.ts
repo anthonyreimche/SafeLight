@@ -99,6 +99,31 @@ export function fieldChanges(photos: CatalogPhoto[], fields: readonly string[] |
   return count;
 }
 
+// Each photo's index by id, built on first lookup and shared by every array of
+// one structure (each holds the same ids at the same indexes).
+const indexes = new WeakMap<CatalogPhoto[], Map<string, number>>();
+
+function indexOf(photos: CatalogPhoto[]): Map<string, number> {
+  let index = indexes.get(photos);
+  if (!index) {
+    index = new Map();
+    for (let i = 0; i < photos.length; i++) {
+      const id = photos[i].id;
+      if (!index.has(id)) index.set(id, i);
+    }
+    indexes.set(photos, index);
+  }
+  return index;
+}
+
+/** The photo with this id in `photos`, as `photos.find` gives it, without a pass
+ *  over the catalog once the array has been looked in. */
+export function photoById(photos: CatalogPhoto[], id: string | null): CatalogPhoto | undefined {
+  if (id === null) return undefined;
+  const i = indexOf(photos).get(id);
+  return i === undefined ? undefined : photos[i];
+}
+
 /** `to` as the next array of `from`'s structure, with `changed` the fields of its
  *  photos that differ from `from`'s. */
 function keepStructure(
@@ -106,6 +131,8 @@ function keepStructure(
   to: CatalogPhoto[],
   changed: Iterable<string> = [],
 ): CatalogPhoto[] {
+  const index = indexes.get(from);
+  if (index) indexes.set(to, index);
   const base = structureOf(from);
   const tracked = [...changed].filter((f) => !PREVIEW_FIELDS.has(f) && !HANDLE_FIELDS.has(f));
   if (tracked.length === 0) {
@@ -309,16 +336,16 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
   // while this window, which already holds the new blob, ignores its own echo.
   const swapPhoto = (id: string, next: (p: CatalogPhoto) => CatalogPhoto): void => {
     set((s) => {
-      const photos = s.photos.map((p) => {
-        if (p.id !== id) return p;
-        const swapped = next(p);
-        if (p.thumbnailUrl && p.thumbnailUrl !== swapped.thumbnailUrl) {
-          revokePreviewUrl(p.thumbnailUrl);
-        }
-        return swapped;
-      });
-      const changed = changedFields(s.photos, photos);
-      return { photos: changed ? keepStructure(s.photos, photos, changed) : photos };
+      const i = indexOf(s.photos).get(id);
+      if (i === undefined) return s;
+      const p = s.photos[i];
+      const swapped = next(p);
+      if (p.thumbnailUrl && p.thumbnailUrl !== swapped.thumbnailUrl) {
+        revokePreviewUrl(p.thumbnailUrl);
+      }
+      const photos = s.photos.slice();
+      photos[i] = swapped;
+      return { photos: keepStructure(s.photos, photos, Object.keys(changesFrom(p, swapped))) };
     });
     announce("update", id);
   };
@@ -553,11 +580,11 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
           });
         }
       }
-      for (const id of ids) {
-        if (catalogStorage() !== storage) return;
-        await storage.deletePhoto(id);
-      }
       if (catalogStorage() !== storage) return;
+      // Storage drops the records at once; the grid follows then, not once their
+      // previews and blobs are gone, or edits made meanwhile land on no record.
+      const cleanup = storage.deletePhotos(ids);
+      if (catalogStorage() !== storage) return cleanup;
       // Previews of removed photos would dangle for the life of the window.
       for (const p of get().photos) {
         if (idSet.has(p.id) && p.thumbnailUrl) revokePreviewUrl(p.thumbnailUrl);
@@ -575,6 +602,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         };
       });
       announce("remove", ids.length === 1 ? ids[0] : undefined);
+      await cleanup;
     },
 
     async relocatePhotos(updated) {

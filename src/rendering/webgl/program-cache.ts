@@ -263,7 +263,7 @@ export function createProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: 
   const vs = compileShader(gl, gl.VERTEX_SHADER, vsSrc);
   let fs: WebGLShader;
   try {
-    fs = compileShader(gl, gl.FRAGMENT_SHADER, fsSrc);
+    fs = compileShader(gl, gl.FRAGMENT_SHADER, withHighpSamplers(fsSrc));
   } catch (err) {
     // A contributed stage with bad GLSL fails here on every attempt (each
     // pipeline switch, each dev-folder reload), so the already-compiled
@@ -289,6 +289,15 @@ export function createProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: 
     throw new Error(`Program link failed: ${log}`);
   }
   return program;
+}
+
+// A fragment sampler2D is lowp by default, which drivers that lower lowp to fp16
+// (Mesa's Asahi, freedreno, panfrost behind ANGLE) honour, clipping HDR values
+// read through it. Added here rather than in the sources: the version 1 text and
+// the program reference hashes are frozen.
+function withHighpSamplers(src: string): string {
+  if (/\bprecision\s+\w+\s+sampler2D\s*;/.test(src)) return src;
+  return src.replace(/^(#version[^\n]*\n)/, "$1precision highp sampler2D;\n");
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {

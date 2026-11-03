@@ -27,6 +27,7 @@ import type { ExtensionModule, SafelightAPI } from "./types";
 import { setExtSetting } from "./ext-settings";
 import { setSourcePixels } from "@/rendering/source-pixels";
 import { broadcast } from "@/state/broadcast";
+import { useDevelopStore } from "@/state/develop-store";
 
 const IDS = ["acme.installed", "acme.dev", "acme.both"];
 
@@ -225,6 +226,18 @@ describe("what an extension subscribed to", () => {
     expect(heard.broadcast).not.toHaveBeenCalled();
   });
 
+  it("stops reaching its core store listener once the extension is stopped", async () => {
+    const heard = vi.fn();
+    await bundle("acme.installed", "installed", {
+      activate: (api: SafelightAPI) => void api.stores.useDevelopStore.subscribe(heard),
+    }).start;
+    stopInstance("acme.installed");
+    const photoId = useDevelopStore.getState().photoId;
+    useDevelopStore.setState({ photoId: "after-stop" });
+    expect(heard).not.toHaveBeenCalled();
+    useDevelopStore.setState({ photoId });
+  });
+
   it("leaves only the new version listening after an update", async () => {
     const before = { settings: vi.fn(), pixels: vi.fn(), broadcast: vi.fn() };
     const after = { settings: vi.fn(), pixels: vi.fn(), broadcast: vi.fn() };
@@ -234,6 +247,68 @@ describe("what an extension subscribed to", () => {
     fire();
     for (const cb of Object.values(before)) expect(cb).not.toHaveBeenCalled();
     for (const cb of Object.values(after)) expect(cb).toHaveBeenCalledOnce();
+  });
+});
+
+describe("a start that finishes after another took over its id", () => {
+  it("leaves only the live copy listening, whatever the late one's deactivate forgets", async () => {
+    const late = vi.fn();
+    const live = vi.fn();
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => (finish = resolve));
+    const start = (bundleName: string, mod: Partial<ExtensionModule>) =>
+      startInstance({
+        id: "acme.installed",
+        source: "installed",
+        bundle: bundleName,
+        read: async () => ({ load: async () => mod }),
+      });
+    const first = start("v1", {
+      activate: async (api: SafelightAPI) => {
+        api.events.onBroadcast(late);
+        await gate;
+      },
+      deactivate: () => {},
+    }).catch(() => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    await start("v2", { activate: (api: SafelightAPI) => void api.events.onBroadcast(live) });
+    finish();
+    await first;
+    broadcast({ type: "selection-change", payload: { activePhotoId: "p1" } });
+    expect(late).not.toHaveBeenCalled();
+    expect(live).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the late one out of the core stores: no setState, and its store listener dropped", async () => {
+    const heard = vi.fn();
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => (finish = resolve));
+    const start = (bundleName: string, mod: Partial<ExtensionModule>) =>
+      startInstance({
+        id: "acme.installed",
+        source: "installed",
+        bundle: bundleName,
+        read: async () => ({ load: async () => mod }),
+      });
+    const first = start("v1", {
+      activate: async (api: SafelightAPI) => {
+        api.stores.useDevelopStore.subscribe(heard);
+        await gate;
+        api.stores.useDevelopStore.setState({ photoId: "stale" });
+      },
+      deactivate: () => {},
+    }).catch(() => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    await start("v2", { activate: vi.fn() });
+    const photoId = useDevelopStore.getState().photoId;
+    finish();
+    await first;
+    expect(useDevelopStore.getState().photoId).toBe(photoId);
+    useDevelopStore.setState({ photoId: "live" });
+    expect(heard).not.toHaveBeenCalled();
+    useDevelopStore.setState({ photoId });
   });
 });
 

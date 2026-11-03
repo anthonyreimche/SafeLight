@@ -28,6 +28,7 @@ import { ParamSync, derivedFor } from "./render-bridge/param-sync";
 import { stagesForWorker, unwireBridge, wireBridge } from "./render-bridge/wiring";
 import { forgetStageFailures, recordStageFailure, stageFailureText } from "./render-bridge/stage-failures";
 import { useRegistry } from "@/extensions/registry";
+import { privilegedGpu } from "@/native/privileged";
 
 export type { RendererAvailability } from "./render-bridge/transport";
 export { getStageTextures, setStageTexture, stagesForWorker } from "./render-bridge/wiring";
@@ -120,6 +121,9 @@ export class RenderBridge {
       stopped: () => this.mailbox.clear(),
       settlePending: () => this.requests.settleAll(),
       error: (message) => this.onError?.(message),
+      unusable: (detail) => {
+        void privilegedGpu()?.rendererFailed(detail).catch(() => undefined);
+      },
     });
     this.ready = this.transport.ready;
     this.requests = new RenderRequests(this.transport);

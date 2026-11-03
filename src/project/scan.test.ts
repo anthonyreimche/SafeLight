@@ -262,9 +262,9 @@ describe("scanProject", () => {
       const list = vi.spyOn(fs, "list");
       await scanNative(fs);
       expect(list.mock.calls).toEqual([
-        ["/card", "/card"],
-        ["/card/DCIM", "/card"],
-        ["/card/DCIM/100", "/card"],
+        ["/card", "/card", true],
+        ["/card/DCIM", "/card", true],
+        ["/card/DCIM/100", "/card", true],
       ]);
     });
 

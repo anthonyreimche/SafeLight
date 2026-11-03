@@ -30,6 +30,7 @@ vi.mock("./cache-bridge", () => ({
   workerWriteCachedPreview: async (key: string) => {
     h.sent.push(`write ${key}`);
     h.store.set(key, "preview");
+    return true;
   },
   workerWriteMarker: async (key: string, value: string) => {
     h.sent.push(`mark ${key}`);
@@ -43,7 +44,10 @@ vi.mock("./cache-bridge", () => ({
   workerDeleteCachedPreview: async (key: string) => {
     h.store.delete(key);
   },
-  workerClearRawCache: async () => h.store.clear(),
+  workerClearRawCache: async () => {
+    h.store.clear();
+    return { failed: 0 };
+  },
   workerCachedKeys: async () => [...h.store.keys()].map((key) => ({ key, complete: true })),
 }));
 

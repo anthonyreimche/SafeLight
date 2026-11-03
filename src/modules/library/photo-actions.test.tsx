@@ -16,13 +16,15 @@ vi.mock("@/state/broadcast", () => ({
   WINDOW_ID: "test-window",
 }));
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { CALLBACK_FAILURE_LIMIT, useCallbackFailures } from "@/extensions/guard";
 import userEvent from "@testing-library/user-event";
 import { installMemoryStorage, photo, snapshot } from "@/catalog/stored-edit.fixtures";
 import { setCatalogStorage } from "@/catalog/storage";
 import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
+import { registerGridMenuItem, unregisterExtension } from "@/extensions/registry";
 import { usePhotoActions } from "./photo-actions";
 
 // A surface that lists photos: right-clicking its one cell targets `cell`.
@@ -122,6 +124,78 @@ describe("photo menu: single-photo items with several photos selected", () => {
   it("leave the multi-photo items on the whole selection", () => {
     openMenu("b");
     expect(menuLabels()).toContain("Update processing (2)");
+  });
+});
+
+describe("photo actions: re-rendering", () => {
+  it("a field update on another photo does not re-render the host", () => {
+    let renders = 0;
+    function Counted() {
+      renders++;
+      usePhotoActions();
+      return null;
+    }
+    render(<Counted />);
+    const before = renders;
+    act(() => {
+      useCatalogStore.setState({
+        photos: useCatalogStore.getState().photos.map((p) => (p.id === "c" ? { ...p, rating: 4 } : p)),
+      });
+    });
+    expect(renders).toBe(before);
+  });
+});
+
+describe("photo actions: copy settings from the keyboard", () => {
+  it("the shortcut's event opens the checklist for the named photo", async () => {
+    const { written } = installMemoryStorage(olderEdit("a"));
+    void written;
+    render(<Surface cell="a" />);
+    act(() => {
+      window.dispatchEvent(new CustomEvent("sl-copy-settings", { detail: { id: "a" } }));
+    });
+    await screen.findByRole("dialog");
+  });
+});
+
+describe("photo menu: extension items", () => {
+  const boom = () => {
+    throw new Error("broken extension");
+  };
+  afterEach(() => unregisterExtension("acme.broken"));
+
+  it("survive an item whose label, enabled and onClick throw", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    registerGridMenuItem("acme.broken", { id: "acme.broken.item", label: boom, enabled: boom, onClick: boom });
+    const user = userEvent.setup();
+    openMenu("a");
+
+    expect(menuLabels()).toContain("Update processing (2)");
+    const item = screen.getByRole("menuitem", { name: "acme.broken.item" }) as HTMLButtonElement;
+    expect(item.disabled).toBe(true);
+    await user.click(item);
+  });
+
+  it("are switched off after repeated throws and listed against their extension", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const label = vi.fn(boom);
+    registerGridMenuItem("acme.broken", { id: "acme.broken.item", label, onClick: () => {} });
+    for (let i = 0; i <= CALLBACK_FAILURE_LIMIT; i++) {
+      openMenu("a");
+      cleanup();
+    }
+    expect(label).toHaveBeenCalledTimes(CALLBACK_FAILURE_LIMIT);
+    expect(useCallbackFailures.getState()["acme.broken"]?.kind).toBe("grid menu item label");
+  });
+
+  it("run onClick without crashing when it throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    registerGridMenuItem("acme.broken", { id: "acme.broken.item", label: "Broken", onClick: boom });
+    const user = userEvent.setup();
+    openMenu("a");
+
+    await user.click(screen.getByRole("menuitem", { name: "Broken" }));
+    expect(screen.getByText("cell")).toBeTruthy();
   });
 });
 

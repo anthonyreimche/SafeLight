@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const PARAMETERS: Record<number, string | number> = { 1: "vendor", 2: "renderer", 3: "GLSL 3.00", 4: 8192 };
+const PARAMETERS: Record<number, string | number> = { 1: "vendor", 2: "renderer", 3: "GLSL 3.00", 4: 8192, 5: 1024 };
 
 /** A probe context that offers `extensions` and nothing else. */
 function stubProbeContext(extensions: string[]): void {
@@ -14,6 +14,7 @@ function stubProbeContext(extensions: string[]): void {
     RENDERER: 2,
     SHADING_LANGUAGE_VERSION: 3,
     MAX_TEXTURE_SIZE: 4,
+    MAX_FRAGMENT_UNIFORM_VECTORS: 5,
     getParameter: (name: number) => PARAMETERS[name],
     getExtension: (name: string) => (extensions.includes(name) ? {} : null),
   };
@@ -35,6 +36,13 @@ describe("readWebGLInfo", () => {
   it("reports float render targets when the GPU offers EXT_color_buffer_float", async () => {
     stubProbeContext(["EXT_color_buffer_float"]);
     expect((await freshReadWebGLInfo())()?.colorBufferFloat).toBe(true);
+  });
+
+  // The develop program's uniforms grow with masks and stages; a driver with few
+  // vectors fails to link it.
+  it("reports the fragment uniform vectors", async () => {
+    stubProbeContext([]);
+    expect((await freshReadWebGLInfo())()?.fragmentUniformVectors).toBe(1024);
   });
 
   it("reports none when it doesn't", async () => {

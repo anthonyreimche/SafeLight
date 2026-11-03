@@ -77,6 +77,28 @@ describe("Preferences ▸ Rendering ▸ Software rendering", () => {
     expect(screen.queryByRole("switch", { name: "Software rendering" })).toBeNull();
   });
 
+  it("shows a disabled switch with a reason when the backend can't be read", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    native.gpu.backend.mockImplementation(() => Promise.reject(new Error("ipc down")));
+    showRendering();
+    const toggle = await softwareSwitch();
+    expect(toggle.matches(":disabled")).toBe(true);
+    expect(screen.getByText("Couldn't read the graphics setting.")).toBeTruthy();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("keeps the switch and says so when changing it fails", async () => {
+    const user = userEvent.setup();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    native.gpu.setSoftware.mockImplementation(() => Promise.reject(new Error("ipc down")));
+    showRendering();
+    await user.click(await softwareSwitch());
+    expect(await screen.findByText("Couldn't change the graphics setting.")).toBeTruthy();
+    expect((await softwareSwitch()).getAttribute("aria-checked")).toBe("false");
+    warn.mockRestore();
+  });
+
   it("is off while Safelight draws on the graphics card", async () => {
     showRendering();
     expect((await softwareSwitch()).getAttribute("aria-checked")).toBe("false");
@@ -103,6 +125,18 @@ describe("Preferences ▸ Rendering ▸ Software rendering", () => {
       await screen.findByText("Safelight turned this on because the graphics driver kept crashing."),
     ).toBeTruthy();
     expect(screen.getByText("Takes effect when you restart Safelight.")).toBeTruthy();
+  });
+
+  it("says Safelight turned it on because the photo renderer couldn't start", async () => {
+    native.gpu.backend.mockImplementation(() =>
+      state({ software: false, nextSoftware: true, reason: "renderer-failed" }),
+    );
+    showRendering();
+    expect(
+      await screen.findByText(
+        "Safelight turned this on because the graphics driver couldn't run its photo renderer.",
+      ),
+    ).toBeTruthy();
   });
 
   it("goes back to the graphics card at the next start", async () => {

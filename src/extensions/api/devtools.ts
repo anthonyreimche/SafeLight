@@ -143,6 +143,8 @@ export interface WebGLInfo {
   renderer: string;
   glsl: string;
   maxTexture: number;
+  /** MAX_FRAGMENT_UNIFORM_VECTORS: the develop program's uniforms must fit in it to link. */
+  fragmentUniformVectors: number;
   /** EXT_color_buffer_float: without it the render pipeline's intermediates are 8-bit. */
   colorBufferFloat: boolean;
 }

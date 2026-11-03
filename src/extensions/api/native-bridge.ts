@@ -55,11 +55,13 @@ export interface NativeFsBridge {
   write(path: string, data: Uint8Array): Promise<void>;
   /** A folder's entries. A link is listed as what it points to, and a broken one
    *  as a folder whose own listing fails; a folder link back above `path`, or into
-   *  the project folder `root` when given, is left out. `size` is a file's size in
-   *  bytes, when it could be read. */
+   *  the project folder `root` when given, is left out. With `withSizes`, `size` is
+   *  a file's size in bytes, when it could be read; without it the files aren't
+   *  stat'ed, which saves a round trip each on a network share. */
   list(
     path: string,
     root?: string,
+    withSizes?: boolean,
   ): Promise<{ name: string; kind: "file" | "directory"; size?: number }[]>;
   mkdir(path: string): Promise<void>;
   /** Resolve a separate .safelight working directory for a project folder, under
@@ -149,7 +151,7 @@ export interface NativeGpuBackendState {
   nextSoftware: boolean;
   /** Why the next launch draws in software: the user turned it on ("chosen"),
    *  or the graphics card failed. Null when it uses the graphics card. */
-  reason: "chosen" | "webgl2-unavailable" | "gpu-crashes" | null;
+  reason: "chosen" | "webgl2-unavailable" | "gpu-crashes" | "renderer-failed" | null;
 }
 
 /** Preferences ▸ Rendering ▸ Software rendering. Privileged so extensions
@@ -158,6 +160,9 @@ export interface NativeGpuBridge {
   /** Null when the main process reports no backend (a build without the GPU ladder). */
   backend(): Promise<NativeGpuBackendState | null>;
   setSoftware(on: boolean): Promise<NativeGpuBackendState | null>;
+  /** The develop renderer couldn't start on this launch's graphics backend
+   *  however often it tried: the next launch draws in software. */
+  rendererFailed(detail: string): Promise<NativeGpuBackendState | null>;
 }
 
 /** Opening what the OS hands the app. Privileged so extensions can't point the

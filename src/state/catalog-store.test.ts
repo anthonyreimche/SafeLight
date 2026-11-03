@@ -63,7 +63,13 @@ vi.mock("@/catalog/orient", async (importOriginal) => ({
 import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { installMemoryStorage } from "@/catalog/stored-edit.fixtures";
 import { storedPhoto } from "@/catalog/types";
-import { fieldChanges, setLastProjectOpener, structureVersion, useCatalogStore } from "./catalog-store";
+import {
+  fieldChanges,
+  photoById,
+  setLastProjectOpener,
+  structureVersion,
+  useCatalogStore,
+} from "./catalog-store";
 
 setLastProjectOpener({ openLast: () => h.openLast(), reconnectLast: () => h.reconnectLast() });
 
@@ -76,7 +82,7 @@ function memoryCatalogStorage() {
       for (const p of list) rows.set(p.id, p);
       if (h.storageGate) await h.storageGate;
     },
-    deletePhoto: async (id) => void rows.delete(id),
+    deletePhotos: async (ids) => void ids.forEach((id) => rows.delete(id)),
     getEditState: async (id) => edits.get(id),
     putEditState: async (e) => void edits.set(e.photoId, e),
     putEditStates: async (list) => {
@@ -389,6 +395,95 @@ describe("previews", () => {
   });
 });
 
+describe("at catalog scale", () => {
+  const N = 50_000;
+  const SWAPS = 500;
+
+  /** N photos that count every read of their ids: a pass over the whole catalog
+   *  reads N of them. */
+  function countedCatalog() {
+    const reads = { count: 0 };
+    const photos = Array.from({ length: N }, (_, i) => {
+      const p = photo(`p${i}`);
+      const id = p.id;
+      Object.defineProperty(p, "id", {
+        enumerable: true,
+        get: () => {
+          reads.count++;
+          return id;
+        },
+      });
+      return p;
+    });
+    return { photos, reads };
+  }
+
+  it("swaps a rebuilt photo in without a pass over the catalog", () => {
+    useCatalogStore.setState({ photos: Array.from({ length: N }, (_, i) => photo(`p${i}`)) });
+    state().mergeRebuiltPhoto(`p${N - 1}`, { fileSize: 1 });
+    const plainStart = performance.now();
+    for (let i = 0; i < SWAPS; i++) {
+      state().mergeRebuiltPhoto(`p${(i * 97) % N}`, { fileSize: i + 2 });
+    }
+    console.info(
+      `[bench] mergeRebuiltPhoto ×${SWAPS} on ${N} (plain): ` +
+        `${((performance.now() - plainStart) / SWAPS).toFixed(3)} ms/call`,
+    );
+
+    const { photos, reads } = countedCatalog();
+    useCatalogStore.setState({ photos });
+    state().mergeRebuiltPhoto(`p${N - 1}`, { fileSize: 1 });
+    let arrays = 0;
+    const unsubscribe = useCatalogStore.subscribe((s, prev) => {
+      if (s.photos !== prev.photos) arrays++;
+    });
+    reads.count = 0;
+    h.broadcasts.length = 0;
+
+    const start = performance.now();
+    for (let i = 0; i < SWAPS; i++) {
+      state().mergeRebuiltPhoto(`p${(i * 97) % N}`, { fileSize: i + 2 });
+    }
+    const ms = performance.now() - start;
+    unsubscribe();
+    console.info(
+      `[bench] mergeRebuiltPhoto ×${SWAPS} on ${N}: ${(ms / SWAPS).toFixed(3)} ms/call, ` +
+        `${reads.count} id reads, ${arrays} photos arrays, ${h.broadcasts.length} announces`,
+    );
+
+    expect(reads.count).toBeLessThan(SWAPS * 4);
+    expect(state().photos[97].fileSize).toBe(3);
+    expect(state().photos.length).toBe(N);
+  });
+
+  it("keeps the structure and counts the fields a swap changed", () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    const before = state().photos;
+
+    state().mergeRebuiltPhoto("b", { fileSize: 1 });
+    state().mergeRebuiltPhoto("a", { thumbnailBlob: new Blob(["x"]), thumbnailUrl: "blob:x" });
+
+    expect(structureVersion(state().photos)).toBe(structureVersion(before));
+    expect(fieldChanges(state().photos, ["fileSize"])).toBe(1);
+    expect(fieldChanges(state().photos, null)).toBe(1);
+  });
+
+  it("finds photos by id in arrays swapped from, set from outside, or kept from another", () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    expect(photoById(state().photos, "b")?.id).toBe("b");
+
+    state().mergeRebuiltPhoto("b", { fileSize: 9 });
+    expect(photoById(state().photos, "b")?.fileSize).toBe(9);
+
+    useCatalogStore.setState({ photos: [photo("c"), photo("a")] });
+    expect(photoById(state().photos, "a")).toBe(state().photos[1]);
+    expect(photoById(state().photos, "b")).toBeUndefined();
+
+    state().mergeThumbnails([{ id: "c", blob: new Blob(["c"]) }]);
+    expect(photoById(state().photos, "c")?.thumbnailBlob).not.toBeNull();
+  });
+});
+
 describe("the edit a loaded preview shows", () => {
   // previewEdit names the edit of the preview this window holds. A preview built
   // from the photo's file shows it unedited, and the loader hands it on with no
@@ -585,13 +680,37 @@ describe("removal", () => {
     expect(h.broadcasts).toEqual([]);
   });
 
+  it("hands every id to storage in one call", async () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b"), photo("c")] });
+    const deleting = vi.spyOn(store.storage, "deletePhotos");
+
+    await state().removePhotos(["a", "b"]);
+
+    expect(deleting.mock.calls).toEqual([[["a", "b"]]]);
+  });
+
+  it("drops the photos from the grid before storage finishes removing their files", async () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    let cleaned = (): void => {};
+    vi.spyOn(store.storage, "deletePhotos").mockImplementationOnce(
+      () => new Promise<void>((resolve) => (cleaned = resolve)),
+    );
+
+    const removing = state().removePhotos(["a"]);
+    await vi.waitFor(() => expect(store.storage.deletePhotos).toHaveBeenCalled());
+
+    expect(ids()).toEqual(["b"]);
+    cleaned();
+    await removing;
+  });
+
   it("removes nothing from the next project when the project changes partway", async () => {
     useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
     const fromNext: string[] = [];
-    vi.spyOn(store.storage, "deletePhoto").mockImplementationOnce(async () => {
+    vi.spyOn(store.storage, "deletePhotos").mockImplementationOnce(async () => {
       installMemoryStorage(); // the project changed while "a" was removed
-      vi.spyOn(catalogStorage(), "deletePhoto").mockImplementation(
-        async (id) => void fromNext.push(id),
+      vi.spyOn(catalogStorage(), "deletePhotos").mockImplementation(
+        async (gone) => void fromNext.push(...gone),
       );
     });
 

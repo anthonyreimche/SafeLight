@@ -66,19 +66,39 @@ async function walkedAnyway(dir, link, root) {
 // One listing entry. A link (a symlink, or a junction on Windows) is listed as what
 // it points to; a broken one as a folder, whose own listing then fails, so the scan
 // marks it unreadable instead of dropping what it held. A folder link the walk
-// would find anyway is left out (walkedAnyway). Files carry their size, for
-// telling a photo's file from another of the same name.
-async function listEntry(dir, d, root) {
+// would find anyway is left out (walkedAnyway). With `withSizes`, files carry their
+// size, for telling a photo's file from another of the same name; it costs a stat
+// per file, a round trip each on a network share, so only the scan asks.
+async function listEntry(dir, d, root, withSizes) {
   const full = path.join(dir, d.name);
   if (d.isDirectory()) return { name: d.name, kind: "directory" };
+  if (d.isFile() && !withSizes) return { name: d.name, kind: "file" };
   let st;
   try {
     st = await fs.promises.stat(full);
   } catch {
     return d.isSymbolicLink() ? { name: d.name, kind: "directory" } : { name: d.name, kind: "file" };
   }
-  if (!st.isDirectory()) return { name: d.name, kind: "file", size: st.size };
+  if (!st.isDirectory()) return withSizes ? { name: d.name, kind: "file", size: st.size } : { name: d.name, kind: "file" };
   return (await walkedAnyway(dir, full, root)) ? null : { name: d.name, kind: "directory" };
+}
+
+// How many entries of one listing are looked at a time: a folder of thousands of
+// photos on a network share would otherwise open thousands of stats at once.
+const LIST_CONCURRENCY = 16;
+
+// `fn` over `items`, at most `limit` at a time, the results in the items' order.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 // Recursive size of a directory in bytes. Best-effort: symlinks aren't followed
@@ -139,7 +159,8 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
       channel: "fs:list",
       privileged: true,
       // `root` is the project folder the listing is for, if any (walkedAnyway).
-      handler: async (_e, p, root) => {
+      // `withSizes` asks for each file's size (listEntry).
+      handler: async (_e, p, root, withSizes) => {
         let ents;
         try {
           ents = await fs.promises.readdir(p, { withFileTypes: true });
@@ -155,7 +176,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
             throw Object.assign(new Error(`${e.code}: ${e.message}`), { code: e.code });
           throw e;
         }
-        const listed = await Promise.all(ents.map((d) => listEntry(p, d, root)));
+        const listed = await mapLimit(ents, LIST_CONCURRENCY, (d) => listEntry(p, d, root, withSizes === true));
         return listed.filter((entry) => entry !== null);
       },
     },

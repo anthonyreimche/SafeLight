@@ -29,6 +29,7 @@ const DEVTOOLS_MODES = new Set(["right", "bottom", "undocked", "detach"]);
  *   extensionConnectHosts: () => string[],
  *   gpuBackendState: () => unknown,
  *   setSoftwareRendering: (on: boolean) => unknown,
+ *   rendererFailed: (detail: string) => unknown,
  * }} deps
  */
 function diagnosticsChannels({
@@ -40,6 +41,7 @@ function diagnosticsChannels({
   extensionConnectHosts,
   gpuBackendState,
   setSoftwareRendering,
+  rendererFailed,
 }) {
   const senderWindow = (e) => BrowserWindow.fromWebContents(e.sender);
 
@@ -116,6 +118,11 @@ function diagnosticsChannels({
       channel: "gpu:setSoftware",
       privileged: true,
       handler: (_e, on) => setSoftwareRendering(on === true),
+    },
+    {
+      channel: "gpu:rendererFailed",
+      privileged: true,
+      handler: (_e, detail) => rendererFailed(String(detail).slice(0, 500)),
     },
     {
       channel: "diagnostics:metrics",

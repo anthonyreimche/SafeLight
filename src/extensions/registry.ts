@@ -52,7 +52,7 @@ import { clearExtensionCursors } from "@/state/cursor-store";
 import { setPickDrag } from "@/modules/develop/pick-drag";
 import { setCanvasTool } from "@/modules/develop/canvas-tool";
 import { dropExtensionVariables } from "./variables-host";
-import { CATALOG_HOOK_TIMEOUT_MS, ExtensionTimeoutError, dropSubscriptions, forgetCallbackFailures, guardExtension } from "./guard";
+import { CATALOG_HOOK_TIMEOUT_MS, ExtensionTimeoutError, dropSubscriptions, forgetCallbackFailures, guardCallback, guardExtension } from "./guard";
 import { forgetStartFailure } from "./start-failures";
 
 export interface RegisteredPanel extends PanelContribution {
@@ -663,16 +663,12 @@ export function useGridFilters(): RegisteredGridFilter[] {
   return useRegistry(useShallow((s) => Object.values(s.gridFilters)));
 }
 
-/** Non-reactive snapshot for code outside React (e.g. culling navigation). */
-export function gridFilterPredicates(): ((
-  p: import("@/catalog/types").CatalogPhoto,
-) => boolean)[] {
-  return Object.values(useRegistry.getState().gridFilters).map((g) => g.test);
-}
-
-/** Fire every registered grid filter's onClear (the "Clear filters" action). */
+/** Fire every registered grid filter's onClear (the "Clear filters" action);
+ *  one that throws doesn't stop the rest. */
 export function runGridFilterClears(): void {
-  for (const g of Object.values(useRegistry.getState().gridFilters)) g.onClear?.();
+  for (const g of Object.values(useRegistry.getState().gridFilters)) {
+    if (g.onClear) guardCallback(g.extensionId, "grid filter clear", g.onClear, undefined, g)();
+  }
 }
 
 /** Reactive, order-sorted list of components contributed to a UI slot. */
@@ -692,17 +688,6 @@ export function registerLibrarySort(
 /** Reactive list of extension-contributed Library sort orders, for the toolbar. */
 export function useLibrarySorts(): RegisteredLibrarySort[] {
   return useRegistry(useShallow((s) => Object.values(s.librarySorts)));
-}
-
-/** The comparator for a sort id, or undefined if it's a built-in / unknown sort.
- *  Non-reactive snapshot for code outside React (e.g. culling navigation). */
-export function librarySortCompare(
-  id: string,
-): ((
-  a: import("@/catalog/types").CatalogPhoto,
-  b: import("@/catalog/types").CatalogPhoto,
-) => number) | undefined {
-  return useRegistry.getState().librarySorts[id]?.compare;
 }
 
 // ─── Catalog hook emitters (called by core) ─────────────────────────────────

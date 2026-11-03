@@ -26,8 +26,9 @@ import { photo } from "@/catalog/stored-edit.fixtures";
 import { useCatalogStore } from "@/state/catalog-store";
 import { useDevelopStore } from "@/state/develop-store";
 import { setCanvasTool, useCanvasToolStore } from "@/modules/develop/canvas-tool";
-import { KEY_ACTIONS, getBinding } from "@/state/keybindings-store";
+import { KEY_ACTIONS, getBinding, resetBinding, setBinding } from "@/state/keybindings-store";
 import { useSettings } from "@/state/settings-store";
+import { useDevelopClipboard } from "@/state/develop-clipboard";
 import { useUIStore } from "@/state/ui-store";
 import { popEscapeHandler } from "@/ui/escape-stack";
 import { alertDialog, ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
@@ -41,6 +42,12 @@ import {
   FOCUS_KEYWORD_INPUT_EVENT,
   useCullingShortcuts,
 } from "./use-culling-shortcuts";
+
+const pasteSettingsSpy = vi.fn(async (_ids: string[], _clip: unknown): Promise<void> => {});
+vi.mock("@/catalog/paste-settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/catalog/paste-settings")>()),
+  pasteSettings: (ids: string[], clip: unknown) => pasteSettingsSpy(ids, clip),
+}));
 
 const removePhotos = vi.fn(async (_ids: string[]): Promise<void> => {});
 const applyRating = vi.fn(
@@ -56,6 +63,7 @@ function press(key: string, init: KeyboardEventInit = {}): void {
 beforeEach(() => {
   removePhotos.mockClear();
   applyRating.mockClear();
+  pasteSettingsSpy.mockClear();
   useCatalogStore.setState({
     photos: [photo("a"), photo("b")],
     selectedIds: new Set(["a"]),
@@ -493,10 +501,36 @@ describe("culling shortcuts: focus and select-all", () => {
     expect(applyRating).toHaveBeenCalledWith(["a"], 3);
   });
 
-  it("still runs a modifier combo typed into a text field", () => {
+  it("still runs a Ctrl combo typed into a text field", () => {
+    setBinding("photo.rotateCW", "Ctrl+]");
+    try {
+      render(<input aria-label="Caption" />);
+      expect(fire(screen.getByLabelText("Caption"), "Ctrl+]")).toBe(true);
+      expect(rotatePhotos).toHaveBeenCalledWith(["a"], 90);
+    } finally {
+      resetBinding("photo.rotateCW");
+    }
+  });
+
+  it("leaves an Alt combo to a text field, which types with it", () => {
     render(<input aria-label="Caption" />);
-    expect(fire(screen.getByLabelText("Caption"), bound("photo.rotateCW"))).toBe(true);
-    expect(rotatePhotos).toHaveBeenCalledWith(["a"], 90);
+    expect(fire(screen.getByLabelText("Caption"), bound("photo.rotateCW"))).toBe(false);
+    expect(rotatePhotos).not.toHaveBeenCalled();
+  });
+
+  it("leaves Option+[ to a text field on a Mac, where it types a quote", () => {
+    Object.defineProperty(window, "safelightNative", { value: { platform: "darwin" }, configurable: true });
+    try {
+      render(<input aria-label="Caption" />);
+      const e = new KeyboardEvent("keydown", { key: "“", code: "BracketLeft", altKey: true, bubbles: true, cancelable: true });
+      act(() => {
+        screen.getByLabelText("Caption").dispatchEvent(e);
+      });
+      expect(e.defaultPrevented).toBe(false);
+      expect(rotatePhotos).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(window, "safelightNative");
+    }
   });
 
   it("leaves every key to an extension's open native dialog", () => {
@@ -561,6 +595,86 @@ describe("culling shortcuts: shared listener across surfaces", () => {
     expect(cullingShortcutsMounted()).toBe(false);
     expect(fire(document.body, bound("rate.3"))).toBe(false);
     expect(applyRating).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("culling shortcuts: copy and paste settings", () => {
+  const clip = { params: { exposure: 1 }, paramBag: {}, sourceName: "a.NEF", fieldCount: 1 };
+  afterEach(() => useDevelopClipboard.getState().clear());
+
+  it("ships Ctrl/Cmd+Shift+C and +V as Library actions", () => {
+    expect(KEY_ACTIONS.find((a) => a.id === "photo.copySettings")).toMatchObject({
+      category: "Library",
+      def: "Ctrl+Shift+C",
+    });
+    expect(KEY_ACTIONS.find((a) => a.id === "photo.pasteSettings")).toMatchObject({
+      category: "Library",
+      def: "Ctrl+Shift+V",
+    });
+  });
+
+  it("copy asks the photo surface to open the checklist for the one selected photo", () => {
+    const seen = vi.fn();
+    window.addEventListener("sl-copy-settings", seen);
+    expect(fire(document.body, bound("photo.copySettings"))).toBe(true);
+    window.removeEventListener("sl-copy-settings", seen);
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect((seen.mock.calls[0][0] as CustomEvent<{ id: string }>).detail.id).toBe("a");
+  });
+
+  it("copy does nothing with several photos selected", () => {
+    seed([photo("a"), photo("b")], ["a", "b"], "a");
+    const seen = vi.fn();
+    window.addEventListener("sl-copy-settings", seen);
+    expect(fire(document.body, bound("photo.copySettings"))).toBe(false);
+    window.removeEventListener("sl-copy-settings", seen);
+    expect(seen).not.toHaveBeenCalled();
+  });
+
+  it("paste applies the clipboard to the whole selection", () => {
+    seed([photo("a"), photo("b")], ["a", "b"], "a");
+    useDevelopClipboard.getState().copy(clip);
+    expect(fire(document.body, bound("photo.pasteSettings"))).toBe(true);
+    expect(pasteSettingsSpy).toHaveBeenCalledWith(["a", "b"], clip);
+  });
+
+  it("paste does nothing while nothing is copied", () => {
+    expect(fire(document.body, bound("photo.pasteSettings"))).toBe(false);
+    expect(pasteSettingsSpy).not.toHaveBeenCalled();
+  });
+
+  describe("in a text field", () => {
+    beforeEach(() => {
+      useDevelopClipboard.getState().copy(clip);
+      render(<input aria-label="Keyword" />);
+    });
+
+    it("leaves Ctrl+Shift+V to the field's paste as plain text", () => {
+      expect(fire(screen.getByLabelText("Keyword"), bound("photo.pasteSettings"))).toBe(false);
+      expect(pasteSettingsSpy).not.toHaveBeenCalled();
+    });
+
+    it("leaves Cmd+Shift+V to the field on a Mac", () => {
+      Object.defineProperty(window, "safelightNative", { value: { platform: "darwin" }, configurable: true });
+      try {
+        const e = new KeyboardEvent("keydown", { key: "V", metaKey: true, shiftKey: true, bubbles: true, cancelable: true });
+        act(() => {
+          screen.getByLabelText("Keyword").dispatchEvent(e);
+        });
+        expect(e.defaultPrevented).toBe(false);
+        expect(pasteSettingsSpy).not.toHaveBeenCalled();
+      } finally {
+        Reflect.deleteProperty(window, "safelightNative");
+      }
+    });
+
+    it("leaves Ctrl+Shift+C to the field's copy", () => {
+      const seen = vi.fn();
+      window.addEventListener("sl-copy-settings", seen);
+      expect(fire(screen.getByLabelText("Keyword"), bound("photo.copySettings"))).toBe(false);
+      window.removeEventListener("sl-copy-settings", seen);
+      expect(seen).not.toHaveBeenCalled();
+    });
   });
 });
 

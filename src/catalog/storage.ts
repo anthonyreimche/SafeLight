@@ -15,7 +15,9 @@ export interface CatalogStorage {
    *  written doesn't reject: the records are stored either way, and the next put
    *  that carries the preview writes it again. */
   putPhotos(photos: CatalogPhoto[]): Promise<void>;
-  deletePhoto(id: string): Promise<void>;
+  /** Remove several photos at once: one save and one message to the other windows,
+   *  where a deletePhoto per photo would send and save each. */
+  deletePhotos(ids: readonly string[]): Promise<void>;
   getEditState(photoId: string): Promise<EditState | undefined>;
   /** getEditState returns the new state once this call returns, before its save
    *  settles: a caller may reload Develop then (extension host, stored-edit). */
@@ -55,7 +57,7 @@ export interface CatalogStorage {
 const empty: CatalogStorage = {
   putPhoto: async () => {},
   putPhotos: async () => {},
-  deletePhoto: async () => {},
+  deletePhotos: async () => {},
   getEditState: async () => undefined,
   putEditState: async () => {},
   putEditStates: async () => {},

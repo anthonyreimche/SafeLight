@@ -95,6 +95,8 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "photo.deleteDisk", label: "Delete from disk", category: "Library", def: "" },
   { id: "photo.rename", label: "Rename photo", category: "Library", def: "F2" },
   { id: "photo.reveal", label: "Show in folder", category: "Library", def: "Ctrl+R" },
+  { id: "photo.copySettings", label: "Copy settings", category: "Library", def: "Ctrl+Shift+C" },
+  { id: "photo.pasteSettings", label: "Paste settings", category: "Library", def: "Ctrl+Shift+V" },
   { id: "keyword.focus", label: "Focus keyword input", category: "Library", def: "K" },
   { id: "grid.smaller", label: "Smaller thumbnails", category: "Library", def: "-" },
   { id: "grid.larger", label: "Larger thumbnails", category: "Library", def: "=", altDef: "+" },
@@ -296,6 +298,24 @@ export function isEditableTarget(t: EventTarget | null): boolean {
   return t.isContentEditable;
 }
 
+/** True when the keydown types into a text field rather than giving a
+ *  shortcut. Only a Ctrl/Cmd combo is a shortcut there: Alt/Option types
+ *  characters on a Mac (Option+[ is "“", a German Mac's @ and [), and so does
+ *  AltGr, which Windows reports as Ctrl+Alt. The field also keeps its own
+ *  copy, paste, cut, undo, redo and select-all, with or without Shift. */
+export function typesIntoField(e: KeyboardEvent): boolean {
+  if (!isEditableTarget(e.target)) return false;
+  if (!(e.ctrlKey || e.metaKey)) return true;
+  if (TEXT_EDIT_KEYS.has(e.key.toLowerCase())) return true;
+  // On a non-Latin layout the typed key is no Latin letter (Ctrl+Z is "я"), so
+  // the combo is matched by its physical key.
+  const physical = /^Key([A-Z])$/.exec(e.code ?? "")?.[1].toLowerCase();
+  if (physical && TEXT_EDIT_KEYS.has(physical) && !/^[a-z]$/i.test(e.key)) return true;
+  return !!e.getModifierState?.("AltGraph") || (e.ctrlKey && e.altKey && !onMac());
+}
+
+const TEXT_EDIT_KEYS: ReadonlySet<string> = new Set(["c", "v", "x", "z", "y", "a"]);
+
 // The US-layout character of each physical punctuation key, which the default
 // combos are written in.
 const CODE_KEYS: Record<string, string> = {
@@ -346,8 +366,10 @@ function comboCandidates(e: KeyboardEvent): string[] {
   if (k === "Control" || k === "Shift" || k === "Alt" || k === "Meta") return [];
   const ctrl = e.ctrlKey || e.metaKey;
   const typed = k.length === 1 ? k.toUpperCase() : k;
-  const physical = k.length === 1 ? keyFromCode(e.code ?? "", k) : null;
+  const physical = k.length === 1 || k === "Dead" ? keyFromCode(e.code ?? "", k) : null;
   const asTyped = joinCombo(ctrl, e.shiftKey, e.altKey, typed);
+  // A dead key (Option+E, US-International's ') names no key of its own.
+  if (k === "Dead" && physical) return [joinCombo(ctrl, e.shiftKey, e.altKey, physical)];
   if (e.altKey && onMac()) {
     if (!physical) return [asTyped];
     const byPosition = [joinCombo(ctrl, e.shiftKey, true, physical), joinCombo(ctrl, e.shiftKey, false, typed)];

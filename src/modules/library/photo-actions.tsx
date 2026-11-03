@@ -18,6 +18,7 @@ import { splitFilename } from "@/catalog/copy-name";
 import { CopySettingsDialog } from "./CopySettingsDialog";
 import { RenamePhotoDialog } from "./RenamePhotoDialog";
 import { useGridMenuItems } from "@/extensions/registry";
+import { guardCallback } from "@/extensions/guard";
 import { exportPhotoData, renamePhoto, revealPhoto } from "@/project/folder-ops";
 import { confirmAndDeleteFromDisk, diskTrashAvailable } from "./delete-from-disk";
 import { removeFromCatalog } from "./use-culling-shortcuts";
@@ -38,13 +39,12 @@ export interface PhotoActions {
   overlays: ReactNode;
 }
 
-// F2 asks for a rename by event, since the surface owns the dialog. Only the
+// F2 and Copy settings ask by event, since the surface owns the dialog. Only the
 // most recently mounted surface answers, so a Filmstrip open beside the grid
 // raises one dialog, not two.
 const renameOwners: symbol[] = [];
 
 export function usePhotoActions(): PhotoActions {
-  const photos = useCatalogStore((s) => s.photos);
   const select = useCatalogStore((s) => s.select);
   const rotatePhotos = useCatalogStore((s) => s.rotatePhotos);
   const setActivePhoto = useCatalogStore((s) => s.setActivePhoto);
@@ -102,6 +102,7 @@ export function usePhotoActions(): PhotoActions {
   // distinguishers.
   const takenRenameNames = useMemo(() => {
     if (!renameTarget) return [];
+    const { photos } = useCatalogStore.getState();
     const target = photos.find((p) => p.id === renameTarget.id);
     if (!target) return [];
     const siblings = photos.filter((p) => p.id !== target.id);
@@ -112,7 +113,7 @@ export function usePhotoActions(): PhotoActions {
       : siblings
           .filter((p) => !p.copyOf && p.folder === target.folder)
           .map((p) => splitFilename(p.filename)[0]);
-  }, [photos, renameTarget]);
+  }, [renameTarget]);
 
   // A virtual copy shares its master's file, so "renaming" it edits the display
   // distinguisher (copyName); a master renames the actual file on disk.
@@ -216,6 +217,17 @@ export function usePhotoActions(): PhotoActions {
     });
   }, []);
 
+  useEffect(() => {
+    const token = ownerToken.current!;
+    const handler = (e: Event) => {
+      if (renameOwners[renameOwners.length - 1] !== token) return;
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (id) void handleCopySettings(id);
+    };
+    window.addEventListener("sl-copy-settings", handler);
+    return () => window.removeEventListener("sl-copy-settings", handler);
+  }, [handleCopySettings]);
+
   const handlePasteSettings = useCallback(async (ids: string[]) => {
     const clip = useDevelopClipboard.getState().clipboard;
     if (!clip) return;
@@ -288,13 +300,19 @@ export function usePhotoActions(): PhotoActions {
       ...(gridMenuItems.length > 0
         ? [
             "separator" as const,
-            ...gridMenuItems.map((item): ContextMenuEntry => ({
-              label:
-                typeof item.label === "function" ? item.label(ids) : item.label,
-              danger: item.danger,
-              disabled: item.enabled ? !item.enabled(ids) : false,
-              onClick: () => item.onClick(ids),
-            })),
+            ...gridMenuItems.map((item): ContextMenuEntry => {
+              const { label, enabled, onClick } = item;
+              // The extension's own functions are guarded, not a closure per
+              // render, so their throws add up to switching them off.
+              const guard = <R,>(kind: string, fn: (photoIds: string[]) => R, fallback: R) =>
+                guardCallback(item.extensionId, `grid menu item ${kind}`, fn, fallback)(ids);
+              return {
+                label: typeof label === "function" ? guard("label", label, item.id) : label,
+                danger: item.danger,
+                disabled: enabled ? !guard("enabled", enabled, false) : false,
+                onClick: () => guard("click", onClick, undefined),
+              };
+            }),
           ]
         : []),
     ];

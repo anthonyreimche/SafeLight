@@ -78,6 +78,33 @@ describe("useActivePhoto", () => {
   });
 });
 
+describe("at catalog scale", () => {
+  it("finds the open photo without a pass over the catalog on each store update", () => {
+    const N = 50_000;
+    const SETS = 100;
+    let reads = 0;
+    const photos = Array.from({ length: N }, (_, i) => {
+      const p = photo(`p${i}`);
+      const id = p.id;
+      Object.defineProperty(p, "id", { enumerable: true, get: () => (reads++, id) });
+      return p;
+    });
+    useCatalogStore.setState({ photos, activePhotoId: `p${N - 1}` });
+    const { result } = renderHook(useActivePhoto);
+    expect(result.current?.id).toBe(`p${N - 1}`);
+    reads = 0;
+
+    const start = performance.now();
+    for (let i = 0; i < SETS; i++) act(() => useCatalogStore.setState({ loading: i % 2 === 0 }));
+    const ms = performance.now() - start;
+    console.info(
+      `[bench] useActivePhoto ×${SETS} store sets on ${N}: ${(ms / SETS).toFixed(3)} ms/set, ${reads} id reads`,
+    );
+
+    expect(reads).toBeLessThan(SETS * 4);
+  });
+});
+
 describe("useActivePhotoAspect", () => {
   it("reads the open photo's stored shape, and 0 when there is none to read", () => {
     useCatalogStore.setState({

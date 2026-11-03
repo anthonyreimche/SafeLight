@@ -3,8 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { beforeEach, describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StorageBanner } from "./StorageBanner";
 import { useProjectStore } from "@/project/project-store";
 
@@ -12,6 +12,7 @@ beforeEach(() => {
   useProjectStore.setState({
     openError: null,
     openErrorReadOnly: false,
+    openErrorRecentId: null,
     storageNotice: null,
     saveError: null,
   });
@@ -28,6 +29,31 @@ describe("StorageBanner", () => {
 
     expect(screen.getByRole("alert").textContent).toContain("Couldn't open “Card”");
     expect(screen.getByRole("button", { name: "Preferences" })).toBeTruthy();
+  });
+
+  it("offers to remove a recent whose folder isn't available, and that clears the banner", async () => {
+    const removeFailedRecent = vi.fn(async () => {
+      useProjectStore.setState({ openError: null, openErrorRecentId: null });
+    });
+    useProjectStore.setState({
+      openError: "“Shoot” isn't available. Reconnect it and open the project again.",
+      openErrorRecentId: "/gone/shoot",
+      removeFailedRecent,
+    });
+
+    render(<StorageBanner />);
+    fireEvent.click(screen.getByRole("button", { name: "Remove from recents" }));
+
+    expect(removeFailedRecent).toHaveBeenCalledOnce();
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("offers no removal for an error that didn't come from a recent", () => {
+    useProjectStore.setState({ openError: "Couldn't open “Shoot”.", openErrorRecentId: null });
+
+    render(<StorageBanner />);
+
+    expect(screen.queryByRole("button", { name: "Remove from recents" })).toBeNull();
   });
 
   it("offers no Preferences when the catalog couldn't be read", () => {

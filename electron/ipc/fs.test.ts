@@ -71,15 +71,49 @@ describe("fs:list", () => {
     await expect(listHandler()({}, "/x")).rejects.toBe(odd);
   });
 
-  it("gives each file its size", async () => {
+  const sizedList = channel<
+    (event: unknown, p: string, root?: string, withSizes?: boolean) => Promise<{ name: string; kind: string }[]>
+  >("fs:list");
+
+  it("gives each file its size when asked", async () => {
     const root = tempDir();
     fs.writeFileSync(path.join(root, "a.jpg"), "12345");
     fs.mkdirSync(path.join(root, "sub"));
-    const listed = await listHandler()({}, root);
+    const listed = await sizedList({}, root, undefined, true);
     expect(listed.sort((a, b) => a.name.localeCompare(b.name))).toEqual([
       { name: "a.jpg", kind: "file", size: 5 },
       { name: "sub", kind: "directory" },
     ]);
+  });
+
+  it("lists plain files without a stat each unless sizes are asked for", async () => {
+    const root = tempDir();
+    fs.writeFileSync(path.join(root, "a.jpg"), "12345");
+    const stat = vi.spyOn(fs.promises, "stat");
+    await expect(listHandler()({}, root)).resolves.toEqual([{ name: "a.jpg", kind: "file" }]);
+    expect(stat).not.toHaveBeenCalled();
+    await sizedList({}, root, undefined, true);
+    expect(stat).toHaveBeenCalledTimes(1);
+  });
+
+  it("stats at most 16 files at a time, in the order listed", async () => {
+    const root = tempDir();
+    const names = Array.from({ length: 40 }, (_, i) => `p${String(i).padStart(2, "0")}.jpg`);
+    for (const name of names) fs.writeFileSync(path.join(root, name), "123");
+    const stat = fs.promises.stat;
+    let running = 0;
+    let most = 0;
+    vi.spyOn(fs.promises, "stat").mockImplementation(async (p, options) => {
+      most = Math.max(most, ++running);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      running--;
+      return stat(p, options);
+    });
+
+    const listed = await sizedList({}, root, undefined, true);
+
+    expect(most).toBeLessThanOrEqual(16);
+    expect(listed.map((e) => e.name)).toEqual(fs.readdirSync(root));
   });
 
   it("lists a linked folder as the folder it links to", async () => {
@@ -89,7 +123,7 @@ describe("fs:list", () => {
     linkFolder(elsewhere, path.join(root, "linked"));
     await expect(listHandler()({}, root)).resolves.toEqual([{ name: "linked", kind: "directory" }]);
     await expect(listHandler()({}, path.join(root, "linked"))).resolves.toEqual([
-      { name: "b.jpg", kind: "file", size: 3 },
+      { name: "b.jpg", kind: "file" },
     ]);
   });
 
@@ -97,7 +131,7 @@ describe("fs:list", () => {
     const root = tempDir();
     fs.writeFileSync(path.join(root, "a.jpg"), "1234");
     fs.symlinkSync(path.join(root, "a.jpg"), path.join(root, "b.jpg"));
-    const listed = await listHandler()({}, root);
+    const listed = await sizedList({}, root, undefined, true);
     expect(listed.find((e) => e.name === "b.jpg")).toEqual({ name: "b.jpg", kind: "file", size: 4 });
   });
 

@@ -73,5 +73,7 @@ export type PresetImportOutcome =
   | { status: "no-importer"; extension: string }
   /** An importer claimed the file but found no develop settings in it. */
   | { status: "no-settings" }
+  /** An importer claimed the file but threw or ran out of time reading it. */
+  | { status: "failed"; reason: string }
   /** A .json file that isn't a Safelight preset this build can read. */
   | { status: "unreadable" };

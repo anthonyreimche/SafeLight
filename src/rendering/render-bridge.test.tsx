@@ -49,6 +49,19 @@ import { stageSignature } from "./webgl/stage-injection";
 import { stageFailuresOf, useStageFailures } from "./render-bridge/stage-failures";
 import { setExtensionName } from "@/extensions/param-registry";
 
+const gpu = vi.hoisted(() => ({
+  rendererFailed: vi.fn<(detail: string) => Promise<null>>(async () => null),
+}));
+
+vi.mock("@/native/privileged", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/native/privileged")>()),
+  privilegedGpu: () => ({
+    backend: async () => null,
+    setSoftware: async () => null,
+    rendererFailed: gpu.rendererFailed,
+  }),
+}));
+
 class FakeWorker {
   static instances: FakeWorker[] = [];
   posted: WorkerRequest[] = [];
@@ -183,6 +196,21 @@ describe("RenderBridge init recovery", () => {
     expect(attempts).toBe(10);
     vi.advanceTimersByTime(600_000);
     expect(inits(worker)).toHaveLength(attempts);
+    bridge.dispose();
+  });
+
+  // Main moves the next launch to software and offers the restart.
+  it("tells main the renderer can't run on this launch's graphics once it gives up", () => {
+    gpu.rendererFailed.mockClear();
+    const bridge = new RenderBridge();
+    bridge.setOnError(() => undefined);
+    bridge.init(64, 64);
+    const worker = FakeWorker.instances[0];
+    for (let i = 0; i < 20; i++) {
+      worker.reply(initError);
+      vi.advanceTimersByTime(60_000);
+    }
+    expect(gpu.rendererFailed.mock.calls).toEqual([["WebGL2 not supported"]]);
     bridge.dispose();
   });
 

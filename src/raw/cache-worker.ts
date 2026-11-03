@@ -63,7 +63,7 @@ export type CacheResponse =
   | { type: "mark"; id: number }
   | { type: "peek"; id: number; value: string | null }
   | { type: "delete"; id: number }
-  | { type: "clear"; id: number }
+  | { type: "clear"; id: number; failed: number }
   | { type: "keys"; id: number; entries: CacheListing[] }
   | { type: "error"; id: number; message: string };
 
@@ -381,7 +381,7 @@ async function handleWrite(
   width: number,
   height: number,
   maxEdge: number,
-): Promise<void> {
+): Promise<boolean> {
   // Taken as the write arrives: a folder set while it compresses is the next
   // project's, and the write must not land there.
   const dir = cacheDir;
@@ -389,9 +389,9 @@ async function handleWrite(
   const entry = encodeCacheEntry(data, width, height, maxEdge);
   if (dir) {
     await writeToDir(dir, key, entry);
-    return;
+    return true;
   }
-  if (s === null) return;
+  if (s === null) return false;
   const [blob, sampleBlob] = await Promise.all([
     gzip(entry.preview.data as unknown as ArrayBuffer),
     gzip(entry.sample.data as unknown as ArrayBuffer),
@@ -417,6 +417,7 @@ async function handleWrite(
     writesSinceEvict = 0;
     await evictLeastRecentlyUsed(db, IDB_CAP_BYTES).catch(() => {});
   }
+  return true;
 }
 
 async function handleMark(key: string, value: string): Promise<void> {
@@ -475,15 +476,18 @@ async function handleDelete(key: string): Promise<void> {
   });
 }
 
-async function handleClear(): Promise<void> {
+/** How many parts of the cache could not be cleared: each file left in the
+ *  folder, and the folder's listing or the database when they failed whole. */
+async function handleClear(): Promise<number> {
+  let failed = 0;
   // As for a write: a folder set while this clears belongs to the next project.
   const dir = cacheDir;
   if (dir) {
     try {
       for await (const name of (dir as unknown as { keys(): AsyncIterable<string> }).keys()) {
-        try { await dir.removeEntry(name); } catch {}
+        try { await dir.removeEntry(name); } catch { failed++; }
       }
-    } catch {}
+    } catch { failed++; }
   }
   try {
     const db = await getDB();
@@ -491,7 +495,8 @@ async function handleClear(): Promise<void> {
       tx.objectStore(STORE).clear();
       tx.objectStore(META).clear();
     });
-  } catch {}
+  } catch { failed++; }
+  return failed;
 }
 
 async function handleKeys(): Promise<CacheListing[]> {
@@ -597,8 +602,11 @@ self.onmessage = async (e: MessageEvent<CacheRequest>) => {
       }
 
       case "write":
-        await handleWrite(msg.key, msg.data, msg.width, msg.height, msg.maxEdge);
-        respond({ type: "write", id: msg.id, ok: true });
+        respond({
+          type: "write",
+          id: msg.id,
+          ok: await handleWrite(msg.key, msg.data, msg.width, msg.height, msg.maxEdge),
+        });
         break;
 
       case "mark":
@@ -616,8 +624,7 @@ self.onmessage = async (e: MessageEvent<CacheRequest>) => {
         break;
 
       case "clear":
-        await handleClear();
-        respond({ type: "clear", id: msg.id });
+        respond({ type: "clear", id: msg.id, failed: await handleClear() });
         break;
 
       case "keys": {

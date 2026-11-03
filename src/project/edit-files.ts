@@ -23,6 +23,7 @@ import {
   fileTimestamp,
   isNotFound,
   isPlainObject,
+  listNames,
   parseJSONObject,
   readBlobIfThere,
   writeBlob,
@@ -260,10 +261,8 @@ const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, 
  *  copy that can't be removed stays; it is no reason to fail the read. */
 async function pruneCopies(dir: FileSystemDirectoryHandle, prefix: string): Promise<void> {
   try {
-    const keys = (dir as unknown as { keys?: () => AsyncIterable<string> }).keys;
-    if (!keys) return;
     const copies: string[] = [];
-    for await (const name of keys.call(dir))
+    for await (const name of listNames(dir))
       if (name.startsWith(prefix) && name.endsWith(".json")) copies.push(name);
     for (const name of copies.sort().slice(0, -KEPT_COPIES)) await removeIfThere(dir, name);
   } catch (error) {

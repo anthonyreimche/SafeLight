@@ -321,7 +321,7 @@ interface PresetImporterContribution {
 }
 ```
 
-Adds a file type to the Presets panel's Import picker. Return `null` or empty `params` when nothing maps, and the panel tells the user. Params use Safelight's scales: exposure in EV, temperature in Kelvin, most sliders ±100. They are merged over the photo's current edit.
+Adds a file type to the Presets panel's Import picker. Several importers may claim the same extension: Safelight asks each in turn and uses the first that returns settings. Return `null` or empty `params` when nothing maps, and the panel tells the user. A `parse` that throws, or doesn't finish within 15 seconds, is reported as a failed import (with the error message) instead of "no settings". The picker only offers `.json` plus the extensions your importers claim. Params use Safelight's scales: exposure in EV, temperature in Kelvin, most sliders ±100. They are merged over the photo's current edit.
 
 ## `GridFilterContribution`
 

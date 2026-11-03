@@ -19,6 +19,7 @@ import {
   angleSwitches,
   webgl2Lost,
   softwareFallbackFor,
+  rendererFallbackFor,
   parseBackendCache,
   formatBackendCache,
   backendState,
@@ -123,6 +124,50 @@ describe("softwareFallbackFor", () => {
   });
 });
 
+// A renderer that can't start on one hardware backend may on the next, so it
+// steps down the ladder one rung rather than jumping to software.
+describe("rendererFallbackFor", () => {
+  it("steps to the next rung on the ladder", () => {
+    const ladder = gpuLadder("linux", false);
+    expect(rendererFallbackFor(ladder, "gl")).toBe("gles");
+    expect(rendererFallbackFor(ladder, "gles")).toBe("vulkan");
+    expect(rendererFallbackFor(ladder, "vulkan")).toBe(SOFTWARE_BACKEND);
+    expect(rendererFallbackFor(gpuLadder("linux", true), "gles")).toBe(SOFTWARE_BACKEND);
+  });
+
+  it("goes straight to software where the ladder has one hardware rung", () => {
+    expect(rendererFallbackFor(gpuLadder("win32", false), "d3d11")).toBe(SOFTWARE_BACKEND);
+    expect(rendererFallbackFor(gpuLadder("darwin", false), "metal")).toBe(SOFTWARE_BACKEND);
+  });
+
+  it("has nowhere to go from software", () => {
+    expect(rendererFallbackFor(gpuLadder("linux", false), SOFTWARE_BACKEND)).toBeNull();
+  });
+});
+
+// Retrying the first rung on a timer would fail the same way and ask for
+// another restart, so a renderer failure holds until the app changes.
+describe("software after a renderer failure", () => {
+  const failed = fallbackCache("renderer-failed", 0, "3.1.0");
+
+  it("remembers the app version through the cache file, and still reads files without one", () => {
+    expect(failed.version).toBe("3.1.0");
+    expect(parseBackendCache(formatBackendCache(failed), angleBackends(false))).toEqual(failed);
+    expect(parseBackendCache(`${SOFTWARE_BACKEND}\nrenderer-failed\n5 0\n`, angleBackends(false)).version).toBeUndefined();
+  });
+
+  it("is not retried while the app version is the same, however long it has run", () => {
+    const old = { ...failed, launches: 1000 };
+    expect(retriesHardware(old, RETRY_AFTER_MS * 10, "3.1.0")).toBe(false);
+    expect(startRung(gpuLadder("linux", false), old, null, RETRY_AFTER_MS * 10, "3.1.0")).toBe(3);
+  });
+
+  it("is retried once the app version changes, or when no version was stored", () => {
+    expect(retriesHardware({ ...failed, launches: RETRY_AFTER_LAUNCHES }, 1, "3.2.0")).toBe(true);
+    expect(retriesHardware({ ...failed, version: undefined, launches: RETRY_AFTER_LAUNCHES }, 1, "3.1.0")).toBe(true);
+  });
+});
+
 // The cache holds the backend the next launch starts on, and for software
 // why it is there, so Preferences can say whether Safelight or the user chose it.
 describe("the backend cache", () => {
@@ -136,6 +181,11 @@ describe("the backend cache", () => {
     const hardware = { backend: "gles", reason: null, since: null, launches: 0 };
     expect(formatBackendCache(hardware)).toBe("gles\n");
     expect(parseBackendCache(formatBackendCache(hardware), backends)).toEqual(hardware);
+  });
+
+  it("keeps a renderer that couldn't start as the reason", () => {
+    const software = { backend: SOFTWARE_BACKEND, reason: "renderer-failed", since: 5, launches: 0 };
+    expect(parseBackendCache(formatBackendCache(software), backends)).toEqual(software);
   });
 
   it("reads the caches earlier versions wrote", () => {

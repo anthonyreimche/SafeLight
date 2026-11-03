@@ -28,6 +28,7 @@ describe("readCaps", () => {
     expect(caps.maxTextureSize).toBe(gl.getParameter(gl.MAX_TEXTURE_SIZE));
     expect(caps.textureUnits).toBe(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS));
     expect(caps.combinedTextureUnits).toBe(gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS));
+    expect(caps.fragmentUniformVectors).toBe(gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS));
   });
 
   it("probes no norm16 format when asked not to", () => {

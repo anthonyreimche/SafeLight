@@ -137,6 +137,39 @@ describe("fenceAPI", () => {
     expect(f.settings).toBe(f.settings);
     expect(f.settings.onChange).toBe(f.settings.onChange);
   });
+
+  it("fences a store hook's setState and subscribe, keeps it callable, and tracks its listeners", () => {
+    const listeners = new Set<() => void>();
+    const useStore = Object.assign(vi.fn((selector?: (s: number) => number) => (selector ? selector(4) : 4)), {
+      getState: () => 4,
+      setState: vi.fn(),
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    const api = { extensionId: "acme.x", stores: { useStore } };
+    const controller = new AbortController();
+    const subscriptions = new Set<() => void>();
+    const f = fenceAPI(api as unknown as SafelightAPI, controller.signal, subscriptions) as unknown as typeof api;
+
+    expect(f.stores.useStore((s) => s * 2)).toBe(8);
+    expect(useStore).toHaveBeenCalledOnce();
+    expect(f.stores.useStore.getState()).toBe(4);
+    f.stores.useStore.subscribe(() => {});
+    expect(listeners.size).toBe(1);
+    expect(subscriptions.size).toBe(1);
+    subscriptions.forEach((unsubscribe) => unsubscribe());
+    expect(listeners.size).toBe(0);
+
+    controller.abort();
+    const refused = "acme.x: this start no longer counts";
+    expect(() => f.stores.useStore.setState(1)).toThrow(refused);
+    expect(() => f.stores.useStore.subscribe(() => {})).toThrow(refused);
+    expect(useStore.setState).not.toHaveBeenCalled();
+    expect(listeners.size).toBe(0);
+    expect(f.stores.useStore.getState()).toBe(4);
+  });
 });
 
 // A start that finished after it stopped counting is stopped with its own
@@ -188,6 +221,16 @@ describe("guardCallback", () => {
   it("hands back what the callback returns", () => {
     const double = guardCallback("acme.ok", "grid filter", (n: number) => n * 2, 0);
     expect(double(4)).toBe(8);
+  });
+
+  it("calls the callback on `self` when given", () => {
+    const filter = {
+      wanted: 4,
+      test(this: { wanted: number }, n: number) {
+        return n === this.wanted;
+      },
+    };
+    expect(guardCallback("acme.ok", "grid filter", filter.test, false, filter)(4)).toBe(true);
   });
 
   it("answers the fallback when the callback throws, logging once per extension and kind", () => {

@@ -67,43 +67,34 @@ import {
   mergePhoto,
   newer,
   own,
-  readChangeStamps,
   stampAll,
   type ChangeStamp,
   type ChangeStamps,
   type PhotoStamps,
 } from "./change-stamps";
+import { mapLimit, readBlobIfThere, readJSON, removeEntry, writeBlob, writeJSON } from "./fs";
 import {
-  isPlainObject,
-  mapLimit,
-  readBlob,
-  readBlobIfThere,
-  readJSON,
-  fileTimestamp,
-  readJSONFile,
-  removeEntry,
-  writeBlob,
-  writeJSON,
-  type JSONFileRead,
-} from "./fs";
-import {
-  CATALOG_VERSION,
-  CatalogDamagedError,
-  CatalogTooNewError,
-  CatalogUnreadableError,
-} from "./catalog-errors";
+  BACKUP,
+  CATALOG,
+  catalogIdOf,
+  catalogKey,
+  isMainWindow,
+  OLDER_BACKUPS,
+  readSavedCatalog,
+  type CatalogFile,
+  type CatalogRecovery,
+} from "./catalog-file";
 import { fsErrorText } from "./fs-errors";
-import {
-  hasEditStack,
-  openableEdit,
-  SAVE_RETRY_DELAYS,
-  UNREADABLE_RETRY_DELAYS,
-} from "./edit-files";
-import { nativeFs, nativePathOf } from "./native-fs";
+import { openableEdit, SAVE_RETRY_DELAYS } from "./edit-files";
+import { nativeFs } from "./native-fs";
+import { PhotoBlobs } from "./photo-blobs";
 import { findMoved, namesFoldCase, shotDiffers } from "./reattach";
 import { scanProject, type FolderNode, type ScannedFile } from "./scan";
 import { recordVolume } from "./volume-print";
+import { adoptSidecar, SIDECAR_SUFFIX, type PhotoSidecar } from "./sidecar";
 import { resolveWorkingDir, type WorkingDirLocation } from "./working-dir";
+
+export { catalogKey, type CatalogRecovery } from "./catalog-file";
 
 /** What a storage needs from the layers above it, handed in by whoever opens it
  *  (see storage-deps): the import of the files the open walk finds new, the
@@ -125,193 +116,6 @@ export interface ProjectStorageDeps {
     dir: FileSystemDirectoryHandle;
     fileName: string;
   }): Promise<Partial<CatalogPhoto> | null>;
-}
-
-interface CatalogFile {
-  version: 1;
-  /** Tells the browser build's windows which catalog they share (catalogKey).
-   *  Catalogs saved before it have none. */
-  id?: string;
-  photos: StoredPhoto[];
-  edits: EditState[];
-  /** relPaths the user removed from the catalog whose files remain on disk, so
-   *  the next scan skips them instead of re-importing (see deletePhoto). */
-  removed?: string[];
-  /** When each record last changed (see change-stamps). Left out when none did;
-   *  catalogs saved before it have none, and every record in them counts as the
-   *  oldest. */
-  changed?: ChangeStamps;
-}
-
-const CATALOG = "catalog.json";
-/** catalog.json as the main window opened it, kept once its first save has replaced
- *  it. Every such session rewrites it, so nothing else keeps a copy under this name:
- *  a fold of read-only edits keeps its own (working-dir.ts). */
-const BACKUP = "catalog.bak.json";
-/** The backups before it, newest first. A session writes BACKUP over the newest
- *  and each moves down one place, so a few bad sessions in a row leave a good one. */
-const OLDER_BACKUPS = ["catalog.bak-1.json", "catalog.bak-2.json"];
-/** How many of each kind of catalog.corrupt-<time>.json is kept; the rest are
- *  removed as a new one is written. Each is a whole catalog. */
-const KEPT_COPIES = 3;
-
-/** How open() recovered a catalog it couldn't use as saved: restored from its
- *  backup, or rebuilt by importing the folder again. `kept` names the copy of the
- *  damaged catalog kept beside it (else of a damaged backup), or is null when
- *  there was none to keep (missing or empty). */
-export interface CatalogRecovery {
-  from: "backup" | "rescan";
-  kept: string | null;
-}
-
-/** A saved catalog as this build opens it: the records it can open, the
- *  top-level keys it doesn't know (saved back as they came), and how many
- *  entries it left out. Its change stamps are in `file.changed`. */
-interface OpenedCatalog {
-  file: CatalogFile & { changed: ChangeStamps };
-  extra: Record<string, unknown>;
-  skipped: number;
-}
-
-/** What an open starts from: the catalog (null: import the folder as new), how
- *  it was recovered, and catalog.json as read when it opened as saved, which the
- *  session's first save keeps as the backup. */
-interface SavedCatalog {
-  catalog: OpenedCatalog | null;
-  recovered: CatalogRecovery | null;
-  bytes: Uint8Array<ArrayBuffer> | null;
-}
-
-function isStoredPhoto(entry: unknown): entry is StoredPhoto {
-  if (!isPlainObject(entry)) return false;
-  const { id, relPath, copyOf } = entry;
-  return (
-    typeof id === "string" &&
-    id !== "" &&
-    typeof relPath === "string" &&
-    (copyOf === undefined || typeof copyOf === "string")
-  );
-}
-
-/** Open a saved catalog: refuse a newer version, and keep only the records this
- *  build can open. A list that isn't a list opens as an empty one. */
-function openCatalog(saved: Record<string, unknown>): OpenedCatalog {
-  const { version, id, photos, edits, removed, changed, ...extra } = saved;
-  if (typeof version === "number" && version > CATALOG_VERSION)
-    throw new CatalogTooNewError(version);
-  let skipped = 0;
-  const entries = <T>(list: unknown, valid: (entry: unknown) => entry is T): T[] => {
-    if (list === undefined) return [];
-    if (!Array.isArray(list)) {
-      skipped++;
-      return [];
-    }
-    const all: unknown[] = list;
-    const kept = all.filter(valid);
-    skipped += all.length - kept.length;
-    return kept;
-  };
-  return {
-    file: {
-      version: 1,
-      id: typeof id === "string" && id !== "" ? id : undefined,
-      photos: entries(photos, isStoredPhoto),
-      edits: entries(edits, hasEditStack).flatMap((edit) => {
-        const openable = openableEdit(edit);
-        if (openable !== edit) skipped++;
-        return openable ? [openable] : [];
-      }),
-      removed: entries(removed, (entry): entry is string => typeof entry === "string"),
-      // A stamp this build can't read only makes its record the oldest, so none is
-      // counted as skipped.
-      changed: readChangeStamps(changed),
-    },
-    extra,
-    skipped,
-  };
-}
-
-/** Read a catalog file, waiting a few seconds for one another program holds; one
- *  that still can't be read stops the open, with catalog.json as it was. */
-async function readCatalogFile(
-  sl: FileSystemDirectoryHandle,
-  name: string,
-): Promise<Exclude<JSONFileRead, { kind: "unreadable" }>> {
-  let read = await readJSONFile(sl, name);
-  for (const delay of UNREADABLE_RETRY_DELAYS) {
-    if (read.kind !== "unreadable") return read;
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    read = await readJSONFile(sl, name);
-  }
-  if (read.kind === "unreadable") throw new CatalogUnreadableError(read.error);
-  return read;
-}
-
-/** Keep a copy of a catalog file (`catalog` or `catalog.bak`) the open won't keep
- *  as it was, beside it, and return the copy's name. A copy that can't be written
- *  stops the open: the save that follows would replace the only one. */
-async function keepAside(
-  sl: FileSystemDirectoryHandle,
-  bytes: Uint8Array<ArrayBuffer>,
-  of: "catalog" | "catalog.bak" = "catalog",
-) {
-  const name = `${of}.corrupt-${fileTimestamp()}.json`;
-  try {
-    await writeBlob(sl, name, new Blob([bytes]));
-  } catch (error) {
-    throw new CatalogDamagedError(error);
-  }
-  await pruneKeptCopies(sl, `${of}.corrupt-`);
-  return name;
-}
-
-/** Remove all but the newest KEPT_COPIES files named `prefix` + a time + .json. A
- *  copy that can't be removed stays; it is no reason to stop the open. */
-async function pruneKeptCopies(sl: FileSystemDirectoryHandle, prefix: string): Promise<void> {
-  try {
-    const keys = (sl as unknown as { keys?: () => AsyncIterable<string> }).keys;
-    if (!keys) return;
-    const copies: string[] = [];
-    for await (const name of keys.call(sl))
-      if (name.startsWith(prefix) && name.endsWith(".json")) copies.push(name);
-    for (const name of copies.sort().slice(0, -KEPT_COPIES)) await removeEntry(sl, name);
-  } catch (error) {
-    console.warn("[project] old copies of the catalog couldn't be removed:", error);
-  }
-}
-
-/** Whether this is the main window: a pop-out opens the project too, and the
- *  catalog it opens may be the one a bad session just left. */
-function isMainWindow(): boolean {
-  return !new URLSearchParams(globalThis.location?.search).has("detached");
-}
-
-/** Read the catalog an open starts from. A damaged catalog.json is kept aside,
- *  then the backup stands in for it, as it does for a missing one. With no backup
- *  to use, the folder is imported again: as a new project when neither file was
- *  there, else as a rebuild, keeping a damaged backup aside too, since the next
- *  session's backup would write over it. */
-async function readSavedCatalog(sl: FileSystemDirectoryHandle): Promise<SavedCatalog> {
-  const read = await readCatalogFile(sl, CATALOG);
-  if (read.kind === "ok") {
-    const catalog = openCatalog(read.value);
-    if (catalog.skipped > 0) await keepAside(sl, read.bytes);
-    return { catalog, recovered: null, bytes: read.bytes };
-  }
-  const kept =
-    read.kind === "corrupt" && read.bytes.length > 0 ? await keepAside(sl, read.bytes) : null;
-  const backup = await readCatalogFile(sl, BACKUP);
-  if (backup.kind === "ok") {
-    const catalog = openCatalog(backup.value);
-    return { catalog, recovered: { from: "backup", kept }, bytes: null };
-  }
-  if (read.kind === "missing" && backup.kind === "missing")
-    return { catalog: null, recovered: null, bytes: null };
-  const keptBackup =
-    backup.kind === "corrupt" && backup.bytes.length > 0
-      ? await keepAside(sl, backup.bytes, "catalog.bak")
-      : null;
-  return { catalog: null, recovered: { from: "rescan", kept: kept ?? keptBackup }, bytes: null };
 }
 
 const SAVE_DELAY = 800;
@@ -382,39 +186,6 @@ export function flushLeftCopies(): void {
 /** Counts the storages this window has opened, to name each one's records. */
 let openedStorages = 0;
 
-/** Names the catalog file a storage writes, so windows take on only the records
- *  of the catalog they share; a copy of the project elsewhere keeps the same photo
- *  ids. In the desktop build that is the working folder's path, compared without
- *  case on Windows. The browser build has no paths: there the project folder's
- *  name and `catalogId`, which the catalog keeps (catalogIdOf), stand in. */
-export function catalogKey(
-  root: FileSystemDirectoryHandle,
-  sl: FileSystemDirectoryHandle,
-  catalogId: string,
-): string {
-  const path = nativePathOf(sl);
-  if (path === null) return `folder:${root.name}:${catalogId}`;
-  const windows = /^[A-Za-z]:[\\/]|^\\\\/.test(path);
-  const slashed = path.replace(/[\\/]+/g, "/").replace(/\/$/, "");
-  return windows ? slashed.toLowerCase() : slashed;
-}
-
-/** The id a catalog is known by: the one it keeps; for a catalog saved before
- *  catalogs had one, an id every window derives alike from its photo ids, so the
- *  windows open on it agree; for a new catalog, a fresh one. Saves keep it. */
-function catalogIdOf(saved: CatalogFile | null): string {
-  if (saved?.id) return saved.id;
-  const photoIds = (saved?.photos ?? []).map((p) => p.id).sort();
-  if (photoIds.length === 0) return crypto.randomUUID();
-  // FNV-1a over the ids: stable and cheap; it only has to tell catalogs apart.
-  let hash = 0x811c9dc5;
-  for (const char of photoIds.join("\n")) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return `photos-${hash.toString(16)}-${photoIds.length}`;
-}
-
 /** A record's rotation; one saved without it (an older build's) is unturned. */
 function turnOf(record: Pick<StoredPhoto, "rotation">): number {
   return record.rotation ?? 0;
@@ -428,21 +199,6 @@ function madeAt(record: Pick<StoredPhoto, "rotation" | "previewRotation">): numb
 function folderOf(relPath: string): string {
   const i = relPath.lastIndexOf("/");
   return i === -1 ? "" : relPath.slice(0, i);
-}
-
-// Sidecar written by folder-ops.exportPhotoData; kept in sync there. Inlined
-// (not imported) to avoid a project-storage ↔ folder-ops ↔ project-store cycle.
-const SIDECAR_SUFFIX = ".safelight.json";
-
-interface PhotoSidecar {
-  safelightSidecar?: number;
-  info?: {
-    rating?: number;
-    colorLabel?: CatalogPhoto["colorLabel"];
-    flag?: CatalogPhoto["flag"];
-    keywords?: string[];
-  };
-  maps?: { stack: EditState["stack"]; currentIndex: number } | null;
 }
 
 export interface OpenedProject {
@@ -573,9 +329,7 @@ export class ProjectStorage implements CatalogStorage {
 
   private sl: FileSystemDirectoryHandle;
   private previews: FileSystemDirectoryHandle;
-  /** Lazily-created .safelight/blobs/ dir for opaque per-photo binary payloads
-   *  (e.g. an extension's warp displacement field), kept out of catalog.json. */
-  private blobsDir: FileSystemDirectoryHandle | null = null;
+  private readonly blobs: PhotoBlobs;
 
   private readonly deps: ProjectStorageDeps;
 
@@ -586,6 +340,7 @@ export class ProjectStorage implements CatalogStorage {
   ) {
     this.sl = sl;
     this.previews = previews;
+    this.blobs = new PhotoBlobs(sl);
     this.deps = deps;
   }
 
@@ -803,10 +558,7 @@ export class ProjectStorage implements CatalogStorage {
               );
               if (sc && sc.safelightSidecar === 1) {
                 const info = sc.info ?? {};
-                if (typeof info.rating === "number") photo.rating = info.rating;
-                if (info.colorLabel) photo.colorLabel = info.colorLabel;
-                if (info.flag) photo.flag = info.flag;
-                if (Array.isArray(info.keywords)) photo.keywords = info.keywords;
+                Object.assign(photo, adoptSidecar(info));
                 if (sc.maps && Array.isArray(sc.maps.stack)) {
                   const adopted = openableEdit({
                     photoId: photo.id,
@@ -839,9 +591,18 @@ export class ProjectStorage implements CatalogStorage {
           } catch {
             /* extension import failed — ignore */
           }
-          if (photo.thumbnailBlob && deps.persistPreviews())
-            await writeBlob(previews, `${photo.id}.jpg`, photo.thumbnailBlob);
-          storage.lastThumb.set(photo.id, photo.thumbnailBlob);
+          // A preview that can't be written keeps the photo: it is left unheld, so
+          // the next put that carries it writes it.
+          let previewHeld = true;
+          if (photo.thumbnailBlob && deps.persistPreviews()) {
+            try {
+              await writeBlob(previews, `${photo.id}.jpg`, photo.thumbnailBlob);
+            } catch (err) {
+              previewHeld = false;
+              console.warn(`[import] the preview of ${f.path} couldn't be stored:`, err);
+            }
+          }
+          if (previewHeld) storage.lastThumb.set(photo.id, photo.thumbnailBlob);
           storage.show(photo);
           storage.changedPhotos.add(photo.id);
           newPhotos.push(photo);
@@ -1243,41 +1004,24 @@ export class ProjectStorage implements CatalogStorage {
   }
 
   async deletePhoto(id: string): Promise<void> {
+    await this.deletePhotos([id]);
+  }
+
+  /** Remove the photos in one save and one message, however many there are. The
+   *  records are gone once this is called; what it returns settles when their
+   *  previews and blobs are removed too. */
+  deletePhotos(ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return Promise.resolve();
     const since = Date.now();
-    this.forget(id);
+    const dropped = ids.flatMap((id) => this.forget(id).dropped);
     this.scheduleSave();
-    this.send({ deletedIds: [id] }, since);
+    this.send({ deletedIds: [...ids] }, since);
     // A write of its preview still running removes the file again once it lands
     // (writePreview).
-    await removeEntry(this.previews, `${id}.jpg`);
-    // Drop any opaque per-photo blobs (warp fields, etc.) for this photo. Open
-    // the dir WITHOUT creating it so blobs written in an earlier session are
-    // reached too, but projects that never used blobs don't get an empty dir.
-    let dir = this.blobsDir;
-    if (!dir) {
-      try {
-        dir = await this.sl.getDirectoryHandle("blobs");
-        this.blobsDir = dir;
-      } catch {
-        dir = null;
-      }
-    }
-    if (dir) {
-      const safeId = id.replace(/[^a-zA-Z0-9._-]/g, "_");
-      // keys() is a standard FileSystemDirectoryHandle async iterator; not in
-      // every TS lib target, so reach it through a narrow cast.
-      const keys = (dir as unknown as { keys?: () => AsyncIterable<string> }).keys;
-      if (keys) {
-        try {
-          for await (const name of keys.call(dir)) {
-            if (typeof name === "string" && name.startsWith(`${safeId}.`))
-              await removeEntry(dir, name);
-          }
-        } catch {
-          /* best-effort cleanup */
-        }
-      }
-    }
+    return Promise.all([
+      mapLimit(dropped, 8, (id) => removeEntry(this.previews, `${id}.jpg`)),
+      this.blobs.deletePhotoBlobs(dropped),
+    ]).then(() => {});
   }
 
   /** Drop a photo's record, shown or not, its edit history and its virtual copies
@@ -1286,10 +1030,12 @@ export class ProjectStorage implements CatalogStorage {
    *  folder scan doesn't re-import it as "new": removal is from the catalog only,
    *  the original stays on disk. A VIRTUAL COPY owns no file of its own (it shares
    *  its master's), so tombstoning its relPath would wrongly suppress the master's
-   *  file; a copy's record is just dropped. Returns the ids this window showed. */
-  private forget(id: string): string[] {
+   *  file; a copy's record is just dropped. Returns every id dropped, and those of
+   *  them this window showed. */
+  private forget(id: string): { dropped: string[]; shown: string[] } {
+    const dropped = [id, ...(this.copies.get(id) ?? [])];
     const shown: string[] = [];
-    for (const gone of [id, ...(this.copies.get(id) ?? [])]) {
+    for (const gone of dropped) {
       const photo = this.photos.get(gone) ?? this.unshown.get(gone);
       if (photo && !photo.copyOf && photo.relPath) {
         this.removed.add(photo.relPath);
@@ -1303,7 +1049,7 @@ export class ProjectStorage implements CatalogStorage {
       this.lastThumb.delete(gone);
       this.removedIds.add(gone);
     }
-    return shown;
+    return { dropped, shown };
   }
 
   /** A photo stored under a file's name puts that file back in the catalog, so the
@@ -1414,45 +1160,12 @@ export class ProjectStorage implements CatalogStorage {
     return [...this.edits.values()];
   }
 
-  // ── opaque per-photo blobs ───────────────────────────────────────────────────
-  // Stored as individual files under .safelight/blobs/ so a multi-hundred-KB
-  // payload (e.g. a warp field) never enters the whole-file catalog.json rewrite.
-
-  private async blobs(): Promise<FileSystemDirectoryHandle> {
-    if (!this.blobsDir)
-      this.blobsDir = await this.sl.getDirectoryHandle("blobs", { create: true });
-    return this.blobsDir;
+  getPhotoBlob(photoId: string, key: string): Promise<Uint8Array | null> {
+    return this.blobs.get(photoId, key);
   }
 
-  private blobName(photoId: string, key: string): string {
-    const safe = (s: string) => s.replace(/[^a-zA-Z0-9._-]/g, "_");
-    return `${safe(photoId)}.${safe(key)}.bin`;
-  }
-
-  async getPhotoBlob(photoId: string, key: string): Promise<Uint8Array | null> {
-    try {
-      const blob = await readBlob(await this.blobs(), this.blobName(photoId, key));
-      if (!blob) return null;
-      return new Uint8Array(await blob.arrayBuffer());
-    } catch {
-      return null;
-    }
-  }
-
-  async putPhotoBlob(
-    photoId: string,
-    key: string,
-    data: Uint8Array | null,
-  ): Promise<void> {
-    const dir = await this.blobs();
-    const name = this.blobName(photoId, key);
-    if (data == null) {
-      await removeEntry(dir, name);
-      return;
-    }
-    // Copy into a fresh ArrayBuffer-backed Blob so a view over a larger buffer
-    // (or a SharedArrayBuffer) is written as exactly its `data` bytes.
-    await writeBlob(dir, name, new Blob([data.slice()]));
+  putPhotoBlob(photoId: string, key: string, data: Uint8Array | null): Promise<void> {
+    return this.blobs.put(photoId, key, data);
   }
 
   async putEditState(editState: EditState): Promise<void> {
@@ -1767,7 +1480,7 @@ export class ProjectStorage implements CatalogStorage {
       changed = true;
     }
     const held = this.photos.size + this.unshown.size + this.edits.size;
-    for (const id of records.deletedIds) shown.deletedIds.push(...this.forget(id));
+    for (const id of records.deletedIds) shown.deletedIds.push(...this.forget(id).shown);
     if (this.photos.size + this.unshown.size + this.edits.size < held) changed = true;
     if (!changed) return;
     // The sender's save of these records began after `since`. A save of this copy

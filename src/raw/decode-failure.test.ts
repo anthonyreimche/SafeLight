@@ -84,7 +84,35 @@ describe("decodeRawToFloat failures", () => {
 
     expect(await decodeRawToFloat(file)).toEqual({
       failure: "transient",
-      reason: "couldn't read the file",
+      reason: "couldn't read the file (NotReadableError: busy)",
+    });
+  });
+
+  it("adds why the fallback failed to libraw's reason for a TIFF stream it couldn't parse", async () => {
+    // Uncompressed CFA data of a frame too large for a typed array to hold.
+    const truncated = new Blob([
+      buildTiff([
+        {
+          fields: [
+            field(TIFF_TAG.PhotometricInterpretation, TYPE.SHORT, PHOTOMETRIC_CFA),
+            field(TIFF_TAG.ImageWidth, TYPE.LONG, 1_048_576),
+            field(TIFF_TAG.ImageLength, TYPE.LONG, 1_048_576),
+            field(TIFF_TAG.BitsPerSample, TYPE.SHORT, 16),
+            field(TIFF_TAG.Compression, TYPE.SHORT, 1),
+            field(TIFF_TAG.StripOffsets, TYPE.LONG, 8),
+            field(TIFF_TAG.StripByteCounts, TYPE.LONG, 8),
+          ],
+        },
+      ]),
+    ]);
+
+    const result = await decodeRawToFloat(truncated);
+
+    expect(result).toMatchObject({
+      failure: "unsupported",
+      reason: expect.stringMatching(
+        /^imageData returned undefined \(in-house decode: \w*Error: .+\)$/,
+      ),
     });
   });
 });

@@ -31,6 +31,8 @@ export interface WebGLInfo {
   renderer: string;
   glsl: string;
   maxTexture: number;
+  /** MAX_FRAGMENT_UNIFORM_VECTORS: the develop program's uniforms must fit in it to link. */
+  fragmentUniformVectors: number;
   /** EXT_color_buffer_float: without it the render pipeline's intermediates are 8-bit. */
   colorBufferFloat: boolean;
 }
@@ -192,7 +194,9 @@ export function graphicsText(f: GraphicsFacts): string {
   if (f.webgl) {
     lines.push(f.webgl.renderer);
     lines.push(`Vendor: ${f.webgl.vendor}`);
-    lines.push(`${f.webgl.glsl} · max texture ${f.webgl.maxTexture}`);
+    lines.push(
+      `${f.webgl.glsl} · max texture ${f.webgl.maxTexture} · fragment uniform vectors ${f.webgl.fragmentUniformVectors}`,
+    );
     if (!f.webgl.colorBufferFloat) {
       lines.push("No float render targets: edits on this GPU are limited to 8-bit, 0–1 intermediates");
     }

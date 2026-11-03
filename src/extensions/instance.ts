@@ -89,6 +89,8 @@ interface Started {
   mod: ExtensionModule;
   /** Frees what the bundle was imported from, once it stops. */
   release?: () => void;
+  /** What this activation subscribed to, to drop if it ends up stopped late. */
+  subscriptions: Set<() => void>;
 }
 
 interface Live extends Started {
@@ -161,6 +163,7 @@ export async function startInstance(start: InstanceStart): Promise<void> {
       start.bundle,
       async (signal) => {
         const { load, release } = await start.read(signal);
+        const subscriptions = new Set<() => void>();
         try {
           const imported = await load();
           if (start.stillWanted && !start.stillWanted()) throw new DroppedStart(`${id}: no longer wanted`);
@@ -169,9 +172,10 @@ export async function startInstance(start: InstanceStart): Promise<void> {
           const mod = imported as ExtensionModule;
           signal.throwIfAborted();
           if (start.name) setExtensionName(id, start.name);
-          await activateFenced(mod, makeScopedAPI(id), signal);
-          return { mod, release };
+          await activateFenced(mod, makeScopedAPI(id), signal, subscriptions);
+          return { mod, release, subscriptions };
         } catch (e) {
+          if (signal.aborted) subscriptions.forEach((unsubscribe) => unsubscribe());
           release?.();
           throw e;
         }
@@ -180,6 +184,7 @@ export async function startInstance(start: InstanceStart): Promise<void> {
         sweep: () => unregisterExtension(id), // whatever it registered before it failed
         stop: (late) => {
           deactivateGuarded(id, () => late.mod.deactivate?.());
+          late.subscriptions.forEach((unsubscribe) => unsubscribe());
           late.release?.();
         },
       },
@@ -195,6 +200,14 @@ export async function startInstance(start: InstanceStart): Promise<void> {
   publishRunning();
 }
 
+function unsubscribeGuarded(unsubscribe: () => void): void {
+  try {
+    unsubscribe();
+  } catch {
+    // One extension's faulty unsubscribe must not keep the rest listening.
+  }
+}
+
 /** Stop a running bundle-loaded extension and sweep its contributions. Given
  *  `only`, a copy that came from another source is left running. */
 export function stopInstance(id: string, only?: InstanceSource): void {
@@ -203,6 +216,8 @@ export function stopInstance(id: string, only?: InstanceSource): void {
   deactivateGuarded(id, () => instance?.mod.deactivate?.());
   if (live.delete(id)) publishRunning();
   unregisterExtension(id);
+  instance?.subscriptions.forEach(unsubscribeGuarded);
+  instance?.subscriptions.clear();
   instance?.release?.();
 }
 

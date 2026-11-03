@@ -34,7 +34,8 @@ const privileged = {
         range ? { start: Number(range.start), end: Number(range.end) } : undefined,
       ),
     write: (p, data) => ipcRenderer.invoke("fs:write", String(p), data),
-    list: (p, root) => ipcRenderer.invoke("fs:list", String(p), root ? String(root) : undefined),
+    list: (p, root, withSizes) =>
+      ipcRenderer.invoke("fs:list", String(p), root ? String(root) : undefined, withSizes === true),
     mkdir: (p) => ipcRenderer.invoke("fs:mkdir", String(p)),
     externalCatalogDir: (p, base, create, variant) =>
       ipcRenderer.invoke(
@@ -82,6 +83,7 @@ const privileged = {
   gpu: {
     backend: () => ipcRenderer.invoke("gpu:backend"),
     setSoftware: (on) => ipcRenderer.invoke("gpu:setSoftware", !!on),
+    rendererFailed: (detail) => ipcRenderer.invoke("gpu:rendererFailed", String(detail)),
   },
   // A photo or folder the OS asked Safelight to open. Privileged: the target
   // is opened as the project, a folder on disk the page chose nothing about.

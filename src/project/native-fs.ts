@@ -156,7 +156,7 @@ function makeDirHandle(fs: Bridge, p: string, root = p): FileSystemDirectoryHand
       await fs.remove(join(p, entryName(name)));
     },
     async *values() {
-      for (const e of await fs.list(p, root)) {
+      for (const e of await fs.list(p, root, true)) {
         yield e.kind === "directory"
           ? makeDirHandle(fs, join(p, e.name), root)
           : makeFileHandle(fs, join(p, e.name), e.size);

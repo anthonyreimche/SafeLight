@@ -26,7 +26,7 @@ import { useRegistry } from "@/extensions/registry";
 import { applyPanelBypass, bypassParamBag } from "@/modules/develop/panel-bypass";
 import { frameStageBag } from "@/rendering/stage-bag";
 import { createRenderParams, type ViewParams } from "./render-params";
-import { useCanvasToolStore } from "@/modules/develop/canvas-tool";
+import { canvasToolView, useCanvasToolStore } from "@/modules/develop/canvas-tool";
 import { watchCacheFills } from "./develop-sources";
 import { createHistogramScheduler } from "./histogram-scheduler";
 import { NO_STAGES, useDevelopPhotoLoad } from "./use-develop-photo-load";
@@ -219,7 +219,7 @@ export function useDevelopRenderer(
   const paramBag = useDevelopStore((s) => s.previewParamBag ?? s.paramBag);
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
   // The held canvas tool's view of the edit (crop mode widens the crop).
-  const view = useCanvasToolStore((s) => s.held?.tool.viewParams ?? null);
+  const view = useCanvasToolStore((s) => canvasToolView(s.held));
   const showClipping = useDevelopStore((s) => s.showClipping);
   // The space the soft proof previews, the export default, or none: the proof is
   // version 3's (usesSignedOutput), and says so rather than leave it to the worker.
@@ -268,7 +268,7 @@ export function useDevelopRenderer(
     bridge.setAsShotTemperature(opened.exif.colorTemperature ?? 6500);
     const st = useDevelopStore.getState();
     bridge.setContributedParams(stageBag(st.params, st.paramBag, st.bypassedPanels));
-    bridge.setParams(forRender(st.params, useCanvasToolStore.getState().held?.tool.viewParams ?? null));
+    bridge.setParams(forRender(st.params, canvasToolView(useCanvasToolStore.getState().held)));
     histogram.clearDirty();
     bridge.render(true, true);
   };

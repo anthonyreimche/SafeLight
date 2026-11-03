@@ -37,12 +37,13 @@ import {
   registerSlot,
   registerStylesheet,
   registerTheme,
+  runGridFilterClears,
   unregisterExtension,
   unregisterProcessingStage,
   useRegistry,
 } from "./registry";
 import { getStageTextures, setStageTexture } from "@/rendering/render-bridge";
-import { CATALOG_HOOK_TIMEOUT_MS } from "./guard";
+import { CALLBACK_FAILURE_LIMIT, CATALOG_HOOK_TIMEOUT_MS, useCallbackFailures } from "./guard";
 import { getAllDescriptors, getParamDescriptor, setExtensionName, unregisterStageParams } from "./param-registry";
 import { BUILTIN_DENOISE_ID } from "@/rendering/webgl/builtin-denoise";
 import { BUILTIN_EXTENSIONS } from "./builtin";
@@ -849,5 +850,23 @@ describe("setStageTexture: stage textures belong to the stage's extension", () =
     api.setStageTexture("acme.film", "lut", null);
     expect(getStageTextures()["acme.film.lut"]).toBeUndefined();
     expect(console.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("runGridFilterClears", () => {
+  it(`stops calling an onClear after ${CALLBACK_FAILURE_LIMIT} throws, and calls it on its filter`, () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onClear = vi.fn(function (this: { id: string }) {
+      throw new Error(`broken clear of ${this.id}`);
+    });
+    registerGridFilter("acme.clear", { id: "acme.clear.filter", test: () => true, onClear });
+    try {
+      for (let i = 0; i < CALLBACK_FAILURE_LIMIT + 2; i++) runGridFilterClears();
+      expect(onClear).toHaveBeenCalledTimes(CALLBACK_FAILURE_LIMIT);
+      expect(useCallbackFailures.getState()["acme.clear"]?.error).toBe("broken clear of acme.clear.filter");
+    } finally {
+      unregisterExtension("acme.clear");
+      error.mockRestore();
+    }
   });
 });

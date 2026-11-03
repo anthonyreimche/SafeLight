@@ -23,6 +23,8 @@ import { openPreferences } from "@/ui/preferences/preferences-store";
 export function StorageBanner() {
   const openError = useProjectStore((s) => s.openError);
   const openErrorReadOnly = useProjectStore((s) => s.openErrorReadOnly);
+  const openErrorRecentId = useProjectStore((s) => s.openErrorRecentId);
+  const removeFailedRecent = useProjectStore((s) => s.removeFailedRecent);
   const storageNotice = useProjectStore((s) => s.storageNotice);
   const saveError = useProjectStore((s) => s.saveError);
   const dismissOpenError = useProjectStore((s) => s.dismissOpenError);
@@ -46,6 +48,14 @@ export function StorageBanner() {
             className="shrink-0 rounded border border-border px-2.5 py-1 text-[11px] text-text-primary hover:bg-surface-3"
           >
             Preferences
+          </button>
+        )}
+        {openErrorRecentId !== null && (
+          <button
+            onClick={() => void removeFailedRecent()}
+            className="shrink-0 rounded border border-border px-2.5 py-1 text-[11px] text-text-primary hover:bg-surface-3"
+          >
+            Remove from recents
           </button>
         )}
         <button

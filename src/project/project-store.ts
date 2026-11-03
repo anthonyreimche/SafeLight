@@ -46,6 +46,7 @@ import {
   getLastProject,
   listRecentProjects,
   recentHandle,
+  removeRecentProject,
   type RecentProject,
 } from "./recent";
 import { namesFoldCase, pathKey } from "./reattach";
@@ -115,6 +116,10 @@ export function projectPassSignal(): AbortSignal | undefined {
 // Generation counter — bumped on each openProject / closeProject so that an
 // in-flight open whose generation no longer matches skips its finalization.
 let openGen = 0;
+
+/** Whether the last open failed because the folder wasn't there; openRecent reads
+ *  it to tell the banner which recent to offer removing. */
+let folderUnavailable = false;
 
 // The save of the catalog the window last left. The next open waits for it to
 // settle before reading catalog.json, as reopening that folder must find the save
@@ -306,6 +311,14 @@ interface ProjectState {
   /** Why the open project's last catalog save failed, while its saves keep
    *  failing (the storage tries again by itself). null = the last save landed. */
   saveError: string | null;
+  /** The recent project whose folder wasn't there when opened from the welcome
+   *  grid, while openError says so. The banner offers to remove it. */
+  openErrorRecentId: string | null;
+  /** Bumped when a recent is removed from outside the welcome grid, so the grid
+   *  reads the list again. */
+  recentsRevision: number;
+  /** Drop the recent behind openError from the recents list and clear the error. */
+  removeFailedRecent: () => Promise<void>;
   /** Dismiss the current open error / storage notice banners. */
   dismissOpenError: () => void;
   dismissStorageNotice: () => void;
@@ -346,7 +359,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   openErrorReadOnly: false,
   storageNotice: null,
   saveError: null,
-  dismissOpenError: () => set({ openError: null }),
+  openErrorRecentId: null,
+  recentsRevision: 0,
+  async removeFailedRecent() {
+    const id = get().openErrorRecentId;
+    if (id === null) return;
+    await removeRecentProject(id);
+    set((s) => ({ openError: null, openErrorRecentId: null, recentsRevision: s.recentsRevision + 1 }));
+  },
+  dismissOpenError: () => set({ openError: null, openErrorRecentId: null }),
   dismissStorageNotice: () => set({ storageNotice: null }),
 
   async openProjectPicker() {
@@ -390,10 +411,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       importTotal: 0,
       openError: null,
       openErrorReadOnly: false,
+      openErrorRecentId: null,
       storageNotice: null,
       saveError: null,
       tree: null,
     });
+    folderUnavailable = false;
     // Clear the old catalog immediately so the grid shows photos as they arrive
     // rather than showing the previous folder until the new one is fully loaded.
     useCatalogStore.getState().replaceCatalog([]);
@@ -584,6 +607,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // The grid was cleared when the open began; no project stays named over it,
       // nor takes the changes made from here, nor runs passes for it.
       if (gen === openGen) {
+        folderUnavailable = e instanceof FolderUnavailableError;
         setCatalogStorage(null);
         passesAbort?.abort();
         passesAbort = null;
@@ -611,6 +635,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // runs inside the card's click gesture.
     if (await verifyPermission(handle, true, "readwrite")) {
       await get().openProject(handle);
+      if (folderUnavailable && get().openError) set({ openErrorRecentId: entry.id });
     } else {
       useCatalogStore.setState({ needsReconnect: true });
       set({ name: handle.name });
@@ -710,13 +735,13 @@ function pathUnder(root: string, folder: string): string | null {
 /** A drive or volume root, a network share, or a home folder: a project once
  *  opened there would otherwise take in every photo opened from anywhere under it. */
 function holdsTooMuch(path: string): boolean {
-  const p = path.replace(/[/\\]+/g, "/").replace(/\/$/, "");
+  const p = path.replace(/\\/g, "/").replace(/(?!^)\/+/g, "/").replace(/\/$/, "");
   return (
     /^([A-Za-z]:)?$/.test(p) ||
     /^\/\/[^/]+\/[^/]+$/.test(p) ||
     /^([A-Za-z]:)?\/(home|Users)\/[^/]+$/i.test(p) ||
     /^\/(Volumes|mnt)\/[^/]+$/.test(p) ||
-    /^\/media\/[^/]+\/[^/]+$/.test(p)
+    /^\/(run\/)?media\/[^/]+\/[^/]+$/.test(p)
   );
 }
 

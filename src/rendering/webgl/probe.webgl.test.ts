@@ -20,7 +20,8 @@ import { encodePerceptual, type Vec3 } from "../stage-space";
 import type { ProbePoint, WebGLRenderer } from "./renderer";
 import { V2_DEFAULT_PIPELINE_GLSL } from "./shaders";
 import {
-  OPEN_PROBE, each, expectColour, floatImage, identityParams, pixelAt, toHalf, withRenderer, worstDifference,
+  OPEN_PROBE, each, expectColour, floatImage, glHarness, identityParams, outOfMemoryAtFirstDraw, pixelAt, toHalf,
+  withRenderer, worstDifference,
   type FloatImage, type Frame,
   masksStagesFor,
 } from "./webgl.test-support";
@@ -174,6 +175,20 @@ describe("the eyedropper probe", () => {
       });
     });
   }
+
+  // Some drivers report the memory only at the first draw into a target, and
+  // what that draw left is undefined: a 16-bit export of it comes out black.
+  it("reads nothing, nor captures a frame, when the driver runs out of memory at its target's first draw", () => {
+    const { gl } = glHarness();
+    onScene(3, (r) => {
+      r.render();
+      expect(outOfMemoryAtFirstDraw(gl, { textures: 1 }, () => r.probe(0.5, 0.5, "output")), "probe").toBeNull();
+      expect(outOfMemoryAtFirstDraw(gl, { textures: 1 }, () => r.captureFloatFrame()), "capture").toBeNull();
+      expect(gl.getError(), "an error left behind").toBe(gl.NO_ERROR);
+      expect(r.probe(0.5, 0.5, "output"), "the next probe").not.toBeNull();
+      expect(r.captureFloatFrame(), "the next capture").not.toBeNull();
+    });
+  });
 
   // The histogram redraws with what the last draw left bound.
   it("leaves the histogram measuring the frame", () => {

@@ -11,9 +11,10 @@ import { ToggleField } from "@/ui/preferences/fields";
 // The Rendering section lists it for search when the module loads.
 export const SOFTWARE_RENDERING = "Software rendering";
 
-const SOFTWARE_REASON: Record<"webgl2-unavailable" | "gpu-crashes", string> = {
+const SOFTWARE_REASON: Record<Exclude<NativeGpuBackendState["reason"], "chosen" | null>, string> = {
   "webgl2-unavailable": "Safelight turned this on because the graphics card couldn't run WebGL2.",
   "gpu-crashes": "Safelight turned this on because the graphics driver kept crashing.",
+  "renderer-failed": "Safelight turned this on because the graphics driver couldn't run its photo renderer.",
 };
 
 // The graphics backend is picked before the window exists, from a probe
@@ -35,6 +36,7 @@ export function softwareRenderingListed(): boolean {
 export function SoftwareRenderingField() {
   const supported = softwareRenderingSupported();
   const [state, setState] = useState<NativeGpuBackendState | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
     if (!supported) return;
@@ -43,25 +45,39 @@ export function SoftwareRenderingField() {
       ?.backend()
       .then((s) => {
         if (live) setState(s);
+      })
+      .catch((err: unknown) => {
+        console.warn("[safelight] couldn't read the software rendering setting", err);
+        if (live) setProblem("Couldn't read the graphics setting.");
       });
     return () => {
       live = false;
     };
   }, [supported]);
 
-  if (!supported || !state) return null;
+  if (!supported || (!state && !problem)) return null;
 
   const change = (on: boolean) => {
+    setProblem(null);
     void privilegedGpu()
       ?.setSoftware(on)
       .then((s) => {
         if (s) setState(s);
+      })
+      .catch((err: unknown) => {
+        console.warn("[safelight] couldn't change the software rendering setting", err);
+        setProblem("Couldn't change the graphics setting.");
       });
   };
-  const why =
-    state.reason === "webgl2-unavailable" || state.reason === "gpu-crashes"
-      ? SOFTWARE_REASON[state.reason]
-      : null;
+  if (!state) {
+    return (
+      <fieldset disabled>
+        <ToggleField label={SOFTWARE_RENDERING} checked={false} onChange={() => {}} />
+        <p className="mt-1 text-[10px] leading-relaxed text-text-secondary">{problem}</p>
+      </fieldset>
+    );
+  }
+  const why = state.reason === null || state.reason === "chosen" ? null : SOFTWARE_REASON[state.reason];
 
   return (
     <div>
@@ -71,6 +87,7 @@ export function SoftwareRenderingField() {
         checked={state.nextSoftware}
         onChange={change}
       />
+      {problem && <p className="mt-1 text-[10px] leading-relaxed text-text-secondary">{problem}</p>}
       {why && <p className="mt-1 text-[10px] leading-relaxed text-text-secondary">{why}</p>}
       {state.nextSoftware !== state.software && (
         <p className="mt-1 text-[10px] leading-relaxed text-text-secondary">

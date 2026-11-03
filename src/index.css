@@ -33,6 +33,8 @@
   --color-accent: #2e2e2e;
   --color-accent-hover: #3c3c3c;
   --color-slider-fill: #2e2e2e;
+  /* Text on an accent or slider-fill: the accent stays dark enough for white. */
+  --color-on-accent: #ffffff;
   --color-rating: #f5c542;
   --color-flag-pick: #ffffff;
   --color-flag-reject: #444444;

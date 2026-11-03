@@ -135,6 +135,20 @@ export async function removeEntry(
   } catch {}
 }
 
+/** The names of a directory's entries. keys() is a standard
+ *  FileSystemDirectoryHandle async iterator but not in every TS lib target, so it
+ *  is reached through a narrow cast; a handle without it lists nothing. */
+export async function* listNames(dir: FileSystemDirectoryHandle): AsyncGenerator<string> {
+  const keys = (dir as unknown as { keys?: () => AsyncIterable<string> }).keys;
+  if (!keys) return;
+  yield* keys.call(dir);
+}
+
+/** A name with every character a file name can't safely hold as `_`. */
+export function safeName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
 /** Run `fn` over `items` with bounded concurrency (keeps big projects snappy
  *  without hammering the disk or decoding 500 thumbnails at once). */
 export async function mapLimit<T, R>(

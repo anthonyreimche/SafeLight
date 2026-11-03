@@ -36,6 +36,8 @@ const h = vi.hoisted(() => ({
   /** Runs while an original is read, and while a grid thumbnail is built. */
   whileReading: (): void => {},
   whileThumbnailing: (): void => {},
+  /** Runs while catalogStorage().putPhoto stores a photo. */
+  whileSaving: (): void => {},
   /** Each write handed to the cache, as [key, the generation it carried]. */
   cacheWrites: [] as [string, number][],
   /** Each cache entry dropped, by key. */
@@ -130,11 +132,13 @@ vi.mock("@/catalog/storage", () => ({
   catalogStorage: () => ({
     putPhoto: async (photo: CatalogPhoto) => {
       h.saved.push(photo.id);
+      h.whileSaving();
     },
   }),
 }));
 
 vi.mock("@/state/catalog-store", () => ({
+  photoById: (photos: CatalogPhoto[], id: string) => photos.find((p) => p.id === id),
   useCatalogStore: { getState: () => ({ photos: h.catalog }) },
 }));
 
@@ -180,6 +184,7 @@ beforeEach(() => {
   h.smallPreview = false;
   h.whileReading = () => {};
   h.whileThumbnailing = () => {};
+  h.whileSaving = () => {};
   h.cacheWrites = [];
   h.cacheDeletes = [];
   h.saved = [];
@@ -356,6 +361,24 @@ describe("rebuilding every preview", () => {
     expect(h.thumbnails).toBe(0);
     expect(h.bitmapsClosed).toBe(1);
     expect(h.saved).toEqual([]);
+    expect(rebuilt).toEqual([]);
+  });
+
+  it("lets go of the preview's URL when the photo is removed while it is stored", async () => {
+    const revoked: string[] = [];
+    vi.stubGlobal("URL", {
+      createObjectURL: () => "blob:thumb",
+      revokeObjectURL: (url: string) => void revoked.push(url),
+    });
+    h.whileSaving = () => {
+      h.catalog = [];
+    };
+    const rebuilt: string[] = [];
+
+    await rebuildThumbnails(raws(1), undefined, (p) => rebuilt.push(p.id));
+
+    expect(h.saved).toEqual(["id:DSC_0000.NEF"]);
+    expect(revoked).toEqual(["blob:thumb"]);
     expect(rebuilt).toEqual([]);
   });
 });

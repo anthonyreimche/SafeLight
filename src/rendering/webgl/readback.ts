@@ -25,7 +25,15 @@ import {
   type Sharpen,
   type SharpenPrograms,
 } from "./export-draw";
-import { SCRATCH_UNIT, allocateTarget, releaseTarget, type ColourTarget } from "./gl-resources";
+import {
+  SCRATCH_UNIT,
+  allocateChecked,
+  allocateTarget,
+  drainErrors,
+  ranOutOfMemory,
+  releaseTarget,
+  type ColourTarget,
+} from "./gl-resources";
 
 type CreateProgram = (vertex: string, fragment: string) => WebGLProgram;
 type UniformLocations = Record<string, WebGLUniformLocation | null>;
@@ -115,17 +123,22 @@ export class Readback {
   }
 
   /** What `draw` draws into a w×h float target, RGBA16F unless `format` is
-   *  RGBA32F, read back bottom-up. Null when the target can't be completed. */
+   *  RGBA32F, read back bottom-up. Null when the target can't be allocated or
+   *  completed, or the driver runs out of memory drawing into it, which some
+   *  report only at the first draw and which leaves the pixels undefined. */
   floatPixels(w: number, h: number, format: number, draw: (fbo: WebGLFramebuffer) => void): Float32Array | null {
     const gl = this.gl;
-    const target = allocateTarget(gl, format, format === gl.RGBA32F ? gl.FLOAT : gl.HALF_FLOAT, w, h);
+    const { target, ok } = allocateChecked(gl, format, format === gl.RGBA32F ? gl.FLOAT : gl.HALF_FLOAT, w, h);
     try {
-      if (!target.complete) return null;
+      if (!ok) {
+        drainErrors(gl);
+        return null;
+      }
       draw(target.fbo);
       const raw = new Float32Array(w * h * 4);
       gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, raw);
-      return raw;
+      return ranOutOfMemory(gl) ? null : raw;
     } finally {
       releaseTarget(gl, target);
     }
@@ -183,12 +196,17 @@ export class Readback {
     // INVALID_OPERATION) and read back an all-black frame. Sampling is driven
     // by the sampler uniforms, so moving the active unit doesn't affect the draws.
     gl.activeTexture(gl.TEXTURE0 + SCRATCH_UNIT);
-    const result = this.float ? this.displayHistogram() : this.histogram8();
+    // A driver can list float render targets and still not complete one; a
+    // read from it is all zeros, every pixel in bin 0.
+    if (this.float) this.histDisplay ??= allocateTarget(gl, gl.RGBA16F, gl.HALF_FLOAT, HIST_SIZE, HIST_SIZE);
+    const result = this.histDisplay?.complete ? this.displayHistogram(this.histDisplay) : this.histogram8();
     if (extended && this.float) {
-      gl.uniform1i(rawHistogram, 1);
       this.histExtended ??= allocateTarget(gl, gl.RGBA16F, gl.HALF_FLOAT, HIST_SIZE, HIST_SIZE);
-      const pxF = this.drawHistogram(this.histExtended, new Float32Array(HIST_SIZE * HIST_SIZE * 4));
-      result.extended = extendedBins(pxF);
+      if (this.histExtended.complete) {
+        gl.uniform1i(rawHistogram, 1);
+        const pxF = this.drawHistogram(this.histExtended, new Float32Array(HIST_SIZE * HIST_SIZE * 4));
+        result.extended = extendedBins(pxF);
+      }
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.activeTexture(gl.TEXTURE0);
@@ -201,10 +219,8 @@ export class Readback {
   // rather than quantized to 256 codes. This removes the comb / banding the
   // 8-bit readback shows after any tonal stretch (curves, exposure,
   // per-channel white-balance gains spread the 256 codes apart).
-  private displayHistogram(): HistogramData {
-    const gl = this.gl;
-    this.histDisplay ??= allocateTarget(gl, gl.RGBA16F, gl.HALF_FLOAT, HIST_SIZE, HIST_SIZE);
-    const pxD = this.drawHistogram(this.histDisplay, new Float32Array(HIST_SIZE * HIST_SIZE * 4));
+  private displayHistogram(target: ColourTarget): HistogramData {
+    const pxD = this.drawHistogram(target, new Float32Array(HIST_SIZE * HIST_SIZE * 4));
     const result = emptyHistogram();
     const { r, g, b, luma } = result;
     for (let i = 0; i < pxD.length; i += 4) {

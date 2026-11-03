@@ -12,9 +12,11 @@
 // A catalog is taken for another card's only on evidence that it is one. Either
 // most of the sampled photos that are on the card are other photos under their
 // names (another size and another capture time; with no time to compare on
-// either side, the size alone), or none of the catalog's photos is on a card that
-// holds something. A photo gone from the card says nothing: photos are erased in
-// camera, moved and renamed. A photo rewritten in place (geotagged, rated by
+// either side, the size alone, but only at a card's root), or none of the catalog's photos is on a card that
+// holds something. That last holds only at a card's root: an ordinary folder whose
+// photos were sorted into subfolders while the app was closed holds none of them
+// where they were, and its catalog must stay for reattach to find them. A photo
+// gone from the card says nothing: photos are erased in camera, moved and renamed. A photo rewritten in place (geotagged, rated by
 // another program) keeps its capture time. Nor does a file that can't be read
 // right now (a virus scanner holds it, a slow reader times out).
 
@@ -49,8 +51,18 @@ interface Photo {
 export type VolumeVerdict = "same" | "other" | "unknown";
 
 const stripSlash = (p: string) => p.replace(/[/\\]+$/, "");
+/** `dir` as a path to list: a bare drive ("E:") lists the drive's current folder,
+ *  so it keeps its separator. */
+const listable = (dir: string) => (/^[A-Za-z]:$/.test(dir) ? `${dir}\\` : dir);
 const folderOf = (relPath: string) => relPath.slice(0, Math.max(0, relPath.lastIndexOf("/")));
 const nameOf = (relPath: string) => relPath.slice(relPath.lastIndexOf("/") + 1).normalize("NFC");
+
+/** Whether `path` is where a card mounts (E:\, /Volumes/X, /media/<user>/X,
+ *  /run/media/<user>/X, /mnt/X) rather than a folder on one. */
+const isVolumeRoot = (path: string) =>
+  /^(?:[A-Za-z]:|\/Volumes\/[^/]+|\/mnt\/[^/]+|\/(?:run\/)?media\/[^/]+\/[^/]+)$/.test(
+    stripSlash(path).replace(/\\/g, "/"),
+  );
 
 /** The source.json beside a separate .safelight working dir. */
 const sourceJsonOf = (slDir: string) => {
@@ -109,14 +121,11 @@ async function printOf(fs: NativeFsBridge, slDir: string): Promise<Sampled[]> {
   return sampleOf(await photosOf(fs, slDir));
 }
 
-/** A file's EXIF capture time, or undefined when it has none or can't be read. */
+/** A file's EXIF capture time, or undefined when it has none. Throws when the file
+ *  can't be read. */
 async function shotOf(fs: NativeFsBridge, path: string): Promise<string | undefined> {
-  try {
-    const { data } = await fs.read(path, { start: 0, end: EXIF_BYTES });
-    return (await parseExif(new Blob([data as BlobPart]))).dateTimeOriginal;
-  } catch {
-    return undefined;
-  }
+  const { data } = await fs.read(path, { start: 0, end: EXIF_BYTES });
+  return (await parseExif(new Blob([data as BlobPart]))).dateTimeOriginal;
 }
 
 /** What one sampled photo says: its file is it, is another photo, is gone, or
@@ -125,7 +134,7 @@ async function judgeSample(
   fs: NativeFsBridge,
   root: string,
   sampled: Sampled,
-): Promise<"match" | "conflict" | "missing" | "unknown"> {
+): Promise<"match" | "conflict" | "sizeConflict" | "missing" | "unknown"> {
   const path = `${root}/${sampled.relPath}`;
   let size: number;
   try {
@@ -134,8 +143,13 @@ async function judgeSample(
     return isNotFound(error) ? "missing" : "unknown";
   }
   if (size === sampled.size) return "match";
-  const shot = sampled.shot ? await shotOf(fs, path) : undefined;
-  if (!sampled.shot || !shot) return "conflict";
+  if (!sampled.shot) return "sizeConflict";
+  let shot: string | undefined;
+  try {
+    shot = await shotOf(fs, path);
+  } catch (error) {
+    return isNotFound(error) ? "missing" : "unknown";
+  }
   return shot === sampled.shot ? "match" : "conflict";
 }
 
@@ -155,11 +169,11 @@ async function overlap(
     byFolder.set(folder, names);
   }
   for (const [folder, names] of [...byFolder].slice(0, LISTED_FOLDERS)) {
-    const listed = await fs.list(folder ? `${root}/${folder}` : root).catch(() => []);
+    const listed = await fs.list(folder ? `${root}/${folder}` : listable(root)).catch(() => []);
     if (listed.some((entry) => entry.kind === "file" && names.has(entry.name.normalize("NFC"))))
       return { any: true, holdsSomething: true };
   }
-  const top = await fs.list(root).catch(() => []);
+  const top = await fs.list(listable(root)).catch(() => []);
   return { any: false, holdsSomething: top.some((entry) => !entry.name.startsWith(".")) };
 }
 
@@ -174,7 +188,12 @@ export async function judgeVolume(
   const print = await printOf(fs, slDir).catch((): Sampled[] => []);
   if (print.length === 0) return "unknown";
   const root = stripSlash(rootPath);
-  const said = await Promise.all(print.map((sampled) => judgeSample(fs, root, sampled)));
+  const atVolumeRoot = isVolumeRoot(root);
+  // A size alone is no evidence in an ordinary folder: a PNG or TIFF re-exported in
+  // place keeps its name and has no capture time to tell it from another photo.
+  const said = (await Promise.all(print.map((sampled) => judgeSample(fs, root, sampled)))).map((s) =>
+    s === "sizeConflict" ? (atVolumeRoot ? "conflict" : "unknown") : s,
+  );
   const matches = said.filter((s) => s === "match").length;
   const conflicts = said.filter((s) => s === "conflict").length;
   if (conflicts * 2 > matches + conflicts) return "other";
@@ -183,7 +202,7 @@ export async function judgeVolume(
   const relPaths = (await photosOf(fs, slDir).catch((): Photo[] => [])).map((p) => p.relPath);
   const found = await overlap(fs, root, relPaths.length > 0 ? relPaths : print.map((s) => s.relPath));
   if (found.any) return "same";
-  return found.holdsSomething ? "other" : "unknown";
+  return found.holdsSomething && atVolumeRoot ? "other" : "unknown";
 }
 
 /** Keep the print of `photos`, the ones found on the source this open as they are

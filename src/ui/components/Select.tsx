@@ -381,7 +381,7 @@ export function Select({
                         o.disabled
                           ? "cursor-default text-text-muted opacity-60"
                           : sel
-                            ? "cursor-pointer bg-slider-fill text-white"
+                            ? "cursor-pointer bg-slider-fill text-on-accent"
                             : act
                               ? "cursor-pointer bg-surface-3 text-text-primary"
                               : "cursor-pointer text-text-primary"

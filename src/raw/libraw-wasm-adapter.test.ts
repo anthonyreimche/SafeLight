@@ -46,6 +46,7 @@ vi.mock("./decode-pool", () => {
       h.background.push(priority?.background);
       return instance;
     },
+    decodePoolFailure: () => undefined,
     releaseInstance: (inst: unknown) => {
       h.released.push(inst);
     },

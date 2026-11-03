@@ -108,7 +108,7 @@ function NoModules({ settled }: { settled: boolean }) {
               <button
                 onClick={() => void installMissingEssentials()}
                 disabled={installing}
-                className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+                className="rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:opacity-50"
               >
                 {installing ? "Installing…" : "Install the essentials"}
               </button>

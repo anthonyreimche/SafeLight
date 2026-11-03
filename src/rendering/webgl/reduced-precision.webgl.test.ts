@@ -7,7 +7,7 @@
 // clip to [0, 1]. The renderer says so once per path and lists the paths, so a
 // report of banded or clipped output from such a GPU is explained by the log.
 
-import { afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import {
   CURRENT_PROCESS_VERSION,
   LEGACY_PROCESS_VERSION,
@@ -15,12 +15,16 @@ import {
   type RetouchSpot,
 } from "@/catalog/types";
 import type { ProcessingStageContribution } from "@/extensions/types";
+import { allocateTarget, releaseTarget } from "./gl-resources";
 import { StageResultLayers } from "./stage-result-layers";
 import {
   LINEAR_PROBE_PIPELINE,
   basicStagesFor,
+  drainGlErrors,
   floatImage,
+  freshContext,
   glHarness,
+  type FreshContext,
   healStagesFor,
   identityParams,
   markerStage,
@@ -46,27 +50,25 @@ const HEAL: RetouchSpot = {
   opacity: 100,
 };
 
-let restore: (() => void) | null = null;
 let warn: MockInstance<typeof console.warn> | null = null;
+let floatless: FreshContext | null = null;
 
 afterEach(() => {
-  restore?.();
-  restore = null;
   warn?.mockRestore();
   warn = null;
 });
 
-/** Hides EXT_color_buffer_float from renderers built after this, as a GPU or VM
- *  without it would, and collects what they warn. */
-function withoutFloatTargets(): void {
-  const { gl } = glHarness();
-  const getExtension = gl.getExtension.bind(gl);
-  gl.getExtension = ((name: string) =>
-    name === "EXT_color_buffer_float" ? null : getExtension(name)) as typeof gl.getExtension;
-  restore = () => {
-    gl.getExtension = getExtension;
-  };
+afterAll(() => {
+  floatless?.release();
+  floatless = null;
+});
+
+/** A context that has never had float render targets, as on a GPU or VM
+ *  without them, with what renderers on it warn collected. */
+function withoutFloatTargets(): FreshContext {
+  floatless ??= freshContext({ noFloat: true });
   warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  return floatless;
 }
 
 function warnings(about: RegExp): string[] {
@@ -78,6 +80,7 @@ function drawn(
   params: DevelopParams,
   bag: Record<string, number> = {},
   frames = 2,
+  canvas?: HTMLCanvasElement,
 ): string[] {
   return withRenderer(
     { stages, pipeline: LINEAR_PROBE_PIPELINE, highBitDepth: false },
@@ -88,7 +91,15 @@ function drawn(
       for (let i = 0; i < frames; i++) r.render();
       return r.reducedPrecision();
     },
+    canvas,
   );
+}
+
+/** Whether a 1×1 target of `internalFormat` completes on `gl`. */
+function renders(gl: WebGL2RenderingContext, internalFormat: number, type: number): boolean {
+  const target = allocateTarget(gl, internalFormat, type, 1, 1);
+  releaseTarget(gl, target);
+  return target.complete;
 }
 
 const PREPASS = /prepass/i;
@@ -96,43 +107,60 @@ const RESULTS = /stage results/i;
 const COPY = /heal and clone/i;
 
 describe("a GPU without float render targets", () => {
+  it("is what the float-less context is: no float target completes there", () => {
+    const { gl } = withoutFloatTargets();
+    expect(gl.getExtension("EXT_color_buffer_float")).toBeNull();
+    expect(gl.getExtension("EXT_color_buffer_half_float")).toBeNull();
+    expect(renders(gl, gl.RGBA16F, gl.HALF_FLOAT)).toBe(false);
+    expect(renders(gl, gl.RGBA32F, gl.FLOAT)).toBe(false);
+    expect(renders(gl, gl.RGBA8, gl.UNSIGNED_BYTE)).toBe(true);
+  });
+
   it("says once that extension prepasses run at 8-bit, clipped to 0-1", () => {
-    withoutFloatTargets();
+    const { canvas } = withoutFloatTargets();
     const stage = markerStage(0, 0.02);
-    const reduced = drawn([stage], V2, takingStages([stage]), 3);
+    const reduced = drawn([stage], V2, takingStages([stage]), 3, canvas);
     expect(reduced.filter((n) => PREPASS.test(n))).toHaveLength(1);
     expect(warnings(PREPASS)).toHaveLength(1);
     expect(warnings(PREPASS)[0]).toMatch(/8-bit/);
   });
 
   it("says nothing about prepasses while none has run", () => {
-    withoutFloatTargets();
+    const { canvas } = withoutFloatTargets();
     const stage = markerStage(0, 0.02);
-    expect(drawn([stage], V2)).toEqual([]);
+    expect(drawn([stage], V2, {}, 2, canvas)).toEqual([]);
     expect(warnings(PREPASS)).toEqual([]);
   });
 
   it("says that the shared result array holds 8-bit results", () => {
-    withoutFloatTargets();
+    const { canvas } = withoutFloatTargets();
     const stages = Array.from({ length: 30 }, (_, i) => markerStage(i, 0.02));
-    const reduced = drawn(stages, V2, takingStages(stages));
+    const reduced = drawn(stages, V2, takingStages(stages), 2, canvas);
     expect(reduced.filter((n) => RESULTS.test(n))).toHaveLength(1);
     expect(warnings(RESULTS)).toHaveLength(1);
   });
 
   it("says that a version 2 heal develops from an 8-bit copy", () => {
-    withoutFloatTargets();
+    const { canvas } = withoutFloatTargets();
     const stages = [...basicStagesFor(V2.processVersion), ...healStagesFor(V2.processVersion)];
-    const reduced = drawn(stages, { ...V2, retouch: [HEAL] });
+    const reduced = drawn(stages, { ...V2, retouch: [HEAL] }, {}, 2, canvas);
     expect(reduced.filter((n) => COPY.test(n))).toHaveLength(1);
     expect(warnings(COPY)).toHaveLength(1);
     expect(warnings(COPY)[0]).toMatch(/8-bit/);
   });
 
+  it("draws a frame with no GL error", () => {
+    const { canvas, gl } = withoutFloatTargets();
+    const stage = markerStage(0, 0.02);
+    drainGlErrors(gl);
+    drawn([...basicStagesFor(V2.processVersion), stage], V2, takingStages([stage]), 2, canvas);
+    expect(gl.getError()).toBe(gl.NO_ERROR);
+  });
+
   // The note says what the copy now holds, so a version 1 copy, which always
   // clips, takes it back.
   it("drops the heal-copy note once a version 1 heal allocates its copy", () => {
-    withoutFloatTargets();
+    const { canvas } = withoutFloatTargets();
     const reduced = withRenderer(
       {
         stages: [...basicStagesFor(V2.processVersion), ...healStagesFor(V2.processVersion)],
@@ -150,15 +178,16 @@ describe("a GPU without float render targets", () => {
         r.render();
         return r.reducedPrecision();
       },
+      canvas,
     );
     expect(reduced.filter((n) => COPY.test(n))).toEqual([]);
   });
 
   // A version 1 photo keeps the clipped copy its edits were made with.
   it("stays quiet about the heal copy on version 1, which always clips", () => {
-    withoutFloatTargets();
+    const { canvas } = withoutFloatTargets();
     const stages = [...basicStagesFor(V1.processVersion), ...healStagesFor(V1.processVersion)];
-    const reduced = drawn(stages, { ...V1, retouch: [HEAL] });
+    const reduced = drawn(stages, { ...V1, retouch: [HEAL] }, {}, 2, canvas);
     expect(reduced.filter((n) => COPY.test(n))).toEqual([]);
     expect(warnings(COPY)).toEqual([]);
   });

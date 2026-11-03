@@ -34,11 +34,17 @@ const h = vi.hoisted(() => ({
 vi.mock("@/raw/cache-bridge", () => ({
   setCacheDirOnWorker: () => {},
   workerReadCachedPreview: async () => null,
-  workerWriteCachedPreview: async (key: string) => void h.stored.set(key, "preview"),
+  workerWriteCachedPreview: async (key: string) => {
+    h.stored.set(key, "preview");
+    return true;
+  },
   workerWriteMarker: async (key: string, value: string) => void h.stored.set(key, value),
   workerReadMarker: async (key: string) => h.stored.get(key) ?? null,
   workerDeleteCachedPreview: async (key: string) => void h.stored.delete(key),
-  workerClearRawCache: async () => h.stored.clear(),
+  workerClearRawCache: async () => {
+    h.stored.clear();
+    return { failed: 0 };
+  },
   workerCachedKeys: async () => [...h.stored.keys()].map((key) => ({ key, complete: true })),
 }));
 

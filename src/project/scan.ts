@@ -9,10 +9,7 @@
 
 import { FolderUnavailableError, failureReason, isUnreachable } from "./catalog-errors";
 import { nativeFs, nativePathOf, nativeSizeOf } from "./native-fs";
-
-// Same value as folder-ops' SIDECAR_SUFFIX; declared locally (like
-// project-storage's copy) to keep this leaf module out of that import cycle.
-const SIDECAR_SUFFIX = ".safelight.json";
+import { SIDECAR_SUFFIX } from "./sidecar";
 
 /** Folders the OS keeps at a drive root and denies the user: skipped without a
  *  word, so a drive-root project doesn't report them as unreadable on every open.

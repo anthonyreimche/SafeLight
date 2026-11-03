@@ -80,6 +80,8 @@ function send<T>(msg: CacheRequest, transfer?: Transferable[]): Promise<T> {
   );
 }
 
+let warnedCacheDir = false;
+
 export function setCacheDirOnWorker(dir: FileSystemDirectoryHandle | null): void {
   const w = getWorker();
   ready!
@@ -98,7 +100,11 @@ export function setCacheDirOnWorker(dir: FileSystemDirectoryHandle | null): void
         );
       }
     })
-    .catch(() => {});
+    .catch((err: unknown) => {
+      if (warnedCacheDir) return;
+      warnedCacheDir = true;
+      console.warn("[cache-bridge] couldn't point the cache worker at the project's folder", err);
+    });
 }
 
 /** The entry under `key`, with its centre sample only when `sample` asks for it
@@ -122,13 +128,14 @@ export async function workerWriteCachedPreview(
   width: number,
   height: number,
   maxEdge: number,
-): Promise<void> {
+): Promise<boolean> {
   const id = nextId++;
   const copy = new Float32Array(data);
-  await send<Extract<CacheResponse, { type: "write" }>>(
+  const resp = await send<Extract<CacheResponse, { type: "write" }>>(
     { cmd: "write", id, key, data: copy, width, height, maxEdge },
     [copy.buffer],
   );
+  return resp.ok;
 }
 
 export async function workerWriteMarker(key: string, value: string): Promise<void> {
@@ -148,9 +155,10 @@ export async function workerDeleteCachedPreview(key: string): Promise<void> {
   await send<Extract<CacheResponse, { type: "delete" }>>({ cmd: "delete", id, key });
 }
 
-export async function workerClearRawCache(): Promise<void> {
+export async function workerClearRawCache(): Promise<{ failed: number }> {
   const id = nextId++;
-  await send<Extract<CacheResponse, { type: "clear" }>>({ cmd: "clear", id });
+  const resp = await send<Extract<CacheResponse, { type: "clear" }>>({ cmd: "clear", id });
+  return { failed: resp.failed };
 }
 
 export async function workerCachedKeys(): Promise<CacheListing[]> {

@@ -28,6 +28,7 @@ import {
   isEditableTarget,
   matchAction,
   shortcutsSuspended,
+  typesIntoField,
 } from "@/state/keybindings-store";
 import { confirmAndDeleteFromDisk } from "./delete-from-disk";
 import { confirmDialog, isDialogOpen } from "@/ui/components/ConfirmDialog";
@@ -35,6 +36,8 @@ import { moveActivePhoto, visibleList } from "./photo-navigation";
 import { revealPhoto } from "@/project/folder-ops";
 import { isNativeFS } from "@/project/native-fs";
 import { getSettings } from "@/state/settings-store";
+import { pasteSettings } from "@/catalog/paste-settings";
+import { useDevelopClipboard } from "@/state/develop-clipboard";
 
 const LABELS: Record<string, ColorLabel> = {
   "label.red": "red",
@@ -111,10 +114,10 @@ function handleCullingKey(e: KeyboardEvent): void {
   // so every culling key (not only Delete) waits until it's answered.
   if (isDialogOpen()) return;
 
-  // Shortcuts take priority: only bare keys defer to true text-entry targets
-  // (so typing works); modifier combos always fire, and a focused slider or
-  // checkbox never blocks anything.
-  if (!(e.ctrlKey || e.metaKey || e.altKey) && isEditableTarget(e.target)) return;
+  // Shortcuts take priority except over typing into a text field: Ctrl/Cmd
+  // combos still fire there, and a focused slider or checkbox never blocks
+  // anything.
+  if (typesIntoField(e)) return;
 
   // Ctrl/Cmd+A selects every photo currently shown (active folder + filters),
   // not the whole catalog. Skip when a text field is focused so its native
@@ -222,6 +225,22 @@ function handleCullingKey(e: KeyboardEvent): void {
     e.preventDefault();
     // The photo surface owns the rename dialog; hand it the photo to edit.
     window.dispatchEvent(new CustomEvent("sl-rename-photo", { detail: { id } }));
+    return;
+  }
+
+  if (action === "photo.copySettings") {
+    if (targetIds.length !== 1) return;
+    e.preventDefault();
+    // The photo surface owns the checklist dialog, as it does for rename.
+    window.dispatchEvent(new CustomEvent("sl-copy-settings", { detail: { id: targetIds[0] } }));
+    return;
+  }
+
+  if (action === "photo.pasteSettings") {
+    const clip = useDevelopClipboard.getState().clipboard;
+    if (!clip || targetIds.length === 0) return;
+    e.preventDefault();
+    void pasteSettings(targetIds, clip);
     return;
   }
 

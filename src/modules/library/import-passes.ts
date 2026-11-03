@@ -19,7 +19,7 @@ import { isRawFile } from "@/raw/raw-preview";
 import type { DecodeRequest } from "@/raw/decode-pool";
 import { deleteCachedPreview, hasDecodeMarker, rawCacheKey } from "@/raw/raw-cache";
 import { getSettings } from "@/state/settings-store";
-import { useCatalogStore, type RebuiltChange } from "@/state/catalog-store";
+import { photoById, useCatalogStore, type RebuiltChange } from "@/state/catalog-store";
 import { catalogStorage } from "@/catalog/storage";
 import { createThumbnail } from "./import-thumb-task";
 import {
@@ -45,7 +45,7 @@ async function storeOnCurrent(
   photo: CatalogPhoto,
   change: Omit<RebuiltChange, "thumbnailUrl" | "previewEdit">,
 ): Promise<{ photo: CatalogPhoto; change: RebuiltChange } | null> {
-  const current = useCatalogStore.getState().photos.find((p) => p.id === photo.id);
+  const current = photoById(useCatalogStore.getState().photos, photo.id);
   if (!current) return null;
   if (change.thumbnailBlob && current.rotation !== photo.rotation) return null;
   const changed: RebuiltChange = changedFields(change, current);
@@ -55,6 +55,10 @@ async function storeOnCurrent(
   }
   const updated: CatalogPhoto = { ...current, ...changed };
   await catalogStorage().putPhoto(updated); // writes the preview + persists
+  if (!photoById(useCatalogStore.getState().photos, photo.id)) {
+    if (changed.thumbnailUrl) URL.revokeObjectURL(changed.thumbnailUrl);
+    return null;
+  }
   return { photo: updated, change: changed };
 }
 
@@ -195,7 +199,7 @@ async function readMetadataOf(
   onRead?: (photo: CatalogPhoto, change: RebuiltChange) => void,
 ): Promise<void> {
   const signal = request.signal;
-  const held = (id: string) => useCatalogStore.getState().photos.find((p) => p.id === id);
+  const held = (id: string) => photoById(useCatalogStore.getState().photos, id);
   for (const photo of photos) {
     if (signal?.aborted) return;
     if (!photo.metadataPending || !photo.fileHandle || !held(photo.id)?.metadataPending) continue;
