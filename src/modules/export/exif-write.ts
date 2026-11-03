@@ -5,14 +5,14 @@
 
 // EXIF writer for export. A canvas render strips every metadata segment, so the
 // export pipeline harvests the source file's entries (catalog/exif
-// readExifEntries), lets the catalog's record decide the fields it holds (RAW
+// readExifEntries), lets the catalogue's record decide the fields it holds (RAW
 // metadata edits live in sidecars/catalog, never in the source bytes), and this module
 // serializes the result back into the exported container: a fresh
 // little-endian TIFF block carried as a JPEG APP1 segment, a PNG eXIf chunk or
 // a WebP EXIF chunk. The TIFF encoder weaves the same entry sets into its own
 // IFD chain via serializeSubIfd. Orientation, pixel dimensions, colour space
 // and software are rewritten to describe the exported image rather than the
-// source; the GPS block is the catalog's position, written only when the
+// source; the GPS block is the catalogue's position, written only when the
 // export opts in.
 
 import type { RawExifEntry, RawExifIfds } from "@/catalog/exif";
@@ -44,7 +44,7 @@ const GPS_TAG = {
 
 type CatalogText = "imageDescription" | "artist" | "copyright";
 
-/** IFD0 tags the catalog holds a text field for. */
+/** IFD0 tags the catalogue holds a text field for. */
 const CATALOG_IFD0_FIELDS: [number, CatalogText][] = [
   [TAG.ImageDescription, "imageDescription"],
   [TAG.Artist, "artist"],
@@ -54,7 +54,7 @@ const CATALOG_IFD0_FIELDS: [number, CatalogText][] = [
 const SRGB = 1;
 const UNCALIBRATED = 0xffff; // the embedded ICC carries the real profile
 
-/** The finalised IFD entry sets an export will carry. */
+/** The finalized IFD entry sets an export will carry. */
 export interface ExportIfds {
   ifd0: RawExifEntry[];
   exif: RawExifEntry[];
@@ -68,7 +68,7 @@ export interface ExportExifOptions {
   /** True tags the EXIF colour space sRGB; anything wider is Uncalibrated. */
   srgb: boolean;
   includeLocation: boolean;
-  /** The photo's catalog record, which holds the user's metadata edits (RAW
+  /** The photo's catalogue record, which holds the user's metadata edits (RAW
    *  edits never reach the source file's bytes). A set artist, copyright or
    *  description replaces the source's and a blank one is not written; one
    *  the record lacks keeps the source's, since a record can predate the
@@ -175,10 +175,10 @@ function catalogGpsEntries(catalog: ExportExifOptions["catalog"]): RawExifEntry[
   return out;
 }
 
-/** Combine harvested source entries with the catalog's record and the
+/** Combine harvested source entries with the catalogue's record and the
  *  export-time overrides. Later entries win the per-tag dedup. A null source
  *  (unreadable file, EXIF-less container) still yields a valid block carrying
- *  the catalog's fields. The render bakes the upright orientation into the
+ *  the catalogue's fields. The render bakes the upright orientation into the
  *  pixels, so the tag resets to 1. */
 export function buildExportIfds(source: RawExifIfds | null, opts: ExportExifOptions): ExportIfds {
   return {

@@ -78,11 +78,11 @@ function structureOf(photos: CatalogPhoto[]): Structure {
   return structure;
 }
 
-/** The catalog's structure version: the same number for two photos arrays only
+/** The catalogue's structure version: the same number for two photos arrays only
  *  when one came from the other with each photo at the same index, changing
  *  nothing but the fields keepStructure was told of (see fieldChanges). Any other
  *  new array (a store update, or a setState from outside) gets a new number. Lets
- *  the grid's filter + sort skip the preview flushes of a big catalog's open. */
+ *  the grid's filter + sort skip the preview flushes of a big catalogue's open. */
 export function structureVersion(photos: CatalogPhoto[]): number {
   return structureOf(photos).version;
 }
@@ -117,7 +117,7 @@ function indexOf(photos: CatalogPhoto[]): Map<string, number> {
 }
 
 /** The photo with this id in `photos`, as `photos.find` gives it, without a pass
- *  over the catalog once the array has been looked in. */
+ *  over the catalogue once the array has been looked in. */
 export function photoById(photos: CatalogPhoto[], id: string | null): CatalogPhoto | undefined {
   if (id === null) return undefined;
   const i = indexOf(photos).get(id);
@@ -197,7 +197,7 @@ interface CatalogState {
   replaceCatalog: (photos: CatalogPhoto[]) => void;
   /** Append photos during a progressive open (no URL revocation, no state reset). */
   appendPhotos: (photos: CatalogPhoto[]) => void;
-  /** Add new photo records to the catalog and DURABLY persist them (unlike
+  /** Add new photo records to the catalogue and DURABLY persist them (unlike
    *  appendPhotos, which is open-time + in-memory only), optionally inserting
    *  each right after a given photo. Used by extensions to add records the core
    *  scan didn't produce — e.g. virtual copies. */
@@ -232,14 +232,14 @@ interface CatalogState {
    *  preview is no longer the blob named (an edit or another read replaced it) keeps
    *  it. Returns the ids that were let go. */
   dropThumbnails: (entries: { id: string; blob: LoadedPreview }[]) => string[];
-  /** Take on what another window wrote to the catalog (see state/catalog-sync):
+  /** Take on what another window wrote to the catalogue (see state/catalog-sync):
    *  each photo here gets the stored fields of its record in `photos` and keeps
    *  its own handles, preview, URL and the edit that preview shows (previewEdit),
-   *  and the photos in `deletedIds` leave the catalog and the selection. Ids this
+   *  and the photos in `deletedIds` leave the catalogue and the selection. Ids this
    *  window doesn't have are ignored. Nothing is stored or broadcast: this
    *  window's storage already holds the records. */
   mergeRemoteRecords: (photos: StoredPhoto[], deletedIds: string[]) => void;
-  /** Replace the skeleton catalog with the post-scan list: attach live handles,
+  /** Replace the skeleton catalogue with the post-scan list: attach live handles,
    *  add newly-found photos, drop vanished ones — while keeping any previews that
    *  already loaded during the skeleton phase, with the edit each shows. */
   reconcileCatalog: (photos: CatalogPhoto[]) => void;
@@ -276,7 +276,7 @@ interface CatalogState {
   selectRange: (id: string, orderedIds?: string[]) => void;
   toggleSelect: (id: string) => void;
   /** Select the given ids (the photos the grid currently shows), or — when
-   *  none are supplied — every photo in the catalog. */
+   *  none are supplied — every photo in the catalogue. */
   selectAll: (ids?: string[]) => void;
   deselectAll: () => void;
   setActivePhoto: (id: string | null, options?: { broadcast?: boolean }) => void;
@@ -296,7 +296,7 @@ export function setLastProjectOpener(opener: LastProjectOpener): void {
 }
 
 export const useCatalogStore = create<CatalogState>((set, get) => {
-  // Tell the windows (this one's own listeners included) the catalog changed. The
+  // Tell the windows (this one's own listeners included) the catalogue changed. The
   // stamp lets a window tell its own echo from another's change. Name a photo
   // (`id`) only when its preview was rewritten: the others reload it.
   const announce = (action: string, id?: string): void =>
@@ -644,7 +644,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
       const turnBlob = (blob: Blob | null) => (blob ? rotateBlob(blob, d) : Promise.resolve(null));
       const updates = new Map<string, CatalogPhoto>();
 
-      // The photos may change, or leave the catalog, while their previews turn:
+      // The photos may change, or leave the catalogue, while their previews turn:
       // each is turned as it is now, and only if it's still here. A preview stored
       // meanwhile (an edit's) is turned again in place of the one it began with,
       // and the turn keeps the edit its source shows.
@@ -744,7 +744,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => {
         return;
       }
       // Range over the order the user actually sees (filtered + sorted), falling
-      // back to catalog order when the caller doesn't supply it.
+      // back to catalogue order when the caller doesn't supply it.
       const order = orderedIds ?? photos.map((p) => p.id);
       const startIdx = order.indexOf(activePhotoId);
       const endIdx = order.indexOf(id);

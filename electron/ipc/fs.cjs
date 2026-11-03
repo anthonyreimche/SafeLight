@@ -16,9 +16,9 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { readFileRange } = require("../file-range.cjs");
 
-// Base directory for "separate" catalogs: the user's override if set, else a
+// Base directory for "separate" catalogues: the user's override if set, else a
 // stable folder under the app's userData. Shared by the resolve + list handlers
-// so they always agree on where catalogs live.
+// so they always agree on where catalogues live.
 function externalCatalogBase(userDataDir, baseOverride) {
   return baseOverride && String(baseOverride).trim()
     ? path.resolve(String(baseOverride))
@@ -26,10 +26,10 @@ function externalCatalogBase(userDataDir, baseOverride) {
 }
 
 // Where the per-source "spillover pointer" lives: a tiny file recording which
-// separate catalog a read-only source spilled into. Kept under the app-data
+// separate catalogue a read-only source spilled into. Kept under the app-data
 // DEFAULT (never the user's chosen base) and keyed by a hash of the source path,
 // so a later writeable open finds the spillover to fold back regardless of which
-// "Separate catalog location" is configured at that time. One file per source →
+// "Separate catalogue location" is configured at that time. One file per source →
 // no shared-index contention; writes are atomic (temp + rename).
 function spilloverPointerPath(userDataDir, rootPath) {
   const src = path.resolve(String(rootPath));
@@ -37,7 +37,7 @@ function spilloverPointerPath(userDataDir, rootPath) {
   return path.join(userDataDir, "external-catalogs", ".pointers", `${tag}.json`);
 }
 
-// The "<leaf>-<tag>" a source's separate catalogs are named by (see
+// The "<leaf>-<tag>" a source's separate catalogues are named by (see
 // fs:externalCatalogDir).
 function catalogStem(src) {
   const tag = crypto.createHash("sha1").update(src).digest("hex").slice(0, 8);
@@ -103,7 +103,7 @@ async function mapLimit(items, limit, fn) {
 
 // Recursive size of a directory in bytes. Best-effort: symlinks aren't followed
 // (lstat) so it can't loop, and any unreadable entry is skipped. Used on demand
-// by the Stored-catalogs manager, never on a hot path.
+// by the Stored-catalogues manager, never on a hot path.
 async function dirSizeBytes(dir) {
   let total = 0;
   let entries;
@@ -192,14 +192,14 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
     // picked "Separate folder" in Preferences. The catalog/previews/RAW cache live
     // here instead, under `baseOverride` if set, otherwise under the app's userData.
     // Keyed by a hash of the source path so every folder keeps its own stable
-    // catalog and two folders at different paths never collide.
-    //   create === false → existence probe: returns the dir iff a catalog already
-    //     lives here (so a redirected source keeps its catalog instead of being
+    // catalogue and two folders at different paths never collide.
+    //   create === false → existence probe: returns the dir iff a catalogue already
+    //     lives here (so a redirected source keeps its catalogue instead of being
     //     orphaned when it later becomes writeable), else null. Creates nothing.
     //   create !== false → creates the directory (so a write failure surfaces, e.g.
     //     an unwriteable override) and returns its absolute path. Idempotent: an
-    //     existing catalog is left untouched.
-    //   variant > 1 → the source's further catalogs, "<leaf>-<tag>-<n>": what
+    //     existing catalogue is left untouched.
+    //   variant > 1 → the source's further catalogues, "<leaf>-<tag>-<n>": what
     //     another card mounted at the same path keeps (see working-dir.ts).
     {
       channel: "fs:externalCatalogDir",
@@ -219,8 +219,8 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
           }
         }
         await fs.promises.mkdir(dir, { recursive: true });
-        // Record the source path (once) so the "Stored catalogs" manager can show
-        // which folder an orphaned catalog belonged to — the tag is a one-way hash.
+        // Record the source path (once) so the "Stored catalogues" manager can show
+        // which folder an orphaned catalogue belonged to — the tag is a one-way hash.
         const meta = path.join(parent, "source.json");
         try {
           await fs.promises.access(meta);
@@ -232,8 +232,8 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
         return dir;
       },
     },
-    // The variants (see fs:externalCatalogDir) of a source's separate catalogs that
-    // hold a catalog, in order: every one, so a variant deleted in the Stored-catalogs
+    // The variants (see fs:externalCatalogDir) of a source's separate catalogues that
+    // hold a catalogue, in order: every one, so a variant deleted in the Stored-catalogs
     // manager doesn't hide the ones after it.
     {
       channel: "fs:externalCatalogVariants",
@@ -263,7 +263,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
         return variants.sort((a, b) => a - b);
       },
     },
-    // Enumerate the "separate" catalogs under `baseOverride` (or the app data dir)
+    // Enumerate the "separate" catalogues under `baseOverride` (or the app data dir)
     // for the Preferences manager: each entry is a per-source folder the user can
     // reveal or delete to reclaim disk. Best-effort — unreadable entries are skipped.
     {
@@ -283,7 +283,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
           // Only ever list folders Safelight itself created — a "<slug>-<8 hex>[-<n>]"
           // leaf (see the keying above) that holds a .safelight working dir. Without
           // this, a user who points the base at one of their own directories would see
-          // its unrelated subfolders listed as deletable "catalogs", and the delete
+          // its unrelated subfolders listed as deletable "catalogues", and the delete
           // button (fs:remove → rm -rf) would wipe them. The filter makes that impossible.
           if (!/-[0-9a-f]{8}(-\d+)?$/.test(e.name)) continue;
           const dir = path.join(base, e.name);
@@ -294,7 +294,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
           }
           let sourcePath = null;
           let createdAt = null;
-          // What the source held when last opened (volume-print.ts), so the catalogs
+          // What the source held when last opened (volume-print.ts), so the catalogues
           // of two cards at one path can be told apart.
           let photoCount = null;
           let lastOpenedAt = null;
@@ -313,7 +313,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
                 .slice(0, 3)
                 .map((v) => v.relPath.slice(v.relPath.lastIndexOf("/") + 1));
           } catch {
-            /* pre-source.json catalog, or unreadable meta — leave nulls */
+            /* pre-source.json catalogue, or unreadable meta — leave nulls */
           }
           let mtimeMs = 0;
           try {
@@ -337,7 +337,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
         return out;
       },
     },
-    // Record where a source's read-only spillover catalog lives (atomic write).
+    // Record where a source's read-only spillover catalogue lives (atomic write).
     {
       channel: "fs:setSpilloverPointer",
       privileged: true,
@@ -356,7 +356,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
       },
     },
     // Look up a source's spillover dir, or null. Verifies the recorded source path
-    // matches so a (truncated-hash) collision can't return another source's catalog.
+    // matches so a (truncated-hash) collision can't return another source's catalogue.
     {
       channel: "fs:getSpilloverPointer",
       privileged: true,
@@ -401,7 +401,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
         await shell.trashItem(path.normalize(p));
       },
     },
-    // Move/rename a file or directory. Used by folder-ops for drag-to-reorganise
+    // Move/rename a file or directory. Used by folder-ops for drag-to-reorganize
     // and folder rename; one rename handles a whole subtree atomically.
     {
       channel: "fs:move",
@@ -435,7 +435,7 @@ function fsChannels({ userData, fileWriter, shell, dialog, BrowserWindow }) {
       },
     },
     // One file, e.g. the monitor's ICC profile in Preferences. Filters come from
-    // the renderer, so only well-formed ones reach the dialog.
+    // the renderer, so only well-formed ones reach the dialogue.
     {
       channel: "fs:pickFile",
       privileged: true,

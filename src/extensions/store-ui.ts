@@ -8,7 +8,7 @@
 // the detail view and the update checker fetch from GitHub. Kept separate from
 // the contribution registry and the enable/disable loader state. Lifting the
 // caches here lets the background launch check (loader.ts) populate update info
-// before the dialog is ever opened, and avoids prop-drilling through the panel.
+// before the dialogue is ever opened, and avoids prop-drilling through the panel.
 
 import { create } from "zustand";
 import { FALLBACK_VOCABULARY } from "./store-categories";
@@ -192,7 +192,7 @@ export const useExtStoreUI = create<ExtStoreUI>((set) => ({
     }),
 }));
 
-/** Fetch and cache normalised repo metadata for "owner/repo". No-op without the
+/** Fetch and cache normalized repo metadata for "owner/repo". No-op without the
  *  native github bridge (plain-browser / older Electron). */
 export async function loadRepoMeta(fullName: string): Promise<void> {
   const gh = window.safelightNative?.github;

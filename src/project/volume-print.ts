@@ -3,19 +3,19 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Which card a separate catalog belongs to. A separate catalog is keyed by its
+// Which card a separate catalogue belongs to. A separate catalogue is keyed by its
 // source's path, and every card a camera formats mounts at the same one (E:\,
 // /Volumes/EOS_DIGITAL) with photos named alike, so the path can't tell two cards
-// apart. A print can: a sample of the catalog's photos, each a path, a size and a
-// capture time, kept in the catalog's source.json.
+// apart. A print can: a sample of the catalogue's photos, each a path, a size and a
+// capture time, kept in the catalogue's source.json.
 //
-// A catalog is taken for another card's only on evidence that it is one. Either
+// A catalogue is taken for another card's only on evidence that it is one. Either
 // most of the sampled photos that are on the card are other photos under their
 // names (another size and another capture time; with no time to compare on
-// either side, the size alone, but only at a card's root), or none of the catalog's photos is on a card that
+// either side, the size alone, but only at a card's root), or none of the catalogue's photos is on a card that
 // holds something. That last holds only at a card's root: an ordinary folder whose
 // photos were sorted into subfolders while the app was closed holds none of them
-// where they were, and its catalog must stay for reattach to find them. A photo
+// where they were, and its catalogue must stay for reattach to find them. A photo
 // gone from the card says nothing: photos are erased in camera, moved and renamed. A photo rewritten in place (geotagged, rated by
 // another program) keeps its capture time. Nor does a file that can't be read
 // right now (a virus scanner holds it, a slow reader times out).
@@ -24,10 +24,10 @@ import { parseExif } from "@/catalog/exif";
 import type { NativeFsBridge } from "@/extensions/types";
 import { isNotFound, isPlainObject, parseJSONObject } from "./fs";
 
-/** How many of a catalog's photos its print samples. */
+/** How many of a catalogue's photos its print samples. */
 const SAMPLED = 16;
 
-/** How many of a catalog's folders are listed to look for any of its photos. */
+/** How many of a catalogue's folders are listed to look for any of its photos. */
 const LISTED_FOLDERS = 64;
 
 /** As far into a file as parseExif reads. */
@@ -46,7 +46,7 @@ interface Photo {
   exif?: { dateTimeOriginal?: string };
 }
 
-/** What a folder says of a separate catalog: it is that folder's, it is another
+/** What a folder says of a separate catalogue: it is that folder's, it is another
  *  card's, or it gives no sign either way. */
 export type VolumeVerdict = "same" | "other" | "unknown";
 
@@ -113,8 +113,8 @@ async function photosOf(fs: NativeFsBridge, slDir: string): Promise<Photo[]> {
   return Array.isArray(photos) ? photos.filter(isPhoto) : [];
 }
 
-/** The print of the separate catalog at `slDir`: the one its source.json keeps, or,
- *  for a catalog from before prints were kept, a sample of its photos. */
+/** The print of the separate catalogue at `slDir`: the one its source.json keeps, or,
+ *  for a catalogue from before prints were kept, a sample of its photos. */
 async function printOf(fs: NativeFsBridge, slDir: string): Promise<Sampled[]> {
   const kept = (await readObject(fs, sourceJsonOf(slDir)))?.volume;
   if (Array.isArray(kept)) return kept.filter(isSampled);
@@ -177,8 +177,8 @@ async function overlap(
   return { any: false, holdsSomething: top.some((entry) => !entry.name.startsWith(".")) };
 }
 
-/** What the folder at `rootPath` says of the separate catalog at `slDir` (see the
- *  header): "other" only on evidence it is another card's; "unknown" for a catalog
+/** What the folder at `rootPath` says of the separate catalogue at `slDir` (see the
+ *  header): "other" only on evidence it is another card's; "unknown" for a catalogue
  *  with no photos, or a print that can't be read right now. */
 export async function judgeVolume(
   fs: NativeFsBridge,
@@ -206,8 +206,8 @@ export async function judgeVolume(
 }
 
 /** Keep the print of `photos`, the ones found on the source this open as they are
- *  now, in the source.json of the separate catalog at `slDir`, alongside what it
- *  holds; with how many there were and when, for the Stored-catalogs manager. */
+ *  now, in the source.json of the separate catalogue at `slDir`, alongside what it
+ *  holds; with how many there were and when, for the Stored-catalogues manager. */
 export async function recordVolume(
   fs: NativeFsBridge,
   slDir: string,

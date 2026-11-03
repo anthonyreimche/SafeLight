@@ -5,7 +5,7 @@
 
 // Per-extension persisted settings. One localStorage entry per extension
 // (sl_ext_settings_<id>), mirrored into a reactive zustand store so settings
-// dialogs update live, and synced across windows via the storage event.
+// dialogues update live, and synced across windows via the storage event.
 // Uninstalling an extension deletes its stored values.
 
 import { create } from "zustand";
@@ -54,7 +54,7 @@ function notify(id: string, key: string, value: unknown): void {
   listeners.get(id)?.forEach((cb) => cb(key, value));
 }
 
-/** Everything the extension has stored (for the generic settings dialog). */
+/** Everything the extension has stored (for the generic settings dialogue). */
 export function getAllExtSettings(id: string): Values {
   return valuesFor(id);
 }

@@ -14,34 +14,34 @@
 // Instead, in the native build, we can redirect the whole working dir
 // (catalog.json, previews/, raw/ cache, blobs/) to a writeable, path-keyed
 // location under the app's data dir — so read-only cards "just work", with the
-// catalog kept out of harm's way. Everything downstream derives from this one
+// catalogue kept out of harm's way. Everything downstream derives from this one
 // handle, so no other code needs to know where it actually points. When even the
 // redirect isn't possible (plain-browser build) or fails (e.g. an unwriteable
 // user-chosen base), we raise a verbose, actionable error instead of failing mute.
 //
-// Precedence (so the catalog follows the source through its whole lifecycle):
+// Precedence (so the catalogue follows the source through its whole lifecycle):
 //   1. An in-folder .safelight/catalog.json already exists → it's canonical; use
 //      it, *even in "external" mode*. Flipping the setting (or a brief read-only
-//      mount) must never orphan a catalog the user already built in the folder,
-//      and a real in-folder project isn't hijacked by a stray external catalog.
-//   2. "External" mode → store new catalogs in the separate location (keep photo
-//      folders clean, catalogs on fast storage).
-//   3. A separate catalog already exists for this source path → keep using it.
+//      mount) must never orphan a catalogue the user already built in the folder,
+//      and a real in-folder project isn't hijacked by a stray external catalogue.
+//   2. "External" mode → store new catalogues in the separate location (keep photo
+//      folders clean, catalogues on fast storage).
+//   3. A separate catalogue already exists for this source path → keep using it.
 //      Load-bearing: without it, a read-only card that later becomes writeable
-//      would get a fresh, empty in-folder .safelight and the catalog the user
+//      would get a fresh, empty in-folder .safelight and the catalogue the user
 //      built up while it was read-only would be silently orphaned.
 //   4. Otherwise create the in-folder .safelight; on read-only, redirect.
 //
 // Read-only round-trip (rule 1's fallback): when a folder that owns an in-folder
-// catalog is opened read-only, writes go to a separate catalog. We avoid stranding
+// catalogue is opened read-only, writes go to a separate catalogue. We avoid stranding
 // that work with a seed-then-promote handshake — no general two-way merge needed,
-// because the in-folder catalog can't change while it's read-only:
-//   • Seed: the separate catalog is copied from the (readable) in-folder catalog
-//     on redirect, so the read-only session shows the user's real catalog (not an
+// because the in-folder catalogue can't change while it's read-only:
+//   • Seed: the separate catalogue is copied from the (readable) in-folder catalogue
+//     on redirect, so the read-only session shows the user's real catalogue (not an
 //     empty one) and edits accumulate on a *superset*. A `.seeded` marker records
-//     that this separate is a spillover of a specific in-folder catalog.
+//     that this separate is a spillover of a specific in-folder catalogue.
 //   • Promote: the next time the folder opens writeable, that superset is folded
-//     back into the in-folder catalog (the previous catalog.json is kept first as
+//     back into the in-folder catalogue (the previous catalog.json is kept first as
 //     catalog.before-merge-<time>.json, a name no session's backup writes over),
 //     then the spillover's catalog.json + marker are retired so nothing is left to
 //     re-promote.
@@ -51,23 +51,23 @@
 // even when its catalog.json is identical, as a session that only edited leaves
 // catalog.json untouched.
 // Promotion is guarded against clobbering: it folds back only a spillover that is
-// newer than *and* differs from the in-folder catalog, so a stale or leftover
+// newer than *and* differs from the in-folder catalogue, so a stale or leftover
 // spillover (e.g. a marker that survived a failed cleanup, or a no-edit read-only
 // spell) is a no-op rather than overwriting newer in-folder data. Only `.seeded`
-// spillovers are eligible; a standalone external catalog is never folded in.
+// spillovers are eligible; a standalone external catalogue is never folded in.
 //
 // One path, several cards: every card a camera formats mounts at the same path
-// (E:\, /Volumes/EOS_DIGITAL), so a separate catalog found for the path is passed
+// (E:\, /Volumes/EOS_DIGITAL), so a separate catalogue found for the path is passed
 // over when the folder shows it to be another card's (volume-print.ts). Then the
-// path's other catalogs are tried, and a new one made after the last, so another
+// path's other catalogues are tried, and a new one made after the last, so another
 // card never opens onto, and saves over, this one's. A seeded spillover is folded
 // back only into a card that isn't shown to be another.
 //
-// Known limitation: the catalog is keyed by the source's absolute path, so
+// Known limitation: the catalogue is keyed by the source's absolute path, so
 // removable media remounted at a different drive letter / mount point gets a fresh
-// catalog. There is no portable, writeable-source-free volume identity to key on
+// catalogue. There is no portable, writeable-source-free volume identity to key on
 // (Node's stat().dev is 0 on Windows), so this is left to the Preferences "Stored
-// catalogs" manager, which lists each catalog by its recorded source path so an
+// catalogues" manager, which lists each catalogue by its recorded source path so an
 // orphan can be found and reclaimed.
 
 import { getSettings } from "@/state/settings-store";
@@ -89,16 +89,16 @@ import { judgeVolume } from "./volume-print";
 export type WorkingDirLocation = "in-folder" | "external";
 
 export interface WorkingDir {
-  /** The .safelight directory handle (writeable) — the catalog's working dir. */
+  /** The .safelight directory handle (writeable) — the catalogue's working dir. */
   sl: FileSystemDirectoryHandle;
   location: WorkingDirLocation;
   /** Absolute path of the external working dir when redirected, else null. */
   externalPath: string | null;
   /** Set when edits made during a prior read-only spell were just folded back
-   *  into this (now writeable) in-folder catalog — the absolute path of the
-   *  separate catalog they came from. Lets the open-flow tell the user. */
+   *  into this (now writeable) in-folder catalogue — the absolute path of the
+   *  separate catalogue they came from. Lets the open-flow tell the user. */
   promotedFromExternal?: string | null;
-  /** Set when `sl` is a spillover of a folder that owns an in-folder catalog: that
+  /** Set when `sl` is a spillover of a folder that owns an in-folder catalogue: that
    *  in-folder .safelight, readable though the folder is not writeable. A reader of
    *  per-photo edit files reads `sl` first and falls back to this; writes go only
    *  to `sl`. */
@@ -117,7 +117,7 @@ export class ReadOnlyProjectError extends Error {
   constructor(folderName: string, redirectFailed: boolean, cause?: unknown) {
     super(
       `Project folder “${folderName}” is read-only and Safelight could not ` +
-        `establish a writeable working directory for its catalog.`,
+        `establish a writeable working directory for its catalogue.`,
     );
     this.name = "ReadOnlyProjectError";
     this.folderName = folderName;
@@ -160,7 +160,7 @@ async function probeWrite(sl: FileSystemDirectoryHandle): Promise<void> {
 }
 
 /** Does <root>/.safelight/catalog.json already exist? A folder that owns a
- *  catalog is canonical — we keep using it rather than a redirect. */
+ *  catalogue is canonical — we keep using it rather than a redirect. */
 async function inFolderCatalogExists(
   root: FileSystemDirectoryHandle,
   fs: ReturnType<typeof nativeFs>,
@@ -170,7 +170,7 @@ async function inFolderCatalogExists(
   // (native-fs sets it on every handle), so a present bridge with a null path is
   // a contract violation, not a browser handle — return false rather than falling
   // through to the FSA probe below, which is *lazy* on native handles
-  // (getFileHandle never reads) and would false-positive on a missing catalog.
+  // (getFileHandle never reads) and would false-positive on a missing catalogue.
   if (fs) {
     if (!rootPath) return false;
     try {
@@ -192,9 +192,9 @@ async function inFolderCatalogExists(
 
 type Bridge = NonNullable<ReturnType<typeof nativeFs>>;
 
-/** Make sure the project folder is there before anything decides where its catalog
+/** Make sure the project folder is there before anything decides where its catalogue
  *  lives. The desktop bridge lists a missing folder as empty, so a drive taken away
- *  would open as a folder emptied, and its catalog would be saved without a photo.
+ *  would open as a folder emptied, and its catalogue would be saved without a photo.
  *  On macOS, a volume the user hasn't allowed Safelight into refuses the listing
  *  with EPERM, which the read-only check would take for a read-only folder. */
 async function reachRoot(fs: Bridge, rootPath: string): Promise<void> {
@@ -215,7 +215,7 @@ const catalogJsonIn = (slDir: string) => `${stripSlash(slDir)}/catalog.json`;
 const seededMarkerIn = (slDir: string) => `${stripSlash(slDir)}/.seeded`;
 const inFolderSlDir = (rootPath: string) => `${stripSlash(rootPath)}/.safelight`;
 
-/** Read a catalog that may not be there (null). One that is there but can't be
+/** Read a catalogue that may not be there (null). One that is there but can't be
  *  read (another program holds it) throws CatalogUnreadableError: taken for
  *  missing, it would be written over, or its edits never folded back. */
 const readIfThere = (fs: Bridge, path: string) =>
@@ -224,13 +224,13 @@ const readIfThere = (fs: Bridge, path: string) =>
     throw new CatalogUnreadableError(error);
   });
 
-/** Seed the separate catalog (at `externalSl`) from the readable in-folder catalog
- *  so a read-only session opens onto the user's real catalog rather than an empty
- *  one. Copies only when the in-folder catalog is newer (or the separate is
+/** Seed the separate catalogue (at `externalSl`) from the readable in-folder catalogue
+ *  so a read-only session opens onto the user's real catalogue rather than an empty
+ *  one. Copies only when the in-folder catalogue is newer (or the separate is
  *  missing), so writeable edits made since the last spell aren't shadowed by a
  *  stale copy; always (re)writes the `.seeded` marker so the next writeable open
  *  knows to promote. Best-effort: on any failure the separate just starts empty
- *  (the pre-seed behavior), except that a catalog that can't be read right now
+ *  (the pre-seed behaviour), except that a catalogue that can't be read right now
  *  fails the open (CatalogUnreadableError, see readIfThere). */
 async function seedExternalCatalog(
   fs: Bridge,
@@ -239,7 +239,7 @@ async function seedExternalCatalog(
 ): Promise<void> {
   try {
     const inInfo = await readIfThere(fs, catalogJsonIn(inFolderSlDir(rootPath)));
-    if (!inInfo) return; // no in-folder catalog to seed from
+    if (!inInfo) return; // no in-folder catalogue to seed from
     const extCat = catalogJsonIn(externalSl);
     const extInfo = await readIfThere(fs, extCat);
     if (!extInfo || inInfo.mtimeMs > extInfo.mtimeMs) {
@@ -262,19 +262,19 @@ const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean => {
   return true;
 };
 
-/** How many separate catalogs an older bridge, which can't list them, is asked
+/** How many separate catalogues an older bridge, which can't list them, is asked
  *  for at one source path. */
 const MOST_CATALOGS_PER_PATH = 99;
 
-/** The separate catalog `variant` of `rootPath` under `base` (null: the default):
- *  made with `create`, else only if it holds a catalog. */
+/** The separate catalogue `variant` of `rootPath` under `base` (null: the default):
+ *  made with `create`, else only if it holds a catalogue. */
 const catalogDir = (fs: Bridge, rootPath: string, base: string | null, create: boolean, variant: number) =>
   variant === 1
     ? fs.externalCatalogDir!(rootPath, base, create)
     : fs.externalCatalogDir!(rootPath, base, create, variant);
 
-/** The separate catalogs of `rootPath` under `base` that hold a catalog, in order:
- *  every one, though one before it was deleted in the Stored-catalogs manager. */
+/** The separate catalogues of `rootPath` under `base` that hold a catalogue, in order:
+ *  every one, though one before it was deleted in the Stored-catalogues manager. */
 async function separateCatalogs(
   fs: Bridge,
   rootPath: string,
@@ -289,7 +289,7 @@ async function separateCatalogs(
     return kept;
   }
   // An older bridge: up to the first missing one. One that has no further
-  // catalogs hands the first one back.
+  // catalogues hands the first one back.
   const seen = new Set<string>();
   for (let variant = 1; variant <= MOST_CATALOGS_PER_PATH; variant++) {
     const dir = await catalogDir(fs, rootPath, base, false, variant);
@@ -305,11 +305,11 @@ const clearSpilloverPointer = async (fs: Bridge, rootPath: string): Promise<void
     await fs.clearSpilloverPointer(rootPath).catch(() => {});
 };
 
-/** Locate a `.seeded` spillover catalog of the card at `rootPath`, or null.
+/** Locate a `.seeded` spillover catalogue of the card at `rootPath`, or null.
  *
  *  Primary: the per-source spillover pointer, recorded on seed under the app-data
  *  default. Because it's keyed by source path (not by base), it locates the
- *  spillover no matter which "Separate catalog location" is configured now — so a
+ *  spillover no matter which "Separate catalogue location" is configured now — so a
  *  base change between the read-only spell and the writeable re-open still folds
  *  the edits back. Fallback: probe the current base + default directly, covering
  *  spillovers seeded before the pointer existed (or whose pointer write was lost).
@@ -338,8 +338,8 @@ async function findSeededSpillover(
   return null;
 }
 
-/** How many copies of the catalogs earlier folds replaced are kept. Each is a
- *  whole catalog. */
+/** How many copies of the catalogues earlier folds replaced are kept. Each is a
+ *  whole catalogue. */
 const KEPT_BEFORE_MERGE = 3;
 
 /** Remove all but the newest KEPT_BEFORE_MERGE catalog.before-merge-<time>.json in
@@ -431,33 +431,33 @@ async function foldEditFiles(
   return taken;
 }
 
-/** If a `.seeded` spillover catalog exists for this now-writeable source, fold its
- *  read-only-session edits back into the in-folder catalog and retire the spillover.
+/** If a `.seeded` spillover catalogue exists for this now-writeable source, fold its
+ *  read-only-session edits back into the in-folder catalogue and retire the spillover.
  *  Returns the spillover path when a fold actually happened, else null.
  *
  *  Guards make this safe against the failure modes of a single marker flag:
  *   • Fold only when the spillover is *newer than and differs from* the in-folder
- *     catalog. A stale spillover (e.g. a marker that survived a failed cleanup, so
+ *     catalogue. A stale spillover (e.g. a marker that survived a failed cleanup, so
  *     in-folder has since advanced) or an identical one (a read-only spell with no
  *     edits) is a no-op — it can never clobber newer in-folder data, even though
- *     the in-folder catalog is always written with the host clock so its mtime is a
+ *     the in-folder catalogue is always written with the host clock so its mtime is a
  *     reliable comparand here (both files are app-written, not camera-stamped).
- *   • The previous in-folder catalog is copied to catalog.before-merge-<time>.json
+ *   • The previous in-folder catalogue is copied to catalog.before-merge-<time>.json
  *     before the overwrite: the backups rotate as later sessions open the
- *     project, and after a fold this copy can be the only one of the catalog it
+ *     project, and after a fold this copy can be the only one of the catalogue it
  *     replaced. The
  *     spillover's catalog.json + marker are removed *after* a
  *     successful fold, so nothing is left to re-promote and the next read-only
  *     spell re-seeds fresh. A swallowed cleanup failure is harmless: the guard
  *     makes the leftover a no-op next time.
  *  Any failure (e.g. the folder is actually still read-only, so the backup write
- *  throws first) is swallowed and leaves both catalogs intact. One exception: a
- *  catalog that is there but can't be read (another program holds it) fails the
- *  open with CatalogUnreadableError. Taken for missing, the in-folder catalog
+ *  throws first) is swallowed and leaves both catalogues intact. One exception: a
+ *  catalogue that is there but can't be read (another program holds it) fails the
+ *  open with CatalogUnreadableError. Taken for missing, the in-folder catalogue
  *  would be replaced with no backup, or the spillover retired unfolded. Nor is a
  *  spillover folded that the open would not take: a damaged one is left where it
  *  is, and one a newer version saved fails the open with CatalogTooNewError, both
- *  with the in-folder catalog untouched. */
+ *  with the in-folder catalogue untouched. */
 async function promoteSeparateCatalog(
   fs: Bridge,
   rootPath: string,
@@ -494,9 +494,9 @@ async function promoteSeparateCatalog(
     }
     if (foldCatalog || editsTaken) await pruneBeforeMergeCopies(fs, inSl).catch(() => {});
     // Retire the spillover so a stuck marker has nothing to re-promote and the
-    // next read-only spell re-seeds fresh from the (now-current) in-folder catalog.
+    // next read-only spell re-seeds fresh from the (now-current) in-folder catalogue.
     // With nothing (newer) to fold, only the spent marker + pointer are consumed, so
-    // they can't re-arm; the in-folder catalog is never touched.
+    // they can't re-arm; the in-folder catalogue is never touched.
     if (foldCatalog) await fs.remove(catalogJsonIn(externalSl)).catch(() => {});
     await fs.remove(seededMarkerIn(externalSl)).catch(() => {});
     await clearSpilloverPointer(fs, rootPath);
@@ -513,7 +513,7 @@ async function promoteSeparateCatalog(
  *  Throws FolderUnavailableError when the folder isn't there (its drive is gone),
  *  FolderAccessDeniedError when macOS keeps Safelight out of its volume,
  *  ReadOnlyProjectError when no writeable location can be established,
- *  CatalogUnreadableError when a catalog a promotion or a seed needs can't be read,
+ *  CatalogUnreadableError when a catalogue a promotion or a seed needs can't be read,
  *  and CatalogTooNewError when the spillover a promotion would fold was saved by a
  *  newer version. */
 export async function resolveWorkingDir(
@@ -532,12 +532,12 @@ export async function resolveWorkingDir(
     return { sl, location: "in-folder", externalPath: null };
   };
 
-  // The separate catalog for this source (see header): the first of the path's
+  // The separate catalogue for this source (see header): the first of the path's
   // that the folder shows to be its own, else the first that shows nothing either
   // way. `allowCreate` distinguishes the two bridge modes: probe-only (returns a
-  // WorkingDir iff such a catalog already lives there) vs create (when there is
-  // none, a new catalog after the path's last). Returns null when redirect isn't
-  // available at all, or — for a probe — when no such catalog exists yet. Creation
+  // WorkingDir iff such a catalogue already lives there) vs create (when there is
+  // none, a new catalogue after the path's last). Returns null when redirect isn't
+  // available at all, or — for a probe — when no such catalogue exists yet. Creation
   // errors propagate.
   const external = async (allowCreate: boolean): Promise<WorkingDir | null> => {
     if (!canRedirect) return null;
@@ -560,7 +560,7 @@ export async function resolveWorkingDir(
     return dir ? at(dir) : null;
   };
 
-  // 1. A folder that already owns an in-folder catalog is canonical — even in
+  // 1. A folder that already owns an in-folder catalogue is canonical — even in
   //    "external" mode, so the setting never orphans data the user built here.
   if (await inFolderCatalogExists(root, fs, rootPath)) {
     // Before using it, fold back any edits made during a prior read-only spell
@@ -575,8 +575,8 @@ export async function resolveWorkingDir(
       return promotedFrom ? { ...wd, promotedFromExternal: promotedFrom } : wd;
     } catch (e) {
       if (!isReadOnlyError(e)) throw e;
-      // In-folder catalog exists but the folder is now read-only: writes must go
-      // to a separate location, seeded from the (readable) in-folder catalog so
+      // In-folder catalogue exists but the folder is now read-only: writes must go
+      // to a separate location, seeded from the (readable) in-folder catalogue so
       // the session opens onto real data and accumulates on a superset that the
       // next writeable open promotes back in (see header).
       try {
@@ -588,14 +588,14 @@ export async function resolveWorkingDir(
           return { ...wd, editsFallback: { sl: nativeDirectoryHandle(path), path } };
         }
       } catch (err) {
-        if (err instanceof CatalogUnreadableError) throw err; // a busy catalog, not a read-only one
+        if (err instanceof CatalogUnreadableError) throw err; // a busy catalogue, not a read-only one
         throw new ReadOnlyProjectError(root.name, true, err);
       }
       throw new ReadOnlyProjectError(root.name, false);
     }
   }
 
-  // 2. "External" mode: new catalogs go to the separate location. The user asked
+  // 2. "External" mode: new catalogues go to the separate location. The user asked
   //    for external explicitly, so if we can't establish it, fail loudly rather
   //    than silently falling through to an in-folder write (steps 3–5).
   if (getSettings().catalogLocation === "external" && canRedirect) {
@@ -608,8 +608,8 @@ export async function resolveWorkingDir(
     throw new ReadOnlyProjectError(root.name, true);
   }
 
-  // 3. No in-folder catalog, not external mode. If this source was redirected
-  //    before, keep using that separate catalog rather than spawning a fresh
+  // 3. No in-folder catalogue, not external mode. If this source was redirected
+  //    before, keep using that separate catalogue rather than spawning a fresh
   //    in-folder one (which would orphan the user's data when a read-only card
   //    becomes writeable).
   const sticky = await external(false).catch(() => null);
@@ -623,12 +623,12 @@ export async function resolveWorkingDir(
     if (!isReadOnlyError(e)) throw e;
   }
 
-  // 5. Read-only folder, no prior catalog → create the separate one now.
+  // 5. Read-only folder, no prior catalogue → create the separate one now.
   if (!canRedirect) throw new ReadOnlyProjectError(root.name, false);
   try {
     const wd = await external(true);
     if (wd) return wd;
-    throw new Error("separate catalog location unavailable");
+    throw new Error("separate catalogue location unavailable");
   } catch (e) {
     if (e instanceof ReadOnlyProjectError) throw e;
     throw new ReadOnlyProjectError(root.name, true, e);

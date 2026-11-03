@@ -91,7 +91,7 @@ export interface RegistryState {
   themes: Record<string, RegisteredTheme>;
   sliderIcons: Record<string, RegisteredIcon>;
   layouts: Record<string, RegisteredLayout>;
-  /** Keyed by extension id — one settings dialog per extension. */
+  /** Keyed by extension id — one settings dialogue per extension. */
   settings: Record<string, RegisteredSettings>;
   pipelines: Record<string, RegisteredPipeline>;
   exportProcessors: Record<string, RegisteredExportProcessor>;

@@ -60,7 +60,7 @@ describe("GraphicsNotice", () => {
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain(
       "This computer can't run Safelight's image engine. " +
-        "You can still browse, rate and organise photos; editing and export need graphics support.",
+        "You can still browse, rate and organize photos; editing and export need graphics support.",
     );
     expect(alert.textContent).not.toContain("GPU process gone");
     expect(screen.getByTitle("WebGL2 couldn't start: Could not create a WebGL2 context (GPU process gone).")).toBeTruthy();

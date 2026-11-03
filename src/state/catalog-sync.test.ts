@@ -3,8 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// What another window writes to the catalog, reaching this window's stores: the
-// catalog store takes on photo fields and removals, and Develop reloads the photo
+// What another window writes to the catalogue, reaching this window's stores: the
+// catalogue store takes on photo fields and removals, and Develop reloads the photo
 // it has open when that photo's edit changes in another window. B is this window
 // and A another one, each with its own storage on one in-memory project folder.
 
@@ -70,8 +70,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Both windows opened the project from one saved catalog. This window is B: its
- *  stores show B's catalog, and Develop has OPEN open at a 5200 K as-shot. */
+/** Both windows opened the project from one saved catalogue. This window is B: its
+ *  stores show B's catalogue, and Develop has OPEN open at a 5200 K as-shot. */
 async function twoWindows(): Promise<{ a: ProjectStorage; b: ProjectStorage }> {
   const fs = new MemoryFs(ROOT);
   const photos = [photo(OPEN), photo(OTHER)];
@@ -134,7 +134,7 @@ describe("Develop", () => {
   });
 });
 
-describe("the catalog store", () => {
+describe("the catalogue store", () => {
   it("takes on the fields another window wrote, on this window's record", async () => {
     const { a } = await twoWindows();
     const mine = inStore(OTHER);
@@ -154,7 +154,7 @@ describe("the catalog store", () => {
     expect(useCatalogStore.getState().photos.map((p) => p.id)).toEqual([OPEN]);
   });
 
-  it("ignores another window's catalog taking on what this window wrote", async () => {
+  it("ignores another window's catalogue taking on what this window wrote", async () => {
     // B's own write reaches A, which reports taking it on. That report is about
     // A's copy, so this window's store must not act on it.
     const { b } = await twoWindows();

@@ -19,7 +19,7 @@ import { settings, type PrefSection } from "@/ui/preferences/section-model";
 import { StoredCatalogsField } from "./StoredCatalogsField";
 
 // Cache-mode tri-state derived from two booleans: caching off, or on with/without
-// the eager full-catalog prefetch. Stored as two flags so existing settings
+// the eager full-catalogue prefetch. Stored as two flags so existing settings
 // migrate for free (rawCacheEnabled stays meaningful; prefetch defaults on).
 type CacheMode = "eager" | "ondemand" | "off";
 
@@ -246,11 +246,11 @@ export function PreviewsSection() {
       {isNativeFS() && (
         <>
           <div className="border-t border-border-subtle pt-3">
-            <div className={labelCls}>Catalog storage</div>
+            <div className={labelCls}>Catalogue storage</div>
           </div>
           <Field
-            label="Catalog location"
-            hint="Where each project's working data (catalog, previews, cache) lives. In photo folder keeps it beside the photos; a read-only source like a memory card falls back to the separate location automatically. Separate folder always stores it there — keeps photo folders clean and is handy on a fast SSD. Applies to folders opened for the first time. Existing catalogs stay where they are."
+            label="Catalogue location"
+            hint="Where each project's working data (catalogue, previews, cache) lives. In photo folder keeps it beside the photos; a read-only source like a memory card falls back to the separate location automatically. Separate folder always stores it there — keeps photo folders clean and is handy on a fast SSD. Applies to folders opened for the first time. Existing catalogues stay where they are."
           >
             <OptionRow
               value={s.catalogLocation}
@@ -264,8 +264,8 @@ export function PreviewsSection() {
             />
           </Field>
           <Field
-            label="Separate catalog location"
-            hint="Where Separate folder catalogs — and the automatic fallback for read-only sources — are stored. Each source folder gets its own subfolder, keyed by path so it's stable across opens. Default: the app's data directory."
+            label="Separate catalogue location"
+            hint="Where Separate folder catalogues — and the automatic fallback for read-only sources — are stored. Each source folder gets its own subfolder, keyed by path so it's stable across opens. Default: the app's data directory."
           >
             <div className="flex items-center gap-1.5">
               <span
@@ -315,20 +315,24 @@ export const previewsSection: PrefSection = {
     "Cache decoded RAW previews",
     "Cached preview resolution",
     "Cache storage",
-    "Catalog location",
-    "Separate catalog location",
-    "Stored catalogs",
+    "Catalogue location",
+    "Separate catalogue location",
+    "Stored catalogues",
   ),
   keywords: [
     "Embedded JPEG",
     "Rebuild thumbnails",
     "Clear preview cache",
-    "catalog storage",
+    "catalogue storage",
     "read-only",
     "memory card",
     "sd card",
     "ssd",
     "reclaim disk",
+    "orphaned catalogue",
+    "catalog storage",
+    "catalog location",
+    "stored catalogs",
     "orphaned catalog",
   ],
   render: () => <PreviewsSection />,

@@ -80,7 +80,7 @@ Build rules, whatever the bundler:
 
 - **`id`** names the extension and its install folder. It starts with a letter or digit and holds only letters, digits, `.`, `_` and `-`. `core` and anything under `core.`, in any letter case, is reserved for built-ins and refused (`corel` or `my.core` are fine). Pick one that is yours alone, such as `com.example.histogram-pro`.
 - **`minAppVersion`** is the oldest Safelight the extension works on. Set it whenever you use an API added in a specific release. Installs and updates on an older build are refused before any files are written, and the installed version keeps running. A newer version that needs a newer Safelight is shown as needing it and never auto-installed. Versions compare as `major.minor.patch` (a `v` prefix is fine).
-- **`permissions.network`** lists the HTTPS origins the extension may reach. Only this field is enforced: the origins join the app's content-security policy at the next launch, and every other host is blocked. It does not limit access to the catalog or files. See [EXTENSIONS.md](../../../EXTENSIONS.md).
+- **`permissions.network`** lists the HTTPS origins the extension may reach. Only this field is enforced: the origins join the app's content-security policy at the next launch, and every other host is blocked. It does not limit access to the catalogue or files. See [EXTENSIONS.md](../../../EXTENSIONS.md).
 - An update that installs but fails to start is rolled back, and auto-update won't retry it until you publish a newer version.
 
 ### Store listing

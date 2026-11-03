@@ -44,7 +44,7 @@ describe("parseLongEdge", () => {
 });
 
 describe("isPresetLongEdge", () => {
-  it("recognises the built-in options", () => {
+  it("recognizes the built-in options", () => {
     expect(isPresetLongEdge(null)).toBe(true);
     expect(isPresetLongEdge(4096)).toBe(true);
     expect(isPresetLongEdge(2048)).toBe(true);
@@ -117,7 +117,7 @@ describe("ResolutionControl", () => {
     expect(onChange).toHaveBeenCalledWith(1500);
   });
 
-  it("clamps committed values and normalises the field", () => {
+  it("clamps committed values and normalizes the field", () => {
     const onChange = renderControl(1024);
     fireEvent.change(input(), { target: { value: "5" } });
     fireEvent.blur(input());

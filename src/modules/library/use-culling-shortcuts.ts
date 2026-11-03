@@ -10,7 +10,7 @@
 // Preferences ▸ Shortcuts; the defaults match Lightroom:
 //
 //   1-5 rating   0 clear   P pick   X reject   U unflag
-//   6-9 color label        [ ] rotate
+//   6-9 colour label        [ ] rotate
 //   ← → prev / next         ↑ ↓ up / down a grid row
 //   - = thumbnail size
 //
@@ -78,12 +78,12 @@ export function cullingShortcutsMounted(): boolean {
 
 /** True while Develop's canvas tool would take mask.delete (Masking's, with a
  *  component selected): Delete/Backspace then belongs to it, not to removing
- *  photos from the catalog. */
+ *  photos from the catalogue. */
 const maskOwnsDelete = (): boolean => canvasToolWants("mask.delete");
 
 let removeConfirmOpen = false;
 
-/** Remove photos from the catalog, after the confirmation when it's turned on.
+/** Remove photos from the catalogue, after the confirmation when it's turned on.
  *  Shared by the Delete key and the photo menu's Remove, so both say the same.
  *  The ids are the selection when it was asked; only the store's removePhotos
  *  is read after the user answers. At most one
@@ -96,8 +96,8 @@ export async function removeFromCatalog(ids: string[]): Promise<void> {
     const n = ids.length;
     const s = n === 1 ? "" : "s";
     const ok = await confirmDialog({
-      title: "Remove from catalog",
-      message: `Remove ${n} photo${s} from the catalog? ${n === 1 ? "Its" : "Their"} edits, ratings and labels are discarded. The original file${s} on disk won't be deleted.`,
+      title: "Remove from catalogue",
+      message: `Remove ${n} photo${s} from the catalogue? ${n === 1 ? "Its" : "Their"} edits, ratings and labels are discarded. The original file${s} on disk won't be deleted.`,
       confirmLabel: "Remove",
       variant: "danger",
     }).finally(() => {
@@ -120,7 +120,7 @@ function handleCullingKey(e: KeyboardEvent): void {
   if (typesIntoField(e)) return;
 
   // Ctrl/Cmd+A selects every photo currently shown (active folder + filters),
-  // not the whole catalog. Skip when a text field is focused so its native
+  // not the whole catalogue. Skip when a text field is focused so its native
   // select-all still works.
   if (
     (e.ctrlKey || e.metaKey) &&
@@ -169,7 +169,7 @@ function handleCullingKey(e: KeyboardEvent): void {
     if (targetIds.length === 0) return;
     e.preventDefault();
     const color = LABELS[action];
-    // Pressing the same color again clears it (toggle off).
+    // Pressing the same colour again clears it (toggle off).
     const ids = new Set(targetIds);
     const allHaveColor = catalog.photos
       .filter((p) => ids.has(p.id))
@@ -223,7 +223,7 @@ function handleCullingKey(e: KeyboardEvent): void {
     const id = catalog.activePhotoId ?? targetIds[0];
     if (!id) return;
     e.preventDefault();
-    // The photo surface owns the rename dialog; hand it the photo to edit.
+    // The photo surface owns the rename dialogue; hand it the photo to edit.
     window.dispatchEvent(new CustomEvent("sl-rename-photo", { detail: { id } }));
     return;
   }
@@ -231,7 +231,7 @@ function handleCullingKey(e: KeyboardEvent): void {
   if (action === "photo.copySettings") {
     if (targetIds.length !== 1) return;
     e.preventDefault();
-    // The photo surface owns the checklist dialog, as it does for rename.
+    // The photo surface owns the checklist dialogue, as it does for rename.
     window.dispatchEvent(new CustomEvent("sl-copy-settings", { detail: { id: targetIds[0] } }));
     return;
   }

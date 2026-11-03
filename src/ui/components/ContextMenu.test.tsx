@@ -135,7 +135,7 @@ describe("ContextMenu keyboard", () => {
 });
 
 describe("ContextMenu escape", () => {
-  it("stays below a dialog opened after it, however often the menu re-renders", () => {
+  it("stays below a dialogue opened after it, however often the menu re-renders", () => {
     const menuItems: ContextMenuEntry[] = [{ label: "Open", onClick: () => {} }];
     const first = vi.fn();
     const { rerender } = render(<ContextMenu x={0} y={0} items={menuItems} onClose={first} />);

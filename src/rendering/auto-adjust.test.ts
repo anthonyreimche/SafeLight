@@ -104,7 +104,7 @@ describe("whiteBalanceStepFromLinear", () => {
     expect(first.done).toBe(false);
   });
 
-  it("keeps every step inside the slider ranges and on the UI quantisation", () => {
+  it("keeps every step inside the slider ranges and on the UI quantization", () => {
     const extremes: Array<[number, number, number]> = [
       [0.001, 0.5, 1],
       [1, 0.5, 0.001],
@@ -126,7 +126,7 @@ describe("whiteBalanceStepFromLinear", () => {
   });
 
   it("ignores the as-shot reference: it cancels out of the solve", () => {
-    // Characterises current behaviour, not desired behaviour — see the report.
+    // Characterizes current behaviour, not desired behaviour — see the report.
     // Every gain is a ratio against the as-shot blackbody, and the current
     // temperature is expressed against the same reference, so it divides out of
     // both the Kelvin search and the tint solve.

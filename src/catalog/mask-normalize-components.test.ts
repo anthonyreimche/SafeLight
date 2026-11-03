@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Characterization of how saved masks and retouch spots are normalised on
+// Characterization of how saved masks and retouch spots are normalized on
 // load (normalizeMasks / normalizeRetouch in types.ts, reached through
 // normalizeParams): legacy single-geometry masks, component modes, geometry
 // clamps, dab filtering, and the MAX_MASKS / MAX_RETOUCH caps.
@@ -151,7 +151,7 @@ describe("legacy single-geometry masks", () => {
     expect(first.map((m) => m.components[0].id)).toEqual(["mask-0-c0", "mask-1-c0"]);
   });
 
-  it("gives identical ids when the same id-less data is normalised twice", () => {
+  it("gives identical ids when the same id-less data is normalized twice", () => {
     const raw: RawMask[] = [
       { type: "radial", radial: {} },
       { type: "linear", linear: { x0: 0.1, y0: 0.1, x1: 0.9, y1: 0.9 } },

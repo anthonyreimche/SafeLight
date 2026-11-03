@@ -5,7 +5,7 @@
 
 // The on-demand grid-preview queue: request order, dedup, the one-update-per-
 // frame flush, and the generation guard that keeps a previous project's reads
-// out of the newly opened catalog. The catalog store is the sink at the far end,
+// out of the newly opened catalogue. The catalogue store is the sink at the far end,
 // so it's stubbed; reads are driven through gated loaders so an "in flight"
 // moment is an actual point in the test, not a timing race.
 
@@ -477,7 +477,7 @@ describe("the cache of loaded previews", () => {
     expect(onEvict).toHaveBeenCalledWith(["a", "b"]);
   });
 
-  it("counts only the previews the catalog took", async () => {
+  it("counts only the previews the catalogue took", async () => {
     catalog.mergeThumbnails.mockImplementationOnce((updates) =>
       updates.filter((u) => u.id !== "a").map((u) => u.id),
     );

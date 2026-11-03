@@ -25,9 +25,9 @@ interface Props {
   onCancel: () => void;
 }
 
-/** Copy Settings dialog: the same adjustment checklist as Save Preset, so a copy
+/** Copy Settings dialogue: the same adjustment checklist as Save Preset, so a copy
  *  can carry as little as a single slider. Changed adjustments are pre-checked.
- *  Mirrors the Presets extension's save dialog, minus the name/group inputs. */
+ *  Mirrors the Presets extension's save dialogue, minus the name/group inputs. */
 export function CopySettingsDialog({
   params,
   paramBag,

@@ -13,7 +13,7 @@ export type RawPhotoOptions = Partial<CatalogPhoto> & {
   onRead?: () => void | Promise<void>;
 };
 
-/** A RAW's catalog record whose file handle serves its original under `name`:
+/** A RAW's catalogue record whose file handle serves its original under `name`:
  *  64 zero bytes unless `bytes` says otherwise. Any other option overrides the
  *  record's field. */
 export function rawPhoto(

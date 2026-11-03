@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Shell for the small single-purpose dialogs (rename, copy settings): a dimmed
+// Shell for the small single-purpose dialogues (rename, copy settings): a dimmed
 // backdrop that closes on outside click around a centred card. ModalWindow is
 // the draggable, titled window; this is its lightweight sibling with the same
 // modal contract — named by the caller's heading, focus moved in on open and
@@ -19,7 +19,7 @@ import { suspendShortcuts } from "@/state/keybindings-store";
 import { trapTab } from "@/ui/focus-trap";
 
 interface DialogProps {
-  /** Id of the visible heading that names the dialog. */
+  /** Id of the visible heading that names the dialogue. */
   labelledBy: string;
   onClose: () => void;
   /** Card classes (size, surface, border). */

@@ -33,7 +33,7 @@ describe("DevelopStage", () => {
     expect(surround()?.contains(screen.getByText("No photo selected"))).toBe(true);
   });
 
-  it("follows the theme's surround, and the ISO middle grey under color assessment", () => {
+  it("follows the theme's surround, and the ISO middle grey under colour assessment", () => {
     render(<DevelopStage zoom={null} onZoomChange={() => {}} />);
     expect(surround()?.style.background).toBe("var(--color-canvas-surround, var(--color-surface-0))");
 

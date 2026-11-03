@@ -543,7 +543,7 @@ describe("editing a named layout turns it into Custom", () => {
 });
 
 describe("toggling a panel from the View menu", () => {
-  it("opens it floating centered instead of re-docking at its default", () => {
+  it("opens it floating centred instead of re-docking at its default", () => {
     panel("ext.strip", {
       allowBottomDock: true,
       defaultDock: { module: "develop", direction: "bottom", height: 112 },
@@ -567,7 +567,7 @@ describe("toggling a panel from the View menu", () => {
     close();
   });
 
-  it("pins the window to the workspace center until it's dragged", () => {
+  it("pins the window to the workspace centre until it's dragged", () => {
     panel("ext.notes");
     const { close, view } = boot();
 
@@ -579,7 +579,7 @@ describe("toggling a panel from the View menu", () => {
     close();
   });
 
-  it("staggers a second centered window so the first stays visible", () => {
+  it("staggers a second centred window so the first stays visible", () => {
     panel("ext.a");
     panel("ext.b");
     const { close } = boot();
@@ -595,7 +595,7 @@ describe("toggling a panel from the View menu", () => {
     close();
   });
 
-  it("resizing a centered window keeps it centered", async () => {
+  it("resizing a centred window keeps it centred", async () => {
     panel("ext.notes");
     const { close, view } = boot();
 
@@ -615,7 +615,7 @@ describe("toggling a panel from the View menu", () => {
     close();
   });
 
-  it("keeps a centered window centered across a restart", async () => {
+  it("keeps a centred window centred across a restart", async () => {
     panel("ext.notes");
     let session = boot();
 
@@ -1330,7 +1330,7 @@ describe("a panel that replaces an old one", () => {
       session.close();
     });
 
-    it("drops a pending edit when the module is initialised again, rather than writing the reloaded layout", async () => {
+    it("drops a pending edit when the module is initialized again, rather than writing the reloaded layout", async () => {
       panel("core.info");
       panel("x.keep");
       const raw = JSON.stringify({

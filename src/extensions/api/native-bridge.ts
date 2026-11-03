@@ -18,23 +18,23 @@ import type {
 
 export type { NativeOpenTarget } from "./stores";
 
-/** One "separate" catalog folder, as listed by the Preferences manager. */
+/** One "separate" catalogue folder, as listed by the Preferences manager. */
 export interface ExternalCatalogEntry {
   /** The per-source folder on disk — the reveal / delete target. */
   path: string;
   /** Folder leaf, e.g. "DCIM-1a2b3c4d" (source-name slug + path hash). */
   name: string;
-  /** The source folder this catalog was created for, or null if unrecorded
-   *  (catalogs created before source.json was written). */
+  /** The source folder this catalogue was created for, or null if unrecorded
+   *  (catalogues created before source.json was written). */
   sourcePath: string | null;
   /** Creation time (ms since epoch), or null if unrecorded. */
   createdAt: number | null;
-  /** Total size on disk in bytes (catalog + previews + RAW cache). */
+  /** Total size on disk in bytes (catalogue + previews + RAW cache). */
   bytes: number;
   /** Last-modified time of the folder (ms since epoch), 0 if unknown. */
   mtimeMs: number;
-  /** What the source held when the catalog was last opened, to tell apart the
-   *  catalogs of cards mounted at one path: how many photos, when, and the
+  /** What the source held when the catalogue was last opened, to tell apart the
+   *  catalogues of cards mounted at one path: how many photos, when, and the
    *  names of a few. Null / empty when unrecorded. */
   photoCount?: number | null;
   lastOpenedAt?: number | null;
@@ -66,10 +66,10 @@ export interface NativeFsBridge {
   mkdir(path: string): Promise<void>;
   /** Resolve a separate .safelight working directory for a project folder, under
    *  `baseOverride` or the app's data dir, keyed by the source path so each folder
-   *  keeps its own catalog. With `create` (default true) the directory is created
+   *  keeps its own catalogue. With `create` (default true) the directory is created
    *  and its path returned; with `create === false` it's an existence probe that
-   *  returns the path only if a catalog already lives there, else null. `variant`
-   *  (default 1) picks the source's further catalogs, for another card mounted at
+   *  returns the path only if a catalogue already lives there, else null. `variant`
+   *  (default 1) picks the source's further catalogues, for another card mounted at
    *  the same path. Absent on older Electron builds — callers must feature-detect. */
   externalCatalogDir?(
     rootPath: string,
@@ -77,18 +77,18 @@ export interface NativeFsBridge {
     create?: boolean,
     variant?: number,
   ): Promise<string | null>;
-  /** The `variant`s of a project folder's separate catalogs under `baseOverride`
-   *  (or the app data dir) that hold a catalog, ascending. Absent on older
+  /** The `variant`s of a project folder's separate catalogues under `baseOverride`
+   *  (or the app data dir) that hold a catalogue, ascending. Absent on older
    *  Electron builds — feature-detect. */
   externalCatalogVariants?(rootPath: string, baseOverride?: string | null): Promise<number[]>;
-  /** List the "separate" catalogs stored under `baseOverride` (or the app data
+  /** List the "separate" catalogues stored under `baseOverride` (or the app data
    *  dir) for the Preferences manager. Each entry's `path` is the per-source
    *  folder to reveal or delete. Absent on older Electron builds — feature-detect. */
   listExternalCatalogs?(baseOverride?: string | null): Promise<ExternalCatalogEntry[]>;
-  /** Spillover pointer: record / look up / clear which separate catalog a
+  /** Spillover pointer: record / look up / clear which separate catalogue a
    *  read-only source spilled into. Stored under the app-data default (not the
    *  configured base), so a later writeable open can fold the spillover back no
-   *  matter which "Separate catalog location" is set then. Absent on older
+   *  matter which "Separate catalogue location" is set then. Absent on older
    *  Electron builds — feature-detect. */
   setSpilloverPointer?(rootPath: string, spilloverDir: string): Promise<void>;
   getSpilloverPointer?(rootPath: string): Promise<string | null>;
@@ -100,7 +100,7 @@ export interface NativeFsBridge {
   move(src: string, dest: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   pickDirectory(): Promise<string | null>;
-  /** Pick one file with the OS dialog; null when cancelled. Absent on older
+  /** Pick one file with the OS dialogue; null when cancelled. Absent on older
    *  Electron builds — feature-detect. */
   pickFile?(filters?: { name: string; extensions: string[] }[]): Promise<string | null>;
   /** Reveal a path in the OS file manager — open a directory, or select a file
@@ -123,11 +123,11 @@ export interface NativeUpdatesBridge {
 
 export type UpdateSupport = "install" | "release-page";
 
-/** Window capture for the Report an issue dialog. Privileged so extensions
+/** Window capture for the Report an issue dialogue. Privileged so extensions
  *  can't take silent captures of the whole window. */
 export interface NativeCaptureBridge {
   /** The sender window as PNG bytes, long edge at most 1920 px; null when the
-   *  window can't be captured (minimised, some Wayland setups). */
+   *  window can't be captured (minimized, some Wayland setups). */
   page(): Promise<Uint8Array<ArrayBuffer> | null>;
 }
 
@@ -142,24 +142,34 @@ export interface NativeCrashRecord {
   name?: string;
 }
 
-/** How Safelight draws on Linux, where the graphics backend is picked before
- *  the window exists and a change applies at the next start. */
+/** How Safelight draws. The graphics backend is picked before the window
+ *  exists, so a change applies at the next start. */
 export interface NativeGpuBackendState {
   /** This launch draws in software (SwiftShader) instead of on the graphics card. */
   software: boolean;
   /** The next launch will draw in software. */
   nextSoftware: boolean;
-  /** Why the next launch draws in software: the user turned it on ("chosen"),
+  /** Why the next launch draws in software: the user picked it ("chosen"),
    *  or the graphics card failed. Null when it uses the graphics card. */
   reason: "chosen" | "webgl2-unavailable" | "gpu-crashes" | "renderer-failed" | null;
+  /** The ANGLE backend this launch draws with ("gl", "d3d11", "swiftshader", …). */
+  backend: string;
+  /** The backend the next launch starts on. */
+  next: string;
+  /** The backend the user picked, or null for Automatic. */
+  choice: string | null;
+  /** This platform's backends, in the order Automatic tries them. */
+  backends: string[];
 }
 
-/** Preferences ▸ Rendering ▸ Software rendering. Privileged so extensions
+/** Preferences ▸ Rendering ▸ Graphics backend. Privileged so extensions
  *  can't change how every later launch draws. */
 export interface NativeGpuBridge {
   /** Null when the main process reports no backend (a build without the GPU ladder). */
   backend(): Promise<NativeGpuBackendState | null>;
   setSoftware(on: boolean): Promise<NativeGpuBackendState | null>;
+  /** Pins one of `backends` for later launches; null goes back to Automatic. */
+  setBackend(choice: string | null): Promise<NativeGpuBackendState | null>;
   /** The develop renderer couldn't start on this launch's graphics backend
    *  however often it tried: the next launch draws in software. */
   rendererFailed(detail: string): Promise<NativeGpuBackendState | null>;
@@ -226,7 +236,7 @@ declare global {
       /** GitHub repo metadata + README proxy for the Extensions store detail view.
        *  Optional: absent in the plain-browser build and older Electron builds. */
       github?: {
-        /** Normalised repo metadata for "owner/repo". */
+        /** Normalized repo metadata for "owner/repo". */
         repoMeta(repo: string): Promise<ExtensionRepoMeta>;
         /** Raw README text for "owner/repo" at `ref`, or null if none exists. */
         readme(repo: string, ref?: string): Promise<string | null>;
@@ -249,7 +259,7 @@ declare global {
       plugins: {
         list(): Promise<ExtensionManifest[]>;
         /** Browse official extensions. For the default topic this serves the
-         *  prebuilt registry index (one CDN fetch, whole catalog, baked
+         *  prebuilt registry index (one CDN fetch, whole catalogue, baked
          *  thumbnails); a custom topic — or an unreachable index — falls back to a
          *  live GitHub Search. Cached; pass `force` to bypass the cache. */
         search(

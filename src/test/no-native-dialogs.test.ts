@@ -41,7 +41,7 @@ function* sourceFiles(dir: string): Generator<string> {
   }
 }
 
-describe("renderer dialog policy", () => {
+describe("renderer dialogue policy", () => {
   it.each([
     'window.confirm("Delete?")',
     'window . alert("Saved")',

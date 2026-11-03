@@ -5,7 +5,7 @@
 
 // The import pipeline's public surface. The work lives in import-decode (the
 // decode chain), import-record (building a photo), import-passes (background
-// passes over the catalog) and cache-pass (the develop-preview cache fill).
+// passes over the catalogue) and cache-pass (the develop-preview cache fill).
 
 export { isSupportedName, buildPreviewBlob, importPhoto, buildPhoto } from "./import-record";
 export {

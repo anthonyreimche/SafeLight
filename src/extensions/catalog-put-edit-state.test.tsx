@@ -6,7 +6,7 @@
 // An extension writing a photo's edit through api.catalog.putEditState, e.g. a
 // batch Auto in Library that includes the photo Develop holds. Develop's next
 // commit writes back the history it holds, so that photo must reload from the
-// catalog, or the extension's step is lost.
+// catalogue, or the extension's step is lost.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeScopedAPI } from "./host";

@@ -170,7 +170,7 @@ describe("folder scoping", () => {
   const scoped = (folder: string | null) =>
     ids(visiblePhotos(photos, NO_FILTER, "filename", "asc", folder));
 
-  it("shows the whole catalog for the All Photos scope, whatever the preference", () => {
+  it("shows the whole catalogue for the All Photos scope, whatever the preference", () => {
     expect(scoped(null)).toHaveLength(photos.length);
     h.settings.showSubfolderPhotos = true;
     expect(scoped(null)).toHaveLength(photos.length);
@@ -193,7 +193,7 @@ describe("folder scoping", () => {
 
   it("lets the project root honour the preference too", () => {
     // "" is a prefix of every path, so the root node is special-cased: it only
-    // widens to the whole catalog when the user asked for subfolders.
+    // widens to the whole catalogue when the user asked for subfolders.
     h.settings.showSubfolderPhotos = true;
     expect(scoped("")).toHaveLength(photos.length);
   });
@@ -229,7 +229,7 @@ describe("sorting", () => {
     ]);
   });
 
-  it("falls back to dateImported for an unrecognised sort id", () => {
+  it("falls back to dateImported for an unrecognized sort id", () => {
     const photos = [
       photo({ id: "second", dateImported: 20 }),
       photo({ id: "first", dateImported: 10 }),

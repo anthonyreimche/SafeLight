@@ -6,7 +6,7 @@
 // Appending a snapshot to a stored edit without opening Develop: the baseline
 // comes from the stored cursor, a refusal writes nothing, and the photo that is
 // open in Develop is reloaded so its next commit can't overwrite the new step.
-// Many photos at once go to the catalog in one write.
+// Many photos at once go to the catalogue in one write.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -593,7 +593,7 @@ describe("appendStoredSnapshots — the photo open in Develop", () => {
 });
 
 describe("storedSnapshotTargets", () => {
-  it("lists the catalog photos among the ids, in order, with their as-shot temperature", () => {
+  it("lists the catalogue photos among the ids, in order, with their as-shot temperature", () => {
     useCatalogStore.setState({
       photos: [photo("a"), { ...photo("b"), exif: { colorTemperature: 4300 } }],
     });

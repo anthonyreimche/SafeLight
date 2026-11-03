@@ -110,7 +110,7 @@ export function readDevelopSourceSample(): Promise<SourceSample | null> {
   return getRenderBridge().readSourceSample();
 }
 
-/** Render an arbitrary catalog photo by id through the full develop pipeline with
+/** Render an arbitrary catalogue photo by id through the full develop pipeline with
  *  `params` (and that photo's own extension-stage `paramBag`) to an ImageBitmap,
  *  off-screen. Unlike captureFrame this is NOT tied to the live Develop source,
  *  so it measures the requested photo even when another (or none) is open —

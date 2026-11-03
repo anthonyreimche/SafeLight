@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The rename dialog is the last gate before a name reaches the filesystem, so
+// The rename dialogue is the last gate before a name reaches the filesystem, so
 // its job is to refuse everything the disk would refuse — blank, illegal
 // characters, a name already spoken for — and to hand back exactly the text the
 // user meant, trimmed.
@@ -144,7 +144,7 @@ describe("dismissing", () => {
   });
 
   it("cancels on a click outside the card but not inside it", async () => {
-    // The backdrop is the dialog's own root element; only a click that lands on
+    // The backdrop is the dialogue's own root element; only a click that lands on
     // it (rather than bubbling from the card) dismisses.
     const { user, container, field, onCancel } = setup();
     await user.click(field);
@@ -156,7 +156,7 @@ describe("dismissing", () => {
 });
 
 describe("as a modal", () => {
-  it("is a named modal dialog that opens with the field focused", () => {
+  it("is a named modal dialogue that opens with the field focused", () => {
     const { field } = setup();
     const dialog = screen.getByRole("dialog", { name: TITLE });
     expect(dialog.getAttribute("aria-modal")).toBe("true");

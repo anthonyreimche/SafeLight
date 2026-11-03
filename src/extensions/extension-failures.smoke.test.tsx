@@ -201,7 +201,7 @@ describe("smoke: broken extensions at launch", () => {
     useProjectStore.setState({ root: { name: "shoot" } as FileSystemDirectoryHandle });
     render(<App />);
     expect(screen.getByText("library view")).toBeTruthy();
-    expect(screen.getByText("0 photos in catalog")).toBeTruthy();
+    expect(screen.getByText("0 photos in catalogue")).toBeTruthy();
   });
 
   it("names the stage the render worker couldn't compile on its extension's row", async () => {

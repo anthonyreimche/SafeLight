@@ -41,7 +41,7 @@ export function parseLongEdge(text: string): number | null {
 }
 
 // The two host surfaces style their option chips differently (the Export
-// panel's muted buttons vs. the Preferences dialog's filled OptionRow chips).
+// panel's muted buttons vs. the Preferences dialogue's filled OptionRow chips).
 const VARIANTS = {
   panel: {
     container: "grid grid-cols-2 gap-1",

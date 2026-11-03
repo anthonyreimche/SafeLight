@@ -14,7 +14,7 @@
 const path = require("node:path");
 
 // A kill between the temp write and the rename leaves `<name>.tmp-<hex>` behind;
-// for a catalog that is megabytes per crash. A temp file this much older than now
+// for a catalogue that is megabytes per crash. A temp file this much older than now
 // can't belong to a write that is still going.
 const ORPHAN_AGE_MS = 10 * 60 * 1000;
 const TEMP_NAME = /\.tmp-[0-9a-f]+$/i;
@@ -22,7 +22,7 @@ const TEMP_NAME = /\.tmp-[0-9a-f]+$/i;
 const inFlight = new Set();
 
 function createAtomicWriter({ fsp, randomId, retry }) {
-  const slots = new Map(); // normalised path -> { next: job | null }
+  const slots = new Map(); // normalized path -> { next: job | null }
   const swept = new Set(); // directories already swept by this writer
   let idle = [];
 

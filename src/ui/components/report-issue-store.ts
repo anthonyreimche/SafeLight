@@ -19,14 +19,14 @@ export interface ReportIssueState {
   prefill: ReportPrefill | null;
   /** The window as it was when Report an issue was clicked. */
   screenshot: Blob | null;
-  /** Kept in memory while the dialog is closed, until a report is sent. */
+  /** Kept in memory while the dialogue is closed, until a report is sent. */
   draft: ReportDraft;
 }
 
 // The fallback when the main process can't serve its local redirect: Electron
 // caps shell.openExternal at 2081 characters on Windows.
 const OS_LINK_BUDGET = 2000;
-// A capture that never answers must not keep the dialog from opening.
+// A capture that never answers must not keep the dialogue from opening.
 const CAPTURE_TIMEOUT_MS = 3000;
 
 export const useReportIssue = create<ReportIssueState>(() => ({

@@ -645,7 +645,7 @@ describe("stage rows", () => {
     expect(rows.some((r) => r.kind === "core" && r.label === "HSL")).toBe(false);
     expect(rows[at - 1]).toMatchObject({ kind: "stage", id: "safelight.basic.vibrance", owner: "safelight.basic" });
     expect(rows[at + 1]).toMatchObject({ kind: "stage", id: "safelight.detail.sharpen", owner: "safelight.detail" });
-    for (const label of ["Sharpening", "Color Grading"])
+    for (const label of ["Sharpening", "Colour Grading"])
       expect(rows.some((r) => r.kind === "core" && r.label === label)).toBe(false);
     expect(stageRow(rows, "safelight.color-grading.grade")).toMatchObject({
       owner: "safelight.color-grading",

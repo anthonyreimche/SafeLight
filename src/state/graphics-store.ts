@@ -41,7 +41,7 @@ export function graphicsUnavailableDetail(reason: string | null): string {
 }
 
 export const GRAPHICS_STILL_WORKS =
-  "You can still browse, rate and organise photos; editing and export need graphics support.";
+  "You can still browse, rate and organize photos; editing and export need graphics support.";
 
 /** Tries a WebGL2 context. A missing WebGL2 is kept for the session; one that
  *  started is looked at again, since a GPU process that gives up takes it away. */
@@ -75,6 +75,20 @@ function takeBackend(state: NativeGpuBackendState | null): void {
 
 export async function readGpuBackend(): Promise<void> {
   takeBackend((await privilegedGpu()?.backend().catch(() => null)) ?? null);
+}
+
+/** Preferences ▸ Rendering ▸ Graphics backend: reads or changes the backend
+ *  and keeps the notice's view of it current. Throws when the bridge does. */
+export async function readGraphicsBackend(): Promise<NativeGpuBackendState | null> {
+  const state = (await privilegedGpu()?.backend()) ?? null;
+  takeBackend(state);
+  return state;
+}
+
+export async function chooseGraphicsBackend(choice: string | null): Promise<NativeGpuBackendState | null> {
+  const state = (await privilegedGpu()?.setBackend(choice)) ?? null;
+  takeBackend(state);
+  return state;
 }
 
 /** Asks the next launch to draw in software; it doesn't change this one. */

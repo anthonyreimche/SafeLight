@@ -3,12 +3,12 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Prebuilt registry index: a static catalog of every published extension,
+// Prebuilt registry index: a static catalogue of every published extension,
 // regenerated server-side by a GitHub Action in the registry repo
 // (TRUST_REGISTRY) and committed as registry.json. The store fetches this ONE
 // CDN-cached file instead of running a live GitHub Search + a per-card icon/og
 // resolution on every machine: one request, no API rate limit, the COMPLETE
-// catalog (not the search endpoint's first page of 25), and the thumbnails
+// catalogue (not the search endpoint's first page of 25), and the thumbnails
 // already resolved. This is how the store loads the full list fast; the live
 // search (search.cjs) stays as the fallback.
 
@@ -20,7 +20,7 @@ const { createRemoteJsonCache } = require("../remote-json-cache.cjs");
 const { TRUST_REGISTRY } = require("./trust.cjs");
 
 const DEFAULT_EXT_TOPIC = "safelight-extension";
-const REGISTRY_INDEX_TTL_MS = 60 * 60 * 1000; // catalog turns over slowly; 1h
+const REGISTRY_INDEX_TTL_MS = 60 * 60 * 1000; // catalogue turns over slowly; 1h
 
 /**
  * @param {{
@@ -96,7 +96,7 @@ function createRegistryIndex({ net, userData, fileWriter }) {
           : null;
       if (!rows) return registryIndexCache ? registryIndexCache.items : null;
       const items = rows.map(normalizeRegistryEntry).filter(Boolean);
-      // Cached, an empty catalog would blank the store for the whole TTL.
+      // Cached, an empty catalogue would blank the store for the whole TTL.
       if (!usableIndex(items)) return registryIndexCache ? registryIndexCache.items : null;
       registryIndexCache = { at: Date.now(), items, vocabulary: parseVocabulary(body) };
       persistRegistryDisk();

@@ -8,7 +8,7 @@
 // idle pass fills the rest. A small window of reads runs concurrently — async
 // fs IPC handlers overlap in the main process (libuv pool), so a few in-flight
 // reads hide per-read round-trip latency without flooding it. Loaded blobs are
-// flushed to the catalog store in one batched update per frame to avoid a
+// flushed to the catalogue store in one batched update per frame to avoid a
 // render storm. The previews it loaded are capped (see CACHE_LIMIT): the oldest
 // are released and read again if their cell returns.
 
@@ -22,7 +22,7 @@ type Loader = (id: string) => Promise<LoadedPreview | null>;
 const CONCURRENCY = 3;
 
 /** How many photos the idle prefill reads past the cells on screen. A bigger
- *  catalog's other cells read their preview as they scroll into view. */
+ *  catalogue's other cells read their preview as they scroll into view. */
 export const THUMBNAIL_PREFILL_LIMIT = 2000;
 
 /** How many loaded previews stay in memory. Past it the ones loaded longest ago go
@@ -41,7 +41,7 @@ interface LoaderOptions {
 let loader: Loader | null = null;
 let cacheLimit = CACHE_LIMIT;
 let onEvict: LoaderOptions["onEvict"];
-// Previews this loader put in the catalog, oldest first: a read or reload moves
+// Previews this loader put in the catalogue, oldest first: a read or reload moves
 // its photo to the end. The blob names which preview is ours to release.
 const resident = new Map<string, LoadedPreview>();
 let gen = 0;
@@ -208,7 +208,7 @@ function pump(): void {
         blob = null;
       }
       // A newer open may have swapped the project during the read; its blob must
-      // not merge into the new catalog under this id.
+      // not merge into the new catalogue under this id.
       if (!blob || gen !== myGen) return;
       if (reloads) {
         useCatalogStore.getState().replaceThumbnail(id, blob);

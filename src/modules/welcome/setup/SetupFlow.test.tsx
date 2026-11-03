@@ -56,7 +56,7 @@ describe("SetupFlow", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("is a modal dialog named by the step heading, with focus on it", async () => {
+  it("is a modal dialogue named by the step heading, with focus on it", async () => {
     await show();
     const dialog = screen.getByRole("dialog", { name: "Pick a look" });
     expect(dialog.getAttribute("aria-modal")).toBe("true");

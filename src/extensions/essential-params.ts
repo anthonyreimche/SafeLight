@@ -50,7 +50,7 @@ export const ESSENTIAL_ADJUSTMENTS: readonly EssentialAdjustments[] = [
     ],
   },
   { id: "safelight.tone-curve", name: "Tone Curve", params: ["toneCurve"] },
-  { id: "safelight.color-grading", name: "Color Grading", params: ["colorGrading"] },
+  { id: "safelight.color-grading", name: "Colour Grading", params: ["colorGrading"] },
   {
     id: "safelight.detail",
     name: "Detail",

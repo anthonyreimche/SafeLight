@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Each write of a photo's edit reads what the catalog holds and builds on it,
+// Each write of a photo's edit reads what the catalogue holds and builds on it,
 // one at a time per photo, so neither another window's steps nor an earlier
 // write from this one are lost: Develop's commits, undo and redo, and the steps
 // Paste Settings and Update processing append from the Library.

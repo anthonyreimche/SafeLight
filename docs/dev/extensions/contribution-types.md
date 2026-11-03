@@ -26,7 +26,7 @@ Every `register*` call, one line each, with a link to its full reference. [How S
 | [`setStageTexture`](../api/contributions.md#processingstagecontribution--gpu-stage) | Pixel data (a LUT, a table) for a texture a stage declares |
 | [`registerPipeline`](../api/contributions.md#pipelinecontribution--display-transform) | A display transform (tone mapper), picked per photo in Develop's bottom bar |
 
-## Catalog and Library
+## Catalogue and Library
 
 | Call | Adds |
 |---|---|
@@ -76,7 +76,7 @@ export function activate(api) {
 }
 ```
 
-## Example: owning a sidecar with catalog hooks
+## Example: owning a sidecar with catalogue hooks
 
 ```js
 export function activate(api) {

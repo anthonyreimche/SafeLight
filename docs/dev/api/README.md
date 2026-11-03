@@ -1,6 +1,6 @@
 # API Reference
 
-Every extension's `activate(api)` receives a scoped `SafelightAPI`. These pages summarise it. The full definition is `src/extensions/types.ts`, which is the source of truth. It re-exports the files in `src/extensions/api/`: `contributions.ts`, `scoped-api.ts` (the `SafelightAPI` itself), `store-types.ts`, `native-bridge.ts` and `variables.ts`. New here? Read [How Safelight works](../concepts.md) and [Building Extensions](../extensions/README.md) first.
+Every extension's `activate(api)` receives a scoped `SafelightAPI`. These pages summarize it. The full definition is `src/extensions/types.ts`, which is the source of truth. It re-exports the files in `src/extensions/api/`: `contributions.ts`, `scoped-api.ts` (the `SafelightAPI` itself), `store-types.ts`, `native-bridge.ts` and `variables.ts`. New here? Read [How Safelight works](../concepts.md) and [Building Extensions](../extensions/README.md) first.
 
 ## Pages
 

@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Containment for extension code the core waits on. Starting extensions and
-// running catalog hooks happen one after another, so one bundle that throws or
+// running catalogue hooks happen one after another, so one bundle that throws or
 // never finishes would otherwise stall every extension or import behind it. The
 // callbacks the core calls while it renders (a grid filter, a sort) are
 // contained too: one that throws would otherwise take the window down.
@@ -16,7 +16,7 @@ import type { ExtensionModule, SafelightAPI } from "./types";
  *  moves on. */
 export const EXTENSION_TIMEOUT_MS = 15_000;
 
-/** How long a catalog hook gets to finish. Longer than a start: a hook may wait
+/** How long a catalogue hook gets to finish. Longer than a start: a hook may wait
  *  on the network, e.g. to look up where a photo was taken. */
 export const CATALOG_HOOK_TIMEOUT_MS = 60_000;
 
@@ -130,7 +130,9 @@ export function createLoadTracker<T>() {
 
 // Calls in a namespace (api.settings.onChange, api.develop.setParam) that add
 // a listener or change state, by name, and the writers whose names don't say
-// so. Others there are components, hooks and readers, left as they are.
+// so. Others there are components, hooks and readers, left as they are. The
+// dialogues are fenced too: a stale start's question would stand in front of the
+// live copy and hold back the app's shortcuts until answered.
 const FENCED_CALL = /^(on|register|set|subscribe)([A-Z]|$)/;
 const SUBSCRIBE_CALL = /^(on|subscribe)([A-Z]|$)/;
 const FENCED_WRITERS = new Set([
@@ -140,7 +142,18 @@ const FENCED_WRITERS = new Set([
   "renamePhoto",
   "apply",
   "togglePanel",
+  "confirmDialog",
+  "alertDialog",
 ]);
+
+/** What a call refused while a stale copy stops hands back: a dialogue still
+ *  answers with a promise, so a deactivate that chains on it runs on (a
+ *  confirmation reads as declined). */
+function refusedAnswer(key: string): unknown {
+  if (key === "confirmDialog") return Promise.resolve(false);
+  if (key === "alertDialog") return Promise.resolve();
+  return undefined;
+}
 
 /** `api` with the calls a stale start could change the live copy with refused
  *  once `signal` aborts: every top-level call (all register, unregister and
@@ -176,7 +189,7 @@ export function fenceAPI(
           if (typeof value === "function" && fenced(key)) {
             const subscribes = subscriptions !== undefined && SUBSCRIBE_CALL.test(key);
             wrapper = (...args: unknown[]) => {
-              if (refused()) return undefined;
+              if (refused()) return refusedAnswer(key);
               const result: unknown = Reflect.apply(value, t, args);
               if (subscribes && typeof result === "function") subscriptions.add(result as () => void);
               return result;

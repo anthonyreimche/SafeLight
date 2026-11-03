@@ -24,7 +24,8 @@ import type { Vec3 } from "@/rendering/stage-space";
 import { deriveStageValues } from "../stage-derive";
 import { WebGLRenderer, type StageDerive, type WebGLRendererOpts } from "./renderer";
 import { BASIC_EXTENSION_ID, CROP_EXTENSION_ID, DETAIL_EXTENSION_ID, HEAL_EXTENSION_ID, MASKS_EXTENSION_ID, essentialStages, type EssentialLine } from "./essential-stages.fixtures";
-import { V2_VARIANT } from "./shaders";
+import { withProcessVersion } from "./program-cache";
+import { V2_VARIANT, type ProcessVersion } from "./shaders";
 import { PASS_VERTEX_SHADER, buildStageInjection } from "./stage-injection";
 
 export interface GlHarness {
@@ -168,19 +169,22 @@ export function withRenderer<T>(
 }
 
 /** Compile every pass of every prepass stage these options imply, on the shared
- *  context. The stages are the ones the renderer resolves for the options. Pass
- *  programs don't depend on the process version, so one injection stands for
- *  both. Throws with the info log of the first pass that fails. */
-function compilePassPrograms(opts: WebGLRendererOpts | undefined): void {
+ *  context, under each of `versions`. The stages are the ones the renderer
+ *  resolves for the options. A pass's source doesn't depend on the process
+ *  version, so one injection stands for all; the version is defined at compile
+ *  time. Throws with the info log of the first pass that fails. */
+function compilePassPrograms(opts: WebGLRendererOpts | undefined, versions: Iterable<ProcessVersion>): void {
   const { gl } = glHarness();
   const given = opts?.stages ?? [];
   const set = typeof given === "function" ? given() : given;
   const stages = Array.isArray(set) ? set : Object.values(set);
   for (const stage of buildStageInjection(stages, V2_VARIANT).prepass) {
     stage.passes.forEach((pass, index) => {
-      const build = buildProgram(gl, PASS_VERTEX_SHADER, pass.fragmentSource);
-      releaseProgram(gl, build);
-      if (build.error) throw new Error(`${stage.stageId} pass ${index}: ${build.error}`);
+      for (const version of versions) {
+        const build = buildProgram(gl, PASS_VERTEX_SHADER, withProcessVersion(pass.fragmentSource, version));
+        releaseProgram(gl, build);
+        if (build.error) throw new Error(`${stage.stageId} pass ${index} (version ${version}): ${build.error}`);
+      }
     });
   }
 }
@@ -208,21 +212,22 @@ export function rendererBuildError(opts?: WebGLRendererOpts): string | null {
     ...opts,
     onStageQuarantined: (q) => quarantined.push(`${q.stageId}: ${q.log}`),
   };
+  // The newest version first, version 2 unless the options raise the cap:
+  // with the stock transform and no stages, a fresh renderer's signatures
+  // already match a version 2 frame.
+  const newest = opts?.processVersionCap ?? CURRENT_PROCESS_VERSION;
+  const versions = new Set<ProcessVersion>([newest, CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION]);
   try {
     withRenderer(reporting, (renderer) => {
       renderer.setImage(floatImage(1, 1, () => [0.18, 0.18, 0.18]));
-      // The newest version first, version 2 unless the options raise the cap:
-      // with the stock transform and no stages, a fresh renderer's signatures
-      // already match a version 2 frame.
-      const newest = opts?.processVersionCap ?? CURRENT_PROCESS_VERSION;
-      for (const processVersion of new Set([newest, CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION])) {
+      for (const processVersion of versions) {
         renderer.setParams(identityParams({ processVersion }));
         renderer.render();
       }
     });
     if (quarantined.length > 0) return quarantined[0];
     if (fallbacks.length > 0) return fallbacks[0];
-    compilePassPrograms(opts);
+    compilePassPrograms(opts, versions);
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
@@ -464,7 +469,7 @@ export function worstDifference(
 
 /** Read-back tolerance. The tone-curve LUT is a 256-entry 8-bit texture sampled
  *  with LINEAR filtering, so even an identity curve round-trips with ~1/512 of
- *  error, and the RGBA16F capture target adds half-float quantisation on top. */
+ *  error, and the RGBA16F capture target adds half-float quantization on top. */
 export const PIXEL_TOLERANCE = 0.005;
 
 export interface GlObjectCounts {

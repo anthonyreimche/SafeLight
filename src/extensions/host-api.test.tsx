@@ -80,7 +80,7 @@ describe("core components and stores for the panels", () => {
     expect(components.ResolutionControl).toBe(ResolutionControl);
   });
 
-  it("adds the confirm dialog to the UI kit", () => {
+  it("adds the confirm dialogue to the UI kit", () => {
     const { ui } = api();
     expect(ui.confirmDialog).toBe(confirmDialog);
     expect(ui.Button).toBe(uiKit.Button);
@@ -165,7 +165,7 @@ describe("api.presets", () => {
     expect(result.current.map((i) => i.id)).toEqual(["ext.importer.cube"]);
   });
 
-  it("lists the savable fields as the save dialog does", () => {
+  it("lists the savable fields as the save dialogue does", () => {
     const params = { ...DEFAULT_DEVELOP_PARAMS, exposure: 1 };
     const fields = api().presets.fields(params, {});
     expect(fields).toEqual(presetFields(params, [], { bagKeys: [], bagDefaults: {}, changed: false }));
@@ -247,7 +247,7 @@ describe("api.catalog.readPreview", () => {
     readPreview,
   });
 
-  it("reads the grid preview from the project without holding it, and leaves the catalog as it is", async () => {
+  it("reads the grid preview from the project without holding it, and leaves the catalogue as it is", async () => {
     const blob = new Blob(["preview"]);
     const readPreview = vi.fn(async () => blob);
     setCatalogStorage(storageReading(readPreview));

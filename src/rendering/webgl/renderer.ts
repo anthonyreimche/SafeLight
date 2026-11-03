@@ -44,6 +44,7 @@ import {
   ProgramCache,
   createProgram,
   isolateFailingStages,
+  type FailingStage,
   type PipelineProgram,
 } from "./program-cache";
 import {
@@ -376,7 +377,7 @@ export class WebGLRenderer {
    *  and the others would pay a downscale on every upload for nothing. */
   keepSourcePixels = false;
   private maxEdge = MAX_EDGE;
-  // Output color space. Live develop/thumbnails stay sRGB (a no-op in the
+  // Output colour space. Live develop/thumbnails stay sRGB (a no-op in the
   // shader); export sets a wider space so the encode + ICC match.
   private outSpace: ColorSpaceId = "srgb";
   // The monitor's profile (Linux, Preferences ▸ Rendering), for the live view.
@@ -493,7 +494,7 @@ export class WebGLRenderer {
     this.initCoverageTexture(this.maskTexture);
   }
 
-  // Whether float color buffers are renderable (EXT_color_buffer_float). This one
+  // Whether float colour buffers are renderable (EXT_color_buffer_float). This one
   // flag governs the entire pipeline's working precision: when false, every
   // intermediate (ping-pong targets, histogram readback) is RGBA8, so even a
   // 16-bit source is crushed to 8 bits at the first pass and any tonal stretch
@@ -749,10 +750,10 @@ export class WebGLRenderer {
     drainErrors(gl);
     if ("kind" in image) {
       // Linear float (RAW) path — upload as RGBA16F so the develop pipeline keeps
-      // ~10-bit precision AND real HDR headroom. The previous code quantised to 8-bit
+      // ~10-bit precision AND real HDR headroom. The previous code quantized to 8-bit
       // sRGB (mipmaps need a filterable+renderable format), which meant a +5 exposure
       // (×32) stretched ~50 code values across the bright sky into visible bands, and
-      // because R/G/B quantise independently their ratios stepped → rainbow posterising.
+      // because R/G/B quantize independently their ratios stepped → rainbow posterizing.
       // 16-bit float removes that. WebGL2 can't generateMipmap on RGBA16F without
       // float colour buffers, so the mip chain for the local-contrast taps is built
       // by hand below.
@@ -1025,7 +1026,7 @@ export class WebGLRenderer {
     return regionOutputSize(this.imageWidth, this.imageHeight, this.drawnCrop, this.maxEdge);
   }
 
-  // Output color space for subsequent renders. Default sRGB matches the screen;
+  // Output colour space for subsequent renders. Default sRGB matches the screen;
   // export uses this to convert pixels (and pairs it with an embedded ICC).
   get bufferWidth(): number { return this.canvas.width; }
   get bufferHeight(): number { return this.canvas.height; }
@@ -1394,6 +1395,13 @@ export class WebGLRenderer {
       lost,
     );
     if (failing.length === 0 || lost()) return false;
+    this.quarantine(failing, variant);
+    return true;
+  }
+
+  /** Leave `failing` out of `variant`'s programs until each is registered
+   *  changed, and tell the owner of each. */
+  private quarantine(failing: readonly FailingStage<ProcessingStageContribution>[], variant: ShaderVariant): void {
     this.quarantinedFrom = this.currentStageIds();
     const vk = variantKey(variant);
     for (const { stage, log } of failing) {
@@ -1406,6 +1414,25 @@ export class WebGLRenderer {
     }
     this.injectionMemo = null;
     this.copiesMemo = null;
+  }
+
+  /** An extension stage whose pass failed this frame has no result for its
+   *  inline glsl, which would read the raw source in its place (a glow lifting
+   *  the whole frame): it is quarantined as a stage whose own glsl doesn't
+   *  build is. True when one was, and the frame must be drawn again without it.
+   *  A lost context fails every pass, which says nothing of the stage. */
+  private quarantineFailedPasses(): boolean {
+    const failures = this.prepass.failedPasses;
+    if (failures.length === 0 || this.gl.isContextLost()) return false;
+    const stages = this.stagesFor(this.variant);
+    const failing: FailingStage<ProcessingStageContribution>[] = [];
+    for (const { stageId, error } of failures) {
+      const stage = stages.find((s) => s.id === stageId);
+      if (!stage || isBuiltInStage(stage) || failing.some((f) => f.stage === stage)) continue;
+      failing.push({ stage, log: errorText(error) });
+    }
+    if (failing.length === 0) return false;
+    this.quarantine(failing, this.variant);
     return true;
   }
 
@@ -1522,7 +1549,7 @@ export class WebGLRenderer {
     this.programs.setCurrent(e);
     // Pass programs are keyed by stageSig; a stage-set change invalidates them
     // and the prepass result cache. No process version changes stageSig, so a
-    // photo on the other version keeps both.
+    // photo on the other version keeps both (each kept under its version).
     if (built.sig !== this.stageSig) {
       this.splitTokens.clear();
       // A stage that left the set (its extension was turned off) takes its
@@ -1562,7 +1589,7 @@ export class WebGLRenderer {
   // and the sharpening preview, which are for the eye: a frame an extension
   // measures (a gain map, which shadow clipping would paint blue) leaves them
   // out, as computeHistogram does. The view state itself is kept.
-  render(options: { viewOverlays?: boolean } = {}) {
+  render(options: { viewOverlays?: boolean } = {}): void {
     if (!this.hasImage || !this.params) return;
     const overlays = options.viewOverlays ?? true;
     this.syncPipeline();
@@ -1611,7 +1638,7 @@ export class WebGLRenderer {
     // float capture) read `c` as the output stage receives it, unencoded.
     const raw = this.redirect?.probe?.point === "output" || this.redirect?.measure === "pre-output";
     gl.uniform1i(u.uRawHistogram, raw ? 1 : 0);
-    // GLSL zero-initialises uniforms, and 0 is a valid split index: every
+    // GLSL zero-initializes uniforms, and 0 is a valid split index: every
     // draw but a split's must run with -1.
     gl.uniform1i(u.uSplitAt, -1);
     // The core block's luminance branch measures detail against the source's
@@ -1732,6 +1759,7 @@ export class WebGLRenderer {
           p,
         ),
       );
+      if (this.quarantineFailedPasses()) return this.render(options);
       // Pass 2 -> develop from the patched copy (now the spot is already gone,
       // so texture/clarity/sharpening can't invert it). Retouch off this pass.
       this.drawDevelop(developed, false, this.outputTarget());
@@ -1739,6 +1767,7 @@ export class WebGLRenderer {
       // No retouch (or no offscreen target): single pass. The in-shader retouch
       // is the fallback when the framebuffer can't be created.
       this.prepass.run(this.prepassFrame(this.imageTexture, `e${this.sourceEpoch}`, hasRetouch, p));
+      if (this.quarantineFailedPasses()) return this.render(options);
       this.drawDevelop(this.imageTexture, hasRetouch, this.outputTarget());
     }
   }
@@ -2075,6 +2104,7 @@ export class WebGLRenderer {
       copyBudget: this.redirect ? Infinity : this.maskCopyPrepassesPerFrame,
       epoch: this.sourceEpoch,
       stageSig: this.stageSig,
+      processVersion: this.variant.version,
       linear: this.linear,
       isFallbackPreview: this.isFallbackPreview,
       sourceWidth: this.sourceFullWidth,

@@ -59,7 +59,7 @@ describe("judgeVolume", () => {
   });
 
   it.each(["E:\\", "/Volumes/EOS_DIGITAL", "/media/anna/EOS_DIGITAL", "/run/media/anna/EOS_DIGITAL", "/mnt/card"])(
-    "takes a catalog none of whose photos is on the card at %s for another card's",
+    "takes a catalogue none of whose photos is on the card at %s for another card's",
     async (root) => {
       const at = root.replace(/[/\\]+$/, "");
       const fs = bridge({ ...catalogOf(shot), [`${at}/Day1/a.NEF`]: "aaa" });
@@ -68,7 +68,7 @@ describe("judgeVolume", () => {
     },
   );
 
-  it("still takes other photos under the catalog's names for another card's in an ordinary folder", async () => {
+  it("still takes other photos under the catalogue's names for another card's in an ordinary folder", async () => {
     const dated = shot.map((p) => ({ ...p, shot: "2024:05:01 10:00:00" }));
     const fs = bridge({ ...catalogOf(dated), "D:\\Shoot/a.NEF": "other a", "D:\\Shoot/b.NEF": "other b" });
 

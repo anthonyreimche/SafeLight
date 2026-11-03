@@ -214,7 +214,7 @@ describe("markDecode across windows open at the same time", () => {
   });
 
   // Round 1 stored only the session: such a strike predates every load since.
-  it("finalises a tentative marker written before strikes carried a time", async () => {
+  it("finalizes a tentative marker written before strikes carried a time", async () => {
     const cache = await session();
     const tentative = cache.decodeMarkerKey(KEY, "unsupported").replace("#2:", "#1:");
     h.store.set(tentative, "an-earlier-session");

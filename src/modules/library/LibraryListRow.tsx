@@ -42,7 +42,7 @@ function LibraryListRowImpl({
   onContextMenu,
   onDragStart,
 }: LibraryListRowProps) {
-  // photo.thumbnailUrl is owned and revoked by the catalog store, so it is used
+  // photo.thumbnailUrl is owned and revoked by the catalogue store, so it is used
   // as-is. The thumbnailBlob fallback is created (and revoked) here: without the
   // effect cleanup below, every virtualized remount would leak an object URL.
   const [blobUrl, setBlobUrl] = useState<string | null>(null);

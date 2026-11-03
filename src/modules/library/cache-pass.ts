@@ -36,7 +36,7 @@ const REFUSED_WRITES_BEFORE_GIVING_UP = 3;
  * photo whose cache key is already present is skipped without touching its file
  * (so is one with a marker that the decoder can't use it; see raw-cache.ts). An
  * entry from before 3.1.0 is rewritten after the photos with no entry, when the
- * whole list fits EAGER_CACHE_LIMIT. The key is derived from the catalog record (relPath + fileSize), so deciding
+ * whole list fits EAGER_CACHE_LIMIT. The key is derived from the catalogue record (relPath + fileSize), so deciding
  * what to skip needs no getFile — which matters because in Electron getFile()
  * reads the whole RAW off disk. So reopening a fully-cached project (this session
  * or a future one) reads one directory listing and decodes nothing. Only files
@@ -75,7 +75,7 @@ export async function preDecodeRawsForCache(
   const { done: settled, stale } = await cacheListing(); // one directory listing
   // A cached decode is served without libraw, so Develop takes the as-shot white
   // balance from the photo's record alone: a RAW whose import left it pending, as
-  // the catalog holds the photo now, waits for a later pass.
+  // the catalogue holds the photo now, waits for a later pass.
   const pending = new Set(
     useCatalogStore
       .getState()

@@ -3,10 +3,10 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Which catalog the app writes through while a project opens and once it closes.
+// Which catalogue the app writes through while a project opens and once it closes.
 // A change made while the folder is walked, a first import's included, goes into
-// the opening project's catalog, never into the one open before it, and a closed
-// project's catalog takes no more. ProjectStorage.open and what the open paints
+// the opening project's catalogue, never into the one open before it, and a closed
+// project's catalogue takes no more. ProjectStorage.open and what the open paints
 // are stubs; project-store.ts and the installed storage (@/catalog/storage) are real.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,7 +21,7 @@ const h = vi.hoisted(() => ({
   reconcileCatalog: vi.fn(),
   /** The window's beforeunload listeners. */
   unload: [] as Array<() => void>,
-  /** What project-store hears how each catalog save ended through. */
+  /** What project-store hears how each catalogue save ended through. */
   saveStatus: null as
     | null
     | ((
@@ -31,12 +31,12 @@ const h = vi.hoisted(() => ({
   flushLeftCopies: vi.fn(),
   /** The grid's display order, as the shared derive hands it out. */
   visible: [] as CatalogPhoto[],
-  /** The catalog the window shows, and the selection call. */
+  /** The catalogue the window shows, and the selection call. */
   photos: [] as CatalogPhoto[],
   select: vi.fn(),
   /** What the preload offers for opening what the OS hands the app. */
   osOpen: null as null | NativeOsOpenBridge,
-  /** How the catalog store reaches the last project, as project-store set it. */
+  /** How the catalogue store reaches the last project, as project-store set it. */
   lastProject: null as null | { openLast(): Promise<void>; reconnectLast(): Promise<boolean> },
   /** The grid-preview requests the idle prefill makes, and the loaders installed. */
   requestThumbnail: vi.fn<(id: string) => void>(),
@@ -201,7 +201,7 @@ beforeEach(async () => {
   ({ catalogStorage } = await import("@/catalog/storage"));
 });
 
-describe("the catalog store's startup load and reconnect", () => {
+describe("the catalogue store's startup load and reconnect", () => {
   it("reopen and re-grant the last project through this store", async () => {
     const openLast = vi.fn(async () => {});
     const reconnectLast = vi.fn(async () => true);
@@ -216,12 +216,12 @@ describe("the catalog store's startup load and reconnect", () => {
   });
 });
 
-describe("the catalog a change goes into while a project opens", () => {
+describe("the catalogue a change goes into while a project opens", () => {
   it("is the new project's while its first import runs", async () => {
     const s = projectStorage();
     let during: unknown = null;
     h.open.mockImplementation(async (_root: unknown, _deps: unknown, onPhoto: OnPhoto, paint: OnSkeletons) => {
-      paint(s, {}, []); // the catalog was read: there is none yet
+      paint(s, {}, []); // the catalogue was read: there is none yet
       onPhoto(photo("new"));
       during = catalogStorage();
       return opened(s, [photo("new")]);
@@ -232,7 +232,7 @@ describe("the catalog a change goes into while a project opens", () => {
     expect(during).toBe(s);
   });
 
-  it("is no project's while the next catalog is read, the last one saved and closed", async () => {
+  it("is no project's while the next catalogue is read, the last one saved and closed", async () => {
     const a = await openA();
     const b = projectStorage();
     const flushesOfA = a.flush.mock.calls.length;
@@ -255,7 +255,7 @@ describe("the catalog a change goes into while a project opens", () => {
     expect(catalogStorage()).toBe(b);
   });
 
-  it("reaches the importing project's catalog when the window closes mid-import", async () => {
+  it("reaches the importing project's catalogue when the window closes mid-import", async () => {
     const s = projectStorage();
     const { done, finish } = walk();
     h.open.mockImplementation(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
@@ -273,7 +273,7 @@ describe("the catalog a change goes into while a project opens", () => {
     expect(s.flush).toHaveBeenCalledWith({ unloading: true });
   });
 
-  it("is written last as the window closes, after the catalogs the window left", async () => {
+  it("is written last as the window closes, after the catalogues the window left", async () => {
     // The desktop app lands writes to one file in the order they were asked for.
     const a = await openA();
     const order: string[] = [];
@@ -350,8 +350,8 @@ describe("a recent project whose drive is gone", () => {
   });
 });
 
-describe("the catalog a change goes into after an open fails", () => {
-  it("is no project's when the catalog couldn't be read", async () => {
+describe("the catalogue a change goes into after an open fails", () => {
+  it("is no project's when the catalogue couldn't be read", async () => {
     const a = await openA();
     h.open.mockRejectedValueOnce(new CatalogUnreadableError(new Error("EBUSY")));
 
@@ -375,7 +375,7 @@ describe("the catalog a change goes into after an open fails", () => {
   });
 });
 
-describe("the catalog a change goes into once a project is closed", () => {
+describe("the catalogue a change goes into once a project is closed", () => {
   it("is no project's, the closed one saved and closed", async () => {
     const a = await openA();
     const flushesOfA = a.flush.mock.calls.length;
@@ -406,7 +406,7 @@ describe("the catalog a change goes into once a project is closed", () => {
     expect(catalogStorage()).not.toBe(b);
   });
 
-  it("is no project's when the project closes before its catalog was read", async () => {
+  it("is no project's when the project closes before its catalogue was read", async () => {
     const b = projectStorage();
     const { done, finish } = walk();
     h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
@@ -454,7 +454,7 @@ describe("the folder tree while a project opens", () => {
   });
 });
 
-describe("reading the catalog of the next project", () => {
+describe("reading the catalogue of the next project", () => {
   // Reopening a folder reads its catalog.json, which the last save of the copy
   // the window left may not have reached yet.
   function heldFlush(storage: FakeStorage): () => void {
@@ -514,7 +514,7 @@ describe("reading the catalog of the next project", () => {
   });
 });
 
-describe("a save of the catalog that failed", () => {
+describe("a save of the catalogue that failed", () => {
   // The storage keeps trying a save that failed, and says how each one ended.
   const failed = (reason: string) => ({ ok: false as const, reason });
 
@@ -526,17 +526,17 @@ describe("a save of the catalog that failed", () => {
 
   const saveError = () => useProjectStore.getState().saveError;
 
-  it("is shown for the open project's catalog", async () => {
+  it("is shown for the open project's catalogue", async () => {
     const a = await openA();
 
     saveEnded(failed("the disk is full"), a);
 
     expect(saveError()).toBe(
-      "Couldn't save the catalog: the disk is full. Your latest changes aren't saved yet.",
+      "Couldn't save the catalogue: the disk is full. Your latest changes aren't saved yet.",
     );
   });
 
-  it("isn't shown for a catalog the window doesn't have open", async () => {
+  it("isn't shown for a catalogue the window doesn't have open", async () => {
     await openA();
 
     saveEnded(failed("the disk is full"), projectStorage());
@@ -578,7 +578,7 @@ describe("a save of the catalog that failed", () => {
     expect(saveError()).toBeNull();
   });
 
-  it("is told in this window when a catalog it left gives up saving a change", async () => {
+  it("is told in this window when a catalogue it left gives up saving a change", async () => {
     const a = await openA();
     const b = projectStorage();
     h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
@@ -596,7 +596,7 @@ describe("a save of the catalog that failed", () => {
     expect(saveError()).toBeNull();
   });
 
-  it("goes when the open fails after the project's catalog failed to save", async () => {
+  it("goes when the open fails after the project's catalogue failed to save", async () => {
     // No project is left open to save, so the message could never go by itself.
     const b = projectStorage();
     h.open.mockImplementationOnce(async (_root: unknown, _deps: unknown, _onPhoto: OnPhoto, paint: OnSkeletons) => {
@@ -612,7 +612,7 @@ describe("a save of the catalog that failed", () => {
 });
 
 // "Open with Safelight" from the file manager: a folder opens as the project, a
-// photo opens its folder and is selected once the catalog has it.
+// photo opens its folder and is selected once the catalogue has it.
 describe("opening what the OS hands the app", () => {
   /** An open that finds `photos` in the folder. */
   function openFinds(...photos: CatalogPhoto[]) {
@@ -655,7 +655,7 @@ describe("opening what the OS hands the app", () => {
     expect(h.select).not.toHaveBeenCalled();
   });
 
-  it("opens the folder and selects nothing when the photo is not in the catalog", async () => {
+  it("opens the folder and selects nothing when the photo is not in the catalogue", async () => {
     openFinds(photo("a"));
 
     await openFromOs({ folder: "/photos/trip", file: "missing.NEF" });
@@ -933,7 +933,7 @@ describe("the grid previews an open reads ahead", () => {
     return s;
   }
 
-  it("are the first 2000 photos of a big catalog; the grid reads the rest as they scroll into view", async () => {
+  it("are the first 2000 photos of a big catalogue; the grid reads the rest as they scroll into view", async () => {
     await openWith(photosNamed(5000));
 
     const requested = h.requestThumbnail.mock.calls.map(([id]) => id);
@@ -950,7 +950,7 @@ describe("the grid previews an open reads ahead", () => {
     expect(h.requestThumbnail.mock.calls.map(([id]) => id)).toEqual(["p3", "p1", "p0", "p2", "p4"]);
   });
 
-  it("are every photo of a small catalog", async () => {
+  it("are every photo of a small catalogue", async () => {
     await openWith(photosNamed(300));
 
     expect(h.requestThumbnail).toHaveBeenCalledTimes(300);
@@ -1007,7 +1007,7 @@ describe("the photo open in Develop when its project is left", () => {
     await vi.waitFor(() => expect(a.flush.mock.calls.length).toBeGreaterThan(1));
   });
 
-  it("reaches the catalog hooks with the photo, though the grid is already cleared", async () => {
+  it("reaches the catalogue hooks with the photo, though the grid is already cleared", async () => {
     const { useDevelopStore } = await import("@/state/develop-store");
     const { registerCatalogHooks } = await import("@/extensions/registry");
     const onEditCommit = vi.fn<NonNullable<CatalogHooksContribution["onEditCommit"]>>();

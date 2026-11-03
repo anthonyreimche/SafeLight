@@ -25,7 +25,7 @@ const h = vi.hoisted(() => ({
   /** The cache's generation as it stands, and what happens inside a write. */
   generation: 0,
   duringWrite: () => {},
-  /** The catalog's photos as the store holds them, and the records stored. */
+  /** The catalogue's photos as the store holds them, and the records stored. */
   catalog: [] as CatalogPhoto[],
   saved: [] as CatalogPhoto[],
   /** Writes, as [key, width, height, generation]. */

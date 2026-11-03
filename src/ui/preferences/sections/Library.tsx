@@ -68,7 +68,7 @@ export function LibrarySection() {
       />
       <ToggleField
         label="Confirm before removing photos"
-        hint="Ask for confirmation when removing photos from the catalog. Remove never deletes the originals on disk; Delete from disk is a separate action that always asks."
+        hint="Ask for confirmation when removing photos from the catalogue. Remove never deletes the originals on disk; Delete from disk is a separate action that always asks."
         checked={s.confirmRemovePhotos}
         onChange={(v) => updateSettings({ confirmRemovePhotos: v })}
       />

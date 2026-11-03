@@ -17,7 +17,7 @@ export interface PhotoSidecar {
   safelightSidecar?: number;
   /** The image's file name when the sidecar was written. */
   filename?: string;
-  /** Catalog metadata the user set (not file-derived fields like EXIF). */
+  /** Catalogue metadata the user set (not file-derived fields like EXIF). */
   info?: {
     rating?: number;
     colorLabel?: CatalogPhoto["colorLabel"];

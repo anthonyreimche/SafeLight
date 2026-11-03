@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Change stamps: which of two versions of a catalog record is newer, whatever
+// Change stamps: which of two versions of a catalogue record is newer, whatever
 // order they reach a window in. Each window's ProjectStorage stamps the changes it
 // makes and keeps the stamps beside its records (never in them); catalog.json and
 // the catalog-records messages carry them as one `changed` block. A photo record

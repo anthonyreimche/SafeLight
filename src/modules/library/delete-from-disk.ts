@@ -4,8 +4,8 @@
 // be preserved in derived versions.
 
 // Delete photos from disk — files go to the OS trash (recoverable), never a
-// hard delete. Catalog removal only follows a successful trash, so a locked or
-// write-protected file (memory card) stays in the catalog with its error
+// hard delete. Catalogue removal only follows a successful trash, so a locked or
+// write-protected file (memory card) stays in the catalogue with its error
 // reported. Virtual copies share their master's file, so they are never
 // trashed from here; removing the master carries its copies away instead.
 
@@ -17,7 +17,7 @@ import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
 import { fsErrorText } from "@/project/fs-errors";
 
 export interface DeleteFromDiskResult {
-  /** Photos whose file went to the OS trash (and left the catalog). */
+  /** Photos whose file went to the OS trash (and left the catalogue). */
   deleted: number;
   /** Virtual copies in the selection — no file of their own, left untouched. */
   skippedCopies: number;
@@ -112,7 +112,7 @@ export async function confirmAndDeleteFromDisk(ids: string[]): Promise<void> {
   confirmOpen = true;
   const ok = await confirmDialog({
     title: "Delete from disk",
-    message: `Move ${n} photo${n === 1 ? "" : "s"} to the ${bin}? They'll also be removed from the catalog; the file${n === 1 ? "" : "s"} can be restored from the ${bin}.`,
+    message: `Move ${n} photo${n === 1 ? "" : "s"} to the ${bin}? They'll also be removed from the catalogue; the file${n === 1 ? "" : "s"} can be restored from the ${bin}.`,
     confirmLabel: `Move to ${bin}`,
     variant: "danger",
   }).finally(() => {
@@ -123,13 +123,13 @@ export async function confirmAndDeleteFromDisk(ids: string[]): Promise<void> {
   const notes: string[] = [];
   if (r.skippedCopies > 0)
     notes.push(
-      `Skipped ${r.skippedCopies} virtual ${r.skippedCopies === 1 ? "copy" : "copies"}. A copy shares its master's file. Use Remove to take copies out of the catalog.`,
+      `Skipped ${r.skippedCopies} virtual ${r.skippedCopies === 1 ? "copy" : "copies"}. A copy shares its master's file. Use Remove to take copies out of the catalogue.`,
     );
   if (r.failed.length > 0)
     notes.push(
       `Couldn't delete ${r.failed.length} file${r.failed.length === 1 ? "" : "s"}:\n` +
         r.failed.map((f) => `• ${f.filename}: ${f.message}`).join("\n") +
-        `\n${r.failed.length === 1 ? "This photo stays" : "These photos stay"} in the catalog.`,
+        `\n${r.failed.length === 1 ? "This photo stays" : "These photos stay"} in the catalogue.`,
     );
   if (notes.length > 0)
     await alertDialog({ title: "Delete from disk", message: notes.join("\n\n") });

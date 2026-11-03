@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // The single read path Export and the Library share with Develop: resolve a
-// photo's persisted edit to normalized params plus a sanitised extension param
+// photo's persisted edit to normalized params plus a sanitized extension param
 // bag, or to as-shot defaults when it was never edited. Driven through a real
 // CatalogStorage implementation rather than a module mock. Run with `npm test`.
 

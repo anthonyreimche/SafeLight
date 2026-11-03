@@ -15,7 +15,7 @@ export const MAX_CATEGORIES = 3;
 
 export const FALLBACK_VOCABULARY: StoreVocabulary = {
   categories: [
-    { slug: "library", label: "Library", description: "Collections, sorting, duplicates and other ways to organise and find photos." },
+    { slug: "library", label: "Library", description: "Collections, sorting, duplicates and other ways to organize and find photos." },
     { slug: "metadata", label: "Metadata", description: "Keywords, EXIF and XMP tools, and where your photos were taken." },
     { slug: "tone", label: "Tone", description: "Levels, local contrast and HDR: shape brightness and contrast." },
     { slug: "color", label: "Colour", description: "Colour editors, grading tools and scopes to check the result." },

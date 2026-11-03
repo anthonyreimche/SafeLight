@@ -74,8 +74,8 @@ function rendererFallbackFor(ladder, backend) {
   return ladder[ladder.indexOf(backend) + 1] ?? SOFTWARE_BACKEND;
 }
 
-// Why the next launch draws in software: the user turned it on in Preferences,
-// or this machine failed on the graphics card.
+// Why the next launch starts where it does: the user picked that backend in
+// Preferences, or this machine failed on the graphics card and is in software.
 const SOFTWARE_REASONS = new Set(["chosen", "webgl2-unavailable", "gpu-crashes", "renderer-failed"]);
 
 /** The cache file's text: the backend on the first line; for software the
@@ -87,30 +87,43 @@ function formatBackendCache({ backend, reason, since, launches, version }) {
   return `${backend}\n${reason || ""}\n${since} ${launches}\n${version ? `${version}\n` : ""}`;
 }
 
+/** Every backend any platform's ladder names. */
+const ALL_BACKENDS = ["gl", "gles", "vulkan", "d3d11", "metal", SOFTWARE_BACKEND];
+
 /** The backend the cache names, if `backends` has it, a known reason, the
- *  software clock, and the app version when one was stored. */
+ *  software clock, and the app version when one was stored. A backend the user
+ *  picked that this ladder lacks (Vulkan, picked under X11, read in a Wayland
+ *  session) comes back as `elsewhere`, so the launch neither starts on it nor
+ *  writes over it. */
 function parseBackendCache(text, backends) {
   const [first = "", second = "", third = "", fourth = ""] = String(text).split(/\r?\n/).map((line) => line.trim());
   const backend = backends.includes(first) ? first : null;
   const reason = backend && SOFTWARE_REASONS.has(second) ? second : null;
   const clock = backend ? /^(\d+) (\d+)$/.exec(third) : null;
+  const elsewhere = !backend && ALL_BACKENDS.includes(first) && second === "chosen" ? first : null;
   return {
     backend,
     reason,
     since: clock ? Number(clock[1]) : null,
     launches: clock ? Number(clock[2]) : 0,
     ...(clock && fourth ? { version: fourth } : {}),
+    ...(elsewhere ? { elsewhere } : {}),
   };
 }
 
-/** What Preferences shows: whether this launch and the next draw in software,
- *  and why the next one does. */
-function backendState(current, next) {
+/** What Preferences shows: the backend this launch draws with and the one the
+ *  next starts on, whether either is software and why, the backend the user
+ *  picked (null for Automatic), and the ones this platform can pick from. */
+function backendState(current, next, ladder, now, version) {
   const nextSoftware = next.backend === SOFTWARE_BACKEND;
   return {
     software: current === SOFTWARE_BACKEND,
     nextSoftware,
     reason: nextSoftware ? next.reason : null,
+    backend: current,
+    next: ladder[startRung(ladder, next, null, now, version)],
+    choice: next.reason === "chosen" ? next.backend : null,
+    backends: ladder,
   };
 }
 
@@ -158,7 +171,10 @@ function startRung(ladder, cache, relaunchIdx, now, version) {
  *  relaunching past each crashed rung is due a retry soon: on a two-rung
  *  ladder that can be a single passing crash. */
 function readyCache(backend, cache, now) {
-  if (backend !== SOFTWARE_BACKEND) return { backend, reason: null, since: null, launches: 0 };
+  if (backend !== SOFTWARE_BACKEND) {
+    const picked = cache.backend === backend && cache.reason === "chosen";
+    return { backend, reason: picked ? "chosen" : null, since: null, launches: 0 };
+  }
   if (cache.backend === SOFTWARE_BACKEND) {
     return { ...cache, since: cache.since === null ? now : cache.since, launches: cache.launches + 1 };
   }
@@ -169,6 +185,14 @@ function readyCache(backend, cache, now) {
  *  or the user turns software on. */
 function fallbackCache(reason, now, version) {
   return { backend: SOFTWARE_BACKEND, reason, since: now, launches: 0, ...(version ? { version } : {}) };
+}
+
+/** The cache for a backend picked in Preferences. Software keeps the software
+ *  clock its other reasons use; a graphics-card pick needs none, since it is
+ *  never retried away from. */
+function chosenCache(backend, now, version) {
+  if (backend === SOFTWARE_BACKEND) return fallbackCache("chosen", now, version);
+  return { backend, reason: "chosen", since: null, launches: 0 };
 }
 
 /** The rung a probe relaunch passed on the command line, or null. */
@@ -211,6 +235,7 @@ module.exports = {
   startRung,
   readyCache,
   fallbackCache,
+  chosenCache,
   relaunchRung,
   relaunchArgs,
   relaunchOptions,

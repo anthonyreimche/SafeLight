@@ -39,7 +39,7 @@ export const NESTED_ADJUSTMENTS: NestedAdjustment[] = [
   { key: "grain.amount",        label: "Amount",     group: "Grain",    parent: "grain",    field: "amount",     min: 0,    max: 100, step: 1 },
   { key: "grain.size",          label: "Size",       group: "Grain",    parent: "grain",    field: "size",       min: 25,   max: 100, step: 1 },
   { key: "grain.roughness",     label: "Roughness",  group: "Grain",    parent: "grain",    field: "roughness",  min: 0,    max: 100, step: 1 },
-  { key: "grain.color",         label: "Color",      group: "Grain",    parent: "grain",    field: "color",      min: 0,    max: 100, step: 1 },
+  { key: "grain.color",         label: "Colour",     group: "Grain",    parent: "grain",    field: "color",      min: 0,    max: 100, step: 1 },
 ];
 
 const byKey = new Map(NESTED_ADJUSTMENTS.map((a) => [a.key, a]));

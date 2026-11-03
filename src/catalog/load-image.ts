@@ -207,7 +207,7 @@ export async function loadPhotoImage(
   // included, so the renderer takes the same float path and the photo renders
   // as it did on first open.
   //
-  // The key comes from the catalog record alone, so the lookup runs before the
+  // The key comes from the catalogue record alone, so the lookup runs before the
   // original is read (in Electron getFile() pulls the whole RAW over IPC), and
   // a hit is served even when the original is offline or its permission was
   // not re-granted: the cache is our own data.
@@ -254,7 +254,7 @@ export async function loadPhotoImage(
 
         // Slow path: full libraw decode. Write result to cache asynchronously
         // so the next open hits the fast path above.
-        // Extract the embedded JPEG preview once — used both for the color
+        // Extract the embedded JPEG preview once — used both for the colour
         // validation below and as the fallback if the RAW decode looks wrong.
         // The decode runs alongside the extraction rather than after it. The
         // preview is painted as soon as it's ready, but inside the awaited
@@ -305,8 +305,8 @@ export async function loadPhotoImage(
           );
           const r = rotateFloatRGBA(f.data, f.width, f.height, rotateDeg);
 
-          // Validate the decode's color against the embedded JPEG preview.
-          // An unrecognised camera body (e.g. newer Canon EOS R bodies with
+          // Validate the decode's colour against the embedded JPEG preview.
+          // An unrecognized camera body (e.g. newer Canon EOS R bodies with
           // LibRaw <0.21) produces grossly wrong R/G and B/G ratios. If either
           // is off by more than 2× vs the preview, reject the decode and fall
           // through to the JPEG-based float path below. The same ruling keeps
@@ -331,7 +331,7 @@ export async function loadPhotoImage(
             if (!cache) remember("suspicious");
             return { kind: "float", data: r.data, width: r.width, height: r.height, ...cameraBaseline(photo) };
           }
-          console.warn("[load] RAW color mismatch vs embedded JPEG — using JPEG fallback");
+          console.warn("[load] RAW colour mismatch vs embedded JPEG — using JPEG fallback");
           remember("unsupported");
           shortfall = {
             unsupported: true,
@@ -344,7 +344,7 @@ export async function loadPhotoImage(
         // The full decode failed or was rejected, but a cached preview exists
         // (smaller than the caller asked for): prefer it over the embedded
         // JPEG. It is the exact linear source Develop rendered the edit
-        // against, so colors stay consistent even if resolution falls short.
+        // against, so colours stay consistent even if resolution falls short.
         if (cached) return float16Of(cached, photo);
 
         // libraw failed or produced bad colors: fall back to the embedded JPEG

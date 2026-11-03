@@ -3,8 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Preferences ▸ Stored catalogs: two cards that mount at the same drive letter
-// keep separate catalogs, so each row has to say which card it belongs to before
+// Preferences ▸ Stored catalogues: two cards that mount at the same drive letter
+// keep separate catalogues, so each row has to say which card it belongs to before
 // anyone deletes one.
 
 import { describe, expect, it, vi } from "vitest";
@@ -46,8 +46,8 @@ vi.mock("@/project/native-fs", () => ({
 
 const { StoredCatalogsField } = await import("./StoredCatalogsField");
 
-describe("Stored catalogs", () => {
-  it("tells two catalogs of one drive apart by their photos", async () => {
+describe("Stored catalogues", () => {
+  it("tells two catalogues of one drive apart by their photos", async () => {
     render(<StoredCatalogsField />);
     expect(await screen.findByText(/412 photos/)).toBeTruthy();
     expect(screen.getByText(/IMG_0001\.CR3, IMG_0002\.CR3, IMG_0003\.CR3/)).toBeTruthy();

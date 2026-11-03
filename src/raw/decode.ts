@@ -7,7 +7,7 @@
 // image (decodeRawToFloat) or an 8-bit bitmap (decodeRawToBitmap), choosing the
 // best available path:
 //
-//   1. libraw (handles everything, best color science): the bundled
+//   1. libraw (handles everything, best colour science): the bundled
 //      libraw-wasm for the float image, a registered build for the bitmap
 //   2. the in-house decoder for uncompressed CFA data (TIFF-based RAW / DNG)
 //   3. no image: the float decode says why (DecodeFailure), the bitmap decode

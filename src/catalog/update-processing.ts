@@ -13,7 +13,7 @@ import { appendStoredSnapshots, storedSnapshotTargets } from "./stored-edit";
 
 /** Update every given photo whose stored edit is on the older processing. A photo
  *  that is already current, or was never edited (it opens on the current
- *  processing), is skipped. The photos are stored with one catalog write. Returns
+ *  processing), is skipped. The photos are stored with one catalogue write. Returns
  *  how many photos changed. */
 export async function updateProcessing(ids: string[]): Promise<number> {
   return appendStoredSnapshots(storedSnapshotTargets(ids), UPDATE_PROCESSING_LABEL, (base) =>

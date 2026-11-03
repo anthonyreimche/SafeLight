@@ -7,10 +7,10 @@ This guide covers Safelight's two modules — **Library** and **Develop** — pl
 Safelight stores everything inside the folder you edit:
 
 - **Open Folder** (Folders panel, Library) opens a project. The folder is scanned recursively; dot-folders are skipped.
-- Catalog data lives in `<project>/.safelight/`: `catalog.json` (photo records and edit histories), `previews/` (grid thumbnails), and `raw/` (a decoded-RAW cache so Develop opens instantly).
-- Reopening a project reconciles the catalog against the disk: new files are picked up, deleted files drop out, everything else keeps its ratings and edits.
+- Catalogue data lives in `<project>/.safelight/`: `catalog.json` (photo records and edit histories), `previews/` (grid thumbnails), and `raw/` (a decoded-RAW cache so Develop opens instantly).
+- Reopening a project reconciles the catalogue against the disk: new files are picked up, deleted files drop out, everything else keeps its ratings and edits.
 - Originals are never written to. Deleting `.safelight/` simply discards Safelight's data for that folder.
-- **Saving the catalog.** If the catalog can't be saved (a sync or antivirus program is using it, or the disk is full), a bar at the bottom of the window says "Couldn't save the catalog" with the reason. Safelight keeps trying, and the bar goes once a save works. Safelight also keeps a backup of the catalog and restores it when `catalog.json` is damaged or missing. See [Installation ▸ Troubleshooting](installation.md#projects-and-files).
+- **Saving the catalogue.** If the catalogue can't be saved (a sync or antivirus program is using it, or the disk is full), a bar at the bottom of the window says "Couldn't save the catalogue" with the reason. Safelight keeps trying, and the bar goes once a save works. Safelight also keeps a backup of the catalogue and restores it when `catalog.json` is damaged or missing. See [Installation ▸ Troubleshooting](installation.md#projects-and-files).
 - The last project is reopened on launch when **Restore last project** is enabled. In the browser, click **Reconnect** in the top bar when permissions expire between sessions.
 
 ## Library Module
@@ -33,23 +33,23 @@ Selection: click to select, **Shift+click** for a range, **Ctrl+click** to toggl
 | Action | Key |
 |---|---|
 | Rating | **1–5**, **0** clears |
-| Color label (red/yellow/green/blue) | **6 / 7 / 8 / 9** |
+| Colour label (red/yellow/green/blue) | **6 / 7 / 8 / 9** |
 | Pick / Reject / Unflag | **P / X / U** |
 | Previous / Next photo | **← / →** |
 | Rotate left / right | **Alt+[ / Alt+]** |
 | Focus keyword input | **K** |
-| Remove from catalog | **Delete** |
+| Remove from catalogue | **Delete** |
 | Smaller / larger thumbnails | **- / =** |
 | Rename photo | **F2** |
 | Show in folder | **Ctrl+R** |
 
-The grid context menu also offers **Delete from disk…**, which moves the selected files to the OS Recycle Bin / Trash and removes the photos from the catalog; it ships without a key but can be bound in Preferences ▸ Shortcuts.
+The grid context menu also offers **Delete from disk…**, which moves the selected files to the OS Recycle Bin / Trash and removes the photos from the catalogue; it ships without a key but can be bound in Preferences ▸ Shortcuts.
 
-Navigation follows the filtered, sorted grid, so it never lands on a hidden photo. (Photos also carry a sixth **purple** color label, available from the Info panel even though it has no default key.)
+Navigation follows the filtered, sorted grid, so it never lands on a hidden photo. (Photos also carry a sixth **purple** colour label, available from the Info panel even though it has no default key.)
 
 ### Filters
 
-The Filters panel narrows the grid by minimum rating (with a comparison operator), flag status, and color label, with quick "All / Picks / Rejects" scopes. Extensions can add further filters (e.g. a text/EXIF search bar) that combine with the built-in ones; **Clear filters** resets them all.
+The Filters panel narrows the grid by minimum rating (with a comparison operator), flag status, and colour label, with quick "All / Picks / Rejects" scopes. Extensions can add further filters (e.g. a text/EXIF search bar) that combine with the built-in ones; **Clear filters** resets them all.
 
 ## Develop Module
 
@@ -57,35 +57,35 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 
 <img width="3840" height="2067" alt="Develop module" src="https://github.com/user-attachments/assets/960afdee-95d0-498b-9988-6c9b63a285a6" />
 <img width="3840" height="2067" alt="Develop with masking" src="https://github.com/user-attachments/assets/ca9f9fbb-6fd7-463d-8e6c-42f47165806e" />
-<img width="3840" height="2067" alt="Develop detail and color tools" src="https://github.com/user-attachments/assets/fe9c8403-b46c-4f71-bf99-ed3c9b11104f" />
+<img width="3840" height="2067" alt="Develop detail and colour tools" src="https://github.com/user-attachments/assets/fe9c8403-b46c-4f71-bf99-ed3c9b11104f" />
 
 ### Canvas and history
 
 - **Zoom and pan** — loupe-style 1:1 inspection with the zoom controls or scroll/drag (smooth drag, no momentum). Opening zoom (fit or 100%) is configurable.
 - **Undo / redo / reset** — undo (**Ctrl+Z**), redo (**Ctrl+Shift+Z** or **Ctrl+Y**), reset all edits (**Ctrl+Shift+R**).
-- **Older edits.** Photos you edited in an earlier version of Safelight keep their look. **Update processing** in Develop's status bar (or in the Library right-click menu, for many photos at once) moves a photo to the new processing, which keeps bright, very saturated colors. Undo puts it back.
+- **Older edits.** Photos you edited in an earlier version of Safelight keep their look. **Update processing** in Develop's status bar (or in the Library right-click menu, for many photos at once) moves a photo to the new processing, which keeps bright, very saturated colours. Undo puts it back.
 - **Sliders** — hold **Shift** while dragging for fine adjustment (or widen the panel); double-click to reset. **Shift+scroll** over a slider steps it, and **Shift+scroll** over a closed dropdown picks the next or previous choice. Click a slider's number to type a value: it's selected so typing replaces it, **Enter** keeps it and **Esc** puts the old value back.
 - **Clipping indicators** — toggle shadow/highlight clipping warnings on the canvas.
 - **Preview and Full quality.** While a photo's full image loads, Develop shows its stored preview or the camera's preview. If that takes a moment, the corner of the image says **Preview**, then **Full quality** for a moment once the full image arrives. The previews ease into the full image unless Reduce motion is on. Moving to another photo keeps the one before on screen until the next one appears.
 - **Photos that only show a preview.** When Develop can only show a preview, the corner says why: Safelight can't open this RAW yet, the RAW took too long to open, or the original isn't available (a drive unplugged, or access not granted). A RAW Safelight can't decode opens on the camera's preview. Once two launches have failed on it, it opens that way straight away. **Re-import** (Library right-click menu) or **Preferences ▸ Previews ▸ Clear preview cache** tries it again. If Develop can't show a photo at all, the corner says "Can't show this photo."
 
-### Tone and color
+### Tone and colour
 
 - **White Balance** — temperature and tint, with an eyedropper that solves both from a neutral target you click.
 - **Basic** — exposure (±5 EV), contrast, highlights, shadows, whites, blacks, texture, clarity, dehaze, vibrance, saturation, plus Auto Tone. On photos using the current processing, Highlights and Shadows work on regions of the photo, so recovered highlights and lifted shadows keep their texture.
 - **Tone Curve** — point curves for the RGB master and individual red, green, and blue channels. Click to add a point, drag to shape, double-click a point to remove/reset. The end points move too: drag the black point right to clip shadows or the white point left to clip highlights, and up or down to lift or lower them. Turn on **Preferences ▸ Tone Curve ▸ Show point values** to read and type the selected point's **In** and **Out** levels, on the same 0–255 scale as Lightroom.
 - **HSL** — hue, saturation, and luminance for 8 bands: red, orange, yellow, green, aqua, blue, purple, magenta. A picker lets you click the image to adjust the band under the cursor.
-- **Color Grading** — shadows / midtones / highlights / global color wheels with per-wheel luma and shadow/highlight range. Drag to set hue and saturation, Shift for precision; double-click resets hue and saturation only (not luma).
+- **Colour Grading** — shadows / midtones / highlights / global colour wheels with per-wheel luma and shadow/highlight range. Drag to set hue and saturation, Shift for precision; double-click resets hue and saturation only (not luma).
 
 ### Detail
 
 - **Sharpening** — amount, radius, detail (halo suppression), and edge masking.
-- **Noise reduction** — luminance (amount, detail, contrast, plus shadow/highlight balance) and color (amount, detail, smoothness).
+- **Noise reduction** — luminance (amount, detail, contrast, plus shadow/highlight balance) and colour (amount, detail, smoothness).
 
 ### Optics and effects
 
 - **Lens Correction** — Off / Profile / Manual. Profiles come from the built-in Lensfun-derived database (matched from EXIF) and any lens-profile extensions; manual exposes distortion, chromatic aberration, defringe, and vignetting.
-- **Effects** — post-crop vignette (amount, midpoint, roundness, feather, highlights) and film grain (amount, size, roughness, color).
+- **Effects** — post-crop vignette (amount, midpoint, roundness, feather, highlights) and film grain (amount, size, roughness, colour).
 
 ### Geometry
 
@@ -95,7 +95,7 @@ Open a photo by double-clicking it in the Library (or press **D** for the Develo
 
 ### Local adjustments
 
-- **Masking** — up to 16 masks per photo. Each mask is built from **components** — radial, linear, brush, luminance-range, or color-range — combined with **add**, **subtract**, or **intersect** (up to 24 components total across all masks). Per-mask adjustments cover exposure, contrast, tone, color, clarity, and sharpness; masks can opt into extra sub-panels (white balance, HSL, tone curve, detail) and be inverted. Extensions that offer it, such as Tone Equalizer, add their own sub-panel to the **Adjust** tab and then apply only inside that mask, with the mask's own settings; this needs the current processing, so use **Update processing** first on a photo edited in an earlier version. Brush components support size (**[ / ]**), feather (**Shift+[ / Shift+]**), and an erase mode.
+- **Masking** — up to 16 masks per photo. Each mask is built from **components** — radial, linear, brush, luminance-range, or colour-range — combined with **add**, **subtract**, or **intersect** (up to 24 components total across all masks). Per-mask adjustments cover exposure, contrast, tone, colour, clarity, and sharpness; masks can opt into extra sub-panels (white balance, HSL, tone curve, detail) and be inverted. Extensions that offer it, such as Tone Equalizer, add their own sub-panel to the **Adjust** tab and then apply only inside that mask, with the mask's own settings; this needs the current processing, so use **Update processing** first on a photo edited in an earlier version. Brush components support size (**[ / ]**), feather (**Shift+[ / Shift+]**), and an erase mode.
 - **Heal / Clone** — up to 16 retouch spots (circle or brush; up to 4 brush-shaped). Heal blends with surroundings via content-aware source selection; clone copies a source area exactly. Each spot has size, feather, and opacity, toggles between heal and clone, and its source can be repositioned.
 
 ### Presets
@@ -107,7 +107,7 @@ The Presets panel saves the current edit as a named preset and applies presets t
 Open the **Export** panel (docked in Library by default, or via **View ▸ Export** from either module):
 
 - **Format** — JPEG, PNG, WebP, or TIFF, with a quality slider for JPEG/WebP and an 8- or 16-bit depth choice for TIFF and PNG. Each keeps its own depth, set by default in **Preferences ▸ Export** (TIFF 16-bit, PNG 8-bit, since 16-bit PNGs are large and most viewers show them as 8-bit) and saved in export presets; 16-bit falls back to 8-bit where the device can't render it. An 8-bit export in ProPhoto RGB, which can band in smooth gradients, shows a warning under the format with a **Use 16-bit TIFF** button.
-- **Color space** — sRGB, Display P3, Adobe RGB, or ProPhoto RGB; the matching ICC profile is embedded so other apps read the pixels correctly.
+- **Colour space** — sRGB, Display P3, Adobe RGB, or ProPhoto RGB; the matching ICC profile is embedded so other apps read the pixels correctly.
 - **Size** — limit the long edge or keep the original size, with optional output sharpening (amount and radius).
 - **Delivery** — multiple photos as a single ZIP, separate files, or into a chosen folder.
 - **Filename** — choose a filename template; extensions can add templates.
@@ -137,9 +137,9 @@ Preferences is organized into sections: **Interface**, **Library**, **Rendering*
 
 - **Interface** — Interface scale (80–200%, − and + buttons), reduce motion, custom UI font.
 - **Library** — default grid size, sort field/direction, confirm-before-remove, thumbnail source and resolution (320/640/960 px), preview persistence.
-- **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both. On Linux, **Display profile** takes your monitor's ICC profile and converts the Develop view to it, because most Wayland desktops leave the window unconverted. On KDE Plasma, set the monitor's Color profile in System Settings instead and leave this empty (see the FAQ on oversaturated colors). Also on Linux, **Software rendering** draws on the processor instead of the graphics card. It is slower, but it works in virtual machines such as VirtualBox and with graphics drivers that can't run WebGL2. Safelight turns it on by itself when the graphics card can't run WebGL2 or its driver keeps crashing, and says which. Turn it off to try the graphics card again. Changes apply when you restart Safelight.
-- **Performance** — RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (4096/6144/8192 px); GPU source-cache budget; neighbor prefetch; high bit-depth previews; live histogram; opening zoom.
-- **Export** — default format, TIFF and PNG bit depth, quality, long edge, color space, metadata and location, and ZIP bundling. Export presets are saved from the Export panel, not here.
+- **Rendering** — the **Default display transform** (tone mapper) for photos without their own pick. Pick a transform per photo from the menu in Develop's bottom bar, next to Assess; the built-in transform plus any extension-provided transforms appear in both. On Linux, **Display profile** takes your monitor's ICC profile and converts the Develop view to it, because most Wayland desktops leave the window unconverted. On KDE Plasma, set the monitor's Colour profile in System Settings instead and leave this empty (see the FAQ on oversaturated colours). **Graphics backend** picks how Safelight talks to the graphics card. Automatic tries this platform's backends in order and keeps the first that works. Pick another one (OpenGL, OpenGL ES or Vulkan on Linux, Direct3D 11 on Windows, Metal on macOS) to try it if photos draw slowly or wrongly on your driver. Software draws on the processor: much slower, but it works in virtual machines such as VirtualBox and with drivers that can't run WebGL2. Automatic switches to software by itself when the graphics card can't run WebGL2 or its driver keeps crashing, and says which. Changes apply when you restart Safelight.
+- **Performance** — **Integrated graphics** sets lighter settings in one click for laptops and other computers whose graphics share memory with the processor (Safelight names the graphics it found): a 2560 px render cap, a 256 MB GPU source cache, no neighbour prefetch and a histogram that waits for edits to settle. RAW preview cache on/off, prefetch, and size (2048/3072/4096 px); Develop render cap (2560/3072/4096/6144/8192 px); GPU source-cache budget; neighbour prefetch; high bit-depth previews; live histogram; opening zoom.
+- **Export** — default format, TIFF and PNG bit depth, quality, long edge, colour space, metadata and location, and ZIP bundling. Export presets are saved from the Export panel, not here.
 - **Shortcuts** — rebind every action; single-letter shortcuts (G/D/F…) can be disabled, while Tab and Ctrl-combos always work.
 - **Extensions** — each installed extension's settings, the GitHub topic used to discover official extensions, and update preferences. This includes the built-in **Accessibility** extension (below).
 - **Updates** — check for updates and choose the patch/minor channel.

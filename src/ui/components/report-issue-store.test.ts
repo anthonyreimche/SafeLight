@@ -41,7 +41,7 @@ afterEach(() => {
 });
 
 describe("openReportIssue", () => {
-  it("captures the window before the dialog opens", async () => {
+  it("captures the window before the dialogue opens", async () => {
     pageImpl = () => {
       expect(useReportIssue.getState().open).toBe(false);
       return Promise.resolve(new Uint8Array([137, 80, 78, 71]));
@@ -109,7 +109,7 @@ describe("closing", () => {
     });
   });
 
-  it("toggles an open dialog shut", async () => {
+  it("toggles an open dialogue shut", async () => {
     await openReportIssue();
     toggleReportIssue();
     expect(useReportIssue.getState().open).toBe(false);

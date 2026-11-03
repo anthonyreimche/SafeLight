@@ -251,7 +251,7 @@ export function extensionsText(f: ExtensionFacts): string {
 
 export function contextText(f: ContextFacts): string {
   const lines = [`Module: ${f.module}`, `Theme: ${f.theme} · Layout: ${f.layout}`];
-  lines.push(f.folderOpen ? `Catalog: ${f.photoCount.toLocaleString("en-US")} photos` : "No folder open");
+  lines.push(f.folderOpen ? `Catalogue: ${f.photoCount.toLocaleString("en-US")} photos` : "No folder open");
   if (f.photo) {
     const p = f.photo;
     const photo = [`Photo: ${p.ext || "(no extension)"}`, p.mimeType, `${p.width}×${p.height}`];

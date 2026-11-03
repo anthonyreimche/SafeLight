@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Smoke: the app boots and opens folders end to end, with the real App, project
-// store, ProjectStorage, scan, importer and catalog store over an in-memory
+// store, ProjectStorage, scan, importer and catalogue store over an in-memory
 // folder in the browser build's handles. Only the pixel decoders are stand-ins
 // (jsdom has no image decoder or libraw): a file whose bytes start like a JPEG
 // or PNG decodes, anything else doesn't.
@@ -154,11 +154,11 @@ describe("smoke: app boot", () => {
     expect(useProjectStore.getState()).toMatchObject({ openError: null, storageNotice: null, opening: false });
     expect(screen.getByRole("navigation", { name: "Views" })).toBeTruthy();
     expect(screen.getByText("library view")).toBeTruthy();
-    expect(screen.getByText("0 photos in catalog")).toBeTruthy();
+    expect(screen.getByText("0 photos in catalogue")).toBeTruthy();
     expect(fs.has(SL)).toBe(true);
   });
 
-  it("opens a project whose catalog was cut off mid-write, keeping the damaged copy", async () => {
+  it("opens a project whose catalogue was cut off mid-write, keeping the damaged copy", async () => {
     const truncated = '{"version":1,"photos":[{"id":"p1:a.jpg"';
     const fs = new MemoryFs(ROOT).putBytes(`${ROOT}/a.jpg`, JPEG).put(`${SL}/catalog.json`, truncated);
     render(<App />);
@@ -175,7 +175,7 @@ describe("smoke: app boot", () => {
     expect(says(notice)).toBe(true);
     expect(useProjectStore.getState().openError).toBeNull();
     expect(screen.getByText("library view")).toBeTruthy();
-    expect(screen.getByText("1 photo in catalog")).toBeTruthy();
+    expect(screen.getByText("1 photo in catalogue")).toBeTruthy();
     expect(JSON.parse(fs.text(`${SL}/catalog.json`) ?? "null").photos).toHaveLength(1);
   });
 });
@@ -217,7 +217,7 @@ describe("smoke: opening a folder of mixed files", () => {
     expect(notice).toContain("1 HEIC file was skipped — HEIC isn't supported yet.");
     expect(notice).not.toMatch(/txt/i);
     expect(says(notice)).toBe(true);
-    expect(screen.getByText("5 photos in catalog")).toBeTruthy();
+    expect(screen.getByText("5 photos in catalogue")).toBeTruthy();
     expect(state.tree?.children.find((c) => c.name === "locked")).toMatchObject({ unreadable: true });
 
     const saved = JSON.parse(fs.text(`${SL}/catalog.json`) ?? "null") as { photos: { filename: string }[] };

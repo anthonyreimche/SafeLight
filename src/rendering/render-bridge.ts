@@ -135,7 +135,7 @@ export class RenderBridge {
     this.paramSync = new ParamSync(this.transport);
   }
 
-  /** Whether the worker's WebGL2 context has renderable float color buffers;
+  /** Whether the worker's WebGL2 context has renderable float colour buffers;
    *  undefined until the worker reports ready. */
   get pipelineFloat(): boolean | undefined {
     return this.transport.pipelineFloat;

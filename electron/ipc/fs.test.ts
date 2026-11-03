@@ -175,7 +175,7 @@ describe("fs:externalCatalogDir", () => {
   ) => Promise<string | null>;
   type ListCatalogs = (event: unknown, base: string | null) => Promise<{ path: string; sourcePath: string | null }[]>;
 
-  it("gives a source a second catalog of its own beside the first", async () => {
+  it("gives a source a second catalogue of its own beside the first", async () => {
     const userData = tempDir();
     const resolve = channel<Resolve>("fs:externalCatalogDir", userData);
     const first = await resolve({}, "E:\\", null, true);
@@ -191,7 +191,7 @@ describe("fs:externalCatalogDir", () => {
     expect(listed.every((c) => c.sourcePath === path.resolve("E:\\"))).toBe(true);
   });
 
-  it("names every catalog a source keeps, past one deleted before it", async () => {
+  it("names every catalogue a source keeps, past one deleted before it", async () => {
     const userData = tempDir();
     const resolve = channel<Resolve>("fs:externalCatalogDir", userData);
     const variants = channel<(event: unknown, rootPath: string, base: string | null) => Promise<number[]>>(
@@ -203,13 +203,13 @@ describe("fs:externalCatalogDir", () => {
       fs.writeFileSync(path.join(dir!, "catalog.json"), "{}");
     }
     await resolve({}, "F:\\", null, true);
-    fs.writeFileSync(path.join((await resolve({}, "E:\\", null, true, 4))!, "x"), "no catalog yet");
+    fs.writeFileSync(path.join((await resolve({}, "E:\\", null, true, 4))!, "x"), "no catalogue yet");
     fs.rmSync(path.dirname((await resolve({}, "E:\\", null, true))!), { recursive: true });
 
     await expect(variants({}, "E:\\", null)).resolves.toEqual([2, 3]);
   });
 
-  it("tells a source's catalogs apart by what their card held", async () => {
+  it("tells a source's catalogues apart by what their card held", async () => {
     const userData = tempDir();
     const dir = (await channel<Resolve>("fs:externalCatalogDir", userData)({}, "E:\\", null, true))!;
     const print = {

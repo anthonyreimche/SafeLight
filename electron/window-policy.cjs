@@ -73,7 +73,7 @@ function indexRedirectFor(url) {
  *  Until a commit is recorded it judges the frame's url, or the page's once
  *  the frame is gone. The sender is read before anything awaits: senderFrame
  *  turns null once the frame navigates, so it is never compared with the
- *  page's mainFrame (a reload's last catalog flush arrives from such a frame
+ *  page's mainFrame (a reload's last catalogue flush arrives from such a frame
  *  and must still land). */
 function guardPrivileged(
   channel,

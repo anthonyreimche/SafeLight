@@ -4,9 +4,9 @@
 // be preserved in derived versions.
 
 // The culling keys are a capture-phase window listener, so unlike the native
-// confirm they replaced, an open in-app dialog does not stop them: the first
+// confirm they replaced, an open in-app dialogue does not stop them: the first
 // block pins that the shortcuts stand down while one is showing. The later
-// blocks characterise the rest of the handler: which photos a key acts on, the
+// blocks characterize the rest of the handler: which photos a key acts on, the
 // grid-row stride, text-field and mask-tool deference, and the ref-counted
 // listener shared by every mounted photo surface.
 
@@ -54,7 +54,7 @@ const applyRating = vi.fn(
   async (_ids: string[], _rating: number): Promise<void> => {},
 );
 
-// Keys go to whatever holds focus, as in the app: the dialog's confirm button
+// Keys go to whatever holds focus, as in the app: the dialogue's confirm button
 // while a card is open, the body otherwise.
 function press(key: string, init: KeyboardEventInit = {}): void {
   fireEvent.keyDown(document.activeElement ?? document.body, { key, ...init });
@@ -75,15 +75,15 @@ beforeEach(() => {
   renderHook(() => useCullingShortcuts());
 });
 
-// The dialog queue is module state: close whatever a spec left open (several
+// The dialogue queue is module state: close whatever a spec left open (several
 // end with a card showing) so it can't surface in the next one. Each close can
 // mount the next queued card, so the escape stack is popped a few times.
 afterEach(() => {
   for (let i = 0; i < 4; i++) act(() => void popEscapeHandler());
 });
 
-describe("culling shortcuts while an in-app dialog is open", () => {
-  it("rates the selection when no dialog is open", () => {
+describe("culling shortcuts while an in-app dialogue is open", () => {
+  it("rates the selection when no dialogue is open", () => {
     press("3");
     expect(applyRating).toHaveBeenCalledWith(["a"], 3);
   });
@@ -91,7 +91,7 @@ describe("culling shortcuts while an in-app dialog is open", () => {
   it("pressing Delete twice opens one confirmation, not two", async () => {
     const user = userEvent.setup();
     press("Delete");
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     press("Delete");
     press("Delete", { repeat: true });
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
@@ -101,23 +101,23 @@ describe("culling shortcuts while an in-app dialog is open", () => {
     expect(removePhotos).not.toHaveBeenCalled();
   });
 
-  it("says the file stays on disk while the photo and its edits leave the catalog", () => {
+  it("says the file stays on disk while the photo and its edits leave the catalogue", () => {
     press("Delete");
-    const dialog = screen.getByRole("dialog", { name: "Remove from catalog" });
+    const dialog = screen.getByRole("dialog", { name: "Remove from catalogue" });
     expect(dialog.textContent).toMatch(/original file on disk won't be deleted/);
     expect(dialog.textContent).toMatch(/edits, ratings and labels/);
   });
 
   it("asks as a destructive action, with Cancel focused", () => {
     press("Delete");
-    const dialog = screen.getByRole("dialog", { name: "Remove from catalog" });
+    const dialog = screen.getByRole("dialog", { name: "Remove from catalogue" });
     expect(within(dialog).getByRole("button", { name: "Remove" }).className).toContain("bg-danger");
     expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
   });
 
-  it("still holds when focus has left the dialog", () => {
+  it("still holds when focus has left the dialogue", () => {
     press("Delete");
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     act(() => {
       (document.activeElement as HTMLElement).blur();
     });
@@ -129,7 +129,7 @@ describe("culling shortcuts while an in-app dialog is open", () => {
 
   it("ignores a rating key while a confirmation is open", () => {
     press("Delete");
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     press("3");
     expect(applyRating).not.toHaveBeenCalled();
   });
@@ -143,7 +143,7 @@ describe("culling shortcuts while an in-app dialog is open", () => {
     expect(applyRating).not.toHaveBeenCalled();
   });
 
-  it("works again once the dialog is answered", async () => {
+  it("works again once the dialogue is answered", async () => {
     const user = userEvent.setup();
     press("Delete");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -161,8 +161,8 @@ describe("culling shortcuts while an in-app dialog is open", () => {
 });
 
 // A focused checkbox or button isn't a text field, so the text-entry deferral
-// alone would let 1-5 or Backspace act on the selection behind these dialogs.
-describe("culling shortcuts behind the Copy settings and Rename dialogs", () => {
+// alone would let 1-5 or Backspace act on the selection behind these dialogues.
+describe("culling shortcuts behind the Copy settings and Rename dialogues", () => {
   it("ignores rating and remove keys after a checkbox in Copy settings is clicked", async () => {
     const user = userEvent.setup();
     const { unmount } = render(
@@ -179,14 +179,14 @@ describe("culling shortcuts behind the Copy settings and Rename dialogs", () => 
     press("Backspace");
     expect(applyRating).not.toHaveBeenCalled();
     expect(removePhotos).not.toHaveBeenCalled();
-    expect(screen.queryByRole("dialog", { name: "Remove from catalog" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Remove from catalogue" })).toBeNull();
 
     unmount();
     press("3");
     expect(applyRating).toHaveBeenCalledWith(["a"], 3);
   });
 
-  it("ignores a rating key while the Rename dialog's buttons hold focus", () => {
+  it("ignores a rating key while the Rename dialogue's buttons hold focus", () => {
     render(
       <RenamePhotoDialog
         title="Rename photo"
@@ -361,7 +361,7 @@ describe("culling shortcuts: which photos a key acts on", () => {
   });
 });
 
-describe("culling shortcuts: removing from the catalog", () => {
+describe("culling shortcuts: removing from the catalogue", () => {
   beforeEach(() => {
     useSettings.setState({ confirmRemovePhotos: true });
     useCatalogStore.setState({ selectedIds: new Set(["a", "b"]) });
@@ -382,14 +382,14 @@ describe("culling shortcuts: removing from the catalog", () => {
   it("still asks to remove while the canvas tool wouldn't take it", () => {
     setCanvasTool("safelight.masks", { overlay: () => null, wants: () => false });
     expect(fire(document.body, bound("photo.remove"))).toBe(true);
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     expect(removePhotos).not.toHaveBeenCalled();
   });
 
   it("removes nothing when the confirmation is cancelled, and asks again next time", async () => {
     const user = userEvent.setup();
     expect(fire(document.body, bound("photo.remove"))).toBe(true);
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(removePhotos).not.toHaveBeenCalled();
@@ -400,7 +400,7 @@ describe("culling shortcuts: removing from the catalog", () => {
     expect(removePhotos).toHaveBeenCalledWith(["a", "b"]);
   });
 
-  it("removes at once, with no dialog, when confirmation is switched off", () => {
+  it("removes at once, with no dialogue, when confirmation is switched off", () => {
     useSettings.setState({ confirmRemovePhotos: false });
     expect(fire(document.body, bound("photo.remove"))).toBe(true);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -410,7 +410,7 @@ describe("culling shortcuts: removing from the catalog", () => {
 
   it("treats a bare Backspace as the same remove key", () => {
     expect(fire(document.body, "Backspace")).toBe(true);
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
   });
 });
 
@@ -533,7 +533,7 @@ describe("culling shortcuts: focus and select-all", () => {
     }
   });
 
-  it("leaves every key to an extension's open native dialog", () => {
+  it("leaves every key to an extension's open native dialogue", () => {
     render(
       <dialog open>
         <input aria-label="Coordinates" />

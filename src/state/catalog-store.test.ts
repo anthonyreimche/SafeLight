@@ -290,7 +290,7 @@ describe("addPhotos", () => {
     expect(ids()).toEqual(["a", "a-copy", "a-copy-2", "b"]);
   });
 
-  it("appends when the anchor is not in the catalog", async () => {
+  it("appends when the anchor is not in the catalogue", async () => {
     useCatalogStore.setState({ photos: [photo("a")] });
 
     await state().addPhotos([photo("b")], { afterId: "missing" });
@@ -325,7 +325,7 @@ describe("previews", () => {
     // Overwriting a live preview would strand its object URL.
     expect(kept.thumbnailUrl).toBe(existing);
     expect(kept.thumbnailBlob).toBe(held.thumbnailBlob);
-    // An update for a photo that isn't in the catalog adds nothing.
+    // An update for a photo that isn't in the catalogue adds nothing.
     expect(ids()).toEqual(["bare", "held"]);
   });
 
@@ -395,11 +395,11 @@ describe("previews", () => {
   });
 });
 
-describe("at catalog scale", () => {
+describe("at catalogue scale", () => {
   const N = 50_000;
   const SWAPS = 500;
 
-  /** N photos that count every read of their ids: a pass over the whole catalog
+  /** N photos that count every read of their ids: a pass over the whole catalogue
    *  reads N of them. */
   function countedCatalog() {
     const reads = { count: 0 };
@@ -418,7 +418,7 @@ describe("at catalog scale", () => {
     return { photos, reads };
   }
 
-  it("swaps a rebuilt photo in without a pass over the catalog", () => {
+  it("swaps a rebuilt photo in without a pass over the catalogue", () => {
     useCatalogStore.setState({ photos: Array.from({ length: N }, (_, i) => photo(`p${i}`)) });
     state().mergeRebuiltPhoto(`p${N - 1}`, { fileSize: 1 });
     const plainStart = performance.now();
@@ -956,7 +956,7 @@ describe("rating, label and flag", () => {
     expect(state().photos.map((p) => p.colorLabel)).toEqual(["green", "green", "none"]);
   });
 
-  it("ignores ids that are not in the catalog", async () => {
+  it("ignores ids that are not in the catalogue", async () => {
     await state().applyRating(["ghost"], 5);
 
     expect(store.rows.size).toBe(0);
@@ -1067,7 +1067,7 @@ describe("rotatePhotos", () => {
     expect(state().photos[0].rotation).toBe(90);
   });
 
-  it("normalises a negative turn into its positive equivalent", async () => {
+  it("normalizes a negative turn into its positive equivalent", async () => {
     useCatalogStore.setState({ photos: [photo("a")] });
 
     await state().rotatePhotos(["a"], -90);
@@ -1111,7 +1111,7 @@ describe("rotatePhotos", () => {
     );
   });
 
-  it("names only the photos still in the catalog when their previews were turned", async () => {
+  it("names only the photos still in the catalogue when their previews were turned", async () => {
     useCatalogStore.setState({ photos: [previewed("a"), photo("b")] });
     const turning = gate();
     h.rotateGate = turning.promise;
@@ -1315,7 +1315,7 @@ describe("selection", () => {
     expect(state().activePhotoId).toBeNull();
   });
 
-  it("selectRange spans the order the user sees, not catalog order", () => {
+  it("selectRange spans the order the user sees, not catalogue order", () => {
     state().select("d");
     // The grid is sorted the other way round; the run must follow that view.
     state().selectRange("b", ["d", "c", "b", "a"]);
@@ -1360,7 +1360,7 @@ describe("selection", () => {
     expect(selected()).toEqual(["a"]);
   });
 
-  it("selectAll takes the visible ids, or the whole catalog when given none", () => {
+  it("selectAll takes the visible ids, or the whole catalogue when given none", () => {
     state().selectAll(["b", "c"]);
     expect(selected()).toEqual(["b", "c"]);
 

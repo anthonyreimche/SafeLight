@@ -5,7 +5,7 @@
 
 // Folder management for the Folders panel: create / rename folders, and move
 // folders or photos between folders by dragging. Every op mutates the real
-// directory tree on disk, then updates the affected catalog records (relPath /
+// directory tree on disk, then updates the affected catalogue records (relPath /
 // folder / live handles) and refreshes the folder tree — no re-decode, so
 // ratings, edits and cached thumbnails (keyed by photo id) are preserved.
 
@@ -204,7 +204,7 @@ async function copyDir(
   }
 }
 
-// ── catalog updates ──────────────────────────────────────────────────────────
+// ── catalogue updates ──────────────────────────────────────────────────────────
 
 /** Where a photo lives now, as far as a move or rename changed it. */
 type Relocation = Partial<
@@ -331,7 +331,7 @@ export async function movePhotos(ids: string[], destRel: string): Promise<void> 
     const newRel = joinRel(destRel, p.filename);
     // Bail on collision rather than overwrite: the move is a native rename,
     // which silently replaces an existing destination file — that would destroy
-    // a different photo and leave two catalog records on one file.
+    // a different photo and leave two catalogue records on one file.
     if (await existsRel(rootHandle, newRel)) {
       console.warn(`[folder-ops] move ${p.relPath} → ${newRel} skipped: name in use`);
       continue;
@@ -390,7 +390,7 @@ export type RenamePhotoResult =
 /** Rename one photo's file on disk, in place (same folder), preserving its
  *  extension. Carries the SafeLight sidecar (<file>.safelight.json) along if one
  *  exists. Cached previews and develop edits are keyed by photo id, so they're
- *  preserved untouched — only the catalog's filename/relPath/handle update. */
+ *  preserved untouched — only the catalogue's filename/relPath/handle update. */
 export async function renamePhoto(
   id: string,
   newBaseName: string,
@@ -448,7 +448,7 @@ export async function renamePhoto(
   return { ok: true, filename: newFilename };
 }
 
-/** Delete a folder: drop its photos (and their previews/edits) from the catalog,
+/** Delete a folder: drop its photos (and their previews/edits) from the catalogue,
  *  remove the directory from disk, then refresh the tree. No-op for the root. */
 export async function deleteFolder(rel: string): Promise<void> {
   const rootHandle = root();

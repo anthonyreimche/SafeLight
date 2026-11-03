@@ -95,7 +95,7 @@ describe("collectReportSections", () => {
     expect(sections.map((s) => s.text).join("\n")).not.toContain("ann");
   });
 
-  it("hides the catalog's own folders, and the folders above them, in relative paths", async () => {
+  it("hides the catalogue's own folders, and the folders above them, in relative paths", async () => {
     useCatalogStore.setState({ photos: [{ ...photo, folder: "Smith Wedding/day1/selects" }], activePhotoId: null });
     recordError("error", "[folder-ops] move Smith Wedding/day1/notes.txt failed");
     const text = textOf(await collectReportSections(null), "errors");

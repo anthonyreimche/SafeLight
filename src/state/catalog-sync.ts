@@ -3,8 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// What other windows write to the catalog reaches this window's ProjectStorage
-// (see project-storage). The catalog store and Develop hold copies of their own
+// What other windows write to the catalogue reaches this window's ProjectStorage
+// (see project-storage). The catalogue store and Develop hold copies of their own
 // and write them back on their next edit, so they take those records on as well.
 
 import { catalogStorage } from "@/catalog/storage";
@@ -12,8 +12,8 @@ import { onRemoteRecords } from "@/project/project-storage";
 import { useCatalogStore } from "./catalog-store";
 import { useDevelopStore } from "./develop-store";
 
-/** Keep the catalog store, and the photo open in Develop, in step with what other
- *  windows write to the catalog. Returns the unsubscribe. */
+/** Keep the catalogue store, and the photo open in Develop, in step with what other
+ *  windows write to the catalogue. Returns the unsubscribe. */
 export function followCatalogRecords(): () => void {
   return onRemoteRecords((records, storage) => {
     // A storage this window doesn't show (one still opening) has no say here.

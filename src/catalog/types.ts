@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The catalog model, split by concern; this file keeps the one import path.
+// The catalogue model, split by concern; this file keeps the one import path.
 // photo: the photo record and EXIF. develop-params: the shape of an edit.
 // defaults: the untouched edit. normalize: stored data back into shape.
 // process-version: which rendering generation an edit belongs to.

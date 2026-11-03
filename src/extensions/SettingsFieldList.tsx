@@ -9,7 +9,7 @@
 // (api.settings.onChange fires as you edit).
 //
 // Beyond rendering each SettingsField, this adds two things the standalone
-// extension dialog never had:
+// extension dialogue never had:
 //   • a per-field reset (↺), shown only when the value differs from the field's
 //     declared default, and a left accent bar marking the same "differs" state;
 //   • optional search: when `query` is set, non-matching fields are hidden and

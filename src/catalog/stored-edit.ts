@@ -5,10 +5,10 @@
 
 // Append one snapshot to a photo's stored edit without opening it in Develop;
 // Paste Settings and Update processing change Library photos this way, a whole
-// selection at a time with one catalog write.
+// selection at a time with one catalogue write.
 //
 // Mirrors what develop-store.commitEdit does for the open photo, but works on any
-// catalog photo straight from its persisted EditState. Grid thumbnails are
+// catalogue photo straight from its persisted EditState. Grid thumbnails are
 // deliberately NOT re-rendered here — that would reintroduce the folder-wide
 // decode pass we removed (see feedback-plain-grid-thumbnails); the new look
 // surfaces in Develop, and the broadcast refreshes the histogram.
@@ -49,8 +49,8 @@ interface AppendedEdit {
   params: DevelopParams;
 }
 
-/** The targets for the catalog photos among `ids`, in `ids` order. An id that is not
- *  in the catalog is skipped. */
+/** The targets for the catalogue photos among `ids`, in `ids` order. An id that is not
+ *  in the catalogue is skipped. */
 export function storedSnapshotTargets(ids: string[]): StoredSnapshotTarget[] {
   const photos = new Map(useCatalogStore.getState().photos.map((p) => [p.id, p] as const));
   return ids.flatMap((photoId) => {
@@ -71,7 +71,7 @@ async function appendedEdit(
   const { photoId, asShot } = target;
   const existing = await storage.getEditState(photoId);
 
-  // Baseline = the photo's current committed look (honoring a prior undo), or its
+  // Baseline = the photo's current committed look (honouring a prior undo), or its
   // as-shot defaults if it was never edited. A never-edited photo gets a seeded
   // "Original" snapshot so the new step stays undoable back to the untouched state.
   let stack: EditSnapshot[];
@@ -122,7 +122,7 @@ export async function appendStoredSnapshot(
 }
 
 /** appendStoredSnapshot for many photos, stored with one putEditStates call: a
- *  putEditState per photo rewrites the whole catalog each time. Every photo's new
+ *  putEditState per photo rewrites the whole catalogue each time. Every photo's new
  *  state is worked out before any is written, so a failure there changes none of
  *  them. They are then stored together, the photo open in Develop is reloaded at
  *  once, and each changed photo is announced in order. An announcement that throws

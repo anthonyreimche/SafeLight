@@ -17,7 +17,7 @@ export type RenderParamsFor = (
 ) => DevelopParams;
 
 /** Makes the function that returns the params the live view draws: the edit with its
- *  bypassed panels neutralised, passed through the held canvas tool's view (crop mode
+ *  bypassed panels neutralized, passed through the held canvas tool's view (crop mode
  *  widens the crop to enclose the whole transformed image). View-only; the stored edit is
  *  untouched. Either step builds a new object whenever it applies, and the bridge posts
  *  each object it is handed once, so the last result is kept and returned again while

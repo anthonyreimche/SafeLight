@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Tests for the shared window chrome: dialog semantics, focus handling, the
+// Tests for the shared window chrome: dialogue semantics, focus handling, the
 // outside-click dismiss, and titlebar dragging.
 
 import { useState } from "react";
@@ -16,7 +16,7 @@ const dialog = () => screen.getByRole("dialog");
 
 function backdrop(): HTMLElement {
   const el = dialog().parentElement;
-  if (!el) throw new Error("dialog has no backdrop");
+  if (!el) throw new Error("dialogue has no backdrop");
   return el;
 }
 
@@ -26,7 +26,7 @@ function titlebar(title: string): HTMLElement {
   return el;
 }
 
-/** A dialog behind a trigger, so focus restoration has somewhere to restore to. */
+/** A dialogue behind a trigger, so focus restoration has somewhere to restore to. */
 function Host({ children }: { children?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
@@ -44,7 +44,7 @@ function Host({ children }: { children?: React.ReactNode }) {
 }
 
 describe("ModalWindow semantics", () => {
-  it("is a modal dialog named by its titlebar", () => {
+  it("is a modal dialogue named by its titlebar", () => {
     render(
       <ModalWindow title="Extensions" onClose={vi.fn()}>
         <p>Body</p>
@@ -151,7 +151,7 @@ describe("ModalWindow focus trap", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Apply" }));
   });
 
-  it("wraps Shift+Tab from the dialog itself round to the last tab stop", async () => {
+  it("wraps Shift+Tab from the dialogue itself round to the last tab stop", async () => {
     const user = userEvent.setup();
     renderTrapped();
     layOutEverything();

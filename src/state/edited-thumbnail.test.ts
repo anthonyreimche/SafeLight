@@ -6,7 +6,7 @@
 // Post-commit grid-thumbnail regeneration: the three-step source ladder
 // (resident GPU source → decode + upload → camera JPEG), the per-photo
 // coalescing that collapses a burst of commits into one trailing render, and
-// the guards that stop a stale or failed render from damaging the catalog. The
+// the guards that stop a stale or failed render from damaging the catalogue. The
 // worker bridge and the decoder are the expensive edges, so they're faked.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -168,7 +168,7 @@ describe("rendering from the resident source", () => {
     bridge.renderThumbnailFromSource.mockResolvedValue(rendered);
   });
 
-  it("renders the committed look and writes it back to the catalog", async () => {
+  it("renders the committed look and writes it back to the catalogue", async () => {
     regenerateEditedThumbnail(PHOTO_ID, params(1), 5000, { "ext.stage.k": 3 });
     await settle();
 
@@ -234,7 +234,7 @@ describe("rendering from the resident source", () => {
     expect(written[0].rating).toBe(4);
   });
 
-  it("does nothing for a photo that is not in the catalog", async () => {
+  it("does nothing for a photo that is not in the catalogue", async () => {
     catalog.photos = [];
     regenerateEditedThumbnail(PHOTO_ID, params(1), 5000);
     await settle();
@@ -341,8 +341,8 @@ describe("rendering from the resident source", () => {
     expect(catalog.mergeRebuiltPhoto).not.toHaveBeenCalled();
   });
 
-  // The edit committed as a project closes: the catalog is gone by the time it renders.
-  it("stores the preview of a photo whose project was left, in the catalog it was left", async () => {
+  // The edit committed as a project closes: the catalogue is gone by the time it renders.
+  it("stores the preview of a photo whose project was left, in the catalogue it was left", async () => {
     const left = photo({ rating: 2 });
     catalog.photos = [];
     installMemoryStorage(); // the next project
@@ -356,7 +356,7 @@ describe("rendering from the resident source", () => {
     expect(catalog.mergeRebuiltPhoto).not.toHaveBeenCalled();
   });
 
-  it("keeps what the catalog holds of a left photo, changing only its preview", async () => {
+  it("keeps what the catalogue holds of a left photo, changing only its preview", async () => {
     const left = photo({ rating: 2 });
     catalog.photos = [];
     const held = photo({ rating: 5, flag: "pick" });
@@ -369,7 +369,7 @@ describe("rendering from the resident source", () => {
     expect(written[0].thumbnailBlob).toBe(rendered);
   });
 
-  it("writes nothing for a left photo the catalog no longer holds", async () => {
+  it("writes nothing for a left photo the catalogue no longer holds", async () => {
     catalog.photos = [];
     const holding: CatalogStorage = { ...storage, heldPhoto: () => undefined };
     await regenerateEditedThumbnail(PHOTO_ID, params(1), 5000, undefined, { photo: photo(), storage: holding });

@@ -60,7 +60,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "develop.zoom100", label: "Zoom to 100%", category: "Develop", def: "Ctrl+1" },
   { id: "develop.toggleClipping", label: "Toggle clipping overlay", category: "Develop", def: "J" },
   { id: "develop.toggleProof", label: "Toggle soft proof", category: "Develop", def: "S" },
-  { id: "develop.colorAssessment", label: "Toggle color assessment", category: "Develop", def: "Ctrl+B" },
+  { id: "develop.colorAssessment", label: "Toggle colour assessment", category: "Develop", def: "Ctrl+B" },
   { id: "develop.surroundDarker", label: "Surround darker", category: "Develop", def: "Ctrl+Shift+[", altDef: "Ctrl+Shift+{" },
   { id: "develop.surroundLighter", label: "Surround lighter", category: "Develop", def: "Ctrl+Shift+]", altDef: "Ctrl+Shift+}" },
   { id: "brush.smaller", label: "Shrink brush", category: "Develop", def: "[" },
@@ -90,7 +90,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   { id: "photo.next", label: "Next photo", category: "Library", def: "ArrowRight" },
   { id: "photo.rotateCCW", label: "Rotate left", category: "Library", def: "Alt+[" },
   { id: "photo.rotateCW", label: "Rotate right", category: "Library", def: "Alt+]" },
-  { id: "photo.remove", label: "Remove from catalog", category: "Library", def: "Delete", altDef: "Backspace" },
+  { id: "photo.remove", label: "Remove from catalogue", category: "Library", def: "Delete", altDef: "Backspace" },
   // Ships unbound: deleting files from disk is opt-in even as a shortcut.
   { id: "photo.deleteDisk", label: "Delete from disk", category: "Library", def: "" },
   { id: "photo.rename", label: "Rename photo", category: "Library", def: "F2" },
@@ -243,7 +243,7 @@ export function initKeybindings(): void {
 // The global handlers stand down while something owns the keyboard: the
 // Preferences combo recorder (they listen in the capture phase too and would
 // otherwise execute the very key being recorded), the welcome setup, core
-// dialogs. Each holder takes a hold and releases it, so overlapping holders
+// dialogues. Each holder takes a hold and releases it, so overlapping holders
 // can close in any order without lifting the suspension under another.
 const holds = new Set<symbol>();
 
@@ -263,7 +263,7 @@ export function resetShortcutHoldsForTests(): void {
 }
 
 /** True when the key comes from inside an open native <dialog>. Core's own
- *  dialogs close through the escape stack; an extension's modal <dialog> (the
+ *  dialogues close through the escape stack; an extension's modal <dialog> (the
  *  Map's Set location) has no way onto it, so it owns its keys outright:
  *  Escape closes it rather than exiting a Develop tool behind it, and Ctrl
  *  combos stay with its fields. */

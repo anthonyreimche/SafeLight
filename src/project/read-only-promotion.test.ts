@@ -3,8 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Edits made while a folder was read-only are folded back into its own catalog
-// the next time it opens writeable, and the catalog they replace is kept. The
+// Edits made while a folder was read-only are folded back into its own catalogue
+// the next time it opens writeable, and the catalogue they replace is kept. The
 // real working-dir and ProjectStorage run here over one in-memory desktop file
 // system, so what one open keeps is what the next open finds.
 
@@ -68,7 +68,7 @@ import { nativeDirectoryHandle } from "./native-fs";
 const CARD = "E:\\DCIM";
 const SPILLOVER = "C:/Users/u/AppData/Safelight/catalogs/dcim/.safelight";
 
-/** A desktop file system whose separate catalogs live under SPILLOVER. */
+/** A desktop file system whose separate catalogues live under SPILLOVER. */
 class DesktopFs extends MemoryFs {
   async externalCatalogDir(_root: string, _base?: string | null, create = true) {
     if (create) {
@@ -114,7 +114,7 @@ afterEach(() => {
 });
 
 describe("folding a read-only session's edits back in", () => {
-  it("keeps the catalog it replaced through the opens that follow", async () => {
+  it("keeps the catalogue it replaced through the opens that follow", async () => {
     const fs = new DesktopFs(CARD);
     h.fs = fs;
     fs.put(`${CARD}/a.jpg`, "A");
@@ -122,7 +122,7 @@ describe("folding a read-only session's edits back in", () => {
     await first.storage.putEditState(edit(first.photos[0].id, "Before the card went read-only"));
     first.storage.close();
     const beforeMerge = fs.text(`${CARD}/.safelight/catalog.json`);
-    // The read-only session's catalog: the folder's own, plus an edit, written later.
+    // The read-only session's catalogue: the folder's own, plus an edit, written later.
     const spilled = JSON.parse(beforeMerge ?? "null") as { edits: EditState[] };
     spilled.edits = [edit(first.photos[0].id, "Made while read-only")];
     fs.put(`${SPILLOVER}/catalog.json`, JSON.stringify(spilled));

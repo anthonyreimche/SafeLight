@@ -26,6 +26,7 @@ import {
   takingStages,
   trackGlObjects,
   withRenderer,
+  worstDifference,
 } from "./webgl.test-support";
 
 const GREY = 0.2;
@@ -232,6 +233,44 @@ describe("an extension stage whose GLSL doesn't build", () => {
     } finally {
       gl.getShaderParameter = getShaderParameter;
     }
+  });
+});
+
+// A stage whose pass doesn't build has no result for its inline glsl to read:
+// read anyway, the raw source stands in for it (a glow at Amount 0.5 lifts the
+// frame by half). The stage is left out of the frame instead, and reported.
+describe("an extension stage whose pass doesn't build", () => {
+  const GLOW: ProcessingStageContribution = {
+    ...stage("acme.glow", "lin += stageResult * amount;"),
+    uniforms: [{ key: "amount", glslType: "float", default: 0 }],
+    passes: [{ glsl: "c = c *;" }],
+  };
+  const BAG = { "acme.glow.amount": 0.5 };
+
+  function frames(stages: ProcessingStageContribution[], processVersion: number, bag: Record<string, unknown>) {
+    const reported: QuarantinedStage[] = [];
+    const shots = withRenderer(
+      { stages, pipeline: LINEAR_PROBE_PIPELINE, onStageQuarantined: (q) => reported.push(q) },
+      (renderer) => {
+        renderer.setImage(floatImage(16, 16, (x, y) => [0.1 + x / 64, 0.1 + y / 64, GREY]));
+        renderer.setParams(identityParams({ processVersion }));
+        renderer.setContributedParams(bag);
+        const first = capture(renderer);
+        renderer.setParams(identityParams({ processVersion, exposure: 0.5 }));
+        capture(renderer);
+        return { first, later: capture(renderer) };
+      },
+    );
+    return { ...shots, reported };
+  }
+
+  it.each([1, 2])("draws a version %i frame as if the stage weren't there, and reports it once", (version) => {
+    const failing = frames([DOUBLE_RED, GLOW], version, BAG);
+    const without = frames([DOUBLE_RED], version, {});
+    expect(worstDifference(failing.first, without.first)).toBe(0);
+    expect(worstDifference(failing.later, without.later)).toBe(0);
+    expect(failing.reported.map((q) => q.stageId)).toEqual(["acme.glow"]);
+    expect(failing.reported[0].log).toMatch(/compile failed/);
   });
 });
 

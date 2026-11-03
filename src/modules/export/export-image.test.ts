@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecodedImage } from "@/catalog/load-image";
 import type { CatalogPhoto, DevelopParams } from "@/catalog/types";
 import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION, normalizeParams } from "@/catalog/types";
-import type { ExportFrame } from "@/extensions/types";
+import type { ExportFrame, ExportProcessorContext } from "@/extensions/types";
 import { buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { denoiseBag } from "@/rendering/webgl/builtin-denoise";
 import type { ExportPixels, ExportPixelsOptions, ExportTarget, Sharpen } from "@/rendering/webgl/export-draw";
@@ -42,6 +42,8 @@ const h = vi.hoisted(() => {
     static gpuSharpens = true;
     /** What captureFloatFrame reads back: null without a float target. */
     static floatCapture: { data: Float32Array; width: number; height: number } | null = null;
+    /** The image (counted from 1) whose upload quarantines an extension stage, or null for none. */
+    static quarantineAtImage: number | null = null;
 
     pipeline: unknown = null;
     /** Each prepareProgram call: its version, and the pipeline the renderer held. */
@@ -57,8 +59,12 @@ const h = vi.hoisted(() => {
     /** Each renderSharpened call's sharpening. */
     gpuSharpened: Sharpen[] = [];
 
-    constructor() {
+    images = 0;
+    readonly opts: { onStageQuarantined?: (stage: { stageId: string; signature: string; log: string }) => void };
+
+    constructor(_canvas: unknown, opts: FakeRenderer["opts"] = {}) {
       if (FakeRenderer.createError) throw FakeRenderer.createError;
+      this.opts = opts;
       FakeRenderer.instances.push(this);
     }
 
@@ -87,6 +93,8 @@ const h = vi.hoisted(() => {
     }
     setImage() {
       events.push("setImage");
+      if (++this.images === FakeRenderer.quarantineAtImage)
+        this.opts.onStageQuarantined?.({ stageId: "ext.film", signature: "abc", log: "syntax error" });
     }
     signedOutputFor(params: DevelopParams): boolean {
       return Math.min(params.processVersion, FakeRenderer.newestVersion) >= 3;
@@ -130,6 +138,10 @@ const h = vi.hoisted(() => {
     sliceReads: [] as { name: string; start: number; end: number }[],
     /** Each CPU output-sharpening pass. */
     cpuSharpened: [] as Sharpen[],
+    /** The desktop fs bridge, or null for the browser build. */
+    nativeFs: null as { exists: (path: string) => Promise<boolean> } | null,
+    /** The photos in the open catalogue. */
+    catalog: [] as CatalogPhoto[],
     /** The saved edit a photo id loads, or undefined to make the read fail. */
     edits: new Map<string, DevelopParams>(),
     /** What loading a photo id decodes to; none decodes to null. */
@@ -147,13 +159,13 @@ const h = vi.hoisted(() => {
           b: Blob,
           p: CatalogPhoto,
           s: Record<string, unknown>,
-          context: { longEdge: number | null },
+          context: ExportProcessorContext,
         ) => Promise<Blob>;
         processPixels?: (
           frame: ExportFrame,
           p: CatalogPhoto,
           s: Record<string, unknown>,
-          context: { longEdge: number | null },
+          context: ExportProcessorContext,
         ) => Promise<ExportFrame | void>;
       }
     >,
@@ -213,7 +225,10 @@ vi.mock("@/project/native-fs", () => ({
     h.sliceReads.push({ name: handle.name, start, end });
     return { data: new Uint8Array(64), size: 50 << 20, lastModified: 0, type: "" };
   },
+  nativeFs: () => h.nativeFs,
+  nativePathOf: (handle: { path?: string } | null) => handle?.path ?? null,
 }));
+vi.mock("@/state/catalog-store", () => ({ useCatalogStore: { getState: () => ({ photos: h.catalog }) } }));
 vi.mock("./sharpen", () => ({
   applyOutputSharpening: (source: HTMLCanvasElement, amount: number, radius: number) => {
     h.cpuSharpened.push({ amount, radius });
@@ -240,6 +255,14 @@ const SETTINGS: ExportSettings = {
   bundle: false,
   delivery: "files",
 };
+
+/** A folder's getFileHandle that finds no file it isn't asked to create. */
+function emptyFolder<T>(get: (name: string, opts?: { create?: boolean }) => Promise<T>) {
+  return async (name: string, opts?: { create?: boolean }): Promise<T> => {
+    if (!opts?.create) throw new DOMException("none", "NotFoundError");
+    return get(name, opts);
+  };
+}
 
 // An edit with no version predates versions and reads as version 1, so say which.
 const CURRENT = normalizeParams({ processVersion: CURRENT_PROCESS_VERSION });
@@ -283,6 +306,9 @@ beforeEach(() => {
   h.FakeRenderer.exportTargets = [];
   h.FakeRenderer.gpuSharpens = true;
   h.FakeRenderer.floatCapture = { data: new Float32Array(8).fill(0.5), width: 2, height: 1 };
+  h.FakeRenderer.quarantineAtImage = null;
+  h.nativeFs = null;
+  h.catalog = [];
   h.cpuSharpened.length = 0;
   h.sliceReads.length = 0;
   h.events.length = 0;
@@ -496,10 +522,10 @@ describe("a rendered batch", () => {
     }),
   };
   const folder = {
-    getFileHandle: async (name: string, opts?: { create?: boolean }) => {
+    getFileHandle: emptyFolder(async (name: string, opts?: { create?: boolean }) => {
       if (opts?.create) written.push(name);
       return { createWritable: async () => ({ write: async () => undefined, close: async () => undefined }) };
-    },
+    }),
   } as unknown as FileSystemDirectoryHandle;
   const FOLDER: ExportSettings = { ...SETTINGS, delivery: "folder" };
 
@@ -589,6 +615,49 @@ describe("a rendered batch", () => {
     const [out] = await renderPhotosToBlobs([photo("a")], SETTINGS);
     expect(calls).toBe(1);
     expect(out.blob).not.toBeNull();
+  });
+
+  it("runs the registered processors by default and none with processors: false", async () => {
+    let calls = 0;
+    h.processors.mark = {
+      id: "mark",
+      order: 0,
+      process: async (blob) => {
+        calls++;
+        return blob;
+      },
+    };
+    await renderPhotosToBlobs([photo("a")], SETTINGS);
+    expect(calls).toBe(1);
+
+    const [out] = await renderPhotosToBlobs([photo("a")], SETTINGS, undefined, { processors: false });
+    expect(out.blob).not.toBeNull();
+    expect(calls).toBe(1);
+
+    await renderPhotosToBlobs([photo("a")], SETTINGS, undefined, { processors: true });
+    expect(calls).toBe(2);
+  });
+
+  it("runs the pixel hooks by default and none with processors: false on a 16-bit render", async () => {
+    let calls = 0;
+    h.processors.mark = {
+      id: "mark",
+      order: 0,
+      processPixels: async () => {
+        calls++;
+        return undefined;
+      },
+      process: async (blob) => {
+        calls++;
+        return blob;
+      },
+    };
+    const settings: ExportSettings = { ...SETTINGS, format: "image/tiff", tiffBitDepth: 16 };
+    await renderPhotosToBlobs([photo("a")], settings);
+    expect(calls).toBe(2);
+
+    await renderPhotosToBlobs([photo("a")], settings, undefined, { processors: false });
+    expect(calls).toBe(2);
   });
 
   // A gallery publish beside a user export: one batch waits inside a processor
@@ -705,7 +774,8 @@ describe("a rendered batch", () => {
     const aborted = vi.fn();
     function folderWriting(write: () => Promise<void>, close: () => Promise<void> = async () => undefined) {
       return {
-        getFileHandle: async () => ({ createWritable: async () => ({ write, close, abort: aborted }) }),
+        getFileHandle: emptyFolder(async () => ({ createWritable: async () => ({ write, close, abort: aborted }) })),
+        removeEntry: async () => undefined,
       } as unknown as FileSystemDirectoryHandle;
     }
 
@@ -786,7 +856,7 @@ describe("a rendered batch", () => {
 
       it("keeps a file that was already there", async () => {
         const dir = folderHolding(["a.jpg"], async (n) => void removed.push(n));
-        await exportPhotos([photo("a")], FOLDER, undefined, dir);
+        await exportPhotos([photo("a")], { ...FOLDER, ifExists: "replace" }, undefined, dir);
         expect(removed).toEqual([]);
       });
 
@@ -848,6 +918,128 @@ describe("a rendered batch", () => {
     });
   });
 
+  // Exporting into the folder that holds the originals must never replace one,
+  // and Windows and macOS match names regardless of case.
+  describe("into a folder that already holds files", () => {
+    const key = (name: string) => name.normalize("NFC").toLowerCase();
+
+    /** A browser folder holding `existing`, found regardless of case. Its listing
+     *  gives `listed`: by default all of them, fewer for files that came after it,
+     *  or an error for a folder that can't be listed. */
+    function folderListing(existing: string[], listed: string[] | Error = existing) {
+      const dir = {
+        getFileHandle: async (name: string, opts?: { create?: boolean }) => {
+          if (opts?.create) written.push(name);
+          else if (!existing.some((e) => key(e) === key(name))) throw new DOMException("none", "NotFoundError");
+          return { createWritable: async () => ({ write: async () => undefined, close: async () => undefined }) };
+        },
+        async *keys() {
+          if (listed instanceof Error) throw listed;
+          yield* listed;
+        },
+        isSameEntry: async (other: unknown) => other === dir,
+      };
+      return dir as unknown as FileSystemDirectoryHandle;
+    }
+
+    /** A desktop folder at `path`: its getFileHandle finds every name, so only the
+     *  bridge knows what is there. */
+    function nativeFolder(path: string, existing: string[]) {
+      const spelt = (p: string) => key(p.replace(/[/\\]+/g, "/"));
+      h.nativeFs = { exists: async (p) => existing.some((e) => spelt(`${path}/${e}`) === spelt(p)) };
+      return {
+        path,
+        getFileHandle: async (name: string) => ({
+          createWritable: async () => {
+            written.push(name);
+            return { write: async () => undefined, close: async () => undefined };
+          },
+        }),
+        async *keys() {},
+      } as unknown as FileSystemDirectoryHandle;
+    }
+
+    const REPLACE: ExportSettings = { ...FOLDER, ifExists: "replace" };
+
+    it("writes beside a file of the same name instead of over it", async () => {
+      await exportPhotos([photo("a")], FOLDER, undefined, folderListing(["a.jpg", "a.RAF"]));
+      expect(written).toEqual(["a (2).jpg"]);
+    });
+
+    it("treats a name that differs only in case as taken", async () => {
+      await exportPhotos([photo("a")], FOLDER, undefined, folderListing(["A.JPG", "a (2).JPG"]));
+      expect(written).toEqual(["a (3).jpg"]);
+    });
+
+    it("treats a name in the other Unicode form as taken", async () => {
+      const cafe = { ...photo("a"), filename: "Caf\u00e9.RAF" };
+      await exportPhotos([cafe], FOLDER, undefined, folderListing(["Cafe\u0301.jpg"]));
+      expect(written).toEqual(["Caf\u00e9 (2).jpg"]);
+    });
+
+    it("keeps the plain name when the folder doesn't hold it", async () => {
+      await exportPhotos([photo("a")], FOLDER, undefined, folderListing(["a.RAF", "b.jpg"]));
+      expect(written).toEqual(["a.jpg"]);
+    });
+
+    it("checks each name again as it writes, for a file that came after the listing", async () => {
+      await exportPhotos([photo("a")], FOLDER, undefined, folderListing(["a.jpg"], []));
+      expect(written).toEqual(["a (2).jpg"]);
+    });
+
+    it("exports into a folder it can't list, checking each name as it writes", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const unlisted = new Error("Error invoking remote method 'fs:list': Error: EACCES: permission denied, scandir");
+      const result = await exportPhotos([photo("a")], FOLDER, undefined, folderListing(["a.jpg"], unlisted));
+      expect(result.exported).toBe(1);
+      expect(written).toEqual(["a (2).jpg"]);
+    });
+
+    it("asks the desktop bridge whether a name is taken", async () => {
+      await exportPhotos([photo("a")], FOLDER, undefined, nativeFolder("D:\\Shoot", ["A.JPG"]));
+      expect(written).toEqual(["a (2).jpg"]);
+    });
+
+    describe("set to replace", () => {
+      it("writes over a file of the same name", async () => {
+        await exportPhotos([photo("a")], REPLACE, undefined, folderListing(["a.jpg"]));
+        expect(written).toEqual(["a.jpg"]);
+      });
+
+      it("takes the Preference when the settings don't say", async () => {
+        h.settings = { exportIfExists: "replace" };
+        await exportPhotos([photo("a")], FOLDER, undefined, folderListing(["a.jpg"]));
+        expect(written).toEqual(["a.jpg"]);
+      });
+
+      it("still numbers two photos of one name in the batch", async () => {
+        h.edits.set("b", CURRENT);
+        h.decoded.set("b", h.decoded.get("a")!);
+        await exportPhotos([photo("a"), { ...photo("b"), filename: "a.NEF" }], REPLACE, undefined, folderListing([]));
+        expect(written).toEqual(["a.jpg", "a (2).jpg"]);
+      });
+
+      it("never writes over the original of a photo in the catalogue", async () => {
+        const dir = folderListing(["A.JPG"]);
+        h.catalog = [{ ...photo("x"), filename: "A.JPG", directoryHandle: dir }];
+        await exportPhotos([photo("a")], REPLACE, undefined, dir);
+        expect(written).toEqual(["a (2).jpg"]);
+      });
+
+      it("writes over a file named like a photo in another folder", async () => {
+        h.catalog = [{ ...photo("x"), filename: "a.jpg", directoryHandle: folderListing([]) }];
+        await exportPhotos([photo("a")], REPLACE, undefined, folderListing(["a.jpg"]));
+        expect(written).toEqual(["a.jpg"]);
+      });
+
+      it("never writes over an original on the desktop, however its path is spelt", async () => {
+        h.catalog = [{ ...photo("x"), filename: "a.jpg", fileHandle: { path: "d:/shoot/a.jpg" } as unknown as FileSystemFileHandle }];
+        await exportPhotos([photo("a")], REPLACE, undefined, nativeFolder("D:\\Shoot\\", ["a.jpg"]));
+        expect(written).toEqual(["a (2).jpg"]);
+      });
+    });
+  });
+
   describe("a batch of several photos", () => {
     const batch = () => ["a", "b", "c", "d"].map(photo);
 
@@ -856,7 +1048,7 @@ describe("a rendered batch", () => {
       const failing = new Set([nths].flat());
       let writes = 0;
       return {
-        getFileHandle: async () => ({
+        getFileHandle: emptyFolder(async () => ({
           createWritable: async () => ({
             write: async () => {
               if (failing.has(++writes)) throw failure;
@@ -864,7 +1056,7 @@ describe("a rendered batch", () => {
             close: async () => undefined,
             abort: async () => undefined,
           }),
-        }),
+        })),
         removeEntry: async () => undefined,
       } as unknown as FileSystemDirectoryHandle;
     }
@@ -878,6 +1070,19 @@ describe("a rendered batch", () => {
         });
         h.bags.set(id, { "own.stage.x": 1, "own.stage.mode": 0 });
       }
+    });
+
+    it("counts the photos drawn without an extension stage that failed to build", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      h.FakeRenderer.quarantineAtImage = 2;
+      const result = await exportPhotos(batch(), FOLDER, undefined, folder);
+      expect(result.exported).toBe(4);
+      expect(result.withoutStages).toBe(3);
+    });
+
+    it("counts none when every stage builds", async () => {
+      const result = await exportPhotos(batch(), FOLDER, undefined, folder);
+      expect(result.withoutStages).toBeUndefined();
     });
 
     describe("stops on a failure that every later write would meet", () => {
@@ -968,7 +1173,7 @@ describe("a rendered batch", () => {
       it("does not pair it with a failure for another reason", async () => {
         let writes = 0;
         const dir = {
-          getFileHandle: async () => ({
+          getFileHandle: emptyFolder(async () => ({
             createWritable: async () => ({
               write: async () => {
                 if (++writes === 1) throw refusal("EPERM");
@@ -977,7 +1182,7 @@ describe("a rendered batch", () => {
               close: async () => undefined,
               abort: async () => undefined,
             }),
-          }),
+          })),
           removeEntry: async () => undefined,
         } as unknown as FileSystemDirectoryHandle;
         const result = await exportPhotos(batch(), FOLDER, undefined, dir);
@@ -1053,7 +1258,7 @@ describe("a rendered batch", () => {
       /** A folder whose write of a file takes `ms`, logging each into the events. */
       const slowFolder = (ms: number) =>
         ({
-          getFileHandle: async (name: string) => ({
+          getFileHandle: emptyFolder(async (name: string) => ({
             createWritable: async () => ({
               write: async () => {
                 if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
@@ -1062,7 +1267,7 @@ describe("a rendered batch", () => {
               close: async () => undefined,
               abort: async () => undefined,
             }),
-          }),
+          })),
         }) as unknown as FileSystemDirectoryHandle;
       const sized = (id: string, edge: number): CatalogPhoto => ({ ...photo(id), width: edge, height: edge });
 
@@ -1172,7 +1377,54 @@ describe("a rendered batch", () => {
     };
     await renderPhotosToBlobs([photo("a")], { ...SETTINGS, longEdge: 1500 });
     await renderPhotosToBlobs([photo("a")], { ...SETTINGS, longEdge: null });
-    expect(seen).toEqual([{ longEdge: 1500 }, { longEdge: null }]);
+    expect(seen).toMatchObject([{ longEdge: 1500 }, { longEdge: null }]);
+  });
+
+  it("hands a processor the export settings it was exported with, read-only", async () => {
+    const seen: ExportProcessorContext["settings"][] = [];
+    const record = async (context: ExportProcessorContext): Promise<void> => {
+      seen.push(context.settings);
+    };
+    h.processors.watch = {
+      id: "watch",
+      order: 0,
+      processPixels: (_frame, _photo, _settings, context) => record(context),
+      process: async (blob, _photo, _settings, context) => {
+        await record(context);
+        return blob;
+      },
+    };
+    const output = {
+      format: "image/tiff",
+      quality: 0.9,
+      longEdge: null,
+      tiffBitDepth: 16,
+      colorSpace: "display-p3",
+      sharpenAmount: 40,
+      sharpenRadius: 1.5,
+      includeMetadata: true,
+      includeLocation: false,
+    } as const;
+    await renderPhotosToBlobs([photo("a")], { ...SETTINGS, ...output });
+    expect(seen).toEqual([output, output]);
+    expect(Object.isFrozen(seen[0])).toBe(true);
+  });
+
+  it("keeps the other processors' settings and the delivery from a processor", async () => {
+    const seen: Record<string, unknown>[] = [];
+    h.processors.watch = {
+      id: "watch",
+      order: 0,
+      process: async (blob, _photo, _settings, context) => {
+        seen.push({ ...context.settings });
+        return blob;
+      },
+    };
+    const processorSettings = { other: { secret: "token" } };
+    await exportPhotos([photo("a")], { ...FOLDER, processorSettings, filenameTemplateId: "t", ifExists: "replace" }, undefined, folder);
+    expect(seen).toHaveLength(1);
+    for (const hidden of ["processorSettings", "delivery", "bundle", "filenameTemplateId", "ifExists"])
+      expect(seen[0]).not.toHaveProperty(hidden);
   });
 
   it("names a file by the type a processor turned it into", async () => {
@@ -1248,9 +1500,9 @@ describe("an export by process version", () => {
         : null,
   };
   const folder = {
-    getFileHandle: async () => ({
+    getFileHandle: emptyFolder(async () => ({
       createWritable: async () => ({ write: async () => undefined, close: async () => undefined }),
-    }),
+    })),
   } as unknown as FileSystemDirectoryHandle;
 
   beforeEach(() => {
@@ -1753,7 +2005,7 @@ describe("an export's pixel hooks", () => {
       order: 0,
       settings: [{ key: "border", label: "Border", type: "number", default: 10 }],
       processPixels: async (_frame, _photo, settings, context) => {
-        ran.push(`pixels:first ${JSON.stringify(settings)} ${JSON.stringify(context)}`);
+        ran.push(`pixels:first ${JSON.stringify(settings)} ${JSON.stringify({ longEdge: context.longEdge })}`);
       },
       process: async (blob) => {
         ran.push("process:first");
@@ -2018,6 +2270,12 @@ describe("the export status line", () => {
     ).toBe("Stopped: the disk is full, after exporting 2 photos.");
     expect(exportStatus(result({ exported: 0, stopped: "the folder is read-only" }))).toBe(
       "Stopped: the folder is read-only, before exporting any photos.",
+    );
+  });
+
+  it("says how many photos are missing an extension's effect", () => {
+    expect(exportStatus(result({ withoutStages: 2 }))).toBe(
+      "Exported 3 photos. 2 exported without an extension's effect (its shader failed to build).",
     );
   });
 

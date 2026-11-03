@@ -76,7 +76,7 @@ export interface StoreVocabulary {
   types: StoreType[];
 }
 
-/** Curation lists from the trust registry repo, fetched + normalised (lowercased)
+/** Curation lists from the trust registry repo, fetched + normalized (lowercased)
  *  in the Electron main process. `verified` is the human-reviewed allowlist;
  *  `repos`/`owners` are the banned kill-switch; `reason` maps a banned
  *  "owner/repo" or "owner" to a short explanation shown to the user. */
@@ -93,7 +93,7 @@ export interface TrustList {
   reason: Record<string, string>;
 }
 
-/** Normalised GitHub repo metadata for the Extensions store detail view.
+/** Normalized GitHub repo metadata for the Extensions store detail view.
  *  A subset of the GitHub repos API, shaped in the Electron main process. */
 export interface ExtensionRepoMeta {
   fullName: string;
@@ -130,7 +130,7 @@ export interface ExtensionManifest {
   main: string;
   /** Icon URL (absolute, or relative to the repo's default branch). */
   icon?: string;
-  /** Store categories, e.g. ["Panels", "Color"]. Preferred over repo topics. */
+  /** Store categories, e.g. ["Panels", "Colour"]. Preferred over repo topics. */
   categories?: string[];
   /** Free-form search keywords. */
   keywords?: string[];
@@ -152,7 +152,7 @@ export interface ExtensionManifest {
    *  `network` is *enforced* — declared HTTPS origins are added to the app's
    *  content-security policy, and anything not declared by an installed or
    *  dev-folder extension is blocked. Extensions otherwise run in-app with
-   *  ambient access (your catalog, files); that is NOT confined by this field,
+   *  ambient access (your catalogue, files); that is NOT confined by this field,
    *  so install only extensions you trust. See EXTENSIONS.md. */
   permissions?: ExtensionPermissions;
 }

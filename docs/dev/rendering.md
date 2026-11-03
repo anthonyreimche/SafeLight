@@ -41,7 +41,7 @@ An extension can add processing stages to either half, or replace the display tr
  │       ◆ registerPipeline replaces this step                        │
  │                                                       colour is c  │
  │  7  Whites, Blacks, Contrast, Dehaze, Clarity, Texture,            │
- │     Tone Curve, HSL, Vibrance, Saturation, Color Grading,          │
+ │     Tone Curve, HSL, Vibrance, Saturation, Colour Grading,         │
  │     Sharpening, the display part of each mask                      │
  │       ◆ display-adjust stages                                      │
  │       ◆ effects stages               core Vignette and Grain       │

@@ -63,7 +63,7 @@ describe("App", () => {
     act(() => unregisterExtension("ext"));
     expect(useUIStore.getState().activeModule).toBe("library");
     expect(screen.queryByText("map-main")).toBeNull();
-    expect(screen.getByText("0 photos in catalog")).toBeTruthy();
+    expect(screen.getByText("0 photos in catalogue")).toBeTruthy();
   });
 
   it("tells the user about a blocked extension with a project open", () => {
@@ -82,7 +82,7 @@ describe("App without Library and Develop installed", () => {
     render(<App />);
     expect(screen.getByRole("navigation", { name: "Views" })).toBeTruthy();
     expect(screen.getByText("Library and Develop aren't installed.")).toBeTruthy();
-    expect(screen.queryByText("0 photos in catalog")).toBeNull();
+    expect(screen.queryByText("0 photos in catalogue")).toBeNull();
   });
 
   it("shows Library once its extension registers it", () => {

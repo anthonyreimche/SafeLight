@@ -160,10 +160,10 @@ describe("reads current", () => {
     });
   });
 
-  // Serialising the develop params is the costly part of a split's key (masks
+  // Serializing the develop params is the costly part of a split's key (masks
   // carry their brush dabs), so frames that replaced nothing upstream, the
   // stage's own inline param included, must not do it.
-  it("serialises nothing for frames that replaced no input but the stage's own param", () => {
+  it("serializes nothing for frames that replaced no input but the stage's own param", () => {
     withRenderer({ stages: [copyStage()], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
       r.setImage(flat(0.2));
       r.setParams(params({ exposure: 1 }));
@@ -185,6 +185,32 @@ describe("reads current", () => {
         stringify.mockRestore();
       }
     });
+  });
+
+  // A stage that reads the current image from version 2 reads the decode on a
+  // version 1 photo, as a source reader does: an upstream edit draws no split
+  // and leaves its passes' result as it was. Version 2 is the control.
+  it("reads the decode on an older version when it reads the current image from a later one", () => {
+    const fromV2 = copyStage({ readsCurrentFrom: 2 });
+    const run = (processVersion: number) =>
+      withRenderer({ stages: [...basicStages(), fromV2], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+        r.setImage(flat(0.2));
+        r.setParams(identityParams({ processVersion, exposure: 1 }));
+        r.setContributedParams({ "test.current.take": 1 });
+        const first = pixelAt(capture(r), 8, 8)[1];
+        const before = { ...r.renderDrawCounts };
+        r.setParams(identityParams({ processVersion, exposure: 0.5 }));
+        r.render();
+        return { first, split: r.renderDrawCounts.split - before.split, pass: r.renderDrawCounts.pass - before.pass };
+      });
+    const v1 = run(1);
+    expect(v1.first).toBeCloseTo(0.2, 2);
+    expect(v1.split).toBe(0);
+    expect(v1.pass).toBe(0);
+    const v2 = run(CURRENT_PROCESS_VERSION);
+    expect(v2.first).toBeCloseTo(0.4, 2);
+    expect(v2.split).toBe(1);
+    expect(v2.pass).toBeGreaterThan(0);
   });
 
   // The tests below keep one renderer across frames: a split's cache entry

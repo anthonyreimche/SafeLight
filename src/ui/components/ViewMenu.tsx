@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // View menu: toggle any registered panel and switch themes. Panels open as
-// floating windows centered over the workspace (drag one into a rail to dock
+// floating windows centred over the workspace (drag one into a rail to dock
 // it). Everything listed here comes from the extension registry.
 
 import { panelTitle, useRegistry } from "@/extensions/registry";

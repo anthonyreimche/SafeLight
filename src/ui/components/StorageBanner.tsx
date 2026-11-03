@@ -4,16 +4,16 @@
 // be preserved in derived versions.
 
 // Surfaces the result of opening a folder whose .safelight working dir couldn't
-// live in the folder itself, or whose catalog couldn't be used as saved:
+// live in the folder itself, or whose catalogue couldn't be used as saved:
 //   • openError   — a blocking, verbose message (e.g. a read-only folder with no
-//                   writeable fallback, or a catalog another program holds).
+//                   writeable fallback, or a catalogue another program holds).
 //                   Replaces the old silent console.error. Preferences is offered
 //                   only for a read-only folder, the one case it can fix.
-//   • saveError   — the open project's catalog saves are failing. It can't be
+//   • saveError   — the open project's catalogue saves are failing. It can't be
 //                   dismissed: it goes by itself once a save lands.
-//   • storageNotice — a non-blocking heads-up that a read-only folder's catalog
+//   • storageNotice — a non-blocking heads-up that a read-only folder's catalogue
 //                   was redirected to a writeable location, so the user knows
-//                   where their edits/ratings actually land, or that a catalog
+//                   where their edits/ratings actually land, or that a catalogue
 //                   was restored from its backup or rebuilt.
 // A slim dismissible bar in the bottom stack (BottomBanners), matching UpdateBanner.
 

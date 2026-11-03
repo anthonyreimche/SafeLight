@@ -31,7 +31,7 @@ const toggleMaximized = () =>
 export function ExtensionsDialog() {
   const open = useExtensionsOpen((s) => s.open);
   const maximized = useSettings((s) => s.extensionsMaximized);
-  // Esc closes the dialog, via the shared modal stack (topmost first).
+  // Esc closes the dialogue, via the shared modal stack (topmost first).
   useEffect(() => {
     if (!open) return;
     return pushEscapeHandler(closeExtensions);

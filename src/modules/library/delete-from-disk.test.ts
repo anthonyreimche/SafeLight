@@ -74,7 +74,7 @@ describe("diskTrashAvailable", () => {
 });
 
 describe("deletePhotosFromDisk", () => {
-  it("moves selected photos to the trash and removes them from the catalog", async () => {
+  it("moves selected photos to the trash and removes them from the catalogue", async () => {
     h.photos = [fakePhoto("a", "D:/pics/a.NEF"), fakePhoto("b", "D:/pics/b.NEF")];
     const r = await deletePhotosFromDisk(["a", "b"]);
     expect(h.trash).toHaveBeenCalledWith("D:/pics/a.NEF");
@@ -83,7 +83,7 @@ describe("deletePhotosFromDisk", () => {
     expect(r).toMatchObject({ deleted: 2, skippedCopies: 0, failed: [] });
   });
 
-  it("keeps a photo in the catalog when trashing its file fails", async () => {
+  it("keeps a photo in the catalogue when trashing its file fails", async () => {
     h.photos = [fakePhoto("a", "D:/pics/a.NEF"), fakePhoto("b", "D:/pics/b.NEF")];
     h.trash.mockImplementation(async (p: string) => {
       if (p.includes("a.NEF")) throw new Error("EBUSY: locked");

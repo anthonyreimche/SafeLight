@@ -3,27 +3,72 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { updateSettings, useSettings } from "@/state/settings-store";
-import { Field, OptionRow, ToggleField } from "@/ui/preferences/fields";
+import { useState } from "react";
+import { readWebGLInfo } from "@/diagnostics/environment";
+import { integratedGpuLead, integratedGpuName } from "@/diagnostics/integrated-gpu";
+import { updateSettings, useSettings, type AppSettings } from "@/state/settings-store";
+import { btnCls, Field, OptionRow, ToggleField } from "@/ui/preferences/fields";
 import { settings, type PrefSection } from "@/ui/preferences/section-model";
+
+type DevelopMaxEdge = AppSettings["developMaxEdge"];
+
+// Graphics that share the processor's memory pay for every full-size target
+// Develop draws through: a smaller render buffer, a smaller GPU cache, no
+// background decode of the next photo and a histogram that waits for edits to
+// settle.
+const INTEGRATED_GRAPHICS = {
+  developMaxEdge: 2560,
+  gpuSourceCacheBytes: 256 * 1024 * 1024,
+  developPrefetchNeighbors: false,
+  liveHistogram: false,
+} satisfies Partial<AppSettings>;
+
+function IntegratedGraphicsField() {
+  const s = useSettings();
+  // Once per mount: the probe makes a WebGL context, so not on every re-render.
+  const [found] = useState(() => {
+    const renderer = readWebGLInfo()?.renderer;
+    return renderer ? integratedGpuName(renderer) : null;
+  });
+  const inUse = (Object.keys(INTEGRATED_GRAPHICS) as (keyof typeof INTEGRATED_GRAPHICS)[]).every(
+    (k) => s[k] === INTEGRATED_GRAPHICS[k],
+  );
+  const lead = integratedGpuLead(found);
+  return (
+    <Field
+      label="Integrated graphics"
+      hint={`${lead}Sets a 2560 px render resolution, a 256 MB GPU source cache, no neighbour prefetch and a histogram that updates once edits settle. 100% zoom is softer on large sensors, and wide effects from some extensions can look slightly different.`}
+    >
+      <div className="flex items-center gap-2">
+        <button className={`${btnCls} disabled:cursor-default disabled:opacity-45`} disabled={inUse} onClick={() => updateSettings(INTEGRATED_GRAPHICS)}>
+          Use integrated graphics settings
+        </button>
+        {inUse && <span className="text-[10px] text-text-secondary">In use.</span>}
+      </div>
+    </Field>
+  );
+}
 
 export function PerformanceSection() {
   const s = useSettings();
   return (
     <div className="flex flex-col gap-4">
+      <IntegratedGraphicsField />
       <Field
         label="Develop render resolution"
-        hint="Cap of the Develop render buffer. Higher keeps 100% zoom true 1:1 on large sensors but uses more GPU memory. Applies when a photo is reopened."
+        hint="Cap of the Develop render buffer. Higher keeps 100% zoom true 1:1 on large sensors but uses more GPU memory; lower is faster on integrated graphics. Applies when a photo is reopened."
       >
         <OptionRow
           value={s.developMaxEdge}
           options={[
+            { value: 2560, label: "2560 px" },
+            { value: 3072, label: "3072 px" },
             { value: 4096, label: "4096 px" },
             { value: 6144, label: "6144 px" },
             { value: 8192, label: "8192 px" },
           ]}
           onChange={(v) =>
-            updateSettings({ developMaxEdge: v as 4096 | 6144 | 8192 })
+            updateSettings({ developMaxEdge: v as DevelopMaxEdge })
           }
         />
       </Field>
@@ -84,6 +129,7 @@ export const performanceSection: PrefSection = {
   label: "Performance",
   group: "General",
   items: settings(
+    "Integrated graphics",
     "Develop render resolution",
     "Open photos at",
     "GPU source cache",
@@ -91,6 +137,6 @@ export const performanceSection: PrefSection = {
     "High bit-depth previews",
     "Live histogram",
   ),
-  keywords: [],
+  keywords: ["integrated graphics", "slow", "gpu memory", "laptop"],
   render: () => <PerformanceSection />,
 };

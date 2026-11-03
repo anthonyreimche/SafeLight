@@ -99,7 +99,7 @@ const SORTS: { id: StoreSort; label: string }[] = [
   { id: "name", label: "Name" },
 ];
 
-/** How many photos in the open catalog set one of `extensionId`'s stage params,
+/** How many photos in the open catalogue set one of `extensionId`'s stage params,
  *  on the whole photo or inside a mask. A running extension's params count when
  *  away from their defaults. One that isn't running has no descriptors left, so
  *  any stored value under its id counts: stage ids, and so their param keys,
@@ -258,7 +258,7 @@ export function ExtensionManagerPanel() {
   useEffect(refresh, [reloadNonce, kitRunning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refresh update badges for installed extensions (TTL-guarded, so cheap if the
-  // launch check already ran). Catches the case where the dialog is opened
+  // launch check already ran). Catches the case where the dialogue is opened
   // before/without the boot check. Respects the user's update-check setting.
   useEffect(() => {
     if (!checkUpdates) return;
@@ -279,8 +279,8 @@ export function ExtensionManagerPanel() {
   };
 
   // Official-extension search: runs on open and (debounced) as you type. An
-  // empty query's answer is also the catalog, kept even once a keystroke has
-  // superseded it. A query searched after ↻ asks for the catalog again once its
+  // empty query's answer is also the catalogue, kept even once a keystroke has
+  // superseded it. A query searched after ↻ asks for the catalogue again once its
   // own forced search has refreshed the main process's cache.
   useEffect(() => {
     if (!native?.plugins.search) return;
@@ -586,7 +586,7 @@ export function ExtensionManagerPanel() {
     if (sel.includes("/")) {
       const lower = sel.toLowerCase();
       const manifest = list.find((m) => repoFor(m)?.toLowerCase() === lower);
-      // A live search can match a repo past the catalog's first page.
+      // A live search can match a repo past the catalogue's first page.
       const matches = (r: ExtensionSearchResult) => r.fullName.toLowerCase() === lower;
       const search = catalog?.find(matches) ?? results?.find(matches);
       const name = manifest?.name ?? search?.name ?? sel.split("/")[1] ?? sel;

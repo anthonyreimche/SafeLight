@@ -16,7 +16,7 @@ import {
 } from "@/catalog/types";
 import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines";
 import { baselineRefit, baselineTone } from "../baseline-tone";
-import { toneHighlights, toneShadows } from "../local-tone";
+import { basicShadows, toneHighlights, toneShadows } from "../local-tone";
 import {
   PIXEL_TOLERANCE,
   basicStagesFor,
@@ -84,14 +84,14 @@ const STRIPED = floatImage(64, 16, (x) => {
 });
 
 describe("version 2 Highlights and Shadows on a flat grey", () => {
-  const CASES: [number, number][] = [[-100, 0], [-40, 60], [0, -50], [0, 100], [30, 0], [100, 100]];
-  const VALUES = [0.05, 0.3, 0.9, 1.6];
+  const CASES: [number, number][] = [[-100, 0], [-40, 60], [0, -50], [0, -100], [0, 100], [30, 0], [100, 100]];
+  const VALUES = [0.004, 0.05, 0.3, 0.9, 1.6];
   for (const [highlights, shadows] of CASES) {
     for (const exposure of [0, 1.5]) {
       it(`land where the TypeScript curves do at Highlights ${highlights}, Shadows ${shadows}, Exposure ${exposure}`, () => {
         const frames = renderEach(HALVING, VALUES.map(flat), { ...V2, highlights, shadows, exposure });
         VALUES.forEach((value, i) => {
-          const expected = toneShadows(
+          const expected = basicShadows(
             toneHighlights(value * 2 ** exposure, exposure, highlights / 100, false),
             shadows / 100,
           );
@@ -105,7 +105,27 @@ describe("version 2 Highlights and Shadows on a flat grey", () => {
     it(`land where the TypeScript curves do without the core shoulder at Highlights ${highlights}, Shadows ${shadows}`, () => {
       const frames = renderEach(SHOULDERLESS, VALUES.map(flat), { ...V2, highlights, shadows });
       VALUES.forEach((value, i) => {
-        const expected = toneShadows(toneHighlights(value, 0, highlights / 100, true), shadows / 100);
+        const expected = basicShadows(toneHighlights(value, 0, highlights / 100, true), shadows / 100);
+        expect(Math.abs(sceneLuma(frames[i], 8, 8) - expected), `at ${value}`).toBeLessThan(TOLERANCE);
+      });
+    });
+  }
+
+  // An installed release renders every photo with its one text; Basic's
+  // current line keeps version 1's Shadows curve for a version 1 photo.
+  for (const shadows of [-100, 100]) {
+    it(`keeps version 1's Shadows curve on a version 1 photo under the current line at Shadows ${shadows}`, () => {
+      const frames = withRenderer({ stages: basicStagesFor(CURRENT_PROCESS_VERSION), pipeline: HALVING }, (renderer) =>
+        VALUES.map((value) => {
+          renderer.setImage(flat(value));
+          renderer.setParams(identityParams({ ...V1, shadows }));
+          const frame = renderer.captureFloatFrame();
+          if (!frame) throw new Error("captureFloatFrame returned null");
+          return frame;
+        }),
+      );
+      VALUES.forEach((value, i) => {
+        const expected = toneShadows(toneHighlights(value, 0, 0, false), shadows / 100);
         expect(Math.abs(sceneLuma(frames[i], 8, 8) - expected), `at ${value}`).toBeLessThan(TOLERANCE);
       });
     });
@@ -144,9 +164,9 @@ describe("version 2 with Highlights and Shadows at 0", () => {
 });
 
 // On a flat field every tap reads the pixel's own value, so the region is the
-// pixel and version 2 must render what version 1 does: its per-pixel curves
-// are the same functions, and its automatic band detail is zero on a flat
-// field. The region base decodes its taps itself (sRGB decode, baseline tone
+// pixel and version 2 must render what version 1 does at Highlights -100: its
+// per-pixel Highlights curve is the same function, and its automatic band
+// detail is zero on a flat field. (Its Shadows curve is its own.) The region base decodes its taps itself (sRGB decode, baseline tone
 // and the camera baseline, white-balance gain), so this guards that the taps
 // decode the source as the pixel does: it fails only when they decode it
 // differently.
@@ -180,7 +200,7 @@ describe("version 2 Highlights and Shadows on a flat field under the built-in tr
     return (lo + hi) / 2;
   }
 
-  for (const slider of [{ highlights: -100 }, { shadows: 100 }]) {
+  for (const slider of [{ highlights: -100 }]) {
     it(`renders a float source with a white-balance gain as version 1 does at ${JSON.stringify(slider)}`, () => {
       // A warm grey of luminance 0.3, at 4000 K against an as-shot 6500 K.
       const rgb = [0.3625, 0.29, 0.2175] as const;

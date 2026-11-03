@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// ProjectStorage: the catalog lives inside the project folder.
+// ProjectStorage: the catalogue lives inside the project folder.
 //
 //   <project>/.safelight/catalog.json   photo records + edit histories
 //   <project>/.safelight/previews/      <photoId>.jpg grid thumbnails
@@ -17,7 +17,7 @@
 // Opening a project reconciles catalog.json against a fresh disk scan: new
 // files get decoded + thumbnailed, records whose file vanished are dropped,
 // and everything else keeps its ratings/edits. Files the user removed from the
-// catalog are tombstoned so they aren't re-imported while their original stays
+// catalogue are tombstoned so they aren't re-imported while their original stays
 // on disk, until a photo is stored under that name again. Saves are debounced
 // whole-file JSON writes, one at a time (handles and blobs are never serialized).
 // A write that fails is tried again after a wait, and how each write ends is
@@ -26,7 +26,7 @@
 // A catalog.json that can't be read, or was saved by a newer version, stops the
 // open with nothing written. A damaged one is kept aside as
 // catalog.corrupt-<time>.json. A damaged or missing one is restored from
-// catalog.bak.json (the catalog as the main window opened it, kept by that
+// catalog.bak.json (the catalogue as the main window opened it, kept by that
 // session's first save, when it held nothing this build couldn't open; the two
 // before it stay as catalog.bak-1.json and catalog.bak-2.json); with no usable
 // backup the open starts from the folder alone. Of the damaged copies kept aside,
@@ -34,13 +34,13 @@
 //
 // Every window (the main one and each pop-out) opens the project with its own
 // storage and saves the whole file from its own copy. So each write is also sent
-// to the windows on the same catalog file as "catalog-records". Each takes them
+// to the windows on the same catalogue file as "catalog-records". Each takes them
 // on where they are the newer change (see change-stamps): the photos it shows
 // change in place, and photos it doesn't show (added by the sender since this
 // window opened) are kept, unshown, so its own saves don't drop them. It saves
 // again when a save of its own may have put the old records back on disk, or when
 // the sender gave up writing them. A window that opens says so once it has read
-// catalog.json ("catalog-hello"), and every other storage on the catalog answers
+// catalog.json ("catalog-hello"), and every other storage on the catalogue answers
 // with what it changed or took in since it opened, which that file may not hold.
 
 import {
@@ -123,7 +123,7 @@ const SAVE_DELAY = 800;
 // periodically instead of the debounce sliding forever and persisting nothing.
 const MAX_SAVE_DELAY = 2500;
 // During the import walk the ceiling relaxes: every flush re-serializes the
-// whole catalog, so at 2.5s a long import spends ~O(n²) work re-writing records
+// whole catalogue, so at 2.5s a long import spends ~O(n²) work re-writing records
 // it just wrote. 10s keeps progress durable while cutting that churn 4×.
 const BULK_SAVE_DELAY = 10_000;
 /** How many times a copy the window has left tries a failed write again before it
@@ -151,7 +151,7 @@ export function onRemoteRecords(listener: RemoteRecordsListener): () => void {
 }
 
 /** How a catalog.json write ended: it landed, or it failed for `reason`, worded
- *  for the user. `gaveUp` is set once a storage whose window left the catalog
+ *  for the user. `gaveUp` is set once a storage whose window left the catalogue
  *  stops trying: its last changes are in no file unless another window saves them. */
 export type SaveStatus = { ok: true } | { ok: false; reason: string; gaveUp?: true };
 
@@ -168,17 +168,17 @@ export function onSaveStatus(listener: SaveStatusListener): () => void {
 
 /** Why a catalog.json write failed, worded for the user. */
 function saveFailureReason(error: unknown): string {
-  if (error instanceof RangeError) return "the catalog is too large to save as one file";
+  if (error instanceof RangeError) return "the catalogue is too large to save as one file";
   return fsErrorText(error);
 }
 
-/** The storages whose window has left their catalog while they may still write it
+/** The storages whose window has left their catalogue while they may still write it
  *  (close), until they let go (letGoIfIdle). */
 const leftCopies = new Set<ProjectStorage>();
 
-/** Write now what each catalog this window has left still holds: the window is
+/** Write now what each catalogue this window has left still holds: the window is
  *  closing, and their next try would come after it. Called before the open
- *  catalog's own flush, so that write is asked for last (see flush). */
+ *  catalogue's own flush, so that write is asked for last (see flush). */
 export function flushLeftCopies(): void {
   for (const storage of leftCopies) void storage.flush({ unloading: true });
 }
@@ -218,22 +218,22 @@ export interface OpenedProject {
   /** Absolute path of the external working dir when redirected, else null. */
   externalPath: string | null;
   /** Set when read-only-session edits were just folded back into this in-folder
-   *  catalog — the separate catalog they came from. Else null. */
+   *  catalogue — the separate catalogue they came from. Else null. */
   promotedFromExternal: string | null;
-  /** How a catalog that couldn't be used as saved was recovered, else null. */
+  /** How a catalogue that couldn't be used as saved was recovered, else null. */
   recovered: CatalogRecovery | null;
 }
 
 export class ProjectStorage implements CatalogStorage {
   private photos = new Map<string, CatalogPhoto>();
   private edits = new Map<string, EditState>();
-  /** Tombstoned relPaths — files removed from the catalog but still on disk. */
+  /** Tombstoned relPaths — files removed from the catalogue but still on disk. */
   private removed = new Set<string>();
   private lastThumb = new Map<string, Blob | null>();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private firstDirtyAt = 0;
   /** Whether this copy holds a change catalog.json may lack: set by a change to
-   *  save, cleared as a write takes its copy of the catalog, set again if that
+   *  save, cleared as a write takes its copy of the catalogue, set again if that
    *  write fails. A flush with nothing to save writes nothing. */
   private dirty = false;
   /** Set for good once a change couldn't be sent to the other windows (send): they
@@ -258,7 +258,7 @@ export class ProjectStorage implements CatalogStorage {
   private photoStamps = new Map<string, PhotoStamps>();
   private editStamps = new Map<string, ChangeStamp>();
   /** The photo records and edit histories this copy changed or took in since it
-   *  opened: what it answers a storage that opens on the catalog later with
+   *  opened: what it answers a storage that opens on the catalogue later with
    *  (answer), with its removals. */
   private changedPhotos = new Set<string>();
   private changedEdits = new Set<string>();
@@ -277,14 +277,14 @@ export class ProjectStorage implements CatalogStorage {
   /** The storages whose answer this copy took in. It holds every change of theirs
    *  made before it listened, so it saves for them when one gives up (apply). */
   private heardFrom = new Set<string>();
-  /** The id this catalog keeps (catalogIdOf), and the catalog file this storage
+  /** The id this catalogue keeps (catalogIdOf), and the catalogue file this storage
    *  writes (catalogKey); both are known once open() has read catalog.json. */
   private catalogId = "";
   private catalog = "";
   private stopListening: (() => void) | null = null;
   /** True until open() has built this copy, or failed: its walk may still save. */
   private walking = true;
-  /** Set once the window has left this catalog (close). */
+  /** Set once the window has left this catalogue (close). */
   private closed = false;
   /** Each photo's newest preview write that hasn't ended, and when it ends
    *  (writePreview). A record changes once its preview lands (previewStored), so
@@ -319,7 +319,7 @@ export class ProjectStorage implements CatalogStorage {
    *  window. A record that comes back for one of them is stale: a late message, or
    *  a writer that held the photo from before its removal. */
   private removedIds = new Set<string>();
-  /** The catalog's top-level keys this build doesn't know, saved back as read. */
+  /** The catalogue's top-level keys this build doesn't know, saved back as read. */
   private extra: Record<string, unknown> = {};
   /** catalog.json as this session opened it, which its first save keeps as
    *  catalog.bak.json; null once kept, or when there is none to keep (a restore or
@@ -371,15 +371,15 @@ export class ProjectStorage implements CatalogStorage {
     const previews = await sl.getDirectoryHandle("previews", { create: true });
     const rawCacheDir = await sl.getDirectoryHandle("raw", { create: true });
     const storage = new ProjectStorage(sl, previews, deps);
-    // Follow the other windows from before catalog.json is read: which catalog what
+    // Follow the other windows from before catalog.json is read: which catalogue what
     // they write belongs to is only known once it is read, so it waits until then
     // (see hold).
     storage.listen();
     try {
-      // Read the saved catalog first (one quick read) and paint the grid from it
+      // Read the saved catalogue first (one quick read) and paint the grid from it
       // immediately as skeleton records — no live handles, no previews — so the UI
       // appears at once. The directory scan below then runs without blocking the
-      // first paint, attaching handles and finding new/removed files. A catalog that
+      // first paint, attaching handles and finding new/removed files. A catalogue that
       // can't be read, or is too new, stops the open here: nothing is written,
       // sent or installed.
       const { catalog: opened, recovered, bytes } = await readSavedCatalog(sl);
@@ -440,7 +440,7 @@ export class ProjectStorage implements CatalogStorage {
         }),
       );
       for (const sk of skeletons) storage.show(sk);
-      // What the other windows sent while the catalog was read is painted with it.
+      // What the other windows sent while the catalogue was read is painted with it.
       storage.holdEarly();
       onSkeletons?.(
         storage,
@@ -484,7 +484,7 @@ export class ProjectStorage implements CatalogStorage {
       // or that record still unless the file's capture time shows it is another
       // photo; then the file is new. The browser build's listing gives no sizes, so
       // there the path decides alone. Telling another card at one mount point from
-      // this one is the separate catalog's print's work (volume-print.ts).
+      // this one is the separate catalogue's print's work (volume-print.ts).
       const known = new Map<ScannedFile, StoredPhoto>();
       await mapLimit(scan.files, 8, async (f: ScannedFile) => {
         const prev = byRel.get(f.path);
@@ -497,7 +497,7 @@ export class ProjectStorage implements CatalogStorage {
         else if (!(await shotDiffers(prev, f))) known.set(f, prev);
       });
 
-      // New files (not in the saved catalog, not tombstoned) are the ones that get
+      // New files (not in the saved catalogue, not tombstoned) are the ones that get
       // decoded — the slow part of opening. Report progress against that count.
       const counted = new Set(
         scan.files.flatMap((f) => (known.has(f) || storage.removed.has(f.path) ? [] : [f])),
@@ -522,8 +522,8 @@ export class ProjectStorage implements CatalogStorage {
           storage.show(photo);
           return photo;
         }
-        // Tombstoned: the user removed this photo from the catalog while its file
-        // stayed on disk. Honor that removal instead of re-importing it as new,
+        // Tombstoned: the user removed this photo from the catalogue while its file
+        // stayed on disk. Honour that removal instead of re-importing it as new,
         // one another window's answer told of after the count too.
         if (storage.removed.has(f.path)) {
           if (counted.has(f)) onProgress?.(++newDone, newTotal);
@@ -736,12 +736,12 @@ export class ProjectStorage implements CatalogStorage {
         prunedTombstone ||
         droppedCopy || // a virtual copy was dropped — re-persist
         savedPhotos.length !== savedRecords.length || // a second record for one file
-        recovered !== null || // the restored or rebuilt catalog replaces the damaged one
+        recovered !== null || // the restored or rebuilt catalogue replaces the damaged one
         (opened?.skipped ?? 0) > 0 // records this build couldn't open, kept aside
       )
         storage.scheduleSave();
 
-      // A separate catalog keeps a print of the card it was found on, so another
+      // A separate catalogue keeps a print of the card it was found on, so another
       // card mounted at the same path later opens one of its own (working-dir).
       const fs = nativeFs();
       if (fs && externalPath && finished)
@@ -754,7 +754,7 @@ export class ProjectStorage implements CatalogStorage {
       storage.applyWaiting();
       storage.walking = false;
       storage.letGoIfIdle();
-      // Other windows open on this catalog keep the photos found here, so their
+      // Other windows open on this catalogue keep the photos found here, so their
       // saves don't drop them, and take on the new place of the ones found moved.
       const asHeld = (photo: { id: string }) => storage.photos.get(photo.id) ?? [];
       const found = newPhotos.flatMap(asHeld);
@@ -1027,7 +1027,7 @@ export class ProjectStorage implements CatalogStorage {
   /** Drop a photo's record, shown or not, its edit history and its virtual copies
    *  (removing a master takes them with it, even those this window doesn't show),
    *  and refuse them from now on (removedIds). The file is tombstoned so the next
-   *  folder scan doesn't re-import it as "new": removal is from the catalog only,
+   *  folder scan doesn't re-import it as "new": removal is from the catalogue only,
    *  the original stays on disk. A VIRTUAL COPY owns no file of its own (it shares
    *  its master's), so tombstoning its relPath would wrongly suppress the master's
    *  file; a copy's record is just dropped. Returns every id dropped, and those of
@@ -1052,7 +1052,7 @@ export class ProjectStorage implements CatalogStorage {
     return { dropped, shown };
   }
 
-  /** A photo stored under a file's name puts that file back in the catalog, so the
+  /** A photo stored under a file's name puts that file back in the catalogue, so the
    *  file's tombstone goes: a photo renamed onto the name of one removed earlier,
    *  or a new one an extension stores under it. A virtual copy owns no file. */
   private revive(photo: StoredPhoto): void {
@@ -1061,7 +1061,7 @@ export class ProjectStorage implements CatalogStorage {
     this.removedFiles.delete(photo.relPath);
   }
 
-  /** Whether records are this copy's to take: sent to every storage on the catalog,
+  /** Whether records are this copy's to take: sent to every storage on the catalogue,
    *  or an answer to this one's hello. */
   private isFor(records: SentCatalogRecords): boolean {
     return records.to === undefined || records.to === this.origin;
@@ -1195,7 +1195,7 @@ export class ProjectStorage implements CatalogStorage {
 
   // ── other windows ──────────────────────────────────────────────────────────
 
-  /** Tell the other windows on this catalog what this storage wrote, with the
+  /** Tell the other windows on this catalogue what this storage wrote, with the
    *  records' stamps; `since` is when the records entered this copy (see apply).
    *  An answer adds no change of this copy's, so it isn't counted as unsaved.
    *  Records a message can't carry (structured clone throws) reach no other window,
@@ -1221,7 +1221,7 @@ export class ProjectStorage implements CatalogStorage {
       });
     } catch (error) {
       this.unsent = true;
-      console.warn("[project] a catalog change could not be sent to the other windows:", error);
+      console.warn("[project] a catalogue change could not be sent to the other windows:", error);
     }
   }
 
@@ -1243,7 +1243,7 @@ export class ProjectStorage implements CatalogStorage {
     };
   }
 
-  /** Start taking on the records other windows write to this catalog, and answering
+  /** Start taking on the records other windows write to this catalogue, and answering
    *  the storages that open on it. Until applyWaiting, records arriving go through
    *  hold. */
   private listen(): void {
@@ -1257,7 +1257,7 @@ export class ProjectStorage implements CatalogStorage {
     });
   }
 
-  /** Take on what arrives while open() builds this copy. Until the catalog is read,
+  /** Take on what arrives while open() builds this copy. Until the catalogue is read,
    *  everything waits (see holdEarly). Then the records of photos this copy shows,
    *  and removals, apply at once, so a change made here after them is the newer;
    *  only the records of photos it doesn't show wait for the walk to end
@@ -1291,14 +1291,14 @@ export class ProjectStorage implements CatalogStorage {
     return { ...records, photos, edits, deletedIds: [], removed: undefined };
   }
 
-  /** The catalog has been read: take on what arrived before, in order, as hold does. */
+  /** The catalogue has been read: take on what arrived before, in order, as hold does. */
   private holdEarly(): void {
     const early = this.waiting ?? [];
     this.waiting = [];
     for (const records of early) this.hold(records);
   }
 
-  /** Ask the other storages on this catalog for the changes they hold that the
+  /** Ask the other storages on this catalogue for the changes they hold that the
    *  catalog.json this copy read may lack (answer). */
   private greet(): void {
     broadcast({
@@ -1307,7 +1307,7 @@ export class ProjectStorage implements CatalogStorage {
     });
   }
 
-  /** Answer a storage that has just read this catalog, and it alone (`to`), with
+  /** Answer a storage that has just read this catalogue, and it alone (`to`), with
    *  every record this copy changed or took in since it opened, its removals, and
    *  the files it removed whose tombstone may be missing from the file that storage
    *  read (removedFiles): its saves would drop them all. The stamps decide what it
@@ -1343,7 +1343,7 @@ export class ProjectStorage implements CatalogStorage {
     for (const records of this.waiting ?? []) this.apply(records, { report: false });
   }
 
-  /** The window has left this catalog: what this copy takes on is no longer
+  /** The window has left this catalogue: what this copy takes on is no longer
    *  reported. Writes through it still persist, carrying what an open still running
    *  was holding. While it may still write (mayWrite) it keeps taking on the other
    *  windows' records, so its last write doesn't undo theirs; then it stops. Once
@@ -1375,7 +1375,7 @@ export class ProjectStorage implements CatalogStorage {
     );
   }
 
-  /** Stop taking on other windows' records once the window has left this catalog
+  /** Stop taking on other windows' records once the window has left this catalogue
    *  and this copy won't write again. Changes it sent that no write of it landed
    *  are then given up: the windows that heard them all are told to save them, and
    *  this window that this copy gave up (onSaveStatus, `gaveUp`). */
@@ -1397,7 +1397,7 @@ export class ProjectStorage implements CatalogStorage {
     this.unsavedSince = Math.min(this.unsavedSince ?? since, since);
   }
 
-  /** Take on records another window wrote to this catalog, each where it is the
+  /** Take on records another window wrote to this catalogue, each where it is the
    *  newer change (see change-stamps): an edit history whole, and each group of a
    *  photo record's fields on its own. For a photo this window shows, its handles,
    *  preview blob and URL stay. The description of the preview on disk the windows
@@ -1409,7 +1409,7 @@ export class ProjectStorage implements CatalogStorage {
    *  the files an answer says were removed are tombstoned unless a photo here holds
    *  them. Records of a photo removed from this copy are refused. Then the records
    *  of shown photos this copy took are reported (onRemoteRecords), unless `report`
-   *  is off or the window has left this catalog. Never sends: every window already
+   *  is off or the window has left this catalogue. Never sends: every window already
    *  received them. */
   private apply(records: SentCatalogRecords, { report = true } = {}): void {
     if (records.catalog !== this.catalog || records.origin === this.origin) return;
@@ -1499,7 +1499,7 @@ export class ProjectStorage implements CatalogStorage {
   /** Whether a record of a photo this window doesn't show may be kept for its
    *  saves. Never one that would stand for a file this window shows: another
    *  window's import of that same file under its own id, or, in the browser
-   *  build, a photo of a duplicated project whose catalog key meets this one's.
+   *  build, a photo of a duplicated project whose catalogue key meets this one's.
    *  Nor a virtual copy of a photo this window knows nothing of. */
   private mayKeep(stored: StoredPhoto, shownFiles: Set<string>): boolean {
     if (stored.copyOf) return this.photos.has(stored.copyOf) || this.unshown.has(stored.copyOf);
@@ -1561,7 +1561,7 @@ export class ProjectStorage implements CatalogStorage {
 
   /** Save now. One catalog.json write runs at a time: a save asked for during a
    *  write waits for it, sharing one write with every save asked for meanwhile,
-   *  and that write reads the catalog when it starts. So each caller resolves
+   *  and that write reads the catalogue when it starts. So each caller resolves
    *  after a write that holds its change. */
   private save(): Promise<void> {
     this.cancelScheduledSave();
@@ -1596,7 +1596,7 @@ export class ProjectStorage implements CatalogStorage {
   private async writeBackup(backup: Blob): Promise<void> {
     try {
       const generations = [BACKUP, ...OLDER_BACKUPS];
-      // The same catalog again would only push an older one out.
+      // The same catalogue again would only push an older one out.
       const newest = await readBlobIfThere(this.sl, BACKUP);
       if (newest && newest.size === backup.size && (await newest.text()) === (await backup.text()))
         return;
@@ -1606,7 +1606,7 @@ export class ProjectStorage implements CatalogStorage {
       }
       await writeBlob(this.sl, BACKUP, backup);
     } catch (error) {
-      console.warn("[project] the catalog couldn't be backed up:", error);
+      console.warn("[project] the catalogue couldn't be backed up:", error);
     }
   }
 
@@ -1637,9 +1637,9 @@ export class ProjectStorage implements CatalogStorage {
       if (unsavedSince !== null) this.noteUnsaved(unsavedSince);
       this.failures++;
       this.lastFailure = saveFailureReason(error);
-      console.error("[project] catalog save failed:", error);
+      console.error("[project] catalogue save failed:", error);
       this.report({ ok: false, reason: this.lastFailure });
-      // A catalog too large to write would fail the same way on every try: the
+      // A catalogue too large to write would fail the same way on every try: the
       // next change or flush tries it again.
       if (!(error instanceof RangeError)) this.retryLater();
       return;

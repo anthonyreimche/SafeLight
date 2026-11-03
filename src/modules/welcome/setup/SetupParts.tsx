@@ -22,7 +22,7 @@ export const secondaryBtn =
   "rounded bg-surface-3 px-3 py-1.5 text-xs text-text-primary hover:bg-surface-4";
 
 export interface StepProps {
-  /** Id of the step's heading, which labels the setup dialog. */
+  /** Id of the step's heading, which labels the setup dialogue. */
   headingId: string;
 }
 

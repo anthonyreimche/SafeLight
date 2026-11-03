@@ -4,10 +4,10 @@
 // be preserved in derived versions.
 
 // A grid preview built from the photo's file shows the photo unedited, so the edit
-// its stored preview showed (previewEdit) goes from the catalog store once it loads,
+// its stored preview showed (previewEdit) goes from the catalogue store once it loads,
 // or Develop would draw it as the edited look. The storage record keeps naming the
 // preview on disk. Driven through the project's preview reader, the on-demand
-// loader and the catalog store, wired as opening a project wires them.
+// loader and the catalogue store, wired as opening a project wires them.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";
@@ -110,7 +110,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** Mount a project holding a.jpg whose catalog was saved with its preview showing
+/** Mount a project holding a.jpg whose catalogue was saved with its preview showing
  *  the edit "edit-1", as a session that edited it leaves it. */
 async function savedWithEditedPreview(): Promise<FileSystemDirectoryHandle> {
   const fs = new MemoryFs(ROOT);

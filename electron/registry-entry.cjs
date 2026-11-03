@@ -124,7 +124,7 @@ function readIndexCache(raw) {
 
 // Client-side query filter over the registry index: substring match on
 // "owner/repo", name, description, topics, keywords and the labels of the
-// entry's categories. Instant and offline: the index is already the whole catalog.
+// entry's categories. Instant and offline: the index is already the whole catalogue.
 function filterRegistry(items, query, vocabulary) {
   const q = String(query || "").trim().toLowerCase();
   if (!q) return items;

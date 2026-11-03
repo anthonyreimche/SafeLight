@@ -5,8 +5,8 @@
 
 // Smoke: two windows editing one photo. Each window is its own copy of the app's
 // modules (vi.resetModules between them), so each has its own develop store,
-// catalog storage and window id, as real windows do, and follows the others'
-// catalog records as useWindowSync has it do; they talk only over a
+// catalogue storage and window id, as real windows do, and follows the others'
+// catalogue records as useWindowSync has it do; they talk only over a
 // BroadcastChannel stand-in that, like the real one, delivers a copy of each
 // message to every other window later, never to the sender.
 

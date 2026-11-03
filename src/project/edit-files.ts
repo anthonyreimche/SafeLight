@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Each photo's edit history in a file of its own, so a commit rewrites one small
-// file instead of the whole catalog:
+// file instead of the whole catalogue:
 //
 //   <.safelight>/edits/<hh>/<name>.json   {format, photoId, stamp?, stack, currentIndex}
 //

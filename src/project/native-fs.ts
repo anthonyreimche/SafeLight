@@ -50,7 +50,7 @@ function basename(p: string): string {
 // A directory-handle entry name must be a single path segment — the real File
 // System Access API rejects names containing a slash. Enforcing it here also
 // confines anyone holding a native handle (e.g. an extension that pulled the
-// project folder's directoryHandle out of the catalog store) to that folder:
+// project folder's directoryHandle out of the catalogue store) to that folder:
 // "..", "a/b" and absolute paths can't walk out to arbitrary files on disk.
 function entryName(name: string): string {
   if (!name || name === "." || name === ".." || /[/\\]/.test(name))
@@ -58,7 +58,7 @@ function entryName(name: string): string {
   return name;
 }
 
-// Brand: lets the recent-projects store recognise a native handle and pull its
+// Brand: lets the recent-projects store recognize a native handle and pull its
 // absolute path back out.
 const PATH = Symbol("safelight.nativePath");
 /** The size the folder listing gave a native file handle. */
@@ -118,7 +118,7 @@ function makeFileHandle(fs: Bridge, p: string, size?: number): FileSystemFileHan
         async seek(_pos: number) {},
         async abort() {},
         async close() {
-          // Text goes to the bridge with no await first: the catalog flush on
+          // Text goes to the bridge with no await first: the catalogue flush on
           // window close runs in beforeunload, and the send must leave before
           // the page unloads.
           if (parts.every((part): part is string => typeof part === "string")) {

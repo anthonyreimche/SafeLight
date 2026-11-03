@@ -55,7 +55,7 @@ interface Derived {
 
 // One derive shared by the grid, the filmstrip, the counts, extensions and
 // keyboard navigation, so the filter + sort runs once per change to what it
-// reads, not once per surface or per key press. Entries all share one catalog
+// reads, not once per surface or per key press. Entries all share one catalogue
 // structure; an update to fields the entry doesn't read (a preview, or a rating
 // while sorting by name) re-reads the order against the new photos.
 let derived: Derived[] = [];
@@ -134,7 +134,7 @@ function deriveVisible(
 }
 
 /** Reactive `visibleList`: the grid's display order as a hook, re-derived when
- *  the catalog, filters, sort, folder or extension grid filters/sorts change.
+ *  the catalogue, filters, sort, folder or extension grid filters/sorts change.
  *  Backs the Library grid and api.catalog.useVisiblePhotos. */
 export function useVisiblePhotos(options?: VisiblePhotosOptions): CatalogPhoto[] {
   const photos = useCatalogStore((s) => s.photos);

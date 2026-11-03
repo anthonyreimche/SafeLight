@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Extension code the core waits on (starting a bundle, a catalog hook) runs
+// Extension code the core waits on (starting a bundle, a catalogue hook) runs
 // through guardExtension: whatever it throws, rejects with or hangs on comes
 // back as a rejection the caller can log and move past.
 
@@ -94,6 +94,7 @@ describe("fenceAPI", () => {
     },
     themes: { apply: vi.fn() },
     dock: { togglePanel: vi.fn() },
+    ui: { Button: Panel, confirmDialog: vi.fn(), alertDialog: vi.fn() },
   });
   const fenced = (api: ReturnType<typeof fake>, signal: AbortSignal) =>
     fenceAPI(api as unknown as SafelightAPI, signal) as unknown as ReturnType<typeof fake>;
@@ -125,6 +126,10 @@ describe("fenceAPI", () => {
     expect(() => f.catalog.renamePhoto()).toThrow(refused);
     expect(() => f.themes.apply()).toThrow(refused);
     expect(() => f.dock.togglePanel()).toThrow(refused);
+    expect(() => f.ui.confirmDialog()).toThrow(refused);
+    expect(() => f.ui.alertDialog()).toThrow(refused);
+    expect(api.ui.confirmDialog).not.toHaveBeenCalled();
+    expect(f.ui.Button).toBe(Panel);
     expect(f.catalog.getEditState()).toBeNull();
     expect(api.settings.onChange).not.toHaveBeenCalled();
     expect(f.settings.get("k")).toBe(1);
@@ -210,6 +215,43 @@ describe("stopping a start that no longer counts", () => {
     expect(cleanedUp).toBe(true);
     expect(api.unregisterPanel).not.toHaveBeenCalled();
     expect(api.settings.set).not.toHaveBeenCalled();
+  });
+
+  it("answers a dialogue its deactivate asks with a promise, unasked", async () => {
+    const api = {
+      extensionId: "acme.x",
+      ui: { confirmDialog: vi.fn(async () => true), alertDialog: vi.fn(async () => undefined) },
+    };
+    const answers: unknown[] = [];
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => (finish = resolve));
+    let held: typeof api | undefined;
+    const mod = {
+      activate: async (given: SafelightAPI) => {
+        held = given as unknown as typeof api;
+        await gate;
+      },
+      deactivate: () => {
+        void held?.ui.confirmDialog().then((yes) => answers.push(yes));
+        void held?.ui.alertDialog().then(() => answers.push("alerted"));
+      },
+    };
+    const load = createLoadTracker<typeof mod>();
+    void load(
+      "acme.x",
+      "bundle.js",
+      async (signal) => {
+        await activateFenced(mod, api as unknown as SafelightAPI, signal);
+        return mod;
+      },
+      { sweep: () => {}, stop: (started) => started.deactivate() },
+    ).catch((e: Error) => e);
+    await vi.advanceTimersByTimeAsync(EXTENSION_TIMEOUT_MS);
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(answers).toEqual([false, "alerted"]);
+    expect(api.ui.confirmDialog).not.toHaveBeenCalled();
+    expect(api.ui.alertDialog).not.toHaveBeenCalled();
   });
 });
 

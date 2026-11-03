@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // A photo turned while an edit's preview is rendered: the grid ends up showing
-// the edit the new way round. The catalog store and edited-thumbnail run as they
+// the edit the new way round. The catalogue store and edited-thumbnail run as they
 // are; the render worker and the decoder are faked, and each render is labelled
 // with the rotation it was made at.
 

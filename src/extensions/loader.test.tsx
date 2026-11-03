@@ -438,7 +438,7 @@ describe("updating an extension whose module the main window shows", () => {
       await expect(update).rejects.toThrow("Widget 2.0.0 failed to start (boom)");
     });
     expect(useUIStore.getState().activeModule).toBe("library");
-    expect(screen.getByText("0 photos in catalog")).toBeTruthy();
+    expect(screen.getByText("0 photos in catalogue")).toBeTruthy();
   });
 
   it("returns from the first other tab when Library and Develop aren't installed", async () => {

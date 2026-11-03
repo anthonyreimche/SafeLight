@@ -4,14 +4,14 @@
 // be preserved in derived versions.
 
 // Pure pixel math for RAW development: sample unpacking, Bayer demosaic, and
-// the linear -> display color/gamma stage. No DOM or app imports, so each
+// the linear -> display colour/gamma stage. No DOM or app imports, so each
 // function is unit-testable directly under Node's --experimental-strip-types.
 //
-// CFA color codes follow TIFF CFAPattern: 0 = Red, 1 = Green, 2 = Blue.
+// CFA colour codes follow TIFF CFAPattern: 0 = Red, 1 = Green, 2 = Blue.
 export const CFA = { R: 0, G: 1, B: 2 } as const;
 
 // Unpack `count` samples of `bits` bits each from a packed byte stream.
-//  - 8/16-bit samples are read whole (16-bit honors file endianness).
+//  - 8/16-bit samples are read whole (16-bit honours file endianness).
 //  - 12/14-bit (and other sub-byte widths) are read MSB-first, which is how
 //    TIFF packs contiguous samples regardless of the file's byte order.
 export function unpackSamples(
@@ -65,7 +65,7 @@ export function linearizeSamples(raw: Uint16Array, table: ArrayLike<number>): Ui
 
 // Subtract black level and scale so white maps to 1.0. Values above 1.0 are
 // preserved (not clamped) so the shader's channel reconstruction can detect
-// which CFA sites hit the sensor ceiling and recover color from unclipped neighbours.
+// which CFA sites hit the sensor ceiling and recover colour from unclipped neighbours.
 export function normalizePlane(
   raw: Uint16Array,
   black: number,
@@ -82,11 +82,11 @@ export function normalizePlane(
 }
 
 // `cfa` is the 2x2 pattern in row-major order: [topLeft, topRight, bottomLeft,
-// bottomRight], each a CFA color code. Returns interleaved RGB (length w*h*3).
+// bottomRight], each a CFA colour code. Returns interleaved RGB (length w*h*3).
 //
 // Bilinear interpolation: the site's native channel is taken directly; the two
 // missing channels are averaged from the matching-color samples in the 3x3
-// neighborhood (edges clamp). Pattern-agnostic, correct for any Bayer layout.
+// neighbourhood (edges clamp). Pattern-agnostic, correct for any Bayer layout.
 export function demosaicBilinear(
   plane: Float32Array,
   width: number,
@@ -103,7 +103,7 @@ export function demosaicBilinear(
       const acc = [0, 0, 0];
       const cnt = [0, 0, 0];
 
-      // 3x3 neighborhood (including self) with edge clamping.
+      // 3x3 neighbourhood (including self) with edge clamping.
       for (let dy = -1; dy <= 1; dy++) {
         let ny = y + dy;
         if (ny < 0) ny = 0;
@@ -119,7 +119,7 @@ export function demosaicBilinear(
       }
 
       const o = idx * 3;
-      // Native channel: exact sample. Others: neighborhood average.
+      // Native channel: exact sample. Others: neighbourhood average.
       rgb[o] = site === CFA.R ? plane[idx] : cnt[0] ? acc[0] / cnt[0] : 0;
       rgb[o + 1] = site === CFA.G ? plane[idx] : cnt[1] ? acc[1] / cnt[1] : 0;
       rgb[o + 2] = site === CFA.B ? plane[idx] : cnt[2] ? acc[2] / cnt[2] : 0;

@@ -130,7 +130,7 @@ export interface SafelightAPI {
   ): void;
   /** Register a keyboard shortcut; appears in Preferences ▸ Shortcuts. */
   registerKeybinding(c: KeyActionContribution): void;
-  /** Declare a settings dialog (⚙ in the Extensions panel). */
+  /** Declare a settings dialogue (⚙ in the Extensions panel). */
   registerSettings(c: SettingsContribution): void;
   /** Register a post-export image processor. Processors run in registration
    *  order, each receiving the Blob from the previous step. Settings declared
@@ -139,7 +139,7 @@ export interface SafelightAPI {
   /** Contribute a filename template. Built-in variables are resolved by core;
    *  the template appears in the Export panel's filename template picker. */
   registerFilenameTemplate(c: FilenameTemplateContribution): void;
-  /** Subscribe to catalog lifecycle events (photo import / metadata change /
+  /** Subscribe to catalogue lifecycle events (photo import / metadata change /
    *  edit commit / photo remove). Lets an extension own a side concern such as
    *  XMP sidecars without core depending on it. */
   registerCatalogHooks(c: CatalogHooksContribution): void;
@@ -209,11 +209,11 @@ export interface SafelightAPI {
      *  (PanelContribution.mask) drawn inside reads and writes that mask through
      *  useMaskScope / useParamScope. Needs Safelight 3.2.0. */
     MaskScope: (props: MaskScopeProps) => JSX.Element | null;
-    /** The virtualised grid the Library draws its cells with: fixed-size
+    /** The virtualized grid the Library draws its cells with: fixed-size
      *  cells, only the visible rows mounted, `scrollToIndex` kept in view. */
     VirtualGrid: typeof import("@/ui/components/VirtualGrid").VirtualGrid;
     /** Develop's canvas area: the surround (theme shade, or the ISO grey under
-     *  color assessment), the active photo's canvas with every core overlay
+     *  colour assessment), the active photo's canvas with every core overlay
      *  (the held canvas tool, extension overlays) and the photo's
      *  edit loaded as it opens. `empty` shows while no photo is open. Fills
      *  its container. */
@@ -230,7 +230,7 @@ export interface SafelightAPI {
     ProcessingUpdateControl: () => JSX.Element | null;
     /** The soft-proof toggle; nothing on a photo without the version 3 output. */
     ProofToggle: () => JSX.Element | null;
-    /** The ISO 12646 color-assessment toggle. */
+    /** The ISO 12646 colour-assessment toggle. */
     AssessmentToggle: () => JSX.Element;
     /** The eyedropper icon core's pickers show. */
     PickerIcon: typeof import("@/ui/components/PickerIcon").PickerIcon;
@@ -244,11 +244,11 @@ export interface SafelightAPI {
    *  strings). Authored in core (where Tailwind is scanned) and rendered inside
    *  the extension's own subtree, so they match the app. Prefer these over
    *  hand-rolled inline-styled controls. `confirmDialog` asks in the app's own
-   *  dialog card and resolves true on confirm; use it instead of
+   *  dialogue card and resolves true on confirm; use it instead of
    *  `window.confirm`, which freezes the window's key handling in Electron. */
   ui: UIKit & {
     confirmDialog: typeof import("@/ui/components/ConfirmDialog").confirmDialog;
-    /** Tell the person something in the app's dialog card; resolves when they
+    /** Tell the person something in the app's dialogue card; resolves when they
      *  close it. Use it instead of `window.alert`. */
     alertDialog: typeof import("@/ui/components/ConfirmDialog").alertDialog;
   };
@@ -320,7 +320,7 @@ export interface SafelightAPI {
      *  for a transform without params or an id that isn't registered. */
     paramKeys(id: string): string[];
   };
-  /** Open / close the Preferences dialog. `open` may take a section id (a core
+  /** Open / close the Preferences dialogue. `open` may take a section id (a core
    *  section's id or an extension id) to deep-link straight to that section. */
   preferences: {
     open(sectionId?: string): void;
@@ -445,7 +445,7 @@ export interface SafelightAPI {
       params: import("@/catalog/types").DevelopParams,
       options?: LiveFloatCaptureOptions,
     ): Promise<FloatFrame | null>;
-    /** Render an arbitrary catalog photo by id through the full develop pipeline
+    /** Render an arbitrary catalogue photo by id through the full develop pipeline
      *  with `params` (and optionally that photo's extension-stage `paramBag`) to
      *  an off-screen ImageBitmap, or null if it can't render. Unlike captureFrame
      *  this is NOT tied to the live Develop source, so it measures the requested
@@ -470,7 +470,7 @@ export interface SafelightAPI {
     ): Promise<ImageBitmap | null>;
     /** renderPhotoFrame's frame as floats: captureFloatFrame's FloatFrame, with
      *  the same `point` and `space`, converted on the GPU as captureFloatFrame's
-     *  is, for any catalog photo. Rendered small, at
+     *  is, for any catalogue photo. Rendered small, at
      *  most 640 px on the long edge (about 4 MB of floats, where a default
      *  captureFloatFrame frame is about 17 MB), so it suits measuring a
      *  selection. `options.paramBag` is drawn as renderPhotoFrame draws its
@@ -572,7 +572,7 @@ export interface SafelightAPI {
      *  extension's values in a mask don't run. Needs Safelight 3.2.0. */
     useOlderProcessing(): boolean;
     /** Core's auto adjustments, each run to convergence and committed as one
-     *  undo step: `whiteBalance` (gray-world, "Auto White Balance"),
+     *  undo step: `whiteBalance` (grey-world, "Auto White Balance"),
      *  `whiteBalanceAt(point)` (the eyedropper: makes the canvas point neutral,
      *  probing it again after each step; "White Balance") and `tone` ("Auto
      *  Tone"). Each needs a rendered frame's histogram and does nothing
@@ -606,11 +606,11 @@ export interface SafelightAPI {
      *  preset. */
     normalizeParams: typeof import("@/catalog/types").normalizeParams;
   };
-  /** Headless export: render catalog photos through the full develop pipeline to
-   *  in-memory blobs, honoring the user's export settings. Unlike
+  /** Headless export: render catalogue photos through the full develop pipeline to
+   *  in-memory blobs, honouring the user's export settings. Unlike
    *  develop.captureFrame (current photo, view-sized), this renders ANY photos at
    *  export resolution — so an extension (e.g. a web-gallery publisher) can ship
-   *  full-resolution images instead of the low-res catalog preview. */
+   *  full-resolution images instead of the low-res catalogue preview. */
   export: {
     /** The persisted default export settings (Preferences ▸ Export): format,
      *  quality (0..1), longEdge (null = original), colorSpace, tiffBitDepth, pngBitDepth. */
@@ -623,8 +623,10 @@ export interface SafelightAPI {
      *  extension renders for its own processing never asked for the slow,
      *  twice-as-large 16-bit path.
      *  `options.paramBag` is merged over each photo's own extension-stage
-     *  params for this render only. A render of the same photo started from
-     *  inside its export processors runs none. Returns one entry per input, in
+     *  params for this render only. The render runs the registered export
+     *  processors unless `options.processors` is false; a render of the same
+     *  photo started from inside its export processors runs none either way.
+     *  Returns one entry per input, in
      *  order; `blob` is null for a photo that couldn't be decoded. */
     renderPhotos(
       photos: import("@/catalog/types").CatalogPhoto[],
@@ -650,13 +652,13 @@ export interface SafelightAPI {
      *  PNG set to 16. */
     proPhotoAt8Bit(settings: BitDepthSettings): boolean;
   };
-  /** Lower-level catalog persistence, for extensions that add records the core
+  /** Lower-level catalogue persistence, for extensions that add records the core
    *  scan didn't produce (e.g. virtual copies). `addPhotos` durably writes new
    *  records and inserts them into the live grid (optionally right after a given
    *  photo). `getEditState` / `putEditState` read and write a photo's saved
    *  develop recipe (the undo stack) by id — so an extension can, for instance,
    *  clone one photo's edits onto another. Writing the photo open in Develop
-   *  reloads it there from the catalog, which also clears the active tool and the
+   *  reloads it there from the catalogue, which also clears the active tool and the
    *  mask and spot selection. */
   catalog: {
     addPhotos(
@@ -672,7 +674,7 @@ export interface SafelightAPI {
     /** Rename one photo's file on disk, in place (same folder), preserving its
      *  extension. This is core's own rename path: an atomic native rename (no
      *  full-file copy), carrying the `<file>.safelight.json` sidecar and any
-     *  virtual copies along, then updating and persisting the catalog record —
+     *  virtual copies along, then updating and persisting the catalogue record —
      *  so ratings, edits and cached previews (keyed by photo id) survive. Pass
      *  the new name WITHOUT extension (core cleans it and re-appends the
      *  original). Returns `{ ok: true, filename }` or `{ ok: false, reason }`;
@@ -698,7 +700,7 @@ export interface SafelightAPI {
      *  (a canvas, a map pin) and so have no <Thumbnail> cell to trigger it. */
     requestThumbnail(photoId: string): void;
     /** Read a photo's grid preview (a JPEG of about 768 px) straight from the
-     *  project, for a scan that walks the whole catalog. It is not made resident:
+     *  project, for a scan that walks the whole catalogue. It is not made resident:
      *  the photo's `thumbnailBlob` and `thumbnailUrl` are untouched and nothing is
      *  cached, so the caller owns the blob and a scan of a large project does not
      *  fill memory. Resolves to null when the photo has none. Core releases the
@@ -709,10 +711,10 @@ export interface SafelightAPI {
      *  Wire `onContextMenu` to each cell and render `overlays` inside the
      *  surface; the menu carries the built-in actions (open, rename, copy/paste
      *  settings, rotate, re-import, export data, remove, delete from disk) and
-     *  every registerGridMenuItem contribution, with the grid's dialogs. React
+     *  every registerGridMenuItem contribution, with the grid's dialogues. React
      *  hook. */
     usePhotoActions(): PhotoActions;
-    /** Mount the Library's culling shortcuts (ratings, flags, color labels,
+    /** Mount the Library's culling shortcuts (ratings, flags, colour labels,
      *  rotate, remove/delete, rename, reveal, select-all, prev/next) for as
      *  long as the calling component is mounted — so a photo surface docked in
      *  Develop culls exactly like the grid. Combos stay rebindable in
@@ -745,7 +747,7 @@ export interface SafelightAPI {
      *  `setGridSize` accepts, in the steps its zoom shortcuts take. */
     gridSize: { readonly min: number; readonly max: number; readonly step: number };
   };
-  /** Messages between the app's windows: catalog changes, edit updates and
+  /** Messages between the app's windows: catalogue changes, edit updates and
    *  the like, from other windows and this one. Returns an unsubscribe fn. */
   events: {
     onBroadcast: typeof import("@/state/broadcast").onBroadcast;
@@ -756,7 +758,7 @@ export interface SafelightAPI {
   };
   /** The project folder's tree, as the Folders panel edits it. Paths are
    *  relative to the project root ("" is the root). Each operation moves the
-   *  files on disk and updates the catalog and the tree. */
+   *  files on disk and updates the catalogue and the tree. */
   project: {
     createFolder(parentRel: string, name: string): Promise<string | null>;
     renameFolder(rel: string, newName: string): Promise<void>;
@@ -782,7 +784,7 @@ export interface SafelightAPI {
     summarize(params: Partial<import("@/catalog/types").DevelopParams>): PresetDiff[];
     /** The adjustments a preset can be saved with from these params and bag:
      *  core fields, the display transform's params, then every extension
-     *  stage's, as the save dialog lists them. */
+     *  stage's, as the save dialogue lists them. */
     fields(
       params: import("@/catalog/types").DevelopParams,
       paramBag: Record<string, unknown>,

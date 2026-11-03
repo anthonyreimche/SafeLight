@@ -11,7 +11,7 @@ import { uiZoom } from "@/ui/frame-point";
 export interface ContextMenuItem {
   label: string;
   onClick: () => void;
-  /** Render in the red danger color (e.g. Remove). */
+  /** Render in the red danger colour (e.g. Remove). */
   danger?: boolean;
   disabled?: boolean;
 }
@@ -55,7 +55,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   }, [x, y]);
 
   // Pushed once: re-pushing on a new inline onClose would lift the menu above a
-  // dialog opened after it and steal that dialog's Escape.
+  // dialogue opened after it and steal that dialogue's Escape.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   useEffect(() => pushEscapeHandler(() => onCloseRef.current()), []);
@@ -69,7 +69,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   useEffect(() => {
     const prev = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     enabledItems(ref.current)[0]?.focus();
-    // An item's action may have sent focus somewhere on purpose (a dialog, a
+    // An item's action may have sent focus somewhere on purpose (a dialogue, a
     // field); only focus stranded on the body by the menu's removal goes back.
     return () => {
       if (document.activeElement === document.body || !document.activeElement) prev?.focus();

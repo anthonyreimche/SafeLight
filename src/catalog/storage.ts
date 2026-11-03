@@ -3,9 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Pluggable catalog persistence. Safelight is project-based: opening a folder
+// Pluggable catalogue persistence. Safelight is project-based: opening a folder
 // installs a ProjectStorage backed by that folder's .safelight/ directory.
-// With no project open, the catalog is empty and writes are no-ops.
+// With no project open, the catalogue is empty and writes are no-ops.
 
 import type { CatalogPhoto, EditState } from "./types";
 
@@ -24,7 +24,7 @@ export interface CatalogStorage {
   putEditState(editState: EditState): Promise<void>;
   /** Store every given edit state, then persist once. A bulk action uses this
    *  instead of one putEditState per photo, each of which rewrites the whole
-   *  catalog. An empty list writes nothing. As with putEditState, the states are
+   *  catalogue. An empty list writes nothing. As with putEditState, the states are
    *  held once the call returns, before the save settles. */
   putEditStates(editStates: EditState[]): Promise<void>;
   /** The record this copy holds for a photo it shows, as it stands now, or
@@ -34,7 +34,7 @@ export interface CatalogStorage {
   /** Read a photo's grid preview (JPEG), or null when it has none and none can be
    *  built. By default the storage keeps what it read, to tell later whether a put
    *  carries a new preview; `hold: false` is for a caller that reads many previews
-   *  and keeps none, such as a scan of the whole catalog. */
+   *  and keeps none, such as a scan of the whole catalogue. */
   readPreview?(photoId: string, options?: { hold?: boolean }): Promise<Blob | null>;
   /** Read an opaque per-photo binary blob (e.g. an extension's warp field),
    *  or null if none was stored. `key` is the caller-namespaced blob key. */
@@ -47,7 +47,7 @@ export interface CatalogStorage {
    *  closing), the write starts at once even beside one still running, since a
    *  closing page won't run a write queued behind it. */
   flush?(options?: { unloading?: boolean }): Promise<void>;
-  /** The window has left this catalog: nothing the storage takes on is reported
+  /** The window has left this catalogue: nothing the storage takes on is reported
    *  any more, and it stops following the other windows once it has nothing left
    *  to write. Writes made through it still persist. Closing it again does nothing.
    *  setCatalogStorage closes the storage it replaces. */

@@ -23,7 +23,7 @@ and it places no restriction on how you use, run, modify, or sell the software.
 
 ## Third-party components
 
-Safelight includes third-party components under their own licenses (for example,
+Safelight includes third-party components under their own licences (for example,
 LibRaw for RAW decoding, and the Electron/Chromium runtime). These retain their
 respective terms; see [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md).
 
@@ -48,6 +48,6 @@ say thanks, see [SPONSORS](SPONSORS.md).
 
 ---
 
-*This document explains the project's licensing and is not itself a license. The
+*This document explains the project's licensing and is not itself a licence. The
 binding terms are in [LICENSE](LICENSE) and [NOTICE](NOTICE). It is not legal
 advice.*

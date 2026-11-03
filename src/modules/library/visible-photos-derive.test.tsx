@@ -3,9 +3,9 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The grid's filter + sort runs over the whole catalog, so it must run only
+// The grid's filter + sort runs over the whole catalogue, so it must run only
 // when something it reads changes: not on every preview the open-time loader
-// attaches (once per frame while a big catalog fills in), not once per surface
+// attaches (once per frame while a big catalogue fills in), not once per surface
 // showing the list, and not on every arrow key.
 
 import { act, renderHook } from "@testing-library/react";
@@ -140,7 +140,7 @@ describe("visible photos derive", () => {
     expect(result.current[result.current.length - 1].id).toBe("p0");
   });
 
-  it("re-derives when the catalog is set wholesale", () => {
+  it("re-derives when the catalogue is set wholesale", () => {
     const { result } = renderHook(() => useVisiblePhotos());
     act(() => {
       useCatalogStore.setState({ photos: [photo(1), photo(2)] });
@@ -259,7 +259,7 @@ describe("visible photos derive", () => {
     expect(derives.count).toBe(1);
   });
 
-  it("re-derives when previews fill in and a field changes in the same catalog", () => {
+  it("re-derives when previews fill in and a field changes in the same catalogue", () => {
     useUIStore.setState({ sortField: "dateCreated" });
     const { result } = renderHook(() => useVisiblePhotos());
     act(() => {

@@ -424,7 +424,7 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
           );
         const stored = catalogStorage().putEditState(editState);
         // Develop's next commit writes back the history it holds, which would drop
-        // this edit, so the photo open there reloads from the catalog. The storage
+        // this edit, so the photo open there reloads from the catalogue. The storage
         // holds the edit once the call returns, so that is now, not after the save.
         const develop = useDevelopStore.getState();
         const reloaded =

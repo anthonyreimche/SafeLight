@@ -7,9 +7,9 @@ import { normalizeParams, type DevelopParams } from "./types";
 import { normalizeParamBag } from "@/extensions/param-registry";
 
 /** A short hash of an edit's look, the same for the live edit a commit renders
- *  from and for that edit saved and loaded again. Loading normalises (a painted
+ *  from and for that edit saved and loaded again. Loading normalizes (a painted
  *  dab gains its default opacity, an out-of-range value is clamped), so both are
- *  hashed normalised; keys go in sorted order, and a key set to undefined counts
+ *  hashed normalized; keys go in sorted order, and a key set to undefined counts
  *  as absent, as it does once saved. */
 export function editFingerprint(
   params: DevelopParams,

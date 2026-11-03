@@ -5,7 +5,7 @@
 
 // A var(--color-…) that no theme declares resolves to nothing, so the text it
 // colours silently falls back to the inherited colour under every theme and
-// overlay. The core dialogs and menus may only name tokens index.css declares.
+// overlay. The core dialogues and menus may only name tokens index.css declares.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -26,7 +26,7 @@ const FILES = [
   "ui/components/Dialog.tsx",
 ];
 
-describe("theme tokens in the core dialogs and menus", () => {
+describe("theme tokens in the core dialogues and menus", () => {
   it.each(FILES)("%s names only declared colour tokens", (rel) => {
     const used = [...read(rel).matchAll(/var\((--color-[a-z0-9-]+)/g)].map((m) => m[1]);
     expect(used.filter((name) => !declared.has(name))).toEqual([]);

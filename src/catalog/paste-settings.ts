@@ -20,7 +20,7 @@ import type { DevelopClipboard } from "@/state/develop-clipboard";
 
 const PASTE_LABEL = "Paste Settings";
 
-/** Apply the clipboard's settings to every given photo, stored with one catalog
+/** Apply the clipboard's settings to every given photo, stored with one catalogue
  *  write. Returns how many photos were updated. */
 export async function pasteSettings(
   ids: string[],
@@ -34,7 +34,7 @@ export async function pasteSettings(
 }
 
 /** The saved edit Copy settings offers from `photoId`, as Develop would open it,
- *  or null for a photo not in the catalog. */
+ *  or null for a photo not in the catalogue. */
 export async function copySettingsSource(photoId: string): Promise<SavedEdit | null> {
   await settlePendingMetadata([photoId]);
   const photo = useCatalogStore.getState().photos.find((p) => p.id === photoId);

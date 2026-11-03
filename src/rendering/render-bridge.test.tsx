@@ -2065,7 +2065,7 @@ describe("RenderBridge worker replies", () => {
       }
     });
 
-    it("reaches extensions as api.develop.renderPhotoFloatFrame, for a catalog photo, through the shared bridge", async () => {
+    it("reaches extensions as api.develop.renderPhotoFloatFrame, for a catalogue photo, through the shared bridge", async () => {
       const photos = useCatalogStore.getState().photos;
       useCatalogStore.setState({ photos: [photoFixture("p1")] });
       try {

@@ -5,7 +5,7 @@
 
 // A change to a photo is stored with its record whether or not the preview it
 // carries can be written, so the change shows in this window either way. The
-// window runs its real storage and catalog store; only the disk refuses to write
+// window runs its real storage and catalogue store; only the disk refuses to write
 // previews, as a full or locked one does.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

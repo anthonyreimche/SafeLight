@@ -289,9 +289,9 @@ function FloatingPanel({ id }: { id: string }) {
   const z = useDockStore((s) => s.zOrder.indexOf(id));
   const collapsed = useDockStore((s) => !!s.collapsed[id]);
   if (!pos) return null;
-  // Centered windows track the workspace center by CSS, so they stay centered
+  // Centred windows track the workspace centre by CSS, so they stay centred
   // whatever the panel's natural height; the height cap keeps a tall panel's
-  // header reachable (the body scrolls) instead of centering it off both edges.
+  // header reachable (the body scrolls) instead of centring it off both edges.
   const placement = pos.centered
     ? {
         left: `calc(50% + ${pos.x}px)`,

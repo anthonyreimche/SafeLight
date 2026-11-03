@@ -336,7 +336,7 @@ describe("matchAction", () => {
   });
 
   it("resolves the same combo to a different action per module", () => {
-    // Delete is mask-component removal in Develop and catalog removal in Library.
+    // Delete is mask-component removal in Develop and catalogue removal in Library.
     expect(matchAction(key("Delete"), ["Develop"])).toBe("mask.delete");
     expect(matchAction(key("Delete"), ["Library"])).toBe("photo.remove");
   });

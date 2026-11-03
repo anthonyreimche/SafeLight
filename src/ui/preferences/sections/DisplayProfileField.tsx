@@ -60,7 +60,7 @@ export function DisplayProfileField() {
   return (
     <Field
       label="Display profile"
-      hint="Under Wayland, Safelight's window reaches your monitor unconverted unless your desktop converts it, so a wide-gamut monitor shows colors oversaturated. Choose the monitor's ICC profile to convert the Develop view to it. On KDE Plasma, set Color profile in System Settings ▸ Display & Monitor instead, which converts every app. Leave this empty when your desktop already converts (KDE with a Color profile set, or the X11 workaround from the FAQ), or colors are converted twice. Library thumbnails aren't converted, and exports don't change."
+      hint="Under Wayland, Safelight's window reaches your monitor unconverted unless your desktop converts it, so a wide-gamut monitor shows colours oversaturated. Choose the monitor's ICC profile to convert the Develop view to it. On KDE Plasma, set Color profile in System Settings ▸ Display & Monitor instead, which converts every app. Leave this empty when your desktop already converts (KDE with a Color profile set, or the X11 workaround from the FAQ), or colors are converted twice. Library thumbnails aren't converted, and exports don't change."
     >
       <div className="flex items-center gap-1.5">
         <span

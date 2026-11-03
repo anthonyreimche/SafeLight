@@ -121,6 +121,7 @@ describe("privileged channel wiring in main.cjs", () => {
     expect(handedOut).toContain("updates:support");
     expect(handedOut).toContain("diagnostics:capturePage");
     expect(handedOut).toContain("gpu:setSoftware");
+    expect(handedOut).toContain("gpu:setBackend");
     expect(handedOut).toContain("os-open:take");
     for (const channel of ["plugins:install", "plugins:uninstall", "plugins:settle-update"]) {
       expect(handedOut).toContain(channel);
@@ -249,6 +250,29 @@ describe("GPU backend fallback", () => {
     expect(MAIN).toMatch(/ipcChannels\(\{[^}]*\brendererFailed,/);
   });
 
+  // Preferences ▸ Rendering ▸ Graphics backend. Anything that isn't a backend
+  // name reaches main as Automatic, never as a string to pass to Chromium.
+  it("hands the picked backend to main through a guarded channel", () => {
+    const setGraphicsBackend = vi.fn((choice: string | null) => ({ choice }));
+    const { privileged, handler } = entry("gpu:setBackend", { setGraphicsBackend });
+    expect(privileged).toBe(true);
+    expect(handler(NO_EVENT, "vulkan")).toEqual({ choice: "vulkan" });
+    handler(NO_EVENT, null);
+    handler(NO_EVENT, { use: "gl" });
+    expect(setGraphicsBackend.mock.calls).toEqual([["vulkan"], [null], [null]]);
+    expect(registrations(PRELOAD, "ipcRenderer\\s*\\.\\s*invoke").map(channelOf)).toContain("gpu:setBackend");
+    expect(MAIN).toMatch(/ipcChannels\(\{[^}]*\bsetGraphicsBackend,/);
+    // A change in Preferences mustn't stop this session falling back if its
+    // GPU fails later.
+    const setter = /const setGraphicsBackend = \(choice\) => \{[\s\S]*?\n\};/.exec(MAIN)?.[0] ?? "";
+    expect(setter).toMatch(/userChose = true;/);
+    expect(setter).not.toMatch(/fellBack/);
+    const software = /const setSoftwareRendering = \(on\) => \{[\s\S]*?\n\};/.exec(MAIN)?.[0] ?? "";
+    expect(software).not.toMatch(/fellBack/);
+    // Main writes only a backend this launch's ladder has.
+    expect(MAIN).toMatch(/const setGraphicsBackend = \(choice\) => \{\s*if \(choice === null\) clearCache\(\);\s*else if \(ANGLE_BACKENDS\.includes\(choice\)\) writeCache\(chosenCache\(/);
+  });
+
   // The renderer failing steps down the ladder and keeps the app version beside a
   // software fallback, so the launch-count retry can't walk back into the failure.
   it("steps a renderer failure down the ladder and starts with the app version", () => {
@@ -279,7 +303,7 @@ describe("GPU backend fallback", () => {
     expect(lock).toBeGreaterThanOrEqual(0);
     expect(write).toBeGreaterThan(lock);
     expect(MAIN.match(/writeCache\(readyCache\(/g)).toHaveLength(1);
-    expect(MAIN).toMatch(/const cacheWorkingBackend = \(\) => \{\s*if \(!fellBack\) writeCache\(readyCache\(/);
+    expect(MAIN).toMatch(/const cacheWorkingBackend = \(\) => \{\s*if \(!fellBack && !userChose && !startCache\.elsewhere\) writeCache\(readyCache\(/);
   });
 });
 
@@ -299,7 +323,7 @@ describe("unrecoverable windows", () => {
     expect(source).toMatch(/else offerRestart\("load"\);/);
   });
 
-  it("asks through a native dialog and relaunches without a probe rung", () => {
+  it("asks through a native dialogue and relaunches without a probe rung", () => {
     const source = functionSource("offerRestart");
     expect(source).toMatch(/const gpu = gpuBackendState\(\);\s*const softwareNext = gpu\.nextSoftware && !gpu\.software;/);
     expect(source).toMatch(/dialog\s*\.showMessageBox\(restartPrompt\(kind, softwareNext\)\)/);

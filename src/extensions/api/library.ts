@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The shapes of api.catalog, api.project and api.presets that aren't catalog
+// The shapes of api.catalog, api.project and api.presets that aren't catalogue
 // records themselves.
 
 import type { MouseEvent, ReactNode } from "react";
@@ -19,7 +19,7 @@ export interface PhotoActions {
    *  of the current selection targets the whole selection; right-clicking an
    *  unselected one selects just it first. */
   onContextMenu: (id: string, e: MouseEvent) => void;
-  /** The menu and its dialogs. Render them inside the surface. */
+  /** The menu and its dialogues. Render them inside the surface. */
   overlays: ReactNode;
 }
 
@@ -36,7 +36,7 @@ export interface PresetDiff {
   value: string;
 }
 
-/** One selectable adjustment in the Save Preset dialog. `keys` are the
+/** One selectable adjustment in the Save Preset dialogue. `keys` are the
  *  DevelopParams keys copied when the field is checked; `changed` marks fields
  *  that differ from the defaults (pre-checked by default). */
 export interface PresetField {

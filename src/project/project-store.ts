@@ -5,7 +5,7 @@
 
 // Project state: which folder is open, its folder tree, and the open/reopen
 // flows. "Open Folder" is the only way photos enter Safelight — the folder IS
-// the catalog, with .safelight/ as its working directory.
+// the catalogue, with .safelight/ as its working directory.
 
 import { create } from "zustand";
 import type { CatalogPhoto } from "@/catalog/types";
@@ -61,9 +61,9 @@ import {
   thumbnailGen,
 } from "@/state/thumbnail-loader";
 
-// Best-effort flush of the debounced catalog on quit, so the last edits/imports
+// Best-effort flush of the debounced catalogue on quit, so the last edits/imports
 // in the final save window aren't lost (incremental saves cover the rest). The
-// catalogs this window left go first, so the open one's write is asked for last.
+// catalogues this window left go first, so the open one's write is asked for last.
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
     flushLeftCopies();
@@ -72,7 +72,7 @@ if (typeof window !== "undefined") {
 }
 
 // How many photos the idle prefill reads ahead: the cells on screen read theirs on
-// demand, so a bigger catalog's rest is not worth holding in memory.
+// demand, so a bigger catalogue's rest is not worth holding in memory.
 const PREFILL_LIMIT = 2000;
 
 // Schedule low-priority work for when the main thread is idle (falls back to a
@@ -121,15 +121,15 @@ let openGen = 0;
  *  it to tell the banner which recent to offer removing. */
 let folderUnavailable = false;
 
-// The save of the catalog the window last left. The next open waits for it to
+// The save of the catalogue the window last left. The next open waits for it to
 // settle before reading catalog.json, as reopening that folder must find the save
 // there; a failed save holds up no open.
 let leftCatalogSaved: Promise<void> = Promise.resolve();
 
-/** The name of the project each catalog the window left belonged to. */
+/** The name of the project each catalogue the window left belonged to. */
 const leftProjects = new WeakMap<object, string>();
 
-/** Leave the installed catalog: Develop's open photo is committed to it and let go,
+/** Leave the installed catalogue: Develop's open photo is committed to it and let go,
  *  what it holds is saved, and it is closed (setCatalogStorage) so it takes no more
  *  changes. The commit still reaches it, as a closed storage keeps what is written. */
 function leaveCatalog(): void {
@@ -172,9 +172,9 @@ function describeSkippedFormats(skipped: Record<string, number>): string[] {
 
 let hearingSaves = false;
 
-/** Show why the open project's catalog saves fail (saveError). A catalog the window
+/** Show why the open project's catalogue saves fail (saveError). A catalogue the window
  *  has left keeps saving for a while, unshown, and only tells this window if it
- *  gives up (storageNotice). Started by the first open: no catalog saves before
+ *  gives up (storageNotice). Started by the first open: no catalogue saves before
  *  one. */
 function hearSaves(): void {
   if (hearingSaves) return;
@@ -194,7 +194,7 @@ function hearSaves(): void {
     useProjectStore.setState({
       saveError: status.ok
         ? null
-        : `Couldn't save the catalog: ${status.reason}. Your latest changes aren't saved yet.`,
+        : `Couldn't save the catalogue: ${status.reason}. Your latest changes aren't saved yet.`,
     });
   });
 }
@@ -236,26 +236,26 @@ function describeOpenError(e: unknown, folderName: string): string {
     if (e.redirectFailed) {
       const reason = e.cause instanceof Error ? ` (${e.cause.message})` : "";
       return (
-        `Couldn't open “${folderName}”: Safelight couldn't write to the catalog ` +
+        `Couldn't open “${folderName}”: Safelight couldn't write to the catalogue ` +
         `storage location${reason}. Choose a writeable folder under Preferences ▸ ` +
-        `Previews ▸ “Separate catalog location”, then try again.`
+        `Previews ▸ “Separate catalogue location”, then try again.`
       );
     }
     return (
       `Couldn't open “${folderName}”. This folder is read-only, so Safelight ` +
       `can't create its .safelight working folder here. Use the desktop app ` +
-      `(which stores the catalog in a writeable location automatically), or ` +
+      `(which stores the catalogue in a writeable location automatically), or ` +
       `open a writeable copy of the folder.`
     );
   }
   if (e instanceof CatalogUnreadableError)
     return (
-      `Couldn't open “${folderName}”: its catalog can't be read right now (${e.reason}). ` +
+      `Couldn't open “${folderName}”: its catalogue can't be read right now (${e.reason}). ` +
       `A sync or antivirus program may be using it. Nothing was changed. Try again in a moment.`
     );
   if (e instanceof CatalogDamagedError)
     return (
-      `Couldn't open “${folderName}”: its catalog is damaged and Safelight couldn't keep ` +
+      `Couldn't open “${folderName}”: its catalogue is damaged and Safelight couldn't keep ` +
       `a copy of it (${e.reason}). Nothing was changed.`
     );
   if (e instanceof CatalogTooNewError)
@@ -277,17 +277,17 @@ function describeOpenError(e: unknown, folderName: string): string {
   return `Couldn't open “${folderName}” (${fsErrorText(e).replace(/\.$/, "")}).`;
 }
 
-/** Tell the user how a catalog that couldn't be used as saved was recovered. */
+/** Tell the user how a catalogue that couldn't be used as saved was recovered. */
 function describeRecovery(recovered: CatalogRecovery, folderName: string): string {
   const how =
     recovered.from === "backup"
-      ? `The catalog of “${folderName}” couldn't be used, so Safelight restored it from ` +
+      ? `The catalogue of “${folderName}” couldn't be used, so Safelight restored it from ` +
         `its backup. Changes made since that backup may be missing.`
-      : `The catalog of “${folderName}” couldn't be used and had no usable backup, so ` +
+      : `The catalogue of “${folderName}” couldn't be used and had no usable backup, so ` +
         `Safelight imported the folder again. Earlier ratings and edits could not be ` +
         `recovered.`;
   if (!recovered.kept) return how;
-  return `${how} The damaged file was kept next to the catalog as ${recovered.kept}.`;
+  return `${how} The damaged file was kept next to the catalogue as ${recovered.kept}.`;
 }
 
 interface ProjectState {
@@ -300,15 +300,15 @@ interface ProjectState {
   importTotal: number;
 
   /** Blocking message shown when opening a folder failed (e.g. it's read-only
-   *  and no writeable catalog location could be established). null = no error. */
+   *  and no writeable catalogue location could be established). null = no error. */
   openError: string | null;
   /** Whether openError is about a folder Safelight can't write to, which a
-   *  separate catalog location in Preferences can fix. */
+   *  separate catalogue location in Preferences can fix. */
   openErrorReadOnly: boolean;
-  /** Non-blocking notice shown when a read-only folder's catalog was redirected
+  /** Non-blocking notice shown when a read-only folder's catalogue was redirected
    *  to a writeable location, so the user knows where their data lives. */
   storageNotice: string | null;
-  /** Why the open project's last catalog save failed, while its saves keep
+  /** Why the open project's last catalogue save failed, while its saves keep
    *  failing (the storage tries again by itself). null = the last save landed. */
   saveError: string | null;
   /** The recent project whose folder wasn't there when opened from the welcome
@@ -333,7 +333,7 @@ interface ProjectState {
    *  reconnect flow (re-granting needs a user gesture). */
   openLast: () => Promise<void>;
   /** Open what the OS handed the app: the folder as the project, and for a file
-   *  its photo selected once the catalog has it. Waits for a project that is
+   *  its photo selected once the catalogue has it. Waits for a project that is
    *  still opening (the last one, at launch) rather than being dropped. */
   openFromOs: (target: NativeOpenTarget) => Promise<void>;
   /** Called from the reconnect button: re-request permission, then open. */
@@ -395,7 +395,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     hearSaves();
     if (get().opening) return;
     // The project being left is saved and takes no more changes. Until the new
-    // one's catalog is read, a change has no catalog to go into.
+    // one's catalogue is read, a change has no catalogue to go into.
     leaveCatalog();
     const gen = ++openGen;
     importAbort = new AbortController();
@@ -404,7 +404,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     passesAbort = new AbortController();
     const passes = passesAbort.signal;
     // The tree goes with the project: folder actions resolve its paths against
-    // the root, which the new project takes once its catalog is read.
+    // the root, which the new project takes once its catalogue is read.
     set({
       opening: true,
       importDone: 0,
@@ -417,7 +417,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       tree: null,
     });
     folderUnavailable = false;
-    // Clear the old catalog immediately so the grid shows photos as they arrive
+    // Clear the old catalogue immediately so the grid shows photos as they arrive
     // rather than showing the previous folder until the new one is fully loaded.
     useCatalogStore.getState().replaceCatalog([]);
     // Restore the folder this project was last viewing (or null = All Photos for
@@ -427,7 +427,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const restoredFolder = restoreActiveFolder(activeProjectKey);
     lastPersistedFolder = restoredFolder;
     useUIStore.getState().setActiveFolder(restoredFolder);
-    // Started when this project's storage is installed, once its catalog is read
+    // Started when this project's storage is installed, once its catalogue is read
     // (onSkeletons).
     let decoderWarm: Promise<void> | null = null;
     const warmOnce = () => (decoderWarm ??= warmDecoding());
@@ -463,7 +463,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           onEvict: (ids) => storage.forgetPreviews(ids),
         });
 
-      // Phase 1 — the instant the catalog is read, before the disk scan: install
+      // Phase 1 — the instant the catalogue is read, before the disk scan: install
       // this project's storage, a first import's too, so every change from now on
       // is stored in it, and paint the grid from the saved photos, so skeletons
       // appear with the UI rather than after.
@@ -510,7 +510,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         return;
       }
       flush(); // drain any photos buffered since the last frame
-      // The storage, raw cache and name went in once the catalog was read
+      // The storage, raw cache and name went in once the catalogue was read
       // (onSkeletons); the folder tree is known only now.
       set({ tree: opened.tree });
       const notices: string[] = [];
@@ -523,18 +523,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         getSettings().catalogLocation !== "external"
       ) {
         notices.push(
-          `“${handle.name}” can't store its Safelight catalog in the folder ` +
-            `itself, so its catalog, previews and cache are kept at ` +
+          `“${handle.name}” can't store its Safelight catalogue in the folder ` +
+            `itself, so its catalogue, previews and cache are kept at ` +
             `${opened.externalPath}. Edits and ratings are saved there.`,
         );
       } else if (opened.promotedFromExternal) {
         // The folder is writeable again; edits made while it was read-only have
-        // been folded back into its in-folder catalog and the separate copy
-        // retired. The pre-merge catalog is kept under its own name, which no
+        // been folded back into its in-folder catalogue and the separate copy
+        // retired. The pre-merge catalogue is kept under its own name, which no
         // session's backup writes over (working-dir.ts).
         notices.push(
           `Edits you made to “${handle.name}” while it was read-only have been ` +
-            `merged back into its catalog. The catalog from before the merge was kept ` +
+            `merged back into its catalogue. The catalogue from before the merge was kept ` +
             `in .safelight as catalog.before-merge- followed by the date and time, in ` +
             `case you need it.`,
         );
@@ -572,7 +572,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // the best-effort beforeunload flush, which can be cut short on app quit),
       // so newly-imported records survive even an immediate close.
       // AWAIT it: the background pre-decode below now runs several files in
-      // parallel and saturates disk/CPU; a fire-and-forget catalog write could
+      // parallel and saturates disk/CPU; a fire-and-forget catalogue write could
       // lose that race and never land, re-importing everything on the next open.
       // Flushing first guarantees catalog.json is durable before any heavy work.
       await catalogStorage().flush?.();

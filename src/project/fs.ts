@@ -69,7 +69,7 @@ export function isNotFound(error: unknown): boolean {
 }
 
 /** The time, for a file name: ISO 8601 with its `:` and `.` as `-`, as the
- *  copies of catalogs kept beside catalog.json are named. */
+ *  copies of catalogues kept beside catalog.json are named. */
 export function fileTimestamp(date = new Date()): string {
   return date.toISOString().replace(/[:.]/g, "-");
 }

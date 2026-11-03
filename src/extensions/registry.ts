@@ -124,7 +124,7 @@ export interface RegistryState {
   themes: Record<string, RegisteredTheme>;
   sliderIcons: Record<string, RegisteredIcon>;
   layouts: Record<string, RegisteredLayout>;
-  /** Keyed by extension id — one settings dialog per extension. */
+  /** Keyed by extension id — one settings dialogue per extension. */
   settings: Record<string, RegisteredSettings>;
   pipelines: Record<string, RegisteredPipeline>;
   exportProcessors: Record<string, RegisteredExportProcessor>;
@@ -690,7 +690,7 @@ export function useLibrarySorts(): RegisteredLibrarySort[] {
   return useRegistry(useShallow((s) => Object.values(s.librarySorts)));
 }
 
-// ─── Catalog hook emitters (called by core) ─────────────────────────────────
+// ─── Catalogue hook emitters (called by core) ─────────────────────────────────
 // Each awaits every registered handler in turn. A handler that throws, or
 // doesn't finish within CATALOG_HOOK_TIMEOUT_MS, is logged and skipped so a
 // misbehaving extension can't break or stall an import or a save. An import
@@ -702,7 +702,7 @@ type MetadataCtx = Parameters<NonNullable<CatalogHooksContribution["onMetadataCh
 type EditCommitCtx = Parameters<NonNullable<CatalogHooksContribution["onEditCommit"]>>[0];
 type RemoveCtx = Parameters<NonNullable<CatalogHooksContribution["onPhotoRemove"]>>[0];
 
-/** Extensions whose catalog hooks are skipped after one timed out. */
+/** Extensions whose catalogue hooks are skipped after one timed out. */
 const timedOutHooks = new Set<string>();
 
 function catalogHookList(): RegisteredCatalogHooks[] {
@@ -725,7 +725,7 @@ async function runHook<R>(
     } else if (!timedOutHooks.has(h.extensionId)) {
       timedOutHooks.add(h.extensionId);
       console.warn(
-        `[ext:${h.extensionId}] ${name} timed out; its catalog hooks are skipped until it is reloaded:`,
+        `[ext:${h.extensionId}] ${name} timed out; its catalogue hooks are skipped until it is reloaded:`,
         e,
       );
     }
@@ -800,7 +800,7 @@ export function bagDiffersFromDefault(
 
 /** Enumerate external processing stages that contribute preset-savable params,
  *  each tagged with its scope and whether `bag` differs from the stage defaults.
- *  Non-reactive snapshot — call it when opening the Save dialog. */
+ *  Non-reactive snapshot — call it when opening the Save dialogue. */
 export function collectPresetStages(
   bag: Record<string, unknown>,
 ): PresetStageField[] {

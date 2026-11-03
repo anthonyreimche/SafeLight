@@ -87,7 +87,7 @@ function sortValue(p: CatalogPhoto, field: string): number | string {
 // A photo is in scope when it lives directly in `folder`. Subfolders are
 // included only when the showSubfolderPhotos preference is on — including for
 // the project root (""), so the root node respects the preference too and only
-// the "All Photos" scope (folder === null) ever shows the whole catalog. Read
+// the "All Photos" scope (folder === null) ever shows the whole catalogue. Read
 // in visibleOrder, not threaded through callers, so the grid, keyboard culling,
 // develop navigation and thumbnail prefetch all scope to exactly the same set.
 function inFolder(p: CatalogPhoto, folder: string, subfolders: boolean): boolean {

@@ -2,7 +2,7 @@
 
 ← [API Reference](README.md)
 
-Live app state, the brush and mask model, and the APIs for the Develop canvas, rendering photos without opening them, the catalog and variables shared across windows.
+Live app state, the brush and mask model, and the APIs for the Develop canvas, rendering photos without opening them, the catalogue and variables shared across windows.
 
 - [State stores (`api.stores`)](#state-stores-apistores)
 - [Brushes, masks & retouch](#brushes-masks--retouch-interactive-develop-tools)
@@ -33,7 +33,7 @@ For presets, keybindings, themes, layouts and pipelines, prefer `api.themes.appl
 
 ### useCatalogStore
 
-The catalog as the Library shows it. For durable writes, use [`api.catalog`](#apicatalog).
+The catalogue as the Library shows it. For durable writes, use [`api.catalog`](#apicatalog).
 
 ```ts
 photos; selectedIds: Set<string>; activePhotoId; loading;
@@ -81,9 +81,9 @@ setShowClipping(mode); setPanelBypass(panelId, on);
 - `applyPreset` takes full params. Merge a partial preset over the current params first, or every omitted adjustment resets.
 - `commitEdit` does nothing when nothing changed: no history entry, and the redo steps stay.
 - Opening another photo commits a live change you haven't committed yet to the photo you left, labelled "Edit". Commit with your own label before then if the label matters.
-- `reloadEdit` reads the open photo's edit back from the catalog after something else wrote it. If a live change is still uncommitted, the change stays and only the history behind it is renewed.
+- `reloadEdit` reads the open photo's edit back from the catalogue after something else wrote it. If a live change is still uncommitted, the change stays and only the history behind it is renewed.
 - If the open photo's stored edit can't be read, `loadEdit` still opens the photo, but with no history and `editError` set to the reason. Commits, undo and redo do nothing for it until it opens again (`reloadEdit` retries) or another photo opens.
-- Commits build on the edit the catalog holds, one at a time per photo, so steps another window stored are kept under yours.
+- Commits build on the edit the catalogue holds, one at a time per photo, so steps another window stored are kept under yours.
 - Derive image aspect from `sourceSize`, not `photo.width/height`. It is `{0, 0}` until a frame is drawn. `fullWidth`/`fullHeight` are the decoded size before the upload cap; `native` is true while `api.develop.readSourceSample` has a sample (3.1.0).
 
 ### useUIStore
@@ -111,10 +111,10 @@ Treat it as read-only. Core writes through its own `updateSettings`, which saves
 | Canvas | `canvasSurroundOverride`, `canvasSurround`, `assessBorderPct`, `windowDim` |
 | Accessibility | `highContrast`, `strongFocus`, `largerText`, `largerControls`, `lowercaseHeadings`, `reduceTransparency`, `keyboardCanvasEditing`, `colorVisionFilter`, `syncOSAccessibility` |
 | Startup, Library | `restoreLastProject`, `defaultGridSize`, `defaultSortField`, `defaultSortDirection`, `confirmRemovePhotos`, `showSubfolderPhotos` |
-| Catalog | `catalogLocation` (`"in-folder"` or `"external"`), `externalCatalogDir` |
+| Catalogue | `catalogLocation` (`"in-folder"` or `"external"`), `externalCatalogDir` |
 | Previews, cache | `previewSource`, `thumbMaxEdge`, `persistPreviews`, `rawCacheEnabled`, `rawCachePrefetch`, `rawCacheMaxEdge` |
 | Develop | `developMaxEdge`, `gpuSourceCacheBytes`, `developPrefetchNeighbors`, `highBitDepth`, `liveHistogram`, `developOpenZoom` |
-| Export | `exportFormat`, `exportQuality`, `exportLongEdge`, `exportBundle`, `exportColorSpace`, `exportTiffBitDepth`, `exportPngBitDepth`, `exportIncludeMetadata`, `exportIncludeLocation`, `exportPresets` |
+| Export | `exportFormat`, `exportQuality`, `exportLongEdge`, `exportBundle`, `exportColorSpace`, `exportTiffBitDepth`, `exportPngBitDepth`, `exportIncludeMetadata`, `exportIncludeLocation`, `exportIfExists` (`"number"` or `"replace"`), `exportPresets` |
 | Other | `singleKeyShortcuts`, `extensionTopic`, `checkExtensionUpdates`, `autoUpdateExtensions`, `onlyVerifiedExtensions`, `extensionsMaximized`, `checkForUpdates`, `updateChannel` |
 
 ## Masks (the develop store's mask edits)
@@ -137,7 +137,7 @@ seedMaskPanelValues(maskId, owns); clearMaskPanelValues(maskId, owns);
 
 ## `api.develop`
 
-Hooks to align to, capture and decorate the live Develop view, plus helpers that render any catalog photo.
+Hooks to align to, capture and decorate the live Develop view, plus helpers that render any catalogue photo.
 
 ```ts
 useDevelopOverlay(): { rect: { x; y; w; h } | null; nonce: number };
@@ -197,11 +197,11 @@ autoAdjust: { whiteBalance(); whiteBalanceAt(point); tone() }; // 3.2.0, each a 
 
 **Rendering any photo**
 
-- `renderPhotoFrame` and `renderPhotoFloatFrame` render any catalog photo small, for measurement, whatever Develop has open (batch Auto Tone, say). `null` if the photo can't render.
+- `renderPhotoFrame` and `renderPhotoFloatFrame` render any catalogue photo small, for measurement, whatever Develop has open (batch Auto Tone, say). `null` if the photo can't render.
 - Built-in stages add their entries from `params` (Detail noise reduction) and win over the same keys in `paramBag`. Set `luminanceNR` and `colorNR` to 0 for a frame without it.
 - `renderPhotoFrame` decodes from a JPEG. Pass `lossless: true` (PNG, 3.0.1) for a frame that carries data. A lossless or float frame is `null` where only the grid's camera preview could stand in for the photo.
 
-**Per-photo data.** `putPhotoData` stores an opaque blob for the photo open in Develop, under a key namespaced to your extension, outside the catalog file. Use it for large payloads such as a warp field. You own the format and when to load and save.
+**Per-photo data.** `putPhotoData` stores an opaque blob for the photo open in Develop, under a key namespaced to your extension, outside the catalogue file. Use it for large payloads such as a warp field. You own the format and when to load and save.
 
 Members marked 3.1.0 are undefined on older builds: check for them, or set `minAppVersion` in the [manifest](../extensions/README.md#manifest). `minAppVersion` gates store installs only, so test dev-folder copies on a matching build.
 
@@ -235,7 +235,7 @@ interface ParamDescriptor {
 
 ## `api.export`
 
-Renders catalog photos through the full pipeline to in-memory blobs at export size, using the user's export settings. Use it to ship full-size images (a web gallery) instead of the catalog preview.
+Renders catalogue photos through the full pipeline to in-memory blobs at export size, using the user's export settings. Use it to ship full-size images (a web gallery) instead of the catalogue preview.
 
 ```ts
 getDefaultSettings(): ExportSettings;  // Preferences ▸ Export
@@ -243,7 +243,7 @@ renderPhotos(
   photos: CatalogPhoto[],
   settings?: Partial<ExportSettings>,  // merged over the defaults
   onProgress?: (p: { done; total; filename }) => void,
-  options?: { paramBag?; signal? },    // this render only
+  options?: { paramBag?; signal?; processors? }, // this render only
 ): Promise<RenderedPhoto[]>;           // { photo; blob; width; height }
 exportPhotos(
   photos: CatalogPhoto[],
@@ -259,14 +259,17 @@ exportPhotos(
 - A PNG renders at 8 bits whatever the Preference says, unless you pass `pngBitDepth: 16` (3.1.0).
 - `blob` is `null` for a photo that couldn't be decoded, or an edited photo whose original is out of reach.
 - `width` and `height` include a `processPixels` mat. If a `process(blob)` resizes the file, read the size from the blob.
+- Export processors (a watermark, say) run on every `renderPhotos` render, as they do on an export. Pass `processors: false` to run none, for a frame you use as source pixels rather than as a delivered file (Safelight 3.2.0).
 - Export processors don't run for a render started from inside them, or for a photo another batch is rendering at the same time.
 - Pass `signal` to stop a batch. It is checked before each photo, so the photo in flight finishes. `renderPhotos` then returns only the photos it reached. `exportPhotos` returns `cancelled: true` and the count it exported; a ZIP in progress is delivered with what it holds.
 - `exportPhotos` also stops on its own, with `stopped` set to the reason (`"the disk is full"`), when a write fails in a way every later write would too: a full disk or a read-only folder. A refusal that one locked file also gives (`EPERM`, `EACCES`, a withdrawn folder grant) stops it only when the same refusal comes twice in a row; a successful write in between starts the count again. Photos after that are not rendered. A failure that belongs to one file is listed in `failures` and the batch goes on. `exportStatus(result)` words either ending for the user.
-- `delivery: "files"` hands each file to the browser's download, which can't report a cancelled Save dialog. Those files count as exported once handed over.
+- `delivery: "folder"` never writes over a file without being asked. With `ifExists: "number"` (the default), a name already in the folder, in any case or Unicode form, gets the next free `"name (2).ext"`. Each name is checked again right before its write, so a file another batch or app wrote since is safe too. `ifExists: "replace"` writes over a file of the same name, but never the original of a photo in the catalogue: that one still gets a number. Leave `ifExists` out and the user's Preference decides (3.2.0).
+- `withoutStages` counts the exported photos drawn without an extension stage whose shader failed to build during the batch, so its effect is missing from them. `exportStatus(result)` says so (3.2.0).
+- `delivery: "files"` hands each file to the browser's download, which can't report a cancelled Save dialogue. Those files count as exported once handed over.
 
 ## `api.catalog`
 
-Lower-level catalog access, for extensions that add records the scan didn't produce (virtual copies), copy edits between photos, or build their own photo surfaces.
+Lower-level catalogue access, for extensions that add records the scan didn't produce (virtual copies), copy edits between photos, or build their own photo surfaces.
 
 ```ts
 addPhotos(photos, opts?: { afterId?: string }): Promise<void>; // saved + in grid
@@ -285,7 +288,7 @@ readPreview(photoId): Promise<Blob | null>;        // read a grid preview, keep 
 - Writing the photo open in Develop with `putEditState` reloads it there, which clears the active tool and the mask and spot selection.
 - `renamePhoto` takes the name without its extension and keeps the sidecar, virtual copies, ratings and edits. It returns `{ ok: false, reason }` rather than throwing. To shuffle a numbering range, rename through temporary names first.
 - `useVisiblePhotos`'s `without` names grid filters to ignore, for a surface that registers a filter of its own.
-- A photo's `thumbnailBlob` and `thumbnailUrl` are a cache, not a promise. In a big project core keeps the previews it loaded last (a few thousand) and releases the rest, so a photo far from view has both set to `null` until its cell scrolls back. A surface that draws a photo calls `requestThumbnail`. Code that walks the whole catalog (a duplicate scan, a contact sheet) should not read the record at all.
+- A photo's `thumbnailBlob` and `thumbnailUrl` are a cache, not a promise. In a big project core keeps the previews it loaded last (a few thousand) and releases the rest, so a photo far from view has both set to `null` until its cell scrolls back. A surface that draws a photo calls `requestThumbnail`. Code that walks the whole catalogue (a duplicate scan, a contact sheet) should not read the record at all.
 - `readPreview` reads the preview from the project for one photo and hands you the blob. Nothing else changes: the record, the memory core holds and the grid are as they were, so a loop over every photo does not fill memory, and the blob is yours to drop. It resolves to `null` for a photo with no preview, or when no project is open. Photos far from view are slower to read than loaded ones, so read a few at a time.
 - Hook examples: [UI Components: Photo surfaces](components.md#photo-surfaces-menu-and-shortcuts).
 

@@ -5,7 +5,7 @@
 
 // Object URLs of grid previews whose <img> has fired `load`. The grid remounts on
 // every module switch, so a preview it already showed must not fade in a second
-// time. A URL leaves the set when the catalog store revokes it, so the set holds
+// time. A URL leaves the set when the catalogue store revokes it, so the set holds
 // only previews that still exist.
 const loaded = new Set<string>();
 

@@ -11,6 +11,28 @@
 // (v2-reference.ts) both still passed; it replaces their whole-program checks,
 // which compared top-level declarations in order. Version 3 had no text freeze
 // before this.
+//
+// Edited on purpose on 2026-11-03: Anthony approved range fixes on version 2
+// and later, version 1 frozen. Tone Curve lines 2 and 3 read the table at the
+// clipped colour and add back what the clip took, which changed every v2 and
+// v3 hash; the v1 hashes are untouched.
+//
+// Edited again on 2026-11-03, the same 36 hashes (Anthony approved fixing
+// Tint on version 2 and later, version 1 frozen): applyWhiteBalance scales its
+// gains so a grey keeps its luminance (`gain /= luma(gain);`), unity at the
+// as-shot point. The v1 hashes are untouched.
+//
+// Edited again on 2026-11-03, the same 36 hashes (Anthony approved making
+// Shadows ±100 a smooth continuation of ±50 on version 2 and later, version 1
+// frozen): Basic's tone block runs the slider through its basicShadows
+// helper, whose gain in stops grows in step with the slider and fades out
+// below mid grey, under SL_PROCESS_VERSION >= 2. The v1 hashes are untouched.
+//
+// Edited again on 2026-11-03, the same 36 hashes (Anthony approved the mask
+// Temp/Tint luminance fix and mask Shadows matching Basic's on version 2 and
+// later, version 1 frozen): applyMaskLinear scales its Temp/Tint gains so a
+// grey keeps its luminance, and its Shadows runs slShadows (local-tone.ts, the
+// twin of basicShadows). The v1 hashes are untouched.
 
 export const PROGRAM_REFERENCE: Readonly<Record<string, string>> = {
   "v1/builtin/builtin": "35e80eeeab1a1bb210afb006964087815329e4c002be69ae412630f9c837ad3b",
@@ -31,40 +53,40 @@ export const PROGRAM_REFERENCE: Readonly<Record<string, string>> = {
   "v1/splits/builtin": "cd6204cf5400f40d0a43c684e1c3c85b0825a66181423b9ef21ddf33d0710d60",
   "v1/splits/custom": "a51b20e81dab5df65cc03414daf86d79056ac87982b89997e29a4e1d4309aa79",
   "v1/splits/rec2020": "682e73e56fe27b623177c641d72d2d39785fdcb9f11ab6aca171cfc20096db65",
-  "v2/builtin/builtin": "ccbfa99dac48a7edb0e703ccb1fae024bf24c7eed8992ade74f092b8a67bab47",
-  "v2/builtin/custom": "8a0d2e744e72857049990d7ff3e628bf530a71f539f2f78646d42c4af6e9a370",
-  "v2/builtin/rec2020": "6e388e82b85882a5ec2e572a0b43f0dd66c22371db797097c8d63e43bc90a6d2",
-  "v2/layered/builtin": "659f83b7eb599e9832afd0378e9c98d816c30082e211c91b3c99569fd2c0c387",
-  "v2/layered/custom": "1718f49e3a612cdb7561512f5d9bbece649179f425ee66cbd97ba9a55781ab86",
-  "v2/layered/rec2020": "83b6563f86d0d55b27f963d26732d012e000d68208d113abbd01ae186150e4d0",
-  "v2/legacyExtensions/builtin": "4e270c510cf44598da54238c2cbfb039e091875369981e365a101a1a249c17ea",
-  "v2/legacyExtensions/custom": "eb85554906abd893c039ad475106d7bd8200f64dbc119f52d7be401f0c547aa5",
-  "v2/legacyExtensions/rec2020": "26014797239407a48365e47249400937aedbdcd18887cb7ea46c3317a7fd086e",
-  "v2/sceneLuma/builtin": "e781b221ddb544684cf3092e333960524ad50b96de800abc73e1c739c59f8831",
-  "v2/sceneLuma/custom": "4cb57ae886d0f60913506470ea5bf4b01dcf38f489abfc83f75274b9e0229b7e",
-  "v2/sceneLuma/rec2020": "23566fa7e4f42fa5e8a86d2a85ed54dd9b641911005a5178c8861558d4dcac90",
-  "v2/spaced/builtin": "a296ac5120651b2420469dd6da35c03c3a3134be3f6af99689c81a5cbeafab39",
-  "v2/spaced/custom": "a287a43b4c578c2f4a0a1c1d2711e2f7d4dc01e0583caa7b3ba9702e38a29db3",
-  "v2/spaced/rec2020": "028dcad3fb4b6843f0c4dd00347bda852bbce891760b050b7e1d36ad53f4d0d5",
-  "v2/splits/builtin": "0fdaac8b91b6d995c8e3543e0885173d2018951feafa750e115aad9632515662",
-  "v2/splits/custom": "4a97e478ec70f9e53e37de654e13a46182c600e2a211747587ca7b9123c91295",
-  "v2/splits/rec2020": "aa6528b70758ac8ec83e7a605fed26803a633ad957de4365418adee406a4660b",
-  "v3/builtin/builtin": "5b06fe0c926c60173f867106df13c4dad76edf2b25aa5ee8a4fe075aa070a863",
-  "v3/builtin/custom": "15754d8a9213861013c94b075959255f74cbcb04bbfdc8f47613fe2438db7ac6",
-  "v3/builtin/rec2020": "c0aeac1adffd49b91f7790f41dd8572217864f8d8a8930c4558f67ba966e6dcc",
-  "v3/layered/builtin": "a3dc18ff765000eaa339aa2a0c4fb708584271a4f545ea80cd50aa3bc9587ecb",
-  "v3/layered/custom": "87fc14f7a7b3151cb0839deeb253b4aadd49ab330da009a1244042a44f1c4a4f",
-  "v3/layered/rec2020": "928c44e8c39abd040f4c6879dcf27929c18264910851709eb5511fb1c4a3e78f",
-  "v3/legacyExtensions/builtin": "aacc4cd980f14cb94f590ae92c9bc1c7816c23670751e7f61a34c25a22cae031",
-  "v3/legacyExtensions/custom": "307f2f3bf90ece5951526e2fa1d1358c70a03098a6d59a2410fdf4e16d0acf39",
-  "v3/legacyExtensions/rec2020": "b3132766bfd5aece60c13fc80269e42e894f30a10a80c95363f1eb2a430fd2f1",
-  "v3/sceneLuma/builtin": "355f32115bab0bdabcdf673e7a13c27028f990640b07ffeafdc8956d011f1ad7",
-  "v3/sceneLuma/custom": "92ea400eaf8fc6476a3c51f22dd730dda147e6b84512568aecaf3c89526d6616",
-  "v3/sceneLuma/rec2020": "2960d746506496ec6379b770ad9854e1aa310d566d04c2bc43124570ba6163e8",
-  "v3/spaced/builtin": "8f16af23516079ba6f794ea083a4912dbf9cdbaeaccccc4294b3fc270e9dff97",
-  "v3/spaced/custom": "67bd7f3b79b54936733366493a394e8e011ffca051445deb671e8941b03de364",
-  "v3/spaced/rec2020": "703eb94a469fe8268647990b1a5d86d9c551d10125ce3b69954989ced4b5cdfc",
-  "v3/splits/builtin": "d29259e1a1a9ed18fb24fab6f4806233a4aba771598c54234dc14fee0a5f408b",
-  "v3/splits/custom": "a8066100c9800d4e6fd5403404cdbe00d0b94667f7f4f4d1c2f7fb3568f73a55",
-  "v3/splits/rec2020": "de64e5ceda1b2a1144f96147a6f4c12b8bde664cdbfdefe1d2b6ec170ff43271",
+  "v2/builtin/builtin": "1e90accdc30c07152dca65ca1c01626d303a3f689440528dc6665c867b464b61",
+  "v2/builtin/custom": "0ee6b3787b51738c16eb88d032b67a9817555ac32cc8a4692339c6cd760a4a6d",
+  "v2/builtin/rec2020": "79ae024d5c11a058853e77d9240bc62b7e7d352f78f153c4e768403784987089",
+  "v2/layered/builtin": "6ed1d6ba91a3d5d7e8dbb3a81207a41549a312adfb623a751eaf0377afab80ab",
+  "v2/layered/custom": "1cfad13ae294dd85609ef658982b633773e44549670062b707b2bdc62314d43c",
+  "v2/layered/rec2020": "e31a1ae2b5dd77a9995134691c3e5649061837bb641bda29ad1ea5315ea6bbac",
+  "v2/legacyExtensions/builtin": "a94ca999828c0f4ddefe3788eb3bcb98f8a2d5df37aee2697a6b739a539cb3da",
+  "v2/legacyExtensions/custom": "8649ebebe4bc2f56785f31d5723e9c9670630175aac6e4c60cc2906e6678f970",
+  "v2/legacyExtensions/rec2020": "b5e9bd3e58072daa03bb58fc05c6cc43da21acf0cc1187c7d23569b33498f59d",
+  "v2/sceneLuma/builtin": "af175d4a093f3ab95071f82062ca8762972011b05963d881ef0f089de71249ac",
+  "v2/sceneLuma/custom": "5b6bb8ca1b1085ccb2bfc45086df235ee1d606f144d06a5b1ffe6d2d284239a1",
+  "v2/sceneLuma/rec2020": "600b98e9376fb195581188ce0c5e1b51dea88efa14c51f34d59f7297498b7b20",
+  "v2/spaced/builtin": "32f299d8e7a641415b57fc7ab55df084a99c66e034c22396a44fdd4bfce07537",
+  "v2/spaced/custom": "8bb62449de541d49fbd0b22f753ec71016ecd2dec7da3367b3d1b69c6a721fd2",
+  "v2/spaced/rec2020": "5cb88f8580bf8b42ac9c1ad5108ba9b709ee17ae96329e02226eeb241c7bd985",
+  "v2/splits/builtin": "a44b8cbc5970c072423d3d59afa31d0bf8f5a07241086c59dd617ed013aa7ad0",
+  "v2/splits/custom": "d208d96c34f8175becb208306b9f6694ad071ac8ffaa04dbb05a11db8b9a23cb",
+  "v2/splits/rec2020": "e16c31a1b821666b60c8d1d95732a398c576cb57bc2eceaa006ccb9ec4b3f1d8",
+  "v3/builtin/builtin": "4f4c3ba7fe2c78314eb6cc4f72c147d427b68efaf7f3cb57b7a3082acb70bb5c",
+  "v3/builtin/custom": "5a79468444dd2981c847370427838cd4870a8c67c273b1b13c3d643a10b7a021",
+  "v3/builtin/rec2020": "0e87a08718d85f25595716782f0c9d59e24da0300ddaed3f3b9f1acfff4e0791",
+  "v3/layered/builtin": "3622dc7088b7c9ee70ceaf2e69fc550c95c83d77a3e159922add4e63cbe1a32b",
+  "v3/layered/custom": "c24e17ca8db2382578a68be924a662bc3056363c1591fdd5cccb4e0e333ff405",
+  "v3/layered/rec2020": "1be199c7d672d629b69c6d2074f1e12c60aa7438bc90c13867cc7121a4373f26",
+  "v3/legacyExtensions/builtin": "7e7991b557198adc171715da9af7a65297265e9712ea565efba55dae9953fb6f",
+  "v3/legacyExtensions/custom": "f1b46632fb524f4065704b832a06033533cbeb637ae04f8c906af112f4d5f40d",
+  "v3/legacyExtensions/rec2020": "5326d208861456cd465679d7aa094a66550a10cdf1b3fb63f8e9c4d68c0ddd8d",
+  "v3/sceneLuma/builtin": "801cefea833dff946ba9fb70331548a9bf556f076dec82d20a11b88edd864baf",
+  "v3/sceneLuma/custom": "6e0ee295309219a04869b8d16b86fb903001afa458b3cad7cfa748e36149c8bf",
+  "v3/sceneLuma/rec2020": "5bfed7633ec483b1b641d711922da8233287443d7d40e6aae39b5a003e7f3022",
+  "v3/spaced/builtin": "cfc77d472598f43283ac6ae6b76d4577d8130ee1812fb32105c9f657cdac84d1",
+  "v3/spaced/custom": "ac913ea2f1bde83932e916ea080d12b9d60348ab235dc114c321568118511818",
+  "v3/spaced/rec2020": "863ab412eaf5b1e63a030275b43d9f708d4e39629f1c6e562745a240722b2599",
+  "v3/splits/builtin": "0ea691b51e10b0b0559f1da9d021c4fbdcf0cc3cd5ce92661004013045696a88",
+  "v3/splits/custom": "15d47b8e4cb11ce0e3844c53b07a64af59699af3f7258ed03492a503684e804f",
+  "v3/splits/rec2020": "19351e6921ece39a9c6fff325a1348a2065de5d0895b1cbaaca1efc01b77c169",
 };

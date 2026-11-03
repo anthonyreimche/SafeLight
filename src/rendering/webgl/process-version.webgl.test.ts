@@ -177,7 +177,7 @@ describe("process version 2", () => {
 
   // Pass programs are the same for both versions, so photos alternating
   // between versions must not rebuild them: Develop runs the denoiser's passes
-  // at the default Color NR.
+  // at the default Colour NR.
   it("compiles nothing more once photos of both versions have been drawn", () => {
     const { gl } = glHarness();
     const tally = trackGlObjects(gl);

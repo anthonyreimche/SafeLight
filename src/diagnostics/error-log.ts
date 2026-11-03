@@ -7,7 +7,7 @@
 // Unlike the Developer Tools console (an extension, opt-in and in-memory),
 // this keeps only what a bug report needs and survives a restart, so a
 // crash-then-relaunch report still has the crash. It never leaves the machine
-// on its own: the report dialog shows it and the user chooses to include it.
+// on its own: the report dialogue shows it and the user chooses to include it.
 //
 // Every window wraps its own console and saves into one shared localStorage
 // list, merging by id so windows don't overwrite each other.

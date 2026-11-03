@@ -165,7 +165,7 @@ function samplerLimit(units: number): { restore(): void } {
   };
 }
 
-// The renderer is what enables float color buffers in the app, and passes the
+// The renderer is what enables float colour buffers in the app, and passes the
 // result as `float`; here nothing has, so RGBA16F isn't yet renderable.
 glHarness().gl.getExtension("EXT_color_buffer_float");
 
@@ -363,7 +363,7 @@ function onRenderer<T>(
   });
 }
 
-/** Reads its result by name with texelFetch, as the Colour Equaliser reads its table. */
+/** Reads its result by name with texelFetch, as the Colour Equalizer reads its table. */
 function namedStage(): ProcessingStageContribution {
   const id = "named.test";
   const sampler = `${uniformPrefix(id)}stageResult`;

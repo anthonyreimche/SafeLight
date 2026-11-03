@@ -5,7 +5,7 @@
 
 // This window's shared-variables registry (variables.ts), synced with the
 // other Safelight windows over its own BroadcastChannel. It is separate from
-// "safelight-sync", which echoes locally and carries catalog traffic.
+// "safelight-sync", which echoes locally and carries catalogue traffic.
 
 import { WINDOW_ID } from "@/state/broadcast";
 import {

@@ -6,7 +6,7 @@
 // The edit store's history contract: what loadEdit restores from a stored
 // stack, what commitEdit snapshots, and how undo/redo step through it. The
 // renderer broadcast and the grid-thumbnail regen are edge side effects, so
-// they're stubbed and observed; catalog persistence runs against an in-memory
+// they're stubbed and observed; catalogue persistence runs against an in-memory
 // CatalogStorage, and the extension hook against a real registry entry.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -263,7 +263,7 @@ describe("reloadEdit", () => {
   });
 });
 
-// A catalog whose reads of chosen photos are held back or fail, to open photos
+// A catalogue whose reads of chosen photos are held back or fail, to open photos
 // faster, slower or not at all.
 describe("opening photos whose reads misbehave", () => {
   const reads = new Map<string, () => Promise<EditState | undefined>>();
@@ -411,8 +411,8 @@ describe("opening photos whose reads misbehave", () => {
   });
 });
 
-describe("a write that lands after another catalog was installed", () => {
-  it("is dropped by a commit, not made into the new catalog", async () => {
+describe("a write that lands after another catalogue was installed", () => {
+  it("is dropped by a commit, not made into the new catalogue", async () => {
     await s().loadEdit(PHOTO_ID, 5000);
     s().setParam("exposure", 1);
 
@@ -441,8 +441,8 @@ describe("a write that lands after another catalog was installed", () => {
   });
 });
 
-describe("undo when the catalog holds fewer steps than this window", () => {
-  it("shows what the catalog holds instead of a step that was not saved", async () => {
+describe("undo when the catalogue holds fewer steps than this window", () => {
+  it("shows what the catalogue holds instead of a step that was not saved", async () => {
     await s().loadEdit(PHOTO_ID, 5000);
     s().setParam("exposure", 1);
     await s().commitEdit("Exposure");
@@ -460,9 +460,9 @@ describe("undo when the catalog holds fewer steps than this window", () => {
   });
 });
 
-// Another window writes the open photo's edit straight to the shared catalog, and
+// Another window writes the open photo's edit straight to the shared catalogue, and
 // this window's history hasn't heard of it yet: every write here builds on what
-// the catalog holds, not on the stack held in memory.
+// the catalogue holds, not on the stack held in memory.
 describe("writes over another window's steps", () => {
   const storedLabels = () => storage.written.at(-1)?.stack.map((h) => h.label);
 
@@ -728,7 +728,7 @@ describe("commitEdit", () => {
     });
   });
 
-  it("emits the committed stack to catalog extensions", async () => {
+  it("emits the committed stack to catalogue extensions", async () => {
     const onEditCommit = vi.fn(async (_ctx: EditCommitCtx) => {});
     registerCatalogHooks("test-ext", { id: "test.hooks", onEditCommit });
     s().setParam("exposure", 1);
@@ -740,7 +740,7 @@ describe("commitEdit", () => {
     expect(ctx.editState.stack[1].params.exposure).toBe(1);
   });
 
-  it("hands a project being left its photo and catalog for the thumbnail refresh", async () => {
+  it("hands a project being left its photo and catalogue for the thumbnail refresh", async () => {
     s().setParam("exposure", 1);
     const left = useCatalogStore.getState().photos[0];
     const edited = params();

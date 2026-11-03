@@ -6,7 +6,7 @@
 // The zoom quartet routes through the central rebindable-shortcut handler to
 // whichever viewport is currently registered; with no viewport mounted the
 // combos must fall through untouched (no preventDefault) so nothing swallows
-// keys in modules without an image on screen. The later blocks characterise
+// keys in modules without an image on screen. The later blocks characterize
 // the rest of the handler: the Esc chain, Develop's arrow keys and rotate next
 // to a culling surface, the single-key preference, and tool-scoped mask.delete.
 
@@ -99,7 +99,7 @@ describe("zoom shortcut dispatch", () => {
     expect(press("0").defaultPrevented).toBe(false);
   });
 
-  it("leaves the combos to an extension's open native dialog", () => {
+  it("leaves the combos to an extension's open native dialogue", () => {
     const commands = mountInDevelop();
     render(
       <dialog open>
@@ -323,7 +323,7 @@ describe("Esc exits one layer at a time", () => {
     expect(canvasHeld()).toBe(true);
   });
 
-  it("leaves Esc to an extension's open native dialog, which closes itself", () => {
+  it("leaves Esc to an extension's open native dialogue, which closes itself", () => {
     render(
       <dialog open>
         <input aria-label="Coordinates" />

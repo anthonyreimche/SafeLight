@@ -6,7 +6,7 @@ The records extensions read and write. Defined in `src/catalog/types.ts`.
 
 ## CatalogPhoto
 
-One photo in the catalog, as stored in `catalog.json`.
+One photo in the catalogue, as stored in `catalog.json`.
 
 ```typescript
 interface CatalogPhoto {
@@ -129,4 +129,4 @@ Notes:
 
 - `commitEdit(label)` in the develop store adds an entry only if the edit changed. A no-op commit adds nothing, keeps redo, and fires no `onEditCommit`.
 - Read and write whole stacks with [`api.catalog.getEditState` / `putEditState`](stores.md#apicatalog). Writing the photo open in Develop reloads it there.
-- Observe commits with a [catalog hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.
+- Observe commits with a [catalogue hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.

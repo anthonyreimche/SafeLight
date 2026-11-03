@@ -6,24 +6,24 @@
 import type { AppModule, DevelopParams, EditState, StoredPhoto } from "@/catalog/types";
 import type { ChangeStamps } from "@/project/change-stamps";
 
-/** What one catalog write stored: edit histories, photo records as catalog.json
- *  holds them, and the ids of photos removed from the catalog. */
+/** What one catalogue write stored: edit histories, photo records as catalog.json
+ *  holds them, and the ids of photos removed from the catalogue. */
 export interface CatalogRecords {
   edits: EditState[];
   photos: StoredPhoto[];
   deletedIds: string[];
 }
 
-/** Catalog records as a window's ProjectStorage sends them to the others. */
+/** Catalogue records as a window's ProjectStorage sends them to the others. */
 export interface SentCatalogRecords extends CatalogRecords {
-  /** The catalog file they belong to (see catalogKey in project-storage). */
+  /** The catalogue file they belong to (see catalogKey in project-storage). */
   catalog: string;
   /** The sending storage, not just its window. */
   origin: string;
   /** When the records entered the sender's copy (Date.now()): any save of it
    *  that began later holds them. */
   since: number;
-  /** Set, with no records, by a sender whose window left the catalog and whose
+  /** Set, with no records, by a sender whose window left the catalogue and whose
    *  writes kept failing: what it sent from `since` on may be in no file, so each
    *  window that holds all of it saves: one listening from before then, or one
    *  that had the sender's answer. */
@@ -33,7 +33,7 @@ export interface SentCatalogRecords extends CatalogRecords {
   /** Set on a storage's answer to another's hello: every record it changed or took
    *  in since it opened, its removals, and the files it removed (`removed`). */
   answer?: true;
-  /** In an answer: the files removed from the catalog in the sender's session that
+  /** In an answer: the files removed from the catalogue in the sender's session that
    *  are still on disk, so a window opening now doesn't import them again. */
   removed?: string[];
   /** In an answer: the storage whose hello it answers, the only one that takes it. */
@@ -80,14 +80,14 @@ export type BroadcastMessage =
     }
   | {
       // Records a window's ProjectStorage just wrote. Each window saves the whole
-      // catalog from its own copy, so the others take these on before their next
+      // catalogue from its own copy, so the others take these on before their next
       // save.
       type: "catalog-records";
       payload: SentCatalogRecords;
     }
   | {
       // A window's ProjectStorage has read catalog.json: each other storage on the
-      // catalog answers with the changes it holds (catalog-records, answer).
+      // catalogue answers with the changes it holds (catalog-records, answer).
       type: "catalog-hello";
       payload: CatalogHello;
     };

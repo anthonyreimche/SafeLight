@@ -28,6 +28,7 @@ import {
   startRung,
   readyCache,
   fallbackCache,
+  chosenCache,
   relaunchRung,
   relaunchArgs,
   relaunchOptions,
@@ -351,24 +352,96 @@ describe("probe relaunch arguments", () => {
 });
 
 describe("backendState", () => {
+  const ladder = gpuLadder("linux", false);
+  const none = { backend: null, reason: null, since: null, launches: 0 };
+
   it("says what this launch uses and what the next one will", () => {
-    expect(backendState("gl", { backend: SOFTWARE_BACKEND, reason: "gpu-crashes" })).toEqual({
+    expect(backendState("gl", { ...none, backend: SOFTWARE_BACKEND, reason: "gpu-crashes", since: 0 }, ladder, 0)).toEqual({
       software: false,
       nextSoftware: true,
       reason: "gpu-crashes",
+      backend: "gl",
+      next: SOFTWARE_BACKEND,
+      choice: null,
+      backends: ladder,
     });
-    expect(backendState(SOFTWARE_BACKEND, { backend: null, reason: null })).toEqual({
+    expect(backendState(SOFTWARE_BACKEND, none, ladder, 0)).toMatchObject({
       software: true,
       nextSoftware: false,
       reason: null,
+      next: "gl",
+      choice: null,
     });
   });
 
-  it("gives no reason for a graphics-card launch", () => {
-    expect(backendState("gl", { backend: "gl", reason: "chosen" })).toEqual({
+  it("gives no software reason for a graphics-card pick, but names the pick", () => {
+    expect(backendState("gl", { ...none, backend: "vulkan", reason: "chosen" }, ladder, 0)).toMatchObject({
       software: false,
       nextSoftware: false,
       reason: null,
+      next: "vulkan",
+      choice: "vulkan",
     });
+  });
+
+  it("names software the user picked as the pick", () => {
+    expect(backendState("gl", fallbackCache("chosen", 0), ladder, 0)).toMatchObject({
+      nextSoftware: true,
+      reason: "chosen",
+      next: SOFTWARE_BACKEND,
+      choice: SOFTWARE_BACKEND,
+    });
+  });
+
+  // Software Safelight picked for itself and now due a retry starts the next
+  // launch on the graphics card, whatever the cache's first line says.
+  it("reports where the next launch really starts", () => {
+    const due = { backend: SOFTWARE_BACKEND, reason: "webgl2-unavailable", since: 0, launches: RETRY_AFTER_LAUNCHES };
+    expect(backendState(SOFTWARE_BACKEND, due, ladder, 0).next).toBe("gl");
+  });
+});
+
+// Preferences ▸ Rendering ▸ Graphics backend: Automatic probes the ladder; any
+// other entry pins that backend for every later launch until the user changes
+// it or it fails.
+describe("a backend the user picked", () => {
+  const ladder = gpuLadder("linux", false);
+
+  it("caches a graphics-card pick with no software clock", () => {
+    expect(chosenCache("gles", 7)).toEqual({ backend: "gles", reason: "chosen", since: null, launches: 0 });
+    expect(parseBackendCache(formatBackendCache(chosenCache("gles", 7)), ladder)).toEqual(chosenCache("gles", 7));
+  });
+
+  it("caches software as the software the user turned on", () => {
+    expect(chosenCache(SOFTWARE_BACKEND, 7, "3.2.0")).toEqual(fallbackCache("chosen", 7, "3.2.0"));
+  });
+
+  it("starts every later launch on the pick and never retries away from it", () => {
+    const pick = chosenCache("vulkan", 0);
+    expect(startRung(ladder, pick, null, 1000 * RETRY_AFTER_MS)).toBe(2);
+    expect(retriesHardware(pick, 1000 * RETRY_AFTER_MS)).toBe(false);
+  });
+
+  it("stays picked once a launch on it reaches ready", () => {
+    expect(readyCache("vulkan", chosenCache("vulkan", 0), 9)).toEqual(chosenCache("vulkan", 0));
+  });
+
+  // Vulkan isn't offered under Wayland. A pick made in an X11 session is kept
+  // for the next X11 session rather than started on, or written over, here.
+  it("is remembered, not started on, in a session type that doesn't offer it", () => {
+    const wayland = gpuLadder("linux", true);
+    const cache = parseBackendCache(formatBackendCache(chosenCache("vulkan", 0)), wayland);
+    expect(cache).toMatchObject({ backend: null, reason: null, elsewhere: "vulkan" });
+    expect(startRung(wayland, cache, null, 0)).toBe(0);
+    expect(backendState("gl", cache, wayland, 0)).toMatchObject({ choice: null, next: "gl" });
+  });
+
+  it("isn't remembered when Safelight, not the user, put the backend there", () => {
+    const cache = parseBackendCache("vulkan\n", gpuLadder("linux", true));
+    expect(cache).toEqual({ backend: null, reason: null, since: null, launches: 0 });
+  });
+
+  it("is dropped when the launch ended up on another backend", () => {
+    expect(readyCache("gl", chosenCache("vulkan", 0), 9)).toEqual({ backend: "gl", reason: null, since: null, launches: 0 });
   });
 });

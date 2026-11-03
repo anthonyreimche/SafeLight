@@ -115,7 +115,7 @@ export interface PhotoListRowProps {
 export interface ContextMenuItem {
   label: string;
   onClick: () => void;
-  /** Render in the red danger color (e.g. Remove). */
+  /** Render in the red danger colour (e.g. Remove). */
   danger?: boolean;
   disabled?: boolean;
 }
@@ -327,6 +327,6 @@ export interface UIKit {
 // ── api.devtools ─────────────────────────────────────────────────────────────
 
 export interface DevFolderControlsProps {
-  /** Laid out for the Developer Tools tab or a settings dialog. */
+  /** Laid out for the Developer Tools tab or a settings dialogue. */
   variant: "tab" | "settings";
 }

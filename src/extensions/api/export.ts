@@ -22,7 +22,7 @@ export interface ExportSettings {
   /** @deprecated Use delivery instead */
   bundle: boolean;
   delivery: DeliveryMode;
-  /** Output color space (pixel convert + embedded ICC). Defaults to sRGB. */
+  /** Output colour space (pixel convert + embedded ICC). Defaults to sRGB. */
   colorSpace?: ColorSpaceId;
   /** Current values for each registered export processor, keyed by processor
    *  id. Missing keys fall back to the processor's declared field defaults. */
@@ -47,7 +47,29 @@ export interface ExportSettings {
   /** Keep GPS location tags when metadata is included. Also off unless
    *  enabled. */
   includeLocation?: boolean;
+  /** A folder export's answer to a file of the same name already there:
+   *  "number" writes beside it as "name (2).ext", "replace" writes over it.
+   *  The original of a photo in the catalogue is never replaced; it gets a
+   *  number either way. Left out, the Preference decides. */
+  ifExists?: "number" | "replace";
 }
+
+/** The output an export asks for, as an export processor is told it: the
+ *  export settings without the delivery, the filename template or the
+ *  processors' own settings. */
+export type ExportOutput = Pick<
+  ExportSettings,
+  | "format"
+  | "quality"
+  | "longEdge"
+  | "colorSpace"
+  | "tiffBitDepth"
+  | "pngBitDepth"
+  | "sharpenAmount"
+  | "sharpenRadius"
+  | "includeMetadata"
+  | "includeLocation"
+>;
 
 export interface ExportProgress {
   done: number;
@@ -76,6 +98,9 @@ export interface ExportResult {
   /** Why the batch ended early on a failure that every later write would meet
    *  too (a full disk, a read-only folder), worded for the user. */
   stopped?: string;
+  /** Count of the exported photos drawn without an extension stage whose
+   *  shader failed to build during the batch, so its effect is missing. */
+  withoutStages?: number;
 }
 
 /** What a headless render (api.export.renderPhotos) takes beyond the export
@@ -87,6 +112,10 @@ export interface RenderPhotosOptions {
   /** Stop before the next photo once this fires. The photos not reached are
    *  left out of the result. */
   signal?: AbortSignal;
+  /** Run the registered export processors (a watermark, say) on each render.
+   *  Defaults to true. Pass false for a frame you use as source pixels rather
+   *  than as a delivered file. */
+  processors?: boolean;
 }
 
 /** What a batch export takes beyond the photos and settings. */

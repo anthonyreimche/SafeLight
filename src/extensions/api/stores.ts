@@ -73,7 +73,7 @@ export interface DevelopState {
   /** Open a photo's stored edit. A change still uncommitted on the photo being
    *  left is committed to that photo first. */
   loadEdit: (photoId: string, asShotTemperature?: number) => Promise<void>;
-  /** Take on the open photo's edit as the catalog now holds it, after another
+  /** Take on the open photo's edit as the catalogue now holds it, after another
    *  window changed it. */
   reloadEdit: () => Promise<void>;
   setParam: <K extends keyof DevelopParams>(
@@ -122,7 +122,7 @@ export interface DevelopState {
   /** Soft proof of the export colour space, on photos that have one (version 3). */
   proof: boolean;
   toggleProof: () => void;
-  /** ISO 12646 color assessment: the image framed in white on a middle-grey
+  /** ISO 12646 colour assessment: the image framed in white on a middle-grey
    *  surround. */
   colorAssessment: boolean;
   toggleColorAssessment: () => void;
@@ -143,7 +143,7 @@ export interface DevelopState {
   clearMaskPanelValues: (maskId: string, owns: readonly string[]) => void;
 }
 
-// ── Catalog ──────────────────────────────────────────────────────────────────
+// ── Catalogue ──────────────────────────────────────────────────────────────────
 
 /** A grid preview as a loader returns it, with the edit it shows. */
 export type LoadedPreview = Blob & { readonly previewEdit?: string };
@@ -203,9 +203,9 @@ export interface CatalogState {
   replaceThumbnail: (id: string, blob: LoadedPreview) => void;
   /** Let go of previews the loader read; returns the ids let go. */
   dropThumbnails: (entries: { id: string; blob: LoadedPreview }[]) => string[];
-  /** Take on what another window wrote to the catalog. */
+  /** Take on what another window wrote to the catalogue. */
   mergeRemoteRecords: (photos: StoredPhoto[], deletedIds: string[]) => void;
-  /** Replace the skeleton catalog with the post-scan list. */
+  /** Replace the skeleton catalogue with the post-scan list. */
   reconcileCatalog: (photos: CatalogPhoto[]) => void;
 
   removePhoto: (id: string) => Promise<void>;
@@ -234,7 +234,7 @@ export interface CatalogState {
   select: (id: string) => void;
   selectRange: (id: string, orderedIds?: string[]) => void;
   toggleSelect: (id: string) => void;
-  /** Select the given ids, or every photo in the catalog when none are given. */
+  /** Select the given ids, or every photo in the catalogue when none are given. */
   selectAll: (ids?: string[]) => void;
   deselectAll: () => void;
   setActivePhoto: (id: string | null, options?: { broadcast?: boolean }) => void;
@@ -336,7 +336,7 @@ export interface AppSettings {
    *  theme's surface. */
   canvasSurroundOverride: boolean;
   canvasSurround: string;
-  /** Width of the color-assessment mat, as a percentage of the smaller
+  /** Width of the colour-assessment mat, as a percentage of the smaller
    *  viewport dimension. */
   assessBorderPct: number;
   /** How much the app behind a window-style pop-up is dimmed, 0–0.8. */
@@ -389,7 +389,7 @@ export interface AppSettings {
   rawCacheMaxEdge: 2048 | 3072 | 4096;
 
   // Render pipeline
-  developMaxEdge: 4096 | 6144 | 8192;
+  developMaxEdge: 2560 | 3072 | 4096 | 6144 | 8192;
   /** GPU memory budget (bytes) for resident decoded RAW sources. */
   gpuSourceCacheBytes: number;
   developPrefetchNeighbors: boolean;
@@ -411,6 +411,7 @@ export interface AppSettings {
   exportPngBitDepth: 8 | 16;
   exportIncludeMetadata: boolean;
   exportIncludeLocation: boolean;
+  exportIfExists: "number" | "replace";
   exportPresets: ExportPreset[];
 
   // Shortcuts
@@ -471,9 +472,9 @@ export interface ProjectState {
   recentsRevision: number;
   /** Removes openErrorRecentId from the recent projects and dismisses openError. */
   removeFailedRecent: () => Promise<void>;
-  /** Notice that a read-only folder's catalog was redirected elsewhere. */
+  /** Notice that a read-only folder's catalogue was redirected elsewhere. */
   storageNotice: string | null;
-  /** Why the last catalog save failed, while saves keep failing; null = saved. */
+  /** Why the last catalogue save failed, while saves keep failing; null = saved. */
   saveError: string | null;
   dismissOpenError: () => void;
   dismissStorageNotice: () => void;

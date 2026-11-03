@@ -13,7 +13,7 @@ import { emitPhotoImport } from "@/extensions/registry";
 import type { ProjectStorageDeps } from "./project-storage";
 
 // Each reads its import when called, not as this module loads: the importer and
-// the catalog store import each other, so either may still be loading here.
+// the catalogue store import each other, so either may still be loading here.
 export const storageDeps: ProjectStorageDeps = {
   isSupportedName: (name) => isSupportedName(name),
   importPhoto: (fileHandle, directoryHandle) => importPhoto(fileHandle, directoryHandle),

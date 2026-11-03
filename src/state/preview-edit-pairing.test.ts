@@ -5,9 +5,9 @@
 
 // A photo's grid preview and the edit it shows (previewEdit) stay paired: Develop
 // draws the preview first only while that edit is the one it opens with. This
-// window runs its storage, preview reader, catalog store and the following of other
+// window runs its storage, preview reader, catalogue store and the following of other
 // windows' records, wired as opening a project wires them. Another window is
-// driven through its storage, as its catalog store and edited-thumbnail drive it.
+// driven through its storage, as its catalogue store and edited-thumbnail drive it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";

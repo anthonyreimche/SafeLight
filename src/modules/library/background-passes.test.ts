@@ -6,9 +6,9 @@
 // The passes a project runs once it is open (the missing-preview repair and the
 // "Cache all" pre-decode) belong to that project. Once the user leaves it they
 // read no more of its files and write nothing: the next project's cache and
-// catalog hold other photos. Their decodes, and those of Rebuild previews, are
+// catalogue hold other photos. Their decodes, and those of Rebuild previews, are
 // background work, so a photo opened meanwhile goes first. The decoders, the
-// cache and the catalog are faked; only the hand-offs are under test.
+// cache and the catalogue are faked; only the hand-offs are under test.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";
@@ -47,7 +47,7 @@ const h = vi.hoisted(() => ({
   /** Grid thumbnails built, and decoded bitmaps let go of. */
   thumbnails: 0,
   bitmapsClosed: 0,
-  /** The catalog's photos as the store holds them. */
+  /** The catalogue's photos as the store holds them. */
   catalog: [] as CatalogPhoto[],
 }));
 
@@ -150,7 +150,7 @@ import {
 } from "./import-photos";
 import { rawPhoto } from "@/raw/raw-photo.test-support";
 
-/** A RAW in the catalog, read through its file handle. */
+/** A RAW in the catalogue, read through its file handle. */
 function rawRecord(index: number, extra: Partial<CatalogPhoto> = {}): CatalogPhoto {
   const name = `DSC_000${index}.NEF`;
   const onRead = () => {

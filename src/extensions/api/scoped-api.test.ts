@@ -137,7 +137,7 @@ describe("SafelightAPI public shapes", () => {
     expect(true).toBe(true);
   });
 
-  it("match the develop, export and catalog shapes", () => {
+  it("match the develop, export and catalogue shapes", () => {
     same<ReturnOf<Dev["useMaskScope"]>, ReturnType<typeof useMaskScope>>();
     same<ReturnOf<Dev["useParamScope"]>, ReturnType<typeof useParamScope>>();
     same<Parameters<Dev["captureFloatFrame"]>[1], RealLiveFloatCaptureOptions | undefined>();

@@ -51,7 +51,7 @@ const overlayStack: { bgVar: string }[] = [];
  * buttons sit on the same background as *this* surface's header. Each top bar
  * passes the CSS var that drives its own background (the welcome and app views
  * share one window but use different surfaces). Re-runs on theme change so the
- * colors keep tracking the active theme, and sends the Interface scale so the
+ * colours keep tracking the active theme, and sends the Interface scale so the
  * native controls grow with the bar. On macOS only the traffic lights move.
  */
 export function useTitleBarOverlay(bgVar: string): void {

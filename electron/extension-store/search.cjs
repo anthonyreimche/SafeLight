@@ -138,7 +138,7 @@ function createSearch({ net, userData, fileWriter, registry, cachedThumbnail }) 
   }
 
   // Browse-grid entry point. For the default topic we serve the prebuilt registry
-  // index (one CDN fetch, the whole catalog, thumbnails already baked); a custom
+  // index (one CDN fetch, the whole catalogue, thumbnails already baked); a custom
   // topic — or an index that isn't reachable / published yet — falls back to a live
   // GitHub Search. Keeping both paths means the store never regresses for users on a
   // custom topic and degrades gracefully if the registry repo is down.

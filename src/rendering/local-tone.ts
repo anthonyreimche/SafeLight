@@ -5,7 +5,8 @@
 
 // Highlights and Shadows for process version 2. The curves are the ones
 // version 1 applies to each pixel (with Highlights > 0 rising into a white
-// that climbs with its knee, where version 1 bends back down). Version 2 also
+// that climbs with its knee, where version 1 bends back down), except the
+// Shadows slider, whose gain grows in stops with it (basicShadows). Version 2 also
 // runs them on the pixel's region and keeps the pixel's ratio to it, blended
 // in with the slider, so recovered highlights and lifted shadows keep the
 // texture inside them. The functions below are the TypeScript twins of the
@@ -61,6 +62,21 @@ export function toneShadows(x: number, s: number): number {
   return mix(x0, x0 ** g, Math.exp(-3 * x0) * Math.abs(s));
 }
 
+/** Luminance `x` through Basic's Shadows slider from process version 2 on,
+ *  `s` = Shadows / 100: twin of the tone stage's basicShadows. Its gain in
+ *  stops is version 1's curve at ±50 times 2|s|. Version 1's curve mixes
+ *  toward x^g by a weight that reaches 1 at ±100, so the deep shadows took
+ *  the whole power there (about -5.5 EV at -100 against -0.84 at -50). The
+ *  gain fades out over the 3.5 stops below mid grey, which stays put. */
+export function basicShadows(x: number, s: number): number {
+  if (Math.abs(s) <= 0.001) return x;
+  const x0 = Math.max(x, 1e-4);
+  const w = 0.5 * Math.exp(-3 * x0);
+  const halfGain = 1 - w + w * x0 ** (s > 0 ? -0.175 : 0.4);
+  const reach = 1 - smoothstep(-3.5, 0, Math.log2(x0 / 0.18));
+  return x0 * halfGain ** (2 * Math.abs(s) * reach);
+}
+
 // Where a colour's strongest channel starts rolling off into white.
 const PATH_START = 0.9;
 
@@ -80,7 +96,7 @@ export function pathToWhite(c: readonly [number, number, number]): [number, numb
   return [L + s * (c[0] - L), L + s * (c[1] - L), L + s * (c[2] - L)];
 }
 
-/** GLSL twins of pathToWhite, toneHighlights and toneShadows, and the region
+/** GLSL twins of pathToWhite, toneHighlights, toneShadows and basicShadows, and the region
  *  base the version 2 tone block runs them on. Spliced after applyWhiteBalance
  *  and baselineTone; reads uImage, uLinear, uIsFallbackPreview,
  *  uApplyBaseCurve, uBaselineGain, uApplyToneShoulder and the white-balance
@@ -131,6 +147,16 @@ float slToneShadows(float x, float S) {
   float x0 = max(x, 1e-4);
   float g = S > 0.0 ? mix(1.0, 0.65, S) : mix(1.0, 1.8, -S);
   return mix(x0, pow(x0, g), exp(-3.0 * x0) * abs(S));
+}
+
+// basicShadows' twin, for a mask's Shadows. Basic's tone stage carries its own.
+float slShadows(float x, float S) {
+  if (abs(S) <= 0.001) return x;
+  float x0 = max(x, 1e-4);
+  float w = 0.5 * exp(-3.0 * x0);
+  float halfGain = 1.0 - w + w * pow(x0, S > 0.0 ? -0.175 : 0.4);
+  float reach = 1.0 - smoothstep(-3.5, 0.0, log2(x0 / 0.18));
+  return x0 * pow(halfGain, 2.0 * abs(S) * reach);
 }
 
 // The source at uv taken through the steps lin took before the tone block
@@ -205,7 +231,7 @@ export function localToneBlend(
   const gain = 2 ** e;
   const lx = Math.max(L, 1e-4) * gain;
   let l1 = toneHighlights(lx, e, h, skipShoulder);
-  let l2 = toneShadows(toneShadows(l1, cameraLift), s);
+  let l2 = basicShadows(toneShadows(l1, cameraLift), s);
   if (Math.abs(h) > 0.001 || Math.abs(s) > 0.001) {
     // Floored after Exposure too: below the curves' own 1e-4 floor a region's
     // Shadows gain would grow as Exposure goes down and cancel it.
@@ -214,7 +240,7 @@ export function localToneBlend(
     l1 = mix(l1, (lx * b1) / bx, Math.abs(h));
     const c1 = toneShadows(l1, cameraLift);
     const cb = toneShadows(b1, cameraLift);
-    l2 = mix(toneShadows(c1, s), (c1 * toneShadows(cb, s)) / cb, Math.abs(s));
+    l2 = mix(basicShadows(c1, s), (c1 * basicShadows(cb, s)) / cb, Math.abs(s));
   }
   return { l1, l2 };
 }

@@ -47,7 +47,7 @@ export interface CatalogPhoto {
    *  short by a quit. A preview made at another rotation is never shown: one is
    *  built from the file instead. */
   previewRotation?: number;
-  /** Set on a *virtual copy* — a second catalog record that shares another
+  /** Set on a *virtual copy* — a second catalogue record that shares another
    *  photo's source file but keeps its own id, edits and metadata. Holds the id
    *  of the master record (the one that owns the file on disk). A virtual copy
    *  has no disk file of its own, so the project scan re-attaches the master's

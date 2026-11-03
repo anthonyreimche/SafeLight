@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Render ONE arbitrary catalog photo through the full develop pipeline with
+// Render ONE arbitrary catalogue photo through the full develop pipeline with
 // caller-supplied params, off-screen, to an ImageBitmap or a frame of floats —
 // without disturbing the live Develop view or its bound source.
 //
@@ -94,7 +94,7 @@ export async function renderPhotoFloatFrame(
  *  view draws it: under the entries the built-in stages take from `params`.
  *  `render` draws one request and gives null for a miss or a failure.
  *  `cameraPreview` lets the grid's camera JPEG stand in, last, for a photo with
- *  no source of its own. Null for a photo the catalog doesn't hold, or one no
+ *  no source of its own. Null for a photo the catalogue doesn't hold, or one no
  *  source renders. */
 async function measure<T>(
   photoId: string,

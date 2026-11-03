@@ -65,9 +65,9 @@ const h = vi.hoisted(() => ({
   floatSignals: [] as (AbortSignal | undefined)[],
   /** Photos handed to catalogStorage().putPhoto. */
   saved: [] as CatalogPhoto[],
-  /** The catalog's photos as the store holds them when a decode finishes. */
+  /** The catalogue's photos as the store holds them when a decode finishes. */
   catalog: [] as CatalogPhoto[],
-  /** Changes merged into the catalog store's photos, as [id, change]. */
+  /** Changes merged into the catalogue store's photos, as [id, change]. */
   merged: [] as [string, RebuiltChange][],
   /** arrayBuffer() reads of a whole source file (see counted). */
   wholeReads: 0,
@@ -319,8 +319,8 @@ const TEMPLATE: Omit<CatalogPhoto, "id" | "filename" | "relPath" | "folder"> = {
   exif: {},
 };
 
-/** A catalog record whose fileHandle serves `name` — the shape the repair and
- *  rebuild passes walk. It is in the catalog (h.catalog) until a test says
+/** A catalogue record whose fileHandle serves `name` — the shape the repair and
+ *  rebuild passes walk. It is in the catalogue (h.catalog) until a test says
  *  otherwise. */
 function record(name: string, extra: Partial<CatalogPhoto> = {}): CatalogPhoto {
   const photo: CatalogPhoto = {
@@ -341,7 +341,7 @@ function record(name: string, extra: Partial<CatalogPhoto> = {}): CatalogPhoto {
   return photo;
 }
 
-/** The record the catalog holds for `photo` changes, as it would while a decode
+/** The record the catalogue holds for `photo` changes, as it would while a decode
  *  runs: a rating here, or one taken on from another window. */
 function changeInCatalog(photo: CatalogPhoto, change: Partial<CatalogPhoto>): void {
   h.catalog = h.catalog.map((p) => (p.id === photo.id ? { ...p, ...change } : p));
@@ -544,7 +544,7 @@ describe("buildPhoto", () => {
     expect(photo.exif.imageDescription).toBe("Sunrise");
   });
 
-  it("leaves an unrecognised XMP colour label unset", async () => {
+  it("leaves an unrecognized XMP colour label unset", async () => {
     h.xmp = { colorLabel: "Chartreuse" };
     const photo = (await buildPhoto(file("a.jpg", "image/jpeg"), null, null))!;
     expect(photo.colorLabel).toBe("none");
@@ -1059,7 +1059,7 @@ describe("readPendingMetadata", () => {
     expect(h.saved).toEqual([]);
   });
 
-  it("reads no file whose mark the catalog has cleared since", async () => {
+  it("reads no file whose mark the catalogue has cleared since", async () => {
     const photo = pending("a.RAF");
     const reads = countReads(photo);
     changeInCatalog(photo, { metadataPending: undefined });
@@ -1070,7 +1070,7 @@ describe("readPendingMetadata", () => {
     expect(h.saved).toEqual([]);
   });
 
-  it("reads no file of a photo that left the catalog", async () => {
+  it("reads no file of a photo that left the catalogue", async () => {
     const photo = pending("a.RAF");
     const reads = countReads(photo);
     h.catalog = [];
@@ -1118,7 +1118,7 @@ describe("settlePendingMetadata", () => {
     expect(h.metaRequests).toEqual([{ background: false }]);
   });
 
-  it("shows what it read on the photo in the catalog", async () => {
+  it("shows what it read on the photo in the catalogue", async () => {
     h.rawMeta = { colorTemperature: 5200 };
     pending("a.RAF");
 
@@ -1259,7 +1259,7 @@ describe("reimportPhotos", () => {
 
 describe("a photo that changes while its preview is rebuilt", () => {
   // These passes walk a list read before their decodes, which take a while. What
-  // they store goes onto the photo as the catalog holds it by then.
+  // they store goes onto the photo as the catalogue holds it by then.
 
   it("keeps a rating and keywords given meanwhile when a missing preview is repaired", async () => {
     const broken = record("broken.jpg", { width: 0, decodeError: "RAW decode failed" });
@@ -1274,7 +1274,7 @@ describe("a photo that changes while its preview is rebuilt", () => {
     expect(repaired).toEqual(h.saved);
   });
 
-  it("stores nothing for a photo that left the catalog meanwhile", async () => {
+  it("stores nothing for a photo that left the catalogue meanwhile", async () => {
     const broken = record("broken.jpg", { width: 0 });
     h.catalog = [];
     const repaired: CatalogPhoto[] = [];
@@ -1357,8 +1357,8 @@ describe("a photo that changes while its preview is rebuilt", () => {
   });
 });
 
-describe("what a pass hands on to the catalog", () => {
-  // Only the fields it changed: the catalog takes them onto the photo as it holds
+describe("what a pass hands on to the catalogue", () => {
+  // Only the fields it changed: the catalogue takes them onto the photo as it holds
   // it once the preview is written, and another window may have turned the photo
   // during that write.
   const keys = (changes: RebuiltChange[]) => changes.map((change) => Object.keys(change).sort());
@@ -1461,7 +1461,7 @@ describe("preDecodeRawsForCache", () => {
     expect(h.floatDecodes).toEqual([]);
   });
 
-  it("goes by the catalog's record, which the metadata pass cleared since", async () => {
+  it("goes by the catalogue's record, which the metadata pass cleared since", async () => {
     const photo = record("DSC_0001.NEF", { metadataPending: true });
     changeInCatalog(photo, { metadataPending: undefined });
 

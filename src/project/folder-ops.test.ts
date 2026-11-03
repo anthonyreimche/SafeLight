@@ -121,7 +121,7 @@ const TEMPLATE: Omit<CatalogPhoto, "id" | "filename" | "relPath" | "folder"> = {
   exif: {},
 };
 
-/** Put a file on disk and register the matching catalog record with live handles. */
+/** Put a file on disk and register the matching catalogue record with live handles. */
 async function addPhoto(
   env: Env,
   relPath: string,
@@ -160,7 +160,7 @@ function addCopy(master: CatalogPhoto, copyName: string): CatalogPhoto {
 
 const find = (id: string): CatalogPhoto => {
   const p = h.photos.find((x) => x.id === id);
-  if (!p) throw new Error(`no catalog record ${id}`);
+  if (!p) throw new Error(`no catalogue record ${id}`);
   return p;
 };
 
@@ -441,7 +441,7 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(find(copy.id).relPath).toBe("a.jpg");
   });
 
-  it("keeps what changes in the catalog while the files move", async () => {
+  it("keeps what changes in the catalogue while the files move", async () => {
     // Another window's rating, or a new virtual copy, can land during the move.
     const env = start();
     const master = await addPhoto(env, "a.jpg");
@@ -619,7 +619,7 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(find(copy.id)).toMatchObject({ filename: "b.jpg", relPath: "b.jpg", copyName: "copy" });
   });
 
-  it("keeps what changes in the catalog while the file is renamed", async () => {
+  it("keeps what changes in the catalogue while the file is renamed", async () => {
     const env = start();
     await addPhoto(env, "a.jpg");
 
@@ -639,7 +639,7 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
 
   // ── deleteFolder ──────────────────────────────────────────────────────────
 
-  it("deletes a folder with its subtree and drops its photos from the catalog", async () => {
+  it("deletes a folder with its subtree and drops its photos from the catalogue", async () => {
     const env = start();
     await addPhoto(env, "trip/a.jpg");
     await addPhoto(env, "trip/day2/b.jpg");
@@ -735,7 +735,7 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
 });
 
 describe("folder ops in the browser build, where each new handle is a disk lookup", () => {
-  it("keeps what changes in the catalog while a renamed folder's photos are found again", async () => {
+  it("keeps what changes in the catalogue while a renamed folder's photos are found again", async () => {
     const env = open("/home/u/photos", false);
     await addPhoto(env, "trip/a.jpg");
     const exists = env.fs.exists.bind(env.fs);

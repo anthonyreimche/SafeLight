@@ -75,7 +75,7 @@ describe("Effects", () => {
   });
 });
 
-describe("Color Grading", () => {
+describe("Colour Grading", () => {
   it.each(CORPUS.map((p, i) => [i, p] as const))("derives what render() bound (params %i)", (_, p) => {
     const cg = p.colorGrading;
     expect(derived("safelight.color-grading.grade", p)).toEqual({

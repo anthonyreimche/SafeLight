@@ -62,7 +62,7 @@ export function useKeyboardShortcuts() {
 
       // Esc = universal "exit": close the topmost modal, else leave the active
       // develop tool mode (the panel "Done" buttons). Runs before the editable-
-      // target gate so it still closes a dialog from a focused field; when there
+      // target gate so it still closes a dialogue from a focused field; when there
       // is nothing to exit it doesn't consume the key (so a rename input's own
       // Esc-to-cancel still works). A field that marks itself data-own-escape
       // (the slider's value field) keeps Esc for its own revert, even when

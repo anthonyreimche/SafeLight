@@ -175,7 +175,7 @@ export function PreferencesDialog() {
   }, [open, visible, sectionId]);
 
   // Esc clears the search first, then closes (via the shared modal stack, so a
-  // nested dialog on top still closes before us).
+  // nested dialogue on top still closes before us).
   useEffect(() => {
     if (!open) return;
     return pushEscapeHandler(() => {

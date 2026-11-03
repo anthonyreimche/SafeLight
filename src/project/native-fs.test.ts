@@ -242,7 +242,7 @@ describe.each(ROOTS)("native handles ($label paths)", ({ root, base, child }) =>
 });
 
 describe("native handle sandboxing", () => {
-  // A native handle is reachable from the catalog store, so an extension holding
+  // A native handle is reachable from the catalogue store, so an extension holding
   // the project folder's directoryHandle must not be able to walk out of it.
   const escapes = ["..", ".", "", "../secret", "a/b", "a\\b", "/etc/passwd", "D:\\other"];
 
@@ -274,7 +274,7 @@ describe("native writable close", () => {
   }
 
   it("sends a text write to the bridge before close() is awaited", async () => {
-    // The last catalog flush runs inside beforeunload; anything still waiting on
+    // The last catalogue flush runs inside beforeunload; anything still waiting on
     // an await when the page unloads never reaches the main process.
     const fs = mount(root);
     const send = vi.spyOn(fs, "write");

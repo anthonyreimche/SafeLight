@@ -33,10 +33,10 @@ describe("ESSENTIAL_ADJUSTMENTS", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("holds Color Grading's wheels", () => {
+  it("holds Colour Grading's wheels", () => {
     expect(ESSENTIAL_ADJUSTMENTS.find((e) => e.id === "safelight.color-grading")).toEqual({
       id: "safelight.color-grading",
-      name: "Color Grading",
+      name: "Colour Grading",
       params: ["colorGrading"],
     });
   });

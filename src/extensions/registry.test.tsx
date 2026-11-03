@@ -64,9 +64,9 @@ beforeEach(() => {
   useRegistry.setState({ modules: {} });
 });
 
-// Every import and save waits on the catalog hooks, one after another, so one
+// Every import and save waits on the catalogue hooks, one after another, so one
 // that throws or never finishes is logged and skipped and the rest still run.
-describe("catalog hooks", () => {
+describe("catalogue hooks", () => {
   const importCtx = {} as Parameters<typeof emitPhotoImport>[0];
   const metadataCtx = {} as Parameters<typeof emitMetadataChange>[0];
   const editCtx = {} as Parameters<typeof emitEditCommit>[0];
@@ -135,7 +135,7 @@ describe("catalog hooks", () => {
     expect(fine.onEditCommit).toHaveBeenCalledWith(editCtx);
     expect(fine.onPhotoRemove).toHaveBeenCalledWith(removeCtx);
     expect(console.warn).toHaveBeenCalledWith(
-      "[ext:acme.stuck] onPhotoImport timed out; its catalog hooks are skipped until it is reloaded:",
+      "[ext:acme.stuck] onPhotoImport timed out; its catalogue hooks are skipped until it is reloaded:",
       timedOut,
     );
     expect(console.warn).toHaveBeenCalledWith("[ext:acme.broken] onPhotoImport failed:", new Error("boom"));

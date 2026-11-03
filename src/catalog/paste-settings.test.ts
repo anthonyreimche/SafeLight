@@ -5,7 +5,7 @@
 
 // Paste settings onto Library photos: the pasted subset merges over each
 // photo's look, a paste never moves a photo between process versions, and the
-// whole selection is stored in one catalog write.
+// whole selection is stored in one catalogue write.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copySettingsSource, pasteSettings } from "./paste-settings";
@@ -101,7 +101,7 @@ describe("pasteSettings — as-shot white balance", () => {
     expect(source?.params.temperature).toBe(5200);
   });
 
-  it("offers Copy settings nothing for a photo not in the catalog", async () => {
+  it("offers Copy settings nothing for a photo not in the catalogue", async () => {
     install();
     await expect(copySettingsSource("gone")).resolves.toBeNull();
   });
@@ -189,7 +189,7 @@ describe("pasteSettings — the photo open in Develop", () => {
   });
 });
 
-describe("pasteSettings — one catalog write for the selection", () => {
+describe("pasteSettings — one catalogue write for the selection", () => {
   const IDS = ["a", "b", "c"];
   const original = (photoId: string): EditState => ({
     photoId,
@@ -251,7 +251,7 @@ describe("pasteSettings — one catalog write for the selection", () => {
 
   it.each([
     { selection: "empty", ids: [] },
-    { selection: "made of photos that aren't in the catalog", ids: ["gone", "missing"] },
+    { selection: "made of photos that aren't in the catalogue", ids: ["gone", "missing"] },
   ])("writes nothing when the selection is $selection", async ({ ids }) => {
     const { batches, singles } = seed();
 

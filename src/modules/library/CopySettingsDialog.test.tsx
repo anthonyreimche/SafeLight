@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Copy Settings fills a clipboard that Paste fans out over whole selections, so
-// what the dialog hands back has to be exactly the ticked rows — no more. The
+// what the dialogue hands back has to be exactly the ticked rows — no more. The
 // per-image rows (framing, heal spots) are the ones that would do damage if they
 // rode along uninvited.
 
@@ -170,7 +170,7 @@ describe("dismissing", () => {
   });
 
   it("cancels on a click outside the card but not inside it", async () => {
-    // The backdrop is the dialog's own root element; only a click that lands on
+    // The backdrop is the dialogue's own root element; only a click that lands on
     // it (rather than bubbling from the card) dismisses.
     const { user, container, onCancel } = setup({ exposure: 1.2 });
     await user.click(box(/^Exposure/));
@@ -192,14 +192,14 @@ describe("dismissing", () => {
 describe("as a modal", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("is a named modal dialog that takes focus on open", () => {
+  it("is a named modal dialogue that takes focus on open", () => {
     setup({ exposure: 1.2 });
     const dialog = screen.getByRole("dialog", { name: "Copy settings" });
     expect(dialog.getAttribute("aria-modal")).toBe("true");
     expect(dialog.contains(document.activeElement)).toBe(true);
   });
 
-  it("keeps Tab inside the dialog", async () => {
+  it("keeps Tab inside the dialogue", async () => {
     vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([
       {} as DOMRect,
     ] as unknown as DOMRectList);

@@ -71,7 +71,7 @@ async function run(
   }
 }
 
-/** Gray-world white balance from the frame's histogram. */
+/** Grey-world white balance from the frame's histogram. */
 function whiteBalance(): Promise<void> {
   return run(() => {
     const s = useDevelopStore.getState();

@@ -87,7 +87,7 @@ export interface DevelopState extends ViewSlice, MaskSlice {
    *  this one's edit is read, this one is dropped; a read that fails opens the
    *  photo as one that can't be edited (`editError`). */
   loadEdit: (photoId: string, asShotTemperature?: number) => Promise<void>;
-  /** Take on the open photo's edit as the catalog now holds it, after another
+  /** Take on the open photo's edit as the catalogue now holds it, after another
    *  window changed it. A change still being made (a slider mid-drag) isn't
    *  discarded: its commit lands on top of the stored history instead. */
   reloadEdit: () => Promise<void>;
@@ -155,7 +155,7 @@ function moveHistory(
   broadcast({ type: "edit-update", payload: { photoId, params } });
   if (!photoId) return;
 
-  // Its writes go to the catalog open now, or nowhere: not to one opened since.
+  // Its writes go to the catalogue open now, or nowhere: not to one opened since.
   const storage = catalogStorage();
   const store = (editState: EditState) => {
     void storage.putEditState(editState);
@@ -166,7 +166,7 @@ function moveHistory(
   };
 
   // With none of this photo's writes under way, the history held here is the
-  // catalog's: each change another window makes renews it (see reloadEdit).
+  // catalogue's: each change another window makes renews it (see reloadEdit).
   if (!writePending(photoId)) {
     store({ photoId, stack: history, currentIndex: newIndex });
     return;
@@ -175,11 +175,11 @@ function moveHistory(
     const base = (await storedHistory(photoId, asShotTemperature, storage)) ?? { stack: history, index: historyIndex };
     if (catalogStorage() !== storage) return;
     const held = base.stack === history && base.index === historyIndex;
-    // The catalog holds steps this history hasn't seen: step its cursor instead.
+    // The catalogue holds steps this history hasn't seen: step its cursor instead.
     const index = held ? newIndex : base.index + dir;
     const steppable = index >= 0 && index <= base.stack.length - 1;
     if (!held && latest() && get().photoId === photoId) {
-      // No step to take in the catalog's history: show it as it is, rather
+      // No step to take in the catalogue's history: show it as it is, rather
       // than the step taken here that was never saved.
       const look = lookOf(base.stack[steppable ? index : base.index]);
       set({ history: base.stack, historyIndex: steppable ? index : base.index, ...look });
@@ -280,7 +280,7 @@ export function beforePhotoLeave(handler: () => void): () => void {
 const LEAVING_THUMBNAIL_MS = 5000;
 
 /** Commit the live params as a history step and store them in `target`, or in the
- *  catalog open now, when that is still the one open as the write lands. */
+ *  catalogue open now, when that is still the one open as the write lands. */
 async function commitStoredEdit(
   get: () => DevelopState,
   set: (p: Partial<DevelopState>) => void,
@@ -289,11 +289,11 @@ async function commitStoredEdit(
 ): Promise<void> {
   const { photoId, params, paramBag, history, historyIndex, asShotTemperature, editError } = get();
   if (!photoId || editError) return;
-  // Unless told where, the write goes to the catalog open now, or nowhere: not to
+  // Unless told where, the write goes to the catalogue open now, or nowhere: not to
   // one opened since.
   const storage = target ?? catalogStorage();
   // A commit made as the project is left reaches the hooks with the photo as it
-  // stood, though the catalog store is emptied by the time the write lands.
+  // stood, though the catalogue store is emptied by the time the write lands.
   const leaving = target && useCatalogStore.getState().photos.find((p) => p.id === photoId);
 
   // An unchanged edit costs no step and keeps the redo tail.
@@ -306,7 +306,7 @@ async function commitStoredEdit(
     paramBag: { ...paramBag },
   };
 
-  // History shows the step at once; the write below builds on the catalog.
+  // History shows the step at once; the write below builds on the catalogue.
   const newHistory = [...history.slice(0, historyIndex + 1), snapshot];
   set({ history: newHistory, historyIndex: newHistory.length - 1 });
 
@@ -342,7 +342,7 @@ async function commitStoredEdit(
   // in-memory, single photo — not the removed folder-wide pump). Fire and
   // forget so the commit stays snappy.
   if (target && leaving) {
-    // The catalog is saved once this commit ends, so the preview is stored first,
+    // The catalogue is saved once this commit ends, so the preview is stored first,
     // within a bound a hung render can't outlast.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const bound = new Promise<void>((resolve) => (timer = setTimeout(resolve, LEAVING_THUMBNAIL_MS)));
@@ -357,12 +357,12 @@ async function commitStoredEdit(
 
   // Announce the committed state so the Library refreshes this photo's
   // histogram the moment it's edited — for any visible photo, in any window —
-  // instead of waiting on the periodic catalog poll.
+  // instead of waiting on the periodic catalogue poll.
   broadcast({ type: "edit-update", payload: { photoId, params } });
 }
 
 /** Close the open photo as its project is left: the change still uncommitted is
- *  committed to `storage`, the catalog being left, and Develop is left with no
+ *  committed to `storage`, the catalogue being left, and Develop is left with no
  *  photo, so nothing of this photo is written to the next project. Null with no
  *  photo open, else the commit's end. */
 export function closeOpenPhoto(storage: CatalogStorage): Promise<void> | null {

@@ -5,7 +5,7 @@
 
 // The bars along the bottom of the window share one stack, so two at once sit
 // one above the other instead of on top of each other, and a confirmation
-// dialog covers them all.
+// dialogue covers them all.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
@@ -29,7 +29,7 @@ beforeEach(() => {
     openError: null,
     openErrorReadOnly: false,
     storageNotice: null,
-    saveError: "Couldn't save the catalog: the disk is full.",
+    saveError: "Couldn't save the catalogue: the disk is full.",
   });
   useTrust.setState({ flagged: [{ id: "x.y", name: "Film Grain", reason: "it sends photos away" }] });
 });
@@ -51,7 +51,7 @@ describe("BottomBanners", () => {
     for (const alert of alerts) expect(alert.className).not.toMatch(/\bfixed\b|\bz-\[/);
   });
 
-  it("sits under a confirmation dialog", async () => {
+  it("sits under a confirmation dialogue", async () => {
     render(
       <>
         <BottomBanners />
@@ -64,7 +64,7 @@ describe("BottomBanners", () => {
     expect(zIndex(stack())).toBeLessThan(zIndex(backdrop));
   });
 
-  it("sits under a dialog and a context menu, which sit under a confirmation", () => {
+  it("sits under a dialogue and a context menu, which sit under a confirmation", () => {
     render(
       <>
         <BottomBanners />

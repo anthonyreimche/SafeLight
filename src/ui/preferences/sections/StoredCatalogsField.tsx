@@ -22,18 +22,18 @@ function formatBytes(n: number): string {
   return `${v >= 10 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 
-/** Lists the "separate" catalogs Safelight keeps outside photo folders (read-only
+/** Lists the "separate" catalogues Safelight keeps outside photo folders (read-only
  *  sources + Separate-folder projects) so the user can see what's on disk and
  *  reclaim space. Deleting one drops that project's edits/ratings/cache — the
  *  photos are never touched — so it's behind a per-row confirm. Renders nothing on
  *  builds whose bridge predates listExternalCatalogs. */
 const STORED_CATALOGS_HINT =
-  "Catalogs kept outside photo folders — for read-only sources and Separate-folder projects. Deleting one removes that project's saved edits, ratings, previews and cache; the photos themselves are untouched.";
+  "Catalogues kept outside photo folders — for read-only sources and Separate-folder projects. Deleting one removes that project's saved edits, ratings, previews and cache; the photos themselves are untouched.";
 
 export function StoredCatalogsField() {
   const s = useSettings();
   const fs = nativeFs();
-  const visible = useFieldVisible("Stored catalogs", STORED_CATALOGS_HINT);
+  const visible = useFieldVisible("Stored catalogues", STORED_CATALOGS_HINT);
   const [items, setItems] = useState<ExternalCatalogEntry[] | null>(null);
   const [confirmPath, setConfirmPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -51,7 +51,7 @@ export function StoredCatalogsField() {
     let cancelled = false;
     setItems(null);
     void (async () => {
-      // Catalogs can sit under the app-data default and/or the chosen base; query
+      // Catalogues can sit under the app-data default and/or the chosen base; query
       // both and dedupe by path so a freshly-changed base still shows old ones.
       const bases = Array.from(new Set(["", s.externalCatalogDir.trim()]));
       const lists = await Promise.all(
@@ -77,7 +77,7 @@ export function StoredCatalogsField() {
       // a leftover pointer is harmless — the marker re-check makes it a no-op).
       if (it.sourcePath && fs.clearSpilloverPointer)
         await fs.clearSpilloverPointer(it.sourcePath).catch(() => {});
-      // Drop the row locally instead of re-walking every remaining catalog.
+      // Drop the row locally instead of re-walking every remaining catalogue.
       if (mountedRef.current)
         setItems((prev) => prev?.filter((e) => e.path !== it.path) ?? prev);
     } finally {
@@ -89,7 +89,7 @@ export function StoredCatalogsField() {
   };
 
   return (
-    <Field label="Stored catalogs" hint={STORED_CATALOGS_HINT}>
+    <Field label="Stored catalogues" hint={STORED_CATALOGS_HINT}>
       <div className="flex flex-col gap-1">
         {items === null ? (
           <span className="text-[10px] text-text-muted">Scanning…</span>

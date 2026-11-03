@@ -5,11 +5,11 @@
 
 // In-app replacement for native window.confirm and window.alert. Native
 // confirm/alert suspend the renderer, and Electron can lose the window's focus
-// state when the native dialog closes — keystrokes stop reaching inputs until
+// state when the native dialogue closes — keystrokes stop reaching inputs until
 // the window is refocused or the app restarts (electron#31917) — so nothing in
 // the renderer may call them. Callers await confirmDialog() or alertDialog();
 // ConfirmDialogHost, mounted once per window, renders the oldest pending
-// request as a lightweight card (the preset rename dialog's pattern). Requests
+// request as a lightweight card (the preset rename dialogue's pattern). Requests
 // queue FIFO and the promise always resolves — for confirms, cancel, backdrop
 // click, and Esc (via the shared escape stack) all resolve false; an alert is
 // a one-button notice that resolves however it's dismissed.
@@ -65,7 +65,7 @@ export function alertDialog(options: AlertDialogOptions): Promise<void> {
 }
 
 /** True from the moment confirmDialog()/alertDialog() is called until its
- *  answer, before the card has even mounted. A native dialog froze every key
+ *  answer, before the card has even mounted. A native dialogue froze every key
  *  handler in the window; this card doesn't, so global shortcuts consult this
  *  and stand down. Not the Preferences shortcuts-suspended flag: that one is a
  *  single boolean, and a confirm opening over Preferences would clobber it. */

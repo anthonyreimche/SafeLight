@@ -35,7 +35,7 @@ import {
   FolderUnavailableError,
 } from "./catalog-errors";
 
-// A .safelight handle that accepts the write-probe and the catalog-exists check.
+// A .safelight handle that accepts the write-probe and the catalogue-exists check.
 function writeableSl() {
   return {
     getFileHandle: vi.fn(async () => ({
@@ -156,7 +156,7 @@ const DATE_TIME_ORIGINAL = 0x9003;
 
 const EROFS = () => new Error("EROFS: read-only file system, mkdir '/card/.safelight'");
 
-/** What the copies a fold kept of the in-folder catalog it replaced hold. Named
+/** What the copies a fold kept of the in-folder catalogue it replaced hold. Named
  *  apart from catalog.bak.json, which every session's first save rewrites. */
 function keptBeforeMerge(b: ReturnType<typeof nativeBridge>): (string | null)[] {
   const name = /^\/card\/\.safelight\/catalog\.before-merge-\d{4}-\d\d-\d\dT[\d-]+Z\.json$/;
@@ -206,10 +206,10 @@ describe("resolveWorkingDir", () => {
     expect(ext).toHaveBeenCalledWith("/card", "/scratch/safelight", true);
   });
 
-  it("STICKY: keeps using an existing separate catalog even when the folder is now writeable", async () => {
-    // The Q1 regression: a card was read-only (so a separate catalog was built),
+  it("STICKY: keeps using an existing separate catalogue even when the folder is now writeable", async () => {
+    // The Q1 regression: a card was read-only (so a separate catalogue was built),
     // then becomes writeable. We must NOT spawn a fresh in-folder .safelight and
-    // orphan the catalog — the existing separate one wins.
+    // orphan the catalogue — the existing separate one wins.
     const ext = nativeBridge({
       inFolderCatalog: false,
       ext: async (_p, _b, create) => (create ? null : "/data/card-abc/.safelight"),
@@ -225,7 +225,7 @@ describe("resolveWorkingDir", () => {
     expect(root.getDirectoryHandle).not.toHaveBeenCalled();
   });
 
-  it("EXTERNAL mode: stores the catalog separately even for a writeable folder", async () => {
+  it("EXTERNAL mode: stores the catalogue separately even for a writeable folder", async () => {
     h.settings.catalogLocation = "external";
     const ext = nativeBridge({
       inFolderCatalog: false,
@@ -259,8 +259,8 @@ describe("resolveWorkingDir", () => {
     expect(root.getDirectoryHandle).not.toHaveBeenCalled(); // no in-folder write
   });
 
-  it("EXTERNAL mode never orphans an existing in-folder catalog (canonical wins)", async () => {
-    // Flipping the global setting to "external" must not abandon catalogs the
+  it("EXTERNAL mode never orphans an existing in-folder catalogue (canonical wins)", async () => {
+    // Flipping the global setting to "external" must not abandon catalogues the
     // user already built in their folders — rule 1 (in-folder canonical) beats
     // rule 2 (external mode). The separate location is never touched here.
     h.settings.catalogLocation = "external";
@@ -274,12 +274,12 @@ describe("resolveWorkingDir", () => {
 
     expect(wd.location).toBe("in-folder");
     expect(wd.sl).toBe(sl);
-    // A separate catalog is never *created* (it may be probed read-only to look
+    // A separate catalogue is never *created* (it may be probed read-only to look
     // for a spillover to promote, but never built/used here).
     expect(ext).not.toHaveBeenCalledWith("/card", null, true);
   });
 
-  it("uses the in-folder catalog when it already exists (canonical), not a redirect", async () => {
+  it("uses the in-folder catalogue when it already exists (canonical), not a redirect", async () => {
     const sl = writeableSl();
     nativeBridge({
       inFolderCatalog: true, // <project>/.safelight/catalog.json exists
@@ -290,7 +290,7 @@ describe("resolveWorkingDir", () => {
     expect(wd.sl).toBe(sl);
   });
 
-  it("falls back to a separate dir when the in-folder catalog exists but the folder is read-only", async () => {
+  it("falls back to a separate dir when the in-folder catalogue exists but the folder is read-only", async () => {
     const ext = nativeBridge({
       inFolderCatalog: true,
       ext: async (_p, _b, create) => (create ? "/data/card-abc/.safelight" : null),
@@ -328,9 +328,9 @@ describe("resolveWorkingDir", () => {
     expect(err.cause).toBe(cause);
   });
 
-  it("SEED: a read-only open seeds the separate catalog from the in-folder one", async () => {
-    // The folder owns a catalog but is mounted read-only. The separate catalog we
-    // redirect to must open onto the user's real data, not an empty catalog.
+  it("SEED: a read-only open seeds the separate catalogue from the in-folder one", async () => {
+    // The folder owns a catalogue but is mounted read-only. The separate catalogue we
+    // redirect to must open onto the user's real data, not an empty catalogue.
     const b = nativeBridge({
       inFolderCatalog: true,
       ext: async (_p, _b, create) => (create ? "/data/card-abc/.safelight" : null),
@@ -346,8 +346,8 @@ describe("resolveWorkingDir", () => {
     expect(b._pointers.get("/card")).toBe("/data/card-abc/.safelight");
   });
 
-  it("fails a read-only open rather than seed over a separate catalog it can't read", async () => {
-    // Read as missing, the separate catalog, the only copy of the read-only
+  it("fails a read-only open rather than seed over a separate catalogue it can't read", async () => {
+    // Read as missing, the separate catalogue, the only copy of the read-only
     // session's edits, was replaced by the older in-folder one.
     const b = nativeBridge({
       inFolderCatalog: true,
@@ -363,7 +363,7 @@ describe("resolveWorkingDir", () => {
     expect(b._text("/data/card-abc/.safelight/catalog.json")).toBe('{"v":"read-only-edits"}');
   });
 
-  it("fails a read-only open, not start empty, when the folder's catalog is busy", async () => {
+  it("fails a read-only open, not start empty, when the folder's catalogue is busy", async () => {
     // Read as missing, nothing was seeded or marked, so the session's edits would
     // never fold back.
     const b = nativeBridge({
@@ -379,9 +379,9 @@ describe("resolveWorkingDir", () => {
     expect(b._files.has("/data/card-abc/.safelight/catalog.json")).toBe(false);
   });
 
-  it("PROMOTE: a writeable open folds a seeded separate catalog back in-folder", async () => {
+  it("PROMOTE: a writeable open folds a seeded separate catalogue back in-folder", async () => {
     // The card is writeable again; edits made while read-only (in the seeded
-    // separate) must be merged back, with the prior in-folder catalog backed up.
+    // separate) must be merged back, with the prior in-folder catalogue backed up.
     const b = nativeBridge({
       inFolderCatalog: true,
       files: {
@@ -402,7 +402,7 @@ describe("resolveWorkingDir", () => {
     expect(b._files.has("/data/card-abc/.safelight/catalog.json")).toBe(false); // spillover retired
   });
 
-  it("keeps only the newest copies of the catalogs earlier folds replaced", async () => {
+  it("keeps only the newest copies of the catalogues earlier folds replaced", async () => {
     const stamp = (n: number) => `2026-01-0${n}T00-00-00-000Z`;
     const old = Object.fromEntries(
       [1, 2, 3].map((n) => [`/card/.safelight/catalog.before-merge-${stamp(n)}.json`, `fold ${n}`]),
@@ -465,7 +465,7 @@ describe("resolveWorkingDir", () => {
     expect(b._files.has("/data/card-abc/.safelight/.seeded")).toBe(true);
   });
 
-  it("keeps the folder's catalog, and the damaged spillover beside it, when the spillover is damaged", async () => {
+  it("keeps the folder's catalogue, and the damaged spillover beside it, when the spillover is damaged", async () => {
     const b = nativeBridge({
       inFolderCatalog: true,
       files: {
@@ -485,7 +485,7 @@ describe("resolveWorkingDir", () => {
 
   it("does NOT fold a STALE spillover over newer in-folder edits (leftover/stuck marker)", async () => {
     // A marker that survived a failed cleanup, after which the user did more
-    // writeable work: the spillover is now older than the in-folder catalog. The
+    // writeable work: the spillover is now older than the in-folder catalogue. The
     // guard must make this a no-op — never clobber the newer in-folder data.
     const b = nativeBridge({
       files: {
@@ -506,7 +506,7 @@ describe("resolveWorkingDir", () => {
   });
 
   it("does NOT fold (or notify) when the spillover is identical (read-only browse, no edits)", async () => {
-    // Seeded marker present but the separate matches the in-folder catalog byte for
+    // Seeded marker present but the separate matches the in-folder catalogue byte for
     // byte (a read-only spell with no edits). Folding would write a redundant backup
     // and show a false "edits merged" notice — the content guard prevents both.
     const b = nativeBridge({
@@ -527,7 +527,7 @@ describe("resolveWorkingDir", () => {
   });
 
   it("PROMOTE finds a spillover under the default base even after the base setting changed", async () => {
-    // User redirected with the default base, then changed "Separate catalog
+    // User redirected with the default base, then changed "Separate catalogue
     // location"; the writeable re-open must still find and fold the old spillover.
     h.settings.externalCatalogDir = "/ssd/cats";
     const b = nativeBridge({
@@ -592,9 +592,9 @@ describe("resolveWorkingDir", () => {
     expect(b._text("/card/.safelight/catalog.json")).toBe('{"v":"in-folder"}'); // untouched
   });
 
-  it("does NOT promote a separate catalog that isn't a seeded spillover", async () => {
-    // A standalone external-mode catalog (no .seeded marker) must never be folded
-    // onto an in-folder one — that would clobber the in-folder catalog.
+  it("does NOT promote a separate catalogue that isn't a seeded spillover", async () => {
+    // A standalone external-mode catalogue (no .seeded marker) must never be folded
+    // onto an in-folder one — that would clobber the in-folder catalogue.
     const b = nativeBridge({
       inFolderCatalog: true,
       files: { "/data/ext/.safelight/catalog.json": '{"v":"external-mode"}' },
@@ -609,8 +609,8 @@ describe("resolveWorkingDir", () => {
     expect(keptBeforeMerge(b)).toEqual([]); // no backup written
   });
 
-  it("fails the open rather than fold over an in-folder catalog it can't read", async () => {
-    // Read as missing, the in-folder catalog was replaced by the spillover with no backup.
+  it("fails the open rather than fold over an in-folder catalogue it can't read", async () => {
+    // Read as missing, the in-folder catalogue was replaced by the spillover with no backup.
     const b = nativeBridge({
       inFolderCatalog: true,
       files: {
@@ -655,8 +655,8 @@ describe("resolveWorkingDir", () => {
     await expect(resolveWorkingDir(rootThrowing(enospc))).rejects.toBe(enospc);
   });
 
-  it("rethrows a non-read-only failure from the in-folder-catalog path (step 1), no redirect", async () => {
-    // In-folder catalog exists (so we enter step 1) but the write probe fails
+  it("rethrows a non-read-only failure from the in-folder-catalogue path (step 1), no redirect", async () => {
+    // In-folder catalogue exists (so we enter step 1) but the write probe fails
     // with ENOSPC — a real problem, not read-only. It must surface as-is, never
     // be reclassified into a redirect.
     const enospc = new Error("ENOSPC: no space left on device");
@@ -695,7 +695,7 @@ describe("resolveWorkingDir with a project folder that isn't there", () => {
     expect(b._text(`${SPILL}/.seeded`)).toBe("/card");
   });
 
-  it("stops before an external-mode catalog is opened", async () => {
+  it("stops before an external-mode catalogue is opened", async () => {
     h.settings.catalogLocation = "external";
     const b = nativeBridge({
       rootGone: true,
@@ -711,7 +711,7 @@ describe("resolveWorkingDir with a project folder that isn't there", () => {
     expect(b._text(`${SPILL}/catalog.json`)).toBe(SAVED);
   });
 
-  it("stops as a folder that can't be reached, and creates no catalog anywhere", async () => {
+  it("stops as a folder that can't be reached, and creates no catalogue anywhere", async () => {
     const b = nativeBridge({ rootGone: true, ext: async () => SPILL });
     const root = rootReturning(writeableSl());
 
@@ -743,7 +743,7 @@ describe("resolveWorkingDir with a project folder that isn't there", () => {
 describe("resolveWorkingDir on macOS with the folder's volume not allowed", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("stops as a folder macOS keeps Safelight out of, and creates no separate catalog", async () => {
+  it("stops as a folder macOS keeps Safelight out of, and creates no separate catalogue", async () => {
     vi.stubGlobal("window", { safelightNative: { platform: "darwin" } });
     const denied = () => new Error("EPERM: operation not permitted, scandir '/card'");
     const b = nativeBridge({ rootListError: denied(), ext: async () => SPILL });
@@ -795,7 +795,7 @@ describe("resolveWorkingDir with per-photo edit files", () => {
     expect(wd.editsFallback).toBeUndefined();
   });
 
-  it("has no edits fallback for a separate catalog with no in-folder one", async () => {
+  it("has no edits fallback for a separate catalogue with no in-folder one", async () => {
     nativeBridge({ inFolderCatalog: false, ext: async (_p, _b, create) => (create ? null : SPILL) });
     const wd = await resolveWorkingDir(rootReturning(writeableSl()));
     expect(wd.location).toBe("external");
@@ -977,7 +977,7 @@ describe("resolveWorkingDir with per-photo edit files", () => {
     expect(spilloverEdits(b)).toEqual([]);
   });
 
-  it("writes nothing in-folder when a newer version saved the spillover catalog", async () => {
+  it("writes nothing in-folder when a newer version saved the spillover catalogue", async () => {
     const b = nativeBridge({
       inFolderCatalog: true,
       files: {
@@ -1055,14 +1055,14 @@ describe("resolveWorkingDir with per-photo edit files", () => {
     expect(wd.promotedFromExternal).toBe(SPILL);
     expect(keptBeforeMerge(b)).toEqual(['{"v":"in-folder"}']);
     expect(keptEdits(b)).toEqual([]);
-    expect(b.write).toHaveBeenCalledTimes(2); // the catalog copy, then the catalog
+    expect(b.write).toHaveBeenCalledTimes(2); // the catalogue copy, then the catalogue
     expect(b.remove).not.toHaveBeenCalledWith(`${SPILL}/edits`);
   });
 });
 
 describe("resolveWorkingDir with another card at the same mount point", () => {
   // Every card a camera formats mounts at one path (E:\, /Volumes/EOS_DIGITAL), and
-  // names its photos alike; their separate catalogs must stay apart.
+  // names its photos alike; their separate catalogues must stay apart.
   const MOUNT = "/Volumes/EOS_DIGITAL";
   const CARD_A = { "DCIM/IMG_0001.CR3": "a1", "DCIM/IMG_0002.CR3": "a22", "DCIM/IMG_0003.CR3": "a333" };
   const CARD_B = { "DCIM/IMG_0001.CR3": "b-one", "DCIM/IMG_0002.CR3": "b-two!", "DCIM/IMG_0003.CR3": "b-3!!!!" };
@@ -1089,7 +1089,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     });
   const mounted = (card: Card) =>
     Object.fromEntries(Object.entries(card).map(([rel, body]) => [`${MOUNT}/${rel}`, body]));
-  /** The separate catalog `card` keeps as `variant`, its print recorded or not. */
+  /** The separate catalogue `card` keeps as `variant`, its print recorded or not. */
   const keptFor = (card: Card, variant: number, printed = true) => ({
     [`${dirOf(variant)}/catalog.json`]: catalogOf(card),
     ...(printed ? { [`${dirOf(variant).replace(/\/\.safelight$/, "")}/source.json`]: printOf(card) } : {}),
@@ -1133,7 +1133,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
   it.each([
     ["external mode", "external", () => rootReturning(writeableSl())],
     ["a read-only card", "in-folder", () => rootThrowing(EROFS())],
-  ] as const)("opens a fresh catalog for card B in %s, leaving card A's as it was", async (_, mode, root) => {
+  ] as const)("opens a fresh catalogue for card B in %s, leaving card A's as it was", async (_, mode, root) => {
     h.settings.catalogLocation = mode;
     const b = cardBridge(CARD_B, keptFor(CARD_A, 1));
 
@@ -1146,7 +1146,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
   it.each([
     ["card A", CARD_A, 1],
     ["card B", CARD_B, 2],
-  ] as const)("goes back to %s's own catalog when it is mounted again", async (_, card, variant) => {
+  ] as const)("goes back to %s's own catalogue when it is mounted again", async (_, card, variant) => {
     h.settings.catalogLocation = "external";
     cardBridge(card, { ...keptFor(CARD_A, 1), ...keptFor(CARD_B, 2) });
 
@@ -1155,7 +1155,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     expect(wd.externalPath).toBe(dirOf(variant));
   });
 
-  it("tells the cards apart by a catalog's photos when it has no print yet", async () => {
+  it("tells the cards apart by a catalogue's photos when it has no print yet", async () => {
     h.settings.catalogLocation = "external";
     cardBridge(CARD_B, keptFor(CARD_A, 1, false));
 
@@ -1164,7 +1164,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     expect(wd.externalPath).toBe(dirOf(2));
   });
 
-  it("keeps a card's catalog when most of its photos are still on it", async () => {
+  it("keeps a card's catalogue when most of its photos are still on it", async () => {
     h.settings.catalogLocation = "external";
     const { "DCIM/IMG_0003.CR3": _gone, ...twoLeft } = CARD_A;
     cardBridge({ ...twoLeft, "DCIM/IMG_0004.CR3": "new" }, keptFor(CARD_A, 1));
@@ -1174,7 +1174,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     expect(wd.externalPath).toBe(dirOf(1));
   });
 
-  it("spills card B's read-only session into a catalog of its own, seeded from card B", async () => {
+  it("spills card B's read-only session into a catalogue of its own, seeded from card B", async () => {
     const b = cardBridge(CARD_B, { ...keptFor(CARD_A, 1), [`${dirOf(1)}/.seeded`]: MOUNT }, true);
 
     const wd = await resolveWorkingDir(rootReturning(readOnlySl(EROFS())));
@@ -1206,8 +1206,8 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
   });
   it.each([
     ["in place, by a geotagging tool", true],
-    ["in place, a catalog from before prints were kept", false],
-  ] as const)("keeps card A's catalog when all its photos were rewritten %s", async (_, printed) => {
+    ["in place, a catalogue from before prints were kept", false],
+  ] as const)("keeps card A's catalogue when all its photos were rewritten %s", async (_, printed) => {
     h.settings.catalogLocation = "external";
     const b = cardBridge(CARD_A, keptFor(CARD_A, 1, printed));
     rewrite(b, CARD_A, 100);
@@ -1217,7 +1217,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     expect(wd.externalPath).toBe(dirOf(1));
   });
 
-  it("keeps card A's catalog when most of its photos were erased in camera", async () => {
+  it("keeps card A's catalogue when most of its photos were erased in camera", async () => {
     h.settings.catalogLocation = "external";
     const many = Object.fromEntries(
       Array.from({ length: 40 }, (_, i) => [`DCIM/IMG_${String(i + 1).padStart(4, "0")}.CR3`, "a".repeat(i + 1)]),
@@ -1230,7 +1230,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     expect(wd.externalPath).toBe(dirOf(1));
   });
 
-  it("opens a fresh catalog for a card none of whose photos card A's names", async () => {
+  it("opens a fresh catalogue for a card none of whose photos card A's names", async () => {
     h.settings.catalogLocation = "external";
     cardBridge({ "DCIM/100MSDCF/DSC00001.ARW": "sony" }, keptFor(CARD_A, 1));
 
@@ -1248,14 +1248,14 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     expect(wd.externalPath).toBe(dirOf(1));
   });
 
-  it("finds the card's catalog past one deleted before it, and makes a new one after the last", async () => {
+  it("finds the card's catalogue past one deleted before it, and makes a new one after the last", async () => {
     h.settings.catalogLocation = "external";
     const files = { ...keptFor(CARD_A, 2), ...keptFor(CARD_B, 3) };
     expect((await resolveWorkingDir(cardRoot(CARD_A, files))).externalPath).toBe(dirOf(2));
     expect((await resolveWorkingDir(cardRoot({ "DCIM/C.CR3": "card C" }, files))).externalPath).toBe(dirOf(4));
   });
 
-  it("takes the card's own catalog over one that holds no photos", async () => {
+  it("takes the card's own catalogue over one that holds no photos", async () => {
     h.settings.catalogLocation = "external";
     const empty = { [`${dirOf(1)}/catalog.json`]: JSON.stringify({ version: 1, photos: [], edits: [] }) };
     cardBridge(CARD_A, { ...empty, ...keptFor(CARD_A, 2) });
@@ -1265,7 +1265,7 @@ describe("resolveWorkingDir with another card at the same mount point", () => {
     expect(wd.externalPath).toBe(dirOf(2));
   });
 
-  it("keeps an ordinary folder's catalog when its photos were sorted into subfolders", async () => {
+  it("keeps an ordinary folder's catalogue when its photos were sorted into subfolders", async () => {
     h.settings.catalogLocation = "external";
     const sorted = { "/card/Day1/IMG_0001.CR3": "a1", "/card/Day2/IMG_0002.CR3": "a22" };
     const b = nativeBridge({

@@ -64,7 +64,7 @@ export function InterfaceSection() {
       </Field>
       <CanvasSurroundField />
       <SliderField
-        label="Color assessment border"
+        label="Colour assessment border"
         value={assessBorderPct}
         min={1}
         max={12}
@@ -127,7 +127,7 @@ export function InterfaceSection() {
 function CanvasSurroundField() {
   const override = useSettings((s) => s.canvasSurroundOverride);
   const surround = useSettings((s) => s.canvasSurround);
-  if (!useFieldVisible("Canvas surround", "color behind the image in Develop"))
+  if (!useFieldVisible("Canvas surround", "colour behind the image in Develop"))
     return null;
   return (
     <div>
@@ -190,7 +190,7 @@ export const interfaceSection: PrefSection = {
     "Save collapsed panels to the layout",
     "Interface scale",
     "Canvas surround",
-    "Color assessment border",
+    "Colour assessment border",
     "Background dimming",
     "Sliders jump to cursor",
     "Restore last project on launch",

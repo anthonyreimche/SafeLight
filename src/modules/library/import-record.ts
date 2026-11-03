@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Photo record construction: the supported-format tables, and the import of a
-// file into a catalog record with its grid preview, EXIF and orientation.
+// file into a catalogue record with its grid preview, EXIF and orientation.
 
 import type { CatalogPhoto, ExifData } from "@/catalog/types";
 import { parseExif, parseExifDate, parseXmp, type XmpData } from "@/catalog/exif";
@@ -98,7 +98,7 @@ export function mimeTypeFromName(name: string): string {
   return RAW_MIME[getExtension(name)] ?? "";
 }
 
-// XMP colour labels are free-text (Adobe/Nikon write capitalised colour names).
+// XMP colour labels are free-text (Adobe/Nikon write capitalized colour names).
 // Map the ones SafeLight understands; anything else leaves the label unset.
 function mapColorLabel(
   label: string | undefined,
@@ -132,7 +132,7 @@ export function decodeFailureReason(file: File, failure: DecodeFailure | null): 
  *  the pixel decode, so even a file that can't be decoded yet gets its date and
  *  orientation. XMP carries the camera/editor-written star rating, colour label,
  *  keywords and title (Nikon stores the in-camera rating here, not in an EXIF tag
- *  — it's what Windows Explorer surfaces). These seed the catalog's editable
+ *  — it's what Windows Explorer surfaces). These seed the catalogue's editable
  *  fields; a SafeLight sidecar, if present, overrides them on import (see
  *  project-storage). */
 async function readTags(file: Blob): Promise<{ exif: ExifData; xmp: XmpData }> {
@@ -145,7 +145,7 @@ async function readTags(file: Blob): Promise<{ exif: ExifData; xmp: XmpData }> {
 /** The fields a new record starts with, whatever built its preview. A supported
  *  file is ALWAYS recorded so it imports exactly once and is never re-scanned as
  *  "new" on later opens — the id stays stable (edits/ratings stick to it) and the
- *  catalog count is honest. `size` is the whole file's. */
+ *  catalogue count is honest. `size` is the whole file's. */
 function newRecord(
   file: { name: string; type: string; lastModified: number },
   size: number,
@@ -235,7 +235,7 @@ export async function importPhoto(
   };
 }
 
-/** Build a catalog record for a file: thumbnail, EXIF, orientation. The caller
+/** Build a catalogue record for a file: thumbnail, EXIF, orientation. The caller
  *  fills in relPath/folder (they're project-relative). */
 export async function buildPhoto(
   file: File,

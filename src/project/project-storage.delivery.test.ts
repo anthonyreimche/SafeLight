@@ -3,11 +3,11 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Two windows whose messages take time to arrive and whose catalog writes take
+// Two windows whose messages take time to arrive and whose catalogue writes take
 // time to land, as between real windows. One window's messages arrive in the
 // order it sent them (the BroadcastChannel guarantee) but late, and two windows'
 // writes to catalog.json can land in either order. Both windows open one
-// in-memory project from a saved catalog, so they share its photo ids.
+// in-memory project from a saved catalogue, so they share its photo ids.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto, EditState } from "@/catalog/types";
@@ -99,7 +99,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Both windows open the project from one saved catalog, a while before the
+/** Both windows open the project from one saved catalogue, a while before the
  *  test acts. */
 async function twoWindows() {
   const fs = new SlowFs(ROOT);

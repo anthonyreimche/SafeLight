@@ -5,7 +5,7 @@
 
 // The trust registry decides whether third-party code is allowed to run, so
 // these tests pin the refusal side of the contract: default-deny for anything
-// unknown, spec/repo normalisation, owner-wide bans, ban-beats-verified, and a
+// unknown, spec/repo normalization, owner-wide bans, ban-beats-verified, and a
 // registry outage never widening what is permitted. Run with `npm test`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -77,13 +77,13 @@ afterEach(() => {
 });
 
 describe("repoFromSpec", () => {
-  it("normalises the shorthand forms to lowercase owner/repo", () => {
+  it("normalizes the shorthand forms to lowercase owner/repo", () => {
     expect(repoFromSpec("Acme/Tool")).toBe("acme/tool");
     expect(repoFromSpec("  acme/tool  ")).toBe("acme/tool");
     expect(repoFromSpec("acme/tool#next")).toBe("acme/tool");
   });
 
-  it("normalises github.com URLs, including .git and /tree refs", () => {
+  it("normalizes github.com URLs, including .git and /tree refs", () => {
     expect(repoFromSpec("https://github.com/Acme/Tool")).toBe("acme/tool");
     expect(repoFromSpec("http://github.com/acme/tool/")).toBe("acme/tool");
     expect(repoFromSpec("https://github.com/acme/tool.git")).toBe("acme/tool");
@@ -162,7 +162,7 @@ describe("verified allowlist", () => {
   });
 
   it("does not accept a homoglyph owner as the verified one", () => {
-    // Normalisation is ASCII case-folding only — Cyrillic а is a different
+    // Normalization is ASCII case-folding only — Cyrillic а is a different
     // account, and must fall through to unverified rather than borrow the badge.
     expect(isVerified("аcme/tool")).toBe(false);
   });

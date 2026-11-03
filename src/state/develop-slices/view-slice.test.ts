@@ -54,7 +54,7 @@ describe("clipping overlay", () => {
     expect(boot({ sl_show_clipping: "5" }).getState().showClipping).toBe(5);
   });
 
-  it("falls back to off for a missing or unrecognised stored value", () => {
+  it("falls back to off for a missing or unrecognized stored value", () => {
     expect(boot().getState().showClipping).toBe(0);
     expect(boot({ sl_show_clipping: "9" }).getState().showClipping).toBe(0);
     expect(boot({ sl_show_clipping: "-1" }).getState().showClipping).toBe(0);

@@ -21,7 +21,7 @@ beforeEach(() => {
 describe("StorageBanner", () => {
   it("offers Preferences when a folder couldn't be opened because it is read-only", () => {
     useProjectStore.setState({
-      openError: "Couldn't open “Card”: Safelight couldn't write to the catalog location.",
+      openError: "Couldn't open “Card”: Safelight couldn't write to the catalogue location.",
       openErrorReadOnly: true,
     });
 
@@ -56,10 +56,10 @@ describe("StorageBanner", () => {
     expect(screen.queryByRole("button", { name: "Remove from recents" })).toBeNull();
   });
 
-  it("offers no Preferences when the catalog couldn't be read", () => {
+  it("offers no Preferences when the catalogue couldn't be read", () => {
     // Nothing in Preferences helps while another program holds the file.
     useProjectStore.setState({
-      openError: "Couldn't open “Shoot”: its catalog can't be read right now (EBUSY).",
+      openError: "Couldn't open “Shoot”: its catalogue can't be read right now (EBUSY).",
       openErrorReadOnly: false,
     });
 
@@ -72,20 +72,20 @@ describe("StorageBanner", () => {
 
   it("shows a save that failed, and can't be dismissed while saves fail", () => {
     // It goes by itself once a save lands.
-    useProjectStore.setState({ saveError: "Couldn't save the catalog: the disk is full" });
+    useProjectStore.setState({ saveError: "Couldn't save the catalogue: the disk is full" });
 
     render(<StorageBanner />);
 
     expect(screen.getByRole("alert").textContent).toContain(
-      "Couldn't save the catalog: the disk is full",
+      "Couldn't save the catalogue: the disk is full",
     );
     expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
   });
 
   it("puts a folder that couldn't be opened before a save that failed", () => {
     useProjectStore.setState({
-      openError: "Couldn't open “Shoot”: its catalog can't be read right now (EBUSY).",
-      saveError: "Couldn't save the catalog: the disk is full",
+      openError: "Couldn't open “Shoot”: its catalogue can't be read right now (EBUSY).",
+      saveError: "Couldn't save the catalogue: the disk is full",
     });
 
     render(<StorageBanner />);
@@ -95,13 +95,13 @@ describe("StorageBanner", () => {
 
   it("puts a save that failed before a notice", () => {
     useProjectStore.setState({
-      saveError: "Couldn't save the catalog: the disk is full",
-      storageNotice: "The catalog of “Shoot” couldn't be used, so Safelight restored it.",
+      saveError: "Couldn't save the catalogue: the disk is full",
+      storageNotice: "The catalogue of “Shoot” couldn't be used, so Safelight restored it.",
     });
 
     render(<StorageBanner />);
 
-    expect(screen.getByRole("alert").textContent).toContain("Couldn't save the catalog");
+    expect(screen.getByRole("alert").textContent).toContain("Couldn't save the catalogue");
     expect(screen.queryByText(/restored it/)).toBeNull();
   });
 });

@@ -50,7 +50,7 @@ const pending = new Map<
 >();
 
 /** A photo committed as its project is left: the photo as it stood and the
- *  catalog it was in, both gone from the stores by the time the render ends. */
+ *  catalogue it was in, both gone from the stores by the time the render ends. */
 export interface LeftPhoto {
   photo: CatalogPhoto;
   storage: CatalogStorage;
@@ -61,7 +61,7 @@ export interface LeftPhoto {
  *  ACTIVE photo, so a commit to a different photo (batch sync/reset/auto) must
  *  pass that photo's own `paramBag` — otherwise the active photo's extension
  *  stage params bleed into the rendered thumbnail. `params` is the freshly
- *  committed look. `leaving` names the photo and catalog of a project being left;
+ *  committed look. `leaving` names the photo and catalogue of a project being left;
  *  the preview is then stored there and shown nowhere. Fire and forget — never
  *  blocks the commit; the promise, which never rejects, is for the caller that
  *  must wait for the preview to be stored. */
@@ -175,8 +175,8 @@ async function run(
 
   if (!blob) return;
 
-  // No store shows a left project's photo: its preview goes to the catalog alone.
-  // Built on the record the catalog holds now: the snapshot taken at close would
+  // No store shows a left project's photo: its preview goes to the catalogue alone.
+  // Built on the record the catalogue holds now: the snapshot taken at close would
   // revert what another window changed since.
   if (leaving) {
     const held = storage.heldPhoto ? storage.heldPhoto(photoId) : photo;

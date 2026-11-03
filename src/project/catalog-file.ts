@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // catalog.json as a file: what it holds, how a saved one is read and opened, and
-// the copies kept beside it (backups, and damaged catalogs kept aside). See
+// the copies kept beside it (backups, and damaged catalogues kept aside). See
 // project-storage for how a storage opens and saves it.
 
 import type { EditState, StoredPhoto } from "@/catalog/types";
@@ -30,16 +30,16 @@ import { namesFoldCase } from "./reattach";
 
 export interface CatalogFile {
   version: 1;
-  /** Tells the browser build's windows which catalog they share (catalogKey).
-   *  Catalogs saved before it have none. */
+  /** Tells the browser build's windows which catalogue they share (catalogKey).
+   *  Catalogues saved before it have none. */
   id?: string;
   photos: StoredPhoto[];
   edits: EditState[];
-  /** relPaths the user removed from the catalog whose files remain on disk, so
+  /** relPaths the user removed from the catalogue whose files remain on disk, so
    *  the next scan skips them instead of re-importing (see deletePhoto). */
   removed?: string[];
   /** When each record last changed (see change-stamps). Left out when none did;
-   *  catalogs saved before it have none, and every record in them counts as the
+   *  catalogues saved before it have none, and every record in them counts as the
    *  oldest. */
   changed?: ChangeStamps;
 }
@@ -53,19 +53,19 @@ export const BACKUP = "catalog.bak.json";
  *  and each moves down one place, so a few bad sessions in a row leave a good one. */
 export const OLDER_BACKUPS = ["catalog.bak-1.json", "catalog.bak-2.json"];
 /** How many of each kind of catalog.corrupt-<time>.json is kept; the rest are
- *  removed as a new one is written. Each is a whole catalog. */
+ *  removed as a new one is written. Each is a whole catalogue. */
 const KEPT_COPIES = 3;
 
-/** How open() recovered a catalog it couldn't use as saved: restored from its
+/** How open() recovered a catalogue it couldn't use as saved: restored from its
  *  backup, or rebuilt by importing the folder again. `kept` names the copy of the
- *  damaged catalog kept beside it (else of a damaged backup), or is null when
+ *  damaged catalogue kept beside it (else of a damaged backup), or is null when
  *  there was none to keep (missing or empty). */
 export interface CatalogRecovery {
   from: "backup" | "rescan";
   kept: string | null;
 }
 
-/** A saved catalog as this build opens it: the records it can open, the
+/** A saved catalogue as this build opens it: the records it can open, the
  *  top-level keys it doesn't know (saved back as they came), and how many
  *  entries it left out. Its change stamps are in `file.changed`. */
 export interface OpenedCatalog {
@@ -74,7 +74,7 @@ export interface OpenedCatalog {
   skipped: number;
 }
 
-/** What an open starts from: the catalog (null: import the folder as new), how
+/** What an open starts from: the catalogue (null: import the folder as new), how
  *  it was recovered, and catalog.json as read when it opened as saved, which the
  *  session's first save keeps as the backup. */
 export interface SavedCatalog {
@@ -94,7 +94,7 @@ function isStoredPhoto(entry: unknown): entry is StoredPhoto {
   );
 }
 
-/** Open a saved catalog: refuse a newer version, and keep only the records this
+/** Open a saved catalogue: refuse a newer version, and keep only the records this
  *  build can open. A list that isn't a list opens as an empty one. */
 function openCatalog(saved: Record<string, unknown>): OpenedCatalog {
   const { version, id, photos, edits, removed, changed, ...extra } = saved;
@@ -132,7 +132,7 @@ function openCatalog(saved: Record<string, unknown>): OpenedCatalog {
   };
 }
 
-/** Read a catalog file, waiting a few seconds for one another program holds; one
+/** Read a catalogue file, waiting a few seconds for one another program holds; one
  *  that still can't be read stops the open, with catalog.json as it was. */
 async function readCatalogFile(
   sl: FileSystemDirectoryHandle,
@@ -148,7 +148,7 @@ async function readCatalogFile(
   return read;
 }
 
-/** Keep a copy of a catalog file (`catalog` or `catalog.bak`) the open won't keep
+/** Keep a copy of a catalogue file (`catalog` or `catalog.bak`) the open won't keep
  *  as it was, beside it, and return the copy's name. A copy that can't be written
  *  stops the open: the save that follows would replace the only one. */
 async function keepAside(
@@ -175,17 +175,17 @@ async function pruneKeptCopies(sl: FileSystemDirectoryHandle, prefix: string): P
       if (name.startsWith(prefix) && name.endsWith(".json")) copies.push(name);
     for (const name of copies.sort().slice(0, -KEPT_COPIES)) await removeEntry(sl, name);
   } catch (error) {
-    console.warn("[project] old copies of the catalog couldn't be removed:", error);
+    console.warn("[project] old copies of the catalogue couldn't be removed:", error);
   }
 }
 
 /** Whether this is the main window: a pop-out opens the project too, and the
- *  catalog it opens may be the one a bad session just left. */
+ *  catalogue it opens may be the one a bad session just left. */
 export function isMainWindow(): boolean {
   return !new URLSearchParams(globalThis.location?.search).has("detached");
 }
 
-/** Read the catalog an open starts from. A damaged catalog.json is kept aside,
+/** Read the catalogue an open starts from. A damaged catalog.json is kept aside,
  *  then the backup stands in for it, as it does for a missing one. With no backup
  *  to use, the folder is imported again: as a new project when neither file was
  *  there, else as a rebuild, keeping a damaged backup aside too, since the next
@@ -213,11 +213,11 @@ export async function readSavedCatalog(sl: FileSystemDirectoryHandle): Promise<S
   return { catalog: null, recovered: { from: "rescan", kept: kept ?? keptBackup }, bytes: null };
 }
 
-/** Names the catalog file a storage writes, so windows take on only the records
- *  of the catalog they share; a copy of the project elsewhere keeps the same photo
+/** Names the catalogue file a storage writes, so windows take on only the records
+ *  of the catalogue they share; a copy of the project elsewhere keeps the same photo
  *  ids. In the desktop build that is the working folder's path, compared without
  *  case where the file system ignores it (namesFoldCase). The browser build has no
- *  paths: there the project folder's name and `catalogId`, which the catalog keeps
+ *  paths: there the project folder's name and `catalogId`, which the catalogue keeps
  *  (catalogIdOf), stand in. */
 export function catalogKey(
   root: FileSystemDirectoryHandle,
@@ -230,14 +230,14 @@ export function catalogKey(
   return namesFoldCase() ? slashed.toLowerCase() : slashed;
 }
 
-/** The id a catalog is known by: the one it keeps; for a catalog saved before
- *  catalogs had one, an id every window derives alike from its photo ids, so the
- *  windows open on it agree; for a new catalog, a fresh one. Saves keep it. */
+/** The id a catalogue is known by: the one it keeps; for a catalogue saved before
+ *  catalogues had one, an id every window derives alike from its photo ids, so the
+ *  windows open on it agree; for a new catalogue, a fresh one. Saves keep it. */
 export function catalogIdOf(saved: CatalogFile | null): string {
   if (saved?.id) return saved.id;
   const photoIds = (saved?.photos ?? []).map((p) => p.id).sort();
   if (photoIds.length === 0) return crypto.randomUUID();
-  // FNV-1a over the ids: stable and cheap; it only has to tell catalogs apart.
+  // FNV-1a over the ids: stable and cheap; it only has to tell catalogues apart.
   let hash = 0x811c9dc5;
   for (const char of photoIds.join("\n")) {
     hash ^= char.charCodeAt(0);

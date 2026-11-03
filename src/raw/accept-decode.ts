@@ -114,7 +114,7 @@ async function previewSample(previewBlob: Blob): Promise<Pixels | null> {
 }
 
 // Compare the decoded RAW float image's channel balance against the embedded
-// JPEG preview's sample (the camera's own rendering — always color-correct).
+// JPEG preview's sample (the camera's own rendering — always colour-correct).
 // Returns true when the decode looks plausible, false when it should be rejected.
 function rawColorMatchesPreview(raw: Pixels, pf: Pixels): boolean {
   // Mean R/G/B of the JPEG preview (linear after inverse-sRGB in bitmapToFloat).
@@ -185,7 +185,7 @@ function bitmapToFloat(bitmap: ImageBitmap): Pixels {
   // would evict an older one — including a live canvas.
   gl.getExtension("WEBGL_lose_context")?.loseContext();
 
-  // Apply the inverse sRGB transfer function (IEC 61966-2-1) to linearise.
+  // Apply the inverse sRGB transfer function (IEC 61966-2-1) to linearize.
   const data = new Float32Array(width * height * 4);
   for (let i = 0; i < pixels.length; i += 4) {
     const r = pixels[i]     / 255;

@@ -15,7 +15,7 @@ import { photoExportBase } from "@/catalog/copy-name";
 import { loadPhotoImage, type DecodedImage } from "@/catalog/load-image";
 import { loadSavedEdit, type SavedEdit } from "@/catalog/edit-params";
 import { readExifEntries, type RawExifIfds } from "@/catalog/exif";
-import { WebGLRenderer } from "@/rendering/webgl/renderer";
+import { WebGLRenderer, type QuarantinedStage } from "@/rendering/webgl/renderer";
 import { embedColorProfile, buildIccProfile, type ColorSpaceId } from "@/rendering/color-space";
 import { quantise16, type Sharpen } from "@/rendering/webgl/export-draw";
 import { getStageTextures } from "@/rendering/render-bridge";
@@ -34,11 +34,15 @@ import { encodeTiff } from "./tiff";
 import { photoGeometry } from "@/rendering/photo-geometry";
 import { ZipWriter } from "./zip";
 import { failsEveryWrite, fsErrorText, mayFailEveryWrite } from "@/project/fs-errors";
-import { readFileSlice } from "@/project/native-fs";
+import { nativeFs, nativePathOf, readFileSlice } from "@/project/native-fs";
+import { listNames } from "@/project/fs";
+import { useCatalogStore } from "@/state/catalog-store";
 
 export type ExportFormat = "image/jpeg" | "image/png" | "image/webp" | "image/tiff";
 
 export type DeliveryMode = "zip" | "files" | "folder";
+/** What a folder export does with a file of the same name already there. */
+export type ExistingFileMode = "number" | "replace";
 
 /** Per-processor settings map passed to exportPhotos from the Export panel. */
 export type ProcessorSettings = Record<string, Record<string, unknown>>;
@@ -76,6 +80,11 @@ export interface ExportSettings {
   /** Keep GPS location tags when metadata is included. Also off unless
    *  enabled. */
   includeLocation?: boolean;
+  /** A folder export's answer to a file of the same name already there:
+   *  "number" writes beside it as "name (2).ext", "replace" writes over it.
+   *  The original of a photo in the catalogue is never replaced; it gets a
+   *  number either way. Left out, the Preference decides. */
+  ifExists?: ExistingFileMode;
 }
 
 const ARCHIVE_NAME = "safelight-export.zip";
@@ -107,6 +116,9 @@ export interface ExportResult {
   /** Why the batch ended early on a failure that every later write would meet
    *  too (a full disk, a read-only folder), worded for the user. */
   stopped?: string;
+  /** Count of the exported photos drawn without an extension stage whose
+   *  shader failed to build during the batch, so its effect is missing. */
+  withoutStages?: number;
 }
 
 function errorReason(e: unknown): string {
@@ -128,6 +140,9 @@ export function exportStatus(result: ExportResult): string {
   }
   if (result.reducedPrecision > 0) {
     msg += ` ${result.reducedPrecision} exported at reduced 16-bit precision (device can't render full precision).`;
+  }
+  if (result.withoutStages) {
+    msg += ` ${result.withoutStages} exported without an extension's effect (its shader failed to build).`;
   }
   if (result.zipFellBack) {
     msg += " ZIP exceeded 4 GiB; delivered as individual files.";
@@ -158,6 +173,10 @@ export interface RenderPhotosOptions {
   /** Stop before the next photo once this fires. The photos not reached are
    *  left out of the result. */
   signal?: AbortSignal;
+  /** Run the registered export processors (a watermark, say) on each render.
+   *  Defaults to true. Pass false for a frame the caller uses as source pixels
+   *  rather than as a delivered file. */
+  processors?: boolean;
 }
 
 /** What a batch export takes beyond the photos and settings. */
@@ -365,6 +384,8 @@ const photosInProcessors = new Set<string>();
 /** What each of one photo's export processors is handed beside its input. */
 interface ProcessorRun {
   photo: CatalogPhoto;
+  /** False for a render that runs no processors at all. */
+  enabled: boolean;
   processorSettings: ProcessorSettings;
   context: ExportProcessorContext;
 }
@@ -376,9 +397,9 @@ type Declaring<M extends ProcessorMethod> = RegisteredExportProcessor &
   Required<Pick<ExportProcessorContribution, M>>;
 
 // The registered processors that declare `method`, in registration order, or
-// none for a render of a photo whose processors are running.
-function processorsWith<M extends ProcessorMethod>(method: M, photo: CatalogPhoto): Declaring<M>[] {
-  if (photosInProcessors.has(photo.id)) return [];
+// none for a render that runs none or of a photo whose processors are running.
+function processorsWith<M extends ProcessorMethod>(method: M, { photo, enabled }: ProcessorRun): Declaring<M>[] {
+  if (!enabled || photosInProcessors.has(photo.id)) return [];
   return Object.values(useRegistry.getState().exportProcessors)
     .filter((proc): proc is Declaring<M> => typeof proc[method] === "function")
     .sort((a, b) => a.order - b.order);
@@ -421,7 +442,7 @@ async function chainProcessors<P extends RegisteredExportProcessor, T>(
 /** Run each registered processor's `process` on the encoded file in
  *  registration order, chaining the output Blob of each step into the next. */
 function runProcessors(blob: Blob, run: ProcessorRun): Promise<Blob> {
-  return chainProcessors(processorsWith("process", run.photo), run, blob, (proc, current, settings) =>
+  return chainProcessors(processorsWith("process", run), run, blob, (proc, current, settings) =>
     proc.process(current, run.photo, settings, run.context),
   );
 }
@@ -496,24 +517,87 @@ async function hookDrawn(
   return { data: bytes, width, height };
 }
 
+// A file name as the file systems an export writes to compare it. Windows and
+// macOS treat names that differ only in case as one file, and APFS matches a
+// name composed or decomposed (é as one code point or as e and an accent).
+function nameKey(name: string): string {
+  return name.normalize("NFC").toLowerCase();
+}
+
 // Ensure a filename is unique within a batch by appending " (2)", " (3)", …
 // before the extension. Prevents collisions inside a ZIP and silent overwrites
-// when several files are downloaded to the same folder. Windows and macOS
-// treat names that differ only in case as one file, so `used` holds lower-cased
-// names and the returned name keeps its own casing.
+// when several files are downloaded to the same folder. `used` holds nameKey
+// forms and the returned name keeps its own spelling.
 export function uniqueName(name: string, used: Set<string>): string {
-  if (!used.has(name.toLowerCase())) {
-    used.add(name.toLowerCase());
+  if (!used.has(nameKey(name))) {
+    used.add(nameKey(name));
     return name;
   }
   const dot = name.lastIndexOf(".");
   const base = dot > 0 ? name.slice(0, dot) : name;
   const ext = dot > 0 ? name.slice(dot) : "";
   let n = 2;
-  while (used.has(`${base} (${n})${ext}`.toLowerCase())) n++;
+  while (used.has(nameKey(`${base} (${n})${ext}`))) n++;
   const unique = `${base} (${n})${ext}`;
-  used.add(unique.toLowerCase());
+  used.add(nameKey(unique));
   return unique;
+}
+
+// A path as nameKey compares a name, with one kind of separator and none at the end.
+function pathKey(path: string): string {
+  return nameKey(path.replace(/[/\\]+/g, "/").replace(/\/$/, ""));
+}
+
+// Whether `dir` holds an entry named `name` now. A desktop handle's
+// getFileHandle finds every name, so the bridge is asked there.
+async function folderHolds(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
+  const fs = nativeFs();
+  const path = nativePathOf(dir);
+  if (fs && path !== null) return fs.exists(`${path.replace(/[/\\]+$/, "")}/${name}`);
+  try {
+    await dir.getFileHandle(name);
+    return true;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "NotFoundError") return false;
+    // A folder of that name.
+    if (e instanceof DOMException && e.name === "TypeMismatchError") return true;
+    throw e;
+  }
+}
+
+// Whether `name` in `dir` is the original of a photo in the catalogue. Where that
+// can't be told, it is taken to be one.
+async function isCatalogOriginal(dir: FileSystemDirectoryHandle, name: string): Promise<boolean> {
+  const dirPath = nativePathOf(dir);
+  for (const photo of useCatalogStore.getState().photos) {
+    if (nameKey(photo.filename) !== nameKey(name)) continue;
+    if (dirPath !== null) {
+      const own = nativePathOf(photo.fileHandle);
+      const folder = own !== null ? own.replace(/[/\\][^/\\]*$/, "") : nativePathOf(photo.directoryHandle);
+      if (folder === null || pathKey(folder) === pathKey(dirPath)) return true;
+    } else if (!photo.directoryHandle || (await dir.isSameEntry(photo.directoryHandle))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The name to write `name` (handed out for `rawName`) under in `dir`, checked
+// right before the write: another batch or app may have written a file since
+// the folder was listed. A name taken there moves on to the next numbered one,
+// unless `replace` lets it be written over.
+async function folderTarget(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+  rawName: string,
+  used: Set<string>,
+  replace: boolean,
+): Promise<{ name: string; existed: boolean }> {
+  for (;;) {
+    if (!(await folderHolds(dir, name))) return { name, existed: false };
+    if (replace && !(await isCatalogOriginal(dir, name))) return { name, existed: true };
+    name = uniqueName(rawName, used);
+  }
 }
 
 // Trigger a browser download for a rendered blob.
@@ -548,7 +632,7 @@ const EXIF_HEAD_BYTES = 1 << 20;
 
 // Source EXIF for re-embedding. A virtual copy shares its master's live file
 // handle; a photo without one (or an unreadable file) harvests nothing, and
-// the export carries catalog-held edits alone.
+// the export carries catalogue-held edits alone.
 async function harvestPhotoExif(photo: CatalogPhoto): Promise<RawExifIfds | null> {
   if (!photo.fileHandle) return null;
   try {
@@ -603,7 +687,7 @@ async function preparePhoto(
     if (knownTemp == null) saved = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
     // Opt-in only: harvest the source file's EXIF once per photo — the canvas
     // render strips every metadata segment, so the export re-embeds it,
-    // layered with catalog-held edits (RAW caption/copyright/GPS edits never
+    // layered with catalogue-held edits (RAW caption/copyright/GPS edits never
     // reach the source bytes, so the harvest alone would drop them).
     const sourceExif = settings.includeMetadata ? await harvestPhotoExif(photo) : null;
     return { saved, image, sourceExif };
@@ -615,7 +699,7 @@ async function preparePhoto(
 
 // What a float decode holds, per source pixel: four 32-bit channels.
 const DECODED_BYTES_PER_PIXEL = 16;
-// A source whose size the catalog doesn't know yet is counted as a 24 MP one.
+// A source whose size the catalogue doesn't know yet is counted as a 24 MP one.
 const UNKNOWN_SOURCE_PIXELS = 24_000_000;
 // Decoded sources held at once, the photo being drawn included, before another
 // one is read ahead of it.
@@ -675,6 +759,25 @@ class DecodeAhead {
   }
 }
 
+// The export settings a processor is told: the output it asks for, not the
+// delivery or the other processors' settings.
+function processorView(settings: ExportSettings): ExportProcessorContext["settings"] {
+  const { format, quality, longEdge, colorSpace, tiffBitDepth, pngBitDepth } = settings;
+  const { sharpenAmount, sharpenRadius, includeMetadata, includeLocation } = settings;
+  return Object.freeze({
+    format,
+    quality,
+    longEdge,
+    colorSpace,
+    tiffBitDepth,
+    pngBitDepth,
+    sharpenAmount,
+    sharpenRadius,
+    includeMetadata,
+    includeLocation,
+  });
+}
+
 async function renderOne(
   renderer: WebGLRenderer,
   canvas: HTMLCanvasElement,
@@ -683,14 +786,16 @@ async function renderOne(
   settings: ExportSettings,
   processorSettings: ProcessorSettings,
   bagPatch?: Record<string, unknown>,
+  withProcessors = true,
 ): Promise<RenderOneResult> {
   // The request, not the delivered size: a crop makes the file smaller than
   // the long edge asked for, and a processor that renders the photo again
   // needs the request to land on the same pixel grid.
   const run: ProcessorRun = {
     photo,
+    enabled: withProcessors,
     processorSettings,
-    context: { longEdge: settings.longEdge ?? null },
+    context: { longEdge: settings.longEdge ?? null, settings: processorView(settings) },
   };
   const { saved, image, sourceExif } = prepared;
   if (!image) return { blob: null, width: 0, height: 0, degradedTo8Bit: false, reducedPrecision: false };
@@ -765,7 +870,7 @@ async function renderOne(
     if (asks16Bit(settings)) {
       const rendered = render16Bit(renderer, signedOutput, sharpen);
       if (rendered) {
-        const pixelProcessors = processorsWith("processPixels", photo);
+        const pixelProcessors = processorsWith("processPixels", run);
         const frame = await runPixelProcessors(pixelProcessors, rendered, colorSpace, 16, run);
         const meta = exifFor(frame.width, frame.height);
         const file =
@@ -790,7 +895,7 @@ async function renderOne(
     const drawn = sharpen && !sharpenedOnGpu
       ? applyOutputSharpening(canvas, sharpen.amount, sharpen.radius)
       : canvas;
-    const hooked = await hookDrawn(drawn, processorsWith("processPixels", photo), colorSpace, run);
+    const hooked = await hookDrawn(drawn, processorsWith("processPixels", run), colorSpace, run);
     const { width, height } = hooked ?? drawn;
     const exifIfds = exifFor(width, height);
     if (settings.format === "image/tiff") {
@@ -834,6 +939,7 @@ async function renderOne(
 async function makeBatchRenderer(
   settings: ExportSettings,
   first: CatalogPhoto | undefined,
+  onStageQuarantined?: (stage: QuarantinedStage) => void,
 ): Promise<{ renderer: WebGLRenderer; canvas: HTMLCanvasElement } | { unavailable: string }> {
   const canvas = document.createElement("canvas");
   let renderer: WebGLRenderer | null = null;
@@ -843,6 +949,7 @@ async function makeBatchRenderer(
       stages: Object.values(useRegistry.getState().processingStages),
       pipeline: resolveDefaultPipeline(),
       derive: windowDerived,
+      onStageQuarantined,
     });
     const saved = first
       ? await loadSavedEdit(first.id, first.exif.colorTemperature).catch(() => null)
@@ -903,6 +1010,7 @@ export function getDefaultExportSettings(): ExportSettings {
     longEdge: s.exportLongEdge,
     bundle: false,
     delivery: "files",
+    ifExists: s.exportIfExists,
     colorSpace: s.exportColorSpace,
     tiffBitDepth: s.exportTiffBitDepth,
     pngBitDepth: s.exportPngBitDepth,
@@ -949,7 +1057,7 @@ export async function renderPhotosToBlobs(
       let height = 0;
       try {
         const prepared = await ahead.take(i);
-        ({ blob, width, height } = await renderOne(renderer, canvas, photo, prepared, settings, procSettings, options?.paramBag));
+        ({ blob, width, height } = await renderOne(renderer, canvas, photo, prepared, settings, procSettings, options?.paramBag, options?.processors !== false));
       } catch {
         blob = null;
       }
@@ -978,7 +1086,10 @@ export async function exportPhotos(
   destDir?: FileSystemDirectoryHandle,
   options?: ExportPhotosOptions,
 ): Promise<ExportResult> {
-  const made = await makeBatchRenderer(settings, photos[0]);
+  // The extension stages this batch's renderer left out; one left out stays out
+  // for the rest of the batch.
+  const quarantined = new Set<string>();
+  const made = await makeBatchRenderer(settings, photos[0], (stage) => quarantined.add(stage.stageId));
   if ("unavailable" in made)
     return {
       exported: 0,
@@ -1010,6 +1121,8 @@ export async function exportPhotos(
   let stopped: string | undefined;
   let degradedTo8Bit = 0;
   let reducedPrecision = 0;
+  let withoutStages = 0;
+  const replace = (settings.ifExists ?? getSettings().exportIfExists) === "replace";
 
   const procSettings = settings.processorSettings ?? {};
   // Resolve the active filename template once (if any) for the batch.
@@ -1019,6 +1132,16 @@ export async function exportPhotos(
 
   const ahead = new DecodeAhead(photos, settings);
   try {
+    // Names already in the folder count as taken, so an export written beside
+    // its originals gets a " (2)" name. A folder that can't be listed is still
+    // written to: each name is checked again as it is written.
+    if (delivery === "folder" && destDir && !replace) {
+      try {
+        for await (const entry of listNames(destDir)) usedNames.add(nameKey(entry));
+      } catch (e) {
+        console.warn("[export] the folder can't be listed; checking each name as it is written:", errorReason(e));
+      }
+    }
     for (let i = 0; i < photos.length; i++) {
       if (options?.signal?.aborted) {
         cancelled = true;
@@ -1027,9 +1150,11 @@ export async function exportPhotos(
       const photo = photos[i];
       let blob: Blob | null = null;
       let renderReason: string | undefined;
+      let drawnWithout = false;
       try {
         const prepared = await ahead.take(i);
         const r = await renderOne(renderer, canvas, photo, prepared, settings, procSettings);
+        drawnWithout = quarantined.size > 0;
         blob = r.blob;
         if (r.degradedTo8Bit) degradedTo8Bit++;
         if (r.reducedPrecision) reducedPrecision++;
@@ -1062,11 +1187,8 @@ export async function exportPhotos(
               downloadBlob(blob, name);
             }
           } else if (delivery === "folder" && destDir) {
-            const existed = await destDir.getFileHandle(name).then(
-              () => true,
-              (e: unknown) => !(e instanceof DOMException && e.name === "NotFoundError"),
-            );
-            const fh = await destDir.getFileHandle(name, { create: true });
+            const { name: fileName, existed } = await folderTarget(destDir, name, rawName, usedNames, replace);
+            const fh = await destDir.getFileHandle(fileName, { create: true });
             let w: FileSystemWritableFileStream | undefined;
             try {
               w = await fh.createWritable();
@@ -1074,13 +1196,14 @@ export async function exportPhotos(
               await w.close();
             } catch (e) {
               await w?.abort().catch(() => undefined);
-              if (!existed) await destDir.removeEntry(name).catch(() => undefined);
+              if (!existed) await destDir.removeEntry(fileName).catch(() => undefined);
               throw e;
             }
           } else {
             downloadBlob(blob, name);
           }
           exported++;
+          if (drawnWithout) withoutStages++;
           lastRefusal = undefined;
         } catch (e) {
           failed.push(photo.filename);
@@ -1117,5 +1240,6 @@ export async function exportPhotos(
     ...(cancelled ? { cancelled: true as const } : {}),
     ...(stopped ? { stopped } : {}),
     ...(failures.length > 0 ? { failures } : {}),
+    ...(withoutStages > 0 ? { withoutStages } : {}),
   };
 }

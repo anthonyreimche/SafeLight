@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { DevelopParams } from "@/catalog/types";
 import type { ProcessingStageContribution } from "@/extensions/types";
 import { baselineRefit, baselineTone } from "../baseline-tone";
-import { toneShadows } from "../local-tone";
+import { basicShadows, toneShadows } from "../local-tone";
 import {
   LINEAR_PROBE_PIPELINE,
   NEGATING_PIPELINE,
@@ -159,7 +159,7 @@ for (const version of [2, 3] as const) describe(`the camera baseline on the GPU,
   // the gain and sits a curve and a stop away.
   it("measures Highlights and Shadows regions in the pixel's units", () => {
     const pixel = refitTone(0.04) * 2;
-    expectGrey(renderScene(grey(0.04, 1), versionParams({ shadows: 100 }), TONED), toneShadows(pixel, 1));
+    expectGrey(renderScene(grey(0.04, 1), versionParams({ shadows: 100 }), TONED), basicShadows(pixel, 1));
   });
 
   // On a flat frame the region is the pixel, so the photo's own Shadows lands
@@ -167,8 +167,8 @@ for (const version of [2, 3] as const) describe(`the camera baseline on the GPU,
   it("lifts the shadows by the camera match's amount, then by the photo's own", () => {
     const lifted = toneShadows(refitTone(0.04) * 2, 0.55);
     expectGrey(renderScene(grey(0.04, 1, 55), versionParams(), TONED), lifted);
-    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: 20 }), TONED), toneShadows(lifted, 0.2));
-    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: -40 }), TONED), toneShadows(lifted, -0.4));
+    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: 20 }), TONED), basicShadows(lifted, 0.2));
+    expectGrey(renderScene(grey(0.04, 1, 55), versionParams({ shadows: -40 }), TONED), basicShadows(lifted, -0.4));
   });
 
   // The match fits the lift pixel by pixel. Taken through the region, as the

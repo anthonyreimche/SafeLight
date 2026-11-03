@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Windows that share a catalog must end with the newer of two changes to a
+// Windows that share a catalogue must end with the newer of two changes to a
 // record, whatever order the records reach them in: a window opening before
 // another's change has landed in catalog.json, and records arriving while a
 // window's open still walks the folder.
@@ -316,7 +316,7 @@ describe.each(BUILDS)("records that arrive while a window's open walks the folde
 });
 
 describe.each(BUILDS)("a window's open, before its walk ($label)", (cfg) => {
-  it("paints a change another window sent while it read the catalog", async () => {
+  it("paints a change another window sent while it read the catalogue", async () => {
     const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
     const a = await open(p);
     await a.storage.flush();
@@ -335,7 +335,7 @@ describe.each(BUILDS)("a window's open, before its walk ($label)", (cfg) => {
 });
 
 describe.each(BUILDS)("the windows that answer a window opening ($label)", (cfg) => {
-  it("include one that left the catalog and still tries a save that fails", async () => {
+  it("include one that left the catalogue and still tries a save that fails", async () => {
     const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
     const a = await open(p);
     await a.storage.flush();
@@ -353,7 +353,7 @@ describe.each(BUILDS)("the windows that answer a window opening ($label)", (cfg)
     expect(onDisk).toBe("Main edit");
   });
 
-  it("include one that left the catalog while its open still walked the folder", async () => {
+  it("include one that left the catalogue while its open still walked the folder", async () => {
     const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
     const first = await open(p);
     await first.storage.flush();
@@ -543,7 +543,7 @@ describe.each(BUILDS)("the order of changes to one record ($label)", (cfg) => {
     expect(ratings).toEqual({ a: 5, b: 5, onDisk: 5 });
   });
 
-  it("puts a change made after reading a catalog stamped ahead of the clock after that stamp", async () => {
+  it("puts a change made after reading a catalogue stamped ahead of the clock after that stamp", async () => {
     const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
     const first = await open(p);
     await first.storage.flush();
@@ -562,10 +562,10 @@ describe.each(BUILDS)("the order of changes to one record ($label)", (cfg) => {
   });
 });
 
-describe.each(BUILDS)("the change stamps a catalog keeps ($label)", (cfg) => {
+describe.each(BUILDS)("the change stamps a catalogue keeps ($label)", (cfg) => {
   const stamp = [expect.any(Number), expect.any(String)];
 
-  it("are saved with a change, and a catalog nobody changed has none", async () => {
+  it("are saved with a change, and a catalogue nobody changed has none", async () => {
     const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
     const a = await open(p);
     await a.storage.flush();

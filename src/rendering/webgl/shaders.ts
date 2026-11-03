@@ -303,11 +303,14 @@ vec3 blackbodyLinear(float kelvin) {
 
 // White balance as a Kelvin temperature (warming the image as the value rises)
 // plus a green↔magenta tint. Gains are derived so asShotK (the camera's
-// shooting WB, baked into the decoded pixels) is the neutral point.
+// shooting WB, baked into the decoded pixels) is the neutral point.${v2(`
+// Version 2 scales them so a grey keeps its luminance (blackbody.ts
+// whiteBalanceGains); at the as-shot point luma(gain) is exactly 1.`)}
 vec3 applyWhiteBalance(vec3 c, float kelvin, float tint, float asShotK) {
   vec3 gain = blackbodyLinear(asShotK) / blackbodyLinear(kelvin);
   gain /= gain.g;
-  gain.g *= 1.0 - (tint / 150.0) * 0.6; // +tint -> magenta, -tint -> green
+  gain.g *= 1.0 - (tint / 150.0) * 0.6; // +tint -> magenta, -tint -> green${v2(`
+  gain /= luma(gain);`)}
   return c * gain;
 }
 
@@ -604,11 +607,12 @@ vec3 applyMaskLinear(vec3 c, vec4 a0, vec4 a1, float m, float refT) {
     float L = max(luma(r), 1e-4);
     r = retargetLuma(r, L, applyExposure(L, ev));
   }
-  // Highlights / shadows: the legacy recovery/lift functions, anchored to the scene tone (refT).
+  // Highlights / shadows: the legacy recovery/lift functions, anchored to the scene tone (refT).${v2(`
+  // Version 2's Shadows is Basic's curve (slShadows) on the colour's luminance.`)}
   float H = clamp(a0.z / 100.0, -1.0, 1.0);
   if (abs(H) > 0.001) r = applyHighlightsRGB(r, H, refT);
   float S = clamp(a0.w / 100.0, -1.0, 1.0);
-  if (abs(S) > 0.001) r = applyShadowsRGB(r, S, refT);
+  if (abs(S) > 0.001) r = ${pick("applyShadowsRGB(r, S, refT)", "retargetLuma(r, max(luma(r), 1e-4), slShadows(luma(r), S))")};
   // White balance as linear channel gains (the physically correct space; the
   // old display-space additive shifts greyed highlights and crushed hue).
   float temp = a1.y / 100.0;
@@ -621,7 +625,9 @@ vec3 applyMaskLinear(vec3 c, vec4 a0, vec4 a1, float m, float refT) {
     r.r *= exp2(tnt * 0.12);
     r.g *= exp2(-tnt * 0.20);
     r.b *= exp2(tnt * 0.12);
-  }
+  }${v2(`
+  // Version 2 scales the gains so a grey keeps its luminance; 1 at 0.
+  r /= luma(vec3(exp2(temp * 0.35 + tnt * 0.12), exp2(-tnt * 0.20), exp2(-temp * 0.35 + tnt * 0.12)));`)}
   return mix(c, r, m);
 }
 

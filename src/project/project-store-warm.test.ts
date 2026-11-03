@@ -109,7 +109,7 @@ beforeEach(async () => {
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("project-store decode warm-up", () => {
-  it("warms the pool at idle once a project's catalog is installed", async () => {
+  it("warms the pool at idle once a project's catalogue is installed", async () => {
     const opened = startOpen();
     await settle();
     expect(h.warm).not.toHaveBeenCalled();

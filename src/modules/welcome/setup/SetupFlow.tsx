@@ -7,7 +7,7 @@
 // the look, the workspace behaviour and the starter kits. It opens by itself on
 // a fresh install (see initFirstRun) and from Preferences and the Extensions
 // store later on. It is modal: app shortcuts stand down while it
-// is up (they would otherwise open dialogs or switch modules underneath), Tab
+// is up (they would otherwise open dialogues or switch modules underneath), Tab
 // stays inside, and Escape closes only a rerun, so a first run can't be skipped
 // by a stray key. It sits below ModalWindow (z-100) and the confirm and banners
 // (z-200 and up), which never open over it but must win if they do.

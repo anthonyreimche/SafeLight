@@ -613,7 +613,7 @@ describe("parseExif — container detection", () => {
     expect(await parseExif(blobOf(new Uint8Array(0)))).toEqual({});
   });
 
-  it("returns nothing for an unrecognised container", async () => {
+  it("returns nothing for an unrecognized container", async () => {
     const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     expect(await parseExif(blobOf(png))).toEqual({});
   });
@@ -777,7 +777,7 @@ describe("parseXmp", () => {
     expect(xmp.keywords).toEqual(["sunset", "Ben & Jerry"]);
   });
 
-  it("reads properties serialised as rdf:Description attributes", async () => {
+  it("reads properties serialized as rdf:Description attributes", async () => {
     const xmp = await parseXmp(blobOf(xmpTiff(true, "", ` xmp:Rating="4" xmp:Label="Blue"`)));
     expect(xmp.rating).toBe(4);
     expect(xmp.colorLabel).toBe("Blue");

@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The photo right-click menu and the dialogs it opens (rename, copy settings),
+// The photo right-click menu and the dialogues it opens (rename, copy settings),
 // shared by every surface that lists photos: the Library grid, the list view,
 // and extension surfaces such as the Filmstrip (via api.catalog.usePhotoActions).
 // One implementation means a strip's menu can never drift from the grid's, and
@@ -33,15 +33,15 @@ import { useDevelopClipboard } from "@/state/develop-clipboard";
 export interface PhotoActions {
   /** Right-click handler for a photo cell. Right-clicking a photo that's part
    *  of the current selection targets the whole selection; right-clicking an
-   *  unselected one selects just it first (mirrors the drag behavior). */
+   *  unselected one selects just it first (mirrors the drag behaviour). */
   onContextMenu: (id: string, e: React.MouseEvent) => void;
-  /** The menu and its dialogs. Render them inside the surface. */
+  /** The menu and its dialogues. Render them inside the surface. */
   overlays: ReactNode;
 }
 
-// F2 and Copy settings ask by event, since the surface owns the dialog. Only the
+// F2 and Copy settings ask by event, since the surface owns the dialogue. Only the
 // most recently mounted surface answers, so a Filmstrip open beside the grid
-// raises one dialog, not two.
+// raises one dialogue, not two.
 const renameOwners: symbol[] = [];
 
 export function usePhotoActions(): PhotoActions {
@@ -88,7 +88,7 @@ export function usePhotoActions(): PhotoActions {
   }, []);
 
   // Rename the targeted photo's file on disk (in place, extension preserved).
-  // Acts on the right-clicked photo; opens a small dialog, then renames.
+  // Acts on the right-clicked photo; opens a small dialogue, then renames.
   const [renameTarget, setRenameTarget] = useState<{
     id: string;
     filename: string;
@@ -96,7 +96,7 @@ export function usePhotoActions(): PhotoActions {
     isCopy: boolean;
   } | null>(null);
 
-  // Names the rename dialog must refuse. A master competes with the other real
+  // Names the rename dialogue must refuse. A master competes with the other real
   // files in its folder (virtual copies mirror a master's filename, so counting
   // them would flag the master's own name); a copy competes with its siblings'
   // distinguishers.
@@ -197,7 +197,7 @@ export function usePhotoActions(): PhotoActions {
   }, []);
 
   // Copy/paste develop settings. Copy reads one photo's saved edit and opens the
-  // checklist dialog; paste merges the clipboard's chosen adjustments onto every
+  // checklist dialogue; paste merges the clipboard's chosen adjustments onto every
   // targeted photo (see paste-settings).
   const [copyDialog, setCopyDialog] = useState<{
     params: DevelopParams;

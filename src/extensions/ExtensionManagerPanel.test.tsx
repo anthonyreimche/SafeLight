@@ -99,7 +99,7 @@ const importRepo = async (user: ReturnType<typeof userEvent.setup>) => {
 };
 
 describe("ExtensionManagerPanel install trust prompts", () => {
-  it("runs both trust gates through the in-app dialog, never window.confirm", async () => {
+  it("runs both trust gates through the in-app dialogue, never window.confirm", async () => {
     const user = userEvent.setup();
     mountStore();
     await importRepo(user);
@@ -566,7 +566,7 @@ describe("ExtensionManagerPanel categories", () => {
     screen.getByText("Detail and repair · Processing");
   });
 
-  it("lists uncategorised extensions under Other", async () => {
+  it("lists uncategorized extensions under Other", async () => {
     const user = userEvent.setup();
     mountStore();
     await openCategory(user, "Other");
@@ -606,7 +606,7 @@ describe("ExtensionManagerPanel categories", () => {
     screen.getAllByText("Popular");
   });
 
-  it("keeps the Other row while a search on Other matches nothing uncategorised", async () => {
+  it("keeps the Other row while a search on Other matches nothing uncategorized", async () => {
     const user = userEvent.setup();
     mountStore();
     await openCategory(user, "Other");
@@ -617,7 +617,7 @@ describe("ExtensionManagerPanel categories", () => {
 });
 
 // The detail page's chips, Works with and More shelves draw on the whole
-// catalog, not on whatever the Browse search last matched.
+// catalogue, not on whatever the Browse search last matched.
 describe("ExtensionManagerPanel detail page store sections", () => {
   const r = (fullName: string, over: Partial<ExtensionSearchResult> = {}): ExtensionSearchResult => ({
     fullName,
@@ -661,7 +661,7 @@ describe("ExtensionManagerPanel detail page store sections", () => {
     list = async () => [{ id: "acme.warp", name: "Warp", version: "1.0.0", main: "index.js" }];
   };
 
-  it("lists Works with and More shelves from the catalog after a search narrowed Browse", async () => {
+  it("lists Works with and More shelves from the catalogue after a search narrowed Browse", async () => {
     const user = userEvent.setup();
     mountStore();
     await screen.findAllByText("denoise");
@@ -688,7 +688,7 @@ describe("ExtensionManagerPanel detail page store sections", () => {
     expect(next.scrollTop).toBe(0);
   });
 
-  it("re-reads the catalog when ↻ is pressed with a search set", async () => {
+  it("re-reads the catalogue when ↻ is pressed with a search set", async () => {
     let served = catalog;
     vi.stubGlobal("safelightNative", {
       plugins: {

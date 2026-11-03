@@ -25,7 +25,7 @@ import { settings, type PrefSection } from "@/ui/preferences/section-model";
 // section. Hoisted to module scope so both the search index (Shortcuts `items`)
 // and the section render share one source of truth. [combo, description].
 const VIEWPORT_FIXED: [string, string][] = [
-  ["Esc", "Exit tool / close dialog"],
+  ["Esc", "Exit tool / close dialogue"],
   ["Space", "Toggle zoom (fit ↔ 100%)"],
   ["Ctrl/⌘ + Click", "Zoom in/out while masking or healing"],
   ["Ctrl/⌘ + Drag", "Pan while zoomed"],

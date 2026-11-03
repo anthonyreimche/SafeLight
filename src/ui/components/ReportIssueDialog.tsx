@@ -107,7 +107,7 @@ function ReportIssueWindow() {
   }, [prefill]);
 
   // Typing here must not reach the app's shortcuts (Ctrl+Z would undo the edit
-  // behind the dialog), and with them paused the shared Esc stack is too.
+  // behind the dialogue), and with them paused the shared Esc stack is too.
   useEffect(() => {
     const releaseShortcuts = suspendShortcuts();
     const onKey = (e: KeyboardEvent) => {
@@ -284,7 +284,7 @@ function ReportIssueWindow() {
           )}
           <p className="text-[10px] leading-relaxed text-text-muted">
             GPS positions and serial numbers are never included, and folder names and photo file
-            names are hidden wherever Safelight recognises them. Check the text anyway: what you see
+            names are hidden wherever Safelight recognizes them. Check the text anyway: what you see
             is exactly what goes into the issue, and issues are public.
           </p>
         </section>

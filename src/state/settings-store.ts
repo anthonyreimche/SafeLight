@@ -7,7 +7,7 @@
 // windows via the storage event (same pattern as themes/layouts). Non-React
 // modules read it with getSettings(); React components subscribe with
 // useSettings(). Theme and layout are NOT duplicated here — they already have
-// their own persisted stores; the Preferences dialog drives them directly.
+// their own persisted stores; the Preferences dialogue drives them directly.
 
 import { create } from "zustand";
 import type { SortDirection, SortField } from "@/catalog/types";
@@ -18,7 +18,7 @@ export type ExportFormatPref = "image/jpeg" | "image/png" | "image/webp" | "imag
 
 /** The surround shades, dark → light: pure black, darktable's own five-rung grey
  *  ladder centred on #777777 (the ~18% middle grey both darktable and Ansel use
- *  for the darkroom canvas, the standard for color-critical viewing), then pure
+ *  for the darkroom canvas, the standard for colour-critical viewing), then pure
  *  white. Black and white bracket the ladder for a darkroom-black or lightbox-
  *  white surround; middle grey stays the default. */
 export const CANVAS_SURROUND_SHADES: { value: string; label: string }[] = [
@@ -31,7 +31,7 @@ export const CANVAS_SURROUND_SHADES: { value: string; label: string }[] = [
   { value: "#ffffff", label: "White" },
 ];
 
-/** Factory-default surround: the ~18% middle grey used for color-critical
+/** Factory-default surround: the ~18% middle grey used for colour-critical
  *  viewing, and the rung the −/+ stepper falls back to when the stored shade
  *  isn't on the ladder. */
 export const DEFAULT_CANVAS_SURROUND = "#777777";
@@ -96,7 +96,7 @@ export interface AppSettings {
    *  CANVAS_SURROUND_SHADES (black, white, or a neutral grey hex). Defaults to
    *  middle grey. */
   canvasSurround: string;
-  /** Width of the white color-assessment mat as a percentage of the smaller
+  /** Width of the white colour-assessment mat as a percentage of the smaller
    *  viewport dimension (resolution-independent). Tunable so the band reads
    *  right on any display size. */
   assessBorderPct: number;
@@ -135,7 +135,7 @@ export interface AppSettings {
   /** Grow interactive controls to a comfortable minimum hit target (WCAG 2.2
    *  SC 2.5.8, ≥24px) for pointer/motor accessibility. */
   largerControls: boolean;
-  /** Render the all-caps section headings in Title Case (capitalise the first
+  /** Render the all-caps section headings in Title Case (capitalize the first
    *  letter of each word) instead of UPPERCASE — easier to read for some users,
    *  since all-caps slows word recognition. */
   lowercaseHeadings: boolean;
@@ -169,7 +169,7 @@ export interface AppSettings {
   defaultGridSize: number; // px, 120–360
   defaultSortField: SortField;
   defaultSortDirection: SortDirection;
-  /** Prompt for confirmation before removing photos from the catalog. */
+  /** Prompt for confirmation before removing photos from the catalogue. */
   confirmRemovePhotos: boolean;
   /** When a folder is selected, also show photos in its subfolders. Off =
    *  only photos directly inside the selected folder. */
@@ -188,9 +188,9 @@ export interface AppSettings {
    *    source (e.g. a memory card) that can't host one falls back to the separate
    *    location automatically.
    *  - "external": always under externalCatalogDir, regardless of writeability —
-   *    keeps photo folders clean and catalogs on fast storage. Native only. */
+   *    keeps photo folders clean and catalogues on fast storage. Native only. */
   catalogLocation: "in-folder" | "external";
-  /** Base directory for "external" catalogs and for read-only source fallbacks,
+  /** Base directory for "external" catalogues and for read-only source fallbacks,
    *  which can't host their own .safelight. "" = the app's own data directory. An
    *  absolute path overrides it (e.g. a fast scratch SSD). Each source folder gets
    *  its own subdirectory, keyed by path so it's stable across opens. Native only. */
@@ -200,7 +200,7 @@ export interface AppSettings {
   /** Cache decoded RAW develop previews (IndexedDB or <project>/.safelight/raw).
    *  Master switch: off = never read or write the develop cache. */
   rawCacheEnabled: boolean;
-  /** When caching is on, pre-decode the whole catalog on open ("Cache all").
+  /** When caching is on, pre-decode the whole catalogue on open ("Cache all").
    *  Off = "As needed": only cache photos as they're opened in Develop. */
   rawCachePrefetch: boolean;
   /** Long-edge cap of cached previews (bigger = sharper re-opens, more disk). */
@@ -208,7 +208,7 @@ export interface AppSettings {
 
   // ── Render pipeline ────────────────────────────────────────────────────
   /** Resolution cap of the Develop render buffer (true 1:1 zoom vs. memory). */
-  developMaxEdge: 4096 | 6144 | 8192;
+  developMaxEdge: 2560 | 3072 | 4096 | 6144 | 8192;
   /** GPU memory budget (bytes) for resident decoded RAW sources. Larger keeps
    *  more photos ready for instant re-open and crisp zoom, at the cost of VRAM. */
   gpuSourceCacheBytes: number;
@@ -232,7 +232,7 @@ export interface AppSettings {
   exportQuality: number; // 1–100
   exportLongEdge: number | null; // null = original
   exportBundle: boolean; // zip when exporting multiple
-  /** Output color space; converts pixels and embeds the matching ICC profile. */
+  /** Output colour space; converts pixels and embeds the matching ICC profile. */
   exportColorSpace: ColorSpaceId;
   /** Default bits per sample for TIFF export (8 or 16). */
   exportTiffBitDepth: 8 | 16;
@@ -247,6 +247,10 @@ export interface AppSettings {
   /** Keep GPS location tags when metadata is included. A second opt-in:
    *  position data is easy to leak and hard to recall. */
   exportIncludeLocation: boolean;
+  /** What a folder export does with a file of the same name already there:
+   *  write beside it with a number, or replace it. A photo's original is never
+   *  replaced. */
+  exportIfExists: "number" | "replace";
   /** Saved export presets (format + quality + resolution + sharpening). */
   exportPresets: ExportPreset[];
 
@@ -368,6 +372,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exportPngBitDepth: 8,
   exportIncludeMetadata: false,
   exportIncludeLocation: false,
+  exportIfExists: "number",
   exportPresets: [],
   singleKeyShortcuts: true,
   extensionTopic: "safelight-extension",

@@ -77,7 +77,7 @@ Notes:
 - A `headerAccessory` handles its own clicks. Clicks on a button in the header don't start a drag.
 - `owns` names the develop params your panel's effect is made of. While its preview-off eye is held, Develop draws the photo with them at their defaults, and the stored edit stays as it is. List every key the eye should hide, including another tool's that means nothing without yours: Transform lists the crop, since the crop is drawn in the transformed frame. A panel with `owns` gets the eye even without a stage of its own, and holding it leaves your extension's stage params alone; a panel without `owns` previews off by dropping all of them. Keys that aren't develop params are left out at registration, with a warning. Older builds ignore it.
 
-To replace a stock panel, register your own and ask users to disable the built-in one in the Extensions dialog.
+To replace a stock panel, register your own and ask users to disable the built-in one in the Extensions dialogue.
 
 ### Per-mask panels (`PanelContribution.mask`)
 

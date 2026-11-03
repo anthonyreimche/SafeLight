@@ -3,8 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The grid-preview loader against the real catalog store: how many previews a
-// project holds in memory after a prefill of a big catalog, and that a preview
+// The grid-preview loader against the real catalogue store: how many previews a
+// project holds in memory after a prefill of a big catalogue, and that a preview
 // let go reloads when its cell comes back into view.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -116,8 +116,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("a prefill of a big catalog", () => {
-  it("holds every preview while the cache has room, as a small catalog always did", async () => {
+describe("a prefill of a big catalogue", () => {
+  it("holds every preview while the cache has room, as a small catalogue always did", async () => {
     await prefill({ cacheLimit: PHOTOS + 1 });
 
     console.info(

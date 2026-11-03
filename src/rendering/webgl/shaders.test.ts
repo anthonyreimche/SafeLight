@@ -61,7 +61,7 @@ describe("the version 2 program", () => {
     expect(v2).toContain("return slEncodePerceptual(lin);");
   });
 
-  // Basic's, the Tone Curve's, HSL's and Color Grading's guards are their
+  // Basic's, the Tone Curve's, HSL's and Colour Grading's guards are their
   // extensions' text (essential-stages.fixtures.ts).
 
   it("leaves version 1 without any of it", () => {
@@ -77,7 +77,7 @@ describe("Highlights and Shadows in the version 2 program", () => {
 
   it("runs the tone block through the shared curves", () => {
     expect(v2).toContain("float L1 = slToneHighlights(Lx, E, H);");
-    expect(v2).toContain("float L2 = slToneShadows(slToneShadows(L1, cameraLift), S);");
+    expect(v2).toContain("float L2 = basicShadows(slToneShadows(L1, cameraLift), S);");
     expect(v1).not.toContain("slToneHighlights");
   });
 

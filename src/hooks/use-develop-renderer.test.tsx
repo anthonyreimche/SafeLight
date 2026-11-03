@@ -3354,7 +3354,7 @@ describe("DevelopCanvas saying which effects it can't apply", () => {
 
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", FixedFrameObserver);
-    setExtensionName("colour-equaliser", "Colour Equaliser");
+    setExtensionName("colour-equaliser", "Colour Equalizer");
     setExtensionName("contrast-equalizer", "Contrast Equalizer");
     useRegistry.setState({
       processingStages: Object.fromEntries(
@@ -3384,7 +3384,7 @@ describe("DevelopCanvas saying which effects it can't apply", () => {
   it("names the effect a frame was drawn without", async () => {
     const { worker } = await open(photo(), true, CanvasView);
     await framesWithout(worker, ["colour-equaliser.rings"]);
-    expect(says(`Can't apply Colour Equaliser. ${TOO_MANY}`)).toBe(true);
+    expect(says(`Can't apply Colour Equalizer. ${TOO_MANY}`)).toBe(true);
   });
 
   it("names each extension once, however many of its stages went without", async () => {
@@ -3394,7 +3394,7 @@ describe("DevelopCanvas saying which effects it can't apply", () => {
       "colour-equaliser.rings",
       "contrast-equalizer.chroma-red",
     ]);
-    expect(says(`Can't apply Contrast Equalizer or Colour Equaliser. ${TOO_MANY}`)).toBe(true);
+    expect(says(`Can't apply Contrast Equalizer or Colour Equalizer. ${TOO_MANY}`)).toBe(true);
   });
 
   it("says nothing once a frame runs them all", async () => {

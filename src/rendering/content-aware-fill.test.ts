@@ -46,7 +46,7 @@ function holePixels(hole: Uint8Array): number[] {
 }
 
 describe("contentAwareFill", () => {
-  it("returns an untouched copy when there is nothing to synthesise", () => {
+  it("returns an untouched copy when there is nothing to synthesize", () => {
     const W = 8;
     const H = 8;
     const src = image(W, H, (x, y) => [x * 8, y * 8, 40]);

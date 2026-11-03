@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The background passes over photos already in the catalog: repair of missing
+// The background passes over photos already in the catalogue: repair of missing
 // previews, pending libraw metadata, preview rebuild and re-import from disk.
 
 import type { CatalogPhoto } from "@/catalog/types";
@@ -33,12 +33,12 @@ import {
 import { decodeFailureReason, mimeTypeFromName } from "./import-record";
 
 /** Store what a repair, rebuild or re-import worked out for `photo`, on the photo
- *  as the catalog holds it once the decode is done. The decode takes a while, and
+ *  as the catalogue holds it once the decode is done. The decode takes a while, and
  *  the photo may have been rated or changed meanwhile, here or in another window;
- *  those changes stay. Nothing is stored for a photo that left the catalog, nor a
+ *  those changes stay. Nothing is stored for a photo that left the catalogue, nor a
  *  preview built for a turn the photo no longer has. Resolves with what was
  *  stored and the fields that changed, or null. Only those fields are for the
- *  catalog to take on (mergeRebuiltPhoto): the photo may change again while the
+ *  catalogue to take on (mergeRebuiltPhoto): the photo may change again while the
  *  preview is written. A preview built here comes from the file, so it shows no
  *  edit: an edited one it replaces no longer counts as the photo's look. */
 async function storeOnCurrent(
@@ -135,12 +135,12 @@ export async function repairMissingPreviews(
 /**
  * Read what libraw knows of each RAW whose import left it pending (see
  * importPhoto) from the whole file: its frame size, as-shot white balance and
- * exposure bias. Each is stored on the photo as the catalog holds it once libraw
+ * exposure bias. Each is stored on the photo as the catalogue holds it once libraw
  * is done, the frame turned by the photo's manual rotation then, and `onRead` is
  * handed the fields that changed. A white balance the file's EXIF declared stays.
  * A RAW libraw can't read keeps its preview's size and isn't tried again; one
  * whose file can't be read now keeps its mark for a later open. A photo whose
- * mark was cleared meanwhile, or that left the catalog, isn't read at all.
+ * mark was cleared meanwhile, or that left the catalogue, isn't read at all.
  * Sequential background work, like repairMissingPreviews. `signal` belongs to the
  * project: once the user leaves it, the pass reads and stores no more.
  */
@@ -153,7 +153,7 @@ export async function readPendingMetadata(
 }
 
 /** Read now, ahead of the background pass, the metadata still pending for the
- *  photos among `ids`, and show it on them in the catalog: for an action about to
+ *  photos among `ids`, and show it on them in the catalogue: for an action about to
  *  start an edit from a photo's as-shot white balance. Libraw takes it as work
  *  the user waits on. */
 export async function settlePendingMetadata(ids: readonly string[]): Promise<void> {
@@ -234,7 +234,7 @@ async function readMetadataOf(
 }
 
 /**
- * Re-decode every catalog photo and regenerate its grid preview at the current
+ * Re-decode every catalogue photo and regenerate its grid preview at the current
  * "Thumbnail quality" (thumbMaxEdge). Unlike repairMissingPreviews this rebuilds
  * ALL previews, not just missing ones — it's the way a changed thumbMaxEdge takes
  * effect on an existing library, since known photos are otherwise never re-decoded

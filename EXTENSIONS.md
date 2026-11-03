@@ -58,7 +58,7 @@ Extensions can declare the capabilities they need in `safelight.json`:
   can connect. Declared origins are shown on the extension's store page and after
   install.
 - **Everything else is disclosure, not a sandbox.** Because extensions run inside the
-  app, they have ambient access to your catalog, photos, and files no matter what they
+  app, they have ambient access to your catalogue, photos, and files no matter what they
   declare; only network egress is technically confined. Permissions help honest
   extensions be transparent and let you make an informed choice — they do not stop a
   determined malicious extension from misusing the in-app access every extension has.
@@ -75,14 +75,14 @@ store/registry. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 ## For extension authors
 
 - Publish your extension in your own repository, tagged `safelight-extension`, with a
-  valid `safelight.json`. It is your work under your own license.
+  valid `safelight.json`. It is your work under your own licence.
 - Shared variables (`api.variables`) can be read and written by every installed extension
   and by Developer Tools, so keep secrets and anything private out of them.
 - To request a Verified badge, or to report or **appeal** a ban, see the
   [registry README](https://github.com/anthonyreimche/safelight-registry).
 - Listing, verification, and removal are at the maintainer's discretion. The store
   surfaces public GitHub repos; Safelight may decline or remove a listing, and ban
-  reasons reflect the registry's good-faith assessment of observed behavior.
+  reasons reflect the registry's good-faith assessment of observed behaviour.
 
 ## Reporting a malicious extension
 

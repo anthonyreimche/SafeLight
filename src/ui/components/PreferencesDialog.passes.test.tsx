@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   /** The open project's passes, as project-store hands them out. */
   project: new AbortController(),
-  /** How often the dialog asked for that signal. */
+  /** How often the dialogue asked for that signal. */
   asked: 0,
 }));
 

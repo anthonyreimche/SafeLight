@@ -219,7 +219,7 @@ describe("smoke: the same card, changed while the app was closed", () => {
     fs.writeFileSync(path.join(mount, rel), data);
   }
 
-  it("keeps its catalog when every photo on it was geotagged in place", async () => {
+  it("keeps its catalogue when every photo on it was geotagged in place", async () => {
     h.settings.catalogLocation = "external";
     const mount = tempDir("EOS_DIGITAL");
     for (const n of [1, 2, 3]) write(mount, IMG(n), shot(n));
@@ -236,7 +236,7 @@ describe("smoke: the same card, changed while the app was closed", () => {
     expect(byRel(again.photos, IMG(2))?.fileSize).toBe(shot(2, 512).length);
   });
 
-  it("keeps its catalog when most of its photos were erased in camera", async () => {
+  it("keeps its catalogue when most of its photos were erased in camera", async () => {
     h.settings.catalogLocation = "external";
     const mount = tempDir("EOS_DIGITAL");
     for (let n = 1; n <= 20; n++) write(mount, IMG(n), shot(n));
@@ -265,7 +265,7 @@ describe("smoke: cards swapped at one mount point", () => {
     for (const [rel, body] of Object.entries(card)) put(mount, rel, body);
   }
 
-  it("keeps each card's catalog and edits apart, and finds card A's again", async () => {
+  it("keeps each card's catalogue and edits apart, and finds card A's again", async () => {
     h.settings.catalogLocation = "external";
     const mount = tempDir("EOS_DIGITAL");
     const IMG_0001 = "DCIM/100CANON/IMG_0001.CR3";

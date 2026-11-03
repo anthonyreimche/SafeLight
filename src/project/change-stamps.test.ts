@@ -108,7 +108,7 @@ describe("merging a record from another window", () => {
   });
 });
 
-describe("stamps as a catalog keeps them", () => {
+describe("stamps as a catalogue keeps them", () => {
   it("keeps the stamps it can read and leaves out the rest", () => {
     const stamps = readChangeStamps({
       photos: { a: { rating: [5, "w"], flag: ["x", 1], nonsense: [1, "w"] }, b: "junk" },

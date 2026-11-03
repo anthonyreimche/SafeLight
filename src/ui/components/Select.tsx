@@ -8,7 +8,7 @@
 // app's dark surfaces). Drop-in for `<select value onChange>` with <option>s:
 // pass `options`, or `groups` for headed sections (the old <optgroup>). The menu
 // is portalled to <body> and fixed-positioned from the trigger rect, so it's
-// never clipped by a scroll container and sits above dialogs. It's at least as
+// never clipped by a scroll container and sits above dialogues. It's at least as
 // wide as the trigger and grows to fit its longest label up to twice that; a
 // label that still doesn't fit shows in full on hover. Keyboard: open with
 // Enter/Space/↑/↓, navigate with ↑/↓/Home/End, type to jump, Enter to choose,
@@ -90,7 +90,7 @@ export function Select({
   ariaLabel,
   title,
 }: SelectProps) {
-  // Normalise once, defensively: a caller (often an extension's `select`
+  // Normalize once, defensively: a caller (often an extension's `select`
   // settings field) can hand us a group with missing `items` or a nullish
   // option. A single bad entry must never throw here — a crash during render
   // tears down the subtree and can strand a global listener's effect cleanup,
@@ -171,7 +171,7 @@ export function Select({
       setOpen(false);
     };
     // Close on Escape via the shared stack, so the menu (most recently opened)
-    // closes before any dialog it lives inside.
+    // closes before any dialogue it lives inside.
     const popEsc = pushEscapeHandler(() => setOpen(false));
     window.addEventListener("scroll", reposition, true);
     window.addEventListener("resize", reposition);

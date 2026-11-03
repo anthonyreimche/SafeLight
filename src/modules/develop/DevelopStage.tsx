@@ -15,7 +15,7 @@ import { useDisplaySpace } from "@/rendering/display-space";
 // image and the canvas of the active photo, with its overlays. The Develop
 // extension supplies the zoom it shares with its status bar, and what shows
 // with no photo open.
-// ISO 12646 color-assessment surround: a fixed middle grey that pairs with the
+// ISO 12646 colour-assessment surround: a fixed middle grey that pairs with the
 // white image mat (ViewportImage). Slightly darker than the default surround so
 // the white frame reads clearly and the mode is unmistakable.
 const ASSESSMENT_SURROUND = "#666666";
@@ -53,7 +53,7 @@ export function DevelopStage({ zoom, onZoomChange, empty }: DevelopStageProps) {
       data-canvas-surround
       className="relative flex flex-1 items-center justify-center overflow-hidden p-4"
       style={{
-        // Neutral surround behind the image. Color assessment forces the ISO
+        // Neutral surround behind the image. Colour assessment forces the ISO
         // middle grey; otherwise it follows the theme unless the user
         // overrides it (Preferences ▸ Interface ▸ Canvas surround). The
         // renderer reads it back for the crop-mode margin.

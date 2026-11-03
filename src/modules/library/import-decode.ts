@@ -80,7 +80,7 @@ function looksDegenerate(data: Float32Array, width: number, height: number): boo
 }
 
 // Decode a file to an ImageBitmap for thumbnailing, robustly — a supported file
-// must never be silently dropped from the catalog. The `source` preference
+// must never be silently dropped from the catalogue. The `source` preference
 // (Preferences ▸ Previews) steers the RAW path:
 //
 //  - "embedded": use the camera's embedded JPEG (fast). Falls back to a full
@@ -125,7 +125,7 @@ export function turned({ width, height }: Size, deg: number): Size {
   return deg === 90 || deg === 270 ? { width: height, height: width } : { width, height };
 }
 
-/** Catalog width/height for a decode: the true frame size (not a downscaled
+/** Catalogue width/height for a decode: the true frame size (not a downscaled
  *  preview bitmap's), swapped when the bake is a quarter turn. */
 function uprightSize(decoded: DecodedImport, bakeRotation: number): Size {
   return turned(
@@ -185,7 +185,7 @@ export async function readRawMetadata(
   }
 }
 
-/** Catalog width/height. A RAW records the frame libraw decodes, not the size
+/** Catalogue width/height. A RAW records the frame libraw decodes, not the size
  *  of whatever built its thumbnail: the camera's embedded JPEG can be smaller
  *  (Fujifilm previews are) or cropped to another aspect. libraw reports that
  *  frame already EXIF-upright, so only a manual turn is left to apply; anything
@@ -229,7 +229,7 @@ export async function decodeImportBitmap(
   if (isRawFile(file)) {
     const whole = bytes ?? (await rawBytesOf(file));
     // CRW & friends: the JPEG byte-scan can't find their real thumbnail and
-    // returns a gray-noise false match, but libraw decodes them correctly — so
+    // returns a grey-noise false match, but libraw decodes them correctly — so
     // ignore the embedded preview entirely and render (as if "rendered" mode).
     const renderOnly = distrustsEmbeddedPreview(file);
     const effectiveSource: PreviewSource = renderOnly ? "rendered" : source;
@@ -295,7 +295,7 @@ export async function decodeImportBitmap(
 
     // Every decode failed. Fall back to the embedded JPEG (the one we set aside in
     // "auto", or a fresh extract in "rendered") rather than drop the file. Skip
-    // this for renderOnly formats (CRW) — their byte-scan preview is gray noise,
+    // this for renderOnly formats (CRW) — their byte-scan preview is grey noise,
     // so a ⚠ "no preview" tile is more honest than a garbage thumbnail.
     const passedOver = "failure" in f && f.passedOver === true;
     if (embedded) return { ...embedded, passedOver };

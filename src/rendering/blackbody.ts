@@ -29,7 +29,7 @@ export const TEMPERATURE_MAX_K = 50000;
 export const TINT_RANGE = 150;
 export const TINT_GAIN_SPAN = 0.6;
 
-// Channel floor before linearisation. Below ~2000 K the fit takes blue to zero,
+// Channel floor before linearization. Below ~2000 K the fit takes blue to zero,
 // which would make the red/blue gain ratio infinite and the inversion useless.
 export const BLACKBODY_CHANNEL_FLOOR = 0.0008;
 
@@ -58,7 +58,7 @@ export function blackbodyLinear(kelvin: number): LinearRgb {
 }
 
 /**
- * Green-normalised white-balance gain for a slider temperature, given the
+ * Green-normalized white-balance gain for a slider temperature, given the
  * as-shot Kelvin already baked into the decoded pixels. Unity when the two
  * agree — the shader's `applyWhiteBalance`, minus the tint term.
  */
@@ -74,6 +74,25 @@ export function tintGain(tint: number): number {
   return 1 - (tint / TINT_RANGE) * TINT_GAIN_SPAN;
 }
 
+/**
+ * The gains the shader's `applyWhiteBalance` multiplies a pixel by. Version 1
+ * keeps green at the tint gain, so Tint and Temperature also moved a grey's
+ * brightness; from version 2 the gains are scaled so a neutral keeps its
+ * Rec.709 luminance. Exactly unity at the as-shot point on every version.
+ */
+export function whiteBalanceGains(
+  kelvin: number,
+  tint: number,
+  asShotKelvin: number,
+  processVersion: number,
+): LinearRgb {
+  const [r, , b] = whiteBalanceGain(kelvin, asShotKelvin);
+  const g = tintGain(tint);
+  if (processVersion < 2) return [r, g, b];
+  const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return [r / y, g / y, b / y];
+}
+
 /** Inverse of `tintGain`: the tint that would produce a given green gain. */
 export function tintForGreenGain(gain: number): number {
   return (1 - gain) * (TINT_RANGE / TINT_GAIN_SPAN);
@@ -85,7 +104,7 @@ const SEARCH_STEPS = 240;
  * The temperature whose white-balance gains reproduce a target red/blue ratio,
  * expressed as `Math.log(gainR / gainB)` and measured against `asShotKelvin`.
  * The fit has no closed-form inverse, so scan log-Kelvin space; the grid is an
- * order of magnitude finer than the 10 K the UI quantises to.
+ * order of magnitude finer than the 10 K the UI quantizes to.
  */
 export function kelvinForGainRatio(
   logRedOverBlue: number,

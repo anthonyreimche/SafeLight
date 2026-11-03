@@ -200,7 +200,7 @@ describe("photo menu: extension items", () => {
 });
 
 describe("photo menu: Remove", () => {
-  it("says the files stay on disk while the photos and their edits leave the catalog", async () => {
+  it("says the files stay on disk while the photos and their edits leave the catalogue", async () => {
     const removePhotos = vi.fn(async (_ids: string[]): Promise<void> => {});
     useCatalogStore.setState({ removePhotos });
     const user = userEvent.setup();
@@ -209,7 +209,7 @@ describe("photo menu: Remove", () => {
 
     await user.click(screen.getByRole("menuitem", { name: "Remove (2)" }));
 
-    const dialog = screen.getByRole("dialog", { name: "Remove from catalog" });
+    const dialog = screen.getByRole("dialog", { name: "Remove from catalogue" });
     expect(dialog.textContent).toMatch(/original files on disk won't be deleted/);
     expect(dialog.textContent).toMatch(/edits, ratings and labels/);
     expect(dialog.textContent).not.toMatch(/reappear/);

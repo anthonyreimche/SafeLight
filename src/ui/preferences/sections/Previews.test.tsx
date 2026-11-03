@@ -37,11 +37,11 @@ beforeEach(() => {
   h.native = false;
 });
 
-describe("Catalog location", () => {
+describe("Catalogue location", () => {
   it("says it only applies to folders opened for the first time", () => {
     h.native = true;
     render(<PreviewsSection />);
-    expect(screen.getByText(/Existing catalogs stay where they are/)).toBeTruthy();
+    expect(screen.getByText(/Existing catalogues stay where they are/)).toBeTruthy();
   });
 });
 

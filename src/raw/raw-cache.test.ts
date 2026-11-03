@@ -104,7 +104,7 @@ describe("writeCachedPreview across a change of project", () => {
   });
 
   it("still writes when the open project's folder is set again", async () => {
-    // An open sets it as soon as the catalog is read and again after the walk.
+    // An open sets it as soon as the catalogue is read and again after the walk.
     const a = folder("A");
     setRawCacheDir(a);
     const begun = rawCacheGeneration();

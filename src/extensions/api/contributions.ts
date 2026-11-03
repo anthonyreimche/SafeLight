@@ -270,7 +270,7 @@ export interface SliderIconContribution {
   svg: string;
 }
 
-/** One field in an extension's settings dialog. */
+/** One field in an extension's settings dialogue. */
 export type SettingsField =
   | {
       key: string;
@@ -372,6 +372,13 @@ export interface ExportProcessorContext {
    *  from a different decode of the source (a cache entry written in
    *  between). */
   longEdge: number | null;
+  /** The output this export asks for: format, quality, long edge, bit depth,
+   *  colour space, output sharpening, metadata and location, as the export
+   *  reads them. Delivery and the other processors' settings are not part of
+   *  it. An optional field left out takes its default (sRGB, no sharpening,
+   *  8-bit, no metadata). Frozen: changing it changes nothing. Needs Safelight
+   *  3.2.0. */
+  settings: Readonly<import("./export").ExportOutput>;
 }
 
 /** An export's pixels before encoding: RGBA, top-down, encoded for the
@@ -384,7 +391,7 @@ export interface ExportFrame {
   colorSpace: import("@/rendering/color-space").ColorSpaceId;
   /** The ICC profile the file will embed, or null (sRGB). */
   icc: Uint8Array | null;
-  /** What the frame will be quantised to. */
+  /** What the frame will be quantized to. */
   bitDepth: 8 | 16;
 }
 
@@ -416,7 +423,7 @@ export interface ExportProcessorContribution {
   ): Promise<Blob>;
   /**
    * Called once per exported image with its pixels, after mapping and
-   * sharpening, before quantisation and encode. Change `frame.data` in place
+   * sharpening, before quantization and encode. Change `frame.data` in place
    * and return nothing, or return a frame, which may change size (a mat). Only
    * the returned `data`, `width` and `height` are read. Needs Safelight 3.1.0:
    * older builds ignore it and require `process`.
@@ -567,12 +574,12 @@ export interface StageTextureData {
  *  source-UV `vec2 srcUv` (after crop/transform/lens, before the image is
  *  sampled), so a stage can warp/displace the coordinate and have the entire
  *  downstream pipeline — source sampling, white balance, exposure, NR, masks —
- *  follow. Every other phase operates on a color (`lin` or `c`).
+ *  follow. Every other phase operates on a colour (`lin` or `c`).
  *
  *  "decode" runs on the linear colour after the baseline tone (applied to RAW
  *  sources unless the display transform skips it), at the same injection
  *  point as "noise-reduction": before core NR. Stage prepasses read the source
- *  through the same linearisation and baseline (`toLin`), so no extension hook
+ *  through the same linearization and baseline (`toLin`), so no extension hook
  *  sees the decode before the baseline.
  *
  *  "scene-linear" and "tone-map" run on `lin` after the core linear edits.
@@ -625,7 +632,7 @@ export const MASKABLE_PHASES: readonly ProcessingPhase[] = [
  *  and neighbourhood algorithms (à trous wavelets, non-local means, separable
  *  blurs) that a single inline fragment can't express become possible.
  *
- *  Contract: the body mutates `vec3 c`, initialised to `readPrev(vUv)` — the
+ *  Contract: the body mutates `vec3 c`, initialized to `readPrev(vUv)` — the
  *  previous pass's output, or on the first pass the stage's input: the decoded
  *  source linearized for `reads: "source"`, the image as edited up to the stage
  *  for `reads: "current"`, in the stage's declared `space` either way. With no
@@ -647,11 +654,17 @@ export const MASKABLE_PHASES: readonly ProcessingPhase[] = [
  *                              // (a RAW); false for camera-rendered bitmaps and the
  *                              // camera preview shown before the RAW decodes
  *    vec3 readPrev(vec2 uv);   // previous pass at uv; first pass: the stage's input
+ *    vec3 readSource(vec2 uv); // the decoded source at uv, as a `reads: "source"` stage's
+ *                              // first read gets it, on any draw and whatever the stage
+ *                              // reads (since 3.2.0)
  *    float luma(vec3); vec3 srgbToLinear(vec3);
  *    vec3 linearToSrgb(vec3);  // display encode: clips to 0..1
  *    vec3 linearToSrgbU(vec3); // same curve, clamps below 0 only; keeps values above 1.0
+ *    #define SL_PROCESS_VERSION // the photo's process version (see ProcessingStageContribution.glsl)
  *  Pass `uniforms` share the owning stage's qualified-key namespace, so the same
- *  param (e.g. "{id}.lumaAmount") can drive both the pass and the inline glsl. */
+ *  param (e.g. "{id}.lumaAmount") can drive both the pass and the inline glsl.
+ *  A pass that fails to compile takes its stage out of the frame, inline glsl
+ *  included, and is reported as the stage's failure. */
 export interface StagePass {
   glsl: string;
   helpers?: string;
@@ -687,7 +700,7 @@ export interface StageSpace {
  *  processing tools runs, in program order: the geometry (Crop & Straighten,
  *  declarations only), White Balance, Exposure/Highlights/Shadows,
  *  Whites/Blacks/Contrast, Tone Curve, HSL, Dehaze/Clarity/Texture, Highlight
- *  and Shadow Detail, Vibrance/Saturation, Color Grading, Sharpening. */
+ *  and Shadow Detail, Vibrance/Saturation, Colour Grading, Sharpening. */
 export type StageAnchor =
   | "geometry"
   | "retouch"
@@ -760,7 +773,10 @@ export interface ProcessingStageContribution {
   geometry?: { region: string; inverse: string };
 
   /** GLSL code fragment operating, by phase, on `vec2 srcUv`, `vec3 lin` or
-   *  `vec3 c` (read/write; see ProcessingPhase). */
+   *  `vec3 c` (read/write; see ProcessingPhase). Here, in `helpers` and in the
+   *  passes, `SL_PROCESS_VERSION` is defined as the photo's process version (1,
+   *  2 or 3), so `#if SL_PROCESS_VERSION >= 2` keeps a change off older photos.
+   *  Needs Safelight 3.2.0; earlier builds don't define it. */
   glsl: string;
   /** Helper functions available to this stage's glsl (namespaced by compiler). */
   helpers?: string;
@@ -802,7 +818,7 @@ export interface ProcessingStageContribution {
    *  offered when saving a preset and pre-selected when changed. "per-image" is
    *  tied to one photo's content — spatial tools like warp, heal or red-eye —
    *  so it is excluded from presets by default and only surfaced under the Save
-   *  dialog's "Show all". Omit for ordinary global adjustments. */
+   *  dialogue's "Show all". Omit for ordinary global adjustments. */
   presetScope?: "global" | "per-image";
 
   /** Opt into full-information values. Omitted, a stage before the display
@@ -828,6 +844,14 @@ export interface ProcessingStageContribution {
    *  geometry stages. */
   reads?: "source" | "current";
 
+  /** With `reads: "current"`, the first process version whose photos this
+   *  stage reads the current image on: a whole number, 1 (every version) by
+   *  default. On older versions it reads the source, as a "source" reader
+   *  does, with no extra draw, and its passes don't rerun for upstream edits.
+   *  For a stage that changed what it reads and keeps older photos' look.
+   *  Since 3.2.0. */
+  readsCurrentFrom?: number;
+
   /** Ids of the stages this one runs after, even against priority: a soft
    *  dependency inside the phase. An id that isn't registered, or sits in another
    *  phase (a phase boundary always wins), is ignored. Stages that name each other
@@ -850,10 +874,10 @@ export interface ProcessingStageContribution {
 }
 
 // ---------------------------------------------------------------------------
-// Catalog lifecycle hooks (orchestrator)
+// Catalogue lifecycle hooks (orchestrator)
 // ---------------------------------------------------------------------------
 
-/** Subscribe to catalog lifecycle events. Lets an extension own a side concern
+/** Subscribe to catalogue lifecycle events. Lets an extension own a side concern
  *  (e.g. XMP sidecars) without core knowing about it. All handlers are async and
  *  awaited; a throwing handler is logged and skipped so one extension can't break
  *  a save or an import. */
@@ -880,7 +904,7 @@ export interface CatalogHooksContribution {
     photo: import("@/catalog/types").CatalogPhoto;
     editState: import("@/catalog/types").EditState;
   }): Promise<void>;
-  /** Called when a photo is removed from the catalog. */
+  /** Called when a photo is removed from the catalogue. */
   onPhotoRemove?(ctx: {
     photo: import("@/catalog/types").CatalogPhoto;
     dir: FileSystemDirectoryHandle;
@@ -984,7 +1008,7 @@ export interface GridMenuItemContribution {
   label: string | ((ids: string[]) => string);
   /** Sort position among extension items (lower = earlier). Default 100. */
   order?: number;
-  /** Render in the red "danger" color (e.g. a destructive action). */
+  /** Render in the red "danger" colour (e.g. a destructive action). */
   danger?: boolean;
   /** Return false to show the item greyed-out for the current target. */
   enabled?: (ids: string[]) => boolean;

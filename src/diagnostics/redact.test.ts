@@ -93,8 +93,8 @@ describe("makeRedactor: project folder", () => {
   });
 });
 
-describe("makeRedactor: the catalog's own folders", () => {
-  it("hides relative folder paths the catalog knows", () => {
+describe("makeRedactor: the catalogue's own folders", () => {
+  it("hides relative folder paths the catalogue knows", () => {
     const redact = makeRedactor({ folders: ["Smith Wedding", "Smith Wedding/day1"] });
     expect(redact("[folder-ops] move Smith Wedding/day1/IMG_1.CR3 → Smith Wedding/IMG_1.CR3")).toBe(
       "[folder-ops] move …/<photo>.CR3 → …/<photo>.CR3",

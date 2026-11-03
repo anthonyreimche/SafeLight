@@ -5,7 +5,7 @@
 
 // The Extensions store's caches (registry-cache.cjs): the search cache file
 // keeps one row per query ever run, so expired rows are dropped on load and on
-// write, and an empty registry index is never served or cached as the catalog
+// write, and an empty registry index is never served or cached as the catalogue
 // (it would blank the store until the cache expired).
 
 import { describe, expect, it } from "vitest";

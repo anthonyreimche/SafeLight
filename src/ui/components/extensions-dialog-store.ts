@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Open/close state of the Extensions window, and the deep links into it. Kept
-// apart from the dialog so the store UI and Preferences can drive it without
+// apart from the dialogue so the store UI and Preferences can drive it without
 // importing the component that renders them.
 
 import { create } from "zustand";

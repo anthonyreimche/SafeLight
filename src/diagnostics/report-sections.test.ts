@@ -197,7 +197,7 @@ describe("photoFacts and contextText", () => {
       [
         "Module: Develop",
         "Theme: core.neutral · Layout: core.classic",
-        "Catalog: 1,234 photos",
+        "Catalogue: 1,234 photos",
         "Photo: .nef · image/x-nikon-nef · 6048×4024",
         "Camera: NIKON Z 6 · Lens: NIKKOR Z 24-70mm f/4 S",
         "Processing: version 1 (current 2) · display transform core.agx (photo's own)",
