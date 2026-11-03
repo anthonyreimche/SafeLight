@@ -301,8 +301,11 @@ export function isEditableTarget(t: EventTarget | null): boolean {
 /** True when the keydown types into a text field rather than giving a
  *  shortcut. Only a Ctrl/Cmd combo is a shortcut there: Alt/Option types
  *  characters on a Mac (Option+[ is "“", a German Mac's @ and [), and so does
- *  AltGr, which Windows reports as Ctrl+Alt. The field also keeps its own
- *  copy, paste, cut, undo, redo and select-all, with or without Shift. */
+ *  AltGr, which Linux reports on its own and Windows as Ctrl+Alt. A Ctrl+Alt
+ *  that gives a Latin letter or digit is a shortcut on both; one that types
+ *  anything else (German "{", Polish "ą") is Windows AltGr. The field also
+ *  keeps its own copy, paste, cut, undo, redo and select-all, with or without
+ *  Shift. */
 export function typesIntoField(e: KeyboardEvent): boolean {
   if (!isEditableTarget(e.target)) return false;
   if (!(e.ctrlKey || e.metaKey)) return true;
@@ -311,7 +314,8 @@ export function typesIntoField(e: KeyboardEvent): boolean {
   // the combo is matched by its physical key.
   const physical = /^Key([A-Z])$/.exec(e.code ?? "")?.[1].toLowerCase();
   if (physical && TEXT_EDIT_KEYS.has(physical) && !/^[a-z]$/i.test(e.key)) return true;
-  return !!e.getModifierState?.("AltGraph") || (e.ctrlKey && e.altKey && !onMac());
+  if (e.ctrlKey && e.altKey && !onMac()) return !/^[A-Za-z0-9]$/.test(e.key);
+  return !!e.getModifierState?.("AltGraph");
 }
 
 const TEXT_EDIT_KEYS: ReadonlySet<string> = new Set(["c", "v", "x", "z", "y", "a"]);
