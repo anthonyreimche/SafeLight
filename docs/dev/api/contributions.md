@@ -2,7 +2,7 @@
 
 ← [API Reference](README.md)
 
-Signatures for every `register*` call except the UI-mount ones (modules, panels, header accessories, slots, layouts), which are in [UI Shell](ui-shell.md). `src/extensions/types.ts` is the source of truth. Every contribution is tagged with your extension's id and removed when it is disabled or uninstalled. Re-registering the same `id` replaces a contribution. An `id` belongs to the extension that registered it first: if another extension registers the same `id`, the call is ignored and a warning names both extensions. Pick ids with your extension's prefix, as the examples do.
+Signatures for every `register*` call except the UI-mount ones (modules, panels, header accessories, slots, layouts), which are in [UI Shell](ui-shell.md). The exact types are in [`src/extensions/api/contributions.ts`](../../../src/extensions/api/contributions.ts). Every contribution is tagged with your extension's id and removed when it is disabled or uninstalled. Re-registering the same `id` replaces a contribution. An `id` belongs to the extension that registered it first: if another extension registers the same `id`, the call is ignored and a warning names both extensions. Pick ids with your extension's prefix, as the examples do.
 
 For where GPU code runs and what values it sees, read [How a photo is rendered](../rendering.md) first.
 
@@ -133,6 +133,17 @@ interface StagePass {
 - Passes can't read inter-stage variables.
 - A pass that fails to compile takes its whole stage out of the frame, inline `glsl` included, so the stage draws as if it weren't installed. The Extensions window names the failure, and the stage is built again once you register it changed. Before 3.2.0 the inline `glsl` kept running and read the raw source as `stageResult`.
 
+#### Passes: sizes, formats and cost
+
+- **Size.** Passes draw at the size the frame develops from, not the screen. In Develop that's the source scaled so its long edge is at most 2560 pixels. An export draws large enough for the requested size, up to the source's full size, and thumbnails draw smaller. `uTexel` gives the pass size and `uSourceSize` the decoded source's.
+- **Radii.** Because the pass size changes between preview and export, a radius counted in pass texels covers a different part of the photo in each. Give radii in source pixels and scale them with the formula above, and the result matches between preview and export to within resampling.
+- **Format.** The two ping-pong targets are RGBA16F (half float: about three significant digits, values up to 65504) when the GPU can render to float. Otherwise they're RGBA8 and every pass result is clipped to [0, 1]. A pass carries three channels, the `vec3 c`.
+- **Sampling.** Linear filtering, clamped to the edge, so a tap outside 0..1 reads the nearest edge pixel.
+- **When passes rerun.** The result is cached, and passes draw again only when the source, the stage's own params, the size or, for `reads: "current"`, the image upstream of the stage changes. Moving an unrelated slider doesn't rerun them.
+- **Draws.** A pass draws at most 1024 times per frame, whatever `iterations` asks for.
+- **Cost.** Every draw is a full-image draw. A draw that reads hundreds of neighbours per pixel can run long enough for the operating system to reset the GPU, and Chromium then refuses WebGL for a couple of minutes. Keep each draw to tens of reads and spread a big kernel over several passes, iterations or a downsampled pyramid, as [Pyramid Local Contrast](https://github.com/anthonyreimche/Pyramid-Local-Contrast) does.
+- **Masks.** Each mask that uses a maskable stage gets its own copy of the stage, and the copy runs its passes separately. Five masks with your stage means six pass chains.
+
 ### Textures
 
 ```typescript
@@ -144,7 +155,7 @@ interface TextureRequirement {
 }
 ```
 
-- **`lut` and `dynamic`** take pixels from `api.setStageTexture(stageId, key, data)`. There is one global copy, not one per photo, so they suit film LUTs, not per-photo data. Supply them from `activate`: they are dropped when the extension is disabled, updated or reloaded. Only the extension that registered the stage can set its textures; the call is ignored with a warning otherwise. A texture is also refused with a warning, keeping the previous one, if its format is unknown, its size isn't positive whole numbers, its data doesn't match width × height × channels, or it is over 64 MB (256 MB across all of an extension's textures). One larger than the GPU's maximum texture size draws as blank.
+- **`lut` and `dynamic`** take pixels from `api.setStageTexture(stageId, key, data)`. There is one global copy, not one per photo, so they suit film LUTs, not per-photo data. Set them in `activate` or any time later (bump `version` to replace the data); they are dropped when the extension is disabled, updated or reloaded. In GLSL the texture is a `sampler2D` named by its `key`, in your `glsl` and `helpers` alike. There are no 3D textures, so a 3D LUT goes in as a 2D atlas of slices: see the [LUT recipe](../extensions/recipes.md#a-3d-lut). Only the extension that registered the stage can set its textures; the call is ignored with a warning otherwise. A texture is also refused with a warning, keeping the previous one, if its format is unknown, its size isn't positive whole numbers, its data doesn't match width × height × channels, or it is over 64 MB (256 MB across all of an extension's textures). One larger than the GPU's maximum texture size draws as blank.
 - **`photo`** is for Safelight's own stages: their `derive` fills it per photo from the photo's params (the tone curve's table). Any other stage that declares one is refused.
 - **`atlas`** is for Safelight's own stages too (3.2.0): `derive` returns up to four `{ id, dabs }` brush strokes under the texture's key, and core bakes them into the texture's four channels in order (Heal's brush spots).
 - **`coverage`** is painted. The photo's bag value at `"{stageId}.{key}"` is a `BrushDab[]`, the same shape core brush masks use, and your inline `glsl` reads it as `float key(vec2 uv)` (0 to 1). It persists, undoes and exports like any edit. Replace the array when it changes (`[...dabs, dab]`); an array edited in place doesn't reach the renderer. Not readable inside passes.

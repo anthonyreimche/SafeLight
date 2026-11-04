@@ -104,7 +104,7 @@ Notes:
 - `panels` lists [per-mask panels](ui-shell.md#per-mask-panels-panelcontributionmask). Unknown ids are kept, so a disabled extension's sub-panels return when it is re-enabled.
 - A [maskable stage](contributions.md#processingstagecontribution--gpu-stage) with keys in `bag` runs again inside the mask with those values, on process version 2 or later.
 - Brush mask components and extension [coverage textures](contributions.md#processingstagecontribution--gpu-stage) share one four-channel texture (`MAX_BRUSH_MASKS` = 4).
-- The actions that build masks and spots are in [Brushes, masks & retouch](stores.md#brushes-masks--retouch-interactive-develop-tools).
+- The actions that edit masks are in [Masks](stores.md#masks-the-develop-stores-mask-edits).
 
 ## EditState
 

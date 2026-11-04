@@ -2,7 +2,7 @@
 
 ← [Building Extensions](README.md)
 
-Every `register*` call, one line each, with a link to its full reference. [How Safelight works](../concepts.md#where-to-find-everything) maps goals to these calls and to real extensions that use them.
+Every `register*` call, one line each, with a link to its full reference. Everything you register is removed for you when the extension stops. [How Safelight works](../concepts.md#where-to-find-everything) maps goals to these calls and to real extensions that use them.
 
 ## UI
 
@@ -52,43 +52,6 @@ Every `register*` call, one line each, with a link to its full reference. [How S
 
 Beyond `register*`, the API can render photos headlessly, add records, copy edit stacks and share values between extensions. See [State Stores & Data APIs](../api/stores.md).
 
-## Example: watermark on export
+## Examples
 
-```js
-export function activate(api) {
-  api.registerExportProcessor({
-    id: "com.example.watermark",
-    label: "Watermark",
-    settings: [{ key: "text", label: "Watermark text", type: "string", default: "© My Name" }],
-    async process(blob, photo, settings) {           // runs on the encoded file
-      const bitmap = await createImageBitmap(blob);
-      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(bitmap, 0, 0);
-      ctx.font = `${Math.round(bitmap.width * 0.02)}px sans-serif`;
-      ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
-      ctx.textAlign = "right";
-      const pad = bitmap.width * 0.02;
-      ctx.fillText(settings.text, bitmap.width - pad, bitmap.height - pad);
-      return canvas.convertToBlob({ type: blob.type, quality: 0.95 });
-    },
-  });
-}
-```
-
-## Example: owning a sidecar with catalogue hooks
-
-```js
-export function activate(api) {
-  api.registerCatalogHooks({
-    id: "com.example.xmp",
-    async onPhotoImport({ dir, fileName }) {
-      const xmp = await readSidecar(dir, fileName);
-      return xmp ? { rating: xmp.rating, keywords: xmp.keywords } : undefined; // merged onto the record
-    },
-    async onMetadataChange({ photos }) { /* write ratings, labels, keywords back out */ },
-    async onEditCommit({ photo, editState }) { /* persist the edit */ },
-    async onPhotoRemove({ dir, fileName }) { /* delete the sidecar */ },
-  });
-}
-```
+[Recipes](recipes.md) has complete versions of the common cases: a Library menu item, a copyright stamp on export, a sidecar file per photo, a 3D LUT and a theme. [Your first extension](first-extension.md) covers a panel with sliders driving a GPU stage.

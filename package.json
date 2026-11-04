@@ -19,7 +19,9 @@
     "icon": "node electron/make-icon.cjs",
     "electron:dev": "vite build && electron .",
     "build:electron": "npm run build:app && npm run icon && electron-builder --win",
-    "build:linux": "npm run build:app && npm run icon && electron-builder --linux"
+    "build:linux": "npm run build:app && npm run icon && electron-builder --linux",
+    "types:extensions": "node scripts/build-extension-types.mjs",
+    "types:extensions:check": "node scripts/build-extension-types.mjs --check"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.1",

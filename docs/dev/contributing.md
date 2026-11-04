@@ -16,7 +16,7 @@ By opening a pull request you confirm you have the right to contribute the work 
    `npm run electron:dev` — desktop window
 4. `npm run build` — type-check and production build; `npm run build:electron` — Windows installer. Distribution packages (Windows + Linux deb/rpm/pacman/AppImage/Flatpak) are built with the one-click scripts in `build-scripts/` (see [Installation](../user/installation.md))
 
-Node.js 20.19+ or 22.12+ required (Vite 8 minimum; Node 22 LTS recommended). There is no test suite yet; changes are verified by building and exercising the app.
+Node.js 20.19+ or 22.12+ required (Vite 8 minimum; Node 22 LTS recommended). `npm test` runs the unit and component tests (Vitest), and `npm run test:webgl` runs the GPU tests in a headless browser with a software renderer. Rendering changes should still be checked in the app as well.
 
 ## Code Style
 
@@ -47,7 +47,7 @@ While developing, enable the built-in **Developer Tools** extension (disabled by
 
 1. Branch from `main`: `feature/<name>` or `fix/<description>`
 2. Implement, keeping commits focused
-3. Verify: `npm run build` passes; test in the browser and (for anything touching files, RAW, or GPU paths) the Electron build; test keyboard shortcuts and multi-window sync if relevant
+3. Verify: `npm test` and `npm run build` pass, plus `npm run test:webgl` for rendering changes; test in the browser and (for anything touching files, RAW, or GPU paths) the Electron build; test keyboard shortcuts and multi-window sync if relevant
 4. Open a pull request describing what and why, with screenshots for UI changes and references to related issues
 
 Commit message style: `feat: …`, `fix: …`, `docs: …`, `refactor: …`.
@@ -59,7 +59,7 @@ Safelight is solo-maintained, so help is genuinely welcome. The highest-leverage
 - **Build an extension.** Almost all new functionality belongs in an extension rather than the core — panels, tools, themes, display transforms, export targets, metadata sidecars, and process-heavy features all ship this way. See [Building Extensions](extensions/README.md), and tag your repo with the `safelight-extension` topic so it shows up in the in-app store.
 - **Pick up an issue.** The live list of wanted work is the [issue tracker](../../issues) — auto-labelled and sorted by priority onto the project board. Planned extensions are the open issues labelled [`extension`](../../issues?q=is%3Aissue+is%3Aopen+label%3Aextension). That list is the source of truth, so nothing here goes stale.
 - **Propose an extension.** Open an issue titled `Extension: <name>` — triage auto-labels it `extension` and adds it to the board. See the [Roadmap](../../ROADMAP.md) for how planned work is tracked.
-- **Tests and tooling.** There's no automated test suite yet, and extension templates, scaffolding, and CI would all help future contributors.
+- **Tooling for extension authors.** There's an [extension template](https://github.com/anthonyreimche/Extension-Template) and [generated API types](../../extension-types/README.md). Publishing those types as an npm package, and a manifest checker, would make starting one quicker still.
 
 ## Questions
 

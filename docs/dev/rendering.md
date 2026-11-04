@@ -4,7 +4,7 @@ If your extension changes pixels, read this first. It explains what happens to a
 
 ## Overview
 
-Every photo is drawn by a single GPU program, a large fragment shader that runs once for each output pixel. Safelight assembles this shader from its own processing blocks plus the GLSL that extensions register, and rebuilds it whenever the set of registered stages changes. The same shader draws the Develop view, thumbnails, captures and exports, so what you see in Develop is what gets exported.
+Every photo is drawn by a single GPU program, a large fragment shader that runs once for each output pixel. Safelight assembles this shader from its own processing blocks plus the GLSL that extensions register, and rebuilds it whenever the set of registered stages changes. The same shader draws the Develop view, thumbnails, captures and exports, so what you see in Develop is what gets exported. The one difference is size: Develop draws at most 2560 pixels on the long edge, and an export draws at its own size, which matters for stages that look at neighbouring pixels (see [Passes](api/contributions.md#passes-sizes-formats-and-cost)).
 
 The shader works in two halves, with the display transform in the middle:
 
@@ -23,28 +23,28 @@ An extension can add processing stages to either half, or replace the display tr
   ▼
  ┌─ GPU program, once per pixel ─────────────────────────────────────┐
  │                                                                    │
- │  1  Crop, straighten, transform: pick the source position srcUv    │
+ │  1  Crop, Transform (Essentials): pick the source position srcUv   │
  │       ◆ geometry stages              move srcUv                    │
- │  2  Sample the image, apply heal and clone spots                   │
+ │  2  Sample the image; Heal spots (Essentials)                      │
  │  3  Convert to linear light; RAW only: default tone baseline       │
  │                                                     colour is lin  │
  │       ◆ decode stages                                              │
  │       ◆ noise-reduction stages       replace the core denoiser     │
  │  4  Core noise reduction                                           │
- │  5  Highlight reconstruction (RAW), white balance, exposure,       │
- │     highlights and shadows with the tone shoulder,                 │
- │     the tone part of each mask                                     │
+ │  5  Highlight reconstruction (RAW); then from the Essentials:      │
+ │     White Balance, Exposure, Highlights, Shadows and the tone      │
+ │     shoulder (Basic), the tone part of each mask (Masking)         │
  │       ◆ scene-linear stages                                        │
  │       ◆ tone-map stages                                            │
  │                                                                    │
  │  6  DISPLAY TRANSFORM   c = pipelineToDisplay(lin)                 │
  │       ◆ registerPipeline replaces this step                        │
  │                                                       colour is c  │
- │  7  Whites, Blacks, Contrast, Dehaze, Clarity, Texture,            │
- │     Tone Curve, HSL, Vibrance, Saturation, Colour Grading,         │
- │     Sharpening, the display part of each mask                      │
+ │  7  From the Essentials: Whites, Blacks, Contrast, Dehaze,         │
+ │     Clarity, Texture, Tone Curve, HSL, Vibrance, Saturation,       │
+ │     Colour Grading, Sharpening, the display part of each mask      │
  │       ◆ display-adjust stages                                      │
- │       ◆ effects stages               core Vignette and Grain       │
+ │       ◆ effects stages               incl. Vignette and Grain      │
  │       ◆ output-encode stages                                       │
  │  8  Output encode: convert to the output colour space,             │
  │     clip to [0, 1]                                                 │
@@ -53,7 +53,9 @@ An extension can add processing stages to either half, or replace the display tr
  screen, thumbnail or exported file
 ```
 
-Each ◆ marks a phase where extension stages can run. Within a phase, stages run in order of their `priority`, lowest first, with 100 as the default. Vignette and Grain are stages themselves, registered by Safelight Core in the `effects` phase at priorities 50 and 60, so an `effects` stage at the default priority runs after both of them.
+Each ◆ marks a phase where extension stages can run. Within a phase, stages run in order of their `priority`, lowest first, with 100 as the default. Vignette and Grain are stages themselves, registered by the Effects extension in the `effects` phase at priorities 50 and 60, so an `effects` stage at the default priority runs after both of them.
+
+The steps marked Essentials are the stock tools' own stages, run at fixed points (anchors) that only Safelight's own extensions can use. When a user switches one of those extensions off, its step is skipped and the rest of the order stays the same. Your stage never needs to know which of them are installed.
 
 To see the actual shader layout for the open photo, including where your own stage landed, turn on the Developer Tools extension and open its **Pipeline** tab. See [Debugging](extensions/debugging.md).
 
@@ -65,6 +67,7 @@ Most pixel work is done with a processing stage, and the phase you pick depends 
 |---|---|---|
 | Change each pixel's colour with light-based maths (exposure, white balance, channel mixing, colour matrices) | [`registerProcessingStage`](api/contributions.md#processingstagecontribution--gpu-stage) | `scene-linear` |
 | Change each pixel's colour with maths written for display values (split toning, Lab adjustments) | `registerProcessingStage` | `display-adjust` |
+| Give the image a look (faded blacks, a tint, a film emulation) | `registerProcessingStage` | `display-adjust` |
 | Add an effect on top of the finished look (glow, grain, borders) | `registerProcessingStage` | `effects` |
 | Use neighbouring pixels (blur, sharpen, denoise, local contrast) | a stage with `passes` | any colour phase |
 | Warp the image (lens distortion, liquify) | a stage | `geometry` |
@@ -72,7 +75,7 @@ Most pixel work is done with a processing stage, and the phase you pick depends 
 | Change the exported file's pixels (mats, watermarks) | [`registerExportProcessor`](api/contributions.md#exportprocessorcontribution) with `processPixels` | after step 8, export only |
 | Read the rendered image (scopes, analysis) | [`api.develop.captureFrame`](api/stores.md#apidevelop) | none |
 
-If you're not sure, start with a single stage without passes in `scene-linear` or `display-adjust`. [Colour Correction](https://github.com/anthonyreimche/Colour-Correction) is a small real example: one `display-adjust` stage and the panel that drives it.
+If you're not sure, start with a single stage without passes in `scene-linear` or `display-adjust`. [Your first extension](extensions/first-extension.md) builds one with a panel. [Colour Correction](https://github.com/anthonyreimche/Colour-Correction) is a small real example: one `display-adjust` stage and the panel that drives it.
 
 ## Writing a stage
 
@@ -137,6 +140,7 @@ Every edit records the rendering version it was made with, in `params.processVer
 
 - **Version 1** covers edits made before process versions existed. It's frozen, and it clips the colour to [0, 1] at more points along the way, so stages after the display transform get clipped values even if they declare `space`.
 - **Version 2** is used for every new edit. It keeps the full range through the display half wherever no tool needs [0, 1].
+- **Version 3** is in development and isn't given to new edits yet. Test `SL_PROCESS_VERSION` with `>=` rather than `==` so your stage keeps working when it arrives.
 
 Users move a photo to the current version with **Update processing** or **Reset all edits**. If your stage looks different on one photo than on another, check the photo's version first. Extensions can read `processVersion` but should never write it. [Process versions](api/contributions.md#process-versions) in the reference has the full list of differences.
 

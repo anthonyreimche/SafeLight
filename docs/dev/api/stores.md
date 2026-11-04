@@ -5,7 +5,7 @@
 Live app state, the brush and mask model, and the APIs for the Develop canvas, rendering photos without opening them, the catalogue and variables shared across windows.
 
 - [State stores (`api.stores`)](#state-stores-apistores)
-- [Brushes, masks & retouch](#brushes-masks--retouch-interactive-develop-tools)
+- [Masks](#masks-the-develop-stores-mask-edits)
 - [`api.develop`](#apidevelop)
 - [`api.params`](#apiparams)
 - [`api.export`](#apiexport)
@@ -33,7 +33,7 @@ For presets, keybindings, themes, layouts and pipelines, prefer `api.themes.appl
 
 ### useCatalogStore
 
-The catalogue as the Library shows it. For durable writes, use [`api.catalog`](#apicatalog).
+The catalogue as the Library shows it. Read it in a component with `useCatalogStore((s) => s.photos)`, or anywhere with `useCatalogStore.getState()`. The rating, label, flag and keyword actions save straight away: they store the records, update other windows and fire every extension's `onMetadataChange` hook, so `await` them and there's nothing else to do. For adding records or editing edit stacks, use [`api.catalog`](#apicatalog).
 
 ```ts
 photos; selectedIds: Set<string>; activePhotoId; loading;
@@ -43,7 +43,8 @@ addPhotos(photos, opts?); updatePhoto(…); removePhoto(id); removePhotos(ids);
 setRating / setColorLabel / setFlag(id, v);
 applyRating / applyColorLabel / applyFlag(ids, v); // batch
 rotatePhotos(ids, deg);
-addKeyword / removeKeyword; addKeywords / removeKeywords;
+addKeyword(id, keyword) / removeKeyword(id, keyword);      // Promise<void>
+addKeywords(ids, keywords) / removeKeywords(ids, keywords); // Promise<void>, batch
 setCopyName;                                      // virtual copies
 select; selectRange; toggleSelect; selectAll; deselectAll; setActivePhoto(id);
 ```
