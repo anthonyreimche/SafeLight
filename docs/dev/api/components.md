@@ -238,13 +238,14 @@ Extension bundles get no Tailwind CSS. Style custom UI inline with these CSS var
 | `--color-accent` | `accent` | Active control, selection |
 | `--color-accent-hover` | `accentHover` | Accent hover |
 | `--color-slider-fill` | `sliderFill` | Slider fill, global `accent-color` |
+| `--color-on-accent` | | Text and icons on accent and slider-fill backgrounds (white by default) |
 | `--color-rating` | `rating` | Star rating |
 | `--color-flag-pick` / `-reject` | | Flag colours |
 | `--color-label-red` / `-yellow` / `-green` / `-blue` / `-purple` | | Colour labels |
 | `--font-mono` | `fontMono` | Interface font (despite the name) |
 | `--font-code` | `fontCode` | Monospace font |
 
-A [`ThemeContribution`](contributions.md#themecontribution) must set the first 13 (`surface-0` to `slider-fill`). The rest fall back to the **Safelight Neutral** values.
+A variable a [`ThemeContribution`](contributions.md#themecontribution) leaves out keeps the **Safelight Neutral** value. Set at least the first 13 (`surface-0` to `slider-fill`), or the theme's own colours end up mixed with Neutral's surfaces and text.
 
 ## Styling hooks
 

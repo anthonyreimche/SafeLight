@@ -38,6 +38,10 @@ export interface PipelineProgram {
 // (a film stock picked) is a new program each time, and each holds driver memory.
 export const MAX_PROGRAMS = 32;
 
+// A build is synchronous, and the render worker says nothing while one runs, so one
+// that takes longer than this is logged: otherwise it reads as a worker that stopped.
+const SLOW_BUILD_MS = 1_000;
+
 // More signatures than this for one stage id inside the window is a stage
 // re-registering itself with new GLSL, compiling a program every time.
 const CHURN_SIGNATURES = 8;
@@ -158,6 +162,7 @@ export class ProgramCache {
         this.gl,
         VERTEX_SHADER,
         withProcessVersion(buildFragmentShader(p.glsl, built.injection, variant, exit, p.uniformDecls), variant.version),
+        `the develop program for "${p.id}" with ${stageIds.size} stages`,
       );
       return {
         program,
@@ -266,7 +271,27 @@ export function isolateFailingStages<T>(
   }
 }
 
-export function createProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string): WebGLProgram {
+/** Build a program from `vsSrc` and `fsSrc`, warning when the driver takes longer
+ *  than SLOW_BUILD_MS over it. `name` says which program it is in that warning. */
+export function createProgram(
+  gl: WebGL2RenderingContext,
+  vsSrc: string,
+  fsSrc: string,
+  name = "a program",
+): WebGLProgram {
+  const start = performance.now();
+  try {
+    return buildProgram(gl, vsSrc, fsSrc);
+  } finally {
+    const ms = performance.now() - start;
+    if (ms > SLOW_BUILD_MS) {
+      const kb = (fsSrc.length / 1024).toFixed(1);
+      console.warn(`[renderer] ${name} took ${Math.round(ms)} ms to build (${kb} KB of fragment GLSL)`);
+    }
+  }
+}
+
+function buildProgram(gl: WebGL2RenderingContext, vsSrc: string, fsSrc: string): WebGLProgram {
   const vs = compileShader(gl, gl.VERTEX_SHADER, vsSrc);
   let fs: WebGLShader;
   try {

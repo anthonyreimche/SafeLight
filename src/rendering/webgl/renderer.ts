@@ -481,7 +481,7 @@ export class WebGLRenderer {
     this.samplerBudget = caps.textureUnits - DEVELOP_SAMPLERS;
     this.sources = new SourceCache(gl);
     this.programs = new ProgramCache(gl);
-    this.readback = new Readback(gl, caps.colorBufferFloat, (vs, fs) => createProgram(gl, vs, fs));
+    this.readback = new Readback(gl, caps.colorBufferFloat, (vs, fs) => createProgram(gl, vs, fs, "a readback program"));
     this.prepass = new PrepassRunner(gl, caps.colorBufferFloat, {
       drawSplit: (index, srcTex, applyRetouch, target) => this.drawSplit(index, srcTex, applyRetouch, target),
       note: (path, note) => this.noteReducedPrecision(path, note),

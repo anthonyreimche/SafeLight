@@ -2,6 +2,8 @@
 
 This walk-through builds a small but complete editing tool: a **Faded Film** panel with three sliders (Fade, Warmth, Grain) and two preset buttons, plus the GPU code that changes the photo. It takes about fifteen minutes.
 
+If your idea doesn't change pixels (a menu item, an export step, a panel that shows information), you can skip the GPU half: [Recipes](recipes.md) has those, and the setup in steps 1, 2 and 4 is the same.
+
 You need the Safelight desktop app and a text editor. You don't need GitHub, npm, a bundler or a copy of Safelight's source. Everything here is plain JavaScript in two files.
 
 ← [Building Extensions](README.md) · Next: [Debugging](debugging.md) · Words you don't know: [Glossary](../glossary.md)
@@ -27,11 +29,11 @@ Safelight can load extensions straight from a folder on your disk, so you can ed
 
 1. Open the Extensions window (the puzzle button in the top bar, or **Ctrl+Shift+X**).
 2. In **Browse**, find **Developer Tools** and install it. Make sure it's switched on under **Installed**.
-3. A **Dev** section now appears in the Extensions window. Click **Choose folder…** and pick an empty folder, for example `Documents/safelight-dev`.
+3. A **Dev** section now appears in the Extensions window. Click **Choose folder…** and pick a folder for your extensions, for example `Documents/safelight-dev`.
 
-<!-- Screenshot: Extensions window, Dev section, "Choose folder…" and "↻ Reload" circled. See docs/dev/images/README.md -->
+![The Dev section with one extension loaded: the folder path, Change, Rescan and Clear, and the extension's row with its status and Reload button](../images/dev-folder.png)
 
-Each subfolder of that folder is one extension. You'll create one called `faded-film`:
+You can pick one extension's own folder, or a parent folder where each subfolder is one extension. The parent is handier once you have several. You'll create one called `faded-film`:
 
 ```
 safelight-dev/
@@ -160,9 +162,11 @@ What each part does:
 
 When you change `index.js`, save it and click **↻ Reload** on the extension's row. The old copy stops, its panel and stage are removed, and the new one starts. You don't need to restart the app.
 
-<!-- GIF: edit index.js → save → ↻ Reload → slider moves the photo. See docs/dev/images/README.md -->
+![The Faded Film panel floating over a photo in Develop, with Fade, Warmth and Grain set by the Strong preset](../images/faded-film-panel.jpg)
 
-If it doesn't load, the Dev section shows the error on the extension's row. GLSL mistakes are reported in the Extensions window and the stage is left out of the image until it compiles. [Debugging](debugging.md#common-load-errors) lists the usual causes.
+The panel may first appear floating, as here. Drag it by its header into a side rail to dock it. If you don't see it at all, your layout may not add new panels by itself: turn it on from the **View** menu.
+
+If it doesn't load, the Dev section shows the error on the extension's row. A GLSL mistake is reported in the Developer Tools console, and the stage is left out of the image until it compiles. [Debugging](debugging.md#common-load-errors) lists the usual causes.
 
 ## Where to go next
 

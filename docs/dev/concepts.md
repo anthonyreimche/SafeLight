@@ -93,7 +93,7 @@ Extensions run in the same JavaScript context as Safelight's own interface. The 
 
 - **App data.** An extension can read or change anything the interface can, including the catalogue, edits, settings and the window's DOM. For the DOM, stick to the dock, slots and stylesheets, because core markup changes between releases.
 - **Files.** There's no raw filesystem access by path. Safelight claims the file and update bridges for itself before any extension loads. Extensions work with the file handles they're given, such as the folder handle passed to the import and removal hooks.
-- **Network.** Only the HTTPS origins you list under `permissions.network` in your manifest. They're added to the app's content-security policy at the next launch, and requests to any other host are blocked.
+- **Network.** `fetch` and XHR reach only the HTTPS origins you list under `permissions.network` in your manifest, plus Cloudflare Worker hosts (`*.workers.dev`), which every extension may reach. Declared origins join the app's content-security policy at the next launch. Images load from any HTTPS host. Declare every host you use: it's what users see on your store page.
 - **GPU.** Your GLSL runs on every photo while your extension is enabled.
 - **Other extensions.** Anything in `api.variables` can be read by every other extension, so don't store secrets there.
 

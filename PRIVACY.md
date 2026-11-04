@@ -46,8 +46,11 @@ control or guarantee; only install extensions you trust. See
 
 ## Exports and metadata
 
-Exported images **do not** carry your camera EXIF, GPS/location, or XMP metadata
-— those are stripped. Wide-gamut exports (Display P3, Adobe RGB, ProPhoto) embed
+By default, exported images **do not** carry your camera EXIF, GPS/location, or
+XMP metadata. Turning on **Preferences ▸ Export ▸ Include metadata** copies the
+photo's camera EXIF (camera, lens, exposure, capture date) into exports; GPS
+location is copied only if you also turn on **Include location (GPS)**. XMP
+metadata is never copied. Wide-gamut exports (Display P3, Adobe RGB, ProPhoto) embed
 a standard **ICC colour profile** so colours render correctly in other software;
 that profile is a technical colour description and contains no personal or
 device-identifying information.

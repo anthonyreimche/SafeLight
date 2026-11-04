@@ -2,10 +2,24 @@
 
 Safelight is a fast, project-based RAW photo editor. This guide takes you from launch to your first export.
 
+## How Safelight handles your photos
+
+Safelight never changes your photo files. It keeps your ratings and edits as notes in a hidden `.safelight` folder next to the photos, and applies them whenever it shows a photo. A new image file is only made when you **export**.
+
+```mermaid
+flowchart LR
+  A["Your photos<br/>(never changed)"] --> B["Safelight shows them<br/>with your edits"]
+  C[".safelight folder<br/>(ratings, edits, previews)"] --> B
+  B -- "Export" --> D["New JPEG or TIFF<br/>to share or print"]
+```
+
+So nothing is copied or moved when you open a folder, and deleting the `.safelight` folder removes your ratings and edits but never your photos.
+
+**RAW files** are the camera's unprocessed sensor data. They hold more detail in bright and dark areas than a JPEG, which is why editing them gives better results, but other apps and websites can't show them directly. That's what exporting is for.
+
 ## Launch Safelight
 
-- **Desktop app**: run the installed `Safelight` shortcut (see [Installation](installation.md)).
-- **From source** (Node.js 20.19+/22.12+): `npm install`, then `npm run dev` and open the printed URL in a Chromium-based browser, or `npm run electron:dev` for a desktop window. See [Installation](installation.md) to build your own installer.
+Run the installed **Safelight** shortcut. If you haven't installed it yet, see [Installation](installation.md). (Developers can also run it from source; that's covered there too.)
 
 ## First launch
 
@@ -13,7 +27,7 @@ The first time you open Safelight, a short setup walks you through three things:
 
 1. **Look**: pick a theme, an interface font and the interface scale, and switch on accessibility options such as high contrast, larger text or reduced motion.
 2. **Workspace**: choose the canvas surround behind photos in Develop, how sliders respond, whether single-key shortcuts are on, and whether Safelight reopens your last project.
-3. **Extensions**: pick starter kits for how you shoot. Open a kit to choose single extensions. They install from GitHub when you finish, after the same third-party notice the Extensions store shows.
+3. **Extensions**: the standard tools (the **Essentials** kit: Basic, White Balance, Tone Curve, Crop, Masking, Export and the rest) are already picked. Leave them picked unless you know you want something else. You can also pick starter kits of extra tools for how you shoot, or add extensions any time later. Anything you pick installs from GitHub when you finish, after a notice that extensions are made by other people.
 
 Everything in the first two steps also lives in Preferences. You can skip setup at any point. To run it again, use **Welcome setup** on the welcome screen or **Preferences ▸ Interface ▸ Welcome setup**.
 

@@ -12,7 +12,7 @@
 
 Until Safelight 3.2.0 it was built in. If you're on an older version, switch it on under **Installed** instead.
 
-<!-- Screenshot: Developer Tools panel, Pipeline tab, own stage highlighted. See docs/dev/images/README.md -->
+![The Pipeline tab: the Faded Film stage listed in display-adjust, between the masks' display values and the Effects stages](../images/pipeline-tab.png)
 
 The panel has seven tabs:
 
@@ -34,7 +34,7 @@ flowchart LR
 ```
 
 1. **Extensions ▸ Dev** (or **Preferences ▸ Developer Tools**) ▸ **Choose folder…**. The Dev section only appears while Developer Tools is switched on.
-2. Each immediate subfolder is one extension, in the same `safelight.json` + built-bundle layout an installed extension uses:
+2. Pick one extension's folder, or a parent folder where each immediate subfolder is one extension, in the same `safelight.json` + built-bundle layout an installed extension uses:
    ```
    my-dev-folder/
    ├─ theme-slate/        →  safelight.json + index.js
@@ -48,7 +48,9 @@ Network access works as for an installed extension: `permissions.network` origin
 
 ## When your stage doesn't show
 
-- **A GLSL error.** The stage is left out of the image, and its row in the Extensions window says `Stage "…" failed to compile and is off` with the first line of the compiler's message. The rest of the photo still renders. Fix the code and reload.
+- **A GLSL error.** The stage is left out of the image and the rest of the photo still renders. The **Console** and **Issues** tabs show `[render-worker] <name>: stage "…" failed to compile and is off until it changes`, with the compiler's message. For an installed extension, its row under **Extensions ▸ Installed** says so too. Fix the code and reload.
+
+  ![The Console tab with the error: [render-worker] Faded Film: stage "com.example.faded-film.stage" failed to compile and is off until it changes (ERROR: 0:2139: 'filmHashTypo' : no matching overloaded function found)](../images/stage-error.png)
 - **It compiles but does nothing.** Open the **Pipeline** tab and check your stage is listed in the phase you expect. Then check the values: a panel that writes a key the stage doesn't declare (a typo in `"{stage id}.{key}"`) changes nothing. The **Console** tab shows `console.log` from your code.
 - **It changes photos it shouldn't.** Every installed stage runs on every photo. At its default values it must leave the image exactly as it was, so wrap your maths in an `if` on the uniforms.
 - **It looks different on some photos.** Check the photo's process version (see [Process versions](../rendering.md#process-versions)). The Pipeline tab's v1/v2/v3 picker shows what each version runs.

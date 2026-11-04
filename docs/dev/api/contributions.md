@@ -135,13 +135,14 @@ interface StagePass {
 
 #### Passes: sizes, formats and cost
 
-- **Size.** Passes draw at the size the frame develops from, not the screen. In Develop that's the source scaled so its long edge is at most 2560 pixels. An export draws large enough for the requested size, up to the source's full size, and thumbnails draw smaller. `uTexel` gives the pass size and `uSourceSize` the decoded source's.
+- **Size.** Passes draw at the size the frame develops from, not the screen. In Develop that's the source scaled so its long edge fits the user's render cap (**Preferences ▸ Performance ▸ Develop render resolution**, 2560 to 8192 pixels, 4096 by default). An export draws large enough for the requested size, up to the source's full size, and thumbnails draw smaller. `uTexel` gives the pass size and `uSourceSize` the decoded source's.
 - **Radii.** Because the pass size changes between preview and export, a radius counted in pass texels covers a different part of the photo in each. Give radii in source pixels and scale them with the formula above, and the result matches between preview and export to within resampling.
 - **Format.** The two ping-pong targets are RGBA16F (half float: about three significant digits, values up to 65504) when the GPU can render to float. Otherwise they're RGBA8 and every pass result is clipped to [0, 1]. A pass carries three channels, the `vec3 c`.
 - **Sampling.** Linear filtering, clamped to the edge, so a tap outside 0..1 reads the nearest edge pixel.
 - **When passes rerun.** The result is cached, and passes draw again only when the source, the stage's own params, the size or, for `reads: "current"`, the image upstream of the stage changes. Moving an unrelated slider doesn't rerun them.
 - **Draws.** A pass draws at most 1024 times per frame, whatever `iterations` asks for.
-- **Cost.** Every draw is a full-image draw. A draw that reads hundreds of neighbours per pixel can run long enough for the operating system to reset the GPU, and Chromium then refuses WebGL for a couple of minutes. Keep each draw to tens of reads and spread a big kernel over several passes, iterations or a downsampled pyramid, as [Pyramid Local Contrast](https://github.com/anthonyreimche/Pyramid-Local-Contrast) does.
+- **No render graph.** Every draw of every pass is full size, into one of the same two targets, and reads only the previous draw (`readPrev`) or the source (`readSource`). There's no lower-resolution target, mip chain, multiple render targets or history of earlier draws. A mip-style bloom is built from widening à trous steps instead.
+- **Cost.** Every draw is a full-image draw. A draw that reads hundreds of neighbours per pixel can run long enough for the operating system to reset the GPU, and Chromium then refuses WebGL for a couple of minutes. Keep each draw to tens of reads and spread a big kernel over several passes or iterations, for example an à trous blur that doubles its tap spacing each draw, as [Glow](https://github.com/anthonyreimche/Glow) and [Pyramid Local Contrast](https://github.com/anthonyreimche/Pyramid-Local-Contrast) do.
 - **Masks.** Each mask that uses a maskable stage gets its own copy of the stage, and the copy runs its passes separately. Five masks with your stage means six pass chains.
 
 ### Textures

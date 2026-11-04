@@ -300,10 +300,10 @@ export class PrepassRunner {
     return t;
   }
 
-  private passProgram(key: string, fragmentSource: string, bindings: ContributedBinding[]) {
+  private passProgram(key: string, name: string, fragmentSource: string, bindings: ContributedBinding[]) {
     let e = this.passPrograms.get(key);
     if (e) return e;
-    const program = createProgram(this.gl, PASS_VERTEX_SHADER, fragmentSource);
+    const program = createProgram(this.gl, PASS_VERTEX_SHADER, fragmentSource, name);
     const gl = this.gl;
     const locs: Record<string, WebGLUniformLocation | null> = {};
     for (const n of [
@@ -623,8 +623,9 @@ export class PrepassRunner {
       // A mask copy draws with its stage's programs (same source, its own values).
       const owner = stage.passesOf ?? stage.stageId;
       const key = `${frame.stageSig}|${owner}|${passIdx}|${simpleHash(pass.fragmentSource)}|pv${frame.processVersion}`;
+      const name = `pass ${passIdx + 1} of stage "${owner}"`;
       passIdx++;
-      const prog = this.passProgram(key, withProcessVersion(pass.fragmentSource, frame.processVersion), pass.bindings);
+      const prog = this.passProgram(key, name, withProcessVersion(pass.fragmentSource, frame.processVersion), pass.bindings);
       const { bag } = frame;
       const draws = passDraws(pass, bag);
       for (let it = 0; it < draws; it++) {

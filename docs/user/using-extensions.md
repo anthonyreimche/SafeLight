@@ -13,7 +13,18 @@ The Extensions panel (**View ▸ Extensions**, or **Ctrl+Shift+X**) is a GitHub-
 - **Choose a version** — an extension that publishes releases has a version list on its detail page, with its release notes under **What's new**. Pick an older release to go back to it: Safelight keeps you on that version (the page says **Kept at**), so auto-update leaves it alone and the Updates badge doesn't count it, though the Updates tab still shows the newer one. To follow new releases again, pick **Latest** and click **Update** (or **Switch**, if you're on a pre-release). Pre-releases are in the list too; once you install one, you're offered newer pre-releases until a full release passes them.
 - **Uninstall** — removes the extension *and deletes its files and stored settings*.
 
-Built-in panels appear under **Built-in**; they can be disabled but not uninstalled. **Safelight Core** (the extension manager, stock themes, the Classic layout, and the built-in display transform) is locked and always on.
+**Safelight Core** (the extension manager, stock themes, the Classic layout, and the built-in display transform) is locked and always on.
+
+## The Essentials
+
+Library, Develop and the standard tools (Basic, White Balance, Tone Curve, HSL, Colour Grading, Detail, Effects, Crop, Transform, Heal, Masking, Edit History, Histogram, Presets, Export, Accessibility and the Library panels) are the **Essentials**. They're official extensions, installed on first launch, and they update through the store like any other. That means a fix to one tool reaches you without a whole new Safelight release, and you can go back to an earlier version of one tool if an update changes something you rely on.
+
+What happens to your edits:
+
+- **Turning an Essential off or uninstalling it never deletes edits.** The values stay in each photo's edit. The photo just renders without that tool until it's back, and Develop says "This photo uses adjustments from Basic, which is turned off", with a button to turn it on.
+- **Exports follow what's installed.** A photo exported while a tool it uses is off is exported without that tool's adjustments. Turn the tool back on before exporting delivered work.
+- **Updating an Essential can change the look of photos it touches.** Each release renders every photo with that release's maths. If an update changes a look you've delivered, pick the earlier version from the tool's page in the store and Safelight keeps you on it.
+- **Offline.** Installed extensions keep working without a connection. Installing and updating need GitHub, and so does the first launch, which downloads the Essentials.
 
 ## Are extensions safe?
 

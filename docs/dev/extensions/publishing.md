@@ -4,6 +4,8 @@
 
 The Extensions store builds your page from your repo. You don't host anything.
 
+![A store page: the icon, name, type badge and Verified badge, author, stars and last update, the description and categories from safelight.json, the install line, and the README below](../images/store-page.png)
+
 ## Thumbnail
 
 **Browse grid:** each card shows your manifest `icon`, or else the owner's avatar. Declaring an icon is the only way to get a distinct thumbnail in the grid.

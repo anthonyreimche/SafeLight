@@ -4,7 +4,7 @@ If your extension changes pixels, read this first. It explains what happens to a
 
 ## Overview
 
-Every photo is drawn by a single GPU program, a large fragment shader that runs once for each output pixel. Safelight assembles this shader from its own processing blocks plus the GLSL that extensions register, and rebuilds it whenever the set of registered stages changes. The same shader draws the Develop view, thumbnails, captures and exports, so what you see in Develop is what gets exported. The one difference is size: Develop draws at most 2560 pixels on the long edge, and an export draws at its own size, which matters for stages that look at neighbouring pixels (see [Passes](api/contributions.md#passes-sizes-formats-and-cost)).
+Every photo is drawn by a single GPU program, a large fragment shader that runs once for each output pixel. Safelight assembles this shader from its own processing blocks plus the GLSL that extensions register, and rebuilds it whenever the set of registered stages changes. The same shader draws the Develop view, thumbnails, captures and exports, so what you see in Develop is what gets exported. The one difference is size: Develop draws at the user's render cap (4096 pixels on the long edge by default, set in **Preferences ▸ Performance**), and an export draws at its own size, which matters for stages that look at neighbouring pixels (see [Passes](api/contributions.md#passes-sizes-formats-and-cost)).
 
 The shader works in two halves, with the display transform in the middle:
 
@@ -53,6 +53,17 @@ An extension can add processing stages to either half, or replace the display tr
  screen, thumbnail or exported file
 ```
 
+The same order as a list:
+
+1. Geometry (Crop, Transform), then `geometry` stages.
+2. Sample the image; Heal.
+3. Convert to linear light, with the RAW baseline. Then `decode` and `noise-reduction` stages.
+4. Core noise reduction.
+5. Highlight reconstruction, White Balance, Exposure, Highlights, Shadows, the tone shoulder and mask tone. Then `scene-linear` and `tone-map` stages.
+6. The display transform, which `registerPipeline` replaces.
+7. Whites, Blacks, Contrast, presence, Tone Curve, HSL, Vibrance, Saturation, Colour Grading, Sharpening and mask display values. Then `display-adjust`, `effects` and `output-encode` stages.
+8. Output encode and the final clip.
+
 Each ◆ marks a phase where extension stages can run. Within a phase, stages run in order of their `priority`, lowest first, with 100 as the default. Vignette and Grain are stages themselves, registered by the Effects extension in the `effects` phase at priorities 50 and 60, so an `effects` stage at the default priority runs after both of them.
 
 The steps marked Essentials are the stock tools' own stages, run at fixed points (anchors) that only Safelight's own extensions can use. When a user switches one of those extensions off, its step is skipped and the rest of the order stays the same. Your stage never needs to know which of them are installed.
@@ -68,8 +79,8 @@ Most pixel work is done with a processing stage, and the phase you pick depends 
 | Change each pixel's colour with light-based maths (exposure, white balance, channel mixing, colour matrices) | [`registerProcessingStage`](api/contributions.md#processingstagecontribution--gpu-stage) | `scene-linear` |
 | Change each pixel's colour with maths written for display values (split toning, Lab adjustments) | `registerProcessingStage` | `display-adjust` |
 | Give the image a look (faded blacks, a tint, a film emulation) | `registerProcessingStage` | `display-adjust` |
-| Add an effect on top of the finished look (glow, grain, borders) | `registerProcessingStage` | `effects` |
-| Use neighbouring pixels (blur, sharpen, denoise, local contrast) | a stage with `passes` | any colour phase |
+| Add an effect on top of the finished look (grain, borders, light leaks) | `registerProcessingStage` | `effects` |
+| Use neighbouring pixels (blur, glow, sharpen, denoise, local contrast) | a stage with `passes` | any colour phase. Glow works in `scene-linear`, where highlights still hold their full brightness. |
 | Warp the image (lens distortion, liquify) | a stage | `geometry` |
 | Replace the tone mapper and the whole scene-to-screen rendering | [`registerPipeline`](api/contributions.md#pipelinecontribution--display-transform) | replaces step 6 |
 | Change the exported file's pixels (mats, watermarks) | [`registerExportProcessor`](api/contributions.md#exportprocessorcontribution) with `processPixels` | after step 8, export only |
@@ -96,6 +107,7 @@ Things to know when writing the GLSL:
 - **The variable depends on the phase.** It's `vec2 srcUv` (the position in the source image) in `geometry`, `vec3 lin` before the display transform, and `vec3 c` after it.
 - **Uniforms are referred to by their `key`**, as `amount` is above. Safelight renames them behind the scenes, so two extensions can both use a uniform called `amount` without clashing.
 - **Your code runs in its own block**, so local variables stay local. Shared functions go in `helpers`.
+- **`vUv`** is the pixel's position in the frame, from 0 to 1 across the image as drawn. It's the same at every size, so it suits patterns tied to the picture, like grain.
 - **Built-in helpers** you can call: `luma()`, `srgbToLinear()` and `linearToSrgb()`. Note that `linearToSrgb()` clips to 0..1; `linearToSrgbU()` keeps values above 1.0 (see the API contributions doc).
 
 ## Per-photo settings: the param bag
@@ -111,7 +123,8 @@ This also means your stage must leave the image unchanged at its default values.
 | | Before the display transform (`lin`) | After it (`c`) |
 |---|---|---|
 | Encoding | Linear light | sRGB-encoded |
-| Primaries | Rec.709 (the same as sRGB) | Rec.709 |
+| Primaries and white point | Rec.709 (the same as sRGB), D65 | Rec.709, D65 |
+| Curve | None: values are proportional to light | The sRGB curve (piecewise, linear near black) |
 | Range | Unclamped. Highlights above 1.0, out-of-gamut colours as negative channels. | Clipped to [0, 1] just before your stage, unless you declare `space` |
 | Highlights | From `scene-linear` on, already rolled off by the core's tone shoulder, unless the display transform turns it off | Whatever the display transform made of them |
 
@@ -130,7 +143,7 @@ Safelight's colour handling has four parts. Extensions can take over some of the
 | **Input** (camera RGB to working space) | The RAW decoder, which applies the camera's colour matrix and the as-shot white balance | Can't replace the matrix. Out-of-gamut colours arrive as negative channels instead of being clipped, so a `decode` stage can still apply its own 3×3 correction. |
 | **Working space** | The core: linear Rec.709 before the display transform, sRGB-encoded Rec.709 after it | A stage can ask for Rec.2020 or another encoding with `space`. The conversion in and out is exact. |
 | **Scene to display** (tone and gamut mapping into sRGB) | The display transform, picked per photo in Develop's bottom bar | Supply your own with `registerPipeline`. With `skipBaseCurve` and `skipToneShoulder` set, it gets untouched scene-linear values and owns the whole rendering. It must return sRGB-encoded values. |
-| **Output** (sRGB to the screen or file's space) | The core, once, at step 8: sRGB on screen; sRGB, Display P3, Adobe RGB or ProPhoto on export, with a matching ICC profile | Can't replace it. An `output-encode` stage runs just before it. Don't convert to the output space yourself, or the image gets converted twice. |
+| **Output** (sRGB to the screen or file's space) | The core, once, at step 8: sRGB on screen (or the monitor's profile on Linux); sRGB, Display P3, Adobe RGB (all D65) or ProPhoto (D50, Bradford-adapted) on export, with a matching ICC v2 matrix profile | Can't replace it. An `output-encode` stage runs just before it. Don't convert to the output space yourself, or the image gets converted twice. |
 
 In practice, a colour management extension today is mostly a display transform with both skip flags set, plus stages that work in Rec.2020 through `space` where needed. [Advanced Rendering](https://github.com/anthonyreimche/Advanced-Rendering) ships ten display transforms and is a good place to see how they're written.
 

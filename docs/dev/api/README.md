@@ -65,8 +65,16 @@ Notes:
 | `keybindings` | `getBinding(actionId)` returns the live combo, `""` when unbound. `list()` returns every built-in action. |
 | `cursors` | `labels`, `resolve(token)`. See [Cursors](contributions.md#cursorcontribution). |
 | `develop` | Develop canvas: overlays, mask scope, frame capture, cursors, per-photo data. See [`api.develop`](stores.md#apidevelop). |
-| `export` | `getDefaultSettings()`, `renderPhotos(photos, settings?, onProgress?, options?)`. See [`api.export`](stores.md#apiexport). |
+| `export` | `getDefaultSettings()`, `renderPhotos(photos, settings?, onProgress?, options?)` (render without writing), `exportPhotos(photos, settings, onProgress?, destDir?, options?)` (the Export panel's whole run, into a folder from `project.pickDirectory`). See [`api.export`](stores.md#apiexport). |
 | `catalog` | Records, edit stacks, rename, photo surfaces. See [`api.catalog`](stores.md#apicatalog). |
+| `project` | `pickDirectory(id)` asks the user for a folder to write into (null if they cancel). `pathOf(handle)` and `reveal(path)` show it in the file manager on the desktop. `createFolder`, `renameFolder`, `moveFolder`, `movePhotos`, `deleteFolder` change the project's folders on disk, with paths relative to the project root. |
+| `presets` | `importFile`, `exportFile`, `pickFile`, `fields`, `summarize`, `describeBag`, `useImporters()`: what the Presets panel and Copy Settings use. |
+| `appSettings` | `update(patch)` writes Preferences and runs their side effects. Read them with `stores.useSettings`. |
+| `registry` | `use(selector)`: a React hook over every registered contribution (panels, stages, modules and so on). |
+| `events` | `onBroadcast(cb)`: messages between windows, such as catalogue and edit changes. Returns an unsubscribe function. |
+| `extensions` | `openStore(category?)` opens the Extensions window, on a category's list if given. |
+| `accessibility` | `useKeyboardCanvasEditing()`: whether an on-image tool should show number fields instead of drag handles. `activate()` / `deactivate()` are for the Accessibility extension. |
+| `titleBar` | `useOverlay(bgVar)` recolours the window controls over a custom title bar. |
 | `variables` | `register`, `get`, `subscribe`, `set`, `update`. Named JSON values shared by every extension and window. Needs Safelight 3.0.1. See [`api.variables`](stores.md#apivariables-shared-variables). |
 
 In the desktop build, `window.safelightNative` is a locked-down native bridge (plugin host, GitHub proxy, DevTools, diagnostics). It is absent in the browser, so feature-detect it. Raw filesystem access and the updater are not on it. See [Electron bridge](subsystems.md#electron-bridge-windowsafelightnative).

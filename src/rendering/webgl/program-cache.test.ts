@@ -7,7 +7,7 @@
 // fewer of them. Every build is a whole develop compile, so the count matters as
 // much as the answer.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProcessingStageContribution } from "@/extensions/types";
 import { PASS_PRELUDE } from "./export-draw";
 import { createProgram, isolateFailingStages } from "./program-cache";
@@ -79,8 +79,9 @@ describe("isolateFailingStages", () => {
   });
 });
 
-/** The fragment source createProgram hands the driver for `fsSrc`. */
-function compiledFragment(vsSrc: string, fsSrc: string): string {
+/** A context whose shaders always build, holding each one's type and source.
+ *  `link` runs as the driver links. */
+function fakeGl(link: () => void = () => {}) {
   const sources = new Map<object, string>();
   const types = new Map<object, number>();
   const gl = {
@@ -97,10 +98,16 @@ function compiledFragment(vsSrc: string, fsSrc: string): string {
     createProgram: () => ({}),
     attachShader: () => {},
     bindAttribLocation: () => {},
-    linkProgram: () => {},
+    linkProgram: link,
     deleteShader: () => {},
     getProgramParameter: () => true,
   } as unknown as WebGL2RenderingContext;
+  return { gl, sources, types };
+}
+
+/** The fragment source createProgram hands the driver for `fsSrc`. */
+function compiledFragment(vsSrc: string, fsSrc: string): string {
+  const { gl, sources, types } = fakeGl();
   createProgram(gl, vsSrc, fsSrc);
   const fragment = [...sources].find(([shader]) => types.get(shader) === gl.FRAGMENT_SHADER);
   if (!fragment) throw new Error("no fragment shader compiled");
@@ -136,5 +143,33 @@ describe("createProgram's fragment precision", () => {
   it("leaves a source that declares its sampler precision as it is", () => {
     const src = `${PASS_PRELUDE}uniform sampler2D uSrc;\nvoid main() { fragColor = texture(uSrc, vec2(0.0)); }\n`;
     expect(compiledFragment(PASS_VERTEX_SHADER, src)).toBe(src);
+  });
+});
+
+// The worker builds programs on its one thread and says nothing until a frame is
+// drawn, so a build the driver takes seconds over reads as a worker that stopped.
+describe("createProgram's build time", () => {
+  let clock = 0;
+  beforeEach(() => {
+    clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("warns of a slow build, naming the program, how long it took and its size", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { gl } = fakeGl(() => (clock += 1_500));
+    createProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER, 'the develop program for "builtin" with 3 stages');
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0];
+    expect(message).toContain('the develop program for "builtin" with 3 stages took 1500 ms to build');
+    expect(message).toContain(" KB of fragment GLSL");
+  });
+
+  it("says nothing of a quick one", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { gl } = fakeGl(() => (clock += 200));
+    createProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER, "a pass");
+    expect(warn).not.toHaveBeenCalled();
   });
 });

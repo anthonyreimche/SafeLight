@@ -115,6 +115,17 @@ Open the **Export** panel (docked in Library by default, or via **View ▸ Expor
 
 Exports render through the same worker WebGL pipeline as the Develop view, so output matches what you see. Exported files carry no EXIF or location metadata unless you opt in: **Include metadata** in **Preferences ▸ Export** copies the camera, lens, exposure and capture date, and **Include location (GPS)**, offered once metadata is on, keeps the GPS position too. Both are off by default, and the Export panel's **Privacy** section says which applies. Defaults are configurable in Preferences, and named export presets save full recipes.
 
+**Which settings for what:**
+
+| For | Format | Colour space | Size (long edge) |
+|---|---|---|---|
+| Instagram, Facebook, the web | JPEG, quality about 85 | sRGB | 2048 px (Instagram shows up to 1080 px wide) |
+| Email | JPEG, quality about 80 | sRGB | 1600–2048 px |
+| A print lab | JPEG at the lab's highest quality, or TIFF if they accept it | sRGB unless the lab asks for Adobe RGB | Original |
+| More editing in another app | TIFF, 16-bit | Adobe RGB or ProPhoto RGB | Original |
+
+When in doubt, use sRGB: it's what nearly every screen, phone and website expects.
+
 When a photo can't be exported, the panel counts it, and lists it with the reason where that is known. An edited photo is skipped with "The original isn't available." when its original can't be reached (a drive unplugged, or access not granted) and all Safelight has of it is its stored preview, which already shows the edit. Reconnect the original and export it again.
 
 ## Workspace

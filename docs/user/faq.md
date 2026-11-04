@@ -14,11 +14,11 @@ Yes — completely free and open source (GPL v3). No subscriptions, no hidden co
 
 ### Does Safelight work offline?
 
-Yes. The core app's only automatic network activity is checking GitHub for app and extension updates on launch (and refreshing the extension trust list). Turn off both update checks in Preferences and the app makes no network request unless you explicitly open the Extensions store or install an extension. See [Privacy](../../PRIVACY.md) for the full list.
+Yes, once it's set up. The first launch needs a connection, because it downloads the Essentials (the stock tools, such as Library, Develop and Basic) from GitHub. After that, the core app's only automatic network activity is checking GitHub for app and extension updates on launch (and refreshing the extension trust list). Turn off both update checks in Preferences and the app makes no network request unless you explicitly open the Extensions store or install an extension. See [Privacy](../../PRIVACY.md) for the full list.
 
 ### Does Safelight collect my data?
 
-There is no telemetry, no analytics, and no accounts. The core app never uploads your photos or edits — they stay on your computer. The update checks above contact GitHub, which (like any download) sees your IP address and the version being compared; you can disable them. Exported images have their camera EXIF, GPS, and XMP stripped. Note that optional extensions you install can make their own network requests — for example, the Web Tools extension uploads photos to a gallery service when you choose to publish. See [Privacy](../../PRIVACY.md).
+There is no telemetry, no analytics, and no accounts. The core app never uploads your photos or edits — they stay on your computer. The update checks above contact GitHub, which (like any download) sees your IP address and the version being compared; you can disable them. By default, exported images carry no camera EXIF, GPS or XMP. **Preferences ▸ Export ▸ Include metadata** copies the camera EXIF, **Include location (GPS)** adds GPS on top, and XMP is never copied. Note that optional extensions you install can make their own network requests — for example, the Web Tools extension uploads photos to a gallery service when you choose to publish. See [Privacy](../../PRIVACY.md).
 
 ### Desktop app or browser — which should I use?
 
@@ -54,7 +54,7 @@ Yes. Safelight decodes RAW at full resolution via libraw-wasm, with an in-house 
 
 ### Can I make local adjustments?
 
-Yes — masks built from radial, linear, brush, luminance-range, and colour-range components (up to 8 masks per photo, 16 components total) combined with add/subtract/intersect, with per-mask exposure, contrast, tone, colour, clarity, and optional sub-panels. Plus heal/clone spot removal (up to 16 spots). Geometry tools include crop, straighten, transform, and automatic/guided Upright perspective correction.
+Yes — masks built from radial, linear, brush, luminance-range, and colour-range components (up to 16 masks per photo, 24 components in all) combined with add/subtract/intersect, with per-mask exposure, contrast, tone, colour, clarity, and optional sub-panels. Plus heal/clone spot removal (up to 32 spots). Geometry tools include crop, straighten, transform, and automatic/guided Upright perspective correction.
 
 ### Can I use presets?
 
@@ -66,11 +66,11 @@ Yes — the Image Comparison extension (from the Extensions store) adds hold-to-
 
 ### Can I import Lightroom catalogues?
 
-Full catalogue import isn't built in yet (it's on the roadmap via sql.js), but the XMP Tools extension (from the Extensions store) reads/writes XMP sidecars and imports Lightroom presets.
+Not yet. You can bring ratings, labels, flags, keywords, your keyword hierarchy and your presets across, but not Lightroom's edits. [Coming from Lightroom or Capture One](coming-from-other-editors.md#moving-from-lightroom) has the steps.
 
 ### Does Safelight support batch editing or AI masking?
 
-Both are planned: batch editing, and AI masking (Select Subject, Sky) via ONNX.js.
+Batch editing, yes: right-click in the Library to **Copy settings…** from one photo and **Paste settings** onto a selection, and **Update processing** works on many photos at once. The **Batch Tools** extension adds selective sync, batch Auto tone and white balance, and bulk reset. AI masking (Select Subject, Sky) is planned.
 
 ### Can I rebind keyboard shortcuts?
 
