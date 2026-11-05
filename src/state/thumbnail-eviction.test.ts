@@ -116,7 +116,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("a prefill of a big catalogue", () => {
+// Each test prefills 5000 photos: half a second on a dev machine, several on a
+// loaded CI runner. The timeout matches `landed`'s wait.
+describe("a prefill of a big catalogue", { timeout: 30_000 }, () => {
   it("holds every preview while the cache has room, as a small catalogue always did", async () => {
     await prefill({ cacheLimit: PHOTOS + 1 });
 

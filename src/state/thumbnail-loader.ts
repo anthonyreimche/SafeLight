@@ -86,6 +86,7 @@ export function setThumbnailLoader(l: Loader | null, opts?: LoaderOptions): numb
   // project re-request the same id without being deduped against a stale read.
   inFlight.clear();
   pending = [];
+  flushScheduled = false;
   for (const settled of replacing.values()) for (const settle of settled) settle();
   replacing.clear();
   readAgain.clear();
