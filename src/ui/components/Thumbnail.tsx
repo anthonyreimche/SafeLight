@@ -6,8 +6,10 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { CatalogPhoto } from "@/catalog/types";
 import { photoDisplayName } from "@/catalog/copy-name";
-import { requestThumbnail } from "@/state/thumbnail-loader";
+import { hasPreviewLoaded, markPreviewLoaded, revokePreviewUrl } from "@/state/preview-urls";
 import { Rating } from "./Rating";
+import { usePhotoOption } from "./use-photo-option";
+import { usePreviewRequest } from "./use-preview-request";
 
 // Callbacks take the photo id so the parent can pass ONE stable function to every
 // cell (instead of a fresh per-cell closure). Combined with the memo() below, a
@@ -25,11 +27,8 @@ interface ThumbnailProps {
   onDragStart?: (id: string, e: React.DragEvent) => void;
 }
 
-// Object URLs whose <img> has fired `load`. The grid remounts on every module
-// switch, so a preview it already showed must not fade in a second time. Cells
-// on the thumbnailBlob fallback mint a new URL per mount and still fade.
-const loadedUrls = new Set<string>();
-const hasLoaded = (url: string | null): boolean => url !== null && loadedUrls.has(url);
+// Cells on the thumbnailBlob fallback mint a new URL per mount and still fade in
+// (see state/preview-urls for the previews that do not).
 
 function ThumbnailImpl({
   photo,
@@ -45,7 +44,7 @@ function ThumbnailImpl({
   // Active (the photo open in Develop) gets the brightest ring; other
   // members of a multi-selection get a clearly visible accent ring too.
   // Light-grey selection border. Uses `border` (not `ring`) so it relies on the
-  // same color tokens the rest of the UI does and isn't clipped by the cell's
+  // same colour tokens the rest of the UI does and isn't clipped by the cell's
   // overflow-hidden. box-border keeps the cell size constant across states.
   const borderClass = active
     ? "border-2 border-text-secondary"
@@ -53,7 +52,7 @@ function ThumbnailImpl({
       ? "border-2 border-text-secondary/60"
       : "border-2 border-transparent hover:border-surface-4";
 
-  // Color label drives a solid bottom bar + a faint cell tint so a labelled photo
+  // Colour label drives a solid bottom bar + a faint cell tint so a labelled photo
   // reads at a glance while scanning, instead of a single 2px corner dot.
   const labelBar = photo.colorLabel !== "none" ? colorLabelClasses[photo.colorLabel] : null;
   const labelTint =
@@ -73,7 +72,7 @@ function ThumbnailImpl({
   // The grid shows the original compressed preview (generated at import) — no
   // per-edit re-render or decode. Cheap and space-light; quality is intentionally
   // modest. Edits are seen in Develop, not the grid.
-  // photo.thumbnailUrl is owned and revoked by the catalog store, so it is used
+  // photo.thumbnailUrl is owned and revoked by the catalogue store, so it is used
   // as-is. The thumbnailBlob fallback is created (and revoked) here: without the
   // effect cleanup below, every virtualized remount would leak an object URL.
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
@@ -84,44 +83,29 @@ function ThumbnailImpl({
     }
     const url = URL.createObjectURL(photo.thumbnailBlob);
     setBlobUrl(url);
-    return () => URL.revokeObjectURL(url);
+    return () => revokePreviewUrl(url);
   }, [photo.thumbnailUrl, photo.thumbnailBlob]);
   const thumbUrl = photo.thumbnailUrl ?? blobUrl;
-  const [loaded, setLoaded] = useState(() => hasLoaded(thumbUrl));
+  const [loaded, setLoaded] = useState(() => hasPreviewLoaded(thumbUrl));
   const prevUrl = useRef(thumbUrl);
   if (prevUrl.current !== thumbUrl) {
     prevUrl.current = thumbUrl;
-    setLoaded(hasLoaded(thumbUrl));
+    setLoaded(hasPreviewLoaded(thumbUrl));
   }
   const onLoad = useCallback(() => {
-    if (thumbUrl) loadedUrls.add(thumbUrl);
+    if (thumbUrl) markPreviewLoaded(thumbUrl);
     setLoaded(true);
   }, [thumbUrl]);
 
   // Lazily pull the cached preview when this cell nears the viewport, so a freshly
   // opened folder loads on-screen thumbnails first instead of all of them up front.
-  const cellRef = useRef<HTMLDivElement>(null);
-  const needsLoad = !thumbUrl;
-  useEffect(() => {
-    if (!needsLoad) return;
-    const el = cellRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          requestThumbnail(photo.id, { visible: true });
-          io.disconnect();
-        }
-      },
-      { rootMargin: "300px" },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [needsLoad, photo.id]);
+  const cellRef = usePreviewRequest<HTMLDivElement>(photo.id, !thumbUrl);
+  const optionProps = usePhotoOption(cellRef, photo.id, selected, active, onDoubleClick);
 
   return (
     <div
       ref={cellRef}
+      {...optionProps}
       data-photo-id={photo.id}
       className={`group relative cursor-pointer overflow-hidden rounded ${labelTint} ${borderClass}`}
       style={{ width: size, height: size }}
@@ -147,8 +131,8 @@ function ThumbnailImpl({
           className="flex h-full w-full flex-col items-center justify-center gap-1 bg-surface-2 text-text-secondary"
           title={`${photo.filename}: ${photo.decodeError}`}
         >
-          <span className="text-lg leading-none">{"⚠"}</span>
-          <span className="px-1 text-center text-[9px] leading-tight">no preview</span>
+          <span aria-hidden="true" className="text-lg leading-none">{"⚠"}</span>
+          <span className="line-clamp-3 px-1 text-center text-[10px] leading-tight">{photo.decodeError}</span>
         </div>
       ) : (
         // Skeleton while the cached preview is still loading.
@@ -157,11 +141,13 @@ function ThumbnailImpl({
 
       {(photo.flag === "pick" || photo.flag === "reject") && (
         <div
+          role="img"
+          aria-label={isReject ? "Rejected" : "Pick"}
           className={`absolute top-1 right-1 rounded bg-black/50 px-1 text-[10px] leading-tight ${
-            photo.flag === "pick" ? "text-flag-pick" : "text-label-red"
+            isReject ? "text-label-red" : "text-flag-pick"
           }`}
         >
-          {"⚑"}
+          {isReject ? "✕" : "⚑"}
         </div>
       )}
 
@@ -170,7 +156,7 @@ function ThumbnailImpl({
           className="absolute top-1 left-1 flex items-center gap-0.5 rounded bg-black/50 px-1 text-[10px] leading-tight text-text-secondary transition-opacity group-hover:opacity-0"
           title={photo.keywords.join(", ")}
         >
-          <span>{"🏷"}</span>
+          <span aria-hidden="true">{"🏷"}</span>
           {photo.keywords.length > 1 && <span>{photo.keywords.length}</span>}
         </div>
       )}

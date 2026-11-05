@@ -16,7 +16,7 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { photo } from "@/catalog/stored-edit.fixtures";
 import { NO_FILTER } from "@/modules/library/visible-photos";
 import { useCatalogStore } from "@/state/catalog-store";
-import { setShortcutsSuspended, shortcutsSuspended } from "@/state/keybindings-store";
+import { resetShortcutHoldsForTests, shortcutsSuspended } from "@/state/keybindings-store";
 import { useUIStore } from "@/state/ui-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { Screenshots } from "./Screenshots";
@@ -89,7 +89,7 @@ describe("Screenshots while enlarged", () => {
     unpush?.();
     unpush = null;
     vi.unstubAllGlobals();
-    setShortcutsSuspended(false);
+    resetShortcutHoldsForTests();
     useCatalogStore.setState(INITIAL_CATALOG, true);
     useUIStore.setState(INITIAL_UI, true);
   });

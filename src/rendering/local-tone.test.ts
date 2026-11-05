@@ -7,8 +7,10 @@
 // keeps a pixel's ratio to its surroundings.
 
 import { describe, expect, it } from "vitest";
+import { shippedProgram } from "./webgl/stock-program.test-support";
 import {
   LOCAL_TONE_GLSL,
+  basicShadows,
   localToneBlend,
   pathToWhite,
   toneHighlights,
@@ -104,10 +106,11 @@ describe("localToneBlend", () => {
   });
 
   it("matches the per-pixel curves on a pixel that is its own region", () => {
-    for (const [h, s] of [[-1, 0], [-0.4, 0.6], [0.3, -0.5], [1, 1]]) {
-      const { l2 } = localToneBlend(0.7, 0.7, 0.5, h, s, false);
-      expect(l2).toBeCloseTo(toneShadows(toneHighlights(0.7 * 2 ** 0.5, 0.5, h, false), s), 12);
-    }
+    for (const [h, s] of [[-1, 0], [-0.4, 0.6], [0.3, -0.5], [1, 1]])
+      for (const L of [0.7, 0.01]) {
+        const { l2 } = localToneBlend(L, L, 0.5, h, s, false);
+        expect(l2).toBeCloseTo(basicShadows(toneHighlights(L * 2 ** 0.5, 0.5, h, false), s), 12);
+      }
   });
 
   it("keeps the ratio between two pixels of one bright region at Highlights -100", () => {
@@ -153,6 +156,58 @@ describe("localToneBlend", () => {
   });
 });
 
+/** CIE L* of a luminance, white at 1. */
+function lightness(y: number): number {
+  const f = y > (6 / 29) ** 3 ? Math.cbrt(y) : y / (3 * (6 / 29) ** 2) + 4 / 29;
+  return 116 * f - 16;
+}
+
+// The grey wedge's zones: deep shadow 8 stops under white, shadow 6.
+describe("the Shadows slider on a flat region", () => {
+  const flat = (x: number, s: number) => localToneBlend(x, x, 0, 0, s, false).l2;
+  const stops = (x: number, s: number) => Math.log2(flat(x, s) / x);
+  const DEEP = 2 ** -8;
+  const SHADOW = 2 ** -6;
+
+  it("keeps ±50 where version 1's curve has it in the shadows", () => {
+    for (const x of [DEEP, SHADOW])
+      for (const s of [-0.5, 0.5]) {
+        expect(Math.abs(stops(x, s) - Math.log2(toneShadows(x, s) / x)), `x ${x} s ${s}`).toBeLessThan(0.05);
+      }
+  });
+
+  it("grows in stops in step with the slider, ±100 twice ±50", () => {
+    for (const x of [2 ** -12, DEEP, SHADOW, 2 ** -4])
+      for (const sign of [-1, 1]) {
+        const at = [0.25, 0.5, 0.75, 1].map((s) => stops(x, sign * s));
+        const first = at[0];
+        for (let i = 1; i < at.length; i++) {
+          const step = (at[i] - at[i - 1]) / first;
+          expect(step, `x ${x} sign ${sign} step ${i}`).toBeGreaterThan(0.6);
+          expect(step, `x ${x} sign ${sign} step ${i}`).toBeLessThan(1.6);
+        }
+        const ratio = at[3] / at[1];
+        expect(ratio, `x ${x} sign ${sign}`).toBeGreaterThan(1.5);
+        expect(ratio, `x ${x} sign ${sign}`).toBeLessThanOrEqual(2.05);
+      }
+  });
+
+  it("leaves mid grey and above within 2 L* at ±100", () => {
+    for (const x of [0.18, 0.5, 0.9])
+      for (const s of [-1, 1]) {
+        expect(Math.abs(lightness(flat(x, s)) - lightness(x)), `x ${x} s ${s}`).toBeLessThan(2);
+      }
+  });
+
+  it("keeps darker input darker at every Shadows", () => {
+    const ramp = Array.from({ length: 200 }, (_, i) => 1e-4 * 1e4 ** (i / 199));
+    for (const s of [-1, -0.5, 0.5, 1]) {
+      const out = ramp.map((x) => flat(x, s));
+      for (let i = 1; i < out.length; i++) expect(out[i], `s ${s} at ${ramp[i]}`).toBeGreaterThan(out[i - 1]);
+    }
+  });
+});
+
 describe("the cost of the region base", () => {
   it("reads the source twenty times a pixel: the guide's four taps and the two rings", () => {
     expect(LOCAL_TONE_GLSL.match(/\btexture(?:Lod)?\s*\(/g)).toHaveLength(1);
@@ -160,7 +215,7 @@ describe("the cost of the region base", () => {
     expect(LOCAL_TONE_GLSL).toContain("for (int i = 0; i < 4; i++)");
     expect(LOCAL_TONE_GLSL).toContain("for (int ring = 0; ring < 2; ring++)");
     expect(LOCAL_TONE_GLSL).toContain("for (int i = 0; i < 8; i++)");
-    const v2 = buildFragmentShader(null, undefined, V2_VARIANT);
+    const v2 = shippedProgram(V2_VARIANT);
     expect(v2.match(/\bslLocalToneBase\(/g)).toHaveLength(2);
   });
 });

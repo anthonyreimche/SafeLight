@@ -22,6 +22,9 @@ const h = vi.hoisted(() => ({
   metadataGate: null as Promise<void> | null,
   rotateGate: null as Promise<void> | null,
   storageGate: null as Promise<void> | null,
+  /** Previews being turned right now, and the most turned at once. */
+  turning: 0,
+  peakTurning: 0,
 }));
 
 // Cross-window fan-out is a side effect here; capture the messages instead so the
@@ -30,12 +33,6 @@ vi.mock("./broadcast", () => ({
   broadcast: (message: BroadcastMessage) => void h.broadcasts.push(message),
   onBroadcast: () => () => {},
   WINDOW_ID: "test-window",
-}));
-
-vi.mock("@/project/project-store", () => ({
-  useProjectStore: {
-    getState: () => ({ openLast: h.openLast, reconnectLast: h.reconnectLast }),
-  },
 }));
 
 vi.mock("@/extensions/registry", () => ({
@@ -53,29 +50,40 @@ vi.mock("@/extensions/registry", () => ({
 vi.mock("@/catalog/orient", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/catalog/orient")>()),
   rotateBlob: async (blob: Blob, deg: number) => {
-    if (h.rotateGate) await h.rotateGate;
-    return new Blob([`${await blob.text()}+${deg}`]);
+    h.peakTurning = Math.max(h.peakTurning, ++h.turning);
+    try {
+      if (h.rotateGate) await h.rotateGate;
+      return new Blob([`${await blob.text()}+${deg}`]);
+    } finally {
+      h.turning--;
+    }
   },
 }));
 
 import { catalogStorage, setCatalogStorage } from "@/catalog/storage";
 import { installMemoryStorage } from "@/catalog/stored-edit.fixtures";
 import { storedPhoto } from "@/catalog/types";
-import { useCatalogStore } from "./catalog-store";
+import {
+  fieldChanges,
+  photoById,
+  setLastProjectOpener,
+  structureVersion,
+  useCatalogStore,
+} from "./catalog-store";
+
+setLastProjectOpener({ openLast: () => h.openLast(), reconnectLast: () => h.reconnectLast() });
 
 function memoryCatalogStorage() {
   const rows = new Map<string, CatalogPhoto>();
   const edits = new Map<string, EditState>();
   const storage: CatalogStorage = {
-    getAllPhotos: async () => [...rows.values()],
     putPhoto: async (p) => void rows.set(p.id, p),
     putPhotos: async (list) => {
       for (const p of list) rows.set(p.id, p);
       if (h.storageGate) await h.storageGate;
     },
-    deletePhoto: async (id) => void rows.delete(id),
+    deletePhotos: async (ids) => void ids.forEach((id) => rows.delete(id)),
     getEditState: async (id) => edits.get(id),
-    getAllEditStates: async () => [...edits.values()],
     putEditState: async (e) => void edits.set(e.photoId, e),
     putEditStates: async (list) => {
       for (const e of list) edits.set(e.photoId, e);
@@ -149,6 +157,8 @@ beforeEach(() => {
   h.metadataGate = null;
   h.rotateGate = null;
   h.storageGate = null;
+  h.turning = 0;
+  h.peakTurning = 0;
   h.openLast.mockReset();
   h.reconnectLast.mockReset();
 
@@ -221,6 +231,32 @@ describe("opening a project", () => {
     expect(liveUrls.has(skeleton.thumbnailUrl)).toBe(true);
   });
 
+  it("reconcileCatalog keeps the structure when it only attaches handles", () => {
+    const record = { exif: {}, keywords: [] };
+    useCatalogStore.setState({
+      photos: [photo("a", { ...record, directoryHandle: null, fileHandle: null }), photo("b", record)],
+    });
+    const before = state().photos;
+
+    state().reconcileCatalog([photo("a", record), photo("b", record)]);
+
+    expect(structureVersion(state().photos)).toBe(structureVersion(before));
+    expect(fieldChanges(state().photos, null)).toBe(fieldChanges(before, null));
+  });
+
+  it("reconcileCatalog counts a field the rescan changed, and starts anew when photos came or went", () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    const before = state().photos;
+
+    state().reconcileCatalog([photo("a", { rating: 3 }), photo("b")]);
+    expect(structureVersion(state().photos)).toBe(structureVersion(before));
+    expect(fieldChanges(state().photos, ["rating"])).toBe(1);
+    expect(fieldChanges(state().photos, ["flag"])).toBe(0);
+
+    state().reconcileCatalog([photo("b"), photo("a")]);
+    expect(structureVersion(state().photos)).not.toBe(structureVersion(before));
+  });
+
   it("reconcileCatalog forgets photos that vanished from disk", () => {
     const gone = previewed("gone");
     useCatalogStore.setState({
@@ -254,7 +290,7 @@ describe("addPhotos", () => {
     expect(ids()).toEqual(["a", "a-copy", "a-copy-2", "b"]);
   });
 
-  it("appends when the anchor is not in the catalog", async () => {
+  it("appends when the anchor is not in the catalogue", async () => {
     useCatalogStore.setState({ photos: [photo("a")] });
 
     await state().addPhotos([photo("b")], { afterId: "missing" });
@@ -289,7 +325,7 @@ describe("previews", () => {
     // Overwriting a live preview would strand its object URL.
     expect(kept.thumbnailUrl).toBe(existing);
     expect(kept.thumbnailBlob).toBe(held.thumbnailBlob);
-    // An update for a photo that isn't in the catalog adds nothing.
+    // An update for a photo that isn't in the catalogue adds nothing.
     expect(ids()).toEqual(["bare", "held"]);
   });
 
@@ -356,6 +392,95 @@ describe("previews", () => {
     expect(liveUrls.has(before.thumbnailUrl)).toBe(false);
     // Reacting to another window's broadcast — echoing it back would loop.
     expect(h.broadcasts).toEqual([]);
+  });
+});
+
+describe("at catalogue scale", () => {
+  const N = 50_000;
+  const SWAPS = 500;
+
+  /** N photos that count every read of their ids: a pass over the whole catalogue
+   *  reads N of them. */
+  function countedCatalog() {
+    const reads = { count: 0 };
+    const photos = Array.from({ length: N }, (_, i) => {
+      const p = photo(`p${i}`);
+      const id = p.id;
+      Object.defineProperty(p, "id", {
+        enumerable: true,
+        get: () => {
+          reads.count++;
+          return id;
+        },
+      });
+      return p;
+    });
+    return { photos, reads };
+  }
+
+  it("swaps a rebuilt photo in without a pass over the catalogue", () => {
+    useCatalogStore.setState({ photos: Array.from({ length: N }, (_, i) => photo(`p${i}`)) });
+    state().mergeRebuiltPhoto(`p${N - 1}`, { fileSize: 1 });
+    const plainStart = performance.now();
+    for (let i = 0; i < SWAPS; i++) {
+      state().mergeRebuiltPhoto(`p${(i * 97) % N}`, { fileSize: i + 2 });
+    }
+    console.info(
+      `[bench] mergeRebuiltPhoto ×${SWAPS} on ${N} (plain): ` +
+        `${((performance.now() - plainStart) / SWAPS).toFixed(3)} ms/call`,
+    );
+
+    const { photos, reads } = countedCatalog();
+    useCatalogStore.setState({ photos });
+    state().mergeRebuiltPhoto(`p${N - 1}`, { fileSize: 1 });
+    let arrays = 0;
+    const unsubscribe = useCatalogStore.subscribe((s, prev) => {
+      if (s.photos !== prev.photos) arrays++;
+    });
+    reads.count = 0;
+    h.broadcasts.length = 0;
+
+    const start = performance.now();
+    for (let i = 0; i < SWAPS; i++) {
+      state().mergeRebuiltPhoto(`p${(i * 97) % N}`, { fileSize: i + 2 });
+    }
+    const ms = performance.now() - start;
+    unsubscribe();
+    console.info(
+      `[bench] mergeRebuiltPhoto ×${SWAPS} on ${N}: ${(ms / SWAPS).toFixed(3)} ms/call, ` +
+        `${reads.count} id reads, ${arrays} photos arrays, ${h.broadcasts.length} announces`,
+    );
+
+    expect(reads.count).toBeLessThan(SWAPS * 4);
+    expect(state().photos[97].fileSize).toBe(3);
+    expect(state().photos.length).toBe(N);
+  });
+
+  it("keeps the structure and counts the fields a swap changed", () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    const before = state().photos;
+
+    state().mergeRebuiltPhoto("b", { fileSize: 1 });
+    state().mergeRebuiltPhoto("a", { thumbnailBlob: new Blob(["x"]), thumbnailUrl: "blob:x" });
+
+    expect(structureVersion(state().photos)).toBe(structureVersion(before));
+    expect(fieldChanges(state().photos, ["fileSize"])).toBe(1);
+    expect(fieldChanges(state().photos, null)).toBe(1);
+  });
+
+  it("finds photos by id in arrays swapped from, set from outside, or kept from another", () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    expect(photoById(state().photos, "b")?.id).toBe("b");
+
+    state().mergeRebuiltPhoto("b", { fileSize: 9 });
+    expect(photoById(state().photos, "b")?.fileSize).toBe(9);
+
+    useCatalogStore.setState({ photos: [photo("c"), photo("a")] });
+    expect(photoById(state().photos, "a")).toBe(state().photos[1]);
+    expect(photoById(state().photos, "b")).toBeUndefined();
+
+    state().mergeThumbnails([{ id: "c", blob: new Blob(["c"]) }]);
+    expect(photoById(state().photos, "c")?.thumbnailBlob).not.toBeNull();
   });
 });
 
@@ -555,13 +680,37 @@ describe("removal", () => {
     expect(h.broadcasts).toEqual([]);
   });
 
+  it("hands every id to storage in one call", async () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b"), photo("c")] });
+    const deleting = vi.spyOn(store.storage, "deletePhotos");
+
+    await state().removePhotos(["a", "b"]);
+
+    expect(deleting.mock.calls).toEqual([[["a", "b"]]]);
+  });
+
+  it("drops the photos from the grid before storage finishes removing their files", async () => {
+    useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
+    let cleaned = (): void => {};
+    vi.spyOn(store.storage, "deletePhotos").mockImplementationOnce(
+      () => new Promise<void>((resolve) => (cleaned = resolve)),
+    );
+
+    const removing = state().removePhotos(["a"]);
+    await vi.waitFor(() => expect(store.storage.deletePhotos).toHaveBeenCalled());
+
+    expect(ids()).toEqual(["b"]);
+    cleaned();
+    await removing;
+  });
+
   it("removes nothing from the next project when the project changes partway", async () => {
     useCatalogStore.setState({ photos: [photo("a"), photo("b")] });
     const fromNext: string[] = [];
-    vi.spyOn(store.storage, "deletePhoto").mockImplementationOnce(async () => {
+    vi.spyOn(store.storage, "deletePhotos").mockImplementationOnce(async () => {
       installMemoryStorage(); // the project changed while "a" was removed
-      vi.spyOn(catalogStorage(), "deletePhoto").mockImplementation(
-        async (id) => void fromNext.push(id),
+      vi.spyOn(catalogStorage(), "deletePhotos").mockImplementation(
+        async (gone) => void fromNext.push(...gone),
       );
     });
 
@@ -807,11 +956,43 @@ describe("rating, label and flag", () => {
     expect(state().photos.map((p) => p.colorLabel)).toEqual(["green", "green", "none"]);
   });
 
-  it("ignores ids that are not in the catalog", async () => {
+  it("ignores ids that are not in the catalogue", async () => {
     await state().applyRating(["ghost"], 5);
 
     expect(store.rows.size).toBe(0);
     expect(h.broadcasts).toEqual([]);
+  });
+
+  it("stores both changes when a second lands while extensions hear of the first", async () => {
+    const hooks = gate();
+    h.metadataGate = hooks.promise;
+
+    const rating = state().setRating("a", 3);
+    await vi.waitFor(() => expect(h.metadata).toHaveLength(1));
+    const flag = state().setFlag("a", "pick");
+    hooks.open();
+    await Promise.all([rating, flag]);
+
+    expect(store.rows.get("a")).toMatchObject({ rating: 3, flag: "pick" });
+    expect(state().photos[0]).toMatchObject({ rating: 3, flag: "pick" });
+    expect(h.metadata.map((ctx) => [ctx.photos[0].rating, ctx.photos[0].flag])).toEqual([
+      [3, "none"],
+      [3, "pick"],
+    ]);
+  });
+
+  it("stores a selection's rating and a label that follows it while extensions hear of the rating", async () => {
+    const hooks = gate();
+    h.metadataGate = hooks.promise;
+
+    const rating = state().applyRating(["a", "b", "c"], 5);
+    await vi.waitFor(() => expect(h.metadata).toHaveLength(1));
+    const label = state().setColorLabel("b", "red");
+    hooks.open();
+    await Promise.all([rating, label]);
+
+    expect(["a", "b", "c"].map((id) => store.rows.get(id)?.rating)).toEqual([5, 5, 5]);
+    expect(store.rows.get("b")).toMatchObject({ rating: 5, colorLabel: "red" });
   });
 
   it("hands extensions the post-mutation records and a null edit state when none is stored", async () => {
@@ -886,7 +1067,7 @@ describe("rotatePhotos", () => {
     expect(state().photos[0].rotation).toBe(90);
   });
 
-  it("normalises a negative turn into its positive equivalent", async () => {
+  it("normalizes a negative turn into its positive equivalent", async () => {
     useCatalogStore.setState({ photos: [photo("a")] });
 
     await state().rotatePhotos(["a"], -90);
@@ -930,7 +1111,7 @@ describe("rotatePhotos", () => {
     );
   });
 
-  it("names only the photos still in the catalog when their previews were turned", async () => {
+  it("names only the photos still in the catalogue when their previews were turned", async () => {
     useCatalogStore.setState({ photos: [previewed("a"), photo("b")] });
     const turning = gate();
     h.rotateGate = turning.promise;
@@ -945,6 +1126,26 @@ describe("rotatePhotos", () => {
     ]);
   });
 
+  it("turns a big selection a few previews at a time, then shows and stores it at once", async () => {
+    const turnIds = Array.from({ length: 500 }, (_, i) => `p${i}`);
+    const rest = Array.from({ length: 19_500 }, (_, i) => photo(`q${i}`));
+    useCatalogStore.setState({ photos: [...turnIds.map((id) => previewed(id)), ...rest] });
+    const puts = vi.spyOn(store.storage, "putPhotos");
+    const single = vi.spyOn(store.storage, "putPhoto");
+    let updates = 0;
+    const unsubscribe = useCatalogStore.subscribe(() => void updates++);
+
+    await state().rotatePhotos(turnIds, 90);
+    unsubscribe();
+
+    expect(h.peakTurning).toBeLessThanOrEqual(4);
+    expect(updates).toBe(1);
+    expect(puts.mock.calls.length + single.mock.calls.length).toBe(1);
+    expect(state().photos.slice(0, 500).every((p) => p.rotation === 90)).toBe(true);
+    expect(state().photos[500]).toBe(rest[0]);
+    expect(turnIds.every((id) => store.rows.get(id)?.rotation === 90)).toBe(true);
+  });
+
   /** An edit's preview landing on "a", as edited-thumbnail stores it. */
   const editLands = () => {
     const thumbnailBlob = new Blob(["edited"]);
@@ -956,9 +1157,9 @@ describe("rotatePhotos", () => {
   it("shows the turn before writing it, so an edit's preview rendered meanwhile is turned", async () => {
     useCatalogStore.setState({ photos: [previewed("a", { previewEdit: "edit-1" })] });
     let shownWhileWritten: CatalogPhoto | undefined;
-    vi.spyOn(store.storage, "putPhoto").mockImplementation(async (p) => {
+    vi.spyOn(store.storage, "putPhotos").mockImplementation(async (list) => {
       shownWhileWritten = state().photos[0];
-      store.rows.set(p.id, p);
+      for (const p of list) store.rows.set(p.id, p);
     });
 
     await state().rotatePhotos(["a"], 90);
@@ -1114,7 +1315,7 @@ describe("selection", () => {
     expect(state().activePhotoId).toBeNull();
   });
 
-  it("selectRange spans the order the user sees, not catalog order", () => {
+  it("selectRange spans the order the user sees, not catalogue order", () => {
     state().select("d");
     // The grid is sorted the other way round; the run must follow that view.
     state().selectRange("b", ["d", "c", "b", "a"]);
@@ -1159,7 +1360,7 @@ describe("selection", () => {
     expect(selected()).toEqual(["a"]);
   });
 
-  it("selectAll takes the visible ids, or the whole catalog when given none", () => {
+  it("selectAll takes the visible ids, or the whole catalogue when given none", () => {
     state().selectAll(["b", "c"]);
     expect(selected()).toEqual(["b", "c"]);
 

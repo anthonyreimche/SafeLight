@@ -138,7 +138,7 @@ describe("demosaicBilinear", () => {
 describe("toRGBA8", () => {
   it("encodes linear light to sRGB and forces opaque alpha", () => {
     const out = toRGBA8(new Float32Array([0, 0.5, 1]), 1, 1);
-    // sRGB(0.5) = 0.73536, which quantises to 188.
+    // sRGB(0.5) = 0.73536, which quantizes to 188.
     expect(Array.from(out)).toEqual([0, 188, 255, 255]);
   });
 

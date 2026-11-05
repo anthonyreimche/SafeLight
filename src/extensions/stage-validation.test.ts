@@ -56,6 +56,23 @@ describe("checkStageContract", () => {
     expect(checkStageContract(withFields({ reads: "edited" })).error).toMatch(/reads/);
   });
 
+  it("accepts a whole process version to read the current image from", () => {
+    const check = checkStageContract(withFields({ reads: "current", readsCurrentFrom: 2, passes: [{ glsl: "c = c;" }] }));
+    expect(check).toEqual({ error: null, readsIgnored: null, warnings: [] });
+  });
+
+  it.each([[0], [1.5], ["2"], [null], [Infinity]])("refuses readsCurrentFrom %o", (readsCurrentFrom) => {
+    expect(checkStageContract(withFields({ reads: "current", readsCurrentFrom, passes: [{ glsl: "c = c;" }] })).error).toMatch(
+      /readsCurrentFrom/,
+    );
+  });
+
+  it("warns that readsCurrentFrom without reads current is ignored", () => {
+    const check = checkStageContract(withFields({ readsCurrentFrom: 2, passes: [{ glsl: "c = c;" }] }));
+    expect(check.error).toBeNull();
+    expect(check.warnings.join(" ")).toMatch(/readsCurrentFrom/);
+  });
+
   it("accepts reads source explicitly", () => {
     const check = checkStageContract(withFields({ reads: "source" }));
     expect(check).toEqual({ error: null, readsIgnored: null, warnings: [] });
@@ -543,9 +560,9 @@ describe("ids that belong to Safelight's own stages", () => {
     expect(checkStageContract(withFields({ id }), CORE_EXTENSION_ID)).toEqual(ACCEPTED);
   });
 
-  // The other built-in extensions (core.hsl, core.devtools) register panels, not stages.
+  // The other built-in extensions (core.masks, core.retouch) register panels, not stages.
   it("refuses them from another extension in the core. namespace", () => {
-    const check = checkStageContract(withFields({ id: "core.vignette" }), "core.hsl");
+    const check = checkStageContract(withFields({ id: "core.vignette" }), "core.masks");
     expect(check.error).not.toBeNull();
   });
 

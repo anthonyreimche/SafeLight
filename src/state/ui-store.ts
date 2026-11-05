@@ -96,7 +96,7 @@ interface UIState {
   setGridSize: (size: number) => void;
   stepGridSize: (direction: 1 | -1) => void;
 
-  // Live column count of the grid, published by LibraryGrid's VirtualGrid so the
+  // Live column count of the grid, published by the Library grid's VirtualGrid so the
   // ↑/↓ shortcuts can jump a whole row. 1 in list view (and before first layout).
   gridColumns: number;
   setGridColumns: (n: number) => void;

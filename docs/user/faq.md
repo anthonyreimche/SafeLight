@@ -14,11 +14,11 @@ Yes — completely free and open source (GPL v3). No subscriptions, no hidden co
 
 ### Does Safelight work offline?
 
-Yes. The core app's only automatic network activity is checking GitHub for app and extension updates on launch (and refreshing the extension trust list). Turn off both update checks in Preferences and the app makes no network request unless you explicitly open the Extensions store or install an extension. See [Privacy](../../PRIVACY.md) for the full list.
+Yes, once it's set up. The first launch needs a connection, because it downloads the Essentials (the stock tools, such as Library, Develop and Basic) from GitHub. After that, the core app's only automatic network activity is checking GitHub for app and extension updates on launch (and refreshing the extension trust list). Turn off both update checks in Preferences and the app makes no network request unless you explicitly open the Extensions store or install an extension. See [Privacy](../../PRIVACY.md) for the full list.
 
 ### Does Safelight collect my data?
 
-There is no telemetry, no analytics, and no accounts. The core app never uploads your photos or edits — they stay on your computer. The update checks above contact GitHub, which (like any download) sees your IP address and the version being compared; you can disable them. Exported images have their camera EXIF, GPS, and XMP stripped. Note that optional extensions you install can make their own network requests — for example, the Web Tools extension uploads photos to a gallery service when you choose to publish. See [Privacy](../../PRIVACY.md).
+There is no telemetry, no analytics, and no accounts. The core app never uploads your photos or edits — they stay on your computer. The update checks above contact GitHub, which (like any download) sees your IP address and the version being compared; you can disable them. By default, exported images carry no camera EXIF, GPS or XMP. **Preferences ▸ Export ▸ Include metadata** copies the camera EXIF, **Include location (GPS)** adds GPS on top, and XMP is never copied. Note that optional extensions you install can make their own network requests — for example, the Web Tools extension uploads photos to a gallery service when you choose to publish. See [Privacy](../../PRIVACY.md).
 
 ### Desktop app or browser — which should I use?
 
@@ -30,7 +30,7 @@ It isn't damaged. Safelight isn't notarized by Apple (that costs $99/year, which
 
 ## Projects and Files
 
-### Where is my catalog stored?
+### Where is my catalogue stored?
 
 Inside the project folder you open, in a hidden `.safelight/` directory: `catalog.json` (records and edit histories), `previews/` (thumbnails), and `raw/` (decoded-RAW cache). Move the folder and the project moves with it.
 
@@ -54,7 +54,7 @@ Yes. Safelight decodes RAW at full resolution via libraw-wasm, with an in-house 
 
 ### Can I make local adjustments?
 
-Yes — masks built from radial, linear, brush, luminance-range, and color-range components (up to 8 masks per photo, 16 components total) combined with add/subtract/intersect, with per-mask exposure, contrast, tone, color, clarity, and optional sub-panels. Plus heal/clone spot removal (up to 16 spots). Geometry tools include crop, straighten, transform, and automatic/guided Upright perspective correction.
+Yes — masks built from radial, linear, brush, luminance-range, and colour-range components (up to 16 masks per photo, 24 components in all) combined with add/subtract/intersect, with per-mask exposure, contrast, tone, colour, clarity, and optional sub-panels. Plus heal/clone spot removal (up to 32 spots). Geometry tools include crop, straighten, transform, and automatic/guided Upright perspective correction.
 
 ### Can I use presets?
 
@@ -64,13 +64,13 @@ Yes. Presets are an open, human-readable JSON format (`safelight-preset`) that y
 
 Yes — the Image Comparison extension (from the Extensions store) adds hold-to-preview and a draggable before/after split to the Develop canvas.
 
-### Can I import Lightroom catalogs?
+### Can I import Lightroom catalogues?
 
-Full catalog import isn't built in yet (it's on the roadmap via sql.js), but the XMP Tools extension (from the Extensions store) reads/writes XMP sidecars and imports Lightroom presets.
+Not yet. You can bring ratings, labels, flags, keywords, your keyword hierarchy and your presets across, but not Lightroom's edits. [Coming from Lightroom or Capture One](coming-from-other-editors.md#moving-from-lightroom) has the steps.
 
 ### Does Safelight support batch editing or AI masking?
 
-Both are planned: batch editing, and AI masking (Select Subject, Sky) via ONNX.js.
+Batch editing, yes: right-click in the Library to **Copy settings…** from one photo and **Paste settings** onto a selection, and **Update processing** works on many photos at once. The **Batch Tools** extension adds selective sync, batch Auto tone and white balance, and bulk reset. AI masking (Select Subject, Sky) is planned.
 
 ### Can I rebind keyboard shortcuts?
 
@@ -80,7 +80,7 @@ Every shortcut is rebindable in Preferences (Ctrl+,) ▸ Shortcuts. Single-lette
 
 ### What can extensions do?
 
-A lot — the core is a blind orchestrator that extensions fill in. They can add or replace panels (every stock panel can be disabled and swapped), add themes, layouts, slider icons, keyboard shortcuts, and UI slots; contribute display transforms (tone mappers) and lens profiles; own catalog side concerns via lifecycle hooks (e.g. XMP sidecars); add Library sorts, grid filters, and preset importers; and add export processors and filename templates. See [Using Extensions](using-extensions.md).
+A lot — the core is a blind orchestrator that extensions fill in. They can add or replace panels (every stock panel can be disabled and swapped), add themes, layouts, slider icons, keyboard shortcuts, and UI slots; contribute display transforms (tone mappers) and lens profiles; own catalogue side concerns via lifecycle hooks (e.g. XMP sidecars); add Library sorts, grid filters, and preset importers; and add export processors and filename templates. See [Using Extensions](using-extensions.md).
 
 ### Are extensions safe?
 
@@ -104,17 +104,17 @@ On photos that still use the older processing and have heal or clone spots, leav
 
 Use the desktop app (it forces the discrete GPU), lower the Develop render cap or thumbnail resolution in Preferences, disable the live histogram, and keep the RAW cache enabled.
 
-### Colors look oversaturated on Linux with a wide-gamut monitor
+### Colours look oversaturated on Linux with a wide-gamut monitor
 
-Only wide-gamut monitors, the kind sold for photo and video work, are affected. A standard monitor, which shows about sRGB, already shows colors correctly and needs none of this.
+Only wide-gamut monitors, the kind sold for photo and video work, are affected. A standard monitor, which shows about sRGB, already shows colours correctly and needs none of this.
 
-Under a Wayland session, the engine behind the desktop app (Electron/Chromium) applies no display color management. It treats the monitor as sRGB and sends sRGB values to the panel unconverted, so on a wide-gamut monitor images look oversaturated: pure sRGB red is drawn as the monitor's own, far more saturated, red. This was confirmed on Fedora 44 with GNOME 50 (Electron 42). Chromium's `--force-color-profile` flag is ignored on Wayland, so it doesn't help. Windows and macOS are not affected, because Chromium reads the operating system's display profile there. It changes only how the screen is drawn, not your files or exports.
+Under a Wayland session, the engine behind the desktop app (Electron/Chromium) applies no display colour management. It treats the monitor as sRGB and sends sRGB values to the panel unconverted, so on a wide-gamut monitor images look oversaturated: pure sRGB red is drawn as the monitor's own, far more saturated, red. This was confirmed on Fedora 44 with GNOME 50 (Electron 42). Chromium's `--force-color-profile` flag is ignored on Wayland, so it doesn't help. Windows and macOS are not affected, because Chromium reads the operating system's display profile there. It changes only how the screen is drawn, not your files or exports.
 
-On KDE Plasma the desktop converts every window itself once it knows the monitor. Open **System Settings ▸ Display & Monitor** and set **Color profile**: **Built-in** uses the color data the monitor reports about itself, so it needs no profile file, and **ICC profile** takes your monitor's profile. KDE leaves it on **None** by default, which sends windows unconverted, because some monitors report wrong data. This converts every app, Library thumbnails included, so leave Safelight's Display profile empty: with both set, colors are converted twice and look washed out.
+On KDE Plasma the desktop converts every window itself once it knows the monitor. Open **System Settings ▸ Display & Monitor** and set **Colour profile**: **Built-in** uses the colour data the monitor reports about itself, so it needs no profile file, and **ICC profile** takes your monitor's profile. KDE leaves it on **None** by default, which sends windows unconverted, because some monitors report wrong data. This converts every app, Library thumbnails included, so leave Safelight's Display profile empty: with both set, colours are converted twice and look washed out.
 
-On GNOME and other desktops that don't convert, the fix is **Preferences ▸ Rendering ▸ Display profile**: choose your monitor's ICC profile (GNOME keeps the ones it made in `~/.local/share/icc`) and the Develop view is converted to it. If there's no profile for your monitor, DisplayCAL can make one from the color data the monitor reports, or measure an accurate one with a colorimeter. Safelight uses the profile's primaries exactly and treats its tone curve as the nearest of sRGB, gamma 2.2 or gamma 1.8; the status under the setting says which. The profile needs a matrix and tone curves: DisplayCAL's "curves + matrix" and "single curve + matrix" profiles work, and a LUT profile works through the matrix it carries unless that matrix is swapped. Only the Develop view is converted: Library thumbnails and the rest of the interface stay as they are. If you recalibrate and overwrite the same file, choose it again to reload it.
+On GNOME and other desktops that don't convert, the fix is **Preferences ▸ Rendering ▸ Display profile**: choose your monitor's ICC profile (GNOME keeps the ones it made in `~/.local/share/icc`) and the Develop view is converted to it. If there's no profile for your monitor, DisplayCAL can make one from the colour data the monitor reports, or measure an accurate one with a colorimeter. Safelight uses the profile's primaries exactly and treats its tone curve as the nearest of sRGB, gamma 2.2 or gamma 1.8; the status under the setting says which. The profile needs a matrix and tone curves: DisplayCAL's "curves + matrix" and "single curve + matrix" profiles work, and a LUT profile works through the matrix it carries unless that matrix is swapped. Only the Develop view is converted: Library thumbnails and the rest of the interface stay as they are. If you recalibrate and overwrite the same file, choose it again to reload it.
 
-Alternatively, run Safelight under XWayland (the X11 compatibility layer), where Chromium does convert to the monitor's ICC profile. Don't combine the two: with the profile set both ways, colors are converted twice and look washed out.
+Alternatively, run Safelight under XWayland (the X11 compatibility layer), where Chromium does convert to the monitor's ICC profile. Don't combine the two: with the profile set both ways, colours are converted twice and look washed out.
 
 1. Store each monitor's ICC profile in the X11 root-window atoms: `_ICC_PROFILE` for the first monitor, then `_ICC_PROFILE_1`, `_ICC_PROFILE_2`, and so on for each further monitor, in XRandR output order. GNOME does not set these atoms for XWayland, so you need a small utility that writes each monitor's ICC profile into them.
 2. Launch Safelight with `--ozone-platform=x11`, which overrides the native Wayland platform the app otherwise selects on its own. For the AppImage:

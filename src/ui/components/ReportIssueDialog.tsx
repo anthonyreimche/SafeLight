@@ -14,7 +14,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import { ModalWindow } from "@/ui/components/ModalWindow";
 import { Button, TextArea, TextInput } from "@/extensions/ui-kit";
 import { labelCls } from "@/extensions/SettingsFieldList";
-import { setShortcutsSuspended, shortcutsSuspended } from "@/state/keybindings-store";
+import { suspendShortcuts } from "@/state/keybindings-store";
 import { openUrl } from "@/update/update-checker";
 import { collectReportSections, reportRedactor } from "@/diagnostics/collect";
 import { readAppVersion } from "@/diagnostics/environment";
@@ -107,17 +107,16 @@ function ReportIssueWindow() {
   }, [prefill]);
 
   // Typing here must not reach the app's shortcuts (Ctrl+Z would undo the edit
-  // behind the dialog), and with them paused the shared Esc stack is too.
+  // behind the dialogue), and with them paused the shared Esc stack is too.
   useEffect(() => {
-    const prev = shortcutsSuspended();
-    setShortcutsSuspended(true);
+    const releaseShortcuts = suspendShortcuts();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeReportIssue();
     };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
-      setShortcutsSuspended(prev);
+      releaseShortcuts();
     };
   }, []);
 
@@ -285,7 +284,7 @@ function ReportIssueWindow() {
           )}
           <p className="text-[10px] leading-relaxed text-text-muted">
             GPS positions and serial numbers are never included, and folder names and photo file
-            names are hidden wherever Safelight recognises them. Check the text anyway: what you see
+            names are hidden wherever Safelight recognizes them. Check the text anyway: what you see
             is exactly what goes into the issue, and issues are public.
           </p>
         </section>

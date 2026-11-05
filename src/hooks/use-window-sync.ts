@@ -13,7 +13,7 @@ import { followCatalogRecords } from "@/state/catalog-sync";
 import { hasModule } from "@/extensions/registry";
 
 // Keeps every window (main + detached) in sync: the active photo follows across
-// windows, catalog records another window writes reach this window's stores, and
+// windows, catalogue records another window writes reach this window's stores, and
 // the main window reflects detach/attach of modules and carries out a detached
 // window's navigation. A detached window also announces its return when closed,
 // so the module is reclaimed.

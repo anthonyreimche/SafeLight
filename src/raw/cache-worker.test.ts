@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryFs, fsaDirectoryHandle } from "@/project/memory-fs.test-support";
 import { type StoredSample, cutSourceSample } from "@/rendering/source-sample";
 import {
+  cacheFileName,
   ENTRY_HEADER_BYTES,
   ENTRY_LAYOUT,
   ENTRY_MAGIC,
@@ -59,7 +60,9 @@ describe("cache worker, project folder", () => {
     return { ...worker, fs };
   }
 
-  const fileOf = (key: string) => `${RAW}/${encodeURIComponent(key)}.bin`;
+  const fileOf = async (key: string) => `${RAW}/${await cacheFileName(key)}`;
+  const nameBytes = (path: string) => new TextEncoder().encode(path.slice(RAW.length + 1)).length;
+  const headerWords = (bytes: Uint8Array) => new Uint32Array(bytes.slice(0, ENTRY_HEADER_BYTES).buffer);
 
   it("round-trips a preview whose key needs escaping, with the frame's size and its sample", async () => {
     const { send } = await withFolder();
@@ -84,11 +87,12 @@ describe("cache worker, project folder", () => {
     const { send, fs } = await withFolder();
     await send({ cmd: "write", id: 1, key: KEY, data: pixels(3, 2), width: 3, height: 2, maxEdge: 4096 });
     // Spoil the sample's stream: a read that touched it would fail.
-    const bytes = fs.bytes(fileOf(KEY));
+    const file = await fileOf(KEY);
+    const bytes = fs.bytes(file);
     if (!bytes) throw new Error("the write left no file");
-    const previewBytes = new Uint32Array(bytes.slice(0, ENTRY_HEADER_BYTES).buffer)[10];
-    bytes.fill(0, ENTRY_HEADER_BYTES + previewBytes);
-    fs.putBytes(fileOf(KEY), bytes);
+    const words = headerWords(bytes);
+    bytes.fill(0, ENTRY_HEADER_BYTES + words[11] + words[10]);
+    fs.putBytes(file, bytes);
 
     expect(await send({ cmd: "read", id: 2, key: KEY, sample: false })).toEqual({
       type: "read",
@@ -127,27 +131,107 @@ describe("cache worker, project folder", () => {
     expect([sample.width, sample.height, sample.x, sample.y]).toEqual([1024, 1024, 1, 2]);
   });
 
-  it("reads an entry written before 3.1.0 as before, without the frame's size, and lists it as incomplete", async () => {
-    const KEY = "v6:DSC_0003.NEF:64:0";
-    const fs = new MemoryFs(RAW).putBytes(fileOf(KEY), await legacyFile(pixels(3, 2), 3, 2));
-    const { send } = await withFolder(fs);
+  // The file's name is a fixed-length hash of the key, so a deep or non-ASCII
+  // path can't outgrow the 255 bytes a file name may take.
+  it("keeps the file name under 255 bytes for a deep path of non-ASCII folders, and round-trips it", async () => {
+    const KEY = `v6:${"写真/".repeat(120)}DSC_0100.NEF:52428800:90`;
+    expect(encodeURIComponent(KEY).length).toBeGreaterThan(255);
+    const { send, fs } = await withFolder();
+    const data = pixels(3, 2);
 
-    expect(await send({ cmd: "read", id: 1, key: KEY, sample: true })).toEqual({
-      type: "read",
-      id: 1,
-      width: 3,
-      height: 2,
-      data: encodeCachedPreview(pixels(3, 2), 3, 2, 4096).data,
-      full: null,
-      sample: null,
+    expect(await send({ cmd: "write", id: 1, key: KEY, data, width: 3, height: 2, maxEdge: 4096 })).toEqual({
+      type: "write", id: 1, ok: true,
     });
-    expect(await send({ cmd: "keys", id: 2 })).toEqual({
-      type: "keys", id: 2, entries: [{ key: KEY, complete: false }],
+
+    const names = fs.tree(RAW);
+    expect(names).toHaveLength(1);
+    expect(nameBytes(names[0])).toBeLessThanOrEqual(255);
+    expect(await send({ cmd: "read", id: 2, key: KEY, sample: false })).toMatchObject({
+      data: encodeCachedPreview(pixels(3, 2), 3, 2, 4096).data,
+      full: { width: 3, height: 2 },
+    });
+    expect(await send({ cmd: "keys", id: 3 })).toEqual({
+      type: "keys", id: 3, entries: [{ key: KEY, complete: true }],
     });
   });
 
+  it("keeps a marker for a long key in a short file name, and reads it back", async () => {
+    const MARKER = `unsupported@libraw#2:v6:${"写真/".repeat(120)}DSC_0100.NEF:52428800:0`;
+    const { send, fs } = await withFolder();
+
+    await send({ cmd: "mark", id: 1, key: MARKER, value: "s1 1700000000000" });
+
+    expect(fs.tree(RAW).map(nameBytes).every((n) => n <= 255)).toBe(true);
+    expect(await send({ cmd: "peek", id: 2, key: MARKER })).toEqual({
+      type: "peek", id: 2, value: "s1 1700000000000",
+    });
+    expect(await send({ cmd: "keys", id: 3 })).toEqual({
+      type: "keys", id: 3, entries: [{ key: MARKER, complete: false }],
+    });
+  });
+
+  it("never lets two keys share a file, even with a long path in common", async () => {
+    const stem = `v6:${"写真/".repeat(120)}DSC_0100`;
+    const A = `${stem}.NEF:52428800:0`;
+    const B = `${stem}.NEF:52428800:90`;
+    const { send, fs } = await withFolder();
+
+    await send({ cmd: "write", id: 1, key: A, data: pixels(3, 2), width: 3, height: 2, maxEdge: 4096 });
+    await send({ cmd: "write", id: 2, key: B, data: pixels(2, 2), width: 2, height: 2, maxEdge: 4096 });
+
+    expect(new Set(fs.tree(RAW)).size).toBe(2);
+    expect(await send({ cmd: "read", id: 3, key: A, sample: false })).toMatchObject({ width: 3, height: 2 });
+    expect(await send({ cmd: "read", id: 4, key: B, sample: false })).toMatchObject({ width: 2, height: 2 });
+  });
+
+  // The name is only a hash: the key inside the entry is what says whose it is.
+  it("reads an entry stored under another key's name as a miss, and keeps it", async () => {
+    const OWN = "v6:own.NEF:64:0";
+    const OTHER = "v6:other.NEF:64:0";
+    const { send, fs } = await withFolder();
+    await send({ cmd: "write", id: 1, key: OWN, data: pixels(3, 2), width: 3, height: 2, maxEdge: 4096 });
+    const bytes = fs.bytes(await fileOf(OWN));
+    if (!bytes) throw new Error("the write left no file");
+    fs.putBytes(await fileOf(OTHER), bytes);
+
+    expect(await send({ cmd: "read", id: 2, key: OTHER, sample: false })).toEqual({
+      type: "read", id: 2, data: null, width: 0, height: 0, full: null, sample: null,
+    });
+    expect(await send({ cmd: "read", id: 3, key: OWN, sample: false })).toMatchObject({ width: 3 });
+  });
+
+  it("reads a marker stored under another key's name as no marker", async () => {
+    const OWN = "unsupported@libraw#2:v6:own.NEF:64:0";
+    const OTHER = "unsupported@libraw#2:v6:other.NEF:64:0";
+    const { send, fs } = await withFolder();
+    await send({ cmd: "mark", id: 1, key: OWN, value: "s1" });
+    const bytes = fs.bytes(await fileOf(OWN));
+    if (!bytes) throw new Error("the mark left no file");
+    fs.putBytes(await fileOf(OTHER), bytes);
+
+    expect(await send({ cmd: "peek", id: 2, key: OTHER })).toEqual({ type: "peek", id: 2, value: null });
+    expect(await send({ cmd: "peek", id: 3, key: OWN })).toEqual({ type: "peek", id: 3, value: "s1" });
+  });
+
+  // Files named by the key itself, from before the name was a hash, can't be
+  // told apart from other keys' or read back: they go on the first listing, and
+  // their photos are filled afresh.
+  it("removes files named the old way when it lists, leaving other files alone", async () => {
+    const KEY = "v6:DSC_0003.NEF:64:0";
+    const fs = new MemoryFs(RAW)
+      .putBytes(`${RAW}/${encodeURIComponent(KEY)}.bin`, await legacyFile(pixels(3, 2), 3, 2))
+      .put(`${RAW}/${encodeURIComponent("unsupported@libraw#2:" + KEY)}.bin`, "s1")
+      .put(`${RAW}/notes.txt`, "x");
+    const { send } = await withFolder(fs);
+
+    expect(await send({ cmd: "read", id: 1, key: KEY, sample: false })).toMatchObject({ data: null });
+    expect(await send({ cmd: "keys", id: 2 })).toEqual({ type: "keys", id: 2, entries: [] });
+
+    expect(fs.tree(RAW)).toEqual([`${RAW}/notes.txt`]);
+  });
+
   it("treats a file too short for its header as a miss", async () => {
-    const fs = new MemoryFs(RAW).put(`${RAW}/short.bin`, "abc");
+    const fs = new MemoryFs(RAW).put(await fileOf("short"), "abc");
     const { send } = await withFolder(fs);
 
     expect(await send({ cmd: "read", id: 3, key: "short", sample: false })).toEqual({
@@ -160,7 +244,7 @@ describe("cache worker, project folder", () => {
   // count as cached, or the pass would skip the photo while Develop misses.
   it("doesn't list an entry whose write hasn't closed, which reads as a miss", async () => {
     const KEY = "v6:DSC_0001.NEF:64:0";
-    const file = `${RAW}/${encodeURIComponent(KEY)}.bin`;
+    const file = await fileOf(KEY);
     const fs = new MemoryFs(RAW);
     const { post, send } = await withFolder(fs);
     const writes = fs.holdWrites();
@@ -176,23 +260,25 @@ describe("cache worker, project folder", () => {
   });
 
   it("removes an entry too short for its header once it reads as a miss", async () => {
-    const fs = new MemoryFs(RAW).put(`${RAW}/short.bin`, "abc");
+    const file = await fileOf("short");
+    const fs = new MemoryFs(RAW).put(file, "abc");
     const { send } = await withFolder(fs);
 
     await send({ cmd: "read", id: 1, key: "short", sample: false });
 
-    expect(fs.has(`${RAW}/short.bin`)).toBe(false);
+    expect(fs.has(file)).toBe(false);
     expect(await send({ cmd: "keys", id: 2 })).toEqual({ type: "keys", id: 2, entries: [] });
   });
 
-  it("never lists a new-layout file shorter than its header, and removes it once it reads as a miss", async () => {
+  it("never lists a file shorter than its header, and removes it once it reads as a miss", async () => {
+    const file = await fileOf("short");
     const short = new Uint8Array(new Uint32Array([ENTRY_MAGIC, ENTRY_LAYOUT, 3, 2, 0]).buffer);
-    const fs = new MemoryFs(RAW).putBytes(`${RAW}/short.bin`, short);
+    const fs = new MemoryFs(RAW).putBytes(file, short);
     const { send } = await withFolder(fs);
 
     expect(await send({ cmd: "keys", id: 1 })).toEqual({ type: "keys", id: 1, entries: [] });
     expect(await send({ cmd: "read", id: 2, key: "short", sample: false })).toMatchObject({ data: null });
-    expect(fs.has(`${RAW}/short.bin`)).toBe(false);
+    expect(fs.has(file)).toBe(false);
   });
 
   // A later build's layout serves nothing here: listed as complete, the pass
@@ -206,40 +292,32 @@ describe("cache worker, project folder", () => {
       fullHeight: 2,
       sample: { width: 3, height: 2, x: 0, y: 0 },
       previewBytes: 8,
+      keyBytes: 5,
     });
     header[1] = ENTRY_LAYOUT + 1;
     const later = new Uint8Array(60);
     later.set(new Uint8Array(header.buffer));
-    const fs = new MemoryFs(RAW).putBytes(`${RAW}/later.bin`, later);
+    const file = await fileOf("later");
+    const fs = new MemoryFs(RAW).putBytes(file, later);
     const { send } = await withFolder(fs);
 
     expect(await send({ cmd: "keys", id: 1 })).toEqual({ type: "keys", id: 1, entries: [] });
     expect(await send({ cmd: "read", id: 2, key: "later", sample: false })).toMatchObject({ data: null });
-    expect(fs.has(`${RAW}/later.bin`)).toBe(false);
+    expect(fs.has(file)).toBe(false);
   });
 
-  it("lists decoded keys, skipping other files and malformed names", async () => {
-    const fs = new MemoryFs(RAW)
-      .put(`${RAW}/${encodeURIComponent("v6:2026/a b.ARW:10:0")}.bin`, "x")
-      .put(`${RAW}/notes.txt`, "x")
-      .put(`${RAW}/%E0%A4%A.bin`, "x");
+  it("lists the key kept inside each entry and marker, skipping other files", async () => {
+    const ENTRY = "v6:2026/a b.ARW:10:0";
+    const MARKER = `unsupported@libraw#2:${ENTRY}`;
+    const fs = new MemoryFs(RAW).put(`${RAW}/notes.txt`, "x");
     const { send } = await withFolder(fs);
+    await send({ cmd: "write", id: 1, key: ENTRY, data: pixels(1, 1), width: 1, height: 1, maxEdge: 64 });
+    await send({ cmd: "mark", id: 2, key: MARKER, value: "s1" });
 
-    expect(await send({ cmd: "keys", id: 4 })).toEqual({
-      type: "keys", id: 4, entries: [{ key: "v6:2026/a b.ARW:10:0", complete: false }],
-    });
-  });
-
-  it("lists an entry that keeps the frame's size as complete, one from before 3.1.0 as not", async () => {
-    const OLD = "v6:old.NEF:64:0";
-    const NEW = "v6:new.NEF:64:0";
-    const fs = new MemoryFs(RAW).putBytes(fileOf(OLD), await legacyFile(pixels(1, 1), 1, 1));
-    const { send } = await withFolder(fs);
-    await send({ cmd: "write", id: 1, key: NEW, data: pixels(1, 1), width: 1, height: 1, maxEdge: 64 });
-
-    const reply = await send({ cmd: "keys", id: 2 });
+    const reply = await send({ cmd: "keys", id: 3 });
     const entries = reply?.type === "keys" ? [...reply.entries].sort((a, b) => a.key.localeCompare(b.key)) : null;
-    expect(entries).toEqual([{ key: NEW, complete: true }, { key: OLD, complete: false }]);
+    expect(entries).toEqual([{ key: MARKER, complete: false }, { key: ENTRY, complete: true }]);
+    expect(fs.has(`${RAW}/notes.txt`)).toBe(true);
   });
 
   it("replies with an error when a request fails", async () => {
@@ -409,8 +487,18 @@ describe("cache worker, no reachable folder", () => {
     await send(scopeTo(B));
     await send(write(2, pixels(1, 1)));
 
-    expect(await send({ cmd: "clear", id: 3 })).toEqual({ type: "clear", id: 3 });
+    expect(await send({ cmd: "clear", id: 3 })).toEqual({ type: "clear", id: 3, failed: 0 });
     expect(idb.rows.size).toBe(0);
+  });
+
+  it("counts what it could not clear", async () => {
+    const idb = new FakeIndexedDB();
+    const { send } = await startCacheWorker(idb);
+    await send(scopeTo(A));
+    await send(write(1, pixels(1, 1)));
+    idb.commitError = new Error("quota");
+
+    expect(await send({ cmd: "clear", id: 3 })).toEqual({ type: "clear", id: 3, failed: 1 });
   });
 
   it("caches nothing when the project has no scope", async () => {
@@ -422,7 +510,7 @@ describe("cache worker, no reachable folder", () => {
 
     expect(await send({ cmd: "read", id: 2, key: KEY, sample: false })).toMatchObject({ data: null });
     expect(await send({ cmd: "keys", id: 3 })).toMatchObject({ entries: [] });
-    expect(await send(write(4, pixels(1, 1)))).toEqual({ type: "write", id: 4, ok: true });
+    expect(await send(write(4, pixels(1, 1)))).toEqual({ type: "write", id: 4, ok: false });
     expect(await send({ cmd: "delete", id: 5, key: KEY })).toEqual({ type: "delete", id: 5 });
     expect(idb.rows.size).toBe(1);
   });

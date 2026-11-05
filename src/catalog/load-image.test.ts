@@ -42,7 +42,7 @@ const h = vi.hoisted(() => ({
   decodeResult: (): Promise<RawFloatImage | null> => Promise.resolve(null),
   previewResult: (): Promise<Blob | null> => Promise.resolve(null),
   saved: [] as CatalogPhoto[],
-  /** The catalog's photos as the store holds them when a decode finishes. */
+  /** The catalogue's photos as the store holds them when a decode finishes. */
   catalog: [] as CatalogPhoto[],
   /** How many times the 8-bit RAW decode (the bitmap path) ran. */
   bitmapDecodes: 0,
@@ -125,21 +125,21 @@ vi.mock("@/raw/accept-decode", async (importOriginal) => {
   };
 });
 
-vi.mock("@/modules/library/raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: () => h.previewResult(),
 }));
 
-vi.mock("@/modules/library/netpbm", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/netpbm")>()),
+vi.mock("@/raw/netpbm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/netpbm")>()),
   decodeNetpbm: () => {
     h.plainDecoders.push("netpbm");
     return h.plainResult();
   },
 }));
 
-vi.mock("@/modules/library/tiff-image", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/tiff-image")>()),
+vi.mock("@/raw/tiff-image", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/tiff-image")>()),
   decodeTiff: () => {
     h.plainDecoders.push("tiff");
     return h.plainResult();
@@ -467,7 +467,7 @@ describe("loadPhotoImage with a cached develop preview", () => {
   });
 
   // In Electron getFile() reads the whole RAW over IPC; the cache key needs
-  // only the catalog record.
+  // only the catalogue record.
   it("serves a cache hit without reading the original once the photo has its camera match", async () => {
     await loadPhotoImage(rawPhoto({ exif: { baselineExposure: 0.5, baselineShadows: 0, cameraMatchVersion: CAMERA_MATCH_VERSION } }));
     await loadPhotoImage(rawPhoto({ exif: { baselineExposure: null, baselineShadows: null, cameraMatchVersion: CAMERA_MATCH_VERSION } }));
@@ -607,7 +607,7 @@ describe("loadPhotoImage on a cache miss", () => {
     expect(h.saved).toEqual([photo]);
   });
 
-  it("stores what the decode learned on the photo as the catalog has it by then", async () => {
+  it("stores what the decode learned on the photo as the catalogue has it by then", async () => {
     // A full decode takes seconds; another window may change the photo meanwhile.
     // The photo has its camera match already, which a decode never relearns.
     h.decodeResult = () => Promise.resolve(floatDecode({ colorTemperature: 5200 }));
@@ -621,7 +621,7 @@ describe("loadPhotoImage on a cache miss", () => {
     ]);
   });
 
-  it("stores nothing for a photo that left the catalog while it decoded", async () => {
+  it("stores nothing for a photo that left the catalogue while it decoded", async () => {
     h.decodeResult = () => Promise.resolve(floatDecode({ colorTemperature: 5200 }));
 
     await loadPhotoImage(rawPhoto());

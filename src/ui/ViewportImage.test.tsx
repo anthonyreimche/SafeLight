@@ -610,6 +610,33 @@ describe("placement and the colour-assessment mat", () => {
     expect(onViewport).toHaveBeenLastCalledWith(HALF, 800, 600);
   });
 
+  it("asks again at the new device size when the pixel ratio changes", () => {
+    const listeners = new Set<() => void>();
+    vi.stubGlobal("matchMedia", () => ({
+      addEventListener: (_: string, fn: () => void) => void listeners.add(fn),
+      removeEventListener: (_: string, fn: () => void) => void listeners.delete(fn),
+    }));
+    const dpr = (value: number) =>
+      Object.defineProperty(window, "devicePixelRatio", { configurable: true, value });
+    try {
+      dpr(1);
+      const onViewport = vi.fn();
+      render(<Placed zoom={1} onViewport={onViewport} />);
+      advance(200);
+      expect(onViewport.mock.lastCall?.slice(1)).toEqual([800, 600]);
+
+      dpr(2);
+      act(() => {
+        for (const fn of [...listeners]) fn();
+      });
+      advance(200);
+      expect(onViewport.mock.lastCall?.slice(1)).toEqual([1600, 1200]);
+    } finally {
+      Reflect.deleteProperty(window, "devicePixelRatio");
+      vi.stubGlobal("matchMedia", undefined);
+    }
+  });
+
   it("asks for a zoom-out's whole image at once", () => {
     const onViewport = vi.fn();
     const view = render(<Placed zoom={1} onViewport={onViewport} />);

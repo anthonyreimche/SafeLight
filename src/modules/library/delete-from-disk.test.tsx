@@ -6,7 +6,7 @@
 // The confirm-and-report flow around the app's most destructive action.
 // Native confirm/alert suspend Electron's renderer and can desync window focus
 // (electron#31917), so confirmAndDeleteFromDisk must run its confirmation and
-// its failure report through the in-app dialog — these tests pin that neither
+// its failure report through the in-app dialogue — these tests pin that neither
 // window.confirm nor window.alert is ever invoked. The seam is the privileged
 // bridge (claimPrivileged → fs.trash), stubbed before its one-shot boot claim;
 // pure trash mechanics (sidecars, copies, cache purge) stay in
@@ -70,7 +70,7 @@ afterEach(() => {
 });
 
 describe("confirmAndDeleteFromDisk", () => {
-  it("confirms through the in-app danger dialog, then trashes", async () => {
+  it("confirms through the in-app danger dialogue, then trashes", async () => {
     const user = userEvent.setup();
     render(<ConfirmDialogHost />);
     let flow!: Promise<void>;
@@ -83,7 +83,7 @@ describe("confirmAndDeleteFromDisk", () => {
     const confirmButton = within(dialog).getByRole("button", {
       name: `Move to ${trashLabel()}`,
     });
-    expect(confirmButton.className).toContain("var(--color-label-red)");
+    expect(confirmButton.className).toContain("bg-danger");
 
     await user.click(confirmButton);
     await flow;
@@ -94,7 +94,7 @@ describe("confirmAndDeleteFromDisk", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("cancelling leaves the files and the catalog untouched", async () => {
+  it("cancelling leaves the files and the catalogue untouched", async () => {
     const user = userEvent.setup();
     render(<ConfirmDialogHost />);
     let flow!: Promise<void>;
@@ -155,7 +155,9 @@ describe("confirmAndDeleteFromDisk", () => {
       name: "Delete from disk",
     });
     expect(report.textContent).toContain("a.NEF");
-    expect(report.textContent).toContain("EBUSY: locked");
+    expect(report.textContent).toContain("a.NEF: the file is locked or not writable");
+    expect(report.textContent).not.toContain("EBUSY");
+    expect(report.textContent).toContain("This photo stays in the catalogue.");
     await user.click(within(report).getByRole("button", { name: "OK" }));
     await flow;
     expect(removePhotos).not.toHaveBeenCalled();

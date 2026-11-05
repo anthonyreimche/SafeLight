@@ -19,7 +19,8 @@ import {
   rewriteGlsl,
   uniformPrefix,
 } from "@/rendering/webgl/shader-compiler";
-import type { ContributedBinding } from "@/rendering/webgl/stage-injection";
+import { BUILTIN_RESOLVED } from "@/rendering/webgl/builtin-pipeline";
+import type { ResolvedPipeline } from "@/rendering/webgl/resolved-pipeline";
 import { getParamDescriptor } from "./param-registry";
 import { bagDiffersFromDefault, useRegistry, type RegisteredPipeline } from "./registry";
 
@@ -33,31 +34,8 @@ export const usePipelineStore = create<{ activeId: string }>(() => ({
   activeId: DEFAULT_PIPELINE,
 }));
 
-export interface ResolvedPipeline {
-  id: string;
-  /** GLSL defining pipelineToDisplay, or null for the built-in transform. */
-  glsl: string | null;
-  skipBaseCurve: boolean;
-  skipToneShoulder: boolean;
-  /** The uniforms the transform's GLSL reads, declared under its namespace.
-   *  Empty ("", and `bindings` []) for a transform with helpers that declares
-   *  none; absent without glsl, or with neither declarations nor helpers. */
-  uniformDecls?: string;
-  /** The bag key each of those uniforms binds from, and its default. */
-  bindings?: readonly ContributedBinding[];
-  /** Change signature the renderer caches its compiled programs and their
-   *  flags by: it differs whenever the shader or either flag does. */
-  sig: string;
-}
-
-/** Stable identity for the built-in fallback (sig "" = stock program). */
-export const BUILTIN_RESOLVED: ResolvedPipeline = {
-  id: DEFAULT_PIPELINE,
-  glsl: null,
-  skipBaseCurve: false,
-  skipToneShoulder: false,
-  sig: "",
-};
+export { BUILTIN_RESOLVED };
+export type { ResolvedPipeline };
 
 /** The pipeline id a photo's `displayTransform` renders with: its own pick
  *  while registered, else the Preferences default while registered, else the

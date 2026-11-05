@@ -9,6 +9,8 @@
 // declare (16 on ANGLE) no longer caps the stage set. A set within the limit
 // keeps a texture per stage (stage-injection.ts, layersResults).
 
+import { SCRATCH_UNIT, drainErrors, setSampling, workingFormat } from "./gl-resources";
+
 /** Each of `ids` gets a layer: the one it holds, else the lowest free one. Every
  *  layer already held is kept, so a resting stage keeps its cached result. */
 export function assignLayers(
@@ -47,8 +49,8 @@ export function releaseLayers(
  *  set. */
 export class StageResultLayers {
   private readonly gl: WebGL2RenderingContext;
-  // RGBA16F with EXT_color_buffer_float, else RGBA8: the ping-pong targets'
-  // format, so a pass's result blits into a layer unchanged.
+  // The ping-pong targets' working format (gl-resources.ts), so a pass's
+  // result blits into a layer unchanged.
   private readonly float: boolean;
   private layers = new Map<string, number>();
   private tex: WebGLTexture | null = null;
@@ -65,9 +67,13 @@ export class StageResultLayers {
   // every frame.
   private failed: string | null = null;
 
-  constructor(gl: WebGL2RenderingContext, float: boolean) {
+  // Called when an array is allocated at 8-bit.
+  private readonly onReducedPrecision: () => void;
+
+  constructor(gl: WebGL2RenderingContext, float: boolean, onReducedPrecision: () => void = () => {}) {
     this.gl = gl;
     this.float = float;
+    this.onReducedPrecision = onReducedPrecision;
   }
 
   /** Gives each of `ids` a layer at `w`×`h` for the source `epoch` names. The
@@ -163,23 +169,18 @@ export class StageResultLayers {
     return (this.drawFbo ??= this.gl.createFramebuffer());
   }
 
-  // Allocated on the scratch unit 7, so no sampler unit's binding moves. Null
+  // Allocated on the scratch unit, so no sampler unit's binding moves. Null
   // when the driver refuses it: out of memory, past MAX_ARRAY_TEXTURE_LAYERS, or
   // a framebuffer it won't complete on the array.
   private allocate(w: number, h: number, depth: number): WebGLTexture | null {
     const gl = this.gl;
-    while (gl.getError() !== gl.NO_ERROR) {} // drain, so the check below is this allocation's
+    drainErrors(gl); // so the check below is this allocation's
     const tex = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE7);
+    const format = workingFormat(gl, this.float);
+    gl.activeTexture(gl.TEXTURE0 + SCRATCH_UNIT);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-    gl.texImage3D(
-      gl.TEXTURE_2D_ARRAY, 0, this.float ? gl.RGBA16F : gl.RGBA8, w, h, depth, 0,
-      gl.RGBA, this.float ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null,
-    );
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, format.internalFormat, w, h, depth, 0, gl.RGBA, format.type, null);
+    setSampling(gl, gl.TEXTURE_2D_ARRAY, gl.LINEAR);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.framebuffer("draw"));
     gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, tex, 0, 0);
@@ -190,9 +191,12 @@ export class StageResultLayers {
     // A deleted texture stays alive while a framebuffer that isn't bound holds it.
     if (!ok) gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, null, 0, 0);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-    if (ok) return tex;
-    gl.deleteTexture(tex);
-    return null;
+    if (!ok) {
+      gl.deleteTexture(tex);
+      return null;
+    }
+    if (!this.float) this.onReducedPrecision();
+    return tex;
   }
 
   private copyLayers(from: WebGLTexture, to: WebGLTexture): void {
@@ -215,11 +219,10 @@ export class StageResultLayers {
     if (this.standIn) return this.standIn;
     const gl = this.gl;
     const tex = gl.createTexture();
-    gl.activeTexture(gl.TEXTURE7);
+    gl.activeTexture(gl.TEXTURE0 + SCRATCH_UNIT);
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
     gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    setSampling(gl, gl.TEXTURE_2D_ARRAY, gl.NEAREST);
     gl.activeTexture(gl.TEXTURE0);
     this.standIn = tex;
     return tex;

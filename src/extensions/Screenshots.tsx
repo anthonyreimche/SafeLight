@@ -12,7 +12,7 @@
 // for a different screenshot; if the enlarged image itself fails, it closes.
 
 import { useEffect, useMemo, useState } from "react";
-import { setShortcutsSuspended, shortcutsSuspended } from "@/state/keybindings-store";
+import { suspendShortcuts } from "@/state/keybindings-store";
 
 export function Screenshots({ urls }: { urls: string[] }) {
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
@@ -29,9 +29,7 @@ export function Screenshots({ urls }: { urls: string[] }) {
 
   useEffect(() => {
     if (!isOpen) return;
-    const prev = shortcutsSuspended();
-    setShortcutsSuspended(true);
-    return () => setShortcutsSuspended(prev);
+    return suspendShortcuts();
   }, [isOpen]);
 
   useEffect(() => {

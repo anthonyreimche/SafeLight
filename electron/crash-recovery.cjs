@@ -36,20 +36,66 @@ function isRendererCrash(details) {
 }
 
 /** Bounded, debounced recovery gate: at most `max` recoveries per session, at
- *  least `minIntervalMs` apart, so a persistently dying GPU degrades to the
- *  old behaviour (user restarts) instead of a reload storm. A denied attempt
- *  consumes neither the budget nor the debounce clock. */
+ *  least `minIntervalMs` apart, so a persistently dying GPU ends in a restart
+ *  prompt instead of a reload storm. "ok" recovers; "debounced" is part of a
+ *  recovery already under way; "spent" means reloading has stopped helping. A
+ *  denied attempt consumes neither the budget nor the debounce clock. */
 function createRecoveryGate({ max = 3, minIntervalMs = 10_000, now = Date.now } = {}) {
   let used = 0;
   let last = -Infinity;
   return {
     tryRecover() {
       const t = now();
-      if (used >= max || t - last < minIntervalMs) return false;
+      if (used >= max) return "spent";
+      if (t - last < minIntervalMs) return "debounced";
       used += 1;
       last = t;
-      return true;
+      return "ok";
     },
+  };
+}
+
+// net::ERR_ABORTED: a load another navigation replaced, not one that failed.
+const ERR_ABORTED = -3;
+
+/** A did-fail-load for the window's own page, not a frame inside it. */
+function isMainFrameLoadFailure(errorCode, isMainFrame) {
+  return isMainFrame === true && errorCode !== ERR_ABORTED;
+}
+
+const RESTART = 0;
+
+const RESTART_MESSAGES = {
+  renderer: {
+    message: "Safelight's window keeps crashing.",
+    detail: "Reloading it didn't help. Restart Safelight to carry on.",
+  },
+  gpu: {
+    message: "Safelight's graphics stopped working.",
+    detail: "Reloading didn't help. Restart Safelight to carry on.",
+  },
+  load: {
+    message: "Safelight's window couldn't load.",
+    detail: "Trying again didn't help. Restart Safelight, or reinstall it if this keeps happening.",
+  },
+};
+
+const SOFTWARE_NEXT_DETAIL =
+  "After a restart Safelight draws in software: slower, but it doesn't depend on the graphics driver.";
+
+/** dialog.showMessageBox options for a window reloading can't save.
+ *  `softwareNext`: the restart moves a graphics-card launch to software. */
+function restartPrompt(kind, softwareNext = false) {
+  const { message, detail } = RESTART_MESSAGES[kind];
+  return {
+    type: "error",
+    title: "Safelight",
+    message,
+    detail: kind === "gpu" && softwareNext ? SOFTWARE_NEXT_DETAIL : detail,
+    buttons: ["Restart", "Quit"],
+    defaultId: RESTART,
+    cancelId: 1,
+    noLink: true,
   };
 }
 
@@ -76,4 +122,12 @@ function createCrashLog({ max = 20, now = Date.now } = {}) {
   };
 }
 
-module.exports = { isRuntimeGpuCrash, isRendererCrash, createRecoveryGate, createCrashLog };
+module.exports = {
+  isRuntimeGpuCrash,
+  isRendererCrash,
+  createRecoveryGate,
+  createCrashLog,
+  isMainFrameLoadFailure,
+  restartPrompt,
+  RESTART,
+};

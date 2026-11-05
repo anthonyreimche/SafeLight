@@ -13,8 +13,17 @@
 
 const path = require("node:path");
 
+// A kill between the temp write and the rename leaves `<name>.tmp-<hex>` behind;
+// for a catalogue that is megabytes per crash. A temp file this much older than now
+// can't belong to a write that is still going.
+const ORPHAN_AGE_MS = 10 * 60 * 1000;
+const TEMP_NAME = /\.tmp-[0-9a-f]+$/i;
+// Shared by every writer in the process, so one's sweep spares another's temp file.
+const inFlight = new Set();
+
 function createAtomicWriter({ fsp, randomId, retry }) {
-  const slots = new Map(); // normalised path -> { next: job | null }
+  const slots = new Map(); // normalized path -> { next: job | null }
+  const swept = new Set(); // directories already swept by this writer
   let idle = [];
 
   const keyOf = (p) => {
@@ -22,9 +31,35 @@ function createAtomicWriter({ fsp, randomId, retry }) {
     return process.platform === "win32" ? abs.toLowerCase() : abs;
   };
 
+  async function sweepOrphans(dir) {
+    const key = keyOf(dir);
+    if (swept.has(key)) return;
+    swept.add(key);
+    try {
+      const now = Date.now();
+      for (const name of await fsp.readdir(dir)) {
+        if (!TEMP_NAME.test(name)) continue;
+        const file = path.join(dir, name);
+        if (inFlight.has(keyOf(file))) continue;
+        try {
+          const { mtimeMs } = await fsp.stat(file);
+          if (now - mtimeMs > ORPHAN_AGE_MS) await fsp.unlink(file);
+        } catch {
+          // Gone already, or locked: the next session's sweep gets it.
+        }
+      }
+    } catch {
+      // An unreadable directory only means the sweep is skipped.
+    }
+  }
+
   async function land(p, bytes) {
-    await fsp.mkdir(path.dirname(p), { recursive: true });
+    const dir = path.dirname(p);
+    await fsp.mkdir(dir, { recursive: true });
+    await sweepOrphans(dir);
     const tmp = `${p}.tmp-${randomId()}`;
+    const tmpKey = keyOf(tmp);
+    inFlight.add(tmpKey);
     try {
       const fh = await fsp.open(tmp, "w");
       try {
@@ -38,6 +73,8 @@ function createAtomicWriter({ fsp, randomId, retry }) {
     } catch (err) {
       await fsp.unlink(tmp).catch(() => {});
       throw err;
+    } finally {
+      inFlight.delete(tmpKey);
     }
   }
 

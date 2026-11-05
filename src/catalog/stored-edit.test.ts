@@ -6,7 +6,7 @@
 // Appending a snapshot to a stored edit without opening Develop: the baseline
 // comes from the stored cursor, a refusal writes nothing, and the photo that is
 // open in Develop is reloaded so its next commit can't overwrite the new step.
-// Many photos at once go to the catalog in one write.
+// Many photos at once go to the catalogue in one write.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -234,6 +234,36 @@ describe("appendStoredSnapshot — the photo open in Develop", () => {
     await useDevelopStore.getState().commitEdit("Contrast");
     saved();
     await appending;
+
+    const { stack } = written[written.length - 1];
+    expect(labelsOf(stack)).toEqual(["Original", "Test step", "Contrast"]);
+    expect(labelsOf(useDevelopStore.getState().history)).toEqual([
+      "Original",
+      "Test step",
+      "Contrast",
+    ]);
+  });
+
+  it("lands both steps when Develop commits while the step is being worked out", async () => {
+    const { written } = installMemoryStorage(edit([snapshot("Original", {})], 0));
+    await openInDevelop();
+    // The step's read of the stored edit is answered only after Develop commits.
+    const storage = catalogStorage();
+    const read = storage.getEditState.bind(storage);
+    let answer = (): void => {};
+    const answered = new Promise<void>((resolve) => (answer = resolve));
+    vi.spyOn(storage, "getEditState").mockImplementationOnce(async (photoId) => {
+      const stored = await read(photoId);
+      await answered;
+      return stored;
+    });
+
+    const appending = appendStoredSnapshot(PHOTO, 5200, "Test step", brighter);
+    useDevelopStore.getState().setParam("contrast", 20);
+    const committing = useDevelopStore.getState().commitEdit("Contrast");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    answer();
+    await Promise.all([appending, committing]);
 
     const { stack } = written[written.length - 1];
     expect(labelsOf(stack)).toEqual(["Original", "Test step", "Contrast"]);
@@ -563,7 +593,7 @@ describe("appendStoredSnapshots — the photo open in Develop", () => {
 });
 
 describe("storedSnapshotTargets", () => {
-  it("lists the catalog photos among the ids, in order, with their as-shot temperature", () => {
+  it("lists the catalogue photos among the ids, in order, with their as-shot temperature", () => {
     useCatalogStore.setState({
       photos: [photo("a"), { ...photo("b"), exif: { colorTemperature: 4300 } }],
     });

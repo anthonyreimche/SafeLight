@@ -5,7 +5,7 @@
 
 // Report an issue in the browser build (no Electron bridge, so no screenshot):
 // the user types a title and description, checks the diagnostics, and GitHub
-// opens with exactly what the dialog showed.
+// opens with exactly what the dialogue showed.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";

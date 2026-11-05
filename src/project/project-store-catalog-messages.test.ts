@@ -3,8 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// What the open flow tells the user about a catalog it couldn't use as saved: why
-// an open failed, and how a catalog it opened was recovered. Everything the open
+// What the open flow tells the user about a catalogue it couldn't use as saved: why
+// an open failed, and how a catalogue it opened was recovered. Everything the open
 // flow touches is a leaf stub; the messages in project-store.ts are real.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,8 @@ import {
   CatalogDamagedError,
   CatalogTooNewError,
   CatalogUnreadableError,
+  FolderAccessDeniedError,
+  FolderUnavailableError,
 } from "./catalog-errors";
 import type { CatalogRecovery } from "./project-storage";
 import { useProjectStore } from "./project-store";
@@ -51,6 +53,7 @@ vi.mock("@/state/settings-store", () => ({
   getSettings: () => ({ catalogLocation: "in-folder", externalCatalogDir: "" }),
 }));
 vi.mock("@/state/catalog-store", () => ({
+  setLastProjectOpener: () => {},
   useCatalogStore: {
     getState: () => ({
       replaceCatalog: () => {},
@@ -61,6 +64,7 @@ vi.mock("@/state/catalog-store", () => ({
     }),
   },
 }));
+vi.mock("@/modules/library/photo-navigation", () => ({ visibleList: () => [] }));
 vi.mock("@/state/ui-store", () => ({
   useUIStore: {
     subscribe: () => () => {},
@@ -77,19 +81,23 @@ vi.mock("@/state/ui-store", () => ({
 const shoot = { name: "Shoot" } as FileSystemDirectoryHandle;
 const tree = { name: "Shoot", path: "", children: [] };
 
-/** What ProjectStorage.open resolves to, by default for a catalog opened as saved. */
+/** What ProjectStorage.open resolves to, by default for a catalogue opened as saved. */
 function opened(
   over: {
     recovered?: CatalogRecovery | null;
     storageLocation?: WorkingDirLocation;
     externalPath?: string | null;
     promotedFromExternal?: string | null;
+    unreadable?: string[];
+    skipped?: Record<string, number>;
   } = {},
 ) {
   return {
     storage: { readPreview: async () => null, close: () => {} },
     rawCacheDir: {},
     tree,
+    unreadable: [],
+    skipped: {},
     photos: [],
     newPhotos: [],
     storageLocation: "in-folder",
@@ -107,7 +115,7 @@ beforeEach(() => {
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
-describe("an open that fails on its catalog", () => {
+describe("an open that fails on its catalogue", () => {
   const ebusy = new Error("EBUSY: resource busy or locked, open 'D:\\Shoot\\catalog.json'");
   const eperm = new Error("EPERM: operation not permitted, open 'D:\\Shoot\\x.json'");
 
@@ -115,13 +123,13 @@ describe("an open that fails on its catalog", () => {
     [
       "can't be read",
       new CatalogUnreadableError(ebusy),
-      "Couldn't open “Shoot”: its catalog can't be read right now (EBUSY). A sync or " +
+      "Couldn't open “Shoot”: its catalogue can't be read right now (EBUSY). A sync or " +
         "antivirus program may be using it. Nothing was changed. Try again in a moment.",
     ],
     [
       "is damaged and can't be kept",
       new CatalogDamagedError(eperm),
-      "Couldn't open “Shoot”: its catalog is damaged and Safelight couldn't keep a copy " +
+      "Couldn't open “Shoot”: its catalogue is damaged and Safelight couldn't keep a copy " +
         "of it (EPERM). Nothing was changed.",
     ],
     [
@@ -130,7 +138,7 @@ describe("an open that fails on its catalog", () => {
       "“Shoot” was saved by a newer version of Safelight. Update Safelight to open it. " +
         "Nothing was changed.",
     ],
-  ])("says so when the catalog %s, offering no Preferences", async (_label, error, message) => {
+  ])("says so when the catalogue %s, offering no Preferences", async (_label, error, message) => {
     h.open.mockRejectedValue(error);
 
     await useProjectStore.getState().openProject(shoot);
@@ -160,27 +168,66 @@ describe("an open that fails on its catalog", () => {
   });
 });
 
-describe("a catalog the open recovered", () => {
+describe("an open that fails on its folder", () => {
+  it("says a folder that isn't there may be on a drive to reconnect, without its errno", async () => {
+    h.open.mockRejectedValue(
+      new FolderUnavailableError(new Error("ENOENT: no such file or directory, scandir 'E:\\Shoot'")),
+    );
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().openError).toBe(
+      "“Shoot” isn't available. If it's on an external drive or network share, reconnect " +
+        "it and open the project again. If the folder was moved or deleted, open it from " +
+        "its new location.",
+    );
+  });
+
+  it("says where macOS allows Safelight into the folder, without its errno", async () => {
+    h.open.mockRejectedValue(
+      new FolderAccessDeniedError(new Error("EPERM: operation not permitted, scandir '/Volumes/Card'")),
+    );
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().openError).toBe(
+      "macOS hasn't allowed Safelight to read “Shoot”. Allow it under System Settings ▸ " +
+        "Privacy & Security ▸ Files and Folders, then open the project again.",
+    );
+  });
+
+  it("words any other failure in a sentence of its own, without the bridge's prefix", async () => {
+    h.open.mockRejectedValue(
+      new Error("Error invoking remote method 'fs:list': Error: the share went away"),
+    );
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().openError).toBe("Couldn't open “Shoot” (the share went away).");
+  });
+});
+
+describe("a catalogue the open recovered", () => {
   it.each<[string, CatalogRecovery, string]>([
     [
-      "restored a damaged catalog from",
+      "restored a damaged catalogue from",
       { from: "backup", kept: "catalog.corrupt-2026-10-06T09-15-00-000Z.json" },
-      "The catalog of “Shoot” couldn't be used, so Safelight restored it from its backup. " +
+      "The catalogue of “Shoot” couldn't be used, so Safelight restored it from its backup. " +
         "Changes made since that backup may be missing. The damaged file was kept next to " +
-        "the catalog as catalog.corrupt-2026-10-06T09-15-00-000Z.json.",
+        "the catalogue as catalog.corrupt-2026-10-06T09-15-00-000Z.json.",
     ],
     [
-      "restored a missing catalog from",
+      "restored a missing catalogue from",
       { from: "backup", kept: null },
-      "The catalog of “Shoot” couldn't be used, so Safelight restored it from its backup. " +
+      "The catalogue of “Shoot” couldn't be used, so Safelight restored it from its backup. " +
         "Changes made since that backup may be missing.",
     ],
     [
       "imported the folder again without",
       { from: "rescan", kept: "catalog.corrupt-2026-10-06T09-15-00-000Z.json" },
-      "The catalog of “Shoot” couldn't be used and had no usable backup, so Safelight " +
+      "The catalogue of “Shoot” couldn't be used and had no usable backup, so Safelight " +
         "imported the folder again. Earlier ratings and edits could not be recovered. The " +
-        "damaged file was kept next to the catalog as " +
+        "damaged file was kept next to the catalogue as " +
         "catalog.corrupt-2026-10-06T09-15-00-000Z.json.",
     ],
   ])("says it %s a backup", async (_label, recovered, notice) => {
@@ -199,12 +246,26 @@ describe("a catalog the open recovered", () => {
 
     expect(useProjectStore.getState().storageNotice).toBe(
       "Edits you made to “Shoot” while it was read-only have been merged back into its " +
-        "catalog. The catalog from before the merge was kept in .safelight as " +
+        "catalogue. The catalogue from before the merge was kept in .safelight as " +
         "catalog.before-merge- followed by the date and time, in case you need it.",
     );
   });
 
-  it("says nothing of a catalog opened as saved", async () => {
+  it.each([
+    [["locked"], "The folder “locked” couldn't be read, so it was skipped."],
+    [["a", "b/c"], "2 folders couldn't be read, so they were skipped."],
+  ])("says which folders it skipped (%j)", async (unreadable, notice) => {
+    h.open.mockResolvedValue(opened({ unreadable }));
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().storageNotice).toBe(
+      `${notice} Photos already catalogued there are kept.`,
+    );
+    expect(useProjectStore.getState().openError).toBeNull();
+  });
+
+  it("says nothing of a catalogue opened as saved", async () => {
     h.open.mockResolvedValue(opened());
 
     await useProjectStore.getState().openProject(shoot);
@@ -212,7 +273,31 @@ describe("a catalog the open recovered", () => {
     expect(useProjectStore.getState().storageNotice).toBeNull();
   });
 
-  it("tells both where a redirected catalog lives and how it was recovered", async () => {
+  it.each([
+    [{ ".heic": 12 }, "12 HEIC files were skipped — HEIC isn't supported yet."],
+    [{ ".heic": 1 }, "1 HEIC file was skipped — HEIC isn't supported yet."],
+    [{ ".heic": 7, ".heif": 5 }, "12 HEIC files were skipped — HEIC isn't supported yet."],
+    [
+      { ".heic": 3, ".gif": 2 },
+      "3 HEIC files were skipped — HEIC isn't supported yet. 2 GIF files were skipped — GIF isn't supported yet.",
+    ],
+  ])("says which unsupported image formats it skipped (%j)", async (skipped, notice) => {
+    h.open.mockResolvedValue(opened({ skipped }));
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().storageNotice).toBe(notice);
+  });
+
+  it("stays quiet about files that were never photos", async () => {
+    h.open.mockResolvedValue(opened({ skipped: { ".txt": 4, ".xmp": 9, "(none)": 1 } }));
+
+    await useProjectStore.getState().openProject(shoot);
+
+    expect(useProjectStore.getState().storageNotice).toBeNull();
+  });
+
+  it("tells both where a redirected catalogue lives and how it was recovered", async () => {
     h.open.mockResolvedValue(
       opened({
         recovered: { from: "backup", kept: null },

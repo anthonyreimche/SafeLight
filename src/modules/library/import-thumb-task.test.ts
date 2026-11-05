@@ -9,6 +9,31 @@
 // bookkeeping are observable from the returned thumbnail and dimensions.
 
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+
+const h = vi.hoisted(() => ({
+  /** Long edges decodeTiffBuffer was asked to reach, in order. */
+  tiffMinEdges: [] as (number | undefined)[],
+  /** What decodeTiffBuffer answers: a bitmap's size and the full image's. */
+  tiff: null as { bitmap: [number, number]; full: [number, number] } | null,
+  /** The size decodeNetpbm decodes to, or null for a file it can't read. */
+  netpbm: null as [number, number] | null,
+}));
+
+vi.mock("@/raw/tiff-image", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/tiff-image")>()),
+  decodeTiffBuffer: async (_buffer: ArrayBuffer, minLongEdge?: number) => {
+    h.tiffMinEdges.push(minLongEdge);
+    if (!h.tiff) return null;
+    const [width, height] = h.tiff.full;
+    return { bitmap: bitmapOf(...h.tiff.bitmap), width, height };
+  },
+}));
+
+vi.mock("@/raw/netpbm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/netpbm")>()),
+  decodeNetpbm: async () => (h.netpbm ? bitmapOf(...h.netpbm) : null),
+}));
+
 import { runThumbTask, type ThumbTaskInput } from "./import-thumb-task";
 
 const bytes = (...b: number[]) => new Uint8Array(b);
@@ -44,6 +69,9 @@ class FakeOffscreenCanvas {
 }
 
 beforeEach(() => {
+  h.tiffMinEdges = [];
+  h.tiff = null;
+  h.netpbm = null;
   vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
   vi.stubGlobal(
     "createImageBitmap",
@@ -159,5 +187,35 @@ describe("runThumbTask — plain images", () => {
     expect(r.ok).toBe(true);
     const bytesDecoded = new Uint8Array(await (decoded[0] as Blob).arrayBuffer());
     expect(bytesDecoded).toEqual(MINIMAL_JPEG);
+  });
+});
+
+describe("runThumbTask — TIFF and Netpbm", () => {
+  it("thumbnails a TIFF from a copy big enough for the grid, sized by its full image", async () => {
+    h.tiff = { bitmap: [1600, 1200], full: [6400, 4800] };
+
+    const r = await runThumbTask(input({ name: "scan.tif", type: "image/tiff", orientation: 6 }));
+
+    expect(h.tiffMinEdges).toEqual([640]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect({ width: r.width, height: r.height }).toEqual({ width: 4800, height: 6400 });
+    await expect(thumbTag(r.thumb)).resolves.toBe("jpeg:480x640");
+  });
+
+  it("thumbnails a Netpbm image and bakes the EXIF turn", async () => {
+    h.netpbm = [800, 600];
+
+    const r = await runThumbTask(input({ name: "frame.ppm", orientation: 3 }));
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect({ width: r.width, height: r.height }).toEqual({ width: 800, height: 600 });
+    await expect(thumbTag(r.thumb)).resolves.toBe("jpeg:640x480");
+  });
+
+  it("declines a TIFF or Netpbm file it can't decode, for the inline chain", async () => {
+    expect(await runThumbTask(input({ name: "bad.tiff" }))).toEqual({ ok: false });
+    expect(await runThumbTask(input({ name: "bad.pgm" }))).toEqual({ ok: false });
   });
 });

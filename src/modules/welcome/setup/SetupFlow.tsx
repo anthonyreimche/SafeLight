@@ -7,13 +7,13 @@
 // the look, the workspace behaviour and the starter kits. It opens by itself on
 // a fresh install (see initFirstRun) and from Preferences and the Extensions
 // store later on. It is modal: app shortcuts stand down while it
-// is up (they would otherwise open dialogs or switch modules underneath), Tab
+// is up (they would otherwise open dialogues or switch modules underneath), Tab
 // stays inside, and Escape closes only a rerun, so a first run can't be skipped
 // by a stray key. It sits below ModalWindow (z-100) and the confirm and banners
 // (z-200 and up), which never open over it but must win if they do.
 
 import { useEffect, useId, useRef, type KeyboardEvent } from "react";
-import { setShortcutsSuspended } from "@/state/keybindings-store";
+import { suspendShortcuts } from "@/state/keybindings-store";
 import { trapTab } from "@/ui/focus-trap";
 import {
   dragBarStyle,
@@ -51,9 +51,9 @@ function SetupLayer() {
   useEffect(() => {
     const previous =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setShortcutsSuspended(true);
+    const releaseShortcuts = suspendShortcuts();
     return () => {
-      setShortcutsSuspended(false);
+      releaseShortcuts();
       previous?.focus();
     };
   }, []);

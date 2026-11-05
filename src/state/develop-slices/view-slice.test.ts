@@ -54,7 +54,7 @@ describe("clipping overlay", () => {
     expect(boot({ sl_show_clipping: "5" }).getState().showClipping).toBe(5);
   });
 
-  it("falls back to off for a missing or unrecognised stored value", () => {
+  it("falls back to off for a missing or unrecognized stored value", () => {
     expect(boot().getState().showClipping).toBe(0);
     expect(boot({ sl_show_clipping: "9" }).getState().showClipping).toBe(0);
     expect(boot({ sl_show_clipping: "-1" }).getState().showClipping).toBe(0);
@@ -165,32 +165,3 @@ describe("panel bypass", () => {
   });
 });
 
-describe("ephemeral picker and overlay state", () => {
-  it("defaults to every picker off", () => {
-    const s = store.getState();
-    expect([s.guidedEditing, s.wbPicking, s.hslPicking, s.maskColorPicking]).toEqual([
-      false,
-      false,
-      false,
-      false,
-    ]);
-    expect(s.selectedHslBand).toBe("hue");
-  });
-
-  it("sets each flag without persisting it", () => {
-    store.getState().setGuidedEditing(true);
-    store.getState().setWbPicking(true);
-    store.getState().setHslPicking(true);
-    store.getState().setMaskColorPicking(true);
-    store.getState().setSelectedHslBand("saturation");
-    const s = store.getState();
-    expect([s.guidedEditing, s.wbPicking, s.hslPicking, s.maskColorPicking]).toEqual([
-      true,
-      true,
-      true,
-      true,
-    ]);
-    expect(s.selectedHslBand).toBe("saturation");
-    expect(localStorage.length).toBe(0);
-  });
-});

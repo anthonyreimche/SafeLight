@@ -10,8 +10,9 @@
 // shaders that ride with that GLSL are held to the same standard. A failure
 // here means an old photo would change.
 
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { V1_VARIANT, VERTEX_SHADER, buildFragmentShader } from "./shaders";
+import { V1_VARIANT, VERTEX_SHADER } from "./shaders";
 import { PASS_VERTEX_SHADER, buildStageInjection } from "./stage-injection";
 import {
   V1_PASS_VERTEX_SHADER,
@@ -29,6 +30,9 @@ import {
   normalizeGlsl,
   projectStageMeta,
 } from "./v1-identity.fixtures";
+import { canonicalGlsl } from "./program-identity.fixtures";
+import { V1_STAGE_PIECES } from "./v1-stage-pieces";
+import { PROGRAM_REFERENCE } from "./program-reference";
 
 const KEYS = ["uniforms", "helpers", "srcUv", "noiseReduction", "sceneLinear", "effects"] as const;
 const lines = (src: string): string[] => normalizeGlsl(src).split("\n");
@@ -37,9 +41,17 @@ describe("process version 1 stays frozen", () => {
   for (const [config, stages] of Object.entries(V1_IDENTITY_CONFIGS)) {
     const reference = V1_INJECTIONS[config];
 
-    it(`builds the ${config} stage GLSL b1f5ec5 built`, () => {
+    // b1f5ec5's pieces until the core tools moved onto the stage path; see
+    // v1-stage-pieces.ts.
+    it(`builds the ${config} stage GLSL as frozen`, () => {
       const { injection } = buildStageInjection(stages(), V1_VARIANT);
-      for (const key of KEYS) expect(lines(injection[key]), key).toEqual(lines(reference[key]));
+      const pieces = V1_STAGE_PIECES[config];
+      for (const key of KEYS) expect(lines(injection[key]), key).toEqual(lines(pieces[key]));
+      const anchors = injection.anchors ?? {};
+      expect(Object.keys(anchors).sort()).toEqual(Object.keys(pieces.anchors).sort());
+      for (const [anchor, text] of Object.entries(pieces.anchors)) {
+        expect(lines(anchors[anchor as keyof typeof anchors] ?? ""), anchor).toEqual(lines(text));
+      }
     });
 
     it(`builds the ${config} pass programs b1f5ec5 built`, () => {
@@ -48,16 +60,19 @@ describe("process version 1 stays frozen", () => {
       expect(live).toEqual(V1_PASS_SOURCES[config].map(normalizeGlsl));
     });
 
-    it(`derives the ${config} bindings, textures and prepass layout b1f5ec5 derived`, () => {
+    it(`derives the ${config} bindings, textures and prepass layout as frozen`, () => {
       const built = buildStageInjection(stages(), V1_VARIANT);
       expect(projectStageMeta(built)).toEqual(V1_STAGE_META[config]);
     });
 
+    // The assembled program is frozen with every version's in
+    // program-identity.test.tsx; its version 1 hashes are b1f5ec5's literal
+    // shader, as this checks.
     for (const [pipeline, glsl] of Object.entries(V1_IDENTITY_PIPELINES)) {
-      it(`assembles the ${config} shader under the ${pipeline} transform as b1f5ec5 did`, () => {
-        const { injection } = buildStageInjection(stages(), V1_VARIANT);
-        const live = buildFragmentShader(glsl, injection, V1_VARIANT);
-        expect(lines(live)).toEqual(lines(buildV1ReferenceShader(glsl, reference)));
+      it(`freezes b1f5ec5's ${config} shader under the ${pipeline} transform`, () => {
+        const literal = canonicalGlsl(buildV1ReferenceShader(glsl, reference));
+        const hash = createHash("sha256").update(literal).digest("hex");
+        expect(hash).toBe(PROGRAM_REFERENCE[`v1/${config}/${pipeline}`]);
       });
     }
   }

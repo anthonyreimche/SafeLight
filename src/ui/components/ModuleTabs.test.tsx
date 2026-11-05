@@ -8,6 +8,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { ModuleTabs } from "./ModuleTabs";
 import { useUIStore } from "@/state/ui-store";
 import { registerModule, useRegistry } from "@/extensions/registry";
+import { registerEssentialModules } from "@/test/essential-modules.test-support";
 
 const View = () => null;
 
@@ -20,12 +21,13 @@ const tabLabels = () =>
 
 beforeEach(() => {
   useRegistry.setState({ modules: {} });
+  registerEssentialModules();
   useUIStore.setState({ activeModule: "library", detached: new Set() });
   vi.stubGlobal("open", vi.fn(() => ({ closed: false, focus: vi.fn(), close: vi.fn() })));
 });
 
 describe("ModuleTabs", () => {
-  it("lists the built-ins, then registered modules, each with a pop-out control", () => {
+  it("lists Library and Develop, then registered modules, each with a pop-out control", () => {
     registerModule("ext", { id: "map", label: "Map", component: View });
     render(<ModuleTabs />);
     expect(tabLabels()).toEqual(["Library", "Develop", "Map"]);

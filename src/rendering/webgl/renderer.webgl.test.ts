@@ -29,6 +29,7 @@ import type { ProcessingStageContribution } from "@/extensions/types";
 import { encodeHalf } from "@/raw/half-float";
 import { toneHighlights } from "@/rendering/local-tone";
 import { BUILTIN_DENOISE_ID, denoiseBag } from "./builtin-denoise";
+import { isBuiltInStage } from "./builtin-stage";
 import { WebGLRenderer } from "./renderer";
 import {
   LINEAR_PROBE_PIPELINE,
@@ -37,7 +38,12 @@ import {
   type Frame,
   type GlObjectCounts,
   builtinStage,
+  basicStagesFor,
+  healStages,
+  healStagesFor,
   builtinStages,
+  cropStages,
+  deriveWithoutSettings,
   drainGlErrors,
   floatImage,
   glHarness,
@@ -47,6 +53,8 @@ import {
   trackGlObjects,
   withRenderer,
   worstDifference,
+  masksStages,
+  masksStagesFor,
 } from "./webgl.test-support";
 
 const NO_LIVE_OBJECTS: GlObjectCounts = {
@@ -91,7 +99,7 @@ function capture(renderer: WebGLRenderer): Frame {
 
 /** Render one frame through the linear probe and hand back the pixels. */
 function linearFrame(configure: (renderer: WebGLRenderer) => void): Frame {
-  return withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+  return withRenderer({ stages: [...basicStagesFor(), ...cropStages()], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
     configure(renderer);
     return capture(renderer);
   });
@@ -142,7 +150,7 @@ describe("construction and teardown", () => {
     const { canvas, gl } = glHarness();
     const tally = trackGlObjects(gl);
     try {
-      const renderer = new WebGLRenderer(canvas);
+      const renderer = new WebGLRenderer(canvas, { derive: deriveWithoutSettings });
       renderer.setImage(flatSource());
       renderer.setParams(identityParams());
       renderer.render();
@@ -162,7 +170,7 @@ describe("construction and teardown", () => {
     const { canvas, gl } = glHarness();
     const tally = trackGlObjects(gl);
     try {
-      const renderer = new WebGLRenderer(canvas, { stages: builtinStages() });
+      const renderer = new WebGLRenderer(canvas, { stages: builtinStages(), derive: deriveWithoutSettings });
       renderer.setImage(flatSource());
       renderer.setParams(identityParams({ luminanceNR: 60 }));
       renderer.setContributedParams({ "builtin.denoise.lumAmount": 60 });
@@ -179,6 +187,7 @@ describe("construction and teardown", () => {
   it("leaks nothing when a contributed stage fails to compile", () => {
     const { canvas, gl } = glHarness();
     const tally = trackGlObjects(gl);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const renderer = new WebGLRenderer(canvas, {
         stages: [
@@ -190,13 +199,17 @@ describe("construction and teardown", () => {
             uniforms: [],
           },
         ],
+        derive: deriveWithoutSettings,
       });
       renderer.setImage(flatSource());
       renderer.setParams(identityParams());
-      expect(() => renderer.render()).toThrow(/neverDeclared/);
+      // Drawn without it, after the builds that found it.
+      renderer.render();
+      expect(logged.mock.calls.join(" ")).toMatch(/neverDeclared/);
       renderer.dispose();
       expect(tally.live).toEqual(NO_LIVE_OBJECTS);
     } finally {
+      logged.mockRestore();
       tally.restore();
     }
   });
@@ -205,7 +218,7 @@ describe("construction and teardown", () => {
     const { canvas, gl } = glHarness();
     const tally = trackGlObjects(gl);
     try {
-      const renderer = new WebGLRenderer(canvas);
+      const renderer = new WebGLRenderer(canvas, { derive: deriveWithoutSettings });
       renderer.setParams(identityParams());
       renderer.uploadSource("a", flatSource());
       renderer.uploadSource("b", flatSource(8, 0.4));
@@ -233,7 +246,7 @@ describe("construction and teardown", () => {
     const { canvas, gl } = glHarness();
     const tally = trackGlObjects(gl);
     try {
-      const renderer = new WebGLRenderer(canvas);
+      const renderer = new WebGLRenderer(canvas, { derive: deriveWithoutSettings });
       renderer.setImage(flatSource());
       const afterFirst = tally.live.texture;
       renderer.setImage(flatSource(8));
@@ -279,9 +292,11 @@ describe("rendererBuildError", () => {
 });
 
 // A program that fails to build is a fact about its signature and process version:
-// retrying it every frame only repeats the compile. The stage below doubles the
-// scene value at its default gain; `broken` is the same stage with another default
-// and a GLSL error, so a leftover of it would show in the pixels.
+// retrying it every frame only repeats the compile. An extension stage it fails
+// for is quarantined for that version, and frames are drawn without it until it
+// changes. The stage below doubles the scene value at its default gain; `broken` is
+// the same stage with another default and a GLSL error, so a leftover of it would
+// show in the pixels.
 describe("a stage set that fails to build", () => {
   const gain = (over: Partial<ProcessingStageContribution> = {}): ProcessingStageContribution => ({
     id: "acme.gain",
@@ -317,22 +332,22 @@ describe("a stage set that fails to build", () => {
     return null;
   }
 
-  it("throws the same error again without compiling it, or saying so, again", () => {
+  it("draws without the stage, never compiling it, or saying so, again", () => {
     const { gl } = glHarness();
     const tally = trackGlObjects(gl);
     try {
       withRenderer({ stages: [broken], pipeline: PIPELINE }, (renderer) => {
         renderer.setImage(flatSource());
         renderer.setParams(identityParams());
-        const first = failure(() => renderer.render());
-        expect(first).toBeInstanceOf(Error);
+        renderer.render();
+        expect(pixelAt(capture(renderer), 8, 8)[1]).toBeCloseTo(FLAT_GREY, 2);
         const compiled = tally.created.shader;
-        expect(compiled).toBeGreaterThan(0);
-        expect(logged).toHaveBeenCalledTimes(1);
-        expect(failure(() => renderer.render())).toBe(first);
-        expect(failure(() => renderer.captureFloatFrame())).toBe(first);
+        const said = logged.mock.calls.length;
+        expect(said).toBeGreaterThan(0);
+        renderer.render();
+        capture(renderer);
         expect(tally.created.shader).toBe(compiled);
-        expect(logged).toHaveBeenCalledTimes(1);
+        expect(logged).toHaveBeenCalledTimes(said);
       });
     } finally {
       tally.restore();
@@ -343,32 +358,35 @@ describe("a stage set that fails to build", () => {
     withRenderer({ stages: [broken], pipeline: PIPELINE }, (renderer) => {
       renderer.setImage(flatSource());
       renderer.setParams(identityParams());
-      expect(() => renderer.render()).toThrow(/neverDeclared/);
+      expect(pixelAt(capture(renderer), 8, 8)[1]).toBeCloseTo(FLAT_GREY, 2);
       renderer.setStages([gain()]);
       expect(pixelAt(capture(renderer), 8, 8)[1]).toBeCloseTo(FLAT_GREY * 2, 2);
     });
   });
 
-  // uCurveActive is declared by the version 2 program alone, so a stage reading it
+  // uBaselineGain is declared by the version 2 program alone, so a stage reading it
   // builds there and fails on version 1.
-  it("is remembered for the process version that failed, not the other", () => {
-    const readsV2Only = gain({ glsl: "if (uCurveActive) lin *= 1.0;", uniforms: [] });
-    withRenderer({ stages: [readsV2Only], pipeline: PIPELINE }, (renderer) => {
-      renderer.setImage(flatSource());
-      const draw = (version: number) => {
-        renderer.setParams(identityParams({ processVersion: version }));
-        return capture(renderer);
-      };
-      const first = failure(() => draw(LEGACY_PROCESS_VERSION));
-      expect(first).toBeInstanceOf(Error);
-      expect(pixelAt(draw(CURRENT_PROCESS_VERSION), 8, 8)[1]).toBeCloseTo(FLAT_GREY, 2);
-      expect(failure(() => draw(LEGACY_PROCESS_VERSION))).toBe(first);
-    });
+  it("quarantines it for the process version that failed, not the other", () => {
+    const readsV2Only = gain({ glsl: "if (uBaselineGain > 0.0) lin *= 2.0;", uniforms: [] });
+    const reported: string[] = [];
+    withRenderer(
+      { stages: [readsV2Only], pipeline: PIPELINE, onStageQuarantined: (q) => reported.push(q.stageId) },
+      (renderer) => {
+        renderer.setImage(flatSource());
+        const draw = (version: number) => {
+          renderer.setParams(identityParams({ processVersion: version }));
+          return pixelAt(capture(renderer), 8, 8)[1];
+        };
+        expect(draw(LEGACY_PROCESS_VERSION)).toBeCloseTo(FLAT_GREY, 2);
+        expect(draw(CURRENT_PROCESS_VERSION)).toBeCloseTo(FLAT_GREY * 2, 2);
+        expect(draw(LEGACY_PROCESS_VERSION)).toBeCloseTo(FLAT_GREY, 2);
+        expect(reported).toEqual(["acme.gain"]);
+      },
+    );
   });
 
-  // A failed switch must leave the renderer on the set it was drawing: the bindings
-  // are the working set's, so a switch back sees nothing of the broken one.
-  it("leaves the working stage set's behaviour alone after a failed switch and back", () => {
+  // The bindings are the drawn set's, so a switch back sees nothing of the broken one.
+  it("leaves the working stage set's behaviour alone after a switch to a broken one and back", () => {
     withRenderer({ stages: [gain()], pipeline: PIPELINE }, (renderer) => {
       renderer.setImage(flatSource());
       renderer.setParams(identityParams());
@@ -376,7 +394,7 @@ describe("a stage set that fails to build", () => {
       expect(before).toBeCloseTo(FLAT_GREY * 2, 2);
 
       renderer.setStages([broken]);
-      expect(() => capture(renderer)).toThrow(/neverDeclared/);
+      expect(pixelAt(capture(renderer), 8, 8)[1]).toBeCloseTo(FLAT_GREY, 2);
       renderer.setStages([gain()]);
       expect(pixelAt(capture(renderer), 8, 8)[1]).toBeCloseTo(before, 3);
     });
@@ -401,23 +419,29 @@ describe("a stage set that fails to build", () => {
   });
 
   describe("prepareProgram", () => {
-    it("throws the error a frame would throw", () => {
-      withRenderer({ stages: [broken], pipeline: PIPELINE }, (renderer) => {
-        expect(() => renderer.prepareProgram(CURRENT_PROCESS_VERSION)).toThrow(/neverDeclared/);
-        renderer.setImage(flatSource());
-        renderer.setParams(identityParams());
-        expect(() => renderer.render()).toThrow(/neverDeclared/);
-      });
+    it("quarantines the stage a frame would, once", () => {
+      const reported: string[] = [];
+      withRenderer(
+        { stages: [broken], pipeline: PIPELINE, onStageQuarantined: (q) => reported.push(q.stageId) },
+        (renderer) => {
+          renderer.prepareProgram(CURRENT_PROCESS_VERSION);
+          expect(reported).toEqual(["acme.gain"]);
+          renderer.setImage(flatSource());
+          renderer.setParams(identityParams({ processVersion: CURRENT_PROCESS_VERSION }));
+          renderer.render();
+          expect(reported).toEqual(["acme.gain"]);
+        },
+      );
     });
 
-    it("leaves the renderer as it was when the program fails to build", () => {
+    it("leaves the renderer as it was when a stage of the program fails to build", () => {
       withRenderer({ stages: [gain()], pipeline: PIPELINE }, (renderer) => {
         renderer.setImage(flatSource());
         renderer.setParams(identityParams());
         const before = pixelAt(capture(renderer), 8, 8)[1];
 
         renderer.setStages([broken]);
-        expect(() => renderer.prepareProgram(CURRENT_PROCESS_VERSION)).toThrow(/neverDeclared/);
+        renderer.prepareProgram(CURRENT_PROCESS_VERSION);
         renderer.setStages([gain()]);
         expect(pixelAt(capture(renderer), 8, 8)[1]).toBeCloseTo(before, 3);
       });
@@ -440,8 +464,8 @@ describe("a stage set that fails to build", () => {
 
   // The stock program is the built-in transform with Safelight's own stages (the core
   // ones and the built-in denoiser) and nothing an extension contributes. A caller
-  // whose prepareProgram threw builds it to tell a stage set or transform that can't
-  // build from a machine that can't run Safelight's own shader.
+  // whose prepareProgram threw builds it to tell a transform that can't build from
+  // a machine that can't run Safelight's own shader.
   describe("prepareStockProgram", () => {
     /** Every shader reports a failed compile, as a driver that can't build the base
      *  shader does. */
@@ -478,13 +502,13 @@ describe("a stage set that fails to build", () => {
       }
     });
 
-    it("builds where the renderer's own stages can't, and its frames still fail for them", () => {
+    it("builds where the renderer's extension stages can't, and its frames are drawn without them", () => {
       withRenderer({ stages: [broken], pipeline: PIPELINE }, (renderer) => {
         renderer.setImage(flatSource());
         renderer.setParams(identityParams());
-        expect(() => renderer.prepareProgram(LEGACY_PROCESS_VERSION)).toThrow(/neverDeclared/);
+        renderer.prepareProgram(LEGACY_PROCESS_VERSION);
         expect(() => renderer.prepareStockProgram(LEGACY_PROCESS_VERSION)).not.toThrow();
-        expect(() => capture(renderer)).toThrow(/neverDeclared/);
+        expect(pixelAt(capture(renderer), 8, 8)[1]).toBeCloseTo(FLAT_GREY, 2);
       });
     });
 
@@ -492,9 +516,9 @@ describe("a stage set that fails to build", () => {
       withRenderer({ stages: [broken], pipeline: PIPELINE }, (renderer) => {
         renderer.setImage(flatSource());
         renderer.setParams(identityParams());
-        expect(() => renderer.prepareProgram(LEGACY_PROCESS_VERSION)).toThrow(/neverDeclared/);
+        renderer.prepareProgram(LEGACY_PROCESS_VERSION);
         renderer.prepareStockProgram(LEGACY_PROCESS_VERSION);
-        expect(() => capture(renderer)).toThrow(/neverDeclared/);
+        expect(pixelAt(capture(renderer), 8, 8)[1]).toBeCloseTo(FLAT_GREY, 2);
 
         renderer.setStages([gain()]);
         expect(pixelAt(capture(renderer), 8, 8)[1]).toBeCloseTo(FLAT_GREY * 2, 2);
@@ -513,7 +537,8 @@ describe("a stage set that fails to build", () => {
       const { gl } = glHarness();
       const tally = trackGlObjects(gl);
       try {
-        withRenderer({ stages: builtinStages(), pipeline: BUILTIN_RESOLVED }, (renderer) => {
+        // Core's stages without the Essentials' (extensions, so not stock).
+        withRenderer({ stages: builtinStages().filter(isBuiltInStage), pipeline: BUILTIN_RESOLVED }, (renderer) => {
           renderer.prepareProgram(LEGACY_PROCESS_VERSION);
           expect(tally.created.program).toBe(1);
           // A set of only Safelight's own stages is the stock program: nothing new to build.
@@ -525,12 +550,17 @@ describe("a stage set that fails to build", () => {
       }
     });
 
-    it("builds around an extension stage that can't, which stays a stage failure", () => {
+    it("builds around an extension stage that can't, which is quarantined", () => {
       const stages = [...builtinStages(), broken];
-      withRenderer({ stages, pipeline: BUILTIN_RESOLVED }, (renderer) => {
-        expect(() => renderer.prepareProgram(LEGACY_PROCESS_VERSION)).toThrow(/neverDeclared/);
-        expect(() => renderer.prepareStockProgram(LEGACY_PROCESS_VERSION)).not.toThrow();
-      });
+      const reported: string[] = [];
+      withRenderer(
+        { stages, pipeline: BUILTIN_RESOLVED, onStageQuarantined: (q) => reported.push(q.stageId) },
+        (renderer) => {
+          renderer.prepareProgram(LEGACY_PROCESS_VERSION);
+          expect(reported).toEqual(["acme.gain"]);
+          expect(() => renderer.prepareStockProgram(LEGACY_PROCESS_VERSION)).not.toThrow();
+        },
+      );
     });
 
     it("fails where one of Safelight's own stages can't be built", () => {
@@ -596,7 +626,7 @@ describe("output sizing", () => {
   });
 
   it("sizes the buffer to the cropped region", () => {
-    withRenderer(undefined, (renderer) => {
+    withRenderer({ stages: cropStages() }, (renderer) => {
       renderer.setImage(floatImage(24, 12, () => [0.2, 0.2, 0.2]));
       renderer.setParams(
         identityParams({ crop: { x: 0.25, y: 0, width: 0.5, height: 0.5 } }),
@@ -621,7 +651,7 @@ describe("output sizing", () => {
   // A zoom window's frame is part of the cropped image; the view places it by the
   // size of the whole and the region it is of, which a crop changes while zoomed in.
   it("tells the size and region of the whole cropped image while drawing a window", () => {
-    withRenderer(undefined, (renderer) => {
+    withRenderer({ stages: cropStages() }, (renderer) => {
       const crop = { x: 0.25, y: 0, width: 0.5, height: 0.5 };
       renderer.setImage(floatImage(24, 12, () => [0.2, 0.2, 0.2]));
       renderer.setParams(identityParams({ crop }));
@@ -634,7 +664,37 @@ describe("output sizing", () => {
   });
 });
 
+describe("derived values", () => {
+  // The window's derive reads what only the window holds (window-derive.ts).
+  it("derives a frame's values with the derive it was made with", () => {
+    const stages = cropStages();
+    const derive = vi.fn(() => ({}));
+    withRenderer({ stages, derive }, (renderer) => {
+      const params = identityParams();
+      renderer.setParams(params);
+      expect(derive).toHaveBeenCalledWith(params, stages);
+      renderer.setParams(params, {});
+      expect(derive).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // The render worker's renderer is always handed them; one that isn't would
+  // draw every stage at its defaults.
+  it("refuses params without derived values when made without a derive", () => {
+    const renderer = new WebGLRenderer(glHarness().canvas, { stages: cropStages() });
+    try {
+      expect(() => renderer.setParams(identityParams())).toThrow("no derived values");
+      expect(() => renderer.setParams(identityParams(), {})).not.toThrow();
+    } finally {
+      renderer.dispose();
+    }
+  });
+});
+
 describe("pixel behaviour", () => {
+  // Transform registers no stage of its own: Crop's matrix draws its params,
+  // which the renderer's own derive takes as they are.
+
   it("passes a flat source through unchanged at identity settings", () => {
     const frame = linearFrame((renderer) => {
       renderer.setImage(flatSource());
@@ -865,7 +925,7 @@ describe("a display transform that skips the tone shoulder", () => {
     highlights: number,
     texel: readonly [number, number, number] = BRIGHT,
   ): number[] {
-    return withRenderer({ stages: [], pipeline }, (renderer) => {
+    return withRenderer({ stages: basicStagesFor(CURRENT_PROCESS_VERSION), pipeline }, (renderer) => {
       renderer.setImage(floatImage(16, 16, () => texel));
       renderer.setParams(identityParams({ highlights, processVersion: CURRENT_PROCESS_VERSION }));
       return sceneAt(renderer);
@@ -919,7 +979,7 @@ describe("a display transform that skips the tone shoulder", () => {
     // Old edits never change: installing a transform update that sets the
     // flag must leave a version 1 photo exactly as it was.
     const frame = (pipeline: ResolvedPipeline, processVersion: number) =>
-      withRenderer({ stages: [], pipeline }, (renderer) => {
+      withRenderer({ stages: basicStagesFor(processVersion), pipeline }, (renderer) => {
         renderer.setImage(floatImage(16, 16, () => BRIGHT));
         renderer.setParams(identityParams({ processVersion }));
         return capture(renderer);
@@ -931,7 +991,7 @@ describe("a display transform that skips the tone shoulder", () => {
   });
 
   it("follows the transform through a one-off render and back", () => {
-    withRenderer({ stages: [], pipeline: SHOULDERED }, (renderer) => {
+    withRenderer({ stages: basicStagesFor(CURRENT_PROCESS_VERSION), pipeline: SHOULDERED }, (renderer) => {
       renderer.setImage(floatImage(16, 16, () => BRIGHT));
       renderer.setParams(identityParams({ processVersion: CURRENT_PROCESS_VERSION }));
       const live = luma(sceneAt(renderer));
@@ -968,7 +1028,8 @@ describe("a display transform that skips the tone shoulder", () => {
         panels: [...DEFAULT_MASK_PANELS],
         components: [],
       };
-      return withRenderer({ stages: [], pipeline }, (renderer) => {
+      const stages = [...basicStagesFor(CURRENT_PROCESS_VERSION), ...masksStagesFor(CURRENT_PROCESS_VERSION)];
+      return withRenderer({ stages, pipeline }, (renderer) => {
         renderer.setImage(floatImage(16, 16, () => texel));
         renderer.setParams(identityParams({ masks: [mask], processVersion: CURRENT_PROCESS_VERSION }));
         return luma(sceneAt(renderer));
@@ -1068,7 +1129,7 @@ describe("cached half-float sources", () => {
   it("caps to the output edge when the thumbnail renderer opts in", () => {
     const source = cached(flatSource(32));
     const capped = zoomedBuffer((r) =>
-      r.uploadSource("k", source, 8, false, false, true, true),
+      r.uploadSource("k", source, 8, false, true, true),
     );
     expect(capped).toEqual([4, 4]);
   });
@@ -1180,14 +1241,14 @@ describe("a retouched frame on a driver that can't mipmap RGBA16", () => {
   it("falls back to an 8-bit patched source within the same frame", () => {
     const { gl } = glHarness();
     const reference = withRenderer(
-      { stages: [], pipeline: LINEAR_PROBE_PIPELINE, highBitDepth: false },
+      { stages: healStages(), pipeline: LINEAR_PROBE_PIPELINE, highBitDepth: false },
       retouched,
     );
 
     const fault = emulateRgba16MipmapBug(gl);
     try {
       withRenderer(
-        { stages: [], pipeline: LINEAR_PROBE_PIPELINE, highBitDepth: true },
+        { stages: healStages(), pipeline: LINEAR_PROBE_PIPELINE, highBitDepth: true },
         (renderer) => {
           const frame = retouched(renderer);
           expect(pixelAt(frame, 8, 8)[1]).toBeGreaterThan(0.1);
@@ -1261,7 +1322,10 @@ function healed(version: Partial<DevelopParams>, over: Partial<DevelopParams> = 
 }
 
 /** One frame of the speckled sky, the denoiser fed as Develop feeds it. */
-function skyFrame(params: DevelopParams, stages: ProcessingStageContribution[] = []): Frame {
+function skyFrame(
+  params: DevelopParams,
+  stages: ProcessingStageContribution[] = [...basicStagesFor(params.processVersion), ...healStagesFor(params.processVersion)],
+): Frame {
   return withRenderer({ stages, pipeline: WIDE_PROBE }, (renderer) => {
     renderer.setImage(SPECKLED_SKY);
     renderer.setParams(params);
@@ -1301,7 +1365,7 @@ describe("a heal spot on a frame with values outside [0, 1]", () => {
   });
 
   it("hands the denoiser the copy's full range on version 2", () => {
-    const stages = [builtinStage(BUILTIN_DENOISE_ID)];
+    const stages = [...healStages(), builtinStage(BUILTIN_DENOISE_ID)];
     withRenderer({ stages, pipeline: WIDE_PROBE }, (renderer) => {
       const params = healed(V2, { colorNR: 25 });
       renderer.setImage(SPECKLED_SKY);
@@ -1325,7 +1389,7 @@ describe("a heal spot on a frame with values outside [0, 1]", () => {
       uniforms: [{ key: "take", glslType: "float", default: 0 }],
       passes: [{ glsl: "c = c;" }],
     };
-    withRenderer({ stages: [current], pipeline: WIDE_PROBE }, (renderer) => {
+    withRenderer({ stages: [...healStages(), current], pipeline: WIDE_PROBE }, (renderer) => {
       renderer.setImage(SPECKLED_SKY);
       renderer.setParams(healed(V2));
       renderer.setContributedParams({ "test.current.take": 1 });
@@ -1341,14 +1405,14 @@ describe("a heal spot on a frame with values outside [0, 1]", () => {
   // from a copy in its own version's format, and the denoiser's cached result
   // from one version's copy must not stand in for the other's.
   it("draws each version as a fresh renderer does when frames alternate, with no new GL objects", () => {
-    const stages = [builtinStage(BUILTIN_DENOISE_ID)];
+    const stages = [...healStages(), builtinStage(BUILTIN_DENOISE_ID)];
     const versions = [V1, V2];
     const params = versions.map((version) => healed(version, { colorNR: 25 }));
     const fresh = params.map((p) => skyFrame(p, stages));
     const { canvas, gl } = glHarness();
     const tally = trackGlObjects(gl);
     try {
-      const renderer = new WebGLRenderer(canvas, { stages, pipeline: WIDE_PROBE });
+      const renderer = new WebGLRenderer(canvas, { stages, pipeline: WIDE_PROBE, derive: deriveWithoutSettings });
       renderer.setImage(SPECKLED_SKY);
       const drift = (index: number): number => {
         renderer.setParams(params[index]);
@@ -1381,7 +1445,7 @@ describe("a heal spot on a frame with values outside [0, 1]", () => {
     }
     const bitmap = await createImageBitmap(new ImageData(pixels, 32, 32));
     const intoShadow: RetouchSpot = { ...SPECK_HEAL, dstY: 0.5, srcY: 0.5 };
-    const frame = withRenderer({ stages: [], pipeline: WIDE_PROBE }, (renderer) => {
+    const frame = withRenderer({ stages: healStages(), pipeline: WIDE_PROBE }, (renderer) => {
       renderer.setImage(bitmap);
       renderer.setParams(identityParams({ ...V2, retouch: [intoShadow] }));
       return capture(renderer);
@@ -1452,7 +1516,7 @@ function withHalfFloatMipmapsRefused<T>(fn: (fault: MipmapFault) => T): T {
 describe("a retouched frame on a driver that can't mipmap RGBA16F", () => {
   it("falls back to a clipped copy within the same frame on version 2, and keeps it", () => {
     withHalfFloatMipmapsRefused((fault) => {
-      withRenderer({ stages: [], pipeline: WIDE_PROBE }, (renderer) => {
+      withRenderer({ stages: healStages(), pipeline: WIDE_PROBE }, (renderer) => {
         renderer.setImage(SPECKLED_SKY);
         renderer.setParams(healed(V2));
         const frame = capture(renderer);
@@ -1480,7 +1544,7 @@ describe("a retouched frame on a driver that can't mipmap RGBA16F", () => {
     const norm16 = emulateRgba16MipmapBug(gl);
     const halfFloat = refuseHalfFloatMipmaps(gl, norm16);
     try {
-      withRenderer({ stages: [], pipeline: WIDE_PROBE, highBitDepth: true }, (renderer) => {
+      withRenderer({ stages: healStages(), pipeline: WIDE_PROBE, highBitDepth: true }, (renderer) => {
         renderer.setImage(SPECKLED_SKY);
         renderer.setParams(healed(V2));
         const frame = capture(renderer);
@@ -1502,7 +1566,7 @@ describe("a retouched frame on a driver that can't mipmap RGBA16F", () => {
   // next version 2 frame's half-float copy fails at the same size, only the copy's
   // format tells the clipped copy it falls back to from the one cached.
   it("denoises the clipped copy afresh when the half-float copy fails at the same size", () => {
-    const stages = [builtinStage(BUILTIN_DENOISE_ID)];
+    const stages = [...healStages(), builtinStage(BUILTIN_DENOISE_ID)];
     const denoised = healed(V2, { colorNR: 25 });
     const reference = withHalfFloatMipmapsRefused(() => skyFrame(denoised, stages));
     withRenderer({ stages, pipeline: WIDE_PROBE }, (renderer) => {
@@ -1569,7 +1633,7 @@ describe("a retouched frame on a driver that can't render to an RGBA16F copy", (
     const norm16 = emulateRgba16MipmapBug(gl);
     const target = refuseHalfFloatTarget(gl);
     try {
-      withRenderer({ stages: [], pipeline: WIDE_PROBE, highBitDepth: true }, (renderer) => {
+      withRenderer({ stages: healStages(), pipeline: WIDE_PROBE, highBitDepth: true }, (renderer) => {
         renderer.setImage(SPECKLED_SKY);
         renderer.setParams(healed(V2));
         const frame = capture(renderer);
@@ -1582,6 +1646,23 @@ describe("a retouched frame on a driver that can't render to an RGBA16F copy", (
     } finally {
       target.restore();
       norm16.restore();
+    }
+  });
+
+  // A format the driver won't complete stays refused, so later retouched frames
+  // don't reallocate the copy and ask again.
+  it("asks for the RGBA16F copy once", () => {
+    const target = refuseHalfFloatTarget(glHarness().gl);
+    try {
+      withRenderer({ stages: healStages(), pipeline: WIDE_PROBE, highBitDepth: true }, (renderer) => {
+        renderer.setImage(SPECKLED_SKY);
+        renderer.setParams(healed(V2));
+        capture(renderer);
+        capture(renderer);
+        expect(target.refused).toBe(1);
+      });
+    } finally {
+      target.restore();
     }
   });
 });
@@ -1633,7 +1714,11 @@ describe("the High bit-depth setting on a retouched frame", () => {
     const norm16 = standInForNorm16(glHarness().gl);
     try {
       const frame = withRenderer(
-        { stages: [], pipeline: WIDE_PROBE, highBitDepth },
+        {
+          stages: [...basicStagesFor(version.processVersion), ...healStagesFor(version.processVersion)],
+          pipeline: WIDE_PROBE,
+          highBitDepth,
+        },
         (renderer) => {
           renderer.setImage(SPECKLED_SKY);
           renderer.setParams(healed(version));
@@ -1706,8 +1791,8 @@ describe("a patched copy an idle stage's result unit still holds", () => {
     it(`is redrawn for the next frame's spots on ${name}`, () => {
       const { gl } = glHarness();
       const moved = identityParams({ ...version, retouch: [ELSEWHERE] });
-      const expected = skyFrame(moved, [IDLE]);
-      withRenderer({ stages: [IDLE], pipeline: WIDE_PROBE }, (renderer) => {
+      const expected = skyFrame(moved, [...healStages(), IDLE]);
+      withRenderer({ stages: [...healStages(), IDLE], pipeline: WIDE_PROBE }, (renderer) => {
         renderer.setImage(SPECKLED_SKY);
         renderer.setParams(healed(version));
         renderer.render();
@@ -1774,7 +1859,7 @@ describe("the patch pass", () => {
   it("draws into a copy no texture unit holds, as frames switch versions", () => {
     const watch = watchDrawsIntoCopy(glHarness().gl);
     try {
-      withRenderer({ stages: [], pipeline: WIDE_PROBE }, (renderer) => {
+      withRenderer({ stages: healStages(), pipeline: WIDE_PROBE }, (renderer) => {
         renderer.setImage(SPECKLED_SKY);
         for (const version of [V1, V2, V1, V2]) {
           renderer.setParams(healed(version));
@@ -1802,7 +1887,7 @@ describe("the patch pass", () => {
     const idle: ProcessingStageContribution = { ...busy[0], id: "idle.test", name: "Idle" };
     const watch = watchDrawsIntoCopy(glHarness().gl);
     try {
-      withRenderer({ stages: [...busy, idle], pipeline: WIDE_PROBE }, (renderer) => {
+      withRenderer({ stages: [...healStages(), ...busy, idle], pipeline: WIDE_PROBE }, (renderer) => {
         renderer.setImage(SPECKLED_SKY);
         renderer.setContributedParams(Object.fromEntries(busy.map((s) => [`${s.id}.take`, 1])));
         for (const version of [V1, V2, V1, V2]) {
@@ -2081,7 +2166,7 @@ describe("brush coverage across frames", () => {
   }
 
   it("shows a dab the next params moved, and the same frame when nothing changed", () => {
-    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+    withRenderer({ stages: [...healStages(), ...masksStages()], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
       renderer.setImage(flatSource(SIZE));
       renderer.setParams(identityParams({ masks: [brushMask([LEFT])] }));
       const first = capture(renderer);
@@ -2097,7 +2182,7 @@ describe("brush coverage across frames", () => {
   });
 
   it("shows a brush spot the next params repainted", () => {
-    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+    withRenderer({ stages: [...healStages(), ...masksStages()], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
       renderer.setImage(rampSource(SIZE));
       renderer.setParams(identityParams());
       const plain = capture(renderer);
@@ -2124,7 +2209,7 @@ describe("brush coverage across frames", () => {
       spotAt("hidden", 0.1, false),
       ...[0.3, 0.5, 0.7, 0.9].map((x) => spotAt(`shown${x}`, x, true)),
     ];
-    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+    withRenderer({ stages: [...healStages(), ...masksStages()], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
       renderer.setImage(rampSource(SIZE));
       renderer.setParams(identityParams());
       const plain = capture(renderer);
@@ -2142,7 +2227,7 @@ describe("brush coverage across frames", () => {
 
   it("reads no mask dab for a frame or for params that kept the same masks", () => {
     const watched = counted(LEFT);
-    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+    withRenderer({ stages: [...healStages(), ...masksStages()], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
       renderer.setImage(flatSource(SIZE));
       const masks = [brushMask([watched.object])];
       renderer.setParams(identityParams({ masks }));
@@ -2162,9 +2247,45 @@ describe("brush coverage across frames", () => {
     });
   });
 
+  // The worker takes params patch by patch faster than it draws, and each patch's
+  // structured clone hands over new dab arrays.
+  it("signs a mask's dabs once for a frame, however many params came before it", () => {
+    const watched = counted(LEFT);
+    withRenderer({ stages: masksStages(), pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+      renderer.setImage(flatSource(SIZE));
+      const readsFor = (queued: number) => {
+        const before = watched.reads();
+        for (let i = 0; i < queued; i++) {
+          renderer.setParams(identityParams({ masks: [brushMask([watched.object])] }));
+        }
+        renderer.render();
+        return watched.reads() - before;
+      };
+      readsFor(1);
+      const one = readsFor(1);
+      expect(one).toBeGreaterThan(0);
+      expect(readsFor(5)).toBe(one);
+    });
+  });
+
+  it("reads no mask dab for params that changed a mask but kept its dabs", () => {
+    const watched = counted(LEFT);
+    withRenderer({ stages: masksStages(), pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+      renderer.setImage(flatSource(SIZE));
+      const dabs = [watched.object];
+      renderer.setParams(identityParams({ masks: [brushMask(dabs)] }));
+      renderer.render();
+      const baked = watched.reads();
+
+      renderer.setParams(identityParams({ masks: [{ ...brushMask(dabs), opacity: 50 }] }));
+      renderer.render();
+      expect(watched.reads()).toBe(baked);
+    });
+  });
+
   it("reads no retouch dab for a frame or for params that kept the same spots", () => {
     const watched = counted(LEFT);
-    withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+    withRenderer({ stages: [...healStages(), ...masksStages()], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
       renderer.setImage(flatSource(SIZE));
       const retouch = [brushSpot([watched.object])];
       renderer.setParams(identityParams({ retouch }));
@@ -2216,12 +2337,16 @@ describe("brush coverage across frames", () => {
       it(`bakes ${name} again for the params that threw`, () => {
         const { dab, heal } = unreadable(LEFT);
         const painted = paint(dab);
-        withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+        withRenderer({ stages: [...healStages(), ...masksStages()], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
           renderer.setImage(rampSource(SIZE));
           renderer.setParams(identityParams());
           const plain = capture(renderer);
 
-          expect(() => renderer.setParams(painted)).toThrow("dab unreadable");
+          // A spot's atlas bakes with the params, a mask's coverage with the frame.
+          expect(() => {
+            renderer.setParams(painted);
+            renderer.render();
+          }).toThrow("dab unreadable");
           expect(() => renderer.render()).toThrow("dab unreadable");
 
           heal();
@@ -2249,7 +2374,7 @@ describe("brush coverage across frames", () => {
     // Renderers share one GL context, so each frame is finished before the next
     // renderer is built.
     function frameOf(source: FloatImage, params: DevelopParams): Frame {
-      return withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+      return withRenderer({ stages: [...healStages(), ...masksStages()], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
         renderer.setImage(source);
         renderer.setParams(params);
         return capture(renderer);
@@ -2267,7 +2392,7 @@ describe("brush coverage across frames", () => {
           false,
         ]);
 
-        withRenderer({ stages: [], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+        withRenderer({ stages: [...healStages(), ...masksStages()], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
           renderer.setImage(SQUARE);
           renderer.setParams(painted);
           const square = capture(renderer);
@@ -2288,7 +2413,7 @@ describe("brush coverage across frames", () => {
   // frame, so its cached result must follow the spot's source offset and opacity
   // as well as its coverage: a dragged source otherwise showed the old patch.
   describe("under the denoiser", () => {
-    const DENOISER = [builtinStage(BUILTIN_DENOISE_ID)];
+    const DENOISER = [...healStages(), builtinStage(BUILTIN_DENOISE_ID)];
     const painted = (spot: RetouchSpot) => identityParams({ colorNR: 25, retouch: [spot] });
     const BEFORE = brushSpot([LEFT], 0.3);
 

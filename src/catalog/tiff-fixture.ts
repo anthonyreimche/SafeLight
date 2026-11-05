@@ -9,7 +9,7 @@
 // layouts instead of binary fixtures. Imported only from *.test.ts files.
 
 // Every buffer here owns its storage; BlobPart rejects the SharedArrayBuffer-
-// backed `Uint8Array<ArrayBufferLike>` that the unparameterised alias widens to.
+// backed `Uint8Array<ArrayBufferLike>` that the unparameterized alias widens to.
 export type Bytes = Uint8Array<ArrayBuffer>;
 
 export type Ratio = readonly [num: number, den: number];

@@ -1,7 +1,7 @@
 {
   "name": "safelight",
   "private": true,
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Safelight — a fast RAW photo editor.",
   "homepage": "https://github.com/anthonyreimche/SafeLight",
   "desktopName": "safelight",
@@ -19,7 +19,9 @@
     "icon": "node electron/make-icon.cjs",
     "electron:dev": "vite build && electron .",
     "build:electron": "npm run build:app && npm run icon && electron-builder --win",
-    "build:linux": "npm run build:app && npm run icon && electron-builder --linux"
+    "build:linux": "npm run build:app && npm run icon && electron-builder --linux",
+    "types:extensions": "node scripts/build-extension-types.mjs",
+    "types:extensions:check": "node scripts/build-extension-types.mjs --check"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.1",
@@ -62,18 +64,36 @@
     "files": [
       "dist/**/*",
       "electron/main.cjs",
+      "electron/app-protocol.cjs",
       "electron/atomic-write.cjs",
       "electron/crash-recovery.cjs",
       "electron/extension-origins.cjs",
+      "electron/extension-store/install.cjs",
+      "electron/extension-store/readme.cjs",
+      "electron/extension-store/registry.cjs",
+      "electron/extension-store/releases.cjs",
+      "electron/extension-store/search.cjs",
+      "electron/extension-store/thumbnails.cjs",
+      "electron/extension-store/trust.cjs",
       "electron/file-range.cjs",
       "electron/gpu-backend.cjs",
+      "electron/ipc/diagnostics.cjs",
+      "electron/ipc/extensions.cjs",
+      "electron/ipc/fs.cjs",
+      "electron/ipc/index.cjs",
+      "electron/ipc/window.cjs",
       "electron/issue-link.cjs",
+      "electron/official-extensions.json",
+      "electron/os-open.cjs",
+      "electron/photo-types.json",
       "electron/plugin-files.cjs",
       "electron/plugin-releases.cjs",
       "electron/registry-cache.cjs",
       "electron/registry-entry.cjs",
       "electron/remote-json-cache.cjs",
+      "electron/self-update.cjs",
       "electron/unzip.cjs",
+      "electron/window-bounds.cjs",
       "electron/window-policy.cjs",
       "electron/preload.cjs",
       "package.json"
@@ -118,7 +138,62 @@
         }
       ],
       "category": "public.app-category.photography",
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "fileAssociations": [
+        {
+          "ext": [
+            "jpg",
+            "jpeg",
+            "png",
+            "webp",
+            "avif",
+            "tiff",
+            "tif",
+            "ppm",
+            "pgm",
+            "pbm",
+            "pnm"
+          ],
+          "name": "Photo",
+          "role": "Editor",
+          "rank": "Alternate"
+        },
+        {
+          "ext": [
+            "nef",
+            "cr2",
+            "cr3",
+            "arw",
+            "dng",
+            "orf",
+            "raf",
+            "pef",
+            "srw",
+            "rw2",
+            "iiq",
+            "3fr",
+            "nrw",
+            "kdc",
+            "mos",
+            "mrw",
+            "erf",
+            "sr2",
+            "x3f",
+            "srf",
+            "dcr",
+            "rwl",
+            "fff",
+            "gpr",
+            "mef",
+            "crw",
+            "raw",
+            "mdc"
+          ],
+          "name": "RAW photo",
+          "role": "Editor",
+          "rank": "Alternate"
+        }
+      ]
     },
     "dmg": {
       "title": "Safelight ${version}"
@@ -165,6 +240,11 @@
         "image/png",
         "image/tiff",
         "image/webp",
+        "image/avif",
+        "image/x-portable-pixmap",
+        "image/x-portable-graymap",
+        "image/x-portable-bitmap",
+        "image/x-portable-anymap",
         "image/x-nikon-nef",
         "image/x-nikon-nrw",
         "image/x-canon-cr2",
@@ -172,6 +252,7 @@
         "image/x-canon-crw",
         "image/x-sony-arw",
         "image/x-sony-sr2",
+        "image/x-sony-srf",
         "image/x-adobe-dng",
         "image/x-olympus-orf",
         "image/x-fuji-raf",
@@ -179,6 +260,17 @@
         "image/x-samsung-srw",
         "image/x-panasonic-rw2",
         "image/x-sigma-x3f",
+        "image/x-phaseone-iiq",
+        "image/x-hasselblad-3fr",
+        "image/x-hasselblad-fff",
+        "image/x-kodak-kdc",
+        "image/x-kodak-dcr",
+        "image/x-leaf-mos",
+        "image/x-minolta-mrw",
+        "image/x-epson-erf",
+        "image/x-leica-rwl",
+        "image/x-gopro-gpr",
+        "image/x-mamiya-mef",
         "image/x-dcraw"
       ]
     },
@@ -195,10 +287,31 @@
         "libnss3",
         "libgtk-3-0",
         "libxss1",
-        "libglib2.0-0"
+        "libglib2.0-0",
+        "libnotify4",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libasound2 | libasound2t64",
+        "libglib2.0-bin"
       ],
       "recommends": [
         "libvulkan1"
+      ],
+      "executableArgs": [
+        "%F"
+      ]
+    },
+    "rpm": {
+      "executableArgs": [
+        "%F"
+      ]
+    },
+    "pacman": {
+      "executableArgs": [
+        "%F"
       ]
     },
     "flatpak": {
@@ -206,7 +319,20 @@
       "runtimeVersion": "24.08",
       "sdk": "org.freedesktop.Sdk",
       "base": "org.electronjs.Electron2.BaseApp",
-      "baseVersion": "24.08"
+      "baseVersion": "24.08",
+      "finishArgs": [
+        "--socket=wayland",
+        "--socket=x11",
+        "--share=ipc",
+        "--device=dri",
+        "--socket=pulseaudio",
+        "--filesystem=home",
+        "--share=network",
+        "--talk-name=org.freedesktop.Notifications",
+        "--filesystem=/media",
+        "--filesystem=/run/media",
+        "--filesystem=/mnt"
+      ]
     },
     "nsis": {
       "differentialPackage": false,

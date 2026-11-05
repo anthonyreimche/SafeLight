@@ -3,18 +3,18 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { RAW_EXTENSIONS } from "@/modules/library/raw-preview";
+import { RAW_EXTENSIONS } from "@/raw/raw-preview";
 
 // Best-effort scrubbing of text bound for a public issue: the folders of any
 // absolute path (the project's become <folder>, a home folder ~, the rest …),
-// the catalog's own relative folders, and photo file names. The user still
+// the catalogue's own relative folders, and photo file names. The user still
 // sees and can edit everything, so this only has to catch the usual shapes,
 // and running it twice must change nothing.
 
 export interface RedactOptions {
   /** Absolute project folders, in any slash style. */
   roots?: readonly string[];
-  /** The catalog's folders relative to the project, e.g. "2024/trip". */
+  /** The catalogue's folders relative to the project, e.g. "2024/trip". */
   folders?: readonly string[];
 }
 

@@ -78,15 +78,25 @@ export function encodeCacheEntry(
   };
 }
 
-// A folder entry's header. Builds before 3.1.0 wrote [width, height] and one
-// gzip stream; the magic word, a value no preview width can take, marks the
-// layout that also keeps the frame's size and the sample, each stream on its
-// own so a read that doesn't want the sample never decompresses it.
+// A folder file is named by a hash of its key (a path-long key outgrows the
+// 255 bytes a file name may take), so it keeps the key inside to be checked
+// against: a name that turns out to hold another key's entry reads as a miss.
+export const HASHED_FILE_NAME = /^[0-9a-f]{64}\.bin$/;
+
+export async function cacheFileName(key: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex}.bin`;
+}
+
+// A folder entry's header, then the key's UTF-8 bytes, the preview's gzip
+// stream and the sample's. The magic word, a value no preview width can take,
+// opens it; the sample and the preview are separate streams so a read that
+// doesn't want the sample never decompresses it.
 export const ENTRY_MAGIC = 0xffffffff;
-export const ENTRY_LAYOUT = 1;
-const ENTRY_HEADER_WORDS = 11;
+export const ENTRY_LAYOUT = 2;
+const ENTRY_HEADER_WORDS = 12;
 export const ENTRY_HEADER_BYTES = ENTRY_HEADER_WORDS * 4;
-export const LEGACY_HEADER_BYTES = 8;
 
 export interface EntryHeader {
   width: number;
@@ -96,9 +106,9 @@ export interface EntryHeader {
   sample: { width: number; height: number; x: number; y: number };
   /** The preview's gzip stream's length; the sample's runs to the end. */
   previewBytes: number;
+  /** The length of the key's UTF-8 bytes, which follow the header. */
+  keyBytes: number;
 }
-
-export type DecodedHeader = EntryHeader | { legacy: { width: number; height: number } };
 
 export function encodeEntryHeader(h: EntryHeader): Uint32Array<ArrayBuffer> {
   return new Uint32Array([
@@ -106,20 +116,18 @@ export function encodeEntryHeader(h: EntryHeader): Uint32Array<ArrayBuffer> {
     h.width, h.height,
     h.fullWidth, h.fullHeight,
     h.sample.width, h.sample.height, h.sample.x, h.sample.y,
-    h.previewBytes,
+    h.previewBytes, h.keyBytes,
   ]);
 }
 
-/** The header at a folder entry's start, from its first bytes (44 or more
- *  when available): the new layout, the one before 3.1.0, or null for a file
- *  too short for either, a magic word without its header, or a layout this
- *  build doesn't know (a later build's), all of which read as a miss. */
-export function decodeEntryHeader(head: ArrayBuffer): DecodedHeader | null {
-  if (head.byteLength < LEGACY_HEADER_BYTES) return null;
-  const first = new Uint32Array(head.slice(0, LEGACY_HEADER_BYTES));
-  if (first[0] !== ENTRY_MAGIC) return { legacy: { width: first[0], height: first[1] } };
-  if (first[1] !== ENTRY_LAYOUT || head.byteLength < ENTRY_HEADER_BYTES) return null;
+/** The header at a folder entry's start, from its first bytes (48 or more
+ *  when available), or null for a file that holds no entry this build can use:
+ *  too short for a header, no magic word (an entry from before the key was
+ *  kept), or a layout it doesn't know. All of them read as a miss. */
+export function decodeEntryHeader(head: ArrayBuffer): EntryHeader | null {
+  if (head.byteLength < ENTRY_HEADER_BYTES) return null;
   const w = new Uint32Array(head.slice(0, ENTRY_HEADER_BYTES));
+  if (w[0] !== ENTRY_MAGIC || w[1] !== ENTRY_LAYOUT) return null;
   return {
     width: w[2],
     height: w[3],
@@ -127,6 +135,7 @@ export function decodeEntryHeader(head: ArrayBuffer): DecodedHeader | null {
     fullHeight: w[5],
     sample: { width: w[6], height: w[7], x: w[8], y: w[9] },
     previewBytes: w[10],
+    keyBytes: w[11],
   };
 }
 

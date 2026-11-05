@@ -417,7 +417,7 @@ describe("a float frame of a photo", () => {
     expect(h.asyncRenders).toBe(0);
   });
 
-  it("is null for a photo the catalog doesn't hold, asking the renderer nothing", async () => {
+  it("is null for a photo the catalogue doesn't hold, asking the renderer nothing", async () => {
     await expect(renderPhotoFloatFrame("unknown", params, FLOAT)).resolves.toBeNull();
 
     expect(h.requests).toEqual([]);

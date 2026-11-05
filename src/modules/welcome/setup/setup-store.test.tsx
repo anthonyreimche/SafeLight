@@ -8,6 +8,7 @@
 // The seam is the Electron bridge (window.safelightNative).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ensureCoreModules } from "@/extensions/essentials-migration";
 import { rememberSource } from "@/extensions/sources";
 import { useTrust } from "@/extensions/trust";
 import { SETUP_RECORD_KEY } from "./first-run";
@@ -26,6 +27,7 @@ import {
 } from "./setup-store";
 import {
   EMPTY_TRUST,
+  KITS_DOC,
   manifestFor,
   ONE,
   stubBridge,
@@ -34,6 +36,11 @@ import {
   TWO,
   type FakeBridge,
 } from "./setup.test-support";
+
+vi.mock("@/extensions/essentials-migration", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/extensions/essentials-migration")>()),
+  ensureCoreModules: vi.fn(async () => {}),
+}));
 
 const FRESH = {
   countRecentProjects: async () => 0,
@@ -53,6 +60,7 @@ let bridge: FakeBridge;
 
 beforeEach(() => {
   localStorage.clear();
+  vi.mocked(ensureCoreModules).mockClear();
   resetSetupForTests();
   bridge = stubBridge();
   useTrust.setState({ list: EMPTY_TRUST, loadedAt: 0 });
@@ -159,11 +167,19 @@ describe("closeSetup", () => {
     expect(record()).toMatchObject({ outcome: "skipped" });
   });
 
+  it("has the essentials installed from the official list once a first run is closed", () => {
+    openSetup("first-run");
+    closeSetup("skipped");
+    expect(ensureCoreModules).toHaveBeenCalledTimes(1);
+    expect(record()).toMatchObject({ outcome: "skipped" });
+  });
+
   it("leaves the record alone on a rerun", () => {
     writeRecord("finished");
     openSetup("rerun");
     closeSetup("skipped");
     expect(record()).toMatchObject({ outcome: "finished" });
+    expect(ensureCoreModules).not.toHaveBeenCalled();
   });
 
   it("won't close while installs are running", () => {
@@ -171,6 +187,7 @@ describe("closeSetup", () => {
     useSetupStore.setState({ installing: true });
     closeSetup("skipped");
     expect(useSetupStore.getState().phase).toBe("open");
+    expect(ensureCoreModules).not.toHaveBeenCalled();
   });
 });
 
@@ -242,6 +259,102 @@ describe("openSetup", () => {
     await vi.waitFor(() =>
       expect(useSetupStore.getState().installed).toEqual([ONE, TWO]),
     );
+  });
+});
+
+describe("default kits", () => {
+  const DEFAULT_FILM = {
+    ...KITS_DOC,
+    kits: [{ ...KITS_DOC.kits[0], default: true }, KITS_DOC.kits[1]],
+  };
+  const selected = () => useSetupStore.getState().selected;
+  const installedReady = (repos: string[]) =>
+    vi.waitFor(() => expect(useSetupStore.getState().installed).toEqual(repos));
+  const deferList = () => {
+    let release!: (list: ReturnType<typeof manifestFor>[]) => void;
+    bridge.list.mockImplementation(() => new Promise((r) => (release = r)));
+    return (list: ReturnType<typeof manifestFor>[]) => release(list);
+  };
+  const deferKits = () => {
+    let release!: (doc: unknown) => void;
+    bridge.kits.mockImplementation(() => new Promise((r) => (release = r)));
+    return (doc: unknown) => release(doc);
+  };
+
+  beforeEach(() => {
+    bridge.kits.mockResolvedValue(DEFAULT_FILM);
+  });
+
+  it("picks the default kits on a first run", async () => {
+    openSetup("first-run");
+    await kitsReady();
+    expect(selected()).toEqual([ONE, TWO]);
+  });
+
+  it("picks nothing on a rerun", async () => {
+    openSetup("rerun", "extensions");
+    await kitsReady();
+    expect(selected()).toEqual([]);
+  });
+
+  it("skips what is installed when the installed list lands first", async () => {
+    bridge.list.mockResolvedValue([manifestFor(ONE, { repository: ONE })]);
+    const releaseKits = deferKits();
+    openSetup("first-run");
+    await installedReady([ONE]);
+    releaseKits(DEFAULT_FILM);
+    await kitsReady();
+    expect(selected()).toEqual([TWO]);
+  });
+
+  it("drops what is installed when the installed list lands after the kits", async () => {
+    const releaseList = deferList();
+    openSetup("first-run");
+    await kitsReady();
+    expect(selected()).toEqual([ONE, TWO]);
+    releaseList([manifestFor(ONE, { repository: ONE })]);
+    await installedReady([ONE]);
+    expect(selected()).toEqual([TWO]);
+  });
+
+  it("picks nothing from a default kit that is fully installed", async () => {
+    bridge.list.mockResolvedValue([
+      manifestFor(ONE, { repository: ONE }),
+      manifestFor(TWO, { repository: TWO }),
+    ]);
+    openSetup("first-run");
+    await installedReady([ONE, TWO]);
+    await kitsReady();
+    expect(selected()).toEqual([]);
+  });
+
+  it("keeps a change made before the kits load", async () => {
+    const releaseKits = deferKits();
+    openSetup("first-run");
+    toggleSetupExtension(ONE);
+    toggleSetupExtension(ONE);
+    releaseKits(DEFAULT_FILM);
+    await kitsReady();
+    expect(selected()).toEqual([]);
+  });
+
+  it("keeps a deselection when the installed list lands later", async () => {
+    const releaseList = deferList();
+    openSetup("first-run");
+    await kitsReady();
+    toggleSetupExtension(ONE);
+    releaseList([manifestFor(THREE, { repository: THREE })]);
+    await installedReady([THREE]);
+    expect(selected()).toEqual([TWO]);
+  });
+
+  it("starts over when setup is opened again", async () => {
+    openSetup("first-run");
+    await kitsReady();
+    toggleSetupExtension(ONE);
+    openSetup("first-run");
+    await kitsReady();
+    expect(selected()).toEqual([ONE, TWO]);
   });
 });
 

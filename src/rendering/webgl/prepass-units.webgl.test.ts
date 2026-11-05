@@ -7,7 +7,7 @@
 // that runs this frame needs a texture unit of its own. Results take 8-11 and 5,
 // the stage-texture units no texture holds, and every unit above 15 the context
 // has; a stage that still finds none is reported. With the first five alone, a
-// sixth active stage did nothing (SafeLight #155: the Colour Equaliser behind
+// sixth active stage did nothing (SafeLight #155: the Colour Equalizer behind
 // the built-in denoiser and four other extension stages).
 //
 // Each marker stage writes its own value into its result and brightens the

@@ -3,31 +3,60 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Extension contributions: modules (tab order, built-in protection, labels),
+// Extension contributions: modules (tab order, official ids, labels),
 // processing stages, and the per-extension sweep. Lives in the dom project
 // because the registry's import graph reaches stores that expect a window.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PROBE_BUILTIN_ID, installProbeBuiltin } from "./builtin.test-support";
 import {
   collectPresetStages,
+  emitEditCommit,
+  emitMetadataChange,
+  emitPhotoImport,
+  emitPhotoRemove,
+  fallbackModule,
+  hasModule,
   moduleLabel,
   moduleTabs,
   panelTitle,
   registerExportProcessor,
+  registerFilenameTemplate,
+  registerGridFilter,
+  registerGridMenuItem,
+  registerLayout,
+  registerLibrarySort,
   registerModule,
   registerPanel,
+  registerPanelHeaderAccessory,
+  registerPipeline,
+  registerPresetImporter,
+  registerCatalogHooks,
   registerProcessingStage,
+  registerSliderIcon,
+  registerSlot,
+  registerStylesheet,
+  registerTheme,
+  runGridFilterClears,
   unregisterExtension,
   unregisterProcessingStage,
   useRegistry,
 } from "./registry";
-import { getParamDescriptor, setExtensionName, unregisterStageParams } from "./param-registry";
+import { getStageTextures, setStageTexture } from "@/rendering/render-bridge";
+import { CALLBACK_FAILURE_LIMIT, CATALOG_HOOK_TIMEOUT_MS, useCallbackFailures } from "./guard";
+import { getAllDescriptors, getParamDescriptor, setExtensionName, unregisterStageParams } from "./param-registry";
 import { BUILTIN_DENOISE_ID } from "@/rendering/webgl/builtin-denoise";
 import { BUILTIN_EXTENSIONS } from "./builtin";
 import { CORE_EXTENSION_ID } from "./core-extension";
 import { extensionKinds, forgetExtension } from "./extension-kinds";
 import { makeScopedAPI } from "./host";
-import type { ExportProcessorContribution, ProcessingPhase, ProcessingStageContribution } from "./types";
+import type {
+  ExportProcessorContribution,
+  PanelContribution,
+  ProcessingPhase,
+  ProcessingStageContribution,
+  StageTextureData,
+} from "./types";
 
 const View = () => null;
 
@@ -35,11 +64,117 @@ beforeEach(() => {
   useRegistry.setState({ modules: {} });
 });
 
+// Every import and save waits on the catalogue hooks, one after another, so one
+// that throws or never finishes is logged and skipped and the rest still run.
+describe("catalogue hooks", () => {
+  const importCtx = {} as Parameters<typeof emitPhotoImport>[0];
+  const metadataCtx = {} as Parameters<typeof emitMetadataChange>[0];
+  const editCtx = {} as Parameters<typeof emitEditCommit>[0];
+  const removeCtx = {} as Parameters<typeof emitPhotoRemove>[0];
+  const hang = () => new Promise<never>(() => {});
+  const timedOut = new Error(`acme.stuck did not finish within ${CATALOG_HOOK_TIMEOUT_MS / 1000} s`);
+  const fail = (): never => {
+    throw new Error("boom");
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    unregisterExtension("acme.stuck");
+    unregisterExtension("acme.broken");
+    unregisterExtension("acme.fine");
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("skip a handler that throws or never finishes and run the rest", async () => {
+    const fine = {
+      onMetadataChange: vi.fn(async () => {}),
+      onEditCommit: vi.fn(async () => {}),
+      onPhotoRemove: vi.fn(async () => {}),
+    };
+    registerCatalogHooks("acme.stuck", {
+      id: "acme.stuck.hooks",
+      onPhotoImport: hang,
+      onMetadataChange: hang,
+      onEditCommit: hang,
+      onPhotoRemove: hang,
+    });
+    registerCatalogHooks("acme.broken", {
+      id: "acme.broken.hooks",
+      onPhotoImport: fail,
+      onMetadataChange: fail,
+      onEditCommit: fail,
+      onPhotoRemove: fail,
+    });
+    // A slow lookup, such as a geocoder, that takes longer than a start may.
+    const slow = () =>
+      new Promise<{ label: "red" }>((resolve) => setTimeout(() => resolve({ label: "red" }), 20_000));
+    registerCatalogHooks("acme.fine", {
+      id: "acme.fine.hooks",
+      onPhotoImport: async () => ({ rating: 3, ...(await slow()) }),
+      ...fine,
+    });
+
+    let settled = false;
+    const run = Promise.all([
+      emitPhotoImport(importCtx),
+      emitMetadataChange(metadataCtx),
+      emitEditCommit(editCtx),
+      emitPhotoRemove(removeCtx),
+    ]).finally(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(CATALOG_HOOK_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(CATALOG_HOOK_TIMEOUT_MS);
+
+    const [merged] = await run;
+    expect(merged).toEqual({ rating: 3, label: "red" });
+    expect(fine.onMetadataChange).toHaveBeenCalledWith(metadataCtx);
+    expect(fine.onEditCommit).toHaveBeenCalledWith(editCtx);
+    expect(fine.onPhotoRemove).toHaveBeenCalledWith(removeCtx);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[ext:acme.stuck] onPhotoImport timed out; its catalogue hooks are skipped until it is reloaded:",
+      timedOut,
+    );
+    expect(console.warn).toHaveBeenCalledWith("[ext:acme.broken] onPhotoImport failed:", new Error("boom"));
+  });
+
+  // An import calls onPhotoImport once per photo, so an extension whose hook
+  // hung once would otherwise cost every photo after it the whole wait.
+  it("skip an extension's hooks once one timed out, until it registers them again", async () => {
+    const stuck = {
+      id: "acme.stuck.hooks",
+      onPhotoImport: vi.fn(hang),
+      onEditCommit: vi.fn(async () => {}),
+    };
+    registerCatalogHooks("acme.stuck", stuck);
+    registerCatalogHooks("acme.fine", { id: "acme.fine.hooks", onPhotoImport: async () => ({ rating: 3 }) });
+
+    const first = emitPhotoImport(importCtx);
+    await vi.advanceTimersByTimeAsync(CATALOG_HOOK_TIMEOUT_MS);
+    await first;
+
+    await expect(emitPhotoImport(importCtx)).resolves.toEqual({ rating: 3 });
+    await emitEditCommit(editCtx);
+    expect(stuck.onPhotoImport).toHaveBeenCalledOnce();
+    expect(stuck.onEditCommit).not.toHaveBeenCalled();
+    expect(vi.mocked(console.warn).mock.calls.filter(([m]) => String(m).includes("acme.stuck"))).toHaveLength(1);
+
+    registerCatalogHooks("acme.stuck", stuck);
+    await emitEditCommit(editCtx);
+    expect(stuck.onEditCommit).toHaveBeenCalledWith(editCtx);
+  });
+});
+
 describe("registerModule", () => {
-  it("lists the built-ins first, then registered modules by order, then label", () => {
+  it("lists Library and Develop first, then the other modules by order, then label", () => {
     registerModule("ext.a", { id: "slideshow", label: "Slideshow", component: View, order: 200 });
+    registerModule("safelight.develop", { id: "develop", label: "Develop", component: View });
     registerModule("ext.b", { id: "map", label: "Map", component: View, order: 100 });
-    registerModule("ext.c", { id: "book", label: "Book", component: View, order: 100 });
+    registerModule("ext.c", { id: "book", label: "Book", component: View, order: -5 });
+    registerModule("safelight.library", { id: "library", label: "Library", component: View });
     expect(moduleTabs().map((m) => m.id)).toEqual([
       "library",
       "develop",
@@ -49,13 +184,19 @@ describe("registerModule", () => {
     ]);
   });
 
-  it("refuses the built-in ids", () => {
+  it("accepts Library and Develop only from the official extension its list row names", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     registerModule("ext", { id: "library", label: "Not Library", component: View });
     registerModule("ext", { id: "develop", label: "Not Develop", component: View });
+    registerModule("safelight.develop", { id: "library", label: "Not Library", component: View });
+    registerModule("safelight.library", { id: "develop", label: "Not Develop", component: View });
     expect(useRegistry.getState().modules).toEqual({});
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(4);
     warn.mockRestore();
+
+    registerModule("safelight.library", { id: "library", label: "Library", component: View });
+    registerModule("safelight.develop", { id: "develop", label: "Develop", component: View });
+    expect(moduleTabs().map((m) => m.id)).toEqual(["library", "develop"]);
   });
 
   it("refuses an id that its pop-out window's URL and name cannot carry", () => {
@@ -73,19 +214,44 @@ describe("registerModule", () => {
     expect(moduleTabs().filter((m) => m.id === "map").map((m) => m.label)).toEqual(["Map 2"]);
   });
 
-  it("labels built-ins and registered modules, and falls back to the id", () => {
+  it("labels registered modules, and falls back to the id", () => {
+    registerModule("safelight.library", { id: "library", label: "Library", component: View });
     registerModule("ext", { id: "map", label: "Map", component: View });
     expect(moduleLabel("library")).toBe("Library");
-    expect(moduleLabel("develop")).toBe("Develop");
     expect(moduleLabel("map")).toBe("Map");
-    expect(moduleLabel("print")).toBe("print");
+    expect(moduleLabel("develop")).toBe("develop");
   });
 
   it("is swept with the rest of the extension's contributions", () => {
     registerModule("ext", { id: "map", label: "Map", component: View });
     registerModule("other", { id: "book", label: "Book", component: View });
     unregisterExtension("ext");
-    expect(moduleTabs().map((m) => m.id)).toEqual(["library", "develop", "book"]);
+    expect(moduleTabs().map((m) => m.id)).toEqual(["book"]);
+    expect(hasModule("map")).toBe(false);
+    expect(hasModule("book")).toBe(true);
+  });
+});
+
+describe("fallbackModule", () => {
+  it("is the first tab other than the one that went away", () => {
+    registerModule("safelight.library", { id: "library", label: "Library", component: View });
+    registerModule("safelight.develop", { id: "develop", label: "Develop", component: View });
+    registerModule("ext", { id: "map", label: "Map", component: View });
+    expect(fallbackModule()).toBe("library");
+    expect(fallbackModule("library")).toBe("develop");
+  });
+
+  it("is the first other module without Library and Develop", () => {
+    registerModule("ext.b", { id: "map", label: "Map", component: View });
+    registerModule("ext.a", { id: "book", label: "Book", component: View });
+    expect(fallbackModule()).toBe("book");
+    expect(fallbackModule("book")).toBe("map");
+  });
+
+  it("is null when there is no other tab", () => {
+    expect(fallbackModule()).toBeNull();
+    registerModule("ext", { id: "map", label: "Map", component: View });
+    expect(fallbackModule("map")).toBeNull();
   });
 });
 
@@ -112,6 +278,29 @@ describe("panelTitle", () => {
     const panels = useRegistry.getState().panels;
     expect(panelTitle(panels, "nameless.panel")).toBe("Nameless");
     expect(panelTitle(panels, "gone")).toBe("gone");
+  });
+});
+
+// Preview-off resets each owned key to its default every frame, so a key with
+// no default would throw there.
+describe("registerPanel: owns", () => {
+  beforeEach(() => useRegistry.setState({ panels: {} }));
+  afterEach(() => vi.restoreAllMocks());
+
+  it("keeps the develop params a panel owns and drops unknown keys, with a warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const owns = ["exposure", "nope", "vignette"] as unknown as PanelContribution["owns"];
+    registerPanel("acme", { id: "acme.tone", title: "Tone", component: View, owns });
+    expect(useRegistry.getState().panels["acme.tone"].owns).toEqual(["exposure", "vignette"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"nope"'));
+  });
+
+  it("drops an owns that isn't a list, with a warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const owns = "exposure" as unknown as PanelContribution["owns"];
+    registerPanel("acme", { id: "acme.tone", title: "Tone", component: View, owns });
+    expect(useRegistry.getState().panels["acme.tone"].owns).toBeUndefined();
+    expect(warn).toHaveBeenCalled();
   });
 });
 
@@ -274,7 +463,7 @@ describe("registerProcessingStage: parts of the contract the core ignores", () =
 // injection, so only the core extension may register them. The extension id is
 // the one place the registry learns who is registering.
 describe("registerProcessingStage: Safelight's own stage ids", () => {
-  const OWN = ["core.vignette", "core.grain", BUILTIN_DENOISE_ID];
+  const OWN = [BUILTIN_DENOISE_ID];
   const registered = () => useRegistry.getState().processingStages;
   const plain = (id: string): ProcessingStageContribution => ({
     id,
@@ -327,23 +516,85 @@ describe("registerProcessingStage: Safelight's own stage ids", () => {
       ...plain("acme.look"),
       uniforms: [{ key: "amount", glslType: "float", default: 0 }],
     });
-    expect(getParamDescriptor("core.vignette.uVignetteAmount")).toBeDefined();
     expect(collectPresetStages({}).map((s) => s.stageId)).toEqual(["acme.look"]);
+  });
+
+  // A built-in is one of BUILTIN_EXTENSIONS, whatever its id: the official
+  // extensions that replace them keep ids outside "core" and their stage params
+  // are preset fields like any other extension's.
+  it("leaves a built-in's stages out of the preset fields by membership, not by id", () => {
+    const look = (id: string): ProcessingStageContribution => ({
+      ...plain(id),
+      uniforms: [{ key: "amount", glslType: "float", default: 0 }],
+    });
+    const probe = installProbeBuiltin();
+    registerProcessingStage(PROBE_BUILTIN_ID, look("probe.look"));
+    registerProcessingStage("core.unlisted", look("unlisted.look"));
+    try {
+      expect(collectPresetStages({}).map((s) => s.stageId)).toEqual(["unlisted.look"]);
+    } finally {
+      unregisterExtension(PROBE_BUILTIN_ID);
+      unregisterExtension("core.unlisted");
+      probe.remove();
+    }
   });
 
   it("keeps the stage that holds the id, and its params, against another extension", () => {
     const error = quiet("error");
     activateCore();
-    const vignette = registered()["core.vignette"];
+    const denoise = registered()[BUILTIN_DENOISE_ID];
+    expect(denoise).toBeDefined();
     registerProcessingStage("acme", {
-      ...plain("core.vignette"),
+      ...plain(BUILTIN_DENOISE_ID),
       glsl: "c = vec3(0.0);",
       uniforms: [{ key: "amount", glslType: "float", default: 0 }],
     });
-    expect(registered()["core.vignette"]).toBe(vignette);
-    expect(getParamDescriptor("core.vignette.uVignetteAmount")).toBeDefined();
-    expect(getParamDescriptor("core.vignette.amount")).toBeUndefined();
+    expect(registered()[BUILTIN_DENOISE_ID]).toBe(denoise);
+    expect(getParamDescriptor(`${BUILTIN_DENOISE_ID}.amount`)).toBeUndefined();
     expect(error).toHaveBeenCalledTimes(1);
+  });
+});
+
+// A stage that derives its values (Safelight's own, an official extension's)
+// takes them from the photo's DevelopParams: they never ride the param bag, so
+// they are no bag params (preset fields, mask-copy seeds, api.params).
+describe("registerProcessingStage: derived values", () => {
+  const AMOUNT = { key: "uAmount", glslType: "float", default: 0 } as const;
+  const stage = (derive?: ProcessingStageContribution["derive"]): ProcessingStageContribution => ({
+    id: "safelight.effects.look",
+    name: "Look",
+    phase: "effects",
+    glsl: "",
+    uniforms: [AMOUNT],
+    ...(derive ? { derive } : {}),
+  });
+
+  beforeEach(() => {
+    useRegistry.setState({ processingStages: {} });
+  });
+
+  afterEach(() => {
+    unregisterExtension("safelight.effects");
+    unregisterExtension(CORE_EXTENSION_ID);
+  });
+
+  it("registers no params for an official stage that derives them", () => {
+    registerProcessingStage("safelight.effects", stage(() => ({ uAmount: 1 })));
+    expect(useRegistry.getState().processingStages["safelight.effects.look"]).toBeDefined();
+    expect(getParamDescriptor("safelight.effects.look.uAmount")).toBeUndefined();
+    expect(collectPresetStages({})).toEqual([]);
+  });
+
+  it("registers an official stage's params when it derives none", () => {
+    registerProcessingStage("safelight.effects", stage());
+    expect(getParamDescriptor("safelight.effects.look.uAmount")).toBeDefined();
+  });
+
+  it("registers none for the core extension's stages", () => {
+    const core = BUILTIN_EXTENSIONS.find((e) => e.id === CORE_EXTENSION_ID);
+    if (!core) throw new Error("no core built-in extension");
+    core.activate(makeScopedAPI(core.id));
+    expect([...getAllDescriptors().values()].filter((d) => d.extensionId === CORE_EXTENSION_ID)).toEqual([]);
   });
 });
 
@@ -428,5 +679,194 @@ describe("registerExportProcessor", () => {
     // A refused processor renders nothing, so saved layouts may still switch its extension.
     expect(Object.hasOwn(extensionKinds(), "acme")).toBe(false);
     warn.mockRestore();
+  });
+});
+
+// An id names one contribution for the whole app, so the extension that holds
+// it keeps it: another extension registering the same id is refused with a
+// warning, and the holder re-registering is how an update replaces its own.
+describe("register*: contribution ids belong to their extension", () => {
+  type RegistryKey = keyof ReturnType<typeof useRegistry.getState>;
+  const stageParts: Omit<ProcessingStageContribution, "id"> = { name: "Stage", phase: "scene-linear", glsl: "", uniforms: [] };
+  const kinds: [string, RegistryKey, (owner: string, id: string, tag: string) => void][] = [
+    ["registerPanel", "panels", (o, id, tag) => registerPanel(o, { id, title: tag, component: View })],
+    ["registerTheme", "themes", (o, id, tag) => registerTheme(o, { id, name: tag, vars: {} })],
+    ["registerSliderIcon", "sliderIcons", (o, id, tag) => registerSliderIcon(o, { id, svg: tag })],
+    ["registerLayout", "layouts", (o, id, tag) => registerLayout(o, { id, name: tag })],
+    ["registerModule", "modules", (o, id, tag) => registerModule(o, { id, label: tag, component: View })],
+    ["registerPipeline", "pipelines", (o, id, tag) => registerPipeline(o, { id, name: tag })],
+    ["registerExportProcessor", "exportProcessors", (o, id, tag) =>
+      registerExportProcessor(o, { id, label: tag, processPixels: async () => undefined })],
+    ["registerFilenameTemplate", "filenameTemplates", (o, id, tag) =>
+      registerFilenameTemplate(o, { id, label: tag, template: tag })],
+    ["registerProcessingStage", "processingStages", (o, id, tag) =>
+      registerProcessingStage(o, { ...stageParts, id, name: tag })],
+    ["registerCatalogHooks", "catalogHooks", (o, id) => registerCatalogHooks(o, { id })],
+    ["registerPresetImporter", "presetImporters", (o, id, tag) =>
+      registerPresetImporter(o, { id, label: tag, extensions: [".xmp"], parse: async () => null })],
+    ["registerGridFilter", "gridFilters", (o, id) => registerGridFilter(o, { id, test: () => true })],
+    ["registerGridMenuItem", "gridMenuItems", (o, id, tag) =>
+      registerGridMenuItem(o, { id, label: tag, onClick: () => {} })],
+    ["registerSlot", "slots", (o, id) => registerSlot(o, { id, slot: "library-toolbar", component: View })],
+    ["registerPanelHeaderAccessory", "panelHeaderAccessories", (o, id) =>
+      registerPanelHeaderAccessory(o, { id, component: View })],
+    ["registerLibrarySort", "librarySorts", (o, id, tag) =>
+      registerLibrarySort(o, { id, label: tag, compare: () => 0 })],
+    ["registerStylesheet", "stylesheets", (o, id, tag) => registerStylesheet(o, { id, css: tag })],
+  ];
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    unregisterExtension("acme");
+    unregisterExtension("other");
+    unregisterExtension(CORE_EXTENSION_ID);
+    forgetExtension("acme");
+    forgetExtension("other");
+  });
+
+  const held = (key: RegistryKey, id: string) =>
+    (useRegistry.getState()[key] as Record<string, { extensionId: string }>)[id];
+
+  it.each(kinds)("%s keeps the first owner's contribution and names both owners", (call, key, register) => {
+    register("acme", "shared.id", "first");
+    const before = held(key, "shared.id");
+    register("other", "shared.id", "second");
+    expect(held(key, "shared.id")).toBe(before);
+    expect(held(key, "shared.id").extensionId).toBe("acme");
+    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(
+      new RegExp(`other.*"shared\\.id".*acme.*${call} ignored`),
+    ));
+  });
+
+  it.each(kinds)("%s lets the owner register its id again, replacing the earlier one", (_call, key, register) => {
+    register("acme", "shared.id", "first");
+    const before = held(key, "shared.id");
+    register("acme", "shared.id", "second");
+    expect(held(key, "shared.id")).not.toBe(before);
+    expect(held(key, "shared.id").extensionId).toBe("acme");
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("protects the core extension's contributions the same way", () => {
+    registerTheme(CORE_EXTENSION_ID, { id: "core.theme", name: "Core", vars: {} });
+    registerTheme("acme", { id: "core.theme", name: "Hijack", vars: {} });
+    expect(useRegistry.getState().themes["core.theme"]).toMatchObject({ extensionId: CORE_EXTENSION_ID, name: "Core" });
+  });
+
+  it("lets an id that only inherits from Object.prototype register", () => {
+    registerPanel("acme", { id: "constructor", title: "Odd", component: View });
+    expect(held("panels", "constructor")?.extensionId).toBe("acme");
+  });
+
+  it("frees an id when its extension is swept", () => {
+    registerSlot("acme", { id: "shared.id", slot: "library-toolbar", component: View });
+    unregisterExtension("acme");
+    registerSlot("other", { id: "shared.id", slot: "library-toolbar", component: View });
+    expect(useRegistry.getState().slots["shared.id"]?.extensionId).toBe("other");
+  });
+
+  it("does not mark an extension as rendering pixels for a stage or transform that is refused", () => {
+    registerProcessingStage("acme", { ...stageParts, id: "shared.stage" });
+    registerProcessingStage("other", { ...stageParts, id: "shared.stage" });
+    registerProcessingStage("other", { ...stageParts, id: "other.bad", space: { encoding: "log" } } as unknown as ProcessingStageContribution);
+    registerPipeline("other", { id: "other.bad", name: "Bad", params: [{ key: "gain", glslType: "float", default: 1 }] });
+    expect(Object.hasOwn(extensionKinds(), "other")).toBe(false);
+  });
+
+  it("keeps a refused stage's params with the stage that holds the id", () => {
+    registerProcessingStage("acme", {
+      ...stageParts,
+      id: "shared.stage",
+      uniforms: [{ key: "amount", glslType: "float", default: 0 }],
+    });
+    registerProcessingStage("other", { ...stageParts, id: "shared.stage" });
+    expect(getParamDescriptor("shared.stage.amount")?.extensionId).toBe("acme");
+  });
+});
+
+// A stage's textures ride the stage, so only the extension that registered the
+// stage may set them.
+describe("setStageTexture: stage textures belong to the stage's extension", () => {
+  const tex: StageTextureData = { data: new Uint8Array([0, 0, 0, 255]), width: 1, height: 1, format: "rgba8", version: 1 };
+  const stage: ProcessingStageContribution = {
+    id: "acme.film",
+    name: "Film",
+    phase: "scene-linear",
+    glsl: "",
+    uniforms: [],
+  };
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    registerProcessingStage("acme", stage);
+  });
+  afterEach(() => {
+    for (const key of Object.keys(getStageTextures())) setStageTexture(key, null);
+    vi.restoreAllMocks();
+    unregisterExtension("acme");
+    unregisterExtension("other");
+    forgetExtension("acme");
+    forgetExtension("other");
+  });
+
+  it("sets a texture on a stage the extension registered", () => {
+    makeScopedAPI("acme").setStageTexture("acme.film", "lut", tex);
+    expect(getStageTextures()["acme.film.lut"]).toBe(tex);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("refuses to set or clear a texture on another extension's stage, and says so", () => {
+    makeScopedAPI("acme").setStageTexture("acme.film", "lut", tex);
+    const other = makeScopedAPI("other");
+    other.setStageTexture("acme.film", "lut", { ...tex, version: 2 });
+    other.setStageTexture("acme.film", "lut", null);
+    expect(getStageTextures()["acme.film.lut"]).toBe(tex);
+    expect(console.warn).toHaveBeenCalledTimes(2);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/other.*"acme\.film".*acme.*setStageTexture ignored/));
+  });
+
+  it("refuses a texture for a stage nobody registered", () => {
+    makeScopedAPI("acme").setStageTexture("acme.unknown", "lut", tex);
+    expect(getStageTextures()["acme.unknown.lut"]).toBeUndefined();
+    expect(console.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a key that spills into a longer stage id another extension holds", () => {
+    registerProcessingStage("other", { ...stage, id: "acme.film.grade" });
+    makeScopedAPI("acme").setStageTexture("acme.film", "grade.lut", tex);
+    expect(getStageTextures()["acme.film.grade.lut"]).toBeUndefined();
+    expect(console.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the extension clear its textures after unregistering the stage", () => {
+    const api = makeScopedAPI("acme");
+    api.setStageTexture("acme.film", "lut", tex);
+    api.unregisterProcessingStage("acme.film");
+    api.setStageTexture("acme.film", "lut", null);
+    expect(getStageTextures()["acme.film.lut"]).toBeUndefined();
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("runGridFilterClears", () => {
+  it(`stops calling an onClear after ${CALLBACK_FAILURE_LIMIT} throws, and calls it on its filter`, () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onClear = vi.fn(function (this: { id: string }) {
+      throw new Error(`broken clear of ${this.id}`);
+    });
+    registerGridFilter("acme.clear", { id: "acme.clear.filter", test: () => true, onClear });
+    try {
+      for (let i = 0; i < CALLBACK_FAILURE_LIMIT + 2; i++) runGridFilterClears();
+      expect(onClear).toHaveBeenCalledTimes(CALLBACK_FAILURE_LIMIT);
+      expect(useCallbackFailures.getState()["acme.clear"]?.error).toBe("broken clear of acme.clear.filter");
+    } finally {
+      unregisterExtension("acme.clear");
+      error.mockRestore();
+    }
   });
 });

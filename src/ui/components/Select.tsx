@@ -8,11 +8,12 @@
 // app's dark surfaces). Drop-in for `<select value onChange>` with <option>s:
 // pass `options`, or `groups` for headed sections (the old <optgroup>). The menu
 // is portalled to <body> and fixed-positioned from the trigger rect, so it's
-// never clipped by a scroll container and sits above dialogs. It's at least as
+// never clipped by a scroll container and sits above dialogues. It's at least as
 // wide as the trigger and grows to fit its longest label up to twice that; a
 // label that still doesn't fit shows in full on hover. Keyboard: open with
 // Enter/Space/↑/↓, navigate with ↑/↓/Home/End, type to jump, Enter to choose,
-// Esc to close.
+// Esc to close. Shift+wheel over the closed trigger picks the next or previous
+// option.
 
 import {
   useCallback,
@@ -89,7 +90,7 @@ export function Select({
   ariaLabel,
   title,
 }: SelectProps) {
-  // Normalise once, defensively: a caller (often an extension's `select`
+  // Normalize once, defensively: a caller (often an extension's `select`
   // settings field) can hand us a group with missing `items` or a nullish
   // option. A single bad entry must never throw here — a crash during render
   // tears down the subtree and can strand a global listener's effect cleanup,
@@ -170,7 +171,7 @@ export function Select({
       setOpen(false);
     };
     // Close on Escape via the shared stack, so the menu (most recently opened)
-    // closes before any dialog it lives inside.
+    // closes before any dialogue it lives inside.
     const popEsc = pushEscapeHandler(() => setOpen(false));
     window.addEventListener("scroll", reposition, true);
     window.addEventListener("resize", reposition);
@@ -182,6 +183,32 @@ export function Select({
       document.removeEventListener("mousedown", onDown, true);
     };
   }, [open, place]);
+
+  // Shift+wheel over the closed trigger steps through the options, stopping at
+  // the ends. Non-passive and ref-read for the same reasons as Slider's.
+  const wheelRef = useRef<(e: WheelEvent) => void>(() => {});
+  wheelRef.current = (e: WheelEvent) => {
+    if (!e.shiftKey || open || disabled) return;
+    // Shift turns the wheel horizontal on some systems.
+    const delta = e.deltaY || e.deltaX;
+    if (delta === 0) return;
+    e.preventDefault();
+    const dir = delta > 0 ? 1 : -1;
+    for (let i = selectedIndex + dir; i >= 0 && i < flat.length; i += dir) {
+      if (!flat[i].disabled) {
+        onChange(flat[i].value);
+        return;
+      }
+    }
+  };
+
+  useEffect(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => wheelRef.current(e);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -354,7 +381,7 @@ export function Select({
                         o.disabled
                           ? "cursor-default text-text-muted opacity-60"
                           : sel
-                            ? "cursor-pointer bg-slider-fill text-white"
+                            ? "cursor-pointer bg-slider-fill text-on-accent"
                             : act
                               ? "cursor-pointer bg-surface-3 text-text-primary"
                               : "cursor-pointer text-text-primary"

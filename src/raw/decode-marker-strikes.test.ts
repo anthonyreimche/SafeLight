@@ -45,6 +45,7 @@ vi.mock("./cache-bridge", () => {
       maxEdge: number,
     ) => {
       await ask({ cmd: "write", id: id(), key, data, width, height, maxEdge });
+      return true;
     },
     workerWriteMarker: async (key: string, value: string) => {
       await ask({ cmd: "mark", id: id(), key, value });
@@ -58,6 +59,7 @@ vi.mock("./cache-bridge", () => {
     },
     workerClearRawCache: async () => {
       await ask({ cmd: "clear", id: id() });
+      return { failed: 0 };
     },
     workerCachedKeys: async () => {
       const reply = await ask({ cmd: "keys", id: id() });

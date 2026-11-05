@@ -10,7 +10,7 @@
 // renders version 2 photos, built them.
 
 import type { ProcessingStageContribution } from "@/extensions/types";
-import { V2_VARIANT, buildFragmentShader } from "./shaders";
+import { V2_VARIANT } from "./shaders";
 import { buildStageInjection } from "./stage-injection";
 import { LEGACY_EXTENSION_STAGES, V1_IDENTITY_PIPELINES, normalizeGlsl } from "./v1-identity.fixtures";
 import { builtinStages } from "./webgl.test-support";
@@ -129,9 +129,6 @@ export function v2Snapshot(): Record<string, string> {
         passes: passes.map(({ fragmentSource, ...pass }) => ({ ...pass, fragmentSource: normalizeGlsl(fragmentSource) })),
       })),
     });
-    for (const [pipeline, glsl] of Object.entries(V2_IDENTITY_PIPELINES)) {
-      out[`${name}/shader/${pipeline}`] = normalizeGlsl(buildFragmentShader(glsl, built.injection, V2_VARIANT));
-    }
   }
   return out;
 }

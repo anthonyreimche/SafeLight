@@ -8,10 +8,9 @@
 // import another without a cycle.
 
 /** The built-in extension that owns Safelight's own contributions: the stock
- *  themes, the Classic layout, the built-in transform and the core processing
- *  stages (vignette, grain, the built-in denoiser). Registration refuses the
- *  ids of those stages (builtin-stage.ts) from any other extension, other
- *  built-ins (core.hsl, core.devtools) included. */
+ *  themes, the Classic layout, the built-in transform and the built-in
+ *  denoiser's stage. Registration refuses the ids of Safelight's own stages
+ *  (builtin-stage.ts) from any other extension, other built-ins included. */
 export const CORE_EXTENSION_ID = "core";
 
 /** An id only Safelight's own extensions may hold: "core" and everything under
@@ -24,6 +23,17 @@ export function isReservedExtensionId(id: string): boolean {
   const lower = id.toLowerCase();
   return lower === CORE_EXTENSION_ID || lower.startsWith(`${CORE_EXTENSION_ID}.`);
 }
+
+const builtinIds = new Set<string>([CORE_EXTENSION_ID]);
+
+/** Record the ids of the built-in extensions. builtin.tsx calls it once, as the
+ *  list loads; the registry can't import that list without a cycle. */
+export function noteBuiltinExtensions(ids: readonly string[]): void {
+  for (const id of ids) builtinIds.add(id);
+}
+
+/** Whether `id` is one of Safelight's built-in extensions, the core included. */
+export const isBuiltinExtension = (id: string): boolean => builtinIds.has(id);
 
 /** Why a reserved id is refused, as the error and the log line say it. */
 export const reservedIdReason = (id: string): string =>

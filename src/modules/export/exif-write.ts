@@ -5,14 +5,15 @@
 
 // EXIF writer for export. A canvas render strips every metadata segment, so the
 // export pipeline harvests the source file's entries (catalog/exif
-// readExifEntries), layers catalog-held user edits on top (RAW metadata edits
-// live in sidecars/catalog, never in the source bytes), and this module
+// readExifEntries), lets the catalogue's record decide the fields it holds (RAW
+// metadata edits live in sidecars/catalog, never in the source bytes), and this module
 // serializes the result back into the exported container: a fresh
 // little-endian TIFF block carried as a JPEG APP1 segment, a PNG eXIf chunk or
 // a WebP EXIF chunk. The TIFF encoder weaves the same entry sets into its own
 // IFD chain via serializeSubIfd. Orientation, pixel dimensions, colour space
 // and software are rewritten to describe the exported image rather than the
-// source; GPS entries are dropped unless the export opts in.
+// source; the GPS block is the catalogue's position, written only when the
+// export opts in.
 
 import type { RawExifEntry, RawExifIfds } from "@/catalog/exif";
 import type { ExifData } from "@/catalog/types";
@@ -37,12 +38,23 @@ const GPS_TAG = {
   Latitude: 0x0002,
   LongitudeRef: 0x0003,
   Longitude: 0x0004,
+  AltitudeRef: 0x0005,
+  Altitude: 0x0006,
 } as const;
+
+type CatalogText = "imageDescription" | "artist" | "copyright";
+
+/** IFD0 tags the catalogue holds a text field for. */
+const CATALOG_IFD0_FIELDS: [number, CatalogText][] = [
+  [TAG.ImageDescription, "imageDescription"],
+  [TAG.Artist, "artist"],
+  [TAG.Copyright, "copyright"],
+];
 
 const SRGB = 1;
 const UNCALIBRATED = 0xffff; // the embedded ICC carries the real profile
 
-/** The finalised IFD entry sets an export will carry. */
+/** The finalized IFD entry sets an export will carry. */
 export interface ExportIfds {
   ifd0: RawExifEntry[];
   exif: RawExifEntry[];
@@ -56,13 +68,16 @@ export interface ExportExifOptions {
   /** True tags the EXIF colour space sRGB; anything wider is Uncalibrated. */
   srgb: boolean;
   includeLocation: boolean;
-  /** Catalog-held user edits (EXIF Tools metadata editor and friends). RAW
-   *  edits never reach the source file's bytes, so set fields are appended
-   *  after the harvested entries and win the last-write dedup. GPS needs both
-   *  coordinates and still requires includeLocation. */
-  edited?: Pick<
+  /** The photo's catalogue record, which holds the user's metadata edits (RAW
+   *  edits never reach the source file's bytes). A set artist, copyright or
+   *  description replaces the source's and a blank one is not written; one
+   *  the record lacks keeps the source's, since a record can predate the
+   *  reader that fills it in. The GPS block is its position alone, needing
+   *  both coordinates and includeLocation; the source's GPS tags are never
+   *  carried, so a removed or moved location can't leak the file's own. */
+  catalog: Pick<
     ExifData,
-    "artist" | "copyright" | "imageDescription" | "gpsLatitude" | "gpsLongitude"
+    "artist" | "copyright" | "imageDescription" | "gpsLatitude" | "gpsLongitude" | "gpsAltitude"
   >;
 }
 
@@ -126,39 +141,49 @@ function dmsRationals(coord: number): [number, number][] {
   ];
 }
 
-function editedIfd0Entries(edited: NonNullable<ExportExifOptions["edited"]>): RawExifEntry[] {
-  const out: RawExifEntry[] = [];
-  if (edited.imageDescription) out.push(asciiEntry(TAG.ImageDescription, edited.imageDescription));
-  if (edited.artist) out.push(asciiEntry(TAG.Artist, edited.artist));
-  if (edited.copyright) out.push(asciiEntry(TAG.Copyright, edited.copyright));
-  return out;
+function catalogIfd0(source: RawExifEntry[], catalog: ExportExifOptions["catalog"]): RawExifEntry[] {
+  const held = new Set(
+    CATALOG_IFD0_FIELDS.filter(([, field]) => catalog[field] !== undefined).map(([tag]) => tag),
+  );
+  return [
+    ...source.filter((e) => !held.has(e.tag)),
+    ...CATALOG_IFD0_FIELDS.flatMap(([tag, field]) => {
+      const text = catalog[field];
+      return text ? [asciiEntry(tag, text)] : [];
+    }),
+  ];
 }
 
-function editedGpsEntries(edited: NonNullable<ExportExifOptions["edited"]>): RawExifEntry[] {
-  const { gpsLatitude: lat, gpsLongitude: lon } = edited;
+function catalogGpsEntries(catalog: ExportExifOptions["catalog"]): RawExifEntry[] {
+  const { gpsLatitude: lat, gpsLongitude: lon, gpsAltitude: alt } = catalog;
   if (lat === undefined || lon === undefined || !Number.isFinite(lat) || !Number.isFinite(lon)) {
     return [];
   }
-  return [
+  const out = [
     byteEntry(GPS_TAG.VersionID, [2, 3, 0, 0]),
     asciiEntry(GPS_TAG.LatitudeRef, lat < 0 ? "S" : "N"),
     rationalEntry(GPS_TAG.Latitude, dmsRationals(lat)),
     asciiEntry(GPS_TAG.LongitudeRef, lon < 0 ? "W" : "E"),
     rationalEntry(GPS_TAG.Longitude, dmsRationals(lon)),
   ];
+  if (alt !== undefined && Number.isFinite(alt)) {
+    out.push(
+      byteEntry(GPS_TAG.AltitudeRef, [alt < 0 ? 1 : 0]),
+      rationalEntry(GPS_TAG.Altitude, [[Math.round(Math.abs(alt) * 100), 100]]),
+    );
+  }
+  return out;
 }
 
-/** Combine harvested source entries with catalog edits and the export-time
- *  overrides. Later entries win the per-tag dedup, so catalog edits override
- *  the file's own tags. A null source (unreadable file, EXIF-less container)
- *  still yields a valid block carrying the edits. The render bakes the upright
- *  orientation into the pixels, so the tag resets to 1. */
+/** Combine harvested source entries with the catalogue's record and the
+ *  export-time overrides. Later entries win the per-tag dedup. A null source
+ *  (unreadable file, EXIF-less container) still yields a valid block carrying
+ *  the catalogue's fields. The render bakes the upright orientation into the
+ *  pixels, so the tag resets to 1. */
 export function buildExportIfds(source: RawExifIfds | null, opts: ExportExifOptions): ExportIfds {
-  const edited = opts.edited ?? {};
   return {
     ifd0: [
-      ...(source?.ifd0 ?? []),
-      ...editedIfd0Entries(edited),
+      ...catalogIfd0(source?.ifd0 ?? [], opts.catalog),
       shortEntry(TAG.Orientation, 1),
       asciiEntry(TAG.Software, `Safelight ${__APP_VERSION__}`),
     ],
@@ -168,7 +193,7 @@ export function buildExportIfds(source: RawExifIfds | null, opts: ExportExifOpti
       longEntry(TAG.PixelXDimension, opts.width),
       longEntry(TAG.PixelYDimension, opts.height),
     ],
-    gps: opts.includeLocation ? [...(source?.gps ?? []), ...editedGpsEntries(edited)] : [],
+    gps: opts.includeLocation ? catalogGpsEntries(opts.catalog) : [],
   };
 }
 

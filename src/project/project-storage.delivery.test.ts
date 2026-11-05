@@ -3,11 +3,11 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Two windows whose messages take time to arrive and whose catalog writes take
+// Two windows whose messages take time to arrive and whose catalogue writes take
 // time to land, as between real windows. One window's messages arrive in the
 // order it sent them (the BroadcastChannel guarantee) but late, and two windows'
 // writes to catalog.json can land in either order. Both windows open one
-// in-memory project from a saved catalog, so they share its photo ids.
+// in-memory project from a saved catalogue, so they share its photo ids.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto, EditState } from "@/catalog/types";
@@ -51,6 +51,7 @@ vi.mock("@/state/broadcast", () => ({
 import { photo } from "@/catalog/stored-edit.fixtures";
 import { MemoryFs, fsaDirectoryHandle } from "./memory-fs.test-support";
 import { ProjectStorage } from "./project-storage";
+import { storageDeps } from "./storage-deps";
 
 /** A file system whose catalog.json writes land after a delay: the next delays
  *  in `queued`, then whatever `delay` returns. */
@@ -98,7 +99,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Both windows open the project from one saved catalog, a while before the
+/** Both windows open the project from one saved catalogue, a while before the
  *  test acts. */
 async function twoWindows() {
   const fs = new SlowFs(ROOT);
@@ -106,8 +107,8 @@ async function twoWindows() {
   for (const p of photos) fs.put(`${ROOT}/${p.relPath}`, p.id);
   fs.put(`${ROOT}/.safelight/catalog.json`, JSON.stringify({ version: 1, photos, edits: [] }));
   const root = fsaDirectoryHandle(fs, ROOT);
-  const a = await ProjectStorage.open(root);
-  const b = await ProjectStorage.open(root);
+  const a = await ProjectStorage.open(root, storageDeps);
+  const b = await ProjectStorage.open(root, storageDeps);
   storages.push(a.storage, b.storage);
   await vi.advanceTimersByTimeAsync(5000);
   const disk = () => JSON.parse(fs.text(`${ROOT}/.safelight/catalog.json`) ?? "null") as Disk;

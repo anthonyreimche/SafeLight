@@ -121,7 +121,7 @@ const TEMPLATE: Omit<CatalogPhoto, "id" | "filename" | "relPath" | "folder"> = {
   exif: {},
 };
 
-/** Put a file on disk and register the matching catalog record with live handles. */
+/** Put a file on disk and register the matching catalogue record with live handles. */
 async function addPhoto(
   env: Env,
   relPath: string,
@@ -160,7 +160,7 @@ function addCopy(master: CatalogPhoto, copyName: string): CatalogPhoto {
 
 const find = (id: string): CatalogPhoto => {
   const p = h.photos.find((x) => x.id === id);
-  if (!p) throw new Error(`no catalog record ${id}`);
+  if (!p) throw new Error(`no catalogue record ${id}`);
   return p;
 };
 
@@ -177,7 +177,14 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
+
+/** A disk that takes names in any case for one name, as NTFS does on Windows. */
+function foldingCase(env: Env): void {
+  vi.stubGlobal("window", { safelightNative: { platform: "win32" } });
+  env.fs.foldCase = true;
+}
 
 describe("uniqueFolderName", () => {
   it("keeps the base name when it's free", () => {
@@ -279,6 +286,18 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(env.fs.text(at(env, "trip/a.jpg"))).toBe("pixels:trip/a.jpg");
     expect(env.fs.text(at(env, "Iceland/b.jpg"))).toBe("pixels:Iceland/b.jpg");
     expect(find("id:trip/a.jpg").relPath).toBe("trip/a.jpg");
+  });
+
+  it("renames a folder to its own name in another case on a case-insensitive disk", async () => {
+    const env = start();
+    foldingCase(env);
+    await addPhoto(env, "trip/a.jpg");
+
+    await renameFolder("trip", "Trip");
+
+    expect(env.fs.tree()).toEqual([at(env, "Trip/a.jpg")]);
+    expect(env.fs.text(at(env, "Trip/a.jpg"))).toBe("pixels:trip/a.jpg");
+    expect(find("id:trip/a.jpg")).toMatchObject({ folder: "Trip", relPath: "Trip/a.jpg" });
   });
 
   it("keeps a rename in place when the typed name contains separators", async () => {
@@ -422,7 +441,7 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(find(copy.id).relPath).toBe("a.jpg");
   });
 
-  it("keeps what changes in the catalog while the files move", async () => {
+  it("keeps what changes in the catalogue while the files move", async () => {
     // Another window's rating, or a new virtual copy, can land during the move.
     const env = start();
     const master = await addPhoto(env, "a.jpg");
@@ -497,6 +516,80 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(env.fs.text(at(env, "b.jpg"))).toBe("pixels:b.jpg");
   });
 
+  it("renames a photo to its own name in another case on a case-insensitive disk", async () => {
+    const env = start();
+    foldingCase(env);
+    await addPhoto(env, "trip/a.jpg");
+    env.fs.put(at(env, `trip/a.jpg${SIDECAR_SUFFIX}`), '{"safelightSidecar":1}');
+
+    await expect(renamePhoto("id:trip/a.jpg", "A")).resolves.toEqual({ ok: true, filename: "A.jpg" });
+
+    expect(env.fs.tree()).toEqual([at(env, "trip/A.jpg"), at(env, `trip/A.jpg${SIDECAR_SUFFIX}`)]);
+    expect(env.fs.text(at(env, "trip/A.jpg"))).toBe("pixels:trip/a.jpg");
+    expect(find("id:trip/a.jpg")).toMatchObject({ filename: "A.jpg", relPath: "trip/A.jpg" });
+  });
+
+  it("still refuses a name another file holds in another case on a case-insensitive disk", async () => {
+    const env = start();
+    foldingCase(env);
+    await addPhoto(env, "a.jpg");
+    await addPhoto(env, "B.jpg");
+
+    await expect(renamePhoto("id:a.jpg", "b")).resolves.toMatchObject({ ok: false });
+    expect(env.fs.text(at(env, "a.jpg"))).toBe("pixels:a.jpg");
+  });
+
+  it("refuses a case-only rename onto another photo where names keep their case", async () => {
+    vi.stubGlobal("window", { safelightNative: { platform: "linux" } });
+    const env = start();
+    await addPhoto(env, "IMG_1.jpg");
+    await addPhoto(env, "img_1.jpg");
+
+    await expect(renamePhoto("id:IMG_1.jpg", "img_1")).resolves.toEqual({
+      ok: false,
+      reason: "“img_1.jpg” already exists in this folder.",
+    });
+    expect(env.fs.text(at(env, "img_1.jpg"))).toBe("pixels:img_1.jpg");
+    expect(env.fs.text(at(env, "IMG_1.jpg"))).toBe("pixels:IMG_1.jpg");
+  });
+
+  it("refuses a case-only rename onto another photo on a case-sensitive volume of a folding platform", async () => {
+    vi.stubGlobal("window", { safelightNative: { platform: "darwin" } });
+    const env = start();
+    await addPhoto(env, "a.jpg");
+    await addPhoto(env, "A.jpg");
+    const move = vi.spyOn(env.fs, "move");
+
+    await expect(renamePhoto("id:a.jpg", "A")).resolves.toMatchObject({ ok: false });
+
+    expect(move).not.toHaveBeenCalled();
+    expect(env.fs.text(at(env, "A.jpg"))).toBe("pixels:A.jpg");
+    expect(env.fs.text(at(env, "a.jpg"))).toBe("pixels:a.jpg");
+  });
+
+  it("renames a photo's case on a folding volume mounted on a platform that keeps case", async () => {
+    vi.stubGlobal("window", { safelightNative: { platform: "linux" } });
+    const env = start();
+    env.fs.foldCase = true;
+    await addPhoto(env, "a.jpg");
+
+    await expect(renamePhoto("id:a.jpg", "A")).resolves.toEqual({ ok: true, filename: "A.jpg" });
+
+    expect(env.fs.tree()).toEqual([at(env, "A.jpg")]);
+  });
+
+  it("refuses a case-only folder rename onto another folder on a case-sensitive volume of a folding platform", async () => {
+    vi.stubGlobal("window", { safelightNative: { platform: "darwin" } });
+    const env = start();
+    await addPhoto(env, "trip/a.jpg");
+    await addPhoto(env, "Trip/b.jpg");
+    const before = env.fs.tree();
+
+    await renameFolder("trip", "Trip");
+
+    expect(env.fs.tree()).toEqual(before);
+  });
+
   it("treats renaming to the current name as a no-op success", async () => {
     const env = start();
     await addPhoto(env, "a.jpg");
@@ -526,7 +619,7 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
     expect(find(copy.id)).toMatchObject({ filename: "b.jpg", relPath: "b.jpg", copyName: "copy" });
   });
 
-  it("keeps what changes in the catalog while the file is renamed", async () => {
+  it("keeps what changes in the catalogue while the file is renamed", async () => {
     const env = start();
     await addPhoto(env, "a.jpg");
 
@@ -546,7 +639,7 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
 
   // ── deleteFolder ──────────────────────────────────────────────────────────
 
-  it("deletes a folder with its subtree and drops its photos from the catalog", async () => {
+  it("deletes a folder with its subtree and drops its photos from the catalogue", async () => {
     const env = start();
     await addPhoto(env, "trip/a.jpg");
     await addPhoto(env, "trip/day2/b.jpg");
@@ -642,7 +735,7 @@ describe.each(BUILDS)("folder ops ($label)", ({ rootPath, native }) => {
 });
 
 describe("folder ops in the browser build, where each new handle is a disk lookup", () => {
-  it("keeps what changes in the catalog while a renamed folder's photos are found again", async () => {
+  it("keeps what changes in the catalogue while a renamed folder's photos are found again", async () => {
     const env = open("/home/u/photos", false);
     await addPhoto(env, "trip/a.jpg");
     const exists = env.fs.exists.bind(env.fs);

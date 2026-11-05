@@ -84,10 +84,12 @@ const at = (x: number, y: number) => ({
 function Harness({
   rgb,
   onChange,
+  onCommit = () => {},
   showPointValues,
 }: {
   rgb: CurvePoint[];
   onChange: (channel: ToneCurveChannel, points: CurvePoint[]) => void;
+  onCommit?: () => void;
   showPointValues?: boolean;
 }) {
   const [curves, setCurves] = useState<ToneCurves>({ ...defaultToneCurves(), rgb });
@@ -98,7 +100,7 @@ function Harness({
         onChange(channel, points);
         setCurves((c) => ({ ...c, [channel]: points }));
       }}
-      onCommit={() => {}}
+      onCommit={onCommit}
       showPointValues={showPointValues}
     />
   );
@@ -200,6 +202,28 @@ describe("CurveEditor end points with keyboard canvas editing", () => {
     await user.type(input, "77");
     expect(lastPoints()?.[0]).toEqual({ x: 77 / 255, y: 0 });
   });
+
+  it("commits one history step when a typed level is finished, not per keystroke", async () => {
+    const onCommit = vi.fn();
+    render(<Harness rgb={IDENTITY} onChange={vi.fn()} onCommit={onCommit} />);
+    const input = screen.getByLabelText<HTMLInputElement>(
+      "Selected point output level (0–255)",
+    );
+    await userEvent.clear(input);
+    await userEvent.type(input, "200");
+    expect(onCommit).not.toHaveBeenCalled();
+    fireEvent.blur(input);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes a decimal comma in a level field", () => {
+    const { lastPoints } = setup(IDENTITY);
+    const input = screen.getByLabelText<HTMLInputElement>(
+      "Selected point output level (0–255)",
+    );
+    fireEvent.change(input, { target: { value: "127,5" } });
+    expect(lastPoints()?.[0].y).toBeCloseTo(127.5 / 255, 9);
+  });
 });
 
 // Lightroom shows and takes curve points as 0–255 levels, so a preset's points
@@ -228,8 +252,6 @@ describe("CurveEditor point values", () => {
     await user.click(screen.getByRole("button", { name: "Select next point" }));
     expect(inField()?.value).toBe("32");
     expect(outField()?.value).toBe("22");
-    expect(inField()?.max).toBe("255");
-    expect(outField()?.max).toBe("255");
   });
 
   it("sets the selected point from typed 0–255 levels", async () => {

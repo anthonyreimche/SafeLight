@@ -5,7 +5,7 @@
 
 // Per-extension persisted settings. One localStorage entry per extension
 // (sl_ext_settings_<id>), mirrored into a reactive zustand store so settings
-// dialogs update live, and synced across windows via the storage event.
+// dialogues update live, and synced across windows via the storage event.
 // Uninstalling an extension deletes its stored values.
 
 import { create } from "zustand";
@@ -15,12 +15,28 @@ const storageKey = (id: string) => `${PREFIX}${id}`;
 
 type Values = Record<string, unknown>;
 
+// The values last parsed from each entry, so the same stored text gives back
+// the same object: a render derives from these on every frame, and keeps what
+// it derived only while they are the same object (stage-derive.ts).
+const parsed = new Map<string, { raw: string | null; values: Values }>();
+
 function load(id: string): Values {
+  let raw: string | null;
   try {
-    return JSON.parse(localStorage.getItem(storageKey(id)) ?? "{}");
+    raw = localStorage.getItem(storageKey(id));
   } catch {
-    return {};
+    raw = null;
   }
+  const last = parsed.get(id);
+  if (last && last.raw === raw) return last.values;
+  let values: Values;
+  try {
+    values = JSON.parse(raw ?? "{}");
+  } catch {
+    values = {};
+  }
+  parsed.set(id, { raw, values });
+  return values;
 }
 
 /** extensionId → its settings values (loaded lazily). */
@@ -38,7 +54,7 @@ function notify(id: string, key: string, value: unknown): void {
   listeners.get(id)?.forEach((cb) => cb(key, value));
 }
 
-/** Everything the extension has stored (for the generic settings dialog). */
+/** Everything the extension has stored (for the generic settings dialogue). */
 export function getAllExtSettings(id: string): Values {
   return valuesFor(id);
 }
@@ -77,6 +93,7 @@ export function deleteExtensionSettings(id: string): void {
     return rest;
   }, true);
   listeners.delete(id);
+  parsed.delete(id);
 }
 
 /** Follow changes made in other windows. Call once at boot. */

@@ -9,6 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryFs, fsaDirectoryHandle } from "@/project/memory-fs.test-support";
+import { cacheFileName } from "./cache-encode";
 import type { CacheRequest } from "./cache-worker";
 import { FakeIndexedDB, startCacheWorker } from "./cache-worker.test-support";
 
@@ -25,7 +26,7 @@ const inFolder = (fs: MemoryFs, dir: string): CacheRequest => ({
   cmd: "setCacheDir", dir: fsaDirectoryHandle(fs, dir), scope: "",
 });
 const scopeTo = (scope: string): CacheRequest => ({ cmd: "setCacheDir", dir: null, scope });
-const fileOf = (dir: string, key: string) => `${dir}/${encodeURIComponent(key)}.bin`;
+const fileOf = async (dir: string, key: string) => `${dir}/${await cacheFileName(key)}`;
 
 describe("cache worker, while the project changes", () => {
   it("lands a write in its own project's folder if the folder changes mid-compress", async () => {
@@ -38,8 +39,8 @@ describe("cache worker, while the project changes", () => {
     await post(inFolder(fs, B));
     await writing;
 
-    expect(fs.has(fileOf(A, KEY))).toBe(true);
-    expect(fs.has(fileOf(B, KEY))).toBe(false);
+    expect(fs.has(await fileOf(A, KEY))).toBe(true);
+    expect(fs.has(await fileOf(B, KEY))).toBe(false);
   });
 
   it("clears the folder it was asked to when the folder changes as it clears", async () => {
@@ -79,13 +80,13 @@ describe("cache worker, markers in the project folder", () => {
     expect(await send({ cmd: "peek", id: 5, key: MARKER })).toEqual({
       type: "peek", id: 5, value: null,
     });
-    expect(fs.has(fileOf(A, MARKER))).toBe(false);
+    expect(fs.has(await fileOf(A, MARKER))).toBe(false);
   });
 
   // A folder marker is created empty and gets its text when its file closes;
   // until then it is no marker at all.
   it("reads a marker whose text hasn't landed yet as no marker", async () => {
-    const fs = new MemoryFs(A).put(fileOf(A, MARKER), "");
+    const fs = new MemoryFs(A).put(await fileOf(A, MARKER), "");
     const { send } = await startCacheWorker();
     await send(inFolder(fs, A));
 

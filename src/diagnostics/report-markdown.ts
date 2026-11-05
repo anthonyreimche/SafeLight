@@ -16,7 +16,7 @@ export type SectionId = "crash" | "environment" | "graphics" | "extensions" | "c
 export interface ReportSection {
   id: SectionId;
   label: string;
-  /** One line for the dialog row; not part of the report. */
+  /** One line for the dialogue row; not part of the report. */
   summary: string;
   /** Exactly what goes in the report. */
   text: string;

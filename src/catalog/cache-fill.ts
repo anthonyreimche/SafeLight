@@ -12,10 +12,10 @@
 // photo from the entry as it was takes the decoded size and the sample at once.
 
 import type { CatalogPhoto } from "./types";
-import { normalizeRotation, orientationToRotation, rotateFloatRGBA } from "./orient";
+import { bakeRotation, rotateFloatRGBA } from "./orient";
 import { decodeRawToFloat } from "@/raw/decode";
 import { acceptDecode } from "@/raw/accept-decode";
-import { extractRawPreview } from "@/modules/library/raw-preview";
+import { extractRawPreview } from "@/raw/raw-preview";
 import { markDecode, rawCacheGeneration, rawCacheKey, writeCachedPreview } from "@/raw/raw-cache";
 import { cutSourceSample } from "@/rendering/source-sample";
 import { rememberLearned, hasCameraMatch, learnedMatch } from "./decode-learned";
@@ -41,8 +41,12 @@ export async function fillCacheEntry(
   const key = rawCacheKey(photo.relPath, photo.fileSize, photo.rotation ?? 0);
   const file = await photo.fileHandle.getFile();
   if (signal?.aborted) return "nothing";
+  // Read once for the decode and the preview it is judged against, and only
+  // by a decode that goes ahead: one passed over reads nothing.
+  let bytes: ArrayBuffer | undefined;
+  const read = async () => (bytes = await file.arrayBuffer());
   // Background: a photo opened in Develop meanwhile goes ahead of the queue.
-  const f = await decodeRawToFloat(file, { background: true, signal });
+  const f = await decodeRawToFloat(file, { background: true, signal }, photo.relPath, read);
   if (signal?.aborted) return "nothing";
   if ("failure" in f) {
     // Only a failure that would recur is remembered; any other is retried on
@@ -51,16 +55,15 @@ export async function fillCacheEntry(
     return "nothing";
   }
 
-  let rotateDeg = photo.rotation ?? 0;
-  if (f.oriented) {
-    rotateDeg = normalizeRotation(rotateDeg - orientationToRotation(photo.exif?.orientation));
-  }
+  const rotateDeg = bakeRotation(photo.rotation ?? 0, photo.exif?.orientation, f.oriented ?? false);
   const r = rotateFloatRGBA(f.data, f.width, f.height, rotateDeg);
 
   // Same ruling as Develop's open. A cached decode is served without a second
   // look, so a marginal or wrong-colour one would show on every open. The
   // preview is read only now, once there is a decode to judge.
-  const { use, cache, match } = await acceptDecode(f, r, await extractRawPreview(file));
+  const preview = await extractRawPreview(file, bytes);
+  bytes = undefined; // the whole file, held no longer than the preview needs it
+  const { use, cache, match } = await acceptDecode(f, r, preview);
   if (signal?.aborted) return "nothing";
   // The camera match, as Develop's open learns it: most RAWs are decoded here
   // before they are first opened.

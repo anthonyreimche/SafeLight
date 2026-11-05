@@ -17,6 +17,7 @@ import type { WebGLRenderer } from "./renderer";
 import {
   OPEN_PROBE, each, expectColour, floatImage, identityParams, patchPixel, toHalf, withRenderer, worstDifference,
   type Frame,
+  masksStagesFor,
 } from "./webgl.test-support";
 
 const fromRec2020 = (rgb: Vec3): Vec3 => each(apply3(REC2020_TO_REC709, rgb), encodePerceptual);
@@ -47,7 +48,7 @@ const WHOLE_FRAME: Mask = {
 };
 
 function onScene(processVersion: number, fn: (r: WebGLRenderer) => void, masks: Mask[] = []): void {
-  withRenderer({ stages: [], pipeline: OPEN_PROBE, processVersionCap: 3 }, (r) => {
+  withRenderer({ stages: masksStagesFor(processVersion), pipeline: OPEN_PROBE, processVersionCap: 3 }, (r) => {
     r.setImage(SCENE);
     r.setParams(identityParams({ processVersion, masks }));
     fn(r);

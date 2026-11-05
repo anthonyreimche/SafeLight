@@ -21,7 +21,6 @@ import {
 describe("parseLongEdge", () => {
   it("parses and rounds positive numbers", () => {
     expect(parseLongEdge("3000")).toBe(3000);
-    expect(parseLongEdge("2048.6")).toBe(2049);
     expect(parseLongEdge(" 1500 ")).toBe(1500);
   });
 
@@ -36,10 +35,16 @@ describe("parseLongEdge", () => {
     expect(parseLongEdge("0")).toBeNull();
     expect(parseLongEdge("-500")).toBeNull();
   });
+
+  it("rejects a separator rather than truncating it", () => {
+    expect(parseLongEdge("2.048")).toBeNull();
+    expect(parseLongEdge("2,048")).toBeNull();
+    expect(parseLongEdge("2048.6")).toBeNull();
+  });
 });
 
 describe("isPresetLongEdge", () => {
-  it("recognises the built-in options", () => {
+  it("recognizes the built-in options", () => {
     expect(isPresetLongEdge(null)).toBe(true);
     expect(isPresetLongEdge(4096)).toBe(true);
     expect(isPresetLongEdge(2048)).toBe(true);
@@ -112,7 +117,7 @@ describe("ResolutionControl", () => {
     expect(onChange).toHaveBeenCalledWith(1500);
   });
 
-  it("clamps committed values and normalises the field", () => {
+  it("clamps committed values and normalizes the field", () => {
     const onChange = renderControl(1024);
     fireEvent.change(input(), { target: { value: "5" } });
     fireEvent.blur(input());

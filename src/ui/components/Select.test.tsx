@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { popEscapeHandler } from "@/ui/escape-stack";
 import { updateSettings } from "@/state/settings-store";
@@ -445,5 +445,40 @@ describe("Select escape-stack registration", () => {
     unmount();
 
     expect(globalEscape()).toBe(false);
+  });
+});
+
+describe("Shift+wheel over the closed trigger", () => {
+  it("steps to the next or previous option, skipping disabled ones", () => {
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    expect(fireEvent.wheel(trigger(), { deltaY: 100, shiftKey: true })).toBe(false);
+    expect(onChange).toHaveBeenLastCalledWith("gamma");
+    fireEvent.wheel(trigger(), { deltaY: -100, shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith("alpha");
+  });
+
+  it("stops at the ends rather than wrapping", () => {
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    fireEvent.wheel(trigger(), { deltaY: -100, shiftKey: true });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("reads the horizontal delta some systems turn Shift+wheel into", () => {
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+    fireEvent.wheel(trigger(), { deltaX: 100, deltaY: 0, shiftKey: true });
+    expect(onChange).toHaveBeenLastCalledWith("gamma");
+  });
+
+  it("leaves a plain wheel to scroll the panel, and does nothing while disabled", () => {
+    const onChange = vi.fn();
+    const { unmount } = render(<Harness onChange={onChange} />);
+    expect(fireEvent.wheel(trigger(), { deltaY: 100 })).toBe(true);
+    unmount();
+    render(<Harness onChange={onChange} disabled />);
+    fireEvent.wheel(trigger(), { deltaY: 100, shiftKey: true });
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

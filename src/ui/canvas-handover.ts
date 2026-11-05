@@ -6,7 +6,7 @@
 import { currentDisplaySpace } from "@/rendering/display-space";
 
 // Develop builds a new view, with a new display canvas, for every photo
-// (DevelopView keys it by photo), so a switch would show the bare surround until the
+// (DevelopStage keys it by photo), so a switch would show the bare surround until the
 // next photo's first picture. The view going away leaves its picture here, and the
 // next one shows it until its own first picture, for at most HANDOVER_MS. Both
 // happen in one React commit: the old view's layout cleanup, then the new one's
@@ -50,7 +50,7 @@ export function takeHandover(into: HTMLCanvasElement): boolean {
     return false;
   }
   // The display's space, so a P3 frame isn't squeezed to sRGB. The first call fixes it:
-  // DevelopView builds this canvas again when the screen's space changes.
+  // DevelopStage builds this canvas again when the screen's space changes.
   const ctx = into.getContext("2d", { colorSpace: currentDisplaySpace() });
   if (!ctx) return false;
   into.width = width;

@@ -25,9 +25,10 @@
 // vendored LibRaw or with any change to what counts as unsupported here.
 
 import { kelvinFromWhiteBalanceGains } from "@/rendering/blackbody";
-import type { DecodeFailure, RawFloatImage } from "./decode";
+import type { DecodeFailure, RawFloatImage } from "./decode-result";
 import {
   acquireInstance,
+  decodePoolFailure,
   discardInstance,
   releaseInstance,
   type DecodeRequest,
@@ -118,7 +119,7 @@ function scaleMultipliers(colorData: unknown): number[] | undefined {
   return mul.length >= 2 ? mul : undefined;
 }
 
-// Under any highlight mode but clip, scale_colors() normalises the multipliers
+// Under any highlight mode but clip, scale_colors() normalizes the multipliers
 // to their LARGEST so no channel can exceed 65535 — which parks the least-
 // amplified channel's sensor white at 65535 / max(mul): about a stop down, and
 // varying with white balance. Auto-bright used to hide that. Undo it here in
@@ -236,11 +237,40 @@ export function decodeTimeLimitForFrame(width: number, height: number): number {
   return Math.min(300_000, 60_000 + 2_000 * ((width * height) / 1_000_000));
 }
 
+/**
+ * The most of libraw's heap a full-size decode may need, with room left under
+ * the 2 GiB the build can grow to (32768 pages). A full-size decode holds the
+ * sensor readout (2 bytes a pixel), LibRaw's working image (8) and its output
+ * (6) at once, besides the file. Past the budget it decodes at half size
+ * (LibRaw's half_size), which shrinks the last two to a quarter.
+ */
+const HEAP_BUDGET = 1_950_000_000;
+const FULL_SIZE_BYTES_PER_PIXEL = 16;
+
+function pastHeapBudget(frame: RawMetadata["frame"], byteLength: number): boolean {
+  return !!frame && frame.width * frame.height * FULL_SIZE_BYTES_PER_PIXEL + byteLength > HEAP_BUDGET;
+}
+
+// How running out of memory surfaces: a RangeError on this page (the copy or
+// the float frame), an abort from libraw's worker once its heap can't grow.
+function outOfMemory(e: unknown, message: string): boolean {
+  return e instanceof RangeError ||
+    /out of memory|\bOOM\b|bad_alloc|allocation failed|enlarge memory|Aborted\(/i.test(message);
+}
+
+// open() transfers the buffer it is passed to libraw's worker, detaching it. A
+// caller that keeps its ArrayBuffer (for a fallback, say) gets it copied; one
+// that is done with it (`transfer`) hands it over as it is.
+function forLibRaw(buffer: ArrayBuffer, transfer: boolean): Uint8Array {
+  return new Uint8Array(transfer ? buffer : buffer.slice(0));
+}
+
 // Lightweight metadata-only extraction: open the RAW, read its frame size and
 // color_data.cam_mul, and close — no pixel decode. Fast enough for import time.
 export async function extractRawMetadata(
   buffer: ArrayBuffer,
   request?: DecodeRequest,
+  transfer = false,
 ): Promise<RawMetadata | undefined> {
   if (typeof Worker === "undefined" || typeof SharedArrayBuffer === "undefined") return undefined;
   if (buffer.byteLength < 1024 * 1024) return undefined;
@@ -250,9 +280,7 @@ export async function extractRawMetadata(
 
   const watched = watch(raw, decodeTimeLimit(buffer.byteLength));
   try {
-    // open() transfers the passed buffer to libraw's worker (detaching it), so
-    // hand it a copy — the caller keeps its ArrayBuffer for the fallback path.
-    await watched.call(raw.open(new Uint8Array(buffer.slice(0)), { useCameraWb: true }));
+    await watched.call(raw.open(forLibRaw(buffer, transfer), { useCameraWb: true }));
     const meta = await watched.call(raw.metadata(true));
     if (!meta) return undefined;
     return {
@@ -270,6 +298,8 @@ export async function extractRawMetadata(
 export async function decodeRawFloatViaLibRaw(
   buffer: ArrayBuffer,
   request?: DecodeRequest,
+  transfer = false,
+  reread?: () => Promise<ArrayBuffer>,
 ): Promise<RawFloatImage | DecodeFailure> {
   if (typeof Worker === "undefined") {
     const reason = "no Worker support";
@@ -301,14 +331,22 @@ export async function decodeRawFloatViaLibRaw(
   if (!raw) {
     // An abandoned request is no failure: nobody is waiting to learn why.
     if (request?.signal?.aborted) return { failure: "aborted" };
-    return { failure: "transient", reason: "decode pool unavailable" };
+    const cause = decodePoolFailure();
+    return {
+      failure: "transient",
+      reason: cause ? `decode pool unavailable (${cause})` : "decode pool unavailable",
+    };
   }
 
-  const watched = watch(raw, decodeTimeLimit(buffer.byteLength));
+  const fileBytes = buffer.byteLength;
+  const watched = watch(raw, decodeTimeLimit(fileBytes));
+  // A transferred buffer is gone after the first open; a frame past the budget
+  // needs the file's bytes again for its half-size reopen, so it asks `reread`.
+  const reopenable = !transfer || !!reread;
+  let frame: RawMetadata["frame"];
+  let halfSize = false;
   try {
-    // open() transfers the passed buffer to libraw's worker (detaching it), so
-    // hand it a copy — the caller keeps its ArrayBuffer for the fallback path.
-    await watched.call(raw.open(new Uint8Array(buffer.slice(0)), {
+    const settings = {
       outputBps: 16,
       useCameraWb: true,
       // ACES (LibRaw -o 6), not sRGB: libraw clips its output at 0, and the
@@ -316,7 +354,7 @@ export async function decodeRawFloatViaLibRaw(
       // SRGB_FROM_ACES rotates the samples to linear sRGB below.
       outputColor: 6,
       // No `gamm`: the wrapper ignores it and always encodes Rec.709 (see
-      // LINEAR_OF_CODE), which is linearised below.
+      // LINEAR_OF_CODE), which is linearized below.
       // No content-driven auto-brighten: it scaled each image so ~1% of pixels
       // clipped to white, destroying exactly the data Highlights recovery needs
       // (and made baseline brightness vary per image). LR uses a fixed baseline.
@@ -328,10 +366,17 @@ export async function decodeRawFloatViaLibRaw(
       // Any mode but 0 also lowers the white point (see highlightModeScale).
       highlight: 2,
       noAutoScale: false,
-    }));
+    };
+    await watched.call(raw.open(forLibRaw(buffer, transfer), settings));
     const meta = (await watched.call(raw.metadata(true))) ?? {};
-    const frame = frameOf(meta);
+    frame = frameOf(meta);
     if (frame) watched.extendTo(decodeTimeLimitForFrame(frame.width, frame.height));
+    // open() reads only the header, so the frame is known before the unpack.
+    if (reopenable && pastHeapBudget(frame, fileBytes)) {
+      const again = transfer && reread ? await reread() : buffer;
+      halfSize = true;
+      await watched.call(raw.open(forLibRaw(again, transfer), { ...settings, halfSize }));
+    }
     const px: unknown = await watched.call(raw.imageData());
 
     // imageData() may return undefined on WASM errors even if metadata succeeded
@@ -430,7 +475,7 @@ export async function decodeRawFloatViaLibRaw(
 
     // Sanity-check: reject a decode where all channels are simultaneously
     // near-clipped AND strongly colour-imbalanced — the hallmark of a bad
-    // WB/colour-matrix for an unrecognised camera, not a legitimately bright
+    // WB/colour-matrix for an unrecognized camera, not a legitimately bright
     // scene (which would have balanced channels near 1.0).
     {
       let sumR = 0, sumG = 0, sumB = 0;
@@ -461,7 +506,8 @@ export async function decodeRawFloatViaLibRaw(
     const status =
       `libraw ${pixels instanceof Uint16Array ? 16 : 8}-bit ${stride}ch ${width}×${height}` +
       ` ×${scale.toFixed(2)} white point` +
-      (bias ? `, ${(-bias).toFixed(2)} EV exposure bias` : "");
+      (bias ? `, ${(-bias).toFixed(2)} EV exposure bias` : "") +
+      (halfSize ? ", half size to fit the decoder's memory" : "");
     const seconds = (watched.elapsed() / 1000).toFixed(1);
     console.log("[libraw] decoded", status, `in ${seconds} s`);
     return {
@@ -471,15 +517,23 @@ export async function decodeRawFloatViaLibRaw(
       suspicious: inferredDims,
       colorTemperature,
       rawExposureBias: bias || undefined,
+      halfSize: halfSize || undefined,
     };
   } catch (e) {
-    const reason = `decode error: ${e instanceof Error ? e.message : String(e)}`;
+    const message = e instanceof Error ? e.message : String(e);
     console.warn("[libraw] decode failed", e);
-    // Nothing here blames the file. LibRaw's own errors come back as an
-    // undefined image (above). What throws is a worker error with a message
+    // A frame past the heap budget that runs out of memory at half size would
+    // only run out again, so it is the file's size to blame. Without a half-size
+    // try there is no such verdict.
+    if (halfSize && frame && pastHeapBudget(frame, fileBytes) && outOfMemory(e, message)) {
+      const reason = `too large to decode (${frame.width}×${frame.height}): ${message}`;
+      return { failure: "unsupported", tooLarge: true, reason };
+    }
+    // Otherwise nothing here blames the file. LibRaw's own errors come back as
+    // an undefined image (above). What throws is a worker error with a message
     // (a trap or an abort, possibly a one-off), a call that outlived the time
     // limit, or this page running out of memory for the copy or the float frame.
-    const failure: DecodeFailure = { failure: "transient", reason };
+    const failure: DecodeFailure = { failure: "transient", reason: `decode error: ${message}` };
     if (e instanceof NoAnswer) failure.timedOut = true;
     return failure;
   } finally {

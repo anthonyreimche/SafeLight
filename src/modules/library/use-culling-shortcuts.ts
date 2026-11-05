@@ -3,14 +3,14 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Culling shortcuts, live while a photo surface is mounted: LibraryView mounts
+// Culling shortcuts, live while a photo surface is mounted: the Library module mounts
 // them for the grid, and an extension photo browser (the Filmstrip) can mount
 // them in Develop through api.catalog.useCullingShortcuts, so a shoot can be
 // culled without leaving the editor. All combos are rebindable in
 // Preferences ▸ Shortcuts; the defaults match Lightroom:
 //
 //   1-5 rating   0 clear   P pick   X reject   U unflag
-//   6-9 color label        [ ] rotate
+//   6-9 colour label        [ ] rotate
 //   ← → prev / next         ↑ ↓ up / down a grid row
 //   - = thumbnail size
 //
@@ -21,13 +21,14 @@
 import { useEffect } from "react";
 import type { ColorLabel, FlagStatus } from "@/catalog/types";
 import { useCatalogStore } from "@/state/catalog-store";
-import { useDevelopStore } from "@/state/develop-store";
+import { canvasToolWants } from "@/modules/develop/canvas-tool";
 import { useUIStore } from "@/state/ui-store";
 import {
   inNativeDialog,
   isEditableTarget,
   matchAction,
   shortcutsSuspended,
+  typesIntoField,
 } from "@/state/keybindings-store";
 import { confirmAndDeleteFromDisk } from "./delete-from-disk";
 import { confirmDialog, isDialogOpen } from "@/ui/components/ConfirmDialog";
@@ -35,6 +36,8 @@ import { moveActivePhoto, visibleList } from "./photo-navigation";
 import { revealPhoto } from "@/project/folder-ops";
 import { isNativeFS } from "@/project/native-fs";
 import { getSettings } from "@/state/settings-store";
+import { pasteSettings } from "@/catalog/paste-settings";
+import { useDevelopClipboard } from "@/state/develop-clipboard";
 
 const LABELS: Record<string, ColorLabel> = {
   "label.red": "red",
@@ -48,6 +51,10 @@ const FLAGS: Record<string, FlagStatus> = {
   "flag.reject": "reject",
   "flag.unflag": "none",
 };
+
+/** The window event the Focus keyword input shortcut (K) dispatches. The
+ *  keyword field listens for it and takes focus. */
+export const FOCUS_KEYWORD_INPUT_EVENT = "sl-focus-keyword-input";
 
 export interface CullingShortcutOptions {
   /** Handle the thumbnail-size actions (- / =), which step the Library grid's
@@ -69,28 +76,30 @@ export function cullingShortcutsMounted(): boolean {
   return surfaces > 0;
 }
 
-/** True while a Develop mask component is selected — Delete/Backspace then
- *  belongs to mask.delete, not to removing photos from the catalog. */
-function maskOwnsDelete(): boolean {
-  const d = useDevelopStore.getState();
-  return d.activeTool === "mask" && !!d.selectedMaskId && !!d.selectedComponentId;
-}
+/** True while Develop's canvas tool would take mask.delete (Masking's, with a
+ *  component selected): Delete/Backspace then belongs to it, not to removing
+ *  photos from the catalogue. */
+const maskOwnsDelete = (): boolean => canvasToolWants("mask.delete");
 
 let removeConfirmOpen = false;
 
-// The in-app confirm is async, so the keydown handler fires and forgets this.
-// The ids are the selection at keydown; only the store's removePhotos is read
-// after the user answers. At most one confirmation is pending: a second
-// request while it's open (a held or repeated key) is dropped, not queued.
-async function removeFromCatalog(ids: string[]): Promise<void> {
+/** Remove photos from the catalogue, after the confirmation when it's turned on.
+ *  Shared by the Delete key and the photo menu's Remove, so both say the same.
+ *  The ids are the selection when it was asked; only the store's removePhotos
+ *  is read after the user answers. At most one
+ *  confirmation is pending: a second request while it's open (a held or
+ *  repeated key) is dropped, not queued. */
+export async function removeFromCatalog(ids: string[]): Promise<void> {
   if (getSettings().confirmRemovePhotos) {
     if (removeConfirmOpen) return;
     removeConfirmOpen = true;
     const n = ids.length;
+    const s = n === 1 ? "" : "s";
     const ok = await confirmDialog({
-      title: "Remove from catalog",
-      message: `Remove ${n} photo${n === 1 ? "" : "s"} from the catalog? The original file${n === 1 ? "" : "s"} on disk won't be deleted.`,
+      title: "Remove from catalogue",
+      message: `Remove ${n} photo${s} from the catalogue? ${n === 1 ? "Its" : "Their"} edits, ratings and labels are discarded. The original file${s} on disk won't be deleted.`,
       confirmLabel: "Remove",
+      variant: "danger",
     }).finally(() => {
       removeConfirmOpen = false;
     });
@@ -105,13 +114,13 @@ function handleCullingKey(e: KeyboardEvent): void {
   // so every culling key (not only Delete) waits until it's answered.
   if (isDialogOpen()) return;
 
-  // Shortcuts take priority: only bare keys defer to true text-entry targets
-  // (so typing works); modifier combos always fire, and a focused slider or
-  // checkbox never blocks anything.
-  if (!(e.ctrlKey || e.metaKey || e.altKey) && isEditableTarget(e.target)) return;
+  // Shortcuts take priority except over typing into a text field: Ctrl/Cmd
+  // combos still fire there, and a focused slider or checkbox never blocks
+  // anything.
+  if (typesIntoField(e)) return;
 
   // Ctrl/Cmd+A selects every photo currently shown (active folder + filters),
-  // not the whole catalog. Skip when a text field is focused so its native
+  // not the whole catalogue. Skip when a text field is focused so its native
   // select-all still works.
   if (
     (e.ctrlKey || e.metaKey) &&
@@ -160,7 +169,7 @@ function handleCullingKey(e: KeyboardEvent): void {
     if (targetIds.length === 0) return;
     e.preventDefault();
     const color = LABELS[action];
-    // Pressing the same color again clears it (toggle off).
+    // Pressing the same colour again clears it (toggle off).
     const ids = new Set(targetIds);
     const allHaveColor = catalog.photos
       .filter((p) => ids.has(p.id))
@@ -206,7 +215,7 @@ function handleCullingKey(e: KeyboardEvent): void {
 
   if (action === "keyword.focus") {
     e.preventDefault();
-    window.dispatchEvent(new CustomEvent("sl-focus-keyword-input"));
+    window.dispatchEvent(new CustomEvent(FOCUS_KEYWORD_INPUT_EVENT));
     return;
   }
 
@@ -214,8 +223,24 @@ function handleCullingKey(e: KeyboardEvent): void {
     const id = catalog.activePhotoId ?? targetIds[0];
     if (!id) return;
     e.preventDefault();
-    // The photo surface owns the rename dialog; hand it the photo to edit.
+    // The photo surface owns the rename dialogue; hand it the photo to edit.
     window.dispatchEvent(new CustomEvent("sl-rename-photo", { detail: { id } }));
+    return;
+  }
+
+  if (action === "photo.copySettings") {
+    if (targetIds.length !== 1) return;
+    e.preventDefault();
+    // The photo surface owns the checklist dialogue, as it does for rename.
+    window.dispatchEvent(new CustomEvent("sl-copy-settings", { detail: { id: targetIds[0] } }));
+    return;
+  }
+
+  if (action === "photo.pasteSettings") {
+    const clip = useDevelopClipboard.getState().clipboard;
+    if (!clip || targetIds.length === 0) return;
+    e.preventDefault();
+    void pasteSettings(targetIds, clip);
     return;
   }
 

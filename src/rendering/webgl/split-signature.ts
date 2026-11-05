@@ -10,6 +10,7 @@
 
 import type { DevelopParams, Mask, MaskAdjustments } from "@/catalog/types";
 import { isUniformValue } from "@/extensions/pipeline-validation";
+import type { StageDomain } from "../stage-space";
 import type { ContributedBinding, SplitCut, StageSplit } from "./stage-injection";
 
 export interface SplitUpstreamInputs {
@@ -68,16 +69,82 @@ function sceneMask(m: Mask): unknown {
   return { ...stagelessMask(m), adj, hsl: undefined, toneCurve: undefined };
 }
 
-function feedingParams(params: DevelopParams, cut: SplitCut): [string, unknown][] {
+const DROPPED: Record<StageDomain, ReadonlySet<string>> = {
+  scene: new Set([...NEVER_UPSTREAM, ...DISPLAY_ONLY]),
+  display: new Set(NEVER_UPSTREAM),
+};
+
+const MASK_VIEW: Record<StageDomain, (m: Mask) => unknown> = {
+  scene: sceneMask,
+  display: stagelessMask,
+};
+
+/** The params fields that feed `cut`, masks as the params hold them. */
+function feedingFields(params: DevelopParams, cut: SplitCut): [string, unknown][] {
   if (cut === "decode") return DECODE_INPUTS.map((k) => [k, params[k]]);
-  const dropped = new Set<string>(
-    cut === "scene" ? [...NEVER_UPSTREAM, ...DISPLAY_ONLY] : NEVER_UPSTREAM,
-  );
-  const masks = params.masks.map(cut === "scene" ? sceneMask : stagelessMask);
-  return Object.entries(params)
-    .filter(([k]) => !dropped.has(k))
-    .map(([k, v]) => [k, k === "masks" ? masks : v]);
+  const dropped = DROPPED[cut];
+  return Object.entries(params).filter(([k]) => !dropped.has(k));
 }
+
+function feedingParams(params: DevelopParams, cut: SplitCut): [string, unknown][] {
+  if (cut === "decode") return feedingFields(params, cut);
+  const masks = params.masks.map(MASK_VIEW[cut]);
+  return feedingFields(params, cut).map(([k, v]) => [k, k === "masks" ? masks : v]);
+}
+
+// Serialized text by value. Callers replace a field, and each mask, on change and
+// never mutate one in place, so a slider tick that replaced the params object
+// serializes only the fields it replaced, and a mask edit only that mask.
+const keyTexts = new Map<string, string>();
+const entryTexts = new Map<string, WeakMap<object, string>>();
+const maskTexts: Record<StageDomain, WeakMap<Mask, string>> = { scene: new WeakMap(), display: new WeakMap() };
+const masksEntryTexts: Record<StageDomain, WeakMap<Mask[], string>> = { scene: new WeakMap(), display: new WeakMap() };
+
+interface TextCache<K> {
+  get(key: K): string | undefined;
+  set(key: K, text: string): unknown;
+}
+
+function cachedText<K>(cache: TextCache<K>, key: K, text: () => string): string {
+  let cached = cache.get(key);
+  if (cached === undefined) {
+    cached = text();
+    cache.set(key, cached);
+  }
+  return cached;
+}
+
+/** A value as JSON.stringify writes it inside an array. */
+const elementText = (v: unknown): string => JSON.stringify(v) ?? "null";
+
+const keyText = (k: string): string => cachedText(keyTexts, k, () => JSON.stringify(k));
+
+function entryText(k: string, v: unknown): string {
+  const text = () => `[${keyText(k)},${elementText(v)}]`;
+  if (typeof v !== "object" || v === null) return text();
+  let byValue = entryTexts.get(k);
+  if (!byValue) entryTexts.set(k, (byValue = new WeakMap()));
+  return cachedText(byValue, v, text);
+}
+
+function masksEntryText(masks: Mask[], cut: StageDomain): string {
+  const view = MASK_VIEW[cut];
+  const mask = (m: Mask) => cachedText(maskTexts[cut], m, () => elementText(view(m)));
+  return cachedText(masksEntryTexts[cut], masks, () => `[${keyText("masks")},[${masks.map(mask).join(",")}]]`);
+}
+
+/** The entries of JSON.stringify(feedingParams(params, cut)), each character for
+ *  character as it writes them, from text cached per field value and per mask.
+ *  Joined with "," inside "[…]" they are that text; compared one by one, an
+ *  unchanged field is the very string it was and costs no character comparison. */
+export function feedingParamsTexts(params: DevelopParams, cut: SplitCut): string[] {
+  return feedingFields(params, cut).map(([k, v]) =>
+    k === "masks" && cut !== "decode" ? masksEntryText(params.masks, cut) : entryText(k, v),
+  );
+}
+
+const sameTexts = (a: readonly string[], b: readonly string[]): boolean =>
+  a === b || (a.length === b.length && a.every((t, i) => t === b[i]));
 
 /** The entries of upstream stages (keys "{stageId}.…"), sorted by key. */
 function upstreamEntries<T>(record: Record<string, T>, ids: readonly string[]): [string, T][] {
@@ -127,7 +194,7 @@ export function splitUpstreamKey(i: SplitUpstreamInputs): string {
 interface SplitMemo {
   split: StageSplit;
   params: DevelopParams;
-  paramsKey: string;
+  paramsTexts: string[];
   bag: Record<string, unknown>;
   transformBindings: readonly ContributedBinding[];
   entries: [string, unknown][];
@@ -138,12 +205,13 @@ interface SplitMemo {
 }
 
 /** Per-stage stand-ins for splitUpstreamKey in the prepass cache: a token
- *  changes exactly when the stage's key does. Serialising the develop params,
+ *  changes exactly when the stage's key does. Serializing the develop params,
  *  brush dabs included, is the costly part, so it runs only when the params
- *  object is replaced (for a decode cut, only when its retouch array is).
+ *  object is replaced (for a decode cut, only when its retouch array is), and
+ *  then only for the fields and masks that were replaced.
  *  Bag entries are compared by reference and texture versions by value, so a
  *  frame that replaced nothing, or only a param of the stage's own or a later
- *  stage's, serialises nothing. Callers replace params, the bag and the
+ *  stage's, serializes nothing. Callers replace params, the bag and the
  *  transform's bindings on change rather than mutating them. */
 export class SplitTokens {
   private readonly memo = new Map<string, SplitMemo>();
@@ -152,10 +220,10 @@ export class SplitTokens {
   token(stageId: string, split: StageSplit, s: SplitSources): number {
     const prev = this.memo.get(stageId);
     const same = prev?.split === split ? prev : undefined;
-    const paramsKey =
+    const paramsTexts =
       same && sameFeedingValues(same.params, s.params, split.cut)
-        ? same.paramsKey
-        : JSON.stringify(feedingParams(s.params, split.cut));
+        ? same.paramsTexts
+        : feedingParamsTexts(s.params, split.cut);
     const sameBindings = split.cut !== "display" || same?.transformBindings === s.transformBindings;
     const entries =
       same?.bag === s.bag && sameBindings
@@ -167,7 +235,7 @@ export class SplitTokens {
     const context = split.cut === "decode" ? "" : s.context;
     const unchanged =
       same !== undefined &&
-      paramsKey === same.paramsKey &&
+      sameTexts(paramsTexts, same.paramsTexts) &&
       entriesKey === same.entriesKey &&
       sameEntries(versions, same.versions) &&
       context === same.context;
@@ -175,7 +243,7 @@ export class SplitTokens {
     this.memo.set(stageId, {
       split,
       params: s.params,
-      paramsKey,
+      paramsTexts,
       bag: s.bag,
       transformBindings: s.transformBindings,
       entries,

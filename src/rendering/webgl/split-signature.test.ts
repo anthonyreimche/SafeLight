@@ -9,8 +9,11 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  defaultHSL,
   defaultMaskAdjustments,
+  defaultToneCurves,
   freshParams,
+  type BrushDab,
   type DevelopParams,
   type Mask,
   type RetouchSpot,
@@ -18,6 +21,7 @@ import {
 import type { ContributedBinding, SplitCut, StageSplit } from "./stage-injection";
 import {
   SplitTokens,
+  feedingParamsTexts,
   splitUpstreamKey,
   type SplitSources,
   type SplitUpstreamInputs,
@@ -191,7 +195,7 @@ describe("splitUpstreamKey", () => {
   });
 });
 
-// The renderer asks for a token on every frame. Serialising the develop
+// The renderer asks for a token on every frame. Serializing the develop
 // params (brush dabs included) is the cost worth avoiding, so it must happen
 // only when the params object is replaced.
 describe("SplitTokens", () => {
@@ -212,7 +216,7 @@ describe("SplitTokens", () => {
     }
   }
 
-  it.each<SplitCut>(["scene", "display"])("serialises nothing for a %s cut while no input changes, nor for the stage's own param", (cut) => {
+  it.each<SplitCut>(["scene", "display"])("serializes nothing for a %s cut while no input changes, nor for the stage's own param", (cut) => {
     const tokens = new SplitTokens();
     const s = split(cut);
     const base = sources();
@@ -223,16 +227,18 @@ describe("SplitTokens", () => {
     expect(serialised).toBe(0);
   });
 
-  it("serialises replaced params once and keeps the token if nothing upstream moved", () => {
+  it("serializes replaced params once and keeps the token if nothing upstream moved", () => {
     const tokens = new SplitTokens();
     const s = split("scene");
     const base = sources();
     const first = tokens.token("own.stage", s, base);
     const contrast = { ...base, params: { ...base.params, contrast: 30 } };
     const exposure = { ...base, params: { ...base.params, exposure: 1 } };
-    const downstream = run(tokens, s, [contrast, contrast]);
-    expect(downstream.issued).toEqual([first, first]);
-    expect(downstream.serialised).toBe(1);
+    const downstream = run(tokens, s, [contrast]);
+    const again = run(tokens, s, [contrast]);
+    expect([...downstream.issued, ...again.issued]).toEqual([first, first]);
+    expect(downstream.serialised).toBeGreaterThan(0);
+    expect(again.serialised).toBe(0);
     const upstream = run(tokens, s, [exposure]);
     expect(upstream.issued[0]).not.toBe(first);
   });
@@ -250,7 +256,7 @@ describe("SplitTokens", () => {
 
   // A slider frame replaces the params object and keeps every array in it. A decode
   // cut reads the retouch alone, so a frame that kept the retouch has nothing to
-  // serialise, however many dabs it holds.
+  // serialize, however many dabs it holds.
   describe("for a decode cut", () => {
     const retouched = () => sources({ params: { ...freshParams(5000), retouch: [SPOT] } });
     const frame = (s: SplitSources, over: Partial<DevelopParams>): SplitSources => ({
@@ -258,7 +264,7 @@ describe("SplitTokens", () => {
       params: { ...s.params, ...over },
     });
 
-    it("serialises nothing for slider frames that keep the retouch array", () => {
+    it("serializes nothing for slider frames that keep the retouch array", () => {
       const tokens = new SplitTokens();
       const s = split("decode");
       const base = retouched();
@@ -269,7 +275,7 @@ describe("SplitTokens", () => {
       expect(serialised).toBe(0);
     });
 
-    it("serialises a replaced retouch array once, and issues a token only if it differs", () => {
+    it("serializes a replaced retouch array once, and issues a token only if it differs", () => {
       const tokens = new SplitTokens();
       const s = split("decode");
       const base = retouched();
@@ -349,5 +355,83 @@ describe("SplitTokens", () => {
     expect(tokens.token("b.stage", s, exposed)).toBe(b);
     tokens.clear();
     expect(tokens.token("a.stage", s, base)).not.toBe(a);
+  });
+
+  // Dragging a global slider over a brush-heavy edit replaces the params object
+  // every tick and keeps every mask and the retouch as they were.
+  describe("on a brush-heavy edit", () => {
+    const dabs = (n: number): BrushDab[] =>
+      Array.from({ length: n }, (_, i) => ({
+        x: (i % 97) / 97,
+        y: (i % 89) / 89,
+        radius: 0.02,
+        erase: false,
+        feather: 0.5,
+        strokeStart: i % 150 === 0,
+      }));
+    const brushMask = (i: number): Mask => ({
+      ...MASK,
+      id: `m${i}`,
+      components: [{ id: `c${i}`, kind: "brush", mode: "add", invert: false, brush: { dabs: dabs(1500), feather: 0.5 } }],
+    });
+    const heavy = (): DevelopParams => ({
+      ...freshParams(5000),
+      masks: Array.from({ length: 30 }, (_, i) => brushMask(i)),
+      retouch: [{ ...SPOT, shape: "brush", dabs: dabs(500) }],
+    });
+    const stages: [string, StageSplit][] = [
+      ["a.stage", split("scene")],
+      ["b.stage", split("display")],
+      ["c.stage", split("scene")],
+      ["d.stage", split("display")],
+    ];
+
+    // The text is the params part of splitUpstreamKey, unchanged, so prepass
+    // reuse keys on exactly what it keyed on before it was cached.
+    it("keys the params as splitUpstreamKey serializes them", () => {
+      const base = heavy();
+      const masked: Mask = {
+        ...brushMask(99),
+        adj: { ...MASK.adj, exposure: 1, contrast: 20 },
+        name: `a"b${String.fromCharCode(0x5c, 0x2028)}`,
+        hsl: defaultHSL(),
+        toneCurve: defaultToneCurves(),
+        bag: { "up.stage.amount": 3 },
+      };
+      const variants: DevelopParams[] = [
+        base,
+        freshParams(5000),
+        { ...base, masks: [masked, ...base.masks.slice(1)] },
+        { ...base, masks: [], retouch: [], exposure: Number.NaN },
+        { ...base, crop: { x: 0.1, y: 0, width: 0.5, height: 1 }, contrast: 30 },
+        { ...base, masks: [base.masks[1], base.masks[0], ...base.masks.slice(2)] },
+      ];
+      for (const cut of ["decode", "scene", "display"] as const)
+        for (const [i, params] of variants.entries())
+          for (let pass = 0; pass < 2; pass++)
+            expect(`[${feedingParamsTexts(params, cut).join(",")}]`, `${cut} #${i}`).toBe(
+              JSON.stringify(JSON.parse(key({ params, cut }))[2]),
+            );
+    });
+
+    it("serializes only the fields a slider tick replaced", () => {
+      const tokens = new SplitTokens();
+      let params = heavy();
+      for (const [id, s] of stages) tokens.token(id, s, sources({ params }));
+      const masksBytes = JSON.stringify(params.masks).length;
+      const stringify = vi.spyOn(JSON, "stringify");
+      let bytes = 0;
+      try {
+        for (let tick = 1; tick <= 200; tick++) {
+          params = { ...params, exposure: tick / 100 };
+          for (const [id, s] of stages) tokens.token(id, s, sources({ params }));
+          for (const r of stringify.mock.results) if (typeof r.value === "string") bytes += r.value.length;
+          stringify.mockClear();
+        }
+      } finally {
+        stringify.mockRestore();
+      }
+      expect(bytes / 200).toBeLessThan(masksBytes / 100);
+    });
   });
 });

@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // The "copy develop settings" clipboard, populated from the Library's right-click
-// Copy dialog (the same preset checkboxes used when saving a preset) and consumed
+// Copy dialogue (the same preset checkboxes used when saving a preset) and consumed
 // by Paste. A tiny zustand store rather than a plain module so the Paste menu item
 // reactively enables once something has been copied. Session-only, like an OS
 // clipboard — not persisted.

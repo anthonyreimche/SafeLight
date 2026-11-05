@@ -33,6 +33,7 @@ vi.mock("./decode-pool", () => {
   return {
     acquireInstance: async (request?: { signal?: AbortSignal }) =>
       h.available && !request?.signal?.aborted ? instance : null,
+    decodePoolFailure: () => undefined,
     releaseInstance: () => {},
     discardInstance: () => {},
   };

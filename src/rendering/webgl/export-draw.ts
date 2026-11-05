@@ -15,6 +15,7 @@
 import { OUTPUT_MAP_GLSL } from "../output-map";
 import { STAGE_SPACE_GLSL } from "../stage-space";
 import { LINEAR_TO_SRGB_GLSL, VERTEX_SHADER } from "./shaders";
+import { SCRATCH_UNIT, allocateChecked, ranOutOfMemory, releaseTarget } from "./gl-resources";
 
 /** Where an export frame lands: RGBA16 (EXT_texture_norm16, read as 16-bit
  *  codes), RGBA32F, or RGBA16F, the target versions 1 and 2 export through. */
@@ -49,73 +50,10 @@ export function quantise16(v: number): number {
   return v <= 0 ? 0 : v >= 1 ? 65535 : Math.round(v * 65535);
 }
 
-/** The renderer's scratch unit: no develop frame reads it, so a pass can bind
- *  a texture there without lending a unit and giving it back. */
-export const SCRATCH_UNIT = 7;
-
-/** A colour target: a texture made on the scratch unit, attached to its own
- *  framebuffer. */
-export interface ColourTarget {
-  tex: WebGLTexture;
-  fbo: WebGLFramebuffer;
-  /** False when the context can't render into it. */
-  complete: boolean;
-}
-
-/** A w×h RGBA target of `internalFormat`, with no framebuffer left bound.
- *  Release it whether or not it is complete. */
-export function allocateTarget(
-  gl: WebGL2RenderingContext,
-  internalFormat: number,
-  type: number,
-  w: number,
-  h: number,
-): ColourTarget {
-  const tex = gl.createTexture();
-  gl.activeTexture(gl.TEXTURE0 + SCRATCH_UNIT);
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, w, h, 0, gl.RGBA, type, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  const fbo = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-  const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  return { tex, fbo, complete };
-}
-
-/** Frees a target, leaving no framebuffer bound and TEXTURE0 active. */
-export function releaseTarget(gl: WebGL2RenderingContext, target: ColourTarget): void {
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.deleteFramebuffer(target.fbo);
-  gl.activeTexture(gl.TEXTURE0 + SCRATCH_UNIT);
-  gl.deleteTexture(target.tex);
-  gl.activeTexture(gl.TEXTURE0);
-}
-
-// An allocation the driver refuses (out of memory, say) raises an error rather
-// than leaving the framebuffer incomplete, so the queue is emptied first to
-// read only the allocation's, and read even for an incomplete target, which
-// would otherwise leave its error for the next reader.
-export function allocateChecked(
-  gl: WebGL2RenderingContext,
-  internalFormat: number,
-  type: number,
-  w: number,
-  h: number,
-): { target: ColourTarget; ok: boolean } {
-  while (gl.getError() !== gl.NO_ERROR) { /* one flag per error code */ }
-  const target = allocateTarget(gl, internalFormat, type, w, h);
-  return { target, ok: gl.getError() === gl.NO_ERROR && target.complete };
-}
-
 // RGBA16_EXT where the context renders EXT_texture_norm16's RGBA16 and reads it
 // back as 16-bit codes, else 0, by context. The renderer's own norm16 probe
-// asks another question (whether the retouch copy can mipmap), and only with
-// High bit depth on.
+// (readCaps, gl-resources.ts) asks another question (whether the retouch copy
+// can mipmap), and only with High bit depth on.
 const norm16Formats = new WeakMap<WebGL2RenderingContext, number>();
 
 /** The norm16 export format for this context, or 0 without one. Probed on first use. */
@@ -172,7 +110,7 @@ export function targetFormat(gl: WebGL2RenderingContext, target: ExportTarget): 
 const BAND_ROWS = 64;
 
 // The bound w×h target as 16-bit codes, top-down: readPixels hands the rows
-// back bottom-up. A float target is quantised with quantise16.
+// back bottom-up. A float target is quantized with quantise16.
 function readCodes(gl: WebGL2RenderingContext, read: number, w: number, h: number): Uint16Array {
   const stride = w * 4;
   const codes = new Uint16Array(stride * h);
@@ -199,16 +137,6 @@ function readCodes(gl: WebGL2RenderingContext, read: number, w: number, h: numbe
     }
   }
   return codes;
-}
-
-// Empties the error queue and says whether it held OUT_OF_MEMORY. Other errors
-// a frame raises (a stage's stray uniform call, say) don't stop an export.
-export function ranOutOfMemory(gl: WebGL2RenderingContext): boolean {
-  let outOfMemory = false;
-  for (let error = gl.getError(); error !== gl.NO_ERROR; error = gl.getError()) {
-    if (error === gl.OUT_OF_MEMORY) outOfMemory = true;
-  }
-  return outOfMemory;
 }
 
 /** A w×h frame drawn by `drawFrame` into the first of `targets` the context
@@ -258,7 +186,7 @@ const MAX_RADIUS = 3;
 const MAX_REACH = Math.ceil(3 * MAX_RADIUS);
 
 // σ = `radius` px, capped at MAX_RADIUS: the centre tap, then one per pixel out
-// to ceil(3σ), normalised, then zeros to MAX_REACH. CSS blur() takes its radius
+// to ceil(3σ), normalized, then zeros to MAX_REACH. CSS blur() takes its radius
 // as σ the same way. A radius of 0 or less blurs nothing.
 function gaussianTaps(radius: number): Float32Array {
   const taps = new Float32Array(MAX_REACH + 1);

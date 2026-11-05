@@ -55,10 +55,23 @@ export const pruneSources = (installed: ExtensionManifest[]): void => {
  *  falling back to the manifest's declared `repository`. Null when neither
  *  exists. Not a trust lookup — the fallback is the extension's own word, so
  *  ban checks go through bannedReasonForManifest instead. */
-export const repoFor = (manifest: ExtensionManifest): string | null => {
-  const source = readSources()[manifest.id];
-  if (source) return source;
+export const repoFor = (manifest: ExtensionManifest): string | null =>
+  readSources()[manifest.id] || declaredRepo(manifest);
+
+function declaredRepo(manifest: ExtensionManifest): string | null {
   return manifest.repository && /^[\w.-]+\/[\w.-]+$/.test(manifest.repository)
     ? manifest.repository
     : null;
+}
+
+/** The "owner/repo" auto-update may install `manifest` from: the `repository`
+ *  its installed safelight.json declares, or the remembered source when it
+ *  declares none. The remembered source lives in localStorage, which any
+ *  extension can write, so one that names another repo than the declared one
+ *  means no auto-update rather than an install from it. */
+export const updateRepoFor = (manifest: ExtensionManifest): string | null => {
+  const declared = declaredRepo(manifest);
+  const source = readSources()[manifest.id];
+  if (!declared) return source || null;
+  return !source || source === declared.toLowerCase() ? declared : null;
 };

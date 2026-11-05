@@ -33,10 +33,15 @@
   --color-accent: #2e2e2e;
   --color-accent-hover: #3c3c3c;
   --color-slider-fill: #2e2e2e;
+  /* Text on an accent or slider-fill: the accent stays dark enough for white. */
+  --color-on-accent: #ffffff;
   --color-rating: #f5c542;
   --color-flag-pick: #ffffff;
   --color-flag-reject: #444444;
   --color-label-red: #e74c3c;
+  --color-danger: var(--color-label-red);
+  /* Text on a danger fill: white on this red is 3.8:1, under AA for small text. */
+  --color-on-danger: #111111;
   --color-label-yellow: #f39c12;
   --color-label-green: #27ae60;
   --color-label-blue: #3498db;
@@ -167,7 +172,7 @@ html.sl-larger-text .tracking-wider {
 }
 
 /* Preferences ▸ Accessibility ▸ Lowercase headings. Render the all-caps section
-   labels in Title Case (capitalise the first letter of each word) instead of
+   labels in Title Case (capitalize the first letter of each word) instead of
    UPPERCASE — all-caps slows word recognition. The label text is authored
    mixed-case and only displayed uppercase via .uppercase, so `capitalize` yields
    proper Title Case. Placed after the larger-text rule so it wins when both are

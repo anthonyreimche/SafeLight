@@ -25,7 +25,7 @@ const h = vi.hoisted(() => ({
   metadataDone: (): Promise<void> => Promise.resolve(),
   /** What the pending-metadata pass reports for each photo it reads. */
   metadataRead: null as null | { id: string; change: Record<string, unknown> },
-  /** Changes merged into the catalog store, as [id, change]. */
+  /** Changes merged into the catalogue store, as [id, change]. */
   merged: [] as [string, unknown][],
   open: vi.fn(),
   /** Remembering the folder for the welcome grid, one of an open's last steps. */
@@ -73,6 +73,7 @@ vi.mock("@/state/thumbnail-loader", () => ({
 }));
 vi.mock("@/state/settings-store", () => ({ getSettings: () => ({}) }));
 vi.mock("@/state/catalog-store", () => ({
+  setLastProjectOpener: () => {},
   useCatalogStore: {
     getState: () => ({
       replaceCatalog: () => {},
@@ -83,6 +84,7 @@ vi.mock("@/state/catalog-store", () => ({
     }),
   },
 }));
+vi.mock("@/modules/library/photo-navigation", () => ({ visibleList: () => [] }));
 vi.mock("@/state/ui-store", () => ({
   useUIStore: {
     subscribe: () => () => {},
@@ -109,6 +111,8 @@ function opened() {
     storage: { readPreview: async () => null, close: () => {} },
     rawCacheDir: {},
     tree: null,
+    unreadable: [],
+    skipped: {},
     photos: [],
     storageLocation: "in-folder",
   };
@@ -162,7 +166,7 @@ describe("the background passes of an open project", () => {
     expect(h.preDecodes).toEqual(h.metadataReads);
   });
 
-  it("show the metadata they read on the photos in the catalog", async () => {
+  it("show the metadata they read on the photos in the catalogue", async () => {
     h.metadataRead = { id: "p1", change: { width: 6240, height: 4160, metadataPending: undefined } };
 
     await openProject("A");
@@ -261,7 +265,7 @@ describe("the background passes of an open project", () => {
     let duringB: AbortSignal | undefined;
     h.open.mockImplementationOnce(async () => {
       duringB = projectPassSignal();
-      throw new Error("the catalog can't be read");
+      throw new Error("the catalogue can't be read");
     });
 
     await openProject("B");

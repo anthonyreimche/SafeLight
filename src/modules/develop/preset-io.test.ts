@@ -339,7 +339,7 @@ describe("importPresetFile", () => {
     });
   });
 
-  it("reports no settings when the importer doesn't recognise the file", async () => {
+  it("reports no settings when the importer doesn't recognize the file", async () => {
     const outcome = await importPresetFile(xmpFile(), [importer(async () => null)]);
     expect(outcome).toEqual({ status: "no-settings" });
   });
@@ -351,14 +351,63 @@ describe("importPresetFile", () => {
     expect(outcome).toEqual({ status: "no-settings" });
   });
 
-  it("reports no settings when the importer throws", async () => {
+  it("reports a failure with the reason when the importer throws", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const outcome = await importPresetFile(xmpFile(), [
       importer(async () => {
         throw new Error("malformed XML");
       }),
     ]);
-    expect(outcome).toEqual({ status: "no-settings" });
+    expect(outcome).toEqual({ status: "failed", reason: "malformed XML" });
+  });
+
+  it("reports a failure when the importer never finishes", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const pending = importPresetFile(xmpFile(), [importer(() => new Promise(() => {}))]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      const outcome = await pending;
+      expect(outcome.status).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("names the importer's extension when a registered importer runs out of time", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const registered = { ...importer(() => new Promise(() => {})), extensionId: "acme.presets" };
+      const pending = importPresetFile(xmpFile(), [registered]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      const outcome = await pending;
+      expect(outcome).toEqual({ status: "failed", reason: "acme.presets did not finish within 15 s" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tries the next importer when the first finds nothing", async () => {
+    const first = vi.fn(async () => null);
+    const second = vi.fn(async () => ({ name: "Second", params: { exposure: 0.5 } }));
+    const outcome = await importPresetFile(xmpFile(), [importer(first), importer(second)]);
+    expect(first).toHaveBeenCalled();
+    expect(outcome).toEqual({
+      status: "imported",
+      preset: { name: "Second", params: { exposure: 0.5 } },
+    });
+  });
+
+  it("uses a later importer when an earlier one throws", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const outcome = await importPresetFile(xmpFile(), [
+      importer(async () => {
+        throw new Error("boom");
+      }),
+      importer(async () => ({ name: "Second", params: { exposure: 1 } })),
+    ]);
+    expect(outcome.status).toBe("imported");
   });
 
   it("reports a .json file that isn't a readable Safelight preset", async () => {
@@ -376,15 +425,13 @@ describe("presetPickerAccept", () => {
     parse: async () => null,
   });
 
-  // Other apps' preset files stay selectable with no importer installed, so
-  // picking one explains what's missing instead of the folder looking empty.
-  it("offers other apps' preset files with no importer installed", () => {
-    expect(presetPickerAccept([])).toBe(".json,.xmp,.lrtemplate");
+  it("offers only Safelight's own files with no importer installed", () => {
+    expect(presetPickerAccept([])).toBe(".json");
   });
 
   it("adds each importer's extensions once", () => {
     expect(presetPickerAccept([claiming(".xmp", ".dcp"), claiming(".dcp")])).toBe(
-      ".json,.xmp,.lrtemplate,.dcp",
+      ".json,.xmp,.dcp",
     );
   });
 });

@@ -358,8 +358,8 @@ function rateLimitMessage(status, headers, repo) {
 
 /** Drop entries whose name carries a backslash (a separator on Windows, so it
  *  escapes a "/"-only traversal filter), a ".." segment as written, or one
- *  once normalised. The raw check matters because stripSingleRoot runs next:
- *  it would turn "w/../x" into "../x", which normalising alone never sees. */
+ *  once normalized. The raw check matters because stripSingleRoot runs next:
+ *  it would turn "w/../x" into "../x", which normalizing alone never sees. */
 function safeEntries(files) {
   return files.filter(
     (f) =>
@@ -382,8 +382,8 @@ function stripSingleRoot(files) {
 }
 
 /** Zips made on Windows (PowerShell 5.1's Compress-Archive) name entries
- *  "dist\index.js". Normalise those to "/" so they install; safeEntries then
- *  judges the normalised name, so a ".." segment is still dropped. */
+ *  "dist\index.js". Normalize those to "/" so they install; safeEntries then
+ *  judges the normalized name, so a ".." segment is still dropped. */
 const slashed = (files) => files.map((f) => ({ ...f, name: f.name.replaceAll("\\", "/") }));
 
 /** A release's files: the first zip asset holding safelight.json, else the

@@ -9,7 +9,7 @@ import type { RawMetadata } from "@/raw/libraw-wasm-adapter";
 import type { RebuiltChange } from "@/state/catalog-store";
 import type { NativeFsBridge } from "@/extensions/types";
 import { MemoryFs } from "@/project/memory-fs.test-support";
-import { MiB, rawBytes, type EmbeddedPreview } from "./raw-bytes.test-support";
+import { MiB, rawBytes, type EmbeddedPreview } from "@/raw/raw-bytes.test-support";
 
 interface XmpFields {
   rating?: number;
@@ -65,10 +65,12 @@ const h = vi.hoisted(() => ({
   floatSignals: [] as (AbortSignal | undefined)[],
   /** Photos handed to catalogStorage().putPhoto. */
   saved: [] as CatalogPhoto[],
-  /** The catalog's photos as the store holds them when a decode finishes. */
+  /** The catalogue's photos as the store holds them when a decode finishes. */
   catalog: [] as CatalogPhoto[],
-  /** Changes merged into the catalog store's photos, as [id, change]. */
+  /** Changes merged into the catalogue store's photos, as [id, change]. */
   merged: [] as [string, RebuiltChange][],
+  /** arrayBuffer() reads of a whole source file (see counted). */
+  wholeReads: 0,
 }));
 
 vi.mock("@/native/privileged", () => ({ privilegedFs: () => h.fs }));
@@ -79,9 +81,12 @@ vi.mock("@/catalog/exif", () => ({
   parseExifDate: (raw: string | undefined) => (raw ? h.exifDate : undefined),
 }));
 
-vi.mock("./raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./raw-preview")>()),
-  extractRawPreview: async () => {
+// Each decode fake reads the file whole unless it is handed the bytes, as the
+// real one does.
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
+  extractRawPreview: async (f: File, bytes?: ArrayBuffer) => {
+    if (!bytes) await f.arrayBuffer();
     h.previewReads++;
     return h.embedded;
   },
@@ -89,9 +94,11 @@ vi.mock("./raw-preview", async (importOriginal) => ({
   // no candidate survives; a targetLongEdge decodes the bitmap downscaled while
   // width/height report the true frame size.
   extractRawPreviewDecoded: async (
-    _f: File,
+    f: File,
     opts?: { targetLongEdge?: number },
+    bytes?: ArrayBuffer,
   ) => {
+    if (!bytes) await f.arrayBuffer();
     if (!h.embedded || h.blobSize.width === 0) return null;
     const { width, height } = h.blobSize;
     const long = Math.max(width, height);
@@ -105,25 +112,30 @@ vi.mock("./raw-preview", async (importOriginal) => ({
   },
 }));
 
-vi.mock("./netpbm", () => ({
+vi.mock("@/raw/netpbm", () => ({
   isNetpbmName: (name: string) => /\.(ppm|pgm|pbm|pnm)$/i.test(name),
   decodeNetpbm: async () => null,
 }));
 
-vi.mock("./tiff-image", () => ({
+vi.mock("@/raw/tiff-image", () => ({
   isTiffName: (name: string) => /\.tiff?$/i.test(name),
   decodeTiff: async () => null,
 }));
 
 vi.mock("@/raw/decode", () => ({
-  decodeRawToBitmap: async () =>
-    h.rawBitmap
+  decodeRawToBitmap: async (f: Blob, bytes?: ArrayBuffer) => {
+    if (!bytes) await f.arrayBuffer();
+    return h.rawBitmap
       ? { bitmap: bitmapOf(h.rawBitmap.width, h.rawBitmap.height), oriented: h.rawBitmap.oriented }
-      : null,
+      : null;
+  },
   decodeRawToFloat: async (
-    _file: Blob,
+    f: Blob,
     priority?: { background?: boolean; signal?: AbortSignal },
+    _path?: string,
+    bytes?: ArrayBuffer,
   ) => {
+    if (!bytes) await f.arrayBuffer();
     h.floatDecodes.push(priority?.background);
     h.floatSignals.push(priority?.signal);
     return h.rawFloat
@@ -196,6 +208,7 @@ vi.mock("@/catalog/storage", () => ({
 }));
 
 vi.mock("@/state/catalog-store", () => ({
+  photoById: (photos: CatalogPhoto[], id: string) => photos.find((p) => p.id === id),
   useCatalogStore: {
     getState: () => ({
       photos: h.catalog,
@@ -271,8 +284,19 @@ function installCanvasStubs(): void {
   });
 }
 
+/** `f`, counting each read of it whole in h.wholeReads. A slice of it is a
+ *  file of its own and goes uncounted. */
+function counted(f: File): File {
+  const read = f.arrayBuffer.bind(f);
+  f.arrayBuffer = () => {
+    h.wholeReads++;
+    return read();
+  };
+  return f;
+}
+
 const file = (name: string, type = "", lastModified = 1_600_000_000_000): File =>
-  new File([new Uint8Array(64)], name, { type, lastModified });
+  counted(new File([new Uint8Array(64)], name, { type, lastModified }));
 
 const thumbText = async (photo: CatalogPhoto) => photo.thumbnailBlob!.text();
 
@@ -295,8 +319,8 @@ const TEMPLATE: Omit<CatalogPhoto, "id" | "filename" | "relPath" | "folder"> = {
   exif: {},
 };
 
-/** A catalog record whose fileHandle serves `name` — the shape the repair and
- *  rebuild passes walk. It is in the catalog (h.catalog) until a test says
+/** A catalogue record whose fileHandle serves `name` — the shape the repair and
+ *  rebuild passes walk. It is in the catalogue (h.catalog) until a test says
  *  otherwise. */
 function record(name: string, extra: Partial<CatalogPhoto> = {}): CatalogPhoto {
   const photo: CatalogPhoto = {
@@ -317,7 +341,7 @@ function record(name: string, extra: Partial<CatalogPhoto> = {}): CatalogPhoto {
   return photo;
 }
 
-/** The record the catalog holds for `photo` changes, as it would while a decode
+/** The record the catalogue holds for `photo` changes, as it would while a decode
  *  runs: a rating here, or one taken on from another window. */
 function changeInCatalog(photo: CatalogPhoto, change: Partial<CatalogPhoto>): void {
   h.catalog = h.catalog.map((p) => (p.id === photo.id ? { ...p, ...change } : p));
@@ -347,6 +371,7 @@ beforeEach(() => {
   h.floatFailure = "unsupported";
   h.saved = [];
   h.merged = [];
+  h.wholeReads = 0;
   installCanvasStubs();
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -519,7 +544,7 @@ describe("buildPhoto", () => {
     expect(photo.exif.imageDescription).toBe("Sunrise");
   });
 
-  it("leaves an unrecognised XMP colour label unset", async () => {
+  it("leaves an unrecognized XMP colour label unset", async () => {
     h.xmp = { colorLabel: "Chartreuse" };
     const photo = (await buildPhoto(file("a.jpg", "image/jpeg"), null, null))!;
     expect(photo.colorLabel).toBe("none");
@@ -1034,7 +1059,7 @@ describe("readPendingMetadata", () => {
     expect(h.saved).toEqual([]);
   });
 
-  it("reads no file whose mark the catalog has cleared since", async () => {
+  it("reads no file whose mark the catalogue has cleared since", async () => {
     const photo = pending("a.RAF");
     const reads = countReads(photo);
     changeInCatalog(photo, { metadataPending: undefined });
@@ -1045,7 +1070,7 @@ describe("readPendingMetadata", () => {
     expect(h.saved).toEqual([]);
   });
 
-  it("reads no file of a photo that left the catalog", async () => {
+  it("reads no file of a photo that left the catalogue", async () => {
     const photo = pending("a.RAF");
     const reads = countReads(photo);
     h.catalog = [];
@@ -1093,7 +1118,7 @@ describe("settlePendingMetadata", () => {
     expect(h.metaRequests).toEqual([{ background: false }]);
   });
 
-  it("shows what it read on the photo in the catalog", async () => {
+  it("shows what it read on the photo in the catalogue", async () => {
     h.rawMeta = { colorTemperature: 5200 };
     pending("a.RAF");
 
@@ -1234,7 +1259,7 @@ describe("reimportPhotos", () => {
 
 describe("a photo that changes while its preview is rebuilt", () => {
   // These passes walk a list read before their decodes, which take a while. What
-  // they store goes onto the photo as the catalog holds it by then.
+  // they store goes onto the photo as the catalogue holds it by then.
 
   it("keeps a rating and keywords given meanwhile when a missing preview is repaired", async () => {
     const broken = record("broken.jpg", { width: 0, decodeError: "RAW decode failed" });
@@ -1249,7 +1274,7 @@ describe("a photo that changes while its preview is rebuilt", () => {
     expect(repaired).toEqual(h.saved);
   });
 
-  it("stores nothing for a photo that left the catalog meanwhile", async () => {
+  it("stores nothing for a photo that left the catalogue meanwhile", async () => {
     const broken = record("broken.jpg", { width: 0 });
     h.catalog = [];
     const repaired: CatalogPhoto[] = [];
@@ -1332,8 +1357,8 @@ describe("a photo that changes while its preview is rebuilt", () => {
   });
 });
 
-describe("what a pass hands on to the catalog", () => {
-  // Only the fields it changed: the catalog takes them onto the photo as it holds
+describe("what a pass hands on to the catalogue", () => {
+  // Only the fields it changed: the catalogue takes them onto the photo as it holds
   // it once the preview is written, and another window may have turned the photo
   // during that write.
   const keys = (changes: RebuiltChange[]) => changes.map((change) => Object.keys(change).sort());
@@ -1436,7 +1461,7 @@ describe("preDecodeRawsForCache", () => {
     expect(h.floatDecodes).toEqual([]);
   });
 
-  it("goes by the catalog's record, which the metadata pass cleared since", async () => {
+  it("goes by the catalogue's record, which the metadata pass cleared since", async () => {
     const photo = record("DSC_0001.NEF", { metadataPending: true });
     changeInCatalog(photo, { metadataPending: undefined });
 
@@ -1521,5 +1546,87 @@ describe("preDecodeRawsForCache choosing what to remember", () => {
     });
 
     expect(progress).toEqual([[0, 1], [1, 1]]);
+  });
+});
+
+// In Electron each arrayBuffer() of a file copies it whole, and in the browser
+// it reads it off the disk again: a RAW's decode chain reads it once and hands
+// the bytes on.
+describe("whole-file reads per photo", () => {
+  const PREVIEW = { width: 1620, height: 1080, payload: 500_000 };
+
+  it("imports a RAW whose camera preview lies at its start without reading it whole", async () => {
+    const whole = counted(new File([rawBytes(5 * MiB, [{ at: 200_000, ...PREVIEW }])], "a.NEF"));
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: PREVIEW.width, height: PREVIEW.height };
+    const handle = { kind: "file", name: "a.NEF", getFile: async () => whole };
+
+    const photo = await importPhoto(handle as unknown as FileSystemFileHandle, null);
+
+    expect(photo?.metadataPending).toBe(true);
+    expect(h.wholeReads).toBe(0);
+  });
+
+  it("reads a pending RAW whole once for its metadata", async () => {
+    const photo = record("a.NEF", { metadataPending: true });
+
+    await readPendingMetadata([photo]);
+
+    expect(h.libRawReads).toBe(1);
+    expect(h.wholeReads).toBe(1);
+  });
+
+  it("reads a RAW once when the pixel stage builds its preview", async () => {
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 1620, height: 1080 };
+
+    await buildPhoto(file("a.NEF"), null, null);
+
+    expect(h.libRawReads).toBe(1);
+    expect(h.wholeReads).toBe(1);
+  });
+
+  it("reads a RAW once when its preview falls through to the inline decode chain", async () => {
+    h.blobSize = { width: 0, height: 0 };
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.rawFloat = { width: 960, height: 640 };
+
+    const photo = await buildPhoto(file("a.NEF"), null, null);
+
+    expect(await thumbText(photo!)).toBe("jpeg:768x512");
+    expect(h.wholeReads).toBe(1);
+  });
+
+  it("reads a JPEG once, as before", async () => {
+    await buildPhoto(file("a.jpg", "image/jpeg"), null, null);
+
+    expect(h.wholeReads).toBe(1);
+  });
+
+  it("reads a RAW once to rebuild a preview through the whole decode chain", async () => {
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 400, height: 300 }; // too small for the grid: rendered instead
+    h.rawFloat = { width: 960, height: 640 };
+
+    const blob = await buildPreviewBlob(record("a.NEF"));
+
+    expect(blob).not.toBeNull();
+    expect(h.floatDecodes).toHaveLength(1);
+    expect(h.wholeReads).toBe(1);
+  });
+
+  it.each([
+    ["repairs a missing preview", (p: CatalogPhoto) => repairMissingPreviews([p])],
+    ["rebuilds a preview", (p: CatalogPhoto) => rebuildThumbnails([p])],
+    ["re-imports a photo", (p: CatalogPhoto) => reimportPhotos([p])],
+  ])("reads a RAW once when it %s, libraw's metadata included", async (_what, pass) => {
+    h.embedded = new Blob(["embedded-jpeg"]);
+    h.blobSize = { width: 400, height: 300 };
+    h.rawFloat = { width: 960, height: 640 };
+
+    await pass(record("a.NEF", { width: 0, height: 0 }));
+
+    expect(h.libRawReads).toBe(1);
+    expect(h.wholeReads).toBe(1);
   });
 });

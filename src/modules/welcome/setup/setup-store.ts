@@ -9,6 +9,7 @@
 // Extensions store can open it, and so installs outlive re-renders.
 
 import { create } from "zustand";
+import { ensureCoreModules } from "@/extensions/essentials-migration";
 import { installFromGitHub } from "@/extensions/loader";
 import { checkReview, setAckedExtensionRisk } from "@/extensions/install-gate";
 import { rememberSource, repoFor } from "@/extensions/sources";
@@ -64,6 +65,8 @@ interface SetupState {
   installed: string[];
   /** Repos picked for install, lowercase. */
   selected: string[];
+  /** The person has changed the picks in this run, so defaults stay off. */
+  selectionChanged: boolean;
   /** The kit whose extension list is open, by id. */
   expandedKit: string | null;
   /** One row per extension being installed; null until Install is clicked. */
@@ -79,6 +82,7 @@ const INITIAL: SetupState = {
   kits: { status: "loading" },
   installed: [],
   selected: [],
+  selectionChanged: false,
   expandedKit: null,
   installs: null,
   installing: false,
@@ -87,6 +91,21 @@ const INITIAL: SetupState = {
 export const useSetupStore = create<SetupState>(() => INITIAL);
 
 let kitsRequest = 0;
+
+/** A first run opens with the default kits picked. Runs when the kits load
+ *  and again when the installed list lands, whichever comes first. */
+function pickDefaultKits(): void {
+  const { mode, kits, installed, selectionChanged, installs } =
+    useSetupStore.getState();
+  if (mode !== "first-run" || selectionChanged || installs) return;
+  if (kits.status !== "ready") return;
+  const have = new Set(installed);
+  const picks = new Set<string>();
+  for (const kit of visibleKits(kits.kits, useTrust.getState().list))
+    if (kit.default)
+      for (const e of kit.extensions) if (!have.has(e.repo)) picks.add(e.repo);
+  useSetupStore.setState({ selected: [...picks] });
+}
 
 /** The kits and the trust list load together: on a fresh install the trust
  *  list is empty until its first fetch, and every kit would look unverified. */
@@ -109,6 +128,7 @@ async function loadKits(): Promise<void> {
         ? { status: "ready", kits }
         : { status: "unavailable" },
   });
+  pickDefaultKits();
 }
 
 async function loadInstalled(): Promise<void> {
@@ -118,6 +138,7 @@ async function loadInstalled(): Promise<void> {
     .map((m) => repoFor(m)?.toLowerCase() ?? null)
     .filter((repo): repo is string => repo !== null);
   useSetupStore.setState({ installed });
+  pickDefaultKits();
 }
 
 /** First run starts at Look; the entry points can start a rerun at any step
@@ -130,6 +151,7 @@ export function openSetup(mode: SetupMode, step: SetupStep = "look"): void {
     mode,
     step,
     selected: [],
+    selectionChanged: false,
     expandedKit: null,
     installs: null,
     installing: false,
@@ -138,15 +160,18 @@ export function openSetup(mode: SetupMode, step: SetupStep = "look"): void {
   void loadInstalled();
 }
 
-/** A first run records how it ended so it isn't offered again; a rerun
- *  leaves the record alone. Refused while installs run, because no other
- *  surface could report their failures. */
+/** A first run records how it ended so it isn't offered again, then makes sure
+ *  Library and Develop are installed (the kits come from the network, and a
+ *  skipped or offline setup leaves them out); a rerun leaves the record
+ *  alone. Refused while installs run, because no other surface could report
+ *  their failures. */
 export function closeSetup(outcome: "finished" | "skipped"): void {
   const { mode, installing } = useSetupStore.getState();
   if (installing) return;
   if (mode === "first-run")
     writeSetupRecord(localStorage, outcome, __APP_VERSION__);
   useSetupStore.setState({ phase: "closed" });
+  if (mode === "first-run") void ensureCoreModules();
 }
 
 export const setSetupStep = (step: SetupStep): void =>
@@ -159,6 +184,7 @@ export function toggleSetupKit(kit: StarterKit): void {
   const { selected, installed } = useSetupStore.getState();
   useSetupStore.setState({
     selected: [...toggleKit(kit, new Set(selected), new Set(installed))],
+    selectionChanged: true,
   });
 }
 
@@ -166,6 +192,7 @@ export function toggleSetupExtension(repo: string): void {
   const { selected } = useSetupStore.getState();
   useSetupStore.setState({
     selected: [...toggleExtension(repo, new Set(selected))],
+    selectionChanged: true,
   });
 }
 
@@ -280,7 +307,7 @@ async function decideAndOpen(
 let firstRun: Promise<void> | null = null;
 
 /** Decide once per launch, in the main window, whether setup opens by itself.
- *  Memoised: StrictMode mounts effects twice. */
+ *  Memoized: StrictMode mounts effects twice. */
 export function initFirstRun(
   sources: SignalSources = defaultSources(),
   budgetMs = FIRST_RUN_BUDGET_MS,

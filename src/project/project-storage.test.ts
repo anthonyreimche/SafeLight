@@ -82,19 +82,31 @@ import {
   onRemoteRecords,
   onSaveStatus,
   type OpenedProject,
+  type ProjectStorageDeps,
   type SaveStatus,
 } from "./project-storage";
+import { storageDeps } from "./storage-deps";
 import { nativeDirectoryHandle } from "./native-fs";
 import { setCatalogStorage, type CatalogStorage } from "@/catalog/storage";
 import { photo as photoRecord } from "@/catalog/stored-edit.fixtures";
 import { onBroadcast, type CatalogRecords } from "@/state/broadcast";
-import { CatalogDamagedError, CatalogTooNewError, CatalogUnreadableError } from "./catalog-errors";
+import {
+  CatalogDamagedError,
+  CatalogTooNewError,
+  CatalogUnreadableError,
+  FolderUnavailableError,
+} from "./catalog-errors";
+import { ascii, buildTiff } from "@/catalog/tiff-fixture";
+
+/** The EXIF tag of the moment a photo was taken. */
+const DATE_TIME_ORIGINAL = 0x9003;
 
 /** A MemoryFs whose reads or writes of chosen files fail with an errno, as they
  *  do while a sync or antivirus program holds the file (EBUSY, EPERM). */
 class FlakyFs extends MemoryFs {
   private failingReads: { path: RegExp; code: string; left: number } | null = null;
   private failingWrites: { path: RegExp; code: string; left: number } | null = null;
+  private failingLists: { path: RegExp; code: string } | null = null;
 
   /** Fail the next `times` reads of a path matching `path`. */
   failReads(path: RegExp, code: string, times = Infinity): void {
@@ -109,6 +121,18 @@ class FlakyFs extends MemoryFs {
   /** Let writes land again (the program holding the file let go). */
   stopFailingWrites(): void {
     this.failingWrites = null;
+  }
+
+  /** Make listing a folder matching `path` fail, as an ACL or a system folder
+   *  does (EACCES, EPERM). */
+  failLists(path: RegExp, code: string): void {
+    this.failingLists = { path, code };
+  }
+
+  override async list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]> {
+    const failing = this.failingLists;
+    if (failing?.path.test(path)) throw new FsError(failing.code, "scandir", path);
+    return super.list(path);
   }
 
   override async read(path: string): Promise<{ data: Uint8Array; mtimeMs: number; size: number }> {
@@ -154,8 +178,8 @@ class FakeChannel {
   }
 }
 
-// The catalog is adapter-agnostic — it derives everything from the one working-
-// dir handle — so both builds must produce byte-identical catalogs.
+// The catalogue is adapter-agnostic — it derives everything from the one working-
+// dir handle — so both builds must produce byte-identical catalogues.
 const BUILDS = [
   { label: "electron · windows", rootPath: "D:\\DCIM", native: true },
   { label: "browser · FSA", rootPath: "/home/u/photos", native: false },
@@ -218,7 +242,7 @@ function catalogWriteAttempts(fs: FlakyFs): () => number {
 const catalogText = (p: Project) => p.fs.text(`${p.slPath}/catalog.json`);
 const backupText = (p: Project) => p.fs.text(`${p.slPath}/catalog.bak.json`);
 
-/** The names of the damaged catalogs and backups kept beside catalog.json, and
+/** The names of the damaged catalogues and backups kept beside catalog.json, and
  *  what each holds. */
 function keptCopies(p: Project): { name: string; text: string | null }[] {
   return p.fs
@@ -241,7 +265,7 @@ const edit = (photoId: string, label: string): EditState => ({
   currentIndex: 0,
 });
 
-/** Every catalog a test opened. Each follows the other windows' writes until it
+/** Every catalogue a test opened. Each follows the other windows' writes until it
  *  is closed, so a test's storages are closed before the next test writes. */
 const openCatalogs: CatalogStorage[] = [];
 
@@ -260,6 +284,7 @@ async function open(
 ): Promise<OpenedProject> {
   const opened = await ProjectStorage.open(
     p.root,
+    storageDeps,
     opts.onPhoto,
     opts.onSkeletons,
     opts.onProgress,
@@ -308,7 +333,31 @@ describe.each(BUILDS)("ProjectStorage ($label)", (cfg) => {
     expect(opened.tree.children.map((c) => c.path)).toEqual(["trip"]);
   });
 
-  it("saves a catalog that carries no handles, blobs or object URLs", async () => {
+  it("walks with the importer, preview setting and import hook it is handed", async () => {
+    const p = mount(cfg, { "a.jpg": "A", "b.raf": "B" });
+    const deps: ProjectStorageDeps = {
+      isSupportedName: (name) => name.endsWith(".raf"),
+      importPhoto: async (fileHandle, directoryHandle) => ({
+        ...photoRecord("handed"),
+        filename: fileHandle.name,
+        fileHandle,
+        directoryHandle,
+        thumbnailBlob: new Blob(["thumb"]),
+      }),
+      buildPreviewBlob: async () => null,
+      persistPreviews: () => false,
+      emitPhotoImport: async () => ({ rating: 4 }),
+    };
+
+    const opened = await ProjectStorage.open(p.root, deps);
+    openCatalogs.push(opened.storage);
+
+    expect(rels(opened.photos)).toEqual(["b.raf"]);
+    expect(opened.photos[0]).toMatchObject({ id: "handed", rating: 4 });
+    expect(p.fs.tree(`${p.slPath}/previews`)).toEqual([]);
+  });
+
+  it("saves a catalogue that carries no handles, blobs or object URLs", async () => {
     const p = mount(cfg, THREE);
     const opened = await open(p);
 
@@ -327,7 +376,7 @@ describe.each(BUILDS)("ProjectStorage ($label)", (cfg) => {
         expect(rec).not.toHaveProperty(dropped);
   });
 
-  it("reopens from the saved catalog instead of re-importing", async () => {
+  it("reopens from the saved catalogue instead of re-importing", async () => {
     const p = mount(cfg, THREE);
     const first = await open(p);
     await first.storage.flush();
@@ -369,6 +418,405 @@ describe.each(BUILDS)("ProjectStorage ($label)", (cfg) => {
     await expect(second.storage.getEditState(first.photos[1].id)).resolves.toBeUndefined();
   });
 
+  describe.runIf(cfg.native)("with another file under a record's name", () => {
+    /** A TIFF-based RAW whose EXIF says it was taken at `date`, padded to change its size. */
+    const shotAt = (date: string, pad = 0) =>
+      new Uint8Array([...buildTiff({ le: true, exif: [[DATE_TIME_ORIGINAL, ascii(date)]] }), ...new Uint8Array(pad)]);
+
+    it("imports a file of another size and shot as new and keeps the record with its edit", async () => {
+      const p = mount(cfg, { "DCIM/IMG_0002.jpg": "kept" });
+      p.fs.putBytes(`${p.rootPath}/DCIM/IMG_0001.jpg`, shotAt("2024:05:01 10:00:00"));
+      h.importOverride = { exif: { dateTimeOriginal: "2024:05:01 10:00:00" } };
+      const first = await open(p);
+      const a = first.photos.find((x) => x.relPath === "DCIM/IMG_0001.jpg")!;
+      await first.storage.putEditState(edit(a.id, "Exposure"));
+      await first.storage.flush();
+
+      p.fs.putBytes(`${p.rootPath}/DCIM/IMG_0001.jpg`, shotAt("2025:02:02 12:00:00", 9));
+      h.importOverride = null;
+      const second = await open(p);
+      await second.storage.flush();
+
+      expect(rels(second.newPhotos)).toEqual(["DCIM/IMG_0001.jpg"]);
+      const b = second.newPhotos[0];
+      expect(b.id).not.toBe(a.id);
+      expect(b.fileHandle).not.toBeNull();
+      expect(second.photos.find((x) => x.id === a.id)).toMatchObject({ fileHandle: null });
+      expect(ids(catalog(p)!.photos).sort()).toEqual(
+        [a.id, b.id, first.photos.find((x) => x !== a)!.id].sort(),
+      );
+      expect(labelsOnDisk(p)).toEqual({ [a.id]: "Exposure" });
+
+      const third = await open(p);
+      expect(third.newPhotos).toEqual([]);
+      expect(third.photos.find((x) => x.id === b.id)?.fileHandle).not.toBeNull();
+      expect(third.photos.find((x) => x.id === a.id)).toMatchObject({ fileHandle: null });
+    });
+
+    it("keeps a record on its file when the file changed size but holds the same shot", async () => {
+      const p = mount(cfg);
+      p.fs.putBytes(`${p.rootPath}/x.dng`, shotAt("2024:05:01 10:00:00"));
+      h.importOverride = { exif: { dateTimeOriginal: "2024:05:01 10:00:00" } };
+      const first = await open(p);
+      await first.storage.flush();
+
+      p.fs.putBytes(`${p.rootPath}/x.dng`, shotAt("2024:05:01 10:00:00", 64));
+      const second = await open(p);
+      await second.storage.flush();
+
+      expect(second.newPhotos).toEqual([]);
+      expect(ids(second.photos)).toEqual(ids(first.photos));
+      expect(second.photos[0]).toMatchObject({ fileSize: shotAt("2024:05:01 10:00:00", 64).length });
+      expect(catalog(p)!.photos[0].fileSize).toBe(second.photos[0].fileSize);
+
+      // Taken at its new size, the file isn't read again on the next open.
+      const read = p.fs.bytesRead(`${p.rootPath}/x.dng`);
+      const third = await open(p);
+      expect(ids(third.photos)).toEqual(ids(first.photos));
+      expect(p.fs.bytesRead(`${p.rootPath}/x.dng`)).toBe(read);
+    });
+
+    it("keeps a file re-saved in place attached when neither it nor its record has a capture time", async () => {
+      const p = mount(cfg, { "scan.png": "scanned" });
+      const first = await open(p);
+      await first.storage.putEditState(edit(first.photos[0].id, "Levels"));
+      await first.storage.flush();
+
+      p.fs.put(`${p.rootPath}/scan.png`, "scanned, re-saved");
+      const second = await open(p);
+      await second.storage.flush();
+
+      expect(second.newPhotos).toEqual([]);
+      expect(ids(second.photos)).toEqual(ids(first.photos));
+      expect(second.photos[0]).toMatchObject({ fileSize: "scanned, re-saved".length });
+      expect(second.photos[0].fileHandle).not.toBeNull();
+      expect(labelsOnDisk(p)).toEqual({ [first.photos[0].id]: "Levels" });
+    });
+
+    it("takes a file of another size and another shot for a new photo", async () => {
+      const p = mount(cfg);
+      p.fs.putBytes(`${p.rootPath}/x.dng`, shotAt("2024:05:01 10:00:00"));
+      h.importOverride = { exif: { dateTimeOriginal: "2024:05:01 10:00:00" } };
+      const first = await open(p);
+      await first.storage.flush();
+
+      p.fs.putBytes(`${p.rootPath}/x.dng`, shotAt("2025:01:01 09:00:00", 64));
+      h.importOverride = null;
+      const second = await open(p);
+
+      expect(second.newPhotos).toHaveLength(1);
+      expect(ids(second.photos)).toContain(first.photos[0].id);
+    });
+  });
+
+  describe("with a file found under another name than its record's", () => {
+    const NFD = "Zürich";
+    const NFC = "Zürich";
+    const onPlatform = (platform: string) =>
+      vi.stubGlobal("window", { safelightNative: { platform } });
+    const mtimeOf = async (p: Project, rel: string) =>
+      (await p.fs.read(`${p.rootPath}/${rel}`)).mtimeMs;
+    const at = (photos: CatalogPhoto[], relPath: string) =>
+      photos.find((photo) => photo.relPath === relPath)!;
+
+    const SHOT = "2024:05:01 10:00:00";
+    /** A TIFF-based RAW whose EXIF says it was taken at `date`. */
+    const shotAt = (date: string) =>
+      buildTiff({ le: true, exif: [[DATE_TIME_ORIGINAL, ascii(date)]] });
+
+    afterEach(() => vi.stubGlobal("window", undefined));
+
+    it("keeps the photo of a case-only rename and of an NFD name read as NFC", async () => {
+      onPlatform("win32");
+      const p = mount(cfg, { "Trip/IMG_1.JPG": "1", [`${NFD}/a.jpg`]: "Z", "keep.jpg": "K" });
+      const first = await open(p);
+      const trip = at(first.photos, "Trip/IMG_1.JPG");
+      const zurich = at(first.photos, `${NFD}/a.jpg`);
+      await first.storage.putEditState(edit(trip.id, "Exposure"));
+      await first.storage.putEditState(edit(zurich.id, "Contrast"));
+      await first.storage.putPhotos([{ ...zurich, rating: 4 }]);
+      await first.storage.flush();
+
+      await p.fs.move(`${p.rootPath}/Trip`, `${p.rootPath}/trip`);
+      await p.fs.move(`${p.rootPath}/trip/IMG_1.JPG`, `${p.rootPath}/trip/img_1.jpg`);
+      await p.fs.move(`${p.rootPath}/${NFD}`, `${p.rootPath}/${NFC}`);
+      const second = await open(p);
+      await second.storage.flush();
+
+      expect(second.newPhotos).toEqual([]);
+      expect(ids(second.photos)).toEqual(ids(first.photos));
+      expect(rels(second.photos)).toEqual(["keep.jpg", "trip/img_1.jpg", `${NFC}/a.jpg`]);
+      expect(at(second.photos, "trip/img_1.jpg")).toMatchObject({
+        id: trip.id,
+        filename: "img_1.jpg",
+        folder: "trip",
+      });
+      expect(at(second.photos, `${NFC}/a.jpg`)).toMatchObject({
+        id: zurich.id,
+        folder: NFC,
+        rating: 4,
+      });
+      const file = await at(second.photos, "trip/img_1.jpg").fileHandle!.getFile();
+      expect(await file.text()).toBe("1");
+      expect(rels(catalog(p)!.photos)).toEqual(rels(second.photos));
+      expect(labelsOnDisk(p)).toEqual({ [trip.id]: "Exposure", [zurich.id]: "Contrast" });
+    });
+
+    it("keeps a case-only rename apart on a platform whose names keep case", async () => {
+      onPlatform("linux");
+      const p = mount(cfg, { "IMG_1.JPG": "1" });
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.move(`${p.rootPath}/IMG_1.JPG`, `${p.rootPath}/img_1.jpg`);
+      const second = await open(p);
+
+      expect(rels(second.newPhotos)).toEqual(["img_1.jpg"]);
+      expect(ids(second.photos)).not.toContain(first.photos[0].id);
+    });
+
+    it("keeps the photo of a file moved to another folder, same name, size and date", async () => {
+      const p = mount(cfg, { "Old/x.nef": "RAW", "keep.jpg": "K" });
+      h.importOverride = { dateCreated: await mtimeOf(p, "Old/x.nef") };
+      const first = await open(p);
+      const x = at(first.photos, "Old/x.nef");
+      await first.storage.putEditState(edit(x.id, "Exposure"));
+      await first.storage.flush();
+
+      await p.fs.move(`${p.rootPath}/Old`, `${p.rootPath}/New`);
+      const second = await open(p);
+      await second.storage.flush();
+
+      expect(second.newPhotos).toEqual([]);
+      expect(at(second.photos, "New/x.nef")).toMatchObject({ id: x.id, folder: "New" });
+      expect(rels(catalog(p)!.photos)).toEqual(["keep.jpg", "New/x.nef"]);
+      expect(labelsOnDisk(p)).toEqual({ [x.id]: "Exposure" });
+      // The window still open on the catalogue takes the photo's new place on too.
+      expect(at(await first.storage.getAllPhotos(), "New/x.nef").id).toBe(x.id);
+    });
+
+    it("keeps a moved photo whose record holds no exif", async () => {
+      const p = mount(cfg, { "Old/x.nef": "RAW" });
+      h.importOverride = { dateCreated: await mtimeOf(p, "Old/x.nef"), exif: undefined };
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.move(`${p.rootPath}/Old`, `${p.rootPath}/New`);
+      const second = await open(p);
+
+      expect(second.newPhotos).toEqual([]);
+      expect(at(second.photos, "New/x.nef").id).toBe(first.photos[0].id);
+    });
+
+    it("doesn't take a file of another size whose path differs only in case", async () => {
+      onPlatform("win32");
+      const p = mount(cfg, { "x.JPG": "RAW" });
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.remove(`${p.rootPath}/x.JPG`);
+      p.fs.put(`${p.rootPath}/x.jpg`, "another photo");
+      const second = await open(p);
+
+      expect(rels(second.newPhotos)).toEqual(["x.jpg"]);
+      expect(ids(second.photos)).not.toContain(first.photos[0].id);
+    });
+
+    it("doesn't take a file whose path differs only in case and whose date disagrees", async () => {
+      onPlatform("win32");
+      const p = mount(cfg, { "x.JPG": "RAW" });
+      h.importOverride = { dateCreated: (await mtimeOf(p, "x.JPG")) + 60_000 };
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.move(`${p.rootPath}/x.JPG`, `${p.rootPath}/x.jpg`);
+      const second = await open(p);
+
+      expect(rels(second.newPhotos)).toEqual(["x.jpg"]);
+      expect(ids(second.photos)).not.toContain(first.photos[0].id);
+    });
+
+    it.runIf(cfg.native)(
+      "reads the capture date of a file only once its name and size match a record's alone",
+      async () => {
+        h.importOverride = { exif: { dateTimeOriginal: SHOT } };
+        const p = mount(cfg);
+        p.fs.putBytes(`${p.rootPath}/Old/x.nef`, shotAt(SHOT));
+        const first = await open(p);
+        await first.storage.flush();
+
+        await p.fs.move(`${p.rootPath}/Old`, `${p.rootPath}/New`);
+        p.fs.put(`${p.rootPath}/Other/x.nef`, "a photo of another size");
+        const read = vi.spyOn(p.fs as MemoryFs, "read");
+        const progress: [number, number][] = [];
+        const second = await open(p, { onProgress: (done, total) => progress.push([done, total]) });
+
+        const exifReads = read.mock.calls.filter(([, range]) => range?.end === 1 << 20);
+        expect(exifReads.map(([path]) => key(path))).toEqual([`${key(p.rootPath)}/New/x.nef`]);
+        expect(progress.slice(0, 2)).toEqual([
+          [0, 1],
+          [1, 1],
+        ]);
+        expect(at(second.photos, "New/x.nef").id).toBe(first.photos[0].id);
+      },
+    );
+
+    it.runIf(cfg.native)("reads no capture date for an open that was cancelled", async () => {
+      h.importOverride = { exif: { dateTimeOriginal: SHOT } };
+      const p = mount(cfg);
+      p.fs.putBytes(`${p.rootPath}/Old/x.nef`, shotAt(SHOT));
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.move(`${p.rootPath}/Old`, `${p.rootPath}/New`);
+      const read = vi.spyOn(p.fs as MemoryFs, "read");
+      const cancelled = new AbortController();
+      cancelled.abort();
+      await open(p, { signal: cancelled.signal });
+
+      expect(read.mock.calls.filter(([, range]) => range?.end === 1 << 20)).toEqual([]);
+    });
+
+    describe("in an open cancelled before it finished", () => {
+      /** A project whose one photo, with an edit, was saved as X.NEF and is now x.nef. */
+      async function renamed() {
+        onPlatform("win32");
+        h.importOverride = { exif: { dateTimeOriginal: SHOT } };
+        const p = mount(cfg);
+        p.fs.putBytes(`${p.rootPath}/X.NEF`, shotAt(SHOT));
+        const first = await open(p);
+        const x = first.photos[0];
+        await first.storage.putEditState(edit(x.id, "Exposure"));
+        await first.storage.flush();
+        first.storage.close?.();
+        await p.fs.move(`${p.rootPath}/X.NEF`, `${p.rootPath}/x.nef`);
+        return { p, x };
+      }
+
+      async function keepsTheRecord(p: Project, x: CatalogPhoto, cancelled: OpenedProject) {
+        await cancelled.storage.flush();
+        cancelled.storage.close?.();
+        expect(ids(catalog(p)!.photos)).toContain(x.id);
+        expect(labelsOnDisk(p)).toMatchObject({ [x.id]: "Exposure" });
+
+        const next = await open(p);
+        await next.storage.flush();
+        expect(next.newPhotos).toEqual([]);
+        expect(at(next.photos, "x.nef").id).toBe(x.id);
+        expect(labelsOnDisk(p)).toEqual({ [x.id]: "Exposure" });
+      }
+
+      it("keeps a saved photo when it was cancelled before the search for moved photos", async () => {
+        const { p, x } = await renamed();
+        const cancelled = await open(p, { signal: AbortSignal.abort() });
+        await keepsTheRecord(p, x, cancelled);
+      });
+
+      it("keeps a saved photo when it was cancelled during the search for moved photos", async () => {
+        const { p, x } = await renamed();
+        const abort = new AbortController();
+        const cancelled = await open(p, { signal: abort.signal, onProgress: () => abort.abort() });
+        await keepsTheRecord(p, x, cancelled);
+      });
+
+      it("keeps a saved photo the walk didn't reach when it was cancelled during the walk", async () => {
+        const { p, x } = await renamed();
+        p.fs.put(`${p.rootPath}/gone.jpg`, "G");
+        const withGone = await open(p);
+        const gone = at(withGone.photos, "gone.jpg");
+        await withGone.storage.putEditState(edit(gone.id, "Contrast"));
+        await withGone.storage.flush();
+        withGone.storage.close?.();
+        await p.fs.remove(`${p.rootPath}/gone.jpg`);
+        p.fs.put(`${p.rootPath}/new.jpg`, "N");
+
+        const abort = new AbortController();
+        const cancelled = await open(p, { signal: abort.signal, onPhoto: () => abort.abort() });
+        await cancelled.storage.flush();
+
+        expect(ids(catalog(p)!.photos)).toEqual(expect.arrayContaining([x.id, gone.id]));
+        expect(labelsOnDisk(p)).toMatchObject({ [x.id]: "Exposure", [gone.id]: "Contrast" });
+      });
+    });
+
+    it("doesn't take a moved file whose date disagrees with the record's", async () => {
+      const p = mount(cfg, { "Old/x.nef": "RAW" });
+      h.importOverride = { dateCreated: (await mtimeOf(p, "Old/x.nef")) + 60_000 };
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.move(`${p.rootPath}/Old`, `${p.rootPath}/New`);
+      const second = await open(p);
+
+      expect(rels(second.newPhotos)).toEqual(["New/x.nef"]);
+      expect(ids(second.photos)).not.toContain(first.photos[0].id);
+    });
+
+    it("keeps the photo of a moved file whose capture date matches, whatever its mtime", async () => {
+      h.importOverride = { exif: { dateTimeOriginal: SHOT } };
+      const p = mount(cfg);
+      p.fs.putBytes(`${p.rootPath}/Old/x.nef`, shotAt(SHOT));
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.remove(`${p.rootPath}/Old`);
+      p.fs.putBytes(`${p.rootPath}/New/x.nef`, shotAt(SHOT));
+      const second = await open(p);
+
+      expect(second.newPhotos).toEqual([]);
+      expect(at(second.photos, "New/x.nef").id).toBe(first.photos[0].id);
+    });
+
+    it("doesn't take a moved file whose capture date disagrees with the record's", async () => {
+      h.importOverride = { exif: { dateTimeOriginal: SHOT } };
+      const p = mount(cfg);
+      p.fs.putBytes(`${p.rootPath}/Old/x.nef`, shotAt(SHOT));
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.remove(`${p.rootPath}/Old`);
+      p.fs.putBytes(`${p.rootPath}/New/x.nef`, shotAt("2024:05:01 10:00:01"));
+      const second = await open(p);
+
+      expect(rels(second.newPhotos)).toEqual(["New/x.nef"]);
+      expect(ids(second.photos)).not.toContain(first.photos[0].id);
+    });
+
+    it("doesn't guess between two moved files of the same name and size", async () => {
+      h.importOverride = { exif: { dateTimeOriginal: SHOT } };
+      const p = mount(cfg);
+      for (const rel of ["Old/x.nef", "Old/y.nef"]) p.fs.putBytes(`${p.rootPath}/${rel}`, shotAt(SHOT));
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.move(`${p.rootPath}/Old`, `${p.rootPath}/New`);
+      p.fs.putBytes(`${p.rootPath}/Copy/x.nef`, shotAt(SHOT));
+      const second = await open(p);
+
+      expect(rels(second.newPhotos)).toEqual(["Copy/x.nef", "New/x.nef"]);
+      expect(at(second.photos, "New/y.nef").id).toBe(at(first.photos, "Old/y.nef").id);
+      expect(ids(second.photos)).not.toContain(at(first.photos, "Old/x.nef").id);
+    });
+
+    it("doesn't guess between two moved records of the same name and size", async () => {
+      h.importOverride = { exif: { dateTimeOriginal: SHOT } };
+      const p = mount(cfg);
+      for (const rel of ["A/x.nef", "B/x.nef", "B/y.nef"])
+        p.fs.putBytes(`${p.rootPath}/${rel}`, shotAt(SHOT));
+      const first = await open(p);
+      await first.storage.flush();
+
+      await p.fs.move(`${p.rootPath}/A`, `${p.rootPath}/C`);
+      await p.fs.move(`${p.rootPath}/B`, `${p.rootPath}/D`);
+      const second = await open(p);
+
+      expect(rels(second.newPhotos)).toEqual(["C/x.nef", "D/x.nef"]);
+      expect(at(second.photos, "D/y.nef").id).toBe(at(first.photos, "B/y.nef").id);
+      expect(ids(second.photos)).not.toContain(at(first.photos, "A/x.nef").id);
+      expect(ids(second.photos)).not.toContain(at(first.photos, "B/x.nef").id);
+    });
+  });
+
   it("persists a develop edit immediately, without waiting for the debounce", async () => {
     // A commit made just before quitting must survive: the beforeunload flush can
     // be cut short, so edits can't ride the 800 ms save timer.
@@ -380,9 +828,9 @@ describe.each(BUILDS)("ProjectStorage ($label)", (cfg) => {
     expect(catalog(p)!.edits).toEqual([edit(opened.photos[0].id, "Contrast")]);
   });
 
-  it("saves a batch of edit states as one catalog write, without the debounce", async () => {
+  it("saves a batch of edit states as one catalogue write, without the debounce", async () => {
     // A bulk Library action stores one history per photo. A write each would
-    // re-serialise the whole catalog once per photo.
+    // re-serialize the whole catalogue once per photo.
     const p = mount(cfg, THREE);
     const opened = await open(p);
     await opened.storage.flush(); // the file exists from here, so a save is one write
@@ -432,14 +880,14 @@ describe.each(BUILDS)("ProjectStorage ($label)", (cfg) => {
   });
 });
 
-describe("catalog recovery", () => {
+describe("catalogue recovery", () => {
   const cfg = BUILDS[1];
 
   it.each([
     ["truncated mid-write", '{"version":1,"photos":[{"id":"p1:a.jpg"'],
     ["not JSON at all", "\0\0\0\0"],
     ["empty", ""],
-  ])("re-imports from disk when the catalog is %s", async (_label, contents) => {
+  ])("re-imports from disk when the catalogue is %s", async (_label, contents) => {
     const p = mount(cfg, { "a.jpg": "A" });
     p.fs.put(`${p.slPath}/catalog.json`, contents);
 
@@ -448,13 +896,13 @@ describe("catalog recovery", () => {
 
     expect(rels(opened.photos)).toEqual(["a.jpg"]);
     expect(catalog(p)!.photos).toHaveLength(1);
-    // The damaged file is kept beside the new catalog; an empty one has nothing to keep.
+    // The damaged file is kept beside the new catalogue; an empty one has nothing to keep.
     const kept = keptCopies(p);
     expect(kept.map((copy) => copy.text)).toEqual(contents ? [contents] : []);
     expect(opened.recovered).toEqual({ from: "rescan", kept: kept[0]?.name ?? null });
   });
 
-  it("tolerates a catalog missing its photos/edits/removed arrays", async () => {
+  it("tolerates a catalogue missing its photos/edits/removed arrays", async () => {
     const p = mount(cfg, { "a.jpg": "A" });
     p.fs.put(`${p.slPath}/catalog.json`, '{"version":1}');
 
@@ -473,15 +921,15 @@ describe("catalog recovery", () => {
   });
 });
 
-describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) => {
-  // Opened as an empty project, a catalog that couldn't be read would be replaced
+describe.each(BUILDS)("a catalogue that can't be used as saved ($label)", (cfg) => {
+  // Opened as an empty project, a catalogue that couldn't be read would be replaced
   // within seconds by a fresh import under new ids, ratings and edits gone.
   const FILES = { "a.jpg": "A", "b.jpg": "B", "c.jpg": "C" };
   const CATALOG_FILE = /[\\/]catalog\.json$/;
   const KEPT_NAME = /^catalog\.corrupt-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z\.json$/;
   const KEPT_BACKUP_NAME = /^catalog\.bak\.corrupt-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z\.json$/;
 
-  /** A project imported and saved once: its catalog's text, ids and writes. */
+  /** A project imported and saved once: its catalogue's text, ids and writes. */
   async function savedProject() {
     const p = mount(cfg, FILES);
     const first = await open(p);
@@ -515,7 +963,7 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
     expect(backupText(p)).toBeNull();
   });
 
-  it("opens the saved catalog when it can be read again within those seconds", async () => {
+  it("opens the saved catalogue when it can be read again within those seconds", async () => {
     const { p, saved } = await savedProject();
     p.fs.failReads(CATALOG_FILE, "EBUSY", 2);
 
@@ -528,7 +976,7 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
     expect(opened.recovered).toBeNull();
   });
 
-  it("imports at once when there is no catalog", async () => {
+  it("imports at once when there is no catalogue", async () => {
     const p = mount(cfg, FILES);
 
     const opened = await open(p); // fake timers: a wait would never end
@@ -537,7 +985,7 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
     expect(opened.recovered).toBeNull();
   });
 
-  it("keeps a damaged catalog aside and restores the photos from the backup", async () => {
+  it("keeps a damaged catalogue aside and restores the photos from the backup", async () => {
     const { p, saved, text } = await savedProject();
     p.fs.put(`${p.slPath}/catalog.bak.json`, text);
     p.fs.put(`${p.slPath}/catalog.json`, text.slice(0, 40));
@@ -550,14 +998,34 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
     expect(ids(opened.photos)).toEqual(saved);
     expect(opened.newPhotos).toEqual([]);
     expect(opened.recovered).toEqual({ from: "backup", kept: kept[0].name });
-    // The restored catalog replaces the damaged one without being asked, and the
+    // The restored catalogue replaces the damaged one without being asked, and the
     // backup isn't overwritten with the damaged file on the way.
     await vi.advanceTimersByTimeAsync(5000);
     expect(ids(catalog(p)?.photos ?? [])).toEqual(saved);
     expect(backupText(p)).toBe(text);
   });
 
-  it("restores a missing catalog from its backup", async () => {
+  it("keeps the newest three damaged catalogues and three damaged backups, no more", async () => {
+    const p = mount(cfg, FILES);
+    const stamp = (n: number) => `2026-01-0${n}T00-00-00-000Z`;
+    for (const n of [1, 2, 3, 4]) {
+      p.fs.put(`${p.slPath}/catalog.corrupt-${stamp(n)}.json`, `catalogue ${n}`);
+      p.fs.put(`${p.slPath}/catalog.bak.corrupt-${stamp(n)}.json`, `backup ${n}`);
+    }
+    p.fs.put(`${p.slPath}/catalog.json`, '{"version":1,"photos":[');
+    p.fs.put(`${p.slPath}/catalog.bak.json`, '{"version":1,"edits":[');
+
+    await open(p);
+
+    const kept = keptCopies(p).map((copy) => copy.text);
+    expect(kept).toHaveLength(6);
+    expect(kept).not.toContain("catalogue 1");
+    expect(kept).not.toContain("backup 1");
+    expect(kept).toContain('{"version":1,"photos":[');
+    expect(kept).toContain('{"version":1,"edits":[');
+  });
+
+  it("restores a missing catalogue from its backup", async () => {
     const { p, saved, text } = await savedProject();
     p.fs.put(`${p.slPath}/catalog.bak.json`, text);
     await p.fs.remove(`${p.slPath}/catalog.json`);
@@ -575,7 +1043,7 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
   it.each([
     ["damaged", '{"version":1,"photos":[{"id"', true],
     ["empty", "", false],
-  ])("says so, keeping a %s backup aside, when the catalog is missing", async (_l, text, keep) => {
+  ])("says so, keeping a %s backup aside, when the catalogue is missing", async (_l, text, keep) => {
     // Otherwise the folder opened as a new project without a word, and the next
     // session's backup wrote over the damaged one.
     const p = mount(cfg, FILES);
@@ -590,7 +1058,7 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
     expect(rels(opened.newPhotos)).toEqual(["a.jpg", "b.jpg", "c.jpg"]);
   });
 
-  it("keeps both a damaged catalog and a damaged backup aside", async () => {
+  it("keeps both a damaged catalogue and a damaged backup aside", async () => {
     const p = mount(cfg, FILES);
     p.fs.put(`${p.slPath}/catalog.json`, '{"version":1,"photos":[');
     p.fs.put(`${p.slPath}/catalog.bak.json`, '{"version":1,"edits":[');
@@ -609,7 +1077,7 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
   it.each([
     ["missing", null],
     ["damaged", "{ cut short"],
-  ])("fails the open, importing nothing, when the catalog is %s and its backup is busy", async (
+  ])("fails the open, importing nothing, when the catalogue is %s and its backup is busy", async (
     _label,
     text,
   ) => {
@@ -628,8 +1096,8 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
     expect(backupText(p)).toBe("{}");
   });
 
-  it("fails the open on a busy catalog in a folder whose name holds ENOENT", async () => {
-    // Read for an errno anywhere in the message, the path made the busy catalog
+  it("fails the open on a busy catalogue in a folder whose name holds ENOENT", async () => {
+    // Read for an errno anywhere in the message, the path made the busy catalogue
     // look missing, and the folder opened as a new project.
     const p = mount({ ...cfg, rootPath: cfg.native ? "D:\\ENOENT" : "/home/u/ENOENT" }, FILES);
     const first = await open(p);
@@ -645,7 +1113,7 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
     await expect(opening).rejects.toMatchObject({ reason: "EBUSY" });
   });
 
-  it("treats a catalog holding JSON null as damaged", async () => {
+  it("treats a catalogue holding JSON null as damaged", async () => {
     const p = mount(cfg, FILES);
     p.fs.put(`${p.slPath}/catalog.json`, "null");
 
@@ -657,7 +1125,7 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
     expect(rels(opened.newPhotos)).toEqual(["a.jpg", "b.jpg", "c.jpg"]);
   });
 
-  it("stops rather than replace a damaged catalog it can't keep a copy of", async () => {
+  it("stops rather than replace a damaged catalogue it can't keep a copy of", async () => {
     const p = mount(cfg, FILES);
     p.fs.put(`${p.slPath}/catalog.json`, '{"version":1,"photos":[{"id":"p1');
     p.fs.failWrites(/[\\/]\.safelight[\\/]/, "EPERM");
@@ -672,7 +1140,7 @@ describe.each(BUILDS)("a catalog that can't be used as saved ($label)", (cfg) =>
 });
 
 describe.each(BUILDS)("the backup a session keeps ($label)", (cfg) => {
-  // Before its first save replaces catalog.json, a session that opened the catalog
+  // Before its first save replaces catalog.json, a session that opened the catalogue
   // as saved keeps a copy of the file as catalog.bak.json.
   const FILES = { "a.jpg": "A", "b.jpg": "B" };
   const backupWrites = (p: Project) => p.fs.writeCount(`${p.slPath}/catalog.bak.json`);
@@ -687,7 +1155,7 @@ describe.each(BUILDS)("the backup a session keeps ($label)", (cfg) => {
     return { p, before, storage: again.storage, photos: again.photos };
   }
 
-  it("copies the catalog as it stood before the session's first save, once", async () => {
+  it("copies the catalogue as it stood before the session's first save, once", async () => {
     const { p, before, storage, photos } = await reopened();
     expect(backupText(p)).toBeNull(); // a new project had nothing to keep
 
@@ -699,6 +1167,71 @@ describe.each(BUILDS)("the backup a session keeps ($label)", (cfg) => {
     expect(backupWrites(p)).toBe(copied);
     expect(backupText(p)).toBe(before);
     expect(labelsOnDisk(p)).toEqual({ [photos[0].id]: "Two" });
+  });
+
+  it("keeps the catalogues of the last three sessions, the newest as catalog.bak.json", async () => {
+    const p = mount(cfg, FILES);
+    const first = await open(p);
+    await first.storage.flush();
+    first.storage.close();
+    const openedAs: (string | null)[] = [];
+    for (const label of ["One", "Two", "Three", "Four"]) {
+      openedAs.push(catalogText(p));
+      const session = await open(p);
+      await session.storage.putEditState(edit(session.photos[0].id, label));
+      session.storage.close();
+    }
+
+    expect(backupText(p)).toBe(openedAs[3]);
+    expect(p.fs.text(`${p.slPath}/catalog.bak-1.json`)).toBe(openedAs[2]);
+    expect(p.fs.text(`${p.slPath}/catalog.bak-2.json`)).toBe(openedAs[1]);
+    expect(p.fs.text(`${p.slPath}/catalog.bak-3.json`)).toBeNull();
+  });
+
+  it("doesn't push an older backup out for one that holds the same catalogue", async () => {
+    const { p, before, storage, photos } = await reopened();
+    storage.close();
+    p.fs.put(`${p.slPath}/catalog.bak.json`, before ?? "");
+    p.fs.put(`${p.slPath}/catalog.bak-1.json`, "an older one");
+    const copied = backupWrites(p);
+
+    const again = await open(p);
+    await again.storage.putEditState(edit(photos[0].id, "One"));
+
+    expect(backupWrites(p)).toBe(copied);
+    expect(backupText(p)).toBe(before);
+    expect(p.fs.text(`${p.slPath}/catalog.bak-1.json`)).toBe("an older one");
+  });
+
+  it("isn't taken by a session that left out entries it couldn't open", async () => {
+    const { p, before, storage, photos } = await reopened();
+    const damaged = JSON.parse(before ?? "") as { photos: unknown[] };
+    damaged.photos.push({ notAPhoto: true });
+    p.fs.put(`${p.slPath}/catalog.json`, JSON.stringify(damaged));
+    p.fs.put(`${p.slPath}/catalog.bak.json`, "the last good one");
+    storage.close();
+
+    const opened = await open(p);
+    await opened.storage.putEditState(edit(photos[0].id, "One"));
+
+    expect(backupText(p)).toBe("the last good one");
+    expect(p.fs.text(`${p.slPath}/catalog.bak-1.json`)).toBeNull();
+  });
+
+  it("isn't taken by a pop-out window", async () => {
+    const { p, storage, photos } = await reopened();
+    storage.close();
+    p.fs.put(`${p.slPath}/catalog.bak.json`, "the main window's");
+    vi.stubGlobal("location", { search: "?detached=develop" });
+    try {
+      const popout = await open(p);
+      await popout.storage.putEditState(edit(photos[0].id, "One"));
+    } finally {
+      vi.stubGlobal("location", undefined);
+    }
+
+    expect(backupText(p)).toBe("the main window's");
+    expect(p.fs.text(`${p.slPath}/catalog.bak-1.json`)).toBeNull();
   });
 
   it("isn't taken by the flush of a window that is closing", async () => {
@@ -713,7 +1246,7 @@ describe.each(BUILDS)("the backup a session keeps ($label)", (cfg) => {
   });
 
   it("stays apart from the copy a fold of read-only edits kept", async () => {
-    // The fold keeps the catalog it replaced under its own name, so neither the
+    // The fold keeps the catalogue it replaced under its own name, so neither the
     // session that folded nor any session after it writes over that copy.
     const p = mount(cfg, FILES);
     const first = await open(p);
@@ -737,7 +1270,7 @@ describe.each(BUILDS)("the backup a session keeps ($label)", (cfg) => {
     expect(p.fs.text(beforeMerge)).toBe("before the merge");
   });
 
-  it("isn't kept by a session that rebuilt a damaged catalog", async () => {
+  it("isn't kept by a session that rebuilt a damaged catalogue", async () => {
     const p = mount(cfg, FILES);
     p.fs.put(`${p.slPath}/catalog.json`, "{ cut short");
 
@@ -792,7 +1325,7 @@ describe("the flush of a closing desktop window", () => {
     expect(labelsOnDisk(p)).toEqual({ [opened.photos[0].id]: "Kept" });
   });
 
-  it("writes a catalog the window left, still waiting to try a failed save again", async () => {
+  it("writes a catalogue the window left, still waiting to try a failed save again", async () => {
     // Its next try is due in seconds, after the page is gone.
     const p = mount(cfg, FILES);
     const left = await open(p);
@@ -845,7 +1378,7 @@ describe("an open that fails after its window left", () => {
   });
 });
 
-describe("a catalog this version can't wholly read", () => {
+describe("a catalogue this version can't wholly read", () => {
   const cfg = BUILDS[1];
   const at = (id: string, file: string) => ({ ...photoRecord(id), filename: file, relPath: file });
 
@@ -871,7 +1404,101 @@ describe("a catalog this version can't wholly read", () => {
     expect(saved?.removed).toEqual([]);
   });
 
-  it("refuses a catalog saved by a newer version, and writes nothing", async () => {
+  describe("with a damaged snapshot in an edit history", () => {
+    const good = (label: string) => edit("x", label).stack[0];
+    const mounted = (edits: unknown[]) => {
+      const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
+      const text = JSON.stringify({
+        version: 1,
+        photos: [at("x", "a.jpg"), at("y", "b.jpg")],
+        edits,
+      });
+      p.fs.put(`${p.slPath}/catalog.json`, text);
+      return { p, text };
+    };
+    const untouched = edit("y", "Other");
+
+    it.each([
+      ["null", null],
+      ["a number", 3],
+      ["a list", []],
+      ["with params that aren't an object", { timestamp: 1, label: "Bad", params: "x" }],
+      ["with params that are a list", { timestamp: 1, label: "Bad", params: [] }],
+    ])("drops a snapshot that is %s and keeps the rest of the history", async (_label, bad) => {
+      const { p, text } = mounted([
+        { photoId: "x", stack: [good("First"), bad, good("Last")], currentIndex: 2 },
+        untouched,
+      ]);
+
+      const opened = await open(p);
+
+      const kept = await opened.storage.getEditState("x");
+      expect(kept?.stack.map((s) => s.label)).toEqual(["First", "Last"]);
+      expect(kept?.currentIndex).toBe(1);
+      expect(await opened.storage.getEditState("y")).toEqual(untouched);
+      expect(rels(opened.photos)).toEqual(["a.jpg", "b.jpg"]);
+      expect(keptCopies(p).map((copy) => copy.text)).toEqual([text]);
+    });
+
+    it.each([
+      ["without params", { timestamp: 1, label: "Bare" }],
+      ["with null params", { timestamp: 1, label: "Bare", params: null }],
+    ])("keeps a snapshot %s, which opens on the defaults", async (_label, bare) => {
+      const { p } = mounted([{ photoId: "x", stack: [good("First"), bare], currentIndex: 1 }]);
+
+      const opened = await open(p);
+
+      const kept = await opened.storage.getEditState("x");
+      expect(kept?.stack.map((s) => s.label)).toEqual(["First", "Bare"]);
+      expect(kept?.currentIndex).toBe(1);
+      expect(keptCopies(p)).toEqual([]);
+    });
+
+    it("moves the cursor off a dropped snapshot onto the one before it", async () => {
+      const { p } = mounted([
+        { photoId: "x", stack: [good("First"), good("Second"), null, good("Last")], currentIndex: 2 },
+      ]);
+
+      const opened = await open(p);
+
+      expect((await opened.storage.getEditState("x"))?.currentIndex).toBe(1);
+    });
+
+    it("keeps the cursor on its snapshot when an earlier one is dropped", async () => {
+      const { p } = mounted([
+        { photoId: "x", stack: [null, good("First"), good("Second")], currentIndex: 1 },
+      ]);
+
+      const opened = await open(p);
+
+      const kept = await opened.storage.getEditState("x");
+      expect(kept?.stack.map((s) => s.label)).toEqual(["First", "Second"]);
+      expect(kept?.currentIndex).toBe(0);
+    });
+
+    it("drops the history when no snapshot is usable, leaving the other photos' edits", async () => {
+      const { p } = mounted([{ photoId: "x", stack: [null, 4], currentIndex: 0 }, untouched]);
+
+      const opened = await open(p);
+
+      expect(await opened.storage.getEditState("x")).toBeUndefined();
+      expect(await opened.storage.getEditState("y")).toEqual(untouched);
+      expect(keptCopies(p)).toHaveLength(1);
+    });
+
+    it("saves the cleaned history back", async () => {
+      const { p } = mounted([
+        { photoId: "x", stack: [good("First"), null], currentIndex: 1 },
+      ]);
+
+      await open(p);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(catalog(p)?.edits.map((e) => e.stack.length)).toEqual([1]);
+    });
+  });
+
+  it("refuses a catalogue saved by a newer version, and writes nothing", async () => {
     const p = mount(cfg, { "a.jpg": "A" });
     const text = JSON.stringify({ version: 2, photos: [at("x", "a.jpg")], edits: [] });
     p.fs.put(`${p.slPath}/catalog.json`, text);
@@ -885,7 +1512,7 @@ describe("a catalog this version can't wholly read", () => {
     expect(keptCopies(p)).toEqual([]);
   });
 
-  it("opens a catalog without a version as version 1", async () => {
+  it("opens a catalogue without a version as version 1", async () => {
     const p = mount(cfg, { "a.jpg": "A" });
     p.fs.put(`${p.slPath}/catalog.json`, JSON.stringify({ photos: [at("x", "a.jpg")], edits: [] }));
 
@@ -895,7 +1522,7 @@ describe("a catalog this version can't wholly read", () => {
     expect(keptCopies(p)).toEqual([]);
   });
 
-  it("keeps what it doesn't know of a catalog through a save", async () => {
+  it("keeps what it doesn't know of a catalogue through a save", async () => {
     const p = mount(cfg, { "a.jpg": "A" });
     p.fs.put(
       `${p.slPath}/catalog.json`,
@@ -915,7 +1542,7 @@ describe("a catalog this version can't wholly read", () => {
 describe("removal tombstones", () => {
   const cfg = BUILDS[1];
 
-  it("keeps a photo removed from the catalog out of the next scan", async () => {
+  it("keeps a photo removed from the catalogue out of the next scan", async () => {
     const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
     const first = await open(p);
     await first.storage.deletePhoto(first.photos[0].id);
@@ -960,6 +1587,35 @@ describe("removal tombstones", () => {
     expect(p.fs.tree(`${p.slPath}/blobs`)).toEqual([]);
   });
 
+  it("removes many photos with one message, one blobs listing and one save", async () => {
+    const files = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`p${i}.jpg`, `P${i}`]));
+    const p = mount(cfg, files);
+    const opened = await open(p);
+    const gone = opened.photos.slice(0, 150).map((photo) => photo.id);
+    await opened.storage.putPhotoBlob(gone[0], "warp", new Uint8Array([1]));
+    await opened.storage.putPhotoBlob(opened.photos[199].id, "warp", new Uint8Array([2]));
+    await opened.storage.flush();
+    const sent: CatalogRecords[] = [];
+    const stop = onBroadcast((message) => {
+      if (message.type === "catalog-records") sent.push(message.payload);
+    });
+    const listings = vi.spyOn(p.fs, "list");
+    const writes = catalogWrites(p);
+
+    await opened.storage.deletePhotos(gone);
+    await opened.storage.flush();
+
+    expect(sent.map((records) => records.deletedIds)).toEqual([gone]);
+    expect(listings.mock.calls.filter(([path]) => /\/blobs$/.test(key(String(path))))).toHaveLength(1);
+    expect(catalogWrites(p)).toBe(writes + 1);
+    expect(catalog(p)!.removed).toHaveLength(150);
+    expect(ids(catalog(p)!.photos).sort()).toEqual(
+      ids(opened.photos.slice(150)).sort(),
+    );
+    expect(p.fs.tree(`${p.slPath}/blobs`)).toHaveLength(1);
+    stop();
+  });
+
   it("does not tombstone a virtual copy — the master still owns the file", async () => {
     const p = mount(cfg, { "a.jpg": "A" });
     const opened = await open(p);
@@ -988,7 +1644,7 @@ describe("removal tombstones", () => {
   });
 
   it("opens a photo saved under a removed file's name, and forgets the removal", async () => {
-    // A catalog an earlier version wrote after a photo took the name of one
+    // A catalogue an earlier version wrote after a photo took the name of one
     // removed before it.
     const p = mount(cfg, { "a.jpg": "A" });
     const keeper = { ...photoRecord("keeper"), filename: "a.jpg", relPath: "a.jpg" };
@@ -1013,7 +1669,7 @@ describe("removal tombstones", () => {
 
 describe.each(BUILDS)("a file name a removed photo left ($label)", (cfg) => {
   // Removing a photo tombstones its file's name. Another photo can take that name
-  // later in the same session, and then it is in the catalog again.
+  // later in the same session, and then it is in the catalogue again.
 
   it("keeps a photo renamed onto it, with its rating and edit", async () => {
     // Delete from disk, then a rename (e.g. a sequence rename) onto the freed name.
@@ -1044,10 +1700,12 @@ describe.each(BUILDS)("a file name a removed photo left ($label)", (cfg) => {
     const p = mount(cfg, { "a.jpg": "A", "b.jpg": "first merge" });
     const first = await open(p);
     const [, merge] = first.photos;
-    await first.storage.deletePhoto(merge.id); // removed from the catalog, file kept
+    await first.storage.deletePhoto(merge.id); // removed from the catalogue, file kept
 
     p.fs.put(`${p.rootPath}/b.jpg`, "second merge");
-    await first.storage.putPhotos([{ ...merge, id: "second-merge", rating: 4 }]);
+    await first.storage.putPhotos([
+      { ...merge, id: "second-merge", rating: 4, fileSize: "second merge".length },
+    ]);
     await first.storage.putEditState(edit("second-merge", "Merge look"));
     await first.storage.flush();
     first.storage.close();
@@ -1141,12 +1799,12 @@ describe("virtual copies", () => {
   });
 });
 
-describe("removing photos from a large catalog", () => {
+describe("removing photos from a large catalogue", () => {
   // A removal finds the photo's virtual copies without looking through every
   // record, so removing many photos at once stays quick in every window.
   const cfg = BUILDS[1];
 
-  /** How often removing ten photos from a catalog of `size` reads a record's
+  /** How often removing ten photos from a catalogue of `size` reads a record's
    *  copyOf. */
   async function looksToRemoveTen(size: number): Promise<number> {
     const p = mount(cfg);
@@ -1169,7 +1827,7 @@ describe("removing photos from a large catalog", () => {
     return looks;
   }
 
-  it("looks only at the photos it removes, however many the catalog holds", async () => {
+  it("looks only at the photos it removes, however many the catalogue holds", async () => {
     expect(await looksToRemoveTen(2000)).toBe(await looksToRemoveTen(200));
   });
 });
@@ -1227,13 +1885,49 @@ describe("cancellation", () => {
   });
 });
 
+describe.each(BUILDS)("a project folder that isn't there ($label)", (cfg) => {
+  const SEPARATE = cfg.native
+    ? "C:\\Users\\u\\AppData\\Safelight\\catalogs\\dcim-abc\\.safelight"
+    : "/appdata/catalogs/photos-abc/.safelight";
+
+  /** List a missing folder as empty, as the desktop bridge does (the browser's
+   *  file API fails it instead). */
+  function listMissingAsEmpty(fs: FlakyFs): void {
+    const list = fs.list.bind(fs);
+    vi.spyOn(fs, "list").mockImplementation((path) =>
+      list(path).catch((error: unknown) => {
+        if (error instanceof FsError && error.code === "ENOENT") return [];
+        throw error;
+      }),
+    );
+  }
+
+  it("fails the open and leaves a separate catalogue and its marker as they were", async () => {
+    const p = mount(cfg, { "a.jpg": "A", "trip/b.jpg": "B" }, SEPARATE);
+    const first = await open(p);
+    await first.storage.putEditState(edit(first.photos[0].id, "Exposure"));
+    await first.storage.flush();
+    first.storage.close?.();
+    p.fs.put(`${p.slPath}/.seeded`, p.rootPath);
+    const saved = catalogText(p);
+
+    await p.fs.remove(p.rootPath);
+    if (cfg.native) listMissingAsEmpty(p.fs);
+    await expect(open(p)).rejects.toBeInstanceOf(FolderUnavailableError);
+    await vi.runAllTimersAsync();
+
+    expect(catalogText(p)).toBe(saved);
+    expect(p.fs.text(`${p.slPath}/.seeded`)).toBe(p.rootPath);
+  });
+});
+
 describe("read-only source redirect", () => {
   // A memory card can't host .safelight, so the working dir is redirected into
   // app data. Nothing may be written back into the project folder.
   const cfg = BUILDS[0];
   const APP_DATA = "C:\\Users\\u\\AppData\\Safelight\\catalogs\\dcim-abc\\.safelight";
 
-  it("keeps the whole catalog out of the frozen project folder", async () => {
+  it("keeps the whole catalogue out of the frozen project folder", async () => {
     const p = mount(cfg, { "a.jpg": "A", "trip/b.NEF": "B" }, APP_DATA);
     p.fs.freeze(p.rootPath);
 
@@ -1245,6 +1939,25 @@ describe("read-only source redirect", () => {
     expect(p.fs.tree(p.rootPath)).toEqual([key(`${p.rootPath}/a.jpg`), key(`${p.rootPath}/trip/b.NEF`)]);
     expect(catalog(p)!.photos).toHaveLength(2);
     expect(p.fs.has(`${APP_DATA}/previews/${opened.photos[0].id}.jpg`)).toBe(true);
+  });
+
+  it("keeps the print of the card it found beside the separate catalogue", async () => {
+    const SOURCE = APP_DATA.replace(/\\\.safelight$/, "\\source.json");
+    const p = mount(cfg, { "a.jpg": "A", "trip/b.NEF": "BB" }, APP_DATA);
+    p.fs.put(SOURCE, JSON.stringify({ source: p.rootPath, createdAt: 7 }));
+
+    await open(p);
+
+    expect(JSON.parse(p.fs.text(SOURCE)!)).toEqual({
+      source: p.rootPath,
+      createdAt: 7,
+      photos: 2,
+      openedAt: expect.any(Number),
+      volume: [
+        { relPath: "a.jpg", size: 1 },
+        { relPath: "trip/b.NEF", size: 2 },
+      ],
+    });
   });
 
   it("reports a promotion back into the project folder", async () => {
@@ -1289,7 +2002,7 @@ describe("previews", () => {
     await expect((await opened.storage.readPreview(id))!.text()).resolves.toBe("rebuilt:a.jpg");
   });
 
-  it("returns null for a photo the catalog has never heard of", async () => {
+  it("returns null for a photo the catalogue has never heard of", async () => {
     const p = mount(cfg, { "a.jpg": "A" });
     const opened = await open(p);
 
@@ -1309,6 +2022,37 @@ describe("previews", () => {
     expect(p.fs.text(`${p.slPath}/previews/${photo.id}.jpg`)).toBe("rotated");
   });
 
+  it("stops holding the previews the grid let go of, writing one again if it comes back", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    const opened = await open(p);
+    const photo = opened.photos[0];
+    const read = (await opened.storage.readPreview(photo.id))!;
+    const path = `${p.slPath}/previews/${photo.id}.jpg`;
+    const first = p.fs.bytes(path);
+
+    await opened.storage.putPhoto({ ...photo, thumbnailBlob: read, rating: 1 });
+    expect(p.fs.bytes(path)).toBe(first); // still held: this blob is the one on disk
+
+    opened.storage.forgetPreviews([photo.id]);
+    await opened.storage.putPhoto({ ...photo, thumbnailBlob: read, rating: 2 });
+    expect(p.fs.bytes(path)).not.toBe(first);
+  });
+
+  it("reads a preview for a caller that doesn't keep it without holding it either", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    const opened = await open(p);
+    const photo = opened.photos[0];
+    const path = `${p.slPath}/previews/${photo.id}.jpg`;
+    const first = p.fs.bytes(path);
+
+    opened.storage.forgetPreviews([photo.id]);
+    const read = (await opened.storage.readPreview(photo.id, { hold: false }))!;
+    await opened.storage.putPhoto({ ...photo, thumbnailBlob: read, rating: 1 });
+
+    expect(read.size).toBeGreaterThan(0);
+    expect(p.fs.bytes(path)).not.toBe(first); // not held, so a put of it writes it
+  });
+
   it("stores the record when its preview can't be written, and writes it with the next put", async () => {
     const p = mount(cfg, { "a.jpg": "A" });
     const opened = await open(p);
@@ -1321,6 +2065,18 @@ describe("previews", () => {
 
     await opened.storage.putPhoto({ ...edited, rating: 3 });
     expect(p.fs.text(`${p.slPath}/previews/${edited.id}.jpg`)).toBe("edited");
+  });
+
+  it("keeps a newly imported photo whose preview can't be written", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    p.fs.failWrites(/[\\/]previews[\\/]/, "ENOSPC", 1);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const opened = await open(p);
+    await opened.storage.flush();
+
+    expect(rels(opened.photos)).toEqual(["a.jpg"]);
+    expect(p.fs.text(`${p.slPath}/catalog.json`)).toContain("a.jpg");
   });
 });
 
@@ -1355,7 +2111,7 @@ describe("the edit a stored preview showed", () => {
   // that preview is missing, or Develop would draw a preview as an edit it doesn't show.
   const cfg = BUILDS[1];
 
-  /** Mount a.jpg and save its catalog with its preview showing the edit "edit-1",
+  /** Mount a.jpg and save its catalogue with its preview showing the edit "edit-1",
    *  as a session that edited it leaves it. */
   async function savedWithEditedPreview(): Promise<Project> {
     const p = mount(cfg, { "a.jpg": "A" });
@@ -1739,7 +2495,7 @@ describe("the edit a stored preview showed", () => {
       externalPath: null,
       promotedFromExternal: null,
     };
-    const next = await ProjectStorage.open(fsaDirectoryHandle(p.fs, other));
+    const next = await ProjectStorage.open(fsaDirectoryHandle(p.fs, other), storageDeps);
     openCatalogs.push(next.storage);
     // The copy left behind still follows the other windows while its previews wait.
     expect(FakeChannel.listening()).toBe(listening + 1);
@@ -1943,7 +2699,7 @@ describe("the rotation a stored preview was made at", () => {
   it("shows a preview built from the file for a photo saved with no rotation, turned", async () => {
     const { p, storage } = await saved();
     storage.close();
-    // A catalog from an older build: the record has no rotation field.
+    // A catalogue from an older build: the record has no rotation field.
     const file = JSON.parse(catalogText(p) ?? "{}");
     delete file.photos[0].rotation;
     p.fs.put(`${p.slPath}/catalog.json`, JSON.stringify(file));
@@ -2102,6 +2858,15 @@ describe("opaque per-photo blobs", () => {
     await expect(opened.storage.getPhotoBlob(id, "warp")).resolves.toBeNull();
     await expect(opened.storage.getPhotoBlob(id, "never-written")).resolves.toBeNull();
   });
+
+  it("creates no blobs folder by reading one", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    const opened = await open(p);
+
+    await expect(opened.storage.getPhotoBlob(opened.photos[0].id, "warp")).resolves.toBeNull();
+
+    expect(p.fs.has(`${p.slPath}/blobs`)).toBe(false);
+  });
 });
 
 describe("open-time callbacks", () => {
@@ -2176,6 +2941,30 @@ describe("sidecar adoption", () => {
     expect(state?.currentIndex).toBe(0);
   });
 
+  it("leaves out the snapshots of a sidecar's develop maps that can't be opened", async () => {
+    const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
+    const snapshot = (label: string) => ({ timestamp: 1, label, params: {} });
+    p.fs.put(
+      `${p.rootPath}/a.jpg.safelight.json`,
+      JSON.stringify({
+        safelightSidecar: 1,
+        maps: { stack: [snapshot("First"), null, snapshot("Last")], currentIndex: 2 },
+      }),
+    );
+    p.fs.put(
+      `${p.rootPath}/b.jpg.safelight.json`,
+      JSON.stringify({ safelightSidecar: 1, maps: { stack: [null], currentIndex: 0 } }),
+    );
+
+    const opened = await open(p);
+
+    const [a, b] = opened.photos;
+    const kept = await opened.storage.getEditState(a.id);
+    expect(kept?.stack.map((s) => s.label)).toEqual(["First", "Last"]);
+    expect(kept?.currentIndex).toBe(1);
+    expect(await opened.storage.getEditState(b.id)).toBeUndefined();
+  });
+
   it("ignores a sidecar that isn't ours or isn't parseable", async () => {
     const p = mount(cfg, { "a.jpg": "A", "b.jpg": "B" });
     p.fs.put(`${p.rootPath}/a.jpg.safelight.json`, JSON.stringify({ info: { rating: 4 } }));
@@ -2184,6 +2973,26 @@ describe("sidecar adoption", () => {
     const opened = await open(p);
 
     expect(opened.photos.map((x) => x.rating)).toEqual([0, 0]);
+  });
+
+  it("drops sidecar values outside what the catalogue holds", async () => {
+    const p = mount(cfg, { "a.jpg": "A" });
+    p.fs.put(
+      `${p.rootPath}/a.jpg.safelight.json`,
+      JSON.stringify({
+        safelightSidecar: 1,
+        info: { rating: 99, colorLabel: "teal", flag: "x", keywords: [1, null, "a", ""] },
+      }),
+    );
+
+    const opened = await open(p);
+
+    expect(opened.photos[0]).toMatchObject({
+      rating: 0,
+      colorLabel: "none",
+      flag: "none",
+      keywords: ["a"],
+    });
   });
 
   it("lets an extension's import metadata win over the sidecar", async () => {
@@ -2200,9 +3009,9 @@ describe("sidecar adoption", () => {
   });
 });
 
-describe("catalog writes", () => {
+describe("catalogue writes", () => {
   // A storage writes catalog.json one save at a time. Saves asked for during a
-  // write share one write after it, which reads the catalog when it starts.
+  // write share one write after it, which reads the catalogue when it starts.
   const cfg = BUILDS[1];
   const FILES = { "a.jpg": "A", "b.jpg": "B", "c.jpg": "C" };
 
@@ -2300,9 +3109,97 @@ describe("catalog writes", () => {
   });
 });
 
+describe.each(BUILDS)("a folder that can't be listed ($label)", (cfg) => {
+  const LOCKED = /[\\/]locked$/;
+  const FILES = {
+    "a.jpg": "A",
+    "locked/x.jpg": "X",
+    "locked/deep/y.jpg": "Y",
+    "locked/gone.jpg": "G",
+  };
+
+  it.each(["EACCES", "EPERM"])("opens on %s, importing the siblings", async (code) => {
+    const p = mount(cfg, FILES);
+    p.fs.failLists(LOCKED, code);
+
+    const opened = await open(p);
+
+    expect(rels(opened.photos)).toEqual(["a.jpg"]);
+    expect(opened.unreadable).toEqual(["locked"]);
+    expect(opened.tree.children.find((c) => c.path === "locked")?.unreadable).toBe(true);
+  });
+
+  it("keeps the records and edits of photos under it, as they were saved", async () => {
+    const p = mount(cfg, FILES);
+    const first = await open(p);
+    const lockedPhotos = first.photos.filter((x) => x.relPath.startsWith("locked/"));
+    expect(lockedPhotos).toHaveLength(3);
+    await first.storage.putEditState(edit(lockedPhotos[0].id, "Exposure"));
+    await first.storage.putPhoto({ ...lockedPhotos[0], rating: 4 });
+    await first.storage.flush();
+    first.storage.close();
+    p.fs.put(`${p.rootPath}/new.jpg`, "N");
+    p.fs.failLists(LOCKED, "EACCES");
+
+    const second = await open(p);
+    await second.storage.flush();
+
+    expect(rels(second.newPhotos)).toEqual(["new.jpg"]);
+    expect(new Set(rels(second.photos))).toEqual(new Set(rels(first.photos).concat("new.jpg")));
+    for (const kept of lockedPhotos)
+      expect(second.photos.find((x) => x.id === kept.id)).toMatchObject({
+        relPath: kept.relPath,
+        fileHandle: null,
+      });
+    expect(second.photos.find((x) => x.id === lockedPhotos[0].id)?.rating).toBe(4);
+    await expect(second.storage.getEditState(lockedPhotos[0].id)).resolves.toEqual(
+      edit(lockedPhotos[0].id, "Exposure"),
+    );
+    const saved = catalog(p)!;
+    expect(saved.photos.map((x) => x.id)).toEqual(expect.arrayContaining(ids(lockedPhotos)));
+    expect(saved.edits.map((e) => e.photoId)).toEqual([lockedPhotos[0].id]);
+  });
+
+  it("keeps the removal of a file under it, so it isn't imported when the folder opens again", async () => {
+    const p = mount(cfg, FILES);
+    const first = await open(p);
+    const gone = first.photos.find((x) => x.relPath === "locked/gone.jpg")!;
+    await first.storage.deletePhoto(gone.id);
+    await first.storage.flush();
+    first.storage.close();
+    expect(catalog(p)!.removed).toEqual(["locked/gone.jpg"]);
+    p.fs.failLists(LOCKED, "EPERM");
+
+    const second = await open(p);
+    await second.storage.flush();
+    expect(catalog(p)!.removed).toEqual(["locked/gone.jpg"]);
+    second.storage.close();
+
+    p.fs.failLists(/^$/, "EPERM");
+    const third = await open(p);
+    expect(rels(third.photos)).not.toContain("locked/gone.jpg");
+  });
+
+  it("lists the folder again on the next open, once it can be read", async () => {
+    const p = mount(cfg, FILES);
+    p.fs.failLists(LOCKED, "EACCES");
+    const first = await open(p);
+    await first.storage.flush();
+    first.storage.close();
+    p.fs.failLists(/^$/, "EACCES");
+
+    const second = await open(p);
+
+    expect(second.unreadable).toEqual([]);
+    expect(rels(second.photos).sort()).toEqual(
+      ["a.jpg", "locked/deep/y.jpg", "locked/gone.jpg", "locked/x.jpg"],
+    );
+  });
+});
+
 describe.each(BUILDS)("a flush with nothing to save ($label)", (cfg) => {
-  // Every launch, pop-out and window close flushes the catalog. An unchanged
-  // catalog isn't written again: the write would gain nothing, and could land over
+  // Every launch, pop-out and window close flushes the catalogue. An unchanged
+  // catalogue isn't written again: the write would gain nothing, and could land over
   // a newer one another window wrote.
   const FILES = { "a.jpg": "A", "b.jpg": "B", "c.jpg": "C" };
   const CATALOG_FILE = /[\\/]catalog\.json$/;
@@ -2317,7 +3214,7 @@ describe.each(BUILDS)("a flush with nothing to save ($label)", (cfg) => {
     return { p, storage: again.storage, photos: again.photos, before: catalogWrites(p) };
   }
 
-  it("writes nothing for a catalog that opened unchanged", async () => {
+  it("writes nothing for a catalogue that opened unchanged", async () => {
     const { p, storage, before } = await reopened();
 
     await storage.flush();
@@ -2370,7 +3267,7 @@ describe.each(BUILDS)("a flush with nothing to save ($label)", (cfg) => {
     expect(labelsOnDisk(p)).toEqual({ [photos[0].id]: "Kept" });
   });
 
-  it("writes a change whose write failed when the window leaves the catalog", async () => {
+  it("writes a change whose write failed when the window leaves the catalogue", async () => {
     const { p, storage, photos } = await reopened();
     p.fs.failWrites(CATALOG_FILE, "EBUSY");
     await storage.putEditState(edit(photos[0].id, "Kept"));
@@ -2388,7 +3285,7 @@ describe.each(BUILDS)("a flush with nothing to save ($label)", (cfg) => {
     p.fs.failWrites(CATALOG_FILE, "EBUSY", 1);
 
     const saving = storage.putEditState(edit(photos[0].id, "Kept")); // its write is running
-    const left = storage.flush(); // as the window leaves the catalog: a flush, then close
+    const left = storage.flush(); // as the window leaves the catalogue: a flush, then close
     storage.close();
     await Promise.all([saving, left]);
 
@@ -2596,7 +3493,7 @@ describe("a save that fails", () => {
     expect(statuses).toEqual([{ ok: false, reason }]);
   });
 
-  it("says a catalog is too large to save, and tries again only when asked", async () => {
+  it("says a catalogue is too large to save, and tries again only when asked", async () => {
     const { p, storage, photos, statuses } = await saved();
     const before = catalogWrites(p);
     const huge = {
@@ -2611,15 +3508,15 @@ describe("a save that fails", () => {
     const unasked = statuses.length;
     await storage.flush();
 
-    const tooLarge = { ok: false, reason: "the catalog is too large to save as one file" };
+    const tooLarge = { ok: false, reason: "the catalogue is too large to save as one file" };
     expect(unasked).toBe(1);
     expect(statuses).toEqual([tooLarge, tooLarge]);
     expect(catalogWrites(p)).toBe(before);
   });
 });
 
-describe("catalogs of different projects", () => {
-  // A shoot folder copied, catalog and all, to another drive keeps its photo ids.
+describe("catalogues of different projects", () => {
+  // A shoot folder copied, catalogue and all, to another drive keeps its photo ids.
   // A window on the copy must not take on what a window on the original writes.
   const ORIGINAL = "D:\\Shoot";
   const COPY = "E:\\Backup\\Shoot";
@@ -2630,7 +3527,7 @@ describe("catalogs of different projects", () => {
     const photos = [photoRecord("x"), photoRecord("y")];
     const opened: ProjectStorage[] = [];
     for (const root of [ORIGINAL, COPY]) {
-      for (const p of photos) fs.put(`${root}/${p.relPath}`, p.id);
+      for (const p of photos) fs.put(`${root}/${p.relPath}`, p.id.padEnd(p.fileSize));
       fs.put(`${root}/.safelight/catalog.json`, JSON.stringify({ version: 1, photos, edits: [] }));
       h.wd = {
         sl: nativeDirectoryHandle(`${root}\\.safelight`),
@@ -2638,7 +3535,7 @@ describe("catalogs of different projects", () => {
         externalPath: null,
         promotedFromExternal: null,
       };
-      const { storage } = await ProjectStorage.open(nativeDirectoryHandle(root));
+      const { storage } = await ProjectStorage.open(nativeDirectoryHandle(root), storageDeps);
       openCatalogs.push(storage);
       opened.push(storage);
     }
@@ -2688,7 +3585,7 @@ describe("catalogs of different projects", () => {
         externalPath: null,
         promotedFromExternal: null,
       };
-      const opened = await ProjectStorage.open(fsaDirectoryHandle(fs, root));
+      const opened = await ProjectStorage.open(fsaDirectoryHandle(fs, root), storageDeps);
       openCatalogs.push(opened.storage);
       return opened;
     };
@@ -2707,7 +3604,7 @@ describe("catalogs of different projects", () => {
     expect((await again.storage.getEditState("a1"))?.stack[0].label).toBe("A's look");
   });
 
-  it("names its catalog in every save", async () => {
+  it("names its catalogue in every save", async () => {
     const p = mount(BUILDS[1], { "a.jpg": "A" });
     const first = await open(p);
     await first.storage.flush();
@@ -2720,7 +3617,7 @@ describe("catalogs of different projects", () => {
     expect(catalog(p)?.id).toBe(id);
   });
 
-  it("shares a catalog saved before catalogs had an id between the windows that open it", async () => {
+  it("shares a catalogue saved before catalogues had an id between the windows that open it", async () => {
     const p = mount(BUILDS[1], { "a.jpg": "A" });
     const old = { ...photoRecord("old"), filename: "a.jpg", relPath: "a.jpg" };
     p.fs.put(`${p.slPath}/catalog.json`, JSON.stringify({ version: 1, photos: [old], edits: [] }));
@@ -2733,7 +3630,7 @@ describe("catalogs of different projects", () => {
   });
 
   it("opens one record per file, the first saved", async () => {
-    // A catalog can hold a record a window kept for another window on a file of
+    // A catalogue can hold a record a window kept for another window on a file of
     // its own (a copy of the project in the browser build): it must not take the
     // photo's place.
     const p = mount(BUILDS[1], { "a.jpg": "A" });
@@ -2757,21 +3654,24 @@ describe("catalogs of different projects", () => {
     expect(ids(opened.photos)).toEqual(["own"]);
     expect(opened.photos[0].rating).toBe(5);
     expect((await opened.storage.getEditState("own"))?.stack[0].label).toBe("Own look");
-    await vi.advanceTimersByTimeAsync(1000); // and the catalog is saved without them
+    await vi.advanceTimersByTimeAsync(1000); // and the catalogue is saved without them
     expect(ids(catalog(p)?.photos ?? [])).toEqual(["own"]);
   });
 });
 
 describe("catalogKey", () => {
-  // Names the catalog file a storage writes: the windows that share one take on
+  // Names the catalogue file a storage writes: the windows that share one take on
   // each other's records.
   const native = (path: string) => nativeDirectoryHandle(path);
+  const onPlatform = (platform: string) => vi.stubGlobal("window", { safelightNative: { platform } });
 
   beforeEach(() => {
     h.fs = new MemoryFs();
   });
+  afterEach(() => vi.stubGlobal("window", undefined));
 
-  it("names a desktop catalog by its working folder, in any case or slash on Windows", () => {
+  it("names a desktop catalogue by its working folder, in any case or slash on Windows", () => {
+    onPlatform("win32");
     const root = native("D:\\Photos");
     expect(catalogKey(root, native("D:\\Photos\\.safelight"), "one")).toBe(
       catalogKey(root, native("d:/photos/.safelight/"), "another"),
@@ -2781,14 +3681,23 @@ describe("catalogKey", () => {
     );
   });
 
+  it("names a desktop catalogue by its working folder in any case on macOS", () => {
+    onPlatform("darwin");
+    const root = native("/Users/u/Photos");
+    expect(catalogKey(root, native("/Users/u/Photos/.safelight"), "one")).toBe(
+      catalogKey(root, native("/Users/u/photos/.safelight"), "one"),
+    );
+  });
+
   it("keeps the case of other systems' paths", () => {
+    onPlatform("linux");
     const root = native("/home/u/Photos");
     expect(catalogKey(root, native("/home/u/Photos/.safelight"), "one")).not.toBe(
       catalogKey(root, native("/home/u/photos/.safelight"), "one"),
     );
   });
 
-  it("names a browser catalog by its folder and the id its catalog keeps", () => {
+  it("names a browser catalogue by its folder and the id its catalogue keeps", () => {
     const fs = new MemoryFs();
     const browser = (path: string) => fsaDirectoryHandle(fs, path);
     const shoot = catalogKey(browser("/a/shoot"), browser("/a/shoot/.safelight"), "one");
@@ -2798,9 +3707,9 @@ describe("catalogKey", () => {
   });
 });
 
-describe("windows sharing a catalog", () => {
+describe("windows sharing a catalogue", () => {
   // Every window opens the project with its own storage and saves the whole
-  // catalog from its own copy, so each write goes out to the other windows and
+  // catalogue from its own copy, so each write goes out to the other windows and
   // they take it on. A and B stand for two windows; broadcast's same-window
   // fan-out carries the records between them.
   const cfg = BUILDS[1];
@@ -2812,7 +3721,7 @@ describe("windows sharing a catalog", () => {
     setCatalogStorage(null);
   });
 
-  /** A imported the folder and saved it; B then opened A's catalog, so both
+  /** A imported the folder and saved it; B then opened A's catalogue, so both
    *  windows hold the same photos under the same ids. What a test does next
    *  happens a while after those saves, as it would in use. */
   async function twoWindows() {
@@ -2931,6 +3840,18 @@ describe("windows sharing a catalog", () => {
     expect(labelsOnDisk(p)).toEqual({ "copy-1": "Copy look" });
   });
 
+  it("removes the preview and blobs of a virtual copy B doesn't show when B removes its master", async () => {
+    const { p, a, b, inA } = await twoWindows();
+    await a.putPhotos([{ ...inA[0], id: "copy-1", copyOf: inA[0].id, copyName: "copy" }]);
+    await a.putPhotoBlob("copy-1", "warp", new Uint8Array([1]));
+    p.fs.put(`${p.slPath}/previews/copy-1.jpg`, "copy preview");
+
+    await b.deletePhoto(inA[0].id);
+
+    expect(p.fs.has(`${p.slPath}/previews/copy-1.jpg`)).toBe(false);
+    expect(p.fs.tree(`${p.slPath}/blobs`)).toEqual([]);
+  });
+
   it("shows a photo another window added once the project is opened again", async () => {
     const { p, a, b, inA, inB } = await twoWindows();
     await a.putPhotos([{ ...inA[0], id: "copy-1", copyOf: inA[0].id, copyName: "copy" }]);
@@ -2992,7 +3913,7 @@ describe("windows sharing a catalog", () => {
   it("keeps a photo another window stores under the name of a file removed there", async () => {
     // e.g. an extension writing its output file again after the first was removed
     const { p, a, b, inA } = await twoWindows();
-    await a.deletePhoto(inA[1].id); // b.jpg leaves the catalog, the file stays
+    await a.deletePhoto(inA[1].id); // b.jpg leaves the catalogue, the file stays
     await a.putPhotos([{ ...inA[1], id: "again", rating: 4 }]);
 
     await b.putEditState(edit(inA[0].id, "From B"));
@@ -3093,7 +4014,7 @@ describe("windows sharing a catalog", () => {
     expect(catalogWrites(p)).toBe(healed); // the repair isn't sent on, so nothing repeats
   });
 
-  it("writes its pending save at once when the window leaves the catalog", async () => {
+  it("writes its pending save at once when the window leaves the catalogue", async () => {
     // Left to its debounce, B's save would land after A's next change, and B no
     // longer takes A's changes on to repair it.
     const { p, a, b, inA, inB } = await twoWindows();
@@ -3156,7 +4077,7 @@ describe("windows sharing a catalog", () => {
     await a.storage.flush();
 
     const b = await open(p, {
-      // B has read the catalog and is about to scan the folder.
+      // B has read the catalogue and is about to scan the folder.
       onSkeletons: () => void a.storage.putPhoto({ ...a.photos[1], rating: 5 }),
     });
 
@@ -3164,7 +4085,7 @@ describe("windows sharing a catalog", () => {
     expect((await b.storage.getAllPhotos())[1].rating).toBe(5);
   });
 
-  it("stops taking on records once the window installs another catalog", async () => {
+  it("stops taking on records once the window installs another catalogue", async () => {
     const { a, b, inA } = await twoWindows();
     setCatalogStorage(b);
     await a.putEditState(edit(inA[0].id, "Before"));
@@ -3340,7 +4261,7 @@ describe("a window that closes while its own open is still running", () => {
   /** A has saved the project and B is opening it. Once B has painted the saved
    *  photos, B flags the last one (a change of its own, to save), A starts saving
    *  a new edit of the first photo, which B can only hold, and `leave` runs with
-   *  B's storage. Every catalog write from then on is held. */
+   *  B's storage. Every catalogue write from then on is held. */
   async function leavingMidOpen(
     leave: (b: ProjectStorage, skeletons: CatalogPhoto[]) => Promise<void>,
   ) {
@@ -3376,7 +4297,7 @@ describe("a window that closes while its own open is still running", () => {
     expect(labelsOnDisk(p)).toEqual({ [photoId]: "From A" });
   });
 
-  it("writes what it was holding when it leaves the catalog with a save pending", async () => {
+  it("writes what it was holding when it leaves the catalogue with a save pending", async () => {
     const { p, photoId, writes, saved } = await leavingMidOpen(async (b, skeletons) => {
       void b.putPhoto({ ...skeletons[1], rating: 2 }); // a save of its own is pending
       b.close();

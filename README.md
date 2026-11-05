@@ -13,7 +13,7 @@ In a darkroom, the safelight is the one lamp you work by — dim, red, faithful 
 Safelight is that lamp: a small, steady core and nothing you didn't ask for. Every tool, every panel, every transform, even the ones that ship built in, is a piece you can move, swap, switch off, or invent. Open it and it simply works: clean defaults, gorgeous edits from the very first slider. Then you start arranging the room, and it becomes unmistakably *yours*.
 
 - **Yours, forever.** Free and open source under the GPL. No subscription, no account, no expiry. The copy you install today is yours to keep, for good.
-- **Private by default.** No accounts, no analytics, no behavioral telemetry. Your photos and edits stay on your machine; the core app never uploads them. It checks GitHub for app and extension updates on launch — turn that off and it goes fully offline — and optional extensions reach the network only where you point them. Exports strip your camera EXIF, GPS, and XMP. See [PRIVACY.md](PRIVACY.md).
+- **Private by default.** No accounts, no analytics, no behavioural telemetry. Your photos and edits stay on your machine; the core app never uploads them. It checks GitHub for app and extension updates on launch — turn that off and it goes fully offline — and optional extensions reach the network only where you point them. Exports leave out your camera EXIF, GPS and XMP unless you turn metadata on. See [PRIVACY.md](PRIVACY.md).
 - **Lean by choice.** Carry only the tools you actually use; everything else stays out until you want it. No clutter, no weight you didn't choose.
 - **Serious about images.** Real, full-resolution RAW and a 16-bit GPU pipeline under the hood. Free was never meant to mean basic.
 
@@ -38,7 +38,7 @@ What you're left with isn't a smaller version of someone else's app. It's the da
 
 A lot of us are building great photo tools on our own: a film simulation, a denoiser, a set of scopes, a darktable module ported over a weekend. Each one ships as its own project with its own app, so using the one tool you like means installing a whole program around it. I got tired of that, so I built Safelight to bring them together.
 
-At its heart, Safelight is an extension manager that gathers everyone's tools and modules into one RAW editor. You keep your own repo, your own license, and your name on the work. Photographers install it from the in-app store in a click, right beside everything else they use, instead of adding yet another program to their machine.
+At its heart, Safelight is an extension manager that gathers everyone's tools and modules into one RAW editor. You keep your own repo, your own licence, and your name on the work. Photographers install it from the in-app store in a click, right beside everything else they use, instead of adding yet another program to their machine.
 
 And it grows together. Someone who comes for one extension browses the store and finds the rest, so every new user is one more person who might find yours. The bigger the room gets, the more people see what everyone in it has built.
 
@@ -53,8 +53,8 @@ Two modules and an open workspace, with defaults that feel familiar from the fir
 <img width="3839" height="2058" alt="Safelight Develop module" src="https://github.com/user-attachments/assets/40bb333a-6c80-4b78-88a4-ad7ba90afa3f" />
 
 - **Library:** open a folder and edit. Non-destructive and project-based; your originals are never touched, and ratings, flags, keywords, and edit history live in a portable `.safelight/` folder. Fast, keyboard-driven culling, filtering, and sorting.
-- **Develop:** white balance, tone, curves, HSL, color grading, detail, lens corrections, geometry and Upright, local masking, heal/clone, and presets, all rendered through a WebGL2 pipeline running in a Web Worker.
-- **Export:** batch JPEG, PNG, WebP, and 8/16-bit TIFF through the same pipeline, with proper output color spaces and embedded ICC profiles. Your camera EXIF, GPS, and XMP are stripped by design.
+- **Develop:** white balance, tone, curves, HSL, colour grading, detail, lens corrections, geometry and Upright, local masking, heal/clone, and presets, all rendered through a WebGL2 pipeline running in a Web Worker.
+- **Export:** batch JPEG, PNG, WebP, and 8/16-bit TIFF through the same pipeline, with proper output colour spaces and embedded ICC profiles. Camera EXIF is left out unless you turn on **Include metadata**, GPS needs its own switch, and XMP is never copied.
 - **Workspace:** Photoshop-style docking (drag, tab, float, minimize any panel), named layouts, themes, rebindable shortcuts, and detachable modules for multi-monitor work.
 
 Real RAW support spans NEF, CR2/CR3, ARW, DNG, ORF, RAF, RW2 and many more, via libraw-wasm plus an in-house linear-float decoder, with automatic fallback to the embedded preview.
@@ -99,6 +99,6 @@ Safelight is under active development. The **[Safelight project board](https://g
 
 Safelight is community-driven. Bug reports, code, extensions, documentation, and feedback are all welcome. See [Contributing](docs/dev/contributing.md). Contributions use the standard inbound = outbound model: you license your contribution under the project's GPL v3 and keep your copyright — there's no separate agreement to sign.
 
-## License
+## Licence
 
-Safelight is free software under the [GNU GPL v3](LICENSE), with a Section 7(b) attribution-preservation term (see [NOTICE](NOTICE)). There is no paid, "pro", or proprietary edition. It bundles third-party components under their own licenses ([THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)), and third-party product names are trademarks of their respective owners ([TRADEMARKS](TRADEMARKS.md)). See [LICENSING.md](LICENSING.md) for the full picture.
+Safelight is free software under the [GNU GPL v3](LICENSE), with a Section 7(b) attribution-preservation term (see [NOTICE](NOTICE)). There is no paid, "pro", or proprietary edition. It bundles third-party components under their own licences ([THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)), and third-party product names are trademarks of their respective owners ([TRADEMARKS](TRADEMARKS.md)). See [LICENSING.md](LICENSING.md) for the full picture.

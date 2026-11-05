@@ -60,7 +60,7 @@ describe("environmentText", () => {
 });
 
 describe("graphicsText", () => {
-  const webgl = { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA GeForce RTX 3070)", glsl: "WebGL GLSL ES 3.00", maxTexture: 16384 };
+  const webgl = { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA GeForce RTX 3070)", glsl: "WebGL GLSL ES 3.00", maxTexture: 16384, fragmentUniformVectors: 1024, colorBufferFloat: true };
 
   it("lists only the GPU features that are off", () => {
     const text = graphicsText({
@@ -72,17 +72,28 @@ describe("graphicsText", () => {
       [
         "ANGLE (NVIDIA GeForce RTX 3070)",
         "Vendor: Google Inc. (NVIDIA)",
-        "WebGL GLSL ES 3.00 · max texture 16384",
+        "WebGL GLSL ES 3.00 · max texture 16384 · fragment uniform vectors 1024",
         "GPU features off: rasterization (disabled_software)",
       ].join("\n"),
     );
   });
 
-  it("says when every feature is on and when WebGL is missing", () => {
+  it("says plainly when the GPU has no float render targets", () => {
+    const text = graphicsText({
+      webgl: { ...webgl, colorBufferFloat: false },
+      gpuFeatures: null,
+      displayProfile: null,
+    });
+    expect(text.split("\n")).toContain(
+      "No float render targets: edits on this GPU are limited to 8-bit, 0–1 intermediates",
+    );
+  });
+
+  it("says when every feature is on and when WebGL2 is missing", () => {
     expect(graphicsText({ webgl, gpuFeatures: { a: "enabled_on" }, displayProfile: "active" })).toContain(
       "GPU features: all enabled\nDisplay profile: active",
     );
-    expect(graphicsText({ webgl: null, gpuFeatures: null, displayProfile: null })).toBe("WebGL unavailable");
+    expect(graphicsText({ webgl: null, gpuFeatures: null, displayProfile: null })).toBe("WebGL2 unavailable");
   });
 });
 
@@ -186,7 +197,7 @@ describe("photoFacts and contextText", () => {
       [
         "Module: Develop",
         "Theme: core.neutral · Layout: core.classic",
-        "Catalog: 1,234 photos",
+        "Catalogue: 1,234 photos",
         "Photo: .nef · image/x-nikon-nef · 6048×4024",
         "Camera: NIKON Z 6 · Lens: NIKKOR Z 24-70mm f/4 S",
         "Processing: version 1 (current 2) · display transform core.agx (photo's own)",

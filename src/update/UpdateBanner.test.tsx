@@ -10,11 +10,20 @@
 // version bump.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useSettings } from "@/state/settings-store";
+import type { NativeUpdatesBridge } from "@/extensions/types";
 import { getDismissedVersion } from "./update-checker";
 import { UpdateBanner } from "./UpdateBanner";
+
+const mocks = vi.hoisted(() => ({ updates: null as NativeUpdatesBridge | null }));
+
+// The install bridge is claimed once at renderer boot; null is the browser build.
+vi.mock("@/native/privileged", () => ({
+  claimPrivileged: () => {},
+  privilegedUpdates: () => mocks.updates,
+}));
 
 // Matches APP_UPDATE_POLL_MS in UpdateBanner.
 const POLL_MS = 3 * 60 * 60 * 1000;
@@ -31,6 +40,7 @@ const release = (version: string, prerelease = false) => ({
   body: "",
   draft: false,
   prerelease,
+  assets: [{ name: `Safelight.Setup.${version}.exe` }],
 });
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -57,6 +67,7 @@ async function mount() {
 const banner = () => screen.queryByRole("status");
 
 beforeEach(() => {
+  mocks.updates = null;
   localStorage.clear();
   useSettings.setState({ checkForUpdates: true, updateChannel: "stable" });
   fetchMock = vi.fn();
@@ -181,8 +192,18 @@ describe("polling", () => {
 });
 
 describe("acting on it", () => {
+  const desktop = (support: Awaited<ReturnType<NonNullable<NativeUpdatesBridge["support"]>>>) => {
+    const bridge = {
+      install: vi.fn((_repo: string, _tag: string) => Promise.resolve()),
+      support: vi.fn((_names: string[]) => Promise.resolve(support)),
+    };
+    mocks.updates = bridge;
+    return bridge;
+  };
+
   it("opens the release page for the version it is offering", async () => {
     const user = userEvent.setup();
+    desktop("install");
     serve(release(NEWER));
     await mount();
 
@@ -194,15 +215,67 @@ describe("acting on it", () => {
     );
   });
 
-  it("explains why an in-app install is unavailable outside the desktop app", async () => {
+  it("offers the install when this copy can take this release's asset", async () => {
     const user = userEvent.setup();
+    const bridge = desktop("install");
+    serve(release(NEWER));
+    await mount();
+
+    expect(bridge.support).toHaveBeenCalledWith([`Safelight.Setup.${NEWER}.exe`]);
+    await user.click(screen.getByRole("button", { name: "Download" }));
+    expect(bridge.install).toHaveBeenCalledWith("anthonyreimche/SafeLight", `v${NEWER}`);
+  });
+
+  it("says the download failed, logs why, and keeps the offer", async () => {
+    const user = userEvent.setup();
+    const bridge = desktop("install");
+    bridge.install.mockRejectedValue(new Error("Couldn't start the installer: Access is denied."));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     serve(release(NEWER));
     await mount();
 
     await user.click(screen.getByRole("button", { name: "Download" }));
     await settle();
-    expect(banner()?.textContent).toContain("only available in the desktop app");
-    // The offer stays clickable so the failure isn't a dead end.
+    const failure = within(banner() as HTMLElement).getByRole("alert");
+    expect(failure.textContent).toBe("Couldn't download the update. Try again, or use View release.");
+    expect(failure.className).toContain("text-danger");
+    expect(logged).toHaveBeenCalledWith(
+      "[update] couldn't install the update:",
+      expect.objectContaining({ message: "Couldn't start the installer: Access is denied." }),
+    );
     expect(screen.getByRole("button", { name: "Download" })).toBeTruthy();
+  });
+
+  // A Linux package goes to the software installer and Safelight stays open.
+  it("says where the package went once it has opened", async () => {
+    const user = userEvent.setup();
+    desktop("install");
+    serve(release(NEWER));
+    await mount();
+
+    await user.click(screen.getByRole("button", { name: "Download" }));
+    await settle();
+    expect(banner()?.textContent).toContain("Opened in your software installer");
+    expect(banner()?.textContent).not.toContain("Downloading");
+    expect(screen.queryByRole("button", { name: "Download" })).toBeNull();
+  });
+
+  it.each([
+    ["a copy that can't install itself", () => void desktop("release-page")],
+    ["the browser build", () => {}],
+  ])("sends %s to the release page", async (_label, setup) => {
+    const user = userEvent.setup();
+    setup();
+    serve(release(NEWER));
+    await mount();
+
+    expect(screen.queryByRole("button", { name: "Download" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View release" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open release page" }));
+    expect(window.open).toHaveBeenCalledWith(
+      expect.stringContaining(`v${NEWER}`),
+      "_blank",
+      "noopener,noreferrer",
+    );
   });
 });

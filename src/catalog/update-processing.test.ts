@@ -6,7 +6,7 @@
 // Update processing for a Library selection: a photo whose stored edit is on the
 // older processing gets one appended step that raises only the version, and a
 // photo that is already current or was never edited is left untouched. The whole
-// selection is stored in one catalog write.
+// selection is stored in one catalogue write.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -132,7 +132,7 @@ describe("updateProcessing", () => {
     const { written } = installMemoryStorage(
       edit([olderSnapshot("Exposure", 1)], 0, "a"),
       edit([snapshot("Exposure", { exposure: 1 })], 0, "b"),
-      // "c" was never edited, and "gone" is not in the catalog.
+      // "c" was never edited, and "gone" is not in the catalogue.
       edit([olderSnapshot("Exposure", 2)], 0, "d"),
     );
 
@@ -166,7 +166,7 @@ describe("updateProcessing", () => {
   });
 });
 
-describe("updateProcessing — one catalog write for the selection", () => {
+describe("updateProcessing — one catalogue write for the selection", () => {
   const IDS = ["a", "b", "c", "d"];
   // "a" and "b" are on the older processing, "c" is current, and "d" was never edited.
   const seed = () =>

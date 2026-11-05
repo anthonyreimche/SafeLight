@@ -3,7 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { PROBE_BUILTIN_ID, installProbeBuiltin } from "@/extensions/builtin.test-support";
 import type { CatalogPhoto } from "@/catalog/types";
 import { BUILTIN_EXTENSIONS } from "@/extensions/builtin";
 import { useDisabledExtensions } from "@/extensions/loader";
@@ -94,7 +95,7 @@ describe("collectReportSections", () => {
     expect(sections.map((s) => s.text).join("\n")).not.toContain("ann");
   });
 
-  it("hides the catalog's own folders, and the folders above them, in relative paths", async () => {
+  it("hides the catalogue's own folders, and the folders above them, in relative paths", async () => {
     useCatalogStore.setState({ photos: [{ ...photo, folder: "Smith Wedding/day1/selects" }], activePhotoId: null });
     recordError("error", "[folder-ops] move Smith Wedding/day1/notes.txt failed");
     const text = textOf(await collectReportSections(null), "errors");
@@ -110,10 +111,12 @@ describe("collectReportSections", () => {
   });
 
   it("lists installed extensions and built-ins switched from their default", async () => {
-    useDisabledExtensions.setState({ ids: defaultDisabled.filter((id) => id !== "core.devtools") });
+    const probe = installProbeBuiltin();
+    onTestFinished(probe.remove);
+    useDisabledExtensions.setState({ ids: [...defaultDisabled, PROBE_BUILTIN_ID] });
     const text = textOf(await collectReportSections(null), "extensions");
     expect(text).toContain("- acme.film 1.2.0 · on, not running · unverified");
-    expect(text.split("Built-in changes:\n")[1]?.split("\n")[0]).toBe("- core.devtools · on (off by default)");
+    expect(text.split("Built-in changes:\n")[1]?.split("\n")[0]).toBe("- core.probe · off (on by default)");
   });
 
   it("leaves built-ins at their defaults out", async () => {

@@ -20,7 +20,11 @@ import type { ProcessingStageContribution, StageTextureData } from "@/extensions
 import { WebGLRenderer } from "./renderer";
 import {
   LINEAR_PROBE_PIPELINE,
+  basicStages,
   builtinStages,
+  cropStages,
+  deriveWithoutSettings,
+  healStages,
   drainGlErrors,
   floatImage,
   glHarness,
@@ -75,8 +79,9 @@ const BLEMISHED = floatImage(32, 32, (x, y) =>
   x >= 15 && x <= 16 && y >= 15 && y <= 16 ? [0.05, 0.05, 0.05] : [x / 32, y / 32, 0.3],
 );
 
+/** The blemished frame with its spot healed by Heal's stage, and `stages`. */
 function healed(stages: ProcessingStageContribution[]): Frame {
-  return withRenderer({ stages, pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+  return withRenderer({ stages: [...healStages(), ...stages], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
     r.setImage(BLEMISHED);
     r.setParams(params({ retouch: [HEAL_SPOT] }));
     r.setContributedParams({ "test.current.take": 1 });
@@ -129,7 +134,7 @@ function refuseDevelopedTarget(gl: WebGL2RenderingContext): { refused: number; r
 describe("reads current", () => {
   it("hands the passes the exposed image, where a source reader gets the decode", () => {
     const run = (reads: "current" | "source") =>
-      withRenderer({ stages: [copyStage({ reads })], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+      withRenderer({ stages: [...basicStages(), copyStage({ reads })], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
         r.setImage(flat(0.2));
         r.setParams(params({ exposure: 1 }));
         r.setContributedParams({ "test.current.take": 1 });
@@ -155,10 +160,10 @@ describe("reads current", () => {
     });
   });
 
-  // Serialising the develop params is the costly part of a split's key (masks
+  // Serializing the develop params is the costly part of a split's key (masks
   // carry their brush dabs), so frames that replaced nothing upstream, the
   // stage's own inline param included, must not do it.
-  it("serialises nothing for frames that replaced no input but the stage's own param", () => {
+  it("serializes nothing for frames that replaced no input but the stage's own param", () => {
     withRenderer({ stages: [copyStage()], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
       r.setImage(flat(0.2));
       r.setParams(params({ exposure: 1 }));
@@ -180,6 +185,32 @@ describe("reads current", () => {
         stringify.mockRestore();
       }
     });
+  });
+
+  // A stage that reads the current image from version 2 reads the decode on a
+  // version 1 photo, as a source reader does: an upstream edit draws no split
+  // and leaves its passes' result as it was. Version 2 is the control.
+  it("reads the decode on an older version when it reads the current image from a later one", () => {
+    const fromV2 = copyStage({ readsCurrentFrom: 2 });
+    const run = (processVersion: number) =>
+      withRenderer({ stages: [...basicStages(), fromV2], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+        r.setImage(flat(0.2));
+        r.setParams(identityParams({ processVersion, exposure: 1 }));
+        r.setContributedParams({ "test.current.take": 1 });
+        const first = pixelAt(capture(r), 8, 8)[1];
+        const before = { ...r.renderDrawCounts };
+        r.setParams(identityParams({ processVersion, exposure: 0.5 }));
+        r.render();
+        return { first, split: r.renderDrawCounts.split - before.split, pass: r.renderDrawCounts.pass - before.pass };
+      });
+    const v1 = run(1);
+    expect(v1.first).toBeCloseTo(0.2, 2);
+    expect(v1.split).toBe(0);
+    expect(v1.pass).toBe(0);
+    const v2 = run(CURRENT_PROCESS_VERSION);
+    expect(v2.first).toBeCloseTo(0.4, 2);
+    expect(v2.split).toBe(1);
+    expect(v2.pass).toBeGreaterThan(0);
   });
 
   // The tests below keep one renderer across frames: a split's cache entry
@@ -301,7 +332,7 @@ describe("reads current", () => {
   // exposure, so neither can stale it.
   it("keeps a noise-reduction reader's split through an Exposure change", () => {
     const reader = copyStage({ phase: "noise-reduction" });
-    withRenderer({ stages: [reader], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+    withRenderer({ stages: [...basicStages(), reader], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
       r.setImage(flat(0.2));
       r.setContributedParams({ "test.current.take": 1 });
       r.setParams(params());
@@ -341,7 +372,7 @@ describe("reads current", () => {
       glsl: "lin = mix(lin, stageResult * 2.0, take);",
     });
     const reader = copyStage({ id: "test.reader", priority: 20 });
-    withRenderer({ stages: [doubler, reader], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+    withRenderer({ stages: [...basicStages(), doubler, reader], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
       r.setImage(flat(0.2));
       r.setContributedParams({ "test.doubler.take": 1, "test.reader.take": 1 });
       for (const exposure of [1, 0.5]) {
@@ -431,7 +462,7 @@ describe("reads current", () => {
 
   it("lines the split up with the source under a crop", () => {
     const ramp = floatImage(32, 8, (x) => [x / 32, x / 32, x / 32]);
-    withRenderer({ stages: [copyStage()], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
+    withRenderer({ stages: [...cropStages(), copyStage()], pipeline: LINEAR_PROBE_PIPELINE }, (r) => {
       r.setImage(ramp);
       r.setParams(params({ crop: { ...DEFAULT_CROP, x: 0.25, width: 0.5 } }));
       r.setContributedParams({ "test.current.take": 1 });
@@ -478,6 +509,7 @@ describe("reads current", () => {
       const r = new WebGLRenderer(canvas, {
         stages: [copyStage()],
         pipeline: LINEAR_PROBE_PIPELINE,
+        derive: deriveWithoutSettings,
       });
       r.setImage(flat(0.2));
       r.setParams(params({ exposure: 1 }));
@@ -500,6 +532,7 @@ describe("reads current", () => {
       const r = new WebGLRenderer(canvas, {
         stages: [copyStage()],
         pipeline: LINEAR_PROBE_PIPELINE,
+        derive: deriveWithoutSettings,
       });
       try {
         r.setImage(flat(0.2));

@@ -7,7 +7,7 @@
 // from the live histogram of the rendered canvas and reports whether the image
 // has converged. The caller (use-auto-adjust) applies the step, lets the
 // pipeline re-render, then re-measures — so a single button press drives the
-// real render loop to a balanced, detail-maximising result instead of needing
+// real render loop to a balanced, detail-maximizing result instead of needing
 // several manual clicks. Driving the actual pipeline this way sidesteps the
 // non-linear tone curve that a single analytic pass can't invert.
 
@@ -43,7 +43,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
 // ---------------------------------------------------------------------------
-// Auto white balance — one gray-world step
+// Auto white balance — one grey-world step
 // ---------------------------------------------------------------------------
 export interface WbStep {
   temperature: number;
@@ -52,9 +52,9 @@ export interface WbStep {
 }
 
 /**
- * One gray-world white-balance step. Measures the rendered channel means,
+ * One grey-world white-balance step. Measures the rendered channel means,
  * estimates the pre-WB scene ratios by removing the current gains, solves for
- * the Kelvin temperature + tint that neutralise them, then moves most of the
+ * the Kelvin temperature + tint that neutralize them, then moves most of the
  * way there (damped, to stay stable across iterations). `done` is true once the
  * three channel means agree to within ~1%.
  */
@@ -69,10 +69,10 @@ export function autoWhiteBalanceStep(hist: HistogramData, params: DevelopParams,
 }
 
 /**
- * One white-balance step toward neutralising the linear RGB triple (mR,mG,mB).
+ * One white-balance step toward neutralizing the linear RGB triple (mR,mG,mB).
  * Shared by Auto WB (channel means of the whole frame) and the eyedropper picker
  * (a single sampled point that should be grey). Estimates the pre-WB scene
- * ratios, solves for the Kelvin temperature + tint that neutralise them, then
+ * ratios, solves for the Kelvin temperature + tint that neutralize them, then
  * moves most of the way there (damped). `done` is true once R/G/B agree to ~1%.
  */
 export function whiteBalanceStepFromLinear(

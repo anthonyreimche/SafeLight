@@ -9,7 +9,7 @@
 
 /** The snapshot index a stored cursor resolves to, for a stack of `length >= 1`
  *  snapshots. The cursor is untrusted, hence `unknown`: a truncated write, a
- *  hand-edited catalog or an extension (through `api.catalog.putEditState`) can
+ *  hand-edited catalogue or an extension (through `api.catalog.putEditState`) can
  *  leave anything behind. A fraction truncates, an out-of-range number lands on
  *  the nearest end, and a value with no nearest end (NaN, or anything that is
  *  not a number) lands on the newest snapshot. */

@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   declaredConnectHosts,
+  isOfficialOnlyId,
   isReservedExtensionId,
   listDevManifests,
   listInstalledManifests,
@@ -26,6 +27,7 @@ import {
   writeDevFolder,
 } from "./extension-origins.cjs";
 import { isReservedExtensionId as isReservedInRenderer } from "../src/extensions/core-extension";
+import { isOfficialOnlyId as isOfficialOnlyInRenderer } from "../src/extensions/official-extensions";
 
 let root: string;
 
@@ -64,6 +66,47 @@ describe("validManifest", () => {
   );
 });
 
+// Ids under "safelight" belong to the official extensions: one is valid only
+// when electron/official-extensions.json lists it and the manifest names that
+// row's repository.
+describe("validManifest: ids under safelight", () => {
+  const from = (id: string, repository?: unknown) =>
+    manifest(id, repository === undefined ? {} : { repository });
+
+  it.each([
+    ["safelight.basic", "anthonyreimche/basic-adjustments"],
+    ["safelight.basic", "AnthonyReimche/Basic-Adjustments"],
+    ["safelight.devtools", "anthonyreimche/developer-tools"],
+  ])("accepts %s from its own repository %s", (id, repository) => {
+    expect(validManifest(from(id, repository))).toBe(true);
+  });
+
+  it.each([
+    ["safelight.basic", undefined],
+    ["safelight.basic", 5],
+    ["safelight.basic", "acme/basic-adjustments"],
+    ["safelight.basic", "anthonyreimche/hsl"],
+    ["safelight.unlisted", "anthonyreimche/unlisted"],
+    ["safelight", "anthonyreimche/library"],
+    ["Safelight.Basic", "anthonyreimche/basic-adjustments"],
+  ])("refuses %s with the repository %j", (id, repository) => {
+    expect(validManifest(from(id, repository))).toBe(false);
+  });
+
+  it.each(["safelightx.tool", "acme.safelight", "my.safelight.basic"])(
+    "accepts %s, which is not under safelight",
+    (id) => {
+      expect(validManifest(from(id))).toBe(true);
+    },
+  );
+
+  it("never lists an installed copy that names another repository", () => {
+    writeExt(path.join(root, "safelight.hsl"), from("safelight.hsl", "acme/hsl"));
+    writeExt(path.join(root, "safelight.info"), from("safelight.info", "anthonyreimche/info"));
+    expect(ids(listInstalledManifests(root))).toEqual(["safelight.info"]);
+  });
+});
+
 // Each runtime states the reserved-id rule once (here, and in the renderer's
 // core-extension.ts). The same id must come out the same in both, or one of them
 // lets through what the other refuses.
@@ -85,6 +128,23 @@ describe("the reserved-id rule", () => {
     "",
   ])("is the same in the main process and the renderer for %j", (id) => {
     expect(isReservedExtensionId(id)).toBe(isReservedInRenderer(id));
+  });
+});
+
+describe("the official-only id rule", () => {
+  it.each([
+    "safelight",
+    "safelight.basic",
+    "SAFELIGHT",
+    "Safelight.Tools",
+    "safelight.",
+    ".safelight",
+    "safelight-x",
+    "safelightx",
+    "acme.safelight",
+    "",
+  ])("is the same in the main process and the renderer for %j", (id) => {
+    expect(isOfficialOnlyId(id)).toBe(isOfficialOnlyInRenderer(id));
   });
 });
 

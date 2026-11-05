@@ -5,7 +5,7 @@
 Safelight refers to third-party products and formats by name where it is
 necessary to describe what the software does — for example, camera RAW formats
 (NEF, CR2/CR3, ARW, DNG, ORF, RAF, and others), manufacturer and camera-model
-names, color spaces (Adobe RGB, Display P3, ProPhoto), and other editors it
+names, colour spaces (Adobe RGB, Display P3, ProPhoto), and other editors it
 interoperates with or imports from.
 
 All product names, logos, brands, and trademarks are the property of their
@@ -18,7 +18,7 @@ being approximated, not to claim any association with the trademark holder.
 ## The Safelight name
 
 "Safelight" and the Safelight logo identify this project and the builds released
-by its author. The project's GPL v3 license grants you broad rights to the
+by its author. The project's GPL v3 licence grants you broad rights to the
 **code**; it does **not** grant rights to the project **name or logo**.
 
 If you distribute a modified version, please use a different name and logo so

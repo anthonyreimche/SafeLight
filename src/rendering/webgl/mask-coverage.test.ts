@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// bakeCoverage rasterises through a 2D canvas (DOM or OffscreenCanvas), neither
+// bakeCoverage rasterizes through a 2D canvas (DOM or OffscreenCanvas), neither
 // of which exists in the node test environment, so only its empty-list guard —
 // which returns before any canvas is touched — is exercised here. The cache
 // signature it is paired with, and the identity memo that spares it, are pure
@@ -54,7 +54,7 @@ describe("coverageSignature", () => {
     }
   });
 
-  it("quantises geometry below the bake's resolvable precision", () => {
+  it("quantizes geometry below the bake's resolvable precision", () => {
     // 4 decimals of UV over a 768 px bake is well under a texel, so a nudge that
     // small must not invalidate the cached atlas.
     expect(coverageSignature([item("m1", [dab({ x: 0.5000004 })])], 1)).toBe(

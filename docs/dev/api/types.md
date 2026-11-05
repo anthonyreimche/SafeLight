@@ -6,7 +6,7 @@ The records extensions read and write. Defined in `src/catalog/types.ts`.
 
 ## CatalogPhoto
 
-One photo in the catalog, as stored in `catalog.json`.
+One photo in the catalogue, as stored in `catalog.json`.
 
 ```typescript
 interface CatalogPhoto {
@@ -104,7 +104,7 @@ Notes:
 - `panels` lists [per-mask panels](ui-shell.md#per-mask-panels-panelcontributionmask). Unknown ids are kept, so a disabled extension's sub-panels return when it is re-enabled.
 - A [maskable stage](contributions.md#processingstagecontribution--gpu-stage) with keys in `bag` runs again inside the mask with those values, on process version 2 or later.
 - Brush mask components and extension [coverage textures](contributions.md#processingstagecontribution--gpu-stage) share one four-channel texture (`MAX_BRUSH_MASKS` = 4).
-- The actions that build masks and spots are in [Brushes, masks & retouch](stores.md#brushes-masks--retouch-interactive-develop-tools).
+- The actions that edit masks are in [Masks](stores.md#masks-the-develop-stores-mask-edits).
 
 ## EditState
 
@@ -129,4 +129,4 @@ Notes:
 
 - `commitEdit(label)` in the develop store adds an entry only if the edit changed. A no-op commit adds nothing, keeps redo, and fires no `onEditCommit`.
 - Read and write whole stacks with [`api.catalog.getEditState` / `putEditState`](stores.md#apicatalog). Writing the photo open in Develop reloads it there.
-- Observe commits with a [catalog hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.
+- Observe commits with a [catalogue hook](contributions.md#cataloghookscontribution)'s `onEditCommit`.

@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { NativeFsBridge } from "@/extensions/types";
 import { MemoryFs, fsaDirectoryHandle } from "./memory-fs.test-support";
 
@@ -16,6 +16,7 @@ import {
   nativeDirectoryHandle,
   nativeFs,
   nativePathOf,
+  pickDirectoryHandle,
   pickNativeDirectory,
   readFileSlice,
   revealNativePath,
@@ -71,6 +72,38 @@ describe("native-fs bridge detection", () => {
   });
 });
 
+describe("pickDirectoryHandle", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("returns a native handle for the picked folder on the desktop", async () => {
+    mount("D:\\Exports").picked = "D:\\Exports";
+    const dir = await pickDirectoryHandle("safelight-export");
+    expect(dir && nativePathOf(dir)).toBe("D:\\Exports");
+  });
+
+  it("returns null when the native picker is cancelled", async () => {
+    mount().picked = null;
+    await expect(pickDirectoryHandle("safelight-export")).resolves.toBeNull();
+  });
+
+  it("asks the File System Access picker for a writable folder in the browser", async () => {
+    const handle = { kind: "directory", name: "out" };
+    const showDirectoryPicker = vi.fn(async () => handle);
+    vi.stubGlobal("window", { showDirectoryPicker });
+    await expect(pickDirectoryHandle("safelight-export")).resolves.toBe(handle);
+    expect(showDirectoryPicker).toHaveBeenCalledWith({ mode: "readwrite", id: "safelight-export" });
+  });
+
+  it("returns null when the browser picker is dismissed", async () => {
+    vi.stubGlobal("window", {
+      showDirectoryPicker: async () => {
+        throw new DOMException("The user aborted a request.", "AbortError");
+      },
+    });
+    await expect(pickDirectoryHandle("safelight-export")).resolves.toBeNull();
+  });
+});
+
 describe("nativePathOf", () => {
   it("recovers the absolute path from a native handle", () => {
     mount("/home/u/photos");
@@ -120,6 +153,18 @@ describe.each(ROOTS)("native handles ($label paths)", ({ root, base, child }) =>
     expect(file.type).toBe("image/jpeg");
     expect(file.lastModified).toBe(mtimeMs);
     expect(await file.text()).toBe("jpeg-bytes");
+  });
+
+  it("types every standard photo extension, avif and the pnm family included", async () => {
+    const fs = mount(root);
+    fs.put(`${root}/a.AVIF`, "x");
+    fs.put(`${root}/b.ppm`, "x");
+    const dir = nativeDirectoryHandle(root);
+
+    expect((await (await dir.getFileHandle("a.AVIF")).getFile()).type).toBe("image/avif");
+    expect((await (await dir.getFileHandle("b.ppm")).getFile()).type).toBe(
+      "image/x-portable-pixmap",
+    );
   });
 
   it("derives the MIME type from the file name, not from a dot in its folder", async () => {
@@ -197,7 +242,7 @@ describe.each(ROOTS)("native handles ($label paths)", ({ root, base, child }) =>
 });
 
 describe("native handle sandboxing", () => {
-  // A native handle is reachable from the catalog store, so an extension holding
+  // A native handle is reachable from the catalogue store, so an extension holding
   // the project folder's directoryHandle must not be able to walk out of it.
   const escapes = ["..", ".", "", "../secret", "a/b", "a\\b", "/etc/passwd", "D:\\other"];
 
@@ -229,7 +274,7 @@ describe("native writable close", () => {
   }
 
   it("sends a text write to the bridge before close() is awaited", async () => {
-    // The last catalog flush runs inside beforeunload; anything still waiting on
+    // The last catalogue flush runs inside beforeunload; anything still waiting on
     // an await when the page unloads never reaches the main process.
     const fs = mount(root);
     const send = vi.spyOn(fs, "write");

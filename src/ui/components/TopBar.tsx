@@ -11,10 +11,13 @@ import { moduleLabel } from "@/extensions/registry";
 import { ModuleTabs } from "./ModuleTabs";
 import { ViewMenu } from "./ViewMenu";
 import { LayoutMenu } from "./LayoutMenu";
-import { openPreferences } from "./PreferencesDialog";
-import { openExtensions } from "./ExtensionsDialog";
+import { openPreferences } from "@/ui/preferences/preferences-store";
+import { openExtensions } from "./extensions-dialog-store";
+import { confirmDialog } from "./ConfirmDialog";
 import { ReportIssueButton } from "./ReportIssueButton";
-import { useDisabledExtensions } from "@/extensions/loader";
+import { EssentialsNotice } from "./EssentialsNotice";
+import { usePluginRunning } from "@/extensions/loader";
+import { DEVTOOLS_EXTENSION_ID } from "@/extensions/official-extensions";
 import { detachDevtools } from "@/extensions/devtools/detach";
 import { dragBarStyle, noDragStyle, useTitleBarOverlay } from "@/ui/window-chrome";
 
@@ -97,11 +100,25 @@ export function TopBar() {
   useTitleBarOverlay("--color-surface-1"); // bar bg in both the app and detached branches
   const dm = detachedModule();
   const closeProject = useProjectStore((s) => s.closeProject);
+  // Closing keeps every edit; only an import still running is cut short.
+  const leaveProject = async () => {
+    const { opening, importDone, importTotal } = useProjectStore.getState();
+    if (opening || importDone < importTotal) {
+      const confirmed = await confirmDialog({
+        title: "Close project",
+        message: "Photos are still being imported. Closing now stops the import; the photos already added stay in the project.",
+        confirmLabel: "Close project",
+        cancelLabel: "Keep working",
+      });
+      if (!confirmed) return;
+    }
+    closeProject();
+  };
   const needsReconnect = useCatalogStore((s) => s.needsReconnect);
   const reconnecting = useCatalogStore((s) => s.reconnecting);
   const reconnectFiles = useCatalogStore((s) => s.reconnectFiles);
-  // The bug button only appears while the Developer Tools extension is enabled.
-  const devtoolsEnabled = useDisabledExtensions((s) => !s.ids.includes("core.devtools"));
+  // The bug button only appears while the Developer Tools extension is running.
+  const devtoolsEnabled = usePluginRunning(DEVTOOLS_EXTENSION_ID);
 
   // Browsers only allow re-requesting file permission inside a user gesture, so
   // we arm a one-time listener: the first click anywhere triggers the reconnect.
@@ -118,7 +135,7 @@ export function TopBar() {
         onClick={() => void reconnectFiles()}
         disabled={reconnecting}
         title="Re-grant access to your project folder so Develop and Export use full-resolution originals (browsers reset this each session)."
-        className="flex items-center gap-1.5 rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-white hover:bg-surface-4 disabled:opacity-70"
+        className="flex items-center gap-1.5 rounded bg-slider-fill px-3 py-1 text-[11px] font-medium text-on-accent hover:opacity-90 disabled:opacity-70"
       >
         {reconnecting && (
           <span className="h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white" />
@@ -166,7 +183,7 @@ export function TopBar() {
     >
       <div className="flex items-center gap-1" style={noDragStyle}>
         <button
-          onClick={closeProject}
+          onClick={() => void leaveProject()}
           title="Return to welcome screen"
           className="mr-3 text-xs font-semibold tracking-widest text-text-secondary transition-colors hover:text-text-primary"
         >
@@ -194,6 +211,7 @@ export function TopBar() {
         )}
       </div>
       <div className="flex items-center gap-2" style={noDragStyle}>
+        <EssentialsNotice />
         {reconnectButton}
       </div>
     </div>

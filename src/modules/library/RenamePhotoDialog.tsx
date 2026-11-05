@@ -3,7 +3,8 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Dialog } from "@/ui/components/Dialog";
 
 // Characters no Windows/macOS/Linux filesystem accepts in a path segment, plus
 // control chars — the same name reaches the on-disk rename verbatim.
@@ -47,7 +48,11 @@ export function RenamePhotoDialog({
 }: Props) {
   const [name, setName] = useState(initial);
   const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => inputRef.current?.select(), []);
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+  const titleId = useId();
 
   const taken = useMemo(
     () => new Set(takenNames.map((n) => n.trim().toLowerCase())),
@@ -65,60 +70,56 @@ export function RenamePhotoDialog({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel();
-      }}
+    <Dialog
+      labelledBy={titleId}
+      onClose={onCancel}
+      className="w-[360px] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-1)] shadow-xl"
     >
-      <div className="w-[360px] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-1)] shadow-xl">
-        <div className="space-y-2 p-3">
-          <div className="text-[10px] uppercase tracking-wide text-[var(--color-text-tertiary)]">
-            {title}
-          </div>
-          <div className="flex items-center rounded bg-[var(--color-surface-2)] focus-within:ring-1 focus-within:ring-[var(--color-accent)]">
-            {prefix && (
-              <span className="shrink-0 pl-2 text-[12px] text-[var(--color-text-tertiary)]">
-                {prefix}
-              </span>
-            )}
-            <input
-              ref={inputRef}
-              type="text"
-              value={name}
-              placeholder={placeholder ?? "Name"}
-              aria-label={title}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submit();
-                if (e.key === "Escape") onCancel();
-              }}
-              className="min-w-0 flex-1 bg-transparent px-2 py-1 text-[12px] text-[var(--color-text)] placeholder:text-[var(--color-text-tertiary)] focus:outline-none"
-            />
-            {suffix && (
-              <span className="shrink-0 pr-2 text-[12px] text-[var(--color-text-tertiary)]">
-                {suffix}
-              </span>
-            )}
-          </div>
-          {error && <div className="text-[10px] text-[var(--color-label-red)]">{error}</div>}
+      <div className="space-y-2 p-3">
+        <div id={titleId} className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">
+          {title}
         </div>
-        <div className="flex justify-end gap-2 border-t border-[var(--color-border)] p-3">
-          <button
-            className="rounded bg-[var(--color-surface-2)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
-            onClick={onCancel}
-          >
-            Cancel
-          </button>
-          <button
-            disabled={!canSave}
-            className="rounded bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            onClick={submit}
-          >
-            Rename
-          </button>
+        <div className="flex items-center rounded bg-[var(--color-surface-2)] focus-within:ring-1 focus-within:ring-[var(--color-accent)]">
+          {prefix && (
+            <span className="shrink-0 pl-2 text-[12px] text-[var(--color-text-muted)]">
+              {prefix}
+            </span>
+          )}
+          <input
+            ref={inputRef}
+            type="text"
+            value={name}
+            placeholder={placeholder ?? "Name"}
+            aria-label={title}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit();
+            }}
+            className="min-w-0 flex-1 bg-transparent px-2 py-1 text-[12px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none"
+          />
+          {suffix && (
+            <span className="shrink-0 pr-2 text-[12px] text-[var(--color-text-muted)]">
+              {suffix}
+            </span>
+          )}
         </div>
+        {error && <div className="text-[10px] text-[var(--color-label-red)]">{error}</div>}
       </div>
-    </div>
+      <div className="flex justify-end gap-2 border-t border-[var(--color-border)] p-3">
+        <button
+          className="rounded bg-[var(--color-surface-2)] px-3 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+        <button
+          disabled={!canSave}
+          className="rounded bg-[var(--color-accent)] px-3 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={submit}
+        >
+          Rename
+        </button>
+      </div>
+    </Dialog>
   );
 }

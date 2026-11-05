@@ -8,7 +8,7 @@ The core systems behind the API, from an extension's point of view: what each on
 
 ## Storage
 
-A project keeps its catalog with the photos, in `<project>/.safelight/`:
+A project keeps its catalogue with the photos, in `<project>/.safelight/`:
 
 ```
 <project>/.safelight/
@@ -17,7 +17,7 @@ A project keeps its catalog with the photos, in `<project>/.safelight/`:
 └─ raw/           # decoded RAW cache (see RAW)
 ```
 
-- Read and write records and edits through [`api.catalog`](stores.md#apicatalog) and the catalog store, not the storage object. Writes there reach every window.
+- Read and write records and edits through [`api.catalog`](stores.md#apicatalog) and the catalogue store, not the storage object. Writes there reach every window.
 - An edit you put is visible to `getEditState` as soon as the call returns, before the file is saved, so you can reload Develop right after.
 - With no project open, writes do nothing.
 
@@ -95,7 +95,7 @@ Each photo goes through these steps:
 
 Every Safelight window runs its own copy of the app and of each extension. The windows keep each other up to date:
 
-- **Catalog records and edits** reach every window on the same catalog when they are written, through `api.catalog` or the catalog store. Each change is stamped, so the newest wins whatever order messages arrive in. Never post these messages yourself.
+- **Catalogue records and edits** reach every window on the same catalogue when they are written, through `api.catalog` or the catalogue store. Each change is stamped, so the newest wins whatever order messages arrive in. Never post these messages yourself.
 - **Edits** reach other windows when they are committed (a slider released, undo, redo, paste), not on every slider tick. Only the window doing the editing shows the in-progress look.
 - **Preferences, themes, layouts, shortcuts and extension settings** sync between windows on their own.
 - For your own state across windows, use [`api.settings`](README.md#imperative-control-surfaces) (persisted) or [`api.variables`](stores.md#apivariables-shared-variables) (for the session).
@@ -116,10 +116,10 @@ Present only in the desktop app. Feature-detect it, and its optional members, be
 |---|---|
 | `platform`, `versions`, `appVersion()` | Host OS, Electron and Chrome versions, the app version |
 | `releases.fetch(repo)` | GitHub Releases, fetched outside the app's content-security policy |
-| `github.{repoMeta, readme, iconUrl, thumbnails, onThumbnail}` | Store metadata, READMEs and thumbnails |
+| `github.{repoMeta, readme, thumbnails, onThumbnail}` | Store metadata, READMEs and thumbnails |
 | `plugins.{list, install, uninstall, search}` | The extension host's install folder |
 | `devtools.{open, close, toggle, isOpen, reload, syncDevFolder}` | Chrome DevTools, for the Developer Tools extension |
 | `diagnostics.{gpuInfo, metrics}` | GPU feature status and per-process metrics |
 | `titlebar.setOverlay(color, symbolColor)` | Recolour the native window controls |
 
-Raw filesystem access by path and the update installer are not on the bridge. The core claims them once at boot, before any extension loads, so extension code can't reach them. Work with files through the handles the core gives you, such as `CatalogPhoto.fileHandle` and the `dir` passed to catalog hooks.
+Raw filesystem access by path and the update installer are not on the bridge. The core claims them once at boot, before any extension loads, so extension code can't reach them. Work with files through the handles the core gives you, such as `CatalogPhoto.fileHandle` and the `dir` passed to catalogue hooks.

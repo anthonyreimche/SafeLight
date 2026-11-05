@@ -107,7 +107,7 @@ describe("normalizeParamBag — enabled vs disabled divergence", () => {
   // the owning extension is loaded. This is intentional (you can't re-validate a
   // param whose descriptor isn't present), but it's the subtle seam that makes
   // 'disable → re-enable' able to resurrect stale params. Pin both sides so a
-  // refactor can't quietly collapse them into one behavior.
+  // refactor can't quietly collapse them into one behaviour.
   it("drops an out-of-type value while the stage is registered", () => {
     registerStageParams("test.stage", STAGE, EXT, UNIFORMS);
     expect(normalizeParamBag({ "test.stage.amount": "bad" })).toEqual({});

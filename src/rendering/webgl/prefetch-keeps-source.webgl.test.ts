@@ -37,7 +37,7 @@ describe("a neighbour decoded ahead", () => {
       renderer.render();
       expect(brightest()).toBeLessThanOrEqual(1);
 
-      renderer.uploadSource("b:0", WHITE, undefined, false, false, false);
+      renderer.uploadSource("b:0", WHITE, undefined, false, false);
       renderer.render();
       expect(brightest()).toBeLessThanOrEqual(1);
     });

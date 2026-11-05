@@ -29,7 +29,7 @@ export interface NestedAdjustment {
   step: number;
 }
 
-// Ranges mirror the Effects panel exactly (it derives its sliders from here).
+// Ranges mirror the Effects extension's sliders (safelight.effects).
 export const NESTED_ADJUSTMENTS: NestedAdjustment[] = [
   { key: "vignette.amount",     label: "Amount",     group: "Vignette", parent: "vignette", field: "amount",     min: -100, max: 100, step: 1 },
   { key: "vignette.midpoint",   label: "Midpoint",   group: "Vignette", parent: "vignette", field: "midpoint",   min: 0,    max: 100, step: 1 },
@@ -39,11 +39,8 @@ export const NESTED_ADJUSTMENTS: NestedAdjustment[] = [
   { key: "grain.amount",        label: "Amount",     group: "Grain",    parent: "grain",    field: "amount",     min: 0,    max: 100, step: 1 },
   { key: "grain.size",          label: "Size",       group: "Grain",    parent: "grain",    field: "size",       min: 25,   max: 100, step: 1 },
   { key: "grain.roughness",     label: "Roughness",  group: "Grain",    parent: "grain",    field: "roughness",  min: 0,    max: 100, step: 1 },
-  { key: "grain.color",         label: "Color",      group: "Grain",    parent: "grain",    field: "color",      min: 0,    max: 100, step: 1 },
+  { key: "grain.color",         label: "Colour",     group: "Grain",    parent: "grain",    field: "color",      min: 0,    max: 100, step: 1 },
 ];
-
-export const VIGNETTE_ADJUSTMENTS = NESTED_ADJUSTMENTS.filter((a) => a.parent === "vignette");
-export const GRAIN_ADJUSTMENTS = NESTED_ADJUSTMENTS.filter((a) => a.parent === "grain");
 
 const byKey = new Map(NESTED_ADJUSTMENTS.map((a) => [a.key, a]));
 

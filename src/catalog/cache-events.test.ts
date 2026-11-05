@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { emitCacheEntryFilled, onCacheEntryFilled, type FilledEntry } from "./cache-events";
-import { rawPhoto } from "@/modules/library/raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
 const entry = (): FilledEntry => ({
   photo: rawPhoto("DSC_0001.NEF"),

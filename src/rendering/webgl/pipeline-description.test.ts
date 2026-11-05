@@ -16,6 +16,7 @@ import { BUILTIN_RESOLVED, type ResolvedPipeline } from "@/extensions/pipelines"
 import type { ProcessingPhase, ProcessingStageContribution } from "@/extensions/types";
 import { fromSpaceExpr, isIdentitySpace, spaceKey, toSpaceExpr } from "../stage-space";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
+import { isBuiltInStage } from "./builtin-stage";
 import { isMaskInstance, maskInstances } from "./mask-stage-instances";
 import { CORE_BLOCKS, describePipeline, findFloors, type ClipWhen, type PipelineRow } from "./pipeline-description";
 import { V1_VARIANT, V2_VARIANT, V3_VARIANT, buildFragmentShader, type ShaderVariant } from "./shaders";
@@ -158,7 +159,10 @@ describe("describePipeline against the GLSL buildStageInjection writes", () => {
         });
 
         it("lists the stages in pipeline order, without their mask copies", () => {
-          const order = built.sig.split("|").map((entry) => entry.slice(0, entry.lastIndexOf(":")));
+          // Where each is written: an anchored stage's place is its anchor's, not its phase's.
+          const order = GROUPS.flatMap((g) =>
+            built.steps.flatMap((s) => (s.kind === "stage" && s.group === g ? [s.stageId] : [])),
+          );
           const copies = new Set(stages.filter(isMaskInstance).map((s) => s.id));
           expect(rowsOf(rows, "stage").map((r) => r.id)).toEqual(order.filter((id) => !copies.has(id)));
         });
@@ -205,27 +209,13 @@ describe("describePipeline against the GLSL buildStageInjection writes", () => {
 // Where each core block starts in main(), by a phrase only that block has there,
 // on the block's first line in every version.
 const BLOCK_MARKERS: Record<string, string> = {
-  "Crop & Straighten": "cropTransformUV(viewUv)",
+  Geometry: "cropTransformUV(viewUv)",
   Heal: "src = applyRetouch(srcUv, src)",
   "Linear source and baseline tone": "vec3 lin = uLinear ? src",
   "Noise Reduction": "if (!uSkipCoreNR",
   "Channel reconstruction": "lin = reconstructClipped(lin, srcUv)",
-  "White Balance": "lin = applyWhiteBalance(lin",
-  "Exposure, Highlights, Shadows & tone shoulder": "float E = uExposure;",
   "Masking (scene values)": "float mcovs[MAX_MASKS]",
   "Display transform": "vec3 disp = ",
-  Whites: "abs(uWhites)",
-  Blacks: "abs(uBlacks)",
-  Contrast: "abs(ck)",
-  "Tone Curve": "applyToneCurve(c)",
-  HSL: "applyHSL(",
-  Dehaze: "abs(dehAmt)",
-  Clarity: "abs(clarAmt)",
-  Texture: "abs(texAmt)",
-  "Highlight Detail & Shadow Detail": "float bandDet",
-  "Vibrance & Saturation": "uVibrance",
-  "Color Grading": "applyColorGrading(",
-  Sharpening: "float sharpen = uSharpening",
   "Masking (display values)": "float mcov = mcovs[mi];",
 };
 const OUTPUT_MARKER = "vec3 outRgb = ";
@@ -237,9 +227,14 @@ const PLACEHOLDERS = {
   effects: "//__CONTRIBUTED_EFFECTS__",
 };
 
-/** The develop program with each group's placeholder left where it stands. */
+/** The develop program with Safelight's own stages (no Essentials: their
+ *  stage rows speak for them), each group's placeholder left where it stands. */
 const program = (variant: ShaderVariant): string =>
-  buildFragmentShader(null, { uniforms: "", helpers: "", ...PLACEHOLDERS }, variant);
+  buildFragmentShader(
+    null,
+    { ...buildStageInjection(builtinStages().filter(isBuiltInStage), variant).injection, ...PLACEHOLDERS },
+    variant,
+  );
 
 /** Where a clip is in one version's main(), and when it runs there. */
 type At = readonly [phrase: string, when: ClipWhen];
@@ -262,12 +257,8 @@ const everywhere = (phrase: string, when: ClipWhen) =>
   ({ v1: [phrase, when], v2: [phrase, when], v3: [phrase, when] }) as const;
 const fromV2 = (phrase: string, when: ClipWhen) => ({ v2: [phrase, when], v3: [phrase, when] }) as const;
 const thenClip = (line: string) => `${line}\n    c = clamp(c, 0.0, 1.0);`;
-const gateClip = (gate: string) => thenClip(`${gate} > 0.001) {`);
-const RESULT_CLIP = thenClip("c = c * (newL / L);");
 const HEAL_CALL = "src = applyRetouch(srcUv, src);";
 const FALLBACK_CLIP = thenClip("if (uIsFallbackPreview) {");
-const OPENS_CLIPPED = "{\n  c = clamp(c, 0.0, 1.0);";
-const VIB_SAT_GATE = "if (abs(uVibrance) >= 0.1 || abs(uSaturation) > 0.1)\n    c = applyVibSat(";
 
 // Every clip of the working colour in the develop program's main(), in
 // program order (the review's clip-site list). The code phrases key each one
@@ -281,50 +272,9 @@ const CLIP_SITES: ClipSite[] = [
     block: "Display transform", where: "result",
     v1: ["vec3 disp = clamp(pipelineToDisplay(lin), 0.0, 1.0);", "always"],
   },
-  { block: "Whites", where: "input", ...fromV2(gateClip("abs(uWhites)"), IN_USE) },
-  { block: "Whites", where: "result", ...everywhere(RESULT_CLIP, IN_USE) },
-  { block: "Blacks", where: "input", ...fromV2(gateClip("abs(uBlacks)"), IN_USE) },
-  { block: "Blacks", where: "result", ...everywhere(RESULT_CLIP, IN_USE) },
-  { block: "Contrast", where: "input", ...fromV2(gateClip("abs(ck)"), IN_USE) },
-  { block: "Contrast", where: "result", ...everywhere(thenClip("c = c * (Lnew / max(L, 1e-4));"), IN_USE) },
-  {
-    block: "Tone Curve", where: "input",
-    v1: ["c = applyToneCurve(c);", "always"], ...fromV2("if (uCurveActive) c = applyToneCurve(c);", IN_USE),
-    helper: ["applyToneCurve", OPENS_CLIPPED],
-  },
-  { block: "HSL", where: "input", ...fromV2("if (uHslActive) c = applyHSL(clamp(c, 0.0, 1.0));", IN_USE) },
-  {
-    block: "HSL", where: "result",
-    v1: ["c = applyHSL(c);", "always"], ...fromV2("if (uHslActive) c = applyHSL(", IN_USE),
-    helper: ["applyHSL", "return clamp(rgb, 0.0, 1.0);"],
-  },
-  { block: "Dehaze", where: "input", ...fromV2(gateClip("abs(dehAmt)"), IN_USE) },
-  { block: "Dehaze", where: "result", ...everywhere(thenClip("c = mix(vec3(dl), c, 1.0 + dehAmt * 0.4);"), IN_USE) },
-  { block: "Highlight Detail & Shadow Detail", where: "result", v1: ["}\n  c = clamp(c, 0.0, 1.0);", "always"] },
-  {
-    block: "Vibrance & Saturation", where: "input",
-    v1: ["c = applyVibSat(c, uVibrance, uSaturation);", "always"], ...fromV2(VIB_SAT_GATE, IN_USE),
-    helper: ["applyVibSat", OPENS_CLIPPED],
-  },
-  // Version 1 calls it for every pixel, but it clips its result only for a
-  // saturation or vibrance it applies.
-  {
-    block: "Vibrance & Saturation", where: "result",
-    v1: ["c = applyVibSat(", IN_USE], ...fromV2(VIB_SAT_GATE, IN_USE),
-    helper: ["applyVibSat", "c = clamp(mix(vec3(l), c, 1.0 + vibAmt), 0.0, 1.0);"],
-  },
-  {
-    block: "Color Grading", where: "input",
-    ...fromV2("if (uColorGradingActive) c = applyColorGrading(clamp(c, 0.0, 1.0));", IN_USE),
-  },
-  {
-    block: "Color Grading", where: "result",
-    v1: ["c = applyColorGrading(c);", "always"], ...fromV2("if (uColorGradingActive) c = applyColorGrading(", IN_USE),
-    helper: ["applyColorGrading", "return clamp(c, 0.0, 1.0);"],
-  },
   // Version 3 drops it: nothing produces a fallback preview.
   {
-    block: "Sharpening", where: "result",
+    block: "Display transform", where: "result",
     v1: [FALLBACK_CLIP, "fallback-preview"], v2: [FALLBACK_CLIP, "fallback-preview"],
   },
   {
@@ -573,6 +523,44 @@ describe("what each version does differently", () => {
   });
 });
 
+describe("stages at anchors", () => {
+  const AT_SHARPEN: ProcessingStageContribution = {
+    id: "core.probe-sharpen",
+    name: "Sharpening probe",
+    phase: "display-adjust",
+    anchor: "sharpen",
+    glsl: "c = c;",
+    uniforms: [],
+  };
+
+  for (const [version, variant] of VARIANTS) {
+    it(`list each right above its tool's row, not with the masks (${version})`, () => {
+      const rows = describePipeline([...builtinStages(), AT_SHARPEN], variant, BUILTIN_RESOLVED);
+      const at = rows.findIndex((r) => r.kind === "stage" && r.id === AT_SHARPEN.id);
+      expect(rows[at + 1]).toEqual({ kind: "core", label: "Masking (display values)" });
+      expect(rows.filter((r) => r.kind === "stage" && r.id === AT_SHARPEN.id)).toHaveLength(1);
+    });
+  }
+
+  it("name an anchor for every tool that has one, in the program's order", () => {
+    expect(CORE_BLOCKS.flatMap((b) => (b.anchors ?? []).map((a) => [b.label, a]))).toEqual([
+      ["Geometry", "geometry"],
+      ["Heal", "retouch"],
+      ["Masking (scene values)", "white-balance"],
+      ["Masking (scene values)", "tone"],
+      ["Masking (scene values)", "masks"],
+      ["Masking (display values)", "display-basic"],
+      ["Masking (display values)", "tone-curve"],
+      ["Masking (display values)", "hsl"],
+      ["Masking (display values)", "presence"],
+      ["Masking (display values)", "band-detail"],
+      ["Masking (display values)", "vibrance"],
+      ["Masking (display values)", "color-grading"],
+      ["Masking (display values)", "sharpen"],
+    ]);
+  });
+});
+
 describe("stage rows", () => {
   const GRADE: ProcessingStageContribution & { extensionId: string } = {
     id: "acme.grade",
@@ -585,7 +573,10 @@ describe("stage rows", () => {
     mask: { maskable: true },
     extensionId: "acme",
   };
-  const registered = () => [...builtinStages().map((s) => ({ ...s, extensionId: "core" })), GRADE];
+  const registered = () => [
+    ...builtinStages().map((s) => ({ ...s, extensionId: s.extensionId ?? "core" })),
+    GRADE,
+  ];
   const stageRow = (rows: readonly PipelineRow[], id: string) => rowsOf(rows, "stage").find((r) => r.id === id);
 
   it("carry what the stage declares, who owns it and the floors in its GLSL", () => {
@@ -628,18 +619,54 @@ describe("stage rows", () => {
 
   it("give Safelight's own stages no owner and the default priority", () => {
     const rows = describePipeline(registered(), V2_VARIANT, BUILTIN_RESOLVED);
-    expect(stageRow(rows, "core.vignette")).toMatchObject({ owner: null, space: null, maskable: false });
-    expect(stageRow(rows, "builtin.denoise")).toMatchObject({ owner: null });
+    expect(stageRow(rows, "builtin.denoise")).toMatchObject({ owner: null, maskable: false });
     expect(stageRow(describePipeline([{ ...GRADE, priority: undefined }], V2_VARIANT, BUILTIN_RESOLVED), "acme.grade"))
       .toMatchObject({ priority: 100 });
   });
 
-  // Version 2 drops the clamp that closes the core Vignette and Grain helpers.
-  it("scan a core stage's helpers as the version compiles them", () => {
-    const floors = (variant: ShaderVariant) =>
-      stageRow(describePipeline(builtinStages(), variant, BUILTIN_RESOLVED), "core.vignette")?.floors;
-    expect(floors(V1_VARIANT)).toEqual(["clamp(c, 0.0, 1.0)"]);
-    expect(floors(V2_VARIANT)).toEqual([]);
+  // A tool that left core has no core row: its stage's row says what it clips.
+  it("list a tool that left core by its stage alone, where its anchor is", () => {
+    const rows = describePipeline(registered(), V2_VARIANT, BUILTIN_RESOLVED);
+    const at = rows.findIndex((r) => r.kind === "stage" && r.id === "safelight.color-grading.grade");
+    const wb = rows.findIndex((r) => r.kind === "stage" && r.id === "safelight.white-balance.balance");
+    expect(rows[wb + 1]).toMatchObject({ kind: "stage", id: "safelight.basic.tone" });
+    expect(rows[wb + 2]).toMatchObject({ kind: "stage", id: "safelight.masks.coverage" });
+    expect(rows[wb + 3]).toMatchObject({ kind: "core", label: "Masking (scene values)" });
+    expect(rows.some((r) => r.kind === "core" && r.label === "White Balance")).toBe(false);
+    const display = rows.findIndex((r) => r.kind === "stage" && r.id === "safelight.basic.display");
+    expect(rows[display + 1]).toMatchObject({ kind: "stage", id: "safelight.tone-curve.curve" });
+    for (const label of ["Exposure, Highlights, Shadows & tone shoulder", "Whites", "Dehaze", "Vibrance & Saturation"])
+      expect(rows.some((r) => r.kind === "core" && r.label === label)).toBe(false);
+    const curve = rows.findIndex((r) => r.kind === "stage" && r.id === "safelight.tone-curve.curve");
+    expect(rows[curve + 1]).toMatchObject({ kind: "stage", id: "safelight.hsl.mix" });
+    expect(rows.some((r) => r.kind === "core" && r.label === "Tone Curve")).toBe(false);
+    const hsl = rows.findIndex((r) => r.kind === "stage" && r.id === "safelight.hsl.mix");
+    expect(rows[hsl + 1]).toMatchObject({ kind: "stage", id: "safelight.basic.presence" });
+    expect(rows.some((r) => r.kind === "core" && r.label === "HSL")).toBe(false);
+    expect(rows[at - 1]).toMatchObject({ kind: "stage", id: "safelight.basic.vibrance", owner: "safelight.basic" });
+    expect(rows[at + 1]).toMatchObject({ kind: "stage", id: "safelight.detail.sharpen", owner: "safelight.detail" });
+    for (const label of ["Sharpening", "Colour Grading"])
+      expect(rows.some((r) => r.kind === "core" && r.label === label)).toBe(false);
+    expect(stageRow(rows, "safelight.color-grading.grade")).toMatchObject({
+      owner: "safelight.color-grading",
+      floors: ["clamp(c, 0.0, 1.0)", "clamp(c, 0.0, 1.0)"],
+    });
+  });
+
+  it("give an official extension's stages their owner", () => {
+    const rows = describePipeline(registered(), V2_VARIANT, BUILTIN_RESOLVED);
+    expect(stageRow(rows, "safelight.effects.vignette")).toMatchObject({ owner: "safelight.effects", maskable: false });
+  });
+
+  // A release carries one text: Effects of line 1 closes its helpers with a
+  // clamp on every version, line 3 on none.
+  it("scan an official stage's helpers as its line wrote them", () => {
+    const floors = (line: 1 | 3, variant: ShaderVariant) =>
+      stageRow(describePipeline(builtinStages(line), variant, BUILTIN_RESOLVED), "safelight.effects.vignette")?.floors;
+    for (const variant of [V1_VARIANT, V2_VARIANT]) {
+      expect(floors(1, variant)).toEqual(["clamp(c, 0.0, 1.0)"]);
+      expect(floors(3, variant)).toEqual([]);
+    }
   });
 
   // findFloors reads `lin` and `c` in a stage's glsl and helpers. The denoiser

@@ -17,7 +17,7 @@ import type { CoverageItem } from "./mask-coverage";
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const finiteOrAbsent = (v: unknown): v is number | undefined => v === undefined || finite(v);
 
-// The bag is deserialised sidecar JSON, so a dab is checked field by field
+// The bag is deserialized sidecar JSON, so a dab is checked field by field
 // before the bake trusts it.
 function isBrushDab(value: unknown): value is BrushDab {
   if (typeof value !== "object" || value === null) return false;

@@ -12,7 +12,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { normalizeParams } from "@/catalog/types";
 import { useDevelopStore } from "@/state/develop-store";
-import { ProofToggle } from "./DevelopView";
+import { ProofToggle } from "./view-toggles";
 
 // zustand keeps the actions in state, so the pristine object doubles as the
 // reset baseline.
@@ -36,7 +36,7 @@ describe("ProofToggle", () => {
   it("is there on a photo stored as version 3, with its tooltip", () => {
     seedPhoto(3);
     render(<ProofToggle />);
-    expect(proof().getAttribute("title")).toBe("Soft proof (S): preview the export color space");
+    expect(proof().getAttribute("title")).toBe("Soft proof (S): preview the export colour space");
     expect(proof().textContent).toBe("Proof");
   });
 

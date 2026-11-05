@@ -7,7 +7,7 @@
 // current edit. The preview carries the fingerprint of the edit it was rendered
 // from, and Develop compares it with the fingerprint of the edit it loaded. The
 // two sides hold the same edit in different shapes: the live params a commit
-// renders from, and those params saved, read back and normalised. If they hashed
+// renders from, and those params saved, read back and normalized. If they hashed
 // apart, no stored preview would ever be drawn, and the first pixels would wait
 // for the decode without any test failing.
 
@@ -130,7 +130,7 @@ function reversedKeys<T>(value: T): T {
 }
 
 describe("editFingerprint", () => {
-  it("is the same for an edit Develop commits and that edit normalised", () => {
+  it("is the same for an edit Develop commits and that edit normalized", () => {
     const params = committedEdit();
     expect(normalizeParams(params)).not.toEqual(params);
     expect(editFingerprint(normalizeParams(params), BAG)).toBe(editFingerprint(params, BAG));
@@ -181,7 +181,7 @@ describe("an edit committed in Develop and opened again", () => {
     return editFingerprint(params, bag ?? {});
   }
 
-  /** Develop opened again on the photo, from `stored` as the catalog holds it. */
+  /** Develop opened again on the photo, from `stored` as the catalogue holds it. */
   async function reopen(stored: EditState) {
     installMemoryStorage(stored);
     useDevelopStore.setState(INITIAL, true);

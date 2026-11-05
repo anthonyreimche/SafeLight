@@ -20,6 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";
 import { CURRENT_PROCESS_VERSION, LEGACY_PROCESS_VERSION, normalizeParams } from "@/catalog/types";
+import { denoiseBag } from "./webgl/builtin-denoise";
 
 const h = vi.hoisted(() => {
   class FakeRenderer {
@@ -37,6 +38,8 @@ const h = vi.hoisted(() => {
     prepared: number[] = [];
     stockPrepared: number[] = [];
     disposed = false;
+    /** Each setContributedParams call's bag. */
+    contributed: Record<string, unknown>[] = [];
 
     constructor() {
       FakeRenderer.instances.push(this);
@@ -55,6 +58,9 @@ const h = vi.hoisted(() => {
     }
 
     setAsShotTemperature() {}
+    setContributedParams(bag: Record<string, unknown>) {
+      this.contributed.push(bag);
+    }
     setImage(...args: unknown[]) {
       FakeRenderer.setImageCalls.push(args);
     }
@@ -123,7 +129,15 @@ vi.mock("@/catalog/load-image", () => ({
   },
 }));
 vi.mock("@/rendering/histogram", () => ({ computeHistogram: () => h.histogram }));
-vi.mock("@/extensions/pipelines", () => ({ setPhotoParams: () => {} }));
+vi.mock("@/extensions/pipelines", () => ({
+  setPhotoParams: () => {},
+  resolvePipelineFor: (displayTransform: string | null) => `pipeline:${displayTransform}`,
+}));
+// Only the "t.x" transform derives anything, so the other photos' bags stay as they are.
+vi.mock("@/extensions/transform-derive", () => ({
+  bagForRender: (pipeline: string, bag: Record<string, unknown>) =>
+    pipeline === "pipeline:t.x" ? { ...bag, [`derived:${pipeline}`]: true } : bag,
+}));
 
 function photo(): CatalogPhoto {
   return {
@@ -189,7 +203,40 @@ describe("renderPhotoHistogram without a loaded thumbnail", () => {
     expect(h.FakeRenderer.setImageCalls).toHaveLength(1);
     const [image, ...options] = h.FakeRenderer.setImageCalls[0];
     expect(image).toBe(h.cached);
-    expect(options).toEqual([256, false, false, true]);
+    expect(options).toEqual([256, false, true]);
+  });
+});
+
+// The histogram draws the saved edit as Develop does: the photo's own stage bag
+// under the built-in denoiser's entries, which come from the Detail panel's
+// params, with its transform's derived uniforms.
+describe("renderPhotoHistogram's stage bag", () => {
+  const NR = normalizeParams({ processVersion: CURRENT_PROCESS_VERSION, luminanceNR: 40, colorNR: 0 });
+
+  it("draws the photo's own bag with the built-in denoiser's entries", async () => {
+    await renderPhotoHistogram(photo(), NR, { "own.stage.x": 1 });
+    const [bag] = h.FakeRenderer.instances[0].contributed;
+    expect(bag).toMatchObject({ "own.stage.x": 1, "builtin.denoise.lumAmount": 40 });
+    expect(bag).not.toHaveProperty("builtin.denoise.colAmount");
+  });
+
+  it("draws the denoiser's entries for a photo with no bag of its own", async () => {
+    await renderPhotoHistogram(photo(), NR);
+    expect(h.FakeRenderer.instances[0].contributed).toEqual([denoiseBag(NR)]);
+  });
+
+  it("adds the derived uniforms of the photo's transform", async () => {
+    await renderPhotoHistogram(photo(), { ...NR, displayTransform: "t.x" }, { "own.stage.x": 1 });
+    expect(h.FakeRenderer.instances[0].contributed).toEqual([
+      { "own.stage.x": 1, ...denoiseBag(NR), "derived:pipeline:t.x": true },
+    ]);
+  });
+
+  // The renderer is shared: one photo's bag must not linger into the next.
+  it("replaces the previous photo's bag", async () => {
+    await renderPhotoHistogram(photo(), NR, { "own.stage.x": 1 });
+    await renderPhotoHistogram(photo(), { ...NR, luminanceNR: 0 }, {});
+    expect(h.FakeRenderer.instances[0].contributed.at(-1)).toEqual({});
   });
 });
 

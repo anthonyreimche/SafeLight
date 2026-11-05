@@ -18,6 +18,7 @@ import { uniformPrefix } from "./shader-compiler";
 import { StageResultLayers } from "./stage-result-layers";
 import {
   LINEAR_PROBE_PIPELINE,
+  deriveWithoutSettings,
   drainGlErrors,
   floatImage,
   glHarness,
@@ -164,7 +165,7 @@ function samplerLimit(units: number): { restore(): void } {
   };
 }
 
-// The renderer is what enables float color buffers in the app, and passes the
+// The renderer is what enables float colour buffers in the app, and passes the
 // result as `float`; here nothing has, so RGBA16F isn't yet renderable.
 glHarness().gl.getExtension("EXT_color_buffer_float");
 
@@ -362,7 +363,7 @@ function onRenderer<T>(
   });
 }
 
-/** Reads its result by name with texelFetch, as the Colour Equaliser reads its table. */
+/** Reads its result by name with texelFetch, as the Colour Equalizer reads its table. */
 function namedStage(): ProcessingStageContribution {
   const id = "named.test";
   const sampler = `${uniformPrefix(id)}stageResult`;
@@ -485,7 +486,7 @@ describe("version 2 stage results on the renderer", () => {
     const { canvas, gl } = glHarness();
     const tally = trackGlObjects(gl);
     try {
-      const r = new WebGLRenderer(canvas, { stages: [], pipeline: LINEAR_PROBE_PIPELINE });
+      const r = new WebGLRenderer(canvas, { stages: [], pipeline: LINEAR_PROBE_PIPELINE, derive: deriveWithoutSettings });
       r.setImage(SOURCE);
       r.setParams(V2);
       r.render();

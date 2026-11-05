@@ -199,8 +199,8 @@ export function applyAccessibility(): void {
 }
 
 // ── Extension lifecycle ─────────────────────────────────────────────────────
-// This module is the runtime of the `core.accessibility` built-in extension.
-// activate/deactivate are driven by its entry in builtin.tsx; disabling the
+// This module is the runtime of the Accessibility extension, which drives
+// activate/deactivate (built in, or installed through api.accessibility); disabling the
 // extension must remove every DOM side-effect (classes, vars, the CVD <svg>,
 // listeners) so the app returns to its as-designed, overlay-free state. The
 // baseline semantic correctness (aria, focus-trap, landmarks, the always-on
@@ -214,11 +214,58 @@ let onOSChange: (() => void) | null = null;
 let unsubSettings: (() => void) | null = null;
 let unsubTheme: (() => void) | null = null;
 
+/** Whether the overlays were on when the last session ended. */
+export const ACCESSIBILITY_ACTIVE_KEY = "sl_accessibility_active";
+
+// The installed Accessibility extension activates only once the installed
+// extensions load, after the theme is on screen. So at launch the overlays come
+// back as the last session left them (restoreAccessibility), and once the
+// extensions have loaded (settleAccessibility) they stay only if an extension
+// claimed them by activating.
+let restoredAtLaunch = false;
+let claimed = false;
+
+function recordActive(active: boolean): void {
+  try {
+    localStorage.setItem(ACCESSIBILITY_ACTIVE_KEY, JSON.stringify(active));
+  } catch {}
+}
+
+function wasActive(): boolean {
+  try {
+    return localStorage.getItem(ACCESSIBILITY_ACTIVE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 /** Activate the overlays: inject the CVD filters, watch settings / theme / OS
  *  preferences, and apply the current state. Idempotent. Safe to call before
  *  initThemes/initSettings — the settings store is loaded at import, and the
  *  theme subscription re-layers high-contrast once the saved theme is applied. */
 export function activateAccessibility(): void {
+  claimed = true;
+  recordActive(true);
+  startOverlays();
+}
+
+/** At launch, before the theme is applied: turn the overlays on if they were on
+ *  when the last session ended. */
+export function restoreAccessibility(): void {
+  if (useA11yActive.getState().active || !wasActive()) return;
+  restoredAtLaunch = true;
+  startOverlays();
+}
+
+/** Once the installed extensions have loaded: remove the overlays the launch
+ *  restored when no extension has activated them. */
+export function settleAccessibility(): void {
+  const unclaimed = restoredAtLaunch && !claimed;
+  restoredAtLaunch = false;
+  if (unclaimed) deactivateAccessibility();
+}
+
+function startOverlays(): void {
   if (useA11yActive.getState().active) return;
   ensureCvdFilters();
   if (typeof window !== "undefined" && window.matchMedia) {
@@ -242,6 +289,8 @@ export function activateAccessibility(): void {
  *  every applied class/attribute, restore the theme's own colour vars, and
  *  remove the injected CVD filter <svg>. */
 export function deactivateAccessibility(): void {
+  claimed = false;
+  recordActive(false);
   if (!useA11yActive.getState().active) return;
   if (osMatchers && onOSChange) {
     for (const mq of Object.values(osMatchers)) {

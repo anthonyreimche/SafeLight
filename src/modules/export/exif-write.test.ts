@@ -5,8 +5,8 @@
 
 // Round-trip tests for the export EXIF writer (issue #93). Sources are built
 // with the shared TIFF fixture builder — big-endian, like most camera files,
-// so the little-endian normalisation is exercised — then harvested with the
-// catalog reader, serialized, embedded, and read back through parseExif, the
+// so the little-endian normalization is exercised — then harvested with the
+// catalogue reader, serialized, embedded, and read back through parseExif, the
 // same reader the app trusts for camera bytes. Run with `npm test`.
 
 import { describe, it, expect } from "vitest";
@@ -18,6 +18,7 @@ import {
   SOS,
   ascii,
   blobOf,
+  byte,
   buildTiff,
   exifPayload,
   jfifPayload,
@@ -62,6 +63,13 @@ const SOURCE_TIFF = buildTiff({
     [0x0002, rational([37, 1], [48, 1], [30, 1])],
     [0x0003, ascii("W")],
     [0x0004, rational([122, 1], [16, 1], [0, 1])],
+    [0x0005, byte(0)], // AltitudeRef
+    [0x0006, rational([1200, 10])], // Altitude
+    [0x0007, rational([14, 1], [30, 1], [5, 1])], // TimeStamp
+    [0x0010, ascii("T")], // ImgDirectionRef
+    [0x0011, rational([270, 1])], // ImgDirection
+    [0x0012, ascii("WGS-84")], // MapDatum
+    [0x001d, ascii("2026:07:26")], // DateStamp
   ],
 });
 
@@ -71,6 +79,9 @@ async function harvestSource(): Promise<RawExifIfds> {
   return meta!;
 }
 
+/** The source's record as the import puts it in the catalogue. */
+const importedRecord = () => parseExif(blobOf(SOURCE_TIFF));
+
 const exportIfds = async (
   overrides: Partial<Parameters<typeof buildExportIfds>[1]> = {},
 ): Promise<ExportIfds> =>
@@ -79,6 +90,7 @@ const exportIfds = async (
     height: 1365,
     srgb: true,
     includeLocation: true,
+    catalog: await importedRecord(),
     ...overrides,
   });
 
@@ -166,7 +178,7 @@ describe("serializeExifTiff", () => {
   });
 });
 
-describe("buildExportIfds — catalog-edited metadata", () => {
+describe("buildExportIfds — the catalogue's metadata", () => {
   const EDITED = {
     artist: "Robin Example",
     copyright: "© 2026 Robin Example",
@@ -176,31 +188,75 @@ describe("buildExportIfds — catalog-edited metadata", () => {
   const parsed = async (ifds: ExportIfds) =>
     parseExif(blobOf(serializeExifTiff(ifds) as Uint8Array<ArrayBuffer>));
 
-  it("overrides the source file's descriptive tags with catalog-edited values", async () => {
-    const exif = await parsed(await exportIfds({ edited: EDITED }));
+  const gpsTags = (ifds: ExportIfds) => ifds.gps.map((e) => e.tag).sort((a, b) => a - b);
+
+  const withoutLocation = async () => {
+    const { gpsLatitude: _lat, gpsLongitude: _lon, gpsAltitude: _alt, ...rest } =
+      await importedRecord();
+    return rest;
+  };
+
+  it("overrides the source file's descriptive tags with catalogue-edited values", async () => {
+    const exif = await parsed(await exportIfds({ catalog: { ...(await importedRecord()), ...EDITED } }));
     expect(exif.artist).toBe("Robin Example");
     expect(exif.copyright).toBe("© 2026 Robin Example");
     expect(exif.imageDescription).toBe("Sunset over the pier");
     expect(exif.cameraMake).toBe("TestCam Industries"); // untouched harvest survives
   });
 
-  it("keeps the source file's tags when edited fields are blank", async () => {
-    const exif = await parsed(await exportIfds({ edited: { artist: "", copyright: undefined } }));
+  it("does not export a descriptive tag the catalogue has cleared to blank", async () => {
+    const catalog = { ...(await importedRecord()), artist: "", copyright: "" };
+    const exif = await parsed(await exportIfds({ catalog }));
+    expect(exif.artist).toBeUndefined();
+    expect(exif.copyright).toBeUndefined();
+    expect(exif.cameraMake).toBe("TestCam Industries");
+  });
+
+  it("keeps the source's descriptive tags the catalogue never read", async () => {
+    const exif = await parsed(await exportIfds({ catalog: {} }));
     expect(exif.artist).toBe("Ansel Adams");
     expect(exif.copyright).toBe("(C) 2026");
   });
 
-  it("replaces the source GPS coordinates with catalog-edited ones", async () => {
-    const exif = await parsed(
-      await exportIfds({ edited: { gpsLatitude: 49.5, gpsLongitude: -123.25 } }),
-    );
+  it("writes no GPS block when the catalogue holds no position", async () => {
+    const ifds = await exportIfds({ catalog: {} });
+    expect(ifds.gps).toEqual([]);
+    const tiff = serializeExifTiff(ifds);
+    expect(leTagValue(tiff, ifd0At(tiff), 0x8825)).toBeUndefined();
+  });
+
+  it("writes no GPS block once the location is removed in the catalogue", async () => {
+    const ifds = await exportIfds({ catalog: await withoutLocation() });
+    expect(ifds.gps).toEqual([]);
+    expect((await parsed(ifds)).cameraMake).toBe("TestCam Industries");
+  });
+
+  it("writes the catalogue's position and none of the source's position tags", async () => {
+    const catalog = { ...(await withoutLocation()), gpsLatitude: 49.5, gpsLongitude: -123.25 };
+    const ifds = await exportIfds({ catalog });
+    expect(gpsTags(ifds)).toEqual([0x0000, 0x0001, 0x0002, 0x0003, 0x0004]);
+    const exif = await parsed(ifds);
     expect(exif.gpsLatitude).toBe(49.5);
     expect(exif.gpsLongitude).toBe(-123.25);
+    expect(exif.gpsAltitude).toBeUndefined();
+  });
+
+  it("writes the catalogue's altitude with its position", async () => {
+    const ifds = await exportIfds();
+    expect(gpsTags(ifds)).toEqual([0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006]);
+    const exif = await parsed(ifds);
+    expect(exif.gpsLatitude).toBe(37.808333);
+    expect(exif.gpsAltitude).toBe(120);
+
+    const below = await parsed(
+      await exportIfds({ catalog: { gpsLatitude: 31.5, gpsLongitude: 35.5, gpsAltitude: -430.5 } }),
+    );
+    expect(below.gpsAltitude).toBe(-430.5);
   });
 
   it("encodes edited coordinates as D/M/S without visible precision loss", async () => {
     const exif = await parsed(
-      await exportIfds({ edited: { gpsLatitude: 51.507222, gpsLongitude: -0.1275 } }),
+      await exportIfds({ catalog: { gpsLatitude: 51.507222, gpsLongitude: -0.1275 } }),
     );
     expect(exif.gpsLatitude).toBe(51.507222);
     expect(exif.gpsLongitude).toBe(-0.1275);
@@ -208,36 +264,35 @@ describe("buildExportIfds — catalog-edited metadata", () => {
 
   it("carries seconds rounding into the next unit instead of writing 60″", async () => {
     const exif = await parsed(
-      await exportIfds({ edited: { gpsLatitude: 9.99999999, gpsLongitude: -0.99999999 } }),
+      await exportIfds({ catalog: { gpsLatitude: 9.99999999, gpsLongitude: -0.99999999 } }),
     );
     expect(exif.gpsLatitude).toBe(10);
     expect(exif.gpsLongitude).toBe(-1);
   });
 
-  it("drops edited GPS along with the source's when location is not opted in", async () => {
+  it("drops the catalogue's GPS when location is not opted in", async () => {
     const tiff = serializeExifTiff(
       await exportIfds({
         includeLocation: false,
-        edited: { gpsLatitude: 49.5, gpsLongitude: -123.25 },
+        catalog: { gpsLatitude: 49.5, gpsLongitude: -123.25 },
       }),
     );
     expect(leTagValue(tiff, ifd0At(tiff), 0x8825)).toBeUndefined();
   });
 
-  it("ignores a lone coordinate rather than writing half a position", async () => {
-    const exif = await parsed(await exportIfds({ edited: { gpsLatitude: 49.5 } }));
-    expect(exif.gpsLatitude).toBe(37.808333); // the source IFD survives untouched
-    expect(exif.gpsLongitude).toBe(-122.266667);
+  it("writes no GPS for a lone coordinate rather than half a position", async () => {
+    const ifds = await exportIfds({ catalog: { gpsLatitude: 49.5 } });
+    expect(ifds.gps).toEqual([]);
   });
 
-  it("builds a complete EXIF block from catalog metadata alone", async () => {
+  it("builds a complete EXIF block from catalogue metadata alone", async () => {
     const exif = await parsed(
       buildExportIfds(null, {
         width: 800,
         height: 600,
         srgb: true,
         includeLocation: true,
-        edited: { ...EDITED, gpsLatitude: 49.5, gpsLongitude: -123.25 },
+        catalog: { ...EDITED, gpsLatitude: 49.5, gpsLongitude: -123.25 },
       }),
     );
     expect(exif.artist).toBe("Robin Example");

@@ -15,6 +15,7 @@ import {
   defaultMaskAdjustments,
   type Mask,
   type MaskComponent,
+  type RetouchSpot,
 } from "@/catalog/types";
 import type { ProcessingStageContribution, UniformDeclaration } from "@/extensions/types";
 import { LIVE_MASK_COPY_PREPASSES } from "./mask-stage-instances";
@@ -23,9 +24,12 @@ import {
   LINEAR_PROBE_PIPELINE,
   floatImage,
   glHarness,
+  healStagesFor,
   identityParams,
+  liveFrame,
   pixelAt,
   withRenderer,
+  masksStagesFor,
 } from "./webgl.test-support";
 
 const BASE = 0.1;
@@ -81,7 +85,8 @@ function draw<T>(
   fn: (r: WebGLRenderer) => T,
   opts: WebGLRendererOpts = {},
 ): T {
-  return withRenderer({ stages, pipeline: LINEAR_PROBE_PIPELINE, ...opts }, (renderer) => {
+  const masking = masksStagesFor(scene.processVersion ?? CURRENT_PROCESS_VERSION);
+  return withRenderer({ stages: [...masking, ...stages], pipeline: LINEAR_PROBE_PIPELINE, ...opts }, (renderer) => {
     renderer.setImage(SOURCE);
     renderer.setContributedParams(scene.bag ?? {});
     renderer.setParams(
@@ -268,6 +273,33 @@ describe("a spatial stage in a mask", () => {
         // A capture is never put off: it runs the remaining passes and shows all.
         expect(red(r, INSIDE)).toBeCloseTo(plain(INSIDE) + masks.length * STEP, 3);
       }, live);
+    });
+
+    // Healing the flat source changes none of its pixels, so only what the frame
+    // shows of the copies' results tells the two apart.
+    it("shows nothing of a put-off copy whose result came from the patched source", () => {
+      const HEAL: RetouchSpot = {
+        id: "spot", shape: "circle", mode: "heal", visible: true,
+        dstX: 0.5, dstY: 0.5, srcX: 0.25, srcY: 0.25, radius: 0.1, feather: 0, opacity: 100,
+      };
+      const brighter = masks.map((m) => ({ ...m, bag: level(0.08) }));
+      const version = CURRENT_PROCESS_VERSION;
+      const stages = [...masksStagesFor(version), ...healStagesFor(version), LEVELLED];
+      const frame = (shown: Mask[], retouch: RetouchSpot[], opts: WebGLRendererOpts) =>
+        withRenderer({ stages, pipeline: LINEAR_PROBE_PIPELINE, ...opts }, (r) => {
+          r.setImage(SOURCE);
+          r.setContributedParams({});
+          if (retouch.length > 0) {
+            r.setParams(identityParams({ masks: shown, processVersion: version, retouch }));
+            for (let i = 0; i < 4 && (i === 0 || r.prepassPending); i++) r.render();
+            expect(r.prepassPending).toBe(false);
+          }
+          r.setParams(identityParams({ masks: shown, processVersion: version }));
+          return liveFrame(r)[0];
+        });
+      const unhealed = frame(brighter, [HEAL], live);
+      const firstOnly = frame(brighter.slice(0, LIVE_MASK_COPY_PREPASSES), [], {});
+      expect(unhealed).toBe(firstOnly);
     });
 
     it("runs every mask's passes in one frame without a limit", () => {

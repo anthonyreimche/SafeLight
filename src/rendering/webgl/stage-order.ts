@@ -5,10 +5,9 @@
 
 import { PROCESSING_PHASE_ORDER, type ProcessingStageContribution } from "@/extensions/types";
 
-// Pipeline order, shared by the injection (stage-injection.ts) and the test-only
-// compiler (shader-compiler.ts) so the two cannot disagree. A leaf module on
-// purpose: stage-injection.ts already imports shader-compiler.ts, so the sort
-// can live in neither.
+// Pipeline order for the injection (stage-injection.ts). A leaf module so the
+// pipeline description and tests can sort stages without pulling in the
+// injection itself.
 
 const phaseIndex = new Map(PROCESSING_PHASE_ORDER.map((p, i) => [p, i]));
 

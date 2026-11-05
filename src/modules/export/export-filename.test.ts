@@ -170,6 +170,12 @@ describe("uniqueName", () => {
     expect(uniqueName("A.JPG", used)).toBe("A (3).JPG");
   });
 
+  it("treats a name composed and decomposed as the same file", () => {
+    const used = new Set<string>();
+    expect(uniqueName("Café.jpg", used)).toBe("Café.jpg");
+    expect(uniqueName("Café.jpg", used)).toBe("Café (2).jpg");
+  });
+
   it("skips a numbered name that is already taken in another case", () => {
     const used = new Set<string>();
     uniqueName("a (2).jpg", used);

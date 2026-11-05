@@ -5,9 +5,9 @@
 
 // A photo's grid preview and the edit it shows (previewEdit) stay paired: Develop
 // draws the preview first only while that edit is the one it opens with. This
-// window runs its storage, preview reader, catalog store and the following of other
+// window runs its storage, preview reader, catalogue store and the following of other
 // windows' records, wired as opening a project wires them. Another window is
-// driven through its storage, as its catalog store and edited-thumbnail drive it.
+// driven through its storage, as its catalogue store and edited-thumbnail drive it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";
@@ -34,6 +34,7 @@ import { freshParams } from "@/catalog/types";
 import { previewShowsEdit as developDrawsStoredPreview } from "@/hooks/preview-shows-edit";
 import { MemoryFs, fsaDirectoryHandle } from "@/project/memory-fs.test-support";
 import { ProjectStorage } from "@/project/project-storage";
+import { storageDeps } from "@/project/storage-deps";
 import { useCatalogStore } from "./catalog-store";
 import { followCatalogRecords } from "./catalog-sync";
 import { useSettings } from "./settings-store";
@@ -86,7 +87,7 @@ function project(previewEdit?: string): FileSystemDirectoryHandle {
 /** Open the project in this window: its storage, preview reader and photos, and
  *  the following of other windows' records. */
 async function thisWindow(root: FileSystemDirectoryHandle): Promise<ProjectStorage> {
-  const { storage, photos } = await ProjectStorage.open(root);
+  const { storage, photos } = await ProjectStorage.open(root, storageDeps);
   storages.push(storage);
   setCatalogStorage(storage);
   setThumbnailLoader((id) => storage.readPreview(id));
@@ -97,7 +98,7 @@ async function thisWindow(root: FileSystemDirectoryHandle): Promise<ProjectStora
 }
 
 async function otherWindow(root: FileSystemDirectoryHandle): Promise<ProjectStorage> {
-  const { storage } = await ProjectStorage.open(root);
+  const { storage } = await ProjectStorage.open(root, storageDeps);
   storages.push(storage);
   return storage;
 }

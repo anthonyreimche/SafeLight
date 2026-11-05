@@ -5,7 +5,7 @@
 Two kits keep extension UI matching the app. Render them with `api.react` (`React.createElement(api.components.Slider, props)`), never a bundled React.
 
 - **`api.components`**: the app's own `Panel`, `Slider`, `Histogram`, `CurveEditor`, `Rating`, `Thumbnail` and `PhotoListRow`.
-- **`api.ui`**: themed form and layout primitives, plus `tokens`. Use these over hand-rolled controls.
+- **`api.ui`**: themed form and layout primitives, `tokens`, and the app's dialogues. Use these over hand-rolled controls.
 
 ## `Panel`
 
@@ -91,9 +91,21 @@ interface RatingProps {
 }
 ```
 
+## `PickerIcon`
+
+The eyedropper icon core's pickers show (3.2.0). It draws in the current text colour; `size` is in pixels (default 11).
+
+## `AutoButton`
+
+The small Auto button of the develop panels (3.2.0): `onClick`, `disabled` and a `title` for its tooltip. Pair it with `api.develop.autoAdjust`.
+
+## `MaskScope`
+
+Binds its children to one mask (3.2.0): `<MaskScope maskId={id}>`. A mask sub-panel's component (`PanelContribution.mask`) drawn inside reads and writes that mask through `useMaskScope` and `useParamScope`. A masking panel draws each of a mask's sub-panels inside one; `api.develop.useMaskPanels` lists them.
+
 ## `Thumbnail`
 
-The Library grid cell. It shows the stored import preview, never an edited render. Callbacks take the photo id first and the cell is memoised, so pass one stable function to every cell.
+The Library grid cell. It shows the stored import preview, never an edited render. Callbacks take the photo id first and the cell is memoized, so pass one stable function to every cell.
 
 ```typescript
 interface ThumbnailProps {
@@ -139,7 +151,8 @@ Notes:
 - `useVisiblePhotos` returns the grid's photos in grid order. `without` leaves out your own grid filter.
 - `onContextMenu` acts on the selection when the clicked photo is in it, else on that photo alone.
 - `useCullingShortcuts` acts once per press however many surfaces are mounted. Pass `sizeSteps: false` when cells size to their container, so `-`/`=` stay with the grid.
-- Call `requestThumbnail` only for photos you draw yourself that have no `thumbnailUrl` yet. A call for a photo that has one still reads from disk.
+- Call `requestThumbnail` only for photos you draw yourself that have no `thumbnailUrl` yet. A call for a photo that has one still reads from disk. Core releases the `thumbnailUrl` of photos far from view in a big project, so a surface that scrolls should ask again when a photo it draws has none.
+- To read previews of many photos at once without loading them, use `api.catalog.readPreview(photoId)` (see [Stores: `api.catalog`](stores.md#apicatalog)).
 
 ## `api.ui` primitives
 
@@ -172,6 +185,43 @@ h(Stack, { gap: 8 },
   h(Button, { variant: "primary", full: true, onClick: run }, "Export"));
 ```
 
+## `api.ui` dialogues
+
+Ask or tell the person something in the app's own dialogue card (3.2.0). Never call `window.confirm` or `window.alert`: in Electron a native dialogue can leave the window unaware it has focus again, and every key stops reaching the app until it is refocused or restarted.
+
+```ts
+confirmDialog(options: {
+  title: string;
+  message: string;
+  confirmLabel?: string;            // default "OK"
+  cancelLabel?: string;             // default "Cancel"
+  variant?: "default" | "danger";
+}): Promise<boolean>;
+
+alertDialog(options: {
+  title: string;
+  message: string;
+  confirmLabel?: string;            // default "OK"
+}): Promise<void>;
+```
+
+- `confirmDialog` resolves `true` on confirm. Cancel, Esc and a click outside the card all resolve `false`.
+- `alertDialog` resolves however the card is closed.
+- `variant: "danger"` paints the confirm button red and opens with Cancel focused. Keep it for actions that destroy data.
+- A blank line in `message` starts a new paragraph; a single line break stays a line break.
+- Dialogues queue: a second one waits until the first is answered. While one is open the app's own shortcuts stand down.
+- A start of your extension that no longer counts (it timed out, or a newer copy took over) can't open one: the call throws, like a `register` call would.
+
+```js
+const ok = await api.ui.confirmDialog({
+  title: "Clear the cache",
+  message: "This deletes every rendered preview. They are made again as you browse.",
+  confirmLabel: "Clear",
+  variant: "danger",
+});
+if (ok) clearCache();
+```
+
 ## Theming tokens
 
 Extension bundles get no Tailwind CSS. Style custom UI inline with these CSS variables, or the matching `api.ui.tokens` strings (`tokens.surface2` is `"var(--color-surface-2)"`). They update live when the theme changes. Native range, checkbox and radio inputs, `<select>` and `<progress>` are already themed through `accent-color`.
@@ -188,13 +238,14 @@ Extension bundles get no Tailwind CSS. Style custom UI inline with these CSS var
 | `--color-accent` | `accent` | Active control, selection |
 | `--color-accent-hover` | `accentHover` | Accent hover |
 | `--color-slider-fill` | `sliderFill` | Slider fill, global `accent-color` |
+| `--color-on-accent` | | Text and icons on accent and slider-fill backgrounds (white by default) |
 | `--color-rating` | `rating` | Star rating |
 | `--color-flag-pick` / `-reject` | | Flag colours |
 | `--color-label-red` / `-yellow` / `-green` / `-blue` / `-purple` | | Colour labels |
 | `--font-mono` | `fontMono` | Interface font (despite the name) |
 | `--font-code` | `fontCode` | Monospace font |
 
-A [`ThemeContribution`](contributions.md#themecontribution) must set the first 13 (`surface-0` to `slider-fill`). The rest fall back to the **Safelight Neutral** values.
+A variable a [`ThemeContribution`](contributions.md#themecontribution) leaves out keeps the **Safelight Neutral** value. Set at least the first 13 (`surface-0` to `slider-fill`), or the theme's own colours end up mixed with Neutral's surfaces and text.
 
 ## Styling hooks
 

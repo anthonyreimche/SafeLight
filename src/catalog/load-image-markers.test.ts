@@ -74,8 +74,8 @@ vi.mock("@/raw/accept-decode", () => ({
   }),
 }));
 
-vi.mock("@/modules/library/raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => h.preview,
 }));
 

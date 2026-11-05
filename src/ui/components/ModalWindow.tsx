@@ -4,11 +4,11 @@
 // be preserved in derived versions.
 
 // Shared chrome for the app's window-style pop-ups (Preferences, Extensions,
-// and any future "window" dialog): a dimmed backdrop that closes on outside
-// click, a centered surface, and a titlebar you can drag the whole window by.
-// Centralised so every such window behaves identically — drag, sizing, close,
+// and any future "window" dialogue): a dimmed backdrop that closes on outside
+// click, a centred surface, and a titlebar you can drag the whole window by.
+// Centralized so every such window behaves identically — drag, sizing, close,
 // and (for callers that opt in) maximize/restore.
-// (The small single-purpose confirm dialogs — preset rename/delete, lens picker
+// (The small single-purpose confirm dialogues — preset rename/delete, lens picker
 // — are a separate lightweight pattern and intentionally don't use this.)
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
@@ -81,9 +81,9 @@ export function ModalWindow({
   onToggleMaximize,
   children,
 }: ModalWindowProps) {
-  // Drag-to-move by the titlebar. `pos` is an offset from the centered resting
+  // Drag-to-move by the titlebar. `pos` is an offset from the centred resting
   // position. The component mounts fresh each time it opens (callers render it
-  // only while open), so it always starts centered — no reset needed. clientX/Y
+  // only while open), so it always starts centred — no reset needed. clientX/Y
   // are visual px under the <body> UI-scale zoom while `transform: translate` is
   // layout px, so divide deltas by uiScale to track the pointer 1:1 (mirrors
   // frame-point.ts).
@@ -120,7 +120,7 @@ export function ModalWindow({
   // outside-click-to-close because it's painted (transparent black), not absent.
   const dim = useSettings((s) => s.windowDim);
 
-  // Accessible dialog: name it by its titlebar, move focus in on open, trap Tab
+  // Accessible dialogue: name it by its titlebar, move focus in on open, trap Tab
   // inside while open, and restore focus to the trigger on close (WCAG 2.4.3 /
   // 2.1.2). Esc is handled by callers via the escape stack, not here.
   const titleId = useId();
@@ -129,7 +129,7 @@ export function ModalWindow({
     const prev = document.activeElement as HTMLElement | null;
     const box = boxRef.current;
     // Respect any child autoFocus (e.g. a search box); only pull focus to the
-    // dialog itself when nothing inside has claimed it.
+    // dialogue itself when nothing inside has claimed it.
     if (box && !box.contains(document.activeElement)) box.focus();
     return () => prev?.focus?.();
   }, []);

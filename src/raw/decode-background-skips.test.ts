@@ -96,6 +96,52 @@ describe("decodeRawToFloat, background work and a file libraw gave no answer for
   });
 });
 
+describe("decodeRawToFloat, files that share a name, size and modification time", () => {
+  it("tells them apart by the path the caller gives", async () => {
+    h.answer = noAnswer;
+    await decodeRawToFloat(raw("H.ARW"), { background: true }, "shoot-a/H.ARW");
+
+    await decodeRawToFloat(raw("H.ARW"), { background: true }, "shoot-b/H.ARW");
+
+    expect(h.asked).toEqual(["H.ARW", "H.ARW"]);
+  });
+
+  it("still passes over the same path", async () => {
+    h.answer = noAnswer;
+    await decodeRawToFloat(raw("I.ARW"), { background: true }, "shoot-a/I.ARW");
+
+    await decodeRawToFloat(raw("I.ARW"), { background: true }, "shoot-a/I.ARW");
+
+    expect(h.asked).toEqual(["I.ARW"]);
+  });
+});
+
+describe("decodeRawToFloat, what it remembers of a file with no answer", () => {
+  it("forgets it once a later decode of the file succeeds", async () => {
+    h.answer = noAnswer;
+    await decodeRawToFloat(raw("J.ARW"), { background: true });
+    h.answer = decoded;
+    await decodeRawToFloat(raw("J.ARW"));
+
+    const again = await decodeRawToFloat(raw("J.ARW"), { background: true });
+
+    expect(again).toMatchObject({ width: 1, height: 1 });
+    expect(h.asked).toEqual(["J.ARW", "J.ARW", "J.ARW"]);
+  });
+
+  it("keeps only the most recent files", async () => {
+    h.answer = noAnswer;
+    await decodeRawToFloat(raw("K0.ARW"), { background: true });
+    for (let i = 1; i <= 300; i++) await decodeRawToFloat(raw(`K${i}.ARW`), { background: true });
+    h.asked = [];
+
+    await decodeRawToFloat(raw("K0.ARW"), { background: true });
+    await decodeRawToFloat(raw("K300.ARW"), { background: true });
+
+    expect(h.asked).toEqual(["K0.ARW"]);
+  });
+});
+
 describe("decodeRawToFloat, background work and a file being decoded already", () => {
   it("answers transient without asking libraw", async () => {
     const first = heldOpen();

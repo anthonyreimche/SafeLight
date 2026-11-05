@@ -23,10 +23,9 @@
 
 import { create } from "zustand";
 import type { ExtensionManifest, ExtensionModule } from "../types";
-import { makeScopedAPI } from "../host";
-import { isReservedExtensionId, reservedIdReason } from "../core-extension";
-import { unregisterExtension } from "../registry";
-import { setExtensionName } from "../param-registry";
+import { DEVTOOLS_EXTENSION_ID, manifestIdRefusal } from "../official-extensions";
+import { startInstance, stopInstances } from "../instance";
+import { restoreDisplacedPlugins } from "../loader";
 import { privilegedFs } from "@/native/privileged";
 import {
   getExtSetting,
@@ -34,7 +33,6 @@ import {
   setExtSetting,
 } from "../ext-settings";
 
-const DEVTOOLS_ID = "core.devtools";
 const FOLDER_KEY = "devFolder";
 
 export type DevExtStatus = "loaded" | "error";
@@ -61,17 +59,12 @@ interface DevFolderState {
 }
 
 export const useDevFolder = create<DevFolderState>(() => ({
-  folder: getExtSetting<string | null>(DEVTOOLS_ID, FOLDER_KEY, null),
+  folder: getExtSetting<string | null>(DEVTOOLS_EXTENSION_ID, FOLDER_KEY, null),
   items: [],
   scanning: false,
   error: null,
   pendingOrigins: [],
 }));
-
-// Live module instances + their blob URLs, keyed by extension id, so a rescan
-// (or single reload) can tear down the previous load before re-activating.
-const loaded = new Map<string, ExtensionModule>();
-const blobUrls = new Map<string, string>();
 
 let started = false;
 let unsubscribe: (() => void) | null = null;
@@ -86,24 +79,8 @@ function join(base: string, name: string): string {
   return base.replace(/[\\/]+$/, "") + sep + name;
 }
 
-/** Tear down a single loaded dev extension and sweep its contributions. */
-function unload(id: string): void {
-  try {
-    loaded.get(id)?.deactivate?.();
-  } catch (e) {
-    console.warn(`[dev-folder] ${id} deactivate threw:`, e);
-  }
-  loaded.delete(id);
-  unregisterExtension(id);
-  const url = blobUrls.get(id);
-  if (url) {
-    URL.revokeObjectURL(url);
-    blobUrls.delete(id);
-  }
-}
-
 function unloadAll(): void {
-  for (const id of [...loaded.keys()]) unload(id);
+  stopInstances("dev");
 }
 
 /** Record the folder with the main process, which reads the manifests there at
@@ -124,7 +101,8 @@ async function syncFolder(folder: string | null): Promise<void> {
 }
 
 /** Read + activate one extension folder. Throws on any failure (no manifest,
- *  bad JSON, a reserved id, missing bundle, no activate export). */
+ *  bad JSON, a reserved or unofficial official-only id, missing bundle, no
+ *  activate export, or not starting within the time guardExtension allows). */
 async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
   const fs = privilegedFs();
   if (!fs) throw new Error("Loading extensions from a folder requires the desktop app.");
@@ -134,39 +112,30 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
   ) as ExtensionManifest;
   if (typeof manifest.id !== "string" || !manifest.id || !manifest.main)
     throw new Error("safelight.json is missing `id` or `main`");
-  if (isReservedExtensionId(manifest.id)) {
-    const reason = reservedIdReason(manifest.id);
-    console.warn(`[dev-folder] refused ${reason}`);
-    throw new Error(reason);
+  const refusal = manifestIdRefusal(manifest);
+  if (refusal) {
+    console.warn(`[dev-folder] refused ${refusal}`);
+    throw new Error(refusal);
   }
 
-  // Replace any prior live instance of this id (a previous dev load).
-  if (loaded.has(manifest.id)) unload(manifest.id);
-
-  const bundle = await fs.read(join(dir, manifest.main));
-  const blob = new Blob([bundle.data as BlobPart], { type: "text/javascript" });
-  const url = URL.createObjectURL(blob);
-  let mod: Partial<ExtensionModule>;
-  try {
-    mod = (await import(/* @vite-ignore */ url)) as Partial<ExtensionModule>;
-  } catch (e) {
-    URL.revokeObjectURL(url);
-    throw e;
-  }
-  if (typeof mod.activate !== "function") {
-    URL.revokeObjectURL(url);
-    throw new Error("bundle has no activate(api) export");
-  }
-  if (manifest.name) setExtensionName(manifest.id, manifest.name);
-  try {
-    mod.activate(makeScopedAPI(manifest.id));
-  } catch (e) {
-    unregisterExtension(manifest.id);
-    URL.revokeObjectURL(url);
-    throw e;
-  }
-  loaded.set(manifest.id, mod as ExtensionModule);
-  blobUrls.set(manifest.id, url);
+  const { id } = manifest;
+  const bundlePath = join(dir, manifest.main);
+  await startInstance({
+    id,
+    source: "dev",
+    name: manifest.name,
+    bundle: bundlePath,
+    read: async (signal) => {
+      const bundle = await fs.read(bundlePath);
+      signal.throwIfAborted();
+      const blob = new Blob([bundle.data as BlobPart], { type: "text/javascript" });
+      const url = URL.createObjectURL(blob);
+      return {
+        load: () => import(/* @vite-ignore */ url) as Promise<Partial<ExtensionModule>>,
+        release: () => URL.revokeObjectURL(url),
+      };
+    },
+  });
   return {
     id: manifest.id,
     name: manifest.name || manifest.id,
@@ -176,9 +145,16 @@ async function loadOne(dir: string, manifestPath: string): Promise<DevExtItem> {
   };
 }
 
-/** Unload everything, then re-read and load every extension in the dev folder. */
+/** Unload everything, then re-read and load every extension in the dev folder.
+ *  An installed extension a dev copy replaced starts again once the scan has
+ *  left its id free. */
 export async function scanDevFolder(): Promise<void> {
   const gen = ++scanGen;
+  await loadFolder(gen);
+  if (gen === scanGen) await restoreDisplacedPlugins();
+}
+
+async function loadFolder(gen: number): Promise<void> {
   const folder = useDevFolder.getState().folder;
   const fs = privilegedFs();
   void syncFolder(folder);
@@ -288,13 +264,14 @@ export async function reloadDevExtension(dir: string): Promise<void> {
   useDevFolder.setState({ items });
   // A rebuilt manifest may declare a new origin.
   void syncFolder(useDevFolder.getState().folder);
+  await restoreDisplacedPlugins();
 }
 
 /** Set (or clear with null) the dev folder. Persisted to the Developer Tools
  *  extension's settings; the change handler applies it and rescans, here and in
  *  any other open window. */
 export function setDevFolder(path: string | null): void {
-  setExtSetting(DEVTOOLS_ID, FOLDER_KEY, path);
+  setExtSetting(DEVTOOLS_EXTENSION_ID, FOLDER_KEY, path);
 }
 
 /** Open a native folder picker and adopt the chosen folder. */
@@ -310,11 +287,11 @@ export async function pickDevFolder(): Promise<void> {
 export function initDevFolder(): void {
   if (started) return;
   started = true;
-  const folder = getExtSetting<string | null>(DEVTOOLS_ID, FOLDER_KEY, null);
+  const folder = getExtSetting<string | null>(DEVTOOLS_EXTENSION_ID, FOLDER_KEY, null);
   useDevFolder.setState({ folder });
   // Follow folder changes from Preferences / the Dev tab — including those made
   // in another window (ext-settings syncs via the storage event).
-  unsubscribe = onExtSettingChange(DEVTOOLS_ID, (key, value) => {
+  unsubscribe = onExtSettingChange(DEVTOOLS_EXTENSION_ID, (key, value) => {
     if (key !== FOLDER_KEY) return;
     const nextFolder = (value as string | null) ?? null;
     if (nextFolder === useDevFolder.getState().folder) return;
@@ -333,6 +310,7 @@ export function teardownDevFolder(): void {
   unsubscribe?.();
   unsubscribe = null;
   unloadAll();
+  void restoreDisplacedPlugins();
   useDevFolder.setState({ items: [], scanning: false, error: null, pendingOrigins: [] });
   // The folder's declarations leave the policy with the extensions themselves.
   void syncFolder(null);

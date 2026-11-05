@@ -27,6 +27,7 @@ import {
   type StageInjection,
 } from "./shaders";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
+import { buildStageInjection } from "./stage-injection";
 import {
   buildProgram,
   builtinStage,
@@ -185,25 +186,26 @@ describe("develop fragment shader assembly", () => {
     { marker: "effects", glsl: "{ c = clamp(c + vUv.xyx * 0.0, 0.0, 1.0); }" },
   ];
 
+  // Core's own program, with no stages: the Essentials' names stand in.
   for (const { name, variant, stock } of VERSIONS) {
+    const tools = buildStageInjection([], variant).injection;
     describe(name, () => {
       it("compiles the built-in pipeline with no contributed stages", () => {
-        expectCompiles(buildFragmentShader(null, undefined, variant));
+        expectCompiles(buildFragmentShader(null, tools, variant));
       });
 
       it("compiles the stock transform spliced in explicitly", () => {
-        expectCompiles(buildFragmentShader(stock, EMPTY_INJECTION, variant));
+        expectCompiles(buildFragmentShader(stock, tools, variant));
       });
 
       it("compiles a replacement display transform", () => {
-        expectCompiles(buildFragmentShader(REPLACEMENT_PIPELINE.glsl, EMPTY_INJECTION, variant));
+        expectCompiles(buildFragmentShader(REPLACEMENT_PIPELINE.glsl, tools, variant));
       });
 
       for (const { marker, glsl } of MARKERS) {
         it(`compiles a block spliced at the ${marker} marker`, () => {
-          expectCompiles(
-            buildFragmentShader(null, { ...EMPTY_INJECTION, [marker]: glsl }, variant),
-          );
+          const spliced = { ...EMPTY_INJECTION, ...tools, [marker]: `${tools[marker] ?? ""}\n${glsl}` };
+          expectCompiles(buildFragmentShader(null, spliced, variant));
         });
       }
     });
@@ -211,19 +213,53 @@ describe("develop fragment shader assembly", () => {
 });
 
 describe("shipped stage sets", () => {
-  it("registers the three stages the app ships", () => {
+  it("registers the stages the app ships", () => {
     expect(builtinStages().map((s) => s.id)).toEqual([
-      "core.vignette",
-      "core.grain",
       BUILTIN_DENOISE_ID,
+      "safelight.crop.geometry",
+      "safelight.heal.retouch",
+      "safelight.white-balance.balance",
+      "safelight.basic.tone",
+      "safelight.basic.display",
+      "safelight.basic.presence",
+      "safelight.basic.band-detail",
+      "safelight.basic.vibrance",
+      "safelight.masks.coverage",
+      "safelight.tone-curve.curve",
+      "safelight.color-grading.grade",
+      "safelight.hsl.mix",
+      "safelight.detail.sharpen",
+      "safelight.effects.vignette",
+      "safelight.effects.grain",
     ]);
   });
 
-  for (const id of ["core.vignette", "core.grain", BUILTIN_DENOISE_ID]) {
+  for (const id of [
+    BUILTIN_DENOISE_ID,
+    "safelight.crop.geometry",
+    "safelight.white-balance.balance",
+    "safelight.basic.tone",
+    "safelight.basic.display",
+    "safelight.basic.presence",
+    "safelight.basic.band-detail",
+    "safelight.basic.vibrance",
+    "safelight.tone-curve.curve",
+    "safelight.color-grading.grade",
+    "safelight.hsl.mix",
+    "safelight.detail.sharpen",
+    "safelight.effects.vignette",
+    "safelight.effects.grain",
+  ]) {
     it(`links the program carrying ${id} alone`, () => {
       expect(rendererBuildError({ stages: [builtinStage(id)] })).toBeNull();
     });
   }
+
+  // Without the Essentials the program reads the names they declare through
+  // core's stand-ins (core-reads.ts): local tone's White Balance, say.
+  it("links core's own program with no Essential installed, on every version", () => {
+    expect(rendererBuildError({ stages: [], processVersionCap: 3 })).toBeNull();
+  });
 
   it("links the program carrying every shipped stage", () => {
     expect(rendererBuildError({ stages: builtinStages() })).toBeNull();

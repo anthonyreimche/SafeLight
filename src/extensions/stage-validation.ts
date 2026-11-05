@@ -4,7 +4,8 @@
 // be preserved in derived versions.
 
 import { BUILTIN_DENOISE_ID } from "@/rendering/webgl/builtin-denoise";
-import { isBuiltInStage } from "@/rendering/webgl/builtin-stage";
+import { isBuiltInStage, writesRawNames } from "@/rendering/webgl/builtin-stage";
+import { STAGE_ANCHORS, isStageAnchor } from "@/rendering/webgl/stage-anchors";
 import { CORE_EXTENSION_ID } from "./core-extension";
 import {
   MASKABLE_PHASES,
@@ -12,6 +13,7 @@ import {
   type InterStageVariable,
   type ProcessingStageContribution,
   type StageSpace,
+  type TextureRequirement,
   type UniformDeclaration,
 } from "./types";
 
@@ -184,6 +186,40 @@ function fixedCountWarnings(c: ProcessingStageContribution, stagePrefix: string)
   return warnings;
 }
 
+const UNARRAYABLE: ReadonlySet<string> = new Set(["mat3", "mat4", "sampler2D"]);
+const MAX_UNIFORM_LENGTH = 64;
+/** An official stage's arrays may run longer (Masking's HSL bands, 96 vec4s). */
+const MAX_OFFICIAL_UNIFORM_LENGTH = 256;
+
+/** An array uniform the program can't declare: one of a matrix or sampler, or a
+ *  length that isn't a whole number from 1 to MAX_UNIFORM_LENGTH. */
+function uniformShapeError(c: ProcessingStageContribution, extensionId?: string): string | null {
+  const uniforms: unknown = c.uniforms;
+  if (!Array.isArray(uniforms)) return null;
+  for (const u of uniforms as UniformDeclaration[]) {
+    const length: unknown = u?.length;
+    if (length === undefined) continue;
+    if (UNARRAYABLE.has(u.glslType)) return `uniform "${u.key}" is a ${u.glslType}, which can't be an array`;
+    const official = typeof c.id === "string" && writesRawNames({ id: c.id, extensionId });
+    const max = official ? MAX_OFFICIAL_UNIFORM_LENGTH : MAX_UNIFORM_LENGTH;
+    if (typeof length !== "number" || !Number.isInteger(length) || length < 1 || length > max) {
+      return `uniform "${u.key}" has length ${formatValue(length)}, which must be a whole number from 1 to ${max}`;
+    }
+  }
+  return null;
+}
+
+/** A photo texture nothing would fill: only a stage of Safelight's own or an
+ *  official extension's has a derive that runs. */
+function photoTextureError(c: ProcessingStageContribution, extensionId?: string): string | null {
+  const textures: unknown = c.textures;
+  if (!Array.isArray(textures)) return null;
+  const fills = typeof c.derive === "function" && writesRawNames({ id: c.id, extensionId });
+  const photo = (textures as TextureRequirement[]).find((t) => t?.kind === "photo" || t?.kind === "atlas");
+  if (!photo || fills) return null;
+  return `texture "${photo.key}" is a ${photo.kind} texture, which only a stage of Safelight's own fills (derive)`;
+}
+
 /** Runtime check of the stage's contract, and of who may register it: ids under
  *  "core." and the built-in denoiser's belong to the core extension, so any other
  *  `extensionId` is refused them. Without one, the stage is checked as an
@@ -212,6 +248,18 @@ export function checkStageContract(
   }
   const warnings: string[] = [];
 
+  if (c.anchor !== undefined) {
+    if (!isStageAnchor(c.anchor)) {
+      return fail(
+        `anchor ${formatValue(c.anchor)} is not one of ${Object.keys(STAGE_ANCHORS).join(", ")}`,
+      );
+    }
+    if (!writesRawNames({ id: c.id, extensionId })) warnings.push(`${stagePrefix}: anchor is for Safelight's own stages, so it is ignored`);
+  }
+  if (c.derive !== undefined && !writesRawNames({ id: c.id, extensionId })) {
+    warnings.push(`${stagePrefix}: derive is for Safelight's own stages, so it is ignored`);
+  }
+
   // Extensions are plain JavaScript, so these fields arrive untyped.
   const space: unknown = c.space;
   if (space !== undefined) {
@@ -231,9 +279,18 @@ export function checkStageContract(
       warnings.push(`${stagePrefix}: geometry stages run before the image is sampled, so space is ignored`);
     }
   }
+  const shape = uniformShapeError(c, extensionId) ?? photoTextureError(c, extensionId);
+  if (shape) return fail(shape);
   const reads: unknown = c.reads;
   if (reads !== undefined && (typeof reads !== "string" || !Object.hasOwn(READS, reads)))
     return fail(`reads must be "source" or "current", got ${formatValue(reads)}`);
+  const readsCurrentFrom: unknown = c.readsCurrentFrom;
+  if (readsCurrentFrom !== undefined) {
+    if (typeof readsCurrentFrom !== "number" || !Number.isInteger(readsCurrentFrom) || readsCurrentFrom < 1)
+      return fail(`readsCurrentFrom must be a whole process version from 1, got ${formatValue(readsCurrentFrom)}`);
+    if (reads !== "current")
+      warnings.push(`${stagePrefix}: readsCurrentFrom only applies with reads "current", so it is ignored`);
+  }
   const interStage = interStageError(c);
   if (interStage) return fail(interStage);
   const isvReference = isvReferenceError(c);

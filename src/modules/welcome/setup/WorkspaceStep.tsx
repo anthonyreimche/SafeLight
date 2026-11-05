@@ -48,11 +48,6 @@ export function WorkspaceStep({ headingId }: StepProps) {
             setting="sliderJumpToCursor"
             description="Click anywhere on a slider to jump there, then drag."
           />
-          <SettingSwitch
-            label="Highlight & shadow detail sliders"
-            setting="basicDetailSliders"
-            description="Adds Highlight Detail and Shadow Detail to the Basic panel."
-          />
         </SettingGroup>
         <SettingGroup title="Shortcuts and startup">
           <SettingSwitch

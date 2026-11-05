@@ -10,7 +10,7 @@
 
 import type { CatalogPhoto } from "@/catalog/types";
 import type { AppSettings } from "@/state/settings-store";
-import { getExtension } from "@/modules/library/raw-preview";
+import { getExtension } from "@/raw/raw-preview";
 import type { ErrorLogEntry } from "./error-log";
 
 export interface ReportCrash {
@@ -31,6 +31,10 @@ export interface WebGLInfo {
   renderer: string;
   glsl: string;
   maxTexture: number;
+  /** MAX_FRAGMENT_UNIFORM_VECTORS: the develop program's uniforms must fit in it to link. */
+  fragmentUniformVectors: number;
+  /** EXT_color_buffer_float: without it the render pipeline's intermediates are 8-bit. */
+  colorBufferFloat: boolean;
 }
 
 export interface EnvironmentFacts {
@@ -190,9 +194,14 @@ export function graphicsText(f: GraphicsFacts): string {
   if (f.webgl) {
     lines.push(f.webgl.renderer);
     lines.push(`Vendor: ${f.webgl.vendor}`);
-    lines.push(`${f.webgl.glsl} · max texture ${f.webgl.maxTexture}`);
+    lines.push(
+      `${f.webgl.glsl} · max texture ${f.webgl.maxTexture} · fragment uniform vectors ${f.webgl.fragmentUniformVectors}`,
+    );
+    if (!f.webgl.colorBufferFloat) {
+      lines.push("No float render targets: edits on this GPU are limited to 8-bit, 0–1 intermediates");
+    }
   } else {
-    lines.push("WebGL unavailable");
+    lines.push("WebGL2 unavailable");
   }
   if (f.gpuFeatures) {
     const off = Object.entries(f.gpuFeatures).filter(
@@ -242,7 +251,7 @@ export function extensionsText(f: ExtensionFacts): string {
 
 export function contextText(f: ContextFacts): string {
   const lines = [`Module: ${f.module}`, `Theme: ${f.theme} · Layout: ${f.layout}`];
-  lines.push(f.folderOpen ? `Catalog: ${f.photoCount.toLocaleString("en-US")} photos` : "No folder open");
+  lines.push(f.folderOpen ? `Catalogue: ${f.photoCount.toLocaleString("en-US")} photos` : "No folder open");
   if (f.photo) {
     const p = f.photo;
     const photo = [`Photo: ${p.ext || "(no extension)"}`, p.mimeType, `${p.width}×${p.height}`];

@@ -10,10 +10,12 @@
 // the bottom-edge clamp (issue #103). jsdom has no layout engine, so the
 // menu's measured size is stubbed here where the expected numbers are visible.
 
-import { beforeAll, describe, it, expect, afterEach } from "vitest";
+import { beforeAll, describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { updateSettings } from "@/state/settings-store";
-import { ContextMenu } from "./ContextMenu.tsx";
+import { popEscapeHandler, pushEscapeHandler } from "@/ui/escape-stack";
+import { ContextMenu, type ContextMenuEntry } from "./ContextMenu.tsx";
 
 const size = { width: 0, height: 0 };
 
@@ -67,5 +69,89 @@ describe("ContextMenu placement", () => {
   it("pins to the viewport origin when the menu cannot fit", () => {
     const menu = renderMenu(100, 100, 200, 900);
     expect(menu.style.top).toBe("0px");
+  });
+});
+
+describe("ContextMenu keyboard", () => {
+  const items = (onPick: (label: string) => void): ContextMenuEntry[] => [
+    { label: "Open", onClick: () => onPick("Open") },
+    { label: "Rename", disabled: true, onClick: () => onPick("Rename") },
+    "separator",
+    { label: "Rotate", onClick: () => onPick("Rotate") },
+    { label: "Remove", onClick: () => onPick("Remove") },
+  ];
+  const item = (name: string) => screen.getByRole("menuitem", { name });
+
+  function open(onPick = (_label: string) => {}) {
+    render(<ContextMenu x={10} y={10} items={items(onPick)} onClose={() => {}} />);
+  }
+
+  it("moves focus to the first item on open", () => {
+    open();
+    expect(document.activeElement).toBe(item("Open"));
+  });
+
+  it("walks the enabled items with the arrow keys, wrapping at the ends", async () => {
+    const user = userEvent.setup();
+    open();
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(item("Rotate"));
+    await user.keyboard("{ArrowDown}{ArrowDown}");
+    expect(document.activeElement).toBe(item("Open"));
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(item("Remove"));
+  });
+
+  it("jumps to the first and last items with Home and End", async () => {
+    const user = userEvent.setup();
+    open();
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(item("Remove"));
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(item("Open"));
+  });
+
+  it("runs the focused item on Enter and on Space", async () => {
+    const user = userEvent.setup();
+    const picked: string[] = [];
+    open((label) => picked.push(label));
+    await user.keyboard("{ArrowDown}{Enter}");
+    await user.keyboard("{ArrowDown} ");
+    expect(picked).toEqual(["Rotate", "Remove"]);
+  });
+
+  it("hands focus back to where it was when it closes", () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    trigger.focus();
+    const { unmount } = render(
+      <ContextMenu x={10} y={10} items={items(() => {})} onClose={() => {}} />,
+    );
+    expect(document.activeElement).toBe(item("Open"));
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+});
+
+describe("ContextMenu escape", () => {
+  it("stays below a dialogue opened after it, however often the menu re-renders", () => {
+    const menuItems: ContextMenuEntry[] = [{ label: "Open", onClick: () => {} }];
+    const first = vi.fn();
+    const { rerender } = render(<ContextMenu x={0} y={0} items={menuItems} onClose={first} />);
+    const dialog = vi.fn();
+    const off = pushEscapeHandler(dialog);
+
+    const second = vi.fn();
+    rerender(<ContextMenu x={0} y={0} items={menuItems} onClose={second} />);
+    popEscapeHandler();
+    expect(dialog).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+    expect(second).not.toHaveBeenCalled();
+
+    off();
+    popEscapeHandler();
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
   });
 });

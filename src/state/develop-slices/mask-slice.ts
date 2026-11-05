@@ -3,43 +3,19 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Mask and retouch state, carved out of the develop store as a self-contained
-// slice: the ephemeral tool UI (active tool, brush/retouch settings, selection)
-// plus the data mutations on params.masks / params.retouch. The mutations write
-// params directly and post nothing to other windows; they do NOT commit to
-// history — commitEdit ends a gesture for undo and is called by the canvas
-// overlay at gesture end. Composed in develop-store.ts; `DevelopState extends
-// MaskSlice`, so the slice owns these members' types.
+// The edits core makes to a mask's values: the ones the mask scope
+// (mask-scope.tsx) hands a mask sub-panel, and the seeding of a sub-panel's
+// values when one is added to a mask or taken off. The masks themselves, the
+// tools that draw them and their selection are the Masking extension's. The
+// edits write params directly and post nothing to other windows; they do NOT
+// commit to history — commitEdit ends a gesture for undo. Composed in
+// develop-store.ts; `DevelopState extends MaskSlice`, so the slice owns these
+// members' types. The sharpening preview rides along.
 
 import type { StateCreator } from "zustand";
-import type {
-  BrushDab,
-  Mask,
-  MaskAdjustments,
-  MaskComponent,
-  MaskComponentMode,
-  MaskType,
-  RetouchSpot,
-} from "@/catalog/types";
-import {
-  MAX_MASKS,
-  MAX_RETOUCH,
-  defaultColorRange,
-  defaultHSL,
-  defaultLumRange,
-  defaultMaskAdjustments,
-  defaultToneCurves,
-  DEFAULT_MASK_PANELS,
-} from "@/catalog/types";
+import type { DevelopParams, Mask, MaskAdjustments } from "@/catalog/types";
+import { defaultHSL, defaultMaskAdjustments, defaultToneCurves } from "@/catalog/types";
 import { getParamDescriptor } from "@/extensions/param-registry";
-import type { DevelopState } from "../develop-store";
-
-export type ToolMode = "none" | "mask" | "retouch" | "hsl-picker";
-
-// Shared id generator for masks / components created from the panel (range
-// masks have no canvas gesture, so they're built here rather than in the overlay).
-let idSeq = 0;
-const genId = (p: string) => `${p}-${Date.now().toString(36)}-${idSeq++}`;
 
 // Classifier for MaskPanelContribution.owns entries. Qualified extension keys
 // always contain a dot ("stage.key"), so they can't collide with these.
@@ -57,7 +33,7 @@ export function isMaskBagKey(key: string): boolean {
 // registered defaults or deleted from the bag. An unregistered extension key
 // has no known default, so seeding it is a delete too — nothing is invented.
 function applyOwnedValues(
-  s: DevelopState,
+  s: MaskSlice,
   maskId: string,
   owns: readonly string[],
   mode: "seed" | "clear",
@@ -78,53 +54,13 @@ function applyOwnedValues(
 }
 
 export interface MaskSlice {
-  // Mask / retouch tool UI state (ephemeral, not persisted to history).
-  activeTool: ToolMode;
-  maskToolType: MaskType;
-  maskCompMode: MaskComponentMode; // whether the next created component adds or subtracts
-  maskAddTarget: "new" | "current"; // start a fresh mask, or extend the selected one
-  selectedMaskId: string | null;
-  selectedComponentId: string | null; // component being edited on-canvas
-  hoveredMaskId: string | null; // mask hovered in the panel list -> coverage overlay
-  maskTab: "coverage" | "adjust"; // selected-mask editor tab (gates the overlay)
-  brushPreview: boolean; // true while a brush size/feather slider is being dragged
   // Sharpening preview shown while Alt/Ctrl-dragging a Detail-panel sharpening
   // slider: 0 = off, 1 = masking, 2 = detail, 3 = luminance. Transient (not
-  // persisted, not broadcast) — like brushPreview.
+  // persisted, not broadcast).
   sharpenViz: number;
-  selectedSpotId: string | null;
-  brushSize: number; // image-height fraction
-  brushFeather: number; // 0..1
-  brushOpacity: number; // 0..1 coverage ceiling
-  brushFlow: number; // 0..1 per-dab deposit
-  brushErase: boolean;
-  retouchSize: number; // image-height fraction
-  retouchFeather: number; // 0..100
-  retouchOpacity: number; // 0..100
-  retouchMode: "heal" | "clone";
-  setActiveTool: (t: ToolMode) => void;
-  setMaskToolType: (t: MaskType) => void;
-  setMaskCompMode: (m: MaskComponentMode) => void;
-  setMaskAddTarget: (t: "new" | "current") => void;
-  selectMask: (id: string | null) => void;
-  selectComponent: (id: string | null) => void;
-  setHoveredMaskId: (id: string | null) => void;
-  setMaskTab: (tab: "coverage" | "adjust") => void;
-  setBrushPreview: (v: boolean) => void;
   setSharpenViz: (mode: number) => void;
-  selectSpot: (id: string | null) => void;
-  setBrushSize: (v: number) => void;
-  setBrushFeather: (v: number) => void;
-  setBrushOpacity: (v: number) => void;
-  setBrushFlow: (v: number) => void;
-  setBrushErase: (v: boolean) => void;
-  setRetouchSize: (v: number) => void;
-  setRetouchFeather: (v: number) => void;
-  setRetouchOpacity: (v: number) => void;
-  setRetouchMode: (v: "heal" | "clone") => void;
 
-  // Mask data mutations (persisted; commitEdit ends a gesture for undo).
-  addMask: (mask: Mask) => void;
+  // Mask value edits (persisted; commitEdit ends a gesture for undo).
   updateMask: (id: string, patch: Partial<Mask>) => void;
   updateMaskAdj: (id: string, patch: Partial<MaskAdjustments>) => void;
   // Merge into the mask's extension-param bag; undefined values delete keys.
@@ -134,198 +70,14 @@ export interface MaskSlice {
   // zeroes the adjustments and strips blocks / bag keys (sub-panel removed).
   seedMaskPanelValues: (maskId: string, owns: readonly string[]) => void;
   clearMaskPanelValues: (maskId: string, owns: readonly string[]) => void;
-  renameMask: (id: string, name: string) => void;
-  // Component mutations within a mask.
-  addComponent: (maskId: string, comp: MaskComponent) => void;
-  updateComponent: (maskId: string, compId: string, patch: Partial<MaskComponent>) => void;
-  removeComponent: (maskId: string, compId: string) => void;
-  cycleComponentMode: (maskId: string, compId: string) => void;
-  // Add a parametric range component (luminance / colour). Appends to the
-  // selected mask (as an intersect by default) or starts a new mask.
-  addRangeComponent: (kind: "lumRange" | "colorRange") => void;
-  addBrushDab: (maskId: string, compId: string, dab: BrushDab) => void;
-  removeMask: (id: string) => void;
-  // Retouch data mutations.
-  addSpot: (spot: RetouchSpot) => void;
-  updateSpot: (id: string, patch: Partial<RetouchSpot>) => void;
-  removeSpot: (id: string) => void;
 }
 
-export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
+export const createMaskSlice: StateCreator<MaskSlice & { params: DevelopParams }, [], [], MaskSlice> = (
   set,
   get,
 ) => ({
-  activeTool: "none",
-  maskToolType: "radial",
-  maskCompMode: "add",
-  maskAddTarget: "new",
-  selectedMaskId: null,
-  selectedComponentId: null,
-  hoveredMaskId: null,
-  maskTab: "coverage",
-  brushPreview: false,
   sharpenViz: 0,
-  selectedSpotId: null,
-  brushSize: 0.08,
-  brushFeather: 0.5,
-  brushOpacity: 1,
-  brushFlow: 1,
-  brushErase: false,
-  retouchSize: 0.04,
-  retouchFeather: 50,
-  retouchOpacity: 100,
-  retouchMode: "heal" as const,
-  setActiveTool: (activeTool) => set({ activeTool }),
-  setMaskToolType: (maskToolType) => set({ maskToolType }),
-  setMaskCompMode: (maskCompMode) => set({ maskCompMode }),
-  setMaskAddTarget: (maskAddTarget) => set({ maskAddTarget }),
-  selectMask: (selectedMaskId) => set({ selectedMaskId }),
-  selectComponent: (selectedComponentId) => set({ selectedComponentId }),
-  setHoveredMaskId: (hoveredMaskId) => set({ hoveredMaskId }),
-  setMaskTab: (maskTab) => set({ maskTab }),
-  setBrushPreview: (brushPreview) => set({ brushPreview }),
   setSharpenViz: (sharpenViz) => set({ sharpenViz }),
-  selectSpot: (selectedSpotId) => set({ selectedSpotId }),
-  setBrushSize: (brushSize) => set({ brushSize }),
-  setBrushFeather: (brushFeather) => set({ brushFeather }),
-  setBrushOpacity: (brushOpacity) => set({ brushOpacity }),
-  setBrushFlow: (brushFlow) => set({ brushFlow }),
-  setBrushErase: (brushErase) => set({ brushErase }),
-  setRetouchSize: (retouchSize) => set({ retouchSize }),
-  setRetouchFeather: (retouchFeather) => set({ retouchFeather }),
-  setRetouchOpacity: (retouchOpacity) => set({ retouchOpacity }),
-  setRetouchMode: (retouchMode) => set({ retouchMode }),
-
-  addMask(mask) {
-    set((s) => {
-      if (s.params.masks.length >= MAX_MASKS) return s;
-      return {
-        params: { ...s.params, masks: [...s.params.masks, mask] },
-        selectedMaskId: mask.id,
-        selectedComponentId: mask.components[mask.components.length - 1]?.id ?? null,
-        // A new mask opens on Coverage so its overlay is visible while drawing;
-        // the tab is otherwise sticky (adding to an existing mask stays put).
-        maskTab: "coverage",
-      };
-    });
-  },
-
-  addComponent(maskId, comp) {
-    set((s) => ({
-      params: {
-        ...s.params,
-        masks: s.params.masks.map((m) =>
-          m.id === maskId ? { ...m, components: [...m.components, comp] } : m,
-        ),
-      },
-      selectedMaskId: maskId,
-      selectedComponentId: comp.id,
-    }));
-  },
-
-  // Cycle a component's combine mode: add -> subtract -> intersect -> add.
-  cycleComponentMode(maskId, compId) {
-    set((s) => ({
-      params: {
-        ...s.params,
-        masks: s.params.masks.map((m) =>
-          m.id === maskId
-            ? {
-                ...m,
-                components: m.components.map((c) => {
-                  if (c.id !== compId) return c;
-                  const next: MaskComponentMode =
-                    c.mode === "add" ? "subtract" : c.mode === "subtract" ? "intersect" : "add";
-                  return { ...c, mode: next };
-                }),
-              }
-            : m,
-        ),
-      },
-    }));
-  },
-
-  addRangeComponent(kind) {
-    const geo =
-      kind === "lumRange"
-        ? { lumRange: defaultLumRange() }
-        : { colorRange: defaultColorRange() };
-    const s = get();
-    const sel = s.params.masks.find((m) => m.id === s.selectedMaskId) ?? null;
-    if (sel) {
-      // Range masks are usually used to confine an existing region -> intersect.
-      const comp: MaskComponent = {
-        id: genId("comp"),
-        kind,
-        mode: sel.components.length > 0 ? "intersect" : "add",
-        invert: false,
-        ...geo,
-      };
-      get().addComponent(sel.id, comp);
-      return;
-    }
-    // No mask selected: start a new mask anchored on the range component.
-    const id = genId("mask");
-    const mask: Mask = {
-      id,
-      name: kind === "lumRange" ? "Luminance" : "Color",
-      visible: true,
-      invert: false,
-      opacity: 100,
-      adj: defaultMaskAdjustments(),
-      panels: [...DEFAULT_MASK_PANELS],
-      components: [
-        { id: genId("comp"), kind, mode: "add", invert: false, ...geo },
-      ],
-    };
-    get().addMask(mask);
-  },
-
-  updateComponent(maskId, compId, patch) {
-    set((s) => ({
-      params: {
-        ...s.params,
-        masks: s.params.masks.map((m) =>
-          m.id === maskId
-            ? {
-                ...m,
-                components: m.components.map((c) =>
-                  c.id === compId ? { ...c, ...patch } : c,
-                ),
-              }
-            : m,
-        ),
-      },
-    }));
-  },
-
-  // Removing the last component removes the whole mask.
-  removeComponent(maskId, compId) {
-    set((s) => {
-      const masks: Mask[] = [];
-      for (const m of s.params.masks) {
-        if (m.id !== maskId) {
-          masks.push(m);
-          continue;
-        }
-        const components = m.components.filter((c) => c.id !== compId);
-        if (components.length > 0) masks.push({ ...m, components });
-        // else: drop the mask entirely
-      }
-      const maskGone = !masks.some((m) => m.id === maskId);
-      return {
-        params: { ...s.params, masks },
-        selectedMaskId: maskGone ? null : s.selectedMaskId,
-        selectedComponentId:
-          s.selectedComponentId === compId ? null : s.selectedComponentId,
-        // A hover on the removed mask outlives its list row (deleting from the
-        // row means mouseleave never fires), and a stale id blocks the selected
-        // mask's coverage overlay — drop it here like the selection.
-        hoveredMaskId:
-          maskGone && s.hoveredMaskId === maskId ? null : s.hoveredMaskId,
-      };
-    });
-  },
 
   // undefined values delete their key so cleared blocks (e.g. hsl) don't persist
   // as explicit-undefined properties through structured-clone, mirroring updateMaskBag.
@@ -380,72 +132,5 @@ export const createMaskSlice: StateCreator<DevelopState, [], [], MaskSlice> = (
 
   clearMaskPanelValues(maskId, owns) {
     applyOwnedValues(get(), maskId, owns, "clear");
-  },
-
-  renameMask(id, name) {
-    set((s) => ({
-      params: {
-        ...s.params,
-        masks: s.params.masks.map((m) => (m.id === id ? { ...m, name } : m)),
-      },
-    }));
-  },
-
-  addBrushDab(maskId, compId, dab) {
-    set((s) => ({
-      params: {
-        ...s.params,
-        masks: s.params.masks.map((m) =>
-          m.id === maskId
-            ? {
-                ...m,
-                components: m.components.map((c) =>
-                  c.id === compId && c.brush
-                    ? { ...c, brush: { ...c.brush, dabs: [...c.brush.dabs, dab] } }
-                    : c,
-                ),
-              }
-            : m,
-        ),
-      },
-    }));
-  },
-
-  removeMask(id) {
-    set((s) => ({
-      params: { ...s.params, masks: s.params.masks.filter((m) => m.id !== id) },
-      selectedMaskId: s.selectedMaskId === id ? null : s.selectedMaskId,
-      selectedComponentId:
-        s.selectedMaskId === id ? null : s.selectedComponentId,
-      hoveredMaskId: s.hoveredMaskId === id ? null : s.hoveredMaskId,
-    }));
-  },
-
-  addSpot(spot) {
-    set((s) => {
-      if (s.params.retouch.length >= MAX_RETOUCH) return s;
-      return {
-        params: { ...s.params, retouch: [...s.params.retouch, spot] },
-        selectedSpotId: spot.id,
-      };
-    });
-  },
-
-  updateSpot(id, patch) {
-    set((s) => ({
-      params: {
-        ...s.params,
-        retouch: s.params.retouch.map((sp) =>
-          sp.id === id ? { ...sp, ...patch } : sp,
-        ),
-      },
-    }));
-  },
-
-  removeSpot(id) {
-    set((s) => ({
-      params: { ...s.params, retouch: s.params.retouch.filter((sp) => sp.id !== id) },
-      selectedSpotId: s.selectedSpotId === id ? null : s.selectedSpotId,
-    }));
   },
 });

@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// The rename dialog is the last gate before a name reaches the filesystem, so
+// The rename dialogue is the last gate before a name reaches the filesystem, so
 // its job is to refuse everything the disk would refuse — blank, illegal
 // characters, a name already spoken for — and to hand back exactly the text the
 // user meant, trimmed.
@@ -130,6 +130,13 @@ describe("dismissing", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("cancels on Escape from the buttons too, not only the field", async () => {
+    const { user, onCancel } = setup();
+    screen.getByRole("button", { name: "Cancel" }).focus();
+    await user.keyboard("{Escape}");
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels from the Cancel button", async () => {
     const { user, onCancel } = setup();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -137,7 +144,7 @@ describe("dismissing", () => {
   });
 
   it("cancels on a click outside the card but not inside it", async () => {
-    // The backdrop is the dialog's own root element; only a click that lands on
+    // The backdrop is the dialogue's own root element; only a click that lands on
     // it (rather than bubbling from the card) dismisses.
     const { user, container, field, onCancel } = setup();
     await user.click(field);
@@ -145,5 +152,14 @@ describe("dismissing", () => {
 
     await user.click(container.firstElementChild as HTMLElement);
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("as a modal", () => {
+  it("is a named modal dialogue that opens with the field focused", () => {
+    const { field } = setup();
+    const dialog = screen.getByRole("dialog", { name: TITLE });
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(document.activeElement).toBe(field);
   });
 });

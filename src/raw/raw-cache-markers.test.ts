@@ -30,6 +30,7 @@ vi.mock("./cache-bridge", () => ({
   workerWriteCachedPreview: async (key: string) => {
     h.sent.push(`write ${key}`);
     h.store.set(key, "preview");
+    return true;
   },
   workerWriteMarker: async (key: string, value: string) => {
     h.sent.push(`mark ${key}`);
@@ -43,7 +44,10 @@ vi.mock("./cache-bridge", () => ({
   workerDeleteCachedPreview: async (key: string) => {
     h.store.delete(key);
   },
-  workerClearRawCache: async () => h.store.clear(),
+  workerClearRawCache: async () => {
+    h.store.clear();
+    return { failed: 0 };
+  },
   workerCachedKeys: async () => [...h.store.keys()].map((key) => ({ key, complete: true })),
 }));
 
@@ -210,7 +214,7 @@ describe("markDecode across windows open at the same time", () => {
   });
 
   // Round 1 stored only the session: such a strike predates every load since.
-  it("finalises a tentative marker written before strikes carried a time", async () => {
+  it("finalizes a tentative marker written before strikes carried a time", async () => {
     const cache = await session();
     const tentative = cache.decodeMarkerKey(KEY, "unsupported").replace("#2:", "#1:");
     h.store.set(tentative, "an-earlier-session");

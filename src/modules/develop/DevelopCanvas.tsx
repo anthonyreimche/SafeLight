@@ -4,84 +4,33 @@
 // be preserved in derived versions.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CatalogPhoto, CropRect } from "@/catalog/types";
-import { HSL_CHANNELS } from "@/catalog/types";
+import type { CatalogPhoto } from "@/catalog/types";
 import { useDevelopRenderer } from "@/hooks/use-develop-renderer";
 import { useDevelopStore } from "@/state/develop-store";
 import { useSettings } from "@/state/settings-store";
-import {
-  fitCropToImage,
-  maxCropForTransform,
-  transformedViewCrop,
-} from "@/rendering/crop-transform";
-import {
-  buildForwardTransform,
-  buildInverseTransform,
-  mat3Apply,
-} from "@/rendering/transform";
-import { computeGuidedCorrection } from "@/rendering/upright";
+import { mat3Apply } from "@/rendering/transform";
+import { photoGeometry } from "@/rendering/photo-geometry";
 import { ViewportImage, assessMatPx } from "@/ui/ViewportImage";
 import { leavePicture, releaseHandover, takeHandover } from "@/ui/canvas-handover";
 import { Slot } from "@/extensions/Slot";
+import { boundaryKey } from "@/extensions/guard";
+import { ErrorBoundary } from "@/ui/components/ErrorBoundary";
 import { useCanvasGesture } from "@/state/canvas-gesture";
 import { DevelopOverlayProvider } from "@/extensions/develop-host";
 import type { OverlayRect } from "@/extensions/develop-host";
-import { CropOverlay } from "./CropOverlay";
-import { GuidedOverlay } from "./GuidedOverlay";
-import { MaskOverlay } from "./MaskOverlay";
-import { useAutoAdjust } from "@/hooks/use-auto-adjust";
 import { getRenderBridge } from "@/rendering/render-bridge";
-import { getExtSetting } from "@/extensions/ext-settings";
 import { useRegistry } from "@/extensions/registry";
+import {
+  GRAPHICS_STILL_WORKS,
+  GRAPHICS_UNAVAILABLE,
+  graphicsUnavailableDetail,
+  probeGraphics,
+  useGraphics,
+} from "@/state/graphics-store";
 import { overflowNotice } from "./stage-overflow";
-
-// HSL hue centers matching the shader
-const HSL_CENTERS = [0, 30, 60, 120, 180, 240, 280, 320];
-
-// Circular gaps from each center to its prev/next neighbour — must match the
-// shader's HSL_DPREV/HSL_DNEXT in applyHSL (shaders.ts).
-const HSL_DPREV = [40, 30, 30, 60, 60, 60, 40, 40];
-const HSL_DNEXT = [30, 30, 60, 60, 60, 40, 40, 40];
-
-// Per-band influence at a given hue — the SAME hat weights the shader's applyHSL
-// uses, including the Preferences ▸ HSL range/smoothness shaping (`range` scales
-// the band half-widths, `smooth` blends linear↔smoothstep). Keeping this in
-// lockstep with hslBandWeight (shaders.ts) is what makes the on-image target tool
-// honest: the sliders move exactly as much as the pixels under the cursor change.
-// range=1, smooth=1 reproduces the default partition-of-unity bands.
-function getHSLWeights(hueDeg: number, range: number, smoothness: number): number[] {
-  return HSL_CENTERS.map((center, i) => {
-    const d = (((hueDeg - center + 540) % 360) - 180); // signed -180..180
-    const dp = HSL_DPREV[i] * range;
-    const dn = HSL_DNEXT[i] * range;
-    let t: number;
-    if (d <= 0) {
-      if (d <= -dp) return 0;
-      t = (d + dp) / dp;
-    } else {
-      if (d >= dn) return 0;
-      t = 1 - d / dn;
-    }
-    return (1 - smoothness) * t + smoothness * (t * t * (3 - 2 * t));
-  });
-}
-
-// Get RGB to hue
-function rgbToHue(r: number, g: number, b: number): number {
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  if (max === min) return 0;
-  const d = max - min;
-  let hue = 0;
-  if (max === r) {
-    hue = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-  } else if (max === g) {
-    hue = ((b - r) / d + 2) / 6;
-  } else {
-    hue = ((r - g) / d + 4) / 6;
-  }
-  return hue * 360;
-}
+import { usePickDragStore } from "./pick-drag";
+import { useCanvasToolStore } from "./canvas-tool";
+import { lendCanvasProbe } from "./canvas-probe";
 
 export function DevelopCanvas({
   photo,
@@ -115,6 +64,12 @@ export function DevelopCanvas({
   } = useDevelopRenderer(canvasRef, photo, fadeCanvasRef);
   const processingStages = useRegistry((s) => s.processingStages);
   const notice = overflowNotice(overflowedStages, processingStages);
+  const stalled = availability !== "starting" && availability !== "ready";
+  const noWebGL2 = useGraphics((s) => s.webgl2 === "no");
+  const graphicsReason = useGraphics((s) => s.reason);
+  useEffect(() => {
+    if (stalled) probeGraphics();
+  }, [stalled]);
 
   // Geometry of the displayed image + a nonce that bumps on any view change, so
   // extension overlays (e.g. before/after) can align and refresh. Generic: core
@@ -136,7 +91,7 @@ export function DevelopCanvas({
     [],
   );
 
-  // DevelopView builds this view anew for every photo, so the picture on screen is
+  // DevelopStage builds this view anew for every photo, so the picture on screen is
   // handed to the next view as this one goes, and the one the view before left is
   // shown until this photo's first picture (canvas-handover.ts). Layout effects: the
   // view going away and the one coming run theirs in the same commit, before paint.
@@ -174,44 +129,15 @@ export function DevelopCanvas({
     setFadeToken((t) => t + 1);
   }, [previewParams]);
 
-  const cropping = useDevelopStore((s) => s.cropping);
-  // While the Crop/Transform panel's preview-off eye is held, the renderer shows
-  // the un-cropped / un-transformed frame; hide the interactive overlay so its
-  // handles (read from the live, un-bypassed edit) don't float over it.
-  const cropBypassed = useDevelopStore((s) => !!s.bypassedPanels["core.crop"]);
-  const transformBypassed = useDevelopStore((s) => !!s.bypassedPanels["core.transform"]);
+  // An extension's on-image tool holding the canvas (canvas-tool.ts): crop mode,
+  // Guided Upright's lines.
+  const canvasTool = useCanvasToolStore((s) => s.held?.tool ?? null);
+  const canvasToolOwner = useCanvasToolStore((s) => s.held?.owner ?? null);
   const colorAssessment = useDevelopStore((s) => s.colorAssessment);
-  const activeTool = useDevelopStore((s) => s.activeTool);
   // While a pan/zoom gesture key is held, force the extension-overlay slot
   // click-through (global passthrough — see canvas-gesture + ViewportImage).
   const overlayPassthrough = useCanvasGesture((s) => s.zoomGesture);
-  const crop = useDevelopStore((s) => s.params.crop);
-  const straighten = useDevelopStore((s) => s.params.straighten);
-  const transform = useDevelopStore((s) => s.params.transform);
-  const cropAspect = useDevelopStore((s) => s.cropAspect);
-  const constrainCrop = useDevelopStore((s) => s.constrainCrop);
-  const cropGuide = useDevelopStore((s) => s.cropGuide);
-  const cropGuideFlip = useDevelopStore((s) => s.cropGuideFlip);
-  const uprightMode = useDevelopStore((s) => s.params.uprightMode);
-  const guidedEditing = useDevelopStore((s) => s.guidedEditing);
-  const guidedLines = useDevelopStore((s) => s.params.guidedLines);
-  const setParam = useDevelopStore((s) => s.setParam);
-  const commitEdit = useDevelopStore((s) => s.commitEdit);
-  const wbPicking = useDevelopStore((s) => s.wbPicking);
-  const setWbPicking = useDevelopStore((s) => s.setWbPicking);
-  const hslPicking = useDevelopStore((s) => s.hslPicking);
-  const hsl = useDevelopStore((s) => s.params.hsl);
-  const setHslValue = useDevelopStore((s) => s.setHslValue);
-  const { whiteBalanceFromSample } = useAutoAdjust();
-
-  // HSL picker drag state
-  const dragState = useRef<{
-    active: boolean;
-    startY: number;
-    baseHue: number;
-    weights: number[];
-    initialValues: { hue: number[]; sat: number[]; lum: number[] };
-  } | null>(null);
+  const pickDrag = usePickDragStore((s) => s.held?.tool ?? null);
 
   // The linear colour the output stage gives the buffer pixel (bx, by), read from
   // the worker's live frame; null when it has none.
@@ -220,75 +146,42 @@ export function DevelopCanvas({
       ? getRenderBridge().probe(bx / width, by / height, "output")
       : Promise.resolve(null);
 
-  // Handle WB pick (simple click)
-  const onWbPick = (bx: number, by: number) => {
-    setWbPicking(false);
-    void whiteBalanceFromSample(() => probeOutput(bx, by));
-  };
+  // The eyedropper's convergence loop and extensions probe by canvas point
+  // (canvas-probe.ts).
+  useEffect(
+    () =>
+      lendCanvasProbe(({ x, y }) =>
+        width > 0 && height > 0 ? getRenderBridge().probe(x / width, y / height, "output") : Promise.resolve(null),
+      ),
+    [width, height],
+  );
 
-  // HSL picker: click+drag to adjust nearest HSL sliders
-  const selectedHslBand = useDevelopStore((s) => s.selectedHslBand);
+  // An extension's pick-drag tool (pick-drag.ts): the press, then the colour the
+  // view shows there, then the drag. Counts presses and releases: a probe
+  // answers after the press that asked, so it only starts the drag if that press
+  // is still the latest and has not been released.
+  const pickPress = useRef(0);
+  const pickDragging = useRef(false);
 
-  // Counts presses and releases. A probe answers after the press that asked, so it
-  // only starts the drag if that press is still the latest and has not been released.
-  const hslPress = useRef(0);
-
-  const onHslPointerDown = async (bx: number, by: number) => {
-    const press = ++hslPress.current;
+  const onPickDragDown = async (bx: number, by: number) => {
+    const press = ++pickPress.current;
+    pickDrag?.onPress?.({ x: bx, y: by });
+    if (!pickDrag?.onDown) return;
     const rgb = await probeOutput(bx, by);
-    if (!rgb || press !== hslPress.current) return;
-
-    const [r, g, bVal] = rgb;
-    const hueDeg = rgbToHue(r, g, bVal);
-    const weights = getHSLWeights(
-      hueDeg,
-      getExtSetting("core.hsl", "hueRange", 100) / 100,
-      getExtSetting("core.hsl", "smoothness", 100) / 100,
-    );
-
-    // Store initial slider values for all channels
-    dragState.current = {
-      active: true,
-      startY: by,
-      baseHue: hueDeg,
-      weights,
-      initialValues: {
-        hue: HSL_CHANNELS.map((ch) => hsl.hue[ch]),
-        sat: HSL_CHANNELS.map((ch) => hsl.saturation[ch]),
-        lum: HSL_CHANNELS.map((ch) => hsl.luminance[ch]),
-      },
-    };
+    if (!rgb || !pickDrag.onDown || press !== pickPress.current) return;
+    pickDragging.current = true;
+    pickDrag.onDown(rgb, { x: bx, y: by });
   };
 
-  const onHslPointerMove = (_bx: number, by: number) => {
-    if (!dragState.current?.active) return;
-
-    const dy = by - dragState.current.startY;
-
-    // Drag up/down adjusts the selected band. Sensitivity (units per pixel) is a
-    // user preference (Preferences ▸ HSL). Up = increase value.
-    const sensitivity = getExtSetting("core.hsl", "pickerSensitivity", 0.5);
-    const delta = -dy * sensitivity;
-
-    // Spread the drag across channels by their normalized influence — the same
-    // weights the shader blends with, so the slider moves match the pixel change.
-    dragState.current.weights.forEach((weight, i) => {
-      if (weight < 0.01) return; // Skip channels with negligible influence
-
-      const channel = HSL_CHANNELS[i];
-      const initialValue = dragState.current!.initialValues[selectedHslBand === "hue" ? "hue" : selectedHslBand === "saturation" ? "sat" : "lum"][i];
-      const newValue = initialValue + delta * weight;
-
-      setHslValue(selectedHslBand, channel, Math.max(-100, Math.min(100, newValue)));
-    });
+  const onPickDragMove = (bx: number, by: number) => {
+    if (pickDragging.current) pickDrag?.onMove?.({ x: bx, y: by });
   };
 
-  const onHslPointerUp = () => {
-    hslPress.current++;
-    if (dragState.current?.active) {
-      dragState.current = null;
-      commitEdit("HSL Picker");
-    }
+  const onPickDragUp = () => {
+    pickPress.current++;
+    if (!pickDragging.current) return;
+    pickDragging.current = false;
+    pickDrag?.onUp?.();
   };
 
   // Use the real decoded source aspect (upright) when available, so aspect-locked
@@ -302,14 +195,15 @@ export function DevelopCanvas({
         ? photo.width / photo.height
         : 1;
 
-  // Inverse transform (transformed coord -> source UV) for crop constraints, the
-  // forward transform (image quad) for the move clamp, and the view region
-  // enclosing the warped image for the crop overlay.
-  const invRaw = buildInverseTransform(straighten, transform, imageAspect);
-  const forwardRaw = buildForwardTransform(straighten, transform, imageAspect);
-  // The crop box is drawn over the region the canvas shows. Until the renderer draws
-  // the view asked for (crop mode opening, a straighten), that is still the one before.
-  const viewCrop = bufferCrop ?? transformedViewCrop(forwardRaw);
+  // The photo's geometry as the geometry stage derives it (photo-geometry.ts): the
+  // crop, and the transformed image to the source and back. Read in the selector,
+  // so a params change that leaves the geometry be hands back the same object;
+  // re-read on every render too, so installing Crop & Straighten (processingStages
+  // above) maps through it at once.
+  const geometry = useDevelopStore((s) => photoGeometry(s.params, imageAspect));
+  const crop = geometry.region;
+  const invRaw = geometry.inverse;
+  const forwardRaw = geometry.forward;
 
   // Mapping helpers handed to develop-canvas-overlay extensions, so interactive
   // marks anchored to the image stay correct through zoom/pan/crop/straighten —
@@ -320,6 +214,7 @@ export function DevelopCanvas({
       return {
         rect: overlayRect, imageRect: null, nonce: overlayNonce,
         toScreen: null, toImage: null, radiusToScreen: null, radiusToImage: null,
+        region: null, imageAspect,
       };
     }
     // Through the region the canvas shows: crop mode shows the whole image past the
@@ -329,6 +224,8 @@ export function DevelopCanvas({
       rect: overlayRect,
       imageRect: ir,
       nonce: overlayNonce,
+      region: shown,
+      imageAspect,
       toScreen: (u: number, v: number) => {
         const t = mat3Apply(forwardRaw, u, v);
         const ox = (t.x - shown.x) / shown.width;
@@ -343,42 +240,7 @@ export function DevelopCanvas({
       radiusToScreen: (r: number) => (r / shown.height) * ir.h,
       radiusToImage: (px: number) => (px / ir.h) * shown.height,
     };
-    // forwardRaw/invRaw derive from straighten/transform/imageAspect (in deps).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlayRect, overlayImageRect, overlayNonce, crop, bufferCrop, straighten, transform, imageAspect]);
-
-  // Throttle crop writes to one per frame so a drag doesn't re-render the panels
-  // on every pointer event.
-  const pendingCrop = useRef<CropRect | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const pushCrop = (next: CropRect) => {
-    pendingCrop.current = next;
-    if (rafRef.current == null) {
-      rafRef.current = requestAnimationFrame(() => {
-        rafRef.current = null;
-        if (pendingCrop.current) setParam("crop", pendingCrop.current);
-      });
-    }
-  };
-  const flushCrop = () => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    if (pendingCrop.current) {
-      setParam("crop", pendingCrop.current);
-      pendingCrop.current = null;
-    }
-  };
-  // Drop a queued write on unmount (photo/module switch mid-drag) so it can't
-  // land the previous photo's crop into the next photo's params after loadEdit.
-  useEffect(
-    () => () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-      pendingCrop.current = null;
-    },
-    [],
-  );
+  }, [overlayRect, overlayImageRect, overlayNonce, crop, bufferCrop, geometry, imageAspect]);
 
   if (!supported) {
     return (
@@ -398,16 +260,31 @@ export function DevelopCanvas({
 
   return (
     <div className="relative h-full w-full">
-    {availability !== "starting" && availability !== "ready" && (
+    {stalled && (
       <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
         <div className="max-w-md rounded bg-surface-2 px-3 py-2 text-center text-xs text-text-muted">
-          <p>
-            {availability === "failed"
-              ? "Can't show images right now. Restart Safelight."
-              : "Can't show images right now. Trying again…"}
-          </p>
-          {availabilityReason && (
-            <p className="mt-1 break-words text-[10px]">Reason: {availabilityReason}</p>
+          {noWebGL2 ? (
+            <>
+              <p className="break-words" title={graphicsUnavailableDetail(graphicsReason)}>
+                {GRAPHICS_UNAVAILABLE}
+              </p>
+              <p className="mt-1 text-[10px]">{GRAPHICS_STILL_WORKS}</p>
+            </>
+          ) : (
+            <>
+              <p>
+                {availability === "failed"
+                  ? "Can't show images right now. Restart Safelight."
+                  : availability === "unresponsive"
+                    ? "The graphics engine isn't responding. Waiting for it…"
+                    : availability === "lost"
+                      ? "The graphics engine was reset. Waiting for it…"
+                      : "Can't show images right now. Trying again…"}
+              </p>
+              {availabilityReason && (
+                <p className="mt-1 break-words text-[10px]">Reason: {availabilityReason}</p>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -435,101 +312,30 @@ export function DevelopCanvas({
       resetKey={photo.id}
       initialZoom={openZoom === "100" ? 1 : null}
       fadeToken={fadeToken}
-      overlayZoomable={!cropping && activeTool !== "none"}
-      onPick={wbPicking && !cropping && activeTool === "none" ? onWbPick : undefined}
+      overlayZoomable={!!canvasTool?.zoomable}
       onPickDrag={
-        hslPicking && !cropping && activeTool === "none"
+        pickDrag && !canvasTool
           ? {
-              onDown: onHslPointerDown,
-              onMove: onHslPointerMove,
-              onUp: onHslPointerUp,
+              onDown: onPickDragDown,
+              onMove: onPickDragMove,
+              onUp: onPickDragUp,
             }
           : null
       }
       overlay={
-        cropping && !cropBypassed && !transformBypassed
+        canvasTool && canvasToolOwner
           ? (rect) => (
-              <CropOverlay
-                rect={rect}
-                crop={crop}
-                viewCrop={viewCrop}
-                inv={invRaw}
-                forward={forwardRaw}
-                distort={null}
-                straightenDeg={straighten}
-                aspect={cropAspect === -1 ? imageAspect : cropAspect}
-                imageAspect={imageAspect}
-                constrain={constrainCrop}
-                guide={cropGuide}
-                guideFlip={cropGuideFlip}
-                onChange={pushCrop}
-                onCommit={() => {
-                  flushCrop();
-                  commitEdit("Crop");
-                }}
-                onLevel={(deg) => {
-                  setParam("straighten", deg);
-                  if (constrainCrop) {
-                    setParam(
-                      "crop",
-                      fitCropToImage(
-                        crop,
-                        buildInverseTransform(deg, transform, imageAspect),
-                      ),
-                    );
-                  }
-                  commitEdit("Straighten");
-                }}
-              />
+              <DevelopOverlayProvider value={overlayState}>
+                <ErrorBoundary
+                  key={boundaryKey(canvasToolOwner, canvasTool.overlay)}
+                  what={`Canvas tool "${canvasToolOwner}"`}
+                  className="text-[11px] text-red-400"
+                >
+                  <canvasTool.overlay rect={rect} />
+                </ErrorBoundary>
+              </DevelopOverlayProvider>
             )
-          : uprightMode === "guided" && guidedEditing && !transformBypassed
-            ? (rect) => (
-                <GuidedOverlay
-                  rect={rect}
-                  forward={forwardRaw}
-                  inv={invRaw}
-                  crop={crop}
-                  lines={guidedLines}
-                  onChange={(lines) => setParam("guidedLines", lines)}
-                  onCommit={() => {
-                    const st = useDevelopStore.getState();
-                    const result = computeGuidedCorrection(st.params.guidedLines, imageAspect);
-                    setParam("straighten", result.straighten);
-                    const next = {
-                      ...st.params.transform,
-                      perspectiveV: Math.round(result.perspectiveV),
-                      perspectiveH: Math.round(result.perspectiveH),
-                    };
-                    setParam("transform", next);
-                    if (constrainCrop) {
-                      const guidedInv = buildInverseTransform(
-                        result.straighten, next, imageAspect,
-                      );
-                      setParam(
-                        "crop",
-                        maxCropForTransform(
-                          guidedInv,
-                          st.cropAspect === -1 ? imageAspect : st.cropAspect,
-                          imageAspect,
-                        ),
-                      );
-                    }
-                    commitEdit("Guided Upright");
-                  }}
-                />
-              )
-            : activeTool !== "none"
-              ? (rect) => (
-                  <MaskOverlay
-                    rect={rect}
-                    crop={crop}
-                    inv={invRaw}
-                    forward={forwardRaw}
-                    imageAspect={imageAspect}
-                    bufferRect={overlayRect}
-                  />
-                )
-              : undefined
+          : undefined
       }
     />
       {/* The photo before, where it showed, until this photo's first picture. Placed

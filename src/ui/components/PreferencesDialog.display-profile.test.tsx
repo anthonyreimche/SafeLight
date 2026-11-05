@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Preferences ▸ Rendering ▸ Display profile: Linux only. Picks the monitor's
-// ICC profile with the native dialog, names the profile in use and the tone
+// ICC profile with the native dialogue, names the profile in use and the tone
 // curve it is treated as, and says why when it can't use one.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -104,7 +104,7 @@ describe("Preferences ▸ Rendering ▸ Display profile", () => {
     expect(native.fs.read.mock.calls).toEqual([[MONITOR], [MONITOR]]);
   });
 
-  it("keeps the profile when the dialog is cancelled", async () => {
+  it("keeps the profile when the dialogue is cancelled", async () => {
     const user = userEvent.setup();
     act(() => updateSettings({ displayProfilePath: MONITOR }));
     native.fs.pickFile.mockResolvedValue(null);

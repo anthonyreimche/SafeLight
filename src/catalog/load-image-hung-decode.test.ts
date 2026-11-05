@@ -49,8 +49,8 @@ vi.mock("@/raw/accept-decode", () => ({
   acceptDecode: async () => ({ use: true, cache: true }),
 }));
 
-vi.mock("@/modules/library/raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/modules/library/raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => new Blob(["jpeg"], { type: "image/jpeg" }),
 }));
 

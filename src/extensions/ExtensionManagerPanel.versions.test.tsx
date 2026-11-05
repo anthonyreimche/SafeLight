@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import "./host";
 import { ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { importPluginModule } from "./plugin-module";
@@ -21,9 +22,15 @@ import { usePins } from "./pins";
 import { useRegistry } from "./registry";
 import { useExtStoreUI, type ExtUpdateInfo } from "./store-ui";
 import { useTrust } from "./trust";
-import type { ExtensionManifest, ExtensionRelease, TrustList } from "./types";
+import type { ExtensionManifest, ExtensionRelease, NativePluginsBridge, TrustList } from "./types";
 
 vi.mock("./plugin-module", () => ({ importPluginModule: vi.fn() }));
+
+let privilegedBridge: NativePluginsBridge | null = null;
+vi.mock("@/native/privileged", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/native/privileged")>()),
+  privilegedPlugins: () => privilegedBridge,
+}));
 
 const ID = "acme.widget";
 const REPO = "acme/widget";
@@ -68,8 +75,6 @@ const openDetail = async (releases: string[], installed: string | null) => {
   vi.stubGlobal("safelightNative", {
     plugins: {
       list: async () => (present ? [current] : []),
-      install: installBridge,
-      uninstall: vi.fn(async () => {}),
       remoteManifest,
       releases: vi.fn(async () => releases.map(rel)),
     },
@@ -99,7 +104,12 @@ beforeEach(() => {
     present = true;
     return current;
   });
-  remoteManifest = vi.fn(async () => ({ version: "2.1.0" }));
+  privilegedBridge = {
+    install: installBridge,
+    uninstall: vi.fn(async () => {}),
+    settleUpdate: vi.fn(async () => null),
+  };
+  remoteManifest =vi.fn(async () => ({ version: "2.1.0" }));
   importer.mockReset();
   importer.mockResolvedValue({ activate: () => {} });
   useRegistry.setState({ stylesheets: {}, modules: {} });

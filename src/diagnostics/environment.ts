@@ -15,16 +15,16 @@ export function windowRole(): string {
 
 // Cached: the values are fixed per session, and a probe context left alive
 // counts against the browser's ~16-context cap — enough refreshes would evict
-// the app's real render context.
+// the app's real render context. A refused context isn't cached: Chromium
+// refuses WebGL for a couple of minutes after a GPU reset, then allows it again.
 let webGLInfo: WebGLInfo | null | undefined;
 
 export function readWebGLInfo(): WebGLInfo | null {
   if (webGLInfo !== undefined) return webGLInfo;
   try {
     const canvas = document.createElement("canvas");
-    const gl = (canvas.getContext("webgl2") ||
-      canvas.getContext("webgl")) as WebGLRenderingContext | null;
-    if (!gl) return (webGLInfo = null);
+    const gl = canvas.getContext("webgl2");
+    if (!gl) return null;
     const dbg = gl.getExtension("WEBGL_debug_renderer_info");
     const vendor = dbg
       ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL))
@@ -37,6 +37,8 @@ export function readWebGLInfo(): WebGLInfo | null {
       renderer,
       glsl: String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION)),
       maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+      fragmentUniformVectors: gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) as number,
+      colorBufferFloat: !!gl.getExtension("EXT_color_buffer_float"),
     };
     gl.getExtension("WEBGL_lose_context")?.loseContext();
     return webGLInfo;

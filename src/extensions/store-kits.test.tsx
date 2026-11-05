@@ -19,6 +19,7 @@ const kit = (id: string, repos: string[]): StarterKit => ({
   name: `Kit ${id}`,
   description: "",
   icon: null,
+  default: false,
   extensions: repos.map((repo) => ({ repo, name: repo.split("/")[1], summary: "" })),
 });
 const trust = (verified: string[]): TrustList => ({ verified, reviewed: {}, repos: [], owners: [], reason: {} });
@@ -143,6 +144,7 @@ describe("runKitInstall", () => {
       name: "Kit film",
       description: "",
       icon: null,
+      default: false,
       get extensions(): KitExtension[] {
         throw new Error("boom");
       },

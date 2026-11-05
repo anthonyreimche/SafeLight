@@ -12,9 +12,18 @@ import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { useUIStore } from "@/state/ui-store";
 import { useProjectStore } from "@/project/project-store";
-import { registerModule, unregisterExtension, useRegistry } from "@/extensions/registry";
+import {
+  registerModule,
+  registerPanel,
+  unregisterExtension,
+  useRegistry,
+} from "@/extensions/registry";
+import { useExternalPluginsSettled } from "@/extensions/loader";
+import { useTrust } from "@/extensions/trust";
 import { openSetup, resetSetupForTests } from "@/modules/welcome/setup/setup-store";
 import { closeReportIssue } from "@/ui/components/report-issue-store";
+import { useGraphics } from "@/state/graphics-store";
+import { registerEssentialModules } from "@/test/essential-modules.test-support";
 
 /** The main window has no other windows to sync with here. */
 class SilentChannel {
@@ -46,13 +55,44 @@ describe("App", () => {
   });
 
   it("falls back to Library when the active module's extension is swept", () => {
+    registerEssentialModules();
+    useExternalPluginsSettled.setState({ settled: true });
     registerModule("ext", { id: "map", label: "Map", component: () => <p>map-main</p> });
     useUIStore.setState({ activeModule: "map" });
     render(<App />);
     act(() => unregisterExtension("ext"));
     expect(useUIStore.getState().activeModule).toBe("library");
     expect(screen.queryByText("map-main")).toBeNull();
-    expect(screen.getByText("0 photos in catalog")).toBeTruthy();
+    expect(screen.getByText("0 photos in catalogue")).toBeTruthy();
+  });
+
+  it("tells the user about a blocked extension with a project open", () => {
+    useTrust.setState({ flagged: [{ id: "bad", name: "Bad Ext", reason: "malware" }] });
+    render(<App />);
+    expect(screen.getByText("⚠ Extension blocked")).toBeTruthy();
+    useTrust.setState({ flagged: [] });
+  });
+});
+
+describe("App without Library and Develop installed", () => {
+  beforeEach(() => useExternalPluginsSettled.setState({ settled: true }));
+  afterEach(() => useExternalPluginsSettled.setState({ settled: false }));
+
+  it("boots into the shell with the empty state when nothing is registered", () => {
+    render(<App />);
+    expect(screen.getByRole("navigation", { name: "Views" })).toBeTruthy();
+    expect(screen.getByText("Library and Develop aren't installed.")).toBeTruthy();
+    expect(screen.queryByText("0 photos in catalogue")).toBeNull();
+  });
+
+  it("shows Library once its extension registers it", () => {
+    registerModule("safelight.library", {
+      id: "library",
+      label: "Library",
+      component: () => <p>library-extension</p>,
+    });
+    render(<App />);
+    expect(screen.getByText("library-extension")).toBeTruthy();
   });
 });
 
@@ -107,6 +147,8 @@ describe("App Report an issue", () => {
     localStorage.clear();
     closeReportIssue();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    // The graphics notice offers Report an issue too; these open it from the top bar.
+    useGraphics.setState({ noticeDismissed: true });
     registerModule("ext", { id: "map", label: "Map", component: () => <p>map-main</p> });
   });
 
@@ -127,6 +169,14 @@ describe("App Report an issue", () => {
     await reportFromTopBar();
   });
 
+  it("brings a popped-out module back from its placeholder", async () => {
+    useUIStore.setState({ activeModule: "map", detached: new Set(["map"]) });
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "Bring it back" }));
+    expect(useUIStore.getState().detached.has("map")).toBe(false);
+    expect(useUIStore.getState().activeModule).toBe("map");
+  });
+
   it("opens while the active module is popped out", async () => {
     useUIStore.setState({ activeModule: "map", detached: new Set(["map"]) });
     render(<App />);
@@ -138,5 +188,41 @@ describe("App Report an issue", () => {
     window.history.replaceState({}, "", "/?detached=map");
     render(<App />);
     await reportFromTopBar();
+  });
+});
+
+// The popped-out Developer Tools window holds whichever panel is registered as
+// core.devtools, with nothing of core's around it: the extension draws its own
+// title bar there.
+describe("App in the Developer Tools window", () => {
+  beforeEach(() => {
+    window.history.replaceState({}, "", "/?devtools=1");
+    useRegistry.setState({ panels: {} });
+  });
+  afterEach(() => {
+    unregisterExtension("safelight.devtools");
+    useExternalPluginsSettled.setState({ settled: false });
+  });
+
+  it("renders the registered panel on its own", () => {
+    registerPanel("safelight.devtools", {
+      id: "core.devtools",
+      title: "Developer Tools",
+      component: () => <p>devtools-window</p>,
+    });
+    const { container } = render(<App />);
+    expect(screen.getByText("devtools-window")).toBeTruthy();
+    expect(container.textContent).toBe("devtools-window");
+  });
+
+  it("says so when no extension registers the panel", () => {
+    useExternalPluginsSettled.setState({ settled: true });
+    render(<App />);
+    expect(screen.getByText("Developer Tools isn't installed.")).toBeTruthy();
+  });
+
+  it("stays blank while the installed extensions are loading", () => {
+    const { container } = render(<App />);
+    expect(container.textContent).toBe("");
   });
 });

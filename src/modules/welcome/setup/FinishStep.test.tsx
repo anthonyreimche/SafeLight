@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RISK_ACK_KEY } from "@/extensions/install-gate";
+import "@/extensions/host";
 import { uninstallPlugin, useDisabledExtensions } from "@/extensions/loader";
 import { readSources } from "@/extensions/sources";
 import { useTrust } from "@/extensions/trust";
@@ -29,10 +30,16 @@ import {
   manifestFor,
   ONE,
   stubBridge,
+  stubbedPrivilegedPlugins,
   TWO,
   trustList,
   type FakeBridge,
 } from "./setup.test-support";
+
+vi.mock("@/native/privileged", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/native/privileged")>()),
+  privilegedPlugins: () => stubbedPrivilegedPlugins(),
+}));
 
 vi.mock("../../../extensions/plugin-module", () => ({
   importPluginModule: vi.fn(async () => ({ activate() {} })),

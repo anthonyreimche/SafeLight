@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  cacheFileName,
   ENTRY_HEADER_BYTES,
   ENTRY_LAYOUT,
   ENTRY_MAGIC,
@@ -79,9 +80,10 @@ describe("entry headers", () => {
     fullHeight: 4000,
     sample: { width: 1024, height: 1024, x: 2488, y: 1488 },
     previewBytes: 36_000_000,
+    keyBytes: 412,
   };
 
-  it("round-trips the new layout in 44 bytes behind the magic word", () => {
+  it("round-trips the layout in 48 bytes behind the magic word, with the length of the key that follows", () => {
     const words = encodeEntryHeader(header);
     expect(words.byteLength).toBe(ENTRY_HEADER_BYTES);
     expect([words[0], words[1]]).toEqual([ENTRY_MAGIC, ENTRY_LAYOUT]);
@@ -94,17 +96,28 @@ describe("entry headers", () => {
     expect(decodeEntryHeader(bytes.buffer)).toEqual(header);
   });
 
-  it("reads an entry written before 3.1.0 as the legacy layout", () => {
-    expect(decodeEntryHeader(new Uint32Array([3072, 2048]).buffer)).toEqual({
-      legacy: { width: 3072, height: 2048 },
-    });
-  });
-
-  it("is null when too short for either layout, for the magic without its header, and for an unknown layout", () => {
+  it("is null for an entry from before the key was kept, too short for a header, the magic without its header, and an unknown layout", () => {
+    expect(decodeEntryHeader(new Uint32Array([3072, 2048]).buffer)).toBeNull();
     expect(decodeEntryHeader(new Uint8Array(7).buffer)).toBeNull();
     expect(decodeEntryHeader(new Uint32Array([ENTRY_MAGIC, ENTRY_LAYOUT, 3, 2, 0]).buffer)).toBeNull();
     const unknown = encodeEntryHeader(header);
     unknown[1] = ENTRY_LAYOUT + 1;
     expect(decodeEntryHeader(unknown.buffer)).toBeNull();
+  });
+});
+
+describe("cacheFileName", () => {
+  it("is a fixed-length name however long or non-ASCII the key", async () => {
+    const deep = `v6:${"写真/".repeat(200)}IMG_0001.NEF:52428800:90`;
+    for (const key of ["k", deep]) {
+      expect(await cacheFileName(key)).toMatch(/^[0-9a-f]{64}\.bin$/);
+    }
+  });
+
+  it("names different keys differently and the same key the same", async () => {
+    const a = `v6:${"x".repeat(300)}a:1:0`;
+    const b = `v6:${"x".repeat(300)}b:1:0`;
+    expect(await cacheFileName(a)).not.toBe(await cacheFileName(b));
+    expect(await cacheFileName(a)).toBe(await cacheFileName(a));
   });
 });

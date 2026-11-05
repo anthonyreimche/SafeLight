@@ -5,7 +5,7 @@
 
 // Integration seam for an optional libraw WASM build.
 //
-// A full RAW decoder (every compression scheme, per-camera color science) is a
+// A full RAW decoder (every compression scheme, per-camera colour science) is a
 // large C library. Rather than vendor a WASM blob the build can't verify, we
 // expose a stable hook a real build can register against at runtime:
 //
@@ -24,6 +24,8 @@ export interface LibRawDecoded {
 }
 
 export interface LibRawModule {
+  /** Must leave `buffer` as it is, neither transferring nor detaching it: the
+   *  caller's other decoders read the same bytes after it. */
   decode(buffer: ArrayBuffer): Promise<LibRawDecoded | null>;
 }
 

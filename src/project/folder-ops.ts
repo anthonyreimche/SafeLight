@@ -5,7 +5,7 @@
 
 // Folder management for the Folders panel: create / rename folders, and move
 // folders or photos between folders by dragging. Every op mutates the real
-// directory tree on disk, then updates the affected catalog records (relPath /
+// directory tree on disk, then updates the affected catalogue records (relPath /
 // folder / live handles) and refreshes the folder tree — no re-decode, so
 // ratings, edits and cached thumbnails (keyed by photo id) are preserved.
 
@@ -16,24 +16,9 @@ import { catalogStorage } from "@/catalog/storage";
 import { nativeFs, nativePathOf, revealNativePath } from "./native-fs";
 import { writeJSON } from "./fs";
 import type { CatalogPhoto } from "@/catalog/types";
+import { SIDECAR_SUFFIX, type PhotoSidecar } from "./sidecar";
 
-/** Per-photo sidecar travelling next to the image file. Lets ratings/labels and
- *  develop edits ("maps") follow the photo into another project folder. */
-export const SIDECAR_SUFFIX = ".safelight.json";
-
-export interface PhotoSidecar {
-  safelightSidecar: 1;
-  filename: string;
-  /** Catalog metadata the user set (not file-derived fields like EXIF). */
-  info: {
-    rating: number;
-    colorLabel: CatalogPhoto["colorLabel"];
-    flag: CatalogPhoto["flag"];
-    keywords: string[];
-  };
-  /** Develop edit history (its snapshots carry the masks = "maps"). */
-  maps: { stack: unknown[]; currentIndex: number } | null;
-}
+export { SIDECAR_SUFFIX };
 
 // ── relative-path helpers (posix separators, "" = project root) ──────────────
 function joinRel(dir: string, name: string): string {
@@ -64,6 +49,36 @@ function splitExt(name: string): [string, string] {
  *  trailing dots or spaces, which Windows can't keep. "" if nothing is left. */
 function cleanEntryName(raw: string): string {
   return raw.trim().replace(/[/\\]/g, "").replace(/[. ]+$/, "");
+}
+
+/** Whether two paths differ only in case. On NTFS and APFS by default that is one
+ *  entry respelled; where names keep their case (Linux, or a case-sensitive volume
+ *  of Windows or macOS) the new spelling may be another entry. The platform can't
+ *  say which, since a card or share keeps its own rules, so the folder's listing
+ *  does (nameTaken). */
+function caseOnlyChange(fromRel: string, toRel: string): boolean {
+  return fromRel !== toRel && fromRel.toLowerCase() === toRel.toLowerCase();
+}
+
+/** Whether `toRel` is taken by an entry other than `fromRel`. A case-only change
+ *  reads the parent's listing for the exact new spelling: a lookup would answer
+ *  yes on a disk that ignores case, where the entry found is the one being
+ *  respelled, and a native rename onto a real second entry replaces it. */
+async function nameTaken(
+  rootHandle: FileSystemDirectoryHandle,
+  fromRel: string,
+  toRel: string,
+  kind: "file" | "directory",
+): Promise<boolean> {
+  if (!caseOnlyChange(fromRel, toRel)) {
+    return kind === "file" ? existsRel(rootHandle, toRel) : dirExistsRel(rootHandle, toRel);
+  }
+  const parent = await resolveDir(rootHandle, dirnameRel(toRel));
+  const target = basename(toRel);
+  for await (const name of parent.keys()) {
+    if (name === target) return true;
+  }
+  return false;
 }
 
 /** Does a project-relative path exist on disk? Works in both the native and FSA
@@ -137,7 +152,15 @@ async function moveOnDisk(
     await fs.move(abs(srcRel), abs(destRel));
     return;
   }
-  // FSA fallback.
+  // FSA fallback. A copy onto the same name in another case would land on the
+  // source itself where the disk ignores case, and the delete would then take
+  // both, so that goes through a temporary name.
+  if (caseOnlyChange(srcRel, destRel)) {
+    const temp = `${destRel}.${Date.now().toString(36)}.renaming`;
+    await moveOnDisk(rootHandle, srcRel, temp, kind);
+    await moveOnDisk(rootHandle, temp, destRel, kind);
+    return;
+  }
   const srcParent = await resolveDir(rootHandle, dirnameRel(srcRel));
   const destParent = await resolveDir(rootHandle, dirnameRel(destRel), true);
   if (kind === "file") {
@@ -181,7 +204,7 @@ async function copyDir(
   }
 }
 
-// ── catalog updates ──────────────────────────────────────────────────────────
+// ── catalogue updates ──────────────────────────────────────────────────────────
 
 /** Where a photo lives now, as far as a move or rename changed it. */
 type Relocation = Partial<
@@ -264,7 +287,7 @@ export async function renameFolder(rel: string, newName: string): Promise<void> 
   if (!rootHandle || !rel || !clean || clean === basename(rel)) return;
   const newRel = joinRel(dirnameRel(rel), clean);
   // Bail on collision rather than merge into / overwrite an existing folder.
-  if (await dirExistsRel(rootHandle, newRel)) {
+  if (await nameTaken(rootHandle, rel, newRel, "directory")) {
     console.warn(`[folder-ops] rename ${rel} → ${newRel} skipped: name in use`);
     return;
   }
@@ -308,7 +331,7 @@ export async function movePhotos(ids: string[], destRel: string): Promise<void> 
     const newRel = joinRel(destRel, p.filename);
     // Bail on collision rather than overwrite: the move is a native rename,
     // which silently replaces an existing destination file — that would destroy
-    // a different photo and leave two catalog records on one file.
+    // a different photo and leave two catalogue records on one file.
     if (await existsRel(rootHandle, newRel)) {
       console.warn(`[folder-ops] move ${p.relPath} → ${newRel} skipped: name in use`);
       continue;
@@ -367,7 +390,7 @@ export type RenamePhotoResult =
 /** Rename one photo's file on disk, in place (same folder), preserving its
  *  extension. Carries the SafeLight sidecar (<file>.safelight.json) along if one
  *  exists. Cached previews and develop edits are keyed by photo id, so they're
- *  preserved untouched — only the catalog's filename/relPath/handle update. */
+ *  preserved untouched — only the catalogue's filename/relPath/handle update. */
 export async function renamePhoto(
   id: string,
   newBaseName: string,
@@ -393,7 +416,7 @@ export async function renamePhoto(
   if (newFilename === photo.filename) return { ok: true, filename: photo.filename };
 
   const newRel = joinRel(photo.folder, newFilename);
-  if (await existsRel(rootHandle, newRel)) {
+  if (await nameTaken(rootHandle, photo.relPath, newRel, "file")) {
     return { ok: false, reason: `“${newFilename}” already exists in this folder.` };
   }
 
@@ -425,7 +448,7 @@ export async function renamePhoto(
   return { ok: true, filename: newFilename };
 }
 
-/** Delete a folder: drop its photos (and their previews/edits) from the catalog,
+/** Delete a folder: drop its photos (and their previews/edits) from the catalogue,
  *  remove the directory from disk, then refresh the tree. No-op for the root. */
 export async function deleteFolder(rel: string): Promise<void> {
   const rootHandle = root();

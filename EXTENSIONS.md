@@ -10,7 +10,8 @@ when you install one or list one in the store. For how to *use* extensions, see 
 
 ## Extensions are third-party software
 
-Except for the small set bundled with the app, extensions are **independent third-party
+Except for the official ones (Safelight Core, which ships inside the app, and the Essentials, the stock
+tools Safelight installs from its own GitHub repos on first launch), extensions are **independent third-party
 software**. They are ordinary GitHub repositories (tagged `safelight-extension`) that
 install **straight from source** and run **with full access to your photos, metadata,
 edits, and files** — the same access the app itself has.
@@ -52,13 +53,16 @@ Extensions can declare the capabilities they need in `safelight.json`:
 ```
 
 - **`network` is enforced.** Only the HTTPS origins an installed extension declares
-  are added to the app's content-security policy; an extension **cannot reach a host
-  it didn't declare** — the request is blocked. A new declaration takes effect on the
+  are added to the app's content-security policy, and `fetch` or XHR to any other host
+  is blocked. Two exceptions apply to every extension: Cloudflare Worker hosts
+  (`*.workers.dev`) are always allowed, for gallery services such as Web Tools, and images
+  load from any HTTPS host, so a request disguised as an image isn't blocked. The
+  declaration is a strong signal, not a complete barrier. A new declaration takes effect on the
   next launch, so installing a network-using extension asks you to restart before it
   can connect. Declared origins are shown on the extension's store page and after
   install.
 - **Everything else is disclosure, not a sandbox.** Because extensions run inside the
-  app, they have ambient access to your catalog, photos, and files no matter what they
+  app, they have ambient access to your catalogue, photos, and files no matter what they
   declare; only network egress is technically confined. Permissions help honest
   extensions be transparent and let you make an informed choice — they do not stop a
   determined malicious extension from misusing the in-app access every extension has.
@@ -75,14 +79,14 @@ store/registry. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 ## For extension authors
 
 - Publish your extension in your own repository, tagged `safelight-extension`, with a
-  valid `safelight.json`. It is your work under your own license.
+  valid `safelight.json`. It is your work under your own licence.
 - Shared variables (`api.variables`) can be read and written by every installed extension
   and by Developer Tools, so keep secrets and anything private out of them.
 - To request a Verified badge, or to report or **appeal** a ban, see the
   [registry README](https://github.com/anthonyreimche/safelight-registry).
 - Listing, verification, and removal are at the maintainer's discretion. The store
   surfaces public GitHub repos; Safelight may decline or remove a listing, and ban
-  reasons reflect the registry's good-faith assessment of observed behavior.
+  reasons reflect the registry's good-faith assessment of observed behaviour.
 
 ## Reporting a malicious extension
 

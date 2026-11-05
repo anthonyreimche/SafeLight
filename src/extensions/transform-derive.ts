@@ -7,7 +7,7 @@
 // from extension code, which only the main thread can run. They are computed
 // here from the transform's params in a photo's bag and handed to a renderer
 // inside the bag it draws with, under "{id}#{key}" keys no param can have, so
-// they never reach the develop store, the catalog or a preset.
+// they never reach the develop store, the catalogue or a preset.
 
 import { derivedKey, type ResolvedPipeline } from "./pipelines";
 import { isUniformValue } from "./pipeline-validation";

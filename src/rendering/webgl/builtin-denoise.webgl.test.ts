@@ -40,7 +40,7 @@ import {
 
 const SIZE = 32;
 const BASE = 0.2;
-// Amplitude matters: the a-trous edge-stop works in the variance-stabilised
+// Amplitude matters: the a-trous edge-stop works in the variance-stabilized
 // domain, where a ±0.006 swing around 0.2 reads as noise and anything much
 // larger reads as an edge to preserve. This is the order of real sensor noise.
 const NOISE = 0.006;
@@ -332,7 +332,7 @@ describe("the denoiser behind a decode stage", () => {
     expect(worstDifference(both.frame, decoded.frame)).toBeGreaterThan(0.05);
   });
 
-  // The split holds `lin` after the linearisation and the baseline tone, so the
+  // The split holds `lin` after the linearization and the baseline tone, so the
   // first pass must take it as it is. The built-in transform keeps the baseline,
   // which a second application would shift well past the tolerance.
   it("hands the passes the values the source would, when the decode stage changes nothing", () => {

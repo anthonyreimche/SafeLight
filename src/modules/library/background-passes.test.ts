@@ -6,9 +6,9 @@
 // The passes a project runs once it is open (the missing-preview repair and the
 // "Cache all" pre-decode) belong to that project. Once the user leaves it they
 // read no more of its files and write nothing: the next project's cache and
-// catalog hold other photos. Their decodes, and those of Rebuild previews, are
+// catalogue hold other photos. Their decodes, and those of Rebuild previews, are
 // background work, so a photo opened meanwhile goes first. The decoders, the
-// cache and the catalog are faked; only the hand-offs are under test.
+// cache and the catalogue are faked; only the hand-offs are under test.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPhoto } from "@/catalog/types";
@@ -36,6 +36,8 @@ const h = vi.hoisted(() => ({
   /** Runs while an original is read, and while a grid thumbnail is built. */
   whileReading: (): void => {},
   whileThumbnailing: (): void => {},
+  /** Runs while catalogStorage().putPhoto stores a photo. */
+  whileSaving: (): void => {},
   /** Each write handed to the cache, as [key, the generation it carried]. */
   cacheWrites: [] as [string, number][],
   /** Each cache entry dropped, by key. */
@@ -45,7 +47,7 @@ const h = vi.hoisted(() => ({
   /** Grid thumbnails built, and decoded bitmaps let go of. */
   thumbnails: 0,
   bitmapsClosed: 0,
-  /** The catalog's photos as the store holds them. */
+  /** The catalogue's photos as the store holds them. */
   catalog: [] as CatalogPhoto[],
 }));
 
@@ -55,8 +57,8 @@ vi.mock("@/catalog/exif", () => ({
   parseExifDate: () => undefined,
 }));
 
-vi.mock("./raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => null,
   extractRawPreviewDecoded: async () =>
     h.smallPreview
@@ -64,8 +66,8 @@ vi.mock("./raw-preview", async (importOriginal) => ({
       : null,
 }));
 
-vi.mock("./netpbm", () => ({ isNetpbmName: () => false, decodeNetpbm: async () => null }));
-vi.mock("./tiff-image", () => ({ isTiffName: () => false, decodeTiff: async () => null }));
+vi.mock("@/raw/netpbm", () => ({ isNetpbmName: () => false, decodeNetpbm: async () => null }));
+vi.mock("@/raw/tiff-image", () => ({ isTiffName: () => false, decodeTiff: async () => null }));
 vi.mock("./import-thumb-task", () => ({
   createThumbnail: async () => {
     h.thumbnails++;
@@ -130,11 +132,13 @@ vi.mock("@/catalog/storage", () => ({
   catalogStorage: () => ({
     putPhoto: async (photo: CatalogPhoto) => {
       h.saved.push(photo.id);
+      h.whileSaving();
     },
   }),
 }));
 
 vi.mock("@/state/catalog-store", () => ({
+  photoById: (photos: CatalogPhoto[], id: string) => photos.find((p) => p.id === id),
   useCatalogStore: { getState: () => ({ photos: h.catalog }) },
 }));
 
@@ -144,9 +148,9 @@ import {
   reimportPhotos,
   repairMissingPreviews,
 } from "./import-photos";
-import { rawPhoto } from "./raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
-/** A RAW in the catalog, read through its file handle. */
+/** A RAW in the catalogue, read through its file handle. */
 function rawRecord(index: number, extra: Partial<CatalogPhoto> = {}): CatalogPhoto {
   const name = `DSC_000${index}.NEF`;
   const onRead = () => {
@@ -180,6 +184,7 @@ beforeEach(() => {
   h.smallPreview = false;
   h.whileReading = () => {};
   h.whileThumbnailing = () => {};
+  h.whileSaving = () => {};
   h.cacheWrites = [];
   h.cacheDeletes = [];
   h.saved = [];
@@ -356,6 +361,24 @@ describe("rebuilding every preview", () => {
     expect(h.thumbnails).toBe(0);
     expect(h.bitmapsClosed).toBe(1);
     expect(h.saved).toEqual([]);
+    expect(rebuilt).toEqual([]);
+  });
+
+  it("lets go of the preview's URL when the photo is removed while it is stored", async () => {
+    const revoked: string[] = [];
+    vi.stubGlobal("URL", {
+      createObjectURL: () => "blob:thumb",
+      revokeObjectURL: (url: string) => void revoked.push(url),
+    });
+    h.whileSaving = () => {
+      h.catalog = [];
+    };
+    const rebuilt: string[] = [];
+
+    await rebuildThumbnails(raws(1), undefined, (p) => rebuilt.push(p.id));
+
+    expect(h.saved).toEqual(["id:DSC_0000.NEF"]);
+    expect(revoked).toEqual(["blob:thumb"]);
     expect(rebuilt).toEqual([]);
   });
 });

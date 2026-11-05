@@ -55,10 +55,10 @@ experience, prior open-source work, photography background.]
 Safelight itself is the primary evidence: a working cross-platform RAW editor I
 designed and built solo, covering RAW decode for multiple camera formats, a
 WebGL rendering engine running in a Web Worker on an OffscreenCanvas, GPU shader
-pipelines, color science (including an ISO-12646 color-assessment mode and a
+pipelines, colour science (including an ISO-12646 colour-assessment mode and a
 spectral film-simulation engine), a Lensfun-derived lens-correction database, and
 a full extension/plugin system with an in-app store. Skills: TypeScript, React,
-WebGL/GLSL, Electron, image processing and color science, GPU programming.
+WebGL/GLSL, Electron, image processing and colour science, GPU programming.
 
 ## Requested amount
 

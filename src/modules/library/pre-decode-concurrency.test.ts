@@ -63,7 +63,7 @@ vi.mock("@/catalog/storage", () => ({
 }));
 
 import { preDecodeRawsForCache } from "./import-photos";
-import { rawPhoto } from "./raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
 const records = (count: number): CatalogPhoto[] =>
   Array.from({ length: count }, (_, i) => rawPhoto(`DSC_000${i}.NEF`));

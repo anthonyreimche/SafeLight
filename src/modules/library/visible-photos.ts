@@ -87,18 +87,39 @@ function sortValue(p: CatalogPhoto, field: string): number | string {
 // A photo is in scope when it lives directly in `folder`. Subfolders are
 // included only when the showSubfolderPhotos preference is on — including for
 // the project root (""), so the root node respects the preference too and only
-// the "All Photos" scope (folder === null) ever shows the whole catalog. Read
-// here, not threaded through callers, so the grid, keyboard culling, develop
-// navigation and thumbnail prefetch all scope to exactly the same set.
-function inFolder(p: CatalogPhoto, folder: string): boolean {
+// the "All Photos" scope (folder === null) ever shows the whole catalogue. Read
+// in visibleOrder, not threaded through callers, so the grid, keyboard culling,
+// develop navigation and thumbnail prefetch all scope to exactly the same set.
+function inFolder(p: CatalogPhoto, folder: string, subfolders: boolean): boolean {
   if (p.folder === folder) return true;
-  if (!getSettings().showSubfolderPhotos) return false;
+  if (!subfolders) return false;
   // Root ("") is a prefix of every path; guard so "" doesn't match via the
   // empty-string startsWith and to avoid a leading-slash mismatch.
   return folder === "" || p.folder.startsWith(`${folder}/`);
 }
 
-export function visiblePhotos(
+/** The photo fields visibleOrder reads for a built-in filter, sort and folder scope
+ *  (no extension filter or sort): while none of them changes, nor does the order. */
+export function orderFieldsRead(
+  filter: LibraryFilter,
+  sortField: string,
+  folder: string | null,
+): (keyof CatalogPhoto)[] {
+  const fields: (keyof CatalogPhoto)[] = ["dateImported"]; // the tiebreak
+  if (ratingFilterActive(filter)) fields.push("rating");
+  if (filter.flag !== "any") fields.push("flag");
+  if (filter.label !== "any") fields.push("colorLabel");
+  if (filter.keywords.length > 0) fields.push("keywords");
+  if (folder !== null) fields.push("folder");
+  // Any other sort id sorts by dateImported (see sortValue), listed above.
+  if (sortField === "filename" || sortField === "rating" || sortField === "dateCreated") {
+    fields.push(sortField);
+  }
+  return fields;
+}
+
+/** visiblePhotos as indices into `photos`: the photos the grid shows, in order. */
+export function visibleOrder(
   photos: CatalogPhoto[],
   filter: LibraryFilter,
   // A built-in SortField or an extension sort id (resolved via customCompare).
@@ -107,33 +128,50 @@ export function visiblePhotos(
   folder: string | null = null,
   // Extra predicates (e.g. an extension's text/EXIF search). ANDed with the
   // built-in filter so culling walks exactly what the grid shows.
-  predicates: ((p: CatalogPhoto) => boolean)[] = [],
+  predicates: readonly ((p: CatalogPhoto) => boolean)[] = [],
   // Ascending comparator for an extension-contributed sort; when given it
   // replaces the built-in field comparator (direction + tiebreak still apply).
   customCompare?: (a: CatalogPhoto, b: CatalogPhoto) => number,
-): CatalogPhoto[] {
+): number[] {
   const dir = sortDir === "asc" ? 1 : -1;
-  // .filter() already returns a fresh array, so sorting it in place is safe.
-  return photos
-    .filter(
-      (p) =>
-        (folder === null || inFolder(p, folder)) &&
-        matches(p, filter) &&
-        predicates.every((fn) => fn(p)),
-    )
-    .sort((a, b) => {
-      let c: number;
-      if (customCompare) {
-        c = customCompare(a, b);
-      } else {
-        const av = sortValue(a, sortField);
-        const bv = sortValue(b, sortField);
-        c =
-          typeof av === "string" && typeof bv === "string"
-            ? av.localeCompare(bv)
-            : (av as number) - (bv as number);
-      }
-      if (c === 0) c = a.dateImported - b.dateImported; // stable tiebreak
-      return c * dir;
-    });
+  const subfolders = folder !== null && getSettings().showSubfolderPhotos;
+  const shown: { index: number; photo: CatalogPhoto; key: number | string }[] = [];
+  photos.forEach((p, index) => {
+    if (
+      (folder === null || inFolder(p, folder, subfolders)) &&
+      matches(p, filter) &&
+      predicates.every((fn) => fn(p))
+    ) {
+      shown.push({ index, photo: p, key: customCompare ? 0 : sortValue(p, sortField) });
+    }
+  });
+  // Keys are computed once per photo, not once per comparison.
+  shown.sort((a, b) => {
+    let c: number;
+    if (customCompare) {
+      c = customCompare(a.photo, b.photo);
+    } else {
+      c =
+        typeof a.key === "string" && typeof b.key === "string"
+          ? a.key.localeCompare(b.key)
+          : (a.key as number) - (b.key as number);
+    }
+    if (c === 0) c = a.photo.dateImported - b.photo.dateImported; // stable tiebreak
+    return c * dir;
+  });
+  return shown.map((s) => s.index);
+}
+
+export function visiblePhotos(
+  photos: CatalogPhoto[],
+  filter: LibraryFilter,
+  sortField: string,
+  sortDir: SortDirection,
+  folder: string | null = null,
+  predicates: ((p: CatalogPhoto) => boolean)[] = [],
+  customCompare?: (a: CatalogPhoto, b: CatalogPhoto) => number,
+): CatalogPhoto[] {
+  return visibleOrder(photos, filter, sortField, sortDir, folder, predicates, customCompare).map(
+    (i) => photos[i],
+  );
 }

@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Preset adjustment metadata, shared by the hover tooltip and the Save dialog.
+// Preset adjustment metadata, shared by the hover tooltip and the Save dialogue.
 //
 // A preset stores only the keys it carries (a Partial<DevelopParams>):
 //   • summarizePreset() lists those keys for the tooltip.
@@ -58,9 +58,9 @@ export const PARAM_LABELS: Partial<Record<ScalarKey, string>> = {
   luminanceNRContrast: "Luminance NR contrast",
   luminanceNRShadows: "Luminance NR shadows",
   luminanceNRHighlights: "Luminance NR highlights",
-  colorNR: "Color NR",
-  colorNRDetail: "Color NR detail",
-  colorNRSmoothness: "Color NR smoothness",
+  colorNR: "Colour NR",
+  colorNRDetail: "Colour NR detail",
+  colorNRSmoothness: "Colour NR smoothness",
 };
 
 export interface PresetDiff {
@@ -123,7 +123,7 @@ export function summarizePreset(params: Partial<DevelopParams>): PresetDiff[] {
     out.push({ label: "HSL", value: "adjusted" });
   }
   if (params.colorGrading && jsonDiffers(params.colorGrading, defaultColorGrading())) {
-    out.push({ label: "Color grading", value: "adjusted" });
+    out.push({ label: "Colour grading", value: "adjusted" });
   }
   if (params.masks && params.masks.length > 0) {
     out.push({ label: "Masks", value: `${params.masks.length}` });
@@ -147,9 +147,9 @@ export function summarizePreset(params: Partial<DevelopParams>): PresetDiff[] {
   return out;
 }
 
-// ─── Save-dialog field enumeration ──────────────────────────────────────────
+// ─── Save-dialogue field enumeration ──────────────────────────────────────────
 
-/** One selectable adjustment in the Save Preset dialog. `keys` are the
+/** One selectable adjustment in the Save Preset dialogue. `keys` are the
  *  DevelopParams keys copied when the field is checked; `changed` marks fields
  *  that differ from the defaults (pre-checked by default). */
 export interface PresetField {
@@ -224,7 +224,7 @@ export function presetFields(
     },
     { id: "toneCurve", label: "Tone curve", keys: ["toneCurve"], changed: !isDefaultToneCurves(params.toneCurve) },
     { id: "hsl", label: "HSL", keys: ["hsl"], changed: jsonDiffers(params.hsl, defaultHSL()) },
-    { id: "colorGrading", label: "Color grading", keys: ["colorGrading"], changed: jsonDiffers(params.colorGrading, defaultColorGrading()) },
+    { id: "colorGrading", label: "Colour grading", keys: ["colorGrading"], changed: jsonDiffers(params.colorGrading, defaultColorGrading()) },
     { id: "geometry", label: "Crop & transform", keys: ["crop", "straighten", "transform", "uprightMode", "guidedLines"], changed: jsonDiffers(params.crop, DEFAULT_CROP) || jsonDiffers(params.transform, DEFAULT_TRANSFORM) || differs(params.straighten, 0), scope: "per-image" },
     { id: "vignette", label: "Vignette", keys: ["vignette"], changed: jsonDiffers(params.vignette, DEFAULT_VIGNETTE) },
     { id: "grain", label: "Grain", keys: ["grain"], changed: jsonDiffers(params.grain, DEFAULT_GRAIN) },

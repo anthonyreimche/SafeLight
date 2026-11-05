@@ -10,7 +10,7 @@ import { broadcast } from "./broadcast";
 
 // The module this window is dedicated to, if it was opened as a detached window.
 // Not checked against the registry: external plugins load after first paint, so
-// a registered module's window must be recognised before its extension is.
+// a registered module's window must be recognized before its extension is.
 export function detachedModule(): AppModule | null {
   const m = new URLSearchParams(window.location.search).get("detached");
   return m && MODULE_ID.test(m) ? m : null;

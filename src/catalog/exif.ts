@@ -50,6 +50,7 @@ const TAG = {
   ExposureProgram: 0x8822,
   ISO: 0x8827,
   DateTimeOriginal: 0x9003,
+  SubSecTimeOriginal: 0x9291,
   ExposureBias: 0x9204,
   MaxAperture: 0x9205,
   SubjectDistance: 0x9206,
@@ -112,6 +113,8 @@ export function parseExifDate(s: string | undefined): number | undefined {
   const m = s.match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
   if (!m) return undefined;
   const [, y, mo, d, h, mi, se] = m;
+  // An unset camera clock writes zeros, which Date would roll back to 1899.
+  if (+y < 1800 || +mo === 0 || +d === 0) return undefined;
   const t = new Date(+y, +mo - 1, +d, +h, +mi, +se).getTime();
   return Number.isNaN(t) ? undefined : t;
 }
@@ -126,7 +129,7 @@ export function parseExifDate(s: string | undefined): number | undefined {
 // raster — strips, tiles, sub-IFDs, thumbnails), the Exif IFD by blocklist
 // (MakerNotes and the Interop pointer embed source-file offsets; colour space
 // and pixel dimensions are rewritten by the export), the GPS IFD wholesale.
-// Value bytes are normalised to little-endian so the writer needs no
+// Value bytes are normalized to little-endian so the writer needs no
 // byte-order handling.
 // ---------------------------------------------------------------------------
 
@@ -227,7 +230,7 @@ function valueBytesLE(r: Reader, e: Entry): Uint8Array | null {
 // editing apps write these into an XMP packet rather than EXIF tags — Nikon
 // stores the in-camera star rating here, which is what Windows Explorer shows.
 // We read the packet (TIFF/RAW tag 0x02bc, or a JPEG XMP APP1 segment) and pull
-// out the handful of fields the catalog tracks.
+// out the handful of fields the catalogue tracks.
 export interface XmpData {
   rating?: number; // 0..5 stars
   colorLabel?: string; // raw label string, e.g. "Red"
@@ -298,7 +301,7 @@ function parseXmpText(xmp: string): XmpData {
   return out;
 }
 
-// An XMP property is serialised either as an element (<xmp:Rating>1</xmp:Rating>)
+// An XMP property is serialized either as an element (<xmp:Rating>1</xmp:Rating>)
 // or as an attribute on rdf:Description (xmp:Rating="1") — handle both forms. The
 // `(?:\s[^>]*)?>` opener requires the tag to end at a space or '>', so a name
 // that's a prefix of another (xmp:Rating vs xmp:RatingPercent) doesn't collide.
@@ -452,6 +455,9 @@ function parseTiff(view: DataView, base: number): ExifData {
     const date = asciiTag(r, e.get(TAG.DateTimeOriginal));
     if (date) exif.dateTimeOriginal = date;
 
+    const subSec = asciiTag(r, e.get(TAG.SubSecTimeOriginal))?.replace(/\D/g, "");
+    if (subSec) exif.subSecTimeOriginal = subSec;
+
     const maxAp = ratTag(r, e.get(TAG.MaxAperture));
     if (maxAp !== undefined) exif.maxAperture = round(Math.pow(Math.SQRT2, maxAp), 1);
 
@@ -549,7 +555,7 @@ type Matrix3 = readonly number[];
 
 interface Calibration {
   matrix: Matrix3; // XYZ (D50) -> camera raw
-  kelvin: number; // calibration illuminant, 0 when unrecognised
+  kelvin: number; // calibration illuminant, 0 when unrecognized
 }
 
 // EXIF LightSource codes -> Kelvin, following dng_sdk's
@@ -633,7 +639,7 @@ function apply3(m: Matrix3, v: Vec3): Vec3 {
 
 // The XYZ->camera matrix for a given white point. Two calibrations are blended
 // in reciprocal-Kelvin space (the DNG spec's rule); anything else — one matrix,
-// an unrecognised illuminant, or two calibrations sharing a temperature — uses
+// an unrecognized illuminant, or two calibrations sharing a temperature — uses
 // the first matrix as written.
 function xyzToCamera(calibrations: readonly Calibration[], kelvin: number): Matrix3 {
   if (calibrations.length < 2) return calibrations[0].matrix;

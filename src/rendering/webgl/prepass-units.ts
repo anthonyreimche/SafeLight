@@ -20,6 +20,13 @@
 export const STAGE_TEX_UNIT_BASE = 12;
 export const MAX_STAGE_TEXTURES = 4;
 
+/** The units official stages' per-photo textures (TextureRequirement "photo"
+ *  and "atlas") bind at, in order: the ones the program bound those tables at
+ *  itself before the tools left core, so extensions keep all four of theirs.
+ *  Unit 1 held the tone curve's table, unit 3 the heal's brush atlas, unit 6
+ *  the masks' curve atlas. Counted among DEVELOP_SAMPLERS. */
+export const PHOTO_TEX_UNITS: readonly number[] = [1, 3, 6];
+
 /** The samplers the develop shader declares before any stage adds its own:
  *  uImage, uCurve, uMaskTex, uRetouchTex, uDevelopedSrc and uMaskCurves. What
  *  MAX_TEXTURE_IMAGE_UNITS leaves past them is the stages' sampler budget. */
@@ -29,10 +36,12 @@ export const DEVELOP_SAMPLERS = 6;
 const FIRST_PREPASS_UNITS: readonly number[] = [8, 9, 10, 11, 5];
 
 /** The units prepass results may take, in the order stages are handed them, on a
- *  context with `combinedUnits` texture units whose stage textures number
- *  `stageTextures`. */
+ *  context with `combinedUnits` texture units whose stage textures take
+ *  `stageTextures` units from STAGE_TEX_UNIT_BASE. */
 export function prepassUnits(combinedUnits: number, stageTextures: number): number[] {
-  const firstFree = STAGE_TEX_UNIT_BASE + Math.min(stageTextures, MAX_STAGE_TEXTURES);
+  // Photo textures past PHOTO_TEX_UNITS bind right after the stage textures,
+  // so the count can pass MAX_STAGE_TEXTURES.
+  const firstFree = STAGE_TEX_UNIT_BASE + stageTextures;
   const units = [...FIRST_PREPASS_UNITS];
   for (let unit = firstFree; unit < combinedUnits; unit++) units.push(unit);
   return units;

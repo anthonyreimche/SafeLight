@@ -19,8 +19,10 @@ import {
   tintForGreenGain,
   tintGain,
   whiteBalanceGain,
+  whiteBalanceGains,
+  type LinearRgb,
 } from "./blackbody";
-import { FRAGMENT_SHADER } from "./webgl/shaders";
+import { FRAGMENT_SHADER, V2_VARIANT, V3_VARIANT, buildFragmentShader } from "./webgl/shaders";
 
 // ---------------------------------------------------------------------------
 // Shader drift guard
@@ -32,14 +34,14 @@ import { FRAGMENT_SHADER } from "./webgl/shaders";
 // copy — or renaming the expressions the patterns key off — fails here.
 // ---------------------------------------------------------------------------
 
-function glslFunction(name: string): string {
-  const start = FRAGMENT_SHADER.indexOf(`vec3 ${name}(`);
-  if (start < 0) throw new Error(`FRAGMENT_SHADER has no ${name}()`);
+function glslFunction(name: string, shader = FRAGMENT_SHADER): string {
+  const start = shader.indexOf(`vec3 ${name}(`);
+  if (start < 0) throw new Error(`the shader has no ${name}()`);
   let depth = 0;
-  for (let i = FRAGMENT_SHADER.indexOf("{", start); i < FRAGMENT_SHADER.length; i++) {
-    if (FRAGMENT_SHADER[i] === "{") depth++;
-    else if (FRAGMENT_SHADER[i] === "}" && --depth === 0) {
-      return FRAGMENT_SHADER.slice(start, i + 1);
+  for (let i = shader.indexOf("{", start); i < shader.length; i++) {
+    if (shader[i] === "{") depth++;
+    else if (shader[i] === "}" && --depth === 0) {
+      return shader.slice(start, i + 1);
     }
   }
   throw new Error(`unbalanced braces in ${name}()`);
@@ -173,6 +175,56 @@ describe("blackbody — shader parity", () => {
   });
 });
 
+describe("blackbody — the gains applyWhiteBalance multiplies by", () => {
+  const lumaOf = ([r, g, b]: LinearRgb) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const TINTS = [-150, -75, 0, 75, 150];
+  const KELVINS = [2800, 4200, 6500, 9000];
+
+  it.each([2, 3])("keep a neutral's luminance under Tint and Temperature on version %i", (version) => {
+    for (const tint of TINTS) {
+      for (const kelvin of KELVINS) {
+        expect(lumaOf(whiteBalanceGains(kelvin, tint, 6500, version)), `${kelvin} K, tint ${tint}`).toBeCloseTo(1, 12);
+      }
+    }
+  });
+
+  it.each([1, 2, 3])("keep the cast's direction and size on version %i", (version) => {
+    for (const tint of TINTS) {
+      for (const kelvin of KELVINS) {
+        const [r, g, b] = whiteBalanceGains(kelvin, tint, 6500, version);
+        const balance = whiteBalanceGain(kelvin, 6500);
+        expect(g / r, `${kelvin} K, tint ${tint}`).toBeCloseTo(tintGain(tint) / balance[0], 12);
+        expect(b / r, `${kelvin} K, tint ${tint}`).toBeCloseTo(balance[2] / balance[0], 12);
+      }
+    }
+  });
+
+  it.each([1, 2, 3])("are exactly unity at the as-shot point on version %i", (version) => {
+    for (const asShot of [3200, 5200, 6500]) {
+      expect(whiteBalanceGains(asShot, 0, asShot, version)).toEqual([1, 1, 1]);
+    }
+  });
+
+  it("stay version 1's: green-normalized, with the tint on green alone", () => {
+    for (const tint of TINTS) {
+      for (const kelvin of KELVINS) {
+        const balance = whiteBalanceGain(kelvin, 6500);
+        expect(whiteBalanceGains(kelvin, tint, 6500, 1)).toEqual([balance[0], tintGain(tint), balance[2]]);
+      }
+    }
+    expect(Math.log2(lumaOf(whiteBalanceGains(6500, 150, 6500, 1)))).toBeLessThan(-0.5);
+  });
+
+  it("are what each version's shader derives", () => {
+    const normalize = "gain /= luma(gain);";
+    expect(glslFunction("applyWhiteBalance")).not.toContain(normalize);
+    for (const variant of [V2_VARIANT, V3_VARIANT]) {
+      const wb = glslFunction("applyWhiteBalance", buildFragmentShader(null, undefined, variant));
+      expect(wb.indexOf(normalize), `version ${variant.version}`).toBeGreaterThan(wb.indexOf("gain.g *="));
+    }
+  });
+});
+
 describe("blackbody — Kelvin inversion", () => {
   it("returns the reference temperature for unity gains", () => {
     for (const reference of [2856, 5500, 6500]) {
@@ -211,7 +263,7 @@ describe("blackbody — Kelvin inversion", () => {
     expect(kelvinFromWhiteBalanceGains(1, 1, Number.NaN)).toBeUndefined();
   });
 
-  it("quantises to the 10 K the temperature slider steps in", () => {
+  it("quantizes to the 10 K the temperature slider steps in", () => {
     for (const [r, g, b] of [
       [2.1, 1, 1.35],
       [1.6, 1, 2.2],

@@ -7,6 +7,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { makeCurveEvaluator } from "@/rendering/curve";
 import { useKeyboardCanvasEditing } from "@/state/accessibility";
 import { useSettings } from "@/state/settings-store";
+import { parseDecimal } from "@/ui/parse-decimal";
 import type { CurvePoint, ToneCurveChannel, ToneCurves } from "@/catalog/types";
 import { channelHex } from "./channel-colors";
 
@@ -99,7 +100,7 @@ export function CurveEditor({
     return () => ro.disconnect();
   }, []);
 
-  // Redraw whenever the active curve, channel color, size, selection or focus change.
+  // Redraw whenever the active curve, channel colour, size, selection or focus change.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -265,26 +266,26 @@ export function CurveEditor({
   // ── Selected-point number fields (non-drag pointer path) ────────────────────
   const setInputLevel = (raw: string) => {
     setEditing({ field: "in", raw });
-    if (raw === "") return;
-    const n = Number(raw);
+    const n = parseDecimal(raw);
     if (!Number.isFinite(n)) return;
     const i = sel;
     const nx = clampPointX(points, i, n / LEVELS);
     const next = points.map((p, j) => (j === i ? { ...p, x: nx } : p));
     update(next);
-    onCommit();
     setAnnounce(describe(i, next[i]));
   };
   const setOutputLevel = (raw: string) => {
     setEditing({ field: "out", raw });
-    if (raw === "") return;
-    const n = Number(raw);
+    const n = parseDecimal(raw);
     if (!Number.isFinite(n)) return;
     const i = sel;
     const next = points.map((p, j) => (j === i ? { ...p, y: clamp01(n / LEVELS) } : p));
     update(next);
-    onCommit();
     setAnnounce(describe(i, next[i]));
+  };
+
+  const commitOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") e.currentTarget.blur();
   };
 
   const fieldBtn =
@@ -360,26 +361,26 @@ export function CurveEditor({
         <label className="ml-1 text-text-muted" htmlFor={`${helpId}-in`}>In</label>
         <input
           id={`${helpId}-in`}
-          type="number"
-          min={0}
-          max={LEVELS}
+          type="text"
+          inputMode="decimal"
           value={editing?.field === "in" ? editing.raw : toLevel(selPoint.x)}
           onFocus={() => setEditing({ field: "in", raw: String(toLevel(selPoint.x)) })}
           onChange={(e) => setInputLevel(e.target.value)}
           onBlur={() => { setEditing(null); onCommit(); }}
+          onKeyDown={commitOnEnter}
           aria-label="Selected point input level (0–255)"
           className={numCls}
         />
         <label className="text-text-muted" htmlFor={`${helpId}-out`}>Out</label>
         <input
           id={`${helpId}-out`}
-          type="number"
-          min={0}
-          max={LEVELS}
+          type="text"
+          inputMode="decimal"
           value={editing?.field === "out" ? editing.raw : toLevel(selPoint.y)}
           onFocus={() => setEditing({ field: "out", raw: String(toLevel(selPoint.y)) })}
           onChange={(e) => setOutputLevel(e.target.value)}
           onBlur={() => { setEditing(null); onCommit(); }}
+          onKeyDown={commitOnEnter}
           aria-label="Selected point output level (0–255)"
           className={numCls}
         />
@@ -451,7 +452,7 @@ function draw(
   ctx.lineTo(PAD + plot, PAD);
   ctx.stroke();
 
-  // Curve, in the channel's color.
+  // Curve, in the channel's colour.
   const evaluate = makeCurveEvaluator(points);
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
@@ -489,7 +490,7 @@ function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-// Points stay between their neighbors; an endpoint's outer bound is the plot
+// Points stay between their neighbours; an endpoint's outer bound is the plot
 // edge, so the black point can slide right and the white point left.
 function clampPointX(points: CurvePoint[], i: number, x: number): number {
   const lo = i === 0 ? 0 : points[i - 1].x + 0.001;

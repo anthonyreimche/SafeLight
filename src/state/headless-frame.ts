@@ -3,7 +3,7 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-// Render ONE arbitrary catalog photo through the full develop pipeline with
+// Render ONE arbitrary catalogue photo through the full develop pipeline with
 // caller-supplied params, off-screen, to an ImageBitmap or a frame of floats —
 // without disturbing the live Develop view or its bound source.
 //
@@ -15,7 +15,8 @@
 // build a per-photo histogram for batch Auto Tone / Auto WB across a selection.
 
 import type { DevelopParams } from "@/catalog/types";
-import { getRenderBridge, type RenderBridge, type ThumbImage, type ThumbRequest } from "@/rendering/render-bridge";
+import { getRenderBridge, type RenderBridge } from "@/rendering/render-bridge";
+import type { SourceImage, ThumbRequest } from "@/rendering/render-protocol";
 import type { FloatCaptureOptions, FloatFrame } from "@/rendering/float-frame";
 import { frameStageBag } from "@/rendering/stage-bag";
 import { loadPhotoImage, photoSourceKey } from "@/catalog/load-image";
@@ -93,7 +94,7 @@ export async function renderPhotoFloatFrame(
  *  view draws it: under the entries the built-in stages take from `params`.
  *  `render` draws one request and gives null for a miss or a failure.
  *  `cameraPreview` lets the grid's camera JPEG stand in, last, for a photo with
- *  no source of its own. Null for a photo the catalog doesn't hold, or one no
+ *  no source of its own. Null for a photo the catalogue doesn't hold, or one no
  *  source renders. */
 async function measure<T>(
   photoId: string,
@@ -110,7 +111,7 @@ async function measure<T>(
   await bridge.ready;
 
   const key = photoSourceKey(photo);
-  const request = (source: { key: string } | { image: ThumbImage }): ThumbRequest => ({
+  const request = (source: { key: string } | { image: SourceImage }): ThumbRequest => ({
     requestId: "key" in source ? `measure-${source.key}-${++reqSeq}` : `measure-once-${++reqSeq}`,
     params,
     // Read at each render: a first decode stores the as-shot white balance it
@@ -149,7 +150,6 @@ async function measure<T>(
           image,
           THUMB_SOURCE_MAX_EDGE,
           decoded.kind === "float" ? decoded.isFallbackPreview : false,
-          false,
         );
         frame = await render(bridge, request({ key }));
       } else {

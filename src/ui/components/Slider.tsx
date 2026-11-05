@@ -6,6 +6,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useRegistry } from "@/extensions/registry";
 import { useSettings } from "@/state/settings-store";
+import { useDevelopStore } from "@/state/develop-store";
+import { parseDecimal } from "@/ui/parse-decimal";
 
 interface SliderProps {
   label: string;
@@ -21,7 +23,7 @@ interface SliderProps {
   step?: number;
   defaultValue?: number; // double-clicking the track resets to this
   hideValue?: boolean; // hide the editable numeric field
-  compact?: boolean; // narrow label + value, for tight columns (e.g. color wheels)
+  compact?: boolean; // narrow label + value, for tight columns (e.g. colour wheels)
   // CSS background for the track (e.g. a hue/lightness gradient). When set, the
   // filled bar is replaced by a thumb marker so the gradient stays visible —
   // the Lightroom-style coloured HSL tracks. Plain sliders ignore this.
@@ -37,6 +39,11 @@ interface SliderProps {
 // Fine-control factor while Shift is held during a drag.
 const FINE = 0.2;
 
+// Shift+wheel moves this fraction of the track per notch (at least one step),
+// and commits once the notches have been still this long.
+const WHEEL_FRACTION = 0.01;
+const WHEEL_COMMIT_MS = 400;
+
 // Keys that actually move a focused range input's value. onKeyUp commits only
 // after one of these; any other key released over a focused slider (Ctrl+Z,
 // Ctrl+Y, Ctrl+Shift+Z) moved nothing worth a commit.
@@ -50,6 +57,11 @@ const VALUE_KEYS = new Set([
   "PageUp",
   "PageDown",
 ]);
+
+// A gesture belongs to the photo open in Develop when it began. Develop commits
+// a photo's uncommitted change as it moves to the next one, so a gesture still
+// going after that writes and commits nothing, or the next photo would get it.
+const openPhoto = () => useDevelopStore.getState().photoId;
 
 export function Slider({
   label,
@@ -86,9 +98,17 @@ export function Slider({
     startValue: number;
     shift: boolean;
     mod: boolean; // Alt/Ctrl held -> modifier preview active
+    photoId: string | null;
   } | null>(null);
   const pendingRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const fieldRef = useRef<HTMLInputElement>(null);
+  // The value as the field was focused, for Escape to put back.
+  const typedFromRef = useRef<number | null>(null);
+  const focusClickRef = useRef(false);
+  const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wheelPhotoRef = useRef<string | null>(null);
 
   useEffect(
     () => () => {
@@ -96,6 +116,51 @@ export function Slider({
     },
     [],
   );
+
+  // Focusing the field swaps the shown "+25" for the raw "25", which moves the
+  // caret; select once that text is in, so typing replaces the whole value.
+  const startedEditing = editing !== null;
+  useEffect(() => {
+    if (startedEditing) fieldRef.current?.select();
+  }, [startedEditing]);
+
+  // The wheel listener reads the latest props through a ref, so it is added
+  // once and stays non-passive (React's onWheel is passive and can't stop the
+  // panel scrolling).
+  const wheelRef = useRef<(e: WheelEvent) => void>(() => {});
+  const commitRef = useRef(onCommit);
+  commitRef.current = onCommit;
+  wheelRef.current = (e: WheelEvent) => {
+    if (!e.shiftKey) return;
+    // Shift turns the wheel horizontal on some systems.
+    const delta = e.deltaY || e.deltaX;
+    if (delta === 0) return;
+    e.preventDefault();
+    const notch = Math.max(step, (max - min) * WHEEL_FRACTION);
+    onChange(snap(value + (delta < 0 ? notch : -notch)));
+    if (wheelTimerRef.current != null) clearTimeout(wheelTimerRef.current);
+    wheelPhotoRef.current = openPhoto();
+    wheelTimerRef.current = setTimeout(() => {
+      wheelTimerRef.current = null;
+      if (wheelPhotoRef.current === openPhoto()) commitRef.current?.();
+    }, WHEEL_COMMIT_MS);
+  };
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => wheelRef.current(e);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      // A commit still waiting on the wheel lands rather than being lost.
+      if (wheelTimerRef.current != null) {
+        clearTimeout(wheelTimerRef.current);
+        wheelTimerRef.current = null;
+        if (wheelPhotoRef.current === openPhoto()) commitRef.current?.();
+      }
+    };
+  }, []);
 
   const shown = dragValue ?? value;
   // The bar only represents the track range; a typed override past it pins full.
@@ -119,20 +184,20 @@ export function Slider({
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null;
         if (pendingRef.current != null) {
-          onChange(pendingRef.current);
+          if (dragRef.current?.photoId === openPhoto()) onChange(pendingRef.current);
           pendingRef.current = null;
         }
       });
     }
   };
 
-  const flushPending = () => {
+  const flushPending = (apply: boolean) => {
     if (rafRef.current != null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
     if (pendingRef.current != null) {
-      onChange(pendingRef.current);
+      if (apply) onChange(pendingRef.current);
       pendingRef.current = null;
     }
   };
@@ -144,8 +209,7 @@ export function Slider({
 
   const onText = (raw: string) => {
     setEditing(raw);
-    if (raw === "" || raw === "-" || raw === ".") return;
-    const n = Number(raw);
+    const n = parseDecimal(raw);
     // Typed values may exceed the track range (e.g. Exposure past +5); the drag
     // and arrow keys still clamp to it.
     if (Number.isFinite(n)) onChange(n);
@@ -172,7 +236,13 @@ export function Slider({
         startValue = snap(min + frac * (max - min));
       }
     }
-    dragRef.current = { startX: e.clientX, startValue, shift: e.shiftKey, mod };
+    dragRef.current = {
+      startX: e.clientX,
+      startValue,
+      shift: e.shiftKey,
+      mod,
+      photoId: openPhoto(),
+    };
     setDragValue(startValue);
     // A click that lands on a new value commits it even without a drag; endDrag
     // flushes the queued change and fires onCommit on pointer-up.
@@ -183,6 +253,10 @@ export function Slider({
   const onPointerMove = (e: React.PointerEvent<HTMLInputElement>) => {
     const d = dragRef.current;
     if (!d) return;
+    if (d.photoId !== openPhoto()) {
+      endDrag();
+      return;
+    }
     const width = e.currentTarget.getBoundingClientRect().width;
     if (width <= 0) return;
     // Re-anchor when Shift toggles mid-drag so sensitivity changes smoothly.
@@ -204,13 +278,14 @@ export function Slider({
   };
 
   const endDrag = () => {
-    if (!dragRef.current) return;
-    const wasMod = dragRef.current.mod;
+    const d = dragRef.current;
+    if (!d) return;
     dragRef.current = null;
-    flushPending();
+    const samePhoto = d.photoId === openPhoto();
+    flushPending(samePhoto);
     setDragValue(null);
-    if (wasMod) onModifierPreview?.(false);
-    onCommit?.();
+    if (d.mod) onModifierPreview?.(false);
+    if (samePhoto) onCommit?.();
   };
 
   return (
@@ -232,7 +307,10 @@ export function Slider({
       {/* sl-slider-wrap shows a focus ring (index.css) when the range input —
           which is opacity-0, so its own outline can't show — is keyboard-focused.
           The sl-slider-* classes are styling hooks for input-styling extensions. */}
-      <div className="sl-slider-wrap relative flex h-4 min-w-0 flex-1 select-none items-center rounded">
+      <div
+        ref={wrapRef}
+        className="sl-slider-wrap relative flex h-4 min-w-0 flex-1 select-none items-center rounded"
+      >
         {trackBackground ? (
           // Coloured track: the gradient IS the bar; a marker shows the value so
           // the whole hue/tone ramp stays readable (Lightroom-style HSL tracks).
@@ -280,20 +358,49 @@ export function Slider({
             if (VALUE_KEYS.has(e.key)) onCommit?.();
           }}
           onDoubleClick={reset}
-          title={`${jumpToCursor ? "Click to set · drag" : "Drag"} to adjust · hold Shift for fine control · double-click to reset`}
+          title={`${jumpToCursor ? "Click to set · drag" : "Drag"} to adjust · hold Shift for fine control · Shift+scroll to step · double-click to reset`}
           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
         />
       </div>
       {!hideValue && (
         <input
+          ref={fieldRef}
           type="text"
           inputMode="decimal"
+          data-own-escape=""
           aria-label={`${label || ariaLabel || ""} value`.trim()}
           value={editing ?? display}
-          onFocus={() => setEditing(String(value))}
+          onFocus={() => {
+            typedFromRef.current = value;
+            focusClickRef.current = true;
+            setEditing(String(value));
+          }}
+          // The mouseup that ends the focusing click would collapse the
+          // selection back to a caret; later clicks place the caret as usual.
+          onMouseUp={(e) => {
+            if (focusClickRef.current) e.preventDefault();
+            focusClickRef.current = false;
+          }}
           onChange={(e) => onText(e.target.value)}
+          onKeyDown={(e) => {
+            focusClickRef.current = false;
+            if (e.key === "Enter") {
+              e.currentTarget.blur();
+            } else if (e.key === "Escape") {
+              // Ours alone (data-own-escape keeps the global Esc handler off it);
+              // stopPropagation keeps ancestors' handlers off it too.
+              e.stopPropagation();
+              const from = typedFromRef.current;
+              typedFromRef.current = null;
+              if (from !== null && from !== value) onChange(from);
+              e.currentTarget.blur();
+            }
+          }}
           onBlur={() => {
             setEditing(null);
+            // Escape cleared this: the value went back, so there's nothing to commit.
+            if (typedFromRef.current === null) return;
+            typedFromRef.current = null;
             onCommit?.();
           }}
           className={`sl-slider-value ${compact ? "w-8" : "w-12"} shrink-0 rounded bg-transparent px-1 text-right ${compact ? "text-[10px]" : "text-[11px]"} tabular-nums outline-none focus:bg-surface-2 ${

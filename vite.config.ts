@@ -21,7 +21,7 @@ const crossOriginIsolation = {
   // `credentialless` keeps the page cross-origin-isolated (SharedArrayBuffer
   // stays enabled) while still loading no-cors cross-origin images without a
   // CORP header — the Extensions store's GitHub thumbnails, avatars, and remote
-  // README images. Kept in sync with electron/main.cjs ISOLATION_HEADERS.
+  // README images. Kept in sync with electron/app-protocol.cjs ISOLATION_HEADERS.
   "Cross-Origin-Embedder-Policy": "credentialless",
 };
 
@@ -56,6 +56,10 @@ export default defineConfig({
   // DOM. WebGL tests need a real GPU context, so they live in
   // vitest.webgl.config.ts (`npm run test:webgl`) and are kept out of this run.
   test: {
+    // Several catalogue-scale tests take 2-3 s under a full local run; a shared
+    // CI runner is a few times slower, which put a different one past the 5 s
+    // default on each push. A hang still fails, just later.
+    testTimeout: process.env.CI ? 30_000 : 5_000,
     projects: [
       {
         extends: true,

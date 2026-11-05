@@ -4,9 +4,9 @@
 // be preserved in derived versions.
 
 // The culling keys are a capture-phase window listener, so unlike the native
-// confirm they replaced, an open in-app dialog does not stop them: the first
+// confirm they replaced, an open in-app dialogue does not stop them: the first
 // block pins that the shortcuts stand down while one is showing. The later
-// blocks characterise the rest of the handler: which photos a key acts on, the
+// blocks characterize the rest of the handler: which photos a key acts on, the
 // grid-row stride, text-field and mask-tool deference, and the ref-counted
 // listener shared by every mounted photo surface.
 
@@ -18,26 +18,43 @@ import {
   render,
   renderHook,
   screen,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { CatalogPhoto, ColorLabel, FlagStatus } from "@/catalog/types";
 import { photo } from "@/catalog/stored-edit.fixtures";
 import { useCatalogStore } from "@/state/catalog-store";
-import { useDevelopStore, type DevelopState } from "@/state/develop-store";
-import { KEY_ACTIONS, getBinding } from "@/state/keybindings-store";
+import { useDevelopStore } from "@/state/develop-store";
+import { setCanvasTool, useCanvasToolStore } from "@/modules/develop/canvas-tool";
+import { KEY_ACTIONS, getBinding, resetBinding, setBinding } from "@/state/keybindings-store";
 import { useSettings } from "@/state/settings-store";
+import { useDevelopClipboard } from "@/state/develop-clipboard";
 import { useUIStore } from "@/state/ui-store";
 import { popEscapeHandler } from "@/ui/escape-stack";
 import { alertDialog, ConfirmDialogHost } from "@/ui/components/ConfirmDialog";
+import { ContextMenu } from "@/ui/components/ContextMenu";
+import { normalizeParams } from "@/catalog/types";
+import { CopySettingsDialog } from "./CopySettingsDialog";
+import { RenamePhotoDialog } from "./RenamePhotoDialog";
 import { NO_FILTER } from "./visible-photos";
-import { cullingShortcutsMounted, useCullingShortcuts } from "./use-culling-shortcuts";
+import {
+  cullingShortcutsMounted,
+  FOCUS_KEYWORD_INPUT_EVENT,
+  useCullingShortcuts,
+} from "./use-culling-shortcuts";
+
+const pasteSettingsSpy = vi.fn(async (_ids: string[], _clip: unknown): Promise<void> => {});
+vi.mock("@/catalog/paste-settings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/catalog/paste-settings")>()),
+  pasteSettings: (ids: string[], clip: unknown) => pasteSettingsSpy(ids, clip),
+}));
 
 const removePhotos = vi.fn(async (_ids: string[]): Promise<void> => {});
 const applyRating = vi.fn(
   async (_ids: string[], _rating: number): Promise<void> => {},
 );
 
-// Keys go to whatever holds focus, as in the app: the dialog's confirm button
+// Keys go to whatever holds focus, as in the app: the dialogue's confirm button
 // while a card is open, the body otherwise.
 function press(key: string, init: KeyboardEventInit = {}): void {
   fireEvent.keyDown(document.activeElement ?? document.body, { key, ...init });
@@ -46,6 +63,7 @@ function press(key: string, init: KeyboardEventInit = {}): void {
 beforeEach(() => {
   removePhotos.mockClear();
   applyRating.mockClear();
+  pasteSettingsSpy.mockClear();
   useCatalogStore.setState({
     photos: [photo("a"), photo("b")],
     selectedIds: new Set(["a"]),
@@ -57,15 +75,15 @@ beforeEach(() => {
   renderHook(() => useCullingShortcuts());
 });
 
-// The dialog queue is module state: close whatever a spec left open (several
+// The dialogue queue is module state: close whatever a spec left open (several
 // end with a card showing) so it can't surface in the next one. Each close can
 // mount the next queued card, so the escape stack is popped a few times.
 afterEach(() => {
   for (let i = 0; i < 4; i++) act(() => void popEscapeHandler());
 });
 
-describe("culling shortcuts while an in-app dialog is open", () => {
-  it("rates the selection when no dialog is open", () => {
+describe("culling shortcuts while an in-app dialogue is open", () => {
+  it("rates the selection when no dialogue is open", () => {
     press("3");
     expect(applyRating).toHaveBeenCalledWith(["a"], 3);
   });
@@ -73,7 +91,7 @@ describe("culling shortcuts while an in-app dialog is open", () => {
   it("pressing Delete twice opens one confirmation, not two", async () => {
     const user = userEvent.setup();
     press("Delete");
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     press("Delete");
     press("Delete", { repeat: true });
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
@@ -83,9 +101,23 @@ describe("culling shortcuts while an in-app dialog is open", () => {
     expect(removePhotos).not.toHaveBeenCalled();
   });
 
-  it("still holds when focus has left the dialog", () => {
+  it("says the file stays on disk while the photo and its edits leave the catalogue", () => {
     press("Delete");
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    const dialog = screen.getByRole("dialog", { name: "Remove from catalogue" });
+    expect(dialog.textContent).toMatch(/original file on disk won't be deleted/);
+    expect(dialog.textContent).toMatch(/edits, ratings and labels/);
+  });
+
+  it("asks as a destructive action, with Cancel focused", () => {
+    press("Delete");
+    const dialog = screen.getByRole("dialog", { name: "Remove from catalogue" });
+    expect(within(dialog).getByRole("button", { name: "Remove" }).className).toContain("bg-danger");
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
+  });
+
+  it("still holds when focus has left the dialogue", () => {
+    press("Delete");
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     act(() => {
       (document.activeElement as HTMLElement).blur();
     });
@@ -97,7 +129,7 @@ describe("culling shortcuts while an in-app dialog is open", () => {
 
   it("ignores a rating key while a confirmation is open", () => {
     press("Delete");
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     press("3");
     expect(applyRating).not.toHaveBeenCalled();
   });
@@ -111,7 +143,7 @@ describe("culling shortcuts while an in-app dialog is open", () => {
     expect(applyRating).not.toHaveBeenCalled();
   });
 
-  it("works again once the dialog is answered", async () => {
+  it("works again once the dialogue is answered", async () => {
     const user = userEvent.setup();
     press("Delete");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -125,6 +157,64 @@ describe("culling shortcuts while an in-app dialog is open", () => {
     expect(removePhotos).toHaveBeenCalledTimes(1);
     expect(removePhotos).toHaveBeenCalledWith(["a"]);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+// A focused checkbox or button isn't a text field, so the text-entry deferral
+// alone would let 1-5 or Backspace act on the selection behind these dialogues.
+describe("culling shortcuts behind the Copy settings and Rename dialogues", () => {
+  it("ignores rating and remove keys after a checkbox in Copy settings is clicked", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <CopySettingsDialog
+        params={normalizeParams({ exposure: 1.2 })}
+        paramBag={{}}
+        sourceName="IMG_0001.NEF"
+        onCopy={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: /^Exposure/ }));
+    press("3");
+    press("Backspace");
+    expect(applyRating).not.toHaveBeenCalled();
+    expect(removePhotos).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Remove from catalogue" })).toBeNull();
+
+    unmount();
+    press("3");
+    expect(applyRating).toHaveBeenCalledWith(["a"], 3);
+  });
+
+  it("ignores a rating key while the Rename dialogue's buttons hold focus", () => {
+    render(
+      <RenamePhotoDialog
+        title="Rename photo"
+        value="IMG_0001"
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    screen.getByRole("button", { name: "Cancel" }).focus();
+    press("3");
+    expect(applyRating).not.toHaveBeenCalled();
+  });
+
+  it("leaves the arrow keys to an open photo menu", () => {
+    render(
+      <ContextMenu
+        x={10}
+        y={10}
+        items={[
+          { label: "Open", onClick: () => {} },
+          { label: "Rotate", onClick: () => {} },
+        ]}
+        onClose={() => {}}
+      />,
+    );
+    press("ArrowDown");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rotate" }));
+    expect(useCatalogStore.getState().activePhotoId).toBe("a");
   });
 });
 
@@ -271,12 +361,7 @@ describe("culling shortcuts: which photos a key acts on", () => {
   });
 });
 
-describe("culling shortcuts: removing from the catalog", () => {
-  type MaskSelection = Pick<
-    DevelopState,
-    "activeTool" | "selectedMaskId" | "selectedComponentId"
-  >;
-
+describe("culling shortcuts: removing from the catalogue", () => {
   beforeEach(() => {
     useSettings.setState({ confirmRemovePhotos: true });
     useCatalogStore.setState({ selectedIds: new Set(["a", "b"]) });
@@ -284,43 +369,27 @@ describe("culling shortcuts: removing from the catalog", () => {
   afterEach(() => {
     useSettings.setState(INITIAL_SETTINGS, true);
     useDevelopStore.setState(INITIAL_DEVELOP, true);
+    useCanvasToolStore.setState({ held: null });
   });
 
-  it("leaves Delete to the mask tool while a mask component is selected", () => {
-    useDevelopStore.setState({
-      activeTool: "mask",
-      selectedMaskId: "m1",
-      selectedComponentId: "c1",
-    });
+  it("leaves Delete to the canvas tool while it would take mask.delete", () => {
+    setCanvasTool("safelight.masks", { overlay: () => null, wants: (action) => action === "mask.delete" });
     expect(fire(document.body, bound("photo.remove"))).toBe(false);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(removePhotos).not.toHaveBeenCalled();
   });
 
-  it.each<[string, MaskSelection]>([
-    [
-      "the mask tool has no component selected",
-      { activeTool: "mask", selectedMaskId: "m1", selectedComponentId: null },
-    ],
-    [
-      "the mask tool has no mask selected",
-      { activeTool: "mask", selectedMaskId: null, selectedComponentId: "c1" },
-    ],
-    [
-      "a component is selected but the tool is not the mask tool",
-      { activeTool: "none", selectedMaskId: "m1", selectedComponentId: "c1" },
-    ],
-  ])("still asks to remove when %s", (_case, selection) => {
-    useDevelopStore.setState(selection);
+  it("still asks to remove while the canvas tool wouldn't take it", () => {
+    setCanvasTool("safelight.masks", { overlay: () => null, wants: () => false });
     expect(fire(document.body, bound("photo.remove"))).toBe(true);
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     expect(removePhotos).not.toHaveBeenCalled();
   });
 
   it("removes nothing when the confirmation is cancelled, and asks again next time", async () => {
     const user = userEvent.setup();
     expect(fire(document.body, bound("photo.remove"))).toBe(true);
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(removePhotos).not.toHaveBeenCalled();
@@ -331,7 +400,7 @@ describe("culling shortcuts: removing from the catalog", () => {
     expect(removePhotos).toHaveBeenCalledWith(["a", "b"]);
   });
 
-  it("removes at once, with no dialog, when confirmation is switched off", () => {
+  it("removes at once, with no dialogue, when confirmation is switched off", () => {
     useSettings.setState({ confirmRemovePhotos: false });
     expect(fire(document.body, bound("photo.remove"))).toBe(true);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -341,7 +410,7 @@ describe("culling shortcuts: removing from the catalog", () => {
 
   it("treats a bare Backspace as the same remove key", () => {
     expect(fire(document.body, "Backspace")).toBe(true);
-    screen.getByRole("dialog", { name: "Remove from catalog" });
+    screen.getByRole("dialog", { name: "Remove from catalogue" });
   });
 });
 
@@ -432,13 +501,39 @@ describe("culling shortcuts: focus and select-all", () => {
     expect(applyRating).toHaveBeenCalledWith(["a"], 3);
   });
 
-  it("still runs a modifier combo typed into a text field", () => {
-    render(<input aria-label="Caption" />);
-    expect(fire(screen.getByLabelText("Caption"), bound("photo.rotateCW"))).toBe(true);
-    expect(rotatePhotos).toHaveBeenCalledWith(["a"], 90);
+  it("still runs a Ctrl combo typed into a text field", () => {
+    setBinding("photo.rotateCW", "Ctrl+]");
+    try {
+      render(<input aria-label="Caption" />);
+      expect(fire(screen.getByLabelText("Caption"), "Ctrl+]")).toBe(true);
+      expect(rotatePhotos).toHaveBeenCalledWith(["a"], 90);
+    } finally {
+      resetBinding("photo.rotateCW");
+    }
   });
 
-  it("leaves every key to an extension's open native dialog", () => {
+  it("leaves an Alt combo to a text field, which types with it", () => {
+    render(<input aria-label="Caption" />);
+    expect(fire(screen.getByLabelText("Caption"), bound("photo.rotateCW"))).toBe(false);
+    expect(rotatePhotos).not.toHaveBeenCalled();
+  });
+
+  it("leaves Option+[ to a text field on a Mac, where it types a quote", () => {
+    Object.defineProperty(window, "safelightNative", { value: { platform: "darwin" }, configurable: true });
+    try {
+      render(<input aria-label="Caption" />);
+      const e = new KeyboardEvent("keydown", { key: "“", code: "BracketLeft", altKey: true, bubbles: true, cancelable: true });
+      act(() => {
+        screen.getByLabelText("Caption").dispatchEvent(e);
+      });
+      expect(e.defaultPrevented).toBe(false);
+      expect(rotatePhotos).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(window, "safelightNative");
+    }
+  });
+
+  it("leaves every key to an extension's open native dialogue", () => {
     render(
       <dialog open>
         <input aria-label="Coordinates" />
@@ -500,5 +595,96 @@ describe("culling shortcuts: shared listener across surfaces", () => {
     expect(cullingShortcutsMounted()).toBe(false);
     expect(fire(document.body, bound("rate.3"))).toBe(false);
     expect(applyRating).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("culling shortcuts: copy and paste settings", () => {
+  const clip = { params: { exposure: 1 }, paramBag: {}, sourceName: "a.NEF", fieldCount: 1 };
+  afterEach(() => useDevelopClipboard.getState().clear());
+
+  it("ships Ctrl/Cmd+Shift+C and +V as Library actions", () => {
+    expect(KEY_ACTIONS.find((a) => a.id === "photo.copySettings")).toMatchObject({
+      category: "Library",
+      def: "Ctrl+Shift+C",
+    });
+    expect(KEY_ACTIONS.find((a) => a.id === "photo.pasteSettings")).toMatchObject({
+      category: "Library",
+      def: "Ctrl+Shift+V",
+    });
+  });
+
+  it("copy asks the photo surface to open the checklist for the one selected photo", () => {
+    const seen = vi.fn();
+    window.addEventListener("sl-copy-settings", seen);
+    expect(fire(document.body, bound("photo.copySettings"))).toBe(true);
+    window.removeEventListener("sl-copy-settings", seen);
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect((seen.mock.calls[0][0] as CustomEvent<{ id: string }>).detail.id).toBe("a");
+  });
+
+  it("copy does nothing with several photos selected", () => {
+    seed([photo("a"), photo("b")], ["a", "b"], "a");
+    const seen = vi.fn();
+    window.addEventListener("sl-copy-settings", seen);
+    expect(fire(document.body, bound("photo.copySettings"))).toBe(false);
+    window.removeEventListener("sl-copy-settings", seen);
+    expect(seen).not.toHaveBeenCalled();
+  });
+
+  it("paste applies the clipboard to the whole selection", () => {
+    seed([photo("a"), photo("b")], ["a", "b"], "a");
+    useDevelopClipboard.getState().copy(clip);
+    expect(fire(document.body, bound("photo.pasteSettings"))).toBe(true);
+    expect(pasteSettingsSpy).toHaveBeenCalledWith(["a", "b"], clip);
+  });
+
+  it("paste does nothing while nothing is copied", () => {
+    expect(fire(document.body, bound("photo.pasteSettings"))).toBe(false);
+    expect(pasteSettingsSpy).not.toHaveBeenCalled();
+  });
+
+  describe("in a text field", () => {
+    beforeEach(() => {
+      useDevelopClipboard.getState().copy(clip);
+      render(<input aria-label="Keyword" />);
+    });
+
+    it("leaves Ctrl+Shift+V to the field's paste as plain text", () => {
+      expect(fire(screen.getByLabelText("Keyword"), bound("photo.pasteSettings"))).toBe(false);
+      expect(pasteSettingsSpy).not.toHaveBeenCalled();
+    });
+
+    it("leaves Cmd+Shift+V to the field on a Mac", () => {
+      Object.defineProperty(window, "safelightNative", { value: { platform: "darwin" }, configurable: true });
+      try {
+        const e = new KeyboardEvent("keydown", { key: "V", metaKey: true, shiftKey: true, bubbles: true, cancelable: true });
+        act(() => {
+          screen.getByLabelText("Keyword").dispatchEvent(e);
+        });
+        expect(e.defaultPrevented).toBe(false);
+        expect(pasteSettingsSpy).not.toHaveBeenCalled();
+      } finally {
+        Reflect.deleteProperty(window, "safelightNative");
+      }
+    });
+
+    it("leaves Ctrl+Shift+C to the field's copy", () => {
+      const seen = vi.fn();
+      window.addEventListener("sl-copy-settings", seen);
+      expect(fire(screen.getByLabelText("Keyword"), bound("photo.copySettings"))).toBe(false);
+      window.removeEventListener("sl-copy-settings", seen);
+      expect(seen).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("culling shortcuts: keyword focus", () => {
+  it("asks the keyword field to take focus through the named window event", () => {
+    const focus = vi.fn();
+    window.addEventListener(FOCUS_KEYWORD_INPUT_EVENT, focus);
+    expect(fire(document.body, bound("keyword.focus"))).toBe(true);
+    window.removeEventListener(FOCUS_KEYWORD_INPUT_EVENT, focus);
+    expect(FOCUS_KEYWORD_INPUT_EVENT).toBe("sl-focus-keyword-input");
+    expect(focus).toHaveBeenCalledTimes(1);
   });
 });

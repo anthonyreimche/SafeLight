@@ -5,15 +5,21 @@
 
 // The on-demand grid-preview queue: request order, dedup, the one-update-per-
 // frame flush, and the generation guard that keeps a previous project's reads
-// out of the newly opened catalog. The catalog store is the sink at the far end,
+// out of the newly opened catalogue. The catalogue store is the sink at the far end,
 // so it's stubbed; reads are driven through gated loaders so an "in flight"
 // moment is an actual point in the test, not a timing race.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const catalog = vi.hoisted(() => ({
-  mergeThumbnails: vi.fn<(updates: { id: string; blob: Blob }[]) => void>(),
+  mergeThumbnails: vi.fn<(updates: { id: string; blob: Blob }[]) => string[]>((updates) =>
+    updates.map((u) => u.id),
+  ),
   replaceThumbnail: vi.fn<(id: string, blob: Blob) => void>(),
+  dropThumbnails: vi.fn<(entries: { id: string; blob: Blob }[]) => string[]>((entries) =>
+    entries.map((e) => e.id),
+  ),
+  activePhotoId: null as string | null,
 }));
 
 vi.mock("./catalog-store", () => ({
@@ -86,6 +92,8 @@ beforeEach(() => {
   setThumbnailLoader(null);
   catalog.mergeThumbnails.mockClear();
   catalog.replaceThumbnail.mockClear();
+  catalog.dropThumbnails.mockClear();
+  catalog.activePhotoId = null;
 });
 
 afterEach(() => {
@@ -441,6 +449,65 @@ describe("project generation", () => {
 
     expect(fresh.calls).toEqual(["b"]);
     expect(mergedIds()).toEqual(["b"]);
+  });
+});
+
+describe("the cache of loaded previews", () => {
+  const released = (): string[] =>
+    catalog.dropThumbnails.mock.calls.flatMap(([entries]) => entries.map((e) => e.id));
+
+  async function readAll(ids: string[], opts: Parameters<typeof setThumbnailLoader>[1]) {
+    setThumbnailLoader(trackingLoader().loader, opts);
+    for (const id of ids) requestThumbnail(id);
+    await settle();
+    flushFrames();
+  }
+
+  it("holds on to every preview while it has room", async () => {
+    await readAll(["a", "b", "c"], { cacheLimit: 3 });
+
+    expect(catalog.dropThumbnails).not.toHaveBeenCalled();
+  });
+
+  it("releases the previews loaded longest ago once it is full, and says which", async () => {
+    const onEvict = vi.fn<(ids: string[]) => void>();
+    await readAll(["a", "b", "c", "d"], { cacheLimit: 2, onEvict });
+
+    expect(released()).toEqual(["a", "b"]);
+    expect(onEvict).toHaveBeenCalledWith(["a", "b"]);
+  });
+
+  it("counts only the previews the catalogue took", async () => {
+    catalog.mergeThumbnails.mockImplementationOnce((updates) =>
+      updates.filter((u) => u.id !== "a").map((u) => u.id),
+    );
+    await readAll(["a", "b"], { cacheLimit: 1 });
+
+    expect(catalog.dropThumbnails).not.toHaveBeenCalled();
+  });
+
+  it("counts a preview reloaded as freshly loaded", async () => {
+    await readAll(["a", "b"], { cacheLimit: 2 });
+    await reloadThumbnail("a");
+    requestThumbnail("c");
+    await settle();
+    flushFrames();
+
+    expect(released()).toEqual(["b"]);
+  });
+
+  it("keeps the photo open in Develop", async () => {
+    catalog.activePhotoId = "a";
+    await readAll(["a", "b", "c"], { cacheLimit: 2 });
+
+    expect(released()).toEqual(["b"]);
+  });
+
+  it("starts empty for each project", async () => {
+    await readAll(["a", "b"], { cacheLimit: 2 });
+    await readAll(["c", "d"], { cacheLimit: 2 });
+
+    expect(catalog.dropThumbnails).not.toHaveBeenCalled();
   });
 });
 

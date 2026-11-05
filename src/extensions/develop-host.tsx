@@ -52,6 +52,12 @@ export interface DevelopOverlayState {
   radiusToScreen: ((r: number) => number) | null;
   /** On-screen pixels -> source-UV radius (fraction of image height). */
   radiusToImage: ((px: number) => number) | null;
+  /** The region of the transformed image the frame shows (x, y, width,
+   *  height, 0 to 1 of the image): the crop, or crop mode's wider view. Null
+   *  until first layout. Needs Safelight 3.2.0. */
+  region: import("@/catalog/types").CropRect | null;
+  /** The decoded image's width over its height. Needs Safelight 3.2.0. */
+  imageAspect: number;
 }
 
 const DevelopOverlayContext = createContext<DevelopOverlayState>({
@@ -62,6 +68,8 @@ const DevelopOverlayContext = createContext<DevelopOverlayState>({
   toImage: null,
   radiusToScreen: null,
   radiusToImage: null,
+  region: null,
+  imageAspect: 1,
 });
 
 export const DevelopOverlayProvider = DevelopOverlayContext.Provider;
@@ -102,7 +110,7 @@ export function readDevelopSourceSample(): Promise<SourceSample | null> {
   return getRenderBridge().readSourceSample();
 }
 
-/** Render an arbitrary catalog photo by id through the full develop pipeline with
+/** Render an arbitrary catalogue photo by id through the full develop pipeline with
  *  `params` (and that photo's own extension-stage `paramBag`) to an ImageBitmap,
  *  off-screen. Unlike captureFrame this is NOT tied to the live Develop source,
  *  so it measures the requested photo even when another (or none) is open —

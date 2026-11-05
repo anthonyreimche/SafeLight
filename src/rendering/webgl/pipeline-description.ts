@@ -12,15 +12,14 @@
 // shaders.ts's text.
 
 import { DEFAULT_PIPELINE, type ResolvedPipeline } from "@/extensions/pipelines";
-import type { ProcessingPhase, ProcessingStageContribution, StageSpace } from "@/extensions/types";
+import type { ProcessingPhase, ProcessingStageContribution, StageAnchor, StageSpace } from "@/extensions/types";
 import { spaceKey, type StageDomain } from "../stage-space";
 import { BUILTIN_DENOISE_ID } from "./builtin-denoise";
-import { isBuiltInStage, isCoreStage } from "./builtin-stage";
+import { isBuiltInStage } from "./builtin-stage";
 import { isMaskInstance, isMaskableStage } from "./mask-stage-instances";
 import type { ShaderVariant } from "./shaders";
 import {
   buildStageInjection,
-  coreStageHelpers,
   phaseInfo,
   withoutComments,
   type InjectionGroup,
@@ -135,6 +134,9 @@ interface CoreClip {
 
 interface CoreBlock {
   readonly label: string;
+  /** The anchors right ahead of the block, whose stages are listed above it,
+   *  in order. A tool that left core has no block: its anchor joins the next. */
+  readonly anchors?: readonly StageAnchor[];
   /** The injection group whose stages run right after the block. */
   readonly stages?: InjectionGroup;
   /** The display transform, which the transform row follows. */
@@ -143,14 +145,6 @@ interface CoreBlock {
   readonly note?: (at: NoteContext) => string | undefined;
 }
 
-// A tool that opens with clampInput (shaders.ts): nothing upstream clips its
-// input from version 2 on, so it does, while in use.
-const CLAMPED_TOOL: readonly CoreClip[] = [
-  { where: "input", v1: null, v2: "while-active" },
-  { where: "result", v1: "while-active", v2: "while-active" },
-];
-// A tool version 1 runs for every pixel and version 2 only while in use.
-const ungated = (where: CoreClip["where"]): CoreClip => ({ where, v1: "always", v2: "while-active" });
 // Mask stage 2: clips inside a mask's coverage, on the versions given.
 const perMask = (where: CoreClip["where"], detail: string, on: "all" | "v1" | "v2" = "all"): CoreClip => ({
   where,
@@ -162,9 +156,12 @@ const perMask = (where: CoreClip["where"], detail: string, on: "all" | "v1" | "v
 /** The develop shader's own blocks, in main()'s order, with the clips each
  *  makes (pipeline-description.test.ts holds them to the shader's text). */
 export const CORE_BLOCKS: readonly CoreBlock[] = [
-  { label: "Crop & Straighten", stages: "srcUv" },
+  // The view mapped to the source through the geometry stage (Crop & Straighten's),
+  // then the geometry-phase stages.
+  { label: "Geometry", anchors: ["geometry"], stages: "srcUv" },
   {
     label: "Heal",
+    anchors: ["retouch"],
     // The patched copy is stored as developedFormatFor decides: only float16
     // keeps values outside [0, 1], and version 1 never takes it.
     clips: [
@@ -202,50 +199,31 @@ export const CORE_BLOCKS: readonly CoreBlock[] = [
         ? "Then a RAW's baseline is refit to the camera curve and given the camera maker's exposure offset"
         : undefined,
   },
-  { label: "White Balance" },
-  { label: "Exposure, Highlights, Shadows & tone shoulder" },
-  { label: "Masking (scene values)", stages: "sceneLinear" },
+  { label: "Masking (scene values)", anchors: ["white-balance", "tone", "masks"], stages: "sceneLinear" },
   {
     label: "Display transform",
     transform: true,
-    clips: [{ where: "result", v1: "always", v2: null, detail: "Clipped to [0, 1] after the transform" }],
+    clips: [
+      { where: "result", v1: "always", v2: null, detail: "Clipped to [0, 1] after the transform" },
+      // After the display tools, which have no core block now that they left
+      // core. Nothing produces a fallback preview, so version 3 drops it.
+      {
+        where: "result",
+        v1: "fallback-preview",
+        v2: "fallback-preview",
+        v3: null,
+        detail: "A fallback preview, which has no headroom above 1, is clipped to [0, 1] after the display tools",
+      },
+    ],
     // slPathToWhite, which version 2 runs wherever the shoulder does.
     note: ({ variant, pipeline }) =>
       variant.fullInfo && toneShoulderOn(variant, pipeline.skipToneShoulder)
         ? "Rolls the strongest channel off into white first"
         : undefined,
   },
-  { label: "Whites", clips: CLAMPED_TOOL },
-  { label: "Blacks", clips: CLAMPED_TOOL },
-  { label: "Contrast", clips: CLAMPED_TOOL },
-  { label: "Tone Curve", clips: [ungated("input")] },
-  { label: "HSL", clips: [{ where: "input", v1: null, v2: "while-active" }, ungated("result")] },
-  { label: "Dehaze", clips: CLAMPED_TOOL },
-  { label: "Clarity" },
-  { label: "Texture" },
-  { label: "Highlight Detail & Shadow Detail", clips: [{ where: "result", v1: "always", v2: null }] },
-  {
-    label: "Vibrance & Saturation",
-    // Version 1 calls it for every pixel, but it clips its result only for a
-    // saturation or vibrance it applies.
-    clips: [ungated("input"), { where: "result", v1: "while-active", v2: "while-active" }],
-  },
-  { label: "Color Grading", clips: [{ where: "input", v1: null, v2: "while-active" }, ungated("result")] },
-  {
-    label: "Sharpening",
-    clips: [
-      {
-        where: "result",
-        v1: "fallback-preview",
-        v2: "fallback-preview",
-        // Nothing produces a fallback preview, so version 3's program drops it.
-        v3: null,
-        detail: "A fallback preview, which has no headroom above 1, is clipped to [0, 1] here",
-      },
-    ],
-  },
   {
     label: "Masking (display values)",
+    anchors: ["display-basic", "tone-curve", "hsl", "presence", "band-detail", "vibrance", "color-grading", "sharpen"],
     stages: "effects",
     clips: [
       perMask("input", "Each mask with display adjustments clips the values coming in to [0, 1]", "v2"),
@@ -312,10 +290,7 @@ function builtinStageClips(stageId: string): PipelineRow[] {
   return [{ kind: "clamp", reason: "builtin-stage", stageId, where: "result", when: "while-active", detail }];
 }
 
-function stageRow(s: Stage, variant: ShaderVariant, readsCurrent: boolean): StageRow {
-  // Scanned as compiled: version 2 drops the clamp closing the core Vignette
-  // and Grain helpers.
-  const compiled = isCoreStage(s) && s.helpers ? { ...s, helpers: coreStageHelpers(s.helpers, variant) } : s;
+function stageRow(s: Stage, readsCurrent: boolean): StageRow {
   return {
     kind: "stage",
     id: s.id,
@@ -327,7 +302,7 @@ function stageRow(s: Stage, variant: ShaderVariant, readsCurrent: boolean): Stag
     domain: phaseInfo(s.phase).domain,
     reads: readsCurrent ? "current" : "source",
     maskable: isMaskableStage(s),
-    floors: findFloors(compiled),
+    floors: findFloors(s),
   };
 }
 
@@ -443,7 +418,7 @@ export function describePipeline(
     };
     let ahead: PipelineRow[] = [];
     for (const step of steps) {
-      if (step.group !== group) continue;
+      if (step.group !== group || (step.kind === "stage" && step.anchor)) continue;
       const owner = step.kind === "convert" ? undefined : byId.get(step.stageId);
       const copy = owner && isMaskInstance(owner) ? copiesOf(owner.instanceOf) : undefined;
       if (step.kind !== "stage") {
@@ -453,7 +428,7 @@ export function describePipeline(
         copy.folded.push(...ahead);
         ahead = [];
       } else if (owner) {
-        rows.push(...ahead, stageRow(owner, variant, readers.has(owner.id)), ...builtinStageClips(owner.id));
+        rows.push(...ahead, stageRow(owner, readers.has(owner.id)), ...builtinStageClips(owner.id));
         ahead = [];
       }
     }
@@ -470,6 +445,12 @@ export function describePipeline(
   const at: NoteContext = { variant, pipeline, replacedNR };
   const rows: PipelineRow[] = [];
   for (const block of CORE_BLOCKS) {
+    for (const anchor of block.anchors ?? []) {
+      for (const step of steps) {
+        const owner = step.kind === "stage" && step.anchor === anchor ? byId.get(step.stageId) : undefined;
+        if (owner) rows.push(stageRow(owner, false));
+      }
+    }
     const note = block.note?.(at);
     rows.push({ kind: "core", label: block.label, ...(note ? { note } : {}) });
     if (block.transform) rows.push(transformRow(variant, pipeline));

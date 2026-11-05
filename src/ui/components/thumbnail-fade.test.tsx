@@ -19,6 +19,7 @@ const loader = vi.hoisted(() => ({
 
 vi.mock("@/state/thumbnail-loader", () => loader);
 
+import { revokePreviewUrl } from "@/state/preview-urls";
 import { Thumbnail } from "./Thumbnail";
 
 function photo(over: Partial<CatalogPhoto> = {}): CatalogPhoto {
@@ -111,6 +112,18 @@ describe("Thumbnail fade-in", () => {
     expect(imgOf(container).style.opacity).toBe("1");
   });
 
+  it("fades a preview in again once its URL was revoked, as a new one may reuse nothing", () => {
+    Object.assign(URL, { revokeObjectURL: vi.fn() });
+    const first = render(cell(photo({ thumbnailUrl: "blob:fade-revoked" })));
+    fireEvent.load(imgOf(first.container));
+    first.unmount();
+
+    revokePreviewUrl("blob:fade-revoked");
+
+    const second = render(cell(photo({ thumbnailUrl: "blob:fade-revoked" })));
+    expect(imgOf(second.container).style.opacity).toBe("0");
+  });
+
   it("keeps a rejected photo dimmed after a remount", () => {
     const rejected = photo({ thumbnailUrl: "blob:fade-reject", flag: "reject" });
     const first = render(cell(rejected));
@@ -154,5 +167,29 @@ describe("Thumbnail preview request", () => {
     render(cell(photo({ id: "far" })));
     intersect?.([{ isIntersecting: false }]);
     expect(loader.requestThumbnail).not.toHaveBeenCalled();
+  });
+});
+
+describe("Thumbnail decode failure", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows the reason on the tile, with the full reason in the tooltip", () => {
+    const { container, getByText } = render(
+      cell(photo({ decodeError: "Unsupported camera model" })),
+    );
+    expect(getByText("Unsupported camera model")).toBeTruthy();
+    expect(container.querySelector("[title]")?.getAttribute("title")).toBe(
+      "p1.NEF: Unsupported camera model",
+    );
   });
 });

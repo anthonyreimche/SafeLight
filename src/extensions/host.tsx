@@ -8,9 +8,14 @@
 // the first render.
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { create } from "zustand";
 import type { SafelightAPI } from "./types";
 import {
+  collectPresetStages,
+  describePresetBag,
+  usePresetImporters,
+  useRegistry,
   registerCatalogHooks,
   registerExportProcessor,
   registerFilenameTemplate,
@@ -25,6 +30,7 @@ import {
   registerPresetImporter,
   registerProcessingStage,
   unregisterProcessingStage,
+  mayWriteStageTexture,
   registerSettings,
   registerSlot,
   unregisterSlot,
@@ -39,9 +45,10 @@ import {
   effectivePipelineId,
   initPipelines,
   transformParamKeys,
+  transformPresetField,
   usePipelineStore,
 } from "./pipelines";
-import { setStageTexture } from "@/rendering/render-bridge";
+import { getRenderBridge, setStageTexture } from "@/rendering/render-bridge";
 import {
   getExtSetting,
   initExtSettings,
@@ -60,11 +67,15 @@ import {
   initDockLayouts,
   toggleDockPanel,
   useDockPlacement,
+  useDockStore,
   useLayoutStore,
 } from "./dock";
 import { useVisiblePhotos } from "@/modules/library/photo-navigation";
 import { usePhotoActions } from "@/modules/library/photo-actions";
-import { useCullingShortcuts } from "@/modules/library/use-culling-shortcuts";
+import {
+  FOCUS_KEYWORD_INPUT_EVENT,
+  useCullingShortcuts,
+} from "@/modules/library/use-culling-shortcuts";
 import { LibraryListRow } from "@/modules/library/LibraryListRow";
 import { applyTheme, initThemes, useThemeStore } from "./themes";
 import {
@@ -75,14 +86,54 @@ import {
   renderDevelopPhotoFrame,
   useDevelopOverlay,
 } from "./develop-host";
-import { useMaskScope, useParamScope } from "@/modules/develop/mask-scope";
+import { MaskScopeProvider, useMaskScope, useParamScope } from "@/modules/develop/mask-scope";
+import { showMaskCoverage } from "@/modules/develop/mask-coverage-view";
+import { useMaskPanels } from "@/modules/develop/mask-panels";
 import {
+  exportPhotos,
   getDefaultExportSettings,
+  proPhotoAt8Bit,
   renderPhotosToBlobs,
 } from "@/modules/export/export-image";
 import { getPhotoData, putPhotoData } from "@/state/photo-blob-store";
 import { requestThumbnail } from "@/state/thumbnail-loader";
-import { renamePhoto } from "@/project/folder-ops";
+import {
+  createFolder,
+  deleteFolder,
+  exportPhotoData,
+  moveFolder,
+  movePhotos,
+  renameFolder,
+  renamePhoto,
+} from "@/project/folder-ops";
+import { nativePathOf, pickDirectoryHandle, revealNativePath } from "@/project/native-fs";
+import { useProjectStore } from "@/project/project-store";
+import { isEditState } from "@/project/edit-files";
+import { settleSelectedPhoto } from "@/modules/library/import-photos";
+import { exportPreset, importPresetFile, pickPresetFile, presetPickerAccept } from "@/modules/develop/preset-io";
+import { presetFields, summarizePreset } from "@/modules/develop/preset-summary";
+import { loadSavedEdit } from "@/catalog/edit-params";
+import { normalizeParams, usesOlderProcessing } from "@/catalog/types";
+import { renderPhotoHistogram } from "@/rendering/thumbnail-renderer";
+import { onBroadcast } from "@/state/broadcast";
+import {
+  activateAccessibility,
+  deactivateAccessibility,
+  useKeyboardCanvasEditing,
+  restoreAccessibility,
+  settleAccessibility,
+} from "@/state/accessibility";
+import { useTitleBarOverlay } from "@/ui/window-chrome";
+import { readAppVersion, readWebGLInfo } from "@/diagnostics/environment";
+import { initDevFolder, teardownDevFolder } from "./devtools/dev-folder";
+import { DevFolderControls } from "./devtools/DevFolderControls";
+import {
+  PIPELINE_VERSIONS,
+  useOpenProcessVersion,
+  usePipelineRows,
+  usePipelineScreen,
+} from "./pipeline-inspect";
+import { useExtStoreUI } from "./store-ui";
 import {
   contributionToSpec,
   registerCursor,
@@ -105,6 +156,11 @@ import {
   loadExternalPlugins,
 } from "./loader";
 import { initPinSync } from "./pins";
+import { provideScopedAPI } from "./instance";
+import { trackSubscription } from "./guard";
+import { ensureCoreModules, startEssentialsMigration } from "./essentials-migration";
+import { DEVTOOLS_EXTENSION_ID } from "./official-extensions";
+import { windowRole } from "@/diagnostics/environment";
 import { initVariables, variableRegistry } from "./variables-host";
 import { Panel } from "@/ui/components/Panel";
 import { Slider } from "@/ui/components/Slider";
@@ -112,19 +168,85 @@ import { Histogram } from "@/ui/components/Histogram";
 import { CurveEditor } from "@/ui/components/CurveEditor";
 import { Rating } from "@/ui/components/Rating";
 import { Thumbnail } from "@/ui/components/Thumbnail";
-import { useDevelopStore } from "@/state/develop-store";
+import { ContextMenu } from "@/ui/components/ContextMenu";
+import { ScaleStepper } from "@/ui/components/ScaleStepper";
+import { ResolutionControl } from "@/modules/export/ResolutionControl";
+import { alertDialog, confirmDialog } from "@/ui/components/ConfirmDialog";
+import { VirtualGrid } from "@/ui/components/VirtualGrid";
+import { ZoomControls } from "@/ui/ZoomControls";
+import { SurroundControl } from "@/ui/SurroundControl";
+import { DisplayTransformControl } from "@/ui/DisplayTransformControl";
+import { ProcessingUpdateControl } from "@/modules/develop/ProcessingUpdateControl";
+import { DevelopStage } from "@/modules/develop/DevelopStage";
+import { AssessmentToggle, ProofToggle } from "@/modules/develop/view-toggles";
+import { setPickDrag, usePickDragStore } from "@/modules/develop/pick-drag";
+import { setCanvasTool, useCanvasToolStore } from "@/modules/develop/canvas-tool";
+import { onSourcePixels, sourcePixels } from "@/rendering/source-pixels";
+import { probeCanvas } from "@/modules/develop/canvas-probe";
+import { autoAdjust } from "@/hooks/use-auto-adjust";
+import { PickerIcon } from "@/ui/components/PickerIcon";
+import { AutoButton } from "@/ui/components/AutoButton";
+import { Slot } from "./Slot";
+import { useActivePhoto } from "@/state/use-active-photo";
+import { photoDisplayName } from "@/catalog/copy-name";
+import { openExtensions } from "@/ui/components/extensions-dialog-store";
+import { openingAnotherPhoto, useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
 import { catalogStorage } from "@/catalog/storage";
-import { useUIStore } from "@/state/ui-store";
+import { GRID_SIZE_MAX, GRID_SIZE_MIN, GRID_SIZE_STEP, useUIStore } from "@/state/ui-store";
 import { goToModule } from "@/state/detach";
-import { initSettings, useSettings } from "@/state/settings-store";
+import { initSettings, updateSettings, useSettings } from "@/state/settings-store";
 import { initDisplayProfile } from "@/rendering/display-profile-store";
 import { initPresets, usePresetsStore } from "@/state/presets-store";
 import {
   openPreferences,
   closePreferences,
   togglePreferences,
-} from "@/ui/components/PreferencesDialog";
+} from "@/ui/preferences/preferences-store";
+import {
+  Field,
+  OptionRow,
+  ToggleField,
+  useFieldVisible,
+} from "@/ui/preferences/fields";
+
+type DevtoolsAPI = NonNullable<SafelightAPI["devtools"]>;
+
+function nativeDetails(): DevtoolsAPI["native"] {
+  const native = window.safelightNative;
+  if (!native) return undefined;
+  return {
+    platform: native.platform,
+    versions: native.versions,
+    gpuInfo: native.diagnostics?.gpuInfo,
+    metrics: native.diagnostics?.metrics,
+  };
+}
+
+/** Handed to Developer Tools only. window.safelight is the "host" API every
+ *  extension can reach, so the host goes without it too. */
+function devtoolsAPI(): DevtoolsAPI {
+  const variables = variableRegistry();
+  return {
+    devFolder: { init: initDevFolder, teardown: teardownDevFolder, Controls: DevFolderControls },
+    pipeline: {
+      versions: PIPELINE_VERSIONS,
+      useOpenVersion: useOpenProcessVersion,
+      useRows: usePipelineRows,
+      useScreen: usePipelineScreen,
+    },
+    variables: {
+      inspect: variables.inspect,
+      subscribeChanges: variables.subscribeChanges,
+      changeCount: variables.changeCount,
+      windowName: variables.windowName,
+    },
+    webglInfo: readWebGLInfo,
+    appVersion: readAppVersion,
+    electron: window.safelightNative?.devtools,
+    native: nativeDetails(),
+  };
+}
 
 /** Every register* call made through a scoped API is tagged with the
  *  extension's id, so uninstalling can sweep all of its contributions. */
@@ -141,7 +263,10 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     registerPipeline: (c) => registerPipeline(extensionId, c),
     registerProcessingStage: (c) => registerProcessingStage(extensionId, c),
     unregisterProcessingStage: (id) => unregisterProcessingStage(extensionId, id),
-    setStageTexture: (stageId, key, tex) => setStageTexture(`${stageId}.${key}`, tex),
+    setStageTexture: (stageId, key, tex) => {
+      const qualifiedKey = `${stageId}.${key}`;
+      if (mayWriteStageTexture(extensionId, qualifiedKey, tex === null)) setStageTexture(qualifiedKey, tex);
+    },
     registerKeybinding: (c) => registerExtensionAction(extensionId, c),
     registerSettings: (c) => registerSettings(extensionId, c),
     registerExportProcessor: (c) => registerExportProcessor(extensionId, c),
@@ -161,7 +286,10 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
     settings: {
       get: (key, fallback) => getExtSetting(extensionId, key, fallback),
       set: (key, value) => setExtSetting(extensionId, key, value),
-      onChange: (cb) => onExtSettingChange(extensionId, cb),
+      onChange: trackSubscription(
+        extensionId,
+        (cb: (key: string, value: unknown) => void) => onExtSettingChange(extensionId, cb),
+      ),
     },
     components: {
       Panel,
@@ -171,8 +299,24 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       Rating,
       Thumbnail,
       PhotoListRow: LibraryListRow,
+      ContextMenu,
+      ScaleStepper,
+      ResolutionControl,
+      Slot,
+      MaskScope: MaskScopeProvider,
+      VirtualGrid,
+      DevelopCanvas: DevelopStage,
+      ZoomControls,
+      SurroundControl,
+      DisplayTransformControl,
+      ProcessingUpdateControl,
+      ProofToggle,
+      AssessmentToggle,
+      PickerIcon,
+      AutoButton,
     },
-    ui: uiKit,
+    ui: { ...uiKit, confirmDialog, alertDialog },
+    reactDom: { createPortal },
     stores: {
       useDevelopStore,
       useCatalogStore,
@@ -183,18 +327,30 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       useThemeStore,
       useLayoutStore,
       usePipelineStore,
+      useProjectStore,
       /** For plugins that need their own state. */
       create,
     },
+    registry: { use: (selector) => useRegistry(selector) },
+    appSettings: { update: updateSettings },
     params: {
       list: () => Array.from(getAllDescriptors().values()),
       get: (qualifiedKey) => getParamDescriptor(qualifiedKey),
     },
-    dock: { togglePanel: toggleDockPanel, usePanelPlacement: useDockPlacement },
+    dock: {
+      togglePanel: toggleDockPanel,
+      usePanelPlacement: useDockPlacement,
+      isPanelOpen: (id) => useDockStore.getState().open.includes(id),
+    },
     themes: { apply: applyTheme },
     layouts: { apply: applyDockLayout },
     pipelines: { apply: applyPipeline, effectiveId: effectivePipelineId, paramKeys: transformParamKeys },
-    preferences: { open: openPreferences, close: closePreferences, toggle: togglePreferences },
+    preferences: {
+      open: openPreferences,
+      close: closePreferences,
+      toggle: togglePreferences,
+      fields: { Field, ToggleField, OptionRow, useFieldVisible },
+    },
     navigation: { goTo: goToModule },
     keybindings: { getBinding, list: () => listBindings() },
     cursors: { labels: CURSOR_LABELS, resolve: (token) => resolveCursorCss(token) },
@@ -216,12 +372,26 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
           opts,
         ),
       putPhotoData: (key, data) => putPhotoData(`${extensionId}.${key}`, data),
+      setPickDrag: (tool) => setPickDrag(extensionId, tool),
+      usePickDragHeld: () => usePickDragStore((s) => s.held?.owner === extensionId),
+      setCanvasTool: (tool) => setCanvasTool(extensionId, tool),
+      readDevelopedPixels: (edge) => getRenderBridge().readDevelopedPixels(edge),
+      sourcePixels,
+      onSourcePixels: trackSubscription(extensionId, onSourcePixels),
+      useCanvasToolHeld: () => useCanvasToolStore((s) => s.held?.owner === extensionId),
+      probe: probeCanvas,
+      probeMaskColour: (u, v) => getRenderBridge().probe(u, v, "mask"),
+      showMaskCoverage,
+      useMaskPanels,
+      useOlderProcessing: () => useDevelopStore((s) => usesOlderProcessing(s.params)),
+      autoAdjust,
       getPhotoData: (key) => getPhotoData(`${extensionId}.${key}`),
       adjustments: {
         list: () => listAdjustments(),
         get: getAdjustment,
         set: setAdjustment,
       },
+      normalizeParams,
     },
     export: {
       getDefaultSettings: () => getDefaultExportSettings(),
@@ -237,6 +407,8 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
           onProgress,
           options,
         ),
+      exportPhotos,
+      proPhotoAt8Bit,
     },
     catalog: {
       addPhotos: (photos, opts) =>
@@ -246,13 +418,18 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
           .getEditState(photoId)
           .then((e) => e ?? null),
       putEditState: async (editState) => {
+        if (!isEditState(editState))
+          throw new Error(
+            "putEditState: not a valid edit state; it needs a photoId, a currentIndex and a stack of snapshots that are objects",
+          );
         const stored = catalogStorage().putEditState(editState);
         // Develop's next commit writes back the history it holds, which would drop
-        // this edit, so the photo open there reloads from the catalog. The storage
+        // this edit, so the photo open there reloads from the catalogue. The storage
         // holds the edit once the call returns, so that is now, not after the save.
         const develop = useDevelopStore.getState();
         const reloaded =
           develop.photoId === editState.photoId &&
+          !openingAnotherPhoto() &&
           develop.loadEdit(editState.photoId, develop.asShotTemperature);
         await Promise.all([stored, reloaded]);
       },
@@ -261,18 +438,71 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       usePhotoActions,
       useCullingShortcuts,
       requestThumbnail,
+      readPreview: async (photoId) =>
+        (await catalogStorage().readPreview?.(photoId, { hold: false })) ?? null,
+      settleSelectedPhoto,
+      renderHistogram: async (photo) => {
+        const { params, paramBag } = await loadSavedEdit(photo.id, photo.exif.colorTemperature);
+        return renderPhotoHistogram(photo, params, paramBag);
+      },
+      useActivePhoto,
+      photoDisplayName,
+      exportPhotoData,
+      gridSize: { min: GRID_SIZE_MIN, max: GRID_SIZE_MAX, step: GRID_SIZE_STEP },
     },
+    events: { onBroadcast: trackSubscription(extensionId, onBroadcast), FOCUS_KEYWORD_INPUT: FOCUS_KEYWORD_INPUT_EVENT },
+    project: {
+      createFolder,
+      renameFolder,
+      moveFolder,
+      movePhotos,
+      deleteFolder,
+      pickDirectory: pickDirectoryHandle,
+      pathOf: nativePathOf,
+      reveal: revealNativePath,
+    },
+    presets: {
+      useImporters: usePresetImporters,
+      describeBag: describePresetBag,
+      summarize: summarizePreset,
+      fields: (params, paramBag) =>
+        presetFields(
+          params,
+          collectPresetStages(paramBag),
+          transformPresetField(params.displayTransform, paramBag),
+        ),
+      exportFile: exportPreset,
+      importFile: importPresetFile,
+      pickFile: pickPresetFile,
+      pickerAccept: presetPickerAccept,
+    },
+    extensions: {
+      openStore: (category) => {
+        if (category) useExtStoreUI.getState().openCategory(category);
+        openExtensions();
+      },
+    },
+    accessibility: { activate: activateAccessibility, deactivate: deactivateAccessibility, useKeyboardCanvasEditing },
+    titleBar: { useOverlay: useTitleBarOverlay },
+    devtools: extensionId === DEVTOOLS_EXTENSION_ID ? devtoolsAPI() : undefined,
     variables: variableRegistry().scoped(extensionId),
   };
 }
 
 let booted = false;
 
+provideScopedAPI(makeScopedAPI);
+
 export function initExtensionHost(): void {
   if (booted) return;
   booted = true;
   initVariables(); // before any extension registers, and before window.safelight below
+  // Before anything reads the state it renames from the old built-in ids.
+  const essentials = windowRole() === "main" ? startEssentialsMigration() : [];
   loadBuiltins(); // pre-installed extensions, minus any the user disabled
+  // Before initThemes, as the built-in Accessibility extension did: the
+  // installed one activates only after the theme is on screen.
+  restoreAccessibility();
   window.safelight = makeScopedAPI("host");
   initSettings();
   initDisplayProfile();
@@ -283,14 +513,15 @@ export function initExtensionHost(): void {
   initPinSync();
   initThemes();
   initStylesheets();
-  // Accessibility overlays are owned by the `core.accessibility` built-in
-  // extension (activated in loadBuiltins above when enabled); its theme
-  // subscription re-layers high-contrast after initThemes applies the theme.
   initPipelines();
   initDockLayouts();
   // Load external plugins, then quietly check them for updates (and auto-update
   // if the user opted in). The check is gated on a setting and rate-limited.
-  void loadExternalPlugins().then(() => void checkAllExtensionUpdates());
+  void loadExternalPlugins().then(() => {
+    settleAccessibility();
+    if (windowRole() === "main") void ensureCoreModules(essentials);
+    void checkAllExtensionUpdates();
+  });
   // Re-discover periodically so a version bumped while the app is left open is
   // noticed without a restart (force past the per-extension TTL).
   setInterval(() => void checkAllExtensionUpdates(true), EXT_UPDATE_POLL_MS);

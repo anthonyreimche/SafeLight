@@ -32,8 +32,8 @@ vi.mock("@/catalog/exif", () => ({
   parseExifDate: () => undefined,
 }));
 
-vi.mock("./raw-preview", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./raw-preview")>()),
+vi.mock("@/raw/raw-preview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/raw/raw-preview")>()),
   extractRawPreview: async () => null,
   extractRawPreviewDecoded: async () => null,
 }));
@@ -67,7 +67,7 @@ import {
   warmDecodePool,
 } from "@/raw/decode-pool";
 import type { Instance } from "@/raw/decode-pool.test-support";
-import { rawPhoto } from "./raw-photo.test-support";
+import { rawPhoto } from "@/raw/raw-photo.test-support";
 
 /** Lets every chain already under way run as far as it can. */
 const settle = async (): Promise<void> => {

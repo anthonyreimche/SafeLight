@@ -6,7 +6,7 @@
 // A commit that changes nothing must leave the history alone: a stray click
 // after an undo would otherwise add a duplicate step and throw away the redo
 // steps. The renderer broadcast and the grid-thumbnail regen are stubbed;
-// persistence runs against the in-memory catalog storage.
+// persistence runs against the in-memory catalogue storage.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 

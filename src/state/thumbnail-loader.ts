@@ -8,22 +8,42 @@
 // idle pass fills the rest. A small window of reads runs concurrently — async
 // fs IPC handlers overlap in the main process (libuv pool), so a few in-flight
 // reads hide per-read round-trip latency without flooding it. Loaded blobs are
-// flushed to the catalog store in one batched update per frame to avoid a
-// render storm.
+// flushed to the catalogue store in one batched update per frame to avoid a
+// render storm. The previews it loaded are capped (see CACHE_LIMIT): the oldest
+// are released and read again if their cell returns.
 
 import { useCatalogStore } from "./catalog-store";
+import type { LoadedPreview } from "@/catalog/types";
 
-/** A grid preview as a loader returns it, with the edit it shows. `previewEdit` is
- *  the edit its record named when it was read from the stored copy; one without it,
- *  such as a preview built from the photo's source file, shows none. It rides on
- *  the Blob because the project's reader also hands its result on as a plain Blob. */
-export type LoadedPreview = Blob & { readonly previewEdit?: string };
+export type { LoadedPreview };
 
 type Loader = (id: string) => Promise<LoadedPreview | null>;
 
 const CONCURRENCY = 3;
 
+/** How many photos the idle prefill reads past the cells on screen. A bigger
+ *  catalogue's other cells read their preview as they scroll into view. */
+export const THUMBNAIL_PREFILL_LIMIT = 2000;
+
+/** How many loaded previews stay in memory. Past it the ones loaded longest ago go
+ *  (their cells read them again on return), so a 50k-photo project holds a few
+ *  thousand 768 px previews rather than all of them. Above the prefill, so the
+ *  prefill never releases what it just read. */
+const CACHE_LIMIT = 3000;
+
+interface LoaderOptions {
+  /** Previews kept in memory; the default is for a project's normal open. */
+  cacheLimit?: number;
+  /** Told which photos' previews were released, for state kept beside them. */
+  onEvict?: (ids: string[]) => void;
+}
+
 let loader: Loader | null = null;
+let cacheLimit = CACHE_LIMIT;
+let onEvict: LoaderOptions["onEvict"];
+// Previews this loader put in the catalogue, oldest first: a read or reload moves
+// its photo to the end. The blob names which preview is ours to release.
+const resident = new Map<string, LoadedPreview>();
 let gen = 0;
 // The idle prefill can hold a whole project (tens of thousands of ids), so it is
 // consumed through a head index: no shift/splice/indexOf on this array. An id
@@ -51,8 +71,11 @@ const readAgain = new Set<string>();
 /** Install the preview reader for the just-opened project, clearing any queue
  *  left from a previous folder. Returns a generation token callers can check to
  *  abort a stale background pass after a newer open. */
-export function setThumbnailLoader(l: Loader | null): number {
+export function setThumbnailLoader(l: Loader | null, opts?: LoaderOptions): number {
   loader = l;
+  cacheLimit = opts?.cacheLimit ?? CACHE_LIMIT;
+  onEvict = opts?.onEvict;
+  resident.clear();
   queue.length = 0;
   head = 0;
   queued.clear();
@@ -63,6 +86,7 @@ export function setThumbnailLoader(l: Loader | null): number {
   // project re-request the same id without being deduped against a stale read.
   inFlight.clear();
   pending = [];
+  flushScheduled = false;
   for (const settled of replacing.values()) for (const settle of settled) settle();
   replacing.clear();
   readAgain.clear();
@@ -134,6 +158,26 @@ export function reloadThumbnail(id: string): Promise<void> {
   });
 }
 
+/** Note that `id` now shows `blob`, and release the previews loaded longest ago
+ *  once more than the cache holds. The photo open in Develop is kept. */
+function remember(entries: { id: string; blob: LoadedPreview }[]): void {
+  for (const { id, blob } of entries) {
+    resident.delete(id);
+    resident.set(id, blob);
+  }
+  const excess = resident.size - cacheLimit;
+  if (excess <= 0) return;
+  const kept = useCatalogStore.getState().activePhotoId;
+  const released: { id: string; blob: LoadedPreview }[] = [];
+  for (const [id, blob] of resident) {
+    if (released.length === excess) break;
+    if (id !== kept) released.push({ id, blob });
+  }
+  for (const { id } of released) resident.delete(id);
+  const dropped = useCatalogStore.getState().dropThumbnails(released);
+  if (dropped.length > 0) onEvict?.(dropped);
+}
+
 function scheduleFlush(): void {
   if (flushScheduled) return;
   flushScheduled = true;
@@ -141,7 +185,9 @@ function scheduleFlush(): void {
     flushScheduled = false;
     const batch = pending;
     pending = [];
-    if (batch.length) useCatalogStore.getState().mergeThumbnails(batch);
+    if (batch.length === 0) return;
+    const taken = new Set(useCatalogStore.getState().mergeThumbnails(batch));
+    remember(batch.filter((entry) => taken.has(entry.id)));
   });
 }
 
@@ -163,10 +209,11 @@ function pump(): void {
         blob = null;
       }
       // A newer open may have swapped the project during the read; its blob must
-      // not merge into the new catalog under this id.
+      // not merge into the new catalogue under this id.
       if (!blob || gen !== myGen) return;
       if (reloads) {
         useCatalogStore.getState().replaceThumbnail(id, blob);
+        remember([{ id, blob }]);
         return;
       }
       pending.push({ id, blob });

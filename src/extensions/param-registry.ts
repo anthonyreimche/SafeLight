@@ -97,7 +97,7 @@ function valueMatchesType(value: unknown, type: GlslType): boolean {
   }
 }
 
-/** Sanitise a persisted/preset param bag before it drives the GPU. For keys with
+/** Sanitize a persisted/preset param bag before it drives the GPU. For keys with
  *  a registered descriptor we keep only type-valid values (a wrong type falls
  *  back to the uniform's default at bind time, so it's simply omitted here).
  *  Keys with NO descriptor are preserved untouched: an extension may be

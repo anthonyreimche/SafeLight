@@ -4,7 +4,7 @@
 // be preserved in derived versions.
 
 // Copy Settings fills a clipboard that Paste fans out over whole selections, so
-// what the dialog hands back has to be exactly the ticked rows — no more. The
+// what the dialogue hands back has to be exactly the ticked rows — no more. The
 // per-image rows (framing, heal spots) are the ones that would do damage if they
 // rode along uninvited.
 
@@ -170,7 +170,7 @@ describe("dismissing", () => {
   });
 
   it("cancels on a click outside the card but not inside it", async () => {
-    // The backdrop is the dialog's own root element; only a click that lands on
+    // The backdrop is the dialogue's own root element; only a click that lands on
     // it (rather than bubbling from the card) dismisses.
     const { user, container, onCancel } = setup({ exposure: 1.2 });
     await user.click(box(/^Exposure/));
@@ -178,6 +178,48 @@ describe("dismissing", () => {
 
     await user.click(container.firstElementChild as HTMLElement);
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels on Escape, also after a checkbox took focus", async () => {
+    const { user, onCancel, onCopy } = setup({ exposure: 1.2 });
+    await user.click(box(/^Exposure/));
+    await user.keyboard("{Escape}");
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onCopy).not.toHaveBeenCalled();
+  });
+});
+
+describe("as a modal", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("is a named modal dialogue that takes focus on open", () => {
+    setup({ exposure: 1.2 });
+    const dialog = screen.getByRole("dialog", { name: "Copy settings" });
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it("keeps Tab inside the dialogue", async () => {
+    vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([
+      {} as DOMRect,
+    ] as unknown as DOMRectList);
+    const { user, copy } = setup({ exposure: 1.2 });
+    copy.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(box(/^Show all/));
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(copy);
+  });
+
+  it("hands focus back to the trigger when it closes", () => {
+    const trigger = document.createElement("button");
+    document.body.append(trigger);
+    trigger.focus();
+    const { unmount } = setup({ exposure: 1.2 });
+    expect(document.activeElement).not.toBe(trigger);
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
   });
 });
 

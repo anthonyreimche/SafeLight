@@ -46,6 +46,7 @@ vi.mock("./decode-pool", () => {
       h.background.push(priority?.background);
       return instance;
     },
+    decodePoolFailure: () => undefined,
     releaseInstance: (inst: unknown) => {
       h.released.push(inst);
     },
@@ -209,6 +210,39 @@ describe("extractRawMetadata", () => {
     expect(h.opened[0].buffer).not.toBe(buffer);
     expect(h.opened[0].byteLength).toBe(buffer.byteLength);
   });
+
+  it("hands libraw the caller's buffer itself when the caller is done with it", async () => {
+    const buffer = rawBytes();
+    h.metadata = { width: 1, height: 1 };
+
+    await extractRawMetadata(buffer, undefined, true);
+
+    expect(h.opened[0].buffer).toBe(buffer);
+  });
+});
+
+describe("decodeRawFloatViaLibRaw and the caller's buffer", () => {
+  beforeEach(() => {
+    h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
+    h.pixels = litPixelFrame(code(0.18));
+  });
+
+  it("hands libraw a copy so the caller's buffer survives the transfer", async () => {
+    const buffer = rawBytes();
+
+    await decodeRawFloatViaLibRaw(buffer);
+
+    expect(h.opened[0].buffer).not.toBe(buffer);
+    expect(h.opened[0].byteLength).toBe(buffer.byteLength);
+  });
+
+  it("hands libraw the caller's buffer itself when the caller is done with it", async () => {
+    const buffer = rawBytes();
+
+    await decodeRawFloatViaLibRaw(buffer, undefined, true);
+
+    expect(h.opened[0].buffer).toBe(buffer);
+  });
 });
 
 describe("decodeRawFloatViaLibRaw", () => {
@@ -246,14 +280,14 @@ describe("decodeRawFloatViaLibRaw", () => {
 
   // libraw-wasm ignores the gamma it is asked for and always hands back
   // Rec.709-encoded samples; the float image must be scene-linear.
-  it("linearises the Rec.709 transfer libraw-wasm bakes into its samples", async () => {
+  it("linearizes the Rec.709 transfer libraw-wasm bakes into its samples", async () => {
     h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
     h.pixels = litPixelFrame(code(0.222));
 
     expect((await decodedImage()).data[1]).toBeCloseTo(0.222, 3);
   });
 
-  it("linearises the toe of that transfer too", async () => {
+  it("linearizes the toe of that transfer too", async () => {
     h.metadata = { width: 2, height: 2, color_data: { cam_mul: [1, 1, 1, 1] } };
     h.pixels = litPixelFrame(code(0.01));
 
@@ -316,7 +350,7 @@ describe("decodeRawFloatViaLibRaw", () => {
     expect(b).toBe(r);
   });
 
-  // libraw's blend highlight mode normalises the WB multipliers to the largest
+  // libraw's blend highlight mode normalizes the WB multipliers to the largest
   // one so no channel can clip, which parks green sensor-white at 1 / 2.1
   // instead of 1.0. The float image has to put it back at 1.0.
   it("restores the white point libraw lowers to keep blended highlights unclipped", async () => {

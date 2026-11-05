@@ -16,6 +16,7 @@ import type { ProcessingStageContribution } from "@/extensions/types";
 import { localToneBlend, toneHighlights } from "../local-tone";
 import {
   LINEAR_PROBE_PIPELINE,
+  basicStagesFor,
   floatImage,
   identityParams,
   pixelAt,
@@ -60,7 +61,7 @@ function captured(
   image: FloatImage,
   over: Partial<DevelopParams>,
 ): Frame {
-  return withRenderer({ stages, pipeline }, (r) => {
+  return withRenderer({ stages: [...basicStagesFor(over.processVersion), ...stages], pipeline }, (r) => {
     r.setImage(image);
     r.setParams(identityParams(over));
     const frame = r.captureFloatFrame();

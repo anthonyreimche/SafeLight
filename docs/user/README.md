@@ -7,6 +7,7 @@ Everything you need to use Safelight. New here? Start with **Getting Started**.
 | [Getting Started](getting-started.md) | Launch, open a project, cull, edit, and export — the whole flow in one pass. |
 | [Installation](installation.md) | Prebuilt downloads (Windows / Linux / macOS), source builds, and troubleshooting. |
 | [User Guide](user-guide.md) | Every feature in detail: the Library and Develop modules, exporting, the dockable workspace, and customization. |
+| [Coming from Lightroom or Capture One](coming-from-other-editors.md) | Names you know mapped to Safelight's, what's not there yet, and moving your photos across. |
 | [Using Extensions](using-extensions.md) | Find, install, update, and manage community panels, tools, and themes. |
 | [FAQ](faq.md) | Common questions about projects, files, features, and privacy. |
 | [Changelog](changelog.md) | Release history. |

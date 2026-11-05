@@ -52,10 +52,11 @@ beforeEach(() => {
         manifest("acme.pins", "Map Pins"),
         manifest("acme.speed", "Speed Edit"),
         manifest("acme.film", "Film Stocks"),
+        { ...manifest("safelight.accessibility", "Accessibility"), repository: "anthonyreimche/accessibility" },
       ],
     },
   });
-  for (const id of ["acme.map", "acme.pins", "acme.speed", "acme.film"])
+  for (const id of ["acme.map", "acme.pins", "acme.speed", "acme.film", "safelight.accessibility"])
     noteExtensionRunning(id);
   noteRendersPixels("acme.film");
   useDisabledExtensions.setState({ ids: ["acme.speed"] });
@@ -103,7 +104,6 @@ describe("a layout's Extensions list", () => {
     render(<LayoutExtensionsEditor layoutId={LAYOUT} />);
     const held = await screen.findByRole("group", { name: "Not switched by layouts" });
 
-    // The group shows the built-in panels before the installed list loads.
     expect(await within(held).findByText("Film Stocks")).toBeTruthy();
     expect(within(held).getByText("Changes how photos look")).toBeTruthy();
     expect(within(held).getByText("Accessibility")).toBeTruthy();

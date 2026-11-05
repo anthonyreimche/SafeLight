@@ -4,12 +4,12 @@
 // be preserved in derived versions.
 
 // The single read path Export and the Library share with Develop: resolve a
-// photo's persisted edit to normalized params plus a sanitised extension param
+// photo's persisted edit to normalized params plus a sanitized extension param
 // bag, or to as-shot defaults when it was never edited. Driven through a real
 // CatalogStorage implementation rather than a module mock. Run with `npm test`.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { loadSavedEdit, loadSavedParams } from "./edit-params";
+import { loadSavedEdit } from "./edit-params";
 import { setCatalogStorage, type CatalogStorage } from "./storage";
 import {
   CURRENT_PROCESS_VERSION,
@@ -26,12 +26,10 @@ const PHOTO = "photo-1";
 
 function install(edit: EditState | undefined): void {
   const storage: CatalogStorage = {
-    getAllPhotos: async () => [],
     putPhoto: async () => {},
     putPhotos: async () => {},
-    deletePhoto: async () => {},
+    deletePhotos: async () => {},
     getEditState: async (photoId) => (photoId === edit?.photoId ? edit : undefined),
-    getAllEditStates: async () => (edit ? [edit] : []),
     putEditState: async () => {},
     putEditStates: async () => {},
   };
@@ -199,21 +197,6 @@ describe("loadSavedEdit — extension param bag", () => {
       [`${STAGE}.enabled`]: true,
       [`${STAGE}.tint`]: [0.1, 0.2, 0.3],
     });
-  });
-});
-
-describe("loadSavedParams", () => {
-  it("is the params half of loadSavedEdit", async () => {
-    install(stackOf([snapshot({ exposure: 0.75, contrast: 12 }, { "ext.stage.k": 1 })]));
-    const params = await loadSavedParams(PHOTO);
-    expect(params.exposure).toBe(0.75);
-    expect(params.contrast).toBe(12);
-    expect(params).toEqual((await loadSavedEdit(PHOTO)).params);
-  });
-
-  it("threads the as-shot temperature through for unedited photos", async () => {
-    install(undefined);
-    expect((await loadSavedParams(PHOTO, 2850)).temperature).toBe(2850);
   });
 });
 

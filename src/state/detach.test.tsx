@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import { detachModule, detachedModule, goToModule } from "./detach";
 import { useUIStore } from "./ui-store";
 import { registerModule, useRegistry } from "@/extensions/registry";
+import { registerEssentialModules } from "@/test/essential-modules.test-support";
 import { makeScopedAPI } from "@/extensions/host";
 
 const View = () => null;
@@ -36,6 +37,7 @@ class FakeChannel {
 
 beforeEach(() => {
   useRegistry.setState({ modules: {} });
+  registerEssentialModules();
   useUIStore.setState({ activeModule: "library", detached: new Set() });
   window.history.replaceState({}, "", "/");
   vi.stubGlobal("open", vi.fn(fakeWindow));
@@ -58,7 +60,7 @@ describe("detachedModule", () => {
     expect(detachedModule()).toBe("map");
   });
 
-  it("still reads the built-ins", () => {
+  it("reads Library and Develop", () => {
     window.history.replaceState({}, "", "/?detached=develop");
     expect(detachedModule()).toBe("develop");
   });
@@ -111,7 +113,7 @@ describe("goToModule in the main window", () => {
     expect(makeScopedAPI("ext").navigation.goTo).toBe(goToModule);
   });
 
-  it("switches to a built-in or registered module", () => {
+  it("switches to any registered module, Develop among them", () => {
     registerModule("ext", { id: "map", label: "Map", component: View });
     goToModule("map");
     expect(useUIStore.getState().activeModule).toBe("map");
@@ -119,7 +121,7 @@ describe("goToModule in the main window", () => {
     expect(useUIStore.getState().activeModule).toBe("develop");
   });
 
-  it("ignores a module that is neither built-in nor registered", () => {
+  it("ignores a module that is not registered", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     goToModule("print");
     expect(useUIStore.getState().activeModule).toBe("library");

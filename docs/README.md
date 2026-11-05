@@ -9,6 +9,7 @@ For photographers. Installing the app, opening projects, culling, editing, expor
 - [Getting Started](user/getting-started.md) — first project to first export
 - [Installation](user/installation.md) — desktop app and source builds
 - [User Guide](user/user-guide.md) — every feature in detail
+- [Coming from Lightroom or Capture One](user/coming-from-other-editors.md) — the names you know, what's missing, moving across
 - [Using Extensions](user/using-extensions.md) — install and manage community add-ons
 - [FAQ](user/faq.md) · [Changelog](user/changelog.md)
 

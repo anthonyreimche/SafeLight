@@ -13,6 +13,7 @@ vi.mock("@/state/settings-store", () => ({ getSettings: () => h.settings }));
 import {
   isFilterActive,
   NO_FILTER,
+  orderFieldsRead,
   visiblePhotos,
   type LibraryFilter,
 } from "./visible-photos";
@@ -169,7 +170,7 @@ describe("folder scoping", () => {
   const scoped = (folder: string | null) =>
     ids(visiblePhotos(photos, NO_FILTER, "filename", "asc", folder));
 
-  it("shows the whole catalog for the All Photos scope, whatever the preference", () => {
+  it("shows the whole catalogue for the All Photos scope, whatever the preference", () => {
     expect(scoped(null)).toHaveLength(photos.length);
     h.settings.showSubfolderPhotos = true;
     expect(scoped(null)).toHaveLength(photos.length);
@@ -192,7 +193,7 @@ describe("folder scoping", () => {
 
   it("lets the project root honour the preference too", () => {
     // "" is a prefix of every path, so the root node is special-cased: it only
-    // widens to the whole catalog when the user asked for subfolders.
+    // widens to the whole catalogue when the user asked for subfolders.
     h.settings.showSubfolderPhotos = true;
     expect(scoped("")).toHaveLength(photos.length);
   });
@@ -228,7 +229,7 @@ describe("sorting", () => {
     ]);
   });
 
-  it("falls back to dateImported for an unrecognised sort id", () => {
+  it("falls back to dateImported for an unrecognized sort id", () => {
     const photos = [
       photo({ id: "second", dateImported: 20 }),
       photo({ id: "first", dateImported: 10 }),
@@ -273,6 +274,56 @@ describe("sorting", () => {
     ).toEqual(["early", "late"]);
   });
 
+  // The filename order as first written: both names lower-cased and compared
+  // with localeCompare on every comparison.
+  const legacyFilenameOrder = (photos: CatalogPhoto[], dir: 1 | -1) =>
+    ids(
+      [...photos].sort((a, b) => {
+        let c = a.filename.toLowerCase().localeCompare(b.filename.toLowerCase());
+        if (c === 0) c = a.dateImported - b.dateImported;
+        return c * dir;
+      }),
+    );
+
+  it("keeps the filename order exact on names that are easy to get wrong", () => {
+    const names = [
+      "IMG_10.jpg", "IMG_2.jpg", "img_2.jpg", "IMG_1.jpg", "Img_01.jpg", "a.jpg", "A.jpg",
+      "_DSC0001.NEF", "-dash.jpg", " space.jpg", "Ärger.jpg", "arger.jpg", "Zebra.jpg",
+      "zebra.JPG", "éclair.jpg", "eclair.jpg", "Éclair.jpg", "ß.jpg", "ss.jpg", "İstanbul.jpg",
+      "istanbul.jpg", "日本.jpg", "写真.jpg", "émoji😀.jpg", "100.jpg", "99.jpg", "1e3.jpg",
+      "a.jpg", "a.jpg",
+    ];
+    const photos = names.map((filename, i) =>
+      photo({ id: `n${i}`, filename, dateImported: (i * 7) % 5 }),
+    );
+    expect(ids(visiblePhotos(photos, NO_FILTER, "filename", "asc"))).toEqual(
+      legacyFilenameOrder(photos, 1),
+    );
+    expect(ids(visiblePhotos(photos, NO_FILTER, "filename", "desc"))).toEqual(
+      legacyFilenameOrder(photos, -1),
+    );
+  });
+
+  it("sorts 50k filenames in the legacy order (timings logged, not asserted)", () => {
+    const photos = Array.from({ length: 50_000 }, (_, i) =>
+      photo({
+        id: `b${i}`,
+        filename: `${i % 3 ? "IMG" : "dsc"}_${String((i * 7919) % 50_000).padStart(5, "0")}.NEF`,
+        dateImported: i % 97,
+      }),
+    );
+    let t = performance.now();
+    const legacy = legacyFilenameOrder(photos, 1);
+    const legacyMs = performance.now() - t;
+    t = performance.now();
+    const current = ids(visiblePhotos(photos, NO_FILTER, "filename", "asc"));
+    const currentMs = performance.now() - t;
+    console.info(
+      `[filename sort 50k] legacy comparator ${legacyMs.toFixed(0)} ms, visiblePhotos ${currentMs.toFixed(0)} ms`,
+    );
+    expect(current).toEqual(legacy);
+  });
+
   it("leaves the caller's array untouched", () => {
     const photos = [
       photo({ id: "b", dateImported: 20 }),
@@ -281,5 +332,58 @@ describe("sorting", () => {
     const result = visiblePhotos(photos, NO_FILTER, "dateImported", "asc");
     expect(ids(photos)).toEqual(["b", "a"]);
     expect(result).not.toBe(photos);
+  });
+});
+
+describe("orderFieldsRead", () => {
+  const shuffled = ["filename", "folder", "rating", "colorLabel", "flag", "keywords", "dateCreated", "dateImported"] as const;
+  const flags = ["none", "pick", "reject"] as const;
+  const labels = ["none", "red", "green"] as const;
+  const photos = Array.from({ length: 24 }, (_, i) =>
+    photo({
+      id: `p${i}`,
+      filename: `IMG_${(i * 7) % 24}.NEF`,
+      folder: ["", "a", "a/b", "c"][i % 4],
+      rating: i % 6,
+      flag: flags[i % 3],
+      colorLabel: labels[(i >> 1) % 3],
+      keywords: i % 2 ? ["trip", "sea"] : ["trip"],
+      dateCreated: (i * 5) % 24,
+      dateImported: (i * 11) % 24,
+    }),
+  );
+  const configs: { filter: LibraryFilter; sortField: string; folder: string | null }[] = [
+    { filter: NO_FILTER, sortField: "filename", folder: null },
+    { filter: NO_FILTER, sortField: "rating", folder: null },
+    { filter: NO_FILTER, sortField: "dateCreated", folder: "a" },
+    { filter: NO_FILTER, sortField: "ext.unknown", folder: null },
+    { filter: { ...NO_FILTER, rating: 2, ratingOp: "gte" }, sortField: "dateImported", folder: null },
+    { filter: { ...NO_FILTER, flag: "pick" }, sortField: "filename", folder: "" },
+    { filter: { ...NO_FILTER, label: "red" }, sortField: "rating", folder: null },
+    { filter: { ...NO_FILTER, keywords: ["sea"] }, sortField: "dateCreated", folder: null },
+  ];
+
+  it("names every field whose change can change the order", () => {
+    for (const { filter, sortField, folder } of configs) {
+      const read = orderFieldsRead(filter, sortField, folder);
+      const before = visiblePhotos(photos, filter, sortField, "asc", folder);
+      for (const field of shuffled) {
+        if (read.includes(field)) continue;
+        // Each photo takes its neighbour's value: every photo changes, the set of values doesn't.
+        const changed = photos.map((p, i) => ({ ...p, [field]: photos[(i + 1) % photos.length][field] }));
+        expect(
+          ids(visiblePhotos(changed, filter, sortField, "asc", folder)),
+          `${sortField} / ${JSON.stringify(filter)} / ${folder} reads ${field}`,
+        ).toEqual(ids(before));
+      }
+    }
+  });
+
+  it("lists what the filter, sort and folder read", () => {
+    expect(orderFieldsRead(NO_FILTER, "filename", null).sort()).toEqual(["dateImported", "filename"]);
+    expect(orderFieldsRead({ ...NO_FILTER, flag: "pick", keywords: ["a"] }, "rating", "x").sort()).toEqual(
+      ["dateImported", "flag", "folder", "keywords", "rating"],
+    );
+    expect(orderFieldsRead({ ...NO_FILTER, ratingOp: "eq" }, "other", null).sort()).toEqual(["dateImported", "rating"]);
   });
 });

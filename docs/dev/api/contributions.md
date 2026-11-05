@@ -2,7 +2,7 @@
 
 ← [API Reference](README.md)
 
-Signatures for every `register*` call except the UI-mount ones (modules, panels, header accessories, slots, layouts), which are in [UI Shell](ui-shell.md). `src/extensions/types.ts` is the source of truth. Every contribution is tagged with your extension's id and removed when it is disabled or uninstalled. Re-registering the same `id` replaces a contribution.
+Signatures for every `register*` call except the UI-mount ones (modules, panels, header accessories, slots, layouts), which are in [UI Shell](ui-shell.md). The exact types are in [`src/extensions/api/contributions.ts`](../../../src/extensions/api/contributions.ts). Every contribution is tagged with your extension's id and removed when it is disabled or uninstalled. Re-registering the same `id` replaces a contribution. An `id` belongs to the extension that registered it first: if another extension registers the same `id`, the call is ignored and a warning names both extensions. Pick ids with your extension's prefix, as the examples do.
 
 For where GPU code runs and what values it sees, read [How a photo is rendered](../rendering.md) first.
 
@@ -50,8 +50,9 @@ interface PipelineContribution {
 - **Input and output.** `lin` is scene-linear, Rec.709 primaries, and can be above 1 or below 0. Guard channels before `log`, `pow` or `sqrt`. Return sRGB-encoded values. Don't convert to the output colour space: the core does that once at the end.
 - **The two flags.** `skipBaseCurve` drops the default RAW tone baseline, so your transform is the whole look. `skipToneShoulder` drops the core's highlight roll-off, so you get the full headroom and must bound your own output. Set both for untouched scene-linear input. `skipToneShoulder` only affects [process version](#process-versions) 2 photos.
 - **Helpers.** `luma()`, `srgbToLinear()`, `linearToSrgb()` and `linearToSrgbU()` are always there. The `sl*` space helpers exist on version 2 photos only, so a transform that must also work on version 1 copies the maths under its own names (not starting with `sl` or `SL_`).
+- **Encoding out-of-range values.** `linearToSrgb()` is a display encode that clips: it clamps its input to 0..1 first, so highlights above 1.0 and anything below 0 are lost. Use it only for a final, display-bound value. To keep HDR highlights, use `linearToSrgbU()`, which clamps at 0 but lets values above 1.0 through (the curve continues past 1.0). To keep negative values too, which wide-gamut and noise-reduced pixels can have, use `slEncodePerceptual()` (version 2 photos only), which encodes the magnitude and keeps the sign. There is no signed variant that also works on version 1; copy the maths under your own name if you need one there.
 - **`params`** are float, int or bool settings stored per photo under `"{id}.{key}"`. Without `derive`, each is a uniform named by its key. Changing one never recompiles. Presets and copy/paste carry all of them. `api.pipelines.paramKeys(id)` lists them. Don't give a stage and a transform the same id: they share the bag.
-- **`derive`** computes uniforms from the params in JavaScript, for coefficients or matrices that are costly or precision-sensitive to compute in GLSL. It runs on the main thread, memoised. A throw or a bad result binds the uniforms' defaults.
+- **`derive`** computes uniforms from the params in JavaScript, for coefficients or matrices that are costly or precision-sensitive to compute in GLSL. It runs on the main thread, memoized. A throw or a bad result binds the uniforms' defaults.
 - Omit `glsl` to reuse the built-in transform with different flags. A transform that fails to compile renders with the built-in one and logs the error. Invalid fields refuse the registration, with the reason in the console. `params`, `helpers` and `derive` need Safelight 3.1.0.
 
 ## `ProcessingStageContribution` — GPU stage
@@ -90,6 +91,7 @@ interface ProcessingStageContribution {
 interface UniformDeclaration {
   key: string;                // GLSL name; bag key "{stageId}.{key}"
   glslType: GlslType;         // float, int, bool, vec2..4, mat3, mat4, ...
+  length?: number;            // an array of 1 to 64 (not mats or samplers)
   default: number | number[] | boolean;
   range?: { min: number; max: number; step?: number };
   label?: string;
@@ -127,20 +129,36 @@ interface StagePass {
 - Passes run at a capped resolution. Scale a radius given in source pixels by `max(1.0 / uTexel.x, 1.0 / uTexel.y) / max(uSourceSize.x, uSourceSize.y)`.
 - `iterations: { key, max }` reads the draw count from the bag each frame (3.0.1). 0 skips the pass. A stage whose passes all draw 0 times runs no passes that frame, so gate your inline `glsl` on the same condition.
 - Passes run while the bag holds a non-zero value for the stage, or a `{ key, max }` count resolves above 0. A non-zero default count therefore runs on every photo.
-- Passes can't read inter-stage variables. A pass that fails to compile disables the stage's passes for the session; the inline `glsl` still runs.
+- An array uniform's value and default are all its numbers, flattened: `float uGain[8]` takes 8, `vec2 uPairs[3]` takes 6. A bag value of the wrong count binds the default. A `mat3` or `mat4` value is column-major.
+- Passes can't read inter-stage variables.
+- A pass that fails to compile takes its whole stage out of the frame, inline `glsl` included, so the stage draws as if it weren't installed. The Extensions window names the failure, and the stage is built again once you register it changed. Before 3.2.0 the inline `glsl` kept running and read the raw source as `stageResult`.
+
+#### Passes: sizes, formats and cost
+
+- **Size.** Passes draw at the size the frame develops from, not the screen. In Develop that's the source scaled so its long edge fits the user's render cap (**Preferences ▸ Performance ▸ Develop render resolution**, 2560 to 8192 pixels, 4096 by default). An export draws large enough for the requested size, up to the source's full size, and thumbnails draw smaller. `uTexel` gives the pass size and `uSourceSize` the decoded source's.
+- **Radii.** Because the pass size changes between preview and export, a radius counted in pass texels covers a different part of the photo in each. Give radii in source pixels and scale them with the formula above, and the result matches between preview and export to within resampling.
+- **Format.** The two ping-pong targets are RGBA16F (half float: about three significant digits, values up to 65504) when the GPU can render to float. Otherwise they're RGBA8 and every pass result is clipped to [0, 1]. A pass carries three channels, the `vec3 c`.
+- **Sampling.** Linear filtering, clamped to the edge, so a tap outside 0..1 reads the nearest edge pixel.
+- **When passes rerun.** The result is cached, and passes draw again only when the source, the stage's own params, the size or, for `reads: "current"`, the image upstream of the stage changes. Moving an unrelated slider doesn't rerun them.
+- **Draws.** A pass draws at most 1024 times per frame, whatever `iterations` asks for.
+- **No render graph.** Every draw of every pass is full size, into one of the same two targets, and reads only the previous draw (`readPrev`) or the source (`readSource`). There's no lower-resolution target, mip chain, multiple render targets or history of earlier draws. A mip-style bloom is built from widening à trous steps instead.
+- **Cost.** Every draw is a full-image draw. A draw that reads hundreds of neighbours per pixel can run long enough for the operating system to reset the GPU, and Chromium then refuses WebGL for a couple of minutes. Keep each draw to tens of reads and spread a big kernel over several passes or iterations, for example an à trous blur that doubles its tap spacing each draw, as [Glow](https://github.com/anthonyreimche/Glow) and [Pyramid Local Contrast](https://github.com/anthonyreimche/Pyramid-Local-Contrast) do.
+- **Masks.** Each mask that uses a maskable stage gets its own copy of the stage, and the copy runs its passes separately. Five masks with your stage means six pass chains.
 
 ### Textures
 
 ```typescript
 interface TextureRequirement {
   key: string;
-  kind: "lut" | "coverage" | "dynamic";
+  kind: "lut" | "coverage" | "dynamic" | "photo" | "atlas";
   width?: number; height?: number;
   format?: "rgba8" | "rgba16f" | "r8";
 }
 ```
 
-- **`lut` and `dynamic`** take pixels from `api.setStageTexture(stageId, key, data)`. There is one global copy, not one per photo, so they suit film LUTs, not per-photo data. Supply them from `activate`: they are dropped when the extension is disabled, updated or reloaded.
+- **`lut` and `dynamic`** take pixels from `api.setStageTexture(stageId, key, data)`. There is one global copy, not one per photo, so they suit film LUTs, not per-photo data. Set them in `activate` or any time later (bump `version` to replace the data); they are dropped when the extension is disabled, updated or reloaded. In GLSL the texture is a `sampler2D` named by its `key`, in your `glsl` and `helpers` alike. There are no 3D textures, so a 3D LUT goes in as a 2D atlas of slices: see the [LUT recipe](../extensions/recipes.md#a-3d-lut). Only the extension that registered the stage can set its textures; the call is ignored with a warning otherwise. A texture is also refused with a warning, keeping the previous one, if its format is unknown, its size isn't positive whole numbers, its data doesn't match width × height × channels, or it is over 64 MB (256 MB across all of an extension's textures). One larger than the GPU's maximum texture size draws as blank.
+- **`photo`** is for Safelight's own stages: their `derive` fills it per photo from the photo's params (the tone curve's table). Any other stage that declares one is refused.
+- **`atlas`** is for Safelight's own stages too (3.2.0): `derive` returns up to four `{ id, dabs }` brush strokes under the texture's key, and core bakes them into the texture's four channels in order (Heal's brush spots).
 - **`coverage`** is painted. The photo's bag value at `"{stageId}.{key}"` is a `BrushDab[]`, the same shape core brush masks use, and your inline `glsl` reads it as `float key(vec2 uv)` (0 to 1). It persists, undoes and exports like any edit. Replace the array when it changes (`[...dabs, dab]`); an array edited in place doesn't reach the renderer. Not readable inside passes.
 
 ### Values a stage sees: `space`
@@ -164,17 +182,36 @@ interface StageSpace {
 
 ### Scene luminance after the transform: `slSceneLuma`
 
-Stages in `display-adjust`, `effects` and `output-encode` can read `float slSceneLuma`: the pixel's scene luminance before the core shoulder compressed it, for HDR or highlight-aware effects. It exists only in the inline `glsl` (pass it to helpers as an argument). On version 1 photos it carries no headroom. Needs Safelight 3.0.0.
+Stages in `display-adjust`, `effects` and `output-encode` can read `float slSceneLuma`: the pixel's scene luminance before the core shoulder compressed it, for HDR or highlight-aware effects. It exists only in the inline `glsl` (pass it to helpers as an argument). On version 1 photos it carries no headroom. The shoulder is part of the Basic extension's tone block: while Basic is off, nothing compresses the luminance and `slSceneLuma` is what the transform receives. Needs Safelight 3.0.0.
 
 ### Process versions
 
 Each edit stores `params.processVersion`, the rendering version it was made with, so old edits never change look.
 
 - **Version 1:** edits made before versions existed. Frozen. Clips to [0, 1] at more points, and stages after the display transform get clipped values even with `space`.
-- **Version 2:** every new edit. Keeps the full range after the display transform wherever no tool needs [0, 1]. Tools that need [0, 1] (Whites, Blacks, Contrast, Dehaze, Tone Curve, HSL, Vibrance, Saturation, Color Grading, mask display edits) clip only while in use. Vignette and Grain don't clip.
+- **Version 2:** every new edit. Keeps the full range after the display transform wherever no tool needs [0, 1]. Tools that need [0, 1] (Whites, Blacks, Contrast, Dehaze, Tone Curve, HSL, Vibrance, Saturation, Colour Grading, mask display edits) clip only while in use. Vignette and Grain don't clip.
 - Users move a photo to the current version with **Update processing** or **Reset all edits**. Nothing else changes it.
 - On a RAW, version 2 also applies the camera baseline after highlight reconstruction, and keeps what `decode` stages did when the denoiser runs. Version 1 loses it.
 - Extensions read `processVersion` and never write it. When you render from params you pass in (`captureFrame`, `renderPhotoFrame`), start from a copy of the photo's own params: params without a version render as version 1.
+
+#### Version-gated GLSL: `SL_PROCESS_VERSION`
+
+A stage's GLSL can tell which process version it renders, so a fix that changes your output can apply to new edits and leave older photos as they were.
+
+Every program Safelight compiles for a photo defines `SL_PROCESS_VERSION` as that photo's process version: `1`, `2` or `3`. It reaches your inline `glsl`, your `helpers` and your passes. Test it with the preprocessor:
+
+```glsl
+#if SL_PROCESS_VERSION >= 2
+  c = max(c, 0.0);         // new edits: keep values above 1
+#else
+  c = clamp(c, 0.0, 1.0);  // older photos: the look they were edited with
+#endif
+```
+
+- Put each directive on a line of its own.
+- Compare with `>=`, not `==`: a later version keeps your version 2 path unless you add one for it.
+- It is a compile-time constant, so the branch not taken costs nothing. Safelight builds a program per version, and a pass's result is kept per version too.
+- Needs Safelight 3.2.0. Older builds don't define it, and `#if` on an undefined name fails to compile: set `minAppVersion` when you use it.
 
 ### Reading the current image: `reads`
 
@@ -185,6 +222,13 @@ A stage's passes normally start from the decoded source (`reads: "source"`), wit
 - The extra draw skips crop and geometry. Stages that may sit ahead of a reader should key on `srcUv`.
 - A `decode` or `noise-reduction` reader is redrawn only when the stages before it, the source or retouching change, not on Exposure or White Balance.
 - Without float render targets the stage reads the source instead, with one warning. `reads: "current"` on a stage without passes, or on `geometry`, is ignored.
+- Any pass can still sample the decoded source with `vec3 readSource(vec2 uv)`, on any draw. It returns what a `reads: "source"` stage's first read gets: linearized, in the stage's `space`. `readSource` itself adds no draw, but the extra draw `reads: "current"` asks for still runs, on every process version, even where a pass reads only `readSource`. Needs Safelight 3.2.0.
+- `readsCurrentFrom: n` reads the current image only on photos of process version `n` and later. Older photos read the source, as a `reads: "source"` stage does: no extra draw, and the passes don't rerun when something upstream changes. Use it when a stage switches to reading the current image and older photos must keep their look. A whole number, 1 (every version) by default; ignored without `reads: "current"`. Needs Safelight 3.2.0.
+
+```typescript
+reads: "current",
+readsCurrentFrom: 2, // version 1 photos read the source, as before
+```
 
 ### Inter-stage variables: `produces` / `consumes`
 
@@ -243,7 +287,7 @@ type SettingsField =
   | { key; label; hint?; type: "select";  default: string; options: { value; label }[] };
 ```
 
-Your section in **Preferences ▸ Extensions**. Read and write values with `api.settings.get/set`, watch them with `api.settings.onChange`.
+Your section in **Preferences ▸ Extensions**. There is one per extension, so a second `registerSettings` call replaces the first. Read and write values with `api.settings.get/set`, watch them with `api.settings.onChange`.
 
 ## `ExportProcessorContribution`
 
@@ -261,7 +305,10 @@ interface ExportProcessorContribution {
     : Promise<Blob>;                 // the encoded file
 }
 
-interface ExportProcessorContext { longEdge: number | null; } // null = original size
+interface ExportProcessorContext {
+  longEdge: number | null;            // null = original size
+  settings: Readonly<ExportOutput>;   // the output this export asks for (3.2.0)
+}
 
 interface ExportFrame {
   data: Uint16Array;          // RGBA, top-down, 0..65535, in the file's colour space
@@ -276,7 +323,8 @@ interface ExportFrame {
 - **`processPixels`** is the better choice for mats, borders and watermarks: it keeps the file's bit depth and ICC profile and works for TIFF. Edit `frame.data` in place or return a new frame. You may change the size. An 8-bit export's values arrive multiplied by 257.
 - **`process`** gets the encoded file. Return a Blob of another image type and the file takes that type's extension.
 - A processor that throws is logged and skipped, so an export is never lost.
-- You can render more of the photo with `api.export.renderPhotos`; that render runs no export processors. Render with `context.longEdge` to match the file's pixel grid.
+- You can render more of the photo with `api.export.renderPhotos`; started from here, that render runs no export processors. Render with `context.longEdge` to match the file's pixel grid.
+- **`context.settings`** (`ExportOutput`) is the output the user asked for: `format`, `quality`, `longEdge`, `tiffBitDepth`/`pngBitDepth`, `colorSpace`, `sharpenAmount`/`sharpenRadius`, `includeMetadata`/`includeLocation`, those fields of [`ExportSettings`](stores.md#apiexport). The delivery, the filename template and the other processors' settings are not in it. Pass it to `api.export.renderPhotos` to build your own render of the photo with the same output choices. An optional field that isn't there takes its default: sRGB, no sharpening, 8-bit, no metadata. It is frozen, so changing it doesn't change the export. Needs Safelight 3.2.0.
 - Needs Safelight 3.1.0 for `processPixels`. Keep a `process` if you must run on older builds.
 
 ## `FilenameTemplateContribution`
@@ -304,7 +352,7 @@ interface CatalogHooksContribution {
 }
 ```
 
-Handlers are awaited. One that throws is logged and skipped, so it can't break an import or a save. When several `onPhotoImport` handlers return fields, the later ones win.
+Handlers are awaited, one after another. One that throws, or doesn't finish within 60 seconds, is logged and skipped, so it can't break or stall an import or a save. When several `onPhotoImport` handlers return fields, the later ones win.
 
 ## `PresetImporterContribution`
 
@@ -316,7 +364,7 @@ interface PresetImporterContribution {
 }
 ```
 
-Adds a file type to the Presets panel's Import picker. Return `null` or empty `params` when nothing maps, and the panel tells the user. Params use Safelight's scales: exposure in EV, temperature in Kelvin, most sliders ±100. They are merged over the photo's current edit.
+Adds a file type to the Presets panel's Import picker. Several importers may claim the same extension: Safelight asks each in turn and uses the first that returns settings. Return `null` or empty `params` when nothing maps, and the panel tells the user. A `parse` that throws, or doesn't finish within 15 seconds, is reported as a failed import (with the error message) instead of "no settings". The picker only offers `.json` plus the extensions your importers claim. Params use Safelight's scales: exposure in EV, temperature in Kelvin, most sliders ±100. They are merged over the photo's current edit.
 
 ## `GridFilterContribution`
 

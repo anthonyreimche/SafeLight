@@ -7,7 +7,7 @@
 // image (decodeRawToFloat) or an 8-bit bitmap (decodeRawToBitmap), choosing the
 // best available path:
 //
-//   1. libraw (handles everything, best color science): the bundled
+//   1. libraw (handles everything, best colour science): the bundled
 //      libraw-wasm for the float image, a registered build for the bitmap
 //   2. the in-house decoder for uncompressed CFA data (TIFF-based RAW / DNG)
 //   3. no image: the float decode says why (DecodeFailure), the bitmap decode
@@ -34,36 +34,9 @@ import {
 import { getLibRaw } from "./libraw";
 import { decodeRawFloatViaLibRaw } from "./libraw-wasm-adapter";
 import type { DecodeRequest } from "./decode-pool";
+import type { DecodeFailure, RawFloatImage } from "./decode-result";
 
-export interface RawFloatImage {
-  data: Float32Array; // linear RGBA, row-major, top-left origin
-  width: number;
-  height: number;
-  oriented?: boolean;   // true when the decoder already applied EXIF orientation
-  suspicious?: boolean; // true when the decode passed sanity checks but was marginal
-                        // — do not write to cache, let the next open re-decode
-  colorTemperature?: number; // as-shot WB in Kelvin, derived from camera multipliers
-  rawExposureBias?: number;  // EV the sensor sat below the tagged ISO (Fujifilm DR modes), compensated in `data`
-}
-
-/**
- * Why a float decode produced no image. `unsupported`: the file was read and
- * nothing usable came of it, so reading it again won't help until the decoder
- * changes. `transient`: the decoder or the file wasn't available this time.
- * `aborted`: the request was abandoned (see DecodeRequest).
- */
-export interface DecodeFailure {
-  failure: "unsupported" | "transient" | "aborted";
-  /** Why, in the decoder's words, for the grid's warning and Develop's status
-   *  line. An abandoned request has none: nobody is waiting to learn it. */
-  reason?: string;
-  /** libraw gave no answer within its time limit (see decodeTimeLimit). */
-  timedOut?: boolean;
-  /** Background work passed the file over (see decodeRawToFloat): its decode
-   *  is running elsewhere or ran out of time. Nothing is wrong with the file,
-   *  so nothing should stand in for its decode. */
-  passedOver?: boolean;
-}
+export type { DecodeFailure, RawFloatImage };
 
 const DEFAULT_CFA: [number, number, number, number] = [0, 1, 1, 2]; // RGGB
 
@@ -71,25 +44,43 @@ const DEFAULT_CFA: [number, number, number, number] = [0, 1, 1, 2]; // RGGB
 // so background work (the "Cache all" pass, the preview repair, Develop's
 // prefetch) tries it once a session. It also leaves a file alone while a decode
 // of it is under way, which fills the cache itself. A photo the user opens is
-// always decoded. A file is told apart by its name, size and modification time.
+// always decoded. A file is told apart by its path (its name when the caller
+// gives none), size and modification time. Only the latest unanswered files
+// are kept; one that later decodes is forgotten.
+const UNANSWERED_LIMIT = 256;
 const decoding = new Map<string, number>();
 const unanswered = new Set<string>();
 
-function fileId(file: Blob): string | undefined {
-  return file instanceof File ? `${file.name}:${file.size}:${file.lastModified}` : undefined;
+function fileId(file: Blob, path?: string): string | undefined {
+  return file instanceof File
+    ? `${path ?? file.name}:${file.size}:${file.lastModified}`
+    : undefined;
+}
+
+function markUnanswered(id: string): void {
+  unanswered.delete(id);
+  unanswered.add(id);
+  if (unanswered.size > UNANSWERED_LIMIT) {
+    const oldest = unanswered.values().next().value;
+    if (oldest !== undefined) unanswered.delete(oldest);
+  }
 }
 
 // Decode to a full-precision LINEAR float image, for the high-bit-depth editing
 // pipeline. libraw handles every compression; the in-house fallback only
 // uncompressed CFA. When neither yields an image, the caller falls back to the
-// camera's embedded preview.
+// camera's embedded preview. `bytes`: the file's, for a caller that goes on
+// using them, either read already or read by the function given, which is
+// called only once the decode goes ahead; they are left intact.
 export async function decodeRawToFloat(
   file: Blob,
   request?: DecodeRequest,
+  path?: string,
+  bytes?: ArrayBuffer | (() => Promise<ArrayBuffer>),
 ): Promise<RawFloatImage | DecodeFailure> {
   if (request?.signal?.aborted) return { failure: "aborted" };
-  const id = fileId(file);
-  if (id === undefined) return decodeFloat(file, request);
+  const id = fileId(file, path);
+  if (id === undefined) return decodeFloat(file, request, undefined, bytes);
   if (request?.background) {
     const reason = unanswered.has(id)
       ? "no answer earlier this session"
@@ -100,7 +91,7 @@ export async function decodeRawToFloat(
   }
   decoding.set(id, (decoding.get(id) ?? 0) + 1);
   try {
-    return await decodeFloat(file, request, id);
+    return await decodeFloat(file, request, id, bytes);
   } finally {
     const left = (decoding.get(id) ?? 1) - 1;
     if (left > 0) decoding.set(id, left);
@@ -112,23 +103,31 @@ async function decodeFloat(
   file: Blob,
   request?: DecodeRequest,
   id?: string,
+  bytes?: ArrayBuffer | (() => Promise<ArrayBuffer>),
 ): Promise<RawFloatImage | DecodeFailure> {
   let buffer: ArrayBuffer;
   try {
-    buffer = await file.arrayBuffer();
-  } catch {
-    return { failure: "transient", reason: "couldn't read the file" };
+    buffer = typeof bytes === "function" ? await bytes() : (bytes ?? (await file.arrayBuffer()));
+  } catch (e) {
+    return { failure: "transient", reason: `couldn't read the file (${describeError(e)})` };
   }
 
   // Prefer libraw: it decodes every compression (incl. Nikon NEF), applies
-  // camera WB and orientation, and outputs full-precision linear data.
-  const viaLib = await decodeRawFloatViaLibRaw(buffer, request);
-  if (!("failure" in viaLib)) return { ...viaLib, oriented: true };
-  if (viaLib.timedOut && id !== undefined) unanswered.add(id);
+  // camera WB and orientation, and outputs full-precision linear data. Only
+  // the in-house fallback reads the buffer after it, and only a TIFF stream,
+  // so libraw takes any other buffer read here without a copy.
+  const transfer = !bytes && !isTiffStream(buffer);
+  const viaLib = await decodeRawFloatViaLibRaw(buffer, request, transfer, () => file.arrayBuffer());
+  if (!("failure" in viaLib)) {
+    if (id !== undefined) unanswered.delete(id);
+    return { ...viaLib, oriented: true };
+  }
+  if (viaLib.timedOut && id !== undefined) markUnanswered(id);
   if (request?.signal?.aborted) return { failure: "aborted" };
 
   // In-house fallback handles only uncompressed CFA (sensor-native orientation).
   // A file it can't take either keeps libraw's verdict.
+  if (transfer) return viaLib;
   try {
     const reader = new TiffReader(buffer);
     const info = findRawIfd(reader);
@@ -137,17 +136,31 @@ async function decodeFloat(
     if (!plane) return viaLib;
     const data = developRawPlaneFloat(plane.samples, plane.options);
     return { data, width: info.width, height: info.height, oriented: false };
-  } catch {
-    return viaLib;
+  } catch (e) {
+    return { ...viaLib, reason: `${viaLib.reason ?? "no decoder took the file"} (in-house decode: ${describeError(e)})` };
   }
 }
 
+const describeError = (e: unknown): string =>
+  e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+
+/** Whether `buffer` opens as TiffReader reads it: a byte-order mark, then 42. */
+function isTiffStream(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < 8) return false;
+  const view = new DataView(buffer);
+  const order = view.getUint16(0, false);
+  if (order !== 0x4949 && order !== 0x4d4d) return false;
+  return view.getUint16(2, order === 0x4949) === 42;
+}
+
+/** `bytes`: the file's, read already by the caller, as decodeRawToFloat takes them. */
 export async function decodeRawToBitmap(
   file: Blob,
+  bytes?: ArrayBuffer,
 ): Promise<{ bitmap: ImageBitmap; oriented: boolean } | null> {
   let buffer: ArrayBuffer;
   try {
-    buffer = await file.arrayBuffer();
+    buffer = bytes ?? (await file.arrayBuffer());
   } catch {
     return null;
   }

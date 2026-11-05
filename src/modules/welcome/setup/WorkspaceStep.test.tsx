@@ -21,7 +21,6 @@ beforeEach(() => {
     canvasSurroundOverride: true,
     canvasSurround: "#777777",
     sliderJumpToCursor: false,
-    basicDetailSliders: false,
     singleKeyShortcuts: true,
     restoreLastProject: false,
   });
@@ -67,7 +66,6 @@ describe("WorkspaceStep", () => {
 
   it.each([
     ["Sliders jump to cursor", "sliderJumpToCursor", true],
-    ["Highlight & shadow detail sliders", "basicDetailSliders", true],
     ["Single-key shortcuts", "singleKeyShortcuts", false],
     ["Restore last project on launch", "restoreLastProject", true],
   ] as const)("flips %s", async (label, key, after) => {

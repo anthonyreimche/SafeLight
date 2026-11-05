@@ -87,6 +87,7 @@ describe("resolvePipelineFor", () => {
 
   it("resolves the built-in transform to the stock program", () => {
     expect(resolvePipelineFor(null)).toBe(BUILTIN_RESOLVED);
+    expect(BUILTIN_RESOLVED).toMatchObject({ id: DEFAULT_PIPELINE, glsl: null, sig: "" });
   });
 
   it("is the default's resolution when asked for the default", () => {

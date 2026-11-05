@@ -3,45 +3,42 @@
 // attribution-preservation term (GPL v3 §7b) — see LICENSE. This notice must
 // be preserved in derived versions.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { CatalogPhoto, CropRect, DevelopParams } from "@/catalog/types";
 import { usesSignedOutput } from "@/catalog/types";
-import { cancelCrossfade, snapshotCrossfade } from "@/ui/canvas-crossfade";
-import { endHandover } from "@/ui/canvas-handover";
 import type { ImageWindow } from "@/ui/viewport-view";
 
 // Coverage overlay: a single red tint, faded in/out for all masks.
 const VIZ_COLOR: [number, number, number] = [0.9, 0.25, 0.25];
 const VIZ_STRENGTH = 0.5;
-import { resolveVizMaskIndex } from "@/modules/develop/mask-viz";
+import { useMaskCoverageView } from "@/modules/develop/mask-coverage-view";
 import { currentDisplaySpace } from "@/rendering/display-space";
 import { getRenderBridge } from "@/rendering/render-bridge";
 import type { RendererAvailability } from "@/rendering/render-bridge";
 import type { RenderBridge, FrameResult } from "@/rendering/render-bridge";
-import type { Float16Source, StoredSample } from "@/rendering/source-sample";
-import { onCacheEntryFilled } from "@/catalog/cache-events";
-import { loadPhotoImage, photoSourceKey, refreshStaleSource } from "@/catalog/load-image";
-import type { DecodedImage, Fallback } from "@/catalog/load-image";
-import { setHealSourceImage } from "@/rendering/heal-source";
+import { setSourcePixels } from "@/rendering/source-pixels";
 import { useDevelopStore } from "@/state/develop-store";
 import { useCatalogStore } from "@/state/catalog-store";
-import { showsEdit, standsForPhoto } from "@/state/fallback-rules";
-import { visibleList } from "@/modules/library/photo-navigation";
-import { getSettings, useSettings } from "@/state/settings-store";
+import { useSettings } from "@/state/settings-store";
 import { usePipelineStore } from "@/extensions/pipelines";
 import { useRegistry } from "@/extensions/registry";
 import { applyPanelBypass, bypassParamBag } from "@/modules/develop/panel-bypass";
 import { frameStageBag } from "@/rendering/stage-bag";
-import { getExtSetting, useExtSettings } from "@/extensions/ext-settings";
-import { createRenderParams } from "./render-params";
-import { previewShowsEdit } from "./preview-shows-edit";
+import { createRenderParams, type ViewParams } from "./render-params";
+import { canvasToolView, useCanvasToolStore } from "@/modules/develop/canvas-tool";
+import { watchCacheFills } from "./develop-sources";
+import { createHistogramScheduler } from "./histogram-scheduler";
+import { NO_STAGES, useDevelopPhotoLoad } from "./use-develop-photo-load";
+import { useDevelopPicture, type DevelopTier } from "./use-develop-picture";
+
+export type { DevelopTier };
 
 // Resolve the colour actually painted behind the image (the canvas surround) to
 // linear-display RGB in 0..1, by reading the surround element's computed
 // background. Reading the DOM rather than re-deriving from settings keeps the
 // crop-mode margin matching every case at once — theme surface, the fixed
-// surround override, and color-assessment grey. Falls back to the legacy dark.
+// surround override, and colour-assessment grey. Falls back to the legacy dark.
 function surroundRGB(): [number, number, number] {
   if (typeof document !== "undefined") {
     const el = document.querySelector("[data-canvas-surround]");
@@ -55,29 +52,6 @@ function surroundRGB(): [number, number, number] {
   return [0.04, 0.04, 0.04];
 }
 
-/** Whether a load settled on a preview of the photo instead of its own pixels: a fallback
- *  (the camera's preview, or the stored one), or a float the decoder marked as one. */
-function isPreview(image: DecodedImage): boolean {
-  if (image.kind === "float") return image.isFallbackPreview ?? false;
-  return image.kind === "bitmap" && image.fallback !== undefined;
-}
-
-/** Why the canvas shows a preview of the photo for good, in the words of its corner. */
-function previewReason(fallback: Fallback | null | undefined): string | null {
-  if (fallback?.unsupported) return "Safelight can't open this RAW yet";
-  if (fallback?.timedOut) return "this RAW took too long to open";
-  if (fallback?.offline) return "the original isn't available";
-  return null;
-}
-
-/** The key a fallback the load settled on goes into the GPU source cache under. The
- *  renderer binds back the source it held after a neighbour is uploaded without binding
- *  (prefetchNeighbors) only when it held it under a key, so the open photo's source
- *  always has one; but no open binds this one, so the next open loads the photo again. */
-const fallbackKey = (key: string): string => `${key}#fallback`;
-
-const NO_STAGES: readonly string[] = [];
-
 /** The stage bag the worker draws with: the photo's own and the built-in stages'
  *  entries (frameStageBag), with what bypassed panels own taken out. */
 function stageBag(
@@ -86,143 +60,6 @@ function stageBag(
   bypassed: Record<string, boolean>,
 ): Record<string, unknown> {
   return frameStageBag(applyPanelBypass(params, bypassed), bypassParamBag(paramBag, bypassed));
-}
-
-// The keys of the sources this view put in the GPU cache that are a preview (isPreview),
-// with what the load fell back on, so a photo bound from there again isn't taken for its
-// full decode and still says why. Kept per bridge, whose worker holds the cache.
-const previewSources = new WeakMap<RenderBridge, Map<string, Fallback | null>>();
-
-function notePreviewSource(bridge: RenderBridge, key: string, image: DecodedImage) {
-  let keys = previewSources.get(bridge);
-  if (!keys) {
-    keys = new Map();
-    previewSources.set(bridge, keys);
-  }
-  if (!isPreview(image)) keys.delete(key);
-  else keys.set(key, image.kind === "bitmap" ? (image.fallback ?? null) : null);
-}
-
-// The keys of the sources this view put in the GPU cache as a cached preview
-// without the centre sample (a RAW cache entry written before 3.1.0). Once that
-// entry is rewritten, such a source takes the decoded size and sample in place
-// (cache-events.ts). Kept per bridge, whose worker holds the cache.
-const staleSources = new WeakMap<RenderBridge, Set<string>>();
-
-function noteStaleSource(bridge: RenderBridge, key: string, image: DecodedImage) {
-  let keys = staleSources.get(bridge);
-  if (!keys) {
-    keys = new Set();
-    staleSources.set(bridge, keys);
-  }
-  if (image.kind === "float16" && !image.sample) keys.add(key);
-  else keys.delete(key);
-}
-
-/** Hand the worker a stale source's decoded size and sample, once per key:
- *  false when the key is not (or no longer) stale for this bridge. */
-function relayStaleSource(
-  bridge: RenderBridge,
-  key: string,
-  take: () => { fullWidth: number; fullHeight: number; sample: StoredSample },
-): boolean {
-  if (!staleSources.get(bridge)?.delete(key)) return false;
-  bridge.setSourceSample(key, take());
-  return true;
-}
-
-/** What the develop canvas shows of the open photo: "stored", its stored preview, drawn
- *  as it is; "preview", frames of the camera's embedded preview while the full decode
- *  runs, or for good when the load settled on a preview; "final", frames of the image
- *  the load settled on (the full decode, the decode cache, or the source still resident
- *  on the GPU). */
-export type DevelopTier = "stored" | "preview" | "final";
-
-// What the canvas holds of the open photo eases into the next tier of it: the stored
-// preview into the first developed frame, the camera's preview into the full decode.
-// Anything else cuts, and so does every move to another photo.
-const STORED_FADE_MS = 150;
-const PREVIEW_FADE_MS = 220;
-
-function fadeMs(from: DevelopTier, to: DevelopTier): number | null {
-  if (from === "stored" && to !== "stored") return STORED_FADE_MS;
-  if (from === "preview" && to === "final") return PREVIEW_FADE_MS;
-  return null;
-}
-
-// A photo opened this soon after the one before (an arrow key held) cuts between its
-// tiers. Kept per bridge: DevelopView mounts a new canvas, and so a new view, per photo.
-const QUICK_SWITCH_MS = 150;
-const lastOpened = new WeakMap<RenderBridge, { photoId: string; at: number; fades: boolean }>();
-
-/** Notes that `bridge`'s view opened `photoId`, and says whether its tiers may fade.
- *  The same photo opened again at once (React's StrictMode runs a mounting view's
- *  effects twice) is the same open. */
-function noteOpened(bridge: RenderBridge, photoId: string): boolean {
-  const at = performance.now();
-  const before = lastOpened.get(bridge);
-  if (before?.photoId === photoId && at - before.at < QUICK_SWITCH_MS) return before.fades;
-  const fades = at - (before?.at ?? -Infinity) >= QUICK_SWITCH_MS;
-  lastOpened.set(bridge, { photoId, at, fades });
-  return fades;
-}
-
-/** Whether one size scaled into a box of the other's shows unstretched. */
-function sameAspect(aw: number, ah: number, bw: number, bh: number): boolean {
-  if (!(aw > 0 && ah > 0 && bw > 0 && bh > 0)) return false;
-  return Math.abs(aw / ah / (bw / bh) - 1) < 0.01;
-}
-
-/** Whether two pictures hold the same window of the image (null: all of it). */
-function sameWindow(a: ImageWindow | null, b: ImageWindow | null): boolean {
-  if (!a || !b) return a === b;
-  return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
-}
-
-/** What a picture on the canvas is of, which the view sizes and places it by. */
-interface Shown {
-  width: number;
-  height: number;
-  // The window of the image it holds (FrameResult.roi); null, the whole image.
-  window: ImageWindow | null;
-  // The size of a picture of the whole image (FrameResult.wholeWidth); null, unknown.
-  whole: { width: number; height: number } | null;
-  // The region of the transformed image it is of (FrameResult.crop); null, unknown.
-  crop: CropRect | null;
-}
-
-const NOTHING_SHOWN: Shown = { width: 0, height: 0, window: null, whole: null, crop: null };
-
-/** Whether two pictures hold the same window of the same image: whole size and region. */
-function samePlace(a: Shown, b: Shown): boolean {
-  const sameWhole =
-    !a.whole || !b.whole
-      ? a.whole === b.whole
-      : a.whole.width === b.whole.width && a.whole.height === b.whole.height;
-  const sameCrop =
-    !a.crop || !b.crop
-      ? a.crop === b.crop
-      : a.crop.x === b.crop.x &&
-        a.crop.y === b.crop.y &&
-        a.crop.width === b.crop.width &&
-        a.crop.height === b.crop.height;
-  return sameWindow(a.window, b.window) && sameWhole && sameCrop;
-}
-
-/** Whether two pictures are of the same size and place. */
-function sameShown(a: Shown, b: Shown): boolean {
-  return a.width === b.width && a.height === b.height && samePlace(a, b);
-}
-
-/** What `p` is of, without its pixels. */
-function shownOf(p: Shown): Shown {
-  return { width: p.width, height: p.height, window: p.window, whole: p.whole, crop: p.crop };
-}
-
-/** Something to put on the canvas: a frame, or the stored preview. Owns its bitmap. */
-interface Picture extends Shown {
-  bitmap: ImageBitmap;
-  tier: DevelopTier;
 }
 
 // The canvas corner says "Preview" once a preview has shown for LABEL_DELAY_MS, and
@@ -293,7 +130,8 @@ interface RendererStatus {
    *  context after a GPU reset; the bridge retries). */
   availability: RendererAvailability;
   /** Why edits can't be drawn: the last init failure while availability is
-   *  "retrying" or "failed", or the missing canvas when not supported. */
+   *  "retrying" or "failed", the worker's silence or lost context while it is
+   *  "unresponsive" or "lost", or the missing canvas when not supported. */
   availabilityReason: string | null;
   width: number;
   height: number;
@@ -345,49 +183,28 @@ export function useDevelopRenderer(
   useEffect(() => {
     openPhotoIdRef.current = photo?.id;
   }, [photo?.id]);
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const rafIdRef = useRef<number | null>(null);
-  // True from the moment a photo opens until its own source is handed to the
-  // worker. Frames and histograms that arrive meanwhile belong to the photo
-  // before, and are dropped.
   const awaitingSourceRef = useRef(true);
-  // Something the histogram measures has changed since one was last asked for.
-  // Frames that only move the view or fade an overlay leave it clear.
-  const histDirtyRef = useRef(false);
-  // performance.now() of the last change that set histDirtyRef.
-  const histDirtyAtRef = useRef(0);
-  // The source number (RenderBridge.sourceGen) of the image the photo's load settled
-  // on, once it is handed over. Frames of an older number show the camera's preview.
-  // Stays null when the load settled on a preview.
   const finalGenRef = useRef<number | null>(null);
-  // The source number of the last image of the photo handed over.
   const sentGenRef = useRef<number | null>(null);
-  // Why nothing of the photo is drawn, said in place of the label: the worker couldn't
-  // take its source, or there is no picture of it to show (holdEditedPreview).
+  const [histogram] = useState(() =>
+    createHistogramScheduler({
+      renderQueued: () => rafIdRef.current != null,
+      compute: () => bridgeRef.current?.computeHistogram(true),
+      publish: (data) => useDevelopStore.getState().setHistogram(data),
+    }),
+  );
   const [cantShow, setCantShow] = useState<string | null>(null);
-  // Why the load settled on a preview for good (previewReason), for the label.
   const [settledReason, setSettledReason] = useState<string | null>(null);
-  const tierRef = useRef<DevelopTier | null>(null);
-  const [tier, setTier] = useState<DevelopTier | null>(null);
   const [supported, setSupported] = useState(true);
   const [availability, setAvailability] = useState<RendererAvailability>("starting");
   const [availabilityReason, setAvailabilityReason] = useState<string | null>(null);
+  // Counts the worker's renderer coming back after its graphics context was lost, which
+  // took every source it held: each time, the photo is loaded again.
+  const [restores, setRestores] = useState(0);
   const [loading, setLoading] = useState(false);
-  // The canvas's box size and what of the image it holds. Change in the same commit as
-  // the pixels (see present).
-  const [size, setSize] = useState<Shown>(NOTHING_SHOWN);
-  // What the canvas holds of the open photo, and at what size; the tier is null while
-  // it holds nothing of it (blank, or the photo before).
-  const shownRef = useRef<DevelopTier | null>(null);
-  const paintedRef = useRef<Shown>(NOTHING_SHOWN);
-  // The photo the load effect opened last, and the one the canvas holds a picture of.
-  const openedRef = useRef<string | null>(null);
-  const paintedPhotoRef = useRef<string | null>(null);
-  // Whether this photo's tiers may fade into each other (QUICK_SWITCH_MS).
-  const fadesRef = useRef(true);
-  // A picture of another size than the box, waiting for the commit that resizes it.
-  const pendingRef = useRef<Picture | null>(null);
-  const [pendingCount, setPendingCount] = useState(0);
+  const picture = useDevelopPicture(canvasRef, fadeCanvasRef);
+  const { size, tier, ctxRef, present, dropPending } = picture;
   // Size of the source the last frame was drawn from, as the renderer holds it
   // (already upright). Drives the image aspect — see `aspect` below.
   const [sourceSize, setSourceSize] = useState({ width: 0, height: 0 });
@@ -401,7 +218,8 @@ export function useDevelopRenderer(
   // extension adjustments preview too, without touching the committed bag.
   const paramBag = useDevelopStore((s) => s.previewParamBag ?? s.paramBag);
   const asShotTemperature = useDevelopStore((s) => s.asShotTemperature);
-  const cropping = useDevelopStore((s) => s.cropping);
+  // The held canvas tool's view of the edit (crop mode widens the crop).
+  const view = useCanvasToolStore((s) => canvasToolView(s.held));
   const showClipping = useDevelopStore((s) => s.showClipping);
   // The space the soft proof previews, the export default, or none: the proof is
   // version 3's (usesSignedOutput), and says so rather than leave it to the worker.
@@ -413,18 +231,11 @@ export function useDevelopRenderer(
   const colorAssessment = useDevelopStore((s) => s.colorAssessment);
   const canvasSurround = useSettings((s) => s.canvasSurround);
   const canvasSurroundOverride = useSettings((s) => s.canvasSurroundOverride);
-  const hoveredMaskId = useDevelopStore((s) => s.hoveredMaskId);
-  const selectedMaskId = useDevelopStore((s) => s.selectedMaskId);
-  const maskTab = useDevelopStore((s) => s.maskTab);
+  const shownMaskId = useMaskCoverageView((s) => s.maskId);
   const sharpenViz = useDevelopStore((s) => s.sharpenViz);
   const bypassedPanels = useDevelopStore((s) => s.bypassedPanels);
   const fileAccessNonce = useCatalogStore((s) => s.fileAccessNonce);
   const pipelineId = usePipelineStore((s) => s.activeId);
-  // Global HSL band shaping (Preferences ▸ HSL). Subscribe so the live view
-  // re-renders when the user drags the pref; 100 = the default 1.0 multiplier.
-  useExtSettings((s) => s["core.hsl"]);
-  const hslRangePref = getExtSetting("core.hsl", "hueRange", 100);
-  const hslSmoothPref = getExtSetting("core.hsl", "smoothness", 100);
 
   // Aspect of the image as actually decoded and shown on screen. We prefer the
   // real buffer dims (reported by every frame drawn) over
@@ -444,153 +255,27 @@ export function useDevelopRenderer(
   // so a run that changed none of its inputs gets back the object the bridge already
   // posted, instead of a rebuilt copy it would clone to the worker again.
   const [renderParams] = useState(createRenderParams);
-  const forRender = (p: DevelopParams, crop: boolean): DevelopParams =>
-    renderParams(p, crop, aspect, bypassedPanels);
+  const forRender = (p: DevelopParams, v: ViewParams | null): DevelopParams =>
+    renderParams(p, v, aspect, bypassedPanels);
 
-  const resize = useCallback((next: Shown) => {
-    setSize((s) => (sameShown(s, next) ? s : shownOf(next)));
-  }, []);
-
-  // Draws `next` now. What the canvas held eases into it when that was a lower tier of
-  // the same photo, of the same shape and place. A picture of another shape or place
-  // ends any fade: the overlay takes the canvas's new box and placement, and would show
-  // the old picture stretched in it or where the new window's pixels belong.
-  const paint = useCallback(
-    (next: Picture) => {
-      const cv = canvasRef.current;
-      const ctx = ctxRef.current;
-      if (!cv || !ctx) {
-        next.bitmap.close();
-        return;
-      }
-      const from = shownRef.current;
-      const ms = from === null ? null : fadeMs(from, next.tier);
-      const overlay = fadeCanvasRef?.current;
-      const sameShape =
-        sameAspect(cv.width, cv.height, next.width, next.height) &&
-        samePlace(paintedRef.current, next);
-      if (overlay && ms !== null && fadesRef.current && sameShape) {
-        snapshotCrossfade(cv, overlay, ms);
-      } else if (overlay && !sameShape) {
-        cancelCrossfade(overlay);
-      }
-      if (cv.width !== next.width) cv.width = next.width;
-      if (cv.height !== next.height) cv.height = next.height;
-      ctx.drawImage(next.bitmap, 0, 0);
-      next.bitmap.close();
-      // The photo's first picture replaces what the view before left on screen.
-      if (from === null) endHandover();
-      shownRef.current = next.tier;
-      paintedRef.current = shownOf(next);
-      paintedPhotoRef.current = openedRef.current;
-    },
-    [canvasRef, fadeCanvasRef],
-  );
-
-  // Not `shownRef`: a photo loading again keeps its last picture on screen.
-  const pictureCanvas = useCallback(
-    () =>
-      paintedPhotoRef.current !== null && paintedPhotoRef.current === openedRef.current
-        ? canvasRef.current
-        : null,
-    [canvasRef],
-  );
-
-  // Shows `next`. A picture of the size and place already painted is drawn at once, so
-  // a drag costs no React render. Another waits for the commit that resizes and places
-  // the box (the layout effect below): drawn ahead of it, it showed stretched to the old
-  // box, at the old window's place, by the old image's shape, or under a crop box drawn
-  // for the old region.
-  const present = useCallback(
-    (next: Picture) => {
-      if (!pendingRef.current && sameShown(paintedRef.current, next)) {
-        paint(next);
-      } else {
-        pendingRef.current?.bitmap.close();
-        pendingRef.current = next;
-        resize(next);
-        setPendingCount((n) => n + 1);
-      }
-      if (tierRef.current !== next.tier) {
-        tierRef.current = next.tier;
-        setTier(next.tier);
-      }
-    },
-    [paint, resize],
-  );
-
-  // Forgets a picture still waiting for its box, which goes back to what is painted.
-  const dropPending = useCallback(() => {
-    const next = pendingRef.current;
-    if (!next) return;
-    next.bitmap.close();
-    pendingRef.current = null;
-    resize(paintedRef.current);
-  }, [resize]);
-
-  // Empties the canvas and its box: what it holds of the photo is no longer true.
-  const clearPicture = useCallback(() => {
-    dropPending();
-    const cv = canvasRef.current;
-    if (cv) {
-      cv.width = 0;
-      cv.height = 0;
-    }
-    const overlay = fadeCanvasRef?.current;
-    if (overlay) cancelCrossfade(overlay);
-    shownRef.current = null;
-    paintedRef.current = NOTHING_SHOWN;
-    paintedPhotoRef.current = null;
-    tierRef.current = null;
-    setTier(null);
-    resize(NOTHING_SHOWN);
-  }, [canvasRef, fadeCanvasRef, dropPending, resize]);
-
-  // An edited photo's stored preview, its original out of reach (Fallback
-  // "stored-edited"), shows the edit it was rendered with, so it is never a source: an
-  // edit rendered over it would apply twice. It shows as it is while that is the edit
-  // open, checked when the load settles on it and on every edit after (an undo back to
-  // it shows it again), and nothing shows otherwise. Edits are saved all the same.
-  const editedPreviewRef = useRef<{ photo: CatalogPhoto; offline: boolean } | null>(null);
-  const holdEditedPreview = useCallback(
-    (bitmap: ImageBitmap | null) => {
-      const held = editedPreviewRef.current;
-      const shows = !!held && previewShowsEdit(held.photo, useDevelopStore.getState());
-      if (!held || !shows) {
-        bitmap?.close();
-        if (!held) return;
-        if (shownRef.current !== null) clearPicture();
-        setCantShow(held.offline ? "The original isn't available." : "Can't show this photo.");
-        return;
-      }
-      setCantShow(null);
-      if (bitmap) {
-        present({ bitmap, width: bitmap.width, height: bitmap.height, tier: "stored", window: null, whole: null, crop: null });
-        return;
-      }
-      const blob = held.photo.thumbnailBlob;
-      if (shownRef.current !== null || !blob) return;
-      createImageBitmap(blob).then(
-        (bm) => {
-          const still =
-            editedPreviewRef.current === held &&
-            shownRef.current === null &&
-            previewShowsEdit(held.photo, useDevelopStore.getState());
-          if (still) present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored", window: null, whole: null, crop: null });
-          else bm.close();
-        },
-        () => {},
-      );
-    },
-    [clearPicture, present],
-  );
-
-  useLayoutEffect(() => {
-    const next = pendingRef.current;
-    if (!next) return;
-    pendingRef.current = null;
-    paint(next);
-  }, [pendingCount, paint]);
+  // Draws the source just handed over (sent, or bound from the GPU cache) with the
+  // photo's edit. The frame carries its own histogram, extended for the clipping
+  // readouts.
+  const drawSource = (bridge: RenderBridge, opened: CatalogPhoto) => {
+    awaitingSourceRef.current = false;
+    sentGenRef.current = bridge.sourceGen;
+    setCantShow(null);
+    bridge.setAsShotTemperature(opened.exif.colorTemperature ?? 6500);
+    const st = useDevelopStore.getState();
+    bridge.setContributedParams(stageBag(st.params, st.paramBag, st.bypassedPanels));
+    bridge.setParams(forRender(st.params, canvasToolView(useCanvasToolStore.getState().held)));
+    histogram.clearDirty();
+    bridge.render(true, true);
+  };
+  // The load runs on across renders, so it draws through the latest one: a panel
+  // bypassed or an aspect learnt while it waits must not be undone by its first draw.
+  const drawSourceRef = useRef(drawSource);
+  drawSourceRef.current = drawSource;
 
   // Set up the bridge + 2D display canvas. The worker owns the WebGL context;
   // this canvas just blits ImageBitmap frames from the worker.
@@ -598,7 +283,7 @@ export function useDevelopRenderer(
     const cv = canvasRef.current;
     if (!cv) return;
     // A context's colour space is fixed by its first getContext, which is why
-    // DevelopView builds the canvas again when the screen's space changes. A P3
+    // DevelopStage builds the canvas again when the screen's space changes. A P3
     // frame keeps its gamut on a P3 screen; an sRGB one converts exactly onto it.
     const ctx = cv.getContext("2d", { colorSpace: currentDisplaySpace() });
     if (!ctx) {
@@ -611,42 +296,7 @@ export function useDevelopRenderer(
     const bridge = getRenderBridge();
     bridgeRef.current = bridge;
 
-    // A cached preview this view holds without its centre sample takes the
-    // decoded size and sample once its RAW cache entry is rewritten, so the
-    // open photo turns native (sourceSize.native) without a reload. Cut only
-    // for such a source, and once per key.
-    const offFilled = onCacheEntryFilled((entry) => {
-      const relayed = relayStaleSource(bridge, photoSourceKey(entry.photo), () => ({
-        fullWidth: entry.fullWidth,
-        fullHeight: entry.fullHeight,
-        sample: entry.cutSample(),
-      }));
-      if (relayed && openPhotoIdRef.current === entry.photo.id) bridge.render(false);
-    });
-
-    const setHistogramRef = useDevelopStore.getState().setHistogram;
-    let histTimer: ReturnType<typeof setTimeout> | null = null;
-    let lastHistTime = 0;
-    const HIST_THROTTLE = 80;
-    // When live histogram is off, recompute only once edits go quiet for this long.
-    const HIST_SETTLE = 250;
-
-    const recomputeHistogram = () => {
-      histTimer = null;
-      lastHistTime = performance.now();
-      // The worker measures its last render, so an edit whose render still waits
-      // for its animation frame needs that frame to ask again. A render waiting in
-      // the bridge's mailbox takes the request itself (RenderBridge.computeHistogram).
-      histDirtyRef.current = rafIdRef.current != null;
-      // Ask the worker to compute the histogram from the RGBA16F render pipeline
-      // and deliver it via setOnHistogram. The previous main-thread path read the
-      // 2D display canvas with getImageData, which is ALWAYS 8-bit — so 256 source
-      // codes mapped into 256 bins, and any tonal stretch (curve/exposure/WB)
-      // spread them apart into the comb/banding you see. The canvas is 8-bit no
-      // matter how high-bit the pipeline is, so it can never produce a clean
-      // histogram; only the in-worker float readback can.
-      bridgeRef.current?.computeHistogram(true);
-    };
+    const offFilled = watchCacheFills(bridge, openPhotoIdRef);
 
     bridge.setOnFrame((frame: FrameResult) => {
       if (awaitingSourceRef.current) {
@@ -687,31 +337,10 @@ export function useDevelopRenderer(
           .getState()
           .setSourceSize(sourceWidth, sourceHeight, { width: sourceFullWidth, height: sourceFullHeight, native: sourceNative });
       }
-      if (frame.histogram) {
-        setHistogramRef(frame.histogram);
-        lastHistTime = performance.now();
-        return;
-      }
-      if (!histDirtyRef.current) return;
-      if (getSettings().liveHistogram) {
-        // Live: recompute continuously while editing, throttled to HIST_THROTTLE.
-        if (!histTimer) {
-          const elapsed = performance.now() - lastHistTime;
-          const delay = Math.max(0, HIST_THROTTLE - elapsed);
-          histTimer = setTimeout(recomputeHistogram, delay);
-        }
-      } else {
-        // Off: debounce — reset on every frame so we only recompute after the
-        // edit settles, instead of on each intermediate frame. Counted from the
-        // edit, not the frame: Auto Tone/WB give each step's histogram 450 ms,
-        // and a slow render would otherwise use that up.
-        if (histTimer) clearTimeout(histTimer);
-        const sinceEdit = performance.now() - histDirtyAtRef.current;
-        histTimer = setTimeout(recomputeHistogram, Math.max(0, HIST_SETTLE - sinceEdit));
-      }
+      histogram.onFrame(frame.histogram);
     });
-    bridge.setOnHistogram((histogram) => {
-      if (!awaitingSourceRef.current) setHistogramRef(histogram);
+    bridge.setOnHistogram((data) => {
+      if (!awaitingSourceRef.current) useDevelopStore.getState().setHistogram(data);
     });
 
     bridge.setOnError((msg) => {
@@ -720,23 +349,27 @@ export function useDevelopRenderer(
     bridge.setOnSourceError((gen, message) => {
       if (gen === sentGenRef.current) setCantShow(`Can't show this photo: ${message}`);
     });
+    let lost = false;
     bridge.setOnAvailability((next, detail) => {
+      if (next === "lost") lost = true;
+      if (next === "ready" && lost) {
+        lost = false;
+        setRestores((n) => n + 1);
+      }
       setAvailability(next);
       setAvailabilityReason(detail ?? null);
     });
 
-    // The worker owns the decoded source; mirror its downscaled heal-source buffer
-    // into this (main-thread) module instance so the overlay's findHealSource /
-    // healColorOffset can pick a real source instead of a blind offset.
-    bridge.setOnHealSource(({ data, width, height }) => {
-      setHealSourceImage(data, width, height);
+    // The worker owns the decoded source; mirror its downscaled copy into this
+    // (window) module instance, where extensions search it.
+    bridge.setOnSourcePixels(({ data, width, height }) => {
+      setSourcePixels(data, width, height);
     });
 
     // The bridge repaints stage and pipeline swaps itself, past the params effect.
     const stopWatchingStages = useRegistry.subscribe((s, prev) => {
       if (s.processingStages !== prev.processingStages || s.pipelines !== prev.pipelines) {
-        histDirtyRef.current = true;
-        histDirtyAtRef.current = performance.now();
+        histogram.markDirty();
       }
     });
 
@@ -744,7 +377,7 @@ export function useDevelopRenderer(
     return () => {
       offFilled();
       stopWatchingStages();
-      if (histTimer) { clearTimeout(histTimer); histTimer = null; }
+      histogram.dispose();
       if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
       bridge.setOnFrame(null);
@@ -752,294 +385,39 @@ export function useDevelopRenderer(
       bridge.setOnError(null);
       bridge.setOnSourceError(null);
       bridge.setOnAvailability(null);
-      bridge.setOnHealSource(null);
+      bridge.setOnSourcePixels(null);
       bridgeRef.current = null;
       ctxRef.current = null;
       dropPending();
     };
   }, [canvasRef, present, dropPending]);
 
-  // Load the active photo into the worker.
-  useEffect(() => {
-    let cancelled = false;
-    const bridge = bridgeRef.current;
-    if (!photo || !bridge) return;
-    // Once the photo is left, a decode this run asked for that still waits for a
-    // decoder gives up its place. One already running finishes and fills the cache.
-    const abort = new AbortController();
+  const { holdEditedPreview } = useDevelopPhotoLoad({
+    photo,
+    // The load runs again when either moves on.
+    fileAccessNonce: fileAccessNonce + restores,
+    bridgeRef,
+    picture,
+    openPhotoIdRef,
+    awaitingSourceRef,
+    finalGenRef,
+    sentGenRef,
+    setLoading,
+    setCantShow,
+    setSettledReason,
+    setOverflowedStages,
+    drawSourceRef,
+  });
 
-    setLoading(true);
-    // The worker's bound source and the histogram still describe the photo
-    // before; neither shows until this photo's source is handed over.
-    awaitingSourceRef.current = true;
-    finalGenRef.current = null;
-    sentGenRef.current = null;
-    setCantShow(null);
-    setSettledReason(null);
-    setOverflowedStages(NO_STAGES);
-    editedPreviewRef.current = null;
-    tierRef.current = null;
-    setTier(null);
-    bridge.clearSource();
-    useDevelopStore.getState().setHistogram(null);
-
-    // What the canvas holds is of another photo, or of this one's load before: the
-    // first picture of this load cuts.
-    shownRef.current = null;
-    openedRef.current = photo.id;
-    dropPending();
-    const overlay = fadeCanvasRef?.current;
-    if (overlay) cancelCrossfade(overlay);
-    fadesRef.current = noteOpened(bridge, photo.id);
-    // Its canvas keeps its last picture until this load's first. Only a reload of the
-    // same photo reaches here with one: DevelopView builds a new view per photo, and
-    // canvas-handover holds the photo before for a moment over the new, blank canvas.
-
-    // DevelopView loads this photo's edit as it mounts, after this effect has
-    // run. Until it lands the store holds the previous photo's edit, so this
-    // photo's source isn't rendered before it. Leaving the photo ends the wait too,
-    // so whatever waited on it can let go.
-    let stopWaiting: (() => void) | null = null;
-    let endWait = () => {};
-    const editLoaded = new Promise<void>((resolve) => {
-      endWait = resolve;
-      if (useDevelopStore.getState().photoId === photo.id) return resolve();
-      stopWaiting = useDevelopStore.subscribe((s) => {
-        if (s.photoId !== photo.id) return;
-        stopWaiting?.();
-        resolve();
-      });
-    });
-
-    // The stored preview, drawn as it is while the source loads, once the photo's
-    // edit has loaded and only if the preview shows it (previewShowsEdit).
-    // An edited photo's preview is re-rendered on every Develop commit, see
-    // edited-thumbnail.ts, so rendering the edit into it again would apply the
-    // edit twice. Nor is its size the source's: an edited preview is cropped.
-    const showStoredPreview = async () => {
-      if (!photo.thumbnailBlob) return;
-      let bm: ImageBitmap;
-      try {
-        [bm] = await Promise.all([createImageBitmap(photo.thumbnailBlob), editLoaded]);
-      } catch {
-        return; // the stored preview is optional
-      }
-      const shows = previewShowsEdit(photo, useDevelopStore.getState());
-      if (!cancelled && awaitingSourceRef.current && shows) {
-        present({ bitmap: bm, width: bm.width, height: bm.height, tier: "stored", window: null, whole: null, crop: null });
-      } else {
-        bm.close();
-      }
-    };
-
-    // `settled` is set for the image the load settled on: it is uploaded into the GPU
-    // source cache under the photo's key when it may stand for the photo (standsForPhoto),
-    // so a later re-open is a zero-decode bindSource, and under fallbackKey otherwise.
-    // Without it the image is a transient setImage: the camera's preview frames while the
-    // decode runs, which no neighbour is ever uploaded over (see fallbackKey).
-    const sendImage = (
-      image:
-        | ImageBitmap
-        | { kind: "float"; data: Float32Array; width: number; height: number; isFallbackPreview?: boolean }
-        | Float16Source,
-      isFallback = false,
-      cachedRaw = false,
-      settled?: { key: string; preview: boolean },
-    ) => {
-      if (cancelled) return;
-      const maxEdge = getSettings().developMaxEdge;
-      const src = image instanceof ImageBitmap ? { kind: "bitmap" as const, bitmap: image } : image;
-      if (settled) {
-        bridge.uploadSource("main", settled.key, src, maxEdge, isFallback, cachedRaw);
-        finalGenRef.current = settled.preview ? null : bridge.sourceGen;
-      } else {
-        bridge.setImage(src, maxEdge, isFallback, cachedRaw);
-      }
-      drawSource();
-    };
-
-    // Draws the source just handed over (sent, or bound from the GPU cache) with the
-    // photo's edit. The frame carries its own histogram, extended for the clipping
-    // readouts.
-    const drawSource = () => {
-      awaitingSourceRef.current = false;
-      sentGenRef.current = bridge.sourceGen;
-      setCantShow(null);
-      bridge.setAsShotTemperature(photo?.exif.colorTemperature ?? 6500);
-      const st = useDevelopStore.getState();
-      bridge.setContributedParams(stageBag(st.params, st.paramBag, st.bypassedPanels));
-      bridge.setParams(forRender(st.params, st.cropping));
-      histDirtyRef.current = false;
-      bridge.render(true, true);
-    };
-
-    // Mirror the photo's as-shot WB into the develop store (same logic on a cache
-    // hit and after a fresh decode).
-    const syncAsShotTemp = () => {
-      if (!photo?.exif.colorTemperature) return;
-      const st = useDevelopStore.getState();
-      if (st.photoId === photo.id && st.asShotTemperature !== photo.exif.colorTemperature) {
-        const asShot = photo.exif.colorTemperature;
-        const wasUninitialised = st.asShotTemperature === 6500;
-        const needsTempUpdate = wasUninitialised && st.params.temperature === 6500;
-        useDevelopStore.setState({
-          asShotTemperature: asShot,
-          ...(needsTempUpdate ? { params: { ...st.params, temperature: asShot } } : {}),
-        });
-      }
-    };
-
-    // Background-decode the prev/next photo (in the Library's visible order) so
-    // navigating to it is an instant bindSource hit. Best-effort and cancellable;
-    // gated by a preference. Uploads with bind=false so the displayed image is
-    // untouched. Runs after a short delay so rapid navigation skips it.
-    const prefetchNeighbors = async () => {
-      if (!getSettings().developPrefetchNeighbors) return;
-      await new Promise((r) => setTimeout(r, 250));
-      if (cancelled) return;
-      const ordered = visibleList();
-      const idx = ordered.findIndex((p) => p.id === photo.id);
-      if (idx < 0) return;
-      const neighbours = [ordered[idx + 1], ordered[idx - 1]].filter(Boolean);
-      const maxEdge = getSettings().developMaxEdge;
-      for (const np of neighbours) {
-        if (cancelled) return;
-        const nk = photoSourceKey(np);
-        if (await bridge.hasSource("main", nk)) continue;
-        if (cancelled) return;
-        // The develop renderer keeps the native sample (render-worker.ts), and a
-        // neighbour bound later restores what was uploaded, so ask for it now.
-        const image = await loadPhotoImage(np, { background: true, signal: abort.signal, sample: true });
-        if (cancelled) {
-          if (image?.kind === "bitmap") image.bitmap.close();
-          return;
-        }
-        // Null: the decoder passed it over for now, or nothing of it could be read.
-        if (!image) continue;
-        if (!standsForPhoto(image)) {
-          if (image.kind === "bitmap") image.bitmap.close();
-          continue;
-        }
-        notePreviewSource(bridge, nk, image);
-        noteStaleSource(bridge, nk, image);
-        if (image.kind === "bitmap") {
-          bridge.uploadSource("main", nk, { kind: "bitmap", bitmap: image.bitmap }, maxEdge, false, image.cached, false);
-        } else {
-          bridge.uploadSource("main", nk, image, maxEdge, image.kind === "float" ? image.isFallbackPreview : false, false, false);
-        }
-      }
-    };
-
-    const run = async () => {
-      void showStoredPreview();
-      await bridge.ready;
-      await editLoaded;
-      if (cancelled) return;
-
-      // Clear any zoom window left over from the previously open photo so the
-      // first frame renders the whole image (ViewportImage re-emits an ROI if the
-      // new photo ends up zoomed).
-      bridge.setViewport(null);
-
-      const key = photoSourceKey(photo);
-
-      // Fast path: the decoded source is already resident on the GPU from a prior
-      // open/thumbnail render — bind and render without decoding (instant re-entry).
-      if (await bridge.bindSource(key)) {
-        if (cancelled) return;
-        const kept = previewSources.get(bridge)?.get(key);
-        finalGenRef.current = kept === undefined ? bridge.sourceGen : null;
-        setSettledReason(previewReason(kept));
-        syncAsShotTemp();
-        drawSource();
-        // A photo held from an entry written before 3.1.0, shown again: its
-        // entry may have been rewritten while no view was listening, or never
-        // asked to be (a neighbour prefetch does not ask). Either way it takes
-        // the size and sample, or its rewrite is asked for and the event
-        // relays it.
-        if (staleSources.get(bridge)?.has(key)) {
-          void refreshStaleSource(photo).then((update) => {
-            if (update && relayStaleSource(bridge, key, () => update) && openPhotoIdRef.current === photo.id) {
-              bridge.render(false);
-            }
-          });
-        }
-        setLoading(false);
-        void prefetchNeighbors();
-        return;
-      }
-      if (cancelled) return;
-
-      const image = await loadPhotoImage(photo, {
-        onPreview: (preview) => {
-          if (cancelled) {
-            if (preview.kind === "bitmap") preview.bitmap.close();
-            return;
-          }
-          if (preview.kind === "bitmap") {
-            sendImage(preview.bitmap);
-          } else {
-            sendImage(preview);
-          }
-        },
-        signal: abort.signal,
-        // For api.develop.readSourceSample on a photo served from the RAW cache.
-        sample: true,
-      });
-      if (cancelled) {
-        if (image?.kind === "bitmap") image.bitmap.close();
-        return;
-      }
-      if (!image) { setLoading(false); return; }
-
-      syncAsShotTemp();
-
-      const fallback = image.kind === "bitmap" ? image.fallback : undefined;
-      setSettledReason(previewReason(fallback));
-      if (image.kind === "bitmap" && fallback && showsEdit(image)) {
-        editedPreviewRef.current = { photo, offline: fallback.offline };
-        holdEditedPreview(image.bitmap);
-        setLoading(false);
-        void prefetchNeighbors();
-        return;
-      }
-      const isFallback = image.kind === "float" ? (image.isFallbackPreview ?? false) : false;
-      const cachedRaw = image.kind === "bitmap" && (image.cached ?? false);
-      const stands = standsForPhoto(image);
-      const settled = stands
-        ? { key, preview: isPreview(image) }
-        : { key: fallbackKey(key), preview: true };
-      if (stands) {
-        notePreviewSource(bridge, key, image);
-        noteStaleSource(bridge, key, image);
-      }
-      if (image.kind === "bitmap") {
-        sendImage(image.bitmap, isFallback, cachedRaw, settled);
-      } else {
-        sendImage(image, isFallback, false, settled);
-      }
-      setLoading(false);
-      void prefetchNeighbors();
-    };
-
-    run();
-    return () => {
-      cancelled = true;
-      abort.abort();
-      stopWaiting?.();
-      endWait();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photo?.id, fileAccessNonce]);
-
-  // Only crop mode draws with the aspect, so outside it the source's own size, which
-  // comes with its first frame, doesn't render and measure that frame a second time.
-  const cropAspect = cropping ? aspect : 0;
+  // Only a tool's view draws with the aspect (crop mode's widened crop), so outside
+  // one the source's own size, which comes with its first frame, doesn't render and
+  // measure that frame a second time.
+  const viewAspect = view ? aspect : 0;
 
   // What the view draws of the edit. It stays the same object while an edit changes
   // nothing drawn, as a drag of the crop box in crop mode does, so that edit renders
   // nothing. The stage bag doesn't read the crop either.
-  const drawn = forRender(params, cropping);
+  const drawn = forRender(params, view);
 
   // Re-render on parameter changes. The frame that answers asks for the
   // histogram (setOnFrame above), throttled or settled per Preferences.
@@ -1047,11 +425,9 @@ export function useDevelopRenderer(
     const bridge = bridgeRef.current;
     if (!bridge) return;
     bridge.setAsShotTemperature(asShotTemperature);
-    bridge.setHslStyle(hslRangePref / 100, hslSmoothPref / 100);
     bridge.setContributedParams(stageBag(params, paramBag, bypassedPanels));
     bridge.setParams(drawn);
-    histDirtyRef.current = true;
-    histDirtyAtRef.current = performance.now();
+    histogram.markDirty();
     if (rafIdRef.current == null) {
       rafIdRef.current = requestAnimationFrame(() => {
         rafIdRef.current = null;
@@ -1060,7 +436,7 @@ export function useDevelopRenderer(
     }
     // `params` feeds only the stage bag here, which changes with `drawn`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drawn, paramBag, cropping, pipelineId, asShotTemperature, cropAspect, bypassedPanels, hslRangePref, hslSmoothPref]);
+  }, [drawn, paramBag, view, pipelineId, asShotTemperature, viewAspect, bypassedPanels]);
 
   // An edited stored preview standing in for the photo holds only while it shows the edit.
   useEffect(() => {
@@ -1115,7 +491,7 @@ export function useDevelopRenderer(
     posted: null as { idx: number; strength: number } | null,
   });
   useEffect(() => {
-    const idx = resolveVizMaskIndex(params.masks, hoveredMaskId, selectedMaskId, maskTab);
+    const idx = shownMaskId ? params.masks.findIndex((m) => m.id === shownMaskId) : -1;
     const a = vizAnim.current;
     if (idx >= 0) a.idx = idx; // keep last index while fading out
     a.target = idx >= 0 ? VIZ_STRENGTH : 0;
@@ -1137,10 +513,10 @@ export function useDevelopRenderer(
     return () => {
       if (a.raf != null) { cancelAnimationFrame(a.raf); a.raf = null; }
     };
-  }, [hoveredMaskId, selectedMaskId, maskTab, params.masks]);
+  }, [shownMaskId, params.masks]);
 
   // Sharpening preview: while Alt/Ctrl-dragging a Detail-panel sharpening slider,
-  // the shader renders a grayscale visualization of that sub-signal. Push the mode
+  // the shader renders a greyscale visualization of that sub-signal. Push the mode
   // straight through and re-render; releasing the key/drag sets it back to 0.
   useEffect(() => {
     const bridge = bridgeRef.current;
@@ -1187,7 +563,7 @@ export function useDevelopRenderer(
     tier,
     status,
     overflowedStages,
-    pictureCanvas,
+    pictureCanvas: picture.pictureCanvas,
     setViewport,
   };
 }

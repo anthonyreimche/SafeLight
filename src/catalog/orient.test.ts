@@ -4,7 +4,15 @@
 // be preserved in derived versions.
 
 import { describe, it, expect } from "vitest";
-import { previewUprightRotation, rotateFloatRGBA } from "./orient";
+import {
+  bakeFor,
+  bakeRotation,
+  manualRotation,
+  normalizeRotation,
+  orientationToRotation,
+  previewUprightRotation,
+  rotateFloatRGBA,
+} from "./orient";
 
 // Landscape sensor dims and portrait (pre-uprighted) dims for the aspect gate.
 const LAND = { w: 6000, h: 4000 };
@@ -118,5 +126,78 @@ describe("rotateFloatRGBA", () => {
       // a d
       expect(out.data).toEqual(buf(p(3), p(6), p(2), p(5), p(1), p(4)));
     });
+  });
+});
+
+describe("bake rotation", () => {
+  const orientations = [undefined, 1, 3, 6, 8];
+  const manualTurns = [0, 90, 180, 270];
+
+  // The formulas the import passes, the cache fill and the load path each
+  // carried inline before they shared these helpers.
+  const inlineManual = (rotation: number, orientation: number | undefined) =>
+    normalizeRotation(rotation - orientationToRotation(orientation));
+  const inlineBake = (rotation: number, orientation: number | undefined, oriented: boolean) =>
+    oriented ? inlineManual(rotation, orientation) : rotation;
+
+  const cases = orientations.flatMap((orientation) =>
+    manualTurns.map((turn) => ({
+      orientation,
+      turn,
+      rotation: normalizeRotation(orientationToRotation(orientation) + turn),
+    })),
+  );
+
+  it.each(cases)(
+    "manual turns are peeled off the EXIF portion (orientation $orientation, +$turn)",
+    ({ orientation, turn, rotation }) => {
+      expect(manualRotation(rotation, orientation)).toBe(inlineManual(rotation, orientation));
+      expect(manualRotation(rotation, orientation)).toBe(turn);
+    },
+  );
+
+  it.each(cases)(
+    "bakes only what the decode left undone (orientation $orientation, +$turn)",
+    ({ orientation, rotation }) => {
+      for (const oriented of [true, false]) {
+        expect(bakeRotation(rotation, orientation, oriented)).toBe(
+          inlineBake(rotation, orientation, oriented),
+        );
+      }
+    },
+  );
+
+  it("bakeFor reads the photo's rotation, falling back to its EXIF orientation", () => {
+    expect(bakeFor({ rotation: 180, exif: { orientation: 6 } }, true)).toEqual({
+      rotation: 180,
+      manual: 90,
+      bake: 90,
+    });
+    expect(bakeFor({ rotation: 180, exif: { orientation: 6 } }, false)).toEqual({
+      rotation: 180,
+      manual: 90,
+      bake: 180,
+    });
+    expect(bakeFor({ rotation: undefined, exif: { orientation: 8 } }, true)).toEqual({
+      rotation: 270,
+      manual: 0,
+      bake: 0,
+    });
+    expect(bakeFor({ rotation: undefined, exif: { orientation: 8 } }, false)).toEqual({
+      rotation: 270,
+      manual: 0,
+      bake: 270,
+    });
+  });
+
+  it("bakeFor agrees with the inline formula over the whole table", () => {
+    for (const { orientation, rotation } of cases) {
+      for (const oriented of [true, false]) {
+        const got = bakeFor({ rotation, exif: { orientation } }, oriented);
+        expect(got.rotation).toBe(rotation);
+        expect(got.manual).toBe(inlineManual(rotation, orientation));
+        expect(got.bake).toBe(inlineBake(rotation, orientation, oriented));
+      }
+    }
   });
 });

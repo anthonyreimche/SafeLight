@@ -38,9 +38,9 @@ export function learnedMatch(match: CameraMatch | undefined): DecodeLearned {
 }
 
 /** Puts what the decode learned on `photo` for the load in hand, and on the
- *  catalog's record of it as the record is now: a decode takes seconds, and
+ *  catalogue's record of it as the record is now: a decode takes seconds, and
  *  another window may have changed the photo meanwhile. A photo that left the
- *  catalog in that time gets nothing stored. */
+ *  catalogue in that time gets nothing stored. */
 export function rememberLearned(photo: CatalogPhoto, learned: DecodeLearned): void {
   if (Object.keys(learned).length === 0) return;
   Object.assign(photo.exif, learned);

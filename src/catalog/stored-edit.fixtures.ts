@@ -4,8 +4,8 @@
 // be preserved in derived versions.
 
 // Fixtures for the specs of code that edits a stored edit without opening
-// Develop (stored-edit, update-processing): a catalog photo, snapshots in the
-// two shapes a stack can hold, and an in-memory catalog storage.
+// Develop (stored-edit, update-processing): a catalogue photo, snapshots in the
+// two shapes a stack can hold, and an in-memory catalogue storage.
 
 import { setCatalogStorage, type CatalogStorage } from "./storage";
 import {
@@ -43,7 +43,7 @@ export function photo(id: string): CatalogPhoto {
   };
 }
 
-/** A snapshot as a current build writes it: params normalised, at the current
+/** A snapshot as a current build writes it: params normalized, at the current
  *  process version unless `params` names another. */
 export function snapshot(
   label: string,
@@ -77,17 +77,15 @@ export interface MemoryEdits {
   singles: EditState[];
 }
 
-/** Install a catalog storage that holds `seed` in memory. */
+/** Install a catalogue storage that holds `seed` in memory. */
 export function installMemoryStorage(...seed: EditState[]): MemoryEdits {
   const edits: MemoryEdits = { written: [], batches: [], singles: [] };
   const states = new Map<string, EditState>(seed.map((s) => [s.photoId, s]));
   const storage: CatalogStorage = {
-    getAllPhotos: async () => [],
     putPhoto: async () => {},
     putPhotos: async () => {},
-    deletePhoto: async () => {},
+    deletePhotos: async () => {},
     getEditState: async (id) => states.get(id),
-    getAllEditStates: async () => [...states.values()],
     putEditState: async (editState) => {
       states.set(editState.photoId, editState);
       edits.written.push(editState);

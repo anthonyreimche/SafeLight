@@ -6,7 +6,7 @@
 // An extension writing a photo's edit through api.catalog.putEditState, e.g. a
 // batch Auto in Library that includes the photo Develop holds. Develop's next
 // commit writes back the history it holds, so that photo must reload from the
-// catalog, or the extension's step is lost.
+// catalogue, or the extension's step is lost.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeScopedAPI } from "./host";
@@ -97,6 +97,30 @@ describe("api.catalog.putEditState on the photo Develop holds", () => {
     expect(labelsOf(useDevelopStore.getState().history)).toEqual(["Original", "Auto", "Contrast"]);
   });
 
+  it.each([
+    ["a null snapshot", [ORIGINAL, null]],
+    ["a snapshot with params that aren't an object", [ORIGINAL, { timestamp: 1, label: "Bad", params: 7 }]],
+    ["a stack that isn't a list", "nope"],
+  ])("rejects an edit holding %s, storing nothing", async (_label, stack) => {
+    const { written } = installMemoryStorage(edit([ORIGINAL]));
+    const bad = { photoId: PHOTO, stack, currentIndex: 1 } as unknown as EditState;
+
+    await expect(makeScopedAPI("ext.auto").catalog.putEditState(bad)).rejects.toThrow(
+      /edit state/i,
+    );
+
+    expect(written).toEqual([]);
+  });
+
+  it("accepts a snapshot without params, which Develop opens on the defaults", async () => {
+    const { written } = installMemoryStorage(edit([ORIGINAL]));
+    const bare = { timestamp: 1, label: "Bare" } as unknown as EditSnapshot;
+
+    await makeScopedAPI("ext.auto").catalog.putEditState(edit([ORIGINAL, bare]));
+
+    expect(labelsOf(written[written.length - 1].stack)).toEqual(["Original", "Bare"]);
+  });
+
   it("leaves Develop alone while it holds another photo", async () => {
     installMemoryStorage(edit([ORIGINAL]), edit([ORIGINAL], OTHER));
     await useDevelopStore.getState().loadEdit(OTHER, 4300);
@@ -106,5 +130,26 @@ describe("api.catalog.putEditState on the photo Develop holds", () => {
 
     expect(useDevelopStore.getState().photoId).toBe(OTHER);
     expect(useDevelopStore.getState().history).toBe(held);
+  });
+
+  it("lets Develop finish opening another photo when the edit is for the one it is leaving", async () => {
+    installMemoryStorage(edit([ORIGINAL]), edit([ORIGINAL, AUTO], OTHER));
+    await useDevelopStore.getState().loadEdit(PHOTO, 4300);
+    const storage = catalogStorage();
+    const read = storage.getEditState.bind(storage);
+    let answer = (): void => {};
+    const answered = new Promise<void>((resolve) => (answer = resolve));
+    vi.spyOn(storage, "getEditState").mockImplementationOnce(async (photoId) => {
+      await answered;
+      return read(photoId);
+    });
+
+    const opening = useDevelopStore.getState().loadEdit(OTHER, 4300);
+    await makeScopedAPI("ext.auto").catalog.putEditState(edit([ORIGINAL, AUTO]));
+    answer();
+    await opening;
+
+    expect(useDevelopStore.getState().photoId).toBe(OTHER);
+    expect(labelsOf(useDevelopStore.getState().history)).toEqual(["Original", "Auto"]);
   });
 });

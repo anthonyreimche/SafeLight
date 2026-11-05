@@ -31,6 +31,7 @@ const kit = (id: string, repos: string[]): StarterKit => ({
   name: id,
   description: "",
   icon: null,
+  default: false,
   extensions: repos.map((repo) => ({ repo, name: repo.toUpperCase(), summary: "" })),
 });
 const set = (...repos: string[]) => new Set(repos);

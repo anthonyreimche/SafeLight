@@ -74,7 +74,7 @@ describe("diskTrashAvailable", () => {
 });
 
 describe("deletePhotosFromDisk", () => {
-  it("moves selected photos to the trash and removes them from the catalog", async () => {
+  it("moves selected photos to the trash and removes them from the catalogue", async () => {
     h.photos = [fakePhoto("a", "D:/pics/a.NEF"), fakePhoto("b", "D:/pics/b.NEF")];
     const r = await deletePhotosFromDisk(["a", "b"]);
     expect(h.trash).toHaveBeenCalledWith("D:/pics/a.NEF");
@@ -83,7 +83,7 @@ describe("deletePhotosFromDisk", () => {
     expect(r).toMatchObject({ deleted: 2, skippedCopies: 0, failed: [] });
   });
 
-  it("keeps a photo in the catalog when trashing its file fails", async () => {
+  it("keeps a photo in the catalogue when trashing its file fails", async () => {
     h.photos = [fakePhoto("a", "D:/pics/a.NEF"), fakePhoto("b", "D:/pics/b.NEF")];
     h.trash.mockImplementation(async (p: string) => {
       if (p.includes("a.NEF")) throw new Error("EBUSY: locked");
@@ -91,7 +91,23 @@ describe("deletePhotosFromDisk", () => {
     const r = await deletePhotosFromDisk(["a", "b"]);
     expect(h.removePhotos).toHaveBeenCalledWith(["b"]);
     expect(r.deleted).toBe(1);
-    expect(r.failed).toEqual([{ filename: "a.NEF", message: "EBUSY: locked" }]);
+    expect(r.failed).toEqual([
+      { filename: "a.NEF", message: "the file is locked or not writable" },
+    ]);
+  });
+
+  it("says a file already gone is gone, and logs the raw error", async () => {
+    h.photos = [fakePhoto("a", "D:/pics/a.NEF")];
+    const gone = new Error("ENOENT: no such file or directory, stat 'D:/pics/a.NEF'");
+    h.trash.mockRejectedValue(gone);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const r = await deletePhotosFromDisk(["a"]);
+      expect(r.failed).toEqual([{ filename: "a.NEF", message: "the file is no longer there" }]);
+      expect(logged).toHaveBeenCalledWith("[library] couldn't move to trash:", "a.NEF", gone);
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("skips virtual copies — they don't own a file on disk", async () => {

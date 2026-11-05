@@ -114,6 +114,35 @@ describe("grid size persistence", () => {
   });
 });
 
+describe("clearing filters", () => {
+  it("clears the built-in filter and reaches every extension's onClear even when one throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { useUIStore } = await boot();
+    const { registerGridFilter } = await import("@/extensions/registry");
+    const later = vi.fn();
+    registerGridFilter("acme.a", {
+      id: "a",
+      test: () => true,
+      onClear: () => {
+        throw new Error("broken onClear");
+      },
+    });
+    registerGridFilter("acme.b", { id: "b", test: () => true, onClear: later });
+    useUIStore.getState().setFilter({ rating: 3 });
+
+    useUIStore.getState().clearFilters();
+
+    expect(later).toHaveBeenCalledTimes(1);
+    expect(useUIStore.getState().filter).toEqual({
+      rating: 0,
+      ratingOp: "gte",
+      flag: "any",
+      label: "any",
+      keywords: [],
+    });
+  });
+});
+
 describe("grid size stepping", () => {
   it("steps one slider stop per call", async () => {
     const { useUIStore, GRID_SIZE_STEP } = await boot();
