@@ -56,6 +56,10 @@ export default defineConfig({
   // DOM. WebGL tests need a real GPU context, so they live in
   // vitest.webgl.config.ts (`npm run test:webgl`) and are kept out of this run.
   test: {
+    // Several catalogue-scale tests take 2-3 s under a full local run; a shared
+    // CI runner is a few times slower, which put a different one past the 5 s
+    // default on each push. A hang still fails, just later.
+    testTimeout: process.env.CI ? 30_000 : 5_000,
     projects: [
       {
         extends: true,
