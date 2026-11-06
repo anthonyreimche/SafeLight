@@ -1279,3 +1279,30 @@ describe("an official stage's constants", () => {
     expect(uniforms).not.toContain("#define MAX_SPOTS 32");
   });
 });
+
+// A paint texture is a sampler of the stage's own, read through a helper under
+// its key that picks the layer's tile.
+describe("paint textures", () => {
+  const PAINTER = flagged({
+    id: "acme.paint",
+    phase: "effects",
+    glsl: "vec4 p = layers(0, srcUv); c = mix(c, p.rgb, p.a);",
+    textures: [{ key: "layers", kind: "paint" }],
+  });
+  const name = `${uniformPrefix(PAINTER.id)}layers`;
+
+  it("declares a sampler and a layer-reading helper under the key", () => {
+    const built = buildStageInjection([PAINTER], V2_VARIANT);
+    expect(built.injection.uniforms).toContain(`uniform sampler2D ${name}_tex;`);
+    expect(built.injection.helpers).toContain(`vec4 ${name}(int layer, vec2 uv)`);
+    expect(built.injection.effects).toContain(`${name}(0, srcUv)`);
+    expect(built.textureBindings).toEqual([{ qualifiedKey: "acme.paint.layers", glslName: name, kind: "paint" }]);
+  });
+
+  it("counts against the sampler budget", () => {
+    const layersAt = (budget: number): (string | undefined)[] =>
+      buildStageInjection([STAGE, PAINTER], V2_VARIANT, budget).prepass.map((p) => p.layerUniform);
+    expect(layersAt(1)).toEqual([`${uniformPrefix(STAGE.id)}stageResultLayer`]);
+    expect(layersAt(2)).toEqual([undefined]);
+  });
+});

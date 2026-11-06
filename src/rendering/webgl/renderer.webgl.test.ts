@@ -2115,6 +2115,48 @@ describe("coverage-kind stage textures", () => {
   });
 });
 
+describe("paint-kind stage textures", () => {
+  const PAINT_GAIN: ProcessingStageContribution = {
+    id: "acme.paint",
+    name: "Paint gain",
+    phase: "scene-linear",
+    glsl: "vec4 p = layers(1, srcUv); lin *= 1.0 + p.a * p.r;",
+    uniforms: [],
+    textures: [{ key: "layers", kind: "paint" }],
+  };
+
+  function paintFrame(bag: Record<string, unknown>): Frame {
+    return withRenderer({ stages: [PAINT_GAIN], pipeline: LINEAR_PROBE_PIPELINE }, (renderer) => {
+      renderer.setImage(flatSource(SIZE));
+      renderer.setParams(identityParams());
+      renderer.setContributedParams(bag);
+      return capture(renderer);
+    });
+  }
+
+  it("reads the painted layer's colour and coverage where it was painted", () => {
+    const frame = paintFrame({
+      "acme.paint.layers": [
+        { id: "under", dabs: [{ ...RIGHT, color: [1, 1, 1] }] },
+        { id: "over", dabs: [{ ...LEFT, color: [0.5, 0, 0] }] },
+      ],
+    });
+    expect(pixelAt(frame, 4, 16)[1]).toBeCloseTo(FLAT_GREY * 1.5, 2);
+    expect(pixelAt(frame, 28, 16)[1]).toBeCloseTo(FLAT_GREY, 2);
+  });
+
+  it("reads an absent or malformed value as unpainted", () => {
+    const bags: Record<string, unknown>[] = [
+      {},
+      { "acme.paint.layers": [] },
+      { "acme.paint.layers": [{ id: "a", dabs: [] }, { id: "b", dabs: [LEFT] }] },
+    ];
+    for (const bag of bags) {
+      expect(pixelAt(paintFrame(bag), 4, 16)[1]).toBeCloseTo(FLAT_GREY, 2);
+    }
+  });
+});
+
 // A renderer keeps its coverage atlases from frame to frame, so only a later
 // frame shows a change the atlas missed.
 describe("brush coverage across frames", () => {

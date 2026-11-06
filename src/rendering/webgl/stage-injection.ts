@@ -65,8 +65,9 @@ export interface ContributedBinding {
 
 /** A stage-declared texture, resolved to its namespaced GLSL identifier so
  *  render() can bind it each frame: a sampler for "lut"/"dynamic" data uploaded
- *  through setStageTexture, or the brush-atlas channel uniform for "coverage"
- *  dabs painted into the param bag. */
+ *  through setStageTexture, the brush-atlas channel uniform for "coverage"
+ *  dabs painted into the param bag, or the `{glslName}_tex` sampler behind a
+ *  "paint" key's helper. */
 export interface StageTextureBinding {
   /** Qualified key "{stageId}.{key}" — also the stage-texture / param-bag key. */
   qualifiedKey: string;
@@ -84,6 +85,18 @@ function coverageHelperGlsl(name: string): string {
   if (ch < 0) return 0.0;
   vec4 t = texture(uMaskTex, uv);
   return ch == 0 ? t.r : ch == 1 ? t.g : ch == 2 ? t.b : t.a;
+}`;
+}
+
+/** The GLSL behind a paint-kind key: the stage calls `key(layer, uv)` and reads
+ *  the layer's tile of the paint texture (2×2 tiles, layer n in tile n). The
+ *  uv is held half a texel inside the tile, so filtering never reads the next. */
+function paintHelperGlsl(name: string): string {
+  return `vec4 ${name}(int layer, vec2 uv) {
+  if (layer < 0 || layer > 3) return vec4(0.0);
+  vec2 inset = min(vec2(0.5), 1.0 / vec2(textureSize(${name}_tex, 0)));
+  vec2 tile = vec2(float(layer % 2), float(layer / 2));
+  return texture(${name}_tex, (tile + clamp(uv, inset, 1.0 - inset)) * 0.5);
 }`;
 }
 
@@ -409,16 +422,18 @@ export interface MaskSlotBinding {
 export const RESULT_ARRAY_UNIFORM = "uStageResults";
 
 /** The samplers the stages add to the develop program while each keeps its own:
- *  one per prepass result, and one per lut or dynamic texture (coverage rides
- *  the brush atlas; an official stage's per-photo textures take units the
+ *  one per prepass result, and one per lut, dynamic or paint texture
+ *  (coverage rides the brush atlas; an official stage's per-photo textures take units the
  *  develop program counts as its own, DEVELOP_SAMPLERS). A core stage declares
  *  neither. */
+const OWN_SAMPLER_KINDS: ReadonlySet<TextureRequirement["kind"]> = new Set(["lut", "dynamic", "paint"]);
+
 function stageSamplers(ordered: readonly ProcessingStageContribution[]): number {
   let samplers = 0;
   for (const s of ordered) {
     if (isCoreStage(s)) continue;
     if ((s.passes?.length ?? 0) > 0) samplers++;
-    samplers += (s.textures ?? []).filter((t) => t.kind === "lut" || t.kind === "dynamic").length;
+    samplers += (s.textures ?? []).filter((t) => OWN_SAMPLER_KINDS.has(t.kind)).length;
   }
   return samplers;
 }
@@ -865,7 +880,8 @@ function declareUniforms(s: ProcessingStageContribution, uPfx: string, declared:
 
 /** Stage textures: LUT/dynamic kinds get a namespaced sampler bound from the
  *  uploaded data; coverage kinds ride the brush atlas (no texture unit) and
- *  are exposed to the inline glsl / helpers as a function under their `key`.
+ *  paint kinds get a sampler of their own, both exposed to the inline glsl /
+ *  helpers as a function under their `key`.
  *  The declarations are in the signature, so a change in the texture set
  *  recompiles, but a data swap or a new dab (same set) doesn't. */
 function declareTextures(s: ProcessingStageContribution, uPfx: string, declared: Declared): void {
@@ -874,6 +890,9 @@ function declareTextures(s: ProcessingStageContribution, uPfx: string, declared:
     if (t.kind === "coverage") {
       declared.uniforms.push(`uniform int ${glslName}_ch;`);
       declared.helpers.push(coverageHelperGlsl(glslName));
+    } else if (t.kind === "paint") {
+      declared.uniforms.push(`uniform sampler2D ${glslName}_tex;`);
+      declared.helpers.push(paintHelperGlsl(glslName));
     } else {
       declared.uniforms.push(`uniform sampler2D ${glslName};`);
     }

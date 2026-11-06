@@ -83,7 +83,8 @@ import type {
   StageSpace,
   StageTextureData,
 } from "@/extensions/types";
-import { coverageItemsFromBag } from "./stage-coverage";
+import { coverageItemsFromBag, paintLayersFromValue } from "./stage-coverage";
+import { PaintBaker, type PaintBakeResult } from "./paint-bake";
 import {
   OUT_SPACE_CODE,
   outMatrixColumnMajor,
@@ -157,7 +158,7 @@ const MAX_EDGE = 2560;
 // tokens, which compare the list by reference, see no change between frames.
 const NO_TRANSFORM_BINDINGS: readonly ContributedBinding[] = [];
 
-/** The unit each stage texture binds at: lut and dynamic textures from
+/** The unit each stage texture binds at: lut, dynamic and paint textures from
  *  STAGE_TEX_UNIT_BASE (at most MAX_STAGE_TEXTURES of them), photo textures at
  *  PHOTO_TEX_UNITS and then right after the others. Coverage textures ride the
  *  brush atlas and take none. */
@@ -328,6 +329,12 @@ export class WebGLRenderer {
    *  its items or the image's size change. */
   private atlases = new Map<string, { inputs: CoverageInputs; data: StageTextureData; sig: string }>();
   private atlasVersion = 0;
+  /** Each paint texture's last bake (TextureRequirement "paint"), redone when
+   *  its layers or the image's size change. Versions share atlasVersion. */
+  private paints = new Map<
+    string,
+    { inputs: CoverageInputs; baker: PaintBaker; baked: PaintBakeResult | null; data: StageTextureData }
+  >();
   private dummyStageTex: WebGLTexture | null = null;
   // The multi-pass prepass framework (prepass-runner.ts) and the stage set's prepass stages.
   private readonly prepass: PrepassRunner;
@@ -679,6 +686,31 @@ export class WebGLRenderer {
         : { data: new Uint8Array(4), width: 1, height: 1, format: "rgba8", version: ++this.atlasVersion };
     });
     return held;
+  }
+
+  /** The paint texture `qk` baked from `value`'s layers for this image: the
+   *  last bake while neither changed. */
+  private paint(qk: string, value: unknown): StageTextureData {
+    let entry = this.paints.get(qk);
+    if (!entry) {
+      entry = { inputs: new CoverageInputs(), baker: new PaintBaker(), baked: null, data: this.emptyPaint() };
+      this.paints.set(qk, entry);
+    }
+    const held = entry;
+    held.inputs.bakeIfChanged([this.imageWidth, this.imageHeight, value], () => {
+      const aspect = this.imageHeight > 0 ? this.imageWidth / this.imageHeight : 1;
+      const baked = held.baker.bake(paintLayersFromValue(value), aspect);
+      if (baked !== null && baked === held.baked) return;
+      held.baked = baked;
+      held.data = baked
+        ? { data: baked.data, width: baked.size, height: baked.size, format: "rgba8", version: ++this.atlasVersion }
+        : this.emptyPaint();
+    });
+    return held.data;
+  }
+
+  private emptyPaint(): StageTextureData {
+    return { data: new Uint8Array(4), width: 1, height: 1, format: "rgba8", version: ++this.atlasVersion };
   }
 
   private coverageKeys(): string[] {
@@ -1706,7 +1738,9 @@ export class WebGLRenderer {
             ? this.ensureStageTexture(tb.qualifiedKey, photoTextureData(bag[tb.qualifiedKey]), this.uploadedPhotoTex)
             : tb.kind === "atlas"
               ? this.ensureStageTexture(tb.qualifiedKey, this.atlas(tb.qualifiedKey, bag[tb.qualifiedKey]).data, this.uploadedPhotoTex)
-              : this.ensureStageTexture(tb.qualifiedKey);
+              : tb.kind === "paint"
+                ? this.ensureStageTexture(tb.qualifiedKey, this.paint(tb.qualifiedKey, bag[tb.qualifiedKey]), this.uploadedPhotoTex)
+                : this.ensureStageTexture(tb.qualifiedKey);
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.uniform1i(loc, unit);
       }

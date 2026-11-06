@@ -220,6 +220,15 @@ function photoTextureError(c: ProcessingStageContribution, extensionId?: string)
   return `texture "${photo.key}" is a ${photo.kind} texture, which only a stage of Safelight's own fills (derive)`;
 }
 
+/** More than one paint texture on a stage: its layers already share one. */
+function paintTextureError(c: ProcessingStageContribution): string | null {
+  const textures: unknown = c.textures;
+  if (!Array.isArray(textures)) return null;
+  const paint = (textures as TextureRequirement[]).filter((t) => t?.kind === "paint");
+  if (paint.length < 2) return null;
+  return `declares ${paint.length} paint textures; a stage has at most one paint texture, whose layers hold every stroke`;
+}
+
 /** Runtime check of the stage's contract, and of who may register it: ids under
  *  "core." and the built-in denoiser's belong to the core extension, so any other
  *  `extensionId` is refused them. Without one, the stage is checked as an
@@ -279,7 +288,7 @@ export function checkStageContract(
       warnings.push(`${stagePrefix}: geometry stages run before the image is sampled, so space is ignored`);
     }
   }
-  const shape = uniformShapeError(c, extensionId) ?? photoTextureError(c, extensionId);
+  const shape = uniformShapeError(c, extensionId) ?? photoTextureError(c, extensionId) ?? paintTextureError(c);
   if (shape) return fail(shape);
   const reads: unknown = c.reads;
   if (reads !== undefined && (typeof reads !== "string" || !Object.hasOwn(READS, reads)))

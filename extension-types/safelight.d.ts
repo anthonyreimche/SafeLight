@@ -664,8 +664,15 @@ export interface TextureRequirement {
      *  own stages: `derive` returns up to four `{ id, dabs }` items (BrushDab[],
      *  as a coverage texture's) under the texture's key, and the renderer bakes
      *  them into the four channels of this texture, in order, so the first item
-     *  is channel 0. Needs Safelight 3.2.0. */
-    kind: "lut" | "coverage" | "dynamic" | "photo" | "atlas";
+     *  is channel 0. Needs Safelight 3.2.0. "paint": coloured brush strokes on
+     *  up to MAX_PAINT_LAYERS layers. The photo's paramBag value at
+     *  "{stageId}.{key}" is a PaintLayer[]; the renderer bakes each layer into a
+     *  tile of one texture per render, and the stage's inline glsl / helpers read
+     *  it as `vec4 key(int layer, vec2 uv)`: the layer's straight colour (rgb,
+     *  display-encoded) and coverage (a) at source-UV, vec4(0) for a layer that
+     *  isn't painted. Not available inside passes. One per stage; it takes a
+     *  stage texture unit, as "lut" and "dynamic" do. */
+    kind: "lut" | "coverage" | "dynamic" | "photo" | "atlas" | "paint";
     width?: number;
     height?: number;
     format?: "rgba8" | "rgba16f" | "r8";
@@ -813,6 +820,22 @@ export interface StageDeriveContext {
  *  (column-major) or array uniform, or an image-space matrix (UniformDeclaration
  *  `space`). */
 export type StageValue = number | boolean | number[] | ImageSpaceMatrix;
+
+/** The most layers a paint texture (TextureRequirement "paint") bakes. */
+declare const MAX_PAINT_LAYERS = 4;
+
+/** A brush dab that lays colour: `color` is display-encoded sRGB, 0 to 1. A
+ *  change of colour starts a new stroke, as `strokeStart` does. */
+export interface PaintDab extends BrushDab {
+    color: [number, number, number];
+}
+
+/** One layer of a paint texture, in the order the layers bake: the first is
+ *  layer 0. Other fields an extension keeps on it (a name) are left alone. */
+export interface PaintLayer {
+    id: string;
+    dabs: PaintDab[];
+}
 
 /** One brush stroke an atlas texture (TextureRequirement "atlas") bakes into
  *  a channel of its own. */
