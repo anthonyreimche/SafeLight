@@ -183,9 +183,9 @@ bash build-scripts/linux-build.sh deb   # deb | rpm | pacman | AppImage | flatpa
 sudo apt install flatpak flatpak-builder
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak install -y flathub \
-  org.freedesktop.Platform//24.08 \
-  org.freedesktop.Sdk//24.08 \
-  org.electronjs.Electron2.BaseApp//24.08
+  org.freedesktop.Platform//26.08 \
+  org.freedesktop.Sdk//26.08 \
+  org.electronjs.Electron2.BaseApp//26.08
 ```
 
 #### On Windows (via WSL2)

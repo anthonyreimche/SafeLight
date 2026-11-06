@@ -915,11 +915,8 @@ const autoInstallable = (m: ExtensionManifest, info: ExtUpdateInfo): boolean =>
 /** Refresh update info for every installed extension, and auto-update the ones
  *  autoInstallable allows when the user has opted in. Gated by the
  *  checkExtensionUpdates setting. Pass `force` to bypass the per-extension TTL
- *  (used by the periodic poll so it always re-checks).
- *
- *  Checks run through a bounded worker pool rather than fixed batches: there's no
- *  barrier between items, so one slow repo can't hold up the rest and the sweep
- *  finishes in roughly a single round-trip instead of ceil(N / batch) waves. */
+ *  (used by the periodic poll so it always re-checks). Checks run eight at a
+ *  time, so the sweep finishes in roughly one round-trip. */
 export async function checkAllExtensionUpdates(force = false): Promise<void> {
   const native = window.safelightNative;
   if (!native?.plugins?.remoteManifest) return;
@@ -931,23 +928,59 @@ export async function checkAllExtensionUpdates(force = false): Promise<void> {
   } catch {
     return;
   }
-  const CONCURRENCY = 8;
+  await inPool(list, 8, async (m) => {
+    const info = await checkExtensionUpdate(m, force);
+    if (!settings.autoUpdateExtensions || !info || !autoInstallable(m, info)) return;
+    const repo = updateRepoFor(m);
+    if (!repo) return;
+    try {
+      await updateExtension(repo, info.latestTag ?? undefined, m.id);
+    } catch (e) {
+      console.error(`[extensions] auto-update failed for ${m.id}:`, e);
+    }
+  });
+}
+
+/** Run `task` over `items`, at most `limit` at a time. A worker pool rather than
+ *  fixed batches: one slow item never holds up the rest. */
+async function inPool<T>(
+  items: readonly T[],
+  limit: number,
+  task: (item: T) => Promise<void>,
+): Promise<void> {
   let next = 0;
   const worker = async () => {
-    while (next < list.length) {
-      const m = list[next++];
-      const info = await checkExtensionUpdate(m, force);
-      if (!settings.autoUpdateExtensions || !info || !autoInstallable(m, info)) continue;
-      const repo = updateRepoFor(m);
-      if (!repo) continue;
-      try {
-        await updateExtension(repo, info.latestTag ?? undefined, m.id);
-      } catch (e) {
-        console.error(`[extensions] auto-update failed for ${m.id}:`, e);
-      }
-    }
+    while (next < items.length) await task(items[next++]);
   };
-  await Promise.all(
-    Array.from({ length: Math.min(CONCURRENCY, list.length) }, worker),
-  );
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+export interface UpdateTarget {
+  id: string;
+  repo: string;
+  version: string;
+}
+
+export interface UpdateAllResult {
+  updated: ExtensionManifest[];
+  failed: { id: string; error: string }[];
+}
+
+/** Update each target to the version its check offered, a few at a time. One
+ *  failing doesn't stop the rest; `onSettled` fires as each one finishes. */
+export async function updateExtensions(
+  targets: readonly UpdateTarget[],
+  onSettled?: (settled: number) => void,
+): Promise<UpdateAllResult> {
+  const result: UpdateAllResult = { updated: [], failed: [] };
+  let settled = 0;
+  await inPool(targets, 4, async (t) => {
+    try {
+      result.updated.push(await updateExtension(t.repo, t.version, t.id));
+    } catch (e) {
+      result.failed.push({ id: t.id, error: errorText(e) });
+    }
+    onSettled?.(++settled);
+  });
+  return result;
 }

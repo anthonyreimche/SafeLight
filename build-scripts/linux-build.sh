@@ -42,7 +42,7 @@ fi
 if [ "$TARGET" = "flatpak" ]; then
   # Surface the real flatpak error instead of "status code 1".
   export DEBUG="@malept/flatpak-bundler${DEBUG:+,$DEBUG}"
-  for ref in org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08 org.electronjs.Electron2.BaseApp//24.08; do
+  for ref in org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08 org.electronjs.Electron2.BaseApp//26.08; do
     flatpak info "$ref" >/dev/null 2>&1 || {
       echo "ERROR: flatpak runtime $ref not installed. Run:"
       echo "  flatpak install -y flathub $ref"
@@ -54,8 +54,8 @@ if [ "$TARGET" = "flatpak" ] && ! command -v flatpak-builder >/dev/null 2>&1; th
   echo "ERROR: flatpak-builder not found. One-time setup inside WSL:"
   echo "  sudo apt install flatpak flatpak-builder"
   echo "  flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo"
-  echo "  flatpak install -y flathub org.freedesktop.Platform//24.08 \\"
-  echo "    org.freedesktop.Sdk//24.08 org.electronjs.Electron2.BaseApp//24.08"
+  echo "  flatpak install -y flathub org.freedesktop.Platform//26.08 \\"
+  echo "    org.freedesktop.Sdk//26.08 org.electronjs.Electron2.BaseApp//26.08"
   exit 1
 fi
 
