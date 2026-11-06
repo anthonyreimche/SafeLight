@@ -6,8 +6,9 @@
 // Built-in extension manager, rendered inside the Extensions window as a
 // Preferences-style master/detail "store":
 //   • Updates   — installed extensions with a newer GitHub release, each with
-//                 an Update button. First in the sidebar so pending updates are
-//                 the first thing seen; a badge shows the count.
+//                 an Update button, and Update all for the ones the badge
+//                 counts. First in the sidebar so pending updates are the
+//                 first thing seen; a badge shows the count.
 //   • Browse    — search official extensions (GitHub repos tagged with the
 //                 safelight-extension topic), shown as shelves on its home
 //                 page and as category pages picked from the rail, plus a
@@ -30,6 +31,7 @@ import {
   setExtensionEnabled,
   uninstallPlugin,
   updateExtension,
+  updateExtensions,
   useDisabledExtensions,
   usePluginRunning,
 } from "./loader";
@@ -479,6 +481,33 @@ export function ExtensionManagerPanel() {
     }
   };
 
+  const [updatingAll, setUpdatingAll] = useState<{ settled: number; total: number } | null>(null);
+  const updateAll = async (targets: ExtensionManifest[]) => {
+    const total = targets.length;
+    setBusy("update-all");
+    setUpdatingAll({ settled: 0, total });
+    setMsg(null);
+    try {
+      const { updated, failed } = await updateExtensions(
+        targets.map((m) => ({ id: m.id, repo: repoFor(m)!, version: updates[m.id]!.latestTag! })),
+        (settled) => setUpdatingAll({ settled, total }),
+      );
+      if (failed.length === 0)
+        setMsg(`Updated ${updated.length} extension${updated.length === 1 ? "" : "s"}.`);
+      else
+        setMsg(
+          `Updated ${updated.length} of ${total}. Couldn't update ` +
+            failed.map((f) => `${nameOf(f.id)}: ${f.error}`).join("; ") +
+            ".",
+          true,
+        );
+      refresh();
+    } finally {
+      setUpdatingAll(null);
+      setBusy(null);
+    }
+  };
+
   const toggle = (id: string, enable: boolean) => {
     setMsg(null);
     void (async () => {
@@ -703,17 +732,31 @@ export function ExtensionManagerPanel() {
                     ? `${installable.length} update${installable.length > 1 ? "s" : ""} available`
                     : "Updates"}
                 </SectionLabel>
-                <button
-                  onClick={() => {
-                    setMsg(null);
-                    for (const m of list) void checkExtensionUpdate(m, true);
-                  }}
-                  disabled={busy !== null}
-                  title="Check all installed extensions for new releases"
-                  className="rounded px-1.5 text-[12px] leading-none text-text-muted hover:text-text-primary disabled:opacity-40"
-                >
-                  ↻
-                </button>
+                <div className="flex items-center gap-1.5">
+                  {(updatingAll || installable.length > 0) && (
+                    <button
+                      onClick={() => void updateAll(installable)}
+                      disabled={busy !== null}
+                      title="Update every extension listed here that can be updated"
+                      className="shrink-0 rounded bg-slider-fill px-3 py-1 font-medium text-white hover:opacity-90 disabled:opacity-40"
+                    >
+                      {updatingAll
+                        ? `Updating ${updatingAll.settled} of ${updatingAll.total}…`
+                        : `Update all (${installable.length})`}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setMsg(null);
+                      for (const m of list) void checkExtensionUpdate(m, true);
+                    }}
+                    disabled={busy !== null}
+                    title="Check all installed extensions for new releases"
+                    className="rounded px-1.5 text-[12px] leading-none text-text-muted hover:text-text-primary disabled:opacity-40"
+                  >
+                    ↻
+                  </button>
+                </div>
               </div>
 
               {pending.length === 0 ? (

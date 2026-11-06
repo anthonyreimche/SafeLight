@@ -14,7 +14,7 @@ Safelight is a React + TypeScript application with a WebGL2 image pipeline, ship
 - **Docking**: dockview 6 (panel rails, tabs, floating windows)
 - **Rendering**: WebGL2 in a Web Worker (`OffscreenCanvas`); 16-bit float textures
 - **RAW**: libraw-wasm built against LibRaw 0.22.1, vendored in `src/raw/vendor/libraw-wasm/` (aliased in `vite.config.ts`; local fixes listed in its `PATCHES.md`), run as a pool of workers on SharedArrayBuffer; plus an in-house TIFF/CFA decoder
-- **Build**: Vite 8; Electron 42 + electron-builder 26 for the desktop app
+- **Build**: Vite 8; Electron 45 + electron-builder 26 for the desktop app
 
 ## Project Structure
 
