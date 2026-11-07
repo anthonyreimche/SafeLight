@@ -27,7 +27,8 @@ import { getAllDescriptors } from "@/extensions/param-registry";
 //    comes from GPU processing stage(s); `bypassParamBag` drops the owning
 //    extension's stage params from the contributed bag, so the renderer binds
 //    each uniform's declared default (renderer.ts: `?? b.default`) — the
-//    stage's neutral state. No worker change.
+//    stage's neutral state. Its stages' texture values (coverage, paint,
+//    atlas), which have no uniform, are dropped with them. No worker change.
 //
 // Crop & Straighten and Transform ARE included (people want to see the framed
 // vs unframed image). Bypassing Crop shows the full frame; bypassing Transform
@@ -90,7 +91,8 @@ export function applyPanelBypass(
 
 // Return a copy of the contributed (extension stage) param bag with the stage
 // params of every bypassed panel that owns no DevelopParams removed, so the
-// renderer falls back to each uniform's declared default. Bypassing such a panel
+// renderer falls back to each uniform's declared default and each texture
+// value's empty one. Bypassing such a panel
 // neutralizes all of its extension's stages — the contribution model has no
 // panel↔stage link, so the owning extension is the finest grain available.
 // Returns the same object when no such panel is bypassed.
@@ -110,11 +112,17 @@ export function bypassParamBag(
   }
   if (owners.size === 0) return bag;
   const descriptors = getAllDescriptors();
+  const stagePrefixes = Object.values(state.processingStages)
+    .filter((st) => owners.has(st.extensionId))
+    .map((st) => `${st.id}.`);
+  const owned = (k: string): boolean => {
+    const d = descriptors.get(k);
+    return d ? owners.has(d.extensionId) : stagePrefixes.some((pre) => k.startsWith(pre));
+  };
   let changed = false;
   const next: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(bag)) {
-    const d = descriptors.get(k);
-    if (d && owners.has(d.extensionId)) {
+    if (owned(k)) {
       changed = true; // drop -> renderer binds the uniform default (neutral)
       continue;
     }

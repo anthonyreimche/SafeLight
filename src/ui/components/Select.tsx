@@ -13,7 +13,8 @@
 // label that still doesn't fit shows in full on hover. Keyboard: open with
 // Enter/Space/↑/↓, navigate with ↑/↓/Home/End, type to jump, Enter to choose,
 // Esc to close. Shift+wheel over the closed trigger picks the next or previous
-// option.
+// option, and so does the plain wheel when the dropdownWheelSelect preference
+// is on.
 
 import {
   useCallback,
@@ -26,6 +27,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useSettings } from "@/state/settings-store";
 import { pushEscapeHandler } from "@/ui/escape-stack";
 import { uiZoom } from "@/ui/frame-point";
 
@@ -185,10 +187,12 @@ export function Select({
   }, [open, place]);
 
   // Shift+wheel over the closed trigger steps through the options, stopping at
-  // the ends. Non-passive and ref-read for the same reasons as Slider's.
+  // the ends; the plain wheel does too when the preference is on. Non-passive
+  // and ref-read for the same reasons as Slider's.
+  const plainWheel = useSettings((s) => s.dropdownWheelSelect);
   const wheelRef = useRef<(e: WheelEvent) => void>(() => {});
   wheelRef.current = (e: WheelEvent) => {
-    if (!e.shiftKey || open || disabled) return;
+    if (!(e.shiftKey || plainWheel) || open || disabled) return;
     // Shift turns the wheel horizontal on some systems.
     const delta = e.deltaY || e.deltaX;
     if (delta === 0) return;

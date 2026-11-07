@@ -88,6 +88,7 @@ import {
 } from "./develop-host";
 import { MaskScopeProvider, useMaskScope, useParamScope } from "@/modules/develop/mask-scope";
 import { showMaskCoverage } from "@/modules/develop/mask-coverage-view";
+import { ownStageValues, setStageViewValues } from "@/modules/develop/stage-view-values";
 import { useMaskPanels } from "@/modules/develop/mask-panels";
 import {
   exportPhotos,
@@ -382,6 +383,11 @@ export function makeScopedAPI(extensionId: string): SafelightAPI {
       probe: probeCanvas,
       probeMaskColour: (u, v) => getRenderBridge().probe(u, v, "mask"),
       showMaskCoverage,
+      setViewValues: (values) =>
+        setStageViewValues(
+          extensionId,
+          values && ownStageValues(extensionId, values, Object.values(useRegistry.getState().processingStages)),
+        ),
       useMaskPanels,
       useOlderProcessing: () => useDevelopStore((s) => usesOlderProcessing(s.params)),
       autoAdjust,

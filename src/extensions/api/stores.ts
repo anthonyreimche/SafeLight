@@ -343,6 +343,9 @@ export interface AppSettings {
   windowDim: number;
   /** Clicking a slider jumps its value to the cursor. */
   sliderJumpToCursor: boolean;
+  /** The plain wheel over a closed dropdown picks the previous or next option;
+   *  off, only Shift+wheel does. */
+  dropdownWheelSelect: boolean;
   /** Collapsing a dock panel writes into the picked saved layout. */
   autoSaveCollapsedPanels: boolean;
 

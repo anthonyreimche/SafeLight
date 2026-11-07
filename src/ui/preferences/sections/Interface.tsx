@@ -32,6 +32,7 @@ export function InterfaceSection() {
   const assessBorderPct = useSettings((s) => s.assessBorderPct);
   const windowDim = useSettings((s) => s.windowDim);
   const sliderJumpToCursor = useSettings((s) => s.sliderJumpToCursor);
+  const dropdownWheelSelect = useSettings((s) => s.dropdownWheelSelect);
   const restoreLastProject = useSettings((s) => s.restoreLastProject);
   const autoSaveCollapsedPanels = useSettings((s) => s.autoSaveCollapsedPanels);
 
@@ -95,6 +96,12 @@ export function InterfaceSection() {
         hint="Clicking anywhere on a slider snaps its value to the cursor, then drags from there. Off keeps the default: a click grabs the current value and only dragging changes it. Hold Shift while dragging for fine control either way."
         checked={sliderJumpToCursor}
         onChange={(v) => updateSettings({ sliderJumpToCursor: v })}
+      />
+      <ToggleField
+        label="Scroll to change dropdowns"
+        hint="Scrolling over a closed dropdown picks the previous or next option. Off keeps the default: the wheel scrolls the panel, and Shift+wheel changes the dropdown."
+        checked={dropdownWheelSelect}
+        onChange={(v) => updateSettings({ dropdownWheelSelect: v })}
       />
       <ToggleField
         label="Restore last project on launch"
@@ -193,10 +200,11 @@ export const interfaceSection: PrefSection = {
     "Colour assessment border",
     "Background dimming",
     "Sliders jump to cursor",
+    "Scroll to change dropdowns",
     "Restore last project on launch",
     "Welcome setup",
     "Interface font",
   ),
-  keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal", "slider", "jump", "cursor", "click", "drag"],
+  keywords: ["surround", "background", "grey", "gray", "neutral", "assessment", "proof", "mat", "border", "dim", "darken", "window", "preferences", "modal", "slider", "jump", "cursor", "click", "drag", "dropdown", "scroll", "wheel"],
   render: () => <InterfaceSection />,
 };

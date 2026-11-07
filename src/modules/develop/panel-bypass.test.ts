@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_DEVELOP_PARAMS, type DevelopParams } from "@/catalog/types";
-import { useRegistry, type RegisteredPanel } from "@/extensions/registry";
+import { useRegistry, type RegisteredPanel, type RegisteredProcessingStage } from "@/extensions/registry";
 import { registerStageParams, unregisterExtensionParams } from "@/extensions/param-registry";
 import { applyPanelBypass, bypassParamBag, panelIsPreviewable } from "./panel-bypass";
 
@@ -68,6 +68,17 @@ describe("a panel that declares owns", () => {
     const bare = withPanels(panel("my-ext.glow-panel", "my-ext"));
     const bag = { "my-ext.glow.amount": 5, "other.x.y": 1 };
     expect(bypassParamBag(bag, { "my-ext.glow-panel": true }, bare)).toEqual({ "other.x.y": 1 });
+  });
+
+  it("drops its stages' texture values too, which have no uniform of their own", () => {
+    const stage = { id: "my-ext.paint", extensionId: "my-ext" } as RegisteredProcessingStage;
+    const other = { id: "other.paint", extensionId: "other" } as RegisteredProcessingStage;
+    const bare = {
+      ...withPanels(panel("my-ext.paint-panel", "my-ext")),
+      processingStages: { [stage.id]: stage, [other.id]: other },
+    };
+    const bag = { "my-ext.paint.layers": [{ id: "a", dabs: [] }], "other.paint.layers": [] };
+    expect(bypassParamBag(bag, { "my-ext.paint-panel": true }, bare)).toEqual({ "other.paint.layers": [] });
   });
 
   it("takes the place of the built-in list for an Essential's panel", () => {
