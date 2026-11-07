@@ -887,6 +887,30 @@ describe("pixel behaviour", () => {
     expect(pixelAt(frame, 0, 0)).toEqual([1, 0, 0]);
     expect(pixelAt(frame, 8, 8)[0]).toBeCloseTo(FLAT_GREY, 2);
   });
+
+  // Crop mode draws a margin past the photo. A geometry stage that zooms in (a
+  // lens correction's auto crop) maps that margin back inside the source, and
+  // the photo spilled into it, past the crop box's dim.
+  it("paints the surround colour outside the photo's frame under a stage that zooms in", () => {
+    const zoomIn: ProcessingStageContribution = {
+      id: "test.zoom-in",
+      name: "Zoom in",
+      phase: "geometry",
+      glsl: "srcUv = 0.5 + (srcUv - 0.5) * 0.5;",
+      uniforms: [],
+    };
+    const frame = withRenderer(
+      { stages: [...basicStagesFor(), ...cropStages(), zoomIn], pipeline: LINEAR_PROBE_PIPELINE },
+      (renderer) => {
+        renderer.setImage(flatSource());
+        renderer.setOutsideColor([1, 0, 0]);
+        renderer.setParams(identityParams({ crop: { x: -0.25, y: -0.25, width: 1.5, height: 1.5 } }));
+        return capture(renderer);
+      },
+    );
+    expect(pixelAt(frame, 0, 0)).toEqual([1, 0, 0]);
+    expect(pixelAt(frame, 8, 8)[0]).toBeCloseTo(FLAT_GREY, 2);
+  });
 });
 
 // A display transform with its own highlight roll-off opts out of the core

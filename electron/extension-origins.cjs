@@ -47,14 +47,12 @@ function isOfficialOnlyId(id) {
 }
 
 /** Whether `m` is an official extension: official-extensions.json lists its id
- *  and it names that row's repository. */
+ *  and it names that row's repository or one of its aliases. */
 function isOfficialManifest(m) {
   const row = OFFICIAL_EXTENSIONS.find((e) => e.id === m.id);
-  return (
-    !!row &&
-    typeof m.repository === "string" &&
-    m.repository.toLowerCase() === row.repo.toLowerCase()
-  );
+  if (!row || typeof m.repository !== "string") return false;
+  const named = m.repository.toLowerCase();
+  return [row.repo, ...(row.aliases || [])].some((r) => r.toLowerCase() === named);
 }
 
 /** Whether `m` is a manifest an extension may be installed, listed or read from:

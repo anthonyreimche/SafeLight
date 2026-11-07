@@ -786,8 +786,11 @@ void main() {
   // outside colour rather than smearing an edge texel.
   ${split("if (uSplitAt < 0) {\n  ")}//__CONTRIBUTED_GEOMETRY__${split("\n  }")}
   // Content rotated out of frame by straighten reads as neutral dark, so corners
-  // stay clean instead of smearing the edge texel.
-  if (srcUv.x < 0.0 || srcUv.x > 1.0 || srcUv.y < 0.0 || srcUv.y > 1.0) {
+  // stay clean instead of smearing the edge texel. A point outside the photo's
+  // frame before the warp is outside too: a stage that zooms in (a lens
+  // correction's auto crop) would otherwise bring crop mode's margin back in.
+  if (srcUv.x < 0.0 || srcUv.x > 1.0 || srcUv.y < 0.0 || srcUv.y > 1.0 ||
+      sensorUv.x < 0.0 || sensorUv.x > 1.0 || sensorUv.y < 0.0 || sensorUv.y > 1.0) {
     fragColor = vec4(uOutsideColor, 1.0);
     return;
   }

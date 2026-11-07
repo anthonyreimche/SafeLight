@@ -77,6 +77,9 @@ describe("validManifest: ids under safelight", () => {
     ["safelight.basic", "anthonyreimche/basic-adjustments"],
     ["safelight.basic", "AnthonyReimche/Basic-Adjustments"],
     ["safelight.devtools", "anthonyreimche/developer-tools"],
+    ["safelight.basic", "anthonyreimche/basic"],
+    ["safelight.crop", "anthonyreimche/Crop"],
+    ["safelight.crop", "anthonyreimche/crop-and-straighten"],
   ])("accepts %s from its own repository %s", (id, repository) => {
     expect(validManifest(from(id, repository))).toBe(true);
   });

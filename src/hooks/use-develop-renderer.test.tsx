@@ -3947,3 +3947,23 @@ describe("a cached preview whose RAW cache entry is rewritten while it is held",
     });
   });
 });
+
+// Assess frames the picture in a white mat, painted around the whole buffer.
+// Crop mode's margin and the corners a straighten leaves are inside the
+// buffer, so in the surround's grey they read as a grey band inside the mat.
+describe("useDevelopRenderer painting outside the photo", () => {
+  const outside = (worker: FakeWorker) =>
+    worker.posted.flatMap((m) => (m.cmd === "setOutsideColor" ? [m.rgb] : []));
+
+  afterEach(() => {
+    useDevelopStore.setState({ colorAssessment: false });
+  });
+
+  it("paints it the mat's white while assessing, and the surround's colour again after", async () => {
+    const { worker } = await open(photo());
+    act(() => useDevelopStore.setState({ colorAssessment: true }));
+    expect(outside(worker).at(-1)).toEqual([1, 1, 1]);
+    act(() => useDevelopStore.setState({ colorAssessment: false }));
+    expect(outside(worker).at(-1)).not.toEqual([1, 1, 1]);
+  });
+});

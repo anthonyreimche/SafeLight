@@ -5,9 +5,12 @@
 
 // Process version 1, frozen: the develop fragment shader, its built-in display
 // transform, and the stage GLSL b1f5ec5 ("Overhaul 1") built for the fixtures
-// in v1-identity.fixtures.ts. Generated once and never edited. The identity
-// test holds the live shader's version 1 output to these tokens, which is what
-// keeps every edit made before process versions rendering as it always has.
+// in v1-identity.fixtures.ts. Generated once. The identity test holds the live
+// shader's version 1 output to these tokens, which is what keeps every edit
+// made before process versions rendering as it always has. Edited once on
+// purpose, on 2026-11-06 with Anthony's approval: main()'s bounds check also
+// tests sensorUv, the point before the contributed geometry stages warp it
+// (program-reference.ts).
 
 export const V1_FRAGMENT_SHADER = `#version 300 es
 precision highp float;
@@ -998,8 +1001,11 @@ void main() {
   // outside colour rather than smearing an edge texel.
   //__CONTRIBUTED_GEOMETRY__
   // Content rotated out of frame by straighten reads as neutral dark, so corners
-  // stay clean instead of smearing the edge texel.
-  if (srcUv.x < 0.0 || srcUv.x > 1.0 || srcUv.y < 0.0 || srcUv.y > 1.0) {
+  // stay clean instead of smearing the edge texel. A point outside the photo's
+  // frame before the warp is outside too: a stage that zooms in (a lens
+  // correction's auto crop) would otherwise bring crop mode's margin back in.
+  if (srcUv.x < 0.0 || srcUv.x > 1.0 || srcUv.y < 0.0 || srcUv.y > 1.0 ||
+      sensorUv.x < 0.0 || sensorUv.x > 1.0 || sensorUv.y < 0.0 || sensorUv.y > 1.0) {
     fragColor = vec4(uOutsideColor, 1.0);
     return;
   }

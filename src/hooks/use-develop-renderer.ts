@@ -37,9 +37,12 @@ export type { DevelopTier };
 // Resolve the colour actually painted behind the image (the canvas surround) to
 // linear-display RGB in 0..1, by reading the surround element's computed
 // background. Reading the DOM rather than re-deriving from settings keeps the
-// crop-mode margin matching every case at once — theme surface, the fixed
-// surround override, and colour-assessment grey. Falls back to the legacy dark.
-function surroundRGB(): [number, number, number] {
+// crop-mode margin matching every case at once — theme surface and the fixed
+// surround override. Falls back to the legacy dark. While assessing, the
+// buffer sits inside Assess's white mat (ViewportImage), so the margin is the
+// mat's white rather than the grey around it.
+function surroundRGB(assessing: boolean): [number, number, number] {
+  if (assessing) return [1, 1, 1];
   if (typeof document !== "undefined") {
     const el = document.querySelector("[data-canvas-surround]");
     if (el) {
@@ -470,7 +473,7 @@ export function useDevelopRenderer(
   useEffect(() => {
     const bridge = bridgeRef.current;
     if (!bridge) return;
-    bridge.setOutsideColor(surroundRGB());
+    bridge.setOutsideColor(surroundRGB(colorAssessment));
     bridge.render(false);
   }, [colorAssessment, canvasSurround, canvasSurroundOverride]);
 
